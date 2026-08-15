@@ -1,0 +1,30 @@
+{
+  "name": "@agentscope/core",
+  "version": "0.1.0",
+  "description": "Normalized coding-agent trace schemas and AgentScope SDK.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./native-traces": "./src/native-traces/index.ts",
+    "./native-turns": "./src/native-turns/index.ts",
+    "./agent-trace": "./src/agent-trace/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && node --test 'dist/native-traces/__tests__/*.test.js' 'dist/native-turns/__tests__/*.test.js'"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,6 +1,9 @@
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
-.beads/proxieddb/
+node_modules
+.nx
+.next
+out
+dist
+coverage
+.env
+.env.*
+!.env.example

@@ -1,0 +1,215 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
+
+:root {
+  --page: #111210;
+  --panel: #181a17;
+  --panel-raised: #20231f;
+  --line: #30342d;
+  --text: #eef0e9;
+  --muted: #a7ada0;
+  --subtle: #747a70;
+  --accent: #a8d870;
+  --accent-ink: #18210d;
+  --blue: #8ec9e8;
+}
+* {
+  box-sizing: border-box;
+}
+html {
+  background: var(--page);
+}
+body {
+  margin: 0;
+  color: var(--text);
+  background:
+    radial-gradient(900px 460px at 18% -15%, #273025 0%, transparent 64%),
+    var(--page);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+.site-header {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--page) 86%, transparent);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.brand-mark {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent) 0 42%, transparent 42%);
+}
+.site-header nav {
+  display: flex;
+  gap: 22px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.site-header nav a:hover {
+  color: var(--text);
+}
+.shell {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  max-width: 1280px;
+  min-height: calc(100vh - 60px);
+  margin: 0 auto;
+}
+.sidebar {
+  padding: 34px 20px;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 14px;
+}
+.nav-label {
+  margin: 0 0 9px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.sidebar a {
+  display: block;
+  padding: 7px 9px;
+  border-radius: 5px;
+}
+.sidebar a:hover,
+.sidebar a.active {
+  color: var(--text);
+  background: var(--panel-raised);
+}
+.content {
+  width: min(800px, 100%);
+  padding: 76px 56px 120px;
+}
+.eyebrow {
+  margin: 0 0 18px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+h1 {
+  max-width: 730px;
+  margin: 0;
+  font-size: clamp(40px, 6vw, 68px);
+  line-height: 1.04;
+  letter-spacing: -0.055em;
+}
+h2 {
+  margin-top: 60px;
+  font-size: 25px;
+  letter-spacing: -0.03em;
+}
+p {
+  color: var(--muted);
+  font-size: 17px;
+}
+.lead {
+  max-width: 650px;
+  margin: 24px 0 32px;
+  font-size: 21px;
+  line-height: 1.5;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 30px 0 70px;
+}
+.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+.button.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.button:hover {
+  transform: translateY(-1px);
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.card {
+  min-height: 150px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(145deg, var(--panel-raised), var(--panel));
+}
+.card h2 {
+  margin: 0 0 7px;
+  font-size: 17px;
+}
+.card p {
+  margin: 0;
+  font-size: 14px;
+}
+code {
+  color: var(--blue);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.92em;
+}
+.docs-prose {
+  max-width: 700px;
+}
+.docs-prose h1 {
+  font-size: 46px;
+}
+.docs-prose pre {
+  overflow-x: auto;
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #0d0f0d;
+}
+@media (max-width: 760px) {
+  .site-header {
+    padding: 0 18px;
+  }
+  .shell {
+    display: block;
+  }
+  .sidebar {
+    display: none;
+  }
+  .content {
+    padding: 48px 22px 80px;
+  }
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .site-header nav {
+    gap: 12px;
+  }
+}

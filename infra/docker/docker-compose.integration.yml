@@ -1,0 +1,33 @@
+services:
+  collector:
+    image: node:22-alpine
+    working_dir: /workspace
+    command: ["node", "tests/integration/collector/server.mjs"]
+    volumes: ["../..:/workspace"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:4318').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+  integration:
+    image: node:22-alpine
+    working_dir: /workspace
+    depends_on:
+      collector:
+        condition: service_healthy
+    environment:
+      AGENTSCOPE_COLLECTOR_URL: http://collector:4318
+      AGENTSCOPE_CONFIG_HOME: /tmp/agent-scope
+    command:
+      [
+        "sh",
+        "-c",
+        "corepack enable && pnpm install --frozen-lockfile && pnpm test:integration:runner",
+      ]
+    volumes: ["../..:/workspace"]

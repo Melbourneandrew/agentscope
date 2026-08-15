@@ -1,0 +1,7 @@
+.beads/
+.claude/
+node_modules/
+.next/
+out/
+dist/
+coverage/

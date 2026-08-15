@@ -1,0 +1,9 @@
+{
+  "name": "@agentscope/harness-claude-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@agentscope/core": "workspace:*"
+  }
+}
