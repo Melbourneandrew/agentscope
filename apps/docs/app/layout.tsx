@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { RootProvider } from "fumadocs-ui/provider/next";
 import "./globals.css";
 
 export const metadata = {
@@ -11,31 +12,23 @@ export default function Layout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <body>
-        <header className="site-header">
-          <Link className="brand" href="/">
-            <span className="brand-mark" />
-            AgentScope
-          </Link>
-          <nav>
-            <Link href="/docs">Documentation</Link>
-            <a href="https://github.com/Melbourneandrew/agentscope">GitHub</a>
-          </nav>
-        </header>
-        <div className="shell">
-          <aside className="sidebar">
-            <p className="nav-label">Get started</p>
-            <Link className="active" href="/docs">
-              Introduction
+        <RootProvider>
+          <header className="site-header">
+            <Link className="brand" href="/">
+              <span
+                className="brand-logo"
+                role="img"
+                aria-label="AgentScope oscilloscope"
+              />
+              AgentScope
             </Link>
-            <Link href="/docs">Installation</Link>
-            <Link href="/docs">Configuration</Link>
-            <p className="nav-label">Reference</p>
-            <Link href="/docs">CLI</Link>
-            <Link href="/docs">Reporters</Link>
-            <Link href="/docs">Harnesses</Link>
-          </aside>
-          <main className="content">{children}</main>
-        </div>
+            <nav>
+              <Link href="/docs">Documentation</Link>
+              <a href="https://github.com/Melbourneandrew/agentscope">GitHub</a>
+            </nav>
+          </header>
+          {children}
+        </RootProvider>
       </body>
     </html>
   );

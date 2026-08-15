@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <>
+    <main className="content homepage">
       <p className="eyebrow">Coding-agent observability</p>
       <h1>Trace the work your agents actually do.</h1>
       <p className="lead">
@@ -44,6 +44,6 @@ export default function Home() {
           </p>
         </section>
       </div>
-    </>
+    </main>
   );
 }

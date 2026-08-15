@@ -39,6 +39,8 @@ Branch context is best-effort and must never cause tracing to fail. A detached `
 - Configuration changes must be idempotent and reversible, with backups and `doctor` diagnostics.
 - Public packages must publish with provenance through npm trusted publishing.
 - User-facing documentation is a static Fumadocs site deployed to GitHub Pages.
+- `main` accepts reviewed pull requests only; required validation and hermetic
+  integration checks pass before a squash merge.
 
 ## Decisions to confirm
 
@@ -73,3 +75,6 @@ AgentScope is complementary to the official Langfuse plugins, not a replacement 
 - Repository architecture, scope boundaries, and the decisions above are documented.
 - Existing SF Platform AgentScope source is preserved in the standalone core package.
 - Package, docs, test, CI, and publishing placeholders exist with a clear next implementation path.
+- A protected scheduled/manual workflow has a stable live-suite entry point;
+  it verifies protected Langfuse configuration now and will gain trace
+  emission/retrieval assertions with the Langfuse reporter implementation.

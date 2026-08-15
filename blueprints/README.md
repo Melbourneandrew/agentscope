@@ -115,6 +115,15 @@ The CLI detects the official plugin/configuration during `install` and `doctor`.
 
 Docker is preferred to a dedicated VM for v1 because the fixtures are file/process driven and must be reproducible in CI. Add a macOS runner only after a provider exposes functionality unavailable in Linux containers.
 
+The repository exposes the protected suite as `pnpm test:integration:live` in
+the `@agentscope/integration-live` workspace. Its GitHub workflow runs only by
+schedule or manual dispatch under the `langfuse-live` Environment; it receives
+the public/secret keys as Environment secrets and the base URL as an
+Environment variable. Until `@agentscope/reporter-langfuse` is implemented,
+the entry point deliberately validates that protected configuration is present
+instead of pretending to prove delivery. The reporter slice upgrades this same
+command to send and retrieve one synthetic redacted trace.
+
 ## Delivery slices
 
 1. Establish package builds and migrate source with parity tests.

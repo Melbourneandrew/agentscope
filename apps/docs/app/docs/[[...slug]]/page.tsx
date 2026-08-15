@@ -1,28 +1,47 @@
-export function generateStaticParams() {
-  return [{ slug: [] }];
+import { notFound } from "next/navigation";
+import {
+  DocsPage,
+  DocsBody,
+  DocsTitle,
+  DocsDescription,
+} from "fumadocs-ui/page";
+import { source } from "../../../lib/source";
+
+interface PageProps {
+  params: Promise<{ slug?: string[] }>;
 }
 
-export default function DocsPlaceholder() {
+export function generateStaticParams() {
+  return source.generateParams();
+}
+
+export async function generateMetadata({ params }: PageProps) {
+  const { slug = [] } = await params;
+  const page = source.getPage(slug);
+
+  if (!page) return {};
+
+  return {
+    title: page.data.title,
+    description: page.data.description,
+  };
+}
+
+export default async function Page({ params }: PageProps) {
+  const { slug = [] } = await params;
+  const page = source.getPage(slug);
+
+  if (!page) notFound();
+
+  const MDX = page.data.body;
+
   return (
-    <article className="docs-prose">
-      <p className="eyebrow">Introduction</p>
-      <h1>AgentScope documentation</h1>
-      <p className="lead">
-        A CLI-first system for capturing traces from coding agents and reporting
-        them to Langfuse or a custom destination.
-      </p>
-      <h2>Planned quick start</h2>
-      <pre>
-        <code>
-          npx @agentscope/cli init{"\n"}agent-scope configure reporter langfuse
-          {"\n"}agent-scope install codex
-        </code>
-      </pre>
-      <p>
-        The Fumadocs MDX source and standard package dependencies are
-        scaffolded; this styled documentation shell is ready for the first
-        complete guide set.
-      </p>
-    </article>
+    <DocsPage toc={page.data.toc}>
+      <DocsTitle>{page.data.title}</DocsTitle>
+      <DocsDescription>{page.data.description}</DocsDescription>
+      <DocsBody>
+        <MDX />
+      </DocsBody>
+    </DocsPage>
   );
 }
