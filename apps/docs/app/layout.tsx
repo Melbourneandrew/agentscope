@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 import "./globals.css";
 
 export const metadata = {
@@ -11,27 +12,27 @@ export default function Layout({ children }: { children: ReactNode }) {
     <html lang="en">
       <body>
         <header className="site-header">
-          <a className="brand" href="/">
+          <Link className="brand" href="/">
             <span className="brand-mark" />
             AgentScope
-          </a>
+          </Link>
           <nav>
-            <a href="/docs">Documentation</a>
+            <Link href="/docs">Documentation</Link>
             <a href="https://github.com/Melbourneandrew/agentscope">GitHub</a>
           </nav>
         </header>
         <div className="shell">
           <aside className="sidebar">
             <p className="nav-label">Get started</p>
-            <a className="active" href="/docs">
+            <Link className="active" href="/docs">
               Introduction
-            </a>
-            <a href="/docs">Installation</a>
-            <a href="/docs">Configuration</a>
+            </Link>
+            <Link href="/docs">Installation</Link>
+            <Link href="/docs">Configuration</Link>
             <p className="nav-label">Reference</p>
-            <a href="/docs">CLI</a>
-            <a href="/docs">Reporters</a>
-            <a href="/docs">Harnesses</a>
+            <Link href="/docs">CLI</Link>
+            <Link href="/docs">Reporters</Link>
+            <Link href="/docs">Harnesses</Link>
           </aside>
           <main className="content">{children}</main>
         </div>

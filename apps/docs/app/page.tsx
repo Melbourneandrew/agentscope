@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function Home() {
   return (
     <>
@@ -9,9 +11,9 @@ export default function Home() {
         control.
       </p>
       <div className="actions">
-        <a className="button primary" href="/docs">
+        <Link className="button primary" href="/docs">
           Read the docs
-        </a>
+        </Link>
         <a
           className="button"
           href="https://github.com/Melbourneandrew/agentscope"
