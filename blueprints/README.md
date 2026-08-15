@@ -39,6 +39,40 @@ agent-scope uninstall codex
 
 `init` creates the global config directory and selects a reporter. `install` detects an existing provider installation, writes a reversible hook configuration transaction, and records the provider version. A hook invokes the stable CLI executable rather than embedding implementation code in provider config.
 
+## Effective Git context resolution
+
+Hook processes commonly inherit the coding agent's active shell working directory. SF Platform's Codex and Claude Code integration tests confirm that this can be a subdirectory and can be inside a fresh Git worktree, so AgentScope must **not** assume the hook's launch path is always the repository root. Provider payloads may also expose a more authoritative workspace path.
+
+For every completed turn, the harness resolves workspace context in this order:
+
+1. Explicit workspace/cwd supplied by the lifecycle hook payload.
+2. Workspace/cwd associated with the provider-native session record or transcript.
+3. The hook process `process.cwd()` as a final fallback.
+
+It then executes Git against the resolved candidate (never changes the global process directory):
+
+```text
+git -C <candidate> rev-parse --show-toplevel
+git -C <candidate> branch --show-current
+git -C <candidate> rev-parse HEAD
+```
+
+The resulting `repository_root`, `worktree_root`, `branch`, `commit`, and `context_source` travel in normalized trace metadata and each reporter receives them after redaction. In a detached worktree, `branch` is `undefined` and `git_state` is `detached`; outside Git or on command failure, `git_state` is `unavailable`. The runner must preserve the exact active worktree—never resolve via `--git-common-dir`, which would lose the branch selected by that worktree.
+
+The test matrix includes root, nested directory, explicitly supplied workspace, detached worktree, non-Git directory, and Git-unavailable cases. This parity requirement is inherited from SF Platform's current hook tests, which exercise subdirectory and fresh-worktree execution.
+
+## SF Platform parity baseline
+
+The initial migration target is parity with the copied framework source, before expansion:
+
+- Codex, Claude Code, and Cursor native discovery and transcript parsing.
+- Stable normalized provider/session/turn/message records with original timestamps and raw-source pointers.
+- Model provider/name/reasoning-effort and usage metadata; tool calls/results, shell activity, file edits, thinking, skills, and child-agent relationships.
+- Native-turn slicing, trace-to-code attribution records, skill-read replay-safe spool behavior, and deterministic provider fixtures.
+- Fail-open lifecycle invocation, idempotent turn export, redaction before spooling/reporting, and destination-neutral reporter planning.
+
+New features must add adapter fixtures and cross-reporter contract tests; they may not regress a copied SF Platform behavior without a documented migration.
+
 ## Reporter plugin interface
 
 The stable v1 interface should be intentionally small:

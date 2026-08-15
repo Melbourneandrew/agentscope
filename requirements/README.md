@@ -22,6 +22,16 @@ AgentScope gives an individual developer or organization a single installable co
 6. Redaction occurs before events are queued or passed to reporters. Local spool data is encrypted or intentionally disabled by policy.
 7. Every harness-reporter combination has deterministic integration coverage; no CI test requires a paid SaaS endpoint.
 8. A protected live smoke test can use Langfuse credentials to detect API integration drift without exposing secrets to pull requests.
+9. Each trace records the effective workspace Git context when available: branch name, commit SHA, repository/worktree root, and a provenance field explaining whether the workspace came from the hook payload, native transcript, or process fallback.
+10. Each trace preserves the provider's effective model metadata at session, turn, and message level where available: provider, model name/ID, reasoning effort, token usage, and timing.
+
+## User story: effective branch context and AgentScope parity
+
+**As a user, I want the traces to be captured with the context of the current branch name, as well as details like model name and everything else. We want all the same requirements from the SF platform, harness engineering, Agent tracing, agent trace collection, and all that stuff.**
+
+The standalone project takes the current SF Platform `agentscope-framework` and hook reporting path as its functional baseline. That includes native Codex, Claude Code, and Cursor trace discovery; normalized session/turn/message/tool/file-edit/shell/skill records; model and usage metadata; native-turn slicing; deterministic fixtures; trace-to-code attribution records; raw-source pointers; retry-safe spooling; and destination-neutral export planning. The new package must preserve this behavior while moving ownership out of the SF Platform integration.
+
+Branch context is best-effort and must never cause tracing to fail. A detached `HEAD`, a non-Git workspace, unavailable Git executable, or permission failure results in an explicit `unavailable`/`detached` state—not an invented branch name.
 
 ## Non-functional requirements
 
