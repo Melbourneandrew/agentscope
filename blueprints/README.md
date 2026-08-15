@@ -54,6 +54,22 @@ export interface Reporter {
 
 Reporters receive events only after core validation and redaction. Retry classification, backpressure, dead-letter policy, and idempotency keys remain owned by core so all destinations behave predictably.
 
+## Langfuse compatibility boundary
+
+Langfuse's official Codex and Claude Code plugins are the reference behavior for their own destination: they run a Stop hook, read the provider transcript, emit a session-grouped turn hierarchy, backdate observations, and maintain state to prevent duplicate uploads. AgentScope should use these as compatibility requirements, not as a code dependency or a second hook to run in parallel.
+
+When `@agentscope/reporter-langfuse` is active, the rendered hierarchy is:
+
+```text
+session
+└── turn trace / agent observation
+    ├── model generation (input, output, usage, reasoning summary)
+    │   └── tool spans (input, output, status, duration)
+    └── child-agent turn traces
+```
+
+The CLI detects the official plugin/configuration during `install` and `doctor`. The default action is a non-destructive conflict report with migration instructions; only an explicit `agent-scope install <harness> --replace-langfuse` may disable or replace the overlapping hook. Test fixtures must include conflict detection, migration rollback, duplicate prevention, layered config precedence, and fail-open behavior.
+
 ## Integration-test blueprint
 
 1. **Contract tests:** fast unit tests for schema, redaction, queues, and reporter semantics.
@@ -61,6 +77,7 @@ Reporters receive events only after core validation and redaction. Retry classif
 3. **Container matrix:** Docker Compose launches a mock collector and an integration runner. The runner creates a temporary home/config directory, installs the built CLI, executes each harness fixture, then asserts captured normalized and reporter payloads.
 4. **Real CLI installation tests:** test hook installation with disposable configuration directories. Never modify a developer's real provider settings.
 5. **Live smoke test:** scheduled/manual workflow uses a protected GitHub Environment, sends one synthetic trace to Langfuse, and verifies receipt by API. It is never a pull-request gate.
+6. **Compatibility fixtures:** sanitized transcript fixtures verify that the Langfuse reporter produces one session grouping, one idempotent turn hierarchy, accurate timestamps, model usage, tool status, and subagent nesting without the official plugin or a live Langfuse project in CI.
 
 Docker is preferred to a dedicated VM for v1 because the fixtures are file/process driven and must be reproducible in CI. Add a macOS runner only after a provider exposes functionality unavailable in Linux containers.
 

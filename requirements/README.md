@@ -41,6 +41,23 @@ AgentScope gives an individual developer or organization a single installable co
 | Test substrate  | Docker Compose fixture matrix + mock OTLP/Langfuse collector       | Reproducible locally and in GitHub Actions; no separate VM is needed for v1.                            |
 | Live validation | Nightly/manual, protected environment                              | Valuable drift detection without making PRs flaky or leaking secrets.                                   |
 
+## Official Langfuse integration interoperability
+
+AgentScope is complementary to the official Langfuse plugins, not a replacement for their Langfuse-only quick start. Langfuse's Claude Code and Codex integrations already use lifecycle hooks to reconstruct native transcripts, preserve session identity, record tool activity and timestamps, deduplicate completed turns with local state, and fail open if export fails. Their Codex plugin is explicitly opt-in, supports layered global/project/environment configuration, and requires a trusted hook. Their Claude Code marketplace plugin uses the OS keychain for credentials. These are the operational standards AgentScope must meet or exceed.
+
+**Decision:** An AgentScope harness owns a given provider's observability hook when AgentScope is enabled. `agent-scope doctor` must detect an official Langfuse hook and refuse a second overlapping installation unless the user explicitly chooses a migration. Running both capture paths by default would create duplicate traces and ambiguous redaction ownership.
+
+`@agentscope/reporter-langfuse` is therefore a compatibility reporter: it maps the vendor-neutral event model to an equivalent Langfuse trace hierarchy (turn, model generation, nested tools, child agents), preserves timestamps and idempotency keys, and supports the Langfuse Cloud and self-hosted base URL. It is not a reimplementation of Langfuse's broader `langfuse-cli`, Langfuse MCP server, or Agent Skill. Those tools help agents query/manage Langfuse data after capture and can be installed alongside AgentScope.
+
+## Lessons adopted from Langfuse
+
+- Use a post-turn hook and transcript/rollout reconstruction rather than intercepting agent model traffic.
+- Make tracing explicit opt-in, fail open, bounded, and independently diagnosable.
+- Use a stable session ID, per-turn idempotency key, sidecar/spool state, and original event timestamps.
+- Respect global → project → environment precedence, but keep AgentScope secrets in the credential store rather than a plaintext project config.
+- Treat transcript content as sensitive: redact before queueing and allow per-field truncation/capture policy.
+- Add fixture parity tests that compare AgentScope's normalized capture with the documented Langfuse hierarchy for Codex and Claude Code.
+
 ## Acceptance criteria for foundation phase
 
 - Repository architecture, scope boundaries, and the decisions above are documented.
