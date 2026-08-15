@@ -2,6 +2,7 @@
   "name": "@agentscope/cli",
   "version": "0.1.0",
   "description": "AgentScope command-line installer and configuration tool.",
+  "private": true,
   "type": "module",
   "bin": {
     "agent-scope": "./dist/bin/agent-scope.js"

@@ -4,17 +4,21 @@
   "description": "Normalized coding-agent trace schemas and AgentScope SDK.",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts",
-    "./native-traces": "./src/native-traces/index.ts",
-    "./native-turns": "./src/native-turns/index.ts",
-    "./agent-trace": "./src/agent-trace/index.ts",
-    "./testing": "./src/testing/index.ts"
+    ".": "./dist/index.js",
+    "./native-traces": "./dist/native-traces/index.js",
+    "./native-turns": "./dist/native-turns/index.js",
+    "./agent-trace": "./dist/agent-trace/index.js",
+    "./testing": "./dist/testing/index.js"
   },
   "files": [
     "dist"
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Melbourneandrew/agentscope.git"
   },
   "dependencies": {
     "zod": "^4.3.6"
