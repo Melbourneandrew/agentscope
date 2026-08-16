@@ -3,9 +3,9 @@
 This is an immutable Git-side index for the executable Beads program. The issue bodies, dependencies, status transitions, and audit history remain authoritative in the Dolt store.
 
 - Beads root: `agentscope-vah`
-- Certified Dolt branch/revision: `main` / `uslbq6kd2b0uarqq2ve84ase982ntu4j`
+- Certified Dolt branch/revision: `main` / `ge6covj8oo1uuad3er7pq3edgk9697hv`
 - Planning PR: [#9](https://github.com/Melbourneandrew/agentscope/pull/9)
-- Inventory at certification: 146 total issues; 93 open; 1 in progress; 91 blocked; 52 closed
+- Inventory at certification: 147 total issues; 93 open; 1 in progress; 91 blocked; 53 closed
 - Graph checks: `bd lint`, `bd orphans`, and `bd dep cycles` pass
 
 Implementers must run `bd dolt pull`, select ready leaf work rather than a ready epic, and create linked follow-up Beads whenever implementation evidence invalidates an assumption. A phase certification task closes its parent epic only after every child is complete, two independent agent review comments are resolved, gates pass, the PR is squash-merged, and main is verified.
@@ -28,7 +28,7 @@ Implementers must run `bd dolt pull`, select ready leaf work rather than a ready
 | 11. CI, release, and docs | `agentscope-vah.12` | `codex/andrew/11-delivery-automation` |
 | 12. Maturity certification | `agentscope-vah.13` | `codex/andrew/12-maturity-certification` |
 
-The Phase 4 platform is proven with a purpose-built process fixture. It does not claim that the later CLI or harnesses exist. The first exact packed-CLI lifecycle is `agentscope-vah.8.8`; actual supported harness binaries are each proven by `agentscope-vah.11.1` through `.11.7`.
+The Phase 4 platform is proven with a purpose-built process fixture. It does not claim that the later CLI, destinations, or harnesses exist. The first exact packed-CLI lifecycle is `agentscope-vah.9.9`, after both first-party destinations exist; actual supported harness binaries are each proven by `agentscope-vah.11.1` through `.11.7`.
 
 ## Requirement acceptance-criterion ownership
 
@@ -68,24 +68,24 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | `destinations/retrievers/query-and-pagination` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.8.5`, `vah.9.3`, `vah.9.6` |
 | `destinations/retrievers/langfuse-retriever` | `ADR-001`–`ADR-006` | `vah.9.1`, `vah.9.3`, `vah.9.7`, `vah.12.6` |
 | `destinations/local-sqlite-destination` | `ADR-001`–`ADR-006` | `vah.9.4-.9.7` |
-| `operations/agentscope-init` | `ADR-001`, `ADR-002` | `vah.8.2`, `vah.8.8`, `vah.11.1-.11.7` |
+| `operations/agentscope-init` | `ADR-001`, `ADR-002` | `vah.8.2`, `vah.9.9`, `vah.11.1-.11.7` |
 | `operations/api-key-storage` | `ADR-001`–`ADR-004` | `vah.2.7`, `vah.7.3-.7.8`, `vah.12.7` |
-| `operations/cli-architecture` | `ADR-001`–`ADR-003` | `vah.2.5`, `vah.8.1-.8.8` |
-| `operations/cli-installation` | `ADR-001`–`ADR-003` | `vah.2.2`, `vah.2.5`, `vah.8.8`, `vah.12.4` |
+| `operations/cli-architecture` | `ADR-001`–`ADR-003` | `vah.2.5`, `vah.8.1-.8.7`, `vah.9.9` |
+| `operations/cli-installation` | `ADR-001`–`ADR-003` | `vah.2.2`, `vah.2.5`, `vah.9.9`, `vah.12.4` |
 | `operations/code-quality-and-ci` | `ADR-001`–`ADR-004` | `vah.2.2-.2.6`, `vah.12.1-.12.5`, `vah.13.1` |
 | `operations/config-management` | `ADR-001`–`ADR-003` | `vah.7.1-.7.3`, `vah.7.8` |
 | `operations/configuration-extensibility` | `ADR-001`–`ADR-003` | `vah.4.1-.4.2`, `vah.7.1-.7.3`, `vah.8.2` |
 | `operations/continuous-integration` | `ADR-001`–`ADR-004` | `vah.2.5`, `vah.2.7`, `vah.5.5`, `vah.12.1-.12.7` |
 | `operations/documentation-site` | `ADR-001`–`ADR-003` | `vah.8.6`, `vah.12.4-.12.5` |
 | `operations/harness-discovery` | `ADR-001`, `ADR-002` | `vah.10.1`, `vah.8.2-.8.3`, `vah.11.1-.11.7` |
-| `operations/hook-installation` | `ADR-001`–`ADR-004` | `vah.10.3-.10.5`, `vah.8.3-.8.4`, `vah.8.8`, `vah.11.1-.11.9` |
+| `operations/hook-installation` | `ADR-001`–`ADR-004` | `vah.10.3-.10.5`, `vah.8.3-.8.4`, `vah.9.9`, `vah.11.1-.11.9` |
 | `operations/npm-publishing` | `ADR-001`, `ADR-002` | `vah.2.2`, `vah.2.5`, `vah.2.7`, `vah.12.4-.12.5` |
 | `operations/operational-state` | `ADR-001`–`ADR-003` | `vah.6.3`, `vah.7.2`, `vah.7.7`, `vah.8.6` |
 | `testing/test-strategy` | `ADR-001`–`ADR-003` | `vah.2.3-.2.5`, `vah.4.3`, `vah.5.1-.5.6`, `vah.11.1-.11.11` |
 | `testing/unit-testing` | `ADR-001`–`ADR-004` | `vah.2.4`, `vah.3.4`, `vah.4.3`, `vah.10.4`, `vah.11.8`, `vah.11.11` |
-| `testing/real-harness-integration` | `ADR-001` | `vah.5.1-.5.6`, `vah.8.8`, `vah.11.1-.11.10` |
+| `testing/real-harness-integration` | `ADR-001` | `vah.5.1-.5.6`, `vah.9.9`, `vah.11.1-.11.10` |
 | `testing/integration/ci-execution` | `ADR-001`, `ADR-002` | `vah.5.1`, `vah.5.5`, `vah.12.1-.12.2` |
-| `testing/integration/container-isolation` | `ADR-001`, `ADR-002` | `vah.5.2`, `vah.5.5-.5.6`, `vah.8.8`, `vah.11.1-.11.9` |
+| `testing/integration/container-isolation` | `ADR-001`, `ADR-002` | `vah.5.2`, `vah.5.5-.5.6`, `vah.9.9`, `vah.11.1-.11.9` |
 | `testing/integration/matrix-operations` | `ADR-001`–`ADR-004` | `vah.5.1`, `vah.5.5`, `vah.11.8-.11.11`, `vah.12.1` |
 | `testing/integration/mock-services` | `ADR-001`–`ADR-003` | `vah.5.3-.5.6`, `vah.9.7`, `vah.11.1-.11.9` |
 
