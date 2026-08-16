@@ -11,7 +11,7 @@ The `agentscope` command must be easy to install, stable for hooks, and publisha
 
 ### ADR-001: Publish a dedicated CLI package
 
-**Decision:** Publish `@agentscope/cli` with an unhyphenated `agentscope` bin entry, while keeping SDK/core packages independently consumable.
+**Decision:** Publish `@agentscope/cli` from `apps/cli` with an unhyphenated `agentscope` bin entry, while keeping supported SDK/core packages independently consumable.
 
 **Context:** Hooks need one stable executable and library consumers should not receive CLI lifecycle dependencies.
 

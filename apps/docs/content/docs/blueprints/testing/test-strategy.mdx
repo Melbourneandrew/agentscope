@@ -11,9 +11,11 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 ### ADR-001: Separate unit and integration lanes
 
-**Decision:** Unit tests verify pure parsing, schemas, mapping, redaction, queues, and reporter contracts; integration tests verify live harness/setup behavior.
+**Decision:** Unit tests are colocated with the app/package that owns pure parsing, schemas, mapping, redaction, queues, and reporter contracts; root integration tests verify live harness/setup behavior.
 
 **Context:** Transcript fixtures cannot prove executable flags, hook invocation, or configuration mutation.
+
+**Consequences:** `apps/**` and `packages/**` retain their own fast unit and contract suites. `tests/integration/` owns hermetic cross-package scenarios, while `tests/integration-live/` owns protected external smoke coverage and is never a pull-request dependency.
 
 ### ADR-002: Treat capability claims as test-backed
 

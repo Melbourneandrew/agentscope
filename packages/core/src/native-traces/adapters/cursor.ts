@@ -121,6 +121,7 @@ class CursorNativeTraceAdapter implements NativeTraceAdapter {
   async discover(
     options: NativeTraceDiscoverOptions = {},
   ): Promise<NativeTraceDiscoveryItem[]> {
+    await Promise.resolve();
     const transcriptItems = this.discoverTranscriptItems(options);
     const globalItems = this.discoverGlobalComposerItems(options);
     return [...transcriptItems, ...globalItems]
@@ -132,6 +133,7 @@ class CursorNativeTraceAdapter implements NativeTraceAdapter {
     item: NativeTraceDiscoveryItem,
     _options: NativeTraceParseOptions = {},
   ): Promise<NativeAgentTrace> {
+    await Promise.resolve();
     if (!this.canParseSource(item.source)) {
       throw new Error(
         `Cursor adapter cannot parse source: ${item.source.sourceType}`,
@@ -403,9 +405,8 @@ class CursorNativeTraceAdapter implements NativeTraceAdapter {
     }>;
     return rows
       .map((row) => ({
-        key: String(row.key ?? ""),
-        value:
-          typeof row.value === "string" ? row.value : String(row.value ?? ""),
+        key: readString(row.key) ?? "",
+        value: readString(row.value) ?? "",
       }))
       .filter((row) => row.key && row.value);
   }
@@ -459,7 +460,7 @@ function partsFromTranscriptContent(
   }
   const type = readString(record.type);
   if (type === "text") {
-    const text = cursorTranscriptText(role, String(record.text ?? ""));
+    const text = cursorTranscriptText(role, readString(record.text) ?? "");
     return [
       {
         type: role === "user" ? "user_text" : "assistant_text",
@@ -755,9 +756,10 @@ function shellCommandFromToolUse(
   if (!command) {
     return undefined;
   }
+  const cwd = readString(record.cwd);
   return {
     command,
-    cwd: readString(record.cwd),
+    ...(cwd !== undefined ? { cwd } : {}),
   };
 }
 

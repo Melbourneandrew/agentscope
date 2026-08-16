@@ -29,9 +29,15 @@ export function normalizeSkillPath(path: string): string {
 
 function namesFromText(text: string): string[] {
   const names = new Map<string, string>(); // bare name -> final name
-  for (const m of text.matchAll(SKILL_MD_IN_TEXT_RE)) names.set(m[1], m[1]);
-  for (const m of text.matchAll(PLUGIN_IN_TEXT_RE))
-    names.set(m[2], `${m[1]}:${m[2]}`); // plugin match upgrades the bare entry
+  for (const match of text.matchAll(SKILL_MD_IN_TEXT_RE)) {
+    const name = match[1];
+    if (name) names.set(name, name);
+  }
+  for (const match of text.matchAll(PLUGIN_IN_TEXT_RE)) {
+    const plugin = match[1];
+    const name = match[2];
+    if (plugin && name) names.set(name, `${plugin}:${name}`); // plugin match upgrades the bare entry
+  }
   return [...names.values()];
 }
 

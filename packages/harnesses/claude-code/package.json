@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@agentscope/core": "workspace:*"
+    "@agentscope/core": "workspace:*",
+    "@agentscope/harnesses-core": "workspace:*"
   }
 }

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import type {
@@ -72,6 +72,7 @@ class ClaudeCodeNativeTraceAdapter implements NativeTraceAdapter {
   async discover(
     options: NativeTraceDiscoverOptions = {},
   ): Promise<NativeTraceDiscoveryItem[]> {
+    await Promise.resolve();
     try {
       const paths = candidateTranscriptPaths(
         this.claudeProjectsRoot,
@@ -94,6 +95,7 @@ class ClaudeCodeNativeTraceAdapter implements NativeTraceAdapter {
     item: NativeTraceDiscoveryItem,
     options: NativeTraceParseOptions = {},
   ): Promise<NativeAgentTrace> {
+    await Promise.resolve();
     if (!this.canParseSource(item.source)) {
       throw new Error(
         `Claude Code adapter cannot parse source: ${item.source.sourceType}`,
@@ -404,13 +406,13 @@ function summarizeRecords(records: ClaudeJsonlRecord[]): {
   }
 
   return {
-    sessionId,
-    cwd,
-    version,
-    model,
-    createdAt,
-    updatedAt,
-    preview,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(version !== undefined ? { version } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+    ...(preview !== undefined ? { preview } : {}),
     hasSidechainMessages,
   };
 }
@@ -474,9 +476,10 @@ function shellCommandFromToolUse(
   if (!command) {
     return undefined;
   }
+  const cwd = readString(record.cwd);
   return {
     command,
-    cwd: readString(record.cwd),
+    ...(cwd !== undefined ? { cwd } : {}),
   };
 }
 

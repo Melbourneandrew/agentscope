@@ -3,6 +3,7 @@
   "collapsible": true,
   "defaultOpen": true,
   "pages": [
+    "workspace-architecture",
     "canonical-trace-format",
     "harness-abstraction",
     "native-trace-mapping",

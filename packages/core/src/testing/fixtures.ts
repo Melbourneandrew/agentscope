@@ -94,7 +94,9 @@ export function createNativeTurnFixtureWorkspace(
   return {
     cwd,
     sourcePath,
-    cleanup: () => rmSync(tempDir, { recursive: true, force: true }),
+    cleanup: () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    },
     adapterOptions: { codexStateDbPath: dbPath },
     rawHookPayload: {
       hook_event_name: "Stop",

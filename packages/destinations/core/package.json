@@ -1,0 +1,10 @@
+{
+  "name": "@agentscope/destinations-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal shared contracts for first-party Agentscope destinations.",
+  "dependencies": {
+    "@agentscope/core": "workspace:*"
+  }
+}
