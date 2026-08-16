@@ -11,7 +11,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-001: Require reporting, make retrieval optional
 
-**Decision:** Every Trace Source has a reporter; only sources whose destination supports queries expose a retriever.
+**Decision:** Every Trace Destination has a reporter; only destinations that support queries expose a retriever.
 
 **Context:** Delivery is core product behavior while many valid destinations are write-only.
 
@@ -23,7 +23,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-003: Make destination testing a plugin capability
 
-**Decision:** Each Trace Source package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
+**Decision:** Each Trace Destination package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
 
 **Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
 
@@ -31,7 +31,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-004: Keep credentials in Core-mediated destination capabilities
 
-**Decision:** First-party executable Trace Source plugins receive validated non-secret configuration and a Core-provided, destination-bound authenticated transport capability; plugin APIs do not receive secret values or credential-store handles. Production execution admits only packages bundled with the CLI or verified against the maintainers' release signature. Third-party executable plugins are disabled by default and available only through an explicit local-development preview mode until Agentscope provides a sandboxed plugin runner with allowlisted RPC.
+**Decision:** First-party executable Trace Destination plugins receive validated non-secret configuration and a Core-provided, destination-bound authenticated transport capability; plugin APIs do not receive secret values or credential-store handles. Production execution admits only packages bundled with the CLI or verified against the maintainers' release signature. Third-party executable plugins are disabled by default and available only through an explicit local-development preview mode until Agentscope provides a sandboxed plugin runner with allowlisted RPC.
 
 **Context:** A credential reference in configuration does not itself define whether third-party code can read the referenced secret.
 
@@ -39,7 +39,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-005: Negotiate executable plugin compatibility before capture
 
-**Decision:** Every external harness or Trace Source plugin declares a manifest identity, Core API compatibility range, configuration-schema version, and requested capabilities. Core validates the manifest before discovery, installation, or hook execution and refuses incompatible plugins with a stable Doctor diagnostic.
+**Decision:** Every external harness or Trace Destination plugin declares a manifest identity, Core API compatibility range, configuration-schema version, and requested capabilities. Core validates the manifest before discovery, installation, or hook execution and refuses incompatible plugins with a stable Doctor diagnostic.
 
 **Context:** Versioned config preservation does not protect against loading executable code built for a different Core contract.
 

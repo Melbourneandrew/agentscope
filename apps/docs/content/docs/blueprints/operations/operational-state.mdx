@@ -27,7 +27,7 @@ Core owns the bounded operational state that supports reliable delivery and `age
 
 ### ADR-003: Make queued delivery crash-safe and destination-pinned
 
-**Decision:** A spool entry records an immutable delivery identifier, immutable Trace Source connection ID plus non-secret destination-binding fingerprint, and reporter export-profile version at enqueue time. The fingerprint includes reporter type and normalized endpoint/tenant/project identity, but excludes credential references and values. Core sends that same identifier as the idempotency key on every attempt, durably records a matching reporter receipt before removing the entry, and never silently re-routes it after a configuration change.
+**Decision:** A spool entry records an immutable delivery identifier, immutable Trace Destination connection ID plus non-secret destination-binding fingerprint, and reporter export-profile version at enqueue time. The fingerprint includes reporter type and normalized endpoint/tenant/project identity, but excludes credential references and values. Core sends that same identifier as the idempotency key on every attempt, durably records a matching reporter receipt before removing the entry, and never silently re-routes it after a configuration change.
 
 **Context:** A process can stop after remote acceptance but before local acknowledgement. Routing is also a data-disclosure boundary: a retry must not move historic data to a newly active connection merely because the user edited routing, renamed, or removed a source. Credential rotation for the same destination must continue queued delivery.
 
@@ -55,7 +55,7 @@ Core owns the bounded operational state that supports reliable delivery and `age
 
 ### ADR-006: Admit hook work without waiting for the delivery drainer
 
-**Decision:** Before any network attempt, a hook uses bounded, per-entry atomic admission (unique temporary entry then same-directory rename) to persist its delivery ID, source pin, and idempotency key. It makes the initial bounded attempt from that durable entry. The drainer lock coordinates delivery, migration, and cleanup only; a hook never waits beyond its capture deadline for it.
+**Decision:** Before any network attempt, a hook uses bounded, per-entry atomic admission (unique temporary entry then same-directory rename) to persist its delivery ID, destination pin, and idempotency key. It makes the initial bounded attempt from that durable entry. The drainer lock coordinates delivery, migration, and cleanup only; a hook never waits beyond its capture deadline for it.
 
 **Context:** Parallel harness hooks are expected. A shared lock that blocks enqueue can either delay an agent session or lose retryable delivery work.
 

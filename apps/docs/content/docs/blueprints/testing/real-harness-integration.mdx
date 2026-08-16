@@ -43,11 +43,11 @@ This Blueprint verifies the complete AgentScope setup flow without ever touching
 
 ### ADR-004: Split generic infrastructure from harness and destination adapters
 
-**Decision:** Testkit owns orchestration, isolation, MockServer lifecycle, log capture, generic assertions, and cleanup. Harness packages contribute `HarnessTestAdapter`s; Trace Source packages contribute `DestinationTestAdapter`s.
+**Decision:** Testkit owns orchestration, isolation, MockServer lifecycle, log capture, generic assertions, and cleanup. Harness packages contribute `HarnessTestAdapter`s; Trace Destination packages contribute `DestinationTestAdapter`s.
 
 **Context:** A monolithic test script becomes unmaintainable as harnesses, sources, and reporters grow.
 
-**Consequences:** New harnesses add detection/setup/invocation/native assertions without duplicating containers. New sources/reporters add mock configuration and ledger normalization without modifying harness scenarios.
+**Consequences:** New harnesses add detection/setup/invocation/native assertions without duplicating containers. New destinations/reporters add mock configuration and ledger normalization without modifying harness scenarios.
 
 ### ADR-005: Observe telemetry independently
 

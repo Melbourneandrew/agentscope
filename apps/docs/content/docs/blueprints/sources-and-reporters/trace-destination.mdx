@@ -1,0 +1,24 @@
+---
+title: Trace Destination
+description: ADRs for connecting harness data to destination capabilities.
+---
+
+## Capability Summary
+
+A Trace Destination is the configured remote trace repository or service that receives captured canonical traces through one mandatory reporter and may expose them through an optional retriever. A native trace source remains the local harness artifact from which an adapter captures evidence.
+
+## Architecture Decision Records
+
+### ADR-001: Make Trace Destination the user-configured connection
+
+**Decision:** A Trace Destination owns one remote destination's non-secret configuration, mandatory reporting capability, and optional retrieval capability. Core owns selection and routing across named Trace Destinations.
+
+**Context:** Users configure a logical service connection, not an unconnected reporter implementation; cross-connection selection needs one authoritative policy owner.
+
+**Consequences:** `agentscope configure reporter langfuse` creates a named destination connection reusable by many harnesses.
+
+### ADR-002: Keep extraction outside Trace Destination
+
+**Decision:** Harness adapters produce canonical batches; Trace Destinations never parse harness artifacts.
+
+**Context:** This keeps a destination reusable across harnesses and makes reporter integration testable independently.

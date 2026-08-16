@@ -3,7 +3,7 @@
   "collapsible": true,
   "defaultOpen": true,
   "pages": [
-    "trace-source",
+    "trace-destination",
     "reporter-abstraction",
     "langfuse-reporter",
     "trace-retrieval"

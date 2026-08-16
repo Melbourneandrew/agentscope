@@ -1,11 +1,11 @@
 ---
 title: Langfuse Reporter
-description: ADRs for the first-party Langfuse Trace Source.
+description: ADRs for the first-party Langfuse Trace Destination.
 ---
 
 ## Capability Summary
 
-Langfuse is the initial first-party destination and validates the Trace Source abstraction.
+Langfuse is the initial first-party destination and validates the Trace Destination abstraction.
 
 ## Architecture Decision Records
 
@@ -17,7 +17,7 @@ Langfuse is the initial first-party destination and validates the Trace Source a
 
 ### ADR-002: Allow a direct Langfuse path later
 
-**Decision:** A direct Langfuse ingestion implementation may be added as another reporter behind the same Trace Source contract.
+**Decision:** A direct Langfuse ingestion implementation may be added as another reporter behind the same Trace Destination contract.
 
 **Context:** It may represent Langfuse-specific capabilities more faithfully without forcing harnesses to choose transport.
 
