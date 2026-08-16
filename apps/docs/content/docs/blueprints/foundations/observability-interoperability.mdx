@@ -1,0 +1,24 @@
+---
+title: Observability Interoperability
+description: ADRs for OTel, OpenInference, and destination compatibility.
+---
+
+# Observability Interoperability
+
+## Capability Summary
+
+AgentScope must interoperate with industry telemetry without becoming dependent on an immature single AI schema.
+
+## Architecture Decision Records
+
+### ADR-001: Emit OpenTelemetry transport identity
+
+**Decision:** Reporters use OTel trace/span context and stable resource attributes wherever their destination supports it.
+
+**Context:** OTel is the broadly adopted trace transport and semantic-convention foundation.
+
+### ADR-002: Adopt OpenInference selectively
+
+**Decision:** Use OpenInference concepts as an export compatibility profile for LLM, tool, and agentic flow fields, not as the internal persistence schema.
+
+**Context:** It provides richer AI conventions but does not model all coding-harness evidence.

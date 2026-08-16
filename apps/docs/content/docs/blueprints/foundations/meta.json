@@ -1,0 +1,11 @@
+{
+  "title": "Foundations",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": [
+    "canonical-trace-format",
+    "harness-abstraction",
+    "native-trace-mapping",
+    "observability-interoperability"
+  ]
+}

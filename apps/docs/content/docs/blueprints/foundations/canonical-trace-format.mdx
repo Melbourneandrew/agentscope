@@ -1,0 +1,28 @@
+---
+title: Canonical AgentScope Trace Format
+description: ADRs for the lossless cross-harness event model.
+---
+
+# Canonical AgentScope Trace Format
+
+## Capability Summary
+
+AgentScope needs a durable internal trace format that preserves coding-agent evidence while supporting interoperable export.
+
+## Architecture Decision Records
+
+### ADR-001: Keep AgentScope canonical and lossless
+
+**Decision:** Retain and evolve the SF Platform-derived normalized trace model as AgentScope's canonical format rather than making an external telemetry schema the source of truth.
+
+**Context:** Coding harnesses expose transcripts, turn journals, skill reads, workspace context, and trace-to-code attribution that external conventions do not consistently model.
+
+**Consequences:** Canonical records carry source provenance and unknown fields without forcing each harness into a lossy common denominator.
+
+### ADR-002: Use versioned export profiles for interoperability
+
+**Decision:** Map canonical traces to version-pinned OpenTelemetry GenAI and OpenInference profiles at reporter boundaries.
+
+**Context:** OTel GenAI agent conventions are emerging and still development-status; OpenInference supplies complementary LLM, tool, and agent conventions.
+
+**Consequences:** Standards churn changes one mapper, not every harness. AgentScope exports W3C/OTel-compatible trace identity while retaining fields those profiles cannot represent.

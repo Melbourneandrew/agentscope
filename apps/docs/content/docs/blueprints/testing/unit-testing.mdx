@@ -1,0 +1,24 @@
+---
+title: Unit Testing
+description: ADRs for deterministic contract coverage.
+---
+
+# Unit Testing
+
+## Capability Summary
+
+Unit tests protect the canonical model and extension contracts without network, Docker, or installed harness dependencies.
+
+## Architecture Decision Records
+
+### ADR-001: Test contracts at seams
+
+**Decision:** Core publishes contract fixtures for canonical trace validation, redaction, spool/retry classification, reporters, retrievers, and adapter mappings.
+
+**Context:** Stable seams make third-party extensions testable before real-harness scenarios are available.
+
+### ADR-002: Keep native fixtures sanitized and versioned
+
+**Decision:** Native traces are checked-in, sanitized fixtures tagged by harness/version family.
+
+**Context:** They provide fast regression coverage while not substituting for integration tests.

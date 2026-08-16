@@ -1,0 +1,26 @@
+---
+title: Native Trace Mapping
+description: ADRs for translating harness artifacts into canonical traces.
+---
+
+# Native Trace Mapping
+
+## Capability Summary
+
+Native artifacts vary by harness; this Blueprint defines how adapters map them without fabricating certainty.
+
+## Architecture Decision Records
+
+### ADR-001: Preserve provenance and uncertainty
+
+**Decision:** Every canonical field derived from a native artifact records source/provenance where ambiguity affects interpretation, and unavailable values remain unavailable.
+
+**Context:** Transcript data, hook payloads, and process working directories can disagree or be incomplete.
+
+**Consequences:** Git branch resolution follows authoritative hook workspace, native session workspace, then process cwd; detached and unavailable states are explicit.
+
+### ADR-002: Normalize semantic primitives, retain native evidence
+
+**Decision:** Map sessions, turns, model calls, tools, skills, files, errors, and child agents to shared primitives while retaining sanitized raw-source pointers.
+
+**Context:** Consumers need portable semantics and support engineers need a way to explain mappings.

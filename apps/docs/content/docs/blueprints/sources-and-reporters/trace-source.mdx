@@ -1,0 +1,26 @@
+---
+title: Trace Source
+description: ADRs for connecting harness data to destination capabilities.
+---
+
+# Trace Source
+
+## Capability Summary
+
+A Trace Source is the configured unit that connects captured canonical traces to one mandatory reporter and an optional retriever.
+
+## Architecture Decision Records
+
+### ADR-001: Make Trace Source the user-configured connection
+
+**Decision:** A Trace Source owns destination selection, non-secret configuration, routing policy, mandatory reporting capability, and optional retrieval capability.
+
+**Context:** Users configure a logical service connection, not an unconnected reporter implementation.
+
+**Consequences:** `agentscope configure reporter langfuse` creates a named source connection reusable by many harnesses.
+
+### ADR-002: Keep extraction outside Trace Source
+
+**Decision:** Harness adapters produce canonical batches; Trace Sources never parse harness artifacts.
+
+**Context:** This keeps a source reusable across harnesses and makes reporter integration testable independently.

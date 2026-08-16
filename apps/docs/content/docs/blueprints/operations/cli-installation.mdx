@@ -1,0 +1,24 @@
+---
+title: CLI Installation
+description: ADRs for publishing and invoking agentscope.
+---
+
+# CLI Installation
+
+## Capability Summary
+
+The `agentscope` command must be easy to install, stable for hooks, and publishable to npm.
+
+## Architecture Decision Records
+
+### ADR-001: Publish a dedicated CLI package
+
+**Decision:** Publish `@agentscope/cli` with an unhyphenated `agentscope` bin entry, while keeping SDK/core packages independently consumable.
+
+**Context:** Hooks need one stable executable and library consumers should not receive CLI lifecycle dependencies.
+
+### ADR-002: Hook config calls the executable, not embedded implementation
+
+**Decision:** Generated harness configuration invokes `agentscope` with a stable hook subcommand.
+
+**Context:** Upgrades should replace one binary rather than rewrite bespoke code into every harness config.

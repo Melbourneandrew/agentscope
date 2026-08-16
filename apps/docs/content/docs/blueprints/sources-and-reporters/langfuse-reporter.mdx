@@ -1,0 +1,28 @@
+---
+title: Langfuse Reporter
+description: ADRs for the first-party Langfuse Trace Source.
+---
+
+# Langfuse Reporter
+
+## Capability Summary
+
+Langfuse is the initial first-party destination and validates the Trace Source abstraction.
+
+## Architecture Decision Records
+
+### ADR-001: Start with OTLP delivery
+
+**Decision:** The initial Langfuse reporter maps canonical traces to OTLP and sends them to a configured endpoint.
+
+**Context:** OTLP gives a vendor-neutral transport and straightforward collector contract for hermetic tests.
+
+### ADR-002: Allow a direct Langfuse path later
+
+**Decision:** A direct Langfuse ingestion implementation may be added as another reporter behind the same Trace Source contract.
+
+**Context:** It may represent Langfuse-specific capabilities more faithfully without forcing harnesses to choose transport.
+
+### ADR-003: Avoid overlapping vendor hooks
+
+**Decision:** Installation detects Langfuse's official harness plugin and requires explicit migration before an AgentScope hook takes ownership.

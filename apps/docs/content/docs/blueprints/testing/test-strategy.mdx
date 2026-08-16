@@ -1,0 +1,22 @@
+---
+title: Test Strategy
+description: ADRs for the AgentScope verification pyramid.
+---
+
+# Test Strategy
+
+## Capability Summary
+
+AgentScope needs independent proof of deterministic semantics and real CLI/hook behavior.
+
+## Architecture Decision Records
+
+### ADR-001: Separate unit and integration lanes
+
+**Decision:** Unit tests verify pure parsing, schemas, mapping, redaction, queues, and reporter contracts; integration tests verify live harness/setup behavior.
+
+**Context:** Transcript fixtures cannot prove executable flags, hook invocation, or configuration mutation.
+
+### ADR-002: Treat capability claims as test-backed
+
+**Decision:** A harness/reporter/version is supported only when its required unit contracts and real-harness scenario pass.

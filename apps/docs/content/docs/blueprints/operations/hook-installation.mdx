@@ -1,0 +1,24 @@
+---
+title: Hook Installation
+description: ADRs for safe harness configuration mutation.
+---
+
+# Hook Installation
+
+## Capability Summary
+
+Hook installation writes the minimal owned integration that allows a harness to invoke AgentScope capture.
+
+## Architecture Decision Records
+
+### ADR-001: Use identifiable owned blocks and transactions
+
+**Decision:** Adapters generate an identifiable AgentScope-owned block, snapshot the target configuration, validate the result, then commit atomically where the host format permits.
+
+**Context:** Uninstall and rollback must never remove user-managed configuration.
+
+### ADR-002: Detect conflicts before modifying hooks
+
+**Decision:** An adapter reports overlapping AgentScope/vendor hooks and requires explicit migration or replacement authority.
+
+**Consequences:** Dry-run is the default diagnostic path; failure rolls back the full installation transaction.
