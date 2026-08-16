@@ -1,39 +1,34 @@
 ---
-title: Trace source and reporting
-description: A stable seam between harness extraction and destination-specific export.
+title: Trace Reporting
+description: ADRs for source normalization and destination plugins.
 ---
 
-## Decision
+# Trace Reporting
 
-AgentScope uses two extension points:
+## Capability Summary
 
-```ts
-interface TraceSource<TEvent> {
-  id: string;
-  collect(input): Promise<TraceBatch<TEvent>>;
-}
+This Blueprint records the technical boundaries behind [Reporting and Destinations](/docs/requirements/reporting-and-destinations).
 
-interface TraceReporter<TEvent> {
-  id: string;
-  report(batch: TraceBatch<TEvent>): Promise<TraceReportReceipt>;
-}
-```
+## Architecture Decision Records
 
-A harness adapter invokes a `TraceSource`; a destination package implements a `TraceReporter`. Core owns the versioned batch envelope, normalization, redaction, idempotency keys, retry classification, and spool policy. This makes `@agentscope/reporter-langfuse` an implementation, not a special case baked into every harness.
+### ADR-001: Keep harness extraction separate from destination export
 
-```mermaid
-flowchart LR
-  H["Agent harness"] --> S["TraceSource"]
-  S --> N["Core: validate, normalize, redact, spool"]
-  N --> L["Langfuse OTLP reporter"]
-  N --> D["Direct Langfuse reporter"]
-  N --> X["Custom reporter"]
-```
+**Decision:** Harness adapters own native extraction; core owns normalized trace semantics; reporter plugins own destination protocol mapping.
 
-## Two Langfuse paths
+**Context:** A harness should not need Langfuse knowledge, and a new destination should not require hook changes across every harness.
 
-The first reporter maps to OTLP so a mock collector can verify resource spans exactly. A future direct Langfuse reporter may use the Langfuse ingestion API where that models a feature more faithfully. Both consume the same normalized batch and share idempotency and redaction rules. A harness never decides which reporter is active.
+**Consequences:** The first-party Langfuse reporter is an implementation of the plugin boundary, not a special case in adapters.
 
-## Contract testing
+### ADR-002: Centralize reliability behavior in core
 
-Every reporter runs the same testkit suite: rejected payload behavior, retryability, idempotency, timestamps, redaction, parent-child span structure, model usage, Git metadata, and graceful shutdown. Every source runs deterministic extraction and explicit unknown/unavailable-field tests with no destination I/O.
+**Decision:** Core owns redaction, batching, idempotency, retry classification, and bounded spooling before invoking a reporter.
+
+**Context:** Delivery semantics must not drift per destination or cause a harness to block on network behavior.
+
+**Consequences:** Reporters return delivery receipts and errors; they do not implement their own durable queue or access raw source artifacts.
+
+### ADR-003: Start Langfuse with OTLP
+
+**Decision:** Ship Langfuse reporting through an OTLP mapping first and permit a direct Langfuse reporter later behind the same normalized boundary.
+
+**Context:** OTLP gives the integration suite a clear mock collector contract while preserving room for a destination-specific ingestion path.

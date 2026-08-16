@@ -1,35 +1,28 @@
 ---
 title: Trace Retrieval
-description: An optional destination capability behind portable CLI queries.
+description: ADRs for optional destination-backed trace search.
 ---
 
-## Decision
+# Trace Retrieval
 
-Keep delivery and query contracts separate, then package them together when a destination supports both:
+## Capability Summary
 
-```ts
-interface TraceReporter {
-  id: string;
-  report(batch: TraceBatch): Promise<TraceReportReceipt>;
-}
+This Blueprint records how the CLI fulfills [Trace Retrieval](/docs/requirements/trace-retrieval) without coupling all reporters to Langfuse.
 
-interface TraceRetriever {
-  search(query: TraceSearchQuery): Promise<TraceSearchPage>;
-  get(traceId: string): Promise<TraceDetail | undefined>;
-}
+## Architecture Decision Records
 
-interface ReporterPlugin {
-  reporter: TraceReporter;
-  retriever?: TraceRetriever;
-}
-```
+### ADR-001: Make retrieval an optional adjacent plugin capability
 
-Core validates `TraceSearchQuery` and the CLI renders its portable result types. The retriever translates to the provider API and returns explicit capability errors for filters it cannot represent. This gives Langfuse API retrieval a first-class home without making an OTLP-only or write-only reporter pretend it can query data.
+**Decision:** A reporter plugin may expose a separate retrieval capability; reporting itself remains write-oriented.
 
-## Why not put `search` on `TraceReporter`?
+**Context:** Some valid destinations are OTLP-only or write-only. Forcing them to implement search would create fake behavior and muddle failure modes.
 
-That would force every destination to implement a meaningless query surface and would blur two failure models: delivery must be resilient and fail open; user-initiated retrieval should accurately fail when a destination cannot search. The plugin boundary preserves shared configuration while keeping those operations independent.
+**Consequences:** The CLI can report unsupported retrieval honestly while a Langfuse plugin can map portable searches to its API.
 
-## Langfuse initial implementation
+### ADR-002: Keep portable query semantics in the CLI
 
-`@agentscope/reporter-langfuse` owns the Langfuse endpoint/authentication mapping and exports both an OTLP reporter and, when configured, a Langfuse retriever. Its contract tests use a mock Langfuse API with pagination, filter translation, empty result, authorization, rate-limit, and malformed-response cases.
+**Decision:** The CLI owns portable filters and result presentation; a retriever owns authentication, provider-filter translation, pagination, and unsupported-filter errors.
+
+**Context:** Users need stable command semantics while destinations vary in query vocabulary and capabilities.
+
+**Consequences:** Retrieval remains read-only and does not need a running harness or workspace.

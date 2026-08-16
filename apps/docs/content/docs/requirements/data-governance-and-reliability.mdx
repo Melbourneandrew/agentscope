@@ -1,10 +1,29 @@
 ---
 title: Data Governance and Reliability
-description: Redaction, durable delivery, and operational expectations.
+description: User requirements for trace data safety and bounded delivery.
 ---
 
-Before writing to the local spool or a reporter, core applies a versioned redaction policy to prompts, tool inputs/outputs, environment-derived metadata, paths, and configured patterns. The policy is testable independently and records a non-sensitive summary of what was removed.
+# Data Governance and Reliability
 
-Delivery is asynchronous and bounded. Core uses idempotency keys, retryable/non-retryable classification, a size- and age-limited spool, and observable drop behavior. It fails open for the harness while preserving enough local diagnostic state for `agentscope doctor` to explain the loss.
+## Overview
 
-The product must document what it captures, what it redacts, where it persists pending work, and how a user removes local state. No reporter may weaken those guarantees.
+Trace data can include prompts, tool outputs, paths, and environment-derived context. AgentScope must make capture useful while giving users clear, bounded data-handling behavior.
+
+## Terminology
+
+- **Redaction policy:** a versioned rule set that removes or transforms sensitive data before persistence or export.
+
+## Requirements
+
+### REQ-GOV-001: Redact before persistence
+
+As a user, I want sensitive data removed before delivery state is stored, so that a reporter or local spool cannot expose raw secrets.
+
+- **AC-GOV-001.1:** When capture produces sensitive fields, the system shall apply the active redaction policy before spooling or reporting.
+- **AC-GOV-001.2:** When redaction occurs, the system shall retain only a non-sensitive summary suitable for diagnostics.
+
+### REQ-GOV-002: Bounded operational state
+
+As an operator, I want local trace state bounded and diagnosable, so that failed delivery cannot consume a machine indefinitely.
+
+- **AC-GOV-002.1:** When pending delivery state exceeds configured size or age limits, the system shall apply documented eviction behavior and record a sanitized diagnostic.

@@ -1,48 +1,36 @@
 ---
 title: Configuration Directory Lifecycle
-description: A safe, portable TypeScript CLI design for ~/.agentscope.
+description: ADRs for the AgentScope machine-local home.
 ---
 
-## Resolution and ownership
+# Configuration Directory Lifecycle
 
-```ts
-function resolveAgentScopeHome(env: NodeJS.ProcessEnv, home: string): string {
-  return env.AGENTSCOPE_HOME ?? path.join(home, ".agentscope");
-}
-```
+## Capability Summary
 
-`AGENTSCOPE_HOME` is intentionally the only override. A single root is easy to explain and makes hermetic harness tests trivial: each scenario receives a temporary root. The code must resolve once at process startup, canonicalize it, and pass a `ConfigPaths` value through the application instead of reading environment variables throughout reporters and adapters.
+This Blueprint records how AgentScope persists configuration and operational state for the [Configuration Directory](/docs/requirements/configuration-directory) requirement.
 
-## Safe read/write API
+## Architecture Decision Records
 
-```ts
-interface ConfigStore {
-  load(): Promise<LoadedConfig>;
-  update(
-    mutator: (config: AgentScopeConfig) => AgentScopeConfig,
-  ): Promise<void>;
-  migrate(): Promise<MigrationResult>;
-}
-```
+### ADR-001: Use one explicit AgentScope home
 
-`load` parses and schema-validates JSON into a typed domain model. `update` obtains a short-lived lock, validates the proposed model, serializes it deterministically, writes `config.json.tmp-<random>` with mode `0600`, fsyncs the file, atomically renames it over `config.json`, then fsyncs the containing directory where supported. Never edit JSON in place.
+**Decision:** Resolve the default home as `~/.agentscope` on every supported platform, with `AGENTSCOPE_HOME` as the single explicit override.
 
-The store should use a mature cross-platform lock implementation or a small lock-file protocol with owner PID/start time and stale-lock detection. A hook must fail open if it cannot acquire the lock promptly; interactive CLI commands may wait briefly and return an actionable conflict error.
+**Context:** A stable product-owned path is easier for users, hooks, diagnostics, and hermetic tests to understand than platform-specific paths or several overlapping override variables.
 
-## Versioning and migrations
+**Consequences:** Path resolution occurs once in the CLI composition root and is injected into adapters and reporters. Tests set only `AGENTSCOPE_HOME`.
 
-Every config document starts with `schemaVersion`. Migrations operate on parsed data, not untyped JSON, and each migration is pure and unit-tested from every supported prior version. Before changing a document, the CLI places a timestamped backup in `state/backups/`; it retains a bounded number of backups and never includes secrets.
+### ADR-002: Separate configuration, secrets, and operational state
 
-`agentscope doctor --fix` may finish an interrupted, known-safe migration only after verifying the backup and target schema. It does not silently discard unknown keys: preserve them under an extension namespace or stop with an upgrade error so newer config is not corrupted by an older CLI.
+**Decision:** Keep non-secret declarative configuration, locks/migration markers, bounded spool data, and diagnostics under separate subdirectories; store actual credentials in the OS credential store or CI environment.
 
-## Separation of concerns
+**Context:** Configuration must be inspectable and migratable without turning a backup or doctor report into a credential leak.
 
-| Location                   | Contents                                         | Retention                  |
-| -------------------------- | ------------------------------------------------ | -------------------------- |
-| `config.json`, `profiles/` | Declarative, non-secret user intent              | Backed up during migration |
-| OS credential store        | API tokens and client secrets                    | Managed by the platform    |
-| `state/`                   | Installation ownership, locks, migration markers | Rebuildable/repairable     |
-| `spool/`                   | Redacted, bounded undelivered batches            | TTL and size-limited       |
-| `diagnostics/`             | Sanitized health evidence                        | TTL and size-limited       |
+**Consequences:** Configuration contains credential references, never token values. Spool and diagnostics have explicit retention bounds.
 
-This division lets `agentscope doctor` and integration tests inspect configuration safely, lets a user back up intended configuration without leaking tokens, and prevents operational state from becoming configuration truth.
+### ADR-003: Use atomic, versioned updates
+
+**Decision:** Schema-validate configuration, write a same-directory temporary file, fsync where supported, and atomically rename; migration creates a bounded backup first.
+
+**Context:** Hooks and interactive CLI commands may coexist, and interruption must not leave malformed configuration as the only copy.
+
+**Consequences:** Hooks fail open on lock contention. `agentscope doctor --fix` may complete only known-safe migrations.

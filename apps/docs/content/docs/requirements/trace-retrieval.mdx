@@ -1,26 +1,29 @@
 ---
 title: Trace Retrieval
-description: Searching and inspecting stored traces without coupling the CLI to Langfuse.
+description: User requirements for optional destination-backed trace search.
 ---
 
-## User outcome
+# Trace Retrieval
 
-Where a destination exposes a query API, users can search and inspect their reported traces from the same CLI:
+## Overview
 
-```bash
-agentscope traces search --branch codex/docs-product-surface --harness codex
-agentscope traces get trace_123
-```
+Where a destination exposes a query API, AgentScope should make delivered traces discoverable through the same CLI without claiming that every reporter can search.
 
-## Boundary
+## Terminology
 
-Reporting is write-oriented. Retrieval is an optional adjacent capability supplied by the destination plugin, not a responsibility forced onto every reporter. A Langfuse plugin can expose a `TraceRetriever` that maps the portable query to Langfuse's API; a write-only OTLP destination simply does not expose it.
-
-The CLI owns portable filters (time range, harness, branch, model, session, tags, pagination) and presentation. The retrieval capability owns destination authentication, filter translation, response pagination, and an honest declaration of unsupported filters.
+- **Retrieval capability:** an optional destination plugin capability that maps portable queries to a provider API.
 
 ## Requirements
 
-- A missing retrieval capability is a clear, actionable CLI result, never a fake local search.
-- Results preserve destination identifiers and map available fields into portable summary fields.
-- Query output is machine-readable (`--json`) and human-readable, with redaction applied before display.
-- Retrieval is read-only; it must not need capture hooks, workspace access, or a running harness.
+### REQ-RET-001: Search supported destinations
+
+As a developer, I want to search traces by meaningful context, so that I can investigate an agent session without switching tools.
+
+- **AC-RET-001.1:** When the active destination supports retrieval, `agentscope traces search` shall accept portable filters including time range, harness, branch, model, session, and tags.
+- **AC-RET-001.2:** When a supported result is returned, the system shall show destination identity and portable trace summary fields with redaction applied.
+
+### REQ-RET-002: Honest unsupported behavior
+
+As a user, I want clear feedback when a destination cannot search, so that I do not mistake local state for remote trace history.
+
+- **AC-RET-002.1:** When no retrieval capability is configured, the system shall return an actionable unsupported-capability result.

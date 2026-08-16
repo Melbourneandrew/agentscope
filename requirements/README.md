@@ -1,83 +1,33 @@
-# Product requirements
+# AgentScope Product Requirements
 
-## Product description
+## Overview
 
-The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
+AgentScope gives coding-agent users one installable trace system that captures harness activity and reports it to Langfuse or other destinations without disrupting the agent session.
 
-AgentScope gives an individual developer or organization a single installable control plane for coding-agent observability. It must capture useful lifecycle and artifact evidence without becoming a proxy for the agent or requiring an application to adopt a specific runtime.
+## Terminology
 
-## Users and outcomes
+- **Agent harness:** a coding-agent runtime such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, or Hermes.
+- **Trace destination:** a configured external service that receives normalized AgentScope traces.
 
-- **Individual developer:** runs `npx @agentscope/cli init`, selects a harness and a reporter, and gets useful trace visibility without hand-editing opaque hook files.
-- **Platform team:** distributes a declarative configuration, centrally selects reporters/redaction, and verifies installation health across machines.
-- **Reporter author:** implements a stable TypeScript reporter interface and tests it against the official contract suite.
+## Requirements
 
-## Functional requirements
+### REQ-PROD-001: Portable agent observability
 
-1. A global CLI installs, updates, verifies, and removes supported coding-agent harnesses.
-2. The CLI stores global non-secret configuration in `~/.agentscope` and secrets in the OS credential store where possible. `AGENTSCOPE_HOME` is reserved for explicit test/CI isolation.
-3. Core exposes a stable TypeScript SDK and a versioned normalized event schema for sessions, turns, tool use, skills, files, errors, and flush results.
-4. Harnesses are independently versioned adapters for Codex, Claude Code, and Cursor; unsupported versions fail clearly and non-destructively.
-5. Reporters are plugins. Bundled console and Langfuse reporters work out of the box; third parties can be loaded by package reference from explicit configuration.
-6. Redaction occurs before events are queued or passed to reporters. Local spool data is encrypted or intentionally disabled by policy.
-7. Every harness-reporter combination has deterministic integration coverage; no CI test requires a paid SaaS endpoint.
-8. A protected live smoke test can use Langfuse credentials to detect API integration drift without exposing secrets to pull requests.
-9. Each trace records the effective workspace Git context when available: branch name, commit SHA, repository/worktree root, and a provenance field explaining whether the workspace came from the hook payload, native transcript, or process fallback.
-10. Each trace preserves the provider's effective model metadata at session, turn, and message level where available: provider, model name/ID, reasoning effort, token usage, and timing.
-11. Integration tests execute supported **agent harness** CLIs (not transcript replay substitutes) against disposable configuration/workspace directories, a deterministic mock model server, and a mock telemetry endpoint.
-12. Unit tests are a separate CI lane and cover core schemas, sources, redaction, queueing, and reporter contracts without launching a harness executable.
-13. The harness matrix starts with Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw/CLAW, and Hermes; every harness is independently version-probed and records clear compatibility failures.
+As a coding-agent user, I want a single trace system across supported harnesses, so that I can inspect comparable sessions regardless of which harness I use.
 
-## User story: effective branch context and AgentScope parity
+- **AC-PROD-001.1:** When a supported harness completes observable work, the system shall create a normalized trace without blocking the harness.
+- **AC-PROD-001.2:** When Git and model metadata are available, the system shall include effective branch, commit, worktree, harness, model, usage, and timing context.
 
-**As a user, I want the traces to be captured with the context of the current branch name, as well as details like model name and everything else. We want all the same requirements from the SF platform, harness engineering, Agent tracing, agent trace collection, and all that stuff.**
+### REQ-PROD-002: Safe machine configuration
 
-The standalone project takes the current SF Platform `agentscope-framework` and hook reporting path as its functional baseline. That includes native Codex, Claude Code, and Cursor trace discovery; normalized session/turn/message/tool/file-edit/shell/skill records; model and usage metadata; native-turn slicing; deterministic fixtures; trace-to-code attribution records; raw-source pointers; retry-safe spooling; and destination-neutral export planning. The new package must preserve this behavior while moving ownership out of the SF Platform integration.
+As a user, I want my AgentScope configuration in one predictable location, so that I can configure and diagnose it without exposing credentials.
 
-Branch context is best-effort and must never cause tracing to fail. A detached `HEAD`, a non-Git workspace, unavailable Git executable, or permission failure results in an explicit `unavailable`/`detached` state—not an invented branch name.
+- **AC-PROD-002.1:** When initialized without an override, the system shall store non-secret configuration under `~/.agentscope`.
+- **AC-PROD-002.2:** When a secret is configured, the system shall store it in an OS credential store or consume an explicit CI secret reference rather than write it to `~/.agentscope`.
 
-## Non-functional requirements
+### REQ-PROD-003: Extensible reporting
 
-- Hook execution must be bounded, asynchronous where the host permits, and must never make an agent session unusable because reporting fails.
-- Configuration changes must be idempotent and reversible, with backups and `doctor` diagnostics.
-- Public packages must publish with provenance through npm trusted publishing.
-- User-facing documentation is a static Fumadocs site deployed to GitHub Pages.
-- `main` accepts reviewed pull requests only; required validation and hermetic
-  integration checks pass before a squash merge.
+As a platform developer, I want destination plugins with optional retrieval support, so that new backends do not require harness changes.
 
-## Decisions to confirm
-
-| Decision        | Recommendation                                                     | Why it is the starting point                                                                                          |
-| --------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| Package names   | Scoped `@agentscope/*` packages                                    | Protects a coherent ecosystem and allows a future `agentscope` meta-package.                                          |
-| Global config   | `~/.agentscope`, with `AGENTSCOPE_HOME` override                   | Gives users, hooks, and support tooling one discoverable machine-local root while preserving hermetic test isolation. |
-| Secrets         | Keychain/credential store, `.env` only for CI/local development    | Prevents accidental credential persistence in config and git.                                                         |
-| Plugin loading  | Explicit installed npm packages; no arbitrary remote code download | Keeps the trust boundary understandable.                                                                              |
-| Test substrate  | Docker Compose fixture matrix + mock OTLP/Langfuse collector       | Reproducible locally and in GitHub Actions; no separate VM is needed for v1.                                          |
-| Live validation | Nightly/manual, protected environment                              | Valuable drift detection without making PRs flaky or leaking secrets.                                                 |
-
-## Official Langfuse integration interoperability
-
-AgentScope is complementary to the official Langfuse plugins, not a replacement for their Langfuse-only quick start. Langfuse's Claude Code and Codex integrations already use lifecycle hooks to reconstruct native transcripts, preserve session identity, record tool activity and timestamps, deduplicate completed turns with local state, and fail open if export fails. Their Codex plugin is explicitly opt-in, supports layered global/project/environment configuration, and requires a trusted hook. Their Claude Code marketplace plugin uses the OS keychain for credentials. These are the operational standards AgentScope must meet or exceed.
-
-**Decision:** An AgentScope harness owns a given provider's observability hook when AgentScope is enabled. `agentscope doctor` must detect an official Langfuse hook and refuse a second overlapping installation unless the user explicitly chooses a migration. Running both capture paths by default would create duplicate traces and ambiguous redaction ownership.
-
-`@agentscope/reporter-langfuse` is therefore a compatibility reporter: it maps the vendor-neutral event model to an equivalent Langfuse trace hierarchy (turn, model generation, nested tools, child agents), preserves timestamps and idempotency keys, and supports the Langfuse Cloud and self-hosted base URL. It is not a reimplementation of Langfuse's broader `langfuse-cli`, Langfuse MCP server, or Agent Skill. Those tools help agents query/manage Langfuse data after capture and can be installed alongside AgentScope.
-
-## Lessons adopted from Langfuse
-
-- Use a post-turn hook and transcript/rollout reconstruction rather than intercepting agent model traffic.
-- Make tracing explicit opt-in, fail open, bounded, and independently diagnosable.
-- Use a stable session ID, per-turn idempotency key, sidecar/spool state, and original event timestamps.
-- Respect global → project → environment precedence, but keep AgentScope secrets in the credential store rather than a plaintext project config.
-- Treat transcript content as sensitive: redact before queueing and allow per-field truncation/capture policy.
-- Add fixture parity tests that compare AgentScope's normalized capture with the documented Langfuse hierarchy for Codex and Claude Code.
-
-## Acceptance criteria for foundation phase
-
-- Repository architecture, scope boundaries, and the decisions above are documented.
-- Existing SF Platform AgentScope source is preserved in the standalone core package.
-- Package, docs, test, CI, and publishing placeholders exist with a clear next implementation path.
-- A protected scheduled/manual workflow has a stable live-suite entry point;
-  it verifies protected Langfuse configuration now and will gain trace
-  emission/retrieval assertions with the Langfuse reporter implementation.
+- **AC-PROD-003.1:** When a destination reporter is added, the system shall receive already-normalized and redacted trace data through the reporter contract.
+- **AC-PROD-003.2:** When a destination supports retrieval, the CLI shall expose its mapped search capability without requiring every reporter to implement search.

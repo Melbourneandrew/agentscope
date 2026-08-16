@@ -1,10 +1,29 @@
 ---
 title: Harness Management
-description: The adapter lifecycle for coding-agent harnesses.
+description: User requirements for agent-harness installation and ownership.
 ---
 
-An agent harness adapter owns detection, compatible-version checks, configuration generation, reversible installation, native artifact extraction, and uninstall. Core owns normalized semantics and reporters own destinations.
+# Harness Management
 
-Each adapter must declare the hook points it uses, what context it can observe, its configuration files, and its compatibility matrix. It must support dry-run installation and detect overlapping native/vendor observability integrations before writing anything.
+## Overview
 
-Real integration tests run every supported harness executable in isolation. The [agent harness integration blueprint](/docs/blueprints/agent-harness-integration) defines the common test contract and the required behavior for new adapters.
+AgentScope manages harness integrations as explicit, reversible installations. A harness is a coding-agent runtime, not the model provider behind it.
+
+## Terminology
+
+- **Owned integration:** a configuration block installed and identifiable as AgentScope-managed.
+
+## Requirements
+
+### REQ-HAR-001: Reversible installation
+
+As a coding-agent user, I want to install and remove an integration safely, so that I retain control of my harness configuration.
+
+- **AC-HAR-001.1:** When I run `agentscope install <harness>`, the system shall detect supported versions and create only an owned, reversible integration.
+- **AC-HAR-001.2:** When I run `agentscope uninstall <harness>`, the system shall remove only its owned integration block.
+
+### REQ-HAR-002: Conflict-aware ownership
+
+As a user, I want duplicate observability hooks detected, so that I do not accidentally export duplicate or inconsistently redacted traces.
+
+- **AC-HAR-002.1:** When an overlapping vendor integration is detected, the system shall report the conflict and require an explicit migration before replacement.

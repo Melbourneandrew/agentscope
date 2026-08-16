@@ -1,10 +1,29 @@
 ---
 title: Reporting and Destinations
-description: Extensible delivery, retries, and destination ownership.
+description: User requirements for reliable, extensible trace delivery.
 ---
 
-AgentScope ships with a Langfuse reporter, initially through OTLP. Reporter plugins receive a normalized, already-redacted trace batch. They map it to their destination's transport and return a receipt; core owns batching, idempotency keys, retry classification, bounded local spooling, and delivery diagnostics.
+# Reporting and Destinations
 
-Reporters must declare their capabilities: delivery transport, retrieval availability, configuration schema, health check, and supported trace fields. This keeps a future direct Langfuse reporter, a data warehouse sink, or an internal endpoint from leaking destination-specific decisions into harness packages.
+## Overview
 
-The concrete extension seam is in the [trace reporting blueprint](/docs/blueprints/trace-reporting).
+AgentScope begins with Langfuse and must grow to additional observability destinations without changing how agent harnesses capture work.
+
+## Terminology
+
+- **Idempotency key:** a stable delivery identity that prevents duplicate trace export.
+
+## Requirements
+
+### REQ-REP-001: Reliable delivery
+
+As a user, I want captures delivered reliably without slowing my agent, so that traces are useful even during transient destination failures.
+
+- **AC-REP-001.1:** When a delivery is retryable, the system shall queue a bounded redacted batch and retry with idempotency.
+- **AC-REP-001.2:** When delivery is non-retryable or storage limits are reached, the system shall retain a sanitized diagnostic and fail open.
+
+### REQ-REP-002: Destination extensibility
+
+As an extension author, I want a stable reporter contract, so that I can add a destination without modifying harness adapters.
+
+- **AC-REP-002.1:** When a reporter receives a batch, the system shall supply normalized and redacted trace data independent of source harness format.

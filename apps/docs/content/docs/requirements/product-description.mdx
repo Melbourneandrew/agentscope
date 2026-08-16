@@ -1,32 +1,37 @@
 ---
 title: Product Description
-description: The product boundary, users, and non-negotiable behavior of AgentScope.
+description: Product-wide purpose and outcomes for AgentScope.
 ---
 
-## Goal
+# AgentScope Product Description
 
-The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
+## Business Problem
 
-AgentScope is an installable observability control plane for **agent harnesses**: Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), Hermes, and future coding-agent runtimes. It is not an LLM provider SDK and it is not a replacement for the harness. It makes the harness's work observable without changing the work it performs.
+Coding-agent traces are fragmented by harness and destination. Developers cannot reliably compare sessions, investigate a failed agent run, or add an observability destination without rebuilding integrations.
 
-## Product surface
+## Current State
 
-| Surface           | User outcome                                              | Primary owner               |
-| ----------------- | --------------------------------------------------------- | --------------------------- |
-| `agentscope` CLI  | Install, configure, inspect, repair, and query AgentScope | `@agentscope/cli`           |
-| Harness adapters  | Translate a harness's native hook/artifact model          | `@agentscope/harness-*`     |
-| Trace core        | Normalize, redact, queue, and deliver trace batches       | `@agentscope/core`          |
-| Reporter plugins  | Send normalized traces to a destination                   | `@agentscope/reporter-*`    |
-| Retrieval plugins | Optionally search a destination through the CLI           | reporter package capability |
-| Docs and SDK      | Explain configuration and enable third-party extensions   | documentation + packages    |
+AgentScope has a CLI-first monorepo, normalized trace source, initial harness adapters, an extensible reporting boundary, and a hermetic test foundation. The public CLI and destination packages remain in development.
 
-## Required outcomes
+## Personas
 
-- Capture must fail open: a broken hook, network, or reporter cannot block an agent session.
-- Each trace has the best available session, harness, model, timing, usage, Git branch, commit, worktree, and workspace context.
-- AgentScope must identify the **effective Git branch** at hook time, including detached-head and worktree cases, and record an explicit unavailable state rather than inventing a value.
-- Secrets never appear in hook arguments, spool files, diagnostics, or exported telemetry.
-- A user can install one harness, configure one or more destinations, inspect capture health, and retrieve traces when the configured destination supports retrieval.
-- The same normalized semantics apply across harnesses; adapters own extraction, not the meaning of a session, turn, model call, tool call, or error.
+- **Coding-agent user:** wants session context without manually editing opaque harness hooks.
+- **Platform engineer:** wants consistent redaction, destinations, and setup health across machines.
+- **Extension author:** wants stable SDK seams for harnesses and reporters.
 
-The architectural decisions behind these outcomes are in the [reporting](/docs/blueprints/trace-reporting), [retrieval](/docs/blueprints/trace-retrieval), and [harness integration](/docs/blueprints/agent-harness-integration) blueprints.
+## Product Description
+
+The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse. AgentScope installs safe harness integrations, normalizes meaningful events, and routes redacted traces to configured destinations.
+
+## Success Metrics
+
+- Supported harness installation succeeds and is reversible in a disposable environment.
+- Every supported harness has hermetic real-executable integration coverage.
+- Capture failures do not interrupt a coding-agent session.
+
+## Technical Requirements
+
+- **REQ-OVR-001:** As a coding-agent user, I want one normalized trace model, so that traces are comparable across harnesses.
+  - **AC-OVR-001.1:** When a supported harness emits observable activity, the system shall normalize it into portable trace primitives.
+- **REQ-OVR-002:** As a platform engineer, I want extensible destinations, so that observability backends can evolve independently of harnesses.
+  - **AC-OVR-002.1:** When a reporter plugin is configured, the system shall receive already-redacted normalized trace data.

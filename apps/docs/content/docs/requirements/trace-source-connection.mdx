@@ -1,26 +1,30 @@
 ---
 title: Trace Source Connection
-description: Configuring trace destinations, credentials, and activation.
+description: User requirements for configuring reporters and credentials.
 ---
 
-## User flow
+# Trace Source Connection
 
-```bash
-agentscope configure reporter langfuse
-agentscope install codex
-agentscope status
-```
+## Overview
 
-The configuration flow selects a reporter, validates its settings, stores secrets through the platform credential store where possible, and creates a named trace-source connection. A connection binds a reporter implementation and a configuration profile; it does not bind a user to a single harness. The non-secret configuration lives at `~/.agentscope`.
+Users configure a destination once, then install compatible harness integrations that route traces to the selected connection.
+
+## Terminology
+
+- **Connection:** a named reporter configuration and credential reference.
+- **Reporter:** a destination plugin that accepts normalized trace batches.
 
 ## Requirements
 
-- Configuration is machine-scoped by default at `~/.agentscope`; `AGENTSCOPE_HOME` is the explicit override for isolated tests and CI.
-- The CLI accepts interactive setup, non-interactive flags, and environment-backed secret references for CI.
-- Reporter credentials are validated with a minimal health check that does not emit a production trace.
-- Multiple named connections may coexist; a routing policy decides the active connection(s) for each capture.
-- Config files contain references and non-secret settings only. The doctor output masks all credential-like values.
+### REQ-CONN-001: Configure a destination
 
-The initial Langfuse connection supports OTLP export. Direct Langfuse ingestion can be another reporter implementation later without changing harness adapters.
+As a user, I want to configure Langfuse through `agentscope`, so that my harness traces reach my selected project.
 
-Read the [configuration directory requirement](/docs/requirements/configuration-directory) and [lifecycle blueprint](/docs/blueprints/configuration-directory) for persistence, migrations, and cleanup rules.
+- **AC-CONN-001.1:** When I run `agentscope configure reporter langfuse`, the system shall validate non-secret settings and store the connection under `~/.agentscope`.
+- **AC-CONN-001.2:** When credentials are required, the system shall use a credential store or explicit CI secret reference.
+
+### REQ-CONN-002: Reusable routing
+
+As a platform engineer, I want named connections reusable across harnesses, so that destination policy is not duplicated in every integration.
+
+- **AC-CONN-002.1:** When multiple connections exist, the system shall let a routing policy select active connection(s) without modifying harness-specific extraction.
