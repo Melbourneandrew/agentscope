@@ -2,7 +2,6 @@
   "name": "@agentscope/cli",
   "version": "0.1.0",
   "description": "Agentscope command-line installer and configuration tool.",
-  "private": true,
   "type": "module",
   "bin": {
     "agentscope": "./dist/bin/agentscope.js"
@@ -13,7 +12,22 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@agentscope/core": "workspace:*"
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@agentscope/core": "workspace:*",
+    "@agentscope/destination-langfuse": "workspace:*",
+    "@agentscope/destination-local-sqlite": "workspace:*",
+    "@agentscope/harness-claude-code": "workspace:*",
+    "@agentscope/harness-codex": "workspace:*",
+    "@agentscope/harness-gemini-cli": "workspace:*",
+    "@agentscope/harness-hermes": "workspace:*",
+    "@agentscope/harness-opencode": "workspace:*",
+    "@agentscope/harness-openclaw": "workspace:*",
+    "@agentscope/harness-pi": "workspace:*",
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.2"
   }
 }

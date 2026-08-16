@@ -3,8 +3,33 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./reporter": {
+      "types": "./dist/reporter/index.d.ts",
+      "import": "./dist/reporter/index.js"
+    },
+    "./retriever": {
+      "types": "./dist/retriever/index.d.ts",
+      "import": "./dist/retriever/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "node ../../../scripts/refuse-private-package.mjs"
+  },
   "dependencies": {
-    "@agentscope/core": "workspace:*",
-    "@agentscope/destinations-core": "workspace:*"
+    "@agentscope/destinations-core": "workspace:*",
+    "@agentscope/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
   }
 }

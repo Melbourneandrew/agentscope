@@ -1,0 +1,32 @@
+---
+title: Supported Platforms
+description: User requirements for evidence-backed operating-system and runtime support.
+---
+
+## Overview
+
+Agentscope interacts with npm, native credential stores, filesystems, harness configuration, and an optional native SQLite dependency. A platform is supported only when the complete user lifecycle is verified on that platform.
+
+## Terminology
+
+- **Platform combination:** an operating system, architecture, Node.js runtime, credential backend, filesystem behavior, and required native dependency set.
+- **Support manifest:** the machine-readable set of platform combinations and capabilities that a release claims to support.
+- **Native evidence:** results produced on the operating system and architecture whose behavior is being claimed.
+
+## Requirements
+
+### REQ-PLAT-001: Evidence-backed support claims
+
+As a user, I want platform support claims grounded in complete lifecycle evidence, so that I can trust Agentscope on my machine.
+
+- **AC-PLAT-001.1:** When a release claims a platform combination as supported, the system shall have verified clean installation, configuration, credential access, hook invocation, Doctor, upgrade, and uninstall behavior on an appropriate native runner.
+- **AC-PLAT-001.2:** When support documentation is produced, the system shall derive its operating-system, architecture, runtime, credential-backend, and native-dependency claims from the release support manifest.
+- **AC-PLAT-001.3:** When a supported platform uses a platform-specific home path, credential backend, path syntax, or atomic filesystem operation, the system shall verify that behavior natively rather than infer it from a Linux container.
+
+### REQ-PLAT-002: Honest unsupported behavior
+
+As a user on an unsupported or incomplete platform combination, I want an actionable result before Agentscope changes my setup, so that I am not left with a partial installation.
+
+- **AC-PLAT-002.1:** When the current platform combination is unsupported, the system shall report a stable diagnostic identifying the unsupported capability before applying configuration or hook mutations.
+- **AC-PLAT-002.2:** When the current platform cannot load a required native dependency, the system shall report the affected feature and shall not claim the platform combination as supported.
+- **AC-PLAT-002.3:** When only an optional capability is unavailable, the system shall identify that capability without misrepresenting unrelated verified capabilities as unavailable.

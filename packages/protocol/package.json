@@ -1,0 +1,24 @@
+{
+  "name": "@agentscope/protocol",
+  "version": "0.1.0",
+  "description": "Internal canonical OpenTelemetry and OpenInference trace protocol for Agentscope.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "node ../../scripts/refuse-private-package.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  }
+}

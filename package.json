@@ -29,6 +29,8 @@
     "test:integration:runner": "node tests/integration/runner.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "prepack": "node scripts/refuse-private-package.mjs",
+    "verify:workspace": "node scripts/verify-workspace-policy.mjs",
     "prepare": "husky",
     "precommit": "lint-staged && pnpm typecheck"
   },

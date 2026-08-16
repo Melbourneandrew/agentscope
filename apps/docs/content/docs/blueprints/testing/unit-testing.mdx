@@ -31,7 +31,7 @@ Unit tests protect the canonical model and first-party package contracts without
 
 ### ADR-004: Run destination contracts against every implementation
 
-**Decision:** Destination family Core publishes internal contract-test factories for Reporter and Retriever independently. The Retriever suite verifies the canonical filter truth table, destination-qualified identities, cursor/query binding, ordering, bounds, cancellation, stable failures, malicious provider DTOs, and safe Core handoff. Each destination adds mapping fixtures without copying generic assertions.
+**Decision:** Destination family Core exports internal contract-test factories for Reporter and Retriever independently. The Retriever suite verifies the canonical filter truth table, destination-qualified identities, cursor/query binding, ordering, bounds, cancellation, stable failures, malicious provider DTOs, and safe Core handoff. Each destination adds mapping fixtures without copying generic assertions.
 
 **Context:** Structural TypeScript compatibility does not establish behavioral compatibility across an HTTP API and a local SQL store.
 
