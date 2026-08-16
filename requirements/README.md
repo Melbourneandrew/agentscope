@@ -15,7 +15,7 @@ AgentScope gives an individual developer or organization a single installable co
 ## Functional requirements
 
 1. A global CLI installs, updates, verifies, and removes supported coding-agent harnesses.
-2. The CLI stores global configuration in the platform configuration directory (`$XDG_CONFIG_HOME/agent-scope`, `%APPDATA%\\agent-scope`, or `~/Library/Application Support/agent-scope`) and secrets in the OS credential store where possible.
+2. The CLI stores global non-secret configuration in `~/.agentscope` and secrets in the OS credential store where possible. `AGENTSCOPE_HOME` is reserved for explicit test/CI isolation.
 3. Core exposes a stable TypeScript SDK and a versioned normalized event schema for sessions, turns, tool use, skills, files, errors, and flush results.
 4. Harnesses are independently versioned adapters for Codex, Claude Code, and Cursor; unsupported versions fail clearly and non-destructively.
 5. Reporters are plugins. Bundled console and Langfuse reporters work out of the box; third parties can be loaded by package reference from explicit configuration.
@@ -47,14 +47,14 @@ Branch context is best-effort and must never cause tracing to fail. A detached `
 
 ## Decisions to confirm
 
-| Decision        | Recommendation                                                     | Why it is the starting point                                                                            |
-| --------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| Package names   | Scoped `@agentscope/*` packages                                    | Protects a coherent ecosystem and allows a future `agentscope` meta-package.                            |
-| Global config   | XDG/OS config directory, not `.agent-scope` initially              | Correctly separates machine-level CLI credentials from project policy; support project overrides later. |
-| Secrets         | Keychain/credential store, `.env` only for CI/local development    | Prevents accidental credential persistence in config and git.                                           |
-| Plugin loading  | Explicit installed npm packages; no arbitrary remote code download | Keeps the trust boundary understandable.                                                                |
-| Test substrate  | Docker Compose fixture matrix + mock OTLP/Langfuse collector       | Reproducible locally and in GitHub Actions; no separate VM is needed for v1.                            |
-| Live validation | Nightly/manual, protected environment                              | Valuable drift detection without making PRs flaky or leaking secrets.                                   |
+| Decision        | Recommendation                                                     | Why it is the starting point                                                                                          |
+| --------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| Package names   | Scoped `@agentscope/*` packages                                    | Protects a coherent ecosystem and allows a future `agentscope` meta-package.                                          |
+| Global config   | `~/.agentscope`, with `AGENTSCOPE_HOME` override                   | Gives users, hooks, and support tooling one discoverable machine-local root while preserving hermetic test isolation. |
+| Secrets         | Keychain/credential store, `.env` only for CI/local development    | Prevents accidental credential persistence in config and git.                                                         |
+| Plugin loading  | Explicit installed npm packages; no arbitrary remote code download | Keeps the trust boundary understandable.                                                                              |
+| Test substrate  | Docker Compose fixture matrix + mock OTLP/Langfuse collector       | Reproducible locally and in GitHub Actions; no separate VM is needed for v1.                                          |
+| Live validation | Nightly/manual, protected environment                              | Valuable drift detection without making PRs flaky or leaking secrets.                                                 |
 
 ## Official Langfuse integration interoperability
 

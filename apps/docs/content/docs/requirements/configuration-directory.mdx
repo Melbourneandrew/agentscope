@@ -1,0 +1,31 @@
+---
+title: Configuration Directory
+description: The stable machine-local home for AgentScope configuration and state.
+---
+
+## Decision
+
+AgentScope uses `~/.agentscope` as its default machine-local root. The CLI command is always `agentscope`—never `agent-scope`.
+
+This deliberately favors a discoverable, product-owned directory over platform-specific XDG/AppData conventions. It gives hooks, users, and support tooling one stable location to inspect across supported operating systems.
+
+```text
+~/.agentscope/
+├── config.json          # versioned, non-secret configuration
+├── profiles/            # named non-secret connection/routing profiles
+├── state/               # locks, installation ledger, migration markers
+├── spool/               # bounded, redacted pending deliveries
+└── diagnostics/         # bounded, non-secret doctor evidence
+```
+
+Secrets are never written into this directory. Configuration stores a credential reference; interactive setup writes the actual value to the OS credential store, while CI can supply an explicit environment-backed secret reference.
+
+## Lifecycle requirements
+
+- `agentscope init` creates the root with owner-only permissions and is idempotent.
+- `agentscope config path` prints the resolved root; `AGENTSCOPE_HOME` is the sole explicit override for test isolation, portable installs, and CI.
+- Writes validate against a versioned schema, write a temporary file in the same directory, flush it, and atomically rename it into place.
+- Schema migrations are forward-only, create a timestamped backup before mutation, and record a migration marker. Failed migration leaves the last valid configuration usable.
+- Hooks treat the directory as read-mostly state: no interactive migrations, no credential prompts, and no unbounded log creation.
+- `agentscope doctor` validates permissions, schema version, lock staleness, spool bounds, credential references, and repairability without printing secrets.
+- `agentscope uninstall` removes only integration blocks owned by AgentScope. Removing `~/.agentscope` is a separate, explicit user action with a dry-run and confirmation.

@@ -40,7 +40,7 @@ agentscope install codex
 agentscope doctor
 ```
 
-The CLI will use the unhyphenated `agentscope` command. Configuration and credentials will be machine-scoped by default; project policy will be explicit.
+The CLI will use the unhyphenated `agentscope` command. Non-secret machine configuration lives in `~/.agentscope`; credentials use the OS credential store, and `AGENTSCOPE_HOME` is reserved for explicit test/CI isolation.
 
 ## Architecture
 
