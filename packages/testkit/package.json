@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && node --test 'dist/__tests__/*.test.js'"
+  },
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && node --test 'dist/__tests__/*.test.js'"
+  },
   "dependencies": {
     "@agentscope/core": "workspace:*"
   }

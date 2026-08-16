@@ -24,6 +24,9 @@ AgentScope gives an individual developer or organization a single installable co
 8. A protected live smoke test can use Langfuse credentials to detect API integration drift without exposing secrets to pull requests.
 9. Each trace records the effective workspace Git context when available: branch name, commit SHA, repository/worktree root, and a provenance field explaining whether the workspace came from the hook payload, native transcript, or process fallback.
 10. Each trace preserves the provider's effective model metadata at session, turn, and message level where available: provider, model name/ID, reasoning effort, token usage, and timing.
+11. Integration tests execute supported **agent harness** CLIs (not transcript replay substitutes) against disposable configuration/workspace directories, a deterministic mock model server, and a mock telemetry endpoint.
+12. Unit tests are a separate CI lane and cover core schemas, sources, redaction, queueing, and reporter contracts without launching a harness executable.
+13. The harness matrix starts with Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw/CLAW, and Hermes; every harness is independently version-probed and records clear compatibility failures.
 
 ## User story: effective branch context and AgentScope parity
 

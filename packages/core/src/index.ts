@@ -6,3 +6,5 @@ export const agentscope = {
 export * from "./native-traces/index.js";
 export * from "./native-turns/index.js";
 export * from "./agent-trace/index.js";
+export * from "./reporting/index.js";
+export * from "./reporting/index.js";
