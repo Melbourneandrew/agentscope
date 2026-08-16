@@ -11,9 +11,11 @@ Retrievers let a configured Trace Destination expose remote trace search through
 
 ### ADR-001: Keep portable search in the CLI
 
-**Decision:** The CLI owns portable filters and presentation; the retriever maps those filters to destination APIs and declares unsupported filters.
+**Decision:** `agentscope traces search --destination <name>` always names exactly one configured Trace Destination. The CLI owns portable filters and presentation; the retriever maps those filters to destination APIs and declares unsupported filters.
 
-**Context:** Users need stable semantics while providers differ in query vocabulary and pagination.
+**Context:** Users and coding agents need explicit, deterministic semantics while providers differ in query vocabulary, identity, and pagination. Implicit defaults or silent fan-out would make an investigation query ambiguous.
+
+**Consequences:** There is no default retrieval destination and no implicit multi-destination search in v1. A future aggregate search requires its own deduplication, ordering, pagination, and partial-failure contract.
 
 ### ADR-002: Do not emulate unsupported retrieval
 

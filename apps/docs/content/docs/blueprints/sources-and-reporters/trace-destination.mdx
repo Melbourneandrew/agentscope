@@ -5,20 +5,36 @@ description: ADRs for connecting harness data to destination capabilities.
 
 ## Capability Summary
 
-A Trace Destination is the configured remote trace repository or service that receives captured canonical traces through one mandatory reporter and may expose them through an optional retriever. A native trace source remains the local harness artifact from which an adapter captures evidence.
+A Trace Destination is the configured local or remote trace repository or service that receives captured canonical traces through one mandatory reporter and may expose them through an optional retriever. A native trace source remains the local harness artifact from which an adapter captures evidence.
 
 ## Architecture Decision Records
 
 ### ADR-001: Make Trace Destination the user-configured connection
 
-**Decision:** A Trace Destination owns one remote destination's non-secret configuration, mandatory reporting capability, and optional retrieval capability. Core owns selection and routing across named Trace Destinations.
+**Decision:** A Trace Destination owns one local or remote destination's non-secret configuration, mandatory reporting capability, and optional retrieval capability. Core owns selection and routing across named Trace Destinations.
 
 **Context:** Users configure a logical service connection, not an unconnected reporter implementation; cross-connection selection needs one authoritative policy owner.
 
-**Consequences:** `agentscope configure reporter langfuse` creates a named destination connection reusable by many harnesses.
+**Consequences:** `agentscope destination configure langfuse` creates a named destination connection reusable by many harnesses.
 
 ### ADR-002: Keep extraction outside Trace Destination
 
 **Decision:** Harness adapters produce canonical batches; Trace Destinations never parse harness artifacts.
 
 **Context:** This keeps a destination reusable across harnesses and makes reporter integration testable independently.
+
+### ADR-003: Let first-party destinations declare their own validated shape
+
+**Decision:** Each first-party destination package exports an internal `DestinationDescriptor`: stable destination type identity, versioned Zod schema for non-secret connection settings, declared credential slots, defaults, retrieval capabilities, and a documentation reference. Core owns the outer configuration document and persists only data validated by that descriptor.
+
+**Context:** Langfuse, local SQLite, and a future remote libSQL service need different settings, but destination-specific CLI commands would make the command tree inconsistent and force users and agents to learn unrelated surfaces.
+
+**Consequences:** `agentscope destination configure <type>` is one generic command. It resolves the first-party descriptor, accepts its documented flags or non-interactive input, validates the shape with Zod, writes atomically, and stores credential references—not secret values. A descriptor is normal reviewed first-party code, not a runtime plugin ABI.
+
+### ADR-004: Keep destination data and credentials out of configuration
+
+**Decision:** The configuration document contains non-secret connection settings and credential references only. A local destination owns its opted-in data file under a platform data directory; remote credentials resolve through an OS credential store or explicit CI environment reference.
+
+**Context:** Configuration must remain safe to inspect, back up, and migrate. A local data file and a remote token have different retention and access-control properties.
+
+**Consequences:** `~/.agentscope` or its future platform-native replacement never contains a Langfuse key, remote database secret, or local trace payload merely because a destination is configured.

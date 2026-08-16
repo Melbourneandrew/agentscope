@@ -35,7 +35,7 @@ Agentscope is in its foundation phase. The monorepo, public documentation, CI st
 ```bash
 # Planned public CLI, not yet published
 npx @agentscope/cli init
-agentscope configure reporter langfuse
+agentscope destination configure langfuse
 agentscope install codex
 agentscope doctor
 ```

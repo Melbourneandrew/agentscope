@@ -10,7 +10,7 @@ Users configure a destination once, then install compatible harness integrations
 ## Terminology
 
 - **Connection:** a named reporter configuration and credential reference.
-- **Trace Destination:** a configured remote trace repository or service. It provides mandatory reporting and may provide retrieval.
+- **Trace Destination:** a configured local or remote trace repository or service. It provides mandatory reporting and may provide retrieval.
 - **Native trace source:** a harness transcript, hook payload, journal, or artifact from which Agentscope captures trace evidence.
 - **Reporter:** a destination package component that accepts normalized trace batches.
 
@@ -20,7 +20,7 @@ Users configure a destination once, then install compatible harness integrations
 
 As a user, I want to configure Langfuse through `agentscope`, so that my harness traces reach my selected project.
 
-- **AC-CONN-001.1:** When I run `agentscope configure reporter langfuse`, the system shall validate non-secret settings and store the connection under `~/.agentscope`.
+- **AC-CONN-001.1:** When I run `agentscope destination configure langfuse`, the system shall validate non-secret settings and store the connection under the resolved Agentscope configuration home.
 - **AC-CONN-001.2:** When credentials are required, the system shall use a credential store or explicit CI secret reference.
 
 ### REQ-CONN-002: Reusable routing

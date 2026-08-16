@@ -13,7 +13,7 @@ The CLI is the user-facing application: it configures AgentScope, installs first
 
 **Decision:** `apps/cli` uses Commander for command definitions, nested commands, generated help, and standard Node CLI behavior. Zod owns command input validation and all configuration/schema validation.
 
-**Context:** AgentScope needs a conventional Node CLI with commands such as `init`, `install`, `configure reporter langfuse`, `traces search`, and `doctor`; it does not need a TUI, a runtime plugin host, generated installers, or a framework-owned application lifecycle. Commander is the familiar, mature choice for contributors; Zod makes runtime input checks and TypeScript types derive from the same schema.
+**Context:** AgentScope needs a conventional Node CLI with commands such as `init`, `install`, `destination configure langfuse`, `traces search`, and `doctor`; it does not need a TUI, a runtime plugin host, generated installers, or a framework-owned application lifecycle. Commander is the familiar, mature choice for contributors; Zod makes runtime input checks and TypeScript types derive from the same schema.
 
 **Consequences:** Commands are small Commander definitions that parse flags then validate a command-specific Zod schema before delegating to injected services. Zod schemas are shared with configuration and API-boundary validation; TypeScript interfaces are inferred rather than separately maintained. Unit tests call command services directly with validated inputs, while a small command smoke suite verifies Commander parsing and exit behavior.
 
@@ -24,3 +24,11 @@ The CLI is the user-facing application: it configures AgentScope, installs first
 **Context:** Hook invocation, unit tests, and integration scenarios need the same operations without a terminal dependency.
 
 **Consequences:** Human output is stable enough for users but not a compatibility API; structured output is opt-in and versioned before it is documented for automation. Expected operational failures return stable diagnostic codes without stack traces by default.
+
+### ADR-003: Treat command documentation as a versioned product surface
+
+**Decision:** Every public command and subcommand has a hand-authored Fumadocs page under `apps/docs/content/docs/cli/`, backed by its Commander/Zod definition. The page contains syntax, required arguments, destination-specific configuration flags, examples, exit/diagnostic behavior, and automation-safe structured-output guidance.
+
+**Context:** Coding agents will invoke the CLI as well as humans. Generated `--help` is necessary for discovery but cannot explain configuration intent, destination tradeoffs, or safe operational flows in sufficient detail.
+
+**Consequences:** `agentscope <command> --help` remains concise, deterministic, and generated from Commander metadata. Detailed documentation is reviewed and versioned with command changes; CI checks documented command paths against the registered command tree.

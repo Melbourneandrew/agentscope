@@ -6,6 +6,7 @@
     "trace-destination",
     "reporter-abstraction",
     "langfuse-reporter",
+    "local-sqlite-destination",
     "trace-retrieval"
   ]
 }

@@ -17,11 +17,11 @@ Where a destination exposes a query API, Agentscope should make delivered traces
 
 As a developer, I want to search traces by meaningful context, so that I can investigate an agent session without switching tools.
 
-- **AC-RET-001.1:** When the active destination supports retrieval, `agentscope traces search` shall accept portable filters including time range, harness, branch, model, session, and tags.
+- **AC-RET-001.1:** When `agentscope traces search --destination <name>` targets a configured destination with retrieval capability, the system shall accept portable filters including time range, harness, branch, model, session, and tags.
 - **AC-RET-001.2:** When a supported result is returned, the system shall show destination identity and portable trace summary fields with redaction applied.
 
 ### REQ-RET-002: Honest unsupported behavior
 
 As a user, I want clear feedback when a destination cannot search, so that I do not mistake local state for remote trace history.
 
-- **AC-RET-002.1:** When no retrieval capability is configured, the system shall return an actionable unsupported-capability result.
+- **AC-RET-002.1:** When `--destination` is absent, unknown, or names a destination without retrieval capability, the system shall return an actionable usage or unsupported-capability result and shall not select or fan out to another destination implicitly.
