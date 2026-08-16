@@ -1,0 +1,29 @@
+---
+title: Reporting and Destinations
+description: User requirements for reliable, extensible trace delivery.
+---
+
+# Reporting and Destinations
+
+## Overview
+
+AgentScope begins with Langfuse and must grow to additional observability destinations without changing how agent harnesses capture work.
+
+## Terminology
+
+- **Idempotency key:** a stable delivery identity that prevents duplicate trace export.
+
+## Requirements
+
+### REQ-REP-001: Reliable delivery
+
+As a user, I want captures delivered reliably without slowing my agent, so that traces are useful even during transient destination failures.
+
+- **AC-REP-001.1:** When a delivery is retryable, the system shall queue a bounded redacted batch and retry with idempotency.
+- **AC-REP-001.2:** When delivery is non-retryable or storage limits are reached, the system shall retain a sanitized diagnostic and fail open.
+
+### REQ-REP-002: Destination extensibility
+
+As an extension author, I want a stable reporter contract, so that I can add a destination without modifying harness adapters.
+
+- **AC-REP-002.1:** When a reporter receives a batch, the system shall supply normalized and redacted trace data independent of source harness format.

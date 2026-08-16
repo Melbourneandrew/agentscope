@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
+import { DocsBrand } from "../docs-brand";
 import { source } from "../../lib/source";
 
 export default function Layout({ children }: { children: ReactNode }) {
@@ -7,17 +8,8 @@ export default function Layout({ children }: { children: ReactNode }) {
     <DocsLayout
       tree={source.getPageTree()}
       nav={{
-        title: (
-          <span className="docs-brand">
-            <span
-              className="brand-logo"
-              role="img"
-              aria-label="AgentScope oscilloscope"
-            />
-            AgentScope
-          </span>
-        ),
-        url: "/docs",
+        title: <DocsBrand />,
+        url: "/",
       }}
     >
       {children}

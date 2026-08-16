@@ -12,6 +12,6 @@ The repository uses npm trusted publishing, not a long-lived `NPM_TOKEN`. The wo
    - Workflow filename: `publish-npm.yml`
    - Allowed action: `npm publish`
 4. Keep the GitHub repository public and retain the workflow's `id-token: write` permission. npm will generate provenance automatically for trusted publishes.
-5. Once the CLI has a real compiled `dist/bin/agent-scope.js`, remove `private: true`, add it to the release command, and configure a second trusted publisher for `@agentscope/cli`.
+5. Once the CLI has a real compiled `dist/bin/agentscope.js`, remove `private: true`, add it to the release command, and configure a second trusted publisher for `@agentscope/cli`.
 
 To release, update package versions, commit them, create a signed `vX.Y.Z` tag, and push that tag. Normal merges to `main` validate but never publish.

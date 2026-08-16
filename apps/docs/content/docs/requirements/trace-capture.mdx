@@ -1,0 +1,32 @@
+---
+title: Trace Capture
+description: User requirements for safe, context-rich agent trace capture.
+---
+
+# Trace Capture
+
+## Overview
+
+AgentScope must capture useful harness activity without acting as a proxy for the agent or making an agent session fail when telemetry is unavailable.
+
+## Terminology
+
+- **Effective Git context:** the branch, commit, worktree, and repository resolved from the active agent workspace.
+- **Fail open:** capture errors do not change the harness's successful/failed outcome.
+
+## Requirements
+
+### REQ-CAP-001: Safe hook capture
+
+As a coding-agent user, I want trace capture to be non-disruptive, so that observability never prevents me from using my harness.
+
+- **AC-CAP-001.1:** When a hook cannot report, the system shall return without blocking the harness session.
+- **AC-CAP-001.2:** When capture work exceeds its bounded deadline, the system shall record a sanitized diagnostic and fail open.
+
+### REQ-CAP-002: Session context
+
+As a user, I want traces to include the context in which my agent worked, so that I can understand a result later.
+
+- **AC-CAP-002.1:** When Git context is available, the system shall record effective branch, commit, worktree, repository root, and provenance.
+- **AC-CAP-002.2:** When the checkout is detached or Git is unavailable, the system shall record an explicit state rather than invent a branch name.
+- **AC-CAP-002.3:** When harness metadata is available, the system shall record harness version, model, reasoning configuration, usage, timing, tool activity, and errors.

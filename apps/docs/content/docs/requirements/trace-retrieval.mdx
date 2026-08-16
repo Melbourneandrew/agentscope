@@ -1,0 +1,29 @@
+---
+title: Trace Retrieval
+description: User requirements for optional destination-backed trace search.
+---
+
+# Trace Retrieval
+
+## Overview
+
+Where a destination exposes a query API, AgentScope should make delivered traces discoverable through the same CLI without claiming that every reporter can search.
+
+## Terminology
+
+- **Retrieval capability:** an optional destination plugin capability that maps portable queries to a provider API.
+
+## Requirements
+
+### REQ-RET-001: Search supported destinations
+
+As a developer, I want to search traces by meaningful context, so that I can investigate an agent session without switching tools.
+
+- **AC-RET-001.1:** When the active destination supports retrieval, `agentscope traces search` shall accept portable filters including time range, harness, branch, model, session, and tags.
+- **AC-RET-001.2:** When a supported result is returned, the system shall show destination identity and portable trace summary fields with redaction applied.
+
+### REQ-RET-002: Honest unsupported behavior
+
+As a user, I want clear feedback when a destination cannot search, so that I do not mistake local state for remote trace history.
+
+- **AC-RET-002.1:** When no retrieval capability is configured, the system shall return an actionable unsupported-capability result.

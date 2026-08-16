@@ -24,7 +24,7 @@ services:
     environment:
       CI: "true"
       AGENTSCOPE_COLLECTOR_URL: http://collector:4318
-      AGENTSCOPE_CONFIG_HOME: /tmp/agent-scope
+      AGENTSCOPE_HOME: /tmp/.agentscope
     command:
       [
         "sh",
