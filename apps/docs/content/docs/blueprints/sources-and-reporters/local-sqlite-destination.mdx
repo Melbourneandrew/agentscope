@@ -27,8 +27,8 @@ The local SQLite destination gives a user an opt-in durable trace repository and
 
 ### ADR-003: Configure and migrate deliberately
 
-**Decision:** Local SQLite configuration validates the selected path, retention settings, and writable directory before atomically recording the destination. Database schema provisioning and future schema migrations run transactionally on first configuration or explicit upgrade, with a schema-version record and clear failure diagnostic.
+**Decision:** Local SQLite uses `better-sqlite3` and reviewed versioned SQL migration files. Configuration validates the selected path, retention settings, and writable directory before atomically recording the destination. Database schema provisioning and future schema migrations run transactionally on first configuration or explicit upgrade, with a schema-version record and clear failure diagnostic.
 
 **Context:** Creating a database is a material mutation and must not occur merely because `agentscope init` discovered that local storage is possible.
 
-**Consequences:** Init may propose the destination but never enables it by default. The database driver and migration runner remain an implementation decision until a short prototype measures packaging, cross-platform behavior, backups, and upgrade recovery; an ORM is not selected solely to provide migrations.
+**Consequences:** Init may propose the destination but never enables it by default. The destination ships no ORM and maintains a small migration runner plus `schema_migrations` table. Its install/release matrix verifies `better-sqlite3` prebuilt-binary availability on every supported CLI platform; an unsupported platform produces an actionable configure-time diagnostic rather than a source-build surprise.
