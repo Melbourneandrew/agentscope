@@ -4,7 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "build": "node --check smoke.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint smoke.mjs --max-warnings=0",
     "test": "node smoke.mjs",
+    "coverage": "vitest run --coverage --passWithNoTests",
+    "clean": "node ../../scripts/clean-workspace.mjs",
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   }
 }

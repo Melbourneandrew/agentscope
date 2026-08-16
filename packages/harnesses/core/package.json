@@ -16,6 +16,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings=0",
+    "test": "vitest run --passWithNoTests",
+    "coverage": "vitest run --coverage --passWithNoTests",
+    "clean": "node ../../../scripts/clean-workspace.mjs",
     "prepack": "node ../../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {

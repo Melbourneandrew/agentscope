@@ -6,6 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint app lib next.config.mjs postcss.config.mjs --max-warnings=0",
+    "test": "vitest run --passWithNoTests",
+    "coverage": "vitest run --coverage --passWithNoTests",
+    "clean": "node ../../scripts/clean-workspace.mjs",
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {

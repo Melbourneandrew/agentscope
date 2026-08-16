@@ -1,0 +1,22 @@
+export const expectedWorkspacePackages = new Map([
+  ["apps/cli", "@agentscope/cli"],
+  ["apps/docs", "@agentscope/docs"],
+  ["packages/core", "@agentscope/core"],
+  ["packages/protocol", "@agentscope/protocol"],
+  ["packages/testkit", "@agentscope/testkit"],
+  ["packages/destinations/core", "@agentscope/destinations-core"],
+  ["packages/destinations/langfuse", "@agentscope/destination-langfuse"],
+  [
+    "packages/destinations/local-sqlite",
+    "@agentscope/destination-local-sqlite",
+  ],
+  ["packages/harnesses/core", "@agentscope/harnesses-core"],
+  ["packages/harnesses/claude-code", "@agentscope/harness-claude-code"],
+  ["packages/harnesses/codex", "@agentscope/harness-codex"],
+  ["packages/harnesses/gemini-cli", "@agentscope/harness-gemini-cli"],
+  ["packages/harnesses/hermes", "@agentscope/harness-hermes"],
+  ["packages/harnesses/opencode", "@agentscope/harness-opencode"],
+  ["packages/harnesses/openclaw", "@agentscope/harness-openclaw"],
+  ["packages/harnesses/pi", "@agentscope/harness-pi"],
+  ["tests/integration-live", "@agentscope/integration-live"],
+]);
