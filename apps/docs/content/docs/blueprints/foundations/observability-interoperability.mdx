@@ -15,7 +15,7 @@ Agentscope must interoperate with industry telemetry without becoming dependent 
 
 **Context:** OTel is the broadly adopted trace transport and semantic-convention foundation, but SDK defaults may expose host, process, user, or environment identity outside a canonical payload.
 
-**Consequences:** Export-contract tests assert the resource attribute allowlist as well as span fields; reporter plugins cannot add arbitrary environment-derived attributes.
+**Consequences:** Export-contract tests assert the resource attribute allowlist as well as span fields; destination packages cannot add arbitrary environment-derived attributes.
 
 ### ADR-002: Adopt OpenInference selectively
 

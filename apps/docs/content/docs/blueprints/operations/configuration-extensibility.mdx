@@ -9,16 +9,16 @@ Configuration must accommodate new packages without converting `config.json` int
 
 ## Architecture Decision Records
 
-### ADR-001: Namespace plugin configuration by stable plugin identity
+### ADR-001: Namespace destination configuration by stable package identity
 
-**Decision:** Core owns the top-level version, configured destinations, and cross-destination routing/selection policy; each Trace Destination and plugin owns only its schema-validated local configuration block.
+**Decision:** Core owns the top-level version, configured destinations, and cross-destination routing/selection policy; each first-party Trace Destination package owns only its schema-validated local configuration block.
 
-**Context:** New reporters and harnesses need configuration without collisions or core releases for every option.
+**Context:** New reporters and harnesses need configuration without collisions or core releases for every option, but v1 does not load third-party executable packages at runtime.
 
 **Consequences:** A Trace Destination declares its reporter/retriever capabilities and local destination settings. Core alone selects which named destination or destinations receive a canonical batch, resolving the active-connection behavior in REQ-CONN-002.
 
-### ADR-002: Preserve unknown extension blocks
+### ADR-002: Preserve unknown package blocks
 
-**Decision:** Older CLIs preserve unknown plugin namespaces during read/write and refuse unsafe downgrades.
+**Decision:** Older CLIs preserve unknown first-party package namespaces during read/write and refuse unsafe downgrades.
 
-**Context:** A user may update one plugin before the CLI; losing its settings is worse than an actionable compatibility error.
+**Context:** A user may update one package before the CLI; losing its settings is worse than an actionable compatibility error.

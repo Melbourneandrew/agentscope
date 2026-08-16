@@ -17,7 +17,7 @@
 
 > The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
 
-Agentscope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into portable traces, then reports them through extensible destination plugins.
+Agentscope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into portable traces, then reports them through extensible first-party destination packages.
 
 ## Status
 
@@ -48,10 +48,10 @@ The CLI will use the unhyphenated `agentscope` command. Non-secret machine confi
 agent harness hook
   -> harness adapter
   -> Agentscope core (normalize, redact, spool)
-  -> reporter plugin (Langfuse / OTLP / custom destination)
+  -> destination reporter (Langfuse / OTLP / custom destination)
 ```
 
-Harness adapters own native configuration and extraction. Core owns the stable trace model, redaction, idempotency, queueing, and retry policy. Reporter plugins own destination protocol mapping, and may optionally add retrieval support to the CLI.
+Harness adapters own native configuration and extraction. Core owns the stable trace model, redaction, idempotency, queueing, and retry policy. Destination packages own destination protocol mapping, and may optionally add retrieval support to the CLI. New harnesses and destinations are contributed through normal reviewed pull requests; Agentscope does not ship a runtime plugin marketplace in v1.
 
 ## Packages
 

@@ -15,7 +15,7 @@ Agentscope needs a durable internal trace format that preserves coding-agent evi
 
 **Context:** Coding harnesses expose transcripts, turn journals, skill reads, workspace context, and trace-to-code attribution that external conventions do not consistently model.
 
-**Consequences:** The public plugin ABI names a versioned `CanonicalTraceEnvelope` in `@agentscope/core`; current `NativeAgentTrace`, `TraceBatch`, and Agent Trace records are migrated behind it before third-party ABI stabilization. Core owns compatibility rules and migrations.
+**Consequences:** `@agentscope/core` exposes a versioned `CanonicalTraceEnvelope` for first-party packages; current `NativeAgentTrace`, `TraceBatch`, and Agent Trace records are migrated behind it. Core owns compatibility rules and migrations. A public SDK ABI is deferred until external extension patterns justify it.
 
 ### ADR-002: Redact before canonical durability
 

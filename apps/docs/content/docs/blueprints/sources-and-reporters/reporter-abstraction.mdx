@@ -21,29 +21,29 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 **Context:** Failure semantics cannot vary by destination or block a harness.
 
-### ADR-003: Make destination testing a plugin capability
+### ADR-003: Make destination testing a package capability
 
-**Decision:** Each Trace Destination package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
+**Decision:** Each first-party Trace Destination package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
 
 **Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
 
-**Consequences:** A future Phoenix/Arize, direct-Langfuse, warehouse, console, or internal reporter extends the suite without changing scenario orchestration or harness packages.
+**Consequences:** A future Phoenix/Arize, direct-Langfuse, warehouse, console, or internal reporter extends the suite through a reviewed Agentscope pull request without changing scenario orchestration or harness packages.
 
-### ADR-004: Keep credentials in Core-mediated destination capabilities
+### ADR-004: Do not ship a runtime plugin loader in v1
 
-**Decision:** First-party executable Trace Destination plugins receive validated non-secret configuration and a Core-provided, destination-bound authenticated transport capability; plugin APIs do not receive secret values or credential-store handles. Production execution admits only packages bundled with the CLI or verified against the maintainers' release signature. Third-party executable plugins are disabled by default and available only through an explicit local-development preview mode until Agentscope provides a sandboxed plugin runner with allowlisted RPC.
+**Decision:** V1 supports only first-party harness and Trace Destination packages published from this monorepo. Adding a harness or destination is a reviewed pull request and release, not a user-installed executable plugin.
 
-**Context:** A credential reference in configuration does not itself define whether third-party code can read the referenced secret.
+**Context:** A Node package loaded in the CLI process has ambient filesystem, environment, and network authority. A generic plugin loader would create a security, compatibility, and support commitment before there is a demonstrated external need.
 
-**Consequences:** Core resolves credential references only at the delivery/retrieval boundary, constrains use to the configured destination, and redacts authorization data from failures. A TypeScript package loaded into the main Node process is not treated as a security boundary: it can use ambient filesystem, environment, and network APIs. Preview mode makes that risk explicit, requires an exact local package/path and confirmation, and is never enabled by a project or config file alone. Plugins that need a new authentication mechanism extend a reviewed Core credential capability rather than accessing the machine credential store directly; future untrusted plugins require process/container isolation with no inherited credentials and allowlisted RPC/network access.
+**Consequences:** Core owns credentials, redaction, delivery, and retrieval boundaries. The package contracts remain internal but well-tested so they can become a public SDK only after real contribution patterns justify a stable ABI.
 
-### ADR-005: Negotiate executable plugin compatibility before capture
+### ADR-005: Reserve a constrained enrichment seam instead of arbitrary code
 
-**Decision:** Every external harness or Trace Destination plugin declares a manifest identity, Core API compatibility range, configuration-schema version, and requested capabilities. Core validates the manifest before discovery, installation, or hook execution and refuses incompatible plugins with a stable Doctor diagnostic.
+**Decision:** V1 supports declarative, schema-validated filtering, redaction, and additional metadata rules owned by Core. It does not execute user-supplied enrichers or filters. A future enrichment SDK must receive an already-redacted canonical envelope and pass its output through final redaction, with explicit capability, privacy, ordering, and failure semantics.
 
-**Context:** Versioned config preservation does not protect against loading executable code built for a different Core contract.
+**Context:** Filtering and metadata attachment are the most plausible user extension needs, but arbitrary callbacks could see sensitive data, block hooks, or make output non-reproducible.
 
-**Consequences:** The Core API uses semantic-version compatibility with explicit capability negotiation. Until the public plugin ABI stabilizes, only first-party packages may claim production support; third-party packages are treated as preview and must opt into the exact supported Core range.
+**Consequences:** Declarative rules have deterministic tests and Doctor diagnostics. Any later executable extension must be separately designed with a real isolation boundary, narrow RPC/capabilities, no inherited credentials, and a stable public versioning policy.
 
 ### ADR-006: Drain delivery opportunistically without a resident daemon
 
