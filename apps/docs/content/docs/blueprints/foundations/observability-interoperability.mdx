@@ -11,7 +11,7 @@ Agentscope must interoperate with industry telemetry without becoming dependent 
 
 ### ADR-001: Emit OpenTelemetry transport identity
 
-**Decision:** Core uses OTel trace/span context and only explicitly allowlisted, redacted resource attributes in its canonical OTLP graph. Reporters preserve them wherever their destination supports it and disable automatic resource detection unless a detector's output is individually normalized and allowlisted.
+**Decision:** Protocol uses OTel trace/span context and only explicitly allowlisted, redacted resource attributes in its canonical OTLP graph. Reporters preserve them wherever their destination supports it and disable automatic resource detection unless a detector's output is individually normalized and allowlisted.
 
 **Context:** OTel is the broadly adopted trace transport and semantic-convention foundation, but SDK defaults may expose host, process, user, or environment identity outside a canonical payload.
 
@@ -23,4 +23,4 @@ Agentscope must interoperate with industry telemetry without becoming dependent 
 
 **Context:** This gives Agentscope portable agent/LLM/tool semantics and direct OTLP interoperability while preserving the additional coding-agent domain context that OpenInference does not model.
 
-**Consequences:** Upgrading the pinned OpenInference version is an explicit Core migration. Agentscope-specific attributes are documented and tested as additive, redaction-safe extensions rather than a fork of the OpenInference vocabulary.
+**Consequences:** Upgrading the pinned OpenInference version is an explicit Protocol migration. Agentscope-specific attributes are documented and tested as additive, redaction-safe extensions rather than a fork of the OpenInference vocabulary.

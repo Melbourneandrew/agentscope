@@ -11,15 +11,15 @@ Agentscope needs a durable internal trace format that reuses open telemetry stan
 
 ### ADR-001: Use OTLP with OpenInference semantics as the canonical model
 
-**Decision:** `@agentscope/core` persists and exchanges an OTLP `ResourceSpans`-shaped trace graph as its canonical body. Its span kinds and attributes follow a pinned OpenInference version wherever that convention applies. `CanonicalTraceEnvelope` is only a small Agentscope lifecycle wrapper around that standard graph, not a second trace schema.
+**Decision:** `@agentscope/protocol` owns and exchanges an OTLP `ResourceSpans`-shaped trace graph as its canonical body. Its span kinds and attributes follow a pinned OpenInference version wherever that convention applies. `CanonicalTraceEnvelope` is only a small Agentscope lifecycle wrapper around that standard graph, not a second trace schema.
 
 **Context:** OpenTelemetry supplies the trace data model and transport; OpenInference supplies portable LLM, agent, tool, retrieval, message, token, timing, and error semantics. Recreating either would create needless translation and interoperability drift. Coding harnesses additionally expose installation ownership, harness identity, Git/worktree context, native artifact provenance, and unavailable-value reasons.
 
-**Consequences:** Agentscope never duplicates OpenInference `AGENT`, `LLM`, `TOOL`, model, message, token, timing, or error fields. It adds only documented `agentscope.*` attributes such as `agentscope.harness.*`, `agentscope.workspace.branch`, `agentscope.workspace.repository`, `agentscope.workspace.worktree`, `agentscope.workspace.directory`, `agentscope.mapping.provenance`, and bounded unavailable/reason fields. Core pins versions and owns migrations; values that could disclose local paths remain subject to redaction.
+**Consequences:** Agentscope never duplicates OpenInference `AGENT`, `LLM`, `TOOL`, model, message, token, timing, or error fields. It adds only documented `agentscope.*` attributes such as `agentscope.harness.*`, `agentscope.workspace.branch`, `agentscope.workspace.repository`, `agentscope.workspace.worktree`, `agentscope.workspace.directory`, `agentscope.mapping.provenance`, and bounded unavailable/reason fields. Protocol pins versions and owns migrations; values that could disclose local paths remain subject to redaction.
 
 ### ADR-002: Redact before canonical durability
 
-**Decision:** Raw native artifacts are transient adapter input only. Redaction occurs before a canonical envelope, source provenance, unknown field, raw pointer, spool entry, diagnostic, or reporter payload becomes durable.
+**Decision:** Raw native artifacts are transient adapter input only. Redaction occurs before a canonical envelope, native-source provenance, unknown field, raw pointer, diagnostic, or reporter payload becomes durable.
 
 **Context:** “Lossless” must preserve observability semantics, not retain secrets. Requirements prohibit sensitive data from reaching persistence or destinations.
 

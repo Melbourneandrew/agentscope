@@ -17,7 +17,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-002: Centralize delivery policy
 
-**Decision:** Core owns redaction, batching, idempotency, retries, and spool limits; reporters map a batch and return a receipt.
+**Decision:** Core owns redaction, batching, hook deadline enforcement, and sanitized delivery diagnostics; reporters map a batch and return a receipt.
 
 **Context:** Failure semantics cannot vary by destination or block a harness.
 
@@ -45,10 +45,10 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 **Consequences:** Declarative rules have deterministic tests and Doctor diagnostics. Executable user extensions are outside the current product scope.
 
-### ADR-006: Drain delivery opportunistically without a resident daemon
+### ADR-006: Deliver once within the hook lifetime
 
-**Decision:** A hook makes one bounded delivery attempt, then enqueues retryable work with persisted due time and backoff state. Core drains due entries under a single-writer lock on later hook or CLI invocations, and `agentscope flush` provides explicit foreground delivery; there is no background daemon in the initial release.
+**Decision:** A hook makes one bounded, in-process delivery attempt. If the reporter cannot accept the redacted batch by the deadline, Core discards the batch, records only a sanitized diagnostic, and returns success to the harness. There is no trace spool, retry queue, `agentscope flush`, or resident daemon in v1.
 
-**Context:** A hook process usually exits immediately, so a spool without a later execution trigger does not provide reliable delivery. A resident process introduces platform service management, credentials, and lifecycle complexity outside the first release.
+**Context:** The product must fail open, and deferred local storage changes the privacy, disk, and operational model substantially. A failed trace is less harmful than adding a durable copy of agent activity to every developer machine without an explicit product need.
 
-**Consequences:** Retry scheduling uses persisted exponential backoff with jitter and idempotency keys. The integration matrix includes restart, due-entry drain, lock-contention fail-open, and explicit-flush scenarios. Delayed delivery is observable through Doctor rather than silently promising immediate retry.
+**Consequences:** Reporter contracts classify accepted, rejected, unavailable, and deadline-exceeded outcomes for diagnostics only. Unit and real-harness scenarios prove deadline enforcement, discarded-failure behavior, and absence of raw trace persistence. A future durable-delivery feature requires new requirements, explicit user consent/policy, encryption and retention decisions, and a separate ADR set.

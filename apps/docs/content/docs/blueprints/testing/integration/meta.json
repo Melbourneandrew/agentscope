@@ -1,0 +1,11 @@
+{
+  "title": "Hermetic Integration Matrix",
+  "collapsible": true,
+  "defaultOpen": false,
+  "pages": [
+    "container-isolation",
+    "mock-services",
+    "matrix-operations",
+    "ci-execution"
+  ]
+}

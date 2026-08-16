@@ -2,5 +2,10 @@
   "title": "Testing",
   "collapsible": true,
   "defaultOpen": true,
-  "pages": ["test-strategy", "unit-testing", "real-harness-integration"]
+  "pages": [
+    "test-strategy",
+    "unit-testing",
+    "real-harness-integration",
+    "integration"
+  ]
 }

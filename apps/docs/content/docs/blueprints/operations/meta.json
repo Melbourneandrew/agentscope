@@ -10,8 +10,11 @@
     "harness-discovery",
     "agentscope-init",
     "cli-installation",
+    "cli-architecture",
     "hook-installation",
     "code-quality-and-ci",
+    "continuous-integration",
+    "documentation-site",
     "npm-publishing"
   ]
 }

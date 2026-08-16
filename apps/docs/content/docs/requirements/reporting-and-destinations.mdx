@@ -13,15 +13,15 @@ Agentscope begins with Langfuse and must grow to additional observability destin
 
 ## Requirements
 
-### REQ-REP-001: Reliable delivery
+### REQ-REP-001: Bounded fail-open delivery
 
-As a user, I want captures delivered reliably without slowing my agent, so that traces are useful even during transient destination failures.
+As a user, I want capture to attempt delivery without slowing or changing my agent session, so that observability remains non-disruptive.
 
-- **AC-REP-001.1:** When a delivery is retryable, the system shall queue a bounded redacted batch and retry with idempotency.
-- **AC-REP-001.2:** When delivery is non-retryable or storage limits are reached, the system shall retain a sanitized diagnostic and fail open.
+- **AC-REP-001.1:** When a reporter accepts a redacted batch before the hook deadline, the system shall finish without retaining a local trace copy.
+- **AC-REP-001.2:** When a reporter cannot accept a batch before the hook deadline for any reason, the system shall discard the batch, retain only a sanitized diagnostic, and fail open.
 
 ### REQ-REP-002: Destination extensibility
 
 As an Agentscope contributor, I want a stable reporter contract, so that I can add a first-party destination without modifying harness adapters.
 
-- **AC-REP-002.1:** When a reporter receives a batch, the system shall supply normalized and redacted trace data independent of source harness format.
+- **AC-REP-002.1:** When a reporter receives a batch, the system shall supply normalized and redacted trace data independent of native harness format.

@@ -19,11 +19,11 @@ The workspace separates the user-facing CLI application from shared runtime serv
 
 ### ADR-002: Keep Core shared and integration-neutral
 
-**Decision:** `packages/core` owns the canonical OTLP/OpenInference contract, documented `agentscope.*` attributes, redaction, configuration and credential references, routing, spool/retry lifecycle, and narrow internal integration contracts. It contains no harness-specific configuration mutation or destination protocol mapping.
+**Decision:** `packages/protocol` owns the canonical OTLP/OpenInference contract, documented `agentscope.*` attributes, schema validation, and protocol migrations. `packages/core` owns redaction, configuration and credential references, routing, bounded hook-time delivery, sanitized diagnostics, and narrow internal integration contracts. Neither contains harness-specific configuration mutation or destination protocol mapping.
 
 **Context:** A single owner is required for data governance and delivery semantics across every harness and Trace Destination.
 
-**Consequences:** Core may depend only on standards and deliberately approved low-level libraries. It must not import harness or destination packages; integrations depend inward on Core.
+**Consequences:** Protocol may depend only on standards and deliberately approved low-level libraries. Core depends on Protocol but must not import harness or destination packages; integrations depend inward on Protocol and Core as needed.
 
 ### ADR-003: Group first-party integrations by product concern
 
@@ -38,6 +38,7 @@ apps/
   cli/
   docs/
 packages/
+  protocol/
   core/
   harnesses/
     core/

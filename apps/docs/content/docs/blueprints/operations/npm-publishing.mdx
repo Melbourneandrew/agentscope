@@ -1,11 +1,11 @@
 ---
 title: NPM Publishing
-description: ADRs for trusted publishing of the CLI and public libraries.
+description: ADRs for trusted publishing of the CLI.
 ---
 
 ## Capability Summary
 
-NPM releases must be attributable, reproducible, and limited to intentionally public packages without long-lived repository secrets.
+NPM releases must be attributable, reproducible, and limited to the intentionally public CLI without long-lived repository secrets.
 
 ## Architecture Decision Records
 
@@ -17,10 +17,10 @@ NPM releases must be attributable, reproducible, and limited to intentionally pu
 
 **Consequences:** Maintainers configure each public package's trusted publisher on npmjs.com for `Melbourneandrew/agentscope`, the release workflow filename, and the `npm publish` action. The repository remains public and the release workflow has the required `id-token: write` permission. Normal merges to `main` never publish.
 
-### ADR-002: Publish only real executable or library contracts
+### ADR-002: Publish only the tested CLI
 
-**Decision:** `@agentscope/cli` becomes public only once `apps/cli` produces the tested `agentscope` executable. Core or protocol-facing libraries become public only after their supported API and compatibility policy are explicitly documented; first-party harness and destination packages remain internal until a concrete external library use case exists.
+**Decision:** `@agentscope/cli` becomes public only once `apps/cli` produces the tested `agentscope` executable. Protocol, Core, harness, destination, and test packages remain private implementation packages in v1.
 
-**Context:** Publishing scaffolding turns internal folder layouts into an accidental long-term compatibility promise.
+**Context:** Publishing an internal package turns its folder layout and types into an accidental long-term compatibility promise.
 
-**Consequences:** Release automation selects only explicitly public workspace packages. The published artifact and packed CLI are validated by the hermetic integration lane before a release tag is created.
+**Consequences:** Release automation selects only `@agentscope/cli`. The published artifact and packed CLI are validated by the hermetic integration lane before a release tag is created.

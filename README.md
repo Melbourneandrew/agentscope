@@ -47,17 +47,19 @@ The CLI will use the unhyphenated `agentscope` command. Non-secret machine confi
 ```text
 agent harness hook
   -> harness adapter
-  -> Agentscope core (normalize, redact, spool)
-  -> destination reporter (Langfuse / OTLP / custom destination)
+  -> Agentscope Protocol (OpenTelemetry/OpenInference + agentscope.*)
+  -> Agentscope Core (redact, bounded delivery)
+  -> Trace Destination reporter (Langfuse / OTLP / custom destination)
 ```
 
-Harness adapters own native configuration and extraction. Core owns the OpenTelemetry/OpenInference trace model, redaction, idempotency, queueing, and retry policy. Destination packages own destination protocol mapping, and may optionally add retrieval support to the CLI. New harnesses and destinations are contributed through normal reviewed pull requests; Agentscope has no runtime plugin system.
+Harness adapters own native configuration and extraction. Protocol owns the OpenTelemetry/OpenInference contract; Core owns redaction, configuration, and one bounded fail-open delivery attempt. A failed attempt drops the trace rather than storing it for later retry. Destination packages own destination protocol mapping and may optionally add retrieval support to the CLI. New harnesses and destinations are contributed through normal reviewed pull requests; Agentscope has no runtime plugin system.
 
 ## Packages
 
 | Package                  | Purpose                                                  |
 | ------------------------ | -------------------------------------------------------- |
-| `@agentscope/core`       | Normalized trace model and TypeScript SDK                |
+| `@agentscope/protocol`   | Private OpenTelemetry/OpenInference contract             |
+| `@agentscope/core`       | Private configuration, redaction, and delivery services  |
 | `@agentscope/cli`        | The `agentscope` installation and configuration command  |
 | `@agentscope/harness-*`  | Harness-specific installation and trace extraction       |
 | `@agentscope/reporter-*` | First-party trace destinations, starting with Langfuse   |

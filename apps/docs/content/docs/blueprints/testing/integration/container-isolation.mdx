@@ -1,0 +1,26 @@
+---
+title: Container Isolation
+description: ADRs for fresh-machine harness scenarios.
+---
+
+## Capability Summary
+
+Every default real-harness scenario proves that AgentScope can install and capture from a clean machine-like environment without affecting a developer's real workstation configuration.
+
+## Architecture Decision Records
+
+### ADR-001: Use one disposable scenario container per harness/version
+
+**Decision:** Each harness/version scenario receives a fresh container, empty user home, harness-specific home, `AGENTSCOPE_HOME`, Git worktree, dummy credentials, network namespace, and telemetry ledger.
+
+**Context:** Sharing homes, hooks, request records, or worktrees produces order-dependent tests and risks serving mock responses to a developer's real harness.
+
+**Consequences:** Scenarios cannot mount a host home, credential store, active harness configuration, or writable project worktree. A host-binary mode may exist only as an explicit diagnostic command and is never the default local or CI suite.
+
+### ADR-002: Prove the installation artifact, not the checkout
+
+**Decision:** A scenario installs the packed candidate `@agentscope/cli` artifact and executes `agentscope init` plus `agentscope install <harness>` before invoking the harness.
+
+**Context:** Mounting the source checkout or relying on a global CLI can hide missing package files, bin metadata, and install-time assumptions.
+
+**Consequences:** Candidate packaging is a prerequisite of the scenario. The scenario asserts owned-hook installation and uninstall behavior in the same isolated environment.

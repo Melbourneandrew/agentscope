@@ -1,0 +1,30 @@
+---
+title: Documentation Site
+description: ADRs for the public Fumadocs site and GitHub Pages deployment.
+---
+
+## Capability Summary
+
+The Fumadocs application is the public home for product requirements, technical blueprints, installation guidance, and future CLI reference material.
+
+## Architecture Decision Records
+
+### ADR-001: Keep one navigable documentation surface
+
+**Decision:** `apps/docs` hosts user documentation and internal-facing requirements/blueprints in one Fumadocs site. The primary documentation page keeps its sidebar visible; Requirements and Blueprints are collapsible, nested navigation groups.
+
+**Context:** AgentScope is CLI-first, so its product and contributor documentation need a shared source of truth rather than separate portals.
+
+**Consequences:** Requirements use Software Factory FRD format; Blueprints use ADR format. Deep technical areas such as integration testing may nest further without duplicating the user-facing requirement hierarchy.
+
+### ADR-002: Use durable, accessible product styling
+
+**Decision:** The site uses IBM Plex Sans, standard Fumadocs behavior, and styling inspired by SF Platform without claiming pixel-for-pixel parity. Brand assets provide explicit light and dark variants and preserve legibility in either color mode.
+
+**Context:** Documentation is a public product surface and must remain readable under the site theme rather than depending on one logo treatment.
+
+### ADR-003: Publish from main to GitHub Pages
+
+**Decision:** A dedicated post-merge workflow deploys `apps/docs` to GitHub Pages only when documentation inputs change. Site links and asset paths use the `/agentscope` Pages base path.
+
+**Context:** Pull-request jobs must validate docs without receiving Pages deployment authority. The repository page should expose the published site URL.

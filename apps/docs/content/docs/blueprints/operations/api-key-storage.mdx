@@ -1,5 +1,5 @@
 ---
-title: Source and Reporter API Key Storage
+title: Trace Destination API Key Storage
 description: ADRs for credential references and secret isolation.
 ---
 
@@ -17,6 +17,6 @@ Trace Destination credentials need secure storage while hooks remain non-interac
 
 ### ADR-002: Permit explicit CI secret references
 
-**Decision:** Non-interactive configuration may reference environment-provided secrets; it never copies their values into config, spool, commands, or diagnostics.
+**Decision:** Non-interactive configuration may reference environment-provided secrets; it never copies their values into config, commands, diagnostics, or retained trace state.
 
 **Consequences:** Real-harness integration tests use dummy credentials and ephemeral environment values.

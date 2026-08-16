@@ -4,6 +4,7 @@
   "defaultOpen": true,
   "pages": [
     "workspace-architecture",
+    "protocol-package",
     "canonical-trace-format",
     "harness-abstraction",
     "native-trace-mapping",

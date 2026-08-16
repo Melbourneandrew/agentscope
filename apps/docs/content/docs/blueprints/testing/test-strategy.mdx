@@ -11,7 +11,7 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 ### ADR-001: Separate unit and integration lanes
 
-**Decision:** Unit tests are colocated with the app/package that owns pure parsing, schemas, mapping, redaction, queues, and reporter contracts; root integration tests verify live harness/setup behavior.
+**Decision:** Unit tests are colocated with the app/package that owns pure parsing, schemas, mapping, redaction, bounded delivery outcomes, and reporter contracts; root integration tests verify live harness/setup behavior.
 
 **Context:** Transcript fixtures cannot prove executable flags, hook invocation, or configuration mutation.
 
@@ -23,8 +23,8 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 ### ADR-003: Make test cleanup owned and inspectable
 
-**Decision:** The test system writes cache only to named Docker volumes and an AgentScope-owned test-cache root, with explicit size-reporting cleanup commands.
+**Decision:** The test system writes mutable Docker state only to named, AgentScope-prefixed volumes, with explicit size-reporting cleanup commands. It does not use an AgentScope runtime cache to retain traces.
 
 **Context:** Repeated package installs can consume material disk space; cleanup must never risk a user's project, home, or active AgentScope state.
 
-**Consequences:** `pnpm test:integration:clean` removes only named integration volumes after reporting targets. `agentscope dev clean` removes only versioned entries under the owned test-cache root, supports dry-run, and never recursively cleans an arbitrary path.
+**Consequences:** `pnpm test:integration:clean` reports and removes only named integration volumes, containers, and networks. It never touches a user's home, local harness configuration, project worktree, or production `~/.agentscope` directory.

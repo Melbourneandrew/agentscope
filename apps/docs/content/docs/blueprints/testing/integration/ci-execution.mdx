@@ -1,0 +1,26 @@
+---
+title: Local and CI Execution
+description: ADRs for safe matrix entry points and lifecycle.
+---
+
+## Capability Summary
+
+The same manifest drives a small selected local scenario and the complete hermetic CI matrix without leaving dependencies, containers, or mock routing on a developer workstation.
+
+## Architecture Decision Records
+
+### ADR-001: Make local execution targeted and safe by default
+
+**Decision:** Local commands select an explicit harness/version or deterministic shard and run it in Docker. They print the exact named containers, networks, volumes, and owned test-cache paths before cleanup; `pnpm test:integration:clean` removes only those targets.
+
+**Context:** Developers may use AgentScope and coding harnesses outside this repository. A test command must not alter their real configuration or make their active agents talk to MockServer.
+
+**Consequences:** The suite never mounts the user's home or injects model endpoint variables into the host shell. Repeated local runs reuse only named, bounded build/cache inputs; cleanup is inspectable and never recursively accepts an arbitrary path.
+
+### ADR-002: Gate pull requests with the defined hermetic matrix
+
+**Decision:** Pull requests run the manifest's required hermetic compatibility set in CI shards. Scheduled/manual CI may run broader supported-version coverage; protected live tests remain a separate non-PR lane.
+
+**Context:** The fast required matrix detects cross-harness regressions without making every PR wait for every historical version or paid external service.
+
+**Consequences:** The CI summary reports each harness/version/destination result, image digest, and scenario identity. A matrix change that lowers coverage requires an explicit review explanation.

@@ -1,0 +1,26 @@
+---
+title: CLI Architecture
+description: ADRs for the agentscope command boundary.
+---
+
+## Capability Summary
+
+The CLI is the user-facing application: it configures AgentScope, installs first-party harness integrations, retrieves traces when supported, and diagnoses setup.
+
+## Architecture Decision Records
+
+### ADR-001: Use Citty for command parsing and composition
+
+**Decision:** `apps/cli` uses Citty for typed command definitions, nested commands, generated help, and programmatic command execution.
+
+**Context:** AgentScope needs a conventional Node CLI with commands such as `init`, `install`, `configure reporter langfuse`, `traces search`, and `doctor`; it does not need a TUI, a runtime plugin host, generated installers, or a framework-owned application lifecycle.
+
+**Consequences:** Commands are small Citty definitions that delegate to injected services. The CLI does not invent its own argument parser. Command tests invoke Citty programmatically with a captured IO context rather than spawning a process for every unit case.
+
+### ADR-002: Separate presentation from domain operations
+
+**Decision:** Command modules own argument validation, human-readable help, stdout/stderr, exit-code selection, and optional machine-readable output. Core and integration packages own all domain mutation and never write directly to process streams.
+
+**Context:** Hook invocation, unit tests, and integration scenarios need the same operations without a terminal dependency.
+
+**Consequences:** Human output is stable enough for users but not a compatibility API; structured output is opt-in and versioned before it is documented for automation. Expected operational failures return stable diagnostic codes without stack traces by default.
