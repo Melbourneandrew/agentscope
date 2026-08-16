@@ -15,7 +15,7 @@ The local SQLite destination gives a user an opt-in durable trace repository and
 
 **Context:** Default AgentScope capture is intentionally non-durable: a failed hook-time report is discarded. A local database materially changes privacy, disk, retention, and backup expectations and must be a user-selected destination rather than hidden runtime state.
 
-**Consequences:** Once configured, Local SQLite receives the same redacted Protocol graph as every other destination. It has no credentials by default. Its retention and data controls are destination settings, not Core diagnostics. Encryption at rest is not required in v1; the destination creates user-restricted files and documents that host filesystem and disk-encryption policy remains the user's responsibility.
+**Consequences:** Once configured, Local SQLite receives the same redacted Protocol graph as every other destination. It has no credentials by default. Its retention and data controls are destination settings, not Core diagnostics. Encryption at rest is not required; the destination creates user-restricted files and documents that host filesystem and disk-encryption policy remains the user's responsibility.
 
 ### ADR-002: Treat remote SQLite-compatible services as distinct destinations
 

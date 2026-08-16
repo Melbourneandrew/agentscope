@@ -15,7 +15,7 @@ Retrievers let a configured Trace Destination expose remote trace search through
 
 **Context:** Users and coding agents need explicit, deterministic semantics while providers differ in query vocabulary, identity, and pagination. Implicit defaults or silent fan-out would make an investigation query ambiguous.
 
-**Consequences:** There is no default retrieval destination and no implicit multi-destination search in v1. A future aggregate search requires its own deduplication, ordering, pagination, and partial-failure contract.
+**Consequences:** There is no default retrieval destination and no implicit multi-destination search. Any aggregate search requires its own deduplication, ordering, pagination, and partial-failure contract.
 
 ### ADR-002: Do not emulate unsupported retrieval
 

@@ -39,7 +39,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-005: Reserve a constrained enrichment seam instead of arbitrary code
 
-**Decision:** V1 supports declarative, schema-validated filtering, redaction, and additional metadata rules owned by Core. It does not execute user-supplied enrichers or filters.
+**Decision:** Agentscope supports declarative, schema-validated filtering, redaction, and additional metadata rules owned by Core. It does not execute user-supplied enrichers or filters.
 
 **Context:** Filtering and metadata attachment are the most plausible user extension needs, but arbitrary callbacks could see sensitive data, block hooks, or make output non-reproducible.
 
@@ -47,7 +47,7 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-006: Deliver once within the hook lifetime
 
-**Decision:** A hook makes one bounded, in-process delivery attempt. If the reporter cannot accept the redacted batch by the deadline, Core discards the batch, records only a sanitized diagnostic, and returns success to the harness. There is no trace spool, retry queue, `agentscope flush`, or resident daemon in v1.
+**Decision:** A hook makes one bounded, in-process delivery attempt. If the reporter cannot accept the redacted batch by the deadline, Core discards the batch, records only a sanitized diagnostic, and returns success to the harness. There is no trace spool, retry queue, `agentscope flush`, or resident daemon.
 
 **Context:** The product must fail open, and deferred local storage changes the privacy, disk, and operational model substantially. A failed trace is less harmful than adding a durable copy of agent activity to every developer machine without an explicit product need.
 

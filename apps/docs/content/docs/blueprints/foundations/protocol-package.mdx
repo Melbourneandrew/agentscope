@@ -15,7 +15,7 @@ description: ADRs for the private OTLP/OpenInference contract boundary.
 
 **Context:** The canonical contract changes on a different cadence from machine-local orchestration. A pure package prevents Core from becoming the owner of every concept and keeps harness/destination adapters aligned on one standards-first model.
 
-**Consequences:** Harnesses construct validated Protocol graphs; destinations consume them. Core may redact, route, and deliver them, but may not redefine their semantic fields. Protocol is private in v1: its API is an internal compatibility boundary, not a published SDK.
+**Consequences:** Harnesses construct validated Protocol graphs; destinations consume them. Core may redact, route, and deliver them, but may not redefine their semantic fields. Protocol is private: its API is an internal compatibility boundary, not a published SDK.
 
 ### ADR-002: Version protocol independently of implementation packages
 
