@@ -18,3 +18,11 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 ### ADR-002: Treat capability claims as test-backed
 
 **Decision:** A harness/reporter/version is supported only when its required unit contracts and real-harness scenario pass.
+
+### ADR-003: Make test cleanup owned and inspectable
+
+**Decision:** The test system writes cache only to named Docker volumes and an AgentScope-owned test-cache root, with explicit size-reporting cleanup commands.
+
+**Context:** Repeated package installs can consume material disk space; cleanup must never risk a user's project, home, or active AgentScope state.
+
+**Consequences:** `pnpm test:integration:clean` removes only named integration volumes after reporting targets. `agentscope dev clean` removes only versioned entries under the owned test-cache root, supports dry-run, and never recursively cleans an arbitrary path.

@@ -20,3 +20,11 @@ Reporters send redacted canonical batches to an external destination for the [Re
 **Decision:** Core owns redaction, batching, idempotency, retries, and spool limits; reporters map a batch and return a receipt.
 
 **Context:** Failure semantics cannot vary by destination or block a harness.
+
+### ADR-003: Make destination testing a plugin capability
+
+**Decision:** Each Trace Source package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
+
+**Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
+
+**Consequences:** A future Phoenix/Arize, direct-Langfuse, warehouse, console, or internal reporter extends the suite without changing scenario orchestration or harness packages.

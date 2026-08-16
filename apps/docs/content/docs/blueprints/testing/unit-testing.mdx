@@ -20,3 +20,9 @@ Unit tests protect the canonical model and extension contracts without network, 
 **Decision:** Native traces are checked-in, sanitized fixtures tagged by harness/version family.
 
 **Context:** They provide fast regression coverage while not substituting for integration tests.
+
+### ADR-003: Reuse workspace dependencies
+
+**Decision:** Unit tests use the workspace dependency installation and create no per-test `node_modules` trees.
+
+**Context:** Per-scenario package installation is slow and creates avoidable disk pressure.

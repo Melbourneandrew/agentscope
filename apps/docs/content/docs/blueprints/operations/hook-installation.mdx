@@ -20,3 +20,9 @@ Hook installation writes the minimal owned integration that allows a harness to 
 **Decision:** An adapter reports overlapping Agentscope/vendor hooks and requires explicit migration or replacement authority.
 
 **Consequences:** Dry-run is the default diagnostic path; failure rolls back the full installation transaction.
+
+### ADR-003: Verify installation in fresh machine-like environments
+
+**Decision:** The integration matrix installs the packed CLI and each harness adapter into a fresh isolated container before exercising its owned hook.
+
+**Context:** A developer's globally installed binary or preexisting harness configuration can hide missing package assets, installation assumptions, or upgrade regressions.
