@@ -48,3 +48,11 @@ The local SQLite destination gives a user an opt-in durable trace repository and
 **Context:** Concurrent hooks, migrations, full disks, corruption, and user removal intent fail independently.
 
 **Consequences:** Contention, migration, capacity, and corruption failures remain fail-open and diagnostically distinct. Doctor checks schema compatibility, integrity, writability, retention status, and capacity without reading trace content. Tests cover concurrency, duplicate delivery, interrupted migration, full disk, corruption, backup/restore, unconfigure, and explicit deletion.
+
+### ADR-006: Implement the canonical Retriever with indexed keyset queries
+
+**Decision:** The Local SQLite Retriever implements the same `search` and `get` contract as every retrieval-capable destination. Its schema maintains indexes for canonical trace ID, start time, harness, branch, model, session, and normalized tags. Search uses snapshot-consistent keyset pagination ordered by start time descending and canonical trace ID; get reads the immutable Protocol payload through the supported reader and current redaction boundary.
+
+**Context:** Local SQLite is the reference destination for exact portable semantics and should not gain a second, SQL-specific CLI surface.
+
+**Consequences:** `agentscope traces search --destination <local-connection>` and `traces get` behave identically to Langfuse at the CLI boundary. Raw SQL, database paths, and row identifiers are never accepted as portable trace references. Migration and query plans are covered by destination-specific tests in addition to the shared Retriever contract suite.

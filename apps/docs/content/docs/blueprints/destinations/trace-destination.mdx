@@ -25,13 +25,21 @@ A Trace Destination is the configured local or remote trace repository or servic
 
 ### ADR-003: Let first-party destinations declare their own validated shape
 
-**Decision:** Each first-party destination package exports an internal `DestinationDescriptor`: stable destination type identity, versioned Zod schema for non-secret connection settings, declared credential slots, defaults, retrieval capabilities, and a documentation reference. Core owns the outer configuration document and persists only data validated by that descriptor.
+**Decision:** Each first-party destination package exports an internal `DestinationDescriptor`: stable destination type identity, versioned Zod schema for non-secret connection settings, declared credential slots, defaults, a mandatory reporter factory, an optional retriever factory, and a documentation reference. Core owns the outer configuration document and persists only data validated by that descriptor.
 
 **Context:** Langfuse, local SQLite, and remote database services need different settings, but destination-specific CLI commands would make the command tree inconsistent and force users and agents to learn unrelated surfaces.
 
 **Consequences:** `agentscope destination configure <type>` is one generic command. It resolves the first-party descriptor, accepts its documented flags or non-interactive input, validates the shape with Zod, writes atomically, and stores credential references—not secret values. A descriptor is normal reviewed first-party code, not a runtime plugin ABI.
 
-### ADR-004: Keep destination data and credentials out of configuration
+### ADR-004: Separate family contracts from destination implementations
+
+**Decision:** `packages/destinations/core` owns the destination-family contracts shared by reporting and retrieval: `DestinationDescriptor`, `Reporter`, `Retriever`, portable request/result DTOs, capability declarations, error taxonomy, and contract-test entry points. It depends only on Protocol and deliberately approved low-level schema libraries. `packages/core` depends on those ports to perform configuration resolution, credential binding, routing, retrieval safety, and deadline orchestration; it never imports a concrete destination.
+
+**Context:** Putting the contracts in a concrete destination would leak provider concepts inward. Making destination family Core depend on application Core would create a dependency cycle once Core orchestrates retrievers.
+
+**Consequences:** Concrete destination packages depend on destination family Core and Protocol. The CLI is the composition root that registers concrete descriptors with Core. These internal contracts make first-party implementations consistent but are neither a public SDK nor a runtime plugin ABI.
+
+### ADR-005: Keep destination data and credentials out of configuration
 
 **Decision:** The configuration document contains non-secret connection settings and credential references only. A local destination owns its opted-in data file under `~/.agentscope/destinations/<type>/` (or the equivalent `AGENTSCOPE_HOME`); remote credentials resolve through an OS credential store or explicit CI environment reference.
 
@@ -39,7 +47,7 @@ A Trace Destination is the configured local or remote trace repository or servic
 
 **Consequences:** Agentscope home never contains a Langfuse key or remote database secret. It contains a local trace payload only when a user explicitly configures and selects a durable local destination.
 
-### ADR-005: Apply one remote endpoint security baseline
+### ADR-006: Apply one remote endpoint security baseline
 
 **Decision:** Core requires HTTPS for remote destinations. Plain HTTP is allowed only for loopback test/development endpoints behind an explicit insecure setting. Endpoints containing user information are rejected; authenticated requests never follow cross-origin redirects; each credential slot is resolved only after Core validates and binds the final destination origin.
 

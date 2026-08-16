@@ -19,7 +19,7 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 ### ADR-002: Enforce import direction mechanically
 
-**Decision:** ESLint boundary rules enforce these dependency directions: `apps/cli` may depend on Core and integrations; integration packages may depend on Core and their family Core package; `packages/core` may not depend on applications or integrations; `packages/testkit` may depend only on test-safe contracts; and tests may not import another package's private paths.
+**Decision:** ESLint boundary rules enforce these dependency directions: `apps/cli` may depend on application Core and first-party integrations; `packages/core` may depend on Protocol and destination family Core; destination family Core may depend on Protocol but not application Core; concrete destination packages may depend on Protocol and destination family Core; harness packages may depend inward on Protocol, application Core, and harness family Core; `packages/testkit` may depend only on test-safe contracts; and tests may not import another package's private paths.
 
 **Context:** Folder structure alone cannot prevent a convenient import from silently collapsing the canonicalization, redaction, and transport boundaries.
 

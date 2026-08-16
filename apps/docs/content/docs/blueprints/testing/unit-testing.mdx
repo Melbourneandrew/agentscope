@@ -28,3 +28,11 @@ Unit tests protect the canonical model and first-party package contracts without
 **Decision:** Unit tests use the workspace dependency installation and create no per-test `node_modules` trees.
 
 **Context:** Per-scenario package installation is slow and creates avoidable disk pressure.
+
+### ADR-004: Run destination contracts against every implementation
+
+**Decision:** Destination family Core publishes internal contract-test factories for Reporter and Retriever independently. The Retriever suite verifies the canonical filter truth table, destination-qualified identities, cursor/query binding, ordering, bounds, cancellation, stable failures, malicious provider DTOs, and safe Core handoff. Each destination adds mapping fixtures without copying generic assertions.
+
+**Context:** Structural TypeScript compatibility does not establish behavioral compatibility across an HTTP API and a local SQL store.
+
+**Consequences:** A destination cannot advertise retrieval until its implementation passes the full shared suite. Langfuse adds API-profile fixtures and Local SQLite adds query-plan, migration, and transaction fixtures; both are held to the same CLI-visible semantics.

@@ -22,3 +22,11 @@ Langfuse is a first-party Trace Destination using OTLP delivery.
 ### ADR-002: Avoid overlapping vendor hooks
 
 **Decision:** Installation detects Langfuse's official harness integration and requires explicit migration before an Agentscope hook takes ownership.
+
+### ADR-003: Project portable retrieval keys deliberately
+
+**Decision:** The Reporter preserves the canonical W3C trace ID and writes the documented root-observation fields required by the [Langfuse Retriever](/docs/blueprints/destinations/retrievers/langfuse-retriever): session ID; exact-filterable namespaced harness, branch, and repository metadata; one reserved tag for each canonical model identity; and safe user tags. Reserved projection keys and the reserved tag prefix are derived from the governed canonical graph and cannot be overwritten by user metadata.
+
+**Context:** Reporting and retrieval are two capabilities of the same configured destination. A trace that is visible in Langfuse but cannot be found through the portable query contract is not a complete Agentscope delivery.
+
+**Consequences:** Reporter contract tests assert both the OTLP/OpenInference payload and the retrieval projection. Changes to a projection key require coordinated Reporter/Retriever compatibility evidence; they never change the authoritative OpenInference plus `agentscope.*` representation.

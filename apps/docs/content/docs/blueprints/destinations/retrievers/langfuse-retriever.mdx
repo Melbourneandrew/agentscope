@@ -1,0 +1,65 @@
+---
+title: Langfuse Retriever
+description: ADRs for mapping portable Agentscope retrieval onto Langfuse APIs.
+---
+
+## Capability Summary
+
+The Langfuse Retriever searches and reconstructs Agentscope-reported traces from a configured Langfuse project without exposing Langfuse API shapes to the CLI.
+
+## Architecture Decision Records
+
+### ADR-001: Retrieve through the Langfuse Observations API
+
+**Decision:** The Retriever uses Langfuse's high-performance Observations API for search and trace reconstruction. It requests only the field groups required for the operation, always supplies bounded start-time filters for search, groups observation rows by `traceId`, and follows the returned cursor. Compatibility with self-hosted installations that expose only the older observations endpoint is isolated behind a second private transport adapter and the same Retriever contract.
+
+**Context:** Langfuse's current API returns observation rows rather than complete trace objects, uses cursor pagination, sorts by start time descending, and supports selective field retrieval. Self-hosted compatibility cannot be allowed to fork CLI semantics.
+
+**Consequences:** Configuration or Doctor capability probing selects one tested transport profile and records no credentials or response content. Transport selection does not change portable flags, results, or errors. The destination compatibility manifest pins the supported Langfuse API profiles and contract fixtures.
+
+### ADR-002: Make the Reporter projection retrieval-aware
+
+**Decision:** The Langfuse Reporter preserves the canonical W3C trace ID and projects the portable search keys onto the logical root observation: session ID into Langfuse's session field; harness, branch, and repository identity into exact-filterable namespaced metadata; one reserved tag per canonical model identity; and user tags into Langfuse tags without altering their portable values. All observations retain the canonical OpenInference and `agentscope.*` attributes.
+
+**Context:** Langfuse can filter first-class observation fields and exact string metadata, but it cannot infer Agentscope's branch, repository, or harness semantics from arbitrary OTLP attributes. Retrieval must not rely on downloading an unbounded project and filtering locally.
+
+**Consequences:** Reserved Langfuse metadata keys and tag prefixes are a tested reporter/retriever contract, not a second canonical schema. User metadata and tags cannot overwrite them, and reserved tags are omitted from portable user-tag output. Length limits, unsupported values, and collisions are validated before delivery; the canonical `agentscope.*` value remains authoritative when reconstructing a trace.
+
+### ADR-003: Map portable filters without semantic weakening
+
+**Decision:** Time bounds map to `fromStartTime` and `toStartTime`; canonical trace ID maps to `traceId`; session maps to `sessionId`; model maps to its reserved root tag; harness, branch, and repository identity map to exact metadata filters; user tags map to Langfuse trace tags. The Retriever submits all applicable predicates server-side and validates every returned root against the normalized request.
+
+**Context:** Provider filter syntax and historical records can produce broader matches than Agentscope's exact portable semantics.
+
+**Consequences:** If a configured Langfuse API profile cannot express a requested predicate, the operation returns `QUERY_UNSUPPORTED` rather than silently ignoring it or performing an unbounded client scan. Bounded defensive post-validation may remove false positives, but it is never the primary implementation of a portable filter.
+
+### ADR-004: Search logical roots and reconstruct by trace ID
+
+**Decision:** Search queries logical root observations with summary field groups and collapses duplicate roots deterministically. Get queries all observation rows for one canonical trace ID, follows pagination under the operation bounds, validates parent references, and reconstructs the OpenInference plus `agentscope.*` graph. Missing parents, multiple logical roots, or truncated pages produce explicit completeness diagnostics.
+
+**Context:** A trace can contain many Langfuse observations, and logical root status is not identical to physical parentlessness. Returning the first observation would lose model, tool, token, and timing data.
+
+**Consequences:** Search remains lightweight; get pays the cost of full reconstruction. A trace written by Agentscope can round-trip to the governed canonical graph within the documented Protocol compatibility window. Non-Agentscope Langfuse traces may return a portable partial representation with explicit provenance and unavailable fields, never fabricated Agentscope metadata.
+
+### ADR-005: Bind pagination and identity to the configured project
+
+**Decision:** The Core cursor envelope wraps the Langfuse cursor or compatible page position together with the immutable connection ID, normalized query fingerprint, and fixed upper time bound. Search and get accept only W3C-format canonical trace IDs for Agentscope-reported traces, while retaining any provider observation IDs solely as provenance.
+
+**Context:** Langfuse trace IDs are W3C-compatible 32-character hexadecimal identifiers, but two configured projects can contain the same ID. A raw provider cursor does not identify its project or original filters.
+
+**Consequences:** Credentials, host, and project binding come from the resolved destination connection, never cursor data. Cursor reuse across projects, connections, or filters fails locally. Reporter contract tests prove that OTLP ingestion preserves the trace ID used for subsequent retrieval.
+
+### ADR-006: Validate against both mock and real Langfuse behavior
+
+**Decision:** Unit tests use captured, reviewed provider DTO fixtures and generated malformed cases. Hermetic destination tests use a Langfuse-compatible request ledger that asserts endpoint, authentication shape, filters, field groups, cursor flow, and reconstruction. Protected live tests report a uniquely tagged trace to a real Langfuse project, poll within a bounded visibility window, search it through the Retriever, get it, compare the canonical graph, and delete or expire the fixture according to the test-project policy.
+
+**Context:** A hand-written mock proves Agentscope logic but cannot detect changes in Langfuse ingestion projection, field availability, filter operators, or eventual visibility.
+
+**Consequences:** Live tests run with isolated credentials and never on untrusted pull requests. Compatibility drift fails with sanitized request/response shape diagnostics and retained non-content artifacts. Reporter and Retriever releases share the same Langfuse compatibility evidence.
+
+## References
+
+- [Langfuse Observations API](https://langfuse.com/docs/api-and-data-platform/features/observations-api)
+- [Langfuse trace IDs and distributed tracing](https://langfuse.com/docs/observability/features/trace-ids-and-distributed-tracing)
+- [Langfuse tags](https://langfuse.com/docs/observability/features/tags)
+- [Langfuse deprecated API migration](https://langfuse.com/faq/all/deprecated-api-migration)

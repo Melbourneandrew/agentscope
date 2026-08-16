@@ -19,15 +19,15 @@ The workspace separates the user-facing CLI application from shared runtime serv
 
 ### ADR-002: Keep Core shared and integration-neutral
 
-**Decision:** `packages/protocol` owns the canonical OTLP/OpenInference contract, documented `agentscope.*` attributes, schema validation, and protocol migrations. `packages/core` owns redaction, configuration and credential references, routing, bounded hook-time delivery, sanitized diagnostics, and narrow internal integration contracts. Neither contains harness-specific configuration mutation or destination protocol mapping.
+**Decision:** `packages/protocol` owns the canonical OTLP/OpenInference contract, documented `agentscope.*` attributes, schema validation, and protocol migrations. `packages/destinations/core` owns destination-family ports and portable reporter/retriever DTOs. `packages/core` owns redaction, configuration and credential references, routing, bounded hook-time delivery, retrieval safety, and sanitized diagnostics. None contains harness-specific configuration mutation or destination protocol mapping.
 
 **Context:** A single owner is required for data governance and delivery semantics across every harness and Trace Destination.
 
-**Consequences:** Protocol may depend only on standards and deliberately approved low-level libraries. Core depends on Protocol but must not import harness or destination packages; integrations depend inward on Protocol and Core as needed.
+**Consequences:** Protocol may depend only on standards and deliberately approved low-level libraries. Destination family Core depends only on Protocol and approved schema libraries; application Core may depend on Protocol and destination family Core, but never on a concrete destination. Concrete integrations depend inward on their family Core and Protocol. The CLI alone composes application Core with concrete first-party integrations.
 
 ### ADR-003: Group first-party integrations by product concern
 
-**Decision:** First-party integrations live under `packages/harnesses/` and `packages/destinations/`. `packages/harnesses/core` and `packages/destinations/core` contain only shared internal adapter contracts and fixtures for their respective families. A harness package owns one harness; a destination entry owns a mandatory `reporter/` module and, when the destination supports it, an optional `retriever/` module.
+**Decision:** First-party integrations live under `packages/harnesses/` and `packages/destinations/`. `packages/harnesses/core` and `packages/destinations/core` contain only shared internal ports, DTOs, and contract-test fixtures for their respective families. A harness package owns one harness; a destination entry owns a mandatory `reporter/` module and, when the destination supports it, an optional `retriever/` module.
 
 **Context:** This makes the contributor-facing structure reflect the two independent directions of the system: harness-native evidence enters through adapters and redacted canonical data leaves through destinations.
 
@@ -58,7 +58,7 @@ tests/
   integration-live/
 ```
 
-The shared family packages are not public runtime plugin SDKs. Adding a harness or destination remains a reviewed first-party pull request; the contracts exist to prevent copy/paste and preserve consistent behavior. The CLI is the composition root and may import first-party package public exports to assemble the supported registry; Core may not import outward.
+The shared family packages are not public runtime plugin SDKs. Adding a harness or destination remains a reviewed first-party pull request; the contracts exist to prevent copy/paste and preserve consistent behavior. The CLI is the composition root and may import first-party package public exports to assemble the supported registry; application Core may import only the destination-family ports, never a concrete destination implementation.
 
 ### ADR-004: Keep test layers in their natural ownership location
 
