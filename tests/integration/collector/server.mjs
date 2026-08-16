@@ -16,5 +16,5 @@ createServer((request, response) => {
   response.setHeader("content-type", "application/json");
   response.end(JSON.stringify({ received: received.length }));
 }).listen(4318, () =>
-  console.log("AgentScope mock collector listening on 4318"),
+  console.log("Agentscope mock collector listening on 4318"),
 );

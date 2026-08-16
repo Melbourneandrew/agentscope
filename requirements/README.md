@@ -1,13 +1,13 @@
-# AgentScope Product Requirements
+# Agentscope Product Requirements
 
 ## Overview
 
-AgentScope gives coding-agent users one installable trace system that captures harness activity and reports it to Langfuse or other destinations without disrupting the agent session.
+Agentscope gives coding-agent users one installable trace system that captures harness activity and reports it to Langfuse or other destinations without disrupting the agent session.
 
 ## Terminology
 
 - **Agent harness:** a coding-agent runtime such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, or Hermes.
-- **Trace destination:** a configured external service that receives normalized AgentScope traces.
+- **Trace destination:** a configured external service that receives normalized Agentscope traces.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ As a coding-agent user, I want a single trace system across supported harnesses,
 
 ### REQ-PROD-002: Safe machine configuration
 
-As a user, I want my AgentScope configuration in one predictable location, so that I can configure and diagnose it without exposing credentials.
+As a user, I want my Agentscope configuration in one predictable location, so that I can configure and diagnose it without exposing credentials.
 
 - **AC-PROD-002.1:** When initialized without an override, the system shall store non-secret configuration under `~/.agentscope`.
 - **AC-PROD-002.2:** When a secret is configured, the system shall store it in an OS credential store or consume an explicit CI secret reference rather than write it to `~/.agentscope`.

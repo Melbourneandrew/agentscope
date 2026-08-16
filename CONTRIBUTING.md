@@ -1,4 +1,4 @@
-# Contributing to AgentScope
+# Contributing to Agentscope
 
 The initial repository bootstrap landed directly on `main`. All subsequent
 changes use a pull request.

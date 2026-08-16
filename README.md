@@ -1,10 +1,10 @@
 <p align="center">
   <a href="https://melbourneandrew.github.io/agentscope/docs">
-    <img src="https://raw.githubusercontent.com/Melbourneandrew/agentscope/main/apps/docs/public/brand/agentscope-oscilloscope-logo-readme.svg" width="112" alt="AgentScope oscilloscope logo" />
+    <img src="https://raw.githubusercontent.com/Melbourneandrew/agentscope/main/apps/docs/public/brand/agentscope-oscilloscope-logo-readme.svg" width="112" alt="Agentscope oscilloscope logo" />
   </a>
 </p>
 
-<h1 align="center">AgentScope</h1>
+<h1 align="center">Agentscope</h1>
 
 <p align="center">CLI-first trace observability for coding-agent harnesses.</p>
 
@@ -17,11 +17,11 @@
 
 > The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
 
-AgentScope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into portable traces, then reports them through extensible destination plugins.
+Agentscope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into portable traces, then reports them through extensible destination plugins.
 
 ## Status
 
-AgentScope is in its foundation phase. The monorepo, public documentation, CI structure, integration-test blueprint, and initial source migration are in place; the publishable CLI and production reporters are not available yet.
+Agentscope is in its foundation phase. The monorepo, public documentation, CI structure, integration-test blueprint, and initial source migration are in place; the publishable CLI and production reporters are not available yet.
 
 ## Documentation
 
@@ -47,7 +47,7 @@ The CLI will use the unhyphenated `agentscope` command. Non-secret machine confi
 ```text
 agent harness hook
   -> harness adapter
-  -> AgentScope core (normalize, redact, spool)
+  -> Agentscope core (normalize, redact, spool)
   -> reporter plugin (Langfuse / OTLP / custom destination)
 ```
 
@@ -65,7 +65,7 @@ Harness adapters own native configuration and extraction. Core owns the stable t
 
 ## Development
 
-AgentScope uses pnpm, Nx, Node.js 22+, and a Fumadocs documentation application.
+Agentscope uses pnpm, Nx, Node.js 22+, and a Fumadocs documentation application.
 
 ```bash
 pnpm install
