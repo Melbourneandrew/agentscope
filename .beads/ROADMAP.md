@@ -3,7 +3,7 @@
 This is an immutable Git-side index for the executable Beads program. The issue bodies, dependencies, status transitions, and audit history remain authoritative in the Dolt store.
 
 - Beads root: `agentscope-vah`
-- Certified Dolt branch/revision: `main` / `ge6covj8oo1uuad3er7pq3edgk9697hv`
+- Certified Dolt branch/revision: `main` / `8ridp18246qh1bvdn5s8d0irt0cs99mj`
 - Planning PR: [#9](https://github.com/Melbourneandrew/agentscope/pull/9)
 - Inventory at certification: 147 total issues; 93 open; 1 in progress; 91 blocked; 53 closed
 - Graph checks: `bd lint`, `bd orphans`, and `bd dep cycles` pass
