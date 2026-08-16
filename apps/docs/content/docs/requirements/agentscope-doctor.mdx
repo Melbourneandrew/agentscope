@@ -3,15 +3,13 @@ title: Agentscope Doctor
 description: User requirements for diagnosis and safe repair.
 ---
 
-# Agentscope Doctor
-
 ## Overview
 
 `agentscope doctor` helps a user find a broken installation without exposing credentials or making unrequested destructive changes.
 
 ## Terminology
 
-- **Safe repair:** a reversible change to an AgentScope-owned resource.
+- **Safe repair:** a reversible change to an Agentscope-owned resource.
 
 ## Requirements
 
@@ -26,5 +24,5 @@ As a user, I want to understand why traces are missing, so that I can repair set
 
 As a user, I want repair to be limited and deliberate, so that diagnostics cannot damage my configuration.
 
-- **AC-DOC-002.1:** When `agentscope doctor --fix` runs, the system shall only perform documented safe repairs on AgentScope-owned state.
+- **AC-DOC-002.1:** When `agentscope doctor --fix` runs, the system shall only perform documented safe repairs on Agentscope-owned state.
 - **AC-DOC-002.2:** When a repair would replace a vendor hook, rotate credentials, or delete user configuration, the system shall require a separate explicit command.

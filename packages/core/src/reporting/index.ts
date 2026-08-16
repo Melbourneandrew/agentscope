@@ -1,4 +1,4 @@
-/** A versioned batch produced by an AgentScope harness after normalization. */
+/** A versioned batch produced by an Agentscope harness after normalization. */
 export interface TraceBatch<TEvent = unknown> {
   schemaVersion: 1;
   source: TraceSourceIdentity;

@@ -1,17 +1,15 @@
 ---
 title: Configuration Directory Lifecycle
-description: ADRs for the AgentScope machine-local home.
+description: ADRs for the Agentscope machine-local home.
 ---
-
-# Configuration Directory Lifecycle
 
 ## Capability Summary
 
-This Blueprint records how AgentScope persists configuration and operational state for the [Configuration Directory](/docs/requirements/configuration-directory) requirement.
+This Blueprint records how Agentscope persists configuration and operational state for the [Configuration Directory](/docs/requirements/configuration-directory) requirement.
 
 ## Architecture Decision Records
 
-### ADR-001: Use one explicit AgentScope home
+### ADR-001: Use one explicit Agentscope home
 
 **Decision:** Resolve the default home as `~/.agentscope` on every supported platform, with `AGENTSCOPE_HOME` as the single explicit override.
 

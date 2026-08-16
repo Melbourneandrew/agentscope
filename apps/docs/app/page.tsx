@@ -13,7 +13,7 @@ export default function Home() {
         <p className="eyebrow">Coding-agent observability</p>
         <h1>Trace the work your agents actually do.</h1>
         <p className="lead">
-          AgentScope captures coding-agent sessions, normalizes the important
+          Agentscope captures coding-agent sessions, normalizes the important
           events, and sends them to Langfuse or an extensible reporter you
           control.
         </p>

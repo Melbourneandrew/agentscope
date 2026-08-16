@@ -3,7 +3,7 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import "./globals.css";
 
 export const metadata = {
-  title: "AgentScope",
+  title: "Agentscope",
   description: "Coding-agent observability",
 };
 

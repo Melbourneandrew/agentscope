@@ -1,24 +1,22 @@
 ---
 title: Configuration Directory
-description: User requirements for the AgentScope machine-local home.
+description: User requirements for the Agentscope machine-local home.
 ---
-
-# Configuration Directory
 
 ## Overview
 
-AgentScope needs one predictable, inspectable place for non-secret configuration and operational state. Users must be able to diagnose setup without credentials leaking into files or logs.
+Agentscope needs one predictable, inspectable place for non-secret configuration and operational state. Users must be able to diagnose setup without credentials leaking into files or logs.
 
 ## Terminology
 
-- **AgentScope home:** the machine-local root at `~/.agentscope`.
+- **Agentscope home:** the machine-local root at `~/.agentscope`.
 - **Credential reference:** a non-secret pointer to a value held by an OS credential store or CI environment.
 
 ## Requirements
 
 ### REQ-CFG-001: Predictable configuration home
 
-As a user, I want AgentScope configuration in one stable directory, so that setup and diagnostics are easy to locate.
+As a user, I want Agentscope configuration in one stable directory, so that setup and diagnostics are easy to locate.
 
 - **AC-CFG-001.1:** When `agentscope init` runs without an override, the system shall create and use `~/.agentscope`.
 - **AC-CFG-001.2:** When `AGENTSCOPE_HOME` is set, the system shall use that directory for explicit CI, portable-install, or test isolation.
@@ -27,6 +25,6 @@ As a user, I want AgentScope configuration in one stable directory, so that setu
 
 As a user, I want configuration persistence that protects credentials and recoverability, so that routine updates do not expose or lose access.
 
-- **AC-CFG-002.1:** When a destination credential is configured, the system shall persist only a credential reference under the AgentScope home.
+- **AC-CFG-002.1:** When a destination credential is configured, the system shall persist only a credential reference under the Agentscope home.
 - **AC-CFG-002.2:** When configuration changes, the system shall validate and atomically persist the new non-secret configuration.
 - **AC-CFG-002.3:** When a migration cannot complete, the system shall preserve the last valid configuration and report a diagnostic.
