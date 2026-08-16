@@ -1,15 +1,6 @@
-import {
-  createClaudeCodeNativeTraceAdapter,
-  type ClaudeCodeNativeTraceAdapterOptions,
-} from "../native-traces/adapters/claude-code.js";
-import {
-  createCodexNativeTraceAdapter,
-  type CodexNativeTraceAdapterOptions,
-} from "../native-traces/adapters/codex.js";
-import {
-  createCursorNativeTraceAdapter,
-  type CursorNativeTraceAdapterOptions,
-} from "../native-traces/adapters/cursor.js";
+import { createClaudeCodeNativeTraceAdapter } from "../native-traces/adapters/claude-code.js";
+import { createCodexNativeTraceAdapter } from "../native-traces/adapters/codex.js";
+import { createCursorNativeTraceAdapter } from "../native-traces/adapters/cursor.js";
 import type {
   NativeAgentTrace,
   NativeTraceAdapter,
@@ -59,13 +50,9 @@ export const cursor = {
       provider: "cursor",
       adapter:
         options.adapter ??
-        createCursorNativeTraceAdapter(
-          options.adapterOptions as CursorNativeTraceAdapterOptions | undefined,
-        ),
+        createCursorNativeTraceAdapter(options.adapterOptions),
       traceId: request.sessionId,
-      traceIds: request.sessionId
-        ? [request.sessionId, `transcript:${request.sessionId}`]
-        : undefined,
+      traceIds: [request.sessionId, `transcript:${request.sessionId}`],
       sessionId: request.sessionId,
       request,
       options,
@@ -82,9 +69,7 @@ export const codex = {
       provider: "codex",
       adapter:
         options.adapter ??
-        createCodexNativeTraceAdapter(
-          options.adapterOptions as CodexNativeTraceAdapterOptions | undefined,
-        ),
+        createCodexNativeTraceAdapter(options.adapterOptions),
       traceId: request.sessionId,
       sessionId: request.sessionId,
       request,
@@ -102,10 +87,7 @@ export const claude = {
       provider: "claude-code",
       adapter:
         options.adapter ??
-        createClaudeCodeNativeTraceAdapter(
-          options.adapterOptions as
-            ClaudeCodeNativeTraceAdapterOptions | undefined,
-        ),
+        createClaudeCodeNativeTraceAdapter(options.adapterOptions),
       traceId: request.sessionId,
       sessionId: request.sessionId,
       request,
@@ -132,18 +114,22 @@ async function buildProviderNativeTurnTrace({
   options?: NativeTurnTraceBuildOptions;
 }): Promise<NativeTurnTraceResult> {
   const discovery = await discoverOne(adapter, {
-    traceId,
-    traceIds,
-    sourcePath: request.sourcePath,
+    ...(traceId !== undefined ? { traceId } : {}),
+    ...(traceIds !== undefined ? { traceIds } : {}),
+    ...(request.sourcePath !== undefined
+      ? { sourcePath: request.sourcePath }
+      : {}),
   });
   const trace = withRequestModel(
     await adapter.parse(discovery, options?.parseOptions),
     request.model,
   );
   const turnTrace = nativeTurnTrace(trace, {
-    sessionId,
-    transcriptTurnId: request.transcriptTurnId,
-    fallbackTurnId: request.turnId,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(request.transcriptTurnId !== undefined
+      ? { transcriptTurnId: request.transcriptTurnId }
+      : {}),
+    ...(request.turnId !== undefined ? { fallbackTurnId: request.turnId } : {}),
   });
   if (turnTrace.provider !== provider) {
     throw new Error(
@@ -181,9 +167,11 @@ async function discoverOne(
   const traceIds = options.traceIds ?? [options.traceId];
   for (const traceId of traceIds) {
     const items = await adapter.discover({
-      cwd: options.cwd,
-      traceId,
-      sourcePath: options.sourcePath,
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(traceId !== undefined ? { traceId } : {}),
+      ...(options.sourcePath !== undefined
+        ? { sourcePath: options.sourcePath }
+        : {}),
       limit: 1,
     });
     const item = items[0];
@@ -252,7 +240,7 @@ function selectTurnMessages(
     return {
       start: first.start,
       end: first.end,
-      turnId: targetIds[0],
+      ...(targetIds[0] !== undefined ? { turnId: targetIds[0] } : {}),
     };
   }
 
@@ -263,7 +251,7 @@ function selectTurnMessages(
   return {
     start: previousUserIndex(messages, end),
     end,
-    turnId: messages[end]?.id,
+    ...(messages[end]?.id !== undefined ? { turnId: messages[end]?.id } : {}),
   };
 }
 

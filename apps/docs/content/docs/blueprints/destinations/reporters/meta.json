@@ -1,0 +1,6 @@
+{
+  "title": "Reporters",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": ["reporter-abstraction", "langfuse-reporter"]
+}

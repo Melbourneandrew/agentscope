@@ -33,10 +33,6 @@ function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
-function conversationPrefix(conversationId: string): string {
-  return `${shortHash(conversationId)}--`;
-}
-
 function generationPrefix(
   conversationId: string,
   generationId: string,
@@ -99,13 +95,15 @@ test("peekSkillReads does not delete the spool files", () => {
     const first = peekSkillReads("conv-1", "gen-1", dir);
     assert.deepEqual(first.skills, ["qa"]);
     assert.equal(first.files.length, 1);
-    assert.ok(existsSync(first.files[0]!));
+    const firstFile = first.files.at(0);
+    assert.ok(firstFile);
+    assert.ok(existsSync(firstFile));
 
     // Peeking again returns the same result — nothing was consumed.
     const second = peekSkillReads("conv-1", "gen-1", dir);
     assert.deepEqual(second.skills, ["qa"]);
     assert.deepEqual(second.files, first.files);
-    assert.ok(existsSync(first.files[0]!));
+    assert.ok(existsSync(firstFile));
   });
 });
 
@@ -122,10 +120,12 @@ test("ackSkillReads deletes exactly the given files", () => {
 
     const { files } = peekSkillReads("conv-1", "gen-1", dir);
     assert.equal(files.length, 1);
-    assert.ok(existsSync(files[0]!));
+    const file = files.at(0);
+    assert.ok(file);
+    assert.ok(existsSync(file));
 
     ackSkillReads(files);
-    assert.equal(existsSync(files[0]!), false);
+    assert.equal(existsSync(file), false);
   });
 });
 
@@ -265,9 +265,9 @@ test("peeking a missing conversation/generation returns an empty result", () => 
 
 test("acking a nonexistent file does not throw", () => {
   withSpoolDir((dir) => {
-    assert.doesNotThrow(() =>
-      ackSkillReads([join(dir, "does-not-exist.json")]),
-    );
+    assert.doesNotThrow(() => {
+      ackSkillReads([join(dir, "does-not-exist.json")]);
+    });
   });
 });
 
@@ -328,13 +328,10 @@ test("spool filenames are opaque convHash--genHash--suffix, never the raw ids", 
 
     const entries = readdirSync(dir);
     assert.equal(entries.length, 1);
-    assert.match(
-      entries[0]!,
-      /^[0-9a-f]{16}--[0-9a-f]{16}--\d+-\d+-\d+\.json$/,
-    );
-    assert.ok(
-      entries[0]!.startsWith(generationPrefix("../evil", "../../also-evil")),
-    );
+    const entry = entries.at(0);
+    assert.ok(entry);
+    assert.match(entry, /^[0-9a-f]{16}--[0-9a-f]{16}--\d+-\d+-\d+\.json$/);
+    assert.ok(entry.startsWith(generationPrefix("../evil", "../../also-evil")));
 
     const skills = consume("../evil", "../../also-evil", dir);
     assert.deepEqual(skills, ["qa"]);

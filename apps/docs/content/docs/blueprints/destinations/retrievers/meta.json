@@ -1,0 +1,10 @@
+{
+  "title": "Retrievers",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": [
+    "retriever-abstraction",
+    "query-and-pagination",
+    "langfuse-retriever"
+  ]
+}

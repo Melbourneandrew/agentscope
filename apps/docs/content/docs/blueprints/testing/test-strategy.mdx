@@ -1,0 +1,30 @@
+---
+title: Test Strategy
+description: ADRs for the Agentscope verification pyramid.
+---
+
+## Capability Summary
+
+Agentscope needs independent proof of deterministic semantics and real CLI/hook behavior.
+
+## Architecture Decision Records
+
+### ADR-001: Separate unit and integration lanes
+
+**Decision:** Unit tests are colocated with the app/package that owns pure parsing, schemas, mapping, redaction, bounded delivery outcomes, and reporter contracts; root integration tests verify live harness/setup behavior.
+
+**Context:** Transcript fixtures cannot prove executable flags, hook invocation, or configuration mutation.
+
+**Consequences:** `apps/**` and `packages/**` retain their own fast unit and contract suites. `tests/integration/` owns hermetic cross-package scenarios, while `tests/integration-live/` owns protected external smoke coverage and is never a pull-request dependency.
+
+### ADR-002: Treat capability claims as test-backed
+
+**Decision:** A harness/reporter/version is supported only when its required unit contracts and real-harness scenario pass.
+
+### ADR-003: Make test cleanup owned and inspectable
+
+**Decision:** The test system writes mutable Docker state only to named, AgentScope-prefixed volumes, with explicit size-reporting cleanup commands. It does not use an AgentScope runtime cache to retain traces.
+
+**Context:** Repeated package installs can consume material disk space; cleanup must never risk a user's project, home, or active AgentScope state.
+
+**Consequences:** `pnpm test:integration:clean` reports and removes only named integration volumes, containers, and networks. It never touches a user's home, local harness configuration, project worktree, or production `~/.agentscope` directory.

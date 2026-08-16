@@ -1,0 +1,41 @@
+---
+title: Local SQLite Destination
+description: User requirements for explicitly opted-in local trace persistence and retrieval.
+---
+
+## Overview
+
+The Local SQLite Trace Destination gives users an explicitly configured, machine-local repository for redacted traces. It is destination behavior, never a hidden Core retry store.
+
+## Terminology
+
+- **Local database:** the SQLite file owned by a named Local SQLite destination connection.
+- **Unconfigure:** remove a destination connection without deleting its database.
+- **Delete:** permanently remove a selected Local SQLite database after explicit confirmation.
+
+## Requirements
+
+### REQ-SQL-001: Explicit local persistence
+
+As a user, I want local trace storage to begin only after I configure it, so that Agentscope never silently retains my traces.
+
+- **AC-SQL-001.1:** When no Local SQLite destination is configured and selected, the system shall not create or write a trace database.
+- **AC-SQL-001.2:** When I configure a Local SQLite destination, the system shall disclose its resolved path and that redacted trace content will persist there.
+- **AC-SQL-001.3:** When reporting to a selected Local SQLite destination succeeds, the system shall durably store the same redacted Protocol trace accepted by its reporter.
+
+### REQ-SQL-002: Predictable data lifecycle
+
+As a user, I want explicit retention and removal behavior, so that I control durable local trace data.
+
+- **AC-SQL-002.1:** When configured retention limits are reached, the system shall enforce them transactionally and report bounded non-content status.
+- **AC-SQL-002.2:** When I unconfigure a Local SQLite destination, the system shall leave its database unchanged and report its location.
+- **AC-SQL-002.3:** When I request database deletion, the system shall identify the exact owned file and require explicit confirmation before deletion.
+- **AC-SQL-002.4:** When the database is backed up or restored, the system shall preserve its Protocol-version and schema-version compatibility metadata.
+
+### REQ-SQL-003: Safe concurrent operation
+
+As a user, I want local trace storage to remain bounded and recoverable under concurrent hooks and upgrades, so that it does not disrupt my harness or silently corrupt history.
+
+- **AC-SQL-003.1:** When concurrent hooks report the same delivery identity, the system shall store at most one logical delivery.
+- **AC-SQL-003.2:** When the database is busy, full, corrupt, or migrating beyond the remaining hook deadline, the system shall record a distinct sanitized diagnostic and fail open.
+- **AC-SQL-003.3:** When an upgrade cannot complete safely, the system shall preserve the last compatible database state and provide a Doctor finding.

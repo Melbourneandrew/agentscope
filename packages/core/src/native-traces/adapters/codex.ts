@@ -91,6 +91,7 @@ class CodexNativeTraceAdapter implements NativeTraceAdapter {
   async discover(
     options: NativeTraceDiscoverOptions = {},
   ): Promise<NativeTraceDiscoveryItem[]> {
+    await Promise.resolve();
     const sourcePathItem = this.discoverSourcePathItem(options);
     if (!existsSync(this.codexStateDbPath)) {
       return sourcePathItem ? [sourcePathItem] : [];
@@ -115,6 +116,7 @@ class CodexNativeTraceAdapter implements NativeTraceAdapter {
     item: NativeTraceDiscoveryItem,
     options: NativeTraceParseOptions = {},
   ): Promise<NativeAgentTrace> {
+    await Promise.resolve();
     if (!this.canParseSource(item.source)) {
       throw new Error(
         `Codex adapter cannot parse source: ${item.source.sourceType}`,
@@ -338,12 +340,16 @@ function codexThreadRowFromJsonlItem(
   return {
     id: item.sessionId ?? item.traceId,
     rollout_path: rolloutPath,
-    cwd: item.cwd,
-    model_provider: item.model?.provider,
-    model: item.model?.name,
-    reasoning_effort: item.model?.reasoningEffort,
-    preview: item.preview,
-    title: item.title,
+    ...(item.cwd !== undefined ? { cwd: item.cwd } : {}),
+    ...(item.model?.provider !== undefined
+      ? { model_provider: item.model.provider }
+      : {}),
+    ...(item.model?.name !== undefined ? { model: item.model.name } : {}),
+    ...(item.model?.reasoningEffort !== undefined
+      ? { reasoning_effort: item.model.reasoningEffort }
+      : {}),
+    ...(item.preview !== undefined ? { preview: item.preview } : {}),
+    ...(item.title !== undefined ? { title: item.title } : {}),
   };
 }
 
@@ -451,9 +457,9 @@ function messagesFromRolloutRecords(
 
   return {
     messages: dedupeAdjacentTextMessages(messages),
-    latestTurnId,
-    cwd,
-    model,
+    ...(latestTurnId !== undefined ? { latestTurnId } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
+    ...(model !== undefined ? { model } : {}),
   };
 }
 
@@ -651,7 +657,10 @@ function shellCommandFromToolCall(
   }
   return {
     command,
-    cwd: readString(record.workdir) ?? readString(record.cwd),
+    ...(() => {
+      const cwd = readString(record.workdir) ?? readString(record.cwd);
+      return cwd !== undefined ? { cwd } : {};
+    })(),
   };
 }
 
@@ -788,27 +797,47 @@ function codexThreadRow(
   return {
     id,
     rollout_path: rolloutPath,
-    created_at: readNumber(row.created_at),
-    updated_at: readNumber(row.updated_at),
-    created_at_ms: readNumber(row.created_at_ms),
-    updated_at_ms: readNumber(row.updated_at_ms),
-    source: readString(row.source),
-    thread_source: readString(row.thread_source),
-    model_provider: readString(row.model_provider),
-    cwd: readString(row.cwd),
-    title: readString(row.title),
-    git_sha: readString(row.git_sha),
-    git_branch: readString(row.git_branch),
-    git_origin_url: readString(row.git_origin_url),
-    cli_version: readString(row.cli_version),
-    first_user_message: readString(row.first_user_message),
-    agent_nickname: readString(row.agent_nickname),
-    agent_role: readString(row.agent_role),
-    memory_mode: readString(row.memory_mode),
-    model: readString(row.model),
-    reasoning_effort: readString(row.reasoning_effort),
-    preview: readString(row.preview),
+    ...optionalCodexThreadFields(row),
   };
+}
+
+function optionalCodexThreadFields(
+  row: Record<string, unknown>,
+): Omit<CodexThreadRow, "id" | "rollout_path"> {
+  const fields: Omit<CodexThreadRow, "id" | "rollout_path"> = {};
+  const numberFields = [
+    "created_at",
+    "updated_at",
+    "created_at_ms",
+    "updated_at_ms",
+  ] as const;
+  for (const field of numberFields) {
+    const value = readNumber(row[field]);
+    if (value !== undefined) fields[field] = value;
+  }
+  const stringFields = [
+    "source",
+    "thread_source",
+    "model_provider",
+    "cwd",
+    "title",
+    "git_sha",
+    "git_branch",
+    "git_origin_url",
+    "cli_version",
+    "first_user_message",
+    "agent_nickname",
+    "agent_role",
+    "memory_mode",
+    "model",
+    "reasoning_effort",
+    "preview",
+  ] as const;
+  for (const field of stringFields) {
+    const value = readString(row[field]);
+    if (value !== undefined) fields[field] = value;
+  }
+  return fields;
 }
 
 function matchesDiscoveryOptions(

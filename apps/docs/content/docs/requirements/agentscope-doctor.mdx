@@ -9,7 +9,7 @@ description: User requirements for diagnosis and safe repair.
 
 ## Terminology
 
-- **Safe repair:** a reversible change to an Agentscope-owned resource.
+- **Safe repair:** a reversible, conflict-checked change whose target and prior content are provably Agentscope-owned.
 
 ## Requirements
 
@@ -17,8 +17,13 @@ description: User requirements for diagnosis and safe repair.
 
 As a user, I want to understand why traces are missing, so that I can repair setup quickly.
 
-- **AC-DOC-001.1:** When `agentscope doctor` runs, the system shall inspect harness discovery, owned hook configuration, config schema, credential references, spool health, reporter reachability, Git context, and duplicate hooks.
-- **AC-DOC-001.2:** When a finding is produced, the system shall provide a stable code, severity, sanitized evidence, and suggested next action.
+- **AC-DOC-001.1:** When `agentscope doctor` runs, the system shall inspect supported harness discovery and version evidence.
+- **AC-DOC-001.2:** When `agentscope doctor` runs, the system shall inspect owned hook integrity, executable identity, and duplicate-hook conflicts.
+- **AC-DOC-001.3:** When `agentscope doctor` runs, the system shall inspect configuration validity and mutation recovery state without modifying either.
+- **AC-DOC-001.4:** When `agentscope doctor` runs, the system shall inspect credential-backend availability and reference resolvability without reading a credential into output or diagnostics.
+- **AC-DOC-001.5:** When `agentscope doctor` runs, the system shall inspect bounded pipeline health evidence and destination-declared non-mutating reachability probes.
+- **AC-DOC-001.6:** When `agentscope doctor` runs from a Git workspace, the system shall inspect effective Git context without changing the repository.
+- **AC-DOC-001.7:** When a finding is produced, the system shall provide a stable code, severity, sanitized evidence, and suggested next action.
 
 ### REQ-DOC-002: Explicit repair authority
 

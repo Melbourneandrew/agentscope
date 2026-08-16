@@ -25,6 +25,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node --test 'dist/native-traces/__tests__/*.test.js' 'dist/native-turns/__tests__/*.test.js'"
   },
   "devDependencies": {

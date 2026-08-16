@@ -1,0 +1,38 @@
+---
+title: Unit Testing
+description: ADRs for deterministic contract coverage.
+---
+
+## Capability Summary
+
+Unit tests protect the canonical model and first-party package contracts without network, Docker, or installed harness dependencies.
+
+## Architecture Decision Records
+
+### ADR-001: Test contracts at seams
+
+**Decision:** Fixtures follow semantic ownership. Protocol owns canonical graph/schema fixtures. Core owns only integration-neutral redaction, routing, deadline, diagnostic, configuration, and retrieval-boundary fixtures. Harness family Core owns generic adapter-contract helpers; destination family Core owns generic reporter/retriever helpers; each concrete integration owns its native mapping or transport fixtures. Testkit consumes only explicit test exports.
+
+**Context:** Stable seams make first-party package contributions testable before real-harness scenarios are available, but centralizing integration fixtures in Core would violate production dependency boundaries.
+
+**Consequences:** Mapping fixtures evolve with their adapter, destination ledgers evolve with their destination, and boundary linting applies to test exports as well as production code. Tests never import another package's private `src` path.
+
+### ADR-002: Keep native fixtures sanitized and versioned
+
+**Decision:** Native traces are checked-in, sanitized fixtures tagged by harness/version family.
+
+**Context:** They provide fast regression coverage while not substituting for integration tests.
+
+### ADR-003: Reuse workspace dependencies
+
+**Decision:** Unit tests use the workspace dependency installation and create no per-test `node_modules` trees.
+
+**Context:** Per-scenario package installation is slow and creates avoidable disk pressure.
+
+### ADR-004: Run destination contracts against every implementation
+
+**Decision:** Destination family Core publishes internal contract-test factories for Reporter and Retriever independently. The Retriever suite verifies the canonical filter truth table, destination-qualified identities, cursor/query binding, ordering, bounds, cancellation, stable failures, malicious provider DTOs, and safe Core handoff. Each destination adds mapping fixtures without copying generic assertions.
+
+**Context:** Structural TypeScript compatibility does not establish behavioral compatibility across an HTTP API and a local SQL store.
+
+**Consequences:** A destination cannot advertise retrieval until its implementation passes the full shared suite. Langfuse adds API-profile fixtures and Local SQLite adds query-plan, migration, and transaction fixtures; both are held to the same CLI-visible semantics.

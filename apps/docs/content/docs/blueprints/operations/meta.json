@@ -1,0 +1,20 @@
+{
+  "title": "Operations and Installation",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": [
+    "config-management",
+    "operational-state",
+    "configuration-extensibility",
+    "api-key-storage",
+    "harness-discovery",
+    "agentscope-init",
+    "cli-installation",
+    "cli-architecture",
+    "hook-installation",
+    "code-quality-and-ci",
+    "continuous-integration",
+    "documentation-site",
+    "npm-publishing"
+  ]
+}

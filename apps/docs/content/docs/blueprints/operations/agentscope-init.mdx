@@ -1,0 +1,24 @@
+---
+title: agentscope init
+description: ADRs for first-run orchestration.
+---
+
+## Capability Summary
+
+`agentscope init` turns a fresh install into an explicit plan for Trace Destinations and harness integrations.
+
+## Architecture Decision Records
+
+### ADR-001: Make initialization plan-first
+
+**Decision:** Init discovers harnesses and requested Trace Destinations, displays an install/configuration plan, and requires confirmation before mutation; `--yes` enables automation.
+
+**Context:** Hook installation and credential setup are material machine changes.
+
+### ADR-002: Resume by reconciling authoritative resources
+
+**Decision:** Init is a stateless orchestrator. Every run reconstructs its plan from destination configuration, credential references, and adapter-owned hook markers; each subsystem exposes idempotent inspect, apply, and verify operations. Init persists no completed-step ledger.
+
+**Context:** Actual owned resources can change after a crash, manual edit, credential rotation, or vendor update; a separate workflow journal would become a conflicting source of truth.
+
+**Consequences:** A step is complete only when its current postcondition and ownership identity match. `--yes` may resume an unchanged non-destructive plan but does not authorize newly discovered replacement or deletion.

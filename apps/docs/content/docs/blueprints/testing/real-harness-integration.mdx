@@ -1,0 +1,18 @@
+---
+title: Real Harness Integration Testing
+description: ADRs for network-isolated MockServer executable scenarios.
+---
+
+## Capability Summary
+
+This Blueprint verifies the complete AgentScope setup flow without ever touching a developer's active AgentScope or harness installation: fresh CLI install, init, hook installation, real harness execution, capture, and destination delivery.
+
+## Architecture Decision Records
+
+### ADR-001: Compose the leaf testing contracts end to end
+
+**Decision:** A real-harness scenario composes, without redefining, the lane boundary from [Test Strategy](/docs/blueprints/testing/test-strategy), filesystem/process boundary from [Container Isolation](/docs/blueprints/testing/integration/container-isolation), network and ledger behavior from [Mock Services](/docs/blueprints/testing/integration/mock-services), pinned inputs and compatibility evidence from [Matrix Operations](/docs/blueprints/testing/integration/matrix-operations), and local/CI lifecycle from [Local and CI Execution](/docs/blueprints/testing/integration/ci-execution).
+
+**Context:** Each leaf capability has one authoritative amendment point. Repeating isolation, artifacts, mocks, or lane policy here would create parallel ADRs that can drift.
+
+**Consequences:** This umbrella owns only the complete acceptance boundary: install the exact packed CLI in a fresh scenario, run init and owned hook installation, invoke the real harness against deterministic model mocks, observe destination delivery independently, assert canonical context/redaction, then prove owned cleanup and uninstall. Harness and destination test adapters extend their own seams without changing generic orchestration.

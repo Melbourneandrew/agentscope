@@ -1,6 +1,6 @@
 ---
 title: Reporting and Destinations
-description: User requirements for reliable, extensible trace delivery.
+description: User requirements for reliable trace delivery to supported destinations.
 ---
 
 ## Overview
@@ -13,15 +13,24 @@ Agentscope begins with Langfuse and must grow to additional observability destin
 
 ## Requirements
 
-### REQ-REP-001: Reliable delivery
+### REQ-REP-001: Bounded fail-open delivery
 
-As a user, I want captures delivered reliably without slowing my agent, so that traces are useful even during transient destination failures.
+As a user, I want capture to attempt delivery without slowing or changing my agent session, so that observability remains non-disruptive.
 
-- **AC-REP-001.1:** When a delivery is retryable, the system shall queue a bounded redacted batch and retry with idempotency.
-- **AC-REP-001.2:** When delivery is non-retryable or storage limits are reached, the system shall retain a sanitized diagnostic and fail open.
+- **AC-REP-001.1:** When a reporter accepts a redacted batch before the hook deadline, the system shall record that connection's terminal outcome and return without creating a Core-owned delivery copy.
+- **AC-REP-001.2:** When a reporter cannot accept a batch before the hook deadline, the system shall discard that connection's batch without creating a retry payload.
+- **AC-REP-001.3:** When any reporting attempt fails, times out, or has an unknown outcome, the system shall retain only bounded non-content health evidence and fail open to the harness.
 
 ### REQ-REP-002: Destination extensibility
 
-As an extension author, I want a stable reporter contract, so that I can add a destination without modifying harness adapters.
+As an Agentscope contributor, I want a stable reporter contract, so that I can add a first-party destination without modifying harness adapters.
 
-- **AC-REP-002.1:** When a reporter receives a batch, the system shall supply normalized and redacted trace data independent of source harness format.
+- **AC-REP-002.1:** When a reporter receives a batch, the system shall supply normalized and redacted trace data independent of native harness format.
+
+### REQ-REP-003: Independent multi-destination outcomes
+
+As a user, I want each selected destination attempted independently, so that one unavailable destination does not prevent another from receiving the trace.
+
+- **AC-REP-003.1:** When routing selects multiple named connections, the system shall attempt each selected connection within the same absolute hook deadline.
+- **AC-REP-003.2:** When one selected connection reaches a terminal outcome, the system shall record that outcome independently of every other selected connection.
+- **AC-REP-003.3:** When a connection's acknowledgement is lost after a possible remote commit, the system shall classify the outcome as unknown rather than rejected.

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MockModelServer, MockTelemetryCollector } from "../index.js";
-import { assertHarnessExit, runHarnessScenario } from "../index.js";
+import {
+  MockModelServer,
+  MockTelemetryCollector,
+  assertHarnessExit,
+  runHarnessScenario,
+} from "../index.js";
 
 test("mock model server records OpenAI-compatible requests", async () => {
   const server = new MockModelServer();

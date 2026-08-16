@@ -1,0 +1,42 @@
+---
+title: Matrix Operations
+description: ADRs for repeatable local and CI harness compatibility execution.
+---
+
+## Capability Summary
+
+The integration matrix needs reproducible harness images, a declared compatibility surface, safe local selection, and scalable CI execution as supported harnesses grow.
+
+## Architecture Decision Records
+
+### ADR-001: Declare compatibility as data
+
+**Decision:** `tests/integration` owns a versioned capability manifest listing pinned tested harness representatives, OCI image digests, required model protocol routes, scenario tags, destination combinations, and evidence identity. The harness descriptor remains the sole owner of the runtime compatibility range.
+
+**Context:** A prose list of harnesses cannot drive CI selection, image pinning, failure reports, or deliberate retirement.
+
+**Consequences:** CI verifies every matrix representative satisfies its descriptor and every advertised range meets the coverage policy. Adding or updating a harness changes the descriptor, manifest, sanitized native fixtures, adapter unit contracts, and real-harness scenario together. Missing evidence yields an explicit unverified state rather than a second compatibility policy.
+
+### ADR-002: Build immutable test inputs before isolating scenarios
+
+**Decision:** A preparation step packs the self-contained candidate CLI tarball and checksum-verifies its declared public runtime dependency artifacts; each harness image is pinned by OCI digest and already contains its documented harness binary. Once a scenario begins, it may not download a package or contact a public registry.
+
+**Context:** This is test-installation infrastructure, not an AgentScope delivery queue. Hermetic scenarios need a reproducible fresh install while still denying runtime public-network access.
+
+**Consequences:** Local developers may build or fetch the declared inputs before invoking an isolated scenario. CI caches immutable preparation outputs keyed by lockfile, candidate revision, platform, and image digest; cache hits are optimization only, never a source of unverified inputs.
+
+### ADR-003: Use shared bases and isolated sharded scenarios
+
+**Decision:** Harness images share pinned base layers where practical, but every scenario still runs in its own disposable container. CI partitions manifest entries into deterministic shards by estimated duration and resource class; a local command selects one harness, tag, or shard by default.
+
+**Context:** One all-harness image couples unrelated release cycles and wastes cache space, while one sequential job makes feedback too slow. Sharing a container would compromise isolation.
+
+**Consequences:** A failed shard can replay one manifest entry with the same image digest and prepared artifacts. The matrix must not depend on test execution order or a shared mutable home.
+
+### ADR-004: Retain only sanitized failure evidence
+
+**Decision:** Failed scenarios upload bounded, sanitized harness logs, AgentScope diagnostics, MockServer ledgers, destination ledgers, and a manifest/image identity record. Successful scenarios retain only aggregate compatibility results.
+
+**Context:** The artifacts are needed to investigate harness drift but can contain prompts, paths, or request metadata.
+
+**Consequences:** Artifact redaction runs before upload, has an explicit retention period, and is covered by unit tests. Raw transcripts, credentials, and complete production trace payloads are never CI artifacts.

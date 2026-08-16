@@ -1,0 +1,58 @@
+---
+title: Local SQLite Destination
+description: ADRs for an explicit local durable Trace Destination.
+---
+
+## Capability Summary
+
+The local SQLite destination gives a user an opt-in durable trace repository and retrieval capability without requiring Langfuse or another remote observability service.
+
+## Architecture Decision Records
+
+### ADR-001: Make local SQLite a separate opt-in destination
+
+**Decision:** A first-party Local SQLite Trace Destination provides both reporter and retriever behavior. It is disabled by default and exists only after `agentscope destination configure local-sqlite` succeeds with explicit user confirmation.
+
+**Context:** Default AgentScope capture is intentionally non-durable: a failed hook-time report is discarded. A local database materially changes privacy, disk, retention, and backup expectations and must be a user-selected destination rather than hidden runtime state.
+
+**Consequences:** Once configured, Local SQLite receives the same redacted Protocol graph as every other destination. It has no credentials by default. Its retention and data controls are destination settings, not Core diagnostics. Encryption at rest is not required; the destination creates user-restricted files and documents that host filesystem and disk-encryption policy remains the user's responsibility.
+
+### ADR-002: Treat remote SQLite-compatible services as distinct destinations
+
+**Decision:** Local SQLite is a filesystem destination. Any remote SQLite-compatible service such as libSQL/Turso is a separate Trace Destination type with its own endpoint, credential slots, network behavior, and availability contract.
+
+**Context:** A network filesystem SQLite file is not a safe substitute for a database service: locking, durability, latency, and failure semantics differ substantially from a local database.
+
+**Consequences:** A shared internal SQLite schema/migration utility may be reused, but `local-sqlite` and a remote service do not share a configuration type or pretend to have identical reliability properties.
+
+### ADR-003: Configure and migrate deliberately
+
+**Decision:** Local SQLite uses `better-sqlite3` and reviewed versioned SQL migration files. Configuration validates the selected path, retention settings, and writable directory before atomically recording the destination. Database schema provisioning and schema migrations run transactionally on first configuration or explicit upgrade, with a schema-version record and clear failure diagnostic.
+
+**Context:** Creating a database is a material mutation and must not occur merely because `agentscope init` discovered that local storage is possible.
+
+**Consequences:** Init may propose the destination but never enables it by default. The destination ships no ORM and maintains a small migration runner plus `schema_migrations` table. Its install/release matrix verifies `better-sqlite3` prebuilt-binary availability on every supported CLI platform; an unsupported platform produces an actionable configure-time diagnostic rather than a source-build surprise.
+
+### ADR-004: Separate SQL layout from durable Protocol payload versions
+
+**Decision:** Every row stores an immutable Protocol version and stable delivery identity. The destination maintains versioned readers for its documented compatibility window and does not rewrite canonical payloads during ordinary SQL migrations.
+
+**Context:** Database layout and canonical trace semantics evolve independently; rewriting historic trace payloads can destroy downgrade and recovery options.
+
+**Consequences:** SQL migrations change storage structures only. Compatibility checks select the correct Protocol reader and refuse an unreadable payload with a stable diagnostic rather than guessing its meaning.
+
+### ADR-005: Bound concurrency, retention, and destructive lifecycle
+
+**Decision:** Writes use WAL, a unique delivery constraint, and a busy timeout no longer than the remaining hook budget. Schema upgrades require an exclusive migration lease; retention enforcement is transactional. Unconfiguration never deletes data, while deletion is a separate confirmed command targeting an exact owned database.
+
+**Context:** Concurrent hooks, migrations, full disks, corruption, and user removal intent fail independently.
+
+**Consequences:** Contention, migration, capacity, and corruption failures remain fail-open and diagnostically distinct. Doctor checks schema compatibility, integrity, writability, retention status, and capacity without reading trace content. Tests cover concurrency, duplicate delivery, interrupted migration, full disk, corruption, backup/restore, unconfigure, and explicit deletion.
+
+### ADR-006: Implement the canonical Retriever with indexed keyset queries
+
+**Decision:** The Local SQLite Retriever implements the same `search` and `get` contract as every retrieval-capable destination. Its schema maintains indexes for canonical trace ID, start time, harness, branch, model, session, and normalized tags. Search uses snapshot-consistent keyset pagination ordered by start time descending and canonical trace ID; get reads the immutable Protocol payload through the supported reader and current redaction boundary.
+
+**Context:** Local SQLite is the reference destination for exact portable semantics and should not gain a second, SQL-specific CLI surface.
+
+**Consequences:** `agentscope traces search --destination <local-connection>` and `traces get` behave identically to Langfuse at the CLI boundary. Raw SQL, database paths, and row identifiers are never accepted as portable trace references. Migration and query plans are covered by destination-specific tests in addition to the shared Retriever contract suite.

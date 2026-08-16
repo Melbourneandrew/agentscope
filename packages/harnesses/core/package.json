@@ -1,0 +1,10 @@
+{
+  "name": "@agentscope/harnesses-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Internal shared contracts for first-party Agentscope harnesses.",
+  "dependencies": {
+    "@agentscope/core": "workspace:*"
+  }
+}

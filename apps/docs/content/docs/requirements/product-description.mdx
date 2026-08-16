@@ -9,13 +9,13 @@ Coding-agent traces are fragmented by harness and destination. Developers cannot
 
 ## Current State
 
-Agentscope has a CLI-first monorepo, normalized trace source, initial harness adapters, an extensible reporting boundary, and a hermetic test foundation. The public CLI and destination packages remain in development.
+Agentscope has a CLI-first monorepo, normalized trace model, initial harness adapters, an extensible reporting boundary, and a hermetic test foundation. The public CLI and destination packages remain in development.
 
 ## Personas
 
 - **Coding-agent user:** wants session context without manually editing opaque harness hooks.
 - **Platform engineer:** wants consistent redaction, destinations, and setup health across machines.
-- **Extension author:** wants stable SDK seams for harnesses and reporters.
+- **Contributor:** wants clear seams for adding a harness or destination through a reviewed Agentscope pull request.
 
 ## Product Description
 
@@ -31,5 +31,5 @@ The overall goal is an agent scope system as a way to capture agent traces from 
 
 - **REQ-OVR-001:** As a coding-agent user, I want one normalized trace model, so that traces are comparable across harnesses.
   - **AC-OVR-001.1:** When a supported harness emits observable activity, the system shall normalize it into portable trace primitives.
-- **REQ-OVR-002:** As a platform engineer, I want extensible destinations, so that observability backends can evolve independently of harnesses.
-  - **AC-OVR-002.1:** When a reporter plugin is configured, the system shall receive already-redacted normalized trace data.
+- **REQ-OVR-002:** As a platform engineer, I want destinations extensible through reviewed first-party packages, so that observability backends can evolve independently of harnesses.
+  - **AC-OVR-002.1:** When a destination reporter is configured, the system shall receive already-redacted normalized trace data.

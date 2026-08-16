@@ -1,0 +1,34 @@
+---
+title: Configuration Management
+description: ADRs for durable cross-platform Agentscope configuration.
+---
+
+## Capability Summary
+
+This Blueprint realizes [Configuration Directory](/docs/requirements/configuration-directory) for a TypeScript CLI.
+
+## Architecture Decision Records
+
+### ADR-001: Resolve one cross-platform machine-local root
+
+**Decision:** Resolve the default home with Node's `os.homedir()` and `path.join(home, ".agentscope")`: `~/.agentscope` on macOS/Linux and `%USERPROFILE%\\.agentscope` on Windows. `AGENTSCOPE_HOME` is the only explicit override and replaces the entire resolved home for tests, CI, and portable installs.
+
+**Context:** Users and hook processes need a predictable support surface without Unix-only path assumptions; hermetic tests need one clean override.
+
+**Consequences:** Every CLI command, hook, Core service, and harness adapter receives the same injected home resolver. No package derives its own path from `$HOME`, `~`, a shell expansion, or a platform-specific environment variable.
+
+### ADR-002: Use one fenced compare-and-swap mutation service
+
+**Decision:** Configuration Management solely owns a fenced compare-and-swap mutation service. Core reads the expected generation, validates the complete candidate while preserving unknown namespaces, writes and fsyncs a same-directory candidate plus one bounded last-known-good backup, verifies the expected prior generation, then atomically replaces the fixed active config path.
+
+**Context:** Atomic rename prevents torn writes but does not prevent two valid writers from overwriting each other. One small configuration document does not need a second active-version pointer.
+
+**Consequences:** Every mutating command uses this transaction service. Lock records contain transaction identity, process identity, and process-start evidence; Doctor repairs only a provably dead owner. Hooks are read-only, fail open on contention, and never perform interactive migration. Downgrades that cannot preserve the complete document refuse mutation.
+
+### ADR-003: Resolve every effective value once with provenance
+
+**Decision:** Core resolves one immutable snapshot with deterministic precedence: descriptor defaults, validated persisted non-secret settings, then narrowly allowlisted command-scoped overrides. Environment variables supply credential values only through persisted explicit references unless a setting explicitly permits otherwise. Every effective non-secret value carries sanitized source provenance.
+
+**Context:** Init, hooks, Doctor, and interactive commands must not resolve the same connection differently or allow project-local environment to redirect machine-owned routing.
+
+**Consequences:** Every entry point receives the same snapshot. Doctor can explain effective destination, endpoint, routing, and policy sources without exposing secrets; forbidden overrides are rejected before mutation or delivery.

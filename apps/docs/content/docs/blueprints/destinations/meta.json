@@ -1,0 +1,11 @@
+{
+  "title": "Trace Destinations",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": [
+    "trace-destination",
+    "reporters",
+    "retrievers",
+    "local-sqlite-destination"
+  ]
+}

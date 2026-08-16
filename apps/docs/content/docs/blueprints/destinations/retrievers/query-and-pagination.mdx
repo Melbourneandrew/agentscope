@@ -1,0 +1,58 @@
+---
+title: Query, Identity, and Pagination
+description: ADRs for portable trace query semantics and continuation.
+---
+
+## Capability Summary
+
+The retrieval query model gives humans and coding agents deterministic filters, trace identities, ordering, and continuation behavior across every retrieval-capable destination.
+
+## Architecture Decision Records
+
+### ADR-001: Standardize the portable query vocabulary
+
+**Decision:** `TraceSearchRequest` supports canonical trace ID, half-open start-time range `[from, to)`, one harness identity, one branch name, one model name, one session ID, a set of exact tags, page limit, and opaque cursor. Timestamps are RFC 3339 instants normalized to UTC. Different dimensions and requested tags combine with AND; omitted filters are unconstrained.
+
+**Context:** These fields are the cross-harness investigation context required by the Trace Retrieval requirements. Destination-native names and comparison rules must not leak into CLI behavior.
+
+**Consequences:** IDs, branches, sessions, and tags use exact case-sensitive equality. Harness identities use the canonical harness registry value; model identities use the normalized Protocol model value while retaining the reported display name in results. A model filter matches a trace when any governed model span has that identity. Empty strings, contradictory ranges, unknown harness identities, duplicate tags, and limits outside Core's bounds fail validation before network or database access.
+
+### ADR-002: Bound every search in time and volume
+
+**Decision:** Core applies documented default and maximum page sizes, an absolute operation deadline, and a maximum number of provider requests per command. If the user omits `to`, Core fixes it to the command's start instant. Destinations that require a lower maximum clamp only after Core reports the effective limit; they never return an unbounded collection.
+
+**Context:** Agent-driven commands must not accidentally scan an entire remote project or local database, and Langfuse recommends bounded observation time windows.
+
+**Consequences:** A search can return fewer items than requested and an opaque continuation cursor. Exhausting a request, byte, or deadline bound returns the matches safely completed plus an explicit partial-result state and continuation when valid; it never presents a partial page as exhaustive.
+
+### ADR-003: Use destination-qualified stable trace identity
+
+**Decision:** Every summary returns a `TraceLocator` containing the immutable connection ID, canonical W3C trace ID, and optional destination-native trace ID. The human CLI prints the connection name and canonical trace ID; structured output includes the full locator. `traces get` verifies both the selected connection and locator before retrieval.
+
+**Context:** The same canonical trace may be reported to multiple destinations, and connection names can be renamed. A provider ID alone is neither portable nor globally meaningful.
+
+**Consequences:** Renaming a connection does not invalidate stored locators because immutable connection identity is authoritative. Copying only a canonical trace ID remains convenient with an explicit `--destination`, while a full structured locator prevents accidental cross-project retrieval in automation.
+
+### ADR-004: Wrap provider cursors in a bound opaque cursor
+
+**Decision:** `TraceSearchPage.nextCursor` is an opaque, versioned Core envelope containing the immutable connection ID, destination type, normalized-query fingerprint, fixed upper time bound, and destination continuation token. Core validates the envelope and all bounds before the provider token reaches a Retriever.
+
+**Context:** Providers use incompatible pagination: Langfuse Observations API uses a cursor, older supported Langfuse endpoints use page offsets, and SQLite uses keyset pagination. Passing a provider token directly would allow reuse with the wrong query or expose a provider contract as an Agentscope API.
+
+**Consequences:** A cursor is rejected after the destination connection, normalized filters, ordering, or cursor schema changes. The envelope is integrity-checked as untrusted user input but contains no credentials or trace content. Cursors are continuation state, not durable bookmarks; configuration changes require a new search.
+
+### ADR-005: Define ordering and mutation guarantees honestly
+
+**Decision:** Results are ordered by trace start time descending and canonical trace ID ascending as the tie-breaker. A Retriever must deduplicate observation rows into one trace summary per page. The fixed upper bound prevents newly arriving traces from shifting later pages; remote updates or deletions during traversal may still produce best-effort snapshot behavior and are declared in the page metadata.
+
+**Context:** Some providers expose observation rows rather than snapshot-consistent trace queries. Agentscope cannot manufacture transactional snapshot guarantees over a mutable remote API.
+
+**Consequences:** Local SQLite provides snapshot-consistent keyset traversal. Langfuse declares best-effort remote consistency, suppresses duplicates already encountered within the provider page, and never claims an exact total. Tests inject arrivals, updates, duplicate observations, and deletions between pages.
+
+### ADR-006: Keep presentation outside query semantics
+
+**Decision:** Core returns a portable `TraceSummary` page and `RetrievedTrace`; the CLI alone renders table, JSON, or JSON Lines output. Search summaries contain identity, start/end time, harness, branch, repository-safe identity, models, status, span counts, and safe tags. Full get output contains the governed canonical graph plus retrieval provenance.
+
+**Context:** Terminal layout and automation schemas evolve differently from destination query adapters.
+
+**Consequences:** Destination packages never write to stdout or choose columns. Structured output has its own schema identifier and is tested independently from provider DTOs. Detailed command docs are generated and reviewed against the canonical flags.

@@ -11,7 +11,15 @@ function entry(
   generationId?: string,
   ts?: string,
 ): PeekedJournalEntry {
-  return { file, entry: { type, text: file, generationId, ts } };
+  return {
+    file,
+    entry: {
+      type,
+      text: file,
+      ...(generationId !== undefined ? { generationId } : {}),
+      ...(ts !== undefined ? { ts } : {}),
+    },
+  };
 }
 
 const files = (entries: PeekedJournalEntry[]) => entries.map((e) => e.file);

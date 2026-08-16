@@ -1,6 +1,6 @@
 ---
 title: Trace Retrieval
-description: User requirements for optional destination-backed trace search.
+description: User requirements for portable destination-backed trace search and retrieval.
 ---
 
 ## Overview
@@ -9,7 +9,8 @@ Where a destination exposes a query API, Agentscope should make delivered traces
 
 ## Terminology
 
-- **Retrieval capability:** an optional destination plugin capability that maps portable queries to a provider API.
+- **Retriever:** an optional Trace Destination capability that maps the Agentscope retrieval contract to a destination repository or API.
+- **Trace reference:** a destination-qualified identity returned by search and accepted by trace retrieval.
 
 ## Requirements
 
@@ -17,11 +18,23 @@ Where a destination exposes a query API, Agentscope should make delivered traces
 
 As a developer, I want to search traces by meaningful context, so that I can investigate an agent session without switching tools.
 
-- **AC-RET-001.1:** When the active destination supports retrieval, `agentscope traces search` shall accept portable filters including time range, harness, branch, model, session, and tags.
-- **AC-RET-001.2:** When a supported result is returned, the system shall show destination identity and portable trace summary fields with redaction applied.
+- **AC-RET-001.1:** When `agentscope traces search --destination <name>` targets a configured destination with retrieval capability, the system shall accept the same portable filter set for trace identity, time range, harness, branch, model, session, and tags.
+- **AC-RET-001.2:** When search returns more matches than one response contains, the system shall return a continuation cursor that can be used only with the same destination connection and normalized query.
+- **AC-RET-001.3:** When a supported result is returned, the system shall show its destination-qualified trace reference and portable trace summary fields with the active redaction policy applied.
 
-### REQ-RET-002: Honest unsupported behavior
+### REQ-RET-002: Retrieve a selected trace
+
+As a developer, I want to retrieve one trace selected from search, so that I can inspect its normalized agent, model, tool, timing, and workspace context.
+
+- **AC-RET-002.1:** When `agentscope traces get --destination <name> --trace-id <id>` targets a configured retriever, the system shall return the matching trace in the portable Agentscope representation or a stable not-found result.
+- **AC-RET-002.2:** When retrieved destination data is malformed, oversized, incompatible, or contains newly disallowed content, the system shall reject or redact it before any human-readable or structured output is produced.
+- **AC-RET-002.3:** When machine-readable output is requested, search and get shall emit documented versioned schemas and shall never emit destination-native response bodies.
+
+### REQ-RET-003: Honest unsupported behavior
 
 As a user, I want clear feedback when a destination cannot search, so that I do not mistake local state for remote trace history.
 
-- **AC-RET-002.1:** When no retrieval capability is configured, the system shall return an actionable unsupported-capability result.
+- **AC-RET-003.1:** When `--destination` is absent, the system shall return a usage result and shall not select a destination implicitly.
+- **AC-RET-003.2:** When `--destination` names an unknown connection, the system shall return a stable unknown-destination result.
+- **AC-RET-003.3:** When `--destination` names a connection without retrieval capability, the system shall return a stable unsupported-capability result.
+- **AC-RET-003.4:** When any destination selection fails, the system shall not fan out to another destination implicitly.

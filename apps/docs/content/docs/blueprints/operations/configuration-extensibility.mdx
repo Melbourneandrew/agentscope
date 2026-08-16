@@ -1,0 +1,32 @@
+---
+title: Configuration Extensibility
+description: ADRs for additional Trace Destinations, reporters, and harness settings.
+---
+
+## Capability Summary
+
+Configuration must accommodate new packages without converting `config.json` into an untyped global bag.
+
+## Architecture Decision Records
+
+### ADR-001: Namespace destination configuration by stable package identity
+
+**Decision:** Core owns the top-level version, configured destinations, and cross-destination routing/selection policy; each first-party Trace Destination package owns only its schema-validated local configuration block.
+
+**Context:** New first-party reporters and harnesses need configuration without collisions or core releases for every option. Agentscope does not load third-party executable packages at runtime.
+
+**Consequences:** A Trace Destination declares its reporter/retriever capabilities and local destination settings. Core alone selects which named destination or destinations receive a canonical batch, resolving the active-connection behavior in REQ-CONN-002.
+
+### ADR-002: Preserve unknown package blocks
+
+**Decision:** Older CLIs preserve unknown first-party package namespaces during read/write and refuse unsafe downgrades.
+
+**Context:** Persisted configuration may have been written by a newer atomic CLI release; private packages are never installed or updated independently.
+
+### ADR-003: Assign validation ownership by contract boundary
+
+**Decision:** CLI owns command syntax and command DTO validation; Core owns the outer configuration document, effective-value resolution, and cross-block/routing invariants; each first-party harness or destination descriptor owns its local settings schema; Protocol owns only canonical trace/envelope schemas and Protocol migrations. Zod is the common mechanism, not the architectural owner.
+
+**Context:** Contract ownership must follow dependency direction even when every layer uses the same validation library.
+
+**Consequences:** CLI composes registered first-party descriptors rather than copying their schemas. Core performs final composed validation before atomic persistence and reports the rejecting boundary using stable sanitized diagnostics.

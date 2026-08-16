@@ -1,0 +1,64 @@
+---
+title: Reporter Abstraction
+description: ADRs for destination delivery behavior.
+---
+
+## Capability Summary
+
+Reporters send redacted canonical batches to an external destination for the [Reporting and Destinations](/docs/requirements/reporting-and-destinations) capability.
+
+## Architecture Decision Records
+
+### ADR-001: Require reporting, make retrieval optional
+
+**Decision:** Every Trace Destination has a reporter; only destinations that support queries expose a retriever.
+
+**Context:** Delivery is core product behavior while many valid destinations are write-only.
+
+**Consequences:** `packages/destinations/core` owns both ports and their shared lifecycle vocabulary. Reporter and Retriever are sibling capabilities of one named destination connection; neither inherits from the other, and a retriever never receives hook-time delivery calls.
+
+### ADR-002: Centralize delivery policy
+
+**Decision:** Core owns redaction, batching, routing, hook deadline enforcement, and sanitized delivery diagnostics; reporters accept only branded `RedactedCanonicalTrace` batches, map them to destination transport, and return an independent terminal receipt.
+
+**Context:** Failure semantics cannot vary by destination or block a harness.
+
+### ADR-003: Make destination testing a package capability
+
+**Decision:** Each first-party Trace Destination package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
+
+**Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
+
+**Consequences:** An additional Phoenix/Arize, warehouse, console, or internal reporter extends the suite through a reviewed Agentscope pull request without changing scenario orchestration or harness packages.
+
+### ADR-004: Ship integrations only as first-party packages
+
+**Decision:** Agentscope supports harness and Trace Destination integrations only as first-party packages published from this monorepo. Adding one is a reviewed pull request and release.
+
+**Context:** A Node package loaded in the CLI process has ambient filesystem, environment, and network authority. Agentscope has no current product need for third-party executable integration loading.
+
+**Consequences:** Core owns credentials, redaction, delivery, and retrieval boundaries. Package contracts remain internal and well-tested; no plugin marketplace, third-party loading mode, or public executable-extension ABI is in scope.
+
+### ADR-005: Reserve a constrained enrichment seam instead of arbitrary code
+
+**Decision:** Agentscope supports declarative, schema-validated filtering, redaction, and additional metadata rules owned by Core. It does not execute user-supplied enrichers or filters.
+
+**Context:** Filtering and metadata attachment are the most plausible user extension needs, but arbitrary callbacks could see sensitive data, block hooks, or make output non-reproducible.
+
+**Consequences:** Declarative rules have deterministic tests and Doctor diagnostics. Executable user extensions are outside the current product scope.
+
+### ADR-006: Fan out once per selected connection within the hook lifetime
+
+**Decision:** Core evaluates a versioned routing policy over redacted canonical metadata to produce an explicit set of named connections; no configured destination is implicitly active. It dispatches at most one attempt per selected connection concurrently under one absolute hook deadline and bounded per-connection budgets. Each connection reaches an independent accepted, rejected, unavailable, deadline-exceeded, or outcome-unknown state. There is no trace spool, retry queue, `agentscope flush`, or resident daemon.
+
+**Context:** The product must fail open, and deferred local storage changes the privacy, disk, and operational model substantially. A failed trace is less harmful than adding a durable copy of agent activity to every developer machine without an explicit product need.
+
+**Consequences:** One failure never cancels or compensates another accepted delivery. Unfinished attempts are aborted at the deadline and recorded independently; routing order does not create priority. Reporters map Core's stable delivery identity to native idempotency where available and otherwise declare possible duplicates. Unit and real-harness scenarios prove mixed partial outcomes, deadline enforcement, discarded-failure behavior, and absence of Core-owned trace persistence.
+
+### ADR-007: Resolve a non-weakening redaction policy once
+
+**Decision:** Core resolves a built-in, versioned mandatory baseline plus one validated user policy from the same immutable configuration snapshot used for routing. Secret detection and local-path prefix protection cannot be disabled; user rules may only reduce retained data. An invalid, unknown, or unavailable policy suppresses persistence/export, records a fixed sanitized diagnostic, and still fails open to the harness.
+
+**Context:** Harness execution may fail open, but disclosure must fail closed. Structural validation does not prove a trace is safe to persist or export.
+
+**Consequences:** Every exported or durable envelope records the applied policy identifier without matched content. Doctor reports effective policy provenance safely; expanding collected/exported categories requires an explicit policy migration and acceptance tests.

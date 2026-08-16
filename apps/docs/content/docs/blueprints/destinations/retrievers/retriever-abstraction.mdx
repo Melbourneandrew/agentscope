@@ -1,0 +1,58 @@
+---
+title: Retriever Abstraction
+description: ADRs for the portable destination retrieval contract.
+---
+
+## Capability Summary
+
+Retrievers let a named Trace Destination search and reconstruct previously reported traces through one destination-neutral Core contract.
+
+## Architecture Decision Records
+
+### ADR-001: Define one internal Retriever port
+
+**Decision:** `packages/destinations/core` owns the internal `Retriever` port and its Zod-validated DTOs. Every retriever implements exactly two operations: `search(TraceSearchRequest, RetrievalContext)` returning `TraceSearchPage`, and `get(TraceGetRequest, RetrievalContext)` returning `RetrievedTrace`. Concrete destination clients and provider DTOs remain private to their destination package.
+
+**Context:** The CLI and coding agents need one predictable retrieval surface, while Langfuse and Local SQLite have different APIs, identities, and pagination mechanisms.
+
+**Consequences:** The CLI never switches on destination type. `packages/core` resolves one named connection, binds its credentials and deadline, invokes its Retriever, validates the result, reapplies governance, and returns presentation-safe DTOs. The interface is an internal first-party seam, not a published SDK or plugin contract.
+
+### ADR-002: Make search and get the mandatory portable capability
+
+**Decision:** A destination advertises retrieval only when it faithfully implements both portable operations. Search accepts the canonical filter vocabulary and returns bounded summaries; get accepts a destination-qualified trace locator and returns a normalized trace. A write-only destination omits the Retriever factory and produces `RETRIEVAL_UNSUPPORTED`.
+
+**Context:** Capability flags for individual filters would make the same CLI command behave unpredictably across destinations. Pretending that an unsupported filter succeeded is worse than rejecting the destination's retrieval capability during configuration or Doctor checks.
+
+**Consequences:** First-party retrievers pass the same contract suite. Destination-specific query features are not added to the portable command until their semantics can be expressed for every retrieval-capable destination; provider-native tooling remains available outside Agentscope.
+
+### ADR-003: Keep destination selection outside the Retriever
+
+**Decision:** `--destination <connection-name>` is required for every search and get. Core resolves the immutable connection identifier and exact configuration snapshot before calling the Retriever; the Retriever receives a resolved connection context and cannot select, fall back to, or fan out to another connection.
+
+**Context:** A user may configure multiple Langfuse projects and a Local SQLite database. A type name such as `langfuse` is not enough to identify which repository is queried.
+
+**Consequences:** Search results carry the connection name, immutable connection identifier, destination type, canonical trace ID, and destination-native trace ID when one exists. A trace reference from one connection cannot be used against another.
+
+### ADR-004: Use typed terminal outcomes
+
+**Decision:** Retriever operations return success DTOs or stable typed failures: invalid query, unknown connection, unsupported retrieval, unauthorized, forbidden, rate limited, unavailable, deadline exceeded, malformed response, incompatible trace, and not found. They honor an `AbortSignal`, absolute deadline, response-byte limits, item limits, and provider-request limits supplied by Core.
+
+**Context:** Network and repository failures need automation-safe meaning without leaking provider payloads, secrets, or stack traces.
+
+**Consequences:** CLI exit codes and structured diagnostics map from the stable taxonomy. Retry hints may be displayed when safely derived from headers, but Core does not retry or change destinations implicitly. Provider-native bodies are retained only in bounded in-memory parsing state and never appear in diagnostics.
+
+### ADR-005: Treat all retrieved content as untrusted
+
+**Decision:** A Retriever validates provider DTOs but returns an untrusted normalized candidate. Core enforces size and graph limits, reads only supported Protocol representations, reapplies the current non-weakening redaction policy, applies the retrieval summary allowlist, and brands the result before presentation.
+
+**Context:** A destination can contain data written by older Agentscope releases, another producer, or a compromised service. Data that was acceptable when reported may no longer satisfy current disclosure policy.
+
+**Consequences:** Retriever packages cannot construct terminal strings or structured CLI output. Human output escapes terminal control characters. Machine output contains only versioned portable DTOs, never a raw destination response. Malformed and incompatible traces fail closed for output while leaving the remote repository unchanged.
+
+### ADR-006: Verify retrievers with one contract suite
+
+**Decision:** Destination family Core exports a Retriever contract suite covering query semantics, identity binding, pagination, cancellation, bounds, typed failures, untrusted data, and redaction handoff. Each concrete retriever supplies a test adapter and provider fixtures; hermetic integration tests run the same cases against its mock repository.
+
+**Context:** A shared TypeScript interface alone cannot prove that two backends interpret filters and cursors the same way.
+
+**Consequences:** Local SQLite and Langfuse must pass identical portable behavior tests plus destination-specific mapping tests. Adding a first-party retriever requires no changes to CLI parsing or generic retrieval scenarios.

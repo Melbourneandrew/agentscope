@@ -57,8 +57,10 @@ export function recordTurnJournalEvent(input: {
     const entry: JournalEntry = {
       ...input.event,
       text: input.event.text.slice(0, MAX_JOURNAL_TEXT_LENGTH),
-      generationId: input.generationId,
       ts: new Date().toISOString(),
+      ...(input.generationId !== undefined
+        ? { generationId: input.generationId }
+        : {}),
     };
     const prefix = conversationPrefix(input.conversationId);
     const name = `${prefix}${Date.now()}-${process.pid}-${eventCounter++}.json`;

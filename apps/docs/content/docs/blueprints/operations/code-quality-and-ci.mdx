@@ -1,0 +1,42 @@
+---
+title: Code Quality and CI
+description: ADRs for strict workspace conventions and layered validation.
+---
+
+## Capability Summary
+
+Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-negotiable quality gates that preserve architectural boundaries before code reaches a pull request or `main`.
+
+## Architecture Decision Records
+
+### ADR-001: Use one strict shared quality baseline with narrow local additions
+
+**Decision:** The repository uses one versioned shared ESLint flat-config baseline, strict TypeScript compiler settings, and Prettier for every TypeScript package and application. Package-local ESLint configuration may add rules, but may not relax the shared baseline without a time-bounded, reviewed exception.
+
+**Context:** A many-package workspace otherwise drifts into inconsistent style and type-safety rules. Agent-generated changes benefit from immediate, deterministic feedback rather than informal conventions.
+
+**Consequences:** ESLint uses type-aware rules where supported, including unsafe TypeScript, promise, import, and unused-code checks. Prettier is the sole formatting authority; ESLint does not duplicate formatting rules. TypeScript runs with the strictest practical settings, including `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `useUnknownInCatchVariables`; a proposed relaxation requires an ADR amendment.
+
+### ADR-002: Enforce import direction mechanically
+
+**Decision:** ESLint boundary rules enforce these dependency directions: `apps/cli` may depend on application Core and first-party integrations; `packages/core` may depend on Protocol and destination family Core; destination family Core may depend on Protocol but not application Core; concrete destination packages may depend on Protocol and destination family Core; harness packages may depend inward on Protocol, application Core, and harness family Core; `packages/testkit` may depend only on test-safe contracts; and tests may not import another package's private paths.
+
+**Context:** Folder structure alone cannot prevent a convenient import from silently collapsing the canonicalization, redaction, and transport boundaries.
+
+**Consequences:** Each workspace package declares a boundary type and public entry points. Cross-package imports use package exports, never `src` paths. Destination code cannot import harness-native artifacts, and harness code cannot import a destination reporter. Violations fail locally and in CI.
+
+### ADR-003: Make local commit and CI gates equivalent in intent
+
+**Decision:** A pre-commit hook runs Prettier verification and ESLint on staged supported files, plus affected strict type checks; the pre-push/CI validation command runs repository-wide format verification, lint, strict type checks, and unit tests.
+
+**Context:** Fast commit feedback prevents routine violations, while staged-only checks cannot establish workspace-wide correctness or detect changed public contracts.
+
+**Consequences:** Generated files and approved vendored fixtures are explicitly excluded in configuration rather than ignored ad hoc. A hook is a convenience layer, not the authority: CI repeats every mandatory gate and no PR may merge with a failing quality job.
+
+### ADR-004: Split CI by feedback horizon and trust boundary
+
+**Decision:** CI has named, independently observable lanes: `quality` (format, lint, type check), `unit`, `docs`, hermetic `integration`, and protected `integration-live`. Dependency installation is lockfile-frozen and cache keys include the lockfile and Node version.
+
+**Context:** The integration matrix is materially slower and has different Docker/artifact requirements than code quality. Separating lanes gives actionable failures and allows safe parallelism.
+
+**Consequences:** Pull requests run quality, unit, docs, and the defined hermetic compatibility matrix; integration work is sharded by scenario without sharing scenario containers. Scheduled/manual protected workflows run the wider version matrix and live smoke tests. Documentation deployment remains a separate post-merge workflow and never grants publishing or external-service credentials to pull-request jobs.

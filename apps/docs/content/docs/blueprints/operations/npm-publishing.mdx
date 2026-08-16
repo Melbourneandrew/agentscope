@@ -1,0 +1,26 @@
+---
+title: NPM Publishing
+description: ADRs for trusted publishing of the CLI.
+---
+
+## Capability Summary
+
+NPM releases must be attributable, reproducible, and limited to the intentionally public CLI without long-lived repository secrets.
+
+## Architecture Decision Records
+
+### ADR-001: Use npm trusted publishing from a tag-only workflow
+
+**Decision:** Public packages publish only from a dedicated GitHub Actions workflow triggered by a protected semantic-version tag reachable from protected `main`, using npm trusted publishing and provenance through a named protected release environment rather than a long-lived `NPM_TOKEN`.
+
+**Context:** A tag gate separates normal pull-request/main validation from a security-sensitive release action and permits npm to verify the GitHub workflow identity.
+
+**Consequences:** Maintainers configure the CLI package's trusted publisher on npmjs.com for `Melbourneandrew/agentscope`, the release workflow filename, and the `npm publish` action. The environment restricts deployment to protected release tags and requires its configured review policy. Normal merges to `main` never publish, and an untrusted ref cannot mint publishing credentials.
+
+### ADR-002: Publish only the tested CLI
+
+**Decision:** The `@agentscope/cli` release build bundles all private Agentscope TypeScript workspace code into one self-contained CLI artifact. Non-bundleable third-party/native modules are ordinary public runtime dependencies and required assets are explicitly included. No private workspace package appears in published dependency metadata.
+
+**Context:** Publishing an internal package turns its folder layout and types into an accidental long-term compatibility promise.
+
+**Consequences:** `npm pack` inspection and clean installation of the exact tarball, with no workspace or separately assembled Agentscope dependency closure, are release gates. Release automation publishes the checksum-addressed tarball already exercised by the hermetic matrix; if rebuilding is unavoidable, it proves normalized content and dependency-metadata equivalence first, then performs an isolated registry-install smoke. Release evidence records source commit and tested/published digest.

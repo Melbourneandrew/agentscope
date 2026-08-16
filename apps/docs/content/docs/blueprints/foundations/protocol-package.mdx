@@ -1,0 +1,26 @@
+---
+title: Protocol Package
+description: ADRs for the private OTLP/OpenInference contract boundary.
+---
+
+## Capability Summary
+
+`@agentscope/protocol` provides the stable internal vocabulary shared by harnesses, Core, destinations, and tests without exposing a public SDK promise.
+
+## Architecture Decision Records
+
+### ADR-001: Isolate the canonical contract in Protocol
+
+**Decision:** `packages/protocol` implements the semantics owned by Canonical Trace Format: OTLP/OpenInference types, the machine-readable standards/extension manifest, canonical schema validation, branded redaction-state APIs, canonical envelope versions, fixtures, and Protocol migrations. It has no filesystem, configuration, credential, network, harness, or destination behavior.
+
+**Context:** The canonical contract changes on a different cadence from machine-local orchestration. A pure package prevents Core from becoming the owner of every concept and keeps harness/destination adapters aligned on one standards-first model.
+
+**Consequences:** Harnesses construct transient `CapturedTrace` values; Core applies redaction and asks Protocol to construct branded `RedactedCanonicalTrace` values; destinations consume only the latter. Protocol is private: its API is an internal compatibility boundary, not a published SDK.
+
+### ADR-002: Version protocol independently of implementation packages
+
+**Decision:** Canonical envelope and attribute semantics carry an explicit Protocol version. A change to the pinned OpenInference or `agentscope.*` vocabulary is a Protocol migration with fixtures and compatibility tests.
+
+**Context:** Persisted configuration, hook blocks, and durable destination payloads can outlive the running CLI even though all private packages ship in one atomic CLI release closure.
+
+**Consequences:** Unsupported Protocol versions fail before delivery with a sanitized diagnostic and fail open. No compatibility with the SF Platform model is implied.
