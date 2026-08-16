@@ -3,7 +3,7 @@ services:
     image: node:22-alpine
     working_dir: /workspace
     command: ["node", "tests/integration/collector/server.mjs"]
-    volumes: ["../..:/workspace"]
+    volumes: ["../..:/workspace:ro"]
     healthcheck:
       test:
         [
@@ -22,6 +22,7 @@ services:
       collector:
         condition: service_healthy
     environment:
+      CI: "true"
       AGENTSCOPE_COLLECTOR_URL: http://collector:4318
       AGENTSCOPE_CONFIG_HOME: /tmp/agent-scope
     command:
@@ -30,4 +31,9 @@ services:
         "-c",
         "corepack enable && pnpm install --frozen-lockfile && pnpm test:integration:runner",
       ]
-    volumes: ["../..:/workspace"]
+    volumes:
+      - ../..:/workspace
+      - integration_node_modules:/workspace/node_modules
+
+volumes:
+  integration_node_modules:

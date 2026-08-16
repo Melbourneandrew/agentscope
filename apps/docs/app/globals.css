@@ -1,4 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
 
 :root {
   --page: #111210;
@@ -11,6 +14,18 @@
   --accent: #a8d870;
   --accent-ink: #18210d;
   --blue: #8ec9e8;
+}
+html.light {
+  --page: #f7f8f4;
+  --panel: #ffffff;
+  --panel-raised: #edf0e9;
+  --line: #d5dbd0;
+  --text: #1b2118;
+  --muted: #536050;
+  --subtle: #687464;
+  --accent: #4b7f18;
+  --accent-ink: #ffffff;
+  --blue: #176e99;
 }
 * {
   box-sizing: border-box;
@@ -48,12 +63,24 @@ a {
   font-weight: 600;
   letter-spacing: -0.02em;
 }
-.brand-mark {
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--accent);
-  border-radius: 5px;
-  background: linear-gradient(135deg, var(--accent) 0 42%, transparent 42%);
+.brand-logo {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  background-color: var(--accent);
+  mask: url("/brand/agentscope-oscilloscope-logo.svg") center / contain
+    no-repeat;
+  -webkit-mask: url("/brand/agentscope-oscilloscope-logo.svg") center / contain
+    no-repeat;
+}
+.docs-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.docs-brand .brand-logo {
+  width: 22px;
+  height: 22px;
 }
 .site-header nav {
   display: flex;
@@ -64,40 +91,10 @@ a {
 .site-header nav a:hover {
   color: var(--text);
 }
-.shell {
-  display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
-  max-width: 1280px;
-  min-height: calc(100vh - 60px);
-  margin: 0 auto;
-}
-.sidebar {
-  padding: 34px 20px;
-  border-right: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 14px;
-}
-.nav-label {
-  margin: 0 0 9px;
-  color: var(--subtle);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-.sidebar a {
-  display: block;
-  padding: 7px 9px;
-  border-radius: 5px;
-}
-.sidebar a:hover,
-.sidebar a.active {
-  color: var(--text);
-  background: var(--panel-raised);
-}
 .content {
   width: min(800px, 100%);
   padding: 76px 56px 120px;
+  margin: 0 auto;
 }
 .eyebrow {
   margin: 0 0 18px;
@@ -180,28 +177,9 @@ code {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.92em;
 }
-.docs-prose {
-  max-width: 700px;
-}
-.docs-prose h1 {
-  font-size: 46px;
-}
-.docs-prose pre {
-  overflow-x: auto;
-  padding: 17px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #0d0f0d;
-}
 @media (max-width: 760px) {
   .site-header {
     padding: 0 18px;
-  }
-  .shell {
-    display: block;
-  }
-  .sidebar {
-    display: none;
   }
   .content {
     padding: 48px 22px 80px;

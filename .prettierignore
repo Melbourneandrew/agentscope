@@ -1,7 +1,9 @@
-.beads/
-.claude/
-node_modules/
-.next/
-out/
-dist/
-coverage/
+.pnpm-store
+.beads
+.claude
+node_modules
+.nx
+.next
+out
+dist
+coverage
