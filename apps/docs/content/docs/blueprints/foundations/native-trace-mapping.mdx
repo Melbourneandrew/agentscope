@@ -19,6 +19,6 @@ Native artifacts vary by harness; this Blueprint defines how adapters map them w
 
 ### ADR-002: Normalize semantic primitives, retain native evidence
 
-**Decision:** Map sessions, turns, model calls, tools, skills, files, errors, and child agents to shared primitives while retaining sanitized raw-source pointers.
+**Decision:** Map sessions, turns, model calls, tools, skills, files, errors, and child agents to shared primitives while retaining only sanitized raw-source identities after the transient adapter phase.
 
-**Context:** Consumers need portable semantics and support engineers need a way to explain mappings.
+**Context:** Consumers need portable semantics and support engineers need a way to explain mappings, but raw native content cannot cross the redaction boundary.

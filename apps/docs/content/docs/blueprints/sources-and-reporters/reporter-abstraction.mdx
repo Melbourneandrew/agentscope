@@ -28,3 +28,27 @@ Reporters send redacted canonical batches to an external destination for the [Re
 **Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
 
 **Consequences:** A future Phoenix/Arize, direct-Langfuse, warehouse, console, or internal reporter extends the suite without changing scenario orchestration or harness packages.
+
+### ADR-004: Keep credentials in Core-mediated destination capabilities
+
+**Decision:** First-party executable Trace Source plugins receive validated non-secret configuration and a Core-provided, destination-bound authenticated transport capability; plugin APIs do not receive secret values or credential-store handles. Production execution admits only packages bundled with the CLI or verified against the maintainers' release signature. Third-party executable plugins are disabled by default and available only through an explicit local-development preview mode until Agentscope provides a sandboxed plugin runner with allowlisted RPC.
+
+**Context:** A credential reference in configuration does not itself define whether third-party code can read the referenced secret.
+
+**Consequences:** Core resolves credential references only at the delivery/retrieval boundary, constrains use to the configured destination, and redacts authorization data from failures. A TypeScript package loaded into the main Node process is not treated as a security boundary: it can use ambient filesystem, environment, and network APIs. Preview mode makes that risk explicit, requires an exact local package/path and confirmation, and is never enabled by a project or config file alone. Plugins that need a new authentication mechanism extend a reviewed Core credential capability rather than accessing the machine credential store directly; future untrusted plugins require process/container isolation with no inherited credentials and allowlisted RPC/network access.
+
+### ADR-005: Negotiate executable plugin compatibility before capture
+
+**Decision:** Every external harness or Trace Source plugin declares a manifest identity, Core API compatibility range, configuration-schema version, and requested capabilities. Core validates the manifest before discovery, installation, or hook execution and refuses incompatible plugins with a stable Doctor diagnostic.
+
+**Context:** Versioned config preservation does not protect against loading executable code built for a different Core contract.
+
+**Consequences:** The Core API uses semantic-version compatibility with explicit capability negotiation. Until the public plugin ABI stabilizes, only first-party packages may claim production support; third-party packages are treated as preview and must opt into the exact supported Core range.
+
+### ADR-006: Drain delivery opportunistically without a resident daemon
+
+**Decision:** A hook makes one bounded delivery attempt, then enqueues retryable work with persisted due time and backoff state. Core drains due entries under a single-writer lock on later hook or CLI invocations, and `agentscope flush` provides explicit foreground delivery; there is no background daemon in the initial release.
+
+**Context:** A hook process usually exits immediately, so a spool without a later execution trigger does not provide reliable delivery. A resident process introduces platform service management, credentials, and lifecycle complexity outside the first release.
+
+**Consequences:** Retry scheduling uses persisted exponential backoff with jitter and idempotency keys. The integration matrix includes restart, due-entry drain, lock-contention fail-open, and explicit-flush scenarios. Delayed delivery is observable through Doctor rather than silently promising immediate retry.

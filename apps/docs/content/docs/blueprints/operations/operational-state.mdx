@@ -1,0 +1,62 @@
+---
+title: Operational State
+description: ADRs for redacted spool, diagnostics, and recovery state.
+---
+
+## Capability Summary
+
+Core owns the bounded operational state that supports reliable delivery and `agentscope doctor` without turning configuration or raw native data into a hidden source of truth.
+
+## Architecture Decision Records
+
+### ADR-001: Separate declarative configuration from operational state
+
+**Decision:** The same `AGENTSCOPE_HOME`-aware home resolver used for configuration contains separate Core-owned state locations for locks/migration markers, redacted pending-delivery spool entries, and sanitized diagnostics. The default resolved home is `~/.agentscope`; state is not configuration and cannot contain raw native artifacts or credentials.
+
+**Context:** Delivery retries and Doctor need durable evidence, while user intent must remain inspectable, migratable, and secret-safe.
+
+**Consequences:** Configuration migrations never reinterpret spool payloads. Core version-tags each state entry and owns state-path compatibility.
+
+### ADR-002: Bound retention and make loss observable
+
+**Decision:** Spool and diagnostics have explicit size, age, and entry-count limits; Core applies deterministic eviction and records a sanitized loss reason that Doctor can report.
+
+**Context:** Fail-open delivery must not consume a machine indefinitely or fail silently.
+
+**Consequences:** Doctor owns inspection and safe repair of stale locks/known-safe state only. It does not replay, delete, or reveal payloads without an explicit user command.
+
+### ADR-003: Make queued delivery crash-safe and destination-pinned
+
+**Decision:** A spool entry records an immutable delivery identifier, immutable Trace Source connection ID plus non-secret destination-binding fingerprint, and reporter export-profile version at enqueue time. The fingerprint includes reporter type and normalized endpoint/tenant/project identity, but excludes credential references and values. Core sends that same identifier as the idempotency key on every attempt, durably records a matching reporter receipt before removing the entry, and never silently re-routes it after a configuration change.
+
+**Context:** A process can stop after remote acceptance but before local acknowledgement. Routing is also a data-disclosure boundary: a retry must not move historic data to a newly active connection merely because the user edited routing, renamed, or removed a source. Credential rotation for the same destination must continue queued delivery.
+
+**Consequences:** An unavailable, removed, or fingerprint-mismatched pinned source leaves its entry pending with a stable Doctor diagnostic. Source names are labels, not durable identities, and a name may not be reused to satisfy a historic pin. Explicit `agentscope` discard or source-migration commands are required to resolve it; source migration must display the old and new destination and require confirmation.
+
+**Retention boundary:** Pinned-source entries remain subject to the global size, age, and count limits. Reaching a limit evicts them with a distinct sanitized loss diagnostic; explicit discard/migration authority is required only while they are still retained.
+
+**Export compatibility:** Core retains each supported reporter export mapper for its documented spool compatibility window. If a pinned export-profile version is unavailable, Core quarantines the entry with a stable Doctor diagnostic; only an explicit, confirmed re-export migration or discard may resolve it.
+
+### ADR-004: Make state migrations recoverable
+
+**Decision:** Core performs operational-state migrations side by side: it writes and validates a new versioned state area, atomically switches a small active-version marker, and retains the previous area through a documented compatibility window. Migration markers contain an owner and expiry; a subsequent invocation can recover an interrupted migration without deleting unreadable entries.
+
+**Context:** State schema/path changes can be interrupted between lock, marker, and spool conversion steps. Configuration atomicity alone does not preserve queued delivery state.
+
+**Consequences:** Doctor reports stable diagnostics for stale locks, incomplete migrations, and entries outside the compatibility window. Fully migrated inactive state is reclaimed after the documented window; retained areas count toward the global state budget. Unreadable entries move to a separately bounded quarantine with explicit age, size, and count limits: before those limits an explicit state-discard command reports its exact owned targets, and at a limit Core evicts with a distinct sanitized loss diagnostic. Rollback restores the prior active marker while the old state is retained.
+
+### ADR-005: Recheck queued data against the current redaction policy
+
+**Decision:** Every spool entry records the redaction-policy version applied at enqueue. Before delivery, Core applies the currently active policy again to the already-sanitized entry; if compatibility cannot be established, it quarantines the entry and records a sanitized diagnostic rather than exporting it.
+
+**Context:** A stricter policy can arrive after a batch was queued, while the transient raw input needed for a full remap no longer exists.
+
+**Consequences:** Policy changes never relax the original redaction result. Quarantined entries require an explicit inspect/discard command with no secret reveal path.
+
+### ADR-006: Admit hook work without waiting for the delivery drainer
+
+**Decision:** Before any network attempt, a hook uses bounded, per-entry atomic admission (unique temporary entry then same-directory rename) to persist its delivery ID, source pin, and idempotency key. It makes the initial bounded attempt from that durable entry. The drainer lock coordinates delivery, migration, and cleanup only; a hook never waits beyond its capture deadline for it.
+
+**Context:** Parallel harness hooks are expected. A shared lock that blocks enqueue can either delay an agent session or lose retryable delivery work.
+
+**Consequences:** If a bounded atomic admission cannot complete (for example disk failure), the hook fails open and writes the best-effort sanitized diagnostic without retrying indefinitely. Unit and real-harness scenarios cover concurrent admission, drainer lock contention, atomic crash recovery, and the explicit fail-open loss path.

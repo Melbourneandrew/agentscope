@@ -11,9 +11,11 @@ Configuration must accommodate new packages without converting `config.json` int
 
 ### ADR-001: Namespace plugin configuration by stable plugin identity
 
-**Decision:** Core owns the top-level version, sources, routing, and policy; each plugin owns a schema-validated namespaced configuration block.
+**Decision:** Core owns the top-level version, configured sources, and cross-source routing/selection policy; each Trace Source and plugin owns only its schema-validated local configuration block.
 
 **Context:** New reporters and harnesses need configuration without collisions or core releases for every option.
+
+**Consequences:** A Trace Source declares its reporter/retriever capabilities and local destination settings. Core alone selects which named source or sources receive a canonical batch, resolving the active-connection behavior in REQ-CONN-002.
 
 ### ADR-002: Preserve unknown extension blocks
 

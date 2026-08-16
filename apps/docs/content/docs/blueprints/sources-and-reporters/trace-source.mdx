@@ -11,9 +11,9 @@ A Trace Source is the configured unit that connects captured canonical traces to
 
 ### ADR-001: Make Trace Source the user-configured connection
 
-**Decision:** A Trace Source owns destination selection, non-secret configuration, routing policy, mandatory reporting capability, and optional retrieval capability.
+**Decision:** A Trace Source owns one destination's non-secret configuration, mandatory reporting capability, and optional retrieval capability. Core owns selection and routing across named Trace Sources.
 
-**Context:** Users configure a logical service connection, not an unconnected reporter implementation.
+**Context:** Users configure a logical service connection, not an unconnected reporter implementation; cross-connection selection needs one authoritative policy owner.
 
 **Consequences:** `agentscope configure reporter langfuse` creates a named source connection reusable by many harnesses.
 

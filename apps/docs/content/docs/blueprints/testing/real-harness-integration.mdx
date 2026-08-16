@@ -15,7 +15,7 @@ This Blueprint verifies the complete AgentScope setup flow without ever touching
 
 **Context:** Developers may actively use AgentScope and harnesses on their host. A test must be unable to read or mutate their configuration, credentials, worktrees, hook files, or agent behavior.
 
-**Consequences:** The container has no host-home, credential-store, harness-config, or writable-repository mount. It installs the packed candidate CLI inside the container, then runs `agentscope init` and `agentscope install <harness>`. Host-binary testing is an explicit diagnostic-only command and never the normal local or CI path.
+**Consequences:** The container has no host-home, credential-store, harness-config, or writable-repository mount. It installs a checksum-verified packed candidate CLI and lockfile-derived offline dependency artifact inside the container, then runs `agentscope init` and `agentscope install <harness>`. Host-binary testing is an explicit diagnostic-only command and never the normal local or CI path.
 
 ### ADR-002: Deny public-network access and use MockServer as protocol authority
 
@@ -24,6 +24,14 @@ This Blueprint verifies the complete AgentScope setup flow without ever touching
 **Context:** A harness that ignores an endpoint override must fail the test rather than receive a real model reply or emit a real trace.
 
 **Consequences:** Mock services are not published to host ports. The adapter registers only expected routes; unexpected outbound requests fail the scenario. Sanitized request ledgers are retained as CI failure artifacts.
+
+### ADR-002a: Provision the matrix from pinned offline artifacts
+
+**Decision:** Each harness/version image is pinned by OCI digest and contains the documented harness binary. Testkit supplies the candidate CLI package and production dependency closure as checksum-verified offline artifacts; the scenario may not acquire packages or harness binaries at runtime.
+
+**Context:** Network isolation cannot coexist with mutable `npm` or vendor downloads, and a preinstalled but unpinned executable does not prove a reproducible compatibility claim.
+
+**Consequences:** CI builds or retrieves pinned images before the isolated scenario begins, verifies artifact checksums, and fails on any attempted registry/public-network acquisition. The capability matrix records the image digest and harness version that produced each result.
 
 ### ADR-003: Give every harness a complete independent fixture
 

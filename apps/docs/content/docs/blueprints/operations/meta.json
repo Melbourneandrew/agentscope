@@ -4,6 +4,7 @@
   "defaultOpen": true,
   "pages": [
     "config-management",
+    "operational-state",
     "configuration-extensibility",
     "api-key-storage",
     "harness-discovery",
