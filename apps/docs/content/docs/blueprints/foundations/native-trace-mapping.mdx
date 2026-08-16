@@ -22,3 +22,5 @@ Native artifacts vary by harness; this Blueprint defines how adapters map them w
 **Decision:** Map sessions, turns, model calls, tools, skills, files, errors, and child agents to shared primitives while retaining only sanitized raw-source identities after the transient adapter phase.
 
 **Context:** Consumers need portable semantics and support engineers need a way to explain mappings, but raw native content cannot cross the redaction boundary.
+
+**Consequences:** A harness adapter emits OpenInference `AGENT`, `LLM`, `TOOL`, and other applicable OTLP spans directly. It contributes `agentscope.*` only for harness/Git/workspace/provenance concepts; model, message, token, timing, and error fields use their OpenInference definitions rather than duplicate fields.

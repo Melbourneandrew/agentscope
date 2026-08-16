@@ -17,6 +17,8 @@ Langfuse is the initial first-party destination and validates the Trace Destinat
 
 **Consequences:** Contract tests prove which OpenInference fields Langfuse renders directly and which Agentscope fields require an explicit `langfuse.*` mapping; unmapped `agentscope.*` attributes remain namespaced metadata rather than silently becoming product fields.
 
+**Required flow:** The reporter accepts only the redacted canonical OTLP/OpenInference graph. It preserves OpenInference and `agentscope.*` fields, adds the narrow tested `langfuse.*` overlay, and serializes an OTLP payload. It does not read a harness transcript or construct a separate Langfuse-native trace model.
+
 ### ADR-002: Allow a direct Langfuse path later
 
 **Decision:** A direct Langfuse ingestion implementation may be added as another reporter behind the same Trace Destination contract.

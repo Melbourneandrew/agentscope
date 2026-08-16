@@ -33,7 +33,15 @@ Agentscope needs a durable internal trace format that reuses open telemetry stan
 
 **Consequences:** The Langfuse reporter maps only the small overlay (for example filterable trace metadata) rather than translating a second, duplicated agent model. Contract tests distinguish OpenInference/OTLP fields, `agentscope.*` fields, and each destination overlay.
 
-### ADR-004: Treat SF Platform as a reference, not a compatibility target
+### ADR-004: Preserve one standards-first trace pipeline
+
+**Decision:** Every supported integration follows one unidirectional pipeline: **harness-native artifact → harness adapter → redacted OTLP/OpenInference canonical graph with `agentscope.*` context → destination reporter → destination transport**. The Langfuse transport is OTLP plus a minimal `langfuse.*` overlay.
+
+**Context:** A separate per-destination canonical model would make harness behavior, privacy controls, and trace meaning diverge.
+
+**Consequences:** Adapters never emit Langfuse-specific fields. Reporters never reinterpret native harness transcripts. A new destination consumes the same canonical graph and may add only its documented transport overlay; it cannot alter the OpenInference or `agentscope.*` semantic contract.
+
+### ADR-005: Treat SF Platform as a reference, not a compatibility target
 
 **Decision:** Agentscope has no requirement to preserve the SF Platform trace schema, APIs, storage format, or hook behavior. The existing implementation is used only to discover use cases, native artifacts, and regression scenarios.
 
