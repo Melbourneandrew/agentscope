@@ -11,9 +11,11 @@ Unit tests protect the canonical model and first-party package contracts without
 
 ### ADR-001: Test contracts at seams
 
-**Decision:** Protocol publishes contract fixtures for canonical trace validation; Core publishes fixtures for redaction, bounded delivery outcome classification, reporters, retrievers, and adapter mappings.
+**Decision:** Fixtures follow semantic ownership. Protocol owns canonical graph/schema fixtures. Core owns only integration-neutral redaction, routing, deadline, diagnostic, configuration, and retrieval-boundary fixtures. Harness family Core owns generic adapter-contract helpers; destination family Core owns generic reporter/retriever helpers; each concrete integration owns its native mapping or transport fixtures. Testkit consumes only explicit test exports.
 
-**Context:** Stable seams make first-party package contributions testable before real-harness scenarios are available.
+**Context:** Stable seams make first-party package contributions testable before real-harness scenarios are available, but centralizing integration fixtures in Core would violate production dependency boundaries.
+
+**Consequences:** Mapping fixtures evolve with their adapter, destination ledgers evolve with their destination, and boundary linting applies to test exports as well as production code. Tests never import another package's private `src` path.
 
 ### ADR-002: Keep native fixtures sanitized and versioned
 

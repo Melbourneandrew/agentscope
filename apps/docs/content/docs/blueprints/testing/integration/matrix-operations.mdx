@@ -11,15 +11,15 @@ The integration matrix needs reproducible harness images, a declared compatibili
 
 ### ADR-001: Declare compatibility as data
 
-**Decision:** `tests/integration` owns a versioned capability manifest listing each harness, supported version range, OCI image digest, required model protocol routes, scenario tags, and destination combinations. A harness is supported only when its manifest entry and required scenario pass.
+**Decision:** `tests/integration` owns a versioned capability manifest listing pinned tested harness representatives, OCI image digests, required model protocol routes, scenario tags, destination combinations, and evidence identity. The harness descriptor remains the sole owner of the runtime compatibility range.
 
 **Context:** A prose list of harnesses cannot drive CI selection, image pinning, failure reports, or deliberate retirement.
 
-**Consequences:** Adding or updating a harness changes the manifest, sanitized native fixtures, adapter unit contracts, and real-harness scenario together. Removing a harness requires an explicit compatibility-policy decision rather than a silently skipped test.
+**Consequences:** CI verifies every matrix representative satisfies its descriptor and every advertised range meets the coverage policy. Adding or updating a harness changes the descriptor, manifest, sanitized native fixtures, adapter unit contracts, and real-harness scenario together. Missing evidence yields an explicit unverified state rather than a second compatibility policy.
 
 ### ADR-002: Build immutable test inputs before isolating scenarios
 
-**Decision:** A preparation step packs the candidate CLI and assembles checksum-verified dependency artifacts; each harness image is pinned by OCI digest and already contains its documented harness binary. Once a scenario begins, it may not download a package or contact a public registry.
+**Decision:** A preparation step packs the self-contained candidate CLI tarball and checksum-verifies its declared public runtime dependency artifacts; each harness image is pinned by OCI digest and already contains its documented harness binary. Once a scenario begins, it may not download a package or contact a public registry.
 
 **Context:** This is test-installation infrastructure, not an AgentScope delivery queue. Hermetic scenarios need a reproducible fresh install while still denying runtime public-network access.
 

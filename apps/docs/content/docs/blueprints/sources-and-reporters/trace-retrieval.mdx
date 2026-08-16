@@ -20,3 +20,11 @@ Retrievers let a configured Trace Destination expose remote trace search through
 ### ADR-002: Do not emulate unsupported retrieval
 
 **Decision:** A Trace Destination without a retriever returns an explicit capability error rather than presenting local diagnostics as destination history.
+
+### ADR-003: Treat retrieved data as untrusted input
+
+**Decision:** Retriever packages return bounded untrusted provider DTOs. Core validates schema and size, normalizes a portable summary, reapplies the active redaction policy and summary-field allowlist, and constructs a branded safe retrieval result. CLI presentation accepts only that safe type and escapes terminal-control content.
+
+**Context:** A destination can return historical traces from another producer, an older policy, or malformed/hostile content.
+
+**Consequences:** Retrievers cannot return presentation-ready strings. Provider-native bodies never enter output or retained diagnostics. Tests cover oversized, malformed, legacy, sensitive, and control-character responses; structured output is versioned from the safe portable DTO.

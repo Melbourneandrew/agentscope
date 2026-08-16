@@ -10,6 +10,7 @@ Trace data can include prompts, tool outputs, paths, and environment-derived con
 ## Terminology
 
 - **Redaction policy:** a versioned rule set that removes or transforms sensitive data before persistence or export.
+- **Sanitized diagnostic:** bounded operational evidence that contains stable codes and non-content metadata, but no trace identifiers, prompts, messages, tool content, paths, credentials, provider response bodies, or raw native data.
 
 ## Requirements
 
@@ -17,11 +18,15 @@ Trace data can include prompts, tool outputs, paths, and environment-derived con
 
 As a user, I want sensitive data removed before reporting or diagnostics, so that observability cannot expose raw secrets.
 
-- **AC-GOV-001.1:** When capture produces sensitive fields, the system shall apply the active redaction policy before reporting or recording diagnostics.
-- **AC-GOV-001.2:** When redaction occurs, the system shall retain only a non-sensitive summary suitable for diagnostics.
+- **AC-GOV-001.1:** When capture produces credential material or credential-shaped secrets, the system shall remove or irreversibly transform those values before any persistence or export.
+- **AC-GOV-001.2:** When capture produces an absolute local path, the system shall remove user-identifying prefixes before any persistence or export while preserving safe repository-relative context where possible.
+- **AC-GOV-001.3:** When a valid redaction policy cannot be resolved, the system shall suppress persistence and export, record a sanitized diagnostic, and fail open to the harness.
+- **AC-GOV-001.4:** When redaction changes a field, the system shall preserve unaffected safe canonical fields and may record only a non-sensitive redaction marker for the changed field.
+- **AC-GOV-001.5:** When a user supplies additional redaction rules, the system shall not allow those rules to disable the mandatory baseline.
 
 ### REQ-GOV-002: Minimal operational state
 
 As an operator, I want local operational state bounded and diagnosable, so that observability cannot consume a machine indefinitely.
 
 - **AC-GOV-002.1:** When diagnostic state exceeds configured size, age, or entry limits, the system shall apply documented eviction behavior and record no raw trace data.
+- **AC-GOV-002.2:** When pipeline health evidence is retained, the system shall exclude trace content and shall evict it under the same documented bounds.

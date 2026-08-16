@@ -11,14 +11,14 @@ Harness adapters implement the [Harness Management](/docs/requirements/harness-m
 
 ### ADR-001: Model harnesses, not model providers
 
-**Decision:** Treat Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, Hermes, and future coding-agent CLIs as harnesses; model providers remain metadata.
+**Decision:** Treat Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, Hermes, and additional coding-agent CLIs as harnesses; model providers remain metadata.
 
 **Context:** Installation, hooks, transcript artifacts, and lifecycle events belong to the harness even when it can route across model providers.
 
 ### ADR-002: Keep adapter responsibilities narrow
 
-**Decision:** Each adapter owns detection, compatible-version checks, owned configuration generation, native artifact collection, and native-to-canonical mapping.
+**Decision:** Each adapter descriptor owns detection, the runtime compatibility range and compatibility-state logic, owned configuration generation, native artifact collection, and native-to-`CapturedTrace` mapping.
 
-**Context:** Reporter behavior, redaction, retries, and configuration persistence must remain common across harnesses.
+**Context:** Reporter behavior, redaction, delivery deadlines, and configuration persistence must remain common across harnesses.
 
-**Consequences:** An adapter package can evolve independently and must supply a real-harness scenario before claiming compatibility.
+**Consequences:** The integration capability manifest records pinned tested representatives and evidence rather than a second supported-version range. CI verifies that every matrix representative satisfies its descriptor and that advertised ranges meet the coverage policy. An adapter must supply a real-harness scenario before claiming compatibility.

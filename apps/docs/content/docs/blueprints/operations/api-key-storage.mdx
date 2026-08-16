@@ -11,11 +11,27 @@ Trace Destination credentials need secure storage while hooks remain non-interac
 
 ### ADR-001: Store secret values outside ~/.agentscope
 
-**Decision:** Interactive configuration stores API keys in an OS credential store; config retains only a credential reference.
+**Decision:** Core provides explicit adapters for macOS Keychain, Windows Credential Manager, Linux Secret Service, and CI environment references. Interactive configuration stores API keys in the supported platform backend; config retains only a credential reference. Agentscope never silently falls back to plaintext storage.
 
 **Context:** Config, backups, diagnostics, and bug reports must remain safely inspectable.
 
-### ADR-002: Permit explicit CI secret references
+### ADR-002: Make references usable from the actual hook context
+
+**Decision:** Destination configuration succeeds only after a non-secret resolution preflight in an execution context equivalent to the installed hook. Stable diagnostics distinguish unavailable, locked, denied, missing, and malformed references without displaying or logging secret values.
+
+**Context:** An interactive shell, GUI-launched harness, service, and CI job can have different credential-store sessions and permissions.
+
+**Consequences:** Supported-platform tests exercise the real adapter and hook-time resolution; container dummy-secret tests prove only the CI environment-reference adapter.
+
+### ADR-003: Treat credential changes as compensating transactions
+
+**Decision:** Credential slots have stable destination/connection ownership and unique generation identity. Configuration creates an owned pending credential entry, validates resolvability, atomically commits a configuration generation referencing it, then marks it active. Failure before config commit removes only that new pending entry; replacement retains the previous secret while any active or last-known-good generation references it.
+
+**Context:** The OS credential store and configuration filesystem cannot share one atomic transaction.
+
+**Consequences:** Rotation and removal are explicit operations. Doctor reports dangling references and provably owned orphan candidates; `--fix` removes only abandoned pending entries with sufficient ownership evidence and never deletes CI environment references.
+
+### ADR-004: Permit explicit CI secret references
 
 **Decision:** Non-interactive configuration may reference environment-provided secrets; it never copies their values into config, commands, diagnostics, or retained trace state.
 

@@ -17,8 +17,18 @@ This Blueprint realizes [Configuration Directory](/docs/requirements/configurati
 
 **Consequences:** Every CLI command, hook, Core service, and harness adapter receives the same injected home resolver. No package derives its own path from `$HOME`, `~`, a shell expansion, or a platform-specific environment variable.
 
-### ADR-002: Persist atomically and version configuration
+### ADR-002: Use one fenced compare-and-swap mutation service
 
-**Decision:** Validate versioned config, write a same-directory temporary file, fsync where supported, then atomically rename; migration makes a bounded backup first.
+**Decision:** Configuration Management solely owns a fenced compare-and-swap mutation service. Core reads the expected generation, validates the complete candidate while preserving unknown namespaces, writes and fsyncs a same-directory candidate plus one bounded last-known-good backup, verifies the expected prior generation, then atomically replaces the fixed active config path.
 
-**Consequences:** Hooks fail open on quick lock contention and never perform interactive migration.
+**Context:** Atomic rename prevents torn writes but does not prevent two valid writers from overwriting each other. One small configuration document does not need a second active-version pointer.
+
+**Consequences:** Every mutating command uses this transaction service. Lock records contain transaction identity, process identity, and process-start evidence; Doctor repairs only a provably dead owner. Hooks are read-only, fail open on contention, and never perform interactive migration. Downgrades that cannot preserve the complete document refuse mutation.
+
+### ADR-003: Resolve every effective value once with provenance
+
+**Decision:** Core resolves one immutable snapshot with deterministic precedence: descriptor defaults, validated persisted non-secret settings, then narrowly allowlisted command-scoped overrides. Environment variables supply credential values only through persisted explicit references unless a setting explicitly permits otherwise. Every effective non-secret value carries sanitized source provenance.
+
+**Context:** Init, hooks, Doctor, and interactive commands must not resolve the same connection differently or allow project-local environment to redirect machine-owned routing.
+
+**Consequences:** Every entry point receives the same snapshot. Doctor can explain effective destination, endpoint, routing, and policy sources without exposing secrets; forbidden overrides are rejected before mutation or delivery.

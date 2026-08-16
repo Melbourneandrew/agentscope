@@ -15,7 +15,7 @@ The workspace separates the user-facing CLI application from shared runtime serv
 
 **Context:** The CLI is the product entry point, while trace collection, configuration, delivery, and integration logic must also be executable from hooks and test infrastructure.
 
-**Consequences:** Hook configuration invokes the published `agentscope` executable. CLI commands delegate to Core services; no harness-native parsing, destination transport, or credential storage implementation is duplicated in `apps/cli`.
+**Consequences:** Hook installation binds to an Agentscope-owned launcher rather than searching hook-time `PATH`. CLI commands delegate to Core services; no harness-native parsing, destination transport, or credential storage implementation is duplicated in `apps/cli`. Release builds bundle all private Agentscope TypeScript workspace code into the CLI artifact; non-bundleable third-party/native modules remain ordinary public runtime dependencies.
 
 ### ADR-002: Keep Core shared and integration-neutral
 

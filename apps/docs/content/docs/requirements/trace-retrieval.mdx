@@ -24,4 +24,7 @@ As a developer, I want to search traces by meaningful context, so that I can inv
 
 As a user, I want clear feedback when a destination cannot search, so that I do not mistake local state for remote trace history.
 
-- **AC-RET-002.1:** When `--destination` is absent, unknown, or names a destination without retrieval capability, the system shall return an actionable usage or unsupported-capability result and shall not select or fan out to another destination implicitly.
+- **AC-RET-002.1:** When `--destination` is absent, the system shall return a usage result and shall not select a destination implicitly.
+- **AC-RET-002.2:** When `--destination` names an unknown connection, the system shall return a stable unknown-destination result.
+- **AC-RET-002.3:** When `--destination` names a connection without retrieval capability, the system shall return a stable unsupported-capability result.
+- **AC-RET-002.4:** When any destination selection fails, the system shall not fan out to another destination implicitly.

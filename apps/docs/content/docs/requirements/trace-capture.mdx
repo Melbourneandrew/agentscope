@@ -11,6 +11,7 @@ Agentscope must capture useful harness activity without acting as a proxy for th
 
 - **Effective Git context:** the branch, commit, worktree, and repository resolved from the active agent workspace.
 - **Fail open:** capture errors do not change the harness's successful/failed outcome.
+- **Hook deadline:** the absolute duration, measured from Agentscope hook entry, after which unfinished capture and reporting work is cancelled before the harness is released.
 
 ## Requirements
 
@@ -19,7 +20,8 @@ Agentscope must capture useful harness activity without acting as a proxy for th
 As a coding-agent user, I want trace capture to be non-disruptive, so that observability never prevents me from using my harness.
 
 - **AC-CAP-001.1:** When a hook cannot report, the system shall return without blocking the harness session.
-- **AC-CAP-001.2:** When capture work exceeds its bounded deadline, the system shall record a sanitized diagnostic and fail open.
+- **AC-CAP-001.2:** When capture work reaches the configured hook deadline, the system shall cancel unfinished work, record a sanitized diagnostic, and fail open.
+- **AC-CAP-001.3:** When a hook begins, the system shall derive one immutable configuration and policy snapshot for all work in that invocation.
 
 ### REQ-CAP-002: Session context
 
@@ -27,4 +29,8 @@ As a user, I want traces to include the context in which my agent worked, so tha
 
 - **AC-CAP-002.1:** When Git context is available, the system shall record effective branch, commit, worktree, repository root, and provenance.
 - **AC-CAP-002.2:** When the checkout is detached or Git is unavailable, the system shall record an explicit state rather than invent a branch name.
-- **AC-CAP-002.3:** When harness metadata is available, the system shall record harness version, model, reasoning configuration, usage, timing, tool activity, and errors.
+- **AC-CAP-002.3:** When harness identity metadata is available, the system shall record the harness and harness version with provenance.
+- **AC-CAP-002.4:** When model metadata is available, the system shall record model identity and reasoning configuration with provenance.
+- **AC-CAP-002.5:** When usage or timing metadata is available, the system shall record it with provenance.
+- **AC-CAP-002.6:** When tool activity or errors are available, the system shall record them with provenance.
+- **AC-CAP-002.7:** When a metadata family is unavailable, the system shall preserve an explicit unavailable state rather than inventing a value.

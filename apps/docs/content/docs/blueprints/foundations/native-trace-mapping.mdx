@@ -11,7 +11,7 @@ Native artifacts vary by harness; this Blueprint defines how adapters map them w
 
 ### ADR-001: Preserve provenance and uncertainty
 
-**Decision:** Every canonical field derived from a native artifact records source/provenance where ambiguity affects interpretation, and unavailable values remain unavailable.
+**Decision:** Every captured field derived from a native artifact records source/provenance where ambiguity affects interpretation, and unavailable values remain unavailable.
 
 **Context:** Transcript data, hook payloads, and process working directories can disagree or be incomplete.
 
@@ -19,8 +19,16 @@ Native artifacts vary by harness; this Blueprint defines how adapters map them w
 
 ### ADR-002: Normalize semantic primitives, retain native evidence
 
-**Decision:** Map sessions, turns, model calls, tools, skills, files, errors, and child agents to shared primitives while retaining only sanitized raw-source identities after the transient adapter phase.
+**Decision:** Map sessions, turns, model calls, tools, skills, files, errors, and child agents into a transient `CapturedTrace`; retain only sanitized raw-source identities after Core converts it to `RedactedCanonicalTrace`.
 
 **Context:** Consumers need portable semantics and support engineers need a way to explain mappings, but raw native content cannot cross the redaction boundary.
 
-**Consequences:** A harness adapter emits OpenInference `AGENT`, `LLM`, `TOOL`, and other applicable OTLP spans directly. It contributes `agentscope.*` only for harness/Git/workspace/provenance concepts; model, message, token, timing, and error fields use their OpenInference definitions rather than duplicate fields.
+**Consequences:** A harness adapter maps native evidence to OpenInference-shaped semantic candidates but cannot construct an exportable value. Core redaction and Protocol validation produce the applicable `AGENT`, `LLM`, `TOOL`, and other OTLP spans. `agentscope.*` remains limited to harness/Git/workspace/provenance concepts; model, message, token, timing, and error fields use their OpenInference definitions.
+
+### ADR-003: Persist only non-content incremental checkpoints
+
+**Decision:** Adapters derive stable native session, turn, and event identity from the strongest harness-provided identifiers. An incremental adapter may persist only versioned non-content checkpoints containing native source identity, generation, and acknowledged event position; when destinations accept independently, checkpoint progress is connection-scoped.
+
+**Context:** Append-only artifacts may be reread by repeated hooks. Advancing one global cursor can either duplicate earlier turns or skip delivery to a connection that did not accept them.
+
+**Consequences:** A checkpoint advances only after the associated connection accepts the capture boundary. Adapters without stable native identity explicitly declare at-least-once behavior. Replay, append, restart, and partial-acceptance tests prove stable deduplication and no skipped acknowledged events.

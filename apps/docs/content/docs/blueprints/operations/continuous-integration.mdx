@@ -24,3 +24,19 @@ CI protects the repository from quality, package, documentation, and harness-com
 **Context:** A pull request can change test code and must not be able to exfiltrate a privileged token through logs or network traffic.
 
 **Consequences:** CI uploads only sanitized test logs and ledgers. Publishing follows [NPM Publishing](/docs/blueprints/operations/npm-publishing), and Pages follows [Documentation Site](/docs/blueprints/operations/documentation-site).
+
+### ADR-003: Bind every privileged job to a trusted source and environment
+
+**Decision:** Every secret-bearing or publishing job uses a named GitHub environment restricted to protected `main` or protected release tags. Manual live checks execute both workflow code and checkout from an explicitly selected trusted `main` commit; candidate-branch checks use no production secret.
+
+**Context:** Safe trigger names and approvals do not establish which workflow revision runs or which source bytes receive authority.
+
+**Consequences:** Environment/ref policy is a documented repository prerequisite. Live and release records identify the trusted source commit; publishing additionally binds the tested package digest as defined by NPM Publishing.
+
+### ADR-004: Gate mandatory requirements by evidence
+
+**Decision:** Every mandatory `AC-*` identifier is referenced by at least one automated test or an explicitly approved manual verification record, and CI rejects orphaned acceptance criteria.
+
+**Context:** Passing named jobs proves those commands ran, not that the external requirements source of truth has evidence.
+
+**Consequences:** PR summaries report requirement coverage. Adding or changing acceptance criteria updates evidence in the same change; release gates consume the same traceability record and exact tested artifact.

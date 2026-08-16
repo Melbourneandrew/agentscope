@@ -11,11 +11,11 @@ Core owns only the small operational state needed to diagnose installations and 
 
 ### ADR-001: Keep trace data out of operational state
 
-**Decision:** `AGENTSCOPE_HOME` may contain versioned configuration, configuration-migration markers, short-lived locks, and bounded sanitized diagnostics. It shall not contain raw native artifacts, canonical trace graphs, pending batches, reporter payloads, credential values, or a retry queue.
+**Decision:** `AGENTSCOPE_HOME` may contain versioned configuration, short-lived owned mutation records, bounded sanitized diagnostics and health markers, and versioned non-content incremental capture checkpoints. It shall not contain raw native artifacts, canonical trace graphs, pending batches, reporter payloads, credential values, or a retry queue.
 
 **Context:** A hook must fail open when reporting is unavailable. Persisting failed telemetry would create an unrequested local trace repository with privacy, retention, encryption, and recovery obligations.
 
-**Consequences:** A hook reports once within its deadline. On any failed or incomplete delivery it discards the batch and records only a stable error code, timestamp, destination identity, and bounded non-sensitive summary.
+**Consequences:** A hook reports at most once per selected connection within its deadline. On any failed or incomplete delivery it discards the batch and records only permitted health evidence; checkpoints contain native source identity/generation and acknowledged position, never trace content.
 
 ### ADR-002: Bound diagnostics and make loss explicit
 
@@ -25,10 +25,10 @@ Core owns only the small operational state needed to diagnose installations and 
 
 **Consequences:** `agentscope doctor` may safely repair stale Agentscope-owned locks and incomplete configuration migrations. It does not offer delivery replay, trace inspection, or arbitrary cleanup.
 
-### ADR-003: Make configuration-state migrations recoverable
+### ADR-003: Retain minimal positive and negative pipeline health evidence
 
-**Decision:** Core performs configuration-state migrations side by side: it writes and validates a new versioned area, atomically switches a small active-version marker, and retains the prior area through a documented compatibility window.
+**Decision:** Core retains bounded non-content markers for the most recent hook invocation and each selected connection: last completed stage, timestamp, stable outcome code, destination identity, policy/config generation, and accepted receipt class.
 
-**Context:** A process can stop between writing, validating, and committing an upgrade.
+**Context:** Failure-only diagnostics cannot distinguish a hook that never ran from capture, redaction, routing, delivery, or remote-acceptance boundaries.
 
-**Consequences:** Doctor reports stale locks and incomplete migrations with stable diagnostics. Recovery never needs to reinterpret historic trace payloads because none are retained.
+**Consequences:** Markers contain no trace/session identifier, prompt, path, payload, credential, or provider response body. Doctor reports where local evidence ends without claiming remote history. Destination reachability uses declared non-mutating bounded probes and never sends trace content.

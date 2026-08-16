@@ -9,56 +9,10 @@ This Blueprint verifies the complete AgentScope setup flow without ever touching
 
 ## Architecture Decision Records
 
-### ADR-001: Run every default real-harness scenario in an isolated container
+### ADR-001: Compose the leaf testing contracts end to end
 
-**Decision:** The default integration command runs each real harness executable in a disposable container with an empty dedicated user home, harness-specific home, `AGENTSCOPE_HOME`, Git workspace, dummy credentials, and timeout.
+**Decision:** A real-harness scenario composes, without redefining, the lane boundary from [Test Strategy](/docs/blueprints/testing/test-strategy), filesystem/process boundary from [Container Isolation](/docs/blueprints/testing/integration/container-isolation), network and ledger behavior from [Mock Services](/docs/blueprints/testing/integration/mock-services), pinned inputs and compatibility evidence from [Matrix Operations](/docs/blueprints/testing/integration/matrix-operations), and local/CI lifecycle from [Local and CI Execution](/docs/blueprints/testing/integration/ci-execution).
 
-**Context:** Developers may actively use AgentScope and harnesses on their host. A test must be unable to read or mutate their configuration, credentials, worktrees, hook files, or agent behavior.
+**Context:** Each leaf capability has one authoritative amendment point. Repeating isolation, artifacts, mocks, or lane policy here would create parallel ADRs that can drift.
 
-**Consequences:** The container has no host-home, credential-store, harness-config, or writable-repository mount. It installs a checksum-verified packed candidate CLI and lockfile-derived offline dependency artifact inside the container, then runs `agentscope init` and `agentscope install <harness>`. Host-binary testing is an explicit diagnostic-only command and never the normal local or CI path.
-
-### ADR-002: Deny public-network access and use MockServer as protocol authority
-
-**Decision:** Test containers connect only to an internal Docker network hosting MockServer and mock telemetry services. MockServer exposes protocol-aware OpenAI/Responses, Anthropic, Gemini, and other harness-required routes with request ledgers.
-
-**Context:** A harness that ignores an endpoint override must fail the test rather than receive a real model reply or emit a real trace.
-
-**Consequences:** Mock services are not published to host ports. The adapter registers only expected routes; unexpected outbound requests fail the scenario. Sanitized request ledgers are retained as CI failure artifacts.
-
-### ADR-002a: Provision the matrix from pinned offline artifacts
-
-**Decision:** Each harness/version image is pinned by OCI digest and contains the documented harness binary. Testkit supplies the candidate CLI package and production dependency closure as checksum-verified offline artifacts; the scenario may not acquire packages or harness binaries at runtime.
-
-**Context:** Network isolation cannot coexist with mutable `npm` or vendor downloads, and a preinstalled but unpinned executable does not prove a reproducible compatibility claim.
-
-**Consequences:** CI builds or retrieves pinned images before the isolated scenario begins, verifies artifact checksums, and fails on any attempted registry/public-network acquisition. The capability matrix records the image digest and harness version that produced each result.
-
-### ADR-003: Give every harness a complete independent fixture
-
-**Decision:** Every harness/version scenario owns a fresh container, temporary harness home, `AGENTSCOPE_HOME`, Git worktree, dummy credentials, MockServer expectation namespace, and telemetry ledger.
-
-**Context:** Shared homes or ledgers create order-dependent tests and hide adapter-specific installation defects.
-
-**Consequences:** The generic suite asserts fresh install, reversible hook installation, branch/worktree context, redaction, delivery, and cleanup; each harness adds native hook/configuration and artifact expectations.
-
-### ADR-004: Split generic infrastructure from harness and destination adapters
-
-**Decision:** Testkit owns orchestration, isolation, MockServer lifecycle, log capture, generic assertions, and cleanup. Harness packages contribute `HarnessTestAdapter`s; Trace Destination packages contribute `DestinationTestAdapter`s.
-
-**Context:** A monolithic test script becomes unmaintainable as harnesses, Trace Destinations, and reporters grow.
-
-**Consequences:** New harnesses add detection/setup/invocation/native assertions without duplicating containers. New destinations/reporters add mock configuration and ledger normalization without modifying harness scenarios.
-
-### ADR-005: Observe telemetry independently
-
-**Decision:** The suite uses a mock OTLP/Langfuse collector to assert reporter requests separately from model requests and native artifacts.
-
-**Consequences:** Scenarios prove model traffic, hook installation, canonical mapping, branch/model/tool context, redaction, and destination output end-to-end.
-
-### ADR-006: Separate hermetic and live validation
-
-**Decision:** Unit and hermetic integration tests gate pull requests; a protected scheduled/manual live Langfuse smoke validates external drift.
-
-**Context:** Paid or network-dependent services are unsafe and flaky as normal PR gates.
-
-**Consequences:** Live tests use protected credentials and never replace the isolated MockServer matrix.
+**Consequences:** This umbrella owns only the complete acceptance boundary: install the exact packed CLI in a fresh scenario, run init and owned hook installation, invoke the real harness against deterministic model mocks, observe destination delivery independently, assert canonical context/redaction, then prove owned cleanup and uninstall. Harness and destination test adapters extend their own seams without changing generic orchestration.

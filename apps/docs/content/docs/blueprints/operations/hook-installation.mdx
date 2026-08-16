@@ -9,20 +9,30 @@ Hook installation writes the minimal owned integration that allows a harness to 
 
 ## Architecture Decision Records
 
-### ADR-001: Use identifiable owned blocks and transactions
+### ADR-001: Use a conflict-safe installation transaction
 
-**Decision:** Adapters generate an identifiable Agentscope-owned block, snapshot the target configuration, validate the result, then commit atomically where the host format permits.
+**Decision:** Adapters generate an identifiable Agentscope-owned block and an owned transaction manifest containing target identities, precondition hashes, staged outputs, and commit state. Targets are rechecked before replacement. Preimages remain in memory where possible; unavoidable same-directory recovery backups preserve source permissions, are excluded from diagnostics, and are removed after verified commit or rollback.
 
-**Context:** Uninstall and rollback must never remove user-managed configuration.
+**Context:** Vendor-owned files can contain credentials and can change concurrently. A snapshot alone does not make rollback safe.
+
+**Consequences:** Recovery restores only a target whose current hash still matches the transaction's committed value; otherwise it reports a conflict for explicit resolution. Formats that cannot provide conflict-safe replacement and recovery are unsupported for mutation.
 
 ### ADR-002: Detect conflicts before modifying hooks
 
 **Decision:** An adapter reports overlapping Agentscope/vendor hooks and requires explicit migration or replacement authority.
 
-**Consequences:** Dry-run is the default diagnostic path; failure rolls back the full installation transaction.
+**Consequences:** Dry-run is the default diagnostic path; failure rolls back only verified unchanged Agentscope-owned targets. Install, resume, rollback, uninstall, and Doctor share this state machine.
 
 ### ADR-003: Verify installation in fresh machine-like environments
 
 **Decision:** The integration matrix installs the packed CLI and each harness adapter into a fresh isolated container before exercising its owned hook.
 
 **Context:** A developer's globally installed binary or preexisting harness configuration can hide missing package assets, installation assumptions, or upgrade regressions.
+
+### ADR-004: Bind hooks to an owned launcher and versioned contract
+
+**Decision:** Installation writes an Agentscope-owned absolute launcher or verified shim with separately encoded arguments; it never invokes through a shell or searches hook-time `PATH`. Each owned block records a hook-contract version and calls a versioned machine-facing capture entry point.
+
+**Context:** Persisted harness configuration outlives individual installs, and GUI/non-login environments may resolve a bare command differently.
+
+**Consequences:** Doctor verifies launcher ownership, location, and contract compatibility. Installation upgrades owned blocks transactionally; unsupported versions remain untouched pending explicit migration. Tests cover argument encoding, relocation, upgrade, downgrade, capture, and uninstall.

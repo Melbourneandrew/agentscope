@@ -19,7 +19,7 @@ A Trace Destination is the configured local or remote trace repository or servic
 
 ### ADR-002: Keep extraction outside Trace Destination
 
-**Decision:** Harness adapters produce canonical batches; Trace Destinations never parse harness artifacts.
+**Decision:** Harness adapters produce transient captures; Core converts them into branded redacted canonical batches. Trace Destinations accept only that branded type and never parse harness artifacts.
 
 **Context:** This keeps a destination reusable across harnesses and makes reporter integration testable independently.
 
@@ -27,14 +27,22 @@ A Trace Destination is the configured local or remote trace repository or servic
 
 **Decision:** Each first-party destination package exports an internal `DestinationDescriptor`: stable destination type identity, versioned Zod schema for non-secret connection settings, declared credential slots, defaults, retrieval capabilities, and a documentation reference. Core owns the outer configuration document and persists only data validated by that descriptor.
 
-**Context:** Langfuse, local SQLite, and a future remote libSQL service need different settings, but destination-specific CLI commands would make the command tree inconsistent and force users and agents to learn unrelated surfaces.
+**Context:** Langfuse, local SQLite, and remote database services need different settings, but destination-specific CLI commands would make the command tree inconsistent and force users and agents to learn unrelated surfaces.
 
 **Consequences:** `agentscope destination configure <type>` is one generic command. It resolves the first-party descriptor, accepts its documented flags or non-interactive input, validates the shape with Zod, writes atomically, and stores credential references—not secret values. A descriptor is normal reviewed first-party code, not a runtime plugin ABI.
 
 ### ADR-004: Keep destination data and credentials out of configuration
 
-**Decision:** The configuration document contains non-secret connection settings and credential references only. A local destination owns its opted-in data file under a platform data directory; remote credentials resolve through an OS credential store or explicit CI environment reference.
+**Decision:** The configuration document contains non-secret connection settings and credential references only. A local destination owns its opted-in data file under `~/.agentscope/destinations/<type>/` (or the equivalent `AGENTSCOPE_HOME`); remote credentials resolve through an OS credential store or explicit CI environment reference.
 
 **Context:** Configuration must remain safe to inspect, back up, and migrate. A local data file and a remote token have different retention and access-control properties.
 
-**Consequences:** `~/.agentscope` or its future platform-native replacement never contains a Langfuse key, remote database secret, or local trace payload merely because a destination is configured.
+**Consequences:** Agentscope home never contains a Langfuse key or remote database secret. It contains a local trace payload only when a user explicitly configures and selects a durable local destination.
+
+### ADR-005: Apply one remote endpoint security baseline
+
+**Decision:** Core requires HTTPS for remote destinations. Plain HTTP is allowed only for loopback test/development endpoints behind an explicit insecure setting. Endpoints containing user information are rejected; authenticated requests never follow cross-origin redirects; each credential slot is resolved only after Core validates and binds the final destination origin.
+
+**Context:** Secure storage does not protect a credential or redacted trace from a malicious endpoint, typo, plaintext transport, or origin-changing redirect.
+
+**Consequences:** Core owns shared endpoint validation and contract tests; a destination may narrow the rules. Doctor reports insecure, redirecting, and origin-mismatched configuration without resolving or printing the secret. Mock services use the explicit loopback-insecure path.

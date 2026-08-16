@@ -1,6 +1,6 @@
 ---
 title: Configuration Extensibility
-description: ADRs for future Trace Destinations, reporters, and harness settings.
+description: ADRs for additional Trace Destinations, reporters, and harness settings.
 ---
 
 ## Capability Summary
@@ -21,4 +21,12 @@ Configuration must accommodate new packages without converting `config.json` int
 
 **Decision:** Older CLIs preserve unknown first-party package namespaces during read/write and refuse unsafe downgrades.
 
-**Context:** A user may update one package before the CLI; losing its settings is worse than an actionable compatibility error.
+**Context:** Persisted configuration may have been written by a newer atomic CLI release; private packages are never installed or updated independently.
+
+### ADR-003: Assign validation ownership by contract boundary
+
+**Decision:** CLI owns command syntax and command DTO validation; Core owns the outer configuration document, effective-value resolution, and cross-block/routing invariants; each first-party harness or destination descriptor owns its local settings schema; Protocol owns only canonical trace/envelope schemas and Protocol migrations. Zod is the common mechanism, not the architectural owner.
+
+**Context:** Contract ownership must follow dependency direction even when every layer uses the same validation library.
+
+**Consequences:** CLI composes registered first-party descriptors rather than copying their schemas. Core performs final composed validation before atomic persistence and reports the rejecting boundary using stable sanitized diagnostics.

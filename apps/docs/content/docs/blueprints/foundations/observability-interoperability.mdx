@@ -17,10 +17,10 @@ Agentscope must interoperate with industry telemetry without becoming dependent 
 
 **Consequences:** Export-contract tests assert the resource attribute allowlist as well as span fields; destination packages cannot add arbitrary environment-derived attributes.
 
-### ADR-002: Make OpenInference the canonical semantic baseline
+### ADR-002: Own only transport interoperability here
 
-**Decision:** Canonical traces use a pinned OpenInference semantic baseline for fields and span kinds it defines; `agentscope.*` adds coding-harness context without redefining those fields.
+**Decision:** This Blueprint owns OTLP protobuf/JSON transport encoding, redacted resource encoding, and detector allowlists. It consumes the OpenInference baseline and `agentscope.*` registry owned by Canonical Trace Format without redefining either.
 
 **Context:** This gives Agentscope portable agent/LLM/tool semantics and direct OTLP interoperability while preserving the additional coding-agent domain context that OpenInference does not model.
 
-**Consequences:** Upgrading the pinned OpenInference version is an explicit Protocol migration. Agentscope-specific attributes are documented and tested as additive, redaction-safe extensions rather than a fork of the OpenInference vocabulary.
+**Consequences:** Transport tests use the Protocol manifest identifier and canonical fixtures. A transport or destination cannot reinterpret canonical fields or silently enable automatic resource detection.

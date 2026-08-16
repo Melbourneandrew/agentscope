@@ -21,6 +21,6 @@ MockServer and mock telemetry services make real harness execution deterministic
 
 **Decision:** A destination test adapter owns a mock OTLP/Langfuse or destination-native endpoint and normalizes its request ledger into common assertions.
 
-**Context:** Model traffic and trace export are distinct evidence. A future Trace Destination must not require a harness test rewrite.
+**Context:** Model traffic and trace export are distinct evidence. An additional Trace Destination must not require a harness test rewrite.
 
 **Consequences:** Generic assertions cover canonical hierarchy, branch/model/tool context, redaction, and delivery shape; a harness adapter adds native expectations and a destination adapter adds protocol-specific expectations.
