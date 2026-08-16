@@ -1,6 +1,6 @@
 ---
 title: Configuration Management
-description: ADRs for durable ~/.agentscope configuration.
+description: ADRs for durable cross-platform Agentscope configuration.
 ---
 
 ## Capability Summary
@@ -9,11 +9,13 @@ This Blueprint realizes [Configuration Directory](/docs/requirements/configurati
 
 ## Architecture Decision Records
 
-### ADR-001: Use one machine-local root
+### ADR-001: Resolve one cross-platform machine-local root
 
-**Decision:** Resolve configuration to `~/.agentscope`, with `AGENTSCOPE_HOME` as the only explicit override.
+**Decision:** Resolve the default home with Node's `os.homedir()` and `path.join(home, ".agentscope")`: `~/.agentscope` on macOS/Linux and `%USERPROFILE%\\.agentscope` on Windows. `AGENTSCOPE_HOME` is the only explicit override and replaces the entire resolved home for tests, CI, and portable installs.
 
-**Context:** Users and hook processes need a predictable support surface; hermetic tests need one clean override.
+**Context:** Users and hook processes need a predictable support surface without Unix-only path assumptions; hermetic tests need one clean override.
+
+**Consequences:** Every CLI command, hook, Core service, and harness adapter receives the same injected home resolver. No package derives its own path from `$HOME`, `~`, a shell expansion, or a platform-specific environment variable.
 
 ### ADR-002: Persist atomically and version configuration
 
