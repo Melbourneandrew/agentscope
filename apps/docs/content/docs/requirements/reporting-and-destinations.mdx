@@ -1,0 +1,10 @@
+---
+title: Reporting and Destinations
+description: Extensible delivery, retries, and destination ownership.
+---
+
+AgentScope ships with a Langfuse reporter, initially through OTLP. Reporter plugins receive a normalized, already-redacted trace batch. They map it to their destination's transport and return a receipt; core owns batching, idempotency keys, retry classification, bounded local spooling, and delivery diagnostics.
+
+Reporters must declare their capabilities: delivery transport, retrieval availability, configuration schema, health check, and supported trace fields. This keeps a future direct Langfuse reporter, a data warehouse sink, or an internal endpoint from leaking destination-specific decisions into harness packages.
+
+The concrete extension seam is in the [trace reporting blueprint](/docs/blueprints/trace-reporting).

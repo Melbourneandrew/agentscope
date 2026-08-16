@@ -1,0 +1,15 @@
+{
+  "title": "Requirements",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": [
+    "product-description",
+    "trace-capture",
+    "trace-source-connection",
+    "trace-retrieval",
+    "reporting-and-destinations",
+    "harness-management",
+    "agentscope-doctor",
+    "data-governance-and-reliability"
+  ]
+}

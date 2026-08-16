@@ -10,7 +10,7 @@ flowchart LR
   Q --> R["Reporter interface"]
   R --> L["Langfuse"]
   R --> O["Console / custom destinations"]
-  CLI["agent-scope CLI"] --> H
+  CLI["agentscope CLI"] --> H
   CLI --> CFG["OS config + credential store"]
   CLI --> C
 ```
@@ -28,13 +28,13 @@ flowchart LR
 ## CLI contract (initial)
 
 ```text
-agent-scope init
-agent-scope configure reporter langfuse
-agent-scope install codex
-agent-scope status
-agent-scope doctor
-agent-scope capture replay <fixture>
-agent-scope uninstall codex
+agentscope init
+agentscope configure reporter langfuse
+agentscope install codex
+agentscope status
+agentscope doctor
+agentscope capture replay <fixture>
+agentscope uninstall codex
 ```
 
 `init` creates the global config directory and selects a reporter. `install` detects an existing provider installation, writes a reversible hook configuration transaction, and records the provider version. A hook invokes the stable CLI executable rather than embedding implementation code in provider config.
@@ -102,7 +102,7 @@ session
     └── child-agent turn traces
 ```
 
-The CLI detects the official plugin/configuration during `install` and `doctor`. The default action is a non-destructive conflict report with migration instructions; only an explicit `agent-scope install <harness> --replace-langfuse` may disable or replace the overlapping hook. Test fixtures must include conflict detection, migration rollback, duplicate prevention, layered config precedence, and fail-open behavior.
+The CLI detects the official plugin/configuration during `install` and `doctor`. The default action is a non-destructive conflict report with migration instructions; only an explicit `agentscope install <harness> --replace-langfuse` may disable or replace the overlapping hook. Test fixtures must include conflict detection, migration rollback, duplicate prevention, layered config precedence, and fail-open behavior.
 
 ## Integration-test blueprint
 

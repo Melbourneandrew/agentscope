@@ -1,0 +1,24 @@
+---
+title: Trace Source Connection
+description: Configuring trace destinations, credentials, and activation.
+---
+
+## User flow
+
+```bash
+agentscope configure reporter langfuse
+agentscope install codex
+agentscope status
+```
+
+The configuration flow selects a reporter, validates its settings, stores secrets through the platform credential store where possible, and creates a named trace-source connection. A connection binds a reporter implementation and a configuration profile; it does not bind a user to a single harness.
+
+## Requirements
+
+- Configuration is machine-scoped by default, with explicit project policy overrides added only when their precedence is documented.
+- The CLI accepts interactive setup, non-interactive flags, and environment-backed secret references for CI.
+- Reporter credentials are validated with a minimal health check that does not emit a production trace.
+- Multiple named connections may coexist; a routing policy decides the active connection(s) for each capture.
+- Config files contain references and non-secret settings only. The doctor output masks all credential-like values.
+
+The initial Langfuse connection supports OTLP export. Direct Langfuse ingestion can be another reporter implementation later without changing harness adapters.

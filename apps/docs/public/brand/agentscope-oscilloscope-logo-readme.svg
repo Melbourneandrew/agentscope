@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">AgentScope oscilloscope logo</title>
+  <desc id="desc">A minimal outline drawing of an oscilloscope with a waveform display.</desc>
+  <g stroke="#5A9820" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="28" y="42" width="200" height="172" rx="24"/>
+    <rect x="48" y="62" width="160" height="104" rx="12"/>
+    <path d="M62 114h18c7 0 11-8 15-22l8-28 12 72 13-45c3-10 7-17 15-17h16c8 0 12 7 15 17l13 45 12-72 8 28c4 14 8 22 15 22h18"/>
+    <circle cx="94" cy="190" r="10"/>
+    <circle cx="162" cy="190" r="10"/>
+  </g>
+</svg>

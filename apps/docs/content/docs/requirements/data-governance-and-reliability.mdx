@@ -1,0 +1,10 @@
+---
+title: Data Governance and Reliability
+description: Redaction, durable delivery, and operational expectations.
+---
+
+Before writing to the local spool or a reporter, core applies a versioned redaction policy to prompts, tool inputs/outputs, environment-derived metadata, paths, and configured patterns. The policy is testable independently and records a non-sensitive summary of what was removed.
+
+Delivery is asynchronous and bounded. Core uses idempotency keys, retryable/non-retryable classification, a size- and age-limited spool, and observable drop behavior. It fails open for the harness while preserving enough local diagnostic state for `agentscope doctor` to explain the loss.
+
+The product must document what it captures, what it redacts, where it persists pending work, and how a user removes local state. No reporter may weaken those guarantees.

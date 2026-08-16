@@ -1,0 +1,26 @@
+---
+title: Trace Retrieval
+description: Searching and inspecting stored traces without coupling the CLI to Langfuse.
+---
+
+## User outcome
+
+Where a destination exposes a query API, users can search and inspect their reported traces from the same CLI:
+
+```bash
+agentscope traces search --branch codex/docs-product-surface --harness codex
+agentscope traces get trace_123
+```
+
+## Boundary
+
+Reporting is write-oriented. Retrieval is an optional adjacent capability supplied by the destination plugin, not a responsibility forced onto every reporter. A Langfuse plugin can expose a `TraceRetriever` that maps the portable query to Langfuse's API; a write-only OTLP destination simply does not expose it.
+
+The CLI owns portable filters (time range, harness, branch, model, session, tags, pagination) and presentation. The retrieval capability owns destination authentication, filter translation, response pagination, and an honest declaration of unsupported filters.
+
+## Requirements
+
+- A missing retrieval capability is a clear, actionable CLI result, never a fake local search.
+- Results preserve destination identifiers and map available fields into portable summary fields.
+- Query output is machine-readable (`--json`) and human-readable, with redaction applied before display.
+- Retrieval is read-only; it must not need capture hooks, workspace access, or a running harness.

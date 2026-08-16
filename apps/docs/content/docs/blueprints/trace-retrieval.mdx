@@ -1,0 +1,35 @@
+---
+title: Trace Retrieval
+description: An optional destination capability behind portable CLI queries.
+---
+
+## Decision
+
+Keep delivery and query contracts separate, then package them together when a destination supports both:
+
+```ts
+interface TraceReporter {
+  id: string;
+  report(batch: TraceBatch): Promise<TraceReportReceipt>;
+}
+
+interface TraceRetriever {
+  search(query: TraceSearchQuery): Promise<TraceSearchPage>;
+  get(traceId: string): Promise<TraceDetail | undefined>;
+}
+
+interface ReporterPlugin {
+  reporter: TraceReporter;
+  retriever?: TraceRetriever;
+}
+```
+
+Core validates `TraceSearchQuery` and the CLI renders its portable result types. The retriever translates to the provider API and returns explicit capability errors for filters it cannot represent. This gives Langfuse API retrieval a first-class home without making an OTLP-only or write-only reporter pretend it can query data.
+
+## Why not put `search` on `TraceReporter`?
+
+That would force every destination to implement a meaningless query surface and would blur two failure models: delivery must be resilient and fail open; user-initiated retrieval should accurately fail when a destination cannot search. The plugin boundary preserves shared configuration while keeping those operations independent.
+
+## Langfuse initial implementation
+
+`@agentscope/reporter-langfuse` owns the Langfuse endpoint/authentication mapping and exports both an OTLP reporter and, when configured, a Langfuse retriever. Its contract tests use a mock Langfuse API with pagination, filter translation, empty result, authorization, rate-limit, and malformed-response cases.

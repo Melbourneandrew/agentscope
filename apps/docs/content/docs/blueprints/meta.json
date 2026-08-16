@@ -1,0 +1,6 @@
+{
+  "title": "Blueprints",
+  "collapsible": true,
+  "defaultOpen": true,
+  "pages": ["trace-reporting", "trace-retrieval", "agent-harness-integration"]
+}

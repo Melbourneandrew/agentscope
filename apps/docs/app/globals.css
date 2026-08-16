@@ -14,6 +14,7 @@
   --accent: #a8d870;
   --accent-ink: #18210d;
   --blue: #8ec9e8;
+  --brand-logo-color: #c8f28f;
 }
 html.light {
   --page: #f7f8f4;
@@ -26,6 +27,10 @@ html.light {
   --accent: #4b7f18;
   --accent-ink: #ffffff;
   --blue: #176e99;
+  --brand-logo-color: #356f0c;
+}
+html.dark {
+  --brand-logo-color: #c8f28f;
 }
 * {
   box-sizing: border-box;
@@ -67,7 +72,7 @@ a {
   width: 26px;
   height: 26px;
   flex: none;
-  background-color: var(--accent);
+  background-color: var(--brand-logo-color);
   mask: url("/brand/agentscope-oscilloscope-logo.svg") center / contain
     no-repeat;
   -webkit-mask: url("/brand/agentscope-oscilloscope-logo.svg") center / contain

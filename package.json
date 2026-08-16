@@ -2,6 +2,15 @@
   "name": "agentscope",
   "private": true,
   "version": "0.1.0",
+  "description": "CLI-first coding-agent trace observability with extensible reporters.",
+  "homepage": "https://melbourneandrew.github.io/agentscope/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Melbourneandrew/agentscope.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Melbourneandrew/agentscope/issues"
+  },
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "engines": {
@@ -12,7 +21,6 @@
     "dev:docs": "pnpm --filter @agentscope/docs dev",
     "lint": "nx run-many -t lint",
     "test": "pnpm test:unit",
-    "test:unit": "pnpm --filter @agentscope/core test && pnpm --filter @agentscope/testkit test",
     "test:unit": "pnpm --filter @agentscope/core test && pnpm --filter @agentscope/testkit test",
     "test:integration": "docker compose -f infra/docker/docker-compose.integration.yml up --build --exit-code-from integration",
     "test:integration:live": "pnpm --filter @agentscope/integration-live test",

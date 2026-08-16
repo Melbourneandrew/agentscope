@@ -1,0 +1,10 @@
+---
+title: Agentscope Doctor
+description: Diagnose a capture setup safely and make repair actions explicit.
+---
+
+`agentscope doctor` is the primary support surface for an installation that looks correct but does not produce traces.
+
+It checks CLI and adapter versions, harness discovery, generated hook configuration, config precedence, credential references, local spool health, reporter reachability, endpoint protocol compatibility, Git-context discovery, duplicate hooks, and redaction configuration. Each finding has a stable code, severity, evidence with secrets removed, and a suggested next command.
+
+`agentscope doctor --fix` is limited to safe, reversible repairs such as regenerating an owned hook block or clearing an expired local lock. It never deletes a user's harness configuration, rotates credentials, or replaces a vendor hook without a separate explicit migration command. `--json` makes the same diagnostics useful to CI and support tooling.

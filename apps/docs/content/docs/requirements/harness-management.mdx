@@ -1,0 +1,10 @@
+---
+title: Harness Management
+description: The adapter lifecycle for coding-agent harnesses.
+---
+
+An agent harness adapter owns detection, compatible-version checks, configuration generation, reversible installation, native artifact extraction, and uninstall. Core owns normalized semantics and reporters own destinations.
+
+Each adapter must declare the hook points it uses, what context it can observe, its configuration files, and its compatibility matrix. It must support dry-run installation and detect overlapping native/vendor observability integrations before writing anything.
+
+Real integration tests run every supported harness executable in isolation. The [agent harness integration blueprint](/docs/blueprints/agent-harness-integration) defines the common test contract and the required behavior for new adapters.

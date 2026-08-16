@@ -1,0 +1,29 @@
+---
+title: Trace Capture
+description: How capture is installed, invoked, and kept safe for an agent session.
+---
+
+## Capture contract
+
+`agentscope install <harness>` writes an idempotent, reversible integration into an isolated harness configuration. The harness invokes a small hook entrypoint; that entrypoint calls the installed `agentscope` binary, which extracts or receives native data and hands it to core.
+
+The hook process inherits the harness's working directory in normal hook designs. AgentScope treats that directory as a hint, then resolves the Git repository and worktree from it. This makes branch capture reliable when an agent has changed directories, while avoiding an assumption that every hook is launched in a repository.
+
+## Required context
+
+For every capture attempt, core records a value, an unavailable reason, or a confidence level for:
+
+- harness identity and version; session/turn identifiers; lifecycle event;
+- model name, provider, reasoning configuration, token and cost usage where exposed;
+- Git root, worktree path, effective branch, commit SHA, and detached-head state;
+- workspace path, host/runtime facts that are safe to retain, timestamps, and parent links;
+- tool activity, file changes, skills, errors, and user-visible outcomes when the harness exposes them.
+
+`git branch --show-current` is the first branch probe inside the resolved worktree. If it is empty, AgentScope records `detached` plus `HEAD` SHA; if Git is absent or the path is not a worktree, it records `unavailable` with a reason. It never uses the checkout directory name as a branch surrogate.
+
+## Safety boundaries
+
+- Hook work is timeout-bounded and returns success after recording a local diagnostic when it cannot report.
+- Redaction happens before persistence and before any reporter sees data.
+- Capture has no authority to modify the workspace or harness configuration except during explicit CLI install, update, or uninstall commands.
+- Duplicate vendor integrations are detected. `agentscope doctor` explains the conflict; replacement requires an explicit, reversible migration command.
