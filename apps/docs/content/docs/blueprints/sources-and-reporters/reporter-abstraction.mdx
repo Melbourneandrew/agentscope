@@ -1,0 +1,24 @@
+---
+title: Reporter Abstraction
+description: ADRs for destination delivery behavior.
+---
+
+# Reporter Abstraction
+
+## Capability Summary
+
+Reporters send redacted canonical batches to an external destination for the [Reporting and Destinations](/docs/requirements/reporting-and-destinations) capability.
+
+## Architecture Decision Records
+
+### ADR-001: Require reporting, make retrieval optional
+
+**Decision:** Every Trace Source has a reporter; only sources whose destination supports queries expose a retriever.
+
+**Context:** Delivery is core product behavior while many valid destinations are write-only.
+
+### ADR-002: Centralize delivery policy
+
+**Decision:** Core owns redaction, batching, idempotency, retries, and spool limits; reporters map a batch and return a receipt.
+
+**Context:** Failure semantics cannot vary by destination or block a harness.

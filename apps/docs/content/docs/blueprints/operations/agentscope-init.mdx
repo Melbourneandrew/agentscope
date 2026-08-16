@@ -1,0 +1,24 @@
+---
+title: agentscope init
+description: ADRs for first-run orchestration.
+---
+
+# agentscope init
+
+## Capability Summary
+
+`agentscope init` turns a fresh install into an explicit plan for sources and harness integrations.
+
+## Architecture Decision Records
+
+### ADR-001: Make initialization plan-first
+
+**Decision:** Init discovers harnesses and requested sources, displays an install/configuration plan, and requires confirmation before mutation; `--yes` enables automation.
+
+**Context:** Hook installation and credential setup are material machine changes.
+
+### ADR-002: Keep init resumable
+
+**Decision:** Init records completed owned steps and can safely resume or rerun idempotently.
+
+**Context:** Credential prompts, unavailable harnesses, and partial installation should not force manual cleanup.

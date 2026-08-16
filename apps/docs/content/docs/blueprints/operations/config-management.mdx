@@ -1,0 +1,24 @@
+---
+title: Configuration Management
+description: ADRs for durable ~/.agentscope configuration.
+---
+
+# Configuration Management
+
+## Capability Summary
+
+This Blueprint realizes [Configuration Directory](/docs/requirements/configuration-directory) for a TypeScript CLI.
+
+## Architecture Decision Records
+
+### ADR-001: Use one machine-local root
+
+**Decision:** Resolve configuration to `~/.agentscope`, with `AGENTSCOPE_HOME` as the only explicit override.
+
+**Context:** Users and hook processes need a predictable support surface; hermetic tests need one clean override.
+
+### ADR-002: Persist atomically and version configuration
+
+**Decision:** Validate versioned config, write a same-directory temporary file, fsync where supported, then atomically rename; migration makes a bounded backup first.
+
+**Consequences:** Hooks fail open on quick lock contention and never perform interactive migration.

@@ -1,0 +1,22 @@
+---
+title: Trace Retrieval
+description: ADRs for optional destination-backed search.
+---
+
+# Trace Retrieval
+
+## Capability Summary
+
+Retrievers let a configured Trace Source expose remote trace search through the CLI.
+
+## Architecture Decision Records
+
+### ADR-001: Keep portable search in the CLI
+
+**Decision:** The CLI owns portable filters and presentation; the retriever maps those filters to destination APIs and declares unsupported filters.
+
+**Context:** Users need stable semantics while providers differ in query vocabulary and pagination.
+
+### ADR-002: Do not emulate unsupported retrieval
+
+**Decision:** A source without a retriever returns an explicit capability error rather than searching local spool data as if it were destination history.

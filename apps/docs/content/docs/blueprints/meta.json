@@ -2,10 +2,5 @@
   "title": "Blueprints",
   "collapsible": true,
   "defaultOpen": true,
-  "pages": [
-    "configuration-directory",
-    "trace-reporting",
-    "trace-retrieval",
-    "agent-harness-integration"
-  ]
+  "pages": ["foundations", "sources-and-reporters", "operations", "testing"]
 }

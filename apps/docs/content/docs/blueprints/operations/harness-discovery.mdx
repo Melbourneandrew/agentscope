@@ -1,0 +1,24 @@
+---
+title: Harness Discovery
+description: ADRs for detecting installed agent harnesses.
+---
+
+# Harness Discovery
+
+## Capability Summary
+
+`agentscope init` needs to identify installable harnesses without mutating the machine.
+
+## Architecture Decision Records
+
+### ADR-001: Discover through adapter probes
+
+**Decision:** Each harness adapter provides a read-only probe for executable path/version and known configuration locations.
+
+**Context:** Harness install conventions differ and discovery must not encode vendor knowledge in the CLI core.
+
+### ADR-002: Separate detection from compatibility
+
+**Decision:** Discovery reports installed, absent, unsupported, and indeterminate states separately.
+
+**Context:** An unsupported installed CLI is useful information and must not appear equivalent to absence.

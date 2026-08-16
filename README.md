@@ -27,7 +27,7 @@ Agentscope is in its foundation phase. The monorepo, public documentation, CI st
 
 - [Documentation site](https://melbourneandrew.github.io/agentscope/docs)
 - [Product requirements](https://melbourneandrew.github.io/agentscope/docs/requirements/product-description)
-- [Integration-test blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/agent-harness-integration)
+- [Integration-test blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration)
 - [Local contributor guide](CONTRIBUTING.md)
 
 ## Planned usage
@@ -74,7 +74,7 @@ pnpm test:integration
 pnpm dev:docs
 ```
 
-Unit tests cover deterministic core, adapter, and reporter contracts. Integration tests are a separate lane: they run real harness executables in isolated homes and Git workspaces against mock model and telemetry endpoints. See the [integration blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/agent-harness-integration) for the intended matrix and extension contract.
+Unit tests cover deterministic core, adapter, and reporter contracts. Integration tests are a separate lane: they run real harness executables in isolated homes and Git workspaces against mock model and telemetry endpoints. See the [integration blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration) for the intended matrix and extension contract.
 
 ## Contributing
 

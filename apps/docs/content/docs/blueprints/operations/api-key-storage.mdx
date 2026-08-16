@@ -1,0 +1,24 @@
+---
+title: Source and Reporter API Key Storage
+description: ADRs for credential references and secret isolation.
+---
+
+# Source and Reporter API Key Storage
+
+## Capability Summary
+
+Trace Source credentials need secure storage while hooks remain non-interactive and testable.
+
+## Architecture Decision Records
+
+### ADR-001: Store secret values outside ~/.agentscope
+
+**Decision:** Interactive configuration stores API keys in an OS credential store; config retains only a credential reference.
+
+**Context:** Config, backups, diagnostics, and bug reports must remain safely inspectable.
+
+### ADR-002: Permit explicit CI secret references
+
+**Decision:** Non-interactive configuration may reference environment-provided secrets; it never copies their values into config, spool, commands, or diagnostics.
+
+**Consequences:** Real-harness integration tests use dummy credentials and ephemeral environment values.

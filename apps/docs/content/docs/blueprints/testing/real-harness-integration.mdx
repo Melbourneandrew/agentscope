@@ -1,0 +1,30 @@
+---
+title: Real Harness Integration Testing
+description: ADRs for MockServer-backed live executable scenarios.
+---
+
+# Real Harness Integration Testing
+
+## Capability Summary
+
+This Blueprint verifies the full AgentScope setup flow: discovery, init, hook installation, actual harness execution, capture, and reporter delivery.
+
+## Architecture Decision Records
+
+### ADR-001: Run real harness binaries in disposable environments
+
+**Decision:** Each scenario runs the actual harness executable with isolated harness home, `AGENTSCOPE_HOME`, Git workspace, dummy keys, and timeout.
+
+**Context:** Only the real binary proves native hook behavior and setup compatibility.
+
+### ADR-002: Use MockServer as protocol authority
+
+**Decision:** A reusable MockServer layer exposes protocol-aware OpenAI/Responses, Anthropic, Gemini, and other harness-required routes with recorded expectation ledgers.
+
+**Context:** One OpenAI-only fake conceals protocol drift; per-harness custom servers duplicate infrastructure.
+
+### ADR-003: Observe telemetry independently
+
+**Decision:** The suite uses a mock OTLP/Langfuse collector to assert reporter requests separately from model requests and native artifacts.
+
+**Consequences:** Scenarios prove model traffic, hook installation, canonical mapping, branch/worktree context, and destination output end-to-end. CI pins required harness images; local runs can explicitly skip unavailable optional binaries.
