@@ -13,7 +13,7 @@ Configuration must accommodate new packages without converting `config.json` int
 
 **Decision:** Core owns the top-level version, configured destinations, and cross-destination routing/selection policy; each first-party Trace Destination package owns only its schema-validated local configuration block.
 
-**Context:** New reporters and harnesses need configuration without collisions or core releases for every option, but v1 does not load third-party executable packages at runtime.
+**Context:** New first-party reporters and harnesses need configuration without collisions or core releases for every option. Agentscope does not load third-party executable packages at runtime.
 
 **Consequences:** A Trace Destination declares its reporter/retriever capabilities and local destination settings. Core alone selects which named destination or destinations receive a canonical batch, resolving the active-connection behavior in REQ-CONN-002.
 

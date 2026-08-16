@@ -1,21 +1,21 @@
 ---
 title: Canonical Agentscope Trace Format
-description: ADRs for the lossless cross-harness event model.
+description: ADRs for the OTLP/OpenInference cross-harness trace model.
 ---
 
 ## Capability Summary
 
-Agentscope needs a durable internal trace format that preserves coding-agent evidence while supporting interoperable export.
+Agentscope needs a durable internal trace format that reuses open telemetry standards while carrying coding-agent evidence those standards do not yet cover.
 
 ## Architecture Decision Records
 
-### ADR-001: Keep Agentscope canonical and lossless
+### ADR-001: Use OTLP with OpenInference semantics as the canonical model
 
-**Decision:** `@agentscope/core` owns the versioned canonical trace contract. It evolves the SF Platform-derived model as its starting provenance rather than making an external telemetry schema the source of truth.
+**Decision:** `@agentscope/core` persists and exchanges an OTLP `ResourceSpans`-shaped trace graph as its canonical body. Its span kinds and attributes follow a pinned OpenInference version wherever that convention applies. `CanonicalTraceEnvelope` is only a small Agentscope lifecycle wrapper around that standard graph, not a second trace schema.
 
-**Context:** Coding harnesses expose transcripts, turn journals, skill reads, workspace context, and trace-to-code attribution that external conventions do not consistently model.
+**Context:** OpenTelemetry supplies the trace data model and transport; OpenInference supplies portable LLM, agent, tool, retrieval, message, token, timing, and error semantics. Recreating either would create needless translation and interoperability drift. Coding harnesses additionally expose installation ownership, harness identity, Git/worktree context, native artifact provenance, and unavailable-value reasons.
 
-**Consequences:** `@agentscope/core` exposes a versioned `CanonicalTraceEnvelope` for first-party packages; current `NativeAgentTrace`, `TraceBatch`, and Agent Trace records are migrated behind it. Core owns compatibility rules and migrations. A public SDK ABI is deferred until external extension patterns justify it.
+**Consequences:** Agentscope never duplicates OpenInference `AGENT`, `LLM`, `TOOL`, model, message, token, timing, or error fields. It adds only documented `agentscope.*` attributes such as `agentscope.harness.*`, `agentscope.workspace.branch`, `agentscope.workspace.repository`, `agentscope.workspace.worktree`, `agentscope.workspace.directory`, `agentscope.mapping.provenance`, and bounded unavailable/reason fields. Core pins versions and owns migrations; values that could disclose local paths remain subject to redaction.
 
 ### ADR-002: Redact before canonical durability
 
@@ -25,10 +25,18 @@ Agentscope needs a durable internal trace format that preserves coding-agent evi
 
 **Consequences:** A raw pointer is a sanitized identity/reference, never an address to unredacted retained content. Fields that cannot be safely represented after redaction are omitted with a bounded unavailable/redacted reason.
 
-### ADR-003: Use versioned export profiles for interoperability
+### ADR-003: Export OpenInference-compatible OTLP with destination overlays
 
-**Decision:** Map canonical traces to version-pinned OpenTelemetry GenAI and OpenInference profiles at reporter boundaries.
+**Decision:** Reporters serialize the canonical graph as version-pinned OpenInference-compatible OTLP, then add destination-specific overlays only where required.
 
-**Context:** OTel GenAI agent conventions are emerging and still development-status; OpenInference supplies complementary LLM, tool, and agent conventions.
+**Context:** The canonical graph is already OpenInference-shaped. OTLP remains the transport, while Langfuse and later destinations can require additional namespaced attributes for first-class presentation and retrieval.
 
-**Consequences:** Standards churn changes one mapper, not every harness. Agentscope exports W3C/OTel-compatible trace identity while retaining fields those profiles cannot represent.
+**Consequences:** The Langfuse reporter maps only the small overlay (for example filterable trace metadata) rather than translating a second, duplicated agent model. Contract tests distinguish OpenInference/OTLP fields, `agentscope.*` fields, and each destination overlay.
+
+### ADR-004: Treat SF Platform as a reference, not a compatibility target
+
+**Decision:** Agentscope has no requirement to preserve the SF Platform trace schema, APIs, storage format, or hook behavior. The existing implementation is used only to discover use cases, native artifacts, and regression scenarios.
+
+**Context:** The standalone product can choose a simpler, standards-aligned design without carrying internal platform constraints forward.
+
+**Consequences:** Compatibility decisions are driven by OTLP, OpenInference, supported harness behavior, and destination contracts. Migration work applies only to Agentscope's own published formats after they exist.

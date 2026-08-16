@@ -11,14 +11,16 @@ Agentscope must interoperate with industry telemetry without becoming dependent 
 
 ### ADR-001: Emit OpenTelemetry transport identity
 
-**Decision:** Reporters use OTel trace/span context and only explicitly allowlisted, redacted resource attributes wherever their destination supports it. They disable automatic resource detection unless a detector's output is individually normalized and allowlisted.
+**Decision:** Core uses OTel trace/span context and only explicitly allowlisted, redacted resource attributes in its canonical OTLP graph. Reporters preserve them wherever their destination supports it and disable automatic resource detection unless a detector's output is individually normalized and allowlisted.
 
 **Context:** OTel is the broadly adopted trace transport and semantic-convention foundation, but SDK defaults may expose host, process, user, or environment identity outside a canonical payload.
 
 **Consequences:** Export-contract tests assert the resource attribute allowlist as well as span fields; destination packages cannot add arbitrary environment-derived attributes.
 
-### ADR-002: Adopt OpenInference selectively
+### ADR-002: Make OpenInference the canonical semantic baseline
 
-**Decision:** Use OpenInference concepts as an export compatibility profile for LLM, tool, and agentic flow fields, not as the internal persistence schema.
+**Decision:** Canonical traces use a pinned OpenInference semantic baseline for fields and span kinds it defines; `agentscope.*` adds coding-harness context without redefining those fields.
 
-**Context:** It provides richer AI conventions but does not model all coding-harness evidence.
+**Context:** This gives Agentscope portable agent/LLM/tool semantics and direct OTLP interoperability while preserving the additional coding-agent domain context that OpenInference does not model.
+
+**Consequences:** Upgrading the pinned OpenInference version is an explicit Core migration. Agentscope-specific attributes are documented and tested as additive, redaction-safe extensions rather than a fork of the OpenInference vocabulary.

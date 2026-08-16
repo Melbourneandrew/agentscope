@@ -11,9 +11,11 @@ Langfuse is the initial first-party destination and validates the Trace Destinat
 
 ### ADR-001: Start with OTLP delivery
 
-**Decision:** The initial Langfuse reporter maps canonical traces to OTLP and sends them to a configured endpoint.
+**Decision:** The initial Langfuse reporter sends the OpenInference-compatible canonical OTLP graph to a configured endpoint and adds only documented `langfuse.*` overlays needed for Langfuse filtering and presentation.
 
-**Context:** OTLP gives a vendor-neutral transport and straightforward collector contract for hermetic tests.
+**Context:** Langfuse accepts OTLP, while its first-class trace metadata and filtering can require Langfuse-specific attributes beyond generic OpenTelemetry/OpenInference fields.
+
+**Consequences:** Contract tests prove which OpenInference fields Langfuse renders directly and which Agentscope fields require an explicit `langfuse.*` mapping; unmapped `agentscope.*` attributes remain namespaced metadata rather than silently becoming product fields.
 
 ### ADR-002: Allow a direct Langfuse path later
 
@@ -23,4 +25,4 @@ Langfuse is the initial first-party destination and validates the Trace Destinat
 
 ### ADR-003: Avoid overlapping vendor hooks
 
-**Decision:** Installation detects Langfuse's official harness plugin and requires explicit migration before an Agentscope hook takes ownership.
+**Decision:** Installation detects Langfuse's official harness integration and requires explicit migration before an Agentscope hook takes ownership.

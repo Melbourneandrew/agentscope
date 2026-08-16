@@ -17,7 +17,7 @@
 
 > The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
 
-Agentscope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into portable traces, then reports them through extensible first-party destination packages.
+Agentscope installs safe, reversible integrations for coding-agent **harnesses** such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. It normalizes sessions, model activity, tools, Git context, and errors into OpenInference-shaped portable traces, then reports them through supported first-party destination packages.
 
 ## Status
 
@@ -51,7 +51,7 @@ agent harness hook
   -> destination reporter (Langfuse / OTLP / custom destination)
 ```
 
-Harness adapters own native configuration and extraction. Core owns the stable trace model, redaction, idempotency, queueing, and retry policy. Destination packages own destination protocol mapping, and may optionally add retrieval support to the CLI. New harnesses and destinations are contributed through normal reviewed pull requests; Agentscope does not ship a runtime plugin marketplace in v1.
+Harness adapters own native configuration and extraction. Core owns the OpenTelemetry/OpenInference trace model, redaction, idempotency, queueing, and retry policy. Destination packages own destination protocol mapping, and may optionally add retrieval support to the CLI. New harnesses and destinations are contributed through normal reviewed pull requests; Agentscope has no runtime plugin system.
 
 ## Packages
 
@@ -60,7 +60,7 @@ Harness adapters own native configuration and extraction. Core owns the stable t
 | `@agentscope/core`       | Normalized trace model and TypeScript SDK                |
 | `@agentscope/cli`        | The `agentscope` installation and configuration command  |
 | `@agentscope/harness-*`  | Harness-specific installation and trace extraction       |
-| `@agentscope/reporter-*` | Extensible trace destinations, starting with Langfuse    |
+| `@agentscope/reporter-*` | First-party trace destinations, starting with Langfuse   |
 | `@agentscope/testkit`    | Hermetic test servers, harness scenarios, and assertions |
 
 ## Development
@@ -74,7 +74,7 @@ pnpm test:integration
 pnpm dev:docs
 ```
 
-Unit tests cover deterministic core, adapter, and reporter contracts. Integration tests are a separate lane: they run real harness executables in isolated homes and Git workspaces against mock model and telemetry endpoints. See the [integration blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration) for the intended matrix and extension contract.
+Unit tests cover deterministic core, adapter, and reporter contracts. Integration tests are a separate lane: they run real harness executables in isolated homes and Git workspaces against mock model and telemetry endpoints. See the [integration blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration) for the intended matrix.
 
 ## Contributing
 
