@@ -106,6 +106,8 @@ The CLI detects the official plugin/configuration during `install` and `doctor`.
 
 ## Integration-test blueprint
 
+AgentScope calls end-user agent runtimes **agent harnesses**. Model providers are a separate concern; an agent harness may use any provider or API shape and must still reduce to the same AgentScope primitives.
+
 1. **Contract tests:** fast unit tests for schema, redaction, queues, and reporter semantics.
 2. **Adapter fixtures:** checked-in, sanitized native artifacts for each supported harness and version family.
 3. **Container matrix:** Docker Compose launches a mock collector and an integration runner. The runner creates a temporary home/config directory, installs the built CLI, executes each harness fixture, then asserts captured normalized and reporter payloads.
@@ -114,6 +116,12 @@ The CLI detects the official plugin/configuration during `install` and `doctor`.
 6. **Compatibility fixtures:** sanitized transcript fixtures verify that the Langfuse reporter produces one session grouping, one idempotent turn hierarchy, accurate timestamps, model usage, tool status, and subagent nesting without the official plugin or a live Langfuse project in CI.
 
 Docker is preferred to a dedicated VM for v1 because the fixtures are file/process driven and must be reproducible in CI. Add a macOS runner only after a provider exposes functionality unavailable in Linux containers.
+
+## Real agent-harness test platform
+
+The integration suite is not only a transcript replay suite. A testkit scenario runs the real harness executable with an isolated home/config directory, a disposable Git workspace, and ephemeral loopback mock services. `MockModelServer` multiplexes minimal deterministic OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini GenerateContent protocol responses, recording every request. `MockTelemetryCollector` records OTLP/Langfuse delivery requests. The scenario asserts the harness contacted the expected model protocol, AgentScope captured its native lifecycle/artifact output, and the reporter emitted the expected normalized hierarchy.
+
+The platform is deliberately layered: `@agentscope/testkit` owns servers, isolation, manifests, and generic assertions; each `@agentscope/harness-*` package contributes a small versioned adapter for detection, setup, invocation, artifact collection, and expectations. This prevents per-harness Docker scripts from becoming independent test frameworks.
 
 The repository exposes the protected suite as `pnpm test:integration:live` in
 the `@agentscope/integration-live` workspace. Its GitHub workflow runs only by

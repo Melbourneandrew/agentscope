@@ -1,0 +1,25 @@
+---
+title: Product requirements
+description: The observable behavior AgentScope must preserve across agent harnesses.
+---
+
+## Product goal
+
+The overall goal is an agent scope system as a way to capture agent traces from coding agents CLIs and report them to external services like Langfuse.
+
+AgentScope is an installable control plane for **agent harnesses**: coding-agent products such as Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw (CLAW), and Hermes. A harness produces native artifacts and lifecycle signals; AgentScope normalizes them into portable session, turn, model, tool, file, skill, and error events before reporting them.
+
+## Required behavior
+
+- Hooks fail open, are bounded, and preserve the agent session.
+- Every trace captures effective Git branch, commit, worktree/root, harness version, model/provider, reasoning level, usage, and timing where available.
+- A harness owns its observability hook; `agent-scope doctor` detects overlapping vendor hooks and requires an explicit migration.
+- Redaction occurs before a trace reaches the spool or reporter.
+- A `TraceSource` owns native extraction and a `TraceReporter` owns one destination. Core owns the normalized batch envelope, retry policy, and idempotency.
+- Unit tests validate schemas, redaction, queues, sources, and reporters separately from integration tests.
+
+## Integration requirement
+
+Integration tests run the **real harness executable**, disposable configuration/home, a disposable Git workspace, a deterministic mock model API, and a mock telemetry collector. They assert the native model interaction and the final normalized/OTLP/Langfuse output. Replay-only transcript tests remain valuable unit fixtures, but never substitute for this end-to-end lane.
+
+Read [agent harness integration testing](/docs/blueprints/agent-harness-integration) and [trace source and reporting](/docs/blueprints/trace-reporting).
