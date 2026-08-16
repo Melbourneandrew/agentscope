@@ -16,3 +16,5 @@ Software Factory keeps product intent, technical intent, and delivery work conne
 Requirements state what must be true for users. Blueprints record durable technical decisions; do not use them for exhaustive APIs, schemas, component inventories, or implementation plans.
 
 Before revising a requirement or Blueprint, read the relevant guide in this directory.
+
+For a thorough Blueprint review, read [guides/reviewing-blueprints.md](guides/reviewing-blueprints.md) and follow its bounded iterative review process.
