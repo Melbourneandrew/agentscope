@@ -9,13 +9,13 @@ The CLI is the user-facing application: it configures AgentScope, installs first
 
 ## Architecture Decision Records
 
-### ADR-001: Use Citty for command parsing and composition
+### ADR-001: Use Commander and Zod for command parsing and validation
 
-**Decision:** `apps/cli` uses Citty for typed command definitions, nested commands, generated help, and programmatic command execution.
+**Decision:** `apps/cli` uses Commander for command definitions, nested commands, generated help, and standard Node CLI behavior. Zod owns command input validation and all configuration/schema validation.
 
-**Context:** AgentScope needs a conventional Node CLI with commands such as `init`, `install`, `configure reporter langfuse`, `traces search`, and `doctor`; it does not need a TUI, a runtime plugin host, generated installers, or a framework-owned application lifecycle.
+**Context:** AgentScope needs a conventional Node CLI with commands such as `init`, `install`, `configure reporter langfuse`, `traces search`, and `doctor`; it does not need a TUI, a runtime plugin host, generated installers, or a framework-owned application lifecycle. Commander is the familiar, mature choice for contributors; Zod makes runtime input checks and TypeScript types derive from the same schema.
 
-**Consequences:** Commands are small Citty definitions that delegate to injected services. The CLI does not invent its own argument parser. Command tests invoke Citty programmatically with a captured IO context rather than spawning a process for every unit case.
+**Consequences:** Commands are small Commander definitions that parse flags then validate a command-specific Zod schema before delegating to injected services. Zod schemas are shared with configuration and API-boundary validation; TypeScript interfaces are inferred rather than separately maintained. Unit tests call command services directly with validated inputs, while a small command smoke suite verifies Commander parsing and exit behavior.
 
 ### ADR-002: Separate presentation from domain operations
 
