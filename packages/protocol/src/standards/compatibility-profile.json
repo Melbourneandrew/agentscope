@@ -1,0 +1,89 @@
+{
+  "profileVersion": 1,
+  "profileFingerprint": "sha256-86d3c71d7f25f75da3af52cf46ec4ac1ba104684f55146c87db02c1d8de444ca",
+  "ordering": "protocol-contract-version-only",
+  "dispatch": "exact-envelope-version-and-manifest-id",
+  "archivePolicy": "whole-protocol-generation",
+  "extensionLineage": "append-only-immutable-no-retirement",
+  "identityPreservation": "equal-identity-profile-fingerprint-only",
+  "migrationPolicy": "adjacent-forward-strict-fresh-unbranded",
+  "limits": {
+    "maximumGenerations": 16,
+    "maximumMigrations": 15,
+    "maximumExtensionsPerGeneration": 64,
+    "maximumMigrationWorkUnits": 4096
+  },
+  "generations": [
+    {
+      "selector": {
+        "kind": "manifest",
+        "manifestId": "agentscope-protocol-1_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-1-sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-1-sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2_codec-1-sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e_compatibility-1-sha256-3f8b0767f3582527e0424679e0e79780b767c48a4ca2c4672ce847b6ad9f0408"
+      },
+      "protocolContractVersion": 1,
+      "envelopeVersion": 1,
+      "sourceSchemaId": "canonical-envelope-v1",
+      "sourceSchemaKind": "canonical-envelope-v1",
+      "sourceSchemaFingerprint": "sha256-fdf4312ce7eba29f3d4c31f935d4c9b25b68d3420ea075638c6588bc3a9e1905",
+      "sourceFixtureFingerprint": "sha256-c54ccceae9ce80eceb316162c8459cecff49c71be9cb6f3f841a3dc318a89342",
+      "upstreamBaselineId": "otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0",
+      "canonicalProfileFingerprint": "sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252",
+      "semanticDescriptorFingerprint": "sha256-a2b82dc7c4c1995af4ddb3cbc8e095cde5026dce02fdbe1a5d9bed697aab5230",
+      "timingDescriptorFingerprint": "sha256-93a27c841faad019d03dfe7ccc067995e6673c7ba35986d7a36bac2ad15d420b",
+      "identityProfileFingerprint": "sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b",
+      "extensionRegistryVersion": 1,
+      "extensionRegistryFingerprint": "sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2",
+      "codecProfileFingerprint": "sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e",
+      "generationFingerprint": "sha256-6e0ac3c919f189b91ea184ca51d360add73cf87439a729b163437d6b994074f0"
+    },
+    {
+      "selector": {
+        "kind": "current"
+      },
+      "protocolContractVersion": 2,
+      "envelopeVersion": 1,
+      "sourceSchemaId": "canonical-envelope-v1",
+      "sourceSchemaKind": "canonical-envelope-v1",
+      "sourceSchemaFingerprint": "sha256-cd88036f9fb1397d1f8cdc8ab84520b1f9bd107fb338b99d5a6fac5c7b132804",
+      "sourceFixtureFingerprint": "sha256-3138e45e7933755f38b316b94bce8a45027ba35a4da9cd4f278a4580cb82bc02",
+      "upstreamBaselineId": "otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0",
+      "canonicalProfileFingerprint": "sha256-682b98c09e5f1e2c5827d2eb06885968d5cd1610c57a2ddc28022d0fdd37165d",
+      "semanticDescriptorFingerprint": "sha256-c81f99ac1031c4f2b82e769f080b3a3ff00a5961ad737a78bae3693fc07e22ec",
+      "timingDescriptorFingerprint": "sha256-93a27c841faad019d03dfe7ccc067995e6673c7ba35986d7a36bac2ad15d420b",
+      "identityProfileFingerprint": "sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b",
+      "extensionRegistryVersion": 2,
+      "extensionRegistryFingerprint": "sha256-691b475677538ec480cc5db480e4d95a2242c06a0ad5517b34dc8da7000a830c",
+      "codecProfileFingerprint": "sha256-37cd4d040eab9d914496acd83545ca46e7fa3dd78314aa067407d999e966e278",
+      "generationFingerprint": "sha256-4389d1af51439556496f24f542c08f26611bad7d33034bb272b95c210c5e3f16"
+    }
+  ],
+  "readerWindow": [
+    {
+      "selector": {
+        "kind": "manifest",
+        "manifestId": "agentscope-protocol-1_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-1-sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-1-sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2_codec-1-sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e_compatibility-1-sha256-3f8b0767f3582527e0424679e0e79780b767c48a4ca2c4672ce847b6ad9f0408"
+      },
+      "envelopeVersion": 1
+    },
+    {
+      "selector": {
+        "kind": "current"
+      },
+      "envelopeVersion": 1
+    }
+  ],
+  "migrations": [
+    {
+      "migrationId": "protocol-v1-to-v2-feedback-carrier",
+      "kind": "adjacent-forward",
+      "source": {
+        "kind": "manifest",
+        "manifestId": "agentscope-protocol-1_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-1-sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-1-sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2_codec-1-sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e_compatibility-1-sha256-3f8b0767f3582527e0424679e0e79780b767c48a4ca2c4672ce847b6ad9f0408"
+      },
+      "target": {
+        "kind": "current"
+      },
+      "identityRule": "preserve-if-profile-equal",
+      "manifestRule": "replace-outer-and-resource-manifest"
+    }
+  ]
+}

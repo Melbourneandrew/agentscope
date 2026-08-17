@@ -1,0 +1,200 @@
+{
+  "profileVersion": 1,
+  "codecVersion": 1,
+  "magic": "ASID",
+  "digest": "sha256",
+  "header": {
+    "magicBytes": 4,
+    "order": [
+      "magic",
+      "codecVersion",
+      "profileVersion",
+      "domainCode",
+      "fieldCount"
+    ],
+    "endianness": "big-endian",
+    "versionWidth": "u16be",
+    "domainWidth": "u16be",
+    "fieldCountWidth": "u16be"
+  },
+  "fieldEncoding": {
+    "tagWidth": "u16be",
+    "typeWidth": "u8",
+    "lengthWidth": "u32be",
+    "integerWidth": "u64be",
+    "fieldOrder": "ascending-tag",
+    "fieldPresence": "all-required",
+    "duplicateTagPolicy": "reject",
+    "unknownTagPolicy": "reject"
+  },
+  "fieldTypes": {
+    "utf8": 1,
+    "bytes": 2,
+    "u64": 3,
+    "digest32": 4,
+    "ascii-enum": 5
+  },
+  "stringPolicy": {
+    "encoding": "utf8-exact",
+    "unicodeNormalization": "none",
+    "loneSurrogatePolicy": "reject",
+    "emptyPolicy": "reject",
+    "maximumBytes": 1024
+  },
+  "inputLimits": {
+    "maximumDepth": 12,
+    "maximumNodes": 2048,
+    "maximumArrayItems": 256,
+    "maximumObjectKeys": 512,
+    "maximumKeyBytes": 128,
+    "maximumTotalUtf8Bytes": 1048576,
+    "maximumSafeInteger": 9007199254740991
+  },
+  "output": {
+    "fullBytes": 32,
+    "traceIdBytes": 16,
+    "spanIdBytes": 8,
+    "projection": "leftmost",
+    "encoding": "lowercase-hex",
+    "allZeroPolicy": "reject",
+    "collisionPolicy": "reject-no-rehash"
+  },
+  "enums": {
+    "harnessRegistryId": [
+      "claude-code",
+      "codex",
+      "gemini-cli",
+      "hermes",
+      "openclaw",
+      "opencode",
+      "pi"
+    ],
+    "boundaryKind": ["hook-invocation", "session", "transcript-range", "turn"],
+    "positionKind": ["byte-offset", "event-index", "line", "sequence"],
+    "operationIdScope": ["parent-scoped", "session-global"],
+    "locatorClass": ["native-operation", "source-ordinal"],
+    "sessionClass": ["native-session", "boundary-scoped", "attempt-scoped"],
+    "nativeIdentityKind": ["conversation", "run", "session", "thread"]
+  },
+  "domains": {
+    "session-native": {
+      "code": 1,
+      "fields": [
+        { "tag": 1, "name": "sessionClass", "type": "ascii-enum" },
+        { "tag": 2, "name": "harnessRegistryId", "type": "ascii-enum" },
+        { "tag": 3, "name": "nativeIdentityKind", "type": "ascii-enum" },
+        { "tag": 4, "name": "nativeIdentity", "type": "utf8" }
+      ]
+    },
+    "session-boundary": {
+      "code": 2,
+      "fields": [
+        { "tag": 1, "name": "sessionClass", "type": "ascii-enum" },
+        { "tag": 2, "name": "harnessRegistryId", "type": "ascii-enum" },
+        { "tag": 3, "name": "boundaryKind", "type": "ascii-enum" },
+        { "tag": 4, "name": "boundaryId", "type": "utf8" }
+      ]
+    },
+    "session-attempt": {
+      "code": 3,
+      "fields": [
+        { "tag": 1, "name": "sessionClass", "type": "ascii-enum" },
+        { "tag": 2, "name": "harnessRegistryId", "type": "ascii-enum" },
+        { "tag": 3, "name": "invocationNonce", "type": "bytes" }
+      ]
+    },
+    "trace": {
+      "code": 4,
+      "fields": [{ "tag": 1, "name": "sessionDigest", "type": "digest32" }]
+    },
+    "root-span": {
+      "code": 5,
+      "fields": [{ "tag": 1, "name": "traceDigest", "type": "digest32" }]
+    },
+    "child-span-session-global-native": {
+      "code": 6,
+      "fields": [
+        { "tag": 1, "name": "traceDigest", "type": "digest32" },
+        { "tag": 2, "name": "locatorClass", "type": "ascii-enum" },
+        { "tag": 3, "name": "nativeOperationId", "type": "utf8" }
+      ]
+    },
+    "child-span-session-global-ordinal": {
+      "code": 7,
+      "fields": [
+        { "tag": 1, "name": "traceDigest", "type": "digest32" },
+        { "tag": 2, "name": "locatorClass", "type": "ascii-enum" },
+        { "tag": 3, "name": "sourceOrdinal", "type": "u64" }
+      ]
+    },
+    "child-span-parent-native": {
+      "code": 8,
+      "fields": [
+        { "tag": 1, "name": "traceDigest", "type": "digest32" },
+        { "tag": 2, "name": "parentSpanDigest", "type": "digest32" },
+        { "tag": 3, "name": "locatorClass", "type": "ascii-enum" },
+        { "tag": 4, "name": "nativeOperationId", "type": "utf8" }
+      ]
+    },
+    "child-span-parent-ordinal": {
+      "code": 9,
+      "fields": [
+        { "tag": 1, "name": "traceDigest", "type": "digest32" },
+        { "tag": 2, "name": "parentSpanDigest", "type": "digest32" },
+        { "tag": 3, "name": "locatorClass", "type": "ascii-enum" },
+        { "tag": 4, "name": "sourceOrdinal", "type": "u64" }
+      ]
+    },
+    "boundary": {
+      "code": 10,
+      "fields": [
+        { "tag": 1, "name": "sessionDigest", "type": "digest32" },
+        { "tag": 2, "name": "boundaryKind", "type": "ascii-enum" },
+        { "tag": 3, "name": "boundaryId", "type": "utf8" },
+        { "tag": 4, "name": "generation", "type": "u64" },
+        { "tag": 5, "name": "positionKind", "type": "ascii-enum" },
+        { "tag": 6, "name": "exclusiveEndPosition", "type": "u64" }
+      ]
+    },
+    "delivery": {
+      "code": 11,
+      "fields": [
+        { "tag": 1, "name": "traceDigest", "type": "digest32" },
+        { "tag": 2, "name": "boundaryDigest", "type": "digest32" }
+      ]
+    }
+  },
+  "fallback": {
+    "native": "session-stable",
+    "boundary": "boundary-scoped-at-least-once",
+    "attempt": "attempt-scoped-at-least-once",
+    "attemptNonceBytes": 32,
+    "boundarySeedExcludes": [
+      "generation",
+      "positionKind",
+      "exclusiveEndPosition"
+    ]
+  },
+  "flags": {
+    "allowedSpanFlags": [0, 1, 256, 257],
+    "rejectedRandomSpanFlags": [2, 3],
+    "otherPolicy": "reject"
+  },
+  "privacyExclusions": [
+    "content",
+    "path",
+    "git",
+    "model",
+    "policy",
+    "config",
+    "harness-version",
+    "destination",
+    "batch",
+    "time",
+    "deadline",
+    "outcome",
+    "semantic-kind",
+    "semantic-name",
+    "logical-key"
+  ]
+}

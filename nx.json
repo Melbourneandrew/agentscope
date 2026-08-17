@@ -42,12 +42,15 @@
       "inputs": ["default", "^production"]
     },
     "lint": {
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"]
     },
     "test": {
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"]
     },
     "coverage": {
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"],
       "outputs": ["{projectRoot}/coverage"]
     },

@@ -9,10 +9,33 @@ const internalPackageBoundary = (groups, message) => [
   { patterns: [{ group: groups, message }] },
 ];
 
-const packageRoleBoundary = (allowed, message) => [
+const packageRoleBoundary = (
+  allowed,
+  message,
+  allowCoreFinalization = false,
+  allowLifecycleSink = false,
+) => [
   "error",
   {
     patterns: [
+      ...(!allowCoreFinalization
+        ? [
+            {
+              group: ["@agentscope/protocol/core-finalization"],
+              message:
+                "Only Core may import the Protocol finalization authority.",
+            },
+          ]
+        : []),
+      ...(!allowLifecycleSink
+        ? [
+            {
+              group: ["@agentscope/destinations-core/lifecycle-sink"],
+              message:
+                "Only Core may import the provisional lifecycle sink authority.",
+            },
+          ]
+        : []),
       {
         group: ["@agentscope/*/src/**", "@agentscope/*/*/src/**"],
         message:
@@ -48,6 +71,7 @@ export default tseslint.config(
       "**/coverage/**",
       "**/node_modules/**",
       "**/.nx/**",
+      "packages/protocol/src/generated/otlp/**",
       ".beads/**",
     ],
   },
@@ -94,7 +118,12 @@ export default tseslint.config(
       "import-x/no-cycle": "error",
       "import-x/no-duplicates": "error",
       "no-restricted-imports": internalPackageBoundary(
-        ["@agentscope/*/src/**", "@agentscope/*/*/src/**"],
+        [
+          "@agentscope/*/src/**",
+          "@agentscope/*/*/src/**",
+          "@agentscope/protocol/core-finalization",
+          "@agentscope/destinations-core/lifecycle-sink",
+        ],
         "Import another workspace only through an exported public entry point.",
       ),
       "no-console": "error",
@@ -116,6 +145,8 @@ export default tseslint.config(
       "no-restricted-imports": packageRoleBoundary(
         ["@agentscope/protocol", "@agentscope/destinations-core"],
         "Core is the lower-level shared layer; it must not import harness, destination, or CLI packages.",
+        true,
+        true,
       ),
     },
   },
@@ -137,7 +168,7 @@ export default tseslint.config(
       "no-restricted-imports": packageRoleBoundary(
         [
           "@agentscope/protocol",
-          "@agentscope/core",
+          "@agentscope/core/harness-capture",
           "@agentscope/harnesses-core",
         ],
         "Harnesses collect and normalize native evidence; they must not import destinations/reporters.",
@@ -183,8 +214,14 @@ export default tseslint.config(
     files: ["apps/cli/src/**/*.{ts,tsx}"],
     rules: {
       "no-restricted-imports": internalPackageBoundary(
-        ["@agentscope/*/src/**", "@agentscope/*/*/src/**"],
-        "The CLI is the composition root: it may import first-party package public exports, never package internals.",
+        [
+          "@agentscope/*/src/**",
+          "@agentscope/*/*/src/**",
+          "@agentscope/core/harness-capture",
+          "@agentscope/protocol/core-finalization",
+          "@agentscope/destinations-core/lifecycle-sink",
+        ],
+        "The CLI is the composition root: it may import first-party package public exports, never package internals or the transient harness-capture boundary.",
       ),
     },
   },

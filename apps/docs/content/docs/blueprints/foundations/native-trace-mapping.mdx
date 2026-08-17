@@ -15,7 +15,7 @@ Native artifacts vary by harness; this Blueprint defines how adapters map them w
 
 **Context:** Transcript data, hook payloads, and process working directories can disagree or be incomplete.
 
-**Consequences:** Git branch resolution follows authoritative hook workspace, native session workspace, then process cwd; detached and unavailable states are explicit.
+**Consequences:** Git resolution follows authoritative hook workspace, native session workspace, then process cwd. Head name, revision, and ref type map to standard OTel `vcs.*` resource attributes; local directory, worktree, and repository-root paths use registered `agentscope.*` extensions. Detached HEAD is `not-applicable` with reason `detached-head` for head name while revision remains observed; command failure is `unavailable`. Every present or unavailable context field has bounded machine-readable provenance.
 
 ### ADR-002: Normalize semantic primitives, retain native evidence
 
@@ -25,10 +25,30 @@ Native artifacts vary by harness; this Blueprint defines how adapters map them w
 
 **Consequences:** A harness adapter maps native evidence to OpenInference-shaped semantic candidates but cannot construct an exportable value. Core redaction and Protocol validation produce the applicable `AGENT`, `LLM`, `TOOL`, and other OTLP spans. `agentscope.*` remains limited to harness/Git/workspace/provenance concepts; model, message, token, timing, and error fields use their OpenInference definitions.
 
+The harness-facing factory accepts exact descriptor-governed semantic terminals, a stable native operation locator or absolute pre-redaction ordinal, parent relations, native timing candidates, and explicit absence evidence. Protocol-owned candidate validation enforces value shapes and applicable upstream compound rules before Core stores the candidate. It rejects native transcript DTOs, OTLP placeholder graphs, provenance-group keys, lifecycle-owned Protocol fields, destination overlays, and provenance sources other than `native-artifact` or `hook-payload`. Core supplies snapshot identity, registered operation-ID scope, attempt identity, harness executable version evidence, and process observation context outside that input. Common high-dimensional embedding vectors fit the bounded transient representation even though the default redaction route later omits them.
+
 ### ADR-003: Persist only non-content incremental checkpoints
 
-**Decision:** Adapters derive stable native session, turn, and event identity from the strongest harness-provided identifiers. An incremental adapter may persist only versioned non-content checkpoints containing native source identity, generation, and acknowledged event position; when destinations accept independently, checkpoint progress is connection-scoped.
+**Decision:** Adapters provide bounded native identity evidence and declare whether operation identifiers are session-global or parent-scoped; Core alone assigns canonical identities through Protocol. An incremental adapter may persist only versioned non-content checkpoints containing native source identity, generation, and acknowledged exclusive event position; when destinations accept independently, checkpoint progress is connection-scoped.
 
 **Context:** Append-only artifacts may be reread by repeated hooks. Advancing one global cursor can either duplicate earlier turns or skip delivery to a connection that did not accept them.
 
-**Consequences:** A checkpoint advances only after the associated connection accepts the capture boundary. Adapters without stable native identity explicitly declare at-least-once behavior. Replay, append, restart, and partial-acceptance tests prove stable deduplication and no skipped acknowledged events.
+**Consequences:** A checkpoint advances only after the associated connection accepts the capture boundary. Adapters without stable native identity produce explicit boundary- or attempt-scoped at-least-once identity. Replay, append, restart, and partial-acceptance tests prove stable identity inputs and no skipped acknowledged events; destination idempotency determines whether repeated attempts are deduplicated.
+
+### ADR-004: Preserve effective observation time without fabricating native intervals
+
+**Decision:** OTLP span times are effective observation times. Protocol's manifest-pinned timing descriptor is the sole compatibility table for timing basis, native state, provenance source, location, construction, and interval-versus-point shape. A native interval or point cites observed `hook-payload` or `native-artifact` evidence; an artifact point cites `native-artifact` evidence with native timing unavailable; a hook-observed point cites the observing `process` with native timing unavailable. All point bases are zero-duration. When native root timing is unavailable and children occur at different effective times, the root alone uses `derived-child-envelope`: source `derived`, native state `unavailable`, start equal to the minimum descendant start, and end equal to the maximum descendant end.
+
+**Context:** OTLP requires start and end timestamps, while native harness evidence may omit one or both. Silently synthesizing an apparent native operation duration would create false precision.
+
+**Consequences:** Core constructs timing evidence by looking up the exported Protocol rule rather than duplicating source assumptions. Configuration and Git provenance cannot claim timing; generic derived provenance is valid only for the root-only descendant envelope. Start and end use the same rule and source. A derived envelope requires at least one descendant and must match the exact descendant bounds; it never claims a native root operation interval. Direct parent/event containment is not required because native operations may be asynchronous or use mixed clocks. Missing native timing remains explicitly unavailable even when a hook-observed point or derived envelope satisfies the OTLP wire requirement. Protocol rejects unsupported combinations with content-free validation codes.
+
+### ADR-005: Construct compact indexed provenance from exact claims
+
+**Decision:** Core supplies exact post-redaction present fields, exact per-field provenance claims, and exact unavailable claims to Protocol's ledger builder. Protocol alone compresses present indexed OpenInference members using manifest-fingerprinted, segment-based object-group specifications cross-validated against accepted semantic template identifiers and span kinds. Resolution precedence is exact terminal, deepest claimed group, then ancestor group.
+
+**Context:** Flattened messages, tool calls, prompts, embeddings, and documents can contain many terminals from one native object. Repeating one source for every terminal is noisy, but letting adapters author group keys or regexes would duplicate Protocol grammar and make mixed-source members ambiguous.
+
+**Consequences:** A group is only a compression default for members actually present in that span; it is never a native field and can never be unavailable. The builder may emit a group when at least two covered members share a unique default source, retains deeper group overrides and exact terminal overrides, canonical-sorts both ledgers, and rejects missing, duplicate, conflicting, unknown, kind-mismatched, ambiguous, or over-budget claims. Unavailable members always retain exact provenance plus an exact absence record. Canonical validation and Core construction use the same frozen target resolver; Core never supplies group keys, segment patterns, or precedence logic.
+
+Events and links additionally use manifest-fingerprinted indexed member evidence. `span.events.<i>.event` and `span.links.<i>.link` prove atomic existence; name, time, relationship, and descriptor-valid attribute suffixes retain their own exact sources. The index is the original bounded source-order identity: omitted whole members and redacted attributes remain exact unavailable holes, while the retained OTLP arrays align to ascending present indices without renumbering. Aggregate `span.events` and `span.links` describe collection existence; `span.links.target_ids` separately records Protocol's derived wire-identity projection.

@@ -1,0 +1,50 @@
+{
+  "descriptorVersion": 1,
+  "rules": [
+    {
+      "timingBasis": "native-interval",
+      "nativeState": "observed",
+      "allowedSources": ["hook-payload", "native-artifact"],
+      "shape": "interval",
+      "evidenceClass": "native-operation-time",
+      "locations": ["root-span", "span"],
+      "construction": "evidence-values"
+    },
+    {
+      "timingBasis": "native-point",
+      "nativeState": "observed",
+      "allowedSources": ["hook-payload", "native-artifact"],
+      "shape": "point",
+      "evidenceClass": "native-operation-time",
+      "locations": ["root-span", "span"],
+      "construction": "evidence-values"
+    },
+    {
+      "timingBasis": "artifact-point",
+      "nativeState": "unavailable",
+      "allowedSources": ["native-artifact"],
+      "shape": "point",
+      "evidenceClass": "artifact-observation-time",
+      "locations": ["root-span", "span"],
+      "construction": "evidence-values"
+    },
+    {
+      "timingBasis": "hook-observed-point",
+      "nativeState": "unavailable",
+      "allowedSources": ["process"],
+      "shape": "point",
+      "evidenceClass": "hook-invocation-time",
+      "locations": ["root-span", "span"],
+      "construction": "evidence-values"
+    },
+    {
+      "timingBasis": "derived-child-envelope",
+      "nativeState": "unavailable",
+      "allowedSources": ["derived"],
+      "shape": "interval",
+      "evidenceClass": "derived-trace-envelope",
+      "locations": ["root-span"],
+      "construction": "descendant-min-max"
+    }
+  ]
+}

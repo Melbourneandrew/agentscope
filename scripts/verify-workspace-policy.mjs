@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectedWorkspacePackages } from "./workspace-packages.mjs";
+import { auditCoreFinalizationImports } from "./restricted-import-policy.mjs";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -148,6 +149,20 @@ if (publicRuntimeDependencies.length > 0) {
   );
 }
 
+const protocol = manifests.get("@agentscope/protocol")?.manifest;
+const expectedFinalizationExport = {
+  types: "./dist/core-finalization.d.ts",
+  import: "./dist/core-finalization.js",
+};
+if (
+  JSON.stringify(protocol?.exports?.["./core-finalization"]) !==
+  JSON.stringify(expectedFinalizationExport)
+) {
+  throw new Error(
+    "@agentscope/protocol must expose the exact Core-only finalization entrypoint.",
+  );
+}
+
 const graph = new Map();
 for (const [name, { manifest }] of manifests) {
   if (
@@ -206,6 +221,8 @@ function visit(name, path = []) {
 }
 
 for (const name of graph.keys()) visit(name);
+
+auditCoreFinalizationImports(workspaceRoot, expectedPackages);
 
 process.stdout.write(
   `Verified ${manifests.size} workspace packages; @agentscope/cli is the sole publishable package.\n`,

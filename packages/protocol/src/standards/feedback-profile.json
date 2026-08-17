@@ -1,0 +1,115 @@
+{
+  "descriptorVersion": 1,
+  "descriptorFingerprint": "sha256-b534393803d56e7144e960330cba25d94004e269b0167dc206f2396128fa5197",
+  "source": "openinference@553ff3ae420e6b16cae166d6bff48f70ebacef07/spec/annotations.md",
+  "index": { "zeroBased": true, "maximum": 9999, "contiguous": "recommended" },
+  "forms": [
+    {
+      "scope": "span",
+      "noun": "annotation",
+      "prefix": "annotations",
+      "object": "annotation"
+    },
+    {
+      "scope": "span",
+      "noun": "evaluation",
+      "prefix": "evaluations",
+      "object": "evaluation"
+    },
+    {
+      "scope": "trace",
+      "noun": "annotation",
+      "prefix": "trace.annotations",
+      "object": "annotation"
+    },
+    {
+      "scope": "trace",
+      "noun": "evaluation",
+      "prefix": "trace.evaluations",
+      "object": "evaluation"
+    },
+    {
+      "scope": "session",
+      "noun": "annotation",
+      "prefix": "session.annotations",
+      "object": "annotation"
+    },
+    {
+      "scope": "session",
+      "noun": "evaluation",
+      "prefix": "session.evaluations",
+      "object": "evaluation"
+    }
+  ],
+  "fields": {
+    "name": {
+      "valueType": "string",
+      "required": true,
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    "score": {
+      "valueType": "number",
+      "required": false,
+      "result": true,
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    "label": {
+      "valueType": "string",
+      "required": false,
+      "result": true,
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    "explanation": {
+      "valueType": "string",
+      "required": false,
+      "result": true,
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    "annotator_kind": {
+      "valueType": "string",
+      "required": false,
+      "allowedValuesWhenApplicable": ["HUMAN", "LLM", "CODE"],
+      "customValues": true,
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    "identifier": {
+      "valueType": "string",
+      "required": false,
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    "metadata": {
+      "valueType": "json-object-string",
+      "required": false,
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy"
+    }
+  },
+  "objectRule": "name-and-at-least-one-result",
+  "missingFieldRule": "omit",
+  "aliasRule": "same-scope-name-and-identifier-fields-must-match-unambiguous-name-when-identifier-absent",
+  "sessionRule": "carrying-span-requires-session-id",
+  "postHoc": {
+    "classification": "agentscope.feedback.transport-post-hoc-required-on-post-hoc-carrier-absence-means-no-post-hoc-claim",
+    "transportKey": "agentscope.feedback.transport",
+    "transportValues": ["inline", "post-hoc"],
+    "strictProducer": "transport-required",
+    "tolerantReader": "transport-optional-unclassified-when-absent",
+    "spanLinks": "exactly-one-total",
+    "traceLinks": "exactly-one-total",
+    "sessionLinks": "unrestricted",
+    "mixedScopes": "reject"
+  }
+}

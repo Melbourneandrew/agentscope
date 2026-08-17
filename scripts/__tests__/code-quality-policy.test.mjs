@@ -218,6 +218,29 @@ test("Prettier rejects a seeded formatting violation", () => {
   }
 });
 
+test("lint rejects Protocol finalization authority outside Core", () => {
+  const path = join(
+    repositoryRoot,
+    "packages/destinations/core/src/finalization-seed.test.ts",
+  );
+  try {
+    writeFileSync(
+      path,
+      'import { finalizeRedactedCanonicalTrace } from "@agentscope/protocol/core-finalization";\nvoid finalizeRedactedCanonicalTrace;\n',
+    );
+    const result = spawnSync(
+      "pnpm",
+      ["exec", "eslint", path, "--max-warnings=0"],
+      { cwd: repositoryRoot, encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /no-restricted-imports/);
+    assert.match(`${result.stdout}${result.stderr}`, /Only Core/);
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
 test("Vitest coverage rejects a seeded untested production module", () => {
   const path = join(repositoryRoot, "packages/testkit/src/coverage-seed.ts");
   try {

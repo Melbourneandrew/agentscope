@@ -56,14 +56,14 @@ Harness adapters own native configuration and extraction. Protocol owns the Open
 
 ## Packages
 
-| Package                  | Purpose                                                  |
-| ------------------------ | -------------------------------------------------------- |
-| `@agentscope/protocol`   | Private OpenTelemetry/OpenInference contract             |
-| `@agentscope/core`       | Private configuration, redaction, and delivery services  |
-| `@agentscope/cli`        | The `agentscope` installation and configuration command  |
-| `@agentscope/harness-*`  | Harness-specific installation and trace extraction       |
-| `@agentscope/reporter-*` | First-party trace destinations, starting with Langfuse   |
-| `@agentscope/testkit`    | Hermetic test servers, harness scenarios, and assertions |
+| Package                     | Purpose                                                  |
+| --------------------------- | -------------------------------------------------------- |
+| `@agentscope/protocol`      | Private OpenTelemetry/OpenInference contract             |
+| `@agentscope/core`          | Private configuration, redaction, and delivery services  |
+| `@agentscope/cli`           | The `agentscope` installation and configuration command  |
+| `@agentscope/harness-*`     | Harness-specific installation and trace extraction       |
+| `@agentscope/destination-*` | First-party trace destinations, starting with Langfuse   |
+| `@agentscope/testkit`       | Hermetic test servers, harness scenarios, and assertions |
 
 ## Development
 

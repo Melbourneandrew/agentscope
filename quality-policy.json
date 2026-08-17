@@ -28,9 +28,13 @@
     },
     "packages/protocol": {
       "role": "protocol-root",
-      "unitTests": "marker-only",
-      "maxSourceFiles": 1,
-      "maxSourceLines": 1
+      "unitTests": "required",
+      "coverage": {
+        "statements": 100,
+        "branches": 100,
+        "functions": 100,
+        "lines": 100
+      }
     },
     "packages/testkit": {
       "role": "test-support",
@@ -44,9 +48,13 @@
     },
     "packages/destinations/core": {
       "role": "destination-contract",
-      "unitTests": "marker-only",
-      "maxSourceFiles": 1,
-      "maxSourceLines": 2
+      "unitTests": "required",
+      "coverage": {
+        "statements": 100,
+        "branches": 100,
+        "functions": 100,
+        "lines": 100
+      }
     },
     "packages/destinations/langfuse": {
       "role": "destination-adapter",
