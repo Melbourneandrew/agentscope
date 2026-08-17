@@ -1,0 +1,261 @@
+{
+  "manifestVersion": 1,
+  "protocolContractVersion": 1,
+  "upstreamBaselineId": "otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0",
+  "manifestId": "agentscope-protocol-1_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-1-sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-1-sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2_codec-1-sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e_compatibility-1-sha256-3f8b0767f3582527e0424679e0e79780b767c48a4ca2c4672ce847b6ad9f0408",
+  "canonicalProfile": {
+    "profileVersion": 1,
+    "profileFingerprint": "sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252",
+    "semanticDescriptorFile": "semantic-profile.json",
+    "semanticDescriptorVersion": 1,
+    "semanticDescriptorFingerprint": "sha256-a2b82dc7c4c1995af4ddb3cbc8e095cde5026dce02fdbe1a5d9bed697aab5230",
+    "timingDescriptorFile": "timing-profile.json",
+    "timingDescriptorVersion": 1,
+    "timingDescriptorFingerprint": "sha256-93a27c841faad019d03dfe7ccc067995e6673c7ba35986d7a36bac2ad15d420b"
+  },
+  "identityProfile": {
+    "profileFile": "identity-profile.json",
+    "profileVersion": 1,
+    "profileFingerprint": "sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b"
+  },
+  "codecProfile": {
+    "profileFile": "codec-profile.json",
+    "profileVersion": 1,
+    "profileFingerprint": "sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e"
+  },
+  "compatibilityProfile": {
+    "profileFile": "compatibility-profile.json",
+    "profileVersion": 1,
+    "profileFingerprint": "sha256-3f8b0767f3582527e0424679e0e79780b767c48a4ca2c4672ce847b6ad9f0408"
+  },
+  "artifacts": {
+    "openTelemetrySpecification": {
+      "release": "v1.60.0",
+      "commit": "29ae8c7710d2ea52e21a5ff81fb1cd657bcd3306",
+      "source": "https://github.com/open-telemetry/opentelemetry-specification/tree/29ae8c7710d2ea52e21a5ff81fb1cd657bcd3306",
+      "license": "Apache-2.0"
+    },
+    "otlpProtocol": {
+      "release": "v1.11.0",
+      "commit": "790608c4d51e6ffc12210b541e8514cbed9e91a4",
+      "source": "https://github.com/open-telemetry/opentelemetry-proto/tree/790608c4d51e6ffc12210b541e8514cbed9e91a4",
+      "traceRequest": "opentelemetry/proto/collector/trace/v1/trace_service.proto",
+      "jsonEncoding": "docs/specification.md",
+      "license": "Apache-2.0"
+    },
+    "openTelemetrySemanticConventions": {
+      "release": "v1.44.0",
+      "commit": "e10a930844c6951757a43b849d364f7d056ac32b",
+      "source": "https://github.com/open-telemetry/semantic-conventions/tree/e10a930844c6951757a43b849d364f7d056ac32b",
+      "license": "Apache-2.0"
+    },
+    "openInference": {
+      "semanticConventionsVersion": "2.7.0",
+      "repositorySnapshot": "553ff3ae420e6b16cae166d6bff48f70ebacef07",
+      "specification": "https://github.com/Arize-ai/openinference/blob/553ff3ae420e6b16cae166d6bff48f70ebacef07/spec/semantic_conventions.md",
+      "license": "Apache-2.0"
+    }
+  },
+  "typescriptLibraries": {
+    "openInferenceSemanticConventions": {
+      "package": "@arizeai/openinference-semantic-conventions",
+      "version": "2.7.0",
+      "integrity": "sha512-POJ0LN6akXRsZnx5KPOyYY19zzOeBUlKx4Sg8zQCgmL12uCPxygagjfa+xGWf76NvIqwZ0bYzDxjICk5JbxHMw==",
+      "role": "adopted-semantic-constants"
+    },
+    "openTelemetryOtlpTransformer": {
+      "package": "@opentelemetry/otlp-transformer",
+      "inspectedVersion": "0.221.0",
+      "integrity": "sha512-lg6lkOU08Az23jVcn/0Els9HP+V8PnR4Km6p0KgpTggS0n/WuhnmY64rSh83Of9iR9nD+dpWr6adlcX8KzAwjg==",
+      "role": "rejected-canonical-codec",
+      "reason": "The official package is experimental; its public trace request API encodes SDK ReadableSpan values, while the raw ExportTraceServiceRequest DTOs needed by Protocol are internal and unexported."
+    },
+    "openTelemetrySemanticConventions": {
+      "package": "@opentelemetry/semantic-conventions",
+      "inspectedVersion": "1.43.0",
+      "integrity": "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg==",
+      "role": "not-adopted-source-release-lags",
+      "reason": "The current JavaScript package trails the adopted v1.44.0 source release, so Protocol pins the language-neutral source and does not import this package."
+    }
+  },
+  "codecPolicy": {
+    "json": "Protocol owns a validated OTLP/JSON DTO and codec. OTLP identity bytes use lowercase hexadecimal, other bytes values use base64, enum values use integers, and 64-bit integers use decimal strings.",
+    "protobuf": "Protocol generates binary codecs from the pinned OTLP v1.11.0 protos. The generator version, input hashes, and generated-output hashes become manifest pins before the codec is accepted.",
+    "openInference": "OpenInference supplies semantic attribute names and values, not an independent wire codec or graph validator."
+  },
+  "agentscopeExtensions": {
+    "registryVersion": 1,
+    "registryFingerprint": "sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2",
+    "namespace": "agentscope.",
+    "unknownKeyPolicy": "reject",
+    "entries": [
+      {
+        "key": "agentscope.protocol.manifest_id",
+        "semantic": "protocol.manifest_id",
+        "valueType": "string",
+        "applicability": "resource",
+        "contentClass": "fixed-structural",
+        "originTrust": "protocol-owned",
+        "sensitivity": "safe",
+        "redaction": "retain",
+        "requirementLevel": "required",
+        "provenanceRule": "Protocol supplies the exact standards manifest identity",
+        "introducedInProtocolContractVersion": 1
+      },
+      {
+        "key": "agentscope.redaction.policy_id",
+        "semantic": "redaction.policy_id",
+        "valueType": "string",
+        "applicability": "root-span",
+        "contentClass": "identifier",
+        "originTrust": "core-registry-owned",
+        "sensitivity": "safe",
+        "redaction": "retain",
+        "requirementLevel": "required",
+        "provenanceRule": "Core supplies the applied policy identifier without matched content",
+        "introducedInProtocolContractVersion": 1,
+        "openInferenceKinds": ["AGENT"]
+      },
+      {
+        "key": "agentscope.mapping.provenance",
+        "semantic": "mapping.provenance",
+        "valueType": "json-string",
+        "jsonShape": "agentscope.field-provenance.v1",
+        "applicability": "span",
+        "contentClass": "structured-metadata",
+        "originTrust": "derived-metadata",
+        "sensitivity": "safe",
+        "redaction": "retain",
+        "requirementLevel": "required",
+        "provenanceRule": "Every emitted span field has one bounded source classification",
+        "introducedInProtocolContractVersion": 1
+      },
+      {
+        "key": "agentscope.harness.name",
+        "semantic": "harness.name",
+        "valueType": "string",
+        "applicability": "root-span",
+        "contentClass": "identifier",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "identifier-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "native harness identity with an explicit source record",
+        "provenanceField": "agentscope.harness.name",
+        "introducedInProtocolContractVersion": 1,
+        "openInferenceKinds": ["AGENT"]
+      },
+      {
+        "key": "agentscope.harness.version",
+        "semantic": "harness.version",
+        "valueType": "string",
+        "applicability": "root-span",
+        "contentClass": "identifier",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "identifier-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "native harness version with an explicit source record",
+        "provenanceField": "agentscope.harness.version",
+        "introducedInProtocolContractVersion": 1,
+        "openInferenceKinds": ["AGENT"]
+      },
+      {
+        "key": "agentscope.workspace.directory",
+        "semantic": "workspace.directory",
+        "valueType": "string",
+        "applicability": "root-span",
+        "contentClass": "location",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "path-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "resolved effective workspace with resolution-source provenance",
+        "provenanceField": "agentscope.workspace.directory",
+        "introducedInProtocolContractVersion": 1,
+        "openInferenceKinds": ["AGENT"]
+      },
+      {
+        "key": "agentscope.git.worktree",
+        "semantic": "git.worktree",
+        "valueType": "string",
+        "applicability": "root-span",
+        "contentClass": "location",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "path-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "resolved effective Git context with resolution-source provenance",
+        "provenanceField": "agentscope.git.worktree",
+        "introducedInProtocolContractVersion": 1,
+        "openInferenceKinds": ["AGENT"]
+      },
+      {
+        "key": "agentscope.git.repository_root",
+        "semantic": "git.repository_root",
+        "valueType": "string",
+        "applicability": "root-span",
+        "contentClass": "location",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "path-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "resolved effective Git context with resolution-source provenance",
+        "provenanceField": "agentscope.git.repository_root",
+        "introducedInProtocolContractVersion": 1,
+        "openInferenceKinds": ["AGENT"]
+      },
+      {
+        "key": "agentscope.mapping.adapter.name",
+        "semantic": "mapping.adapter.name",
+        "valueType": "string",
+        "applicability": "span",
+        "contentClass": "identifier",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "identifier-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "Agentscope adapter identity",
+        "introducedInProtocolContractVersion": 1
+      },
+      {
+        "key": "agentscope.mapping.adapter.version",
+        "semantic": "mapping.adapter.version",
+        "valueType": "string",
+        "applicability": "span",
+        "contentClass": "identifier",
+        "originTrust": "native-controlled",
+        "sensitivity": "potentially-sensitive",
+        "redaction": "identifier-policy",
+        "requirementLevel": "conditional",
+        "provenanceRule": "Agentscope adapter version",
+        "introducedInProtocolContractVersion": 1
+      },
+      {
+        "key": "agentscope.mapping.unavailable",
+        "semantic": "mapping.unavailable",
+        "valueType": "json-string",
+        "jsonShape": "agentscope.field-unavailable.v1",
+        "applicability": "span",
+        "contentClass": "structured-metadata",
+        "originTrust": "derived-metadata",
+        "sensitivity": "safe",
+        "redaction": "retain",
+        "requirementLevel": "conditional",
+        "provenanceRule": "bounded structured absence states reference the field provenance ledger",
+        "introducedInProtocolContractVersion": 1
+      }
+    ]
+  },
+  "compatibility": {
+    "producerPolicy": "An Agentscope producer emits exactly one manifestId and never silently mixes artifact baselines.",
+    "readerPolicy": "Readers declare supported manifestIds explicitly and reject an unknown baseline before delivery.",
+    "upgradeProcedure": [
+      "Open a dedicated standards-upgrade Bead and update every exact artifact and library pin.",
+      "Review OpenTelemetry, OTLP, OpenTelemetry semantic-convention, and OpenInference release notes and semantic diffs for collisions with registered agentscope.* extensions.",
+      "Regenerate or update OTLP codecs and sanitized golden fixtures.",
+      "Run Protocol round-trip, backward-reader, destination-contract, and real-harness integration suites.",
+      "Record any compatibility-window decision in the Protocol Blueprint before merging."
+    ]
+  }
+}

@@ -1,0 +1,2247 @@
+{
+  "descriptorVersion": 2,
+  "profileId": "agentscope-semantic-profile-1",
+  "upstream": {
+    "openInferenceSemanticConventionsVersion": "2.7.0",
+    "openInferenceRepositorySnapshot": "553ff3ae420e6b16cae166d6bff48f70ebacef07",
+    "openTelemetrySemanticConventionsVersion": "1.44.0"
+  },
+  "upgradePolicy": "manual-review-required",
+  "canonicalIndex": {
+    "zeroBased": true,
+    "noLeadingZero": true,
+    "maximum": 9999
+  },
+  "diagnosticExposure": "never",
+  "matchPrecedence": "exact-before-template-reject-ambiguity",
+  "openInferenceRoots": [
+    "agent",
+    "annotations",
+    "audio",
+    "embedding",
+    "evaluations",
+    "graph",
+    "image",
+    "input",
+    "llm",
+    "metadata",
+    "openinference",
+    "output",
+    "prompt",
+    "reranker",
+    "retrieval",
+    "session",
+    "tag",
+    "tool",
+    "trace",
+    "user"
+  ],
+  "openTelemetryAttributeKeys": [
+    "service.name",
+    "service.version",
+    "vcs.ref.head.name",
+    "vcs.ref.head.revision",
+    "vcs.ref.type",
+    "vcs.repository.name",
+    "vcs.repository.url.full",
+    "error.type",
+    "exception.type",
+    "exception.message",
+    "exception.stacktrace",
+    "exception.escaped"
+  ],
+  "redactionRoutes": {
+    "retain-structural": ["bound", "secret-scan", "retain"],
+    "identifier-policy": [
+      "bound",
+      "secret-scan",
+      "absolute-path-scan",
+      "identifier-policy"
+    ],
+    "path-policy": ["bound", "secret-scan", "path-policy"],
+    "content-policy": [
+      "bound",
+      "secret-scan",
+      "absolute-path-scan",
+      "content-policy"
+    ],
+    "structured-content-policy": [
+      "bound",
+      "parse-json",
+      "recursive-secret-scan",
+      "recursive-absolute-path-scan",
+      "deterministic-json",
+      "content-policy"
+    ],
+    "uri-media-policy": [
+      "bound",
+      "reject-data-uri",
+      "reject-userinfo",
+      "drop-query",
+      "drop-fragment",
+      "secret-scan",
+      "absolute-path-scan",
+      "uri-policy"
+    ],
+    "opaque-drop": ["drop"],
+    "embedding-restricted": ["drop"]
+  },
+  "allowedOutcomesByRoute": {
+    "retain-structural": ["retain", "suppress-trace"],
+    "identifier-policy": [
+      "retain",
+      "replace-non-content",
+      "omit-redacted",
+      "suppress-trace"
+    ],
+    "path-policy": [
+      "retain",
+      "replace-non-content",
+      "omit-redacted",
+      "suppress-trace"
+    ],
+    "content-policy": [
+      "retain",
+      "replace-non-content",
+      "omit-redacted",
+      "suppress-trace"
+    ],
+    "structured-content-policy": [
+      "retain",
+      "replace-non-content",
+      "omit-redacted",
+      "suppress-trace"
+    ],
+    "uri-media-policy": [
+      "retain",
+      "replace-non-content",
+      "omit-redacted",
+      "suppress-trace"
+    ],
+    "opaque-drop": ["omit-redacted", "suppress-trace"],
+    "embedding-restricted": ["omit-redacted", "suppress-trace"]
+  },
+  "classRouteCompatibility": {
+    "fixed-structural": ["retain-structural"],
+    "telemetry": ["retain-structural"],
+    "classification": ["retain-structural", "identifier-policy"],
+    "identifier": ["retain-structural", "identifier-policy"],
+    "location": ["path-policy", "uri-media-policy"],
+    "content": ["content-policy"],
+    "structured-content": ["structured-content-policy"],
+    "derived-metadata": ["retain-structural"],
+    "opaque-provider-artifact": ["opaque-drop"],
+    "embedding-vector": ["embedding-restricted"]
+  },
+  "structuralLeaves": [
+    {
+      "support": "accepted",
+      "key": "scope.name",
+      "valueType": "string",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "scope.version",
+      "valueType": "string",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "resource.dropped_attributes_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.trace_id",
+      "valueType": "trace-id",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.span_id",
+      "valueType": "span-id",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.parent_span_id",
+      "valueType": "span-id",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.kind",
+      "valueType": "span-kind",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.flags",
+      "valueType": "flags",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.dropped_attributes_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.dropped_events_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.dropped_links_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.name",
+      "valueType": "string",
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "allowedOutcomes": ["retain", "replace-non-content", "suppress-trace"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.start_time_unix_nano",
+      "valueType": "timestamp",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.end_time_unix_nano",
+      "valueType": "timestamp",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.status.code",
+      "valueType": "status-code",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.status.message",
+      "valueType": "string",
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "allowedOutcomes": ["retain", "omit-redacted"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.event.name",
+      "valueType": "string",
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "allowedOutcomes": ["retain", "replace-non-content", "omit-event"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.event.time_unix_nano",
+      "valueType": "timestamp",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.event.dropped_attributes_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.link.trace_id",
+      "valueType": "trace-id",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.link.span_id",
+      "valueType": "span-id",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.link.flags",
+      "valueType": "flags",
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "span.link.dropped_attributes_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    },
+    {
+      "support": "accepted",
+      "key": "scope.dropped_attributes_count",
+      "valueType": "uint32",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "allowedOutcomes": ["retain", "omit"]
+    }
+  ],
+  "upstreamConstraints": [
+    {
+      "id": "openinference-span-kind-required",
+      "source": "openinference/spec/semantic_conventions.md",
+      "rule": "required-attribute",
+      "key": "openinference.span.kind",
+      "scope": "every-span"
+    },
+    {
+      "id": "llm-system-required-or-explicitly-incomplete",
+      "source": "openinference/spec/llm_spans.md",
+      "rule": "required-or-absent-evidence",
+      "key": "llm.system",
+      "openInferenceKind": "LLM",
+      "absentStates": ["unavailable", "redacted"]
+    },
+    {
+      "id": "embedding-operation-name",
+      "source": "openinference/spec/embedding_spans.md",
+      "rule": "required-span-name",
+      "openInferenceKind": "EMBEDDING",
+      "spanName": "CreateEmbeddings"
+    }
+  ],
+  "directGroups": [
+    {
+      "support": "accepted",
+      "keys": ["input.mime_type", "output.mime_type", "audio.mime_type"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "classification",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["input.value", "output.value"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "allowEmpty": true,
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["audio.transcript"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["session.id", "user.id"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["image.url", "audio.url"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "location",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "uri-media-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["metadata"],
+      "valueType": "json-object-string",
+      "locations": ["root-span", "span"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["tag.tags"],
+      "valueType": "string-array",
+      "locations": ["root-span", "span"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["openinference.span.kind"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "allowedValues": [
+        "AGENT",
+        "CHAIN",
+        "EMBEDDING",
+        "EVALUATOR",
+        "GUARDRAIL",
+        "LLM",
+        "PROMPT",
+        "RERANKER",
+        "RETRIEVER",
+        "TOOL"
+      ],
+      "contentClass": "classification",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    {
+      "support": "accepted",
+      "keys": ["llm.system", "llm.provider", "llm.model_name"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["llm.finish_reason"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "classification",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["llm.invocation_parameters", "llm.function_call"],
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["llm.prompt_template.variables"],
+      "valueType": "json-object-string",
+      "locations": ["root-span", "span"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["llm.prompt_template.template"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["llm.prompt_template.version"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": [
+        "llm.token_count.completion",
+        "llm.token_count.completion_details.reasoning",
+        "llm.token_count.completion_details.audio"
+      ],
+      "valueType": "nonnegative-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    {
+      "support": "accepted",
+      "keys": [
+        "llm.token_count.prompt",
+        "llm.token_count.prompt_details.cache_read",
+        "llm.token_count.prompt_details.cache_write",
+        "llm.token_count.prompt_details.cache_input",
+        "llm.token_count.prompt_details.audio",
+        "llm.token_count.total"
+      ],
+      "valueType": "nonnegative-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM", "EMBEDDING"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    {
+      "support": "accepted",
+      "keys": [
+        "llm.cost.prompt",
+        "llm.cost.completion",
+        "llm.cost.total",
+        "llm.cost.prompt_details.input",
+        "llm.cost.prompt_details.cache_write",
+        "llm.cost.prompt_details.cache_read",
+        "llm.cost.prompt_details.cache_input",
+        "llm.cost.prompt_details.audio",
+        "llm.cost.completion_details.output",
+        "llm.cost.completion_details.reasoning",
+        "llm.cost.completion_details.audio"
+      ],
+      "valueType": "double",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    {
+      "support": "accepted",
+      "keys": ["embedding.model_name"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["EMBEDDING"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["embedding.invocation_parameters"],
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["EMBEDDING"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["reranker.query"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["reranker.model_name"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["reranker.top_k"],
+      "valueType": "nonnegative-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    {
+      "support": "accepted",
+      "keys": ["tool.name", "tool.id"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["TOOL"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["tool.description"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["TOOL"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["tool.parameters", "tool.json_schema"],
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["TOOL"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["prompt.vendor", "prompt.id"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["PROMPT"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["prompt.url"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["PROMPT"],
+      "contentClass": "location",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "uri-media-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["agent.name", "graph.node.id", "graph.node.name"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["AGENT"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["graph.node.parent_id"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["AGENT"],
+      "allowEmpty": true,
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "sourceReference": "openinference/spec/semantic_conventions.md#graph",
+      "sourceStatus": "empty-string-denotes-root-per-pinned-upstream"
+    },
+    {
+      "support": "accepted",
+      "keys": ["service.name", "service.version"],
+      "valueType": "string",
+      "locations": ["resource"],
+      "contentClass": "fixed-structural",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    },
+    {
+      "support": "accepted",
+      "keys": ["vcs.ref.head.name", "vcs.repository.name"],
+      "valueType": "string",
+      "locations": ["resource"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["vcs.ref.head.revision", "vcs.ref.type"],
+      "valueType": "string",
+      "locations": ["resource"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["vcs.repository.url.full"],
+      "valueType": "string",
+      "locations": ["resource"],
+      "contentClass": "location",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "uri-media-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["error.type"],
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["exception.type"],
+      "valueType": "string",
+      "locations": ["event"],
+      "eventName": "exception",
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["exception.message", "exception.stacktrace"],
+      "valueType": "string",
+      "locations": ["event"],
+      "eventName": "exception",
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy"
+    },
+    {
+      "support": "accepted",
+      "keys": ["exception.escaped"],
+      "valueType": "boolean",
+      "locations": ["event"],
+      "eventName": "exception",
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural"
+    }
+  ],
+  "templates": [
+    {
+      "support": "accepted",
+      "id": "llm-message-content",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "content"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-identity",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            {
+              "oneOf": ["role", "name", "function_call_name", "tool_call_id"]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-function-arguments",
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "function_call_arguments_json"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-content-text",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "message_content",
+            "text"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-content-id",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "message_content",
+            "id"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-content-opaque",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "opaque-provider-artifact",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "opaque-drop",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "message_content",
+            {
+              "oneOf": ["signature", "data", "encrypted_content"]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-content-type",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "classification",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "message_content",
+            "type"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-image-url",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "location",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "uri-media-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "message_content",
+            "image",
+            "image",
+            "url"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-input-message-audio-url",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "location",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "uri-media-policy",
+      "sourceReference": "openinference@553ff3a/spec/multimodal_attributes.md#message-contents",
+      "sourceStatus": "snapshot-experimental-no-package-constant",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            "input_messages",
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "message_content",
+            "audio",
+            "audio",
+            "url"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-tool-call-identity",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "tool_call",
+            "id"
+          ],
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "tool_calls",
+            {
+              "index": true
+            },
+            "tool_call",
+            "id"
+          ],
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "tool_call",
+            "function",
+            "name"
+          ],
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "tool_calls",
+            {
+              "index": true
+            },
+            "tool_call",
+            "function",
+            "name"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-tool-call-reasoning-signature",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "opaque-provider-artifact",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "opaque-drop",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "tool_call",
+            "reasoning_signature"
+          ],
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "tool_calls",
+            {
+              "index": true
+            },
+            "tool_call",
+            "reasoning_signature"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-message-tool-call-arguments",
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "contents",
+            {
+              "index": true
+            },
+            "tool_call",
+            "function",
+            "arguments"
+          ],
+          [
+            "llm",
+            {
+              "oneOf": ["input_messages", "output_messages"]
+            },
+            {
+              "index": true
+            },
+            "message",
+            "tool_calls",
+            {
+              "index": true
+            },
+            "tool_call",
+            "function",
+            "arguments"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-prompt-text",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            "prompts",
+            {
+              "index": true
+            },
+            "prompt",
+            "text"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-choice-text",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            "choices",
+            {
+              "index": true
+            },
+            "completion",
+            "text"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "llm-tool-schema",
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            "tools",
+            {
+              "index": true
+            },
+            "tool",
+            "json_schema"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "embedding-text",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["EMBEDDING"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "embedding",
+            "embeddings",
+            {
+              "index": true
+            },
+            "embedding",
+            "text"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "embedding-vector",
+      "valueType": "double-array",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["EMBEDDING"],
+      "contentClass": "embedding-vector",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "embedding-restricted",
+      "match": {
+        "alternatives": [
+          [
+            "embedding",
+            "embeddings",
+            {
+              "index": true
+            },
+            "embedding",
+            "vector"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "retrieval-document-id",
+      "valueType": "string-or-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RETRIEVER"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "match": {
+        "alternatives": [
+          [
+            "retrieval",
+            "documents",
+            {
+              "index": true
+            },
+            "document",
+            "id"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "retrieval-document-content",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RETRIEVER"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "retrieval",
+            "documents",
+            {
+              "index": true
+            },
+            "document",
+            "content"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "retrieval-document-score",
+      "valueType": "double",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RETRIEVER"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "match": {
+        "alternatives": [
+          [
+            "retrieval",
+            "documents",
+            {
+              "index": true
+            },
+            "document",
+            "score"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "retrieval-document-metadata",
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RETRIEVER"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "retrieval",
+            "documents",
+            {
+              "index": true
+            },
+            "document",
+            "metadata"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "reranker-document-id",
+      "valueType": "string-or-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "match": {
+        "alternatives": [
+          [
+            "reranker",
+            {
+              "oneOf": ["input_documents", "output_documents"]
+            },
+            {
+              "index": true
+            },
+            "document",
+            "id"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "reranker-document-content",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "reranker",
+            {
+              "oneOf": ["input_documents", "output_documents"]
+            },
+            {
+              "index": true
+            },
+            "document",
+            "content"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "reranker-document-score",
+      "valueType": "double",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "match": {
+        "alternatives": [
+          [
+            "reranker",
+            {
+              "oneOf": ["input_documents", "output_documents"]
+            },
+            {
+              "index": true
+            },
+            "document",
+            "score"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "reranker-document-metadata",
+      "valueType": "json-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["RERANKER"],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy",
+      "match": {
+        "alternatives": [
+          [
+            "reranker",
+            {
+              "oneOf": ["input_documents", "output_documents"]
+            },
+            {
+              "index": true
+            },
+            "document",
+            "metadata"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "prompt-token-detail",
+      "valueType": "nonnegative-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM", "EMBEDDING"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            "token_count",
+            "prompt_details",
+            {
+              "identifier": {
+                "style": "lower-snake",
+                "maxLength": 32
+              }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "completion-token-detail",
+      "valueType": "nonnegative-int",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": ["LLM"],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "match": {
+        "alternatives": [
+          [
+            "llm",
+            "token_count",
+            "completion_details",
+            {
+              "identifier": {
+                "style": "lower-snake",
+                "maxLength": 32
+              }
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "feedback-identifier",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": [
+        "AGENT",
+        "CHAIN",
+        "EMBEDDING",
+        "EVALUATOR",
+        "GUARDRAIL",
+        "LLM",
+        "PROMPT",
+        "RERANKER",
+        "RETRIEVER",
+        "TOOL"
+      ],
+      "contentClass": "identifier",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "identifier-policy",
+      "sourceReference": "openinference@553ff3a/spec/annotations.md",
+      "match": {
+        "alternatives": [
+          [
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            {
+              "oneOf": ["name", "label", "annotator_kind", "identifier"]
+            }
+          ],
+          [
+            "trace",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            {
+              "oneOf": ["name", "label", "annotator_kind", "identifier"]
+            }
+          ],
+          [
+            "session",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            {
+              "oneOf": ["name", "label", "annotator_kind", "identifier"]
+            }
+          ],
+          [
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            {
+              "oneOf": ["name", "label", "annotator_kind", "identifier"]
+            }
+          ],
+          [
+            "trace",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            {
+              "oneOf": ["name", "label", "annotator_kind", "identifier"]
+            }
+          ],
+          [
+            "session",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            {
+              "oneOf": ["name", "label", "annotator_kind", "identifier"]
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "feedback-score",
+      "valueType": "number",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": [
+        "AGENT",
+        "CHAIN",
+        "EMBEDDING",
+        "EVALUATOR",
+        "GUARDRAIL",
+        "LLM",
+        "PROMPT",
+        "RERANKER",
+        "RETRIEVER",
+        "TOOL"
+      ],
+      "contentClass": "telemetry",
+      "sensitivity": "safe",
+      "redaction": "retain-structural",
+      "sourceReference": "openinference@553ff3a/spec/annotations.md",
+      "match": {
+        "alternatives": [
+          [
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "score"
+          ],
+          [
+            "trace",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "score"
+          ],
+          [
+            "session",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "score"
+          ],
+          [
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "score"
+          ],
+          [
+            "trace",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "score"
+          ],
+          [
+            "session",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "score"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "feedback-explanation",
+      "valueType": "string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": [
+        "AGENT",
+        "CHAIN",
+        "EMBEDDING",
+        "EVALUATOR",
+        "GUARDRAIL",
+        "LLM",
+        "PROMPT",
+        "RERANKER",
+        "RETRIEVER",
+        "TOOL"
+      ],
+      "contentClass": "content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "content-policy",
+      "sourceReference": "openinference@553ff3a/spec/annotations.md",
+      "match": {
+        "alternatives": [
+          [
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "explanation"
+          ],
+          [
+            "trace",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "explanation"
+          ],
+          [
+            "session",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "explanation"
+          ],
+          [
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "explanation"
+          ],
+          [
+            "trace",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "explanation"
+          ],
+          [
+            "session",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "explanation"
+          ]
+        ]
+      }
+    },
+    {
+      "support": "accepted",
+      "id": "feedback-metadata",
+      "valueType": "json-object-string",
+      "locations": ["root-span", "span"],
+      "openInferenceKinds": [
+        "AGENT",
+        "CHAIN",
+        "EMBEDDING",
+        "EVALUATOR",
+        "GUARDRAIL",
+        "LLM",
+        "PROMPT",
+        "RERANKER",
+        "RETRIEVER",
+        "TOOL"
+      ],
+      "contentClass": "structured-content",
+      "sensitivity": "potentially-sensitive",
+      "redaction": "structured-content-policy",
+      "sourceReference": "openinference@553ff3a/spec/annotations.md",
+      "match": {
+        "alternatives": [
+          [
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "metadata"
+          ],
+          [
+            "trace",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "metadata"
+          ],
+          [
+            "session",
+            "annotations",
+            {
+              "index": true
+            },
+            "annotation",
+            "metadata"
+          ],
+          [
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "metadata"
+          ],
+          [
+            "trace",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "metadata"
+          ],
+          [
+            "session",
+            "evaluations",
+            {
+              "index": true
+            },
+            "evaluation",
+            "metadata"
+          ]
+        ]
+      }
+    }
+  ],
+  "packageConstantBindings": [
+    {
+      "exportName": "INPUT_VALUE",
+      "key": "input.value"
+    },
+    {
+      "exportName": "INPUT_MIME_TYPE",
+      "key": "input.mime_type"
+    },
+    {
+      "exportName": "OUTPUT_VALUE",
+      "key": "output.value"
+    },
+    {
+      "exportName": "OUTPUT_MIME_TYPE",
+      "key": "output.mime_type"
+    },
+    {
+      "exportName": "IMAGE_URL",
+      "key": "image.url"
+    },
+    {
+      "exportName": "AUDIO_URL",
+      "key": "audio.url"
+    },
+    {
+      "exportName": "AUDIO_MIME_TYPE",
+      "key": "audio.mime_type"
+    },
+    {
+      "exportName": "AUDIO_TRANSCRIPT",
+      "key": "audio.transcript"
+    },
+    {
+      "exportName": "LLM_MODEL_NAME",
+      "key": "llm.model_name"
+    },
+    {
+      "exportName": "LLM_INVOCATION_PARAMETERS",
+      "key": "llm.invocation_parameters"
+    },
+    {
+      "exportName": "LLM_SYSTEM",
+      "key": "llm.system"
+    },
+    {
+      "exportName": "LLM_PROVIDER",
+      "key": "llm.provider"
+    },
+    {
+      "exportName": "LLM_FINISH_REASON",
+      "key": "llm.finish_reason"
+    },
+    {
+      "exportName": "LLM_FUNCTION_CALL",
+      "key": "llm.function_call"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_COMPLETION",
+      "key": "llm.token_count.completion"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING",
+      "key": "llm.token_count.completion_details.reasoning"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_COMPLETION_DETAILS_AUDIO",
+      "key": "llm.token_count.completion_details.audio"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_PROMPT",
+      "key": "llm.token_count.prompt"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ",
+      "key": "llm.token_count.prompt_details.cache_read"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE",
+      "key": "llm.token_count.prompt_details.cache_write"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_INPUT",
+      "key": "llm.token_count.prompt_details.cache_input"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_PROMPT_DETAILS_AUDIO",
+      "key": "llm.token_count.prompt_details.audio"
+    },
+    {
+      "exportName": "LLM_TOKEN_COUNT_TOTAL",
+      "key": "llm.token_count.total"
+    },
+    {
+      "exportName": "LLM_COST_PROMPT",
+      "key": "llm.cost.prompt"
+    },
+    {
+      "exportName": "LLM_COST_COMPLETION",
+      "key": "llm.cost.completion"
+    },
+    {
+      "exportName": "LLM_COST_TOTAL",
+      "key": "llm.cost.total"
+    },
+    {
+      "exportName": "LLM_COST_INPUT",
+      "key": "llm.cost.prompt_details.input"
+    },
+    {
+      "exportName": "LLM_COST_PROMPT_DETAILS_CACHE_WRITE",
+      "key": "llm.cost.prompt_details.cache_write"
+    },
+    {
+      "exportName": "LLM_COST_PROMPT_DETAILS_CACHE_READ",
+      "key": "llm.cost.prompt_details.cache_read"
+    },
+    {
+      "exportName": "LLM_COST_PROMPT_DETAILS_CACHE_INPUT",
+      "key": "llm.cost.prompt_details.cache_input"
+    },
+    {
+      "exportName": "LLM_COST_PROMPT_DETAILS_AUDIO",
+      "key": "llm.cost.prompt_details.audio"
+    },
+    {
+      "exportName": "LLM_COST_OUTPUT",
+      "key": "llm.cost.completion_details.output"
+    },
+    {
+      "exportName": "LLM_COST_COMPLETION_DETAILS_REASONING",
+      "key": "llm.cost.completion_details.reasoning"
+    },
+    {
+      "exportName": "LLM_COST_COMPLETION_DETAILS_AUDIO",
+      "key": "llm.cost.completion_details.audio"
+    },
+    {
+      "exportName": "EMBEDDING_MODEL_NAME",
+      "key": "embedding.model_name"
+    },
+    {
+      "exportName": "RERANKER_QUERY",
+      "key": "reranker.query"
+    },
+    {
+      "exportName": "RERANKER_MODEL_NAME",
+      "key": "reranker.model_name"
+    },
+    {
+      "exportName": "RERANKER_TOP_K",
+      "key": "reranker.top_k"
+    },
+    {
+      "exportName": "TOOL_NAME",
+      "key": "tool.name"
+    },
+    {
+      "exportName": "TOOL_DESCRIPTION",
+      "key": "tool.description"
+    },
+    {
+      "exportName": "TOOL_PARAMETERS",
+      "key": "tool.parameters"
+    },
+    {
+      "exportName": "TOOL_JSON_SCHEMA",
+      "key": "tool.json_schema"
+    },
+    {
+      "exportName": "TOOL_ID",
+      "key": "tool.id"
+    },
+    {
+      "exportName": "PROMPT_TEMPLATE_VARIABLES",
+      "key": "llm.prompt_template.variables"
+    },
+    {
+      "exportName": "PROMPT_TEMPLATE_TEMPLATE",
+      "key": "llm.prompt_template.template"
+    },
+    {
+      "exportName": "PROMPT_TEMPLATE_VERSION",
+      "key": "llm.prompt_template.version"
+    },
+    {
+      "exportName": "SESSION_ID",
+      "key": "session.id"
+    },
+    {
+      "exportName": "USER_ID",
+      "key": "user.id"
+    },
+    {
+      "exportName": "METADATA",
+      "key": "metadata"
+    },
+    {
+      "exportName": "TAG_TAGS",
+      "key": "tag.tags"
+    },
+    {
+      "exportName": "OPENINFERENCE_SPAN_KIND",
+      "containerName": "SemanticConventions",
+      "key": "openinference.span.kind"
+    },
+    {
+      "exportName": "PROMPT_VENDOR",
+      "key": "prompt.vendor"
+    },
+    {
+      "exportName": "PROMPT_ID",
+      "key": "prompt.id"
+    },
+    {
+      "exportName": "PROMPT_URL",
+      "key": "prompt.url"
+    },
+    {
+      "exportName": "AGENT_NAME",
+      "key": "agent.name"
+    },
+    {
+      "exportName": "GRAPH_NODE_ID",
+      "key": "graph.node.id"
+    },
+    {
+      "exportName": "GRAPH_NODE_NAME",
+      "key": "graph.node.name"
+    },
+    {
+      "exportName": "GRAPH_NODE_PARENT_ID",
+      "key": "graph.node.parent_id"
+    }
+  ],
+  "packageExportDispositions": {
+    "acceptedPrefix": {
+      "LLM_INPUT_MESSAGES": "llm.input_messages",
+      "LLM_OUTPUT_MESSAGES": "llm.output_messages",
+      "LLM_PROMPTS": "llm.prompts",
+      "LLM_TOKEN_COUNT_COMPLETION_DETAILS": "llm.token_count.completion_details",
+      "LLM_TOKEN_COUNT_PROMPT_DETAILS": "llm.token_count.prompt_details",
+      "LLM_TOOLS": "llm.tools",
+      "LLM_COST": "llm.cost",
+      "MESSAGE_TOOL_CALLS": "message.tool_calls",
+      "MESSAGE_CONTENTS": "message.contents",
+      "MESSAGE_CONTENT_IMAGE": "message_content.image",
+      "EMBEDDING_EMBEDDINGS": "embedding.embeddings",
+      "RERANKER_INPUT_DOCUMENTS": "reranker.input_documents",
+      "RERANKER_OUTPUT_DOCUMENTS": "reranker.output_documents",
+      "RETRIEVAL_DOCUMENTS": "retrieval.documents"
+    },
+    "acceptedComponentFragment": {
+      "MESSAGE_ROLE": "message.role",
+      "MESSAGE_NAME": "message.name",
+      "MESSAGE_TOOL_CALL_ID": "message.tool_call_id",
+      "MESSAGE_FUNCTION_CALL_NAME": "message.function_call_name",
+      "MESSAGE_FUNCTION_CALL_ARGUMENTS_JSON": "message.function_call_arguments_json",
+      "MESSAGE_CONTENT": "message.content",
+      "MESSAGE_CONTENT_ID": "message_content.id",
+      "MESSAGE_CONTENT_SIGNATURE": "message_content.signature",
+      "MESSAGE_CONTENT_DATA": "message_content.data",
+      "MESSAGE_CONTENT_ENCRYPTED_CONTENT": "message_content.encrypted_content",
+      "MESSAGE_CONTENT_TEXT": "message_content.text",
+      "MESSAGE_CONTENT_TYPE": "message_content.type",
+      "TOOL_CALL_ID": "tool_call.id",
+      "TOOL_CALL_REASONING_SIGNATURE": "tool_call.reasoning_signature",
+      "TOOL_CALL_FUNCTION_NAME": "tool_call.function.name",
+      "TOOL_CALL_FUNCTION_ARGUMENTS_JSON": "tool_call.function.arguments",
+      "DOCUMENT_ID": "document.id",
+      "DOCUMENT_CONTENT": "document.content",
+      "DOCUMENT_SCORE": "document.score",
+      "DOCUMENT_METADATA": "document.metadata",
+      "EMBEDDING_TEXT": "embedding.text",
+      "EMBEDDING_VECTOR": "embedding.vector"
+    },
+    "rejectedFeedbackPrefix": {
+      "ANNOTATIONS": "annotations",
+      "TRACE_ANNOTATIONS": "trace.annotations",
+      "SESSION_ANNOTATIONS": "session.annotations",
+      "EVALUATIONS": "evaluations",
+      "TRACE_EVALUATIONS": "trace.evaluations",
+      "SESSION_EVALUATIONS": "session.evaluations"
+    },
+    "rejectedFeedbackComponent": {
+      "ANNOTATION_NAME": "annotation.name",
+      "ANNOTATION_SCORE": "annotation.score",
+      "ANNOTATION_LABEL": "annotation.label",
+      "ANNOTATION_EXPLANATION": "annotation.explanation",
+      "ANNOTATION_ANNOTATOR_KIND": "annotation.annotator_kind",
+      "ANNOTATION_IDENTIFIER": "annotation.identifier",
+      "ANNOTATION_METADATA": "annotation.metadata",
+      "EVALUATION_NAME": "evaluation.name",
+      "EVALUATION_SCORE": "evaluation.score",
+      "EVALUATION_LABEL": "evaluation.label",
+      "EVALUATION_EXPLANATION": "evaluation.explanation",
+      "EVALUATION_ANNOTATOR_KIND": "evaluation.annotator_kind",
+      "EVALUATION_IDENTIFIER": "evaluation.identifier",
+      "EVALUATION_METADATA": "evaluation.metadata"
+    }
+  },
+  "packageEnumBindings": {
+    "OpenInferenceSpanKind": {
+      "LLM": "LLM",
+      "CHAIN": "CHAIN",
+      "TOOL": "TOOL",
+      "RETRIEVER": "RETRIEVER",
+      "RERANKER": "RERANKER",
+      "EMBEDDING": "EMBEDDING",
+      "AGENT": "AGENT",
+      "GUARDRAIL": "GUARDRAIL",
+      "EVALUATOR": "EVALUATOR",
+      "PROMPT": "PROMPT"
+    },
+    "LLMSystem": {
+      "OPENAI": "openai",
+      "ANTHROPIC": "anthropic",
+      "MISTRALAI": "mistralai",
+      "COHERE": "cohere",
+      "VERTEXAI": "vertexai",
+      "AI21": "ai21",
+      "META": "meta",
+      "AMAZON": "amazon"
+    },
+    "LLMProvider": {
+      "OPENAI": "openai",
+      "ANTHROPIC": "anthropic",
+      "MISTRALAI": "mistralai",
+      "COHERE": "cohere",
+      "GOOGLE": "google",
+      "AWS": "aws",
+      "AZURE": "azure",
+      "XAI": "xai",
+      "DEEPSEEK": "deepseek",
+      "GROQ": "groq",
+      "FIREWORKS": "fireworks",
+      "MOONSHOT": "moonshot",
+      "CEREBRAS": "cerebras",
+      "PERPLEXITY": "perplexity",
+      "TOGETHER": "together",
+      "OLLAMA": "ollama"
+    },
+    "AnnotatorKind": {
+      "HUMAN": "HUMAN",
+      "LLM": "LLM",
+      "CODE": "CODE"
+    },
+    "MimeType": {
+      "TEXT": "text/plain",
+      "JSON": "application/json",
+      "AUDIO_WAV": "audio/wav"
+    }
+  },
+  "openEnumPolicy": ["LLMSystem", "LLMProvider", "AnnotatorKind", "MimeType"]
+}

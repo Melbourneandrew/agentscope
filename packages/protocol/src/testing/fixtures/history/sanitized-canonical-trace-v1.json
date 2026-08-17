@@ -1,0 +1,160 @@
+{
+  "resourceSpans": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "agentscope.protocol.manifest_id",
+            "value": {
+              "stringValue": "agentscope-protocol-1_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-1-sha256-dc5795cc6d080352aa296d6034715c04621b9e03223f86d2cca53c3677d9f252_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-1-sha256-24ad1108f9c1ebc9f6e160977337034de1ee80183cfcb07d39d825b84414f1c2_codec-1-sha256-d6d556675a221e421cf1547a613d26418460b1aeea13b964c2ca546f80d09c2e_compatibility-1-sha256-3f8b0767f3582527e0424679e0e79780b767c48a4ca2c4672ce847b6ad9f0408"
+            }
+          },
+          { "key": "service.name", "value": { "stringValue": "agentscope" } },
+          {
+            "key": "vcs.ref.head.name",
+            "value": { "stringValue": "fixture-branch" }
+          },
+          {
+            "key": "vcs.ref.head.revision",
+            "value": {
+              "stringValue": "0123456789abcdef0123456789abcdef01234567"
+            }
+          },
+          { "key": "vcs.ref.type", "value": { "stringValue": "branch" } },
+          {
+            "key": "vcs.repository.name",
+            "value": { "stringValue": "fixture-repository" }
+          },
+          {
+            "key": "vcs.repository.url.full",
+            "value": {
+              "stringValue": "https://example.invalid/fixture-repository"
+            }
+          }
+        ]
+      },
+      "scopeSpans": [
+        {
+          "scope": { "name": "@agentscope/protocol", "version": "1" },
+          "spans": [
+            {
+              "traceId": "0123456789abcdef0123456789abcdef",
+              "spanId": "0123456789abcdef",
+              "name": "coding-agent session",
+              "kind": 1,
+              "startTimeUnixNano": "1000000000",
+              "endTimeUnixNano": "4000000000",
+              "attributes": [
+                {
+                  "key": "agentscope.git.repository_root",
+                  "value": { "stringValue": "workspace://fixture/repository" }
+                },
+                {
+                  "key": "agentscope.git.worktree",
+                  "value": { "stringValue": "workspace://fixture/worktree" }
+                },
+                {
+                  "key": "agentscope.harness.name",
+                  "value": { "stringValue": "fixture-harness" }
+                },
+                {
+                  "key": "agentscope.harness.version",
+                  "value": { "stringValue": "1.2.3-fixture" }
+                },
+                {
+                  "key": "agentscope.mapping.provenance",
+                  "value": {
+                    "stringValue": "[{\"field\":\"agentscope.git.repository_root\",\"source\":\"native-artifact\"},{\"field\":\"agentscope.git.worktree\",\"source\":\"native-artifact\"},{\"field\":\"agentscope.harness.name\",\"source\":\"native-artifact\"},{\"field\":\"agentscope.harness.version\",\"source\":\"native-artifact\"},{\"field\":\"agentscope.workspace.directory\",\"source\":\"native-artifact\"},{\"field\":\"family.error.activity\",\"source\":\"native-artifact\"},{\"field\":\"family.tool.activity\",\"source\":\"native-artifact\"},{\"field\":\"openinference.span.kind\",\"source\":\"native-artifact\"},{\"field\":\"span.end_time_unix_nano\",\"source\":\"native-artifact\",\"timingBasis\":\"native-interval\",\"nativeState\":\"observed\"},{\"field\":\"span.kind\",\"source\":\"native-artifact\"},{\"field\":\"span.name\",\"source\":\"native-artifact\"},{\"field\":\"span.span_id\",\"source\":\"native-artifact\"},{\"field\":\"span.start_time_unix_nano\",\"source\":\"native-artifact\",\"timingBasis\":\"native-interval\",\"nativeState\":\"observed\"},{\"field\":\"span.trace_id\",\"source\":\"native-artifact\"},{\"field\":\"vcs.ref.head.name\",\"source\":\"native-artifact\"},{\"field\":\"vcs.ref.head.revision\",\"source\":\"native-artifact\"},{\"field\":\"vcs.ref.type\",\"source\":\"native-artifact\"},{\"field\":\"vcs.repository.name\",\"source\":\"native-artifact\"},{\"field\":\"vcs.repository.url.full\",\"source\":\"native-artifact\"}]"
+                  }
+                },
+                {
+                  "key": "agentscope.mapping.unavailable",
+                  "value": {
+                    "stringValue": "[{\"field\":\"family.error.activity\",\"state\":\"not-applicable\",\"reason\":\"not-applicable\"}]"
+                  }
+                },
+                {
+                  "key": "agentscope.redaction.policy_id",
+                  "value": { "stringValue": "fixture-policy" }
+                },
+                {
+                  "key": "agentscope.workspace.directory",
+                  "value": { "stringValue": "workspace://fixture/current" }
+                },
+                {
+                  "key": "openinference.span.kind",
+                  "value": { "stringValue": "AGENT" }
+                }
+              ]
+            },
+            {
+              "traceId": "0123456789abcdef0123456789abcdef",
+              "spanId": "1111111111111111",
+              "parentSpanId": "0123456789abcdef",
+              "name": "model response",
+              "kind": 3,
+              "startTimeUnixNano": "1500000000",
+              "endTimeUnixNano": "2500000000",
+              "attributes": [
+                {
+                  "key": "agentscope.mapping.provenance",
+                  "value": {
+                    "stringValue": "[{\"field\":\"family.llm.usage\",\"source\":\"native-artifact\"},{\"field\":\"llm.invocation_parameters\",\"source\":\"native-artifact\"},{\"field\":\"llm.model_name\",\"source\":\"native-artifact\"},{\"field\":\"llm.provider\",\"source\":\"native-artifact\"},{\"field\":\"llm.system\",\"source\":\"native-artifact\"},{\"field\":\"llm.token_count.total\",\"source\":\"native-artifact\"},{\"field\":\"openinference.span.kind\",\"source\":\"native-artifact\"},{\"field\":\"span.end_time_unix_nano\",\"source\":\"native-artifact\",\"timingBasis\":\"native-interval\",\"nativeState\":\"observed\"},{\"field\":\"span.kind\",\"source\":\"native-artifact\"},{\"field\":\"span.name\",\"source\":\"native-artifact\"},{\"field\":\"span.parent_span_id\",\"source\":\"native-artifact\"},{\"field\":\"span.span_id\",\"source\":\"native-artifact\"},{\"field\":\"span.start_time_unix_nano\",\"source\":\"native-artifact\",\"timingBasis\":\"native-interval\",\"nativeState\":\"observed\"},{\"field\":\"span.trace_id\",\"source\":\"native-artifact\"}]"
+                  }
+                },
+                {
+                  "key": "agentscope.mapping.unavailable",
+                  "value": {
+                    "stringValue": "[{\"field\":\"llm.provider\",\"state\":\"unavailable\",\"reason\":\"not-emitted\"}]"
+                  }
+                },
+                {
+                  "key": "llm.invocation_parameters",
+                  "value": { "stringValue": "{\"temperature\":0}" }
+                },
+                {
+                  "key": "llm.model_name",
+                  "value": { "stringValue": "fixture-model" }
+                },
+                {
+                  "key": "llm.system",
+                  "value": { "stringValue": "fixture-provider" }
+                },
+                {
+                  "key": "llm.token_count.total",
+                  "value": { "intValue": "3" }
+                },
+                {
+                  "key": "openinference.span.kind",
+                  "value": { "stringValue": "LLM" }
+                }
+              ]
+            },
+            {
+              "traceId": "0123456789abcdef0123456789abcdef",
+              "spanId": "2222222222222222",
+              "parentSpanId": "0123456789abcdef",
+              "name": "read_file",
+              "kind": 1,
+              "startTimeUnixNano": "2600000000",
+              "endTimeUnixNano": "3000000000",
+              "attributes": [
+                {
+                  "key": "agentscope.mapping.provenance",
+                  "value": {
+                    "stringValue": "[{\"field\":\"openinference.span.kind\",\"source\":\"native-artifact\"},{\"field\":\"span.end_time_unix_nano\",\"source\":\"native-artifact\",\"timingBasis\":\"native-interval\",\"nativeState\":\"observed\"},{\"field\":\"span.kind\",\"source\":\"native-artifact\"},{\"field\":\"span.name\",\"source\":\"native-artifact\"},{\"field\":\"span.parent_span_id\",\"source\":\"native-artifact\"},{\"field\":\"span.span_id\",\"source\":\"native-artifact\"},{\"field\":\"span.start_time_unix_nano\",\"source\":\"native-artifact\",\"timingBasis\":\"native-interval\",\"nativeState\":\"observed\"},{\"field\":\"span.trace_id\",\"source\":\"native-artifact\"},{\"field\":\"tool.name\",\"source\":\"native-artifact\"}]"
+                  }
+                },
+                {
+                  "key": "openinference.span.kind",
+                  "value": { "stringValue": "TOOL" }
+                },
+                { "key": "tool.name", "value": { "stringValue": "read_file" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

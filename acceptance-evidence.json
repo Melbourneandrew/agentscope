@@ -16,17 +16,34 @@
     { "prefix": "INIT", "owners": ["agentscope-vah.8.2"] },
     {
       "prefix": "GOV",
-      "owners": ["agentscope-vah.6.1", "agentscope-vah.13.3"]
+      "owners": [
+        "agentscope-vah.3.3.5",
+        "agentscope-vah.3.3.7",
+        "agentscope-vah.6.1",
+        "agentscope-vah.13.3"
+      ]
     },
     {
       "prefix": "HAR",
       "owners": ["agentscope-vah.10.1", "agentscope-vah.11.10"]
     },
     { "prefix": "SQL", "owners": ["agentscope-vah.9.4"] },
-    { "prefix": "REP", "owners": ["agentscope-vah.4.1", "agentscope-vah.6.2"] },
+    {
+      "prefix": "REP",
+      "owners": [
+        "agentscope-vah.3.3.6",
+        "agentscope-vah.4.1",
+        "agentscope-vah.6.2"
+      ]
+    },
     {
       "prefix": "CAP",
-      "owners": ["agentscope-vah.6.1", "agentscope-vah.10.2"]
+      "owners": [
+        "agentscope-vah.3.3.6",
+        "agentscope-vah.3.3.7",
+        "agentscope-vah.6.1",
+        "agentscope-vah.10.2"
+      ]
     },
     {
       "prefix": "CONN",
@@ -57,6 +74,12 @@
         "AC-INS-001.3",
         "AC-INS-001.4"
       ]
+    },
+    {
+      "id": "test:core-redaction-pipeline",
+      "kind": "automated-test",
+      "path": "packages/core/src/redaction/pipeline.test.ts",
+      "criteria": ["AC-GOV-001.4"]
     }
   ]
 }

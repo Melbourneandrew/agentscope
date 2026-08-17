@@ -9,7 +9,7 @@ Agentscope begins with Langfuse and must grow to additional observability destin
 
 ## Terminology
 
-- **Idempotency key:** a stable delivery identity that prevents duplicate trace export.
+- **Delivery identity:** a stable per-item identity that lets a destination deduplicate repeated delivery when supported; it does not guarantee exactly-once delivery.
 
 ## Requirements
 
@@ -34,3 +34,4 @@ As a user, I want each selected destination attempted independently, so that one
 - **AC-REP-003.1:** When routing selects multiple named connections, the system shall attempt each selected connection within the same absolute hook deadline.
 - **AC-REP-003.2:** When one selected connection reaches a terminal outcome, the system shall record that outcome independently of every other selected connection.
 - **AC-REP-003.3:** When a connection's acknowledgement is lost after a possible remote commit, the system shall classify the outcome as unknown rather than rejected.
+- **AC-REP-003.4:** When the same logical trace boundary is routed to multiple destinations or regrouped into different transport batches, the system shall preserve the same per-item delivery identity.

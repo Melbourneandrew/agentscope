@@ -7,4 +7,5 @@ node_modules
 out
 dist
 coverage
+packages/protocol/src/generated/otlp
 .husky/_
