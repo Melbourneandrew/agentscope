@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createPublishManifest } from "./scripts/publish-manifest.mjs";
+
 // AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
@@ -58,23 +60,7 @@ try {
   const developmentManifest = JSON.parse(
     readFileSync(resolve(packageRoot, "package.json"), "utf8"),
   );
-  const publishManifest = Object.fromEntries(
-    [
-      "name",
-      "version",
-      "description",
-      "license",
-      "type",
-      "engines",
-      "bin",
-      "files",
-      "publishConfig",
-      "dependencies",
-      "optionalDependencies",
-      "peerDependencies",
-      "peerDependenciesMeta",
-    ].map((field) => [field, developmentManifest[field]]),
-  );
+  const publishManifest = createPublishManifest(developmentManifest);
   writeFileSync(
     resolve(stagingRoot, "package.json"),
     `${JSON.stringify(publishManifest, undefined, 2)}\n`,
@@ -94,14 +80,7 @@ try {
 
   run(
     "npm",
-    [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--offline",
-      tarball,
-    ],
+    ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
     { cwd: installRoot },
   );
 

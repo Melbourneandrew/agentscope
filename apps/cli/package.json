@@ -19,7 +19,7 @@
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src build.mjs verify-artifact.mjs --max-warnings=0",
+    "lint": "eslint src scripts build.mjs verify-artifact.mjs --max-warnings=0",
     "test": "vitest run --config ../../vitest.config.ts",
     "coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "clean": "node ../../scripts/clean-workspace.mjs",
