@@ -11,7 +11,7 @@ NPM releases must be attributable, reproducible, and limited to the intentionall
 
 ### ADR-001: Use npm trusted publishing from a tag-only workflow
 
-**Decision:** Public packages publish only from a dedicated GitHub Actions workflow triggered by a protected semantic-version tag reachable from protected `main`, using npm trusted publishing and provenance through a named protected release environment rather than a long-lived `NPM_TOKEN`.
+**Decision:** The public CLI publishes only from a dedicated GitHub Actions workflow triggered by a protected semantic-version tag reachable from protected `main`, using npm trusted publishing and provenance through a named protected release environment rather than a long-lived `NPM_TOKEN`.
 
 **Context:** A tag gate separates normal pull-request/main validation from a security-sensitive release action and permits npm to verify the GitHub workflow identity.
 

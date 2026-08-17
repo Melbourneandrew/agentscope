@@ -44,21 +44,26 @@ packages/
     core/
     codex/
     claude-code/
-    …
+    gemini-cli/
+    opencode/
+    pi/
+    openclaw/
+    hermes/
   destinations/
     core/
     langfuse/
       reporter/
       retriever/              # present only when supported
-    console/
+    local-sqlite/
       reporter/
+      retriever/
   testkit/
 tests/
   integration/
   integration-live/
 ```
 
-The shared family packages are not public runtime plugin SDKs. Adding a harness or destination remains a reviewed first-party pull request; the contracts exist to prevent copy/paste and preserve consistent behavior. The CLI is the composition root and may import first-party package public exports to assemble the supported registry; application Core may import only the destination-family ports, never a concrete destination implementation.
+The shared family packages are not public runtime plugin SDKs. The existing Cursor harness and console destination directories are disposable scaffolds and are removed rather than carried into the target structure. Adding a harness or destination remains a reviewed first-party pull request; the contracts exist to prevent copy/paste and preserve consistent behavior. The CLI is the composition root and may import first-party package public exports to assemble the supported registry; application Core may import only the destination-family ports, never a concrete destination implementation.
 
 ### ADR-004: Keep test layers in their natural ownership location
 

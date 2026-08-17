@@ -17,20 +17,33 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "nx run-many -t build",
+    "build": "pnpm verify:targets && nx run-many -t build --all",
     "dev:docs": "pnpm --filter @agentscope/docs dev",
-    "lint": "eslint . --max-warnings=0",
+    "lint": "pnpm verify:targets && pnpm verify:quality && eslint scripts *.mjs vitest.config.ts --max-warnings=0 && nx run-many -t lint --all",
     "test": "pnpm test:unit",
-    "test:unit": "pnpm --filter @agentscope/core test && pnpm --filter @agentscope/testkit test",
+    "test:unit": "pnpm verify:targets && pnpm test:workspace-policy && nx run-many -t test --all --exclude=@agentscope/integration-live",
+    "coverage": "pnpm verify:targets && nx run-many -t coverage --all --exclude=@agentscope/integration-live",
     "test:integration": "docker compose -f tests/integration/docker-compose.yml up --build --exit-code-from integration",
     "test:integration:clean": "node tests/integration/clean.mjs",
     "test:integration:live": "pnpm --filter @agentscope/integration-live test",
-    "typecheck": "nx run-many -t typecheck",
+    "typecheck": "pnpm verify:targets && nx run-many -t typecheck --all",
+    "clean": "pnpm verify:targets && nx run-many -t clean --all",
     "test:integration:runner": "node tests/integration/runner.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "verify:acceptance-evidence": "node scripts/verify-acceptance-evidence.mjs",
+    "verify:acceptance-evidence:release": "node scripts/verify-acceptance-evidence.mjs --require-verified",
+    "verify:cli-artifact": "pnpm --filter @agentscope/cli verify:artifact",
+    "prepack": "node scripts/refuse-private-package.mjs",
+    "verify:workspace": "node scripts/verify-workspace-policy.mjs && pnpm verify:targets",
+    "verify:targets": "node scripts/verify-workspace-targets.mjs",
+    "test:workspace-policy": "vitest run --config vitest.config.ts scripts/__tests__",
+    "verify:quality": "node scripts/verify-code-quality-policy.mjs",
+    "verify:coverage-ratchet": "node scripts/verify-coverage-ratchet.mjs",
+    "validate": "pnpm verify:workspace && pnpm verify:acceptance-evidence && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm coverage && pnpm build && pnpm verify:cli-artifact",
     "prepare": "husky",
-    "precommit": "lint-staged && pnpm typecheck"
+    "precommit": "lint-staged && node scripts/typecheck-staged.mjs",
+    "prepush": "pnpm validate"
   },
   "lint-staged": {
     "*.{js,cjs,mjs,ts,tsx}": [

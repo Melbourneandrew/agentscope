@@ -4,7 +4,28 @@
   "private": true,
   "type": "module",
   "description": "Internal shared contracts for first-party Agentscope destinations.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings=0",
+    "test": "vitest run --config ../../../vitest.config.ts --passWithNoTests",
+    "coverage": "vitest run --config ../../../vitest.config.ts --coverage --passWithNoTests",
+    "clean": "node ../../../scripts/clean-workspace.mjs",
+    "prepack": "node ../../../scripts/refuse-private-package.mjs"
+  },
   "dependencies": {
-    "@agentscope/core": "workspace:*"
+    "@agentscope/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
   }
 }

@@ -57,10 +57,52 @@ importers:
         version: 4.1.10(@types/node@22.20.1)(@vitest/coverage-v8@4.1.10)(vite@8.2.1(@types/node@22.20.1)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))
 
   apps/cli:
-    dependencies:
+    devDependencies:
       "@agentscope/core":
         specifier: workspace:*
         version: link:../../packages/core
+      "@agentscope/destination-langfuse":
+        specifier: workspace:*
+        version: link:../../packages/destinations/langfuse
+      "@agentscope/destination-local-sqlite":
+        specifier: workspace:*
+        version: link:../../packages/destinations/local-sqlite
+      "@agentscope/harness-claude-code":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/claude-code
+      "@agentscope/harness-codex":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/codex
+      "@agentscope/harness-gemini-cli":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/gemini-cli
+      "@agentscope/harness-hermes":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/hermes
+      "@agentscope/harness-openclaw":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/openclaw
+      "@agentscope/harness-opencode":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/opencode
+      "@agentscope/harness-pi":
+        specifier: workspace:*
+        version: link:../../packages/harnesses/pi
+      "@types/node":
+        specifier: ^22.15.0
+        version: 22.20.1
+      commander:
+        specifier: ^15.0.0
+        version: 15.0.0
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
 
   apps/docs:
     dependencies:
@@ -104,6 +146,12 @@ importers:
 
   packages/core:
     dependencies:
+      "@agentscope/destinations-core":
+        specifier: workspace:*
+        version: link:../destinations/core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../protocol
       zod:
         specifier: ^4.3.6
         version: 4.4.3
@@ -115,29 +163,41 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
-  packages/destinations/console:
-    dependencies:
-      "@agentscope/core":
-        specifier: workspace:*
-        version: link:../../core
-      "@agentscope/destinations-core":
-        specifier: workspace:*
-        version: link:../core
-
   packages/destinations/core:
     dependencies:
-      "@agentscope/core":
+      "@agentscope/protocol":
         specifier: workspace:*
-        version: link:../../core
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   packages/destinations/langfuse:
     dependencies:
-      "@agentscope/core":
-        specifier: workspace:*
-        version: link:../../core
       "@agentscope/destinations-core":
         specifier: workspace:*
         version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/destinations/local-sqlite:
+    dependencies:
+      "@agentscope/destinations-core":
+        specifier: workspace:*
+        version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   packages/harnesses/claude-code:
     dependencies:
@@ -147,6 +207,13 @@ importers:
       "@agentscope/harnesses-core":
         specifier: workspace:*
         version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   packages/harnesses/codex:
     dependencies:
@@ -156,14 +223,25 @@ importers:
       "@agentscope/harnesses-core":
         specifier: workspace:*
         version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
   packages/harnesses/core:
     dependencies:
-      "@agentscope/core":
+      "@agentscope/protocol":
         specifier: workspace:*
-        version: link:../../core
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
-  packages/harnesses/cursor:
+  packages/harnesses/gemini-cli:
     dependencies:
       "@agentscope/core":
         specifier: workspace:*
@@ -171,12 +249,95 @@ importers:
       "@agentscope/harnesses-core":
         specifier: workspace:*
         version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
 
-  packages/testkit:
+  packages/harnesses/hermes:
     dependencies:
       "@agentscope/core":
         specifier: workspace:*
+        version: link:../../core
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
         version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/harnesses/openclaw:
+    dependencies:
+      "@agentscope/core":
+        specifier: workspace:*
+        version: link:../../core
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
+        version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/harnesses/opencode:
+    dependencies:
+      "@agentscope/core":
+        specifier: workspace:*
+        version: link:../../core
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
+        version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/harnesses/pi:
+    dependencies:
+      "@agentscope/core":
+        specifier: workspace:*
+        version: link:../../core
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
+        version: link:../core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../../protocol
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/protocol:
+    devDependencies:
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  packages/testkit:
+    dependencies:
+      "@agentscope/destinations-core":
+        specifier: workspace:*
+        version: link:../destinations/core
+      "@agentscope/harnesses-core":
+        specifier: workspace:*
+        version: link:../harnesses/core
+      "@agentscope/protocol":
+        specifier: workspace:*
+        version: link:../protocol
 
   tests/integration-live: {}
 
@@ -3260,6 +3421,13 @@ packages:
       {
         integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==,
       }
+
+  commander@15.0.0:
+    resolution:
+      {
+        integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==,
+      }
+    engines: { node: ">=22.12.0" }
 
   comment-parser@1.4.8:
     resolution:
@@ -8275,6 +8443,8 @@ snapshots:
       delayed-stream: 1.0.0
 
   comma-separated-tokens@2.0.3: {}
+
+  commander@15.0.0: {}
 
   comment-parser@1.4.8: {}
 

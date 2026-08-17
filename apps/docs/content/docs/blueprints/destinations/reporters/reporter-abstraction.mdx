@@ -29,11 +29,11 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 **Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
 
-**Consequences:** An additional Phoenix/Arize, warehouse, console, or internal reporter extends the suite through a reviewed Agentscope pull request without changing scenario orchestration or harness packages.
+**Consequences:** An additional Phoenix/Arize, warehouse, or internal-service Trace Destination extends the suite through a reviewed Agentscope pull request without changing scenario orchestration or harness packages. A console destination is not part of the product because writing trace content to a hook's terminal would create an unsafe and unreliable disclosure path.
 
 ### ADR-004: Ship integrations only as first-party packages
 
-**Decision:** Agentscope supports harness and Trace Destination integrations only as first-party packages published from this monorepo. Adding one is a reviewed pull request and release.
+**Decision:** Agentscope supports harness and Trace Destination integrations only as private first-party workspace packages bundled into the public CLI artifact. Adding one is a reviewed pull request and CLI release.
 
 **Context:** A Node package loaded in the CLI process has ambient filesystem, environment, and network authority. Agentscope has no current product need for third-party executable integration loading.
 

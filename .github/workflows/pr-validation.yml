@@ -13,10 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:workspace
+      - run: pnpm verify:coverage-ratchet --base=origin/main
+      - run: pnpm verify:acceptance-evidence
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
@@ -31,7 +35,9 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      - run: pnpm coverage
       - run: pnpm build
+      - run: pnpm verify:cli-artifact
 
   docs:
     name: Documentation

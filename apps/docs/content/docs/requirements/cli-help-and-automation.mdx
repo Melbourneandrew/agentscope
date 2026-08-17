@@ -1,0 +1,34 @@
+---
+title: CLI Help and Automation
+description: User requirements for discoverable commands and safe machine-readable results.
+---
+
+## Overview
+
+Humans and coding agents must be able to discover and invoke every public `agentscope` command without relying on implementation knowledge or parsing destination-native responses.
+
+## Terminology
+
+- **Public command:** a command or subcommand intentionally exposed by the installed `agentscope` CLI.
+- **Structured output:** an explicitly requested, versioned machine-readable result.
+- **Diagnostic code:** a stable non-secret identifier for an expected operational outcome.
+
+## Requirements
+
+### REQ-CLI-001: Complete command help
+
+As a user, I want accurate help at every command level, so that I can configure and operate Agentscope without guessing syntax.
+
+- **AC-CLI-001.1:** When I run `agentscope --help` or `agentscope <command> --help`, the system shall describe the registered command syntax, required arguments, options, defaults, and available subcommands for that level.
+- **AC-CLI-001.2:** When help is requested, the system shall not mutate configuration, access credentials, install hooks, or contact a Trace Destination.
+- **AC-CLI-001.3:** When a public command is added or changed, the system shall provide a corresponding documentation page with examples, expected diagnostics, and any automation-safe output guidance.
+- **AC-CLI-001.4:** When command help or documentation names the executable or configuration root, the system shall use `agentscope` and the resolved Agentscope home consistently.
+
+### REQ-CLI-002: Predictable command results
+
+As an automation author, I want stable result categories and explicit structured output, so that an agent can distinguish usage errors from operational failures safely.
+
+- **AC-CLI-002.1:** When a public command completes, the system shall select a documented exit category and keep result data separate from diagnostics.
+- **AC-CLI-002.2:** When an expected operational failure occurs, the system shall emit a stable diagnostic code without exposing a stack trace, credential, or destination-native response body by default.
+- **AC-CLI-002.3:** When structured output is requested for a command that supports it, the system shall emit only its documented versioned schema and shall not mix human-readable progress into that result.
+- **AC-CLI-002.4:** When an unsupported structured-output mode is requested, the system shall return a usage result rather than silently changing the output contract.

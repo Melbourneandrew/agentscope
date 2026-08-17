@@ -15,7 +15,7 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 **Context:** A many-package workspace otherwise drifts into inconsistent style and type-safety rules. Agent-generated changes benefit from immediate, deterministic feedback rather than informal conventions.
 
-**Consequences:** ESLint uses type-aware rules where supported, including unsafe TypeScript, promise, import, and unused-code checks. Prettier is the sole formatting authority; ESLint does not duplicate formatting rules. TypeScript runs with the strictest practical settings, including `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `useUnknownInCatchVariables`; a proposed relaxation requires an ADR amendment.
+**Consequences:** ESLint uses type-aware rules for production and tests, including unsafe-value, promise, import, and unused-code checks. Test files receive no blanket promise or unsafe-type exemptions. Prettier is the sole formatting authority; ESLint does not duplicate formatting rules. TypeScript runs with the strictest practical settings, including `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, and `useUnknownInCatchVariables`; a proposed relaxation requires an ADR amendment.
 
 ### ADR-002: Enforce import direction mechanically
 
@@ -23,11 +23,11 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 **Context:** Folder structure alone cannot prevent a convenient import from silently collapsing the canonicalization, redaction, and transport boundaries.
 
-**Consequences:** Each workspace package declares a boundary type and public entry points. Cross-package imports use package exports, never `src` paths. Destination code cannot import harness-native artifacts, and harness code cannot import a destination reporter. Violations fail locally and in CI.
+**Consequences:** Each workspace package declares a role and public entry points in the repository quality policy. Cross-package imports use package exports, never `src` paths. Destination code cannot import harness-native artifacts, and harness code cannot import a destination reporter. The workspace dependency graph and source entry graphs must be acyclic; unreachable production modules and duplicate imports fail validation. Seeded boundary, private-import, and cycle violations prove the controls fail closed.
 
 ### ADR-003: Make local commit and CI gates equivalent in intent
 
-**Decision:** A pre-commit hook runs Prettier verification and ESLint on staged supported files, plus affected strict type checks; the pre-push/CI validation command runs repository-wide format verification, lint, strict type checks, and unit tests.
+**Decision:** A pre-commit hook runs Prettier and ESLint on staged supported files, then Nx affected strict type checks for the staged paths. The pre-push validation command runs repository-wide workspace-policy validation, format verification, lint, strict type checks, coverage-enforced unit tests, and builds; CI repeats the same guarantees in independently observable lanes.
 
 **Context:** Fast commit feedback prevents routine violations, while staged-only checks cannot establish workspace-wide correctness or detect changed public contracts.
 
@@ -40,3 +40,11 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 **Context:** The integration matrix is materially slower and has different Docker/artifact requirements than code quality. Separating lanes gives actionable failures and allows safe parallelism.
 
 **Consequences:** Pull requests run quality, unit, docs, and the defined hermetic compatibility matrix; integration work is sharded by scenario without sharing scenario containers. Scheduled/manual protected workflows run the wider version matrix and live smoke tests. Documentation deployment remains a separate post-merge workflow and never grants publishing or external-service credentials to pull-request jobs.
+
+### ADR-005: Enforce complexity and test posture through reviewed policy
+
+**Decision:** The shared ESLint baseline limits cyclomatic complexity to 30, nesting depth to four, function length to 120 nonblank noncomment lines, and parameters to five. A versioned quality-policy registry declares every workspace role, unit-test posture, and coverage thresholds. Substantive TypeScript production code requires real Vitest tests; `--passWithNoTests` is permitted only for mechanically bounded marker-only scaffolds, while non-unit-test applications require a specific reviewed rationale.
+
+**Context:** Uniform extreme thresholds would force cosmetic splitting in the disposable reference Core, while unbounded exceptions would let new packages silently evade tests. Marker bounds make temporary scaffolds self-expiring when implementation begins.
+
+**Consequences:** The initial Core coverage floors are 40% statements, 35% branches, 45% functions, and 40% lines; Testkit floors are 70%, 45%, 85%, and 70%, respectively. These are rounded-down measurements of the current executable suites, not targets. Pull requests may raise but not lower an established threshold, and policy changes require review. Deterministic meta-tests seed architecture, private-import, dependency-cycle, type-safety, promise, formatting, complexity, dead-module, test-presence, and coverage failures.

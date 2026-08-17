@@ -4,7 +4,11 @@
   "defaultOpen": true,
   "pages": [
     "product-description",
+    "cli-installation-and-upgrades",
+    "cli-help-and-automation",
+    "supported-platforms",
     "configuration-directory",
+    "initialization-and-discovery",
     "trace-capture",
     "trace-destination-connection",
     "local-sqlite-destination",

@@ -28,7 +28,7 @@ As a developer, I want to retrieve one trace selected from search, so that I can
 
 - **AC-RET-002.1:** When `agentscope traces get --destination <name> --trace-id <id>` targets a configured retriever, the system shall return the matching trace in the portable Agentscope representation or a stable not-found result.
 - **AC-RET-002.2:** When retrieved destination data is malformed, oversized, incompatible, or contains newly disallowed content, the system shall reject or redact it before any human-readable or structured output is produced.
-- **AC-RET-002.3:** When machine-readable output is requested, search and get shall emit documented versioned schemas and shall never emit destination-native response bodies.
+- **AC-RET-002.3:** When machine-readable output is requested, the system shall emit documented versioned schemas for search and get and shall never emit destination-native response bodies.
 
 ### REQ-RET-003: Honest unsupported behavior
 

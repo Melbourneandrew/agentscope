@@ -1,0 +1,40 @@
+---
+title: CLI Installation and Upgrades
+description: User requirements for installing and updating the public Agentscope CLI.
+---
+
+## Overview
+
+Agentscope is distributed as one npm CLI package that installs the stable `agentscope` command. Installation and upgrades must be verifiable without exposing internal workspace packages as public products.
+
+## Terminology
+
+- **CLI artifact:** the packed `@agentscope/cli` npm artifact offered for installation.
+- **Owned launcher:** the stable executable or shim written by Agentscope for harness hooks.
+- **Clean installation:** installation in an environment with no Agentscope source checkout or separately installed Agentscope packages.
+
+## Requirements
+
+### REQ-INS-001: One installable CLI
+
+As a coding-agent user, I want one conventional npm installation to provide Agentscope, so that setup does not require assembling internal packages.
+
+- **AC-INS-001.1:** When the CLI artifact is installed on a supported platform, the system shall expose an unhyphenated `agentscope` command.
+- **AC-INS-001.2:** When `agentscope --version` runs after a clean installation, the system shall identify the installed CLI version without requiring a repository checkout.
+- **AC-INS-001.3:** When the CLI artifact is installed, the system shall not require any separately published Agentscope library, SDK, harness, destination, Protocol, or Core package.
+- **AC-INS-001.4:** When the artifact contents are inspected before publication, the system shall include every required runtime asset and shall exclude development-only and secret material.
+
+### REQ-INS-002: Safe upgrades
+
+As a user with installed harness integrations, I want CLI upgrades to preserve valid setup and surface incompatibilities, so that tracing does not silently break.
+
+- **AC-INS-002.1:** When the CLI is upgraded, the system shall preserve valid non-secret configuration and credential references or migrate them without losing the last valid state.
+- **AC-INS-002.2:** When an owned launcher is upgraded, the system shall preserve its stable invocation contract or report an actionable incompatibility before modifying harness configuration.
+- **AC-INS-002.3:** When an installed harness integration requires reconciliation after an upgrade, the system shall report that state through status and Doctor rather than silently replacing vendor or user configuration.
+
+### REQ-INS-003: Verifiable release identity
+
+As an operator, I want an installed CLI to be attributable to its tested release, so that I can audit what code is running in hooks.
+
+- **AC-INS-003.1:** When a CLI release is published, the system shall associate the artifact with its source revision, package version, and integrity digest.
+- **AC-INS-003.2:** When release verification runs, the system shall exercise the same artifact that is eligible for publication rather than an independently assembled substitute.

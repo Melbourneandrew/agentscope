@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "packages": {
+    "apps/cli": {
+      "role": "composition-root",
+      "unitTests": "required",
+      "coverage": {
+        "statements": 95,
+        "branches": 90,
+        "functions": 100,
+        "lines": 95
+      }
+    },
+    "apps/docs": {
+      "role": "documentation-application",
+      "unitTests": "not-applicable",
+      "reason": "The documentation application is verified by lint, type checking, and a production build until it gains independently testable runtime logic."
+    },
+    "packages/core": {
+      "role": "application-core",
+      "unitTests": "required",
+      "coverage": {
+        "statements": 40,
+        "branches": 35,
+        "functions": 45,
+        "lines": 40
+      }
+    },
+    "packages/protocol": {
+      "role": "protocol-root",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "packages/testkit": {
+      "role": "test-support",
+      "unitTests": "required",
+      "coverage": {
+        "statements": 70,
+        "branches": 45,
+        "functions": 85,
+        "lines": 70
+      }
+    },
+    "packages/destinations/core": {
+      "role": "destination-contract",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 2
+    },
+    "packages/destinations/langfuse": {
+      "role": "destination-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 3,
+      "maxSourceLines": 8
+    },
+    "packages/destinations/local-sqlite": {
+      "role": "destination-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 3,
+      "maxSourceLines": 8
+    },
+    "packages/harnesses/core": {
+      "role": "harness-contract",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "packages/harnesses/claude-code": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 2
+    },
+    "packages/harnesses/codex": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "packages/harnesses/gemini-cli": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 2
+    },
+    "packages/harnesses/hermes": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "packages/harnesses/opencode": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "packages/harnesses/openclaw": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "packages/harnesses/pi": {
+      "role": "harness-adapter",
+      "unitTests": "marker-only",
+      "maxSourceFiles": 1,
+      "maxSourceLines": 1
+    },
+    "tests/integration-live": {
+      "role": "protected-live-test",
+      "unitTests": "not-applicable",
+      "reason": "This workspace is a credential-gated live smoke runner, not a TypeScript unit-test surface."
+    }
+  }
+}

@@ -5,6 +5,7 @@ node_modules
 out
 dist
 coverage
+artifacts
 .env
 .env.*
 !.env.example

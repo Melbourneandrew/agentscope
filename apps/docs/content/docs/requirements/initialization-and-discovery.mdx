@@ -1,0 +1,42 @@
+---
+title: Initialization and Discovery
+description: User requirements for planning an Agentscope setup from machine evidence.
+---
+
+## Overview
+
+`agentscope init` helps a user understand what Agentscope can configure on the current machine before it changes any destination, credential, or harness configuration.
+
+## Terminology
+
+- **Discovery:** read-only inspection of supported harness executables, versions, and known configuration locations.
+- **Initialization plan:** the explicit set of destination and harness changes proposed for the current machine.
+- **Discovery state:** one of installed, absent, unsupported, or indeterminate.
+
+## Requirements
+
+### REQ-INIT-001: Read-only discovery
+
+As a coding-agent user, I want Agentscope to discover compatible harnesses without changing them, so that I can assess setup safely.
+
+- **AC-INIT-001.1:** When `agentscope init` inspects the machine, the system shall leave harness configuration, destination configuration, credentials, and Agentscope-owned state unchanged until an initialization plan is accepted.
+- **AC-INIT-001.2:** When a supported harness is inspected, the system shall report its discovery state and the available executable and version evidence without exposing sensitive configuration content.
+- **AC-INIT-001.3:** When a harness is installed but its compatibility cannot be established, the system shall report unsupported or indeterminate rather than absent.
+
+### REQ-INIT-002: Explicit initialization plan
+
+As a user, I want to review the complete setup plan before it runs, so that Agentscope does not install hooks or enable trace delivery unexpectedly.
+
+- **AC-INIT-002.1:** When initialization can propose changes, the system shall identify every destination, credential reference, harness integration, and owned file it would create or modify before requesting confirmation.
+- **AC-INIT-002.2:** When the user does not accept the plan, the system shall make none of its proposed changes.
+- **AC-INIT-002.3:** When `agentscope init --yes` is used, the system shall apply only the displayed non-destructive plan and shall not authorize a newly discovered replacement, deletion, or conflicting-hook migration.
+- **AC-INIT-002.4:** When no routing policy selects a Trace Destination, the system shall not enable trace delivery or implicitly select a configured destination.
+- **AC-INIT-002.5:** When Local SQLite is available but has not been explicitly selected and configured, the system shall not enable it during initialization.
+
+### REQ-INIT-003: Resumable reconciliation
+
+As a user, I want initialization to be safely repeatable, so that an interrupted or partially configured setup can be completed without duplicate integrations.
+
+- **AC-INIT-003.1:** When `agentscope init` runs again, the system shall derive a new plan from current authoritative configuration, credential references, and owned integration evidence.
+- **AC-INIT-003.2:** When an intended resource already satisfies its verified postcondition, the system shall not create a duplicate or rewrite it unnecessarily.
+- **AC-INIT-003.3:** When current machine state conflicts with an earlier plan, the system shall present the newly discovered conflict and require the authority appropriate to that change.

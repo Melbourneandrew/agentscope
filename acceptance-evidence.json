@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "ownership": [
+    { "prefix": "OVR", "owners": ["agentscope-vah.3.2"] },
+    {
+      "prefix": "INS",
+      "owners": ["agentscope-vah.2.5", "agentscope-vah.12.4"]
+    },
+    { "prefix": "CLI", "owners": ["agentscope-vah.2.5", "agentscope-vah.8.1"] },
+    {
+      "prefix": "PLAT",
+      "owners": ["agentscope-vah.2.7", "agentscope-vah.12.1"]
+    },
+    { "prefix": "DOC", "owners": ["agentscope-vah.8.6"] },
+    { "prefix": "CFG", "owners": ["agentscope-vah.7.1"] },
+    { "prefix": "INIT", "owners": ["agentscope-vah.8.2"] },
+    {
+      "prefix": "GOV",
+      "owners": ["agentscope-vah.6.1", "agentscope-vah.13.3"]
+    },
+    {
+      "prefix": "HAR",
+      "owners": ["agentscope-vah.10.1", "agentscope-vah.11.10"]
+    },
+    { "prefix": "SQL", "owners": ["agentscope-vah.9.4"] },
+    { "prefix": "REP", "owners": ["agentscope-vah.4.1", "agentscope-vah.6.2"] },
+    {
+      "prefix": "CAP",
+      "owners": ["agentscope-vah.6.1", "agentscope-vah.10.2"]
+    },
+    {
+      "prefix": "CONN",
+      "owners": ["agentscope-vah.7.2", "agentscope-vah.8.2"]
+    },
+    { "prefix": "RET", "owners": ["agentscope-vah.4.2", "agentscope-vah.8.5"] }
+  ],
+  "evidence": [
+    {
+      "id": "test:cli-root-shell",
+      "kind": "automated-test",
+      "path": "apps/cli/src/program.test.ts",
+      "criteria": [
+        "AC-CLI-001.1",
+        "AC-CLI-001.2",
+        "AC-CLI-001.4",
+        "AC-INS-001.1",
+        "AC-INS-001.2"
+      ]
+    },
+    {
+      "id": "test:cli-packed-artifact",
+      "kind": "automated-test",
+      "path": "apps/cli/verify-artifact.mjs",
+      "criteria": [
+        "AC-INS-001.1",
+        "AC-INS-001.2",
+        "AC-INS-001.3",
+        "AC-INS-001.4"
+      ]
+    }
+  ]
+}

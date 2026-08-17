@@ -11,7 +11,11 @@ if (missing.length > 0) {
   );
 }
 
-const endpoint = new URL(process.env.LANGFUSE_BASE_URL);
+const langfuseBaseUrl = process.env.LANGFUSE_BASE_URL;
+if (!langfuseBaseUrl) {
+  throw new Error("LANGFUSE_BASE_URL is required");
+}
+const endpoint = new URL(langfuseBaseUrl);
 if (!["http:", "https:"].includes(endpoint.protocol)) {
   throw new Error("LANGFUSE_BASE_URL must be an HTTP(S) URL");
 }

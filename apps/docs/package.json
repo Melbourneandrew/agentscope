@@ -5,7 +5,12 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint app lib next.config.mjs postcss.config.mjs --max-warnings=0",
+    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",
+    "coverage": "vitest run --config ../../vitest.config.ts --coverage --passWithNoTests",
+    "clean": "node ../../scripts/clean-workspace.mjs",
+    "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
     "fumadocs-core": "^16.14.4",

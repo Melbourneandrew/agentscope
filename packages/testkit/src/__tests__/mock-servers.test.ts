@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   MockModelServer,
   MockTelemetryCollector,
@@ -15,12 +15,19 @@ test("mock model server records OpenAI-compatible requests", async () => {
       method: "POST",
       body: JSON.stringify({ model: "agentscope-test" }),
     });
-    const payload = await response.json();
+    const payload: unknown = await response.json();
     assert.equal(response.status, 200);
-    assert.equal(
-      payload.choices[0].message.content,
-      "AGENTSCOPE_MOCK_RESPONSE",
-    );
+    assert.deepEqual(payload, {
+      choices: [
+        {
+          message: {
+            role: "assistant",
+            content: "AGENTSCOPE_MOCK_RESPONSE",
+          },
+        },
+      ],
+      usage: { prompt_tokens: 11, completion_tokens: 3 },
+    });
     assert.equal(server.requests[0]?.path, "/v1/chat/completions");
   } finally {
     await server.stop();

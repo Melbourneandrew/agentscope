@@ -2,8 +2,11 @@
   "name": "@agentscope/cli",
   "version": "0.1.0",
   "description": "Agentscope command-line installer and configuration tool.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "agentscope": "./dist/bin/agentscope.js"
   },
@@ -13,7 +16,30 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "@agentscope/core": "workspace:*"
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src scripts build.mjs verify-artifact.mjs --max-warnings=0",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "coverage": "vitest run --config ../../vitest.config.ts --coverage",
+    "clean": "node ../../scripts/clean-workspace.mjs",
+    "verify:artifact": "node verify-artifact.mjs"
+  },
+  "devDependencies": {
+    "@agentscope/core": "workspace:*",
+    "@agentscope/destination-langfuse": "workspace:*",
+    "@agentscope/destination-local-sqlite": "workspace:*",
+    "@agentscope/harness-claude-code": "workspace:*",
+    "@agentscope/harness-codex": "workspace:*",
+    "@agentscope/harness-gemini-cli": "workspace:*",
+    "@agentscope/harness-hermes": "workspace:*",
+    "@agentscope/harness-openclaw": "workspace:*",
+    "@agentscope/harness-opencode": "workspace:*",
+    "@agentscope/harness-pi": "workspace:*",
+    "@types/node": "^22.15.0",
+    "commander": "^15.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.2",
+    "zod": "^4.3.6"
   }
 }
