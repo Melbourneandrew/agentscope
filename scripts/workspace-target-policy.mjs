@@ -27,11 +27,15 @@ const requiredSharedGlobals = Object.freeze([
   "{workspaceRoot}/nx.json",
   "{workspaceRoot}/tsconfig.base.json",
   "{workspaceRoot}/eslint.config.mjs",
+  "{workspaceRoot}/vitest.config.ts",
+  "{workspaceRoot}/quality-policy.json",
   "{workspaceRoot}/.prettierignore",
   "{workspaceRoot}/scripts/workspace-packages.mjs",
   "{workspaceRoot}/scripts/workspace-target-policy.mjs",
   "{workspaceRoot}/scripts/verify-workspace-targets.mjs",
   "{workspaceRoot}/scripts/clean-workspace.mjs",
+  "{workspaceRoot}/scripts/code-quality-policy.mjs",
+  "{workspaceRoot}/scripts/verify-code-quality-policy.mjs",
 ]);
 
 function readJson(path) {

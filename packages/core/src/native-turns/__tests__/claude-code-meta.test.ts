@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import * as agentscope from "../index.js";
 import { encodeClaudeProjectPath } from "../../native-traces/index.js";
 import type { NativeTracePart } from "../../native-traces/index.js";

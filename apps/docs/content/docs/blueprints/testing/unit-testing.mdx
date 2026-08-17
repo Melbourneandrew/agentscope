@@ -36,3 +36,11 @@ Unit tests protect the canonical model and first-party package contracts without
 **Context:** Structural TypeScript compatibility does not establish behavioral compatibility across an HTTP API and a local SQL store.
 
 **Consequences:** A destination cannot advertise retrieval until its implementation passes the full shared suite. Langfuse adds API-profile fixtures and Local SQLite adds query-plan, migration, and transaction fixtures; both are held to the same CLI-visible semantics.
+
+### ADR-005: Standardize TypeScript unit and contract tests on Vitest
+
+**Decision:** Every TypeScript unit and contract suite runs directly from source through Vitest with V8 coverage. Compiled `node:test` suites are not supported. Coverage includes all production TypeScript reachable in the package, excludes tests and declarations, and enforces the reviewed per-package floors in the repository quality-policy registry.
+
+**Context:** Mixing compiled Node tests with Vitest produced different discovery, transformation, and coverage behavior. Allowing every empty workspace to pass also made a missing suite indistinguishable from an intentionally skeletal package.
+
+**Consequences:** A package with substantive production code must contain at least one discoverable test and may not use `--passWithNoTests`. Mechanically bounded marker-only scaffolds may pass without tests only until they exceed their declared file or source-line allowance. Coverage thresholds ratchet upward and cannot be lowered relative to the pull request base. Unit suites remain deterministic and may not use network, Docker, installed harnesses, or per-test dependency installations.
