@@ -60,7 +60,6 @@ describe("agentscope command shell", () => {
   });
 
   it("uses a deterministic non-zero usage result for unknown options", async () => {
-    // AC-CLI-002.1
     const result = await parseAndCapture("--does-not-exist");
 
     expect(result.error?.exitCode).toBe(1);
