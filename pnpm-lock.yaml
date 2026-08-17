@@ -91,9 +91,18 @@ importers:
       "@types/node":
         specifier: ^22.15.0
         version: 22.20.1
+      commander:
+        specifier: ^15.0.0
+        version: 15.0.0
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       typescript:
         specifier: ^5.9.2
         version: 5.9.3
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
 
   apps/docs:
     dependencies:
@@ -3412,6 +3421,13 @@ packages:
       {
         integrity: sha512-Fu4hJdvzeylCfQPp9SGWidpzrMs7tTrlu6Vb8XGaRGck8QSNZJJp538Wrb60Lax4fPwR64ViY468OIUTbRlGZg==,
       }
+
+  commander@15.0.0:
+    resolution:
+      {
+        integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==,
+      }
+    engines: { node: ">=22.12.0" }
 
   comment-parser@1.4.8:
     resolution:
@@ -8427,6 +8443,8 @@ snapshots:
       delayed-stream: 1.0.0
 
   comma-separated-tokens@2.0.3: {}
+
+  commander@15.0.0: {}
 
   comment-parser@1.4.8: {}
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { cliPackageId } from "../index.js";
+import { createProgram } from "../program.js";
 
-void cliPackageId;
+await createProgram().parseAsync(process.argv);

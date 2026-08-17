@@ -19,6 +19,7 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify:coverage-ratchet --base=origin/main
+      - run: pnpm verify:acceptance-evidence
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
@@ -35,6 +36,7 @@ jobs:
       - run: pnpm test
       - run: pnpm coverage
       - run: pnpm build
+      - run: pnpm verify:cli-artifact
 
   docs:
     name: Documentation

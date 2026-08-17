@@ -3,9 +3,13 @@
   "packages": {
     "apps/cli": {
       "role": "composition-root",
-      "unitTests": "marker-only",
-      "maxSourceFiles": 2,
-      "maxSourceLines": 5
+      "unitTests": "required",
+      "coverage": {
+        "statements": 95,
+        "branches": 90,
+        "functions": 100,
+        "lines": 95
+      }
     },
     "apps/docs": {
       "role": "documentation-application",

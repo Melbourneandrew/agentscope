@@ -2,7 +2,11 @@
   "name": "@agentscope/cli",
   "version": "0.1.0",
   "description": "Agentscope command-line installer and configuration tool.",
+  "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "agentscope": "./dist/bin/agentscope.js"
   },
@@ -13,12 +17,13 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src --max-warnings=0",
-    "test": "vitest run --config ../../vitest.config.ts --passWithNoTests",
-    "coverage": "vitest run --config ../../vitest.config.ts --coverage --passWithNoTests",
-    "clean": "node ../../scripts/clean-workspace.mjs"
+    "lint": "eslint src build.mjs verify-artifact.mjs --max-warnings=0",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "coverage": "vitest run --config ../../vitest.config.ts --coverage",
+    "clean": "node ../../scripts/clean-workspace.mjs",
+    "verify:artifact": "node verify-artifact.mjs"
   },
   "devDependencies": {
     "@agentscope/core": "workspace:*",
@@ -28,10 +33,13 @@
     "@agentscope/harness-codex": "workspace:*",
     "@agentscope/harness-gemini-cli": "workspace:*",
     "@agentscope/harness-hermes": "workspace:*",
-    "@agentscope/harness-opencode": "workspace:*",
     "@agentscope/harness-openclaw": "workspace:*",
+    "@agentscope/harness-opencode": "workspace:*",
     "@agentscope/harness-pi": "workspace:*",
     "@types/node": "^22.15.0",
-    "typescript": "^5.9.2"
+    "commander": "^15.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.2",
+    "zod": "^4.3.6"
   }
 }

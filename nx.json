@@ -22,7 +22,9 @@
       "{workspaceRoot}/scripts/verify-workspace-targets.mjs",
       "{workspaceRoot}/scripts/clean-workspace.mjs",
       "{workspaceRoot}/scripts/code-quality-policy.mjs",
-      "{workspaceRoot}/scripts/verify-code-quality-policy.mjs"
+      "{workspaceRoot}/scripts/verify-code-quality-policy.mjs",
+      "{workspaceRoot}/scripts/acceptance-evidence.mjs",
+      "{workspaceRoot}/acceptance-evidence.json"
     ]
   },
   "targetDefaults": {
