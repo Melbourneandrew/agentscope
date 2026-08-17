@@ -80,7 +80,14 @@ try {
 
   run(
     "npm",
-    ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--offline",
+      tarball,
+    ],
     { cwd: installRoot },
   );
 
