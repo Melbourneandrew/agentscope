@@ -148,3 +148,45 @@ test("permits the destination testing entrypoint only in tests and testkit", () 
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("permits the Protocol testing entrypoint only in tests and testkit", () => {
+  const value = fixture();
+  try {
+    writeFileSync(
+      join(value.root, "packages/destination/fixture.test.ts"),
+      'import { createSanitizedCanonicalTraceFixture } from "@agentscope/protocol/testing";\nvoid createSanitizedCanonicalTraceFixture;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    const production = join(value.root, "packages/destination/fixture.ts");
+    writeFileSync(
+      production,
+      'import { createSanitizedCanonicalTraceFixture } from "@agentscope/protocol/testing";\nvoid createSanitizedCanonicalTraceFixture;\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /test-only/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("rejects testing entrypoints from Core production sources", () => {
+  const value = fixture();
+  try {
+    for (const [name, specifier] of [
+      ["destination-testing", "@agentscope/destinations-core/testing"],
+      ["protocol-testing", "@agentscope/protocol/testing"],
+    ]) {
+      const production = join(value.root, `packages/core/${name}.ts`);
+      writeFileSync(production, `import ${JSON.stringify(specifier)};\n`);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /test-only/u,
+      );
+      rmSync(production);
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});

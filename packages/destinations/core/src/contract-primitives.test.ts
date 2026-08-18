@@ -295,6 +295,8 @@ describe("deadline and credential capabilities", () => {
       "unavailable-before-send",
       "deadline-before-send",
       "commit-then-lose-acknowledgement",
+      "malformed-receipt",
+      "throw-before-receipt",
       "hang",
     ]);
     expect(Object.isFrozen(REPORTER_TEST_BEHAVIORS)).toBe(true);

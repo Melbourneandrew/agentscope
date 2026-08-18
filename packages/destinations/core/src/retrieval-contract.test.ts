@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 import { standardsManifest } from "@agentscope/protocol";
+import { createSanitizedCanonicalTraceFixture } from "@agentscope/protocol/testing";
 
 import { createReporterDeadline } from "./deadline.js";
 import {
@@ -53,15 +53,7 @@ const destinationType = createDestinationTypeId(
   "@agentscope/destination-local-sqlite",
 );
 const traceId = "0123456789abcdef0123456789abcdef";
-const graph: unknown = JSON.parse(
-  readFileSync(
-    new URL(
-      "../../../protocol/src/testing/fixtures/sanitized-canonical-trace.json",
-      import.meta.url,
-    ),
-    "utf8",
-  ),
-);
+const graph: unknown = createSanitizedCanonicalTraceFixture();
 
 const locator = () =>
   createTraceLocator({

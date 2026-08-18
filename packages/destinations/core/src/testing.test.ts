@@ -47,6 +47,8 @@ describe("DestinationTestAdapter", () => {
       "deadline-exceeded",
       "outcome-unknown",
       "outcome-unknown",
+      "outcome-unknown",
+      "outcome-unknown",
     ];
     for (const [index, behavior] of REPORTER_TEST_BEHAVIORS.entries()) {
       await expect(

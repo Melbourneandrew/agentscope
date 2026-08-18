@@ -6,7 +6,10 @@ const restrictedSpecifiers = [
   "@agentscope/destinations-core/lifecycle-sink",
   "@agentscope/destinations-core/core-orchestration",
 ];
-const destinationTestingSpecifier = "@agentscope/destinations-core/testing";
+const testingSpecifiers = [
+  "@agentscope/destinations-core/testing",
+  "@agentscope/protocol/testing",
+];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const ignoredDirectories = new Set([
@@ -33,28 +36,31 @@ const sourceFiles = (root) => {
   return files;
 };
 
+const assertNoCoreOnlyImports = (source, file, packageName) => {
+  if (packageName === "@agentscope/core") return;
+  for (const specifier of restrictedSpecifiers)
+    if (source.includes(specifier))
+      throw new Error(`${specifier} is Core-only; forbidden import in ${file}`);
+};
+
+const assertNoProductionTestingImports = (source, file, packageName) => {
+  if (packageName === "@agentscope/testkit" || testSource.test(file)) return;
+  for (const specifier of testingSpecifiers)
+    if (source.includes(specifier))
+      throw new Error(`${specifier} is test-only; forbidden import in ${file}`);
+};
+
 export const auditCoreFinalizationImports = (
   workspaceRoot,
   expectedPackages,
 ) => {
   for (const [packagePath, packageName] of expectedPackages) {
-    if (packageName === "@agentscope/core") continue;
     const root = join(workspaceRoot, packagePath);
     for (const file of sourceFiles(root)) {
       const source = readFileSync(file, "utf8");
-      for (const restrictedSpecifier of restrictedSpecifiers)
-        if (source.includes(restrictedSpecifier))
-          throw new Error(
-            `${restrictedSpecifier} is Core-only; forbidden import in ${relative(workspaceRoot, file)}`,
-          );
-      if (
-        source.includes(destinationTestingSpecifier) &&
-        packageName !== "@agentscope/testkit" &&
-        !testSource.test(relative(workspaceRoot, file))
-      )
-        throw new Error(
-          `${destinationTestingSpecifier} is test-only; forbidden import in ${relative(workspaceRoot, file)}`,
-        );
+      const workspaceFile = relative(workspaceRoot, file);
+      assertNoCoreOnlyImports(source, workspaceFile, packageName);
+      assertNoProductionTestingImports(source, workspaceFile, packageName);
     }
   }
 };

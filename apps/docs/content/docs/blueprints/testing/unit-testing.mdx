@@ -35,7 +35,7 @@ Unit tests protect the canonical model and first-party package contracts without
 
 **Context:** Structural TypeScript compatibility does not establish behavioral compatibility across an HTTP API and a local SQL store.
 
-**Consequences:** A destination cannot advertise retrieval until its implementation passes the full shared suite. Langfuse adds API-profile fixtures and Local SQLite adds query-plan, migration, and transaction fixtures; both are held to the same CLI-visible semantics.
+**Consequences:** The framework-neutral factories return frozen, named asynchronous cases with stable assertion codes; a package's Vitest suite registers and runs those cases without making Vitest a destination-family runtime dependency. The Retriever factory requires the exact family-owned match/miss matrix for every portable filter, conjunction, all-tags, limit, continuation, and partial-result behavior; callers cannot omit a case by narrowing the input inventory. Cursor tokens are reconstructed under the exact connection, configuration, query, and upper-time binding before the adapter sees them. A deterministic family-owned adapter proves the suite itself, and seeded filter-ignoring or identity-swapping adapters must fail the exact relevant assertion. Protocol exposes its canonical fixture only through a test-only package entrypoint, so destination tests neither copy canonical-schema ownership nor import another package's private source. A destination cannot advertise retrieval until its implementation passes the full shared suite. Langfuse adds API-profile fixtures and Local SQLite adds query-plan, migration, and transaction fixtures; both are held to the same CLI-visible semantics.
 
 ### ADR-005: Standardize TypeScript unit and contract tests on Vitest
 

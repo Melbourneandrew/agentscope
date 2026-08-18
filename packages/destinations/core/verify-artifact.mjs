@@ -25,6 +25,14 @@ import {
   readTraceSearchCursor,
   resolveDestinationConnection,
 } from "./dist/core-orchestration.js";
+import {
+  createDestinationTestAdapter,
+  createReporterContractSuite,
+  createRetrieverContractQueryMatrix,
+  createRetrieverTestAdapter,
+  RETRIEVER_CONTRACT_FIXTURE_VALUES,
+  RETRIEVER_CONTRACT_QUERY_CASE_NAMES,
+} from "./dist/testing.js";
 
 const connectionId = createDestinationConnectionId(
   "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -69,6 +77,24 @@ const unhandled = [];
 const collectUnhandled = (reason) => unhandled.push(reason);
 process.on("unhandledRejection", collectUnhandled);
 try {
+  const reporterCases = createReporterContractSuite({
+    adapter: createDestinationTestAdapter(),
+    traces: [{}],
+  });
+  const queryMatrix = createRetrieverContractQueryMatrix({
+    primaryTraceId: "0123456789abcdef0123456789abcdef",
+    secondaryTraceId: "1123456789abcdef0123456789abcdef",
+  });
+  if (
+    !reporterCases.some(({ name }) => name === "reporter:accept") ||
+    typeof createRetrieverTestAdapter !== "function" ||
+    RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length !== 22 ||
+    queryMatrix.length !== RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length ||
+    queryMatrix[0]?.expectedTraceIds.length !== 2 ||
+    RETRIEVER_CONTRACT_FIXTURE_VALUES.branch !== "main"
+  )
+    throw new Error("Destination testing subpath is incomplete.");
+
   const methodSchema = z.strictObject({ endpoint: z.string() });
   materializeRoot(methodSchema);
   const methodDescriptor = defineDestinationDescriptor(
