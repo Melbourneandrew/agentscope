@@ -101,3 +101,50 @@ test("permits the provisional lifecycle sink entrypoint only inside Core", () =>
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("permits destination orchestration authority only inside Core", () => {
+  const value = fixture();
+  try {
+    writeFileSync(
+      join(value.root, "packages/core/orchestration.ts"),
+      'import { bindDestinationTransport } from "@agentscope/destinations-core/core-orchestration";\nvoid bindDestinationTransport;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    const forbidden = join(value.root, "packages/destination/orchestration.ts");
+    writeFileSync(
+      forbidden,
+      'import { bindDestinationTransport } from "@agentscope/destinations-core/core-orchestration";\nvoid bindDestinationTransport;\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /Core-only/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("permits the destination testing entrypoint only in tests and testkit", () => {
+  const value = fixture();
+  try {
+    writeFileSync(
+      join(value.root, "packages/destination/adapter.test.ts"),
+      'import { createDestinationTestAdapter } from "@agentscope/destinations-core/testing";\nvoid createDestinationTestAdapter;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    const production = join(
+      value.root,
+      "packages/destination/production-adapter.ts",
+    );
+    writeFileSync(
+      production,
+      'import { createDestinationTestAdapter } from "@agentscope/destinations-core/testing";\nvoid createDestinationTestAdapter;\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /test-only/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});

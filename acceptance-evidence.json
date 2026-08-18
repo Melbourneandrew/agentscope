@@ -80,6 +80,18 @@
       "kind": "automated-test",
       "path": "packages/core/src/redaction/pipeline.test.ts",
       "criteria": ["AC-GOV-001.4"]
+    },
+    {
+      "id": "test:reporter-built-brand-boundary",
+      "kind": "automated-test",
+      "path": "packages/core/verify-artifact.mjs",
+      "criteria": ["AC-REP-002.1"]
+    },
+    {
+      "id": "test:reporter-acknowledgement-loss",
+      "kind": "automated-test",
+      "path": "packages/destinations/core/src/testing.test.ts",
+      "criteria": ["AC-REP-003.3"]
     }
   ]
 }

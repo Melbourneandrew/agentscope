@@ -4,7 +4,10 @@ import { join, relative } from "node:path";
 const restrictedSpecifiers = [
   "@agentscope/protocol/core-finalization",
   "@agentscope/destinations-core/lifecycle-sink",
+  "@agentscope/destinations-core/core-orchestration",
 ];
+const destinationTestingSpecifier = "@agentscope/destinations-core/testing";
+const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const ignoredDirectories = new Set([
   ".next",
@@ -44,6 +47,14 @@ export const auditCoreFinalizationImports = (
           throw new Error(
             `${restrictedSpecifier} is Core-only; forbidden import in ${relative(workspaceRoot, file)}`,
           );
+      if (
+        source.includes(destinationTestingSpecifier) &&
+        packageName !== "@agentscope/testkit" &&
+        !testSource.test(relative(workspaceRoot, file))
+      )
+        throw new Error(
+          `${destinationTestingSpecifier} is test-only; forbidden import in ${relative(workspaceRoot, file)}`,
+        );
     }
   }
 };

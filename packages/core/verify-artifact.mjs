@@ -6,6 +6,14 @@ import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
 import { invokeRedactedTraceSink } from "../destinations/core/dist/lifecycle-sink.js";
+import {
+  createReporterDeadline,
+  invokeReporter,
+} from "../destinations/core/dist/core-orchestration.js";
+import {
+  createDestinationReporter,
+  createReporterReceipt,
+} from "../destinations/core/dist/index.js";
 import { runFailOpenTraceLifecycle } from "./dist/index.js";
 import { REDACTION_POLICY_IDENTITIES } from "./dist/redaction/policy.js";
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
@@ -74,13 +82,54 @@ const verifyRuntime = (run, guard, invoke) => {
     invoke(() => undefined, {}) !== "rejected"
   )
     throw new Error("Core lifecycle artifact registry verification failed.");
+  return trace;
 };
 
-verifyRuntime(
+const directTrace = verifyRuntime(
   runFailOpenTraceLifecycle,
   isRedactedCanonicalTrace,
   invokeRedactedTraceSink,
 );
+const directReporter = createDestinationReporter({
+  report: ({ traces }) =>
+    Promise.resolve(
+      traces.length === 1 && traces[0] === directTrace
+        ? createReporterReceipt("accepted")
+        : createReporterReceipt("rejected"),
+    ),
+});
+// AC-REP-002.1: the built Reporter boundary accepts only the Core-produced,
+// harness-independent branded canonical envelope and preserves its identity.
+const directAttempt = {
+  traces: [directTrace],
+  signal: new AbortController().signal,
+  deadline: createReporterDeadline(1_000),
+};
+if (
+  (await invokeReporter(directReporter, directAttempt)).outcome !== "accepted"
+)
+  throw new Error("Reporter rejected a Core-minted branded trace.");
+const hangingReporter = createDestinationReporter({
+  report: () => new Promise(() => undefined),
+});
+if (
+  (
+    await invokeReporter(hangingReporter, {
+      ...directAttempt,
+      deadline: createReporterDeadline(20),
+    })
+  ).outcome !== "outcome-unknown"
+)
+  throw new Error("Hanging Reporter did not settle at the Core deadline.");
+try {
+  await invokeReporter(directReporter, {
+    ...directAttempt,
+    traces: [structuredClone(directTrace)],
+  });
+  throw new Error("Reporter accepted a cloned trace.");
+} catch (error) {
+  if (error?.code !== "destination.reporter.invalid") throw error;
+}
 const unhandled = [];
 const collectUnhandled = (reason) => unhandled.push(reason);
 process.on("unhandledRejection", collectUnhandled);
@@ -112,14 +161,21 @@ try {
       `import { runFailOpenTraceLifecycle } from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
       `import { REDACTION_POLICY_IDENTITIES } from ${JSON.stringify(resolve(import.meta.dirname, "dist/redaction/policy.js"))};`,
       `import { invokeRedactedTraceSink } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/lifecycle-sink.js"))};`,
+      `import { createReporterDeadline, invokeReporter } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/core-orchestration.js"))};`,
+      `import { createDestinationReporter, createReporterReceipt } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/index.js"))};`,
       `import { isRedactedCanonicalTrace } from ${JSON.stringify(resolve(import.meta.dirname, "../protocol/dist/index.js"))};`,
       `const invocation = ${JSON.stringify(invocation)};`,
       "invocation.snapshot.policyIdentity = REDACTION_POLICY_IDENTITIES.baseline;",
       `const candidate = ${JSON.stringify(candidate)};`,
-      "export const verify = () => {",
+      "export const verify = async () => {",
       "  let trace;",
       "  const result = runFailOpenTraceLifecycle({ invocation, capture: (factory) => factory.capture(candidate), sink(value) { trace = value; return undefined; } });",
-      "  return result.outcome === 'sink-returned' && isRedactedCanonicalTrace(trace) && invokeRedactedTraceSink(() => undefined, structuredClone(trace)) === 'rejected' && invokeRedactedTraceSink(() => undefined, {}) === 'rejected';",
+      "  const reporter = createDestinationReporter({ report: ({ traces }) => Promise.resolve(createReporterReceipt(traces.length === 1 && traces[0] === trace ? 'accepted' : 'rejected')) });",
+      "  const attempt = { traces: [trace], signal: new AbortController().signal, deadline: createReporterDeadline(1000) };",
+      "  const accepted = await invokeReporter(reporter, attempt);",
+      "  let cloneRejected = false;",
+      "  try { await invokeReporter(reporter, { ...attempt, traces: [structuredClone(trace)] }); } catch (error) { cloneRejected = error?.code === 'destination.reporter.invalid'; }",
+      "  return result.outcome === 'sink-returned' && accepted.outcome === 'accepted' && cloneRejected && isRedactedCanonicalTrace(trace) && invokeRedactedTraceSink(() => undefined, structuredClone(trace)) === 'rejected' && invokeRedactedTraceSink(() => undefined, {}) === 'rejected';",
       "};",
     ].join("\n"),
   );
@@ -131,7 +187,7 @@ try {
     outfile: output,
   });
   const bundled = await import(`${pathToFileURL(output).href}?artifact=1`);
-  if (bundled.verify() !== true)
+  if ((await bundled.verify()) !== true)
     throw new Error("Bundled lifecycle registry verification failed.");
 } finally {
   rmSync(directory, { recursive: true, force: true });
