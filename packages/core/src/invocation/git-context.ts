@@ -16,7 +16,7 @@ import {
 const execFile = promisify(nodeExecFile);
 const MAXIMUM_PATH_CODE_UNITS = 4_096;
 const MAXIMUM_GIT_OUTPUT_BYTES = 32_768;
-const MAXIMUM_GIT_STAGE_MILLISECONDS = 100;
+const MAXIMUM_GIT_STAGE_MILLISECONDS = 500;
 const revisionPattern = /^[0-9a-f]{40,64}$/u;
 
 export type WorkspaceCandidate = Readonly<{
@@ -102,74 +102,73 @@ const runGitWithExecutor = async (
   signal: AbortSignal | undefined,
   execute: GitCommandExecutor,
 ): Promise<GitProbeResult> => {
+  const startedAt = performance.now();
+  const remaining = (): number =>
+    Math.max(
+      0,
+      Math.floor(timeoutMilliseconds - (performance.now() - startedAt)),
+    );
   /* v8 ignore next -- exactly one platform-specific null device is active per test process. */
   const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
-  const options = {
-    cwd: workspace,
-    env: Object.freeze({
-      GIT_CONFIG_GLOBAL: nullDevice,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_TERMINAL_PROMPT: "0",
-      PATH: "/usr/bin:/bin",
-    }),
-    encoding: "utf8" as const,
-    maxBuffer: MAXIMUM_GIT_OUTPUT_BYTES,
-    timeout: timeoutMilliseconds,
-    windowsHide: true,
-    ...(signal === undefined ? {} : { signal }),
+  const executeWithinBudget = (arguments_: readonly string[]) => {
+    const timeout = remaining();
+    if (timeout <= 0 || signal?.aborted === true)
+      return Promise.reject(new Error("core.git.unavailable"));
+    return execute(executable, arguments_, {
+      cwd: workspace,
+      env: Object.freeze({
+        GIT_CONFIG_GLOBAL: nullDevice,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        PATH: "/usr/bin:/bin",
+      }),
+      encoding: "utf8" as const,
+      maxBuffer: MAXIMUM_GIT_OUTPUT_BYTES,
+      timeout,
+      windowsHide: true,
+      ...(signal === undefined ? {} : { signal }),
+    });
   };
-  const paths = await execute(
-    executable,
-    [
-      "-c",
-      "credential.helper=",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-C",
-      workspace,
-      "rev-parse",
-      "--path-format=absolute",
-      "--show-toplevel",
-      "--git-common-dir",
-    ],
-    options,
-  );
-  const revisionResult = await execute(
-    executable,
-    [
-      "-c",
-      "credential.helper=",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-C",
-      workspace,
-      "rev-parse",
-      "--verify",
-      "HEAD",
-    ],
-    options,
-  );
-  const headResult = await execute(
-    executable,
-    [
-      "-c",
-      "credential.helper=",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.hooksPath=/dev/null",
-      "-C",
-      workspace,
-      "rev-parse",
-      "--symbolic-full-name",
-      "HEAD",
-    ],
-    options,
-  );
+  const paths = await executeWithinBudget([
+    "-c",
+    "credential.helper=",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-C",
+    workspace,
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--git-common-dir",
+  ]);
+  const revisionResult = await executeWithinBudget([
+    "-c",
+    "credential.helper=",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-C",
+    workspace,
+    "rev-parse",
+    "--verify",
+    "HEAD",
+  ]);
+  const headResult = await executeWithinBudget([
+    "-c",
+    "credential.helper=",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-C",
+    workspace,
+    "rev-parse",
+    "--symbolic-full-name",
+    "HEAD",
+  ]);
   const pathLines = boundedOutput(paths.stdout).trimEnd().split("\n");
   if (pathLines.length !== 2)
     /* v8 ignore next -- malformed path output is exercised through the fixed unavailable result. */
