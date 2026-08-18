@@ -11,11 +11,11 @@ The same manifest drives a small selected local scenario and the complete hermet
 
 ### ADR-001: Make local execution targeted and safe by default
 
-**Decision:** Local commands select an explicit harness/version or deterministic shard and run it in Docker. They print the exact named containers, networks, volumes, and owned test-cache paths before cleanup; `pnpm test:integration:clean` removes only those targets.
+**Decision:** Local commands select an explicit scenario, harness, tag, deterministic shard, or deliberate full run and execute it in Docker. They print exact named containers, networks, images, and fixed-root artifact paths before cleanup; `pnpm test:integration:clean` removes only validated owned targets.
 
 **Context:** Developers may use AgentScope and coding harnesses outside this repository. A test command must not alter their real configuration or make their active agents talk to MockServer.
 
-**Consequences:** The suite never mounts the user's home or injects model endpoint variables into the host shell. Repeated local runs reuse only named, bounded build/cache inputs; cleanup is inspectable and never recursively accepts an arbitrary path.
+**Consequences:** The suite never mounts the user's home or injects model endpoint variables into the host shell. Repeated local runs reuse only named, bounded prepared inputs; scenario and sidecar resources have explicit memory, process, request, concurrency, and time ceilings. Run registration and global artifact mutation are serialized by one host-local OS socket lease derived from the canonical workspace path. The kernel provides atomic exclusion and releases the lease when its owner exits, so interruption cannot leave a stale pathname lock or race a later owner. Each live run then holds a validated host-process lease; retention and cleanup refuse to mutate integration resources while any lease owner is alive. Cleanup is inspectable and never follows symlinked roots or recursively accepts an arbitrary path.
 
 ### ADR-002: Gate pull requests with the defined hermetic matrix
 
@@ -23,4 +23,4 @@ The same manifest drives a small selected local scenario and the complete hermet
 
 **Context:** The fast required matrix detects cross-harness regressions without making every PR wait for every historical version or paid external service.
 
-**Consequences:** The CI summary reports each harness/version/destination result, image digest, and scenario identity. A matrix change that lowers coverage requires an explicit review explanation.
+**Consequences:** A prerequisite job prepares the candidate once; shard and replay jobs consume that exact checksum-bound artifact. Manual dispatch can select one exact manifest scenario without rebuilding the candidate. The CI summary reports each harness/version/destination result, image digest, and scenario identity. A matrix change that lowers coverage requires an explicit review explanation.

@@ -1,0 +1,32 @@
+{
+  "name": "@agentscope/integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src *.mjs fixtures/*.mjs --max-warnings=0",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "coverage": "vitest run --config ../../vitest.config.ts --coverage",
+    "clean": "node ../../scripts/clean-workspace.mjs",
+    "prepare:candidate": "pnpm --filter @agentscope/cli verify:artifact && node prepare-cli.mjs",
+    "prepare:images": "node prepare-images.mjs",
+    "prepare:model-routes": "pnpm --filter @agentscope/testkit build && node prepare-model-routes.mjs",
+    "select": "node select.mjs",
+    "run:scenarios": "node run-scenarios.mjs",
+    "maintain:artifacts": "node maintain-artifacts.mjs",
+    "verify:isolation": "node verify-isolation.mjs",
+    "verify:operations": "node verify-operations.mjs",
+    "prepack": "node ../../scripts/refuse-private-package.mjs"
+  },
+  "dependencies": {
+    "@agentscope/testkit": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.2"
+  }
+}

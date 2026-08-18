@@ -19,8 +19,8 @@ Every default real-harness scenario proves that AgentScope can install and captu
 
 ### ADR-002: Prove the installation artifact, not the checkout
 
-**Decision:** A scenario installs the packed candidate `@agentscope/cli` artifact and executes `agentscope init` plus `agentscope install <harness>` before invoking the harness.
+**Decision:** Every scenario receives the packed candidate `@agentscope/cli` artifact as a checksum-bound immutable input. A real-harness acceptance scenario must install that artifact and execute `agentscope init` plus `agentscope install <harness>` before invoking the harness. A platform-certification fixture may exercise only an explicitly identified test lifecycle adapter and does not count as real-harness or product acceptance evidence.
 
 **Context:** Mounting the source checkout or relying on a global CLI can hide missing package files, bin metadata, and install-time assumptions.
 
-**Consequences:** Candidate packaging is a prerequisite of the scenario. The scenario asserts owned-hook installation and uninstall behavior in the same isolated environment.
+**Consequences:** Candidate packaging is a prerequisite of every scenario. The generic platform can be certified before public initialization and harness commands exist, without inventing support claims; each advertised harness still requires a scenario that asserts real owned-hook installation and uninstall behavior in the same isolated environment.

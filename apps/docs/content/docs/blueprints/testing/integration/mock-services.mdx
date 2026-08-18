@@ -23,7 +23,7 @@ MockServer and mock telemetry services make real harness execution deterministic
 
 **Context:** Model traffic and trace export are distinct evidence. An additional Trace Destination must not require a harness test rewrite.
 
-**Consequences:** Generic assertions cover canonical hierarchy, branch/model/tool context, redaction, and delivery shape; a harness adapter adds native expectations and a destination adapter adds protocol-specific expectations. Unit contracts consume the adapter's normalized delivery ledger through the destination-family testing subpath; integration code remains responsible only for translating native mock requests into that ledger.
+**Consequences:** Generic assertions cover canonical hierarchy, branch/model/tool context, redaction, and delivery shape; a checksum-bound scenario adapter adds harness and destination-specific behavior without modifying generic orchestration. Unit contracts consume normalized delivery ledgers through the destination-family testing subpath; integration adapters remain responsible only for translating native mock requests into that ledger.
 
 ### ADR-003: Model destination retrieval as a separate protocol
 

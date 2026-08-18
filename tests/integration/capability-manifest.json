@@ -1,0 +1,39 @@
+{
+  "manifestVersion": 1,
+  "manifestIdentity": "sha256-767cdcc73b359947b339475d9bba2b59a9c60eefbd8779e2ff66be3bd0c74270",
+  "requiredRepresentativeIds": ["fixture-process-v1"],
+  "evidence": [
+    {
+      "evidenceId": "fixture-process-v1",
+      "harnessId": "fixture-process",
+      "harnessPackage": "@agentscope/harnesses-core",
+      "representativeVersion": "1.0.0",
+      "descriptorArtifact": {
+        "path": "fixtures/process-harness-evidence.json",
+        "sha256": "ca2b9a23a6844659a39e7d21b87e68f60856efd3be39dd964226b3c211b74512"
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenarioId": "fixture-process-smoke",
+      "harnessEvidenceId": "fixture-process-v1",
+      "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "modelRoutes": [
+        "openai-responses",
+        "openai-chat-completions",
+        "anthropic-messages",
+        "gemini-generate-content"
+      ],
+      "tags": ["pr", "smoke"],
+      "destinations": ["otlp-ledger"],
+      "fixtureAdapter": {
+        "path": "fixtures/process-platform-adapter.mjs",
+        "sha256": "25f41fa3c25dd8af69a4d8939445eb5763f5ca65c982d1b2a655d04fb19f16b3"
+      },
+      "resourceClass": "small",
+      "shardWeight": 100
+    }
+  ]
+}

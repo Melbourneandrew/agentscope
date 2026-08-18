@@ -68,6 +68,16 @@
       "maxSourceFiles": 3,
       "maxSourceLines": 8
     },
+    "tests/integration": {
+      "role": "hermetic-integration-platform",
+      "unitTests": "required",
+      "coverage": {
+        "statements": 90,
+        "branches": 85,
+        "functions": 95,
+        "lines": 90
+      }
+    },
     "packages/harnesses/core": {
       "role": "harness-contract",
       "unitTests": "marker-only",
