@@ -7,7 +7,7 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 const integrationRoot = import.meta.dirname;
 const artifactsRoot = resolve(integrationRoot, "../../artifacts/integration");
 const workspaceRoot = resolve(integrationRoot, "../..");
-const releaseOperationLock = acquireIntegrationOperationLock(
+const releaseOperationLock = await acquireIntegrationOperationLock(
   workspaceRoot,
   "integration.operations.active",
 );
@@ -160,5 +160,5 @@ process.stdout.write(
     })),
   })}\n`,
 );
-releaseOperationLock();
+await releaseOperationLock();
 process.removeListener("exit", releaseOperationLock);

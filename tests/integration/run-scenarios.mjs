@@ -240,8 +240,8 @@ const assertContainer = async (plan, signal) => {
 const fixtureResults = new Map();
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
-const activateRun = (plan) => {
-  const release = acquireIntegrationOperationLock(
+const activateRun = async (plan) => {
+  const release = await acquireIntegrationOperationLock(
     workspaceRoot,
     "integration.isolation.active",
   );
@@ -254,7 +254,7 @@ const activateRun = (plan) => {
       { flag: "wx" },
     );
   } finally {
-    release();
+    await release();
   }
 };
 const captureFixtureResult = (output, plan) => {
@@ -593,14 +593,14 @@ try {
   const evidence = await mapWithConcurrency(
     scenarios,
     scenarioConcurrency,
-    (scenario) => {
+    async (scenario) => {
       const plan = createIsolationPlan({
         scenario,
         manifestIdentity: manifest.manifestIdentity,
         candidate,
         runToken: randomBytes(8).toString("hex"),
       });
-      activateRun(plan);
+      await activateRun(plan);
       return executeIsolationPlan(
         plan,
         createDriver(),

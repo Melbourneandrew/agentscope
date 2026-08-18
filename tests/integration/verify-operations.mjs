@@ -1,7 +1,6 @@
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
-  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -13,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
@@ -159,50 +159,38 @@ try {
     if (!activeRejected || !existsSync(resolve(runsRoot, created[0])))
       throw new Error("integration.operations.active-run");
   }
-  const operationLock = resolve(
-    workspaceRoot,
-    "artifacts/.agentscope-integration-operation-lock",
-  );
-  const releaseOperationLock = acquireIntegrationOperationLock(
+  const releaseOperationLock = await acquireIntegrationOperationLock(
     workspaceRoot,
     "integration.operations.active-run",
   );
-  const lockOwner = JSON.parse(readFileSync(operationLock, "utf8"));
-  if (
-    !lstatSync(operationLock).isFile() ||
-    lstatSync(operationLock).isSymbolicLink() ||
-    lockOwner.pid !== process.pid
-  )
-    throw new Error("integration.operations.active-run");
   let registrationRejected = false;
   try {
     await runOnce();
   } catch {
     registrationRejected = true;
   } finally {
-    releaseOperationLock();
+    await releaseOperationLock();
   }
   if (!registrationRejected || !existsSync(resolve(runsRoot, created[0])))
     throw new Error("integration.operations.active-run");
-  const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
-  if (!Number.isSafeInteger(exited.pid))
-    throw new Error("integration.operations.stale-lock");
-  const staleCandidate = resolve(
-    workspaceRoot,
-    `artifacts/.agentscope-integration-operation-lock.candidate-${exited.pid}-0000000000000000`,
+  const lockModule = pathToFileURL(
+    resolve(integrationRoot, "operation-lock.mjs"),
+  ).href;
+  const exited = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const { acquireIntegrationOperationLock } = await import(${JSON.stringify(lockModule)}); await acquireIntegrationOperationLock(${JSON.stringify(workspaceRoot)}, "integration.operations.stale-lock"); process.exit(0);`,
+    ],
+    { cwd: workspaceRoot, encoding: "utf8" },
   );
-  writeFileSync(staleCandidate, "stale\n");
-  writeFileSync(
-    operationLock,
-    `${JSON.stringify({ lockVersion: 1, pid: exited.pid })}\n`,
-  );
-  const releaseReclaimedLock = acquireIntegrationOperationLock(
+  if (exited.status !== 0) throw new Error("integration.operations.stale-lock");
+  const releaseReclaimedLock = await acquireIntegrationOperationLock(
     workspaceRoot,
     "integration.operations.stale-lock",
   );
-  releaseReclaimedLock();
-  if (existsSync(operationLock) || existsSync(staleCandidate))
-    throw new Error("integration.operations.stale-lock");
+  await releaseReclaimedLock();
   rmSync(activeMarker);
   rmSync(activeRoot, { recursive: true });
   execFileSync(process.execPath, [resolve(integrationRoot, "clean.mjs")], {
