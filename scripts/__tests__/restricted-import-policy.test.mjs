@@ -191,19 +191,28 @@ test("rejects testing entrypoints from Core production sources", () => {
   }
 });
 
-test("rejects computed dynamic imports from production sources", () => {
+test("rejects computed module loads from production sources", () => {
   const value = fixture();
   try {
     const production = join(value.root, "packages/core/computed.ts");
+    for (const moduleLoad of [
+      "import(moduleName)",
+      "import/*comment*/(moduleName)",
+      "require(moduleName)",
+    ]) {
+      writeFileSync(
+        production,
+        `const moduleName = "@agentscope/" + "protocol/testing";\nvoid ${moduleLoad};\n`,
+      );
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /computed module load/u,
+      );
+    }
     writeFileSync(
       production,
-      'const moduleName = "@agentscope/" + "protocol/testing";\nvoid import(moduleName);\n',
+      'void import("@agentscope/protocol");\nvoid require(`node:fs`);\n',
     );
-    assert.throws(
-      () => auditCoreFinalizationImports(value.root, value.packages),
-      /computed dynamic import/u,
-    );
-    writeFileSync(production, 'void import("@agentscope/protocol");\n');
     auditCoreFinalizationImports(value.root, value.packages);
   } finally {
     rmSync(value.root, { recursive: true, force: true });

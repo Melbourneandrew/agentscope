@@ -1,6 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import ts from "typescript";
+
 const restrictedSpecifiers = [
   "@agentscope/protocol/core-finalization",
   "@agentscope/destinations-core/lifecycle-sink",
@@ -12,8 +14,6 @@ const testingSpecifiers = [
 ];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
 const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
-const dynamicImport = /\bimport\s*\(\s*([^)]*?)\s*\)/gu;
-const literalSpecifier = /^(?:"[^"\\]*"|'[^'\\]*'|`[^`$\\]*`)$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const ignoredDirectories = new Set([
   ".next",
@@ -53,16 +53,36 @@ const assertNoProductionTestingImports = (source, file, packageName) => {
       throw new Error(`${specifier} is test-only; forbidden import in ${file}`);
 };
 
-const assertNoComputedDynamicImports = (source, file, packageName) => {
+const isLiteralModuleSpecifier = (value) =>
+  value !== undefined &&
+  (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value));
+
+const assertNoComputedModuleLoads = (source, file, packageName) => {
   if (
     packageName === "@agentscope/testkit" ||
     testSource.test(file) ||
     artifactVerifier.test(file)
   )
     return;
-  for (const match of source.matchAll(dynamicImport))
-    if (!literalSpecifier.test(match[1] ?? ""))
-      throw new Error(`computed dynamic import is forbidden in ${file}`);
+  const parsed = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.getScriptKindFromFileName(file),
+  );
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) &&
+          node.expression.text === "require")) &&
+      !isLiteralModuleSpecifier(node.arguments[0])
+    )
+      throw new Error(`computed module load is forbidden in ${file}`);
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
 };
 
 export const auditCoreFinalizationImports = (
@@ -76,7 +96,7 @@ export const auditCoreFinalizationImports = (
       const workspaceFile = relative(workspaceRoot, file);
       assertNoCoreOnlyImports(source, workspaceFile, packageName);
       assertNoProductionTestingImports(source, workspaceFile, packageName);
-      assertNoComputedDynamicImports(source, workspaceFile, packageName);
+      assertNoComputedModuleLoads(source, workspaceFile, packageName);
     }
   }
 };
