@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "@agentscope/destinations-core": "workspace:*",
-    "@agentscope/protocol": "workspace:*"
+    "@agentscope/protocol": "workspace:*",
+    "zod": "4.4.3"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node verify-artifact.mjs",

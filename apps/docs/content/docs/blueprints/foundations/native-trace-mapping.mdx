@@ -33,7 +33,7 @@ The harness-facing factory accepts exact descriptor-governed semantic terminals,
 
 **Context:** Append-only artifacts may be reread by repeated hooks. Advancing one global cursor can either duplicate earlier turns or skip delivery to a connection that did not accept them.
 
-**Consequences:** A checkpoint advances only after the associated connection accepts the capture boundary. Adapters without stable native identity produce explicit boundary- or attempt-scoped at-least-once identity. Replay, append, restart, and partial-acceptance tests prove stable identity inputs and no skipped acknowledged events; destination idempotency determines whether repeated attempts are deduplicated.
+**Consequences:** A checkpoint advances only after the associated connection accepts the capture boundary. Adapters without stable native identity produce explicit boundary- or attempt-scoped at-least-once identity. Missing, expired, evicted, corrupt, or unavailable checkpoint evidence is never interpreted as an instruction to jump to the native tail: the adapter replays its declared bounded still-available window with the same stable identity inputs, emits a fixed checkpoint-unavailable or source-loss diagnostic when continuity cannot be proven, and accepts duplicates rather than skipping an available unacknowledged event. Replay, append, restart, every checkpoint-loss class, and partial-acceptance tests prove stable identity inputs and no skipped acknowledged events; destination idempotency determines whether repeated attempts are deduplicated.
 
 ### ADR-004: Preserve effective observation time without fabricating native intervals
 

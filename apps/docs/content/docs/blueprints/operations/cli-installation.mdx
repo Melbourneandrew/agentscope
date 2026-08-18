@@ -17,13 +17,13 @@ The `agentscope` command must be easy to install, stable for hooks, and publisha
 
 ### ADR-002: Hook config calls an owned launcher, not embedded implementation
 
-**Decision:** Generated harness configuration invokes an absolute Agentscope-owned launcher or verified shim with a versioned stable hook subcommand and separately encoded arguments.
+**Decision:** Generated harness configuration invokes an absolute Agentscope-owned launcher or verified shim with a versioned stable hook subcommand, separately encoded arguments, and an owned machine-home resolution that ignores project-inherited environment overrides.
 
 **Context:** Upgrades should replace one launcher rather than rewrite bespoke code into every harness config, while avoiding hook-time `PATH` lookup or shell interpretation.
 
 ### ADR-003: Make platform support a release-gated manifest
 
-**Decision:** The CLI owns a machine-readable support manifest covering Node versions, operating systems, architectures, credential backends, required filesystem semantics, native dependencies, and the applicable evidence policy.
+**Decision:** The CLI owns a machine-readable support manifest covering Node versions, operating systems, architectures, credential backends, required same-filesystem exclusive-create, durable rename, directory sync, and hard-link semantics, native dependencies, and the applicable evidence policy.
 
 **Context:** Linux containers cannot prove Windows path/rename behavior, macOS or Windows credential access, GUI hook execution, or native dependency availability.
 

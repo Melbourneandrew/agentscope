@@ -15,6 +15,8 @@ const testingSpecifiers = [
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
 const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
+const homeAuthoritySource = "packages/core/src/configuration/home.ts";
+const applicationSource = /^(?:apps|packages)\//u;
 const ignoredDirectories = new Set([
   ".next",
   "coverage",
@@ -116,6 +118,26 @@ const assertNoComputedModuleLoads = (source, file, packageName) => {
   visit(parsed);
 };
 
+const assertSingleHomeAuthority = (source, file) => {
+  if (
+    file === homeAuthoritySource ||
+    testSource.test(file) ||
+    artifactVerifier.test(file) ||
+    !applicationSource.test(file)
+  )
+    return;
+  for (const pattern of [
+    /\bAGENTSCOPE_HOME\b/u,
+    /\bhomedir\b/u,
+    /process\.env\.(?:HOME|USERPROFILE)\b/u,
+    /process\.env\[['"](?:HOME|USERPROFILE)['"]\]/u,
+  ])
+    if (pattern.test(source))
+      throw new Error(
+        `Agentscope home must be injected from ${homeAuthoritySource}; forbidden derivation in ${file}`,
+      );
+};
+
 export const auditCoreFinalizationImports = (
   workspaceRoot,
   expectedPackages,
@@ -128,6 +150,7 @@ export const auditCoreFinalizationImports = (
       assertNoCoreOnlyImports(source, workspaceFile, packageName);
       assertNoProductionTestingImports(source, workspaceFile, packageName);
       assertNoComputedModuleLoads(source, workspaceFile, packageName);
+      assertSingleHomeAuthority(source, workspaceFile);
     }
   }
 };
