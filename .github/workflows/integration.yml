@@ -118,3 +118,17 @@ jobs:
       - name: Remove manifest-owned resources
         if: always()
         run: pnpm test:integration:clean
+  hermetic-integration:
+    name: hermetic-integration
+    if: always()
+    needs: [prepare-candidate, hermetic-platform]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every hermetic integration job
+        env:
+          CANDIDATE_RESULT: ${{ needs.prepare-candidate.result }}
+          PLATFORM_RESULT: ${{ needs.hermetic-platform.result }}
+        run: |
+          test "$CANDIDATE_RESULT" = success
+          test "$PLATFORM_RESULT" = success
