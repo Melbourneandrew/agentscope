@@ -35,11 +35,11 @@ The retrieval query model gives humans and coding agents deterministic filters, 
 
 ### ADR-004: Wrap provider cursors in a bound opaque cursor
 
-**Decision:** `TraceSearchPage.nextCursor` is an opaque, versioned Core envelope containing the immutable connection ID, destination type, normalized-query fingerprint, fixed upper time bound, and destination continuation token. Core validates the envelope and all bounds before the provider token reaches a Retriever.
+**Decision:** `TraceSearchPage.nextCursor` is an opaque, versioned Core envelope containing the immutable connection ID, destination type, exact configuration identity, normalized-query fingerprint, fixed upper time bound, and destination continuation token. Core validates the envelope and all bounds before the provider token reaches a Retriever. The cursor checksum detects corruption and non-canonical rewriting; it is not an authorization credential. Authorization always comes from resolving the selected current connection and configuration before validating the cursor binding.
 
 **Context:** Providers use incompatible pagination: Langfuse Observations API uses a cursor, older supported Langfuse endpoints use page offsets, and SQLite uses keyset pagination. Passing a provider token directly would allow reuse with the wrong query or expose a provider contract as an Agentscope API.
 
-**Consequences:** A cursor is rejected after the destination connection, normalized filters, ordering, or cursor schema changes. The envelope is integrity-checked as untrusted user input but contains no credentials or trace content. Cursors are continuation state, not durable bookmarks; configuration changes require a new search.
+**Consequences:** A cursor is rejected after the destination connection, destination type, configuration identity, normalized filters, fixed upper time bound, or cursor schema changes. The envelope is bounded and integrity-checked as untrusted user input but contains no credentials or trace content. Its provider token is cloned as plain JSON before use. Cursors are continuation state, not durable bookmarks; configuration changes require a new search.
 
 ### ADR-005: Define ordering and mutation guarantees honestly
 

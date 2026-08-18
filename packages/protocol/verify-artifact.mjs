@@ -17,6 +17,7 @@ import {
   serializeRedactedCanonicalTrace,
   standardsManifest,
 } from "./dist/index.js";
+import { createSanitizedCanonicalTraceFixture } from "./dist/testing.js";
 
 const fixture = JSON.parse(
   readFileSync(
@@ -27,6 +28,11 @@ const fixture = JSON.parse(
     "utf8",
   ),
 );
+if (
+  JSON.stringify(createSanitizedCanonicalTraceFixture()) !==
+  JSON.stringify(fixture)
+)
+  throw new Error("Protocol testing fixture export drifted.");
 const identityInput = {
   harnessRegistryId: "codex",
   session: {

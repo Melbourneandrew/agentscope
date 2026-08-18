@@ -19,13 +19,15 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-002: Centralize delivery policy
 
-**Decision:** Core owns redaction, batching, routing, hook deadline enforcement, and sanitized delivery diagnostics; reporters accept only branded `RedactedCanonicalTrace` batches, map them to destination transport, and return an independent terminal receipt.
+**Decision:** Core owns redaction, batching, routing, hook deadline enforcement, and sanitized delivery diagnostics. A reporter receives a nonempty bounded batch of the original branded `RedactedCanonicalTrace` references, one Core-authored `AbortSignal`, and one branded same-process monotonic absolute deadline. It maps that batch to its origin-bound destination transport and returns one exact content-free terminal receipt: accepted, rejected, unavailable, deadline-exceeded, or outcome-unknown. The envelope's existing delivery identity is the sole per-item authority; reporters cannot replace it.
 
-**Context:** Failure semantics cannot vary by destination or block a harness.
+**Context:** Failure semantics cannot vary by destination or block a harness. A provider body, thrown error, acknowledgement loss, or unattributable partial-batch response must not leak content or be misreported as a definite non-commit.
+
+**Consequences:** Empty, oversized, sparse, accessor-backed, cloned, forged, duplicate-identity, persisted-reader, or external-reader batches fail before reporter invocation. Application Core accepts a receipt only if it settles before the deadline. Expiry before invocation is deadline-exceeded; once invocation begins, a throw, rejection, malformed receipt, abort, deadline race, lost acknowledgement, or partial result that cannot be assigned to every logical item is outcome-unknown unless a trusted transport proves that remote commit was impossible. Late settlement is observed and discarded.
 
 ### ADR-003: Make destination testing a package capability
 
-**Decision:** Each first-party Trace Destination package supplies a `DestinationTestAdapter` that configures its mock endpoint and translates its request ledger into generic reporting/retrieval assertions.
+**Decision:** Each first-party Trace Destination package supplies a `DestinationTestAdapter` through the explicit test-only destination-family subpath. The family provides a closed behavior vocabulary and normalized delivery ledger; provider packages configure their mock endpoint and translate native requests into those generic reporting/retrieval assertions. The reusable exhaustive contract suite lands separately from the primitive adapter seam so provider matrices do not fork.
 
 **Context:** Langfuse/OTLP is the first destination, not an assumption embedded in harness tests.
 
@@ -49,11 +51,11 @@ Reporters send redacted canonical batches to an external destination for the [Re
 
 ### ADR-006: Fan out once per selected connection within the hook lifetime
 
-**Decision:** Core evaluates a versioned routing policy over redacted canonical metadata to produce an explicit set of named connections; no configured destination is implicitly active. It dispatches at most one attempt per selected connection concurrently under one absolute hook deadline and bounded per-connection budgets. Each connection reaches an independent accepted, rejected, unavailable, deadline-exceeded, or outcome-unknown state. There is no trace spool, retry queue, `agentscope flush`, or resident daemon.
+**Decision:** Core evaluates a versioned routing policy over redacted canonical metadata to produce an explicit set of named connections; no configured destination is implicitly active. It dispatches at most one attempt per selected connection concurrently under one absolute hook deadline and bounded per-connection budgets. Each connection reaches an independent accepted, rejected, unavailable, deadline-exceeded, or outcome-unknown state. A receipt is connection-attempt scoped; provider protocols that cannot attribute partial acceptance to every logical delivery item yield outcome-unknown. There is no trace spool, retry queue, `agentscope flush`, or resident daemon.
 
 **Context:** The product must fail open, and deferred local storage changes the privacy, disk, and operational model substantially. A failed trace is less harmful than adding a durable copy of agent activity to every developer machine without an explicit product need.
 
-**Consequences:** One failure never cancels or compensates another accepted delivery. Unfinished attempts are aborted at the deadline and recorded independently; routing order does not create priority. Reporters map Core's stable delivery identity to native idempotency where available and otherwise declare possible duplicates. Unit and real-harness scenarios prove mixed partial outcomes, deadline enforcement, discarded-failure behavior, and absence of Core-owned trace persistence.
+**Consequences:** One failure never cancels or compensates another accepted delivery. Core requests cooperative abort at the deadline and records each attempt independently; it does not claim that an uncooperative transport stopped. Routing order does not create priority. Reporters map Core's stable delivery identity to native idempotency where available and otherwise declare possible duplicates. Unit and real-harness scenarios prove mixed partial outcomes, deadline enforcement, discarded-failure behavior, and absence of Core-owned trace persistence.
 
 ### ADR-007: Resolve a non-weakening redaction policy once
 

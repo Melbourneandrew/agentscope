@@ -10,6 +10,8 @@ Agentscope begins with Langfuse and must grow to additional observability destin
 ## Terminology
 
 - **Delivery identity:** a stable per-item identity that lets a destination deduplicate repeated delivery when supported; it does not guarantee exactly-once delivery.
+- **Reporter receipt:** a content-free terminal statement about one connection attempt; it is accepted only when returned before the shared hook deadline.
+- **Outcome unknown:** the conservative terminal state used when remote commit may have occurred but cannot be confirmed, including lost acknowledgements and unattributable partial-batch responses.
 
 ## Requirements
 

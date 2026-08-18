@@ -1,0 +1,585 @@
+import { z } from "zod";
+
+import {
+  createDestinationConnectionId,
+  createDestinationRetriever,
+  createRetrieverFailure,
+  createRetrieverSearchPage,
+  createRetrieverSuccess,
+  createTraceLocator,
+  createTraceSummary,
+  defineDestinationDescriptor,
+  executeBoundDestinationRequest,
+  parseDestinationSettings,
+} from "./dist/index.js";
+import {
+  bindDestinationTransport,
+  createRetrievalContext,
+  createReporterDeadline,
+  createTraceSearchCursor,
+  createTraceSearchRequest,
+  invokeRetrieverSearch,
+  normalizeTraceSearchQuery,
+  prepareDestinationReporter,
+  prepareDestinationRetriever,
+  readTraceSearchCursor,
+  resolveDestinationConnection,
+} from "./dist/core-orchestration.js";
+import {
+  createDestinationTestAdapter,
+  createReporterContractSuite,
+  createRetrieverContractQueryMatrix,
+  createRetrieverTestAdapter,
+  RETRIEVER_CONTRACT_FIXTURE_VALUES,
+  RETRIEVER_CONTRACT_QUERY_CASE_NAMES,
+} from "./dist/testing.js";
+
+const connectionId = createDestinationConnectionId(
+  "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+);
+const schema = z.strictObject({ endpoint: z.string() });
+void schema.shape;
+const materializeRoot = (candidate) => {
+  void candidate.shape;
+  return candidate;
+};
+const input = (overrides = {}) => ({
+  descriptorVersion: 1,
+  destinationType: "@agentscope/destination-artifact",
+  commandName: "artifact",
+  settingsVersion: 1,
+  settingsSchema: schema,
+  defaultSettings: { endpoint: "https://example.com" },
+  credentialSlots: [],
+  documentationPath: "/docs/destinations/artifact",
+  deliveryIdentitySupport: "duplicates-possible",
+  transport: {
+    kind: "remote",
+    resolveEndpoint: ({ endpoint }) => ({
+      url: endpoint,
+      allowInsecureLoopback: false,
+    }),
+  },
+  createReporter: () => ({ report: () => Promise.resolve({}) }),
+  ...overrides,
+});
+
+const expectFixedRejection = (action) => {
+  try {
+    action();
+  } catch (error) {
+    if (error?.code === "destination.descriptor.invalid") return;
+  }
+  throw new Error("Destination artifact callback misuse was not rejected.");
+};
+
+const unhandled = [];
+const collectUnhandled = (reason) => unhandled.push(reason);
+process.on("unhandledRejection", collectUnhandled);
+try {
+  const reporterCases = createReporterContractSuite({
+    adapter: createDestinationTestAdapter(),
+    traces: [{}],
+  });
+  const queryMatrix = createRetrieverContractQueryMatrix({
+    primaryTraceId: "0123456789abcdef0123456789abcdef",
+    secondaryTraceId: "1123456789abcdef0123456789abcdef",
+  });
+  const limitCase = queryMatrix.find(({ name }) => name === "limit");
+  const continuationCase = queryMatrix.find(
+    ({ name }) => name === "continuation",
+  );
+  if (
+    !reporterCases.some(({ name }) => name === "reporter:accept") ||
+    typeof createRetrieverTestAdapter !== "function" ||
+    RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length !== 22 ||
+    queryMatrix.length !== RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length ||
+    queryMatrix[0]?.expectedTraceIds.length !== 2 ||
+    limitCase?.expectedState !== "continuation" ||
+    continuationCase?.expectedState !== "exhaustive" ||
+    JSON.stringify(limitCase.expectedContinuationToken) !==
+      JSON.stringify(continuationCase.continuationToken) ||
+    RETRIEVER_CONTRACT_FIXTURE_VALUES.branch !== "main"
+  )
+    throw new Error("Destination testing subpath is incomplete.");
+
+  const methodSchema = z.strictObject({ endpoint: z.string() });
+  materializeRoot(methodSchema);
+  const methodDescriptor = defineDestinationDescriptor(
+    input({ settingsSchema: methodSchema }),
+  );
+  Object.defineProperty(methodSchema, "safeParse", {
+    value: (value) => ({ success: true, data: value }),
+  });
+  Object.defineProperty(methodSchema._zod, "run", {
+    value: (value) => value,
+  });
+  expectFixedRejection(() =>
+    parseDestinationSettings(methodDescriptor, { endpoint: 42 }),
+  );
+
+  const shapeSchema = z.strictObject({ endpoint: z.string() });
+  materializeRoot(shapeSchema);
+  const shapeDescriptor = defineDestinationDescriptor(
+    input({ settingsSchema: shapeSchema }),
+  );
+  Object.defineProperty(shapeSchema.def, "shape", {
+    value: { endpoint: z.number() },
+  });
+  expectFixedRejection(() =>
+    parseDestinationSettings(shapeDescriptor, {
+      endpoint: 42,
+    }),
+  );
+
+  const preparedExact = resolveDestinationConnection(methodDescriptor, {
+    connectionId,
+    settings: { endpoint: "https://example.com/tenant-a/" },
+  });
+  const preparedOtherPath = resolveDestinationConnection(methodDescriptor, {
+    connectionId,
+    settings: { endpoint: "https://example.com/tenant-b/" },
+  });
+  let transportCalls = 0;
+  const otherPathTransport = bindDestinationTransport(
+    preparedOtherPath.endpoint,
+    async () => {
+      transportCalls += 1;
+      return { status: 200, headers: {}, body: new Uint8Array() };
+    },
+  );
+  expectFixedRejection(() =>
+    prepareDestinationReporter(preparedExact, {
+      credentials: {},
+      transport: otherPathTransport,
+    }),
+  );
+  try {
+    await executeBoundDestinationRequest(otherPathTransport, {
+      method: "POST",
+      pathAndQuery: "https://example.com/absolute",
+      headers: {},
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+    });
+    throw new Error("Absolute destination request was accepted.");
+  } catch (error) {
+    if (error?.code !== "destination.transport.invalid") throw error;
+  }
+  if (transportCalls !== 0)
+    throw new Error("Invalid destination request reached the executor.");
+
+  const retrieverDescriptor = defineDestinationDescriptor(
+    input({
+      createRetriever: () =>
+        createDestinationRetriever({
+          search: () =>
+            Promise.resolve(createRetrieverFailure("retrieval-unsupported")),
+          get: () => Promise.resolve(createRetrieverFailure("not-found")),
+        }),
+    }),
+  );
+  const retrieverPrepared = resolveDestinationConnection(retrieverDescriptor, {
+    connectionId,
+    settings: { endpoint: "https://example.com/tenant-a/" },
+  });
+  const retrieverTransport = bindDestinationTransport(
+    retrieverPrepared.endpoint,
+    async () => ({ status: 200, headers: {}, body: new Uint8Array() }),
+  );
+  const retriever = prepareDestinationRetriever(retrieverPrepared, {
+    credentials: {},
+    transport: retrieverTransport,
+  });
+  const query = normalizeTraceSearchQuery(
+    {},
+    {
+      commandStartedAt: "2026-08-17T00:00:00Z",
+      knownHarnessIds: ["codex"],
+    },
+  );
+  const cursorBinding = {
+    connectionId,
+    destinationType: retrieverDescriptor.destinationType,
+    configurationIdentity: "artifact-config-v1",
+    queryFingerprint: query.fingerprint,
+    upperTimeBound: query.to,
+  };
+  const cursor = createTraceSearchCursor(cursorBinding, { offset: 1 });
+  if (readTraceSearchCursor(cursor, cursorBinding).offset !== 1)
+    throw new Error("Retriever cursor lost its provider token.");
+  for (const rewritten of [`${cursor}!`, `${cursor}=`]) {
+    try {
+      readTraceSearchCursor(rewritten, cursorBinding);
+      throw new Error("Non-canonical Retriever cursor was accepted.");
+    } catch (error) {
+      if (error?.code !== "destination.trace-cursor.invalid") throw error;
+    }
+  }
+  const retrievalResult = await invokeRetrieverSearch(
+    retriever,
+    createTraceSearchRequest(
+      query,
+      {
+        connectionId,
+        destinationType: retrieverDescriptor.destinationType,
+      },
+      readTraceSearchCursor(cursor, cursorBinding),
+    ),
+    createRetrievalContext({
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+      maximumResponseBytes: 1_024,
+      maximumProviderRequests: 1,
+    }),
+  );
+  if (
+    retrievalResult.ok ||
+    retrievalResult.code !== "retrieval-unsupported" ||
+    retrieverDescriptor.retrievalSupport !== "search-and-get"
+  )
+    throw new Error("Retriever dist contract verification failed.");
+  const otherConnectionId = createDestinationConnectionId(
+    "destination-connection-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  );
+  const wrongSummary = createTraceSummary({
+    locator: createTraceLocator({
+      connectionId: otherConnectionId,
+      destinationType: retrieverDescriptor.destinationType,
+      traceId: "0123456789abcdef0123456789abcdef",
+    }),
+    startTime: "2026-08-17T00:00:00.000Z",
+    models: [],
+    status: "ok",
+    spanCount: 1,
+    tags: [],
+  });
+  const wrongPage = createRetrieverSearchPage({
+    summaries: [wrongSummary],
+    state: "exhaustive",
+    consistency: "snapshot",
+  });
+  const swappingRetriever = createDestinationRetriever({
+    search: () => Promise.resolve(createRetrieverSuccess(wrongPage)),
+    get: () => Promise.resolve(createRetrieverFailure("not-found")),
+  });
+  const swapped = await invokeRetrieverSearch(
+    swappingRetriever,
+    createTraceSearchRequest(query, {
+      connectionId,
+      destinationType: retrieverDescriptor.destinationType,
+    }),
+    createRetrievalContext({
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+      maximumResponseBytes: 4_096,
+      maximumProviderRequests: 1,
+    }),
+  );
+  if (swapped.ok || swapped.code !== "malformed-response")
+    throw new Error("Retriever accepted a cross-connection summary.");
+  const asyncRetrieverDescriptor = defineDestinationDescriptor(
+    input({
+      createRetriever: async () => {
+        throw new Error("CANARY_RETRIEVER_SECRET");
+      },
+    }),
+  );
+  const asyncRetrieverPrepared = resolveDestinationConnection(
+    asyncRetrieverDescriptor,
+    {
+      connectionId,
+      settings: { endpoint: "https://example.com/tenant-a/" },
+    },
+  );
+  const asyncRetrieverTransport = bindDestinationTransport(
+    asyncRetrieverPrepared.endpoint,
+    async () => ({ status: 200, headers: {}, body: new Uint8Array() }),
+  );
+  expectFixedRejection(() =>
+    prepareDestinationRetriever(asyncRetrieverPrepared, {
+      credentials: {},
+      transport: asyncRetrieverTransport,
+    }),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+
+  let weakened = false;
+  const refinementSchema = z.strictObject({
+    endpoint: z
+      .string()
+      .refine((value) => weakened || value === "https://example.com"),
+  });
+  materializeRoot(refinementSchema);
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(input({ settingsSchema: refinementSchema })),
+  );
+  weakened = true;
+
+  const propertySchema = z
+    .strictObject({ endpoint: z.string() })
+    .check(z.property("endpoint", z.string().min(20)));
+  materializeRoot(propertySchema);
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(input({ settingsSchema: propertySchema })),
+  );
+
+  for (const pattern of [/abc/i, /^abc$/m, /abc/u]) {
+    const flaggedRegexSchema = z.strictObject({
+      endpoint: z.string().regex(pattern),
+    });
+    materializeRoot(flaggedRegexSchema);
+    expectFixedRejection(() =>
+      defineDestinationDescriptor(
+        input({ settingsSchema: flaggedRegexSchema }),
+      ),
+    );
+  }
+  for (const nonRoundTrippableString of [
+    z.string().emoji(),
+    z.string().includes("b", { position: 2 }),
+  ]) {
+    expectFixedRejection(() =>
+      defineDestinationDescriptor(
+        input({
+          settingsSchema: materializeRoot(
+            z.strictObject({ endpoint: nonRoundTrippableString }),
+          ),
+        }),
+      ),
+    );
+  }
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({
+            endpoint: z.number().min(3, { when: () => false }),
+          }),
+        ),
+      }),
+    ),
+  );
+  for (const metadataSchema of [
+    z.string().regex(/^x$/).meta({ pattern: ".*" }),
+    z.string().check(z.meta({ pattern: ".*" })),
+  ]) {
+    expectFixedRejection(() =>
+      defineDestinationDescriptor(
+        input({
+          settingsSchema: materializeRoot(
+            z.strictObject({ endpoint: metadataSchema }),
+          ),
+        }),
+      ),
+    );
+  }
+  const customEmitterSchema = z.strictObject({
+    endpoint: z.string().regex(/^x$/),
+  });
+  materializeRoot(customEmitterSchema);
+  Object.defineProperty(customEmitterSchema._zod, "toJSONSchema", {
+    value: () => ({
+      type: "object",
+      properties: { endpoint: { type: "string" } },
+      required: ["endpoint"],
+      additionalProperties: false,
+    }),
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(input({ settingsSchema: customEmitterSchema })),
+  );
+
+  const inheritedEmitterSchema = z.strictObject({ endpoint: z.string() });
+  materializeRoot(inheritedEmitterSchema);
+  Object.setPrototypeOf(inheritedEmitterSchema._zod, {
+    toJSONSchema: () => ({ type: "object" }),
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({ settingsSchema: inheritedEmitterSchema }),
+    ),
+  );
+  const tamperedBagLeaf = z.string().regex(/^https:\/\/example\.com$/);
+  tamperedBagLeaf._zod.bag.patterns = new Set([/.*/]);
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({ endpoint: tamperedBagLeaf }),
+        ),
+      }),
+    ),
+  );
+  const inheritedBagLeaf = z.string();
+  Object.setPrototypeOf(inheritedBagLeaf._zod.bag, {
+    patterns: new Set([/^x$/]),
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({ endpoint: inheritedBagLeaf }),
+        ),
+      }),
+    ),
+  );
+  const shadowedPattern = /^https:\/\/example\.com$/;
+  Object.defineProperty(shadowedPattern, "source", { get: () => ".*" });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({
+            endpoint: z.string().regex(shadowedPattern),
+          }),
+        ),
+      }),
+    ),
+  );
+  const inheritedPattern = /^https:\/\/example\.com$/;
+  Object.setPrototypeOf(inheritedPattern, {
+    get source() {
+      return ".*";
+    },
+    get flags() {
+      return "";
+    },
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({
+            endpoint: z.string().regex(inheritedPattern),
+          }),
+        ),
+      }),
+    ),
+  );
+  const iteratorBagLeaf = z.string().regex(/^https:\/\/example\.com$/);
+  let iteratorCalls = 0;
+  Object.defineProperty(iteratorBagLeaf._zod.bag.patterns, Symbol.iterator, {
+    value: function* () {
+      iteratorCalls += 1;
+      yield iteratorCalls === 1 ? /^https:\/\/example\.com$/ : /.*/;
+    },
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({ endpoint: iteratorBagLeaf }),
+        ),
+      }),
+    ),
+  );
+  const constructorBagLeaf = z.string().regex(/^https:\/\/example\.com$/);
+  constructorBagLeaf._zod.bag.patterns = new Set([/.*/]);
+  const corruptedBag = constructorBagLeaf._zod.bag;
+  constructorBagLeaf._zod.constr = function CorruptedConstructor() {
+    return { _zod: { bag: corruptedBag } };
+  };
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({
+        settingsSchema: materializeRoot(
+          z.strictObject({ endpoint: constructorBagLeaf }),
+        ),
+      }),
+    ),
+  );
+  const shapeLeaf = z.string().regex(/^https:\/\/example\.com$/);
+  const shape = { endpoint: shapeLeaf };
+  const statefulShapeSchema = z.strictObject(shape);
+  let shapeCalls = 0;
+  Object.defineProperty(statefulShapeSchema._zod.def, "shape", {
+    get: () => {
+      shapeCalls += 1;
+      if (shapeCalls > 1) shapeLeaf._zod.bag.patterns = new Set([/.*/]);
+      return shape;
+    },
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(input({ settingsSchema: statefulShapeSchema })),
+  );
+  if (shapeCalls !== 0)
+    throw new Error("Destination custom shape callback was invoked.");
+
+  const definitionAccessorSchema = materializeRoot(
+    z.strictObject({ endpoint: z.string() }),
+  );
+  const originalType = definitionAccessorSchema._zod.def.type;
+  let definitionAccessorCalls = 0;
+  Object.defineProperty(definitionAccessorSchema._zod.def, "type", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      definitionAccessorCalls += 1;
+      return originalType;
+    },
+  });
+  expectFixedRejection(() =>
+    defineDestinationDescriptor(
+      input({ settingsSchema: definitionAccessorSchema }),
+    ),
+  );
+  if (definitionAccessorCalls !== 0)
+    throw new Error("Destination definition callback was invoked.");
+
+  const hostileSchema = z.strictObject({ endpoint: z.string() });
+  materializeRoot(hostileSchema);
+  Object.defineProperty(hostileSchema, "safeParse", {
+    value: () => Promise.reject(new Error("CANARY_SCHEMA_SECRET")),
+  });
+  const hostileDescriptor = defineDestinationDescriptor(
+    input({ settingsSchema: hostileSchema }),
+  );
+  expectFixedRejection(() =>
+    parseDestinationSettings(hostileDescriptor, { endpoint: 42 }),
+  );
+
+  const resolverDescriptor = defineDestinationDescriptor(
+    input({
+      transport: {
+        kind: "remote",
+        resolveEndpoint: () =>
+          Promise.reject(new Error("CANARY_RESOLVER_SECRET")),
+      },
+    }),
+  );
+  expectFixedRejection(() =>
+    resolveDestinationConnection(resolverDescriptor, {
+      connectionId,
+      settings: {},
+    }),
+  );
+
+  const factoryDescriptor = defineDestinationDescriptor(
+    input({
+      createReporter: () => Promise.reject(new Error("CANARY_FACTORY_SECRET")),
+    }),
+  );
+  const prepared = resolveDestinationConnection(factoryDescriptor, {
+    connectionId,
+    settings: {},
+  });
+  const transport = bindDestinationTransport(prepared.endpoint, async () => ({
+    status: 200,
+    headers: {},
+    body: new Uint8Array(),
+  }));
+  expectFixedRejection(() =>
+    prepareDestinationReporter(prepared, { credentials: {}, transport }),
+  );
+
+  await Promise.resolve();
+  await Promise.resolve();
+  if (unhandled.length !== 0)
+    throw new Error("Destination artifact callback rejection leaked.");
+} finally {
+  process.off("unhandledRejection", collectUnhandled);
+}
+
+process.stdout.write("Verified destination callback containment in dist.\n");

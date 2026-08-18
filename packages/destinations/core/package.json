@@ -12,13 +12,21 @@
     "./lifecycle-sink": {
       "types": "./dist/lifecycle-sink.d.ts",
       "import": "./dist/lifecycle-sink.js"
+    },
+    "./core-orchestration": {
+      "types": "./dist/core-orchestration.d.ts",
+      "import": "./dist/core-orchestration.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings=0",
     "test": "vitest run --config ../../../vitest.config.ts",
@@ -27,7 +35,8 @@
     "prepack": "node ../../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
-    "@agentscope/protocol": "workspace:*"
+    "@agentscope/protocol": "workspace:*",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

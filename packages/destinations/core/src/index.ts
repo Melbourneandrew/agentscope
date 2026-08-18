@@ -1,2 +1,143 @@
 export const destinationsCorePackageId =
   "@agentscope/destinations-core" as const;
+
+export {
+  compileDestinationRegistry,
+  defineDestinationDescriptor,
+  DestinationDescriptorError,
+  getDestinationDescriptor,
+  isDestinationDescriptor,
+  parseDestinationSettings,
+  type DeliveryIdentitySupport,
+  type DestinationDescriptor,
+  type DestinationDescriptorInput,
+  type DestinationRegistry,
+  type DestinationSettings,
+  type DestinationTransportDeclaration,
+  type RemoteEndpointCandidate,
+  type ReporterFactoryContext,
+  type RetrieverFactoryContext,
+} from "./descriptor.js";
+export {
+  isReporterDeadline,
+  MAXIMUM_REPORTER_TIMEOUT_MILLISECONDS,
+  ReporterDeadlineError,
+  reporterDeadlineRemainingMilliseconds,
+  type ReporterDeadline,
+} from "./deadline.js";
+export {
+  DestinationEndpointError,
+  isValidatedDestinationEndpoint,
+  type DestinationEndpointPolicy,
+  type ValidatedDestinationEndpoint,
+} from "./endpoint.js";
+export {
+  createCredentialSlotId,
+  createDestinationCommandName,
+  createDestinationConnectionId,
+  createDestinationTypeId,
+  DestinationIdentityError,
+  type CredentialSlotId,
+  type DestinationCommandName,
+  type DestinationConnectionId,
+  type DestinationTypeId,
+} from "./identity.js";
+export {
+  createDestinationReporter,
+  createReporterReceipt,
+  isDestinationReporter,
+  MAXIMUM_REPORTER_BATCH_ITEMS,
+  REPORTER_OUTCOMES,
+  ReporterContractError,
+  type RedactedTraceBatch,
+  type Reporter,
+  type ReporterAttempt,
+  type ReporterImplementation,
+  type ReporterOutcome,
+  type ReporterReceipt,
+} from "./reporter.js";
+export {
+  DestinationTransportError,
+  executeBoundDestinationRequest,
+  isBoundDestinationTransport,
+  MAXIMUM_TRANSPORT_REQUEST_BYTES,
+  MAXIMUM_TRANSPORT_RESPONSE_BYTES,
+  type BoundDestinationTransport,
+  type DestinationTransportRequest,
+  type DestinationTransportResponse,
+} from "./transport.js";
+export {
+  DestinationCredentialError,
+  readReporterCredential,
+  type CredentialSlot,
+  type ReporterCredentialAccessor,
+} from "./credentials.js";
+export {
+  DESTINATION_SETTINGS_LIMITS,
+  DestinationDataError,
+  type JsonObject,
+  type JsonValue,
+} from "./plain-data.js";
+export {
+  createTraceLocator,
+  isTraceLocator,
+  RetrievalIdentityError,
+  type TraceLocator,
+  type TraceLocatorInput,
+} from "./retrieval-identity.js";
+export {
+  TRACE_SEARCH_DEFAULT_LIMIT,
+  TRACE_SEARCH_MAXIMUM_LIMIT,
+  TRACE_SEARCH_MAXIMUM_TAGS,
+  TraceQueryError,
+  type TraceQueryFingerprint,
+  type TraceSearchInput,
+  type TraceSearchQuery,
+} from "./retrieval-query.js";
+export {
+  createRetrievedTrace,
+  createRetrieverSearchPage,
+  createTraceSummary,
+  isRetrievedTrace,
+  isRetrieverSearchPage,
+  isTraceSummary,
+  RetrievalResultError,
+  TRACE_SUMMARY_STATUSES,
+  type PartialResultReason,
+  type RetrievedTrace,
+  type RetrievedTraceRepresentation,
+  type RetrievalConsistency,
+  type RetrieverSearchPage,
+  type RetrieverSearchPageInput,
+  type TraceSummary,
+  type TraceSummaryInput,
+  type TraceSummaryStatus,
+} from "./retrieval-results.js";
+export {
+  createDestinationRetriever,
+  createRetrieverFailure,
+  createRetrieverSuccess,
+  isDestinationRetriever,
+  isRetrieverFailure,
+  RETRIEVER_FAILURE_CODES,
+  RetrieverContractError,
+  type RetrievalContext,
+  type Retriever,
+  type RetrieverFailure,
+  type RetrieverFailureCode,
+  type RetrieverImplementation,
+  type RetrieverOperationResult,
+  type TraceGetBinding,
+  type TraceGetRequest,
+  type TraceSearchRequest,
+} from "./retriever.js";
+export {
+  TraceCursorError,
+  type TraceCursorBinding,
+  type TraceSearchCursor,
+} from "./retrieval-cursor.js";
+export {
+  isTraceSearchPage,
+  TraceSearchPageError,
+  type TraceSearchPage,
+} from "./retrieval-page.js";
