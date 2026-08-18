@@ -23,6 +23,11 @@ import {
   createTraceSummary,
 } from "./retrieval-results.js";
 import {
+  createDestinationRetriever,
+  createRetrieverFailure,
+  createRetrieverSuccess,
+} from "./retriever.js";
+import {
   createReporterContractSuite,
   createRetrieverContractSuite,
   createRetrieverContractQueryMatrix,
@@ -96,9 +101,9 @@ const fixture = () => {
       page: createRetrieverSearchPage({
         summaries,
         state: queryCase.expectedState,
-        ...(queryCase.expectedState === "continuation"
-          ? { continuationToken: { offset: 2 } }
-          : {}),
+        ...(queryCase.expectedContinuationToken === undefined
+          ? {}
+          : { continuationToken: queryCase.expectedContinuationToken }),
         ...(queryCase.expectedState === "partial"
           ? { partialReason: "provider-request-limit" as const }
           : {}),
@@ -174,6 +179,18 @@ describe("shared Retriever contract suite", () => {
     expect(cases.map((testCase) => testCase.name)).toContain(
       "retriever:failure:rate-limited",
     );
+    const limit = values.queryCases.find(({ name }) => name === "limit")!;
+    const continuation = values.queryCases.find(
+      ({ name }) => name === "continuation",
+    )!;
+    expect(limit.query.fingerprint).toBe(continuation.query.fingerprint);
+    expect(limit.expectedContinuationToken).toEqual(
+      continuation.continuationToken,
+    );
+    expect([limit.expectedState, continuation.expectedState]).toEqual([
+      "continuation",
+      "exhaustive",
+    ]);
     for (const testCase of cases) await testCase.run();
     const snapshot = adapter.readRetrievalLedger();
     adapter.reset();
@@ -256,7 +273,9 @@ describe("shared Retriever contract suite", () => {
       ),
     );
   });
+});
 
+describe("Retriever contract suite rejection oracles", () => {
   it("rejects invalid family-owned query-matrix trace identities", () => {
     for (const invalid of ["0".repeat(32), "A".repeat(32), "short", traceId]) {
       expect(() =>
@@ -270,5 +289,38 @@ describe("shared Retriever contract suite", () => {
         ),
       );
     }
+  });
+
+  it("rejects a Retriever that ignores the requested get locator", async () => {
+    const values = fixture();
+    const reference = createRetrieverTestAdapter(values);
+    const ignoringAdapter = Object.freeze({
+      ...reference,
+      createRetriever: (
+        behavior: Parameters<typeof reference.createRetriever>[0],
+      ) => {
+        const retriever = reference.createRetriever(behavior);
+        if (behavior !== "success") return retriever;
+        return createDestinationRetriever({
+          search: () =>
+            Promise.resolve(createRetrieverFailure("invalid-query")),
+          get: () =>
+            Promise.resolve(createRetrieverSuccess(values.retrievedTrace)),
+        });
+      },
+    });
+    const contractCase = createRetrieverContractSuite({
+      adapter: ignoringAdapter,
+      queryCases: values.queryCases,
+      locator: values.locator,
+      connectionId,
+      destinationType,
+      configurationIdentity: "contract-config-v1",
+    }).find(({ name }) => name === "retriever:get-missing")!;
+    await expect(contractCase.run()).rejects.toEqual(
+      new DestinationContractAssertionError(
+        "destination.contract.retriever.get-missing",
+      ),
+    );
   });
 });

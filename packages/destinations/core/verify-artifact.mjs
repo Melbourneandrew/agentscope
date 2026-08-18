@@ -85,12 +85,20 @@ try {
     primaryTraceId: "0123456789abcdef0123456789abcdef",
     secondaryTraceId: "1123456789abcdef0123456789abcdef",
   });
+  const limitCase = queryMatrix.find(({ name }) => name === "limit");
+  const continuationCase = queryMatrix.find(
+    ({ name }) => name === "continuation",
+  );
   if (
     !reporterCases.some(({ name }) => name === "reporter:accept") ||
     typeof createRetrieverTestAdapter !== "function" ||
     RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length !== 22 ||
     queryMatrix.length !== RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length ||
     queryMatrix[0]?.expectedTraceIds.length !== 2 ||
+    limitCase?.expectedState !== "continuation" ||
+    continuationCase?.expectedState !== "exhaustive" ||
+    JSON.stringify(limitCase.expectedContinuationToken) !==
+      JSON.stringify(continuationCase.continuationToken) ||
     RETRIEVER_CONTRACT_FIXTURE_VALUES.branch !== "main"
   )
     throw new Error("Destination testing subpath is incomplete.");

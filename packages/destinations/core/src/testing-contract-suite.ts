@@ -9,7 +9,7 @@ import {
   createTraceSearchCursor,
   readTraceSearchCursor,
 } from "./retrieval-cursor.js";
-import type { TraceLocator } from "./retrieval-identity.js";
+import { createTraceLocator, type TraceLocator } from "./retrieval-identity.js";
 import {
   normalizeTraceSearchQuery,
   type TraceSearchInput,
@@ -216,6 +216,7 @@ export type RetrieverContractQueryCase = Readonly<{
   expectedTraceIds: readonly string[];
   expectedState: "exhaustive" | "continuation" | "partial";
   continuationToken?: JsonValue;
+  expectedContinuationToken?: JsonValue;
 }>;
 
 declare const retrieverContractQueryMatrixBrand: unique symbol;
@@ -244,7 +245,11 @@ export const RETRIEVER_CONTRACT_FIXTURE_VALUES = Object.freeze({
   missingTag: "missing",
 });
 
-const queryMatrixRegistry = new WeakMap<object, string>();
+type QueryMatrixBinding = Readonly<{
+  primaryTraceId: string;
+  missingTraceId: string;
+}>;
+const queryMatrixRegistry = new WeakMap<object, QueryMatrixBinding>();
 const traceIdPattern = /^[0-9a-f]{32}$/u;
 
 const contractQuery = (input: TraceSearchInput): TraceSearchQuery =>
@@ -262,6 +267,7 @@ type QueryCaseInput = Readonly<{
   expectedTraceIds: readonly string[];
   expectedState?: "exhaustive" | "continuation" | "partial";
   continuationToken?: JsonValue;
+  expectedContinuationToken?: JsonValue;
 }>;
 
 const freezeQueryCase = (input: QueryCaseInput): RetrieverContractQueryCase =>
@@ -273,6 +279,9 @@ const freezeQueryCase = (input: QueryCaseInput): RetrieverContractQueryCase =>
     ...(input.continuationToken === undefined
       ? {}
       : { continuationToken: input.continuationToken }),
+    ...(input.expectedContinuationToken === undefined
+      ? {}
+      : { expectedContinuationToken: input.expectedContinuationToken }),
   });
 
 const scalarQueryCases = (
@@ -404,12 +413,14 @@ const compoundQueryCases = (
       name: "limit",
       input: { limit: 1 },
       expectedTraceIds: [primary],
+      expectedState: "continuation",
+      expectedContinuationToken: Object.freeze({ offset: 1 }),
     }),
     freezeQueryCase({
       name: "continuation",
       input: { limit: 1 },
       expectedTraceIds: [secondary],
-      expectedState: "continuation",
+      expectedState: "exhaustive",
       continuationToken: Object.freeze({ offset: 1 }),
     }),
     freezeQueryCase({
@@ -442,7 +453,10 @@ export const createRetrieverContractQueryMatrix = (input: {
     ...scalarQueryCases(primary, secondary, missingTraceId),
     ...compoundQueryCases(primary, secondary),
   ]) as RetrieverContractQueryMatrix;
-  queryMatrixRegistry.set(cases, primary);
+  queryMatrixRegistry.set(
+    cases,
+    Object.freeze({ primaryTraceId: primary, missingTraceId }),
+  );
   return cases;
 };
 
@@ -523,6 +537,11 @@ const queryContractCase = (
         result.ok && result.value.state === queryCase.expectedState,
         `destination.contract.retriever.query-${queryCase.name}.state`,
       );
+      assert(
+        JSON.stringify(result.value.continuationToken) ===
+          JSON.stringify(queryCase.expectedContinuationToken),
+        `destination.contract.retriever.query-${queryCase.name}.continuation`,
+      );
       const ledger = input.adapter.readRetrievalLedger();
       assert(
         ledger.length === 1 &&
@@ -546,6 +565,7 @@ const primaryRetrieverCases = (
   Object.freeze({
     name: "retriever:get-success",
     run: async (): Promise<void> => {
+      input.adapter.reset();
       const get = await invokeRetrieverGet(
         input.adapter.createRetriever("success"),
         getRequest,
@@ -555,6 +575,44 @@ const primaryRetrieverCases = (
       assert(
         get.ok && !isRedactedCanonicalTrace(get.value),
         "destination.contract.retriever.unbranded-handoff",
+      );
+      const ledger = input.adapter.readRetrievalLedger();
+      assert(
+        ledger.length === 1 &&
+          ledger[0]?.operation === "get" &&
+          ledger[0].traceId === input.locator.traceId &&
+          ledger[0].connectionId === input.connectionId &&
+          ledger[0].destinationType === input.destinationType &&
+          ledger[0].maximumProviderRequests === 4,
+        "destination.contract.retriever.get-binding",
+      );
+    },
+  }),
+  Object.freeze({
+    name: "retriever:get-missing",
+    run: async (): Promise<void> => {
+      input.adapter.reset();
+      const matrixBinding = queryMatrixRegistry.get(input.queryCases)!;
+      const missingLocator = createTraceLocator({
+        connectionId: input.connectionId,
+        destinationType: input.destinationType,
+        traceId: matrixBinding.missingTraceId,
+      });
+      const result = await invokeRetrieverGet(
+        input.adapter.createRetriever("success"),
+        createTraceGetRequest(missingLocator, {
+          connectionId: input.connectionId,
+          destinationType: input.destinationType,
+        }),
+        context(),
+      );
+      const ledger = input.adapter.readRetrievalLedger();
+      assert(
+        !result.ok &&
+          result.code === "not-found" &&
+          ledger.length === 1 &&
+          ledger[0]?.traceId === matrixBinding.missingTraceId,
+        "destination.contract.retriever.get-missing",
       );
     },
   }),
@@ -593,7 +651,8 @@ export const createRetrieverContractSuite = (
     destinationType: input.destinationType,
   });
   assert(
-    queryMatrixRegistry.get(input.queryCases) === input.locator.traceId,
+    queryMatrixRegistry.get(input.queryCases)?.primaryTraceId ===
+      input.locator.traceId,
     "destination.contract.retriever.query-matrix",
   );
   const firstQuery = input.queryCases[0]!;

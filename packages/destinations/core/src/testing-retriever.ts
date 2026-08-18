@@ -119,11 +119,17 @@ export const createRetrieverTestAdapter = (
         : createRetrieverFailure("invalid-query"),
     );
   };
-  const getResult = (behavior: RetrieverTestBehavior): unknown => {
+  const getResult = (
+    behavior: RetrieverTestBehavior,
+    request: TraceGetRequest,
+  ): unknown => {
     const failure = failureResult(behavior);
-    return behavior === "success"
-      ? Promise.resolve(createRetrieverSuccess(fixture.retrievedTrace))
-      : failure;
+    if (behavior !== "success") return failure;
+    return Promise.resolve(
+      request.locator === fixture.retrievedTrace.locator
+        ? createRetrieverSuccess(fixture.retrievedTrace)
+        : createRetrieverFailure("not-found"),
+    );
   };
   return Object.freeze({
     createRetriever: (behavior) =>
@@ -134,7 +140,7 @@ export const createRetrieverTestAdapter = (
         },
         get: (request, context) => {
           appendGet(request, context);
-          return getResult(behavior) as never;
+          return getResult(behavior, request) as never;
         },
       }),
     readRetrievalLedger: () =>

@@ -11,6 +11,9 @@ const testingSpecifiers = [
   "@agentscope/protocol/testing",
 ];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
+const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
+const dynamicImport = /\bimport\s*\(\s*([^)]*?)\s*\)/gu;
+const literalSpecifier = /^(?:"[^"\\]*"|'[^'\\]*'|`[^`$\\]*`)$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const ignoredDirectories = new Set([
   ".next",
@@ -50,6 +53,18 @@ const assertNoProductionTestingImports = (source, file, packageName) => {
       throw new Error(`${specifier} is test-only; forbidden import in ${file}`);
 };
 
+const assertNoComputedDynamicImports = (source, file, packageName) => {
+  if (
+    packageName === "@agentscope/testkit" ||
+    testSource.test(file) ||
+    artifactVerifier.test(file)
+  )
+    return;
+  for (const match of source.matchAll(dynamicImport))
+    if (!literalSpecifier.test(match[1] ?? ""))
+      throw new Error(`computed dynamic import is forbidden in ${file}`);
+};
+
 export const auditCoreFinalizationImports = (
   workspaceRoot,
   expectedPackages,
@@ -61,6 +76,7 @@ export const auditCoreFinalizationImports = (
       const workspaceFile = relative(workspaceRoot, file);
       assertNoCoreOnlyImports(source, workspaceFile, packageName);
       assertNoProductionTestingImports(source, workspaceFile, packageName);
+      assertNoComputedDynamicImports(source, workspaceFile, packageName);
     }
   }
 };
