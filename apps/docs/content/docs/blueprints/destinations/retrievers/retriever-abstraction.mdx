@@ -43,11 +43,11 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 ### ADR-005: Treat all retrieved content as untrusted
 
-**Decision:** A Retriever validates provider DTOs but returns an untrusted normalized candidate. The family boundary accepts either a strictly parsed supported persisted envelope or a strictly parsed canonical graph, verifies its canonical trace ID against the selected `TraceLocator`, and never grants the Protocol redacted-envelope brand. Core then reapplies the current non-weakening redaction policy, applies the retrieval summary allowlist, and constructs presentation DTOs.
+**Decision:** A Retriever validates provider DTOs but returns an untrusted normalized candidate. The family boundary accepts either a strictly parsed supported persisted envelope or a strictly parsed canonical graph, verifies its canonical trace ID against the selected `TraceLocator`, and never grants the Protocol redacted-envelope brand. Core then reapplies the current non-weakening redaction policy, applies the retrieval summary allowlist, and constructs presentation DTOs. Search fields that the current policy would omit are absent from the portable summary. A full retrieved graph is emitted only when every structural name and semantic value is already an unchanged fixed point under the current policy; if any value would be omitted, replaced, normalized, or suppressed, Core returns the stable incompatible-trace result instead of attempting an evidence-breaking partial rewrite.
 
 **Context:** A destination can contain data written by older Agentscope releases, another producer, or a compromised service. Data that was acceptable when reported may no longer satisfy current disclosure policy.
 
-**Consequences:** Retriever packages cannot construct terminal strings or structured CLI output. Human output escapes terminal control characters. Machine output contains only versioned portable DTOs, never a raw destination response. Malformed and incompatible traces fail closed for output while leaving the remote repository unchanged.
+**Consequences:** Retriever packages cannot construct terminal strings or structured CLI output. Human output escapes terminal control characters. Machine output contains only versioned portable DTOs, never a raw destination response. Malformed and incompatible traces fail closed for output while leaving the remote repository unchanged. This conservative fixed-point rule preserves canonical compound and provenance invariants while still permitting a later dedicated graph-redaction reconstruction path.
 
 ### ADR-006: Verify retrievers with one contract suite
 

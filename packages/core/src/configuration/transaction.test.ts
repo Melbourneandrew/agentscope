@@ -99,10 +99,14 @@ const homeFixture = async () => {
 };
 
 const document = (generation: number, reference = "policy-v1") => ({
-  configurationVersion: 1,
+  configurationVersion: 2,
   generation,
   destinations: {},
-  routing: { version: 1, selectedConnectionIds: [] },
+  routing: {
+    version: 1,
+    selectedConnectionIds: [],
+    hookDeadlineMilliseconds: 2_000,
+  },
   policy: { version: 1, reference },
 });
 
@@ -1357,7 +1361,9 @@ describe("noninteractive configuration reads", () => {
     });
     await mkdirAsync(home.root, { recursive: true });
     await writeFileAsync(home.configFile, "not-json");
-    await expect(readConfigurationForHook(store)).resolves.toEqual({
+    await expect(
+      readConfigurationForHook(store, new AbortController().signal),
+    ).resolves.toEqual({
       ok: false,
       code: "core.configuration.invalid",
     });
@@ -1388,7 +1394,9 @@ describe("noninteractive configuration reads", () => {
     const target = join(home.root, "target.json");
     await writeFileAsync(target, snapshotText(0));
     await symlinkAsync(target, home.configFile);
-    await expect(readConfigurationForHook(store)).resolves.toEqual({
+    await expect(
+      readConfigurationForHook(store, new AbortController().signal),
+    ).resolves.toEqual({
       ok: false,
       code: "core.configuration.unavailable",
     });
@@ -1397,6 +1405,12 @@ describe("noninteractive configuration reads", () => {
       home.configFile,
       "x".repeat(MAXIMUM_CONFIGURATION_FILE_BYTES + 1),
     );
+    await expect(
+      readConfigurationForHook(store, new AbortController().signal),
+    ).resolves.toEqual({
+      ok: false,
+      code: "core.configuration.invalid",
+    });
     await expect(readConfigurationForHook(store)).resolves.toEqual({
       ok: false,
       code: "core.configuration.invalid",
@@ -1443,6 +1457,12 @@ describe("configuration byte and lock isolation", () => {
     });
 
     await writeFileAsync(home.configFile, Buffer.from([0xc3, 0x28]));
+    await expect(
+      readConfigurationForHook(store, new AbortController().signal),
+    ).resolves.toEqual({
+      ok: false,
+      code: "core.configuration.invalid",
+    });
     await expect(readConfigurationForHook(store)).resolves.toEqual({
       ok: false,
       code: "core.configuration.invalid",

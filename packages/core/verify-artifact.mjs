@@ -1,11 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
 
-import { invokeRedactedTraceSink } from "../destinations/core/dist/lifecycle-sink.js";
 import {
   createReporterDeadline,
   invokeReporter,
@@ -13,10 +12,18 @@ import {
 import {
   compileDestinationRegistry,
   createDestinationReporter,
+  createDestinationRetriever,
   createReporterReceipt,
+  createRetrievedTrace,
+  createRetrieverSearchPage,
+  createRetrieverSuccess,
+  createTraceLocator,
+  createTraceSummary,
+  defineDestinationDescriptor,
 } from "../destinations/core/dist/index.js";
+import { z } from "zod";
 import {
-  compileConfigurationMigrationRegistry,
+  DEFAULT_CONFIGURATION_MIGRATION_REGISTRY,
   compileCredentialBackendRegistry,
   createCiEnvironmentCredentialAdapter,
   createCredentialResolutionContext,
@@ -26,13 +33,15 @@ import {
   createAgentscopeHomeResolver,
   createOperationalStateStore,
   inspectAgentscopeDoctor,
+  inspectOperationalState,
   migrateConfigurationDocument,
   parseAgentscopeConfiguration,
   readConfigurationSnapshot,
   recoverCredentialMutation,
   resolveCredentialReference,
-  recordPipelineHealth,
-  runFailOpenTraceLifecycle,
+  searchConfiguredTraces,
+  getConfiguredTrace,
+  runResolvedTraceLifecycle,
   retireCredentialReference,
   serializeAgentscopeConfiguration,
   writeConfigurationSnapshot,
@@ -47,20 +56,44 @@ import { createMacosKeychainCredentialAdapterForTesting } from "./dist/configura
 import { createLinuxSecretServiceAdapterForTesting } from "./dist/configuration/linux-secret-service.js";
 import { createWindowsCredentialManagerAdapterForTesting } from "./dist/configuration/windows-credential-manager.js";
 import * as coreArtifactExports from "./dist/index.js";
-import { REDACTION_POLICY_IDENTITIES } from "./dist/redaction/policy.js";
+import { DEFAULT_REDACTION_POLICY_REGISTRY } from "./dist/redaction/policy.js";
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
 
-const invocation = {
-  harnessRegistryId: "codex",
-  harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
-  snapshot: {
-    configurationIdentity: "config.v1",
-    policyIdentity: REDACTION_POLICY_IDENTITIES.baseline,
-    redactionPolicy: { version: 1, mode: "baseline" },
-  },
-  hookObservedUnixNano: "10",
-  operationIdScope: "session-global",
+const listRegularFiles = (directory, prefix = "") => {
+  const files = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const relativePath = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      files.push(
+        ...listRegularFiles(join(directory, entry.name), relativePath),
+      );
+      continue;
+    }
+    if (!entry.isFile())
+      throw new Error(`Unexpected Core artifact entry: ${relativePath}`);
+    files.push(relativePath);
+  }
+  return files.sort();
 };
+
+const productionSources = listRegularFiles(resolve(import.meta.dirname, "src"))
+  .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+  .map((file) => file.slice(0, -3));
+const expectedArtifactFiles = productionSources
+  .flatMap((file) => [`${file}.d.ts`, `${file}.js`])
+  .sort();
+const actualArtifactFiles = listRegularFiles(
+  resolve(import.meta.dirname, "dist"),
+);
+if (
+  actualArtifactFiles.length !== expectedArtifactFiles.length ||
+  actualArtifactFiles.some(
+    (file, index) => file !== expectedArtifactFiles[index],
+  )
+)
+  throw new Error("Core production artifact inventory is not exact.");
+if (actualArtifactFiles.some((file) => file.includes(".test.")))
+  throw new Error("Core production artifact contains compiled tests.");
 const candidate = {
   captureBoundary: {
     session: {
@@ -72,6 +105,7 @@ const candidate = {
     boundaryId: "artifact-turn",
     generation: 0,
     positionKind: "event-index",
+    startPosition: 0,
     exclusiveEndPosition: 1,
   },
   rootContext: { fields: [], unavailable: [] },
@@ -97,31 +131,6 @@ const candidate = {
   ],
 };
 
-const verifyRuntime = (run, guard, invoke) => {
-  let trace;
-  const result = run({
-    invocation,
-    capture: (factory) => factory.capture(candidate),
-    sink(value) {
-      trace = value;
-      return undefined;
-    },
-  });
-  if (
-    result.outcome !== "sink-returned" ||
-    !guard(trace) ||
-    invoke(() => undefined, structuredClone(trace)) !== "rejected" ||
-    invoke(() => undefined, {}) !== "rejected"
-  )
-    throw new Error("Core lifecycle artifact registry verification failed.");
-  return trace;
-};
-
-const directTrace = verifyRuntime(
-  runFailOpenTraceLifecycle,
-  isRedactedCanonicalTrace,
-  invokeRedactedTraceSink,
-);
 const artifactConfigurationDirectory = mkdtempSync(
   join(tmpdir(), "agentscope-core-configuration-artifact-"),
 );
@@ -132,13 +141,96 @@ const artifactHome = createAgentscopeHomeResolver({
   environmentOverrideAuthority: "test",
   platform: process.platform,
 })();
-const artifactRegistry = compileDestinationRegistry([]);
+let directTrace;
+const artifactSettingsSchema = z.strictObject({});
+void artifactSettingsSchema.shape;
+z.toJSONSchema(artifactSettingsSchema);
+const artifactConnectionId = `destination-connection-v1-${"a".repeat(64)}`;
+const artifactDescriptor = defineDestinationDescriptor({
+  descriptorVersion: 1,
+  destinationType: "@agentscope/destination-artifact",
+  commandName: "artifact",
+  settingsVersion: 1,
+  settingsSchema: artifactSettingsSchema,
+  defaultSettings: {},
+  credentialSlots: [],
+  documentationPath: "/docs/destinations/artifact",
+  deliveryIdentitySupport: "duplicates-possible",
+  transport: { kind: "local" },
+  createReporter: () =>
+    createDestinationReporter({
+      report: ({ traces }) => {
+        directTrace = traces[0];
+        return Promise.resolve(createReporterReceipt("accepted"));
+      },
+    }),
+  createRetriever: () =>
+    createDestinationRetriever({
+      search: (request) =>
+        Promise.resolve(
+          createRetrieverSuccess(
+            createRetrieverSearchPage({
+              summaries: [
+                createTraceSummary({
+                  locator: createTraceLocator({
+                    connectionId: request.connectionId,
+                    destinationType: request.destinationType,
+                    traceId:
+                      directTrace.graph.resourceSpans[0].scopeSpans[0].spans[0]
+                        .traceId,
+                  }),
+                  startTime: "2026-01-01T00:00:00.000Z",
+                  models: [],
+                  status: "ok",
+                  spanCount: 1,
+                  tags: [],
+                }),
+              ],
+              state: "exhaustive",
+              consistency: "snapshot",
+            }),
+          ),
+        ),
+      get: (request) =>
+        Promise.resolve(
+          createRetrieverSuccess(
+            createRetrievedTrace({
+              locator: request.locator,
+              representation: {
+                kind: "canonical-graph",
+                graph: directTrace.graph,
+              },
+              consistency: "snapshot",
+            }),
+          ),
+        ),
+    }),
+});
+const artifactRegistry = compileDestinationRegistry([artifactDescriptor]);
+const emptyCredentialRegistry = compileCredentialBackendRegistry([]);
 const artifactConfiguration = parseAgentscopeConfiguration(
   {
-    configurationVersion: 1,
+    configurationVersion: 2,
     generation: 0,
-    destinations: {},
-    routing: { version: 1, selectedConnectionIds: [] },
+    destinations: {
+      "@agentscope/destination-artifact": {
+        namespaceVersion: 1,
+        settingsVersion: 1,
+        connections: [
+          {
+            connectionId: artifactConnectionId,
+            name: "artifact",
+            settings: {},
+            credentialReferences: {},
+          },
+        ],
+      },
+    },
+    routing: {
+      version: 1,
+      selectedConnectionIds: [artifactConnectionId],
+      hookDeadlineMilliseconds: 2_000,
+    },
     policy: { version: 1, reference: "core-redaction-policy-v1-baseline" },
   },
   artifactRegistry,
@@ -151,28 +243,19 @@ if (
   throw new Error("Core configuration artifact verification failed.");
 const migratedConfiguration = migrateConfigurationDocument(
   {
-    configurationVersion: 0,
+    configurationVersion: 1,
     generation: 0,
-    destinations: {},
-    selectedConnectionIds: [],
-    policyReference: "core-redaction-policy-v1-baseline",
-  },
-  compileConfigurationMigrationRegistry([
-    {
-      fromVersion: 0,
-      toVersion: 1,
-      migrate: (value) => ({
-        configurationVersion: 1,
-        generation: value.generation,
-        destinations: value.destinations,
-        routing: {
-          version: 1,
-          selectedConnectionIds: value.selectedConnectionIds,
-        },
-        policy: { version: 1, reference: value.policyReference },
-      }),
+    destinations: artifactConfiguration.document.destinations,
+    routing: {
+      version: 1,
+      selectedConnectionIds: [artifactConnectionId],
     },
-  ]),
+    policy: {
+      version: 1,
+      reference: "core-redaction-policy-v1-baseline",
+    },
+  },
+  DEFAULT_CONFIGURATION_MIGRATION_REGISTRY,
   artifactRegistry,
 );
 const artifactStore = createConfigurationStore(artifactHome, artifactRegistry);
@@ -180,6 +263,29 @@ const artifactOwner = createConfigurationProcessIdentity(
   process.pid,
   `process-start-v1-${"d".repeat(64)}`,
 );
+const artifactOperationalStateStore = createOperationalStateStore(
+  artifactHome,
+  artifactOwner,
+);
+const captureArtifactCandidate = (factory, _signal, checkpointResolver) => {
+  if (typeof checkpointResolver !== "function")
+    throw new Error("Core checkpoint resolver was unavailable.");
+  const resume = checkpointResolver({
+    nativeIdentityKind: "thread",
+    nativeIdentity: "artifact-thread",
+    sourceGeneration: 0,
+    positionKind: "event-index",
+    availableStartPosition: 0,
+  });
+  return factory.capture({
+    ...candidate,
+    captureBoundary: {
+      ...candidate.captureBoundary,
+      startPosition: resume.startPosition,
+      exclusiveEndPosition: resume.startPosition + 1,
+    },
+  });
+};
 await writeConfigurationSnapshot(artifactStore, {
   expectedGeneration: null,
   candidate: migratedConfiguration,
@@ -189,6 +295,163 @@ if ((await readConfigurationSnapshot(artifactStore)).generation !== 0)
   throw new Error(
     "Core configuration transaction artifact verification failed.",
   );
+const lifecycleResult = await runResolvedTraceLifecycle({
+  configurationStore: artifactStore,
+  operationalStateStore: artifactOperationalStateStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  harnessRegistryId: "codex",
+  harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+  hookObservedUnixNano: "10",
+  operationIdScope: "session-global",
+  workspaceCandidates: [],
+  gitExecutable: "/usr/bin/git",
+  bootstrapDeadlineMilliseconds: 1_000,
+  capture: captureArtifactCandidate,
+});
+const artifactOperationalSnapshot = await inspectOperationalState(
+  artifactOperationalStateStore,
+);
+const serializedOperationalSnapshot = JSON.stringify(
+  artifactOperationalSnapshot,
+);
+if (
+  lifecycleResult.outcome !== "completed" ||
+  lifecycleResult.connections[0]?.outcome !== "accepted" ||
+  lifecycleResult.operationalEvidence.persistence.code !== "not-attempted" ||
+  lifecycleResult.operationalEvidence.checkpoints.length !== 0 ||
+  artifactOperationalSnapshot.checkpoints.length !== 0 ||
+  serializedOperationalSnapshot.includes("artifact-thread") ||
+  serializedOperationalSnapshot.includes(directTrace.delivery.identity) ||
+  serializedOperationalSnapshot.includes(directTrace.graph.traceId) ||
+  !isRedactedCanonicalTrace(directTrace) ||
+  isRedactedCanonicalTrace(structuredClone(directTrace))
+)
+  throw new Error("Core resolved lifecycle artifact verification failed.");
+const retrievalRuntime = {
+  configuration: artifactConfiguration,
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  deadline: createReporterDeadline(1_000),
+};
+// Built-boundary component coverage; user-facing AC-RET evidence remains planned.
+const artifactTraceId =
+  directTrace.graph.resourceSpans[0].scopeSpans[0].spans[0].traceId;
+const artifactSearch = await searchConfiguredTraces(retrievalRuntime, {
+  destinationName: "artifact",
+  query: { traceId: artifactTraceId },
+});
+const artifactGet = await getConfiguredTrace(retrievalRuntime, {
+  destinationName: "artifact",
+  traceId: artifactTraceId,
+});
+if (
+  !artifactSearch.ok ||
+  artifactSearch.page.summaries[0]?.locator.traceId !== artifactTraceId ||
+  !artifactGet.ok ||
+  artifactGet.trace.graph === directTrace.graph ||
+  isRedactedCanonicalTrace(artifactGet.trace.graph)
+)
+  throw new Error("Core retrieval artifact verification failed.");
+const artifactSourceLoss = await runResolvedTraceLifecycle({
+  configurationStore: artifactStore,
+  operationalStateStore: artifactOperationalStateStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  harnessRegistryId: "codex",
+  harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+  hookObservedUnixNano: "10",
+  operationIdScope: "session-global",
+  workspaceCandidates: [],
+  gitExecutable: "/usr/bin/git",
+  bootstrapDeadlineMilliseconds: 1_000,
+  capture: (factory, _signal, checkpointResolver) => {
+    if (typeof checkpointResolver !== "function")
+      throw new Error("Core checkpoint resolver was unavailable.");
+    const resume = checkpointResolver({
+      nativeIdentityKind: "thread",
+      nativeIdentity: "artifact-thread",
+      sourceGeneration: 0,
+      positionKind: "event-index",
+      availableStartPosition: 10,
+    });
+    return factory.capture({
+      ...candidate,
+      captureBoundary: {
+        ...candidate.captureBoundary,
+        startPosition: resume.startPosition,
+        exclusiveEndPosition: resume.startPosition + 1,
+      },
+    });
+  },
+});
+if (
+  artifactSourceLoss.outcome !== "completed" ||
+  artifactSourceLoss.operationalEvidence.diagnostics[0]?.code !==
+    "native-source-loss" ||
+  artifactSourceLoss.operationalEvidence.diagnostics[1]?.code !==
+    "checkpoint-unavailable" ||
+  artifactSourceLoss.operationalEvidence.checkpoints.length !== 0
+)
+  throw new Error("Core source-loss artifact verification failed.");
+let artifactCheckpointAccessorReads = 0;
+let retainedArtifactCheckpointResolver;
+const hostileCheckpointResult = await runResolvedTraceLifecycle({
+  configurationStore: artifactStore,
+  operationalStateStore: artifactOperationalStateStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  harnessRegistryId: "codex",
+  harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+  hookObservedUnixNano: "10",
+  operationIdScope: "session-global",
+  workspaceCandidates: [],
+  gitExecutable: "/usr/bin/git",
+  bootstrapDeadlineMilliseconds: 1_000,
+  capture: (_factory, _signal, checkpointResolver) => {
+    if (typeof checkpointResolver !== "function")
+      throw new Error("Core checkpoint resolver was unavailable.");
+    retainedArtifactCheckpointResolver = checkpointResolver;
+    const request = Object.create(null);
+    Object.defineProperties(request, {
+      availableStartPosition: { enumerable: true, value: 0 },
+      nativeIdentity: {
+        enumerable: true,
+        get() {
+          artifactCheckpointAccessorReads += 1;
+          return "artifact-thread";
+        },
+      },
+      nativeIdentityKind: { enumerable: true, value: "thread" },
+      positionKind: { enumerable: true, value: "event-index" },
+      sourceGeneration: { enumerable: true, value: 0 },
+    });
+    checkpointResolver(request);
+  },
+});
+let lateCheckpointResolverRejected = false;
+try {
+  retainedArtifactCheckpointResolver?.({
+    nativeIdentityKind: "thread",
+    nativeIdentity: "artifact-thread",
+    sourceGeneration: 0,
+    positionKind: "event-index",
+    availableStartPosition: 0,
+  });
+} catch {
+  lateCheckpointResolverRejected = true;
+}
+if (
+  hostileCheckpointResult.outcome !== "failed-open" ||
+  hostileCheckpointResult.stage !== "capture" ||
+  artifactCheckpointAccessorReads !== 0 ||
+  !lateCheckpointResolverRejected
+)
+  throw new Error("Core checkpoint authority artifact verification failed.");
 const artifactCredentialRegistry = compileCredentialBackendRegistry([
   createCiEnvironmentCredentialAdapter({
     AGENTSCOPE_ARTIFACT_KEY: "CANARY_SECRET",
@@ -407,26 +670,9 @@ if (
   throw new Error(
     "Linux Secret Service artifact boundary verification failed.",
   );
-const artifactOperationalStore = createOperationalStateStore(
-  artifactHome,
-  artifactOwner,
-);
-if (
-  !(
-    await recordPipelineHealth(artifactOperationalStore, {
-      scope: "hook",
-      stage: "redaction",
-      outcome: "completed",
-      configurationGeneration: 0,
-      policyMode: "baseline",
-      receipt: null,
-    })
-  ).recorded
-)
-  throw new Error("Core operational state artifact write failed.");
 const doctorReport = await inspectAgentscopeDoctor({
   configurationStore: artifactStore,
-  operationalStateStore: artifactOperationalStore,
+  operationalStateStore: artifactOperationalStateStore,
   credentialRegistry: artifactCredentialRegistry,
   credentialResolutionContext: createCredentialResolutionContext(
     "hook-equivalent",
@@ -443,7 +689,6 @@ if (
   "createOperationalStateStoreForTesting" in coreArtifactExports
 )
   throw new Error("Core Doctor artifact boundary verification failed.");
-rmSync(artifactConfigurationDirectory, { recursive: true, force: true });
 const directReporter = createDestinationReporter({
   report: ({ traces }) =>
     Promise.resolve(
@@ -488,12 +733,22 @@ const unhandled = [];
 const collectUnhandled = (reason) => unhandled.push(reason);
 process.on("unhandledRejection", collectUnhandled);
 try {
-  const asyncMisuse = runFailOpenTraceLifecycle({
-    invocation,
+  const asyncMisuse = await runResolvedTraceLifecycle({
+    configurationStore: artifactStore,
+    operationalStateStore: artifactOperationalStateStore,
+    credentialBackendRegistry: emptyCredentialRegistry,
+    transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+    policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+    harnessRegistryId: "codex",
+    harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+    hookObservedUnixNano: "10",
+    operationIdScope: "session-global",
+    workspaceCandidates: [],
+    gitExecutable: "/usr/bin/git",
+    bootstrapDeadlineMilliseconds: 1_000,
     capture: async () => {
       throw new Error("CANARY_SECRET");
     },
-    sink: () => undefined,
   });
   if (asyncMisuse.outcome !== "failed-open" || asyncMisuse.stage !== "capture")
     throw new Error("Async capture misuse did not fail open.");
@@ -504,6 +759,7 @@ try {
 } finally {
   process.off("unhandledRejection", collectUnhandled);
 }
+rmSync(artifactConfigurationDirectory, { recursive: true, force: true });
 
 const directory = mkdtempSync(join(tmpdir(), "agentscope-core-artifact-"));
 const entry = join(directory, "entry.mjs");
@@ -512,28 +768,13 @@ try {
   writeFileSync(
     entry,
     [
-      `import { runFailOpenTraceLifecycle } from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
-      `import { REDACTION_POLICY_IDENTITIES } from ${JSON.stringify(resolve(import.meta.dirname, "dist/redaction/policy.js"))};`,
-      `import { invokeRedactedTraceSink } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/lifecycle-sink.js"))};`,
-      `import { createReporterDeadline, invokeReporter } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/core-orchestration.js"))};`,
-      `import { createDestinationReporter, createReporterReceipt } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/index.js"))};`,
+      `import * as core from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
       `import { compileDestinationRegistry } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/index.js"))};`,
-      `import { compileConfigurationMigrationRegistry, createAgentscopeHomeResolver, createConfigurationProcessIdentity, createConfigurationStore, createOperationalStateStore, inspectAgentscopeDoctor, migrateConfigurationDocument, parseAgentscopeConfiguration, readConfigurationSnapshot, recordPipelineHealth, serializeAgentscopeConfiguration, writeConfigurationSnapshot } from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
-      `import { isRedactedCanonicalTrace } from ${JSON.stringify(resolve(import.meta.dirname, "../protocol/dist/index.js"))};`,
-      `const invocation = ${JSON.stringify(invocation)};`,
-      "invocation.snapshot.policyIdentity = REDACTION_POLICY_IDENTITIES.baseline;",
-      `const candidate = ${JSON.stringify(candidate)};`,
+      `import { compileConfigurationMigrationRegistry, createAgentscopeHomeResolver, createConfigurationProcessIdentity, createConfigurationStore, createOperationalStateStore, inspectAgentscopeDoctor, migrateConfigurationDocument, parseAgentscopeConfiguration, readConfigurationSnapshot, serializeAgentscopeConfiguration, writeConfigurationSnapshot } from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
       "export const verify = async () => {",
-      "  let trace;",
-      "  const result = runFailOpenTraceLifecycle({ invocation, capture: (factory) => factory.capture(candidate), sink(value) { trace = value; return undefined; } });",
-      "  const reporter = createDestinationReporter({ report: ({ traces }) => Promise.resolve(createReporterReceipt(traces.length === 1 && traces[0] === trace ? 'accepted' : 'rejected')) });",
-      "  const attempt = { traces: [trace], signal: new AbortController().signal, deadline: createReporterDeadline(1000) };",
-      "  const accepted = await invokeReporter(reporter, attempt);",
       "  const home = createAgentscopeHomeResolver({ environment: { AGENTSCOPE_HOME: '/tmp/agentscope-bundle-home' }, environmentOverrideAuthority: 'test', platform: 'linux' })();",
-      "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 1, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [] }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
-      "  let cloneRejected = false;",
-      "  try { await invokeReporter(reporter, { ...attempt, traces: [structuredClone(trace)] }); } catch (error) { cloneRejected = error?.code === 'destination.reporter.invalid'; }",
-      "  return result.outcome === 'sink-returned' && accepted.outcome === 'accepted' && cloneRejected && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof recordPipelineHealth === 'function' && typeof writeConfigurationSnapshot === 'function' && isRedactedCanonicalTrace(trace) && invokeRedactedTraceSink(() => undefined, structuredClone(trace)) === 'rejected' && invokeRedactedTraceSink(() => undefined, {}) === 'rejected';",
+      "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 2, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [], hookDeadlineMilliseconds: 2000 }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
+      "  return typeof core.runResolvedTraceLifecycle === 'function' && typeof core.searchConfiguredTraces === 'function' && typeof core.getConfiguredTrace === 'function' && !('agentscope' in core) && !('CoreRedactionError' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
       "};",
     ].join("\n"),
   );

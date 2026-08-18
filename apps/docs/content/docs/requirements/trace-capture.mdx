@@ -20,7 +20,7 @@ Agentscope must capture useful harness activity without acting as a proxy for th
 As a coding-agent user, I want trace capture to be non-disruptive, so that observability never prevents me from using my harness.
 
 - **AC-CAP-001.1:** When a hook cannot report, the system shall return without blocking the harness session.
-- **AC-CAP-001.2:** When capture work reaches the configured hook deadline, the system shall cancel unfinished work, record a sanitized diagnostic, and fail open.
+- **AC-CAP-001.2:** When capture work reaches the configured hook deadline, the system shall request cancellation of unfinished work, prevent new capture or reporting stages from starting, record a sanitized diagnostic, release the harness by the deadline, and fail open.
 - **AC-CAP-001.3:** When a hook begins, the system shall derive one immutable configuration and policy snapshot for all work in that invocation.
 - **AC-CAP-001.4:** When an existing native session is captured across appended boundaries, the system shall preserve its trace identity and existing operation span identities while assigning a distinct identity to each acknowledged capture boundary.
 - **AC-CAP-001.5:** When stable native session identity is unavailable, the system shall expose boundary-scoped or attempt-scoped at-least-once identity rather than claiming session continuity.

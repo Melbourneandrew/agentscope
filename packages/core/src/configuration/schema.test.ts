@@ -14,6 +14,8 @@ import {
   serializeAgentscopeConfiguration,
 } from "./schema.js";
 
+// Configuration validation evidence for AC-CONN-002.3.
+
 const connectionId =
   "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const generationId =
@@ -86,12 +88,16 @@ const knownNamespace = () => ({
 });
 
 const document = () => ({
-  configurationVersion: 1,
+  configurationVersion: 2,
   generation: 7,
   destinations: {
     "@agentscope/destination-example": knownNamespace(),
   },
-  routing: { version: 1, selectedConnectionIds: [connectionId] },
+  routing: {
+    version: 1,
+    selectedConnectionIds: [connectionId],
+    hookDeadlineMilliseconds: 2_000,
+  },
   policy: { version: 1, reference: "core-redaction-policy-v1-baseline" },
 });
 
@@ -112,7 +118,7 @@ describe("versioned Agentscope configuration", () => {
     } as never;
     const snapshot = parseAgentscopeConfiguration(input, registry);
     expect(snapshot).toMatchObject({
-      configurationVersion: 1,
+      configurationVersion: 2,
       generation: 7,
       mutationSafe: true,
       policyReference: "core-redaction-policy-v1-baseline",
@@ -120,6 +126,7 @@ describe("versioned Agentscope configuration", () => {
       unsupportedDestinationTypes: [],
     });
     expect(snapshot.connections).toHaveLength(1);
+    expect(snapshot.destinationRegistry).toBe(registry);
     expect(snapshot.connections[0]).toMatchObject({
       connectionId,
       name: "primary",
@@ -246,12 +253,19 @@ describe("configuration rejection boundaries", () => {
         "destination-connection-v1-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       name: "secondary",
     });
-    candidate.routing.selectedConnectionIds = [];
-    expect(
-      parseAgentscopeConfiguration(candidate, registry).connections.map(
-        (connection) => connection.name,
-      ),
-    ).toEqual(["primary", "secondary"]);
+    candidate.routing.selectedConnectionIds = [
+      "destination-connection-v1-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      connectionId,
+    ];
+    const snapshot = parseAgentscopeConfiguration(candidate, registry);
+    expect(snapshot.connections.map((connection) => connection.name)).toEqual([
+      "primary",
+      "secondary",
+    ]);
+    expect(snapshot.selectedConnectionIds).toEqual([
+      connectionId,
+      "destination-connection-v1-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    ]);
   });
 
   it("enforces connection, routing, and namespace invariants", () => {
@@ -274,6 +288,12 @@ describe("configuration rejection boundaries", () => {
     const repeatedRoute = document();
     repeatedRoute.routing.selectedConnectionIds = [connectionId, connectionId];
     cases.push(repeatedRoute);
+    for (const hookDeadlineMilliseconds of [49, 60_001, 50.5]) {
+      const invalidDeadline = document();
+      invalidDeadline.routing.hookDeadlineMilliseconds =
+        hookDeadlineMilliseconds;
+      cases.push(invalidDeadline);
+    }
     const duplicateConnection = document();
     duplicateConnection.destinations[
       "@agentscope/destination-example"
@@ -395,7 +415,7 @@ describe("configuration hostile input boundaries", () => {
     for (const candidate of [
       null,
       [],
-      { ...document(), configurationVersion: 2 },
+      { ...document(), configurationVersion: 3 },
       { ...document(), generation: -1 },
       { ...document(), policy: { version: 1, reference: "BAD POLICY" } },
       extra,

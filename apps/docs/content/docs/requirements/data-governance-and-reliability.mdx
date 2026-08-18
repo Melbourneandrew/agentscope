@@ -21,7 +21,7 @@ As a user, I want sensitive data removed before reporting or diagnostics, so tha
 - **AC-GOV-001.1:** When capture produces credential material or credential-shaped secrets, the system shall remove or irreversibly transform those values before any persistence or export.
 - **AC-GOV-001.2:** When capture produces an absolute local path, the system shall remove user-identifying prefixes before any persistence or export while preserving safe repository-relative context where possible.
 - **AC-GOV-001.3:** When a valid redaction policy cannot be resolved, the system shall suppress persistence and export, record a sanitized diagnostic, and fail open to the harness.
-- **AC-GOV-001.4:** When redaction changes a field, the system shall preserve unaffected safe canonical fields and may record only a non-sensitive redaction marker for the changed field.
+- **AC-GOV-001.4:** When redaction changes a field and the remaining data can form a valid canonical trace, the system shall preserve unaffected safe canonical fields and may record only a non-sensitive redaction marker for the changed field; otherwise it shall suppress the trace.
 - **AC-GOV-001.5:** When a user supplies additional redaction rules, the system shall not allow those rules to disable the mandatory baseline.
 
 ### REQ-GOV-002: Minimal operational state

@@ -13,17 +13,15 @@ import {
   type TimingBasis,
 } from "@agentscope/protocol";
 import { finalizeRedactedCanonicalTrace } from "@agentscope/protocol/core-finalization";
+import { isAbsolute, relative } from "node:path";
 
 import type { CapturedTrace } from "../capture/types.js";
 import {
   assignCapturedTraceIdentities,
   readCapturedTraceForCore,
 } from "../capture/runtime.js";
-import {
-  applyDescriptorRedaction,
-  CoreRedactionError,
-  type ResolvedRedactionPolicy,
-} from "./transforms.js";
+import { applyDescriptorRedaction, CoreRedactionError } from "./transforms.js";
+import type { ResolvedRedactionPolicy } from "./policy.js";
 export { CoreRedactionError } from "./transforms.js";
 
 type EvidenceClaim = {
@@ -57,6 +55,41 @@ const stringValue = (key: string, value: string): OtlpKeyValue => ({
   value: { stringValue: value },
 });
 
+const projectRepositoryRelativePaths = <
+  T extends Readonly<{
+    field: string;
+    value: unknown;
+    provenance: Readonly<{ field: string; source: ProvenanceSource }>;
+  }>,
+>(
+  fields: readonly T[],
+): readonly T[] => {
+  const repositoryRoot = fields.find(
+    ({ field }) => field === "agentscope.git.repository_root",
+  )?.value;
+  if (typeof repositoryRoot !== "string" || !isAbsolute(repositoryRoot))
+    return fields;
+  return fields.map((field) => {
+    if (
+      ![
+        "agentscope.workspace.directory",
+        "agentscope.git.worktree",
+        "agentscope.git.repository_root",
+      ].includes(field.field) ||
+      typeof field.value !== "string" ||
+      !isAbsolute(field.value)
+    )
+      return field;
+    const projected = relative(repositoryRoot, field.value);
+    if (projected.startsWith("..") || isAbsolute(projected)) return field;
+    return {
+      ...field,
+      value: projected === "" ? "." : projected,
+      provenance: { field: field.field, source: "derived" as const },
+    };
+  });
+};
+
 const redactField = (
   field: {
     field: string;
@@ -64,11 +97,23 @@ const redactField = (
     provenance: { source: ProvenanceSource };
   },
   policy: ResolvedRedactionPolicy,
+  spanKind: ReturnType<
+    typeof readCapturedTraceForCore
+  >["operations"][number]["kind"],
 ) => {
   const descriptor = getAcceptedSemanticAttributeDescriptor(field.field);
   /* v8 ignore next -- capture construction already proves descriptor ownership. */
   if (descriptor === undefined) throw new CoreRedactionError();
-  const result = applyDescriptorRedaction(descriptor, field.value, policy);
+  const result = applyDescriptorRedaction(
+    descriptor,
+    field.value,
+    policy,
+    undefined,
+    {
+      semanticKey: field.field,
+      spanKind,
+    },
+  );
   if (result.outcome === "omit-redacted") {
     return {
       unavailable: {
@@ -153,9 +198,11 @@ const createSpan = (
     policy: ResolvedRedactionPolicy;
     hookObservedUnixNano: string;
     rootBounds?: { start: string; end: string };
-    rootContextFields: readonly ReturnType<
-      typeof readCapturedTraceForCore
-    >["rootContext"]["fields"][number][];
+    rootContextFields: readonly Readonly<{
+      field: string;
+      value: unknown;
+      provenance: Readonly<{ field: string; source: ProvenanceSource }>;
+    }>[];
     rootContextUnavailable: readonly UnavailableClaim[];
     harness: ReturnType<
       typeof readCapturedTraceForCore
@@ -191,6 +238,7 @@ const createSpan = (
         provenance: { source: options.harness.nameSource },
       },
       options.policy,
+      operation.kind,
     );
     if (harnessName.attribute !== undefined && harnessName.claim !== undefined)
       addAttribute(harnessName.attribute, harnessName.claim);
@@ -204,6 +252,7 @@ const createSpan = (
           provenance: { source: version.source },
         },
         options.policy,
+        operation.kind,
       );
       if (
         harnessVersion.attribute !== undefined &&
@@ -235,7 +284,7 @@ const createSpan = (
       : []),
   ];
   for (const field of semanticFields) {
-    const redacted = redactField(field, options.policy);
+    const redacted = redactField(field, options.policy, operation.kind);
     if (redacted.attribute !== undefined && redacted.claim !== undefined)
       addAttribute(redacted.attribute, redacted.claim);
     if (redacted.unavailable !== undefined)
@@ -253,7 +302,7 @@ const createSpan = (
         "resource",
       ),
     )) {
-      const redacted = redactField(field, options.policy);
+      const redacted = redactField(field, options.policy, operation.kind);
       if (redacted.attribute !== undefined && redacted.claim !== undefined) {
         present.push(field.field);
         claims.push(redacted.claim);
@@ -264,26 +313,6 @@ const createSpan = (
   }
 
   if (options.isRoot && !options.standaloneFeedbackRoot) {
-    const rootRequired = [
-      "agentscope.workspace.directory",
-      "agentscope.git.worktree",
-      "agentscope.git.repository_root",
-      "vcs.ref.head.name",
-      "vcs.ref.head.revision",
-      "vcs.ref.type",
-    ];
-    const accounted = new Set([
-      ...present,
-      ...unavailable.map(({ field }) => field),
-    ]);
-    for (const field of rootRequired)
-      if (!accounted.has(field))
-        unavailable.push({
-          field,
-          source: field.startsWith("vcs.") ? "git" : "process",
-          state: "unavailable",
-          reason: "not-emitted",
-        });
     if (options.hasTool) {
       claims.push({ field: "family.tool.activity", source: "derived" });
       present.push("family.tool.activity");
@@ -344,6 +373,8 @@ const createSpan = (
     nameDescriptor,
     operation.name,
     options.policy,
+    undefined,
+    { semanticKey: "span.name", spanKind: operation.kind },
   );
   /* v8 ignore next 6 -- the fingerprinted span-name descriptor permits only string retention or replacement. */
   if (
@@ -391,6 +422,8 @@ const createSpan = (
         descriptor,
         event.name,
         options.policy,
+        undefined,
+        { semanticKey: "span.event.name", spanKind: operation.kind },
       );
       if (result.outcome === "omit-event") {
         unavailable.push({
@@ -423,7 +456,7 @@ const createSpan = (
         },
       );
       const eventAttributes = event.fields.flatMap((field) => {
-        const redacted = redactField(field, options.policy);
+        const redacted = redactField(field, options.policy, operation.kind);
         const evidenceField = `span.events.${eventIndex}.attributes.${field.field}`;
         if (redacted.unavailable !== undefined) {
           unavailable.push({ ...redacted.unavailable, field: evidenceField });
@@ -476,7 +509,7 @@ const createSpan = (
     );
     /* v8 ignore start -- current pinned profile has no link attributes. */
     const linkAttributes = link.fields.flatMap((field) => {
-      const redacted = redactField(field, options.policy);
+      const redacted = redactField(field, options.policy, operation.kind);
       const evidenceField = `span.links.${linkIndex}.attributes.${field.field}`;
       if (redacted.unavailable !== undefined) {
         unavailable.push({ ...redacted.unavailable, field: evidenceField });
@@ -553,12 +586,16 @@ export const redactCapturedTrace = (
   try {
     const capture = readCapturedTraceForCore(value);
     const identityBundle = assignCapturedTraceIdentities(value);
-    const policy: ResolvedRedactionPolicy = Object.freeze({
-      ...capture.invocation.snapshot.redactionPolicy,
-      identity: capture.invocation.snapshot.policyIdentity,
-    });
-    let rootContextFields = [...capture.rootContext.fields];
+    const policy = capture.invocation.snapshot.redactionPolicy;
+    const root = capture.operations.find(
+      ({ parentLogicalKey }) => parentLogicalKey === undefined,
+    )!;
+    let rootContextFields = projectRepositoryRelativePaths([
+      ...capture.invocation.context.fields,
+      ...capture.rootContext.fields,
+    ]);
     const rootContextUnavailable: UnavailableClaim[] = [
+      ...capture.invocation.context.unavailable,
       ...capture.rootContext.unavailable,
     ];
     for (const [identity, dependents] of [
@@ -570,7 +607,7 @@ export const redactCapturedTrace = (
       );
       const identityRetained =
         identityField !== undefined &&
-        redactField(identityField, policy).attribute !== undefined;
+        redactField(identityField, policy, root.kind).attribute !== undefined;
       if (!identityRetained) {
         const removed = rootContextFields.filter(({ field }) =>
           dependents.includes(field as never),
@@ -590,9 +627,6 @@ export const redactCapturedTrace = (
           });
       }
     }
-    const root = capture.operations.find(
-      ({ parentLogicalKey }) => parentLogicalKey === undefined,
-    )!;
     const nonRootTimes = capture.operations
       .filter(({ logicalKey }) => logicalKey !== root.logicalKey)
       .map((operation) =>
@@ -625,11 +659,14 @@ export const redactCapturedTrace = (
     const hasRetainedException = capture.operations.some(({ events }) =>
       events.some(({ name }) => name === "exception"),
     );
-    const capturedErrorTypes = capture.operations.flatMap(({ fields }) =>
-      fields.filter(({ field }) => field === "error.type"),
+    const capturedErrorTypes = capture.operations.flatMap((operation) =>
+      operation.fields
+        .filter(({ field }) => field === "error.type")
+        .map((field) => ({ field, kind: operation.kind })),
     );
     const hasRetainedErrorType = capturedErrorTypes.some(
-      (field) => redactField(field, policy).attribute !== undefined,
+      ({ field, kind }) =>
+        redactField(field, policy, kind).attribute !== undefined,
     );
     const errorActivity =
       hasRetainedException || hasRetainedErrorType
@@ -687,7 +724,7 @@ export const redactCapturedTrace = (
       stringValue("service.name", CANONICAL_COMPOUND_RULES.serviceName),
     ];
     for (const field of resourceFields) {
-      const redacted = redactField(field, policy);
+      const redacted = redactField(field, policy, root.kind);
       if (redacted.attribute !== undefined)
         resourceAttributes.push(redacted.attribute);
     }

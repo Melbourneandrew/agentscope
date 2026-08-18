@@ -18,6 +18,7 @@ export {
 export {
   createTraceSearchCursor,
   readTraceSearchCursor,
+  readTraceSearchCursorUpperTimeBound,
 } from "./retrieval-cursor.js";
 export {
   normalizeTraceSearchQuery,

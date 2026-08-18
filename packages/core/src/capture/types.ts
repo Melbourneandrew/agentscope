@@ -39,6 +39,7 @@ export type CaptureBoundaryCandidate = {
   readonly boundaryId: string;
   readonly generation: number;
   readonly positionKind: "byte-offset" | "event-index" | "line" | "sequence";
+  readonly startPosition: number;
   readonly exclusiveEndPosition: number;
 };
 
@@ -140,8 +141,34 @@ export type CaptureSnapshotIdentity = {
   readonly policyIdentity: string;
   readonly redactionPolicy: {
     readonly version: 1;
+    readonly reference: string;
     readonly mode: "baseline" | "strict";
+    readonly identity: string;
+    readonly rules: readonly Readonly<{
+      selector: Readonly<{
+        kind: "semantic-key" | "template";
+        value: string;
+      }>;
+      spanKind?: OpenInferenceOperationKind;
+      action: "omit";
+    }>[];
   };
+};
+
+export type CoreContextField = {
+  readonly field: string;
+  readonly value: SemanticValueCandidate;
+  readonly provenance: Readonly<{
+    field: string;
+    source: "git" | "hook-payload" | "native-artifact" | "process";
+  }>;
+};
+
+export type CoreContextUnavailable = {
+  readonly field: string;
+  readonly source: "git" | "hook-payload" | "native-artifact" | "process";
+  readonly state: "unavailable" | "not-applicable";
+  readonly reason: "resolution-failed" | "detached-head";
 };
 
 export type CapturedTraceCandidate = {
@@ -180,4 +207,8 @@ export type CaptureInvocationContext = {
   readonly snapshot: CaptureSnapshotIdentity;
   readonly hookObservedUnixNano: string;
   readonly operationIdScope: "session-global" | "parent-scoped";
+  readonly context: Readonly<{
+    readonly fields: readonly CoreContextField[];
+    readonly unavailable: readonly CoreContextUnavailable[];
+  }>;
 };

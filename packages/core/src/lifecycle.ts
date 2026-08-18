@@ -1,7 +1,7 @@
 import {
-  invokeRedactedTraceSink,
-  type RedactedTraceSink,
-} from "@agentscope/destinations-core/lifecycle-sink";
+  isRedactedCanonicalTrace,
+  type RedactedCanonicalTrace,
+} from "@agentscope/protocol";
 
 import type {
   CapturedTrace,
@@ -10,6 +10,15 @@ import type {
   HarnessCaptureFactory,
 } from "./capture/types.js";
 import { withCaptureInvocationSyncForCore } from "./capture/runtime.js";
+import type { CaptureCheckpointResume } from "./configuration/operational-state.js";
+export type CaptureResumeRequest = Readonly<{
+  nativeIdentityKind: "thread" | "session" | "conversation" | "run";
+  nativeIdentity: string;
+  sourceGeneration: number;
+  positionKind: "byte-offset" | "event-index" | "line" | "sequence";
+  availableStartPosition: number;
+}>;
+export type CaptureResume = CaptureCheckpointResume;
 import { redactCapturedTrace } from "./redaction/pipeline.js";
 
 export type LifecycleStage = "capture" | "redaction" | "sink";
@@ -26,13 +35,19 @@ export type LifecycleResult =
 export type CaptureAdapter = (
   factory: HarnessCaptureFactory,
   signal?: AbortSignal,
+  checkpointResolver?: (request: CaptureResumeRequest) => CaptureResume,
 ) => CapturedTrace;
+
+export type RedactedTraceSink = (trace: RedactedCanonicalTrace) => undefined;
 
 export type TraceLifecycleInput = Readonly<{
   invocation: CaptureInvocationContext;
   capture: CaptureAdapter;
   sink: RedactedTraceSink;
   signal?: AbortSignal;
+  remainingMilliseconds?: () => number;
+  onCaptured?: (trace: CapturedTrace) => unknown;
+  checkpointResolver?: (request: CaptureResumeRequest) => CaptureResume;
 }>;
 
 const sinkReturned = Object.freeze({
@@ -88,6 +103,18 @@ const signalIsAborted = (signal: AbortSignal | undefined): boolean => {
   }
 };
 
+const deadlineIsExpired = (
+  remainingMilliseconds: (() => number) | undefined,
+) => {
+  if (remainingMilliseconds === undefined) return false;
+  try {
+    const remaining = remainingMilliseconds();
+    return !Number.isFinite(remaining) || remaining <= 0;
+  } catch {
+    return true;
+  }
+};
+
 const failOpen = (
   stage: LifecycleStage,
   reason: LifecycleFailureReason,
@@ -100,7 +127,10 @@ export const runFailOpenTraceLifecycle = (
   let signal: AbortSignal | undefined;
   try {
     signal = input.signal;
-    if (signalIsAborted(signal)) return failOpen(stage, "cancelled");
+    const remainingMilliseconds = input.remainingMilliseconds;
+    const cancelled = () =>
+      signalIsAborted(signal) || deadlineIsExpired(remainingMilliseconds);
+    if (cancelled()) return failOpen(stage, "cancelled");
     let minted: CapturedTrace | undefined;
     const captured = withCaptureInvocationSyncForCore(
       input.invocation,
@@ -114,8 +144,13 @@ export const runFailOpenTraceLifecycle = (
         const runtimeCapture = input.capture as unknown as (
           scopedFactory: HarnessCaptureFactory,
           scopedSignal?: AbortSignal,
+          checkpointResolver?: TraceLifecycleInput["checkpointResolver"],
         ) => unknown;
-        const returned = runtimeCapture(trackingFactory, signal);
+        const returned = runtimeCapture(
+          trackingFactory,
+          signal,
+          input.checkpointResolver,
+        );
         if (minted === undefined || returned !== minted) {
           observeUnexpectedReturn(returned);
           throw new Error("core.lifecycle.invalid");
@@ -123,14 +158,28 @@ export const runFailOpenTraceLifecycle = (
         return minted;
       },
     );
+    if (input.onCaptured !== undefined) {
+      const observed: unknown = input.onCaptured(captured);
+      if (observed !== undefined) {
+        observeUnexpectedReturn(observed);
+        return failOpen(stage, "failed");
+      }
+    }
     stage = "redaction";
-    if (signalIsAborted(signal)) return failOpen(stage, "cancelled");
+    if (cancelled()) return failOpen(stage, "cancelled");
     const redacted = redactCapturedTrace(captured);
     stage = "sink";
-    if (signalIsAborted(signal)) return failOpen(stage, "cancelled");
-    return invokeRedactedTraceSink(input.sink, redacted) === "returned"
-      ? sinkReturned
-      : failOpen(stage, "failed");
+    if (cancelled()) return failOpen(stage, "cancelled");
+    /* v8 ignore next -- Core redaction is the sole producer and always returns
+       the exact runtime-branded value checked again at the routing boundary. */
+    if (!isRedactedCanonicalTrace(redacted)) return failOpen(stage, "failed");
+    const returned: unknown = (
+      input.sink as unknown as (trace: RedactedCanonicalTrace) => unknown
+    )(redacted);
+    if (returned !== undefined) observeUnexpectedReturn(returned);
+    const result =
+      returned === undefined ? sinkReturned : failOpen(stage, "failed");
+    return cancelled() ? failOpen(stage, "cancelled") : result;
   } catch {
     return failOpen(stage, signalIsAborted(signal) ? "cancelled" : "failed");
   }

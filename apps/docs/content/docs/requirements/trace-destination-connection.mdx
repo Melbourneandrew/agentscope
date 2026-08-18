@@ -9,7 +9,8 @@ Users configure a destination once, then install compatible harness integrations
 
 ## Terminology
 
-- **Connection:** a named reporter configuration and credential reference.
+- **Connection:** a reporter configuration and credential reference with one immutable opaque identity and one globally unique user-facing name.
+- **Routing policy:** the versioned machine-local configuration that explicitly selects zero or more connections for hook-time delivery.
 - **Trace Destination:** a configured local or remote trace repository or service. It provides mandatory reporting and may provide retrieval.
 - **Native trace source:** a harness transcript, hook payload, journal, or artifact from which Agentscope captures trace evidence.
 - **Reporter:** a destination package component that accepts normalized trace batches.
@@ -27,6 +28,6 @@ As a user, I want to configure Langfuse through `agentscope`, so that my harness
 
 As a platform engineer, I want named connections reusable across harnesses, so that destination policy is not duplicated in every integration.
 
-- **AC-CONN-002.1:** When multiple connections exist, the system shall let a routing policy select active connection(s) without modifying harness-specific extraction.
+- **AC-CONN-002.1:** When multiple connections exist, the system shall let a routing policy explicitly select active connection(s) without modifying harness-specific extraction or inspecting raw harness content.
 - **AC-CONN-002.2:** When no connection is selected by the routing policy, the system shall report a stable non-content diagnostic and shall not choose a configured connection implicitly.
-- **AC-CONN-002.3:** When routing selects an unknown connection, the system shall reject the invalid configuration before hook-time delivery.
+- **AC-CONN-002.3:** When routing selects an unknown or duplicate connection, the system shall reject the invalid configuration before hook-time delivery.

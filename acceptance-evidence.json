@@ -42,14 +42,26 @@
         "agentscope-vah.3.3.6",
         "agentscope-vah.3.3.7",
         "agentscope-vah.6.1",
+        "agentscope-vah.6.2",
         "agentscope-vah.10.2"
       ]
     },
     {
       "prefix": "CONN",
-      "owners": ["agentscope-vah.7.2", "agentscope-vah.8.2"]
+      "owners": [
+        "agentscope-vah.6.2",
+        "agentscope-vah.7.2",
+        "agentscope-vah.8.2"
+      ]
     },
-    { "prefix": "RET", "owners": ["agentscope-vah.4.2", "agentscope-vah.8.5"] }
+    {
+      "prefix": "RET",
+      "owners": [
+        "agentscope-vah.4.2",
+        "agentscope-vah.6.4",
+        "agentscope-vah.8.5"
+      ]
+    }
   ],
   "evidence": [
     {
@@ -79,7 +91,39 @@
       "id": "test:core-redaction-pipeline",
       "kind": "automated-test",
       "path": "packages/core/src/redaction/pipeline.test.ts",
-      "criteria": ["AC-GOV-001.4"]
+      "criteria": [
+        "AC-GOV-001.1",
+        "AC-GOV-001.2",
+        "AC-GOV-001.4",
+        "AC-GOV-001.5"
+      ]
+    },
+    {
+      "id": "test:core-git-context",
+      "kind": "automated-test",
+      "path": "packages/core/src/invocation/git-context.test.ts",
+      "criteria": ["AC-CAP-002.1", "AC-CAP-002.2", "AC-CAP-002.7"]
+    },
+    {
+      "id": "test:core-invocation-snapshot",
+      "kind": "automated-test",
+      "path": "packages/core/src/invocation/snapshot.test.ts",
+      "criteria": [
+        "AC-CAP-001.3",
+        "AC-CAP-002.1",
+        "AC-CAP-002.2",
+        "AC-CAP-002.7",
+        "AC-GOV-001.1",
+        "AC-GOV-001.2",
+        "AC-GOV-001.3",
+        "AC-GOV-001.5"
+      ]
+    },
+    {
+      "id": "test:core-operational-state",
+      "kind": "automated-test",
+      "path": "packages/core/src/configuration/operational-state.test.ts",
+      "criteria": ["AC-GOV-002.1", "AC-GOV-002.2"]
     },
     {
       "id": "test:reporter-built-brand-boundary",
@@ -92,6 +136,29 @@
       "kind": "automated-test",
       "path": "packages/destinations/core/src/testing.test.ts",
       "criteria": ["AC-REP-003.3"]
+    },
+    {
+      "id": "test:core-explicit-routing",
+      "kind": "automated-test",
+      "path": "packages/core/src/routing/delivery.test.ts",
+      "criteria": [
+        "AC-CAP-001.1",
+        "AC-CAP-001.2",
+        "AC-CONN-002.1",
+        "AC-CONN-002.2",
+        "AC-REP-001.1",
+        "AC-REP-001.2",
+        "AC-REP-001.3",
+        "AC-REP-003.1",
+        "AC-REP-003.2",
+        "AC-REP-003.4"
+      ]
+    },
+    {
+      "id": "test:core-routing-configuration",
+      "kind": "automated-test",
+      "path": "packages/core/src/configuration/schema.test.ts",
+      "criteria": ["AC-CONN-002.3"]
     }
   ]
 }

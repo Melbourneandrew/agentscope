@@ -30,6 +30,7 @@ import type {
   FieldUnavailableCandidate,
   CaptureInvocationContext,
   HarnessCaptureFactory,
+  OpenInferenceOperationKind,
   SemanticFieldCandidate,
   SemanticValueCandidate,
   TimingCandidate,
@@ -41,7 +42,7 @@ import {
   clonePlainData,
   deepFreezePrivate,
 } from "./plain-data.js";
-import { REDACTION_POLICY_IDENTITIES } from "../redaction/policy.js";
+import { validateResolvedRedactionPolicy } from "../redaction/policy.js";
 const uint64 = /^(?:0|[1-9]\d{0,19})$/u;
 const identifier = /^[a-z][a-z\d]*(?:[._:/-][a-z\d]+)*$/u;
 const firstPartyHarnesses: ReadonlySet<string> = new Set(
@@ -84,6 +85,20 @@ const forbiddenCanonicalFields = new Set([
   "openinference.span.kind",
   "service.name",
   "service.version",
+  "agentscope.workspace.directory",
+  "agentscope.git.worktree",
+  "agentscope.git.repository_root",
+  "vcs.ref.head.name",
+  "vcs.ref.head.revision",
+  "vcs.ref.type",
+]);
+const coreContextFields = new Set([
+  "agentscope.workspace.directory",
+  "agentscope.git.worktree",
+  "agentscope.git.repository_root",
+  "vcs.ref.head.name",
+  "vcs.ref.head.revision",
+  "vcs.ref.type",
 ]);
 const openInferenceKinds: ReadonlySet<string> = new Set(
   OPENINFERENCE_SPAN_KINDS,
@@ -392,7 +407,7 @@ const validateOperation = (value: CapturedValueCandidate) => {
     ["parentLogicalKey", "timing", "feedbackTransport"],
   );
   const logicalKey = boundedString(record.logicalKey);
-  const kind = boundedString(record.kind);
+  const kind = boundedString(record.kind) as OpenInferenceOperationKind;
   const name = boundedString(record.name);
   if (!openInferenceKinds.has(kind)) throw new CapturedTraceError();
   const fields = validateFields(record.fields, kind, new Set(["span"]));
@@ -540,6 +555,7 @@ const validateBoundary = (value: CapturedValueCandidate) => {
     "boundaryId",
     "generation",
     "positionKind",
+    "startPosition",
     "exclusiveEndPosition",
   ]);
   const boundaryKind = boundedString(record.boundaryKind);
@@ -577,13 +593,17 @@ const validateBoundary = (value: CapturedValueCandidate) => {
     }
     throw new CapturedTraceError();
   })();
+  const startPosition = safeInteger(record.startPosition);
+  const exclusiveEndPosition = safeInteger(record.exclusiveEndPosition);
+  if (exclusiveEndPosition <= startPosition) throw new CapturedTraceError();
   return {
     session: validatedSession,
     boundaryKind,
     boundaryId: boundedString(record.boundaryId),
     generation: safeInteger(record.generation),
     positionKind,
-    exclusiveEndPosition: safeInteger(record.exclusiveEndPosition),
+    startPosition,
+    exclusiveEndPosition,
   };
 };
 
@@ -609,21 +629,97 @@ const validateSnapshot = (
     !identifier.test(policyIdentity)
   )
     throw new CapturedTraceError();
-  const policy = exactKeys(record.redactionPolicy, ["version", "mode"]);
-  if (
-    policy.version !== 1 ||
-    (policy.mode !== "baseline" && policy.mode !== "strict") ||
-    policyIdentity !== REDACTION_POLICY_IDENTITIES[policy.mode]
-  )
-    throw new CapturedTraceError();
+  const policy = validateResolvedRedactionPolicy(record.redactionPolicy);
+  if (policyIdentity !== policy.identity) throw new CapturedTraceError();
   return {
     configurationIdentity,
     policyIdentity,
-    redactionPolicy: {
-      version: 1 as const,
-      mode: policy.mode,
-    },
+    redactionPolicy: policy,
   };
+};
+
+const validateCoreContext = (value: CapturedValueCandidate, kind: string) => {
+  const record = exactKeys(value, ["fields", "unavailable"]);
+  const fields = dataArray(record.fields, coreContextFields.size).map(
+    (entry) => {
+      const fieldRecord = exactKeys(entry, ["field", "value", "provenance"]);
+      const field = boundedString(fieldRecord.field);
+      const descriptor = getAcceptedSemanticAttributeDescriptor(field);
+      const provenance = exactKeys(fieldRecord.provenance, ["field", "source"]);
+      const source = boundedString(provenance.source);
+      const sourceIsValid =
+        field === "agentscope.workspace.directory"
+          ? new Set(["hook-payload", "native-artifact", "process"]).has(source)
+          : source === "git";
+      if (
+        !coreContextFields.has(field) ||
+        descriptor === undefined ||
+        !descriptor.locations.some((location) =>
+          new Set(["resource", "root-span"]).has(location),
+        ) ||
+        (descriptor.openInferenceKinds !== undefined &&
+          !descriptor.openInferenceKinds.includes(kind)) ||
+        provenance.field !== field ||
+        !sourceIsValid
+      )
+        throw new CapturedTraceError();
+      validateSemanticValue(fieldRecord.value, descriptor);
+      return {
+        field,
+        value: fieldRecord.value as SemanticValueCandidate,
+        provenance: {
+          field,
+          source: source as
+            "git" | "hook-payload" | "native-artifact" | "process",
+        },
+      };
+    },
+  );
+  const present = new Set(fields.map(({ field }) => field));
+  if (present.size !== fields.length) throw new CapturedTraceError();
+  const unavailable = dataArray(record.unavailable, coreContextFields.size).map(
+    (entry) => {
+      const item = exactKeys(entry, ["field", "source", "state", "reason"]);
+      const field = boundedString(item.field);
+      const source = boundedString(item.source);
+      const state = boundedString(item.state);
+      const reason = boundedString(item.reason);
+      const sourceIsValid =
+        field === "agentscope.workspace.directory"
+          ? new Set(["hook-payload", "native-artifact", "process"]).has(source)
+          : source === "git";
+      if (
+        !coreContextFields.has(field) ||
+        present.has(field) ||
+        !sourceIsValid ||
+        !(
+          (state === "unavailable" && reason === "resolution-failed") ||
+          (field === "vcs.ref.head.name" &&
+            source === "git" &&
+            state === "not-applicable" &&
+            reason === "detached-head")
+        )
+      )
+        throw new CapturedTraceError();
+      return {
+        field,
+        source: source as
+          "git" | "hook-payload" | "native-artifact" | "process",
+        state,
+        reason,
+      } as const;
+    },
+  );
+  const accounted = new Set([
+    ...fields.map(({ field }) => field),
+    ...unavailable.map(({ field }) => field),
+  ]);
+  if (
+    accounted.size !== coreContextFields.size ||
+    [...coreContextFields].some((field) => !accounted.has(field))
+  )
+    throw new CapturedTraceError();
+  return { fields, unavailable };
 };
 
 const validateInvocation = (value: CapturedValueCandidate) => {
@@ -633,6 +729,7 @@ const validateInvocation = (value: CapturedValueCandidate) => {
     "snapshot",
     "hookObservedUnixNano",
     "operationIdScope",
+    "context",
   ]);
   const harnessRegistryId = boundedString(record.harnessRegistryId);
   if (!firstPartyHarnesses.has(harnessRegistryId))
@@ -694,6 +791,7 @@ const validateInvocation = (value: CapturedValueCandidate) => {
     snapshot: validateSnapshot(record.snapshot),
     hookObservedUnixNano: validateTimestamp(record.hookObservedUnixNano),
     operationIdScope: operationIdScope as "parent-scoped" | "session-global",
+    context: validateCoreContext(record.context, "AGENT"),
   };
 };
 

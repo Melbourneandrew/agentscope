@@ -139,7 +139,7 @@ const configured = () => {
     reference,
     snapshot: parseAgentscopeConfiguration(
       {
-        configurationVersion: 1,
+        configurationVersion: 2,
         generation: 0,
         destinations: {
           "@agentscope/destination-example": {
@@ -158,7 +158,11 @@ const configured = () => {
             ],
           },
         },
-        routing: { version: 1, selectedConnectionIds: [connectionId] },
+        routing: {
+          version: 1,
+          selectedConnectionIds: [connectionId],
+          hookDeadlineMilliseconds: 2_000,
+        },
         policy: { version: 1, reference: "policy-v1" },
       },
       destinations,
@@ -169,10 +173,14 @@ const configured = () => {
 const emptySnapshot = (generation: number) =>
   parseAgentscopeConfiguration(
     {
-      configurationVersion: 1,
+      configurationVersion: 2,
       generation,
       destinations: {},
-      routing: { version: 1, selectedConnectionIds: [] },
+      routing: {
+        version: 1,
+        selectedConnectionIds: [],
+        hookDeadlineMilliseconds: 2_000,
+      },
       policy: { version: 1, reference: "policy-v1" },
     },
     destinations,
@@ -612,7 +620,7 @@ describe("Agentscope Doctor fixed failure states", () => {
 
     const unsupported = parseAgentscopeConfiguration(
       {
-        configurationVersion: 1,
+        configurationVersion: 2,
         generation: 0,
         destinations: {
           "@agentscope/destination-unknown": {
@@ -621,7 +629,11 @@ describe("Agentscope Doctor fixed failure states", () => {
             connections: [],
           },
         },
-        routing: { version: 1, selectedConnectionIds: [] },
+        routing: {
+          version: 1,
+          selectedConnectionIds: [],
+          hookDeadlineMilliseconds: 2_000,
+        },
         policy: { version: 1, reference: "policy-v1" },
       },
       destinations,

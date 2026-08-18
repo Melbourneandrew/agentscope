@@ -11,7 +11,8 @@ Agentscope begins with Langfuse and must grow to additional observability destin
 
 - **Delivery identity:** a stable per-item identity that lets a destination deduplicate repeated delivery when supported; it does not guarantee exactly-once delivery.
 - **Reporter receipt:** a content-free terminal statement about one connection attempt; it is accepted only when returned before the shared hook deadline.
-- **Outcome unknown:** the conservative terminal state used when remote commit may have occurred but cannot be confirmed, including lost acknowledgements and unattributable partial-batch responses.
+- **Outcome unknown:** the conservative connection-attempt state used whenever full-batch acceptance or definite non-commit cannot be established, including lost acknowledgements and every partial-batch response even when individual provider items are attributable.
+- **Connection attempt:** at most one hook-time Reporter invocation for one selected connection and one bounded redacted batch.
 
 ## Requirements
 
@@ -34,6 +35,6 @@ As an Agentscope contributor, I want a stable reporter contract, so that I can a
 As a user, I want each selected destination attempted independently, so that one unavailable destination does not prevent another from receiving the trace.
 
 - **AC-REP-003.1:** When routing selects multiple named connections, the system shall attempt each selected connection within the same absolute hook deadline.
-- **AC-REP-003.2:** When one selected connection reaches a terminal outcome, the system shall record that outcome independently of every other selected connection.
+- **AC-REP-003.2:** When one selected connection reaches a terminal outcome, the system shall record exactly one terminal outcome for that connection independently of every other selected connection.
 - **AC-REP-003.3:** When a connection's acknowledgement is lost after a possible remote commit, the system shall classify the outcome as unknown rather than rejected.
 - **AC-REP-003.4:** When the same logical trace boundary is routed to multiple destinations or regrouped into different transport batches, the system shall preserve the same per-item delivery identity.
