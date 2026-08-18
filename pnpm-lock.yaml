@@ -361,6 +361,19 @@ importers:
         specifier: workspace:*
         version: link:../protocol
 
+  tests/integration:
+    dependencies:
+      zod:
+        specifier: ^4.3.6
+        version: 4.4.3
+    devDependencies:
+      "@types/node":
+        specifier: ^22.15.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
   tests/integration-live: {}
 
 packages:

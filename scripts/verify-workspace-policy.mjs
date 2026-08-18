@@ -61,6 +61,7 @@ const expectedInternalDependencies = new Map([
     ["@agentscope/core", "@agentscope/harnesses-core", "@agentscope/protocol"],
   ]),
   ["@agentscope/integration-live", []],
+  ["@agentscope/integration", []],
 ]);
 
 const packageRoots = [

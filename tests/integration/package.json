@@ -1,0 +1,25 @@
+{
+  "name": "@agentscope/integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src *.mjs --max-warnings=0",
+    "test": "vitest run --config ../../vitest.config.ts",
+    "coverage": "vitest run --config ../../vitest.config.ts --coverage",
+    "clean": "node ../../scripts/clean-workspace.mjs",
+    "prepare:candidate": "pnpm --filter @agentscope/cli verify:artifact && node prepare-cli.mjs",
+    "select": "node select.mjs",
+    "prepack": "node ../../scripts/refuse-private-package.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "evidenceVersion": 1,
+  "harnessId": "fixture-process",
+  "harnessPackage": "@agentscope/harnesses-core",
+  "representativeVersion": "1.0.0",
+  "capabilities": ["model-route-ledger", "process-exit", "telemetry-ledger"]
+}

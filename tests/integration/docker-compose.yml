@@ -1,6 +1,6 @@
 services:
   collector:
-    image: node:22-alpine
+    image: node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
     working_dir: /workspace
     command: ["node", "tests/integration/collector/server.mjs"]
     volumes: ["../..:/workspace:ro"]
@@ -16,7 +16,7 @@ services:
       timeout: 2s
       retries: 15
   integration:
-    image: node:22-alpine
+    image: node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
     working_dir: /workspace
     depends_on:
       collector:
@@ -25,15 +25,8 @@ services:
       CI: "true"
       AGENTSCOPE_COLLECTOR_URL: http://collector:4318
       AGENTSCOPE_HOME: /tmp/.agentscope
-    command:
-      [
-        "sh",
-        "-c",
-        "corepack enable && pnpm install --frozen-lockfile && pnpm test:integration:runner",
-      ]
+      AGENTSCOPE_CANDIDATE_ROOT: /prepared
+    command: ["node", "tests/integration/runner.mjs"]
     volumes:
-      - ../..:/workspace
-      - integration_node_modules:/workspace/node_modules
-
-volumes:
-  integration_node_modules:
+      - ../..:/workspace:ro
+      - ../../artifacts/integration:/prepared:ro

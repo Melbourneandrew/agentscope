@@ -1,0 +1,29 @@
+{
+  "manifestVersion": 1,
+  "manifestIdentity": "sha256-0330780c23775ded5bc6ec8c6f5210563a44716c1b7e69071e00e2eabe9f0583",
+  "requiredRepresentativeIds": ["fixture-process-v1"],
+  "evidence": [
+    {
+      "evidenceId": "fixture-process-v1",
+      "harnessId": "fixture-process",
+      "harnessPackage": "@agentscope/harnesses-core",
+      "representativeVersion": "1.0.0",
+      "descriptorArtifact": {
+        "path": "fixtures/process-harness-evidence.json",
+        "sha256": "ca2b9a23a6844659a39e7d21b87e68f60856efd3be39dd964226b3c211b74512"
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "scenarioId": "fixture-process-smoke",
+      "harnessEvidenceId": "fixture-process-v1",
+      "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+      "modelRoutes": ["openai-responses"],
+      "tags": ["pr", "smoke"],
+      "destinations": ["otlp-ledger"],
+      "resourceClass": "small",
+      "shardWeight": 100
+    }
+  ]
+}
