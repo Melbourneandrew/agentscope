@@ -319,10 +319,9 @@ const serializedOperationalSnapshot = JSON.stringify(
 if (
   lifecycleResult.outcome !== "completed" ||
   lifecycleResult.connections[0]?.outcome !== "accepted" ||
-  lifecycleResult.operationalEvidence.persistence.recorded !== true ||
-  lifecycleResult.operationalEvidence.checkpoints[0]?.advanced !== true ||
-  artifactOperationalSnapshot.checkpoints[0]?.acknowledgedExclusivePosition !==
-    1 ||
+  lifecycleResult.operationalEvidence.persistence.code !== "not-attempted" ||
+  lifecycleResult.operationalEvidence.checkpoints.length !== 0 ||
+  artifactOperationalSnapshot.checkpoints.length !== 0 ||
   serializedOperationalSnapshot.includes("artifact-thread") ||
   serializedOperationalSnapshot.includes(directTrace.delivery.identity) ||
   serializedOperationalSnapshot.includes(directTrace.graph.traceId) ||
@@ -393,7 +392,9 @@ if (
   artifactSourceLoss.outcome !== "completed" ||
   artifactSourceLoss.operationalEvidence.diagnostics[0]?.code !==
     "native-source-loss" ||
-  artifactSourceLoss.operationalEvidence.checkpoints[0]?.code !== "stale"
+  artifactSourceLoss.operationalEvidence.diagnostics[1]?.code !==
+    "checkpoint-unavailable" ||
+  artifactSourceLoss.operationalEvidence.checkpoints.length !== 0
 )
   throw new Error("Core source-loss artifact verification failed.");
 let artifactCheckpointAccessorReads = 0;

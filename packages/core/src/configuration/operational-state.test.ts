@@ -32,6 +32,7 @@ import {
   recordHookOperationalEvidence,
   recordPipelineHealth,
   recordSanitizedDiagnostic,
+  resolveCaptureCheckpointForCore,
 } from "./operational-state.js";
 import { createConfigurationProcessIdentity } from "./transaction.js";
 
@@ -517,6 +518,70 @@ describe("capture checkpoint loss recovery", () => {
   });
 });
 
+describe("non-hook checkpoint resolution", () => {
+  it("resolves retained, replay, source-loss, and unavailable state exactly", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      now: () => 1_000,
+      randomId: () => "1".repeat(32),
+    });
+    const request = (overrides: Record<string, unknown> = {}) => ({
+      adapterId: "@agentscope/harness-codex",
+      sourceIdentityDigest: hex,
+      nativeIdentityKind: "thread" as const,
+      sourceGeneration: 1,
+      positionKind: "event-index" as const,
+      availableStartPosition: 0,
+      connectionIds: [connectionId],
+      ...overrides,
+    });
+    expect(resolveCaptureCheckpointForCore(store, request())).toEqual({
+      disposition: "replay-required",
+      startPosition: 0,
+    });
+    await advanceCaptureCheckpoint(store, {
+      adapterId: "@agentscope/harness-codex",
+      sourceIdentityDigest: hex,
+      nativeIdentityKind: "thread",
+      sourceGeneration: 1,
+      positionKind: "event-index",
+      startPosition: 0,
+      exclusiveEndPosition: 10,
+      configurationGeneration: 1,
+      connectionId,
+    });
+    expect(resolveCaptureCheckpointForCore(store, request())).toEqual({
+      disposition: "retained",
+      startPosition: 10,
+    });
+    expect(
+      resolveCaptureCheckpointForCore(
+        store,
+        request({ availableStartPosition: 11 }),
+      ),
+    ).toEqual({ disposition: "source-loss", startPosition: 11 });
+    expect(
+      resolveCaptureCheckpointForCore(
+        store,
+        request({ connectionIds: [connectionId, secondConnectionId] }),
+      ),
+    ).toEqual({ disposition: "replay-required", startPosition: 0 });
+    expect(
+      resolveCaptureCheckpointForCore(store, request({ sourceGeneration: 2 })),
+    ).toEqual({ disposition: "source-loss", startPosition: 0 });
+    await writeFile(
+      join(home.healthDirectory, "operational-state-v1.json"),
+      "{}\n",
+    );
+    expect(resolveCaptureCheckpointForCore(store, request())).toEqual({
+      disposition: "unavailable",
+      startPosition: 0,
+    });
+  });
+});
+
 describe("atomic hook operational evidence", () => {
   it("records one hook marker, connection markers, diagnostics, and accepted checkpoints in one generation", async () => {
     const home = await homeFixture();
@@ -554,7 +619,9 @@ describe("atomic hook operational evidence", () => {
       checkpoints: [{ acknowledgedExclusivePosition: 10 }],
     });
   });
+});
 
+describe("atomic hook operational evidence validation", () => {
   it("rejects duplicate or incomplete evidence and retains stale checkpoint dispositions", async () => {
     const home = await homeFixture();
     let temporary = 0;
@@ -591,7 +658,15 @@ describe("atomic hook operational evidence", () => {
     });
     await expect(
       recordHookOperationalEvidence(store, {
-        diagnostics: [],
+        diagnostics: [
+          {
+            code: "native-source-loss",
+            severity: "warning",
+            configurationGeneration: 1,
+            destinationType: "@agentscope/destination-langfuse",
+            connectionId,
+          },
+        ],
         health: [hook],
         checkpoints: [
           {
@@ -610,6 +685,39 @@ describe("atomic hook operational evidence", () => {
       }),
     ).resolves.toMatchObject({
       recorded: true,
+      diagnostics: [],
+      checkpoints: [{ advanced: false, code: "stale" }],
+    });
+    await expect(
+      recordHookOperationalEvidence(store, {
+        diagnostics: [
+          {
+            code: "native-source-loss",
+            severity: "warning",
+            configurationGeneration: 1,
+            destinationType: "@agentscope/destination-langfuse",
+            connectionId,
+          },
+        ],
+        health: [hook],
+        checkpoints: [
+          {
+            adapterId: "@agentscope/harness-codex",
+            sourceIdentityDigest: hex,
+            nativeIdentityKind: "thread",
+            sourceGeneration: 1,
+            positionKind: "event-index",
+            startPosition: 0,
+            exclusiveEndPosition: 1,
+            configurationGeneration: 1,
+            destinationType: "@agentscope/destination-langfuse",
+            connectionId,
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      recorded: true,
+      diagnostics: [],
       checkpoints: [{ advanced: false, code: "stale" }],
     });
     await expect(

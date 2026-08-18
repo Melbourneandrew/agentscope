@@ -802,7 +802,7 @@ describe("routing-disabled trace lifecycle", () => {
       operationalEvidence: {
         diagnostics: [{ code: "no-route", severity: "info" }],
         health: [{ scope: "hook", stage: "routing", outcome: "no-route" }],
-        persistence: { recorded: true, code: "recorded" },
+        persistence: { recorded: false, code: "not-attempted" },
         checkpoints: [],
       },
     });
@@ -811,8 +811,8 @@ describe("routing-disabled trace lifecycle", () => {
     expect(
       await inspectOperationalState(value.operationalStateStore),
     ).toMatchObject({
-      diagnostics: [{ code: "no-route" }],
-      health: [{ scope: "hook", outcome: "no-route" }],
+      diagnostics: [],
+      health: [],
       checkpoints: [],
     });
   });
@@ -1001,7 +1001,7 @@ describe("resolved configured trace lifecycle", () => {
 });
 
 describe("resolved checkpoint lifecycle evidence", () => {
-  it("returns and atomically retains health while advancing only contiguous accepted boundaries", async () => {
+  it("returns bounded evidence without hook-path checkpoint I/O", async () => {
     const value = await fixture(BUILTIN_REDACTION_POLICY_REFERENCES.baseline);
     const selectedStarts: number[] = [];
     const run = (exclusiveEndPosition: number) =>
@@ -1058,23 +1058,16 @@ describe("resolved checkpoint lifecycle evidence", () => {
             receipt: "accepted",
           },
         ],
-        persistence: { recorded: true, code: "recorded" },
-        checkpoints: [{ connectionId, advanced: true, code: "advanced" }],
+        persistence: { recorded: false, code: "not-attempted" },
+        checkpoints: [],
       },
     });
     const second = await run(2);
-    expect(second.operationalEvidence.checkpoints).toMatchObject([
-      { advanced: true, acknowledgedExclusivePosition: 2 },
-    ]);
-    expect(selectedStarts).toEqual([0, 1]);
+    expect(second.operationalEvidence.checkpoints).toEqual([]);
+    expect(selectedStarts).toEqual([0, 0]);
     const snapshot = await inspectOperationalState(value.operationalStateStore);
-    expect(snapshot.health).toMatchObject([
-      { scope: "hook", outcome: "accepted" },
-      { scope: "connection", connectionId, outcome: "accepted" },
-    ]);
-    expect(snapshot.checkpoints).toMatchObject([
-      { acknowledgedExclusivePosition: 2 },
-    ]);
+    expect(snapshot.health).toEqual([]);
+    expect(snapshot.checkpoints).toEqual([]);
     expect(JSON.stringify(snapshot)).not.toContain("thread-1");
 
     const boundaryScoped = await runResolvedTraceLifecycle({
@@ -1106,7 +1099,7 @@ describe("resolved checkpoint lifecycle evidence", () => {
 });
 
 describe("resolved checkpoint restart authority", () => {
-  it("selects replay, retained, source-loss, and unavailable windows", async () => {
+  it("selects conservative unavailable or source-loss windows without state I/O", async () => {
     const value = await fixture(BUILTIN_REDACTION_POLICY_REFERENCES.baseline);
     const observed: Array<Readonly<{ disposition: string; start: number }>> =
       [];
@@ -1167,8 +1160,9 @@ describe("resolved checkpoint restart authority", () => {
       operationalEvidence: {
         diagnostics: [
           { code: "native-source-loss", connectionId, severity: "warning" },
+          { code: "checkpoint-unavailable", connectionId, severity: "warning" },
         ],
-        checkpoints: [{ connectionId, advanced: false, code: "stale" }],
+        checkpoints: [],
       },
     });
     await expect(
@@ -1180,8 +1174,8 @@ describe("resolved checkpoint restart authority", () => {
       ),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(observed).toEqual([
-      { disposition: "replay-required", start: 5 },
-      { disposition: "retained", start: 6 },
+      { disposition: "source-loss", start: 5 },
+      { disposition: "unavailable", start: 0 },
       { disposition: "source-loss", start: 10 },
       { disposition: "source-loss", start: 10 },
     ]);
@@ -1198,7 +1192,7 @@ describe("resolved checkpoint restart authority", () => {
       runWithOperationalStore(value, expiredStore, undefined, adapter(1, 20)),
     ).resolves.toMatchObject({ outcome: "completed" });
     expect(observed.at(-1)).toEqual({
-      disposition: "replay-required",
+      disposition: "source-loss",
       start: 20,
     });
 
@@ -1217,7 +1211,7 @@ describe("resolved checkpoint restart authority", () => {
         adapter(0, 7),
       ),
     ).resolves.toMatchObject({ outcome: "completed" });
-    expect(observed.at(-1)).toEqual({ disposition: "unavailable", start: 7 });
+    expect(observed.at(-1)).toEqual({ disposition: "source-loss", start: 7 });
   });
 });
 
@@ -1277,7 +1271,7 @@ describe("checkpoint source-loss persistence fallback", () => {
             severity: "warning",
           },
         ],
-        persistence: { recorded: false, code: "unavailable" },
+        persistence: { recorded: false, code: "not-attempted" },
       },
     });
   });
@@ -1345,7 +1339,7 @@ describe("checkpoint source-loss across routing membership", () => {
         positionKind: boundary.positionKind,
         availableStartPosition: 0,
       });
-      expect(resume).toEqual({ disposition: "source-loss", startPosition: 0 });
+      expect(resume).toEqual({ disposition: "unavailable", startPosition: 0 });
       return factory.capture({
         ...input,
         captureBoundary: { ...boundary, generation: 1 },
@@ -1362,17 +1356,11 @@ describe("checkpoint source-loss across routing membership", () => {
       operationalEvidence: {
         diagnostics: [
           {
-            code: "native-source-loss",
+            code: "checkpoint-unavailable",
             connectionId: secondConnectionId,
           },
         ],
-        checkpoints: [
-          {
-            connectionId: secondConnectionId,
-            advanced: true,
-            code: "advanced",
-          },
-        ],
+        checkpoints: [],
       },
     });
   });
@@ -1648,7 +1636,7 @@ describe("maximum fanout operational evidence", () => {
     expect(result).toMatchObject({
       outcome: "completed",
       operationalEvidence: {
-        persistence: { recorded: true, code: "recorded" },
+        persistence: { recorded: false, code: "not-attempted" },
         checkpoints: [],
       },
     });
@@ -1665,8 +1653,8 @@ describe("maximum fanout operational evidence", () => {
       ),
     ).toHaveLength(32);
     const stored = await inspectOperationalState(value.operationalStateStore);
-    expect(stored.diagnostics).toHaveLength(64);
-    expect(stored.health).toHaveLength(33);
+    expect(stored.diagnostics).toEqual([]);
+    expect(stored.health).toEqual([]);
   });
 });
 
@@ -1700,7 +1688,7 @@ describe("resolved operational persistence boundaries", () => {
         diagnostics: [
           { code: "checkpoint-unavailable", connectionId, severity: "warning" },
         ],
-        persistence: { recorded: false, code: "unavailable" },
+        persistence: { recorded: false, code: "not-attempted" },
       },
     });
 
@@ -1723,7 +1711,7 @@ describe("resolved operational persistence boundaries", () => {
         diagnostics: [
           { code: "checkpoint-unavailable", connectionId, severity: "warning" },
         ],
-        persistence: { recorded: false, code: "unavailable" },
+        persistence: { recorded: false, code: "not-attempted" },
       },
     });
   });
@@ -1802,7 +1790,7 @@ describe("operational persistence deadline fencing", () => {
         diagnostics: [
           { code: "checkpoint-unavailable", connectionId, severity: "warning" },
         ],
-        persistence: { recorded: false, code: "unavailable" },
+        persistence: { recorded: false, code: "not-attempted" },
       },
     });
     await expect(

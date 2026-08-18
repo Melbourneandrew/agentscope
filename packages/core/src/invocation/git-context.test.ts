@@ -165,6 +165,67 @@ describe("snapshot-bound Git context failure closure", () => {
     });
     expect(missing.fields).toEqual([]);
     expect(missing.unavailable).toHaveLength(6);
+    const absent = await resolveGitContextForTesting({
+      candidates: [
+        { path: join(value.repository, "still-missing"), source: "process" },
+      ],
+      gitExecutable: "/usr/bin/git",
+      remainingMilliseconds: 1_000,
+      probe: () => Promise.reject(new Error("unreachable")),
+    });
+    expect(absent.fields).toEqual([]);
+    expect(absent.unavailable).toHaveLength(6);
+  });
+});
+
+describe("snapshot-bound path worker failure closure", () => {
+  it("contains path-worker failure before and after Git observation", async () => {
+    const value = await fixture();
+    const failed = await resolveGitContextForTesting({
+      candidates: [{ path: value.workspace, source: "process" }],
+      gitExecutable: "/usr/bin/git",
+      remainingMilliseconds: 1_000,
+      probe: () => Promise.reject(new Error("unreachable")),
+      inspectPaths: () => Promise.reject(new Error("worker failed")),
+    });
+    expect(failed.fields).toEqual([]);
+    expect(failed.unavailable).toHaveLength(6);
+    let inspections = 0;
+    await expect(
+      resolveGitContextForTesting({
+        candidates: [{ path: value.workspace, source: "process" }],
+        gitExecutable: "/usr/bin/git",
+        remainingMilliseconds: 1_000,
+        probe: () =>
+          Promise.resolve({
+            worktree: value.repository,
+            commonDirectory: value.commonDirectory,
+            revision: "a".repeat(40),
+            head: "main",
+          }),
+        inspectPaths: () => {
+          inspections += 1;
+          return Promise.resolve(
+            inspections === 1
+              ? { kind: "workspace", index: 0, path: value.workspace }
+              : null,
+          );
+        },
+      }),
+    ).resolves.toMatchObject({ fields: [{ value: value.workspace }] });
+    for (const inspected of [
+      { kind: "workspace" as const, index: 99, path: value.workspace },
+      { kind: "workspace" as const, index: 0, path: "x".repeat(4_097) },
+    ])
+      await expect(
+        resolveGitContextForTesting({
+          candidates: [{ path: value.workspace, source: "process" }],
+          gitExecutable: "/usr/bin/git",
+          remainingMilliseconds: 1_000,
+          probe: () => Promise.reject(new Error("unreachable")),
+          inspectPaths: () => Promise.resolve(inspected),
+        }),
+      ).resolves.toMatchObject({ fields: [] });
   });
 });
 

@@ -7,6 +7,11 @@ import type {
   CoreContextField,
   CoreContextUnavailable,
 } from "../capture/types.js";
+import {
+  inspectPathsInChildForCore,
+  type PathInspectionRequest,
+  type PathInspectionResponse,
+} from "./path-inspection.js";
 
 const execFile = promisify(nodeExecFile);
 const MAXIMUM_PATH_CODE_UNITS = 4_096;
@@ -43,6 +48,12 @@ type GitCommandExecutor = (
   arguments_: readonly string[],
   options: Readonly<Record<string, unknown>>,
 ) => Promise<Readonly<{ stdout: string }>>;
+
+type PathInspector = (
+  request: PathInspectionRequest,
+  timeoutMilliseconds: number,
+  signal?: AbortSignal,
+) => Promise<PathInspectionResponse>;
 
 const unavailable = (
   field: string,
@@ -198,30 +209,53 @@ const runGit: GitProbe = (executable, workspace, timeoutMilliseconds, signal) =>
     executeGit,
   );
 
+const inspectPathsInProcess: PathInspector = async (request) => {
+  if (request.kind === "workspace") {
+    for (let index = 0; index < request.paths.length; index += 1) {
+      try {
+        const path = await nodeRealpath(request.paths[index]!);
+        const information = await nodeStat(path);
+        if (information.isDirectory())
+          return Object.freeze({ kind: "workspace", index, path });
+      } catch {
+        // Try the next owned candidate.
+      }
+    }
+    return null;
+  }
+  return Object.freeze({
+    kind: "canonicalize",
+    worktree: await nodeRealpath(request.worktree),
+    repositoryRoot: await nodeRealpath(dirname(request.commonDirectory)),
+  });
+};
+
 const resolveWorkspace = async (
   candidates: readonly WorkspaceCandidate[],
+  timeoutMilliseconds: number,
+  signal: AbortSignal | undefined,
+  inspectPaths: PathInspector,
 ): Promise<Readonly<{
   path: string;
   source: WorkspaceCandidate["source"];
 }> | null> => {
-  for (const candidate of candidates) {
-    if (
-      typeof candidate.path !== "string" ||
-      candidate.path.length === 0 ||
-      candidate.path.length > MAXIMUM_PATH_CODE_UNITS ||
-      !isAbsolute(candidate.path)
-    )
-      continue;
-    try {
-      const path = await nodeRealpath(candidate.path);
-      const information = await nodeStat(path);
-      if (information.isDirectory())
-        return Object.freeze({ path, source: candidate.source });
-    } catch {
-      // Try the next owned candidate.
-    }
-  }
-  return null;
+  const validCandidates = candidates.filter(
+    (candidate) =>
+      typeof candidate.path === "string" &&
+      candidate.path.length > 0 &&
+      candidate.path.length <= MAXIMUM_PATH_CODE_UNITS &&
+      isAbsolute(candidate.path),
+  );
+  if (validCandidates.length === 0) return null;
+  const inspected = await inspectPaths(
+    { kind: "workspace", paths: validCandidates.map(({ path }) => path) },
+    timeoutMilliseconds,
+    signal,
+  );
+  if (inspected === null || inspected.kind !== "workspace") return null;
+  const selected = validCandidates[inspected.index];
+  if (!selected || inspected.path.length > MAXIMUM_PATH_CODE_UNITS) return null;
+  return Object.freeze({ path: inspected.path, source: selected.source });
 };
 
 const resolveGitContext = async (
@@ -231,9 +265,26 @@ const resolveGitContext = async (
     remainingMilliseconds: number;
     signal?: AbortSignal;
     probe: GitProbe;
+    inspectPaths: PathInspector;
   }>,
 ): Promise<GitContextSnapshot> => {
-  const workspace = await resolveWorkspace(input.candidates);
+  const startedAt = performance.now();
+  const remaining = (): number =>
+    Math.max(
+      0,
+      Math.floor(input.remainingMilliseconds - (performance.now() - startedAt)),
+    );
+  let workspace;
+  try {
+    workspace = await resolveWorkspace(
+      input.candidates,
+      Math.min(remaining(), MAXIMUM_GIT_STAGE_MILLISECONDS),
+      input.signal,
+      input.inspectPaths,
+    );
+  } catch {
+    workspace = null;
+  }
   if (workspace === null)
     return Object.freeze({
       fields: Object.freeze([]),
@@ -250,18 +301,28 @@ const resolveGitContext = async (
   try {
     if (
       !isAbsolute(input.gitExecutable) ||
-      input.remainingMilliseconds <= 0 ||
+      remaining() <= 0 ||
       input.signal?.aborted === true
     )
       throw new Error("core.git.unavailable");
     const result = await input.probe(
       input.gitExecutable,
       workspace.path,
-      Math.min(input.remainingMilliseconds, MAXIMUM_GIT_STAGE_MILLISECONDS),
+      Math.min(remaining(), MAXIMUM_GIT_STAGE_MILLISECONDS),
       input.signal,
     );
-    const worktree = await nodeRealpath(result.worktree);
-    const repositoryRoot = await nodeRealpath(dirname(result.commonDirectory));
+    const canonical = await input.inspectPaths(
+      {
+        kind: "canonicalize",
+        worktree: result.worktree,
+        commonDirectory: result.commonDirectory,
+      },
+      Math.min(remaining(), MAXIMUM_GIT_STAGE_MILLISECONDS),
+      input.signal,
+    );
+    if (canonical === null || canonical.kind !== "canonicalize")
+      throw new Error("core.git.invalid");
+    const { worktree, repositoryRoot } = canonical;
     const workspaceRelative = relative(worktree, workspace.path);
     const belongsToWorktree =
       workspaceRelative === "" ||
@@ -319,7 +380,11 @@ export const resolveGitContextForCore = (
     signal?: AbortSignal;
   }>,
 ): Promise<GitContextSnapshot> =>
-  resolveGitContext({ ...input, probe: runGit });
+  resolveGitContext({
+    ...input,
+    probe: runGit,
+    inspectPaths: inspectPathsInChildForCore,
+  });
 
 export const resolveGitContextForTesting = (
   input: Readonly<{
@@ -328,8 +393,13 @@ export const resolveGitContextForTesting = (
     remainingMilliseconds: number;
     signal?: AbortSignal;
     probe: GitProbe;
+    inspectPaths?: PathInspector;
   }>,
-): Promise<GitContextSnapshot> => resolveGitContext(input);
+): Promise<GitContextSnapshot> =>
+  resolveGitContext({
+    ...input,
+    inspectPaths: input.inspectPaths ?? inspectPathsInProcess,
+  });
 
 export const probeGitForTesting = (
   input: Readonly<{
