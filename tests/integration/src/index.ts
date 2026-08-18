@@ -16,3 +16,13 @@ export type {
   CandidateEvidence,
   PrepareCandidateInput,
 } from "./artifacts.js";
+export {
+  createIsolationPlan,
+  executeIsolationPlan,
+  SCENARIO_TMPFS_MOUNTS,
+} from "./isolation.js";
+export type {
+  IsolationDriver,
+  IsolationEvidence,
+  IsolationPlan,
+} from "./isolation.js";
