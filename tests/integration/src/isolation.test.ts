@@ -63,12 +63,20 @@ const driver = () => {
   });
   const implementation: IsolationDriver = {
     buildImage,
+    buildMockServerImage: vi.fn(() => {
+      calls.push("build-mockserver");
+      return Promise.resolve(`sha256-${"6".repeat(64)}`);
+    }),
     createNetwork: vi.fn(() => {
       calls.push("network");
       return Promise.resolve();
     }),
     startCollector: vi.fn(() => {
       calls.push("collector");
+      return Promise.resolve();
+    }),
+    startMockServer: vi.fn(() => {
+      calls.push("mockserver");
       return Promise.resolve();
     }),
     runScenario,
@@ -96,6 +104,7 @@ describe("scenario isolation", () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(first.networkName).not.toBe(second.networkName);
     expect(first.collectorName).not.toBe(second.collectorName);
+    expect(first.mockServerName).not.toBe(second.mockServerName);
     expect(first.scenarioName).not.toBe(second.scenarioName);
     expect(first.tmpfsMounts).toEqual([
       "/home/agentscope",
@@ -119,15 +128,22 @@ describe("scenario isolation", () => {
     expect(evidence.hostMountCount).toBe(0);
     expect(evidence.readOnlyRootFilesystem).toBe(true);
     expect(evidence.builtImageDigest).toBe(`sha256-${"5".repeat(64)}`);
+    expect(evidence.builtMockServerImageDigest).toBe(
+      `sha256-${"6".repeat(64)}`,
+    );
     expect(fixture.calls).toEqual([
       "build",
+      "build-mockserver",
       "network",
       "collector",
+      "mockserver",
       "scenario",
       "container:agentscope-int-0123456789abcdef-scenario",
       "container:agentscope-int-0123456789abcdef-collector",
+      "container:agentscope-int-0123456789abcdef-mockserver",
       "remove-network:agentscope-int-0123456789abcdef-network",
       "image:agentscope-int-0123456789abcdef:candidate",
+      "image:agentscope-int-0123456789abcdef:mockserver",
       "evidence",
     ]);
   });

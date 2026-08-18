@@ -14,6 +14,8 @@ const requiredEnvironment = (name) => {
   return value;
 };
 const endpoint = requiredEnvironment("AGENTSCOPE_COLLECTOR_URL");
+const modelServerEndpoint = requiredEnvironment("AGENTSCOPE_MODEL_SERVER_URL");
+const scenarioId = requiredEnvironment("AGENTSCOPE_SCENARIO_ID");
 const candidateRoot = requiredEnvironment("AGENTSCOPE_CANDIDATE_ROOT");
 const home = requiredEnvironment("HOME");
 const harnessHome = requiredEnvironment("HARNESS_HOME");
@@ -57,6 +59,9 @@ const selection = JSON.parse(
 const manifest = JSON.parse(
   readFileSync("/opt/agentscope/capability-manifest.json", "utf8"),
 );
+const modelRoutes = JSON.parse(
+  readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
+);
 const knownScenarios = new Set(
   manifest.scenarios.map(({ scenarioId }) => scenarioId),
 );
@@ -71,6 +76,21 @@ if (
   )
 )
   throw new Error("integration.runner.selection");
+const scenario = manifest.scenarios.find(
+  (candidate) => candidate.scenarioId === scenarioId,
+);
+const routeInventory = new Map(
+  modelRoutes.routes.map((route) => [route.routeId, route]),
+);
+if (
+  modelRoutes.routeFixtureVersion !== 1 ||
+  !Array.isArray(modelRoutes.routeIds) ||
+  !Array.isArray(modelRoutes.routes) ||
+  scenario === undefined ||
+  !selection.scenarioIds.includes(scenarioId) ||
+  scenario.modelRoutes.some((routeId) => !routeInventory.has(routeId))
+)
+  throw new Error("integration.runner.model-routes");
 const directory = join(candidateRoot, "candidates", pointer.bundleIdentity);
 const evidence = JSON.parse(
   readFileSync(join(directory, "evidence.json"), "utf8"),
@@ -126,9 +146,92 @@ for (let attempt = 0; attempt < 30; attempt += 1) {
   await new Promise((resolve) => setTimeout(resolve, 100));
 }
 if (!response?.ok) throw new Error("integration.runner.collector");
+
+let modelStatus;
+for (let attempt = 0; attempt < 60; attempt += 1) {
+  try {
+    modelStatus = await fetch(
+      `${modelServerEndpoint}/mockserver/retrieve?type=ACTIVE_EXPECTATIONS`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    if (modelStatus.ok) break;
+  } catch {
+    // MockServer may still be loading its initialization document.
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
+if (!modelStatus?.ok) throw new Error("integration.runner.model-server");
+
+const ledgerEntries = [];
+for (const routeId of scenario.modelRoutes) {
+  const route = routeInventory.get(routeId);
+  const url = new URL(route.path, modelServerEndpoint);
+  for (const [name, value] of Object.entries(route.query ?? {}))
+    url.searchParams.set(name, value);
+  const body = JSON.stringify(route.requestBody);
+  const routeResponse = await fetch(url, {
+    method: route.method,
+    headers: route.headers,
+    body,
+  });
+  if (
+    routeResponse.status !== 200 ||
+    JSON.stringify(await routeResponse.json()) !==
+      JSON.stringify(route.responseBody)
+  )
+    throw new Error("integration.runner.model-response");
+  ledgerEntries.push({
+    routeId: route.routeId,
+    provider: route.provider,
+    method: route.method,
+    path: route.path,
+    bodyBytes: Buffer.byteLength(body),
+  });
+}
+const unexpectedPath = "/agentscope-unmatched";
+const unmatched = await fetch(`${modelServerEndpoint}${unexpectedPath}`);
+if (unmatched.status !== 404)
+  throw new Error("integration.runner.model-unmatched");
+ledgerEntries.push({
+  routeId: "unmatched",
+  provider: "none",
+  method: "GET",
+  path: unexpectedPath,
+  bodyBytes: 0,
+});
+
+const recordedResponse = await fetch(
+  `${modelServerEndpoint}/mockserver/retrieve?type=REQUESTS`,
+  {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  },
+);
+const recordedRequests = await recordedResponse.json();
+const observed = recordedRequests.map(({ method, path }) => ({ method, path }));
+const expected = ledgerEntries.map(({ method, path }) => ({ method, path }));
+if (
+  !recordedResponse.ok ||
+  JSON.stringify(observed) !== JSON.stringify(expected)
+)
+  throw new Error("integration.runner.model-recording");
+
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
   throw new Error("integration.runner.expected-failure");
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
   await new Promise(() => setInterval(() => {}, 1_000));
 writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
+const modelLedger = {
+  ledgerVersion: 1,
+  scenarioId,
+  entries: ledgerEntries,
+};
+console.log(
+  `AGENTSCOPE_MODEL_LEDGER=${Buffer.from(JSON.stringify(modelLedger)).toString("base64url")}`,
+);
 console.log("Integration scenario passed with public egress denied.");

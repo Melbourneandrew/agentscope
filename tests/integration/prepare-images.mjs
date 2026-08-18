@@ -26,10 +26,10 @@ const scenarios = new Map(
 );
 const images = [
   ...new Set(
-    selection.scenarioIds.map((scenarioId) => {
+    selection.scenarioIds.flatMap((scenarioId) => {
       const scenario = scenarios.get(scenarioId);
       if (!scenario) throw new Error("integration.images.selection");
-      return scenario.image;
+      return [scenario.image, scenario.mockServerImage];
     }),
   ),
 ].sort();

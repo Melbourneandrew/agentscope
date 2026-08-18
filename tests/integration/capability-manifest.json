@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-0330780c23775ded5bc6ec8c6f5210563a44716c1b7e69071e00e2eabe9f0583",
+  "manifestIdentity": "sha256-8fcbe1324db02b857431810c62ffc00f5d952d0a185a8db34c05c70472e9e435",
   "requiredRepresentativeIds": ["fixture-process-v1"],
   "evidence": [
     {
@@ -19,7 +19,13 @@
       "scenarioId": "fixture-process-smoke",
       "harnessEvidenceId": "fixture-process-v1",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
-      "modelRoutes": ["openai-responses"],
+      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "modelRoutes": [
+        "openai-responses",
+        "openai-chat-completions",
+        "anthropic-messages",
+        "gemini-generate-content"
+      ],
       "tags": ["pr", "smoke"],
       "destinations": ["otlp-ledger"],
       "resourceClass": "small",

@@ -43,6 +43,9 @@ const scenarioSchema = z.strictObject({
   scenarioId: id,
   harnessEvidenceId: id,
   image: z.string().regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
+  mockServerImage: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
   modelRoutes: uniqueList(id),
   tags: uniqueList(id),
   destinations: uniqueList(id),

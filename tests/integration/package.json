@@ -13,12 +13,14 @@
     "clean": "node ../../scripts/clean-workspace.mjs",
     "prepare:candidate": "pnpm --filter @agentscope/cli verify:artifact && node prepare-cli.mjs",
     "prepare:images": "node prepare-images.mjs",
+    "prepare:model-routes": "pnpm --filter @agentscope/testkit build && node prepare-model-routes.mjs",
     "select": "node select.mjs",
     "run:scenarios": "node run-scenarios.mjs",
     "verify:isolation": "node verify-isolation.mjs",
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
+    "@agentscope/testkit": "workspace:*",
     "zod": "^4.3.6"
   },
   "devDependencies": {

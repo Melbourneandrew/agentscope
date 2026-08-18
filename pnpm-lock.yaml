@@ -363,6 +363,9 @@ importers:
 
   tests/integration:
     dependencies:
+      "@agentscope/testkit":
+        specifier: workspace:*
+        version: link:../../packages/testkit
       zod:
         specifier: ^4.3.6
         version: 4.4.3
