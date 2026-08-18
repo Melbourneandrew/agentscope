@@ -153,11 +153,11 @@ const fixtureResult = fixtureOutput
   .split("\n")
   .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
 if (!fixtureResult) throw new Error("integration.runner.fixture-result");
+console.log(fixtureResult);
 
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
   throw new Error("integration.runner.expected-failure");
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
   await new Promise(() => setInterval(() => {}, 1_000));
 writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
-console.log(fixtureResult);
 console.log("Integration scenario passed with public egress denied.");

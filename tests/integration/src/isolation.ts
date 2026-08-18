@@ -56,12 +56,15 @@ export interface IsolationEvidence {
 }
 
 export interface IsolationDriver {
-  buildImage(plan: IsolationPlan): Promise<string>;
-  buildMockServerImage(plan: IsolationPlan): Promise<string>;
-  createNetwork(plan: IsolationPlan): Promise<void>;
-  startCollector(plan: IsolationPlan): Promise<void>;
-  startRetrieval(plan: IsolationPlan): Promise<void>;
-  startMockServer(plan: IsolationPlan): Promise<void>;
+  buildImage(plan: IsolationPlan, signal: AbortSignal): Promise<string>;
+  buildMockServerImage(
+    plan: IsolationPlan,
+    signal: AbortSignal,
+  ): Promise<string>;
+  createNetwork(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  startCollector(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  startRetrieval(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  startMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   runScenario(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   recordEvidence(evidence: IsolationEvidence): Promise<void>;
   removeContainer(name: string): Promise<void>;
@@ -147,17 +150,17 @@ export const executeIsolationPlan = async (
   let failure: unknown;
   try {
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
-    imageDigest = await driver.buildImage(plan);
+    imageDigest = await driver.buildImage(plan, signal);
     if (!digest.safeParse(imageDigest).success)
       throw new Error("integration.isolation.image-digest");
-    mockServerImageDigest = await driver.buildMockServerImage(plan);
+    mockServerImageDigest = await driver.buildMockServerImage(plan, signal);
     if (!digest.safeParse(mockServerImageDigest).success)
       throw new Error("integration.isolation.image-digest");
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
-    await driver.createNetwork(plan);
-    await driver.startCollector(plan);
-    await driver.startRetrieval(plan);
-    await driver.startMockServer(plan);
+    await driver.createNetwork(plan, signal);
+    await driver.startCollector(plan, signal);
+    await driver.startRetrieval(plan, signal);
+    await driver.startMockServer(plan, signal);
     await driver.runScenario(plan, signal);
   } catch (error) {
     failure = error;

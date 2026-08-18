@@ -14,6 +14,10 @@ const relativeEvidencePath = z
   .string()
   .regex(/^fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.json$/u)
   .refine((value) => !value.split("/").includes(".."));
+const relativeAdapterPath = z
+  .string()
+  .regex(/^fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
+  .refine((value) => !value.split("/").includes(".."));
 const uniqueList = <T extends z.ZodType<string>>(member: T) =>
   z
     .array(member)
@@ -49,6 +53,10 @@ const scenarioSchema = z.strictObject({
   modelRoutes: uniqueList(id),
   tags: uniqueList(id),
   destinations: uniqueList(id),
+  fixtureAdapter: z.strictObject({
+    path: relativeAdapterPath,
+    sha256: fileDigest,
+  }),
   resourceClass: z.enum(["small", "medium", "large"]),
   shardWeight: z.number().int().min(1).max(100_000),
 });
@@ -177,6 +185,15 @@ export const verifyManifestEvidence = (
       descriptor.data.representativeVersion !== evidence.representativeVersion
     )
       throw new Error("integration.manifest.evidence-contract");
+  }
+  for (const scenario of manifest.scenarios) {
+    const path = evidencePath(integrationRoot, scenario.fixtureAdapter.path);
+    const status = lstatSync(path);
+    if (!status.isFile() || status.isSymbolicLink())
+      throw new Error("integration.manifest.evidence-file");
+    const actual = sha256(readFileSync(path)).slice("sha256-".length);
+    if (actual !== scenario.fixtureAdapter.sha256)
+      throw new Error("integration.manifest.evidence-digest");
   }
 };
 

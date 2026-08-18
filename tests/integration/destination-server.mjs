@@ -7,9 +7,19 @@ if (!scenarioId || (mode !== "ingestion" && mode !== "retrieval"))
 
 const entries = [];
 const traces = new Map();
+const maximumRequestBytes = 1024 * 1024;
 const readBody = async (request) => {
   const chunks = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  let bytes = 0;
+  for await (const chunk of request) {
+    const value = Buffer.from(chunk);
+    bytes += value.byteLength;
+    if (bytes > maximumRequestBytes) {
+      request.resume();
+      return undefined;
+    }
+    chunks.push(value);
+  }
   return Buffer.concat(chunks);
 };
 const sendJson = (response, status, value) => {
@@ -59,6 +69,10 @@ const handleFault = (request, response, body, operation) => {
 
 const ingestion = async (request, response, path) => {
   const body = await readBody(request);
+  if (body === undefined) {
+    sendJson(response, 413, {});
+    return;
+  }
   const operation = path === "/v1/traces" ? "otlp-ingest" : "langfuse-ingest";
   if (handleFault(request, response, body, operation)) return;
   try {
@@ -74,6 +88,10 @@ const ingestion = async (request, response, path) => {
 
 const retrieval = async (request, response, path) => {
   const body = await readBody(request);
+  if (body === undefined) {
+    sendJson(response, 413, {});
+    return;
+  }
   const operation =
     path === "/seed" ? "seed" : path === "/search" ? "search" : "get";
   if (handleFault(request, response, body, operation)) return;

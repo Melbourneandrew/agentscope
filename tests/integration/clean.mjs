@@ -1,9 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import {
+  lstatSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { resolve, sep } from "node:path";
 
 const integrationRoot = import.meta.dirname;
 const artifactsRoot = resolve(integrationRoot, "../../artifacts/integration");
+const expectedRealArtifactsRoot = resolve(
+  realpathSync(resolve(integrationRoot, "../..")),
+  "artifacts/integration",
+);
 const label = "com.agentscope.integration=true";
 const runToken = "[a-f0-9]{16}";
 const resourcePatterns = {
@@ -73,8 +83,18 @@ const directoryBytes = (root) => {
   }
   return bytes;
 };
+const assertOwnedRoot = () => {
+  const status = lstatSync(artifactsRoot);
+  if (
+    !status.isDirectory() ||
+    status.isSymbolicLink() ||
+    realpathSync(artifactsRoot) !== expectedRealArtifactsRoot
+  )
+    throw new Error("integration.cleanup.path");
+};
 const diskTargets = [];
 try {
+  assertOwnedRoot();
   for (const entry of readdirSync(artifactsRoot, { withFileTypes: true })) {
     const target = resolve(artifactsRoot, entry.name);
     if (!target.startsWith(`${artifactsRoot}${sep}`) || entry.isSymbolicLink())
@@ -122,17 +142,31 @@ console.log(
 remove(["container", "rm", "--force"], containers);
 remove(["network", "rm"], networks);
 remove(["image", "rm", "--force"], images);
-for (const target of diskTargets)
+for (const target of diskTargets) {
+  assertOwnedRoot();
+  const status = lstatSync(target.path);
+  const realTarget = realpathSync(target.path);
+  if (
+    status.isSymbolicLink() ||
+    !realTarget.startsWith(`${expectedRealArtifactsRoot}${sep}`)
+  )
+    throw new Error("integration.cleanup.path");
   rmSync(target.path, { force: true, recursive: true });
+}
 for (const directory of Object.keys(ownedDirectories)) {
   const path = resolve(artifactsRoot, directory);
   try {
+    assertOwnedRoot();
+    const status = lstatSync(path);
+    if (!status.isDirectory() || status.isSymbolicLink())
+      throw new Error("integration.cleanup.path");
     if (readdirSync(path).length === 0) rmSync(path, { recursive: true });
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
 }
 try {
+  assertOwnedRoot();
   if (
     lstatSync(artifactsRoot).isDirectory() &&
     readdirSync(artifactsRoot).length === 0

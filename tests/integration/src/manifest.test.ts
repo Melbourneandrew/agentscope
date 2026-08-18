@@ -98,6 +98,23 @@ describe("integration capability manifest", () => {
     }
   });
 
+  it("detects scenario adapter mutation", () => {
+    const original = manifestFixture();
+    const adapterPath = resolve(
+      integrationRoot,
+      original.scenarios[0]!.fixtureAdapter.path,
+    );
+    const bytes = readFileSync(adapterPath);
+    try {
+      writeFileSync(adapterPath, `${bytes.toString("utf8")}\n`);
+      expect(() => {
+        verifyManifestEvidence(original, integrationRoot);
+      }).toThrow("integration.manifest.evidence-digest");
+    } finally {
+      writeFileSync(adapterPath, bytes);
+    }
+  });
+
   it("rejects descriptor evidence that contradicts its manifest binding", () => {
     const original = manifestFixture();
     const evidencePath = resolve(

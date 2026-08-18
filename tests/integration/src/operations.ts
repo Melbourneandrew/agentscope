@@ -16,28 +16,16 @@ const bundleIdentity = z.string().regex(/^sha256-[a-f\d]{64}$/u);
 const modelEntry = z.strictObject({
   routeId: id,
   provider: id,
-  method: z.enum(["GET", "POST"]),
+  method: z.string().regex(/^[A-Z]{3,12}$/u),
   path: requestPath,
   bodyBytes: byteCount,
 });
 const destinationEntry = z.strictObject({
-  operation: z.enum([
-    "otlp-ingest",
-    "langfuse-ingest",
-    "seed",
-    "search",
-    "get",
-  ]),
-  method: z.enum(["GET", "POST"]),
+  operation: id,
+  method: z.string().regex(/^[A-Z]{3,12}$/u),
   path: requestPath,
   bodyBytes: byteCount,
-  outcome: z.enum([
-    "accepted",
-    "auth-rejected",
-    "rate-limited",
-    "unavailable",
-    "malformed-response",
-  ]),
+  outcome: id,
 });
 const lifecycle = z.tuple([
   z.literal("install"),
@@ -48,15 +36,11 @@ const lifecycle = z.tuple([
   z.literal("retrieve"),
   z.literal("uninstall"),
 ]);
-const eventKinds = z.tuple([
-  z.literal("hook"),
-  z.literal("canonical"),
-  z.literal("redaction"),
-  z.literal("git"),
-  z.literal("model"),
-  z.literal("tool"),
-  z.literal("destination"),
-]);
+const eventKinds = z
+  .array(id)
+  .min(1)
+  .max(32)
+  .refine((value) => new Set(value).size === value.length);
 const fixtureResult = z.strictObject({
   evidenceVersion: z.literal(1),
   scenarioId: id,

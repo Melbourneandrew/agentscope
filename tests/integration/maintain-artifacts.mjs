@@ -36,8 +36,19 @@ const directoryBytes = (root) => {
 };
 
 const entries = collections.flatMap((collection) => {
+  try {
+    const rootStatus = lstatSync(artifactsRoot);
+    if (!rootStatus.isDirectory() || rootStatus.isSymbolicLink())
+      throw new Error("integration.operations.artifacts");
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
   const root = resolve(artifactsRoot, collection);
   try {
+    const status = lstatSync(root);
+    if (!status.isDirectory() || status.isSymbolicLink())
+      throw new Error("integration.operations.artifacts");
     return readdirSync(root, { withFileTypes: true }).map((entry) => {
       if (!entry.isDirectory() || entry.isSymbolicLink())
         throw new Error("integration.operations.artifacts");

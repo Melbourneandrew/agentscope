@@ -1,13 +1,16 @@
 import { execFile, execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -41,6 +44,30 @@ const runOnce = () =>
     maxBuffer: 16 * 1024 * 1024,
     timeout: 6 * 60 * 1000,
   });
+const verifySymlinkedRootIsRejected = () => {
+  const victim = mkdtempSync(resolve(tmpdir(), "agentscope-clean-victim-"));
+  const victimRun = resolve(victim, "runs", "0123456789abcdef");
+  mkdirSync(victimRun, { recursive: true });
+  writeFileSync(resolve(victimRun, "sentinel"), "VICTIM\n");
+  symlinkSync(victim, artifactsRoot, "dir");
+  let rejected = false;
+  try {
+    execFileSync(process.execPath, [resolve(integrationRoot, "clean.mjs")], {
+      cwd: workspaceRoot,
+      stdio: "pipe",
+    });
+  } catch {
+    rejected = true;
+  } finally {
+    rmSync(artifactsRoot, { force: true });
+  }
+  if (
+    !rejected ||
+    readFileSync(resolve(victimRun, "sentinel"), "utf8") !== "VICTIM\n"
+  )
+    throw new Error("integration.operations.symlink-root");
+  rmSync(victim, { force: true, recursive: true });
+};
 
 mkdirSync(resolve(workspaceRoot, "artifacts"), { recursive: true });
 writeFileSync(sentinel, "HOST_SENTINEL\n");
@@ -75,6 +102,7 @@ try {
     cwd: workspaceRoot,
     stdio: "inherit",
   });
+  verifySymlinkedRootIsRejected();
   if (readFileSync(sentinel, "utf8") !== "HOST_SENTINEL\n")
     throw new Error("integration.operations.sentinel");
   const resources = [

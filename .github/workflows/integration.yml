@@ -15,8 +15,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare-candidate:
+    name: Prepare immutable candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install immutable workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and prepare candidate once
+        run: |
+          pnpm build
+          pnpm --filter @agentscope/integration prepare:candidate
+      - name: Publish checksum-bound candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-candidate-${{ github.sha }}
+          path: |
+            artifacts/integration/candidates
+            artifacts/integration/current-candidate.json
+          if-no-files-found: error
+          retention-days: 1
   hermetic-platform:
     name: Hermetic shard ${{ matrix.shard.name }} replay ${{ matrix.replay }}
+    needs: prepare-candidate
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
@@ -38,10 +68,13 @@ jobs:
           cache: pnpm
       - name: Install immutable workspace dependencies
         run: pnpm install --frozen-lockfile
-      - name: Build fixture inputs once
-        run: |
-          pnpm build
-          pnpm --filter @agentscope/integration prepare:candidate
+      - name: Build workspace fixture code
+        run: pnpm build
+      - name: Download exact prepared candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: integration-candidate-${{ github.sha }}
+          path: artifacts/integration
       - name: Select deterministic shard
         env:
           AGENTSCOPE_INTEGRATION_SHARD: ${{ matrix.shard.selector }}

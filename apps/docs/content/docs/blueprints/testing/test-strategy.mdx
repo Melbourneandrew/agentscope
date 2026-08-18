@@ -23,8 +23,8 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 ### ADR-003: Make test cleanup owned and inspectable
 
-**Decision:** The test system writes mutable Docker state only to named, AgentScope-prefixed volumes, with explicit size-reporting cleanup commands. It does not use an AgentScope runtime cache to retain traces.
+**Decision:** The test system gives every Docker resource an exact AgentScope-prefixed name and label, keeps scenario homes and worktrees in container-local tmpfs, and writes retained evidence only beneath the fixed repository artifact root. Cleanup reports sizes and accepts only the closed resource-name and artifact-child grammars. It does not use an AgentScope runtime cache to retain traces.
 
 **Context:** Repeated package installs can consume material disk space; cleanup must never risk a user's project, home, or active AgentScope state.
 
-**Consequences:** `pnpm test:integration:clean` reports and removes only named integration volumes, containers, and networks. It never touches a user's home, local harness configuration, project worktree, or production `~/.agentscope` directory.
+**Consequences:** `pnpm test:integration:clean` reports and removes only validated integration containers, networks, images, prepared candidates, build contexts, and run evidence. It rejects symlinked or unexpected artifact paths and never touches a user's home, local harness configuration, project worktree, or production `~/.agentscope` directory.

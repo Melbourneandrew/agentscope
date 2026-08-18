@@ -17,6 +17,7 @@ import {
   executeIsolationPlan,
   mapWithConcurrency,
   sanitizeFixtureResult,
+  verifyManifestEvidence,
   verifyPreparedCandidate,
 } from "./dist/index.js";
 
@@ -28,6 +29,7 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const manifest = compileCapabilityManifest(
   readJson(resolve(integrationRoot, "capability-manifest.json")),
 );
+verifyManifestEvidence(manifest, integrationRoot);
 const selection = readJson(resolve(artifactsRoot, "current-selection.json"));
 const pointer = readJson(resolve(artifactsRoot, "current-candidate.json"));
 const imageEvidence = readJson(resolve(artifactsRoot, "current-images.json"));
@@ -90,11 +92,14 @@ const docker = async (arguments_, options = {}) =>
   execute("docker", arguments_, {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    timeout: scenarioTimeoutMilliseconds,
     ...options,
   });
-const ignoreMissing = async (arguments_) => {
+const dockerWithSignal = (arguments_, signal, options = {}) =>
+  docker(arguments_, { ...options, signal });
+const ignoreMissing = async (arguments_, signal) => {
   try {
-    await docker(arguments_);
+    await docker(arguments_, { signal, timeout: 30_000 });
   } catch (error) {
     const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
     if (!/(?:No such (?:container|image)|network .* not found)/u.test(output))
@@ -128,11 +133,16 @@ const confinementArguments = (plan) => [
   "1000:1000",
   ...tmpfsArguments(plan),
 ];
+const sidecarResourceArguments = ["--pids-limit", "128", "--memory", "512m"];
 
 const stageBuildContext = (plan) => {
   const context = resolve(artifactsRoot, "contexts", plan.runId);
   rmSync(context, { force: true, recursive: true });
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
+  const scenario = manifest.scenarios.find(
+    (entry) => entry.scenarioId === plan.scenarioId,
+  );
+  if (scenario === undefined) throw new Error("integration.isolation.context");
   const sources = [
     ["runner.mjs", resolve(integrationRoot, "runner.mjs")],
     [
@@ -140,6 +150,10 @@ const stageBuildContext = (plan) => {
       resolve(integrationRoot, "destination-server.mjs"),
     ],
     ["platform-fixture.mjs", resolve(integrationRoot, "platform-fixture.mjs")],
+    [
+      "scenario-adapter.mjs",
+      resolve(integrationRoot, scenario.fixtureAdapter.path),
+    ],
     [
       "testkit/platform-fixture.js",
       resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
@@ -180,7 +194,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs destination-server.mjs platform-fixture.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       "USER node",
@@ -204,8 +218,11 @@ const stageBuildContext = (plan) => {
   return context;
 };
 
-const assertContainer = async (plan) => {
-  const { stdout } = await docker(["container", "inspect", plan.scenarioName]);
+const assertContainer = async (plan, signal) => {
+  const { stdout } = await dockerWithSignal(
+    ["container", "inspect", plan.scenarioName],
+    signal,
+  );
   const [container] = JSON.parse(stdout);
   const tmpfs = Object.keys(container?.HostConfig?.Tmpfs ?? {}).sort();
   if (
@@ -219,202 +236,12 @@ const assertContainer = async (plan) => {
 };
 
 const fixtureResults = new Map();
-const preparedImageFor = async (image) => {
-  const prepared = imageEvidence.images.find((entry) => entry.image === image);
-  if (!prepared) throw new Error("integration.isolation.base-image");
-  const { stdout } = await docker([
-    "image",
-    "inspect",
-    "--format",
-    "{{.Id}}",
-    image,
-  ]);
-  if (stdout.trim().replace(":", "-") !== prepared.localImageDigest)
-    throw new Error("integration.isolation.base-image");
-};
-const inspectImage = async (tag) => {
-  const { stdout } = await docker([
-    "image",
-    "inspect",
-    "--format",
-    "{{.Id}}",
-    tag,
-  ]);
-  return stdout.trim().replace(":", "-");
-};
-const buildImage = async (plan) => {
-  await preparedImageFor(plan.baseImage);
-  const context = stageBuildContext(plan);
-  await docker([
-    "build",
-    "--network",
-    "none",
-    "--pull=false",
-    ...labelArguments(plan),
-    "--build-arg",
-    `BASE_IMAGE=${plan.baseImage}`,
-    "--tag",
-    plan.imageTag,
-    context,
-  ]);
-  return inspectImage(plan.imageTag);
-};
-const buildMockServerImage = async (plan) => {
-  await preparedImageFor(plan.mockServerImage);
-  const context = resolve(artifactsRoot, "contexts", plan.runId);
-  await docker([
-    "build",
-    "--network",
-    "none",
-    "--pull=false",
-    ...labelArguments(plan),
-    "--file",
-    resolve(context, "MockServer.Dockerfile"),
-    "--build-arg",
-    `MOCKSERVER_IMAGE=${plan.mockServerImage}`,
-    "--tag",
-    plan.mockServerImageTag,
-    context,
-  ]);
-  return inspectImage(plan.mockServerImageTag);
-};
-const createNetwork = async (plan) => {
-  await docker([
-    "network",
-    "create",
-    "--internal",
-    ...labelArguments(plan),
-    plan.networkName,
-  ]);
-};
-const startCollector = async (plan) => {
-  await docker([
-    "create",
-    "--name",
-    plan.collectorName,
-    ...labelArguments(plan),
-    "--network",
-    plan.networkName,
-    "--network-alias",
-    "collector",
-    "--read-only",
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges",
-    "--user",
-    "1000:1000",
-    "--tmpfs",
-    "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
-    "--env",
-    `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-    plan.imageTag,
-    "node",
-    "/opt/agentscope/destination-server.mjs",
-    "ingestion",
-  ]);
-  await docker(["start", plan.collectorName]);
-};
-const startRetrieval = async (plan) => {
-  await docker([
-    "create",
-    "--name",
-    plan.retrievalName,
-    ...labelArguments(plan),
-    "--network",
-    plan.networkName,
-    "--network-alias",
-    "retrieval",
-    "--read-only",
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges",
-    "--user",
-    "1000:1000",
-    "--tmpfs",
-    "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
-    "--env",
-    `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-    plan.imageTag,
-    "node",
-    "/opt/agentscope/destination-server.mjs",
-    "retrieval",
-  ]);
-  await docker(["start", plan.retrievalName]);
-};
-const startMockServer = async (plan) => {
-  await docker([
-    "create",
-    "--name",
-    plan.mockServerName,
-    ...labelArguments(plan),
-    "--network",
-    plan.networkName,
-    "--network-alias",
-    "mockserver",
-    "--read-only",
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges",
-    "--tmpfs",
-    "/tmp:rw,nosuid,nodev,size=64m",
-    "--env",
-    "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
-    "--env",
-    "MOCKSERVER_LOG_LEVEL=WARN",
-    plan.mockServerImageTag,
-  ]);
-  await docker(["start", plan.mockServerName]);
-};
-const runScenario = async (plan, signal) => {
-  const testModeArguments =
-    testMode === undefined
-      ? []
-      : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
-  await docker([
-    "create",
-    "--name",
-    plan.scenarioName,
-    ...labelArguments(plan),
-    ...confinementArguments(plan),
-    "--env",
-    "HOME=/home/agentscope",
-    "--env",
-    "XDG_CONFIG_HOME=/harness-home",
-    "--env",
-    "HARNESS_HOME=/harness-home",
-    "--env",
-    "AGENTSCOPE_HOME=/agentscope-home",
-    "--env",
-    "AGENTSCOPE_WORKTREE=/worktree",
-    "--env",
-    "AGENTSCOPE_LEDGER=/ledger",
-    "--env",
-    "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
-    "--env",
-    "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
-    "--env",
-    "AGENTSCOPE_INGESTION_URL=http://collector:4318",
-    "--env",
-    "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
-    "--env",
-    "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
-    "--env",
-    `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-    ...testModeArguments,
-    plan.imageTag,
-  ]);
-  await assertContainer(plan);
-  const deadlineSignal = AbortSignal.timeout(scenarioTimeoutMilliseconds);
-  const { stdout } = await docker(["start", "--attach", plan.scenarioName], {
-    signal: AbortSignal.any([signal, deadlineSignal]),
-  });
-  const resultLine = stdout
+const captureFixtureResult = (output, plan) => {
+  const resultLine = output
     .split("\n")
     .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
-  if (!resultLine || resultLine.length > 1024 * 1024)
+  if (resultLine === undefined) return false;
+  if (resultLine.length > 1024 * 1024)
     throw new Error("integration.isolation.fixture-result");
   fixtureResults.set(
     plan.runId,
@@ -428,6 +255,225 @@ const runScenario = async (plan, signal) => {
       plan.scenarioId,
     ),
   );
+  return true;
+};
+const preparedImageFor = async (image, signal) => {
+  const prepared = imageEvidence.images.find((entry) => entry.image === image);
+  if (!prepared) throw new Error("integration.isolation.base-image");
+  const { stdout } = await dockerWithSignal(
+    ["image", "inspect", "--format", "{{.Id}}", image],
+    signal,
+  );
+  if (stdout.trim().replace(":", "-") !== prepared.localImageDigest)
+    throw new Error("integration.isolation.base-image");
+};
+const inspectImage = async (tag, signal) => {
+  const { stdout } = await dockerWithSignal(
+    ["image", "inspect", "--format", "{{.Id}}", tag],
+    signal,
+  );
+  return stdout.trim().replace(":", "-");
+};
+const buildImage = async (plan, signal) => {
+  await preparedImageFor(plan.baseImage, signal);
+  const context = stageBuildContext(plan);
+  await dockerWithSignal(
+    [
+      "build",
+      "--network",
+      "none",
+      "--pull=false",
+      ...labelArguments(plan),
+      "--build-arg",
+      `BASE_IMAGE=${plan.baseImage}`,
+      "--tag",
+      plan.imageTag,
+      context,
+    ],
+    signal,
+  );
+  return inspectImage(plan.imageTag, signal);
+};
+const buildMockServerImage = async (plan, signal) => {
+  await preparedImageFor(plan.mockServerImage, signal);
+  const context = resolve(artifactsRoot, "contexts", plan.runId);
+  await dockerWithSignal(
+    [
+      "build",
+      "--network",
+      "none",
+      "--pull=false",
+      ...labelArguments(plan),
+      "--file",
+      resolve(context, "MockServer.Dockerfile"),
+      "--build-arg",
+      `MOCKSERVER_IMAGE=${plan.mockServerImage}`,
+      "--tag",
+      plan.mockServerImageTag,
+      context,
+    ],
+    signal,
+  );
+  return inspectImage(plan.mockServerImageTag, signal);
+};
+const createNetwork = async (plan, signal) => {
+  await dockerWithSignal(
+    [
+      "network",
+      "create",
+      "--internal",
+      ...labelArguments(plan),
+      plan.networkName,
+    ],
+    signal,
+  );
+};
+const startCollector = async (plan, signal) => {
+  await dockerWithSignal(
+    [
+      "create",
+      "--name",
+      plan.collectorName,
+      ...labelArguments(plan),
+      "--network",
+      plan.networkName,
+      "--network-alias",
+      "collector",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      ...sidecarResourceArguments,
+      "--user",
+      "1000:1000",
+      "--tmpfs",
+      "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
+      "--env",
+      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      plan.imageTag,
+      "node",
+      "/opt/agentscope/destination-server.mjs",
+      "ingestion",
+    ],
+    signal,
+  );
+  await dockerWithSignal(["start", plan.collectorName], signal);
+};
+const startRetrieval = async (plan, signal) => {
+  await dockerWithSignal(
+    [
+      "create",
+      "--name",
+      plan.retrievalName,
+      ...labelArguments(plan),
+      "--network",
+      plan.networkName,
+      "--network-alias",
+      "retrieval",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      ...sidecarResourceArguments,
+      "--user",
+      "1000:1000",
+      "--tmpfs",
+      "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
+      "--env",
+      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      plan.imageTag,
+      "node",
+      "/opt/agentscope/destination-server.mjs",
+      "retrieval",
+    ],
+    signal,
+  );
+  await dockerWithSignal(["start", plan.retrievalName], signal);
+};
+const startMockServer = async (plan, signal) => {
+  await dockerWithSignal(
+    [
+      "create",
+      "--name",
+      plan.mockServerName,
+      ...labelArguments(plan),
+      "--network",
+      plan.networkName,
+      "--network-alias",
+      "mockserver",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      ...sidecarResourceArguments,
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev,size=64m",
+      "--env",
+      "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
+      "--env",
+      "MOCKSERVER_LOG_LEVEL=WARN",
+      plan.mockServerImageTag,
+    ],
+    signal,
+  );
+  await dockerWithSignal(["start", plan.mockServerName], signal);
+};
+const runScenario = async (plan, signal) => {
+  const testModeArguments =
+    testMode === undefined
+      ? []
+      : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
+  await dockerWithSignal(
+    [
+      "create",
+      "--name",
+      plan.scenarioName,
+      ...labelArguments(plan),
+      ...confinementArguments(plan),
+      "--env",
+      "HOME=/home/agentscope",
+      "--env",
+      "XDG_CONFIG_HOME=/harness-home",
+      "--env",
+      "HARNESS_HOME=/harness-home",
+      "--env",
+      "AGENTSCOPE_HOME=/agentscope-home",
+      "--env",
+      "AGENTSCOPE_WORKTREE=/worktree",
+      "--env",
+      "AGENTSCOPE_LEDGER=/ledger",
+      "--env",
+      "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
+      "--env",
+      "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
+      "--env",
+      "AGENTSCOPE_INGESTION_URL=http://collector:4318",
+      "--env",
+      "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
+      "--env",
+      "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
+      "--env",
+      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      ...testModeArguments,
+      plan.imageTag,
+    ],
+    signal,
+  );
+  await assertContainer(plan, signal);
+  try {
+    const { stdout } = await dockerWithSignal(
+      ["start", "--attach", plan.scenarioName],
+      signal,
+    );
+    if (!captureFixtureResult(stdout, plan))
+      throw new Error("integration.isolation.fixture-result");
+  } catch (error) {
+    captureFixtureResult(`${error?.stdout ?? ""}`, plan);
+    throw error;
+  }
 };
 const recordEvidence = async (evidence) => {
   const directory = resolve(artifactsRoot, "runs", evidence.runId);
@@ -436,10 +482,10 @@ const recordEvidence = async (evidence) => {
     resolve(directory, "evidence.json"),
     `${JSON.stringify(evidence, undefined, 2)}\n`,
   );
-  if (evidence.outcome === "passed") {
-    const result = fixtureResults.get(evidence.runId);
-    if (result === undefined)
-      throw new Error("integration.isolation.fixture-result");
+  const result = fixtureResults.get(evidence.runId);
+  if (evidence.outcome === "passed" && result === undefined)
+    throw new Error("integration.isolation.fixture-result");
+  if (result !== undefined) {
     writeFileSync(
       resolve(directory, "model-ledger.json"),
       `${JSON.stringify(result.modelLedger, undefined, 2)}\n`,
@@ -465,27 +511,37 @@ const recordEvidence = async (evidence) => {
     fixtureResults.delete(evidence.runId);
   }
 };
-const createDriver = () => ({
-  buildImage,
-  buildMockServerImage,
-  createNetwork,
-  startCollector,
-  startRetrieval,
-  startMockServer,
-  runScenario,
-  recordEvidence,
-  removeContainer: (name) => ignoreMissing(["rm", "--force", name]),
-  removeNetwork: (name) => ignoreMissing(["network", "rm", name]),
-  removeImage: (tag) => ignoreMissing(["image", "rm", "--force", tag]),
-  removeContext: async (runId) => {
-    if (!/^[a-f\d]{16}$/u.test(runId))
-      throw new Error("integration.isolation.context");
-    rmSync(resolve(artifactsRoot, "contexts", runId), {
-      force: true,
-      recursive: true,
-    });
-  },
-});
+const createDriver = () => {
+  let cleanupSignal;
+  const boundedCleanupSignal = () => {
+    cleanupSignal ??= AbortSignal.timeout(60_000);
+    return cleanupSignal;
+  };
+  return {
+    buildImage,
+    buildMockServerImage,
+    createNetwork,
+    startCollector,
+    startRetrieval,
+    startMockServer,
+    runScenario,
+    recordEvidence,
+    removeContainer: (name) =>
+      ignoreMissing(["rm", "--force", name], boundedCleanupSignal()),
+    removeNetwork: (name) =>
+      ignoreMissing(["network", "rm", name], boundedCleanupSignal()),
+    removeImage: (tag) =>
+      ignoreMissing(["image", "rm", "--force", tag], boundedCleanupSignal()),
+    removeContext: async (runId) => {
+      if (!/^[a-f\d]{16}$/u.test(runId))
+        throw new Error("integration.isolation.context");
+      rmSync(resolve(artifactsRoot, "contexts", runId), {
+        force: true,
+        recursive: true,
+      });
+    },
+  };
+};
 
 const scenarios = selection.scenarioIds.map((scenarioId) => {
   const scenario = manifest.scenarios.find(
@@ -517,7 +573,10 @@ try {
           runToken: randomBytes(8).toString("hex"),
         }),
         createDriver(),
-        controller.signal,
+        AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(scenarioTimeoutMilliseconds),
+        ]),
       ),
   );
   console.log(JSON.stringify(evidence));

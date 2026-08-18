@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-8fcbe1324db02b857431810c62ffc00f5d952d0a185a8db34c05c70472e9e435",
+  "manifestIdentity": "sha256-ae4479686265e7f7df77cdcef23456f0dd68b303b54d2cc744725be08479ec1a",
   "requiredRepresentativeIds": ["fixture-process-v1"],
   "evidence": [
     {
@@ -28,6 +28,10 @@
       ],
       "tags": ["pr", "smoke"],
       "destinations": ["otlp-ledger"],
+      "fixtureAdapter": {
+        "path": "fixtures/process-platform-adapter.mjs",
+        "sha256": "ae943ca28b4ee9abb38124dcf0fc1f2bf93e57e9ae8cbaea3ce913c943ef90b0"
+      },
       "resourceClass": "small",
       "shardWeight": 100
     }

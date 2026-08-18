@@ -16,3 +16,11 @@ This Blueprint verifies the complete AgentScope setup flow without ever touching
 **Context:** Each leaf capability has one authoritative amendment point. Repeating isolation, artifacts, mocks, or lane policy here would create parallel ADRs that can drift.
 
 **Consequences:** This umbrella owns only the complete acceptance boundary: install the exact packed CLI in a fresh scenario, run init and owned hook installation, invoke the real harness against deterministic model mocks, observe destination delivery independently, assert canonical context/redaction, then prove owned cleanup and uninstall. Harness and destination test adapters extend their own seams without changing generic orchestration.
+
+### ADR-002: Keep platform certification distinct from product acceptance
+
+**Decision:** The process fixture certifies generic isolation, immutable inputs, model and destination ledgers, failure handling, concurrency, retention, and cleanup. It is not a real harness and cannot satisfy a harness-support, initialization, hook-installation, capture, or destination-product acceptance criterion.
+
+**Context:** The hermetic substrate is useful before public CLI and harness integrations exist, but fixture-shaped lifecycle markers must not be mistaken for implemented product behavior.
+
+**Consequences:** Acceptance evidence remains planned until a manifest entry uses the real packed CLI, real public commands, a pinned harness binary, and the appropriate first-party adapters end to end. The platform fixture remains a deterministic certification test for the orchestration layer only.
