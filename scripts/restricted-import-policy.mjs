@@ -71,10 +71,7 @@ const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
 };
 
 const assertNoComputedModuleLoads = (source, file, packageName) => {
-  const computedLoadsAllowed =
-    packageName === "@agentscope/testkit" ||
-    testSource.test(file) ||
-    artifactVerifier.test(file);
+  const computedLoadsAllowed = artifactVerifier.test(file);
   const parsed = ts.createSourceFile(
     file,
     source,

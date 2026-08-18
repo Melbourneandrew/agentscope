@@ -264,3 +264,28 @@ test("checks artifact literals while permitting computed artifact loads", () => 
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("rejects computed Core authority loads from tests and testkit", () => {
+  const value = fixture();
+  try {
+    value.packages.set("packages/testkit", "@agentscope/testkit");
+    mkdirSync(join(value.root, "packages/testkit"), { recursive: true });
+    for (const path of [
+      "packages/destination/authority.test.ts",
+      "packages/testkit/authority.ts",
+    ]) {
+      const source = join(value.root, path);
+      writeFileSync(
+        source,
+        'const moduleName = "@agentscope/protocol/" + "core-finalization";\nvoid import(moduleName);\n',
+      );
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /computed module load/u,
+      );
+      rmSync(source);
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
