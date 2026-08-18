@@ -218,3 +218,24 @@ test("rejects computed module loads from production sources", () => {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("rejects escaped test-only module specifiers", () => {
+  const value = fixture();
+  try {
+    const production = join(value.root, "packages/core/escaped.ts");
+    for (const source of [
+      'import "@agentscope/protocol/test\\u0069ng";\n',
+      'import fixture = require("@agentscope/protocol/test\\u0069ng");\n',
+      'void import("@agentscope/protocol/test\\u0069ng");\n',
+      'void require("@agentscope/destinations-core/test\\u0069ng");\n',
+    ]) {
+      writeFileSync(production, source);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /test-only/u,
+      );
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});

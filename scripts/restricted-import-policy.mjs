@@ -57,6 +57,19 @@ const isLiteralModuleSpecifier = (value) =>
   value !== undefined &&
   (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value));
 
+const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
+  if (packageName !== "@agentscope/core")
+    for (const restricted of restrictedSpecifiers)
+      if (specifier === restricted)
+        throw new Error(
+          `${restricted} is Core-only; forbidden import in ${file}`,
+        );
+  if (packageName === "@agentscope/testkit" || testSource.test(file)) return;
+  for (const testing of testingSpecifiers)
+    if (specifier === testing)
+      throw new Error(`${testing} is test-only; forbidden import in ${file}`);
+};
+
 const assertNoComputedModuleLoads = (source, file, packageName) => {
   if (
     packageName === "@agentscope/testkit" ||
@@ -73,13 +86,35 @@ const assertNoComputedModuleLoads = (source, file, packageName) => {
   );
   const visit = (node) => {
     if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      isLiteralModuleSpecifier(node.moduleSpecifier)
+    )
+      assertLiteralSpecifierAllowed(
+        node.moduleSpecifier.text,
+        file,
+        packageName,
+      );
+    if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      isLiteralModuleSpecifier(node.moduleReference.expression)
+    )
+      assertLiteralSpecifierAllowed(
+        node.moduleReference.expression.text,
+        file,
+        packageName,
+      );
+    if (
       ts.isCallExpression(node) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (ts.isIdentifier(node.expression) &&
-          node.expression.text === "require")) &&
-      !isLiteralModuleSpecifier(node.arguments[0])
-    )
-      throw new Error(`computed module load is forbidden in ${file}`);
+          node.expression.text === "require"))
+    ) {
+      const specifier = node.arguments[0];
+      if (!isLiteralModuleSpecifier(specifier))
+        throw new Error(`computed module load is forbidden in ${file}`);
+      assertLiteralSpecifierAllowed(specifier.text, file, packageName);
+    }
     ts.forEachChild(node, visit);
   };
   visit(parsed);
