@@ -239,3 +239,28 @@ test("rejects escaped test-only module specifiers", () => {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("checks artifact literals while permitting computed artifact loads", () => {
+  const value = fixture();
+  try {
+    const verifier = join(
+      value.root,
+      "packages/destination/verify-artifact.mjs",
+    );
+    writeFileSync(
+      verifier,
+      'const moduleName = "node:" + "fs";\nvoid import(moduleName);\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    writeFileSync(
+      verifier,
+      'void import("@agentscope/protocol/test\\u0069ng");\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /test-only/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});

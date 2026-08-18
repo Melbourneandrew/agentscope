@@ -71,12 +71,10 @@ const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
 };
 
 const assertNoComputedModuleLoads = (source, file, packageName) => {
-  if (
+  const computedLoadsAllowed =
     packageName === "@agentscope/testkit" ||
     testSource.test(file) ||
-    artifactVerifier.test(file)
-  )
-    return;
+    artifactVerifier.test(file);
   const parsed = ts.createSourceFile(
     file,
     source,
@@ -111,9 +109,10 @@ const assertNoComputedModuleLoads = (source, file, packageName) => {
           node.expression.text === "require"))
     ) {
       const specifier = node.arguments[0];
-      if (!isLiteralModuleSpecifier(specifier))
+      if (!isLiteralModuleSpecifier(specifier) && !computedLoadsAllowed)
         throw new Error(`computed module load is forbidden in ${file}`);
-      assertLiteralSpecifierAllowed(specifier.text, file, packageName);
+      if (isLiteralModuleSpecifier(specifier))
+        assertLiteralSpecifierAllowed(specifier.text, file, packageName);
     }
     ts.forEachChild(node, visit);
   };
