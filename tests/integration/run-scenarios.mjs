@@ -240,19 +240,27 @@ const assertContainer = async (plan, signal) => {
 const fixtureResults = new Map();
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
-const activateRun = async (plan) => {
+const activateRuns = async (plans) => {
   const release = await acquireIntegrationOperationLock(
     workspaceRoot,
     "integration.isolation.active",
   );
+  const activated = [];
   try {
     const directory = resolve(artifactsRoot, "active");
     mkdirSync(directory, { recursive: true });
-    writeFileSync(
-      activeMarkerFor(plan.runId),
-      `${JSON.stringify({ activeVersion: 1, runId: plan.runId, pid: process.pid })}\n`,
-      { flag: "wx" },
-    );
+    for (const plan of plans) {
+      const marker = activeMarkerFor(plan.runId);
+      writeFileSync(
+        marker,
+        `${JSON.stringify({ activeVersion: 1, runId: plan.runId, pid: process.pid })}\n`,
+        { flag: "wx" },
+      );
+      activated.push(marker);
+    }
+  } catch (error) {
+    for (const marker of activated) rmSync(marker, { force: true });
+    throw error;
   } finally {
     await release();
   }
@@ -585,31 +593,32 @@ const scenarios = selection.scenarioIds.map((scenarioId) => {
     throw new Error("integration.isolation.model-routes");
   return scenario;
 });
+const plans = scenarios.map((scenario) =>
+  createIsolationPlan({
+    scenario,
+    manifestIdentity: manifest.manifestIdentity,
+    candidate,
+    runToken: randomBytes(8).toString("hex"),
+  }),
+);
 const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
 process.once("SIGTERM", abort);
 try {
+  await activateRuns(plans);
   const evidence = await mapWithConcurrency(
-    scenarios,
+    plans,
     scenarioConcurrency,
-    async (scenario) => {
-      const plan = createIsolationPlan({
-        scenario,
-        manifestIdentity: manifest.manifestIdentity,
-        candidate,
-        runToken: randomBytes(8).toString("hex"),
-      });
-      await activateRun(plan);
-      return executeIsolationPlan(
+    (plan) =>
+      executeIsolationPlan(
         plan,
         createDriver(),
         AbortSignal.any([
           controller.signal,
           AbortSignal.timeout(scenarioTimeoutMilliseconds),
         ]),
-      );
-    },
+      ),
   );
   console.log(JSON.stringify(evidence));
 } finally {

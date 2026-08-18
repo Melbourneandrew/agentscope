@@ -35,12 +35,12 @@ const runDirectories = () =>
         )
       : [],
   );
-const runOnce = (testMode) =>
+const runOnce = (testMode, concurrency = "1") =>
   execute(process.execPath, [resolve(integrationRoot, "run-scenarios.mjs")], {
     cwd: workspaceRoot,
     env: {
       ...process.env,
-      AGENTSCOPE_INTEGRATION_CONCURRENCY: "1",
+      AGENTSCOPE_INTEGRATION_CONCURRENCY: concurrency,
       AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000",
       ...(testMode === undefined
         ? {}
@@ -139,6 +139,31 @@ try {
         throw new Error("integration.operations.repetition");
     }
   }
+  const selectionPath = resolve(artifactsRoot, "current-selection.json");
+  const originalSelection = readFileSync(selectionPath, "utf8");
+  const concurrentBefore = runDirectories();
+  try {
+    const selection = JSON.parse(originalSelection);
+    writeFileSync(
+      selectionPath,
+      `${JSON.stringify(
+        {
+          ...selection,
+          scenarioIds: [selection.scenarioIds[0], selection.scenarioIds[0]],
+        },
+        undefined,
+        2,
+      )}\n`,
+    );
+    await runOnce(undefined, "2");
+  } finally {
+    writeFileSync(selectionPath, originalSelection);
+  }
+  const concurrentCreated = [...runDirectories()].filter(
+    (name) => !concurrentBefore.has(name),
+  );
+  if (concurrentCreated.length !== 2)
+    throw new Error("integration.operations.concurrent-registration");
   const activeRoot = resolve(artifactsRoot, "active");
   const activeMarker = resolve(activeRoot, "aaaaaaaaaaaaaaaa.json");
   mkdirSync(activeRoot, { recursive: true });
