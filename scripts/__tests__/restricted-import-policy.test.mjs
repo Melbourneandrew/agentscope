@@ -219,6 +219,43 @@ test("rejects computed module loads from production sources", () => {
   }
 });
 
+test("permits exactly one production Agentscope home authority", () => {
+  const value = fixture();
+  try {
+    const authorityDirectory = join(
+      value.root,
+      "packages/core/src/configuration",
+    );
+    mkdirSync(authorityDirectory, { recursive: true });
+    writeFileSync(
+      join(authorityDirectory, "home.ts"),
+      'import { homedir } from "node:os";\nconst name = "AGENTSCOPE_HOME";\nvoid homedir; void name;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    const production = join(value.root, "packages/core/other.ts");
+    for (const source of [
+      'import { homedir } from "node:os";\nvoid homedir;\n',
+      "const value = process.env.HOME;\nvoid value;\n",
+      'const value = process.env["USERPROFILE"];\nvoid value;\n',
+      'const value = "AGENTSCOPE_HOME";\nvoid value;\n',
+    ]) {
+      writeFileSync(production, source);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /home must be injected/u,
+      );
+    }
+    rmSync(production);
+    writeFileSync(
+      join(value.root, "packages/core/other.test.ts"),
+      'const value = "AGENTSCOPE_HOME";\nvoid value;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("rejects escaped test-only module specifiers", () => {
   const value = fixture();
   try {

@@ -35,4 +35,4 @@ Hook installation writes the minimal owned integration that allows a harness to 
 
 **Context:** Persisted harness configuration outlives individual installs, and GUI/non-login environments may resolve a bare command differently.
 
-**Consequences:** Doctor verifies launcher ownership, location, and contract compatibility. Installation upgrades owned blocks transactionally; unsupported versions remain untouched pending explicit migration. Tests cover argument encoding, relocation, upgrade, downgrade, capture, and uninstall.
+**Consequences:** The launcher resolves the machine-default Agentscope home through the owned Configuration Management contract and conveys that approved authority to the hook entry point; it never trusts a project-inherited `AGENTSCOPE_HOME`. Doctor verifies launcher ownership, location, home authority, and contract compatibility. Installation upgrades owned blocks transactionally; unsupported versions remain untouched pending explicit migration. Tests cover argument encoding, environment redirection, relocation, upgrade, downgrade, capture, and uninstall.

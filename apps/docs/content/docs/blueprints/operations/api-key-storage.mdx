@@ -25,14 +25,46 @@ Trace Destination credentials need secure storage while hooks remain non-interac
 
 ### ADR-003: Treat credential changes as compensating transactions
 
-**Decision:** Credential slots have stable destination/connection ownership and unique generation identity. Configuration creates an owned pending credential entry, validates resolvability, atomically commits a configuration generation referencing it, then marks it active. Failure before config commit removes only that new pending entry; replacement retains the previous secret while any active or last-known-good generation references it.
+**Decision:** [Configuration Management ADR-005](/docs/blueprints/operations/config-management) is the sole backend-neutral credential lifecycle: stable ownership and generation identity, a durable content-free mutation intent before pending creation, hook-equivalent preflight, configuration commit, activation confirmation, proof-bound compensation, and explicit backup retirement before deletion. Platform adapters implement only that contract and do not invent a second persisted pending/active state machine.
 
 **Context:** The OS credential store and configuration filesystem cannot share one atomic transaction.
 
-**Consequences:** Rotation and removal are explicit operations. Doctor reports dangling references and provably owned orphan candidates; `--fix` removes only abandoned pending entries with sufficient ownership evidence and never deletes CI environment references.
+**Consequences:** Rotation, removal, and orphan cleanup are separate explicit operations. Doctor reports dangling references and provably owned orphan candidates but does not delete credentials through `--fix`, because secret deletion is not reversible. A platform adapter's post-commit activation confirms that the exact committed reference still exists and is resolvable; configuration commit is the durable ownership authority. CI environment references are never deleted.
 
 ### ADR-004: Permit explicit CI secret references
 
 **Decision:** Non-interactive configuration may reference environment-provided secrets; it never copies their values into config, commands, diagnostics, or retained trace state.
 
 **Consequences:** Real-harness integration tests use dummy credentials and ephemeral environment values.
+
+### ADR-005: Use one shell-free macOS Keychain command boundary
+
+**Decision:** The macOS adapter invokes only the absolute `/usr/bin/security` executable with `shell: false`. It owns the fixed service label `dev.agentscope.credentials.v1` and derives the account and opaque credential reference from the credential ownership tuple plus generation. Creation passes the secret through standard input with the final `-w` flag; the secret never appears in arguments. Resolution uses `find-generic-password -w`, activation checks exact item existence, and compensation or owned removal deletes only the recomputed service/account pair. Line-breaking secrets are rejected because the native command's password-input form is line-oriented.
+
+The executor snapshots bounded stdout and stderr, applies a referenced timeout, honors cancellation before and during invocation, and maps native failures to the closed unavailable/locked/denied/missing/malformed vocabulary without retaining command output. A stored value must round-trip exactly through hook-equivalent resolution before the configuration commit; truncated, substituted, or otherwise changed values are compensated as malformed.
+
+**Context:** Shell interpolation, secret-bearing arguments, unbounded native output, and user-selected Keychain labels would widen the credential disclosure and deletion boundaries. Treating configuration commit as activation authority avoids inventing mutable state inside Keychain while preserving generation-owned compensation.
+
+**Consequences:** Deterministic fake-process and built-artifact tests certify command construction, lifecycle ordering, failure containment, and non-disclosure on every development platform. [CLI Installation ADR-003](/docs/blueprints/operations/cli-installation) owns the support manifest and requires the same adapter to pass against the real Keychain on a trusted macOS runner and hook-equivalent GUI/session context before macOS Keychain support is claimed; container or fake-executor evidence does not certify native availability or permission behavior.
+
+### ADR-006: Reach Windows Credential Manager through a fixed Unicode native bridge
+
+**Decision:** The Windows adapter invokes only the standard absolute `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` path with `shell: false`, a fixed encoded script, a hidden window, and no profile or interactive session. The script contains the complete reviewed Unicode P/Invoke bridge for `CredWriteW`, `CredReadW`, `CredDeleteW`, and `CredFree`; Agentscope does not use `cmdkey` because it would place a password in process arguments. The operation, ownership-derived ASCII target name, and UTF-8 secret bytes encoded as base64 travel only through standard input. The adapter accepts Unicode and multiline secret values up to the native generic-credential blob limit, and clears temporary native and managed byte buffers where the bridge controls them.
+
+The target `dev.agentscope.credentials.v1:<generation digest>` is derived from destination type, connection identity, credential slot, and generation. Resolution and existence checks use that exact target, while compensation and owned deletion recompute it before invoking the bridge. Bounded stdout is parsed as one closed result record; Win32 not-found, missing-logon-session, access-denied, and cancellation errors map to missing, locked, and denied outcomes, while every other process, parser, timeout, or native error becomes a fixed unavailable or malformed result without retaining native text.
+
+**Context:** Windows Credential APIs are Unicode native APIs, but Core is JavaScript and must not grant arbitrary script, shell, command-search, or secret-bearing argument authority. A fixed bridge keeps the native surface reviewable while preventing user-controlled account names and Windows paths from becoming executable authority.
+
+**Consequences:** Deterministic fake-process, decoded-script, lifecycle, and built-artifact tests certify path/argument construction, Unicode round-trip, ownership-safe cleanup, parser totality, and non-disclosure without mutating a developer credential vault. [CLI Installation ADR-003](/docs/blueprints/operations/cli-installation) owns the support manifest and may claim this backend only after a trusted Windows runner proves the standard executable path, native API behavior, interactive configuration, and hook-equivalent account/session access; fake or non-Windows evidence alone is component evidence.
+
+### ADR-007: Require an existing Linux Secret Service session or an explicit CI reference
+
+**Decision:** The Linux desktop adapter invokes only the absolute `/usr/bin/secret-tool` executable with `shell: false`, a hidden non-interactive process, and fixed `service=dev.agentscope.credentials.v1` plus ownership-derived `reference=<generation digest>` attributes. Store sends the secret through standard input; lookup and clear use only those attributes. Secret text never appears in arguments. Because the command interface is line-oriented, line-breaking secrets are rejected rather than silently truncated; the backend-neutral preflight still requires an exact hook-equivalent round-trip before configuration commit.
+
+Core considers the native adapter usable only when `DBUS_SESSION_BUS_ADDRESS` is a bounded own data value in the process environment. Without that user-session authority, creation and resolution return the fixed unavailable outcome without invoking a process. Headless servers, SSH sessions, containers, services, and harness hooks therefore use Secret Service only when their actual execution context has the same accessible user D-Bus and unlocked collection. Otherwise the supported noninteractive alternative is an explicit CI environment credential reference. There is no plaintext file, config value, process-argument, project environment, or automatic in-memory persistence fallback.
+
+The executor bounds stdout and stderr, honors cancellation and a referenced timeout, discards all native error text, and recognizes only reviewed missing-item, locked-collection, and denied/not-authorized error families. Empty lookup/clear failures are missing; every unrecognized, malformed, localized, absent-service, absent-session, or process failure is unavailable. Deletion is idempotent only for the exact missing outcome, and owned deletion recomputes the reference before clearing it.
+
+**Context:** Secret Service is scoped to a user D-Bus session and collection state, so availability in an interactive desktop terminal does not prove availability in an SSH, container, service, or GUI-harness hook. Autolaunching a new bus or silently writing a local secret file would change both security and ownership semantics.
+
+**Consequences:** Deterministic desktop/headless fakes and the built artifact certify argument construction, secret isolation, session gating, error containment, and lifecycle behavior without requiring CI to mutate a developer collection. [CLI Installation ADR-003](/docs/blueprints/operations/cli-installation) owns the support manifest; it lists `libsecret-tools`, a user Secret Service provider, and hook-equivalent D-Bus/collection access as native dependencies and requires trusted Linux desktop and headless evidence before claiming native support. Until that evidence passes, the adapter remains component-certified and explicit CI references are the only supported no-session path.

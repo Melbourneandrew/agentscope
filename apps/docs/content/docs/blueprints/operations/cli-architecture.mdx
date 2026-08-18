@@ -32,3 +32,11 @@ The CLI is the user-facing application: it configures AgentScope, installs first
 **Context:** Coding agents will invoke the CLI as well as humans. Generated `--help` is necessary for discovery but cannot explain configuration intent, destination tradeoffs, or safe operational flows in sufficient detail.
 
 **Consequences:** `agentscope <command> --help` remains concise, deterministic, and generated from Commander metadata. Detailed documentation is reviewed and versioned with command changes; CI checks documented command paths against the registered command tree.
+
+### ADR-004: Compose one read-only Doctor report
+
+**Decision:** The CLI owns the user-facing `agentscope doctor` orchestration required by [Agentscope Doctor](/docs/requirements/agentscope-doctor). It resolves one approved machine home, invokes Core's read-only configuration, credential-intent, operational-state, and writer-lock inspection seams, and composes them with harness discovery, hook-installation, destination-declared reachability, and Git-context inspectors. It maps every component result into one closed finding, severity, freshness, and suggested-action vocabulary before presentation.
+
+**Context:** Core can certify its bounded state parsers and proof-bound repairs, but it cannot truthfully claim that the installed hook, native harness, destination endpoint, Git repository, and platform credential session were all inspected together.
+
+**Consequences:** Doctor never infers health from stale or absent evidence, never displays credential values or provider bodies, and distinguishes unavailable inspection from a negative finding. Human and structured output derive from the same immutable report. Any transaction, credential, or operational recovery claim—whether fixed-plus-claim or claim-only—is an error with `reconcile-recovery-claim`, never an informational retry. `doctor --fix` delegates only the explicitly reversible, proof-bound repairs named by [Operational State ADR-004](/docs/blueprints/operations/operational-state); interrupted-claim reconciliation, credential cleanup, backup restoration, installation mutation, and remote writes remain separate authorized commands. End-to-end Doctor acceptance evidence stays planned until this CLI composition and its installed-context tests exist.
