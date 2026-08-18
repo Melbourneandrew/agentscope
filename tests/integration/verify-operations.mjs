@@ -1,6 +1,7 @@
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -158,10 +159,21 @@ try {
     if (!activeRejected || !existsSync(resolve(runsRoot, created[0])))
       throw new Error("integration.operations.active-run");
   }
+  const operationLock = resolve(
+    workspaceRoot,
+    "artifacts/.agentscope-integration-operation-lock",
+  );
   const releaseOperationLock = acquireIntegrationOperationLock(
     workspaceRoot,
     "integration.operations.active-run",
   );
+  const lockOwner = JSON.parse(readFileSync(operationLock, "utf8"));
+  if (
+    !lstatSync(operationLock).isFile() ||
+    lstatSync(operationLock).isSymbolicLink() ||
+    lockOwner.pid !== process.pid
+  )
+    throw new Error("integration.operations.active-run");
   let registrationRejected = false;
   try {
     await runOnce();
@@ -175,13 +187,13 @@ try {
   const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
   if (!Number.isSafeInteger(exited.pid))
     throw new Error("integration.operations.stale-lock");
-  const staleLock = resolve(
+  const staleCandidate = resolve(
     workspaceRoot,
-    "artifacts/.agentscope-integration-operation-lock",
+    `artifacts/.agentscope-integration-operation-lock.candidate-${exited.pid}-0000000000000000`,
   );
-  mkdirSync(staleLock);
+  writeFileSync(staleCandidate, "stale\n");
   writeFileSync(
-    resolve(staleLock, "owner.json"),
+    operationLock,
     `${JSON.stringify({ lockVersion: 1, pid: exited.pid })}\n`,
   );
   const releaseReclaimedLock = acquireIntegrationOperationLock(
@@ -189,6 +201,8 @@ try {
     "integration.operations.stale-lock",
   );
   releaseReclaimedLock();
+  if (existsSync(operationLock) || existsSync(staleCandidate))
+    throw new Error("integration.operations.stale-lock");
   rmSync(activeMarker);
   rmSync(activeRoot, { recursive: true });
   execFileSync(process.execPath, [resolve(integrationRoot, "clean.mjs")], {
