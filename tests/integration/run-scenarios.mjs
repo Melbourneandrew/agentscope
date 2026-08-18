@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import {
@@ -114,7 +114,15 @@ const stageBuildContext = (plan) => {
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
   const sources = [
     ["runner.mjs", resolve(integrationRoot, "runner.mjs")],
-    ["collector-server.mjs", resolve(integrationRoot, "collector/server.mjs")],
+    [
+      "destination-server.mjs",
+      resolve(integrationRoot, "destination-server.mjs"),
+    ],
+    ["platform-fixture.mjs", resolve(integrationRoot, "platform-fixture.mjs")],
+    [
+      "testkit/platform-fixture.js",
+      resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
+    ],
     [
       "capability-manifest.json",
       resolve(integrationRoot, "capability-manifest.json"),
@@ -136,7 +144,9 @@ const stageBuildContext = (plan) => {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
       throw new Error("integration.isolation.context");
-    cpSync(source, resolve(context, destination));
+    const target = resolve(context, destination);
+    mkdirSync(dirname(target), { recursive: true });
+    cpSync(source, target);
   }
   cpSync(
     candidateDirectory,
@@ -149,7 +159,8 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs collector-server.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs destination-server.mjs platform-fixture.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       "USER node",
       'CMD ["node", "/opt/agentscope/runner.mjs"]',
@@ -186,7 +197,7 @@ const assertContainer = async (plan) => {
     throw new Error("integration.isolation.container");
 };
 
-const modelLedgers = new Map();
+const fixtureResults = new Map();
 const preparedImageFor = async (image) => {
   const prepared = imageEvidence.images.find((entry) => entry.image === image);
   if (!prepared) throw new Error("integration.isolation.base-image");
@@ -274,11 +285,42 @@ const startCollector = async (plan) => {
     "1000:1000",
     "--tmpfs",
     "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
+    "--env",
+    `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
     plan.imageTag,
     "node",
-    "/opt/agentscope/collector-server.mjs",
+    "/opt/agentscope/destination-server.mjs",
+    "ingestion",
   ]);
   await docker(["start", plan.collectorName]);
+};
+const startRetrieval = async (plan) => {
+  await docker([
+    "create",
+    "--name",
+    plan.retrievalName,
+    ...labelArguments(plan),
+    "--network",
+    plan.networkName,
+    "--network-alias",
+    "retrieval",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--user",
+    "1000:1000",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
+    "--env",
+    `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+    plan.imageTag,
+    "node",
+    "/opt/agentscope/destination-server.mjs",
+    "retrieval",
+  ]);
+  await docker(["start", plan.retrievalName]);
 };
 const startMockServer = async (plan) => {
   await docker([
@@ -333,6 +375,10 @@ const runScenario = async (plan, signal) => {
     "--env",
     "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
     "--env",
+    "AGENTSCOPE_INGESTION_URL=http://collector:4318",
+    "--env",
+    "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
+    "--env",
     "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
     "--env",
     `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
@@ -343,15 +389,15 @@ const runScenario = async (plan, signal) => {
   const { stdout } = await docker(["start", "--attach", plan.scenarioName], {
     signal,
   });
-  const ledgerLine = stdout
+  const resultLine = stdout
     .split("\n")
-    .find((line) => line.startsWith("AGENTSCOPE_MODEL_LEDGER="));
-  if (!ledgerLine) throw new Error("integration.isolation.model-ledger");
-  modelLedgers.set(
+    .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
+  if (!resultLine) throw new Error("integration.isolation.fixture-result");
+  fixtureResults.set(
     plan.runId,
     JSON.parse(
       Buffer.from(
-        ledgerLine.slice("AGENTSCOPE_MODEL_LEDGER=".length),
+        resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
         "base64url",
       ).toString("utf8"),
     ),
@@ -365,18 +411,38 @@ const recordEvidence = async (evidence) => {
     `${JSON.stringify(evidence, undefined, 2)}\n`,
   );
   if (evidence.outcome === "passed") {
-    const ledger = modelLedgers.get(evidence.runId);
+    const result = fixtureResults.get(evidence.runId);
     if (
-      ledger?.ledgerVersion !== 1 ||
-      ledger.scenarioId !== evidence.scenarioId ||
-      !Array.isArray(ledger.entries)
+      result?.evidenceVersion !== 1 ||
+      result.scenarioId !== evidence.scenarioId ||
+      result.modelLedger?.ledgerVersion !== 1 ||
+      result.destinationLedger?.ledgerVersion !== 1 ||
+      !Array.isArray(result.lifecycle)
     )
-      throw new Error("integration.isolation.model-ledger");
+      throw new Error("integration.isolation.fixture-result");
     writeFileSync(
       resolve(directory, "model-ledger.json"),
-      `${JSON.stringify(ledger, undefined, 2)}\n`,
+      `${JSON.stringify(result.modelLedger, undefined, 2)}\n`,
     );
-    modelLedgers.delete(evidence.runId);
+    writeFileSync(
+      resolve(directory, "destination-ledger.json"),
+      `${JSON.stringify(result.destinationLedger, undefined, 2)}\n`,
+    );
+    writeFileSync(
+      resolve(directory, "fixture-lifecycle.json"),
+      `${JSON.stringify(
+        {
+          evidenceVersion: 1,
+          scenarioId: result.scenarioId,
+          artifactFileName: result.artifactFileName,
+          lifecycle: result.lifecycle,
+          eventKinds: result.eventKinds,
+        },
+        undefined,
+        2,
+      )}\n`,
+    );
+    fixtureResults.delete(evidence.runId);
   }
 };
 const createDriver = () => ({
@@ -384,6 +450,7 @@ const createDriver = () => ({
   buildMockServerImage,
   createNetwork,
   startCollector,
+  startRetrieval,
   startMockServer,
   runScenario,
   recordEvidence,

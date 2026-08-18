@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   lstatSync,
   mkdirSync,
@@ -7,14 +8,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execute = promisify(execFile);
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
   if (!value) throw new Error(`integration.runner.environment-${name}`);
   return value;
 };
-const endpoint = requiredEnvironment("AGENTSCOPE_COLLECTOR_URL");
-const modelServerEndpoint = requiredEnvironment("AGENTSCOPE_MODEL_SERVER_URL");
 const scenarioId = requiredEnvironment("AGENTSCOPE_SCENARIO_ID");
 const candidateRoot = requiredEnvironment("AGENTSCOPE_CANDIDATE_ROOT");
 const home = requiredEnvironment("HOME");
@@ -79,16 +81,15 @@ if (
 const scenario = manifest.scenarios.find(
   (candidate) => candidate.scenarioId === scenarioId,
 );
-const routeInventory = new Map(
-  modelRoutes.routes.map((route) => [route.routeId, route]),
-);
 if (
   modelRoutes.routeFixtureVersion !== 1 ||
   !Array.isArray(modelRoutes.routeIds) ||
   !Array.isArray(modelRoutes.routes) ||
   scenario === undefined ||
   !selection.scenarioIds.includes(scenarioId) ||
-  scenario.modelRoutes.some((routeId) => !routeInventory.has(routeId))
+  scenario.modelRoutes.some(
+    (routeId) => !modelRoutes.routeIds.includes(routeId),
+  )
 )
   throw new Error("integration.runner.model-routes");
 const directory = join(candidateRoot, "candidates", pointer.bundleIdentity);
@@ -135,103 +136,28 @@ for (const publicEndpoint of [
     if (error?.message === "integration.runner.public-egress") throw error;
   }
 }
-let response;
-for (let attempt = 0; attempt < 30; attempt += 1) {
-  try {
-    response = await fetch(endpoint);
-    if (response.ok) break;
-  } catch {
-    // The collector may still be starting inside the isolated network.
-  }
-  await new Promise((resolve) => setTimeout(resolve, 100));
-}
-if (!response?.ok) throw new Error("integration.runner.collector");
-
-let modelStatus;
-for (let attempt = 0; attempt < 60; attempt += 1) {
-  try {
-    modelStatus = await fetch(
-      `${modelServerEndpoint}/mockserver/retrieve?type=ACTIVE_EXPECTATIONS`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      },
-    );
-    if (modelStatus.ok) break;
-  } catch {
-    // MockServer may still be loading its initialization document.
-  }
-  await new Promise((resolve) => setTimeout(resolve, 100));
-}
-if (!modelStatus?.ok) throw new Error("integration.runner.model-server");
-
-const ledgerEntries = [];
-for (const routeId of scenario.modelRoutes) {
-  const route = routeInventory.get(routeId);
-  const url = new URL(route.path, modelServerEndpoint);
-  for (const [name, value] of Object.entries(route.query ?? {}))
-    url.searchParams.set(name, value);
-  const body = JSON.stringify(route.requestBody);
-  const routeResponse = await fetch(url, {
-    method: route.method,
-    headers: route.headers,
-    body,
-  });
-  if (
-    routeResponse.status !== 200 ||
-    JSON.stringify(await routeResponse.json()) !==
-      JSON.stringify(route.responseBody)
-  )
-    throw new Error("integration.runner.model-response");
-  ledgerEntries.push({
-    routeId: route.routeId,
-    provider: route.provider,
-    method: route.method,
-    path: route.path,
-    bodyBytes: Buffer.byteLength(body),
-  });
-}
-const unexpectedPath = "/agentscope-unmatched";
-const unmatched = await fetch(`${modelServerEndpoint}${unexpectedPath}`);
-if (unmatched.status !== 404)
-  throw new Error("integration.runner.model-unmatched");
-ledgerEntries.push({
-  routeId: "unmatched",
-  provider: "none",
-  method: "GET",
-  path: unexpectedPath,
-  bodyBytes: 0,
-});
-
-const recordedResponse = await fetch(
-  `${modelServerEndpoint}/mockserver/retrieve?type=REQUESTS`,
-  {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  },
+const cliArtifact = evidence.artifacts.find(
+  ({ id }) => id === "agentscope-cli",
 );
-const recordedRequests = await recordedResponse.json();
-const observed = recordedRequests.map(({ method, path }) => ({ method, path }));
-const expected = ledgerEntries.map(({ method, path }) => ({ method, path }));
-if (
-  !recordedResponse.ok ||
-  JSON.stringify(observed) !== JSON.stringify(expected)
-)
-  throw new Error("integration.runner.model-recording");
+if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
+const { stdout: fixtureOutput } = await execute(
+  process.execPath,
+  [
+    "/opt/agentscope/platform-fixture.mjs",
+    "--artifact",
+    join(directory, "files", cliArtifact.fileName),
+  ],
+  { encoding: "utf8", maxBuffer: 1024 * 1024 },
+);
+const fixtureResult = fixtureOutput
+  .split("\n")
+  .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
+if (!fixtureResult) throw new Error("integration.runner.fixture-result");
 
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
   throw new Error("integration.runner.expected-failure");
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "interruption")
   await new Promise(() => setInterval(() => {}, 1_000));
 writeFileSync(join(ledger, "scenario.json"), '{"status":"passed"}\n');
-const modelLedger = {
-  ledgerVersion: 1,
-  scenarioId,
-  entries: ledgerEntries,
-};
-console.log(
-  `AGENTSCOPE_MODEL_LEDGER=${Buffer.from(JSON.stringify(modelLedger)).toString("base64url")}`,
-);
+console.log(fixtureResult);
 console.log("Integration scenario passed with public egress denied.");

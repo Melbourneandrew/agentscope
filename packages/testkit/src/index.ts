@@ -7,6 +7,7 @@ import {
 
 export * from "./harness.js";
 export * from "./model-routes.js";
+export * from "./platform-fixture.js";
 
 export interface MockRequest {
   method: string;

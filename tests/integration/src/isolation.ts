@@ -31,6 +31,7 @@ export interface IsolationPlan {
   readonly mockServerImageTag: string;
   readonly networkName: string;
   readonly collectorName: string;
+  readonly retrievalName: string;
   readonly mockServerName: string;
   readonly scenarioName: string;
   readonly tmpfsMounts: readonly string[];
@@ -59,6 +60,7 @@ export interface IsolationDriver {
   buildMockServerImage(plan: IsolationPlan): Promise<string>;
   createNetwork(plan: IsolationPlan): Promise<void>;
   startCollector(plan: IsolationPlan): Promise<void>;
+  startRetrieval(plan: IsolationPlan): Promise<void>;
   startMockServer(plan: IsolationPlan): Promise<void>;
   runScenario(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   recordEvidence(evidence: IsolationEvidence): Promise<void>;
@@ -94,6 +96,7 @@ export const createIsolationPlan = (input: {
     mockServerImageTag: `${prefix}:mockserver`,
     networkName: `${prefix}-network`,
     collectorName: `${prefix}-collector`,
+    retrievalName: `${prefix}-retrieval`,
     mockServerName: `${prefix}-mockserver`,
     scenarioName: `${prefix}-scenario`,
     tmpfsMounts: SCENARIO_TMPFS_MOUNTS,
@@ -107,6 +110,7 @@ const cleanup = async (
   const operations = [
     () => driver.removeContainer(plan.scenarioName),
     () => driver.removeContainer(plan.collectorName),
+    () => driver.removeContainer(plan.retrievalName),
     () => driver.removeContainer(plan.mockServerName),
     () => driver.removeNetwork(plan.networkName),
     () => driver.removeImage(plan.imageTag),
@@ -150,6 +154,7 @@ export const executeIsolationPlan = async (
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
     await driver.createNetwork(plan);
     await driver.startCollector(plan);
+    await driver.startRetrieval(plan);
     await driver.startMockServer(plan);
     await driver.runScenario(plan, signal);
   } catch (error) {

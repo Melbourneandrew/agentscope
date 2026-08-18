@@ -75,6 +75,10 @@ const driver = () => {
       calls.push("collector");
       return Promise.resolve();
     }),
+    startRetrieval: vi.fn(() => {
+      calls.push("retrieval");
+      return Promise.resolve();
+    }),
     startMockServer: vi.fn(() => {
       calls.push("mockserver");
       return Promise.resolve();
@@ -104,6 +108,7 @@ describe("scenario isolation", () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(first.networkName).not.toBe(second.networkName);
     expect(first.collectorName).not.toBe(second.collectorName);
+    expect(first.retrievalName).not.toBe(second.retrievalName);
     expect(first.mockServerName).not.toBe(second.mockServerName);
     expect(first.scenarioName).not.toBe(second.scenarioName);
     expect(first.tmpfsMounts).toEqual([
@@ -136,10 +141,12 @@ describe("scenario isolation", () => {
       "build-mockserver",
       "network",
       "collector",
+      "retrieval",
       "mockserver",
       "scenario",
       "container:agentscope-int-0123456789abcdef-scenario",
       "container:agentscope-int-0123456789abcdef-collector",
+      "container:agentscope-int-0123456789abcdef-retrieval",
       "container:agentscope-int-0123456789abcdef-mockserver",
       "remove-network:agentscope-int-0123456789abcdef-network",
       "image:agentscope-int-0123456789abcdef:candidate",
