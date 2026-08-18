@@ -8,6 +8,7 @@ import {
   getDestinationDescriptor,
   parseDestinationSettings,
   prepareDestinationReporter,
+  prepareDestinationRetriever,
   resolveDestinationConnection,
   type DestinationDescriptor,
   type DestinationDescriptorInput,
@@ -17,6 +18,11 @@ import {
 import { validateDestinationEndpoint } from "./endpoint.js";
 import { createDestinationConnectionId } from "./identity.js";
 import { createDestinationReporter, type Reporter } from "./reporter.js";
+import {
+  createDestinationRetriever,
+  createRetrieverFailure,
+  isDestinationRetriever,
+} from "./retriever.js";
 import { bindDestinationTransport } from "./transport.js";
 
 const connectionId = createDestinationConnectionId(
@@ -1017,6 +1023,74 @@ describe("DestinationDescriptor reporter preparation", () => {
       endpoint: null,
       transport: null,
     });
+  });
+});
+
+describe("DestinationDescriptor retrieval capability", () => {
+  it("advertises only a complete search-and-get Retriever factory", () => {
+    const retriever = createDestinationRetriever({
+      search: () =>
+        Promise.resolve(createRetrieverFailure("retrieval-unsupported")),
+      get: () => Promise.resolve(createRetrieverFailure("not-found")),
+    });
+    const factory = vi.fn(() => retriever);
+    const descriptor = defineDestinationDescriptor(
+      remoteInput({ createRetriever: factory }),
+    );
+    expect(descriptor.retrievalSupport).toBe("search-and-get");
+    const prepared = resolveDestinationConnection(descriptor, {
+      connectionId,
+      settings: {},
+    });
+    const exactTransport = bindDestinationTransport(prepared.endpoint!, () =>
+      Promise.resolve({ status: 200, headers: {}, body: new Uint8Array() }),
+    );
+    const created = prepareDestinationRetriever(prepared, {
+      credentials: { "secret-key": "secret" },
+      transport: exactTransport,
+    });
+    expect(created).toBe(retriever);
+    expect(isDestinationRetriever(created)).toBe(true);
+    expect(factory).toHaveBeenCalledOnce();
+
+    const writeOnly = defineDestinationDescriptor(remoteInput());
+    expect(writeOnly.retrievalSupport).toBe("unsupported");
+    const writeOnlyPrepared = resolveDestinationConnection(writeOnly, {
+      connectionId,
+      settings: {},
+    });
+    const writeOnlyTransport = bindDestinationTransport(
+      writeOnlyPrepared.endpoint!,
+      () =>
+        Promise.resolve({ status: 200, headers: {}, body: new Uint8Array() }),
+    );
+    expect(() =>
+      prepareDestinationRetriever(writeOnlyPrepared, {
+        credentials: { "secret-key": "secret" },
+        transport: writeOnlyTransport,
+      }),
+    ).toThrowError(DestinationDescriptorError);
+    expect(() =>
+      defineDestinationDescriptor(remoteInput({ createRetriever: 1 as never })),
+    ).toThrowError(DestinationDescriptorError);
+    const malformed = defineDestinationDescriptor(
+      remoteInput({ createRetriever: (() => ({})) as never }),
+    );
+    const malformedPrepared = resolveDestinationConnection(malformed, {
+      connectionId,
+      settings: {},
+    });
+    const malformedTransport = bindDestinationTransport(
+      malformedPrepared.endpoint!,
+      () =>
+        Promise.resolve({ status: 200, headers: {}, body: new Uint8Array() }),
+    );
+    expect(() =>
+      prepareDestinationRetriever(malformedPrepared, {
+        credentials: { "secret-key": "secret" },
+        transport: malformedTransport,
+      }),
+    ).toThrowError(DestinationDescriptorError);
   });
 });
 

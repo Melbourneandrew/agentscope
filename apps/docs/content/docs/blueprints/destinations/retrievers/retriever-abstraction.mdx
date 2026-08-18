@@ -11,7 +11,7 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 ### ADR-001: Define one internal Retriever port
 
-**Decision:** `packages/destinations/core` owns the internal `Retriever` port and its Zod-validated DTOs. Every retriever implements exactly two operations: `search(TraceSearchRequest, RetrievalContext)` returning `TraceSearchPage`, and `get(TraceGetRequest, RetrievalContext)` returning `RetrievedTrace`. Concrete destination clients and provider DTOs remain private to their destination package.
+**Decision:** `packages/destinations/core` owns the internal `Retriever` port and its runtime-validated, process-branded DTOs. Every retriever implements exactly two operations: `search(TraceSearchRequest, RetrievalContext)` returning `TraceSearchPage`, and `get(TraceGetRequest, RetrievalContext)` returning `RetrievedTrace`. Concrete destination clients and provider DTOs remain private to their destination package.
 
 **Context:** The CLI and coding agents need one predictable retrieval surface, while Langfuse and Local SQLite have different APIs, identities, and pagination mechanisms.
 
@@ -19,7 +19,7 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 ### ADR-002: Make search and get the mandatory portable capability
 
-**Decision:** A destination advertises retrieval only when it faithfully implements both portable operations. Search accepts the canonical filter vocabulary and returns bounded summaries; get accepts a destination-qualified trace locator and returns a normalized trace. A write-only destination omits the Retriever factory and produces `RETRIEVAL_UNSUPPORTED`.
+**Decision:** A destination advertises retrieval only when its descriptor supplies one synchronous factory that returns a runtime-recognized Retriever implementing both portable operations. Search accepts the canonical filter vocabulary and returns bounded summaries; get accepts a destination-qualified trace locator and returns a normalized trace. Core resolves and validates the destination configuration and endpoint before it binds the same origin-scoped credentials and transport capability used by the Reporter family. A write-only destination omits the Retriever factory and produces `RETRIEVAL_UNSUPPORTED` before credential binding.
 
 **Context:** Capability flags for individual filters would make the same CLI command behave unpredictably across destinations. Pretending that an unsupported filter succeeded is worse than rejecting the destination's retrieval capability during configuration or Doctor checks.
 
@@ -27,7 +27,7 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 ### ADR-003: Keep destination selection outside the Retriever
 
-**Decision:** `--destination <connection-name>` is required for every search and get. Core resolves the immutable connection identifier and exact configuration snapshot before calling the Retriever; the Retriever receives a resolved connection context and cannot select, fall back to, or fan out to another connection.
+**Decision:** `--destination <connection-name>` is required for every search and get. Core resolves the immutable connection identifier and exact configuration snapshot before calling the Retriever; the Retriever receives a resolved connection context and cannot select, fall back to, or fan out to another connection. Search requests and get locators are process-branded after exact connection and destination-type validation, and a result is accepted only through the matching operation boundary.
 
 **Context:** A user may configure multiple Langfuse projects and a Local SQLite database. A type name such as `langfuse` is not enough to identify which repository is queried.
 
@@ -35,7 +35,7 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 ### ADR-004: Use typed terminal outcomes
 
-**Decision:** Retriever operations return success DTOs or stable typed failures: invalid query, unknown connection, unsupported retrieval, unauthorized, forbidden, rate limited, unavailable, deadline exceeded, malformed response, incompatible trace, and not found. They honor an `AbortSignal`, absolute deadline, response-byte limits, item limits, and provider-request limits supplied by Core.
+**Decision:** Retriever operations return success DTOs or stable typed failures: invalid query, unknown connection, unsupported retrieval, unauthorized, forbidden, rate limited, unavailable, deadline exceeded, malformed response, incompatible trace, and not found. Core reconstructs every returned value through the family runtime, races the operation against a same-process monotonic deadline and `AbortSignal`, and rejects malformed, oversized, late, or unbranded results. First-party Retriever implementations must honor the provider-request count supplied in the operation context; the shared contract suite verifies that limit through their bound transport ledger.
 
 **Context:** Network and repository failures need automation-safe meaning without leaking provider payloads, secrets, or stack traces.
 
@@ -43,7 +43,7 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 ### ADR-005: Treat all retrieved content as untrusted
 
-**Decision:** A Retriever validates provider DTOs but returns an untrusted normalized candidate. Core enforces size and graph limits, reads only supported Protocol representations, reapplies the current non-weakening redaction policy, applies the retrieval summary allowlist, and brands the result before presentation.
+**Decision:** A Retriever validates provider DTOs but returns an untrusted normalized candidate. The family boundary accepts either a strictly parsed supported persisted envelope or a strictly parsed canonical graph, verifies its canonical trace ID against the selected `TraceLocator`, and never grants the Protocol redacted-envelope brand. Core then reapplies the current non-weakening redaction policy, applies the retrieval summary allowlist, and constructs presentation DTOs.
 
 **Context:** A destination can contain data written by older Agentscope releases, another producer, or a compromised service. Data that was acceptable when reported may no longer satisfy current disclosure policy.
 

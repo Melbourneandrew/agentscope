@@ -24,6 +24,7 @@ import {
   type JsonObject,
 } from "./plain-data.js";
 import { isDestinationReporter, type Reporter } from "./reporter.js";
+import { isDestinationRetriever, type Retriever } from "./retriever.js";
 import {
   isBoundDestinationTransport,
   type BoundDestinationTransport,
@@ -47,6 +48,8 @@ export type ReporterFactoryContext<Settings extends JsonObject> = Readonly<{
   endpoint: ValidatedDestinationEndpoint | null;
   transport: BoundDestinationTransport | null;
 }>;
+export type RetrieverFactoryContext<Settings extends JsonObject> =
+  ReporterFactoryContext<Settings>;
 
 declare const destinationDescriptorBrand: unique symbol;
 
@@ -61,6 +64,7 @@ export type DestinationDescriptor<Settings extends JsonObject = JsonObject> =
     credentialSlots: readonly CredentialSlot[];
     documentationPath: string;
     deliveryIdentitySupport: DeliveryIdentitySupport;
+    retrievalSupport: "search-and-get" | "unsupported";
     transport: DestinationTransportDeclaration;
     readonly [destinationDescriptorBrand]: Settings;
   }>;
@@ -85,6 +89,7 @@ export type DestinationDescriptorInput<Settings extends JsonObject> = Readonly<{
         resolveEndpoint: (settings: Settings) => RemoteEndpointCandidate;
       }>;
   createReporter: (context: ReporterFactoryContext<Settings>) => Reporter;
+  createRetriever?: (context: RetrieverFactoryContext<Settings>) => Retriever;
 }>;
 
 type StoredDescriptor = Readonly<{
@@ -92,6 +97,7 @@ type StoredDescriptor = Readonly<{
   settingKeys: ReadonlySet<string>;
   resolveEndpoint?: (settings: JsonObject) => RemoteEndpointCandidate;
   createReporter: (context: ReporterFactoryContext<JsonObject>) => Reporter;
+  createRetriever?: (context: RetrieverFactoryContext<JsonObject>) => Retriever;
 }>;
 
 const descriptorRegistry = new WeakMap<object, StoredDescriptor>();
@@ -583,6 +589,29 @@ const exactKeys = (
 ): boolean =>
   objectKeys(descriptors).sort().join(",") === [...expected].sort().join(",");
 
+const descriptorInputKeysAreValid = (
+  descriptors: PropertyDescriptorMap,
+): boolean => {
+  const required = [
+    "commandName",
+    "createReporter",
+    "credentialSlots",
+    "defaultSettings",
+    "deliveryIdentitySupport",
+    "descriptorVersion",
+    "destinationType",
+    "documentationPath",
+    "settingsSchema",
+    "settingsVersion",
+    "transport",
+  ];
+  const keys = objectKeys(descriptors);
+  return (
+    required.every((key) => keys.includes(key)) &&
+    keys.every((key) => required.includes(key) || key === "createRetriever")
+  );
+};
+
 const observeUnexpectedPromise = (value: unknown): void => {
   try {
     void reflectApply(promiseThen, value, [() => undefined, () => undefined]);
@@ -743,22 +772,7 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
   try {
     if (typeof input !== "object" || input === null) return invalid();
     const descriptors = objectGetOwnPropertyDescriptors(input);
-    if (
-      !exactKeys(descriptors, [
-        "commandName",
-        "createReporter",
-        "credentialSlots",
-        "defaultSettings",
-        "deliveryIdentitySupport",
-        "descriptorVersion",
-        "destinationType",
-        "documentationPath",
-        "settingsSchema",
-        "settingsVersion",
-        "transport",
-      ])
-    )
-      return invalid();
+    if (!descriptorInputKeysAreValid(descriptors)) return invalid();
     if (inputValue(descriptors, "descriptorVersion") !== 1) return invalid();
     const settingsVersion = inputValue(descriptors, "settingsVersion");
     if (
@@ -820,6 +834,14 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
     } else return invalid();
     const factory = inputValue(descriptors, "createReporter");
     if (typeof factory !== "function") return invalid();
+    const retrieverFactory = descriptors.createRetriever
+      ? inputValue(descriptors, "createRetriever")
+      : undefined;
+    if (
+      retrieverFactory !== undefined &&
+      typeof retrieverFactory !== "function"
+    )
+      return invalid();
 
     const descriptor = Object.freeze({
       descriptorVersion: 1 as const,
@@ -837,6 +859,8 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
         inputValue(descriptors, "documentationPath"),
       ),
       deliveryIdentitySupport,
+      retrievalSupport:
+        retrieverFactory === undefined ? "unsupported" : "search-and-get",
       transport,
     }) as DestinationDescriptor<Settings>;
     descriptorRegistry.set(descriptor, {
@@ -846,6 +870,13 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
       createReporter: factory as (
         context: ReporterFactoryContext<JsonObject>,
       ) => Reporter,
+      ...(retrieverFactory === undefined
+        ? {}
+        : {
+            createRetriever: retrieverFactory as (
+              context: RetrieverFactoryContext<JsonObject>,
+            ) => Retriever,
+          }),
     });
     return descriptor;
   } catch {
@@ -890,10 +921,12 @@ const preparedConnectionRegistry = new WeakMap<
   StoredPreparedConnection
 >();
 
-export type PrepareReporterInput = Readonly<{
+export type PrepareDestinationCapabilityInput = Readonly<{
   credentials: unknown;
   transport: BoundDestinationTransport | null;
 }>;
+export type PrepareReporterInput = PrepareDestinationCapabilityInput;
+export type PrepareRetrieverInput = PrepareDestinationCapabilityInput;
 
 const resolveRemoteEndpoint = (
   resolver: (settings: JsonObject) => RemoteEndpointCandidate,
@@ -956,41 +989,77 @@ export const resolveDestinationConnection = <Settings extends JsonObject>(
   }
 };
 
+const prepareCapabilityContext = (
+  prepared: PreparedDestinationConnection,
+  input: PrepareDestinationCapabilityInput,
+): Readonly<{
+  stored: StoredPreparedConnection;
+  context: ReporterFactoryContext<JsonObject>;
+}> => {
+  const stored = preparedConnectionRegistry.get(prepared);
+  if (!stored || typeof input !== "object" || input === null) return invalid();
+  const descriptors = objectGetOwnPropertyDescriptors(input);
+  if (!exactKeys(descriptors, ["credentials", "transport"])) return invalid();
+  const transportInput = inputValue(descriptors, "transport");
+  let transport: BoundDestinationTransport | null = null;
+  if (prepared.endpoint) {
+    if (!isBoundDestinationTransport(transportInput)) return invalid();
+    if (transportInput.endpoint !== prepared.endpoint) return invalid();
+    transport = transportInput;
+  } else if (transportInput !== null) return invalid();
+  const credentials = createReporterCredentialAccessor(
+    stored.descriptor.credentialSlots,
+    inputValue(descriptors, "credentials"),
+    prepared.endpoint?.origin ?? null,
+  );
+  return Object.freeze({
+    stored,
+    context: Object.freeze({
+      connectionId: prepared.connectionId,
+      settings: stored.settings,
+      credentials,
+      endpoint: prepared.endpoint,
+      transport,
+    }),
+  });
+};
+
 export const prepareDestinationReporter = (
   prepared: PreparedDestinationConnection,
   input: PrepareReporterInput,
 ): Reporter => {
   try {
-    const storedPrepared = preparedConnectionRegistry.get(prepared);
-    if (!storedPrepared || typeof input !== "object" || input === null)
-      return invalid();
-    const descriptors = objectGetOwnPropertyDescriptors(input);
-    if (!exactKeys(descriptors, ["credentials", "transport"])) return invalid();
-    const transportInput = inputValue(descriptors, "transport");
-    let transport: BoundDestinationTransport | null = null;
-    if (prepared.endpoint) {
-      if (!isBoundDestinationTransport(transportInput)) return invalid();
-      if (transportInput.endpoint !== prepared.endpoint) return invalid();
-      transport = transportInput;
-    } else if (transportInput !== null) return invalid();
-    const credentials = createReporterCredentialAccessor(
-      storedPrepared.descriptor.credentialSlots,
-      inputValue(descriptors, "credentials"),
-      prepared.endpoint?.origin ?? null,
+    const preparedCapability = prepareCapabilityContext(prepared, input);
+    const reporter = preparedCapability.stored.storedDescriptor.createReporter(
+      preparedCapability.context,
     );
-    const context = Object.freeze({
-      connectionId: prepared.connectionId,
-      settings: storedPrepared.settings,
-      credentials,
-      endpoint: prepared.endpoint,
-      transport,
-    });
-    const reporter = storedPrepared.storedDescriptor.createReporter(context);
     if (!isDestinationReporter(reporter)) {
       observeUnexpectedPromise(reporter);
       return invalid();
     }
     return reporter;
+  } catch {
+    return invalid();
+  }
+};
+
+export const prepareDestinationRetriever = (
+  prepared: PreparedDestinationConnection,
+  input: PrepareRetrieverInput,
+): Retriever => {
+  try {
+    const stored = preparedConnectionRegistry.get(prepared);
+    if (!stored?.storedDescriptor.createRetriever) return invalid();
+    const preparedCapability = prepareCapabilityContext(prepared, input);
+    const factory = preparedCapability.stored.storedDescriptor.createRetriever;
+    /* v8 ignore next -- the same immutable stored descriptor was checked before credential binding. */
+    if (!factory) return invalid();
+    const retriever = factory(preparedCapability.context);
+    if (!isDestinationRetriever(retriever)) {
+      observeUnexpectedPromise(retriever);
+      return invalid();
+    }
+    return retriever;
   } catch {
     return invalid();
   }

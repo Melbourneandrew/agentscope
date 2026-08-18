@@ -2,14 +2,27 @@ import { z } from "zod";
 
 import {
   createDestinationConnectionId,
+  createDestinationRetriever,
+  createRetrieverFailure,
+  createRetrieverSearchPage,
+  createRetrieverSuccess,
+  createTraceLocator,
+  createTraceSummary,
   defineDestinationDescriptor,
   executeBoundDestinationRequest,
   parseDestinationSettings,
 } from "./dist/index.js";
 import {
   bindDestinationTransport,
+  createRetrievalContext,
   createReporterDeadline,
+  createTraceSearchCursor,
+  createTraceSearchRequest,
+  invokeRetrieverSearch,
+  normalizeTraceSearchQuery,
   prepareDestinationReporter,
+  prepareDestinationRetriever,
+  readTraceSearchCursor,
   resolveDestinationConnection,
 } from "./dist/core-orchestration.js";
 
@@ -121,6 +134,142 @@ try {
   }
   if (transportCalls !== 0)
     throw new Error("Invalid destination request reached the executor.");
+
+  const retrieverDescriptor = defineDestinationDescriptor(
+    input({
+      createRetriever: () =>
+        createDestinationRetriever({
+          search: () =>
+            Promise.resolve(createRetrieverFailure("retrieval-unsupported")),
+          get: () => Promise.resolve(createRetrieverFailure("not-found")),
+        }),
+    }),
+  );
+  const retrieverPrepared = resolveDestinationConnection(retrieverDescriptor, {
+    connectionId,
+    settings: { endpoint: "https://example.com/tenant-a/" },
+  });
+  const retrieverTransport = bindDestinationTransport(
+    retrieverPrepared.endpoint,
+    async () => ({ status: 200, headers: {}, body: new Uint8Array() }),
+  );
+  const retriever = prepareDestinationRetriever(retrieverPrepared, {
+    credentials: {},
+    transport: retrieverTransport,
+  });
+  const query = normalizeTraceSearchQuery(
+    {},
+    {
+      commandStartedAt: "2026-08-17T00:00:00Z",
+      knownHarnessIds: ["codex"],
+    },
+  );
+  const cursorBinding = {
+    connectionId,
+    destinationType: retrieverDescriptor.destinationType,
+    configurationIdentity: "artifact-config-v1",
+    queryFingerprint: query.fingerprint,
+    upperTimeBound: query.to,
+  };
+  const cursor = createTraceSearchCursor(cursorBinding, { offset: 1 });
+  if (readTraceSearchCursor(cursor, cursorBinding).offset !== 1)
+    throw new Error("Retriever cursor lost its provider token.");
+  for (const rewritten of [`${cursor}!`, `${cursor}=`]) {
+    try {
+      readTraceSearchCursor(rewritten, cursorBinding);
+      throw new Error("Non-canonical Retriever cursor was accepted.");
+    } catch (error) {
+      if (error?.code !== "destination.trace-cursor.invalid") throw error;
+    }
+  }
+  const retrievalResult = await invokeRetrieverSearch(
+    retriever,
+    createTraceSearchRequest(
+      query,
+      {
+        connectionId,
+        destinationType: retrieverDescriptor.destinationType,
+      },
+      readTraceSearchCursor(cursor, cursorBinding),
+    ),
+    createRetrievalContext({
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+      maximumResponseBytes: 1_024,
+      maximumProviderRequests: 1,
+    }),
+  );
+  if (
+    retrievalResult.ok ||
+    retrievalResult.code !== "retrieval-unsupported" ||
+    retrieverDescriptor.retrievalSupport !== "search-and-get"
+  )
+    throw new Error("Retriever dist contract verification failed.");
+  const otherConnectionId = createDestinationConnectionId(
+    "destination-connection-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  );
+  const wrongSummary = createTraceSummary({
+    locator: createTraceLocator({
+      connectionId: otherConnectionId,
+      destinationType: retrieverDescriptor.destinationType,
+      traceId: "0123456789abcdef0123456789abcdef",
+    }),
+    startTime: "2026-08-17T00:00:00.000Z",
+    models: [],
+    status: "ok",
+    spanCount: 1,
+    tags: [],
+  });
+  const wrongPage = createRetrieverSearchPage({
+    summaries: [wrongSummary],
+    state: "exhaustive",
+    consistency: "snapshot",
+  });
+  const swappingRetriever = createDestinationRetriever({
+    search: () => Promise.resolve(createRetrieverSuccess(wrongPage)),
+    get: () => Promise.resolve(createRetrieverFailure("not-found")),
+  });
+  const swapped = await invokeRetrieverSearch(
+    swappingRetriever,
+    createTraceSearchRequest(query, {
+      connectionId,
+      destinationType: retrieverDescriptor.destinationType,
+    }),
+    createRetrievalContext({
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+      maximumResponseBytes: 4_096,
+      maximumProviderRequests: 1,
+    }),
+  );
+  if (swapped.ok || swapped.code !== "malformed-response")
+    throw new Error("Retriever accepted a cross-connection summary.");
+  const asyncRetrieverDescriptor = defineDestinationDescriptor(
+    input({
+      createRetriever: async () => {
+        throw new Error("CANARY_RETRIEVER_SECRET");
+      },
+    }),
+  );
+  const asyncRetrieverPrepared = resolveDestinationConnection(
+    asyncRetrieverDescriptor,
+    {
+      connectionId,
+      settings: { endpoint: "https://example.com/tenant-a/" },
+    },
+  );
+  const asyncRetrieverTransport = bindDestinationTransport(
+    asyncRetrieverPrepared.endpoint,
+    async () => ({ status: 200, headers: {}, body: new Uint8Array() }),
+  );
+  expectFixedRejection(() =>
+    prepareDestinationRetriever(asyncRetrieverPrepared, {
+      credentials: {},
+      transport: asyncRetrieverTransport,
+    }),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
 
   let weakened = false;
   const refinementSchema = z.strictObject({
