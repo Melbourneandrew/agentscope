@@ -9,6 +9,57 @@ const collections = ["candidates", "contexts", "runs"];
 const maximumFiles = 4096;
 const maximumFileBytes = 128 * 1024 * 1024;
 const maximumRetainedBytes = 512 * 1024 * 1024;
+const activeMarkerPattern = /^([a-f0-9]{16})\.json$/u;
+const processIsAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw new Error("integration.operations.active", { cause: error });
+  }
+};
+const parseActiveMarker = (root, entry) => {
+  const match = activeMarkerPattern.exec(entry.name);
+  const path = resolve(root, entry.name);
+  let marker;
+  try {
+    marker = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    marker = undefined;
+  }
+  if (
+    !entry.isFile() ||
+    entry.isSymbolicLink() ||
+    match === null ||
+    JSON.stringify(Object.keys(marker ?? {}).sort()) !==
+      JSON.stringify(["activeVersion", "pid", "runId"]) ||
+    marker?.activeVersion !== 1 ||
+    marker?.runId !== match[1] ||
+    !Number.isSafeInteger(marker?.pid) ||
+    marker.pid < 1
+  )
+    throw new Error("integration.operations.active");
+  return marker;
+};
+
+const assertNoActiveRuns = () => {
+  const root = resolve(artifactsRoot, "active");
+  try {
+    const status = lstatSync(root);
+    if (!status.isDirectory() || status.isSymbolicLink())
+      throw new Error("integration.operations.active");
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const marker = parseActiveMarker(root, entry);
+      if (processIsAlive(marker.pid))
+        throw new Error("integration.operations.active");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+};
+
+assertNoActiveRuns();
 
 const directoryBytes = (root) => {
   const pending = [root];

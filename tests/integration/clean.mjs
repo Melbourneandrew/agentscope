@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   lstatSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -67,6 +68,42 @@ const ownedFiles = new Set([
   "current-model-routes.json",
   "current-selection.json",
 ]);
+const activeMarkerPattern = /^([a-f0-9]{16})\.json$/u;
+const processIsAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw new Error("integration.cleanup.active", { cause: error });
+  }
+};
+const parseActiveMarker = (root, entry) => {
+  const match = activeMarkerPattern.exec(entry.name);
+  const path = resolve(root, entry.name);
+  let value;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    value = undefined;
+  }
+  if (
+    !entry.isFile() ||
+    entry.isSymbolicLink() ||
+    match === null ||
+    value === null ||
+    typeof value !== "object" ||
+    JSON.stringify(Object.keys(value).sort()) !==
+      JSON.stringify(["activeVersion", "pid", "runId"]) ||
+    value.activeVersion !== 1 ||
+    value.runId !== match[1] ||
+    !Number.isSafeInteger(value.pid) ||
+    value.pid < 1
+  )
+    throw new Error("integration.cleanup.path");
+  if (processIsAlive(value.pid)) throw new Error("integration.cleanup.active");
+  return { path, bytes: statSync(path).size };
+};
 const directoryBytes = (root) => {
   let bytes = 0;
   const pending = [root];
@@ -103,6 +140,16 @@ try {
       if (!ownedFiles.has(entry.name))
         throw new Error("integration.cleanup.path");
       diskTargets.push({ path: target, bytes: statSync(target).size });
+      continue;
+    }
+    if (entry.name === "active") {
+      if (!entry.isDirectory() || entry.isSymbolicLink())
+        throw new Error("integration.cleanup.path");
+      diskTargets.push(
+        ...readdirSync(target, { withFileTypes: true }).map((marker) =>
+          parseActiveMarker(target, marker),
+        ),
+      );
       continue;
     }
     const pattern = ownedDirectories[entry.name];
@@ -164,6 +211,17 @@ for (const directory of Object.keys(ownedDirectories)) {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+}
+try {
+  assertOwnedRoot();
+  const activeRoot = resolve(artifactsRoot, "active");
+  const status = lstatSync(activeRoot);
+  if (!status.isDirectory() || status.isSymbolicLink())
+    throw new Error("integration.cleanup.path");
+  if (readdirSync(activeRoot).length === 0)
+    rmSync(activeRoot, { recursive: true });
+} catch (error) {
+  if (error?.code !== "ENOENT") throw error;
 }
 try {
   assertOwnedRoot();

@@ -31,7 +31,7 @@ The integration matrix needs reproducible harness images, a declared compatibili
 
 **Context:** One all-harness image couples unrelated release cycles and wastes cache space, while one sequential job makes feedback too slow. Sharing a container would compromise isolation.
 
-**Consequences:** A failed shard can replay one manifest entry with the same image digest and prepared artifacts. The matrix must not depend on test execution order or a shared mutable home.
+**Consequences:** A failed shard can replay one manifest entry with the same image digest and prepared artifacts; manual CI accepts either that exact scenario identity or a deterministic shard selector. The matrix must not depend on test execution order or a shared mutable home.
 
 ### ADR-004: Retain only sanitized failure evidence
 
@@ -39,4 +39,4 @@ The integration matrix needs reproducible harness images, a declared compatibili
 
 **Context:** The artifacts are needed to investigate harness drift but can contain prompts, paths, or request metadata.
 
-**Consequences:** Artifact redaction runs before upload, has an explicit retention period, and is covered by unit tests. Raw transcripts, credentials, and complete production trace payloads are never CI artifacts.
+**Consequences:** The fixture emits bounded sanitized checkpoints as model and destination work completes, so an authentic sidecar or harness failure retains the latest partial ledgers rather than only a terminal status. Artifact redaction runs before upload, has an explicit retention period, and is covered by unit tests. Raw transcripts, credentials, and complete production trace payloads are never CI artifacts.

@@ -140,20 +140,30 @@ const cliArtifact = evidence.artifacts.find(
   ({ id }) => id === "agentscope-cli",
 );
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
-const { stdout: fixtureOutput } = await execute(
-  process.execPath,
-  [
-    "/opt/agentscope/platform-fixture.mjs",
-    "--artifact",
-    join(directory, "files", cliArtifact.fileName),
-  ],
-  { encoding: "utf8", maxBuffer: 1024 * 1024 },
-);
+let fixtureOutput;
+let fixtureFailure;
+try {
+  ({ stdout: fixtureOutput } = await execute(
+    process.execPath,
+    [
+      "/opt/agentscope/platform-fixture.mjs",
+      "--artifact",
+      join(directory, "files", cliArtifact.fileName),
+    ],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 },
+  ));
+} catch (error) {
+  fixtureOutput = `${error?.stdout ?? ""}`;
+  fixtureFailure = error;
+}
 const fixtureResult = fixtureOutput
   .split("\n")
-  .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
+  .filter((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="))
+  .at(-1);
 if (!fixtureResult) throw new Error("integration.runner.fixture-result");
 console.log(fixtureResult);
+if (fixtureFailure !== undefined)
+  throw new Error("integration.runner.fixture-failed");
 
 if (process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "failure")
   throw new Error("integration.runner.expected-failure");

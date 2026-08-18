@@ -32,13 +32,16 @@ const runDirectories = () =>
         )
       : [],
   );
-const runOnce = () =>
+const runOnce = (testMode) =>
   execute(process.execPath, [resolve(integrationRoot, "run-scenarios.mjs")], {
     cwd: workspaceRoot,
     env: {
       ...process.env,
       AGENTSCOPE_INTEGRATION_CONCURRENCY: "1",
       AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000",
+      ...(testMode === undefined
+        ? {}
+        : { AGENTSCOPE_INTEGRATION_TEST_MODE: testMode }),
     },
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
@@ -71,11 +74,46 @@ const verifySymlinkedRootIsRejected = () => {
 
 mkdirSync(resolve(workspaceRoot, "artifacts"), { recursive: true });
 writeFileSync(sentinel, "HOST_SENTINEL\n");
-const before = runDirectories();
 try {
+  const beforeFailure = runDirectories();
+  let sidecarFailureRejected = false;
+  try {
+    await runOnce("sidecar-failure");
+  } catch {
+    sidecarFailureRejected = true;
+  }
+  const failedRuns = [...runDirectories()].filter(
+    (name) => !beforeFailure.has(name),
+  );
+  if (!sidecarFailureRejected || failedRuns.length !== 1)
+    throw new Error("integration.operations.failure-evidence");
+  const failedDirectory = resolve(runsRoot, failedRuns[0]);
+  const failedEvidence = JSON.parse(
+    readFileSync(resolve(failedDirectory, "evidence.json"), "utf8"),
+  );
+  const failedLifecycle = JSON.parse(
+    readFileSync(resolve(failedDirectory, "fixture-lifecycle.json"), "utf8"),
+  );
+  if (
+    failedEvidence.outcome !== "failed" ||
+    failedLifecycle.resultStatus !== "partial"
+  )
+    throw new Error("integration.operations.failure-evidence");
+  for (const fileName of [
+    "evidence.json",
+    "model-ledger.json",
+    "destination-ledger.json",
+    "fixture-lifecycle.json",
+  ]) {
+    if (!statSync(resolve(failedDirectory, fileName)).isFile())
+      throw new Error("integration.operations.failure-evidence");
+  }
+  const successfulBefore = runDirectories();
   await runOnce();
   await Promise.all([runOnce(), runOnce()]);
-  const created = [...runDirectories()].filter((name) => !before.has(name));
+  const created = [...runDirectories()].filter(
+    (name) => !successfulBefore.has(name),
+  );
   if (created.length !== 3 || new Set(created).size !== created.length)
     throw new Error("integration.operations.repetition");
   for (const runId of created) {
@@ -98,6 +136,28 @@ try {
         throw new Error("integration.operations.repetition");
     }
   }
+  const activeRoot = resolve(artifactsRoot, "active");
+  const activeMarker = resolve(activeRoot, "aaaaaaaaaaaaaaaa.json");
+  mkdirSync(activeRoot, { recursive: true });
+  writeFileSync(
+    activeMarker,
+    `${JSON.stringify({ activeVersion: 1, runId: "aaaaaaaaaaaaaaaa", pid: process.pid })}\n`,
+  );
+  for (const operation of ["clean.mjs", "maintain-artifacts.mjs"]) {
+    let activeRejected = false;
+    try {
+      execFileSync(process.execPath, [resolve(integrationRoot, operation)], {
+        cwd: workspaceRoot,
+        stdio: "pipe",
+      });
+    } catch {
+      activeRejected = true;
+    }
+    if (!activeRejected || !existsSync(resolve(runsRoot, created[0])))
+      throw new Error("integration.operations.active-run");
+  }
+  rmSync(activeMarker);
+  rmSync(activeRoot, { recursive: true });
   execFileSync(process.execPath, [resolve(integrationRoot, "clean.mjs")], {
     cwd: workspaceRoot,
     stdio: "inherit",

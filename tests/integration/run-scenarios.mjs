@@ -59,7 +59,8 @@ const scenarioTimeoutMilliseconds = boundedInteger(
 if (
   testMode !== undefined &&
   testMode !== "failure" &&
-  testMode !== "interruption"
+  testMode !== "interruption" &&
+  testMode !== "sidecar-failure"
 )
   throw new Error("integration.isolation.test-mode");
 if (
@@ -236,10 +237,22 @@ const assertContainer = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const activeMarkerFor = (runId) =>
+  resolve(artifactsRoot, "active", `${runId}.json`);
+const activateRun = (plan) => {
+  const directory = resolve(artifactsRoot, "active");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    activeMarkerFor(plan.runId),
+    `${JSON.stringify({ activeVersion: 1, runId: plan.runId, pid: process.pid })}\n`,
+    { flag: "wx" },
+  );
+};
 const captureFixtureResult = (output, plan) => {
   const resultLine = output
     .split("\n")
-    .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
+    .filter((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="))
+    .at(-1);
   if (resultLine === undefined) return false;
   if (resultLine.length > 1024 * 1024)
     throw new Error("integration.isolation.fixture-result");
@@ -463,6 +476,8 @@ const runScenario = async (plan, signal) => {
     signal,
   );
   await assertContainer(plan, signal);
+  if (testMode === "sidecar-failure")
+    await dockerWithSignal(["stop", plan.collectorName], signal);
   try {
     const { stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
@@ -483,7 +498,10 @@ const recordEvidence = async (evidence) => {
     `${JSON.stringify(evidence, undefined, 2)}\n`,
   );
   const result = fixtureResults.get(evidence.runId);
-  if (evidence.outcome === "passed" && result === undefined)
+  if (
+    evidence.outcome === "passed" &&
+    (result === undefined || result.resultStatus !== "complete")
+  )
     throw new Error("integration.isolation.fixture-result");
   if (result !== undefined) {
     writeFileSync(
@@ -499,6 +517,7 @@ const recordEvidence = async (evidence) => {
       `${JSON.stringify(
         {
           evidenceVersion: 1,
+          resultStatus: result.resultStatus,
           scenarioId: result.scenarioId,
           artifactFileName: result.artifactFileName,
           lifecycle: result.lifecycle,
@@ -539,6 +558,7 @@ const createDriver = () => {
         force: true,
         recursive: true,
       });
+      rmSync(activeMarkerFor(runId), { force: true });
     },
   };
 };
@@ -564,20 +584,23 @@ try {
   const evidence = await mapWithConcurrency(
     scenarios,
     scenarioConcurrency,
-    (scenario) =>
-      executeIsolationPlan(
-        createIsolationPlan({
-          scenario,
-          manifestIdentity: manifest.manifestIdentity,
-          candidate,
-          runToken: randomBytes(8).toString("hex"),
-        }),
+    (scenario) => {
+      const plan = createIsolationPlan({
+        scenario,
+        manifestIdentity: manifest.manifestIdentity,
+        candidate,
+        runToken: randomBytes(8).toString("hex"),
+      });
+      activateRun(plan);
+      return executeIsolationPlan(
+        plan,
         createDriver(),
         AbortSignal.any([
           controller.signal,
           AbortSignal.timeout(scenarioTimeoutMilliseconds),
         ]),
-      ),
+      );
+    },
   );
   console.log(JSON.stringify(evidence));
 } finally {

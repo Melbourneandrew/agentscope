@@ -184,10 +184,29 @@ const runDestinations = async ({
 };
 
 export const runPlatformAdapter = async (context) => {
-  const [modelLedger, destinationLedger] = await Promise.all([
-    runModels(context),
-    runDestinations(context),
+  const [modelResult, destinationResult] = await Promise.allSettled([
+    runModels(context).then((modelLedger) => {
+      context.publishCheckpoint({
+        eventKinds: representativeEventKinds,
+        modelLedger,
+      });
+      return modelLedger;
+    }),
+    runDestinations(context).then((destinationLedger) => {
+      context.publishCheckpoint({
+        eventKinds: representativeEventKinds,
+        destinationLedger,
+      });
+      return destinationLedger;
+    }),
   ]);
+  if (
+    modelResult.status !== "fulfilled" ||
+    destinationResult.status !== "fulfilled"
+  )
+    throw new Error("integration.fixture.adapter");
+  const modelLedger = modelResult.value;
+  const destinationLedger = destinationResult.value;
   return {
     eventKinds: representativeEventKinds,
     modelLedger,

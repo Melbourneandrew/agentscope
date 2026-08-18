@@ -46,6 +46,32 @@ const scenario = manifest.scenarios.find(
 );
 if (!scenario) throw new Error("integration.fixture.scenario");
 
+let partial = {
+  eventKinds: [],
+  modelLedger: { ledgerVersion: 1, scenarioId, entries: [] },
+  destinationLedger: {
+    ledgerVersion: 1,
+    scenarioId,
+    ingestion: [],
+    retrieval: [],
+  },
+};
+const emitEvidence = (resultStatus) => {
+  const evidence = {
+    evidenceVersion: 1,
+    resultStatus,
+    scenarioId,
+    artifactFileName: basename(artifactPath),
+    lifecycle: FIXTURE_LIFECYCLE_PHASES,
+    ...partial,
+  };
+  console.log(
+    `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
+  );
+  return evidence;
+};
+emitEvidence("partial");
+
 const requestJson = async (url, options, statusCode) => {
   const response = await fetch(url, {
     ...options,
@@ -56,7 +82,9 @@ const requestJson = async (url, options, statusCode) => {
   return response;
 };
 const waitFor = async (url, options) => {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  const maximumAttempts =
+    process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === "sidecar-failure" ? 3 : 60;
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     try {
       const response = await fetch(url, {
         ...options,
@@ -94,9 +122,14 @@ const adapterResult = await runPlatformAdapter({
   routeFixture,
   scenario,
   scenarioId,
+  publishCheckpoint: (checkpoint) => {
+    partial = { ...partial, ...checkpoint };
+    emitEvidence("partial");
+  },
 });
 const evidence = {
   evidenceVersion: 1,
+  resultStatus: "complete",
   scenarioId,
   artifactFileName: basename(artifactPath),
   lifecycle: FIXTURE_LIFECYCLE_PHASES,

@@ -10,6 +10,7 @@ import {
 
 const fixtureResult = () => ({
   evidenceVersion: 1,
+  resultStatus: "complete",
   scenarioId: "fixture-process-smoke",
   artifactFileName: "agentscope-cli.tgz",
   lifecycle: [
@@ -92,6 +93,22 @@ describe("integration retained artifacts", () => {
     oversized.modelLedger.entries[0]!.bodyBytes = 32 * 1024 * 1024;
     expect(() =>
       sanitizeFixtureResult(oversized, "fixture-process-smoke"),
+    ).toThrow("integration.operations.fixture-result");
+  });
+
+  it("retains bounded partial ledgers without treating them as complete", () => {
+    const partial = fixtureResult();
+    partial.resultStatus = "partial";
+    partial.eventKinds = [];
+    partial.modelLedger.entries = [];
+    partial.destinationLedger.ingestion = [];
+    partial.destinationLedger.retrieval = [];
+    expect(sanitizeFixtureResult(partial, "fixture-process-smoke")).toEqual(
+      partial,
+    );
+    partial.resultStatus = "complete";
+    expect(() =>
+      sanitizeFixtureResult(partial, "fixture-process-smoke"),
     ).toThrow("integration.operations.fixture-result");
   });
 

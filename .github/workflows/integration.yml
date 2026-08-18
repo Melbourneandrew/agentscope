@@ -6,6 +6,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: Exact manifest scenario ID to replay; empty selects the shard
+        required: false
+        type: string
+      shard:
+        description: Deterministic index/total shard selector
+        required: false
+        default: 0/1
+        type: string
 
 permissions:
   contents: read
@@ -77,8 +87,14 @@ jobs:
           path: artifacts/integration
       - name: Select deterministic shard
         env:
-          AGENTSCOPE_INTEGRATION_SHARD: ${{ matrix.shard.selector }}
-        run: pnpm --filter @agentscope/integration select
+          REPLAY_SCENARIO: ${{ inputs.scenario }}
+          REPLAY_SHARD: ${{ inputs.shard || matrix.shard.selector }}
+        run: |
+          if [ -n "$REPLAY_SCENARIO" ]; then
+            AGENTSCOPE_INTEGRATION_SCENARIO="$REPLAY_SCENARIO" pnpm --filter @agentscope/integration select
+          else
+            AGENTSCOPE_INTEGRATION_SHARD="$REPLAY_SHARD" pnpm --filter @agentscope/integration select
+          fi
       - name: Prepare pinned images and model routes
         run: |
           pnpm --filter @agentscope/integration prepare:images

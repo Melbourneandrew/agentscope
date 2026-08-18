@@ -41,24 +41,34 @@ const eventKinds = z
   .min(1)
   .max(32)
   .refine((value) => new Set(value).size === value.length);
-const fixtureResult = z.strictObject({
-  evidenceVersion: z.literal(1),
-  scenarioId: id,
-  artifactFileName: z.string().regex(/^agentscope-cli(?:-[0-9.]+)?\.tgz$/u),
-  lifecycle,
-  eventKinds,
-  modelLedger: z.strictObject({
-    ledgerVersion: z.literal(1),
+const fixtureResult = z
+  .strictObject({
+    evidenceVersion: z.literal(1),
+    resultStatus: z.enum(["partial", "complete"]),
     scenarioId: id,
-    entries: z.array(modelEntry).min(1).max(32),
-  }),
-  destinationLedger: z.strictObject({
-    ledgerVersion: z.literal(1),
-    scenarioId: id,
-    ingestion: z.array(destinationEntry).min(1).max(32),
-    retrieval: z.array(destinationEntry).min(1).max(32),
-  }),
-});
+    artifactFileName: z.string().regex(/^agentscope-cli(?:-[0-9.]+)?\.tgz$/u),
+    lifecycle,
+    eventKinds: z.array(id).max(32),
+    modelLedger: z.strictObject({
+      ledgerVersion: z.literal(1),
+      scenarioId: id,
+      entries: z.array(modelEntry).max(32),
+    }),
+    destinationLedger: z.strictObject({
+      ledgerVersion: z.literal(1),
+      scenarioId: id,
+      ingestion: z.array(destinationEntry).max(32),
+      retrieval: z.array(destinationEntry).max(32),
+    }),
+  })
+  .refine(
+    (value) =>
+      value.resultStatus === "partial" ||
+      (eventKinds.safeParse(value.eventKinds).success &&
+        value.modelLedger.entries.length > 0 &&
+        value.destinationLedger.ingestion.length > 0 &&
+        value.destinationLedger.retrieval.length > 0),
+  );
 
 export type SanitizedFixtureResult = z.infer<typeof fixtureResult>;
 

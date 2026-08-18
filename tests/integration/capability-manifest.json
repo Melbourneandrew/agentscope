@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-ae4479686265e7f7df77cdcef23456f0dd68b303b54d2cc744725be08479ec1a",
+  "manifestIdentity": "sha256-767cdcc73b359947b339475d9bba2b59a9c60eefbd8779e2ff66be3bd0c74270",
   "requiredRepresentativeIds": ["fixture-process-v1"],
   "evidence": [
     {
@@ -30,7 +30,7 @@
       "destinations": ["otlp-ledger"],
       "fixtureAdapter": {
         "path": "fixtures/process-platform-adapter.mjs",
-        "sha256": "ae943ca28b4ee9abb38124dcf0fc1f2bf93e57e9ae8cbaea3ce913c943ef90b0"
+        "sha256": "25f41fa3c25dd8af69a4d8939445eb5763f5ca65c982d1b2a655d04fb19f16b3"
       },
       "resourceClass": "small",
       "shardWeight": 100
