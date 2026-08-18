@@ -67,6 +67,7 @@ export interface IsolationDriver {
   removeContainer(name: string): Promise<void>;
   removeNetwork(name: string): Promise<void>;
   removeImage(tag: string): Promise<void>;
+  removeContext(runId: string): Promise<void>;
 }
 
 export const createIsolationPlan = (input: {
@@ -115,6 +116,7 @@ const cleanup = async (
     () => driver.removeNetwork(plan.networkName),
     () => driver.removeImage(plan.imageTag),
     () => driver.removeImage(plan.mockServerImageTag),
+    () => driver.removeContext(plan.runId),
   ];
   const failures: unknown[] = [];
   for (const operation of operations) {

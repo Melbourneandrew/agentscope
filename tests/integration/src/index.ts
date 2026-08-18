@@ -26,3 +26,17 @@ export type {
   IsolationEvidence,
   IsolationPlan,
 } from "./isolation.js";
+export {
+  ARTIFACT_RETENTION_LIMITS,
+  compileLocalSelection,
+  mapWithConcurrency,
+  planArtifactRetention,
+  sanitizeFixtureResult,
+} from "./operations.js";
+export type {
+  ArtifactCollection,
+  ArtifactDirectoryEntry,
+  ArtifactRetentionPlan,
+  LocalSelection,
+  SanitizedFixtureResult,
+} from "./operations.js";

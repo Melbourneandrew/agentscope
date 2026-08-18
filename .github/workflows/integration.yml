@@ -5,15 +5,67 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  hermetic-integration:
+  hermetic-platform:
+    name: Hermetic shard ${{ matrix.shard.name }} replay ${{ matrix.replay }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - selector: "0/1"
+            name: 0-of-1
+        replay: [1, 2]
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Run hermetic harness and reporter fixtures
-        run: docker compose -f tests/integration/docker-compose.yml up --build --abort-on-container-exit
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install immutable workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build fixture inputs once
+        run: |
+          pnpm build
+          pnpm --filter @agentscope/integration prepare:candidate
+      - name: Select deterministic shard
+        env:
+          AGENTSCOPE_INTEGRATION_SHARD: ${{ matrix.shard.selector }}
+        run: pnpm --filter @agentscope/integration select
+      - name: Prepare pinned images and model routes
+        run: |
+          pnpm --filter @agentscope/integration prepare:images
+          pnpm --filter @agentscope/integration prepare:model-routes
+      - name: Run immutable platform fixture
+        env:
+          AGENTSCOPE_INTEGRATION_CONCURRENCY: "2"
+          AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000"
+        run: pnpm --filter @agentscope/integration run:scenarios
+      - name: Report bounded integration disk use
+        if: always()
+        run: pnpm --filter @agentscope/integration maintain:artifacts
+      - name: Upload sanitized failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
+          path: artifacts/integration/runs
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Remove manifest-owned resources
+        if: always()
+        run: pnpm test:integration:clean

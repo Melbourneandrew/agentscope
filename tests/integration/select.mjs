@@ -6,6 +6,7 @@ import {
   selectCapabilityScenarios,
   verifyManifestEvidence,
 } from "./dist/manifest.js";
+import { compileLocalSelection } from "./dist/operations.js";
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -16,29 +17,12 @@ const manifest = compileCapabilityManifest(
 );
 verifyManifestEvidence(manifest, integrationRoot);
 
-const shard = process.env.AGENTSCOPE_INTEGRATION_SHARD;
-let parsedShard;
-if (shard !== undefined) {
-  const match = /^(\d+)\/(\d+)$/u.exec(shard);
-  if (!match) throw new Error("integration.manifest.shard");
-  parsedShard = { index: Number(match[1]), total: Number(match[2]) };
-}
-const selector = {
-  ...(process.env.AGENTSCOPE_INTEGRATION_SCENARIO === undefined
-    ? {}
-    : { scenarioId: process.env.AGENTSCOPE_INTEGRATION_SCENARIO }),
-  ...(process.env.AGENTSCOPE_INTEGRATION_HARNESS === undefined
-    ? {}
-    : { harnessId: process.env.AGENTSCOPE_INTEGRATION_HARNESS }),
-  ...(process.env.AGENTSCOPE_INTEGRATION_TAG === undefined
-    ? {}
-    : { tag: process.env.AGENTSCOPE_INTEGRATION_TAG }),
-  ...(parsedShard === undefined ? {} : { shard: parsedShard }),
-};
+const { mode: selectionMode, selector } = compileLocalSelection(process.env);
 const scenarios = selectCapabilityScenarios(manifest, selector);
 const selection = {
   selectionVersion: 1,
   manifestIdentity: manifest.manifestIdentity,
+  selectionMode,
   scenarioIds: scenarios.map(({ scenarioId }) => scenarioId),
 };
 const integrationArtifacts = resolve(workspaceRoot, "artifacts/integration");

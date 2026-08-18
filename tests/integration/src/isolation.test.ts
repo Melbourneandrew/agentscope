@@ -97,6 +97,10 @@ const driver = () => {
       calls.push(`image:${name}`);
       return Promise.resolve();
     }),
+    removeContext: vi.fn((runId) => {
+      calls.push(`context:${runId}`);
+      return Promise.resolve();
+    }),
   };
   return { buildImage, calls, implementation, removeContainer, runScenario };
 };
@@ -151,6 +155,7 @@ describe("scenario isolation", () => {
       "remove-network:agentscope-int-0123456789abcdef-network",
       "image:agentscope-int-0123456789abcdef:candidate",
       "image:agentscope-int-0123456789abcdef:mockserver",
+      "context:0123456789abcdef",
       "evidence",
     ]);
   });

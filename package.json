@@ -23,7 +23,7 @@
     "test": "pnpm test:unit",
     "test:unit": "pnpm verify:targets && pnpm test:workspace-policy && nx run-many -t test --all --exclude=@agentscope/integration-live",
     "coverage": "pnpm verify:targets && nx run-many -t coverage --all --exclude=@agentscope/integration-live",
-    "test:integration": "pnpm --filter @agentscope/integration build && pnpm --filter @agentscope/integration prepare:candidate && pnpm --filter @agentscope/integration select && pnpm --filter @agentscope/integration prepare:images && pnpm --filter @agentscope/integration prepare:model-routes && pnpm --filter @agentscope/integration run:scenarios",
+    "test:integration": "pnpm --filter @agentscope/integration build && pnpm --filter @agentscope/integration prepare:candidate && pnpm --filter @agentscope/integration maintain:artifacts && AGENTSCOPE_INTEGRATION_FULL=1 pnpm --filter @agentscope/integration select && pnpm --filter @agentscope/integration prepare:images && pnpm --filter @agentscope/integration prepare:model-routes && pnpm --filter @agentscope/integration run:scenarios && pnpm --filter @agentscope/integration maintain:artifacts",
     "test:integration:clean": "node tests/integration/clean.mjs",
     "test:integration:live": "pnpm --filter @agentscope/integration-live test",
     "typecheck": "pnpm verify:targets && nx run-many -t typecheck --all",

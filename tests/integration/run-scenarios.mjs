@@ -15,6 +15,8 @@ import {
   compileCapabilityManifest,
   createIsolationPlan,
   executeIsolationPlan,
+  mapWithConcurrency,
+  sanitizeFixtureResult,
   verifyPreparedCandidate,
 } from "./dist/index.js";
 
@@ -33,6 +35,25 @@ const modelRoutes = readJson(
   resolve(artifactsRoot, "current-model-routes.json"),
 );
 const testMode = process.env.AGENTSCOPE_INTEGRATION_TEST_MODE;
+const boundedInteger = (name, fallback, maximum) => {
+  const value = process.env[name] ?? String(fallback);
+  if (!/^\d+$/u.test(value))
+    throw new Error("integration.isolation.runtime-policy");
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum)
+    throw new Error("integration.isolation.runtime-policy");
+  return parsed;
+};
+const scenarioConcurrency = boundedInteger(
+  "AGENTSCOPE_INTEGRATION_CONCURRENCY",
+  2,
+  16,
+);
+const scenarioTimeoutMilliseconds = boundedInteger(
+  "AGENTSCOPE_INTEGRATION_TIMEOUT_MS",
+  5 * 60 * 1000,
+  30 * 60 * 1000,
+);
 if (
   testMode !== undefined &&
   testMode !== "failure" &&
@@ -386,20 +407,25 @@ const runScenario = async (plan, signal) => {
     plan.imageTag,
   ]);
   await assertContainer(plan);
+  const deadlineSignal = AbortSignal.timeout(scenarioTimeoutMilliseconds);
   const { stdout } = await docker(["start", "--attach", plan.scenarioName], {
-    signal,
+    signal: AbortSignal.any([signal, deadlineSignal]),
   });
   const resultLine = stdout
     .split("\n")
     .find((line) => line.startsWith("AGENTSCOPE_FIXTURE_RESULT="));
-  if (!resultLine) throw new Error("integration.isolation.fixture-result");
+  if (!resultLine || resultLine.length > 1024 * 1024)
+    throw new Error("integration.isolation.fixture-result");
   fixtureResults.set(
     plan.runId,
-    JSON.parse(
-      Buffer.from(
-        resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
-        "base64url",
-      ).toString("utf8"),
+    sanitizeFixtureResult(
+      JSON.parse(
+        Buffer.from(
+          resultLine.slice("AGENTSCOPE_FIXTURE_RESULT=".length),
+          "base64url",
+        ).toString("utf8"),
+      ),
+      plan.scenarioId,
     ),
   );
 };
@@ -412,13 +438,7 @@ const recordEvidence = async (evidence) => {
   );
   if (evidence.outcome === "passed") {
     const result = fixtureResults.get(evidence.runId);
-    if (
-      result?.evidenceVersion !== 1 ||
-      result.scenarioId !== evidence.scenarioId ||
-      result.modelLedger?.ledgerVersion !== 1 ||
-      result.destinationLedger?.ledgerVersion !== 1 ||
-      !Array.isArray(result.lifecycle)
-    )
+    if (result === undefined)
       throw new Error("integration.isolation.fixture-result");
     writeFileSync(
       resolve(directory, "model-ledger.json"),
@@ -457,6 +477,14 @@ const createDriver = () => ({
   removeContainer: (name) => ignoreMissing(["rm", "--force", name]),
   removeNetwork: (name) => ignoreMissing(["network", "rm", name]),
   removeImage: (tag) => ignoreMissing(["image", "rm", "--force", tag]),
+  removeContext: async (runId) => {
+    if (!/^[a-f\d]{16}$/u.test(runId))
+      throw new Error("integration.isolation.context");
+    rmSync(resolve(artifactsRoot, "contexts", runId), {
+      force: true,
+      recursive: true,
+    });
+  },
 });
 
 const scenarios = selection.scenarioIds.map((scenarioId) => {
@@ -477,8 +505,10 @@ const abort = () => controller.abort();
 process.once("SIGINT", abort);
 process.once("SIGTERM", abort);
 try {
-  const evidence = await Promise.all(
-    scenarios.map((scenario) =>
+  const evidence = await mapWithConcurrency(
+    scenarios,
+    scenarioConcurrency,
+    (scenario) =>
       executeIsolationPlan(
         createIsolationPlan({
           scenario,
@@ -489,7 +519,6 @@ try {
         createDriver(),
         controller.signal,
       ),
-    ),
   );
   console.log(JSON.stringify(evidence));
 } finally {

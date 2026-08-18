@@ -16,7 +16,9 @@
     "prepare:model-routes": "pnpm --filter @agentscope/testkit build && node prepare-model-routes.mjs",
     "select": "node select.mjs",
     "run:scenarios": "node run-scenarios.mjs",
+    "maintain:artifacts": "node maintain-artifacts.mjs",
     "verify:isolation": "node verify-isolation.mjs",
+    "verify:operations": "node verify-operations.mjs",
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
