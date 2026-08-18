@@ -11,7 +11,7 @@ import {
   unlink as nodeUnlink,
   writeFile,
 } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,13 +26,17 @@ import {
   createOperationalStateStoreForTesting,
   inspectOperationalState,
   inspectOperationalStateLock,
+  operationalStateStoreMatchesHomeForCore,
   OperationalStateError,
   recoverAbandonedOperationalStateLock,
-  recordCaptureCheckpoint,
+  recordHookOperationalEvidence,
   recordPipelineHealth,
   recordSanitizedDiagnostic,
 } from "./operational-state.js";
 import { createConfigurationProcessIdentity } from "./transaction.js";
+
+// Bounded, content-free operational-state evidence for AC-GOV-002.1 and
+// AC-GOV-002.2.
 
 const roots: string[] = [];
 const hex = "a".repeat(64);
@@ -42,6 +46,96 @@ const owner = createConfigurationProcessIdentity(
   111,
   `process-start-v1-${"c".repeat(64)}`,
 );
+const advanceCaptureCheckpoint = async (
+  store: Parameters<typeof recordHookOperationalEvidence>[0],
+  checkpoint: Omit<
+    Parameters<typeof recordHookOperationalEvidence>[1]["checkpoints"][number],
+    "destinationType"
+  >,
+) => {
+  const storedCheckpoint = {
+    ...checkpoint,
+    destinationType: "@agentscope/destination-langfuse",
+  };
+  const result = await recordHookOperationalEvidence(store, {
+    diagnostics: [],
+    health: [
+      {
+        scope: "hook",
+        stage: "remote-acceptance",
+        outcome: "accepted",
+        configurationGeneration: storedCheckpoint.configurationGeneration,
+        policyMode: "baseline",
+        receipt: null,
+      },
+    ],
+    checkpoints: [storedCheckpoint],
+  });
+  return (
+    result.checkpoints[0] ?? {
+      advanced: false,
+      code: result.code,
+      acknowledgedExclusivePosition: null,
+      connectionId: storedCheckpoint.connectionId,
+    }
+  );
+};
+
+const completeHookEvidence = () => ({
+  diagnostics: [
+    {
+      code: "reporter-unavailable" as const,
+      severity: "warning" as const,
+      configurationGeneration: 9,
+      destinationType: "@agentscope/destination-langfuse",
+      connectionId: secondConnectionId,
+    },
+  ],
+  health: [
+    {
+      scope: "hook" as const,
+      stage: "delivery" as const,
+      outcome: "completed" as const,
+      configurationGeneration: 9,
+      policyMode: "baseline" as const,
+      receipt: null,
+    },
+    {
+      scope: "connection" as const,
+      stage: "remote-acceptance" as const,
+      outcome: "accepted" as const,
+      configurationGeneration: 9,
+      policyMode: "baseline" as const,
+      destinationType: "@agentscope/destination-langfuse",
+      connectionId,
+      receipt: "accepted" as const,
+    },
+    {
+      scope: "connection" as const,
+      stage: "delivery" as const,
+      outcome: "unavailable" as const,
+      configurationGeneration: 9,
+      policyMode: "baseline" as const,
+      destinationType: "@agentscope/destination-langfuse",
+      connectionId: secondConnectionId,
+      receipt: "unavailable" as const,
+    },
+  ],
+  checkpoints: [
+    {
+      adapterId: "@agentscope/harness-codex",
+      sourceIdentityDigest: hex,
+      nativeIdentityKind: "thread" as const,
+      sourceGeneration: 1,
+      positionKind: "event-index" as const,
+      startPosition: 0,
+      exclusiveEndPosition: 10,
+      configurationGeneration: 9,
+      destinationType: "@agentscope/destination-langfuse",
+      connectionId,
+    },
+  ],
+});
 const homeFixture = async () => {
   const root = await mkdtemp(join(tmpdir(), "agentscope-operational-"));
   roots.push(root);
@@ -110,20 +204,23 @@ describe("operational state", () => {
       }),
     ).resolves.toMatchObject({ recorded: true, code: "recorded" });
     await expect(
-      recordCaptureCheckpoint(store, {
+      advanceCaptureCheckpoint(store, {
         adapterId: "@agentscope/harness-codex",
         sourceIdentityDigest: hex,
+        nativeIdentityKind: "thread",
         sourceGeneration: 4,
-        acknowledgedExclusivePosition: 19,
+        positionKind: "event-index",
+        startPosition: 0,
+        exclusiveEndPosition: 19,
         configurationGeneration: 2,
         connectionId,
       }),
-    ).resolves.toMatchObject({ recorded: true, code: "recorded" });
+    ).resolves.toMatchObject({ advanced: true, code: "advanced" });
 
     const snapshot = await inspectOperationalState(store);
-    expect(snapshot.nextSequence).toBe(3);
-    expect(snapshot.diagnostics).toHaveLength(1);
-    expect(snapshot.health).toHaveLength(1);
+    expect(snapshot.nextSequence).toBe(5);
+    expect(snapshot.diagnostics).toHaveLength(2);
+    expect(snapshot.health).toHaveLength(2);
     expect(snapshot.checkpoints).toHaveLength(1);
     expect(Object.isFrozen(snapshot.diagnostics[0])).toBe(true);
     const stored = await readFile(
@@ -170,25 +267,28 @@ describe("operational state retention", () => {
         connectionId: selectedConnectionId,
         receipt: "accepted",
       });
-    const checkpoint = (position: number) =>
-      recordCaptureCheckpoint(store, {
+    const checkpoint = (startPosition: number, exclusiveEndPosition: number) =>
+      advanceCaptureCheckpoint(store, {
         adapterId: "@agentscope/harness-codex",
         sourceIdentityDigest: hex,
+        nativeIdentityKind: "thread",
         sourceGeneration: 1,
-        acknowledgedExclusivePosition: position,
+        positionKind: "event-index",
+        startPosition,
+        exclusiveEndPosition,
         configurationGeneration: 1,
         connectionId,
       });
-    await checkpoint(10);
+    await checkpoint(0, 10);
     now += 1;
-    await checkpoint(20);
+    await checkpoint(10, 20);
 
     const snapshot = await inspectOperationalState(store);
     expect(snapshot.health).toHaveLength(3);
     expect(
       snapshot.health.find((entry) => entry.scope === "hook"),
     ).toMatchObject({
-      outcome: "suppressed",
+      outcome: "accepted",
     });
     expect(snapshot.checkpoints).toMatchObject([
       { acknowledgedExclusivePosition: 20 },
@@ -232,6 +332,528 @@ describe("operational state retention", () => {
     expect(snapshot.diagnostics).toHaveLength(1);
     expect(snapshot.losses.diagnostics).toBe(129);
   }, 10_000);
+});
+
+describe("capture checkpoint advancement", () => {
+  it("advances only an exact contiguous expected position and rejects generation reuse", async () => {
+    const home = await homeFixture();
+    let temporary = 0;
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      now: () => 1_000,
+      randomId: () => (++temporary).toString(16).padStart(32, "0"),
+    });
+    const advance = (input: {
+      sourceIdentityDigest?: string;
+      sourceGeneration?: number;
+      startPosition: number;
+      exclusiveEndPosition: number;
+    }) =>
+      advanceCaptureCheckpoint(store, {
+        adapterId: "@agentscope/harness-codex",
+        sourceIdentityDigest: input.sourceIdentityDigest ?? hex,
+        nativeIdentityKind: "thread",
+        sourceGeneration: input.sourceGeneration ?? 1,
+        positionKind: "event-index",
+        startPosition: input.startPosition,
+        exclusiveEndPosition: input.exclusiveEndPosition,
+        configurationGeneration: 3,
+        connectionId,
+      });
+
+    await expect(
+      advance({
+        startPosition: 0,
+        exclusiveEndPosition: 10,
+      }),
+    ).resolves.toMatchObject({
+      advanced: true,
+      code: "advanced",
+      acknowledgedExclusivePosition: 10,
+    });
+    await expect(
+      advance({
+        startPosition: 20,
+        exclusiveEndPosition: 30,
+      }),
+    ).resolves.toMatchObject({
+      advanced: false,
+      code: "stale",
+      acknowledgedExclusivePosition: 10,
+    });
+    await expect(
+      advance({
+        startPosition: 5,
+        exclusiveEndPosition: 15,
+      }),
+    ).resolves.toMatchObject({ advanced: false, code: "stale" });
+    await expect(
+      advance({
+        startPosition: 10,
+        exclusiveEndPosition: 20,
+      }),
+    ).resolves.toMatchObject({ advanced: true, code: "advanced" });
+    await expect(
+      advance({
+        sourceGeneration: 2,
+        startPosition: 4,
+        exclusiveEndPosition: 8,
+      }),
+    ).resolves.toMatchObject({ advanced: true, code: "advanced" });
+    await expect(
+      advance({
+        sourceGeneration: 1,
+        startPosition: 20,
+        exclusiveEndPosition: 21,
+      }),
+    ).resolves.toMatchObject({ advanced: false, code: "incompatible" });
+    await expect(
+      advance({
+        sourceIdentityDigest: "d".repeat(64),
+        sourceGeneration: 0,
+        startPosition: 0,
+        exclusiveEndPosition: 1,
+      }),
+    ).resolves.toMatchObject({ advanced: true, code: "advanced" });
+
+    const snapshot = await inspectOperationalState(store);
+    expect(snapshot.nextSequence).toBe(17);
+    expect(snapshot.checkpoints).toHaveLength(3);
+  });
+
+  it("rejects invalid ranges", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStore(home, owner);
+    const base = {
+      adapterId: "@agentscope/harness-codex" as const,
+      sourceIdentityDigest: hex,
+      nativeIdentityKind: "thread" as const,
+      sourceGeneration: 1,
+      positionKind: "event-index" as const,
+      configurationGeneration: 1,
+      destinationType: "@agentscope/destination-langfuse",
+      connectionId,
+    };
+    await expect(
+      advanceCaptureCheckpoint(store, {
+        ...base,
+        startPosition: 4,
+        exclusiveEndPosition: 4,
+      }),
+    ).resolves.toMatchObject({ advanced: false, code: "invalid" });
+  });
+});
+
+describe("capture checkpoint loss recovery", () => {
+  it("turns expiry and source transitions into bounded replay diagnostics without skipping", async () => {
+    const home = await homeFixture();
+    let now = 1_000;
+    let temporary = 0;
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      now: () => now,
+      randomId: () => (++temporary).toString(16).padStart(32, "0"),
+    });
+    const record = (
+      sourceIdentityDigest: string,
+      sourceGeneration: number,
+      startPosition: number,
+      exclusiveEndPosition: number,
+    ) =>
+      recordHookOperationalEvidence(store, {
+        diagnostics: [],
+        health: [
+          {
+            scope: "hook",
+            stage: "remote-acceptance",
+            outcome: "accepted",
+            configurationGeneration: 1,
+            policyMode: "baseline",
+            receipt: null,
+          },
+        ],
+        checkpoints: [
+          {
+            adapterId: "@agentscope/harness-codex",
+            sourceIdentityDigest,
+            nativeIdentityKind: "thread",
+            sourceGeneration,
+            positionKind: "event-index",
+            startPosition,
+            exclusiveEndPosition,
+            configurationGeneration: 1,
+            destinationType: "@agentscope/destination-langfuse",
+            connectionId,
+          },
+        ],
+      });
+
+    await record(hex, 1, 0, 10);
+    now += 31 * 24 * 60 * 60 * 1_000;
+    const expired = await record(hex, 1, 0, 10);
+    expect(expired).toMatchObject({
+      recorded: true,
+      diagnostics: [{ code: "checkpoint-unavailable" }],
+      checkpoints: [{ advanced: true, acknowledgedExclusivePosition: 10 }],
+      losses: { checkpoints: 1 },
+    });
+    const rotated = await record(hex, 2, 3, 7);
+    expect(rotated).toMatchObject({
+      diagnostics: [{ code: "native-source-loss" }],
+      checkpoints: [{ advanced: true, acknowledgedExclusivePosition: 7 }],
+    });
+    const replaced = await record("f".repeat(64), 0, 2, 4);
+    expect(replaced).toMatchObject({
+      diagnostics: [{ code: "native-source-loss" }],
+      checkpoints: [{ advanced: true, acknowledgedExclusivePosition: 4 }],
+    });
+    expect((await inspectOperationalState(store)).checkpoints).toMatchObject([
+      { sourceIdentityDigest: hex, sourceGeneration: 1 },
+      { sourceIdentityDigest: hex, sourceGeneration: 2 },
+      { sourceIdentityDigest: "f".repeat(64), sourceGeneration: 0 },
+    ]);
+  });
+});
+
+describe("atomic hook operational evidence", () => {
+  it("records one hook marker, connection markers, diagnostics, and accepted checkpoints in one generation", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      now: () => 5_000,
+      randomId: () => "e".repeat(32),
+    });
+    const result = await recordHookOperationalEvidence(
+      store,
+      completeHookEvidence(),
+    );
+    expect(result).toMatchObject({
+      recorded: true,
+      code: "recorded",
+      checkpoints: [{ connectionId, advanced: true, code: "advanced" }],
+    });
+    const snapshot = await inspectOperationalState(store);
+    expect(snapshot).toMatchObject({
+      nextSequence: 6,
+      diagnostics: [
+        { code: "reporter-unavailable" },
+        { code: "checkpoint-unavailable" },
+      ],
+      health: [
+        { scope: "hook", outcome: "completed" },
+        { scope: "connection", connectionId, outcome: "accepted" },
+        {
+          scope: "connection",
+          connectionId: secondConnectionId,
+          outcome: "unavailable",
+        },
+      ],
+      checkpoints: [{ acknowledgedExclusivePosition: 10 }],
+    });
+  });
+
+  it("rejects duplicate or incomplete evidence and retains stale checkpoint dispositions", async () => {
+    const home = await homeFixture();
+    let temporary = 0;
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      randomId: () => (++temporary).toString(16).padStart(32, "0"),
+    });
+    const hook = {
+      scope: "hook" as const,
+      stage: "routing" as const,
+      outcome: "no-route" as const,
+      configurationGeneration: 1,
+      policyMode: "strict" as const,
+      receipt: null,
+    };
+    await expect(
+      recordHookOperationalEvidence(store, {
+        diagnostics: [],
+        health: [hook, hook],
+        checkpoints: [],
+      }),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+    await advanceCaptureCheckpoint(store, {
+      adapterId: "@agentscope/harness-codex",
+      sourceIdentityDigest: hex,
+      nativeIdentityKind: "thread",
+      sourceGeneration: 1,
+      positionKind: "event-index",
+      startPosition: 0,
+      exclusiveEndPosition: 1,
+      configurationGeneration: 1,
+      connectionId,
+    });
+    await expect(
+      recordHookOperationalEvidence(store, {
+        diagnostics: [],
+        health: [hook],
+        checkpoints: [
+          {
+            adapterId: "@agentscope/harness-codex",
+            sourceIdentityDigest: hex,
+            nativeIdentityKind: "thread",
+            sourceGeneration: 1,
+            positionKind: "event-index",
+            startPosition: 2,
+            exclusiveEndPosition: 3,
+            configurationGeneration: 1,
+            destinationType: "@agentscope/destination-langfuse",
+            connectionId,
+          },
+        ],
+      }),
+    ).resolves.toMatchObject({
+      recorded: true,
+      checkpoints: [{ advanced: false, code: "stale" }],
+    });
+    await expect(
+      recordHookOperationalEvidence(store, {
+        diagnostics: [],
+        health: [
+          {
+            ...hook,
+            destinationType: "@agentscope/destination-langfuse",
+          },
+        ],
+        checkpoints: [],
+      }),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+  });
+});
+
+describe("atomic checkpoint generation authority", () => {
+  it("rejects a reused earlier generation without an acknowledged boundary", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStore(home, owner);
+    const checkpoint = {
+      adapterId: "@agentscope/harness-codex" as const,
+      sourceIdentityDigest: hex,
+      nativeIdentityKind: "thread" as const,
+      positionKind: "event-index" as const,
+      startPosition: 0,
+      exclusiveEndPosition: 1,
+      configurationGeneration: 1,
+      connectionId,
+    };
+    await advanceCaptureCheckpoint(store, {
+      ...checkpoint,
+      sourceGeneration: 2,
+    });
+    await expect(
+      advanceCaptureCheckpoint(store, { ...checkpoint, sourceGeneration: 1 }),
+    ).resolves.toMatchObject({
+      advanced: false,
+      code: "incompatible",
+      acknowledgedExclusivePosition: null,
+    });
+  });
+});
+
+describe("atomic hook operational writer failures", () => {
+  it("contains clock, sequence, cancellation, and release failures", async () => {
+    const home = await homeFixture();
+    const invalidClock = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      now: () => Number.NaN,
+    });
+    await expect(
+      recordHookOperationalEvidence(invalidClock, completeHookEvidence()),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+
+    await ensureAgentscopeHomeLayout(home);
+    await writeFile(
+      join(home.healthDirectory, "operational-state-v1.json"),
+      `${JSON.stringify({
+        version: 1,
+        nextSequence: Number.MAX_SAFE_INTEGER,
+        losses: { diagnostics: 0, health: 0, checkpoints: 0 },
+        diagnostics: [],
+        health: [],
+        checkpoints: [],
+      })}\n`,
+    );
+    await expect(
+      recordHookOperationalEvidence(
+        createOperationalStateStore(home, owner),
+        completeHookEvidence(),
+      ),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+
+    await rm(join(home.healthDirectory, "operational-state-v1.json"));
+    for (const abortAt of [1, 2, 3]) {
+      let reads = 0;
+      await expect(
+        recordHookOperationalEvidence(
+          createOperationalStateStoreForTesting({
+            home,
+            owner,
+            randomId: () => String(abortAt).repeat(32),
+          }),
+          completeHookEvidence(),
+          {
+            get aborted() {
+              reads += 1;
+              return reads === abortAt;
+            },
+          } as unknown as AbortSignal,
+        ),
+      ).resolves.toMatchObject({ recorded: false, code: "unavailable" });
+    }
+
+    const releaseFailure = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      fileSystem: {
+        open: nodeOpen,
+        rename: () => Promise.reject(new Error("CANARY_SECRET")),
+        unlink: () => Promise.reject(new Error("CANARY_SECRET")),
+        atomicRename: () => {
+          throw new Error("CANARY_SECRET");
+        },
+      },
+      randomId: () => "f".repeat(32),
+    });
+    await expect(
+      recordHookOperationalEvidence(releaseFailure, completeHookEvidence()),
+    ).resolves.toMatchObject({ recorded: false, code: "unavailable" });
+  });
+});
+
+describe("atomic hook commit boundary", () => {
+  it("does not delegate commit or lock release to async filesystem promises", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      fileSystem: {
+        open: nodeOpen,
+        rename: () => new Promise(() => undefined),
+        unlink: () => new Promise(() => undefined),
+      },
+      randomId: () => "b".repeat(32),
+    });
+    await expect(
+      recordHookOperationalEvidence(store, completeHookEvidence()),
+    ).resolves.toMatchObject({ recorded: true, code: "recorded" });
+    await expect(
+      inspectOperationalStateLock(store, () => "dead"),
+    ).resolves.toEqual({ state: "clean" });
+  });
+
+  it("rejects asynchronous atomic commit and release callbacks", async () => {
+    const home = await homeFixture();
+    const asynchronousCommit = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      fileSystem: {
+        open: nodeOpen,
+        rename: nodeRename,
+        unlink: nodeUnlink,
+        atomicRename: () => Promise.resolve(),
+      },
+      randomId: () => "e".repeat(32),
+    });
+    await expect(
+      recordHookOperationalEvidence(asynchronousCommit, completeHookEvidence()),
+    ).resolves.toMatchObject({ recorded: false, code: "unavailable" });
+
+    const asynchronousRelease = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      fileSystem: {
+        open: nodeOpen,
+        rename: nodeRename,
+        unlink: nodeUnlink,
+        atomicUnlink: () => Promise.resolve(),
+      },
+      randomId: () => "f".repeat(32),
+    });
+    await expect(
+      recordHookOperationalEvidence(
+        asynchronousRelease,
+        completeHookEvidence(),
+      ),
+    ).resolves.toMatchObject({ recorded: false, code: "unavailable" });
+  });
+});
+
+describe("synchronous hook-state hostile artifacts", () => {
+  const record = (
+    store: ReturnType<typeof createOperationalStateStoreForTesting>,
+  ) => recordHookOperationalEvidence(store, completeHookEvidence());
+
+  it("rejects oversized, malformed, and symlinked state authorities", async () => {
+    const home = await homeFixture();
+    await ensureAgentscopeHomeLayout(home);
+    const statePath = join(home.healthDirectory, "operational-state-v1.json");
+    const store = createOperationalStateStore(home, owner);
+    await writeFile(statePath, Buffer.alloc(262_145));
+    await expect(record(store)).resolves.toMatchObject({
+      recorded: false,
+      code: "invalid",
+    });
+    await writeFile(statePath, "{}\n");
+    await expect(record(store)).resolves.toMatchObject({
+      recorded: false,
+      code: "invalid",
+    });
+    await rm(statePath);
+    const target = join(home.healthDirectory, "hostile-state-target");
+    await writeFile(target, "{}\n");
+    await symlink(target, statePath);
+    await expect(record(store)).resolves.toMatchObject({
+      recorded: false,
+      code: "unavailable",
+    });
+  });
+
+  it("rejects malformed claims and invalid synchronous identities", async () => {
+    const home = await homeFixture();
+    await ensureAgentscopeHomeLayout(home);
+    const claim = join(home.healthDirectory, "operational-state.recovery.lock");
+    await writeFile(claim, "{}\n");
+    await expect(
+      record(createOperationalStateStore(home, owner)),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+    await writeFile(
+      claim,
+      `${JSON.stringify({
+        version: 1,
+        owner,
+        token: "a".repeat(32),
+      })}\n`,
+    );
+    await expect(
+      record(createOperationalStateStore(home, owner)),
+    ).resolves.toMatchObject({ recorded: false, code: "unavailable" });
+    await rm(claim);
+    await expect(
+      record(
+        createOperationalStateStoreForTesting({
+          home,
+          owner,
+          randomId: () => "invalid",
+        }),
+      ),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+    let identity = 0;
+    await expect(
+      record(
+        createOperationalStateStoreForTesting({
+          home,
+          owner,
+          randomId: () => (identity++ === 0 ? "a".repeat(32) : "invalid"),
+        }),
+      ),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+  });
 });
 
 describe("operational state boundaries", () => {
@@ -321,6 +943,50 @@ describe("operational state boundaries", () => {
         code: "capture-failed",
         severity: "warning",
         configurationGeneration: null,
+      }),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+  });
+});
+
+describe("operational state authority boundaries", () => {
+  it("contains forged store and hostile signal authority", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStore(home, owner);
+    expect(operationalStateStoreMatchesHomeForCore({} as never, home)).toBe(
+      false,
+    );
+    await expect(
+      recordHookOperationalEvidence(store, completeHookEvidence(), {
+        get aborted() {
+          throw new Error("CANARY_SECRET");
+        },
+      } as unknown as AbortSignal),
+    ).resolves.toMatchObject({ recorded: false, code: "unavailable" });
+  });
+
+  it("rejects incomplete health authority", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStore(home, owner);
+    await expect(
+      recordPipelineHealth(store, {
+        scope: "connection",
+        stage: "delivery",
+        outcome: "unavailable",
+        configurationGeneration: null,
+        policyMode: null,
+        destinationType: "@agentscope/destination-langfuse",
+        connectionId,
+        receipt: "unavailable",
+      }),
+    ).resolves.toMatchObject({ recorded: false, code: "invalid" });
+    await expect(
+      recordPipelineHealth(store, {
+        scope: "hook",
+        stage: "capture",
+        outcome: "suppressed",
+        configurationGeneration: 1,
+        policyMode: null,
+        receipt: null,
       }),
     ).resolves.toMatchObject({ recorded: false, code: "invalid" });
   });
@@ -450,6 +1116,9 @@ describe("operational state failures", () => {
         open: nodeOpen,
         rename: () => Promise.reject(new Error("CANARY_SECRET")),
         unlink: nodeUnlink,
+        atomicRename: () => {
+          throw new Error("CANARY_SECRET");
+        },
       },
       randomId: () => "f".repeat(32),
     });
@@ -634,6 +1303,9 @@ describe("operational state hostile writer locks", () => {
         open: nodeOpen,
         rename: nodeRename,
         unlink: () => Promise.reject(new Error("CANARY_SECRET")),
+        atomicUnlink: () => {
+          throw new Error("CANARY_SECRET");
+        },
       },
       randomId: (() => {
         let value = 5;
@@ -909,6 +1581,17 @@ describe("operational state writer lock substitution", () => {
         rename: async (source, destination) => {
           await nodeRename(source, destination);
           await writeFile(
+            join(home.healthDirectory, "operational-state.lock"),
+            `${JSON.stringify({
+              version: 1,
+              owner,
+              token: "a".repeat(32),
+            })}\n`,
+          );
+        },
+        atomicRename: (source, destination) => {
+          renameSync(source, destination);
+          writeFileSync(
             join(home.healthDirectory, "operational-state.lock"),
             `${JSON.stringify({
               version: 1,

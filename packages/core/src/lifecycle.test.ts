@@ -7,10 +7,6 @@ import tls from "node:tls";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
-  invokeRedactedTraceSink,
-  type RedactedTraceSink,
-} from "@agentscope/destinations-core/lifecycle-sink";
-import {
   isRedactedCanonicalTrace,
   type RedactedCanonicalTrace,
 } from "@agentscope/protocol";
@@ -27,24 +23,57 @@ import {
 } from "./capture/runtime.js";
 import {
   runFailOpenTraceLifecycle,
+  type RedactedTraceSink,
   type TraceLifecycleInput,
 } from "./lifecycle.js";
-import { REDACTION_POLICY_IDENTITIES } from "./redaction/policy.js";
+import {
+  BUILTIN_REDACTION_POLICY_REFERENCES,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  resolveRedactionPolicy,
+} from "./redaction/policy.js";
 
-// Component evidence toward AC-GOV-001.1 and AC-GOV-001.3; real hook,
-// diagnostic-store, persistence, and transport integration remain pending.
+// Branded handoff and content-free fail-open component evidence.
 
-const invocation = (): CaptureInvocationContext => ({
-  harnessRegistryId: "codex",
-  harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
-  snapshot: {
-    configurationIdentity: "config.v1",
-    policyIdentity: REDACTION_POLICY_IDENTITIES.baseline,
-    redactionPolicy: { version: 1, mode: "baseline" },
-  },
-  hookObservedUnixNano: "10",
-  operationIdScope: "session-global",
-});
+const invocation = (): CaptureInvocationContext => {
+  const policy = resolveRedactionPolicy(
+    DEFAULT_REDACTION_POLICY_REGISTRY,
+    BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+  );
+  return {
+    harnessRegistryId: "codex",
+    harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+    snapshot: {
+      configurationIdentity: "config.v1",
+      policyIdentity: policy.identity,
+      redactionPolicy: policy,
+    },
+    hookObservedUnixNano: "10",
+    operationIdScope: "session-global",
+    context: {
+      fields: [],
+      unavailable: [
+        {
+          field: "agentscope.workspace.directory",
+          source: "process",
+          state: "unavailable",
+          reason: "resolution-failed",
+        },
+        ...[
+          "agentscope.git.worktree",
+          "agentscope.git.repository_root",
+          "vcs.ref.head.name",
+          "vcs.ref.head.revision",
+          "vcs.ref.type",
+        ].map((field) => ({
+          field,
+          source: "git" as const,
+          state: "unavailable" as const,
+          reason: "resolution-failed" as const,
+        })),
+      ],
+    },
+  };
+};
 
 const operation = (): OperationCandidate => ({
   logicalKey: "root",
@@ -76,6 +105,7 @@ const candidate = (): CapturedTraceCandidate => ({
     boundaryId: "turn-1",
     generation: 0,
     positionKind: "event-index",
+    startPosition: 0,
     exclusiveEndPosition: 1,
   },
   rootContext: { fields: [], unavailable: [] },
@@ -129,12 +159,9 @@ describe("synchronous fail-open trace lifecycle", () => {
     expect(Object.isFrozen(result)).toBe(true);
     expect(sink).toHaveBeenCalledOnce();
     expect(JSON.stringify(result)).not.toMatch(/trace|span|thread|CANARY/iu);
-    expect(
-      invokeRedactedTraceSink(
-        vi.fn<RedactedTraceSink>(() => undefined),
-        clone as RedactedCanonicalTrace,
-      ),
-    ).toBe("rejected");
+    expect(isRedactedCanonicalTrace(clone as RedactedCanonicalTrace)).toBe(
+      false,
+    );
   });
 
   it("returns fixed capture failures for invalid policy and arbitrary errors", () => {
@@ -191,6 +218,20 @@ describe("synchronous fail-open trace lifecycle", () => {
         reason: "failed",
       });
     expect(sink).not.toHaveBeenCalled();
+
+    const duringSink = new AbortController();
+    expect(
+      runFailOpenTraceLifecycle({
+        ...validInput(() => {
+          duringSink.abort();
+        }),
+        signal: duringSink.signal,
+      }),
+    ).toEqual({
+      outcome: "failed-open",
+      stage: "sink",
+      reason: "cancelled",
+    });
   });
 });
 
@@ -242,6 +283,21 @@ describe("runtime misuse observation", () => {
 });
 
 describe("lifecycle cancellation and sink failure closure", () => {
+  it("treats an unavailable deadline clock as cancellation", () => {
+    expect(
+      runFailOpenTraceLifecycle({
+        ...validInput(),
+        remainingMilliseconds() {
+          throw new Error("CANARY_SECRET");
+        },
+      }),
+    ).toEqual({
+      outcome: "failed-open",
+      stage: "capture",
+      reason: "cancelled",
+    });
+  });
+
   it("checks cancellation before capture, redaction, and sink handoff", () => {
     const pre = new AbortController();
     pre.abort("CANARY_SECRET");
@@ -405,6 +461,12 @@ describe("hostile lifecycle boundaries", () => {
       runFailOpenTraceLifecycle({
         ...validInput(),
         capture: (() => undefined) as unknown as TraceLifecycleInput["capture"],
+      }),
+    ).toEqual({ outcome: "failed-open", stage: "capture", reason: "failed" });
+    expect(
+      runFailOpenTraceLifecycle({
+        ...validInput(),
+        onCaptured: () => Promise.resolve("unexpected"),
       }),
     ).toEqual({ outcome: "failed-open", stage: "capture", reason: "failed" });
     const abortOnFailure = new AbortController();

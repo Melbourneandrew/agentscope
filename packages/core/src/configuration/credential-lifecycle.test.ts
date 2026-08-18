@@ -130,7 +130,7 @@ const candidate = (
 ) =>
   parseAgentscopeConfiguration(
     {
-      configurationVersion: 1,
+      configurationVersion: 2,
       generation,
       destinations: {
         "@agentscope/destination-example": {
@@ -146,7 +146,11 @@ const candidate = (
           ],
         },
       },
-      routing: { version: 1, selectedConnectionIds: [connectionId] },
+      routing: {
+        version: 1,
+        selectedConnectionIds: [connectionId],
+        hookDeadlineMilliseconds: 2_000,
+      },
       policy: { version: 1, reference: "policy-v1" },
     },
     destinationRegistry,
@@ -155,10 +159,14 @@ const candidate = (
 const candidateWithoutCredential = (generation: number) =>
   parseAgentscopeConfiguration(
     {
-      configurationVersion: 1,
+      configurationVersion: 2,
       generation,
       destinations: {},
-      routing: { version: 1, selectedConnectionIds: [] },
+      routing: {
+        version: 1,
+        selectedConnectionIds: [],
+        hookDeadlineMilliseconds: 2_000,
+      },
       policy: { version: 1, reference: "policy-v1" },
     },
     destinationRegistry,

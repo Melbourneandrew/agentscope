@@ -14,10 +14,13 @@ import { z } from "zod";
 
 import { cloneConfigurationDocument } from "./plain-data.js";
 
-export const AGENTSCOPE_CONFIGURATION_VERSION = 1 as const;
+export const AGENTSCOPE_CONFIGURATION_VERSION = 2 as const;
 export const MAXIMUM_CONFIGURED_CONNECTIONS = 64;
 export const MAXIMUM_DESTINATION_NAMESPACES = 32;
 export const MAXIMUM_ROUTED_CONNECTIONS = 32;
+export const DEFAULT_HOOK_DEADLINE_MILLISECONDS = 2_000;
+export const MINIMUM_HOOK_DEADLINE_MILLISECONDS = 50;
+export const MAXIMUM_HOOK_DEADLINE_MILLISECONDS = 60_000;
 
 const connectionNamePattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u;
 const opaqueReferencePattern = /^credential-reference-v1-[0-9a-f]{64}$/u;
@@ -78,6 +81,11 @@ const outerConfigurationSchema = z.strictObject({
   routing: z.strictObject({
     version: z.literal(1),
     selectedConnectionIds: z.array(z.string()).max(MAXIMUM_ROUTED_CONNECTIONS),
+    hookDeadlineMilliseconds: z
+      .number()
+      .int()
+      .min(MINIMUM_HOOK_DEADLINE_MILLISECONDS)
+      .max(MAXIMUM_HOOK_DEADLINE_MILLISECONDS),
   }),
   policy: z.strictObject({
     version: z.literal(1),
@@ -117,8 +125,10 @@ export type AgentscopeConfigurationSnapshot = Readonly<{
   configurationVersion: typeof AGENTSCOPE_CONFIGURATION_VERSION;
   generation: number;
   document: JsonObject;
+  destinationRegistry: DestinationRegistry;
   connections: readonly ConfiguredDestinationConnection[];
   selectedConnectionIds: readonly DestinationConnectionId[];
+  hookDeadlineMilliseconds: number;
   policyReference: string;
   unsupportedDestinationTypes: readonly DestinationTypeId[];
   mutationSafe: boolean;
@@ -256,9 +266,9 @@ export const parseAgentscopeConfiguration = (
       parsed.data.destinations,
       registry,
     );
-    const selected = parsed.data.routing.selectedConnectionIds.map((value) =>
-      createDestinationConnectionId(value),
-    );
+    const selected = parsed.data.routing.selectedConnectionIds
+      .map((value) => createDestinationConnectionId(value))
+      .sort((left, right) => left.localeCompare(right));
     if (new Set(selected).size !== selected.length) return invalid();
     const knownIds = new Set(
       destinationState.connections.map((connection) => connection.connectionId),
@@ -272,8 +282,10 @@ export const parseAgentscopeConfiguration = (
       configurationVersion: AGENTSCOPE_CONFIGURATION_VERSION,
       generation: parsed.data.generation,
       document,
+      destinationRegistry: registry,
       connections: destinationState.connections,
       selectedConnectionIds: Object.freeze(selected),
+      hookDeadlineMilliseconds: parsed.data.routing.hookDeadlineMilliseconds,
       policyReference: parsed.data.policy.reference,
       unsupportedDestinationTypes: destinationState.unsupportedDestinationTypes,
       mutationSafe: destinationState.unsupportedDestinationTypes.length === 0,

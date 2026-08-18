@@ -12,24 +12,58 @@ import type {
 } from "../capture/types.js";
 import { withCaptureInvocation } from "../capture/runtime.js";
 import { CoreRedactionError, redactCapturedTrace } from "./pipeline.js";
-import { REDACTION_POLICY_IDENTITIES } from "./policy.js";
+import {
+  BUILTIN_REDACTION_POLICY_REFERENCES,
+  compileRedactionPolicyRegistry,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  resolveRedactionPolicy,
+} from "./policy.js";
 
-// Component evidence toward AC-GOV-001.1, AC-GOV-001.3, and AC-GOV-001.5;
-// this file directly verifies AC-GOV-001.4.
+// Redaction pipeline evidence for AC-GOV-001.1, AC-GOV-001.2,
+// AC-GOV-001.4, and AC-GOV-001.5.
 
 const invocation = (
   mode: "baseline" | "strict" = "baseline",
-): CaptureInvocationContext => ({
-  harnessRegistryId: "codex",
-  harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
-  snapshot: {
-    configurationIdentity: "config.v1",
-    policyIdentity: REDACTION_POLICY_IDENTITIES[mode],
-    redactionPolicy: { version: 1, mode },
-  },
-  hookObservedUnixNano: "10",
-  operationIdScope: "session-global",
-});
+): CaptureInvocationContext => {
+  const policy = resolveRedactionPolicy(
+    DEFAULT_REDACTION_POLICY_REGISTRY,
+    BUILTIN_REDACTION_POLICY_REFERENCES[mode],
+  );
+  return {
+    harnessRegistryId: "codex",
+    harnessVersion: { state: "observed", value: "1.2.3", source: "process" },
+    snapshot: {
+      configurationIdentity: "config.v1",
+      policyIdentity: policy.identity,
+      redactionPolicy: policy,
+    },
+    hookObservedUnixNano: "10",
+    operationIdScope: "session-global",
+    context: {
+      fields: [],
+      unavailable: [
+        {
+          field: "agentscope.workspace.directory",
+          source: "process",
+          state: "unavailable",
+          reason: "resolution-failed",
+        },
+        ...[
+          "agentscope.git.worktree",
+          "agentscope.git.repository_root",
+          "vcs.ref.head.name",
+          "vcs.ref.head.revision",
+          "vcs.ref.type",
+        ].map((field) => ({
+          field,
+          source: "git" as const,
+          state: "unavailable" as const,
+          reason: "resolution-failed" as const,
+        })),
+      ],
+    },
+  };
+};
 
 const operation = (
   logicalKey = "root",
@@ -75,6 +109,7 @@ const candidate = (): CapturedTraceCandidate => ({
     boundaryId: "turn-1",
     generation: 0,
     positionKind: "event-index",
+    startPosition: 0,
     exclusiveEndPosition: 1,
   },
   rootContext: { fields: [], unavailable: [] },
@@ -84,8 +119,33 @@ const candidate = (): CapturedTraceCandidate => ({
 const capture = (
   value = candidate(),
   mode: "baseline" | "strict" = "baseline",
+  context: CaptureInvocationContext["context"] = invocation(mode).context,
 ) =>
-  withCaptureInvocation(invocation(mode), (factory) => factory.capture(value));
+  withCaptureInvocation({ ...invocation(mode), context }, (factory) =>
+    factory.capture(value),
+  );
+
+const coreContext = (
+  fields: readonly Readonly<{ field: string; value: string }>[],
+): CaptureInvocationContext["context"] => {
+  const present = new Set(fields.map(({ field }) => field));
+  return {
+    fields: fields.map(({ field, value }) => ({
+      field,
+      value,
+      provenance: {
+        field,
+        source:
+          field === "agentscope.workspace.directory"
+            ? ("process" as const)
+            : ("git" as const),
+      },
+    })),
+    unavailable: invocation().context.unavailable.filter(
+      ({ field }) => !present.has(field),
+    ),
+  };
+};
 
 describe("descriptor-driven redaction pipeline", () => {
   it("constructs, validates, freezes, and brands a fresh canonical envelope", async () => {
@@ -94,8 +154,57 @@ describe("descriptor-driven redaction pipeline", () => {
     expect(isRedactedCanonicalTrace(result)).toBe(true);
     expect(Object.isFrozen(result)).toBe(true);
     const serialized = serializeRedactedCanonicalTrace(result);
-    expect(serialized).toContain("agentscope.redaction.baseline.v1");
+    expect(serialized).toContain("agentscope.redaction.effective.v1.baseline");
     expect(serialized).not.toContain("thread-1");
+  });
+
+  it("composes user omission with baseline while retaining unaffected siblings", async () => {
+    const policy = resolveRedactionPolicy(
+      compileRedactionPolicyRegistry([
+        {
+          version: 1,
+          reference: "omit-input-v1",
+          mode: "baseline",
+          rules: [
+            {
+              selector: { kind: "semantic-key", value: "input.value" },
+              action: "omit",
+            },
+          ],
+        },
+      ]),
+      "omit-input-v1",
+    );
+    const base = candidate();
+    const captured = await withCaptureInvocation(
+      {
+        ...invocation(),
+        snapshot: {
+          configurationIdentity: "config.user-policy.v1",
+          policyIdentity: policy.identity,
+          redactionPolicy: policy,
+        },
+      },
+      (factory) =>
+        factory.capture({
+          ...base,
+          operations: [
+            {
+              ...base.operations[0]!,
+              fields: [
+                field("input.value", "safe input"),
+                field("output.value", "safe output"),
+              ],
+            },
+          ],
+        }),
+    );
+    const serialized = serializeRedactedCanonicalTrace(
+      redactCapturedTrace(captured),
+    );
+    expect(serialized).not.toContain("safe input");
+    expect(serialized).toContain("safe output");
+    expect(serialized).toContain(policy.identity);
   });
 });
 
@@ -316,19 +425,24 @@ describe("descriptor-driven redaction context construction", () => {
     const base = candidate();
     const value: CapturedTraceCandidate = {
       ...base,
-      rootContext: {
-        fields: [
-          field("agentscope.workspace.directory", "workspace/project"),
-          field("vcs.ref.head.revision", "abcdef1"),
-          field("vcs.ref.head.name", "main"),
-          field("vcs.ref.type", "branch"),
-        ],
-        unavailable: [],
-      },
       operations: [root, llm, tool],
     };
     const serialized = serializeRedactedCanonicalTrace(
-      redactCapturedTrace(await capture(value)),
+      redactCapturedTrace(
+        await capture(
+          value,
+          "baseline",
+          coreContext([
+            {
+              field: "agentscope.workspace.directory",
+              value: "workspace/project",
+            },
+            { field: "vcs.ref.head.revision", value: "abcdef1" },
+            { field: "vcs.ref.head.name", value: "main" },
+            { field: "vcs.ref.type", value: "branch" },
+          ]),
+        ),
+      ),
     );
     expect(serialized).toContain("family.llm.usage");
     expect(serialized).toContain("family.tool.activity");
@@ -426,9 +540,6 @@ describe("descriptor-driven redaction policy and closure", () => {
       ...base,
       rootContext: {
         fields: [
-          field("vcs.ref.head.revision", "password=CANARY_SECRET"),
-          field("vcs.ref.head.name", "main"),
-          field("vcs.ref.type", "branch"),
           field("vcs.repository.url.full", "https://example.test/org/repo.git"),
           field("vcs.repository.name", "repo"),
         ],
@@ -436,14 +547,91 @@ describe("descriptor-driven redaction policy and closure", () => {
       },
     };
     const serialized = serializeRedactedCanonicalTrace(
-      redactCapturedTrace(await capture(value)),
+      redactCapturedTrace(
+        await capture(
+          value,
+          "baseline",
+          coreContext([
+            {
+              field: "vcs.ref.head.revision",
+              value: "password=CANARY_SECRET",
+            },
+            { field: "vcs.ref.head.name", value: "main" },
+            { field: "vcs.ref.type", value: "branch" },
+          ]),
+        ),
+      ),
     );
     expect(serialized).not.toContain("CANARY_SECRET");
     expect(serialized).not.toContain('vcs.ref.head.name\\",\\"value');
     expect(serialized).toContain("https://example.test/org/repo");
     expect(serialized).not.toContain("repo.git");
   });
+});
 
+describe("descriptor-driven redaction graph closure", () => {
+  it("projects trusted local paths to safe repository-relative context", async () => {
+    const serialized = serializeRedactedCanonicalTrace(
+      redactCapturedTrace(
+        await capture(
+          candidate(),
+          "baseline",
+          coreContext([
+            {
+              field: "agentscope.workspace.directory",
+              value: "/Users/alice/project/packages/core",
+            },
+            {
+              field: "agentscope.git.worktree",
+              value: "/Users/alice/project",
+            },
+            {
+              field: "agentscope.git.repository_root",
+              value: "/Users/alice/project",
+            },
+            { field: "vcs.ref.head.name", value: "main" },
+            { field: "vcs.ref.head.revision", value: "a".repeat(40) },
+            { field: "vcs.ref.type", value: "branch" },
+          ]),
+        ),
+      ),
+    );
+    expect(serialized).toContain("packages/core");
+    expect(serialized).not.toContain("/Users/alice");
+    expect(serialized).toContain(
+      '\\"field\\":\\"agentscope.workspace.directory\\",\\"source\\":\\"derived\\"',
+    );
+    const linkedWorktree = serializeRedactedCanonicalTrace(
+      redactCapturedTrace(
+        await capture(
+          candidate(),
+          "baseline",
+          coreContext([
+            {
+              field: "agentscope.workspace.directory",
+              value: "/Volumes/worktrees/project/packages/core",
+            },
+            {
+              field: "agentscope.git.worktree",
+              value: "/Volumes/worktrees/project",
+            },
+            {
+              field: "agentscope.git.repository_root",
+              value: "/Users/alice/project",
+            },
+            { field: "vcs.ref.head.name", value: "main" },
+            { field: "vcs.ref.head.revision", value: "a".repeat(40) },
+            { field: "vcs.ref.type", value: "branch" },
+          ]),
+        ),
+      ),
+    );
+    expect(linkedWorktree).not.toContain("/Volumes/worktrees");
+    expect(linkedWorktree).toContain("policy-redacted");
+  });
+});
+
+describe("descriptor-driven redaction timing and family closure", () => {
   it("uses hook points for untimed children and suppresses a narrow native root", async () => {
     const child = operation("child", "root", 1);
     const { timing, ...untimedChild } = child;
@@ -719,14 +907,16 @@ describe("descriptor-driven redaction ordering", () => {
     };
     const value: CapturedTraceCandidate = {
       ...base,
-      rootContext: {
-        fields: [field("vcs.ref.head.name", "main")],
-        unavailable: [],
-      },
       operations: [operation(), childB, childA, childC],
     };
     const serialized = serializeRedactedCanonicalTrace(
-      redactCapturedTrace(await capture(value)),
+      redactCapturedTrace(
+        await capture(
+          value,
+          "baseline",
+          coreContext([{ field: "vcs.ref.head.name", value: "main" }]),
+        ),
+      ),
     );
     expect(serialized).toContain("resolution-failed");
     expect(serialized).not.toContain('\\"vcs.ref.head.name\\",\\"value');
@@ -739,7 +929,13 @@ describe("descriptor-driven redaction ordering", () => {
     ])
       expect(
         serializeRedactedCanonicalTrace(
-          redactCapturedTrace(await capture({ ...value, operations })),
+          redactCapturedTrace(
+            await capture(
+              { ...value, operations },
+              "baseline",
+              coreContext([{ field: "vcs.ref.head.name", value: "main" }]),
+            ),
+          ),
         ),
       ).toBe(serialized);
   });

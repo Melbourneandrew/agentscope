@@ -6,6 +6,7 @@ import type {
 import { cloneConfigurationDocument } from "./plain-data.js";
 import {
   AGENTSCOPE_CONFIGURATION_VERSION,
+  DEFAULT_HOOK_DEADLINE_MILLISECONDS,
   parseAgentscopeConfiguration,
   type AgentscopeConfigurationSnapshot,
 } from "./schema.js";
@@ -98,6 +99,27 @@ export const compileConfigurationMigrationRegistry = (
   migrationRegistries.set(registry, bySource);
   return registry;
 };
+
+export const CONFIGURATION_V1_TO_V2_MIGRATION: ConfigurationMigration =
+  Object.freeze({
+    fromVersion: 1,
+    toVersion: 2,
+    migrate: (input: JsonObject): unknown => {
+      const routing = input.routing;
+      if (typeof routing !== "object" || routing === null) return input;
+      return {
+        ...input,
+        configurationVersion: 2,
+        routing: {
+          ...routing,
+          hookDeadlineMilliseconds: DEFAULT_HOOK_DEADLINE_MILLISECONDS,
+        },
+      };
+    },
+  });
+
+export const DEFAULT_CONFIGURATION_MIGRATION_REGISTRY =
+  compileConfigurationMigrationRegistry([CONFIGURATION_V1_TO_V2_MIGRATION]);
 
 const configurationVersion = (document: JsonObject): number => {
   const descriptor = Object.getOwnPropertyDescriptor(

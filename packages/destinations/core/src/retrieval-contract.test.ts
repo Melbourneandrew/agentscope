@@ -12,6 +12,7 @@ import {
 import {
   createTraceSearchCursor,
   readTraceSearchCursor,
+  readTraceSearchCursorUpperTimeBound,
   TraceCursorError,
 } from "./retrieval-cursor.js";
 import {
@@ -325,6 +326,17 @@ describe("bound opaque retrieval cursor", () => {
       key: "opaque",
       offset: 25,
     });
+    expect(readTraceSearchCursorUpperTimeBound(cursor)).toBe(normalized.to);
+    expect(() =>
+      readTraceSearchCursorUpperTimeBound(`${cursor}=`),
+    ).toThrowError(TraceCursorError);
+    expect(() =>
+      readTraceSearchCursorUpperTimeBound(
+        rewriteCursor(cursor, (value) => {
+          value.upperTimeBound = "not-a-time";
+        }),
+      ),
+    ).toThrowError(TraceCursorError);
     for (const changed of [
       { ...binding, configurationIdentity: "config-v2" },
       {

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import {
   link as nodeLink,
   open as nodeOpen,
@@ -161,6 +161,10 @@ type ConfigurationStoreInternals = Readonly<{
   home: AgentscopeHome;
   registry: DestinationRegistry;
   fileSystem: ConfigurationFileSystem;
+  readForHook?: (
+    file: string,
+    signal: AbortSignal,
+  ) => Promise<string | undefined>;
   createTransactionId: () => string;
   afterStep?: (step: ConfigurationTransactionStep) => void;
 }>;
@@ -316,6 +320,41 @@ const readBoundedFile = async (
   }
 };
 
+const readBoundedHookFile = async (
+  file: string,
+  signal: AbortSignal,
+): Promise<string | undefined> => {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const stream = createReadStream(file, {
+    flags: (readFlags | constants.O_NONBLOCK) as unknown as string,
+    highWaterMark: 64 * 1_024,
+    start: 0,
+    end: MAXIMUM_CONFIGURATION_FILE_BYTES,
+    signal,
+  });
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.from(chunk as Uint8Array);
+      total += bytes.byteLength;
+      if (total > MAXIMUM_CONFIGURATION_FILE_BYTES)
+        return invalid("core.configuration.invalid");
+      chunks.push(bytes);
+    }
+    try {
+      return utf8Decoder.decode(Buffer.concat(chunks, total));
+    } catch {
+      return invalid("core.configuration.invalid");
+    }
+  } catch (error) {
+    if (nodeErrorCode(error) === "ENOENT") return undefined;
+    if (error instanceof ConfigurationStoreError) throw error;
+    return invalid("core.configuration.unavailable");
+  } finally {
+    stream.destroy();
+  }
+};
+
 const writeDurableExclusive = async (
   fileSystem: ConfigurationFileSystem,
   file: string,
@@ -360,6 +399,10 @@ const unlinkIfPresent = async (
 const stored = (store: ConfigurationStore): ConfigurationStoreInternals =>
   storeRegistry.get(store) ?? invalid("core.configuration.invalid");
 
+export const configurationStoreHomeForCore = (
+  store: ConfigurationStore,
+): AgentscopeHome => stored(store).home;
+
 const validateOwner = (
   owner: ConfigurationProcessIdentity,
 ): ConfigurationProcessIdentity => {
@@ -401,6 +444,7 @@ const createStore = (
     home,
     registry,
     fileSystem: overrides.fileSystem ?? nativeFileSystem,
+    ...(overrides.readForHook ? { readForHook: overrides.readForHook } : {}),
     createTransactionId:
       overrides.createTransactionId ??
       (() => `configuration-transaction-v1-${randomBytes(32).toString("hex")}`),
@@ -484,9 +528,20 @@ export const readConfigurationBackupSnapshot = async (
 
 export const readConfigurationForHook = async (
   store: ConfigurationStore,
+  signal?: AbortSignal,
 ): Promise<HookConfigurationReadResult> => {
   try {
-    const snapshot = await readConfigurationSnapshot(store);
+    const state = stored(store);
+    const snapshot =
+      signal === undefined
+        ? await readConfigurationSnapshot(store)
+        : (parseCurrent(
+            await (state.readForHook ?? readBoundedHookFile)(
+              state.home.configFile,
+              signal,
+            ),
+            state.registry,
+          ) ?? invalid("core.configuration.missing"));
     return snapshot.mutationSafe
       ? Object.freeze({ ok: true as const, snapshot })
       : Object.freeze({

@@ -4,9 +4,15 @@ import {
   type RedactionTransform,
   type SemanticAttributeDescriptor,
   type StructuralSemanticDescriptor,
+  type OpenInferenceSpanKindValue,
 } from "@agentscope/protocol";
 
-import { REDACTION_POLICY_PROFILE } from "./policy.js";
+import {
+  REDACTION_POLICY_PROFILE,
+  redactionRuleOmits,
+  type ResolvedRedactionPolicy,
+} from "./policy.js";
+export type { ResolvedRedactionPolicy } from "./policy.js";
 
 export class CoreRedactionError extends Error {
   public readonly code = "core.redaction.suppressed";
@@ -16,12 +22,6 @@ export class CoreRedactionError extends Error {
     this.name = "CoreRedactionError";
   }
 }
-
-export type ResolvedRedactionPolicy = Readonly<{
-  version: 1;
-  mode: "baseline" | "strict";
-  identity: string;
-}>;
 
 type Descriptor = SemanticAttributeDescriptor | StructuralSemanticDescriptor;
 type TransformState = {
@@ -36,6 +36,7 @@ type TransformState = {
   replacement: string;
   transformed: boolean;
   oversized: boolean;
+  userOmit: boolean;
 };
 
 const secretPatterns = REDACTION_POLICY_PROFILE.secretPatterns.map(
@@ -206,6 +207,7 @@ const terminalOutcome = (
   const rules = semantics.routes[route];
   const candidates: TerminalDecision[] = [rules.otherwise];
   if (state.policy.mode === "strict") candidates.push(rules.strict);
+  if (state.userOmit) candidates.push("optional");
   if (state.secret) candidates.push(rules.secret);
   if (state.absolutePath) candidates.push(rules.absolutePath);
   if (state.oversized) candidates.push(rules.oversized);
@@ -368,6 +370,10 @@ export const applyDescriptorRedaction = (
   value: unknown,
   policy: ResolvedRedactionPolicy,
   replacement = REDACTION_POLICY_PROFILE.replacementLiteral,
+  context: Readonly<{
+    semanticKey?: string;
+    spanKind?: OpenInferenceSpanKindValue;
+  }> = {},
 ): RedactionResult => {
   try {
     const state: TransformState = {
@@ -379,6 +385,15 @@ export const applyDescriptorRedaction = (
       replacement,
       transformed: false,
       oversized: false,
+      userOmit:
+        context.semanticKey === undefined
+          ? false
+          : redactionRuleOmits(
+              policy,
+              context.semanticKey,
+              "templateId" in descriptor ? descriptor.templateId : undefined,
+              context.spanKind,
+            ),
     };
     for (const transform of descriptor.mandatoryTransforms)
       TRANSFORM_HANDLERS[transform as RedactionTransform](state);

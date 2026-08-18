@@ -21,26 +21,63 @@ import {
   readCapturedTraceForCore,
   withCaptureInvocation,
 } from "./runtime.js";
-import { REDACTION_POLICY_IDENTITIES } from "../redaction/policy.js";
-import { agentscope } from "../index.js";
+import {
+  BUILTIN_REDACTION_POLICY_REFERENCES,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  resolveRedactionPolicy,
+} from "../redaction/policy.js";
 
-// Component evidence toward AC-CAP-001.3; hook-start derivation is pending.
+// Capture-side enforcement evidence for AC-CAP-001.3 and AC-CAP-002.7.
 
-const invocation = (): CaptureInvocationContext => ({
-  harnessRegistryId: "codex",
-  harnessVersion: {
-    state: "observed",
-    value: "1.2.3",
-    source: "process",
-  },
-  snapshot: {
-    configurationIdentity: "config.v1",
-    policyIdentity: REDACTION_POLICY_IDENTITIES.baseline,
-    redactionPolicy: { version: 1, mode: "baseline" },
-  },
-  hookObservedUnixNano: "100",
-  operationIdScope: "session-global",
+const resolvedPolicy = (mode: "baseline" | "strict" = "baseline") =>
+  resolveRedactionPolicy(
+    DEFAULT_REDACTION_POLICY_REGISTRY,
+    BUILTIN_REDACTION_POLICY_REFERENCES[mode],
+  );
+
+const unavailableContext = Object.freeze({
+  fields: Object.freeze([]),
+  unavailable: Object.freeze([
+    {
+      field: "agentscope.workspace.directory",
+      source: "process" as const,
+      state: "unavailable" as const,
+      reason: "resolution-failed" as const,
+    },
+    ...[
+      "agentscope.git.worktree",
+      "agentscope.git.repository_root",
+      "vcs.ref.head.name",
+      "vcs.ref.head.revision",
+      "vcs.ref.type",
+    ].map((field) => ({
+      field,
+      source: "git" as const,
+      state: "unavailable" as const,
+      reason: "resolution-failed" as const,
+    })),
+  ]),
 });
+
+const invocation = (): CaptureInvocationContext => {
+  const policy = resolvedPolicy();
+  return {
+    harnessRegistryId: "codex",
+    harnessVersion: {
+      state: "observed",
+      value: "1.2.3",
+      source: "process",
+    },
+    snapshot: {
+      configurationIdentity: "config.v1",
+      policyIdentity: policy.identity,
+      redactionPolicy: policy,
+    },
+    hookObservedUnixNano: "100",
+    operationIdScope: "session-global",
+    context: unavailableContext,
+  };
+};
 
 const operation = (
   logicalKey = "root",
@@ -87,6 +124,7 @@ const candidate = (): CapturedTraceCandidate => ({
     boundaryId: "native-secret-boundary",
     generation: 0,
     positionKind: "event-index",
+    startPosition: 0,
     exclusiveEndPosition: 2,
   },
   rootContext: { fields: [], unavailable: [] },
@@ -264,6 +302,7 @@ describe("identity privacy exclusions", () => {
         endUnixNano: "30",
       },
     };
+    const strict = resolvedPolicy("strict");
     const changed = await withCaptureInvocation(
       {
         ...invocation(),
@@ -274,8 +313,8 @@ describe("identity privacy exclusions", () => {
         },
         snapshot: {
           configurationIdentity: "config.changed",
-          policyIdentity: REDACTION_POLICY_IDENTITIES.strict,
-          redactionPolicy: { version: 1, mode: "strict" },
+          policyIdentity: strict.identity,
+          redactionPolicy: strict,
         },
         hookObservedUnixNano: "999",
       },
@@ -319,7 +358,9 @@ describe("snapshot-bound capture lifecycle", () => {
     });
     expect(late).toThrow(CapturedTraceError);
   });
+});
 
+describe("snapshot-bound invocation rejection", () => {
   it("rejects hostile or invalid Core-owned invocation context", async () => {
     for (const context of [
       null,
@@ -347,6 +388,74 @@ describe("snapshot-bound capture lifecycle", () => {
         harnessVersion: { state: "attacker", source: "process" },
       },
       { ...invocation(), snapshot: { policyIdentity: "x" } },
+      { ...invocation(), context: { fields: [], unavailable: [] } },
+      {
+        ...invocation(),
+        context: {
+          fields: [
+            {
+              field: "agentscope.workspace.directory",
+              value: "workspace",
+              provenance: {
+                field: "agentscope.workspace.directory",
+                source: "git",
+              },
+            },
+          ],
+          unavailable: unavailableContext.unavailable.slice(1),
+        },
+      },
+      {
+        ...invocation(),
+        context: {
+          fields: [],
+          unavailable: unavailableContext.unavailable.map((entry, index) =>
+            index === 1
+              ? { ...entry, state: "not-applicable", reason: "detached-head" }
+              : entry,
+          ),
+        },
+      },
+      {
+        ...invocation(),
+        context: {
+          fields: [
+            {
+              field: "agentscope.workspace.directory",
+              value: "workspace",
+              provenance: {
+                field: "agentscope.workspace.directory",
+                source: "process",
+              },
+            },
+            {
+              field: "agentscope.workspace.directory",
+              value: "workspace",
+              provenance: {
+                field: "agentscope.workspace.directory",
+                source: "process",
+              },
+            },
+          ],
+          unavailable: unavailableContext.unavailable.slice(1),
+        },
+      },
+      {
+        ...invocation(),
+        context: {
+          fields: [
+            {
+              field: "agentscope.workspace.directory",
+              value: "workspace",
+              provenance: {
+                field: "agentscope.workspace.directory",
+                source: "process",
+              },
+            },
+          ],
+          unavailable: unavailableContext.unavailable,
+        },
+      },
     ]) {
       await expect(
         withCaptureInvocation(context as never, () => undefined),
@@ -359,6 +468,30 @@ describe("snapshot-bound capture lifecycle", () => {
 });
 
 describe("Core-owned harness identity evidence", () => {
+  it("accepts exact detached-head unavailability without inventing a name", async () => {
+    const value = invocation();
+    const detached: CaptureInvocationContext = {
+      ...value,
+      context: {
+        fields: value.context.fields,
+        unavailable: value.context.unavailable.map((entry) =>
+          entry.field === "vcs.ref.head.name"
+            ? {
+                ...entry,
+                state: "not-applicable",
+                reason: "detached-head",
+              }
+            : entry,
+        ),
+      },
+    };
+    await expect(
+      withCaptureInvocation(detached, (factory) =>
+        factory.capture(candidate()),
+      ),
+    ).resolves.toBeDefined();
+  });
+
   it("binds observed or explicitly unavailable harness version evidence", async () => {
     const observed = await withCaptureInvocation(invocation(), (factory) =>
       factory.capture(candidate()),
@@ -587,17 +720,6 @@ describe("descriptor value candidates", () => {
     };
     const value: CapturedTraceCandidate = {
       ...base,
-      rootContext: {
-        fields: [field("vcs.ref.head.revision", "abc123")],
-        unavailable: [
-          {
-            field: "vcs.ref.head.name",
-            source: "native-artifact",
-            state: "not-applicable",
-            reason: "detached-head",
-          },
-        ],
-      },
       operations,
     };
     expect(isCapturedTrace(await capture(value))).toBe(true);
@@ -1164,6 +1286,11 @@ describe("boundary candidate rejection", () => {
       { ...candidate().captureBoundary, operationIdScope: "invalid" },
       { ...candidate().captureBoundary, generation: -1 },
       { ...candidate().captureBoundary, exclusiveEndPosition: 1.5 },
+      {
+        ...candidate().captureBoundary,
+        startPosition: 2,
+        exclusiveEndPosition: 2,
+      },
       { ...candidate().captureBoundary, session: { kind: "invalid" } },
       {
         ...candidate().captureBoundary,
@@ -1201,8 +1328,8 @@ describe("boundary candidate rejection", () => {
       },
       {
         configurationIdentity: "config.v1",
-        policyIdentity: REDACTION_POLICY_IDENTITIES.baseline,
-        redactionPolicy: { version: 1, mode: "strict" },
+        policyIdentity: resolvedPolicy("baseline").identity,
+        redactionPolicy: resolvedPolicy("strict"),
       },
     ]) {
       await expect(
@@ -1387,10 +1514,6 @@ describe("compile boundary", () => {
     expectTypeOf<
       HarnessCaptureFactory["capture"]
     >().returns.not.toEqualTypeOf<CapturedTraceCandidate>();
-    expect(agentscope).toEqual({
-      framework: "agentscope",
-      purpose: "agent-trace-observability",
-    });
   });
 
   it("publishes only root and type-only capture seams and has no lifecycle imports", () => {

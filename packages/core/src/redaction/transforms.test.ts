@@ -13,23 +13,24 @@ import {
   type ResolvedRedactionPolicy,
 } from "./transforms.js";
 import {
+  BUILTIN_REDACTION_POLICY_REFERENCES,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
   fingerprintRedactionPolicyMaterialForTesting,
   REDACTION_POLICY_IDENTITIES,
   REDACTION_POLICY_MATERIAL_FOR_TESTING,
   REDACTION_POLICY_PROFILE,
   REDACTION_POLICY_PROFILE_FINGERPRINT,
+  resolveRedactionPolicy,
 } from "./policy.js";
 
-const baseline: ResolvedRedactionPolicy = Object.freeze({
-  version: 1,
-  mode: "baseline",
-  identity: REDACTION_POLICY_IDENTITIES.baseline,
-});
-const strict: ResolvedRedactionPolicy = Object.freeze({
-  version: 1,
-  mode: "strict",
-  identity: REDACTION_POLICY_IDENTITIES.strict,
-});
+const baseline: ResolvedRedactionPolicy = resolveRedactionPolicy(
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+);
+const strict: ResolvedRedactionPolicy = resolveRedactionPolicy(
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  BUILTIN_REDACTION_POLICY_REFERENCES.strict,
+);
 const descriptor = (field: string) => {
   const result = getAcceptedSemanticAttributeDescriptor(field);
   if (result === undefined) throw new Error("fixture descriptor missing");

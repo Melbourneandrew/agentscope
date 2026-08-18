@@ -140,6 +140,59 @@ const envelope = (
   });
 };
 
+const readCursorEnvelope = (input: unknown): ReturnType<typeof envelope> => {
+  if (
+    typeof input !== "string" ||
+    input.length === 0 ||
+    input.length > MAXIMUM_CURSOR_CHARACTERS
+  )
+    return invalid();
+  const parts = input.split(".");
+  if (parts.length !== 3 || parts[0] !== CURSOR_PREFIX) return invalid();
+  const payload = parts[1]!;
+  if (!equalDigest(parts[2]!, digest(payload))) return invalid();
+  const decoded = Buffer.from(payload, "base64url").toString("utf8");
+  const cloned = cloneJsonObject(JSON.parse(decoded) as unknown);
+  if (
+    Buffer.from(JSON.stringify(cloned), "utf8").toString("base64url") !==
+    payload
+  )
+    return invalid();
+  const descriptors = objectGetOwnPropertyDescriptors(cloned);
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    objectKeys(descriptors).sort().join(",") !==
+      "configurationIdentity,connectionId,destinationType,providerToken,queryFingerprint,upperTimeBound,version" ||
+    valueOf(descriptors, "version") !== 1
+  )
+    return invalid();
+  return cloned;
+};
+
+/**
+ * Reads only the integrity-protected pagination time anchor. Authorization and
+ * operation binding still occur in readTraceSearchCursor before provider state
+ * is released.
+ */
+export const readTraceSearchCursorUpperTimeBound = (input: unknown): string => {
+  try {
+    const parsed = readCursorEnvelope(input);
+    const upperTimeBound = valueOf(
+      objectGetOwnPropertyDescriptors(parsed),
+      "upperTimeBound",
+    );
+    if (
+      typeof upperTimeBound !== "string" ||
+      !Number.isFinite(Date.parse(upperTimeBound)) ||
+      new Date(Date.parse(upperTimeBound)).toISOString() !== upperTimeBound
+    )
+      return invalid();
+    return upperTimeBound;
+  } catch {
+    return invalid();
+  }
+};
+
 export const createTraceSearchCursor = (
   inputBinding: TraceCursorBinding,
   providerToken: JsonValue,
@@ -162,32 +215,8 @@ export const readTraceSearchCursor = (
   expectedBinding: TraceCursorBinding,
 ): JsonValue => {
   try {
-    if (
-      typeof input !== "string" ||
-      input.length === 0 ||
-      input.length > MAXIMUM_CURSOR_CHARACTERS
-    )
-      return invalid();
-    const parts = input.split(".");
-    if (parts.length !== 3 || parts[0] !== CURSOR_PREFIX) return invalid();
-    const payload = parts[1]!;
-    if (!equalDigest(parts[2]!, digest(payload))) return invalid();
-    const decoded = Buffer.from(payload, "base64url").toString("utf8");
-    const parsed: unknown = JSON.parse(decoded);
-    const cloned = cloneJsonObject(parsed);
-    if (
-      Buffer.from(JSON.stringify(cloned), "utf8").toString("base64url") !==
-      payload
-    )
-      return invalid();
+    const cloned = readCursorEnvelope(input);
     const descriptors = objectGetOwnPropertyDescriptors(cloned);
-    if (
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-      objectKeys(descriptors).sort().join(",") !==
-        "configurationIdentity,connectionId,destinationType,providerToken,queryFingerprint,upperTimeBound,version" ||
-      valueOf(descriptors, "version") !== 1
-    )
-      return invalid();
     const expected = validateTraceCursorBinding(expectedBinding);
     if (
       valueOf(descriptors, "connectionId") !== expected.connectionId ||

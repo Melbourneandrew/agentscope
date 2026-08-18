@@ -13,7 +13,6 @@ const packageRoleBoundary = (
   allowed,
   message,
   allowCoreFinalization = false,
-  allowLifecycleSink = false,
   allowDestinationOrchestration = false,
 ) => [
   "error",
@@ -25,15 +24,6 @@ const packageRoleBoundary = (
               group: ["@agentscope/protocol/core-finalization"],
               message:
                 "Only Core may import the Protocol finalization authority.",
-            },
-          ]
-        : []),
-      ...(!allowLifecycleSink
-        ? [
-            {
-              group: ["@agentscope/destinations-core/lifecycle-sink"],
-              message:
-                "Only Core may import the provisional lifecycle sink authority.",
             },
           ]
         : []),
@@ -132,7 +122,6 @@ export default tseslint.config(
           "@agentscope/*/src/**",
           "@agentscope/*/*/src/**",
           "@agentscope/protocol/core-finalization",
-          "@agentscope/destinations-core/lifecycle-sink",
           "@agentscope/destinations-core/core-orchestration",
         ],
         "Import another workspace only through an exported public entry point.",
@@ -156,7 +145,6 @@ export default tseslint.config(
       "no-restricted-imports": packageRoleBoundary(
         ["@agentscope/protocol", "@agentscope/destinations-core"],
         "Core is the lower-level shared layer; it must not import harness, destination, or CLI packages.",
-        true,
         true,
         true,
       ),
@@ -231,7 +219,6 @@ export default tseslint.config(
           "@agentscope/*/*/src/**",
           "@agentscope/core/harness-capture",
           "@agentscope/protocol/core-finalization",
-          "@agentscope/destinations-core/lifecycle-sink",
           "@agentscope/destinations-core/core-orchestration",
         ],
         "The CLI is the composition root: it may import first-party package public exports, never package internals or the transient harness-capture boundary.",

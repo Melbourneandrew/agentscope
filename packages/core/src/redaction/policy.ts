@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 
+import {
+  OPENINFERENCE_SPAN_KINDS,
+  semanticProfileDescriptors,
+  type OpenInferenceSpanKindValue,
+} from "@agentscope/protocol";
+import { z } from "zod";
+
+import { cloneConfigurationDocument } from "../configuration/plain-data.js";
+
 const deepFreeze = <T>(value: T): T => {
   if (typeof value === "object" && value !== null) {
     for (const member of Object.values(value)) deepFreeze(member);
@@ -157,3 +166,247 @@ export const REDACTION_POLICY_IDENTITIES = deepFreeze({
   baseline: `agentscope.redaction.baseline.v1.${REDACTION_POLICY_PROFILE_FINGERPRINT}`,
   strict: `agentscope.redaction.strict.v1.${REDACTION_POLICY_PROFILE_FINGERPRINT}`,
 });
+
+export const MAXIMUM_REDACTION_RULES = 64;
+export const MAXIMUM_REDACTION_POLICY_BYTES = 32_768;
+export const BUILTIN_REDACTION_POLICY_REFERENCES = deepFreeze({
+  baseline: "core-redaction-policy-v1-baseline",
+  strict: "core-redaction-policy-v1-strict",
+});
+
+const referencePattern = /^[a-z0-9][a-z0-9._-]{0,255}$/u;
+const selectorPattern = /^[a-z][a-z\d_.-]{0,255}$/u;
+const selectorSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("semantic-key"),
+    value: z.string().regex(selectorPattern),
+  }),
+  z.strictObject({
+    kind: z.literal("template"),
+    value: z.string().regex(selectorPattern),
+  }),
+]);
+const ruleSchema = z.strictObject({
+  selector: selectorSchema,
+  spanKind: z.enum(OPENINFERENCE_SPAN_KINDS).optional(),
+  action: z.literal("omit"),
+});
+const policySchema = z.strictObject({
+  version: z.literal(1),
+  reference: z.string().regex(referencePattern),
+  mode: z.enum(["baseline", "strict"]),
+  rules: z.array(ruleSchema).max(MAXIMUM_REDACTION_RULES),
+});
+
+export type RedactionPolicyRule = Readonly<{
+  selector: Readonly<{
+    kind: "semantic-key" | "template";
+    value: string;
+  }>;
+  spanKind?: OpenInferenceSpanKindValue;
+  action: "omit";
+}>;
+
+export type RedactionPolicyDefinition = Readonly<{
+  version: 1;
+  reference: string;
+  mode: "baseline" | "strict";
+  rules: readonly RedactionPolicyRule[];
+}>;
+
+export type ResolvedRedactionPolicy = Readonly<{
+  version: 1;
+  reference: string;
+  mode: "baseline" | "strict";
+  identity: string;
+  rules: readonly RedactionPolicyRule[];
+}>;
+
+export type RedactionPolicyRegistry = Readonly<{
+  readonly redactionPolicyRegistry: "agentscope-core";
+}>;
+
+export class RedactionPolicyError extends Error {
+  public readonly code = "core.redaction.policy.invalid";
+
+  public constructor() {
+    super("core.redaction.policy.invalid");
+    this.name = "RedactionPolicyError";
+  }
+}
+
+const invalidPolicy = (): never => {
+  throw new RedactionPolicyError();
+};
+
+const templateIds = new Set(
+  semanticProfileDescriptors.attributes.flatMap(({ templateId }) =>
+    templateId === undefined ? [] : [templateId],
+  ),
+);
+const semanticKeys = new Set(
+  semanticProfileDescriptors.attributes.flatMap(({ key }) =>
+    key === undefined ? [] : [key],
+  ),
+);
+
+const canonicalRule = (rule: RedactionPolicyRule) =>
+  `${rule.selector.kind}:${rule.selector.value}:${rule.spanKind ?? "*"}:omit`;
+
+const parsePolicy = (input: unknown): RedactionPolicyDefinition => {
+  try {
+    const cloned = cloneConfigurationDocument(input);
+    if (
+      Buffer.byteLength(JSON.stringify(cloned)) > MAXIMUM_REDACTION_POLICY_BYTES
+    )
+      return invalidPolicy();
+    const parsed = policySchema.safeParse(cloned);
+    if (!parsed.success) return invalidPolicy();
+    const rules = parsed.data.rules.map((rule) => {
+      const recognized =
+        rule.selector.kind === "semantic-key"
+          ? semanticKeys.has(rule.selector.value)
+          : templateIds.has(rule.selector.value);
+      if (!recognized) return invalidPolicy();
+      return Object.freeze({
+        selector: Object.freeze({ ...rule.selector }),
+        ...(rule.spanKind === undefined ? {} : { spanKind: rule.spanKind }),
+        action: "omit" as const,
+      });
+    });
+    rules.sort((left, right) =>
+      canonicalRule(left) < canonicalRule(right) ? -1 : 1,
+    );
+    if (new Set(rules.map(canonicalRule)).size !== rules.length)
+      return invalidPolicy();
+    return Object.freeze({
+      version: 1 as const,
+      reference: parsed.data.reference,
+      mode: parsed.data.mode,
+      rules: Object.freeze(rules),
+    });
+  } catch {
+    return invalidPolicy();
+  }
+};
+
+const policyRegistry = new WeakMap<
+  RedactionPolicyRegistry,
+  ReadonlyMap<string, RedactionPolicyDefinition>
+>();
+
+export const compileRedactionPolicyRegistry = (
+  inputs: readonly unknown[],
+): RedactionPolicyRegistry => {
+  try {
+    if (!Array.isArray(inputs) || inputs.length > 64) return invalidPolicy();
+    const definitions = new Map<string, RedactionPolicyDefinition>();
+    for (let index = 0; index < inputs.length; index += 1) {
+      if (!Object.hasOwn(inputs, index)) return invalidPolicy();
+      const definition = parsePolicy(inputs[index]);
+      if (definitions.has(definition.reference)) return invalidPolicy();
+      definitions.set(definition.reference, definition);
+    }
+    const registry = Object.freeze({
+      redactionPolicyRegistry: "agentscope-core" as const,
+    });
+    policyRegistry.set(registry, definitions);
+    return registry;
+  } catch {
+    return invalidPolicy();
+  }
+};
+
+export const DEFAULT_REDACTION_POLICY_REGISTRY = compileRedactionPolicyRegistry(
+  [
+    {
+      version: 1,
+      reference: BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+      mode: "baseline",
+      rules: [],
+    },
+    {
+      version: 1,
+      reference: BUILTIN_REDACTION_POLICY_REFERENCES.strict,
+      mode: "strict",
+      rules: [],
+    },
+  ],
+);
+
+const materializeResolvedPolicy = (
+  definition: RedactionPolicyDefinition,
+): ResolvedRedactionPolicy => {
+  const definitionIdentity = createHash("sha256")
+    .update(canonical(definition))
+    .digest("hex");
+  return Object.freeze({
+    ...definition,
+    identity: `agentscope.redaction.effective.v1.${definition.mode}.${REDACTION_POLICY_PROFILE_FINGERPRINT}.definition-${definitionIdentity}`,
+  });
+};
+
+export const resolveRedactionPolicy = (
+  registry: RedactionPolicyRegistry,
+  reference: string,
+): ResolvedRedactionPolicy => {
+  try {
+    const definition = policyRegistry.get(registry)?.get(reference);
+    if (definition === undefined) return invalidPolicy();
+    return materializeResolvedPolicy(definition);
+  } catch {
+    return invalidPolicy();
+  }
+};
+
+export const validateResolvedRedactionPolicy = (
+  value: unknown,
+): ResolvedRedactionPolicy => {
+  try {
+    if (typeof value !== "object" || value === null) return invalidPolicy();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      Object.keys(descriptors).sort().join("\u0000") !==
+      ["identity", "mode", "reference", "rules", "version"]
+        .sort()
+        .join("\u0000")
+    )
+      return invalidPolicy();
+    const read = (key: string): unknown => {
+      const descriptor = descriptors[key];
+      if (
+        descriptor === undefined ||
+        "get" in descriptor ||
+        "set" in descriptor
+      )
+        return invalidPolicy();
+      return descriptor.value as unknown;
+    };
+    const identity = read("identity");
+    if (typeof identity !== "string") return invalidPolicy();
+    const definition = parsePolicy({
+      version: read("version"),
+      reference: read("reference"),
+      mode: read("mode"),
+      rules: read("rules"),
+    });
+    const resolved = materializeResolvedPolicy(definition);
+    return identity === resolved.identity ? resolved : invalidPolicy();
+  } catch {
+    return invalidPolicy();
+  }
+};
+
+export const redactionRuleOmits = (
+  policy: ResolvedRedactionPolicy,
+  semanticKey: string,
+  templateId: string | undefined,
+  spanKind: OpenInferenceSpanKindValue | undefined,
+): boolean =>
+  policy.rules.some(
+    (rule) =>
+      (rule.spanKind === undefined || rule.spanKind === spanKind) &&
+      (rule.selector.kind === "semantic-key"
+        ? rule.selector.value === semanticKey
+        : rule.selector.value === templateId),
+  );

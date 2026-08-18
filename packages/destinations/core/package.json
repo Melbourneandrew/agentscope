@@ -9,10 +9,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./lifecycle-sink": {
-      "types": "./dist/lifecycle-sink.d.ts",
-      "import": "./dist/lifecycle-sink.js"
-    },
     "./core-orchestration": {
       "types": "./dist/core-orchestration.d.ts",
       "import": "./dist/core-orchestration.js"

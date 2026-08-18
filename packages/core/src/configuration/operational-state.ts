@@ -1,5 +1,16 @@
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import {
   link as nodeLink,
   open as nodeOpen,
@@ -9,6 +20,8 @@ import {
 import { join } from "node:path";
 
 import { z } from "zod";
+
+import { NATIVE_IDENTITY_KINDS } from "@agentscope/protocol";
 
 import {
   ensureAgentscopeHomeLayout,
@@ -27,6 +40,7 @@ const LOCK_FILE_NAME = "operational-state.lock";
 const RECOVERY_CLAIM_FILE_NAME = "operational-state.recovery.lock";
 const MAXIMUM_STATE_BYTES = 262_144;
 const MAXIMUM_DIAGNOSTICS = 128;
+const MAXIMUM_HOOK_DIAGNOSTICS = 64;
 const MAXIMUM_HEALTH_MARKERS = 64;
 const MAXIMUM_CHECKPOINTS = 128;
 const DIAGNOSTIC_MAXIMUM_AGE_MILLISECONDS = 7 * 24 * 60 * 60 * 1_000;
@@ -104,8 +118,8 @@ const healthInputSchema = z.strictObject({
   scope: z.enum(["hook", "connection"]),
   stage: z.enum(PIPELINE_HEALTH_STAGES),
   outcome: z.enum(PIPELINE_HEALTH_OUTCOMES),
-  configurationGeneration: nonnegative,
-  policyMode: z.enum(["baseline", "strict"]),
+  configurationGeneration: nonnegative.nullable(),
+  policyMode: z.enum(["baseline", "strict"]).nullable(),
   destinationType: destinationType.optional(),
   connectionId: connectionId.optional(),
   receipt: z
@@ -122,12 +136,31 @@ const healthEntrySchema = healthInputSchema.extend(sequenceEntry);
 const checkpointInputSchema = z.strictObject({
   adapterId: z.string().regex(/^@agentscope\/harness-[a-z0-9-]{1,64}$/u),
   sourceIdentityDigest: digest,
+  nativeIdentityKind: z.enum(NATIVE_IDENTITY_KINDS),
   sourceGeneration: nonnegative,
+  positionKind: z.enum(["byte-offset", "event-index", "line", "sequence"]),
+  startPosition: nonnegative,
+  exclusiveEndPosition: nonnegative,
+  configurationGeneration: nonnegative,
+  destinationType,
+  connectionId,
+});
+const checkpointEntrySchema = z.strictObject({
+  adapterId: checkpointInputSchema.shape.adapterId,
+  sourceIdentityDigest: digest,
+  nativeIdentityKind: checkpointInputSchema.shape.nativeIdentityKind,
+  sourceGeneration: nonnegative,
+  positionKind: checkpointInputSchema.shape.positionKind,
   acknowledgedExclusivePosition: nonnegative,
   configurationGeneration: nonnegative,
   connectionId,
+  ...sequenceEntry,
 });
-const checkpointEntrySchema = checkpointInputSchema.extend(sequenceEntry);
+const hookOperationalEvidenceInputSchema = z.strictObject({
+  diagnostics: z.array(diagnosticInputSchema).max(MAXIMUM_HOOK_DIAGNOSTICS),
+  health: z.array(healthInputSchema).min(1).max(33),
+  checkpoints: z.array(checkpointInputSchema).max(32),
+});
 const documentSchema = z.strictObject({
   version: z.literal(1),
   nextSequence: nonnegative,
@@ -179,6 +212,29 @@ export type OperationalStateWriteResult = Readonly<{
     checkpoints: number;
   }>;
 }>;
+export type CaptureCheckpointAdvanceResult = Readonly<{
+  advanced: boolean;
+  code: "advanced" | "stale" | "incompatible" | "invalid" | "unavailable";
+  acknowledgedExclusivePosition: number | null;
+  losses: OperationalStateWriteResult["losses"];
+}>;
+export type HookOperationalEvidenceInput = Readonly<{
+  diagnostics: readonly SanitizedDiagnosticInput[];
+  health: readonly PipelineHealthInput[];
+  checkpoints: readonly CaptureCheckpointInput[];
+}>;
+export type HookOperationalEvidenceWriteResult = Readonly<{
+  recorded: boolean;
+  code: "recorded" | "invalid" | "unavailable";
+  losses: OperationalStateWriteResult["losses"];
+  checkpoints: readonly Readonly<{
+    connectionId: string;
+    advanced: boolean;
+    code: CaptureCheckpointAdvanceResult["code"];
+    acknowledgedExclusivePosition: number | null;
+  }>[];
+  diagnostics: readonly Readonly<SanitizedDiagnosticInput>[];
+}>;
 export type OperationalStateLockInspection = Readonly<{
   state:
     | "clean"
@@ -189,12 +245,27 @@ export type OperationalStateLockInspection = Readonly<{
     | "invalid"
     | "unavailable";
 }>;
+export type CaptureCheckpointResumeRequest = Readonly<{
+  adapterId: string;
+  sourceIdentityDigest: string;
+  nativeIdentityKind: CaptureCheckpointInput["nativeIdentityKind"];
+  sourceGeneration: number;
+  positionKind: CaptureCheckpointInput["positionKind"];
+  availableStartPosition: number;
+  connectionIds: readonly string[];
+}>;
+export type CaptureCheckpointResume = Readonly<{
+  disposition: "retained" | "replay-required" | "source-loss" | "unavailable";
+  startPosition: number;
+}>;
 
 type OperationalFileSystem = Readonly<{
   link?: typeof nodeLink;
   open: typeof nodeOpen;
   rename: typeof nodeRename;
   unlink: typeof nodeUnlink;
+  atomicRename?: (source: string, destination: string) => unknown;
+  atomicUnlink?: (path: string) => unknown;
 }>;
 type StoreInternals = Readonly<{
   home: AgentscopeHome;
@@ -213,7 +284,158 @@ const nativeFileSystem: OperationalFileSystem = Object.freeze({
   open: nodeOpen,
   rename: nodeRename,
   unlink: nodeUnlink,
+  atomicRename: renameSync,
+  atomicUnlink: unlinkSync,
 });
+
+const syncDirectorySynchronously = (state: StoreInternals): void => {
+  const descriptor = openSync(state.home.healthDirectory, readFlags);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const commitFileSynchronously = (
+  state: StoreInternals,
+  source: string,
+  destination: string,
+): void => {
+  const result: unknown = (state.fileSystem.atomicRename ?? renameSync)(
+    source,
+    destination,
+  );
+  observeUnexpectedPromise(result);
+  if (result !== undefined) throw new OperationalStateUnavailableError();
+  syncDirectorySynchronously(state);
+};
+
+const removeFileSynchronously = (state: StoreInternals, path: string): void => {
+  const result: unknown = (state.fileSystem.atomicUnlink ?? unlinkSync)(path);
+  observeUnexpectedPromise(result);
+  if (result !== undefined) throw new OperationalStateUnavailableError();
+  syncDirectorySynchronously(state);
+};
+
+const readBoundedSynchronously = (
+  path: string,
+  maximumBytes: number,
+): string | undefined => {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, readFlags);
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size > maximumBytes) return invalid();
+    const bytes = Buffer.alloc(maximumBytes + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (count === 0) break;
+      offset += count;
+    }
+    /* v8 ignore next -- the pre-read fstat cap closes ordinary inputs; this
+     * catches an external file-growth race during the synchronous read. */
+    if (offset > maximumBytes) return invalid();
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      bytes.subarray(0, offset),
+    );
+  } catch (error) {
+    if (nodeErrorCode(error) === "ENOENT") return undefined;
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+
+const readLockSynchronously = (
+  state: StoreInternals,
+  path = lockFile(state),
+): LockRecord | undefined => {
+  const text = readBoundedSynchronously(path, 1_024);
+  if (text === undefined) return undefined;
+  const parsed = lockSchema.safeParse(JSON.parse(text) as unknown);
+  if (!parsed.success || `${JSON.stringify(parsed.data)}\n` !== text)
+    return invalid();
+  return parsed.data;
+};
+
+const readDocumentSynchronously = (state: StoreInternals): Document => {
+  const text = readBoundedSynchronously(stateFile(state), MAXIMUM_STATE_BYTES);
+  if (text === undefined) return emptyDocument();
+  const parsed = documentSchema.safeParse(JSON.parse(text) as unknown);
+  if (!parsed.success || canonical(parsed.data) !== text) return invalid();
+  return parsed.data;
+};
+
+const acquireLockSynchronously = (state: StoreInternals): LockRecord => {
+  if (readLockSynchronously(state, recoveryClaimFile(state)) !== undefined)
+    throw new OperationalStateUnavailableError();
+  const token = state.randomId();
+  if (typeof token !== "string" || !temporaryIdentityPattern.test(token))
+    return invalid();
+  const record = { version: 1 as const, owner: state.owner, token };
+  const descriptor = openSync(lockFile(state), createFlags, FILE_MODE);
+  try {
+    writeFileSync(descriptor, `${JSON.stringify(record)}\n`, {
+      encoding: "utf8",
+    });
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  syncDirectorySynchronously(state);
+  /* v8 ignore start -- a second process can create the recovery claim only
+   * between these non-yielding checks; retain the reciprocal fence. */
+  if (readLockSynchronously(state, recoveryClaimFile(state)) !== undefined) {
+    removeFileSynchronously(state, lockFile(state));
+    throw new OperationalStateUnavailableError();
+  }
+  /* v8 ignore stop */
+  return record;
+};
+
+const writeDocumentSynchronously = (
+  state: StoreInternals,
+  document: Document,
+): void => {
+  const text = canonical(document);
+  const temporaryIdentity = state.randomId();
+  if (
+    typeof temporaryIdentity !== "string" ||
+    !temporaryIdentityPattern.test(temporaryIdentity)
+  )
+    return invalid();
+  const temporary = join(
+    state.home.healthDirectory,
+    `.operational-state.${temporaryIdentity}.tmp`,
+  );
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(temporary, createFlags, FILE_MODE);
+    writeFileSync(descriptor, text, { encoding: "utf8" });
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    commitFileSynchronously(state, temporary, stateFile(state));
+  } catch (error) {
+    /* v8 ignore next -- native write/fsync failure with the descriptor still
+     * open is platform fault containment; commit-failure cleanup is tested. */
+    if (descriptor !== undefined) closeSync(descriptor);
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Doctor owns any fixed-name residue after a synchronous failure.
+    }
+    throw error;
+  }
+};
 const emptyDocument = (): Document => ({
   version: 1,
   nextSequence: 0,
@@ -286,6 +508,14 @@ const nodeErrorCode = (error: unknown): string | undefined => {
     : undefined;
 };
 
+const signalIsAborted = (signal: AbortSignal | undefined): boolean => {
+  try {
+    return signal?.aborted === true;
+  } catch {
+    return true;
+  }
+};
+
 const syncDirectory = async (state: StoreInternals): Promise<void> => {
   const directory = await state.fileSystem.open(
     state.home.healthDirectory,
@@ -314,7 +544,7 @@ const acquireLock = async (state: StoreInternals): Promise<LockRecord> => {
     );
     created = true;
     const record = { version: 1 as const, owner: state.owner, token };
-    await handle.writeFile(`${JSON.stringify(record)}\n`, "utf8");
+    await handle.writeFile(`${JSON.stringify(record)}\n`, { encoding: "utf8" });
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -358,8 +588,7 @@ const releaseLock = async (
     current.owner.processStartIdentity !== expected.owner.processStartIdentity
   )
     throw new OperationalStateUnavailableError();
-  await state.fileSystem.unlink(path);
-  await syncDirectory(state);
+  removeFileSynchronously(state, path);
 };
 
 const observeUnexpectedPromise = (value: unknown): void => {
@@ -485,12 +714,11 @@ const writeDocument = async (
   let handle: Awaited<ReturnType<typeof nodeOpen>> | undefined;
   try {
     handle = await state.fileSystem.open(temporary, createFlags, FILE_MODE);
-    await handle.writeFile(text, "utf8");
+    await handle.writeFile(text, { encoding: "utf8" });
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await state.fileSystem.rename(temporary, stateFile(state));
-    await syncDirectory(state);
+    commitFileSynchronously(state, temporary, stateFile(state));
   } catch (error) {
     await closeQuietly(handle);
     try {
@@ -599,6 +827,13 @@ const healthIsConsistent = (value: PipelineHealthInput): boolean => {
     (value.destinationType !== undefined || value.connectionId !== undefined)
   )
     return false;
+  if (
+    value.scope === "connection" &&
+    (value.configurationGeneration === null || value.policyMode === null)
+  )
+    return false;
+  if ((value.configurationGeneration === null) !== (value.policyMode === null))
+    return false;
   return value.receipt === null || value.receipt === value.outcome;
 };
 
@@ -639,6 +874,8 @@ const serialize = async <T>(
     );
     document.nextSequence += 1;
     const currentLock = await readLock(state);
+    /* v8 ignore next 8 -- the held writer-lock token can differ only after an
+     * external lock recovery race; the guard is retained as defense in depth. */
     if (
       currentLock === undefined ||
       currentLock.token !== lockRecord.token ||
@@ -673,6 +910,17 @@ export const createOperationalStateStore = (
   owner: ConfigurationProcessIdentity,
 ): OperationalStateStore =>
   createOperationalStateStoreForTesting({ home, owner });
+
+export const operationalStateStoreMatchesHomeForCore = (
+  store: OperationalStateStore,
+  home: AgentscopeHome,
+): boolean => {
+  try {
+    return stored(store).home.root === home.root;
+  } catch {
+    return false;
+  }
+};
 
 export const createOperationalStateStoreForTesting = (input: {
   home: AgentscopeHome;
@@ -774,27 +1022,351 @@ export const recordPipelineHealth = (
     },
   );
 
-export const recordCaptureCheckpoint = (
-  store: OperationalStateStore,
-  input: CaptureCheckpointInput,
-): Promise<OperationalStateWriteResult> =>
-  serialize(
-    store,
-    checkpointInputSchema,
-    input,
-    (document, value, sequence, now) => ({
+const checkpointKeyMatches = (
+  entry: CaptureCheckpointEntry,
+  value: CaptureCheckpointInput,
+): boolean =>
+  entry.adapterId === value.adapterId &&
+  entry.sourceIdentityDigest === value.sourceIdentityDigest &&
+  entry.nativeIdentityKind === value.nativeIdentityKind &&
+  entry.sourceGeneration === value.sourceGeneration &&
+  entry.positionKind === value.positionKind &&
+  entry.connectionId === value.connectionId;
+
+const checkpointSourceMatches = (
+  entry: CaptureCheckpointEntry,
+  value: CaptureCheckpointInput,
+): boolean =>
+  entry.adapterId === value.adapterId &&
+  entry.sourceIdentityDigest === value.sourceIdentityDigest &&
+  entry.nativeIdentityKind === value.nativeIdentityKind &&
+  entry.positionKind === value.positionKind &&
+  entry.connectionId === value.connectionId;
+
+const checkpointLineageMatches = (
+  entry: CaptureCheckpointEntry,
+  value: CaptureCheckpointInput,
+): boolean =>
+  entry.adapterId === value.adapterId &&
+  entry.nativeIdentityKind === value.nativeIdentityKind &&
+  entry.positionKind === value.positionKind &&
+  entry.connectionId === value.connectionId;
+
+const batchResult = (
+  recorded: boolean,
+  code: HookOperationalEvidenceWriteResult["code"],
+  document: Document,
+  checkpoints: HookOperationalEvidenceWriteResult["checkpoints"] = [],
+  diagnostics: HookOperationalEvidenceWriteResult["diagnostics"] = [],
+): HookOperationalEvidenceWriteResult =>
+  Object.freeze({
+    recorded,
+    code,
+    losses: Object.freeze({ ...document.losses }),
+    checkpoints: Object.freeze([...checkpoints]),
+    diagnostics: Object.freeze(
+      diagnostics.map((entry) => Object.freeze({ ...entry })),
+    ),
+  });
+
+const batchIsConsistent = (value: HookOperationalEvidenceInput): boolean => {
+  if (
+    value.health.filter((entry) => entry.scope === "hook").length !== 1 ||
+    value.diagnostics.some((entry) => !diagnosticIsConsistent(entry)) ||
+    value.health.some((entry) => !healthIsConsistent(entry))
+  )
+    return false;
+  const healthKeys = value.health.map((entry) =>
+    entry.scope === "hook" ? "hook" : `connection:${entry.connectionId}`,
+  );
+  const checkpointKeys = value.checkpoints.map(
+    (entry) =>
+      `${entry.adapterId}:${entry.sourceIdentityDigest}:${entry.nativeIdentityKind}:${entry.sourceGeneration}:${entry.positionKind}:${entry.connectionId}`,
+  );
+  return (
+    new Set(healthKeys).size === healthKeys.length &&
+    new Set(checkpointKeys).size === checkpointKeys.length &&
+    value.checkpoints.every(
+      (entry) => entry.exclusiveEndPosition > entry.startPosition,
+    )
+  );
+};
+
+type AppliedEvidence = Readonly<{
+  document: Document;
+  checkpoints: HookOperationalEvidenceWriteResult["checkpoints"];
+  diagnostics: HookOperationalEvidenceWriteResult["diagnostics"];
+}>;
+
+const appendDiagnosticsAndHealth = (
+  document: Document,
+  value: HookOperationalEvidenceInput,
+  now: number,
+): Document => {
+  let nextSequence = document.nextSequence;
+  let working: Document = {
+    ...document,
+    diagnostics: [
+      ...document.diagnostics,
+      ...value.diagnostics.map((entry) => ({
+        ...entry,
+        sequence: nextSequence++,
+        observedAtUnixMilliseconds: now,
+      })),
+    ],
+  };
+  for (const entry of value.health)
+    working = {
+      ...working,
+      health: [
+        ...working.health.filter((existing) =>
+          entry.scope === "hook"
+            ? existing.scope !== "hook"
+            : existing.connectionId !== entry.connectionId,
+        ),
+        { ...entry, sequence: nextSequence++, observedAtUnixMilliseconds: now },
+      ],
+    };
+  return { ...working, nextSequence };
+};
+
+const applyCheckpoint = (
+  document: Document,
+  entry: CaptureCheckpointInput,
+  now: number,
+): AppliedEvidence => {
+  const existing = document.checkpoints.find((checkpoint) =>
+    checkpointKeyMatches(checkpoint, entry),
+  );
+  const generations = document.checkpoints
+    .filter((checkpoint) => checkpointSourceMatches(checkpoint, entry))
+    .map((checkpoint) => checkpoint.sourceGeneration);
+  const latest = generations.length === 0 ? null : Math.max(...generations);
+  const sourceTransition =
+    existing === undefined &&
+    document.checkpoints.some((checkpoint) =>
+      checkpointLineageMatches(checkpoint, entry),
+    );
+  const incompatible = existing
+    ? latest !== null && latest > entry.sourceGeneration
+    : latest !== null && latest >= entry.sourceGeneration;
+  const stale =
+    existing !== undefined &&
+    entry.startPosition !== existing.acknowledgedExclusivePosition;
+  const sourceGap =
+    existing !== undefined &&
+    entry.startPosition > existing.acknowledgedExclusivePosition;
+  const diagnostic = Object.freeze({
+    code:
+      incompatible || sourceTransition || sourceGap
+        ? ("native-source-loss" as const)
+        : ("checkpoint-unavailable" as const),
+    severity: "warning" as const,
+    configurationGeneration: entry.configurationGeneration,
+    destinationType: entry.destinationType,
+    connectionId: entry.connectionId,
+  });
+  if (incompatible || stale)
+    return {
+      document,
+      checkpoints: [
+        Object.freeze({
+          connectionId: entry.connectionId,
+          advanced: false,
+          code: incompatible ? ("incompatible" as const) : ("stale" as const),
+          acknowledgedExclusivePosition:
+            existing?.acknowledgedExclusivePosition ?? null,
+        }),
+      ],
+      diagnostics: [diagnostic],
+    };
+  const initial = existing === undefined;
+  return {
+    document: {
       ...document,
+      nextSequence: document.nextSequence + 1,
       checkpoints: [
         ...document.checkpoints.filter(
-          (entry) =>
-            entry.adapterId !== value.adapterId ||
-            entry.sourceIdentityDigest !== value.sourceIdentityDigest ||
-            entry.connectionId !== value.connectionId,
+          (checkpoint) => !checkpointKeyMatches(checkpoint, entry),
         ),
-        { ...value, sequence, observedAtUnixMilliseconds: now },
+        {
+          adapterId: entry.adapterId,
+          sourceIdentityDigest: entry.sourceIdentityDigest,
+          nativeIdentityKind: entry.nativeIdentityKind,
+          sourceGeneration: entry.sourceGeneration,
+          positionKind: entry.positionKind,
+          acknowledgedExclusivePosition: entry.exclusiveEndPosition,
+          configurationGeneration: entry.configurationGeneration,
+          connectionId: entry.connectionId,
+          sequence: document.nextSequence,
+          observedAtUnixMilliseconds: now,
+        },
       ],
-    }),
+    },
+    checkpoints: [
+      Object.freeze({
+        connectionId: entry.connectionId,
+        advanced: true,
+        code: "advanced" as const,
+        acknowledgedExclusivePosition: entry.exclusiveEndPosition,
+      }),
+    ],
+    diagnostics: initial ? [diagnostic] : [],
+  };
+};
+
+const applyHookEvidence = (
+  document: Document,
+  value: HookOperationalEvidenceInput,
+  now: number,
+): AppliedEvidence => {
+  let working = appendDiagnosticsAndHealth(document, value, now);
+  const checkpoints: Array<
+    HookOperationalEvidenceWriteResult["checkpoints"][number]
+  > = [];
+  const diagnostics: SanitizedDiagnosticInput[] = [];
+  for (const entry of value.checkpoints) {
+    const applied = applyCheckpoint(working, entry, now);
+    working = applied.document;
+    checkpoints.push(...applied.checkpoints);
+    diagnostics.push(
+      ...applied.diagnostics.filter(
+        (diagnostic) =>
+          !value.diagnostics.some(
+            (existing) =>
+              existing.connectionId === diagnostic.connectionId &&
+              existing.destinationType === diagnostic.destinationType &&
+              existing.configurationGeneration ===
+                diagnostic.configurationGeneration &&
+              (existing.code === diagnostic.code ||
+                existing.code === "native-source-loss"),
+          ),
+      ),
+    );
+  }
+  for (const entry of diagnostics) {
+    working = {
+      ...working,
+      nextSequence: working.nextSequence + 1,
+      diagnostics: [
+        ...working.diagnostics,
+        {
+          ...entry,
+          sequence: working.nextSequence,
+          observedAtUnixMilliseconds: now,
+        },
+      ],
+    };
+  }
+  return { document: bound(working), checkpoints, diagnostics };
+};
+
+const writeHookEvidenceSynchronously = (
+  state: StoreInternals,
+  value: HookOperationalEvidenceInput,
+  signal: AbortSignal | undefined,
+): HookOperationalEvidenceWriteResult => {
+  let document = emptyDocument();
+  let lockRecord: LockRecord | undefined;
+  try {
+    mkdirSync(state.home.healthDirectory, { recursive: true, mode: 0o700 });
+    if (signalIsAborted(signal))
+      return batchResult(false, "unavailable", document);
+    lockRecord = acquireLockSynchronously(state);
+    document = readDocumentSynchronously(state);
+    const now = state.now();
+    if (!Number.isSafeInteger(now) || now < 0)
+      throw new OperationalStateError();
+    document = prune(document, now);
+    const count =
+      value.diagnostics.length +
+      value.health.length +
+      value.checkpoints.length * 2;
+    if (document.nextSequence > Number.MAX_SAFE_INTEGER - count)
+      throw new OperationalStateError();
+    const applied = applyHookEvidence(document, value, now);
+    document = applied.document;
+    if (signalIsAborted(signal)) throw new OperationalStateUnavailableError();
+    const currentLock = readLockSynchronously(state);
+    /* v8 ignore next 8 -- the held writer-lock token can differ only after an
+     * external lock recovery race; the guard is retained as defense in depth. */
+    if (
+      currentLock === undefined ||
+      currentLock.token !== lockRecord.token ||
+      currentLock.owner.processId !== lockRecord.owner.processId ||
+      currentLock.owner.processStartIdentity !==
+        lockRecord.owner.processStartIdentity
+    )
+      throw new OperationalStateUnavailableError();
+    writeDocumentSynchronously(state, document);
+    removeFileSynchronously(state, lockFile(state));
+    lockRecord = undefined;
+    return batchResult(
+      true,
+      "recorded",
+      document,
+      applied.checkpoints,
+      applied.diagnostics,
+    );
+  } catch (error) {
+    if (lockRecord !== undefined)
+      try {
+        const current = readLockSynchronously(state);
+        /* v8 ignore next 7 -- only an external lock-substitution race can make
+         * this exact held-lock cleanup comparison false. */
+        if (
+          current?.token === lockRecord.token &&
+          current.owner.processId === lockRecord.owner.processId &&
+          current.owner.processStartIdentity ===
+            lockRecord.owner.processStartIdentity
+        )
+          removeFileSynchronously(state, lockFile(state));
+      } catch {
+        return batchResult(false, "unavailable", document);
+      }
+    return batchResult(
+      false,
+      error instanceof OperationalStateError ? "invalid" : "unavailable",
+      document,
+    );
+  }
+};
+
+export const recordHookOperationalEvidence = async (
+  store: OperationalStateStore,
+  input: HookOperationalEvidenceInput,
+  signal?: AbortSignal,
+): Promise<HookOperationalEvidenceWriteResult> => {
+  const state = stored(store);
+  if (signalIsAborted(signal))
+    return batchResult(false, "unavailable", emptyDocument());
+  let release!: () => void;
+  const previous = queues.get(store) ?? Promise.resolve();
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  queues.set(
+    store,
+    previous.then(() => current),
   );
+  await previous;
+  try {
+    const value = exactInput(hookOperationalEvidenceInputSchema, input);
+    if (!batchIsConsistent(value))
+      return batchResult(false, "invalid", emptyDocument());
+    return writeHookEvidenceSynchronously(state, value, signal);
+  } catch (error) {
+    return batchResult(
+      false,
+      /* v8 ignore next -- exactInput normalizes every hostile batch to the
+       * closed OperationalStateError family before this boundary. */
+      error instanceof OperationalStateError ? "invalid" : "unavailable",
+      emptyDocument(),
+    );
+  } finally {
+    release();
+  }
+};
 
 const freezeDocument = (document: Document): OperationalStateSnapshot =>
   Object.freeze({
@@ -816,6 +1388,85 @@ export const inspectOperationalState = async (
 ): Promise<OperationalStateSnapshot> => {
   const state = stored(store);
   return freezeDocument(await readDocument(state));
+};
+
+export const resolveCaptureCheckpointForCore = (
+  store: OperationalStateStore,
+  input: CaptureCheckpointResumeRequest,
+): CaptureCheckpointResume => {
+  let availableStartPosition = 0;
+  try {
+    const parsed = checkpointInputSchema
+      .pick({
+        adapterId: true,
+        sourceIdentityDigest: true,
+        nativeIdentityKind: true,
+        sourceGeneration: true,
+        positionKind: true,
+      })
+      .extend({
+        availableStartPosition: nonnegative,
+        connectionIds: z.array(connectionId).min(1).max(32),
+      })
+      .safeParse(input);
+    /* v8 ignore start -- the process-private lifecycle constructs this exact
+     * request from validated snapshot and adapter fields; retain totality for
+     * internal runtime-cast regressions. */
+    if (
+      !parsed.success ||
+      new Set(parsed.data.connectionIds).size !==
+        parsed.data.connectionIds.length
+    )
+      return invalid();
+    /* v8 ignore stop */
+    availableStartPosition = parsed.data.availableStartPosition;
+    const state = stored(store);
+    const now = state.now();
+    /* v8 ignore next -- store construction binds the already-tested clock
+     * contract; this is defense against post-construction internal drift. */
+    if (!Number.isSafeInteger(now) || now < 0) return invalid();
+    const document = prune(readDocumentSynchronously(state), now);
+    const lineage = document.checkpoints.filter(
+      (entry) =>
+        entry.adapterId === parsed.data.adapterId &&
+        entry.sourceIdentityDigest === parsed.data.sourceIdentityDigest &&
+        entry.nativeIdentityKind === parsed.data.nativeIdentityKind &&
+        entry.positionKind === parsed.data.positionKind,
+    );
+    const exact = parsed.data.connectionIds.map((selectedConnectionId) =>
+      lineage.find(
+        (entry) =>
+          entry.connectionId === selectedConnectionId &&
+          entry.sourceGeneration === parsed.data.sourceGeneration,
+      ),
+    );
+    if (exact.some((entry) => entry === undefined))
+      return Object.freeze({
+        disposition: lineage.some(
+          (entry) => entry.sourceGeneration !== parsed.data.sourceGeneration,
+        )
+          ? ("source-loss" as const)
+          : ("replay-required" as const),
+        startPosition: parsed.data.availableStartPosition,
+      });
+    const retainedStart = Math.min(
+      ...exact.map((entry) => entry!.acknowledgedExclusivePosition),
+    );
+    if (retainedStart < parsed.data.availableStartPosition)
+      return Object.freeze({
+        disposition: "source-loss" as const,
+        startPosition: parsed.data.availableStartPosition,
+      });
+    return Object.freeze({
+      disposition: "retained" as const,
+      startPosition: retainedStart,
+    });
+  } catch {
+    return Object.freeze({
+      disposition: "unavailable",
+      startPosition: availableStartPosition,
+    });
+  }
 };
 
 export const inspectOperationalStateLock = async (

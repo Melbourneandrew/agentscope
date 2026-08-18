@@ -1,8 +1,3 @@
-export const agentscope = {
-  framework: "agentscope",
-  purpose: "agent-trace-observability",
-} as const;
-
 export {
   CREDENTIAL_RESOLUTION_FAILURES,
   compileCredentialBackendRegistry,
@@ -76,6 +71,8 @@ export {
   type AgentscopeHomeResolverInput,
 } from "./configuration/home.js";
 export {
+  CONFIGURATION_V1_TO_V2_MIGRATION,
+  DEFAULT_CONFIGURATION_MIGRATION_REGISTRY,
   compileConfigurationMigrationRegistry,
   ConfigurationMigrationError,
   migrateConfigurationDocument,
@@ -92,9 +89,6 @@ export {
   inspectOperationalState,
   inspectOperationalStateLock,
   recoverAbandonedOperationalStateLock,
-  recordCaptureCheckpoint,
-  recordPipelineHealth,
-  recordSanitizedDiagnostic,
   type CaptureCheckpointInput,
   type OperationalStateSnapshot,
   type OperationalStateLockInspection,
@@ -108,6 +102,9 @@ export {
 } from "./configuration/operational-state.js";
 export {
   AGENTSCOPE_CONFIGURATION_VERSION,
+  DEFAULT_HOOK_DEADLINE_MILLISECONDS,
+  MAXIMUM_HOOK_DEADLINE_MILLISECONDS,
+  MINIMUM_HOOK_DEADLINE_MILLISECONDS,
   AgentscopeConfigurationError,
   MAXIMUM_CONFIGURED_CONNECTIONS,
   MAXIMUM_DESTINATION_NAMESPACES,
@@ -144,21 +141,44 @@ export {
   type HookConfigurationReadResult,
 } from "./configuration/transaction.js";
 
-export { withCaptureInvocation } from "./capture/runtime.js";
 export {
-  CoreRedactionError,
-  redactCapturedTrace,
-} from "./redaction/pipeline.js";
-export {
+  BUILTIN_REDACTION_POLICY_REFERENCES,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  MAXIMUM_REDACTION_POLICY_BYTES,
+  MAXIMUM_REDACTION_RULES,
   REDACTION_POLICY_IDENTITIES,
   REDACTION_POLICY_PROFILE,
   REDACTION_POLICY_PROFILE_FINGERPRINT,
+  RedactionPolicyError,
+  compileRedactionPolicyRegistry,
+  resolveRedactionPolicy,
+  type RedactionPolicyDefinition,
+  type RedactionPolicyRegistry,
+  type RedactionPolicyRule,
+  type ResolvedRedactionPolicy,
 } from "./redaction/policy.js";
 export {
-  runFailOpenTraceLifecycle,
+  runResolvedTraceLifecycle,
+  type ResolvedRoutingLifecycleResult,
+  type ResolvedLifecycleOperationalEvidence,
+  type ResolvedTraceLifecycleInput,
+  type ResolvedTraceLifecycleResult,
+} from "./invocation/lifecycle.js";
+export {
+  getConfiguredTrace,
+  searchConfiguredTraces,
+  RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS,
+  RETRIEVAL_MAXIMUM_RESPONSE_BYTES,
+  type CoreRetrievedTrace,
+  type CoreRetrievalFailure,
+  type CoreRetrievalFailureCode,
+  type CoreRetrievalRuntime,
+  type CoreTraceGetResult,
+  type CoreTraceSearchPage,
+  type CoreTraceSearchResult,
+} from "./retrieval/orchestration.js";
+export {
   type CaptureAdapter,
-  type LifecycleFailureReason,
-  type LifecycleResult,
-  type LifecycleStage,
-  type TraceLifecycleInput,
+  type CaptureResume,
+  type CaptureResumeRequest,
 } from "./lifecycle.js";

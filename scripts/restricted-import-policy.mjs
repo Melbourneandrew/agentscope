@@ -5,7 +5,6 @@ import ts from "typescript";
 
 const restrictedSpecifiers = [
   "@agentscope/protocol/core-finalization",
-  "@agentscope/destinations-core/lifecycle-sink",
   "@agentscope/destinations-core/core-orchestration",
 ];
 const testingSpecifiers = [
