@@ -9,8 +9,16 @@ import {
 } from "node:fs";
 import { resolve, sep } from "node:path";
 
+import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
+
 const integrationRoot = import.meta.dirname;
 const artifactsRoot = resolve(integrationRoot, "../../artifacts/integration");
+const workspaceRoot = resolve(integrationRoot, "../..");
+const releaseOperationLock = acquireIntegrationOperationLock(
+  workspaceRoot,
+  "integration.cleanup.active",
+);
+process.once("exit", releaseOperationLock);
 const expectedRealArtifactsRoot = resolve(
   realpathSync(resolve(integrationRoot, "../..")),
   "artifacts/integration",
@@ -234,3 +242,5 @@ try {
   if (error?.code !== "ENOENT") throw error;
 }
 console.log("Agentscope integration cleanup complete.");
+releaseOperationLock();
+process.removeListener("exit", releaseOperationLock);

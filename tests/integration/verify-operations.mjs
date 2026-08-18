@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -13,6 +13,8 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
+
+import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
@@ -156,6 +158,37 @@ try {
     if (!activeRejected || !existsSync(resolve(runsRoot, created[0])))
       throw new Error("integration.operations.active-run");
   }
+  const releaseOperationLock = acquireIntegrationOperationLock(
+    workspaceRoot,
+    "integration.operations.active-run",
+  );
+  let registrationRejected = false;
+  try {
+    await runOnce();
+  } catch {
+    registrationRejected = true;
+  } finally {
+    releaseOperationLock();
+  }
+  if (!registrationRejected || !existsSync(resolve(runsRoot, created[0])))
+    throw new Error("integration.operations.active-run");
+  const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+  if (!Number.isSafeInteger(exited.pid))
+    throw new Error("integration.operations.stale-lock");
+  const staleLock = resolve(
+    workspaceRoot,
+    "artifacts/.agentscope-integration-operation-lock",
+  );
+  mkdirSync(staleLock);
+  writeFileSync(
+    resolve(staleLock, "owner.json"),
+    `${JSON.stringify({ lockVersion: 1, pid: exited.pid })}\n`,
+  );
+  const releaseReclaimedLock = acquireIntegrationOperationLock(
+    workspaceRoot,
+    "integration.operations.stale-lock",
+  );
+  releaseReclaimedLock();
   rmSync(activeMarker);
   rmSync(activeRoot, { recursive: true });
   execFileSync(process.execPath, [resolve(integrationRoot, "clean.mjs")], {

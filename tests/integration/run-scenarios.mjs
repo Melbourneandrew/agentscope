@@ -20,6 +20,7 @@ import {
   verifyManifestEvidence,
   verifyPreparedCandidate,
 } from "./dist/index.js";
+import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
@@ -240,13 +241,21 @@ const fixtureResults = new Map();
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
 const activateRun = (plan) => {
-  const directory = resolve(artifactsRoot, "active");
-  mkdirSync(directory, { recursive: true });
-  writeFileSync(
-    activeMarkerFor(plan.runId),
-    `${JSON.stringify({ activeVersion: 1, runId: plan.runId, pid: process.pid })}\n`,
-    { flag: "wx" },
+  const release = acquireIntegrationOperationLock(
+    workspaceRoot,
+    "integration.isolation.active",
   );
+  try {
+    const directory = resolve(artifactsRoot, "active");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      activeMarkerFor(plan.runId),
+      `${JSON.stringify({ activeVersion: 1, runId: plan.runId, pid: process.pid })}\n`,
+      { flag: "wx" },
+    );
+  } finally {
+    release();
+  }
 };
 const captureFixtureResult = (output, plan) => {
   const resultLine = output

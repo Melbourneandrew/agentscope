@@ -2,9 +2,16 @@ import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
 import { planArtifactRetention } from "./dist/operations.js";
+import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 
 const integrationRoot = import.meta.dirname;
 const artifactsRoot = resolve(integrationRoot, "../../artifacts/integration");
+const workspaceRoot = resolve(integrationRoot, "../..");
+const releaseOperationLock = acquireIntegrationOperationLock(
+  workspaceRoot,
+  "integration.operations.active",
+);
+process.once("exit", releaseOperationLock);
 const collections = ["candidates", "contexts", "runs"];
 const maximumFiles = 4096;
 const maximumFileBytes = 128 * 1024 * 1024;
@@ -153,3 +160,5 @@ process.stdout.write(
     })),
   })}\n`,
 );
+releaseOperationLock();
+process.removeListener("exit", releaseOperationLock);
