@@ -16,7 +16,7 @@ import {
 const execFile = promisify(nodeExecFile);
 const MAXIMUM_PATH_CODE_UNITS = 4_096;
 const MAXIMUM_GIT_OUTPUT_BYTES = 32_768;
-const MAXIMUM_GIT_STAGE_MILLISECONDS = 500;
+const MAXIMUM_GIT_STAGE_MILLISECONDS = 1_000;
 const revisionPattern = /^[0-9a-f]{40,64}$/u;
 
 export type WorkspaceCandidate = Readonly<{
