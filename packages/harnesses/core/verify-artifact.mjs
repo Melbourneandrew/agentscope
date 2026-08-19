@@ -19,6 +19,8 @@ import {
   applyHarnessInstallation,
   resolveNativeCaptureStart,
 } from "./dist/index.js";
+import * as harnessRoot from "./dist/index.js";
+import { createHarnessContractSuite } from "./dist/testing.js";
 
 const listRegularFiles = (directory, prefix = "") => {
   const files = [];
@@ -51,6 +53,11 @@ if (
 
 if (harnessesCorePackageId !== "@agentscope/harnesses-core")
   throw new Error("Harness Core package identity drifted.");
+if (
+  "createHarnessContractSuite" in harnessRoot ||
+  typeof createHarnessContractSuite !== "function"
+)
+  throw new Error("Harness Core testing export boundary drifted.");
 
 const descriptor = defineHarnessDescriptor({
   descriptorVersion: 1,
