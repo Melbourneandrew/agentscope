@@ -292,6 +292,7 @@ export const createHarnessCliServices = (
     operation: "install" | "migrate" | "uninstall",
     harness: string,
     apply: boolean,
+    presentPlan: (value: CliHarnessMutationValue) => Promise<void>,
   ): Promise<CliOperationResult<CliHarnessMutationValue>> => {
     const adapter = find(harness);
     if (!adapter)
@@ -330,6 +331,7 @@ export const createHarnessCliServices = (
       if (plan.disposition !== "ready" && plan.disposition !== "unchanged")
         return partial(value, planDiagnostic(plan.disposition));
       if (!apply || plan.disposition === "unchanged") return success(value);
+      await presentPlan(value);
       const applied = await applyHarnessInstallation(plan);
       const appliedValue: CliHarnessMutationValue = {
         applied: applied.ok,
@@ -348,7 +350,8 @@ export const createHarnessCliServices = (
   };
 
   const services: CliHarnessServices = {
-    installHarness: ({ apply, harness }) => manage("install", harness, apply),
+    installHarness: ({ apply, harness, presentPlan }) =>
+      manage("install", harness, apply, presentPlan),
     listHarnesses: async (): Promise<
       CliOperationResult<CliHarnessListValue>
     > => {
@@ -361,7 +364,8 @@ export const createHarnessCliServices = (
         return failure(diagnostic("unavailable", "harness.unavailable"));
       }
     },
-    migrateHarness: ({ apply, harness }) => manage("migrate", harness, apply),
+    migrateHarness: ({ apply, harness, presentPlan }) =>
+      manage("migrate", harness, apply, presentPlan),
     statusHarness: async ({
       harness,
     }): Promise<CliOperationResult<CliHarnessStatusValue>> => {
@@ -383,8 +387,8 @@ export const createHarnessCliServices = (
         return failure(diagnostic("unavailable", "harness.unavailable"));
       }
     },
-    uninstallHarness: ({ apply, harness }) =>
-      manage("uninstall", harness, apply),
+    uninstallHarness: ({ apply, harness, presentPlan }) =>
+      manage("uninstall", harness, apply, presentPlan),
   };
   return Object.freeze(services);
 };

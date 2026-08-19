@@ -60,6 +60,7 @@ import * as coreArtifactExports from "./dist/index.js";
 import { DEFAULT_REDACTION_POLICY_REGISTRY } from "./dist/redaction/policy.js";
 import { runOperationalCoordinatorForTesting } from "./dist/invocation/operational-coordinator.js";
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
+import { createConfigurationManagementRuntime } from "./dist/configuration/management-index.js";
 
 const listRegularFiles = (directory, prefix = "") => {
   const files = [];
@@ -265,6 +266,19 @@ const artifactOwner = createConfigurationProcessIdentity(
   process.pid,
   `process-start-v1-${"d".repeat(64)}`,
 );
+const independentlyCompiledArtifactRegistry = compileDestinationRegistry([
+  artifactDescriptor,
+]);
+try {
+  createConfigurationManagementRuntime(
+    independentlyCompiledArtifactRegistry,
+    artifactStore,
+    artifactOwner,
+  );
+  throw new Error("Mismatched configuration registry authority was accepted.");
+} catch (error) {
+  if (error?.code !== "core.configuration.invalid") throw error;
+}
 const artifactOperationalStateStore = createOperationalStateStore(
   artifactHome,
   artifactOwner,

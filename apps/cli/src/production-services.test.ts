@@ -61,6 +61,7 @@ const secretDescriptor = defineDestinationDescriptor({
 });
 const registry = compileDestinationRegistry([descriptor, secretDescriptor]);
 const roots: string[] = [];
+const presentPlan = (): Promise<void> => Promise.resolve();
 
 afterEach(async () => {
   await Promise.all(
@@ -86,6 +87,42 @@ const productionFixture = async (prefix: string) => {
     }),
   };
 };
+
+describe("production configuration composition", () => {
+  it("writes the exact initialization plan before --yes mutation", async () => {
+    const { root, services } = await productionFixture(
+      "agentscope-cli-plan-order-",
+    );
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    await expect(
+      runCli(["init", "--yes"], {
+        output: {
+          writeErr: async (text) => {
+            await expect(
+              access(join(root, "config.json")),
+            ).rejects.toBeDefined();
+            stderr.push(text);
+          },
+          writeOut: (text) => {
+            stdout.push(text);
+          },
+        },
+        services,
+        version: "1.2.3",
+      }),
+    ).resolves.toBe(0);
+    expect(stderr).toEqual([
+      "Initialization plan (no changes applied):\n",
+      "planned: create-configuration\n",
+    ]);
+    expect(stdout).toEqual([
+      "Initialization plan applied.\n",
+      "applied: create-configuration\n",
+    ]);
+    await expect(access(join(root, "config.json"))).resolves.toBeUndefined();
+  });
+});
 
 describe("production configuration composition", () => {
   it("keeps plan inspection read-only and applies the generic lifecycle after --yes", async () => {
@@ -209,15 +246,21 @@ describe("production configuration diagnostics", () => {
       await expect(result).resolves.toMatchObject({
         diagnostic: { code: "configuration.missing" },
       });
-    await expect(services.init({ apply: false })).resolves.toMatchObject({
+    await expect(
+      services.init({ apply: false, presentPlan }),
+    ).resolves.toMatchObject({
       status: "success",
       value: { applied: false, generation: null },
     });
-    await expect(services.init({ apply: true })).resolves.toMatchObject({
+    await expect(
+      services.init({ apply: true, presentPlan }),
+    ).resolves.toMatchObject({
       status: "success",
       value: { applied: true, generation: 0 },
     });
-    await expect(services.init({ apply: false })).resolves.toMatchObject({
+    await expect(
+      services.init({ apply: false, presentPlan }),
+    ).resolves.toMatchObject({
       status: "success",
       value: { applied: false, generation: 0 },
     });
@@ -282,7 +325,9 @@ describe("production configuration diagnostics", () => {
     });
 
     const defaults = createProductionCliServices({ homeResolver, registry });
-    await expect(defaults.init({ apply: false })).resolves.toMatchObject({
+    await expect(
+      defaults.init({ apply: false, presentPlan }),
+    ).resolves.toMatchObject({
       status: "success",
     });
   });
@@ -291,7 +336,7 @@ describe("production configuration diagnostics", () => {
 describe("production configuration mutation diagnostics", () => {
   it("validates connection and slot authority before unsupported mutations", async () => {
     const { services } = await productionFixture("agentscope-cli-unsupported-");
-    await services.init({ apply: true });
+    await services.init({ apply: true, presentPlan });
     await services.configureDestination({
       credentialEnvironment: [],
       name: "local",

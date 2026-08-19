@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 `agentscope harness migrate <harness>` is the only CLI authority that permits a descriptor planner's `replace-overlap` decision. It remains dry-run by default and uses the same conflict-safe, crash-recoverable transaction as install and uninstall.
 
+No concrete adapter is registered in the current packed CLI, so named migration requests currently return `harness.adapter-missing`.
+
 ## Syntax
 
 ```bash
@@ -15,7 +17,7 @@ agentscope harness migrate <harness> [--yes] [--output human|json|jsonl]
 
 ## Output and exits
 
-`human` reports the migration disposition and bounded target counts. `json` emits one `agentscope.cli.harness-migrate.v1` result; `jsonl` emits its record. A conflict remains nonzero even when a partial plan record is available.
+`human` reports the migration disposition and bounded target counts. `json` emits one `agentscope.cli.harness-migrate.v1` result; `jsonl` emits its record. With `--yes`, the exact one-use plan is flushed to stderr before mutation and the final applied result is written to stdout afterward. A conflict remains nonzero even when a partial plan record is available.
 
 ## Automation
 

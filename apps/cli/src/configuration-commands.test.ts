@@ -68,7 +68,12 @@ describe("plan-first configuration command modules", () => {
       ).resolves.toBe(0);
       expect(captured.stderr).toEqual([]);
     }
-    expect(init.mock.calls).toEqual([[{ apply: false }], [{ apply: true }]]);
+    expect(init.mock.calls.map(([input]) => input.apply)).toEqual([
+      false,
+      true,
+    ]);
+    for (const [input] of init.mock.calls)
+      expect(typeof input.presentPlan).toBe("function");
   });
 
   it("passes only bounded generic destination settings and credential references", async () => {

@@ -152,7 +152,7 @@ const parseSettings = (text: string): unknown => {
 
 const createInitService =
   (state: ProductionState): CliConfigurationServices["init"] =>
-  async ({ apply }) => {
+  async ({ apply, presentPlan }) => {
     try {
       const snapshot = await readConfigurationSnapshot(state.store);
       const value: CliInitializationValue = {
@@ -189,6 +189,7 @@ const createInitService =
     };
     if (!apply) return success(planned);
     try {
+      await presentPlan(planned);
       const result = await initializeAgentscopeConfiguration(state.management);
       return success({
         applied: result.created,

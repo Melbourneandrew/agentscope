@@ -15,7 +15,7 @@ agentscope init [--yes] [--output human|json|jsonl]
 
 ## Output and exits
 
-`human` explains every planned or applied step. `json` emits one versioned result and `jsonl` emits one record per step. Success is exit 0; conflicts and unavailable configuration services use their stable category exit.
+`human` explains every planned or applied step. `json` emits one versioned result and `jsonl` emits one record per step. With `--yes`, the exact plan is flushed to stderr before mutation and the final applied result is written to stdout afterward. Success is exit 0; conflicts and unavailable configuration services use their stable category exit.
 
 ## Automation
 

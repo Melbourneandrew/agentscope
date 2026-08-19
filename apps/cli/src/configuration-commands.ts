@@ -99,7 +99,10 @@ export type CliConfigurationServices = Readonly<{
     | Result<z.infer<typeof deleteValueSchema>>
     | Promise<Result<z.infer<typeof deleteValueSchema>>>;
   init: (
-    input: Readonly<{ apply: boolean }>,
+    input: Readonly<{
+      apply: boolean;
+      presentPlan: (value: CliInitializationValue) => Promise<void>;
+    }>,
   ) => Result<CliInitializationValue> | Promise<Result<CliInitializationValue>>;
   inspectDestination: (
     input: Readonly<{ name: string }>,
@@ -155,7 +158,8 @@ const initModule = defineCliCommandModule({
   configure: (command: Command) => {
     command.option("--yes", "apply the displayed non-destructive plan");
   },
-  execute: (services: CliConfigurationServices, input) => services.init(input),
+  execute: (services: CliConfigurationServices, input, context) =>
+    services.init({ ...input, presentPlan: context.presentPlan }),
   human: (value) => [
     value.applied
       ? "Initialization plan applied."

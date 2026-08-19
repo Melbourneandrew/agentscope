@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 The generic configure command resolves `<type>` through the compiled first-party registry, validates non-secret settings with the descriptor's detached strict schema, validates every declared credential slot, and commits one new configuration generation atomically.
 
+No concrete descriptor is registered in the current packed CLI, so every provider type currently returns `destination.type-missing`. This page defines the stable contract consumed by the later first-party destination packages.
+
 ## Syntax
 
 ```bash

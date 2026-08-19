@@ -463,6 +463,11 @@ export const isConfigurationStore = (
 ): value is ConfigurationStore =>
   typeof value === "object" && value !== null && storeRegistry.has(value);
 
+export const configurationStoreUsesRegistry = (
+  store: ConfigurationStore,
+  registry: DestinationRegistry,
+): boolean => storeRegistry.get(store)?.registry === registry;
+
 export const isConfigurationProcessIdentity = (
   value: unknown,
 ): value is ConfigurationProcessIdentity =>

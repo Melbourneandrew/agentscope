@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 Harnesses are coding-agent runtimes such as Codex or Claude Code, not model providers. The harness commands expose descriptor-owned discovery and the distinct explicit migration authority. Install and uninstall remain top-level plan-first commands.
 
+The current packed CLI contains the generic plan-first harness command surface but no concrete harness adapters. `harness list` is therefore empty and named status/install/uninstall/migrate requests return `harness.adapter-missing`. The seven first-party adapters are delivered and certified in the real-harness phase; their user-facing acceptance criteria remain planned until then.
+
 ## Syntax
 
 ```bash

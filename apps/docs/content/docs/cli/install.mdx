@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 `agentscope install <harness>` is plan-first. It discovers the registered first-party harness, checks its descriptor-owned compatibility range, inspects every owned target through Harness Core, and performs no mutation unless `--yes` is present. Ordinary installation never replaces an overlapping vendor observability hook; use the separate migration command after reviewing the conflict.
 
+No concrete adapter is registered in the current packed CLI, so every named install currently returns `harness.adapter-missing`. This page defines the stable contract that the later first-party adapters must satisfy.
+
 ## Syntax
 
 ```bash
@@ -15,7 +17,7 @@ agentscope install <harness> [--yes] [--output human|json|jsonl]
 
 ## Output and exits
 
-`human` reports the plan disposition and bounded target counts. `json` emits one `agentscope.cli.install.v1` result and `jsonl` emits its record. A safe dry-run or applied/unchanged plan exits 0; a partial conflict or recovery requirement uses its stable nonzero category.
+`human` reports the plan disposition and bounded target counts. `json` emits one `agentscope.cli.install.v1` result and `jsonl` emits its record. With `--yes`, the exact one-use plan is flushed to stderr before mutation and the final applied result is written to stdout afterward. A safe dry-run or applied/unchanged plan exits 0; a partial conflict or recovery requirement uses its stable nonzero category.
 
 ## Automation
 

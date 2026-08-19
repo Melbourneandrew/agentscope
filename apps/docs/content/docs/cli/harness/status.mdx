@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 `agentscope harness status <harness>` reports both compatibility discovery and the current install-plan disposition without applying the plan. A recovery-required disposition is preserved rather than guessed from a journal.
 
+No concrete adapter is registered in the current packed CLI, so named status requests currently return `harness.adapter-missing`.
+
 ## Syntax
 
 ```bash

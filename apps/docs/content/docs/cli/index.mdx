@@ -7,6 +7,10 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 The `agentscope` command is the composition root for capture, configuration, installation, destination, retrieval, and diagnostic workflows. The currently shipped configuration surface is plan-first: `init` does not mutate without `--yes`, destination configuration is descriptor-driven, and routing is always explicit.
 
+## Current availability
+
+This release establishes the generic CLI and Core composition contracts. The packed production registry intentionally contains no concrete destination descriptors or harness adapters yet. Destination commands that require a provider return `destination.type-missing`; harness commands report an empty roster or `harness.adapter-missing`. The first-party Langfuse and Local SQLite packages, followed by the seven real harness adapters, are separate delivery phases. Their user-facing acceptance criteria remain planned until those packages are registered and pack-tested end to end.
+
 ## Syntax
 
 ```bash
@@ -31,7 +35,7 @@ The CLI owns stdout, stderr, and process exit status. Domain packages return typ
 
 ## Automation
 
-The root command currently supports only `human`. Public leaf commands that support `json` or `jsonl` declare a command-specific versioned data schema. JSON emits one newline-terminated result document. JSONL emits independently typed data records followed by one summary record. Machine-readable diagnostics are separate newline-terminated records on stderr, and failures emit no machine result on stdout.
+The root command currently supports only `human`. Public leaf commands that support `json` or `jsonl` declare a command-specific versioned data schema. JSON emits one newline-terminated result document. JSONL emits independently typed data records followed by one summary record. For a plan-first `--yes` mutation, the exact pre-mutation plan is written and flushed to stderr using the same selected presentation mode before Core receives the one-use apply authority; the final result remains the sole stdout result. Machine-readable diagnostics are separate newline-terminated records on stderr, and failures emit no final machine result on stdout.
 
 ## Diagnostics
 

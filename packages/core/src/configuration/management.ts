@@ -31,6 +31,7 @@ import {
 } from "./schema.js";
 import {
   ConfigurationStoreError,
+  configurationStoreUsesRegistry,
   isConfigurationProcessIdentity,
   isConfigurationStore,
   readConfigurationSnapshot,
@@ -148,16 +149,12 @@ export const createConfigurationManagementRuntime = (
   store: ConfigurationStore,
   owner: ConfigurationProcessIdentity,
 ): ConfigurationManagementRuntime => {
-  if (!isConfigurationStore(store) || !isConfigurationProcessIdentity(owner))
+  if (
+    !isConfigurationStore(store) ||
+    !configurationStoreUsesRegistry(store, registry) ||
+    !isConfigurationProcessIdentity(owner)
+  )
     return invalid();
-  try {
-    getDestinationDescriptor(
-      registry,
-      "@agentscope/destination-registry-probe",
-    );
-  } catch {
-    return invalid();
-  }
   const runtime = Object.freeze({
     configurationManagement: "agentscope-core" as const,
   });

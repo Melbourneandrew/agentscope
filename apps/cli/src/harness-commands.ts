@@ -76,7 +76,11 @@ type Result<Value> = CliOperationResult<Value>;
 
 export type CliHarnessServices = Readonly<{
   installHarness: (
-    input: Readonly<{ apply: boolean; harness: string }>,
+    input: Readonly<{
+      apply: boolean;
+      harness: string;
+      presentPlan: (value: CliHarnessMutationValue) => Promise<void>;
+    }>,
   ) =>
     | Result<z.infer<typeof harnessMutationSchema>>
     | Promise<Result<z.infer<typeof harnessMutationSchema>>>;
@@ -84,7 +88,11 @@ export type CliHarnessServices = Readonly<{
     | Result<z.infer<typeof harnessListSchema>>
     | Promise<Result<z.infer<typeof harnessListSchema>>>;
   migrateHarness: (
-    input: Readonly<{ apply: boolean; harness: string }>,
+    input: Readonly<{
+      apply: boolean;
+      harness: string;
+      presentPlan: (value: CliHarnessMutationValue) => Promise<void>;
+    }>,
   ) =>
     | Result<z.infer<typeof harnessMutationSchema>>
     | Promise<Result<z.infer<typeof harnessMutationSchema>>>;
@@ -94,7 +102,11 @@ export type CliHarnessServices = Readonly<{
     | Result<z.infer<typeof harnessStatusSchema>>
     | Promise<Result<z.infer<typeof harnessStatusSchema>>>;
   uninstallHarness: (
-    input: Readonly<{ apply: boolean; harness: string }>,
+    input: Readonly<{
+      apply: boolean;
+      harness: string;
+      presentPlan: (value: CliHarnessMutationValue) => Promise<void>;
+    }>,
   ) =>
     | Result<z.infer<typeof harnessMutationSchema>>
     | Promise<Result<z.infer<typeof harnessMutationSchema>>>;
@@ -156,10 +168,12 @@ const mutationModule = (
         .argument("<harness>", "first-party harness name")
         .option("--yes", "apply the inspected plan");
     },
-    execute: (services: CliHarnessServices, input) => {
-      if (operation === "install") return services.installHarness(input);
-      if (operation === "uninstall") return services.uninstallHarness(input);
-      return services.migrateHarness(input);
+    execute: (services: CliHarnessServices, input, context) => {
+      const presented = { ...input, presentPlan: context.presentPlan };
+      if (operation === "install") return services.installHarness(presented);
+      if (operation === "uninstall")
+        return services.uninstallHarness(presented);
+      return services.migrateHarness(presented);
     },
     human: (value) => [
       `${value.operation} ${value.harness}: ${value.disposition}`,

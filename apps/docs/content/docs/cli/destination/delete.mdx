@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 Deletion is intentionally separate from unconfiguration. The destination implementation must identify an exact owned local file and Core must validate ownership before removal. Remote destinations and descriptors without a governed deletion capability are unsupported.
 
+The current generic CLI has no registered governed deletion capability, so this command returns `destination.data-delete-unsupported` after validating the named connection and confirmation authority.
+
 ## Syntax
 
 ```bash

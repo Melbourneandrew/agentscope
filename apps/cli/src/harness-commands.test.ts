@@ -85,10 +85,17 @@ describe("harness command modules", () => {
         }),
       ).resolves.toBe(0);
     }
-    expect(installHarness.mock.calls).toEqual([
-      [{ apply: false, harness: "example" }],
-      [{ apply: true, harness: "example" }],
+    expect(
+      installHarness.mock.calls.map(([input]) => ({
+        apply: input.apply,
+        harness: input.harness,
+      })),
+    ).toEqual([
+      { apply: false, harness: "example" },
+      { apply: true, harness: "example" },
     ]);
+    for (const [input] of installHarness.mock.calls)
+      expect(typeof input.presentPlan).toBe("function");
   });
 
   it("renders status and empty discovery in every supported presentation path", async () => {
@@ -159,10 +166,9 @@ describe("harness mutation command authorities", () => {
         version: "1.2.3",
       }),
     ).resolves.toBe(4);
-    expect(migrateHarness).toHaveBeenCalledWith({
-      apply: false,
-      harness: "example",
-    });
+    const migrateInput = migrateHarness.mock.calls[0]?.[0];
+    expect(migrateInput).toMatchObject({ apply: false, harness: "example" });
+    expect(typeof migrateInput?.presentPlan).toBe("function");
     await expect(
       runCli(["uninstall", "example"], {
         output: createCapturedOutput().output,
@@ -170,10 +176,9 @@ describe("harness mutation command authorities", () => {
         version: "1.2.3",
       }),
     ).resolves.toBe(0);
-    expect(uninstallHarness).toHaveBeenCalledWith({
-      apply: false,
-      harness: "example",
-    });
+    const uninstallInput = uninstallHarness.mock.calls[0]?.[0];
+    expect(uninstallInput).toMatchObject({ apply: false, harness: "example" });
+    expect(typeof uninstallInput?.presentPlan).toBe("function");
 
     for (const [arguments_, override] of [
       [

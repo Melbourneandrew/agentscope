@@ -41,6 +41,7 @@ export type CliCommandModule<Services, Input, Value> = Readonly<{
   execute: (
     services: Services,
     input: Input,
+    context: CliCommandExecutionContext<Value>,
   ) => CliOperationResult<Value> | Promise<CliOperationResult<Value>>;
   human: (value: Value) => readonly string[];
   id: string;
@@ -50,9 +51,17 @@ export type CliCommandModule<Services, Input, Value> = Readonly<{
   readInput: (command: Command) => unknown;
 }>;
 
+export type CliCommandExecutionContext<Value> = Readonly<{
+  presentPlan: (value: Value) => Promise<void>;
+}>;
+
 export type RuntimeCliCommandModule = Readonly<{
   configure: (command: Command) => void;
-  execute: (services: unknown, input: unknown) => unknown;
+  execute: (
+    services: unknown,
+    input: unknown,
+    context: CliCommandExecutionContext<unknown>,
+  ) => unknown;
   human: (value: unknown) => readonly string[];
   id: string;
   inputSchema: z.ZodType<unknown>;
@@ -68,8 +77,12 @@ export function defineCliCommandModule<Services, Input, Value>(
 ): RuntimeCliCommandModule {
   return Object.freeze({
     configure: module.configure,
-    execute: (services: unknown, input: unknown) =>
-      module.execute(services as Services, input as Input),
+    execute: (services: unknown, input: unknown, context) =>
+      module.execute(
+        services as Services,
+        input as Input,
+        context as CliCommandExecutionContext<Value>,
+      ),
     human: (value: unknown) => module.human(value as Value),
     id: module.id,
     inputSchema: module.inputSchema,
@@ -184,7 +197,29 @@ async function executeCommand(
       );
       return;
     }
-    const execution: unknown = module.execute(input.services, parsedInput.data);
+    let planPresented = false;
+    const context: CliCommandExecutionContext<unknown> = Object.freeze({
+      presentPlan: async (value: unknown): Promise<void> => {
+        if (planPresented) throw new Error("cli.runtime.invalid");
+        await renderValue({
+          completion: "complete",
+          mode,
+          module,
+          output: Object.freeze({
+            writeErr: input.output.writeErr,
+            writeOut: input.output.writeErr,
+          }),
+          registration,
+          value,
+        });
+        planPresented = true;
+      },
+    });
+    const execution: unknown = module.execute(
+      input.services,
+      parsedInput.data,
+      context,
+    );
     const serviceResult = isNativePromise(execution)
       ? await execution
       : execution;

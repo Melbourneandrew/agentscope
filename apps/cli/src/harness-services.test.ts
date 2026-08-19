@@ -57,6 +57,7 @@ const registry = compileHarnessRegistry([descriptor], {
 
 const owned = new TextEncoder().encode("agentscope-owned-hook");
 const vendor = "vendor-observability-hook";
+const presentPlan = (): Promise<void> => Promise.resolve();
 
 const planner =
   (
@@ -137,11 +138,22 @@ describe("harness CLI composition", () => {
       value.root,
     );
   });
+});
 
+describe("harness CLI plan-first mutation", () => {
   it("keeps install and uninstall plan-first and mutates only with --yes authority", async () => {
     const value = await fixture();
+    const presentedInstall = vi.fn(async () => {
+      await expect(readFile(value.targetPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
     await expect(
-      value.services.installHarness({ apply: false, harness: "example" }),
+      value.services.installHarness({
+        apply: false,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: false, disposition: "ready" },
@@ -150,13 +162,20 @@ describe("harness CLI composition", () => {
       code: "ENOENT",
     });
     await expect(
-      value.services.installHarness({ apply: true, harness: "example" }),
+      value.services.installHarness({
+        apply: true,
+        harness: "example",
+        presentPlan: presentedInstall,
+      }),
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: true, disposition: "committed" },
     });
     await expect(readFile(value.targetPath, "utf8")).resolves.toBe(
       "agentscope-owned-hook",
+    );
+    expect(presentedInstall).toHaveBeenCalledWith(
+      expect.objectContaining({ applied: false, disposition: "ready" }),
     );
     await expect(
       value.services.statusHarness({ harness: "example" }),
@@ -165,7 +184,11 @@ describe("harness CLI composition", () => {
       value: { installation: "unchanged" },
     });
     await expect(
-      value.services.uninstallHarness({ apply: false, harness: "example" }),
+      value.services.uninstallHarness({
+        apply: false,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: false, disposition: "ready" },
@@ -174,7 +197,11 @@ describe("harness CLI composition", () => {
       "agentscope-owned-hook",
     );
     await expect(
-      value.services.uninstallHarness({ apply: true, harness: "example" }),
+      value.services.uninstallHarness({
+        apply: true,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: true, disposition: "committed" },
@@ -188,7 +215,11 @@ describe("harness CLI composition", () => {
     const value = await fixture();
     await writeFile(value.targetPath, vendor);
     await expect(
-      value.services.installHarness({ apply: true, harness: "example" }),
+      value.services.installHarness({
+        apply: true,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.overlap-conflict" },
       status: "partial",
@@ -196,14 +227,22 @@ describe("harness CLI composition", () => {
     });
     await expect(readFile(value.targetPath, "utf8")).resolves.toBe(vendor);
     await expect(
-      value.services.migrateHarness({ apply: false, harness: "example" }),
+      value.services.migrateHarness({
+        apply: false,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: false, disposition: "ready" },
     });
     await expect(readFile(value.targetPath, "utf8")).resolves.toBe(vendor);
     await expect(
-      value.services.migrateHarness({ apply: true, harness: "example" }),
+      value.services.migrateHarness({
+        apply: true,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: true, disposition: "committed" },
@@ -218,13 +257,21 @@ describe("harness CLI state classification", () => {
   it("preserves unsupported, missing, and recovery-required distinctions", async () => {
     const unsupported = await fixture("2.0.0");
     await expect(
-      unsupported.services.installHarness({ apply: true, harness: "example" }),
+      unsupported.services.installHarness({
+        apply: true,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.version-unsupported" },
       status: "failure",
     });
     await expect(
-      unsupported.services.installHarness({ apply: true, harness: "missing" }),
+      unsupported.services.installHarness({
+        apply: true,
+        harness: "missing",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.adapter-missing" },
       status: "failure",
@@ -232,7 +279,11 @@ describe("harness CLI state classification", () => {
     const recovery = await fixture();
     await writeFile(recovery.manifestPath, "interrupted");
     await expect(
-      recovery.services.installHarness({ apply: true, harness: "example" }),
+      recovery.services.installHarness({
+        apply: true,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.recovery-required" },
       status: "partial",
@@ -242,7 +293,11 @@ describe("harness CLI state classification", () => {
     await writeFile(recovery.targetPath, "unknown-native-format");
     await rm(recovery.manifestPath, { force: true });
     await expect(
-      recovery.services.installHarness({ apply: false, harness: "example" }),
+      recovery.services.installHarness({
+        apply: false,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.installation-unsupported" },
       status: "partial",
@@ -261,7 +316,7 @@ describe("harness CLI state classification", () => {
     };
     await expect(
       createHarnessCliServices({ adapters: [absent], registry }).installHarness(
-        { apply: true, harness: "example" },
+        { apply: true, harness: "example", presentPlan },
       ),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.absent" },
@@ -278,7 +333,7 @@ describe("harness CLI state classification", () => {
       createHarnessCliServices({
         adapters: [indeterminate],
         registry,
-      }).migrateHarness({ apply: true, harness: "example" }),
+      }).migrateHarness({ apply: true, harness: "example", presentPlan }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.discovery-indeterminate" },
       status: "failure",
@@ -303,7 +358,7 @@ describe("harness CLI failure containment", () => {
       createHarnessCliServices({
         adapters: [invalid],
         registry,
-      }).installHarness({ apply: false, harness: "example" }),
+      }).installHarness({ apply: false, harness: "example", presentPlan }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.plan-invalid" },
       status: "partial",
@@ -324,7 +379,7 @@ describe("harness CLI failure containment", () => {
       createHarnessCliServices({
         adapters: [authoritySwap],
         registry,
-      }).installHarness({ apply: true, harness: "example" }),
+      }).installHarness({ apply: true, harness: "example", presentPlan }),
     ).resolves.toEqual({
       diagnostic: { category: "unavailable", code: "harness.plan-invalid" },
       status: "failure",
@@ -343,7 +398,11 @@ describe("harness CLI failure containment", () => {
       registry,
     });
     await expect(
-      throwingServices.uninstallHarness({ apply: true, harness: "example" }),
+      throwingServices.uninstallHarness({
+        apply: true,
+        harness: "example",
+        presentPlan,
+      }),
     ).resolves.toEqual({
       diagnostic: { category: "unavailable", code: "harness.plan-invalid" },
       status: "failure",
@@ -371,7 +430,7 @@ describe("harness CLI failure containment", () => {
       createHarnessCliServices({
         adapters: [concurrent],
         registry,
-      }).installHarness({ apply: true, harness: "example" }),
+      }).installHarness({ apply: true, harness: "example", presentPlan }),
     ).resolves.toMatchObject({
       diagnostic: { code: "harness.overlap-conflict" },
       status: "partial",

@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 Destination commands operate on named connections described by reviewed first-party descriptors. Core owns the outer configuration document, credential references, and routing invariants; provider packages never own terminal output or configuration transactions.
 
+The current packed CLI contains the generic descriptor-driven command surface but no concrete destination descriptors. Until the first-party destination phase registers them, configuration requests return `destination.type-missing`; provider-specific rotation and deletion remain unavailable. These pages define the stable command contract, not a claim that Langfuse or Local SQLite is already usable.
+
 ## Syntax
 
 ```bash

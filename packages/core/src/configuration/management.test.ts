@@ -103,6 +103,20 @@ const environmentReference = {
 describe("Core-owned destination configuration management", () => {
   it("rejects unbranded runtimes, registries, stores, and owners", async () => {
     const { runtime, store } = await fixture();
+    const independentlyCompiledRegistry = compileDestinationRegistry([
+      descriptor,
+      secretDescriptor,
+    ]);
+    expect(() =>
+      createConfigurationManagementRuntime(
+        independentlyCompiledRegistry,
+        store,
+        createConfigurationProcessIdentity(
+          process.pid,
+          `process-start-v1-${"e".repeat(64)}`,
+        ),
+      ),
+    ).toThrowError(ConfigurationManagementError);
     expect(() =>
       createConfigurationManagementRuntime(
         registry,

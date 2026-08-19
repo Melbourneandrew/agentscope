@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 Rotation creates or validates the replacement reference, atomically commits the new configuration generation, retains the prior credential while active or backup configuration references it, and retires it only after proof-bound backup advancement.
 
+The current generic CLI does not yet register a production rotation backend, so this command returns `destination.credential-rotation-unsupported` after validating the connection and slot. Provider-backed rotation remains part of the first-party destination phase.
+
 ## Syntax
 
 ```bash

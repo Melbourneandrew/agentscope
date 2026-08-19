@@ -7,6 +7,8 @@ commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bf
 
 `agentscope uninstall <harness>` inspects the adapter-owned configuration and removes only an exact Agentscope-owned integration. It does not require the harness executable to remain installed, and it leaves vendor or unrecognized configuration unchanged.
 
+No concrete adapter is registered in the current packed CLI, so named uninstall requests currently return `harness.adapter-missing`.
+
 ## Syntax
 
 ```bash
@@ -15,7 +17,7 @@ agentscope uninstall <harness> [--yes] [--output human|json|jsonl]
 
 ## Output and exits
 
-`human` reports whether the owned plan is ready or unchanged. `json` emits one `agentscope.cli.uninstall.v1` result and `jsonl` emits its record. Without `--yes`, success is a read-only dry-run.
+`human` reports whether the owned plan is ready or unchanged. `json` emits one `agentscope.cli.uninstall.v1` result and `jsonl` emits its record. With `--yes`, the exact one-use plan is flushed to stderr before mutation and the final applied result is written to stdout afterward. Without `--yes`, success is a read-only dry-run.
 
 ## Automation
 
