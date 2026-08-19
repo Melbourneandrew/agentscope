@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { link, mkdir, open, rename, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const MAXIMUM_TARGETS = 16;
 const MAXIMUM_TARGET_BYTES = 1_048_576;
@@ -145,6 +145,18 @@ export class HarnessInstallationError extends Error {
 
 class HarnessInstallationConflictError extends HarnessInstallationError {}
 
+const isCanonicalAbsolutePath = (path: string): boolean =>
+  isAbsolute(path) &&
+  path.length <= MAXIMUM_PATH_LENGTH &&
+  resolve(path) === path;
+
+const pathIdentity = (path: string): string => {
+  /* v8 ignore next -- exact Windows case-folding is exercised on the required
+     Windows matrix; other platforms retain case-sensitive path identity. */
+  if (process.platform === "win32") return path.toLocaleLowerCase("en-US");
+  return path;
+};
+
 const invalid = (): never => {
   throw new HarnessInstallationError();
 };
@@ -269,8 +281,7 @@ const exactInput = (
     const targetPathValues = plainDataArray(targetPathsInput, MAXIMUM_TARGETS);
     if (
       typeof manifestPath !== "string" ||
-      !isAbsolute(manifestPath) ||
-      manifestPath.length > MAXIMUM_PATH_LENGTH ||
+      !isCanonicalAbsolutePath(manifestPath) ||
       !["install", "migrate", "uninstall"].includes(String(operation)) ||
       typeof planner !== "function" ||
       !targetPathValues
@@ -279,15 +290,14 @@ const exactInput = (
     const targetPaths = targetPathValues.map((value) => {
       if (
         typeof value !== "string" ||
-        !isAbsolute(value) ||
-        value.length > MAXIMUM_PATH_LENGTH ||
-        value === manifestPath
+        !isCanonicalAbsolutePath(value) ||
+        pathIdentity(value) === pathIdentity(manifestPath)
       )
         return invalid();
       return value;
     });
     if (
-      new Set(targetPaths).size !== targetPaths.length ||
+      new Set(targetPaths.map(pathIdentity)).size !== targetPaths.length ||
       !pathsAvoidOwnershipRecords(manifestPath, targetPaths)
     )
       return invalid();
@@ -527,13 +537,13 @@ const pathsAvoidOwnershipRecords = (
 ): boolean => {
   const reserved = new Set(
     targetPaths.flatMap((targetPath) => [
-      ownershipMarkerPath(targetPath),
-      ownershipClaimPath(targetPath),
+      pathIdentity(ownershipMarkerPath(targetPath)),
+      pathIdentity(ownershipClaimPath(targetPath)),
     ]),
   );
   return (
-    !reserved.has(manifestPath) &&
-    targetPaths.every((targetPath) => !reserved.has(targetPath))
+    !reserved.has(pathIdentity(manifestPath)) &&
+    targetPaths.every((targetPath) => !reserved.has(pathIdentity(targetPath)))
   );
 };
 
@@ -546,7 +556,9 @@ const transactionPathsAreDisjoint = (
     afterExists: boolean;
   }>[],
 ): boolean => {
-  const targetPaths = new Set(targets.map((target) => target.targetPath));
+  const targetPaths = new Set(
+    targets.map((target) => pathIdentity(target.targetPath)),
+  );
   const artifacts = [
     `${manifestPath}.${transactionId}.tmp`,
     ...targets.flatMap((target) => {
@@ -560,10 +572,11 @@ const transactionPathsAreDisjoint = (
       ];
     }),
   ];
+  const artifactIdentities = artifacts.map(pathIdentity);
   return (
-    new Set(artifacts).size === artifacts.length &&
-    !artifacts.includes(manifestPath) &&
-    artifacts.every((path) => !targetPaths.has(path))
+    new Set(artifactIdentities).size === artifacts.length &&
+    !artifactIdentities.includes(pathIdentity(manifestPath)) &&
+    artifactIdentities.every((path) => !targetPaths.has(path))
   );
 };
 
@@ -651,8 +664,7 @@ const parseOwnershipRecord = (
       typeof record.transactionId !== "string" ||
       !transactionPattern.test(record.transactionId) ||
       typeof record.manifestPath !== "string" ||
-      !isAbsolute(record.manifestPath) ||
-      record.manifestPath.length > MAXIMUM_PATH_LENGTH ||
+      !isCanonicalAbsolutePath(record.manifestPath) ||
       record.targetPath !== expectedTargetPath
     )
       return undefined;
@@ -871,12 +883,51 @@ const withState = (
   state: TransactionManifest["state"],
 ): TransactionManifest => Object.freeze({ ...manifest, state });
 
+const preflightPreparedArtifacts = async (
+  manifest: TransactionManifest,
+): Promise<void> => {
+  for (const target of manifest.targets) {
+    const required = [
+      ...(target.stagePath
+        ? [
+            {
+              path: target.stagePath,
+              digest: target.afterDigest,
+              mode: target.afterMode,
+            },
+          ]
+        : []),
+      ...(target.backupPath
+        ? [
+            {
+              path: target.backupPath,
+              digest: target.beforeDigest,
+              mode: target.beforeMode,
+            },
+          ]
+        : []),
+    ];
+    for (const artifact of required) {
+      const snapshot = await inspectFile(artifact.path);
+      if (!snapshot.exists) throw new Error("harness.installation.unavailable");
+      if (
+        !snapshotMatchesManifestState(
+          snapshot,
+          true,
+          artifact.digest,
+          artifact.mode,
+        )
+      )
+        throw new HarnessInstallationConflictError();
+    }
+  }
+};
+
 const commitManifest = async (
   path: string,
   manifest: TransactionManifest,
 ): Promise<void> => {
   if (manifest.state === "prepared") {
-    await ensureManifestOwnership(path, manifest);
     for (const target of manifest.targets) {
       if (
         !snapshotMatchesManifestState(
@@ -888,6 +939,8 @@ const commitManifest = async (
       )
         throw new HarnessInstallationConflictError();
     }
+    await preflightPreparedArtifacts(manifest);
+    await ensureManifestOwnership(path, manifest);
   } else if (!(await ensureRecordedManifestOwnership(path, manifest))) {
     throw new HarnessInstallationConflictError();
   }
@@ -1044,7 +1097,7 @@ const parseManifestTarget = (input: unknown): ManifestTarget => {
     Object.keys(target).sort().join("\0") !==
       "afterDigest\0afterExists\0afterMode\0backupPath\0beforeDigest\0beforeExists\0beforeMode\0stagePath\0targetPath" ||
     typeof target.targetPath !== "string" ||
-    !isAbsolute(target.targetPath) ||
+    !isCanonicalAbsolutePath(target.targetPath) ||
     typeof target.beforeDigest !== "string" ||
     !digestPattern.test(target.beforeDigest) ||
     typeof target.afterDigest !== "string" ||
@@ -1059,9 +1112,10 @@ const parseManifestTarget = (input: unknown): ManifestTarget => {
         !Number.isSafeInteger(target.afterMode))) ||
     (target.stagePath !== null &&
       (typeof target.stagePath !== "string" ||
-        !isAbsolute(target.stagePath))) ||
+        !isCanonicalAbsolutePath(target.stagePath))) ||
     (target.backupPath !== null &&
-      (typeof target.backupPath !== "string" || !isAbsolute(target.backupPath)))
+      (typeof target.backupPath !== "string" ||
+        !isCanonicalAbsolutePath(target.backupPath)))
   )
     return invalid();
   return Object.freeze({
@@ -1111,7 +1165,7 @@ const parseManifestRecord = (
     return invalid();
   const targets = targetsInput.map((target) => parseManifestTarget(target));
   if (
-    new Set(targets.map((target) => target.targetPath)).size !==
+    new Set(targets.map((target) => pathIdentity(target.targetPath))).size !==
       targets.length ||
     !pathsAvoidOwnershipRecords(
       manifestPath,
@@ -1142,7 +1196,7 @@ const parseManifestRecord = (
 };
 
 const parseManifest = async (path: string): Promise<TransactionManifest> => {
-  if (!isAbsolute(path) || path.length > MAXIMUM_PATH_LENGTH) return invalid();
+  if (!isCanonicalAbsolutePath(path)) return invalid();
   const snapshot = await inspectFile(path);
   if (!snapshot.exists || !snapshot.bytes) return invalid();
   try {

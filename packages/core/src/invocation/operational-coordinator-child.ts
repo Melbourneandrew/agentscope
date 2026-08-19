@@ -1,5 +1,6 @@
 /* v8 ignore file -- this module executes only as the separately verified built child. */
 import { randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
 
 import { createAgentscopeHomeFromOwnedRootForCore } from "../configuration/home.js";
 import {
@@ -11,6 +12,7 @@ import {
 import { createConfigurationProcessIdentity } from "../configuration/transaction.js";
 
 const MAXIMUM_REQUEST_BYTES = 524_288;
+const REQUEST_FD_ENVIRONMENT = "AGENTSCOPE_OPERATIONAL_COORDINATOR_REQUEST_FD";
 const PLATFORMS = new Set<NodeJS.Platform>([
   "aix",
   "android",
@@ -75,9 +77,13 @@ const exactRequest = (
 };
 
 const main = async (): Promise<void> => {
+  const requestInput =
+    process.env[REQUEST_FD_ENVIRONMENT] === "3"
+      ? createReadStream("", { autoClose: false, fd: 3 })
+      : process.stdin;
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of process.stdin) {
+  for await (const chunk of requestInput) {
     const bytes = Buffer.from(chunk as Uint8Array);
     size += bytes.byteLength;
     if (size > MAXIMUM_REQUEST_BYTES) return fail();

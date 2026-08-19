@@ -9,8 +9,29 @@ const manifest = JSON.parse(
 );
 
 await rm(new URL("dist", import.meta.url), { force: true, recursive: true });
+const coordinatorBuild = await build({
+  bundle: true,
+  entryPoints: [
+    new URL(
+      "../../packages/core/src/invocation/operational-coordinator-child.ts",
+      import.meta.url,
+    ).pathname,
+  ],
+  format: "esm",
+  platform: "node",
+  target: "node22",
+  write: false,
+});
+if (coordinatorBuild.outputFiles.length !== 1) {
+  throw new Error("Operational coordinator did not build as one program");
+}
+const coordinatorProgram = coordinatorBuild.outputFiles[0].text;
 await build({
   bundle: true,
+  define: {
+    __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__:
+      JSON.stringify(coordinatorProgram),
+  },
   entryPoints: [new URL("src/bin/agentscope.ts", import.meta.url).pathname],
   format: "esm",
   minify: false,

@@ -861,17 +861,35 @@ const directory = mkdtempSync(join(tmpdir(), "agentscope-core-artifact-"));
 const entry = join(directory, "entry.mjs");
 const output = join(directory, "bundle.mjs");
 try {
+  const coordinatorBuild = await build({
+    entryPoints: [
+      resolve(
+        import.meta.dirname,
+        "src/invocation/operational-coordinator-child.ts",
+      ),
+    ],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    target: "node22",
+    write: false,
+  });
+  if (coordinatorBuild.outputFiles.length !== 1)
+    throw new Error("Core coordinator did not build as one program.");
+  const coordinatorProgram = coordinatorBuild.outputFiles[0].text;
   writeFileSync(
     entry,
     [
       `import * as core from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
       `import { compileDestinationRegistry } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/index.js"))};`,
       `import { compileConfigurationMigrationRegistry, createAgentscopeHomeResolver, createConfigurationProcessIdentity, createConfigurationStore, createOperationalStateStore, inspectAgentscopeDoctor, migrateConfigurationDocument, parseAgentscopeConfiguration, readConfigurationSnapshot, serializeAgentscopeConfiguration, writeConfigurationSnapshot } from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
+      `import { runOperationalCoordinatorForTesting } from ${JSON.stringify(resolve(import.meta.dirname, "dist/invocation/operational-coordinator.js"))};`,
       "export const verify = async () => {",
       "  const home = createAgentscopeHomeResolver({ environment: { AGENTSCOPE_HOME: '/tmp/agentscope-bundle-home' }, environmentOverrideAuthority: 'test', platform: 'linux' })();",
       "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 2, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [], hookDeadlineMilliseconds: 2000 }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
       "  return typeof core.runResolvedTraceLifecycle === 'function' && typeof core.searchConfiguredTraces === 'function' && typeof core.getConfiguredTrace === 'function' && !('agentscope' in core) && !('CoreRedactionError' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
       "};",
+      "export const verifyCoordinator = (homeRoot, platform) => runOperationalCoordinatorForTesting({ kind: 'preload', homeRoot, platform }, 1000, {});",
     ].join("\n"),
   );
   await build({
@@ -880,10 +898,23 @@ try {
     format: "esm",
     platform: "node",
     outfile: output,
+    define: {
+      __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__:
+        JSON.stringify(coordinatorProgram),
+    },
   });
   const bundled = await import(`${pathToFileURL(output).href}?artifact=1`);
   if ((await bundled.verify()) !== true)
     throw new Error("Bundled lifecycle registry verification failed.");
+  const bundledCoordinatorSnapshot = await bundled.verifyCoordinator(
+    directory,
+    process.platform,
+  );
+  if (
+    bundledCoordinatorSnapshot.nextSequence !== 0 ||
+    bundledCoordinatorSnapshot.checkpoints.length !== 0
+  )
+    throw new Error("Bundled coordinator preload verification failed.");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

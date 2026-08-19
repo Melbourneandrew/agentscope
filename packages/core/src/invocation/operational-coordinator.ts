@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, type StdioOptions } from "node:child_process";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import type { AgentscopeHome } from "../configuration/home.js";
@@ -17,6 +18,14 @@ import {
 
 const MAXIMUM_REQUEST_BYTES = 524_288;
 const MAXIMUM_RESPONSE_BYTES = 524_288;
+const COORDINATOR_REQUEST_FD_ENVIRONMENT =
+  "AGENTSCOPE_OPERATIONAL_COORDINATOR_REQUEST_FD";
+declare const __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__: string;
+let bundledCoordinatorProgram: string | undefined;
+/* v8 ignore next -- the release build defines and executes this branch in the
+ * strict bundled-artifact verifier; source tests retain the sibling fallback. */
+if (typeof __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__ === "string")
+  bundledCoordinatorProgram = __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__;
 
 type CoordinatorRequest =
   | Readonly<{
@@ -93,19 +102,49 @@ const runChild = (
       new Error("core.operational-coordinator.unavailable"),
     );
   return new Promise((resolve, reject) => {
-    /* v8 ignore next -- the no-program branch is exercised by the strict
-     * built-artifact verifier against the emitted child module. */
-    const arguments_ = options.program
-      ? ["--input-type=module", "--eval", options.program]
-      : [
-          fileURLToPath(
-            new URL("./operational-coordinator-child.js", import.meta.url),
-          ),
-        ];
+    /* v8 ignore next -- the injected-program fallback is executed by the
+     * strict single-file bundle verifier. */
+    const program = options.program ?? bundledCoordinatorProgram;
+    /* v8 ignore next -- exact injected-program selection is exercised by the
+     * strict single-file bundle verifier. */
+    const injectedProgram =
+      options.program === undefined && bundledCoordinatorProgram !== undefined;
+    let arguments_: string[];
+    /* v8 ignore next -- the sibling branch is exercised by the strict direct
+     * dist verifier while source coverage supplies explicit programs. */
+    if (injectedProgram) arguments_ = ["--input-type=module", "-"];
+    else if (program) arguments_ = ["--input-type=module", "--eval", program];
+    else
+      arguments_ = [
+        fileURLToPath(
+          new URL("./operational-coordinator-child.js", import.meta.url),
+        ),
+      ];
+    /* v8 ignore next -- the injected descriptor is exercised by the strict
+     * single-file bundle verifier. */
+    const requestFileDescriptor = injectedProgram ? "3" : "";
+    /* v8 ignore next -- the injected extra pipe is exercised by that same
+     * strict verifier. */
+    const childStdio: StdioOptions = injectedProgram
+      ? ["pipe", "pipe", "ignore", "pipe"]
+      : ["pipe", "pipe", "ignore"];
     const child = spawn(options.executable ?? process.execPath, arguments_, {
-      stdio: ["pipe", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        [COORDINATOR_REQUEST_FD_ENVIRONMENT]: requestFileDescriptor,
+      },
+      stdio: childStdio,
       windowsHide: true,
     });
+    const childInput = child.stdin;
+    const childOutput = child.stdout;
+    /* v8 ignore next 5 -- the exact pipe stdio descriptor makes both streams
+     * non-null on every supported Node runtime; keep a fixed host fallback. */
+    if (!childInput || !childOutput) {
+      child.kill("SIGKILL");
+      reject(new Error("core.operational-coordinator.unavailable"));
+      return;
+    }
     options.onSpawn?.(child.pid);
     let output = "";
     let failed = false;
@@ -145,8 +184,8 @@ const runChild = (
         reject(new Error("core.operational-coordinator.unavailable"));
       }
     };
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    childOutput.setEncoding("utf8");
+    childOutput.on("data", (chunk: string) => {
       output += chunk;
       if (Buffer.byteLength(output) > MAXIMUM_RESPONSE_BYTES) stop();
     });
@@ -155,12 +194,20 @@ const runChild = (
       if (code !== 0) failed = true;
       finish();
     });
-    child.stdin.once("error", stop);
+    /* v8 ignore next -- the injected request pipe is exercised by the strict
+     * single-file bundle verifier. */
+    const requestInput = (
+      injectedProgram ? child.stdio[3] : childInput
+    ) as Writable | null;
+    childInput.once("error", stop);
+    requestInput?.once("error", stop);
     try {
       signal?.addEventListener("abort", abort, { once: true });
       /* v8 ignore next -- closes the exact add-listener/abort race. */
       if (signalIsAborted(signal)) stop();
-      child.stdin.end(payload);
+      /* v8 ignore next -- the strict bundle verifier supplies this program. */
+      if (injectedProgram) childInput.end(program);
+      requestInput?.end(payload);
       /* v8 ignore next 2 -- native pipe failures settle through error/close;
        * synchronous host throws are retained as defense in depth. */
     } catch {
