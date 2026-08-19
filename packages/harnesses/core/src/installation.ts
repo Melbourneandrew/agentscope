@@ -158,13 +158,19 @@ const isCanonicalAbsolutePath = (path: string): boolean =>
   path.length <= MAXIMUM_PATH_LENGTH &&
   resolve(path) === path;
 
+const darwinPathIdentity = (path: string): string =>
+  path
+    .normalize("NFD")
+    .toLocaleUpperCase("en-US")
+    .toLocaleLowerCase("en-US")
+    .normalize("NFD");
+
 const pathIdentity = (path: string): string => {
   /* v8 ignore next -- exact Windows and conservative Darwin case-folding are
      exercised on their required platform matrices. Darwin folding can reject
      distinct names on an uncommon case-sensitive volume, but never grants two
      ownership identities to one entry on the default case-insensitive volume. */
-  if (process.platform === "darwin")
-    return path.normalize("NFD").toLocaleLowerCase("en-US");
+  if (process.platform === "darwin") return darwinPathIdentity(path);
   /* v8 ignore next -- exact Windows case-folding is exercised on its required
      platform matrix; NTFS preserves normalization distinctions. */
   if (process.platform === "win32") return path.toLocaleLowerCase("en-US");

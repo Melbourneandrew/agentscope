@@ -39,7 +39,11 @@ const absentDigest = digest("");
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
 const pathIdentity = (path: string): string =>
   process.platform === "darwin"
-    ? path.normalize("NFD").toLocaleLowerCase("en-US")
+    ? path
+        .normalize("NFD")
+        .toLocaleUpperCase("en-US")
+        .toLocaleLowerCase("en-US")
+        .normalize("NFD")
     : process.platform === "win32"
       ? path.toLocaleLowerCase("en-US")
       : path;
@@ -524,6 +528,53 @@ describe("harness installation filesystem identity", () => {
     expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([
       expect.objectContaining({ state: "conflict" }),
     ]);
+  });
+});
+
+describe("harness installation Darwin caseless identity", () => {
+  it("uses one ownership identity for Darwin Unicode case-fold aliases", async () => {
+    if (process.platform !== "darwin") return;
+    const root = await temporaryRoot();
+    const aliases = [
+      ["long-ſ.json", "long-s.json"],
+      ["sigma-ς.json", "sigma-σ.json"],
+      ["eszett-ß.json", "eszett-ss.json"],
+    ] as const;
+
+    for (const [leftName, rightName] of aliases) {
+      const left = join(root, leftName);
+      const right = join(root, rightName);
+      await writeFile(left, "before");
+      await expect(
+        inspectHarnessInstallation(
+          planInput(root, [left, right], () => ({
+            kind: "replace",
+            bytes: bytes("after"),
+          })),
+        ),
+      ).resolves.toMatchObject({ disposition: "invalid" });
+
+      const plans = await Promise.all(
+        [left, right].map((targetPath, index) =>
+          inspectHarnessInstallation({
+            ...planInput(root, [targetPath], () => ({
+              kind: "replace",
+              bytes: bytes(`case-fold-${index}`),
+            })),
+            manifestPath: join(
+              root,
+              "transactions",
+              `${leftName}-${index}.json`,
+            ),
+          }),
+        ),
+      );
+      const outcomes = await Promise.all(plans.map(applyHarnessInstallation));
+      expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+      expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([
+        expect.objectContaining({ state: "conflict" }),
+      ]);
+    }
   });
 });
 
