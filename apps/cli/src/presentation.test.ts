@@ -9,6 +9,7 @@ import {
   writeCliDiagnostic,
   writeHumanResult,
   writeMachineResult,
+  writeMachinePlan,
 } from "./presentation.js";
 import type { CliOutput } from "./presentation.js";
 
@@ -129,5 +130,41 @@ describe("CLI presentation bounds", () => {
     });
     expect(captured.stdout).toHaveLength(1);
     expect(captured.stdout[0]).toContain('"count":0');
+  });
+});
+
+describe("CLI plan presentation", () => {
+  it("uses a distinct machine plan envelope on stderr", async () => {
+    const captured = sink();
+    await writeMachinePlan(captured.output, {
+      command: "agentscope init",
+      dataSchema: "agentscope.cli.initialization.v1",
+      mode: "json",
+      records: [{ action: "create" }],
+    });
+    expect(captured.stdout).toEqual([]);
+    expect(JSON.parse(captured.stderr[0] ?? "null")).toMatchObject({
+      schema: "agentscope.cli.plan.v1",
+    });
+    expect(captured.stderr[0]).not.toContain("agentscope.cli.result.v1");
+    expect(captured.stderr[0]).not.toContain("agentscope.cli.diagnostic.v1");
+
+    const jsonl = sink();
+    await writeMachinePlan(jsonl.output, {
+      command: "agentscope init",
+      dataSchema: "agentscope.cli.initialization.v1",
+      mode: "jsonl",
+      records: [{ action: "create" }],
+    });
+    expect(jsonl.stderr).toHaveLength(2);
+    expect(JSON.parse(jsonl.stderr[0] ?? "null")).toMatchObject({
+      kind: "plan",
+      schema: "agentscope.cli.plan-record.v1",
+    });
+    expect(JSON.parse(jsonl.stderr[1] ?? "null")).toMatchObject({
+      count: 1,
+      kind: "summary",
+      schema: "agentscope.cli.plan-record.v1",
+    });
   });
 });

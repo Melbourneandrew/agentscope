@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   ConfigurationManagementError,
   ConfigurationStoreError,
+  applyAgentscopeConfigurationInitialization,
   configureDestinationConnection,
   createAgentscopeHomeResolver,
   createCiEnvironmentCredentialReference,
@@ -10,7 +11,7 @@ import {
   createConfigurationManagementRuntime,
   createConfigurationProcessIdentity,
   createConfigurationStore,
-  initializeAgentscopeConfiguration,
+  inspectAgentscopeConfigurationInitialization,
   listDestinationConnections,
   readConfigurationSnapshot,
   setDestinationRouting,
@@ -153,11 +154,20 @@ const parseSettings = (text: string): unknown => {
 const createInitService =
   (state: ProductionState): CliConfigurationServices["init"] =>
   async ({ apply, presentPlan }) => {
+    let plan: Awaited<
+      ReturnType<typeof inspectAgentscopeConfigurationInitialization>
+    >;
     try {
-      const snapshot = await readConfigurationSnapshot(state.store);
+      plan = await inspectAgentscopeConfigurationInitialization(
+        state.management,
+      );
+    } catch (error) {
+      return failure(mapError(error));
+    }
+    if (plan.action === "no-change") {
       const value: CliInitializationValue = {
         applied: false,
-        generation: snapshot.generation,
+        generation: plan.generation,
         steps: [
           {
             action: "no-change",
@@ -168,12 +178,6 @@ const createInitService =
         ],
       };
       return success(value);
-    } catch (error) {
-      if (
-        !(error instanceof ConfigurationStoreError) ||
-        error.code !== "core.configuration.missing"
-      )
-        return failure(mapError(error));
     }
     const planned: CliInitializationValue = {
       applied: false,
@@ -190,7 +194,7 @@ const createInitService =
     if (!apply) return success(planned);
     try {
       await presentPlan(planned);
-      const result = await initializeAgentscopeConfiguration(state.management);
+      const result = await applyAgentscopeConfigurationInitialization(plan);
       return success({
         applied: result.created,
         generation: result.generation,

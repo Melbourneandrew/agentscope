@@ -68,6 +68,15 @@ const configurationCredentialPreflights = new WeakMap<
     registry: CredentialBackendRegistry;
   }>
 >();
+const configurationInitializationPlans = new WeakMap<
+  object,
+  Readonly<{
+    action: "create" | "no-change";
+    generation: number | null;
+    runtime: ConfigurationManagementRuntime;
+  }>
+>();
+const consumedConfigurationInitializationPlans = new WeakSet<object>();
 
 export type ConfigurationManagementRuntime = Readonly<{
   readonly configurationManagement: "agentscope-core";
@@ -75,6 +84,12 @@ export type ConfigurationManagementRuntime = Readonly<{
 
 export type ConfigurationCredentialPreflight = Readonly<{
   readonly configurationCredentialPreflight: "agentscope-core";
+}>;
+
+export type ConfigurationInitializationPlan = Readonly<{
+  readonly action: "create" | "no-change";
+  readonly configurationInitializationPlan: "agentscope-core";
+  readonly generation: number | null;
 }>;
 
 export type DestinationConnectionSummary = Readonly<{
@@ -235,15 +250,18 @@ const writeCandidate = async (
   }
 };
 
-export const initializeAgentscopeConfiguration = async (
+export const inspectAgentscopeConfigurationInitialization = async (
   runtime: ConfigurationManagementRuntime,
-): Promise<Readonly<{ created: boolean; generation: number }>> => {
+): Promise<ConfigurationInitializationPlan> => {
   const state = stored(runtime);
+  let action: "create" | "no-change" = "create";
+  let generation: number | null = null;
   try {
     const current = await readConfigurationSnapshot(state.store);
     /* v8 ignore next -- an unsupported namespace cannot be minted by this management registry. */
     if (!current.mutationSafe) return invalid();
-    return Object.freeze({ created: false, generation: current.generation });
+    action = "no-change";
+    generation = current.generation;
   } catch (error) {
     /* v8 ignore next -- branded store reads throw only the fixed store error family. */
     if (
@@ -251,6 +269,38 @@ export const initializeAgentscopeConfiguration = async (
       error.code !== "core.configuration.missing"
     )
       return mapStoreError(error);
+  }
+  const plan = Object.freeze({
+    action,
+    configurationInitializationPlan: "agentscope-core" as const,
+    generation,
+  });
+  configurationInitializationPlans.set(plan, { action, generation, runtime });
+  return plan;
+};
+
+export const applyAgentscopeConfigurationInitialization = async (
+  plan: ConfigurationInitializationPlan,
+): Promise<Readonly<{ created: boolean; generation: number }>> => {
+  const authority = configurationInitializationPlans.get(plan);
+  if (!authority || consumedConfigurationInitializationPlans.has(plan))
+    return invalid();
+  consumedConfigurationInitializationPlans.add(plan);
+  const state = stored(authority.runtime);
+  if (authority.action === "no-change") {
+    let current: AgentscopeConfigurationSnapshot;
+    try {
+      current = await readConfigurationSnapshot(state.store);
+    } catch (error) {
+      return mapStoreError(error);
+    }
+    if (
+      !current.mutationSafe ||
+      authority.generation === null ||
+      current.generation !== authority.generation
+    )
+      return invalid("core.configuration.conflict");
+    return Object.freeze({ created: false, generation: current.generation });
   }
   const candidate = parseAgentscopeConfiguration(
     {
@@ -281,6 +331,13 @@ export const initializeAgentscopeConfiguration = async (
     return mapStoreError(error);
   }
 };
+
+export const initializeAgentscopeConfiguration = async (
+  runtime: ConfigurationManagementRuntime,
+): Promise<Readonly<{ created: boolean; generation: number }>> =>
+  applyAgentscopeConfigurationInitialization(
+    await inspectAgentscopeConfigurationInitialization(runtime),
+  );
 
 export const listDestinationConnections = async (
   runtime: ConfigurationManagementRuntime,

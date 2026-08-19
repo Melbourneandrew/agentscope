@@ -43,14 +43,22 @@ export type RunCliInput = Readonly<{
   version: string;
 }>;
 
+function writeProcessStream(
+  stream: NodeJS.WriteStream,
+  text: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    stream.write(text, (error) => {
+      if (error) reject(new Error("cli.output.unavailable"));
+      else resolve();
+    });
+  });
+}
+
 function processOutput(): CliOutput {
   return Object.freeze({
-    writeErr: (text: string) => {
-      process.stderr.write(text);
-    },
-    writeOut: (text: string) => {
-      process.stdout.write(text);
-    },
+    writeErr: (text: string) => writeProcessStream(process.stderr, text),
+    writeOut: (text: string) => writeProcessStream(process.stdout, text),
   });
 }
 

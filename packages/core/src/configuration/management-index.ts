@@ -1,14 +1,17 @@
 export { createCiEnvironmentCredentialReference } from "./credential-adapter.js";
 export {
   ConfigurationManagementError,
+  applyAgentscopeConfigurationInitialization,
   configureDestinationConnection,
   createCiEnvironmentCredentialPreflight,
   createConfigurationManagementRuntime,
   initializeAgentscopeConfiguration,
+  inspectAgentscopeConfigurationInitialization,
   listDestinationConnections,
   setDestinationRouting,
   unconfigureDestinationConnection,
   type ConfigurationManagementRuntime,
+  type ConfigurationInitializationPlan,
   type ConfigurationCredentialPreflight,
   type ConfigureDestinationConnectionInput,
   type DestinationConfigurationResult,

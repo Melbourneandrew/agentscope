@@ -19,6 +19,7 @@ import {
   reconstructCliValue,
   writeCliDiagnostic,
   writeHumanResult,
+  writeMachinePlan,
   writeMachineResult,
 } from "./presentation.js";
 import type { CliOutput } from "./presentation.js";
@@ -165,6 +166,32 @@ async function renderValue(input: RenderValueInput): Promise<void> {
   });
 }
 
+async function renderPlan(
+  input: Omit<RenderValueInput, "completion">,
+): Promise<void> {
+  const parsed = input.module.outputSchema.parse(input.value);
+  if (input.mode === "human") {
+    const lines = input.module.human(parsed);
+    await writeHumanResult(
+      Object.freeze({
+        writeErr: input.output.writeErr,
+        writeOut: input.output.writeErr,
+      }),
+      lines,
+    );
+    return;
+  }
+  if (input.registration.dataSchema === null) {
+    throw new Error("cli.runtime.invalid");
+  }
+  await writeMachinePlan(input.output, {
+    command: commandPath(input.registration),
+    dataSchema: input.registration.dataSchema,
+    mode: input.mode,
+    records: input.module.machineRecords(parsed),
+  });
+}
+
 function isNativePromise(input: unknown): input is Promise<unknown> {
   return input instanceof Promise;
 }
@@ -201,14 +228,10 @@ async function executeCommand(
     const context: CliCommandExecutionContext<unknown> = Object.freeze({
       presentPlan: async (value: unknown): Promise<void> => {
         if (planPresented) throw new Error("cli.runtime.invalid");
-        await renderValue({
-          completion: "complete",
+        await renderPlan({
           mode,
           module,
-          output: Object.freeze({
-            writeErr: input.output.writeErr,
-            writeOut: input.output.writeErr,
-          }),
+          output: input.output,
           registration,
           value,
         });

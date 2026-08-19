@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +11,7 @@ import {
   compileDestinationRegistry,
   defineDestinationDescriptor,
 } from "@agentscope/destinations-core/configuration";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { createCapturedOutput } from "./__tests__/cli-fixture.js";
@@ -64,6 +64,7 @@ const roots: string[] = [];
 const presentPlan = (): Promise<void> => Promise.resolve();
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
   );
@@ -120,6 +121,70 @@ describe("production configuration composition", () => {
       "Initialization plan applied.\n",
       "applied: create-configuration\n",
     ]);
+    await expect(access(join(root, "config.json"))).resolves.toBeUndefined();
+  });
+
+  it("separates a machine initialization plan from the final result", async () => {
+    const { services } = await productionFixture(
+      "agentscope-cli-machine-plan-",
+    );
+    const captured = createCapturedOutput();
+    await expect(
+      runCli(["init", "--yes", "--output", "json"], {
+        output: captured.output,
+        services,
+        version: "1.2.3",
+      }),
+    ).resolves.toBe(0);
+    expect(JSON.parse(captured.stderr[0] ?? "null")).toMatchObject({
+      schema: "agentscope.cli.plan.v1",
+    });
+    expect(JSON.parse(captured.stdout[0] ?? "null")).toMatchObject({
+      schema: "agentscope.cli.result.v1",
+    });
+  });
+
+  it("awaits the real stderr write completion before initialization", async () => {
+    const { root, services } = await productionFixture(
+      "agentscope-cli-process-plan-",
+    );
+    let completePlanWrite: (() => void) | undefined;
+    vi.spyOn(process.stderr, "write").mockImplementation(
+      (_value: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+        const completion =
+          typeof encodingOrCallback === "function"
+            ? encodingOrCallback
+            : callback;
+        if (typeof completion === "function") {
+          completePlanWrite = () => {
+            Reflect.apply(completion, undefined, []);
+          };
+        }
+        return false;
+      },
+    );
+    vi.spyOn(process.stdout, "write").mockImplementation(
+      (_value: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+        const completion =
+          typeof encodingOrCallback === "function"
+            ? encodingOrCallback
+            : callback;
+        if (typeof completion === "function")
+          Reflect.apply(completion, undefined, []);
+        return true;
+      },
+    );
+
+    const invocation = runCli(["init", "--yes", "--output", "json"], {
+      services,
+      version: "1.2.3",
+    });
+    await vi.waitFor(() => {
+      expect(completePlanWrite).toBeTypeOf("function");
+    });
+    await expect(access(join(root, "config.json"))).rejects.toBeDefined();
+    completePlanWrite?.();
+    await expect(invocation).resolves.toBe(0);
     await expect(access(join(root, "config.json"))).resolves.toBeUndefined();
   });
 });
@@ -263,6 +328,15 @@ describe("production configuration diagnostics", () => {
     ).resolves.toMatchObject({
       status: "success",
       value: { applied: false, generation: 0 },
+    });
+    const unavailable = await productionFixture(
+      "agentscope-cli-invalid-config-",
+    );
+    await writeFile(join(unavailable.root, "config.json"), "not-json", "utf8");
+    await expect(
+      unavailable.services.init({ apply: false, presentPlan }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "configuration.unavailable" },
     });
     for (const settingsJson of ["{", "[]", "null"]) {
       await expect(

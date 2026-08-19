@@ -202,6 +202,52 @@ export async function writeMachineResult(
   }
 }
 
+export async function writeMachinePlan(
+  output: CliOutput,
+  input: Readonly<{
+    command: string;
+    dataSchema: string;
+    mode: Exclude<CliOutputMode, "human">;
+    records: unknown;
+  }>,
+): Promise<void> {
+  const records = snapshotDenseArray(input.records).map((record) =>
+    reconstructJsonValue(record, 0, { nodes: 0, seen: new Set() }),
+  );
+  if (input.mode === "json") {
+    await output.writeErr(
+      serializeJsonLine({
+        command: input.command,
+        dataSchema: input.dataSchema,
+        records,
+        schema: "agentscope.cli.plan.v1",
+      }),
+    );
+    return;
+  }
+  for (const [sequence, record] of records.entries()) {
+    await output.writeErr(
+      serializeJsonLine({
+        command: input.command,
+        data: record,
+        dataSchema: input.dataSchema,
+        kind: "plan",
+        schema: "agentscope.cli.plan-record.v1",
+        sequence,
+      }),
+    );
+  }
+  await output.writeErr(
+    serializeJsonLine({
+      command: input.command,
+      count: records.length,
+      dataSchema: input.dataSchema,
+      kind: "summary",
+      schema: "agentscope.cli.plan-record.v1",
+    }),
+  );
+}
+
 export async function writeCliDiagnostic(
   output: CliOutput,
   mode: CliOutputMode,

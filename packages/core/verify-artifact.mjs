@@ -60,7 +60,11 @@ import * as coreArtifactExports from "./dist/index.js";
 import { DEFAULT_REDACTION_POLICY_REGISTRY } from "./dist/redaction/policy.js";
 import { runOperationalCoordinatorForTesting } from "./dist/invocation/operational-coordinator.js";
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
-import { createConfigurationManagementRuntime } from "./dist/configuration/management-index.js";
+import {
+  applyAgentscopeConfigurationInitialization,
+  createConfigurationManagementRuntime,
+  inspectAgentscopeConfigurationInitialization,
+} from "./dist/configuration/management-index.js";
 
 const listRegularFiles = (directory, prefix = "") => {
   const files = [];
@@ -266,6 +270,11 @@ const artifactOwner = createConfigurationProcessIdentity(
   process.pid,
   `process-start-v1-${"d".repeat(64)}`,
 );
+const artifactManagement = createConfigurationManagementRuntime(
+  artifactRegistry,
+  artifactStore,
+  artifactOwner,
+);
 const independentlyCompiledArtifactRegistry = compileDestinationRegistry([
   artifactDescriptor,
 ]);
@@ -311,6 +320,23 @@ if ((await readConfigurationSnapshot(artifactStore)).generation !== 0)
   throw new Error(
     "Core configuration transaction artifact verification failed.",
   );
+const artifactInitializationPlan =
+  await inspectAgentscopeConfigurationInitialization(artifactManagement);
+try {
+  await applyAgentscopeConfigurationInitialization({
+    ...artifactInitializationPlan,
+  });
+  throw new Error("Cloned initialization plan authority was accepted.");
+} catch (error) {
+  if (error?.code !== "core.configuration.invalid") throw error;
+}
+const artifactInitializationResult =
+  await applyAgentscopeConfigurationInitialization(artifactInitializationPlan);
+if (
+  artifactInitializationResult.created ||
+  artifactInitializationResult.generation !== 0
+)
+  throw new Error("Core initialization plan artifact verification failed.");
 const lifecycleResult = await runResolvedTraceLifecycle({
   configurationStore: artifactStore,
   operationalStateStore: artifactOperationalStateStore,

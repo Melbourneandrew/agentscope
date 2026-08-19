@@ -35,7 +35,7 @@ The CLI owns stdout, stderr, and process exit status. Domain packages return typ
 
 ## Automation
 
-The root command currently supports only `human`. Public leaf commands that support `json` or `jsonl` declare a command-specific versioned data schema. JSON emits one newline-terminated result document. JSONL emits independently typed data records followed by one summary record. For a plan-first `--yes` mutation, the exact pre-mutation plan is written and flushed to stderr using the same selected presentation mode before Core receives the one-use apply authority; the final result remains the sole stdout result. Machine-readable diagnostics are separate newline-terminated records on stderr, and failures emit no final machine result on stdout.
+The root command currently supports only `human`. Public leaf commands that support `json` or `jsonl` declare a command-specific versioned data schema. JSON emits one newline-terminated result document. JSONL emits independently typed data records followed by one summary record. For a plan-first `--yes` mutation, the exact pre-mutation plan is written and flushed to stderr using the same selected presentation mode before Core receives the one-use apply authority; the final result remains the sole stdout result. JSON plans use `agentscope.cli.plan.v1`, and JSONL plans use `agentscope.cli.plan-record.v1`; neither is a result or diagnostic envelope. Machine-readable diagnostics are separate newline-terminated records on stderr, and failures emit no final machine result on stdout.
 
 ## Diagnostics
 

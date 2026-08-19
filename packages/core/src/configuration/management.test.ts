@@ -14,10 +14,12 @@ import { z } from "zod";
 import { createAgentscopeHomeFromOwnedRootForCore } from "./home.js";
 import {
   ConfigurationManagementError,
+  applyAgentscopeConfigurationInitialization,
   configureDestinationConnection,
   createCiEnvironmentCredentialPreflight,
   createConfigurationManagementRuntime,
   initializeAgentscopeConfiguration,
+  inspectAgentscopeConfigurationInitialization,
   listDestinationConnections,
   setDestinationRouting,
   unconfigureDestinationConnection,
@@ -88,6 +90,7 @@ const fixture = async () => {
     `process-start-v1-${"a".repeat(64)}`,
   );
   return {
+    root,
     runtime: createConfigurationManagementRuntime(registry, store, owner),
     store,
   };
@@ -205,6 +208,41 @@ describe("destination configuration lifecycle", () => {
     expect(
       (await readConfigurationSnapshot(store)).selectedConnectionIds,
     ).toEqual([]);
+  });
+
+  it("binds initialization to an exact one-use inspected plan", async () => {
+    const { root, runtime } = await fixture();
+    const createPlan =
+      await inspectAgentscopeConfigurationInitialization(runtime);
+    expect(createPlan).toMatchObject({ action: "create", generation: null });
+    await expect(
+      applyAgentscopeConfigurationInitialization({ ...createPlan }),
+    ).rejects.toThrowError(ConfigurationManagementError);
+    await expect(
+      applyAgentscopeConfigurationInitialization(createPlan),
+    ).resolves.toEqual({ created: true, generation: 0 });
+    await expect(
+      applyAgentscopeConfigurationInitialization(createPlan),
+    ).rejects.toThrowError(ConfigurationManagementError);
+
+    const unchangedPlan =
+      await inspectAgentscopeConfigurationInitialization(runtime);
+    await configureDestinationConnection(runtime, {
+      commandName: "example",
+      credentialReferences: {},
+      name: "later",
+      settings: { project: "agentscope" },
+    });
+    await expect(
+      applyAgentscopeConfigurationInitialization(unchangedPlan),
+    ).rejects.toMatchObject({ code: "core.configuration.conflict" });
+
+    const missingPlan =
+      await inspectAgentscopeConfigurationInitialization(runtime);
+    await rm(join(root, "config.json"));
+    await expect(
+      applyAgentscopeConfigurationInitialization(missingPlan),
+    ).rejects.toMatchObject({ code: "core.configuration.missing" });
   });
 });
 

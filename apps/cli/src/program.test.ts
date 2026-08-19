@@ -91,25 +91,45 @@ describe("agentscope root command", () => {
     expect(captured.stdout).toEqual([]);
     expect(captured.stderr).toEqual(["error [cli.input.invalid]\n"]);
   });
+});
 
+describe("process output", () => {
   it("uses the real process streams when output is not injected", async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
-    vi.spyOn(process.stdout, "write").mockImplementation((value) => {
-      stdout.push(String(value));
-      return true;
-    });
-    vi.spyOn(process.stderr, "write").mockImplementation((value) => {
-      stderr.push(String(value));
-      return true;
-    });
+    vi.spyOn(process.stdout, "write").mockImplementation(
+      (value: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+        stdout.push(String(value));
+        const completion =
+          typeof encodingOrCallback === "function"
+            ? encodingOrCallback
+            : callback;
+        if (typeof completion === "function")
+          Reflect.apply(completion, undefined, []);
+        return true;
+      },
+    );
+    vi.spyOn(process.stderr, "write").mockImplementation(
+      (value: unknown, encodingOrCallback?: unknown, callback?: unknown) => {
+        stderr.push(String(value));
+        const completion =
+          typeof encodingOrCallback === "function"
+            ? encodingOrCallback
+            : callback;
+        if (typeof completion === "function")
+          Reflect.apply(completion, undefined, []);
+        return true;
+      },
+    );
 
     expect(await runCli(["--version"], { version: "1.2.3" })).toBe(0);
     expect(await runCli(["--bad"], { version: "1.2.3" })).toBe(2);
     expect(stdout).toEqual(["1.2.3\n"]);
     expect(stderr).toEqual(["error [cli.input.invalid]\n"]);
   });
+});
 
+describe("agentscope root command failures", () => {
   it("binds Commander help and error writers to the CLI output", () => {
     const captured = createCapturedOutput();
     const program = createProgram({
