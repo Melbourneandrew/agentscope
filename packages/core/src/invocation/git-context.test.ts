@@ -1,9 +1,12 @@
 import {
+  chmod,
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   realpath,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -363,12 +366,13 @@ describe("real Git fixture isolation", () => {
       "checkout@example.invalid",
     ]);
     await runFixtureGit(checkout, ["config", "user.name", "Checkout"]);
-    await runFixtureGit(checkout, [
-      "commit",
-      "--allow-empty",
-      "-qm",
-      "checkout",
-    ]);
+    const sentinelDirectory = join(checkout, "nested");
+    const sentinelPath = join(sentinelDirectory, "sentinel.txt");
+    await mkdir(sentinelDirectory);
+    await writeFile(sentinelPath, "checkout sentinel\n", "utf8");
+    await chmod(sentinelPath, 0o640);
+    await runFixtureGit(checkout, ["add", "nested/sentinel.txt"]);
+    await runFixtureGit(checkout, ["commit", "-qm", "checkout"]);
     const checkoutHead = await runFixtureGit(checkout, ["rev-parse", "HEAD"]);
     const checkoutReflog = await runFixtureGit(checkout, ["reflog", "show"]);
     const checkoutConfig = await runFixtureGit(checkout, [
@@ -376,6 +380,14 @@ describe("real Git fixture isolation", () => {
       "--local",
       "--list",
     ]);
+    const checkoutStatus = await runFixtureGit(checkout, [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+    ]);
+    const checkoutTree = await runFixtureGit(checkout, ["write-tree"]);
+    const sentinelBytes = await readFile(sentinelPath);
+    const sentinelMode = (await stat(sentinelPath)).mode & 0o777;
     const checkoutEntries = await readdir(checkout);
     const inherited = {
       ...process.env,
@@ -416,6 +428,16 @@ describe("real Git fixture isolation", () => {
     expect(await runFixtureGit(checkout, ["config", "--local", "--list"])).toBe(
       checkoutConfig,
     );
+    expect(
+      await runFixtureGit(checkout, [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+      ]),
+    ).toBe(checkoutStatus);
+    expect(await runFixtureGit(checkout, ["write-tree"])).toBe(checkoutTree);
+    expect(await readFile(sentinelPath)).toEqual(sentinelBytes);
+    expect((await stat(sentinelPath)).mode & 0o777).toBe(sentinelMode);
     expect(await readdir(checkout)).toEqual(checkoutEntries);
   });
 });
