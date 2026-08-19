@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import type { HarnessScenarioAdapter } from "@agentscope/harnesses-core/testing";
+
 /** Versioned recipe supplied by each @agentscope/harness-* package. */
 export interface HarnessScenario {
   id: string;
@@ -22,6 +24,39 @@ export interface HarnessRunResult {
   exitCode: number | null;
   stdout: string;
   stderr: string;
+}
+
+export interface HarnessScenarioRuntime {
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutMs?: number;
+  expect: HarnessExpectations;
+}
+
+/** Composes family-owned harness data with the generic isolated process seam. */
+export function composeHarnessScenario(
+  adapter: HarnessScenarioAdapter,
+  runtime: HarnessScenarioRuntime,
+): Readonly<HarnessScenario> {
+  return Object.freeze({
+    id: adapter.scenarioId,
+    harness: adapter.harnessId,
+    command: runtime.command,
+    args: Object.freeze([...adapter.commandArguments]),
+    cwd: runtime.cwd,
+    env: Object.freeze({ ...runtime.env }),
+    ...(runtime.timeoutMs === undefined
+      ? {}
+      : { timeoutMs: runtime.timeoutMs }),
+    expect: Object.freeze({
+      modelPaths: Object.freeze([...runtime.expect.modelPaths]),
+      telemetryPaths: Object.freeze([...runtime.expect.telemetryPaths]),
+      ...(runtime.expect.exitCode === undefined
+        ? {}
+        : { exitCode: runtime.expect.exitCode }),
+    }),
+  });
 }
 
 /** Runs a real harness process; testkit never replaces the executable with a fake. */

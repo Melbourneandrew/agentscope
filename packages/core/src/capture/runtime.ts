@@ -69,6 +69,16 @@ const unavailableStates = new Set([
   "observed-empty",
   "unavailable",
 ]);
+const harnessUnavailablePairs = new Set([
+  "not-applicable:detached-head",
+  "not-applicable:not-applicable",
+  "observed-empty:empty-native-value",
+  "unavailable:not-emitted",
+  "unavailable:resolution-failed",
+  "unavailable:unsupported",
+]);
+const harnessUnavailablePairIsValid = (state: string, reason: string) =>
+  harnessUnavailablePairs.has(`${state}:${reason}`);
 const harnessUnavailableFamilies = new Set([
   "family.error.activity",
   "family.llm.usage",
@@ -238,6 +248,7 @@ const validateUnavailable = (
           )) ||
         !harnessProvenanceSources.has(source) ||
         !unavailableStates.has(state) ||
+        !harnessUnavailablePairIsValid(state, reason) ||
         presentFields.has(field)
       )
         throw new CapturedTraceError();

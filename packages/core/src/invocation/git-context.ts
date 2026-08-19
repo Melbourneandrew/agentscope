@@ -49,6 +49,11 @@ type GitCommandExecutor = (
   options: Readonly<Record<string, unknown>>,
 ) => Promise<Readonly<{ stdout: string }>>;
 
+type GitRunOptions = Readonly<{
+  execute: GitCommandExecutor;
+  now?: () => number;
+}>;
+
 type PathInspector = (
   request: PathInspectionRequest,
   timeoutMilliseconds: number,
@@ -100,21 +105,19 @@ const runGitWithExecutor = async (
   workspace: string,
   timeoutMilliseconds: number,
   signal: AbortSignal | undefined,
-  execute: GitCommandExecutor,
+  options: GitRunOptions,
 ): Promise<GitProbeResult> => {
-  const startedAt = performance.now();
+  const now = options.now ?? performance.now.bind(performance);
+  const startedAt = now();
   const remaining = (): number =>
-    Math.max(
-      0,
-      Math.floor(timeoutMilliseconds - (performance.now() - startedAt)),
-    );
+    Math.max(0, Math.floor(timeoutMilliseconds - (now() - startedAt)));
   /* v8 ignore next -- exactly one platform-specific null device is active per test process. */
   const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
   const executeWithinBudget = (arguments_: readonly string[]) => {
     const timeout = remaining();
     if (timeout <= 0 || signal?.aborted === true)
       return Promise.reject(new Error("core.git.unavailable"));
-    return execute(executable, arguments_, {
+    return options.execute(executable, arguments_, {
       cwd: workspace,
       env: Object.freeze({
         GIT_CONFIG_GLOBAL: nullDevice,
@@ -200,13 +203,9 @@ const executeGit: GitCommandExecutor = async (
 };
 
 const runGit: GitProbe = (executable, workspace, timeoutMilliseconds, signal) =>
-  runGitWithExecutor(
-    executable,
-    workspace,
-    timeoutMilliseconds,
-    signal,
-    executeGit,
-  );
+  runGitWithExecutor(executable, workspace, timeoutMilliseconds, signal, {
+    execute: executeGit,
+  });
 
 const inspectPathsInProcess: PathInspector = async (request) => {
   if (request.kind === "workspace") {
@@ -407,6 +406,7 @@ export const probeGitForTesting = (
     timeoutMilliseconds: number;
     signal?: AbortSignal;
     execute: GitCommandExecutor;
+    now?: () => number;
   }>,
 ) =>
   runGitWithExecutor(
@@ -414,5 +414,8 @@ export const probeGitForTesting = (
     input.workspace,
     input.timeoutMilliseconds,
     input.signal,
-    input.execute,
+    {
+      execute: input.execute,
+      ...(input.now === undefined ? {} : { now: input.now }),
+    },
   );

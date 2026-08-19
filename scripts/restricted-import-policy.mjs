@@ -9,6 +9,7 @@ const restrictedSpecifiers = [
 ];
 const testingSpecifiers = [
   "@agentscope/destinations-core/testing",
+  "@agentscope/harnesses-core/testing",
   "@agentscope/protocol/testing",
 ];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;

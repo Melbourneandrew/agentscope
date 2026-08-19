@@ -1,4 +1,5 @@
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,6 +58,7 @@ import { createLinuxSecretServiceAdapterForTesting } from "./dist/configuration/
 import { createWindowsCredentialManagerAdapterForTesting } from "./dist/configuration/windows-credential-manager.js";
 import * as coreArtifactExports from "./dist/index.js";
 import { DEFAULT_REDACTION_POLICY_REGISTRY } from "./dist/redaction/policy.js";
+import { runOperationalCoordinatorForTesting } from "./dist/invocation/operational-coordinator.js";
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
 
 const listRegularFiles = (directory, prefix = "") => {
@@ -307,7 +309,7 @@ const lifecycleResult = await runResolvedTraceLifecycle({
   operationIdScope: "session-global",
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
-  bootstrapDeadlineMilliseconds: 1_000,
+  bootstrapDeadlineMilliseconds: 10_000,
   capture: captureArtifactCandidate,
 });
 const artifactOperationalSnapshot = await inspectOperationalState(
@@ -319,9 +321,12 @@ const serializedOperationalSnapshot = JSON.stringify(
 if (
   lifecycleResult.outcome !== "completed" ||
   lifecycleResult.connections[0]?.outcome !== "accepted" ||
-  lifecycleResult.operationalEvidence.persistence.code !== "not-attempted" ||
-  lifecycleResult.operationalEvidence.checkpoints.length !== 0 ||
-  artifactOperationalSnapshot.checkpoints.length !== 0 ||
+  lifecycleResult.operationalEvidence.persistence.code !== "recorded" ||
+  lifecycleResult.operationalEvidence.checkpoints[0]?.code !== "advanced" ||
+  lifecycleResult.operationalEvidence.checkpoints[0]
+    ?.acknowledgedExclusivePosition !== 1 ||
+  artifactOperationalSnapshot.checkpoints[0]?.acknowledgedExclusivePosition !==
+    1 ||
   serializedOperationalSnapshot.includes("artifact-thread") ||
   serializedOperationalSnapshot.includes(directTrace.delivery.identity) ||
   serializedOperationalSnapshot.includes(directTrace.graph.traceId) ||
@@ -329,6 +334,97 @@ if (
   isRedactedCanonicalTrace(structuredClone(directTrace))
 )
   throw new Error("Core resolved lifecycle artifact verification failed.");
+const artifactCheckpoint = artifactOperationalSnapshot.checkpoints[0];
+const lostAcknowledgementCommit = spawnSync(
+  process.execPath,
+  [
+    resolve(
+      import.meta.dirname,
+      "dist/invocation/operational-coordinator-child.js",
+    ),
+  ],
+  {
+    input: JSON.stringify({
+      kind: "commit",
+      homeRoot: artifactHome.root,
+      platform: artifactHome.platform,
+      evidence: {
+        diagnostics: [],
+        health: [
+          {
+            scope: "hook",
+            stage: "remote-acceptance",
+            outcome: "accepted",
+            configurationGeneration: 0,
+            policyMode: "baseline",
+            receipt: null,
+          },
+        ],
+        checkpoints: [
+          {
+            adapterId: artifactCheckpoint.adapterId,
+            sourceIdentityDigest: artifactCheckpoint.sourceIdentityDigest,
+            nativeIdentityKind: artifactCheckpoint.nativeIdentityKind,
+            sourceGeneration: artifactCheckpoint.sourceGeneration,
+            positionKind: artifactCheckpoint.positionKind,
+            startPosition: 1,
+            exclusiveEndPosition: 2,
+            configurationGeneration: 0,
+            destinationType: "@agentscope/destination-artifact",
+            connectionId: artifactConnectionId,
+          },
+        ],
+      },
+    }),
+    encoding: "utf8",
+  },
+);
+// Deliberately discard the successful reply to model replacement followed by
+// acknowledgement loss. The next owned preload is the reconciliation authority.
+if (lostAcknowledgementCommit.status !== 0)
+  throw new Error("Core coordinator acknowledgement-loss setup failed.");
+const reconciledOperationalSnapshot = await runOperationalCoordinatorForTesting(
+  {
+    kind: "preload",
+    homeRoot: artifactHome.root,
+    platform: artifactHome.platform,
+  },
+  1_000,
+  {},
+);
+if (
+  reconciledOperationalSnapshot.checkpoints[0]
+    ?.acknowledgedExclusivePosition !== 2
+)
+  throw new Error("Core coordinator acknowledgement reconciliation failed.");
+let hangingCoordinatorProcessId = 0;
+try {
+  await runOperationalCoordinatorForTesting(
+    {
+      kind: "preload",
+      homeRoot: artifactHome.root,
+      platform: artifactHome.platform,
+    },
+    20,
+    {
+      program: "process.stdin.resume(); setInterval(() => {}, 1000);",
+      onSpawn: (value) => {
+        hangingCoordinatorProcessId = value ?? 0;
+      },
+    },
+  );
+  throw new Error("Core coordinator accepted a hanging child.");
+} catch (error) {
+  if (error?.message !== "core.operational-coordinator.unavailable")
+    throw error;
+}
+try {
+  process.kill(hangingCoordinatorProcessId, 0);
+  throw new Error("Core coordinator did not join a timed-out child.");
+} catch (error) {
+  if (error?.message === "Core coordinator did not join a timed-out child.")
+    throw error;
+}
 const retrievalRuntime = {
   configuration: artifactConfiguration,
   policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
@@ -367,7 +463,7 @@ const artifactSourceLoss = await runResolvedTraceLifecycle({
   operationIdScope: "session-global",
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
-  bootstrapDeadlineMilliseconds: 1_000,
+  bootstrapDeadlineMilliseconds: 10_000,
   capture: (factory, _signal, checkpointResolver) => {
     if (typeof checkpointResolver !== "function")
       throw new Error("Core checkpoint resolver was unavailable.");
@@ -392,9 +488,9 @@ if (
   artifactSourceLoss.outcome !== "completed" ||
   artifactSourceLoss.operationalEvidence.diagnostics[0]?.code !==
     "native-source-loss" ||
-  artifactSourceLoss.operationalEvidence.diagnostics[1]?.code !==
-    "checkpoint-unavailable" ||
-  artifactSourceLoss.operationalEvidence.checkpoints.length !== 0
+  artifactSourceLoss.operationalEvidence.diagnostics.length !== 1 ||
+  artifactSourceLoss.operationalEvidence.checkpoints[0]?.code !== "stale" ||
+  artifactSourceLoss.operationalEvidence.persistence.code !== "recorded"
 )
   throw new Error("Core source-loss artifact verification failed.");
 let artifactCheckpointAccessorReads = 0;
@@ -411,7 +507,7 @@ const hostileCheckpointResult = await runResolvedTraceLifecycle({
   operationIdScope: "session-global",
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
-  bootstrapDeadlineMilliseconds: 1_000,
+  bootstrapDeadlineMilliseconds: 10_000,
   capture: (_factory, _signal, checkpointResolver) => {
     if (typeof checkpointResolver !== "function")
       throw new Error("Core checkpoint resolver was unavailable.");
@@ -745,7 +841,7 @@ try {
     operationIdScope: "session-global",
     workspaceCandidates: [],
     gitExecutable: "/usr/bin/git",
-    bootstrapDeadlineMilliseconds: 1_000,
+    bootstrapDeadlineMilliseconds: 10_000,
     capture: async () => {
       throw new Error("CANARY_SECRET");
     },
@@ -765,17 +861,35 @@ const directory = mkdtempSync(join(tmpdir(), "agentscope-core-artifact-"));
 const entry = join(directory, "entry.mjs");
 const output = join(directory, "bundle.mjs");
 try {
+  const coordinatorBuild = await build({
+    entryPoints: [
+      resolve(
+        import.meta.dirname,
+        "src/invocation/operational-coordinator-child.ts",
+      ),
+    ],
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    target: "node22",
+    write: false,
+  });
+  if (coordinatorBuild.outputFiles.length !== 1)
+    throw new Error("Core coordinator did not build as one program.");
+  const coordinatorProgram = coordinatorBuild.outputFiles[0].text;
   writeFileSync(
     entry,
     [
       `import * as core from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
       `import { compileDestinationRegistry } from ${JSON.stringify(resolve(import.meta.dirname, "../destinations/core/dist/index.js"))};`,
       `import { compileConfigurationMigrationRegistry, createAgentscopeHomeResolver, createConfigurationProcessIdentity, createConfigurationStore, createOperationalStateStore, inspectAgentscopeDoctor, migrateConfigurationDocument, parseAgentscopeConfiguration, readConfigurationSnapshot, serializeAgentscopeConfiguration, writeConfigurationSnapshot } from ${JSON.stringify(resolve(import.meta.dirname, "dist/index.js"))};`,
+      `import { runOperationalCoordinatorForTesting } from ${JSON.stringify(resolve(import.meta.dirname, "dist/invocation/operational-coordinator.js"))};`,
       "export const verify = async () => {",
       "  const home = createAgentscopeHomeResolver({ environment: { AGENTSCOPE_HOME: '/tmp/agentscope-bundle-home' }, environmentOverrideAuthority: 'test', platform: 'linux' })();",
       "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 2, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [], hookDeadlineMilliseconds: 2000 }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
       "  return typeof core.runResolvedTraceLifecycle === 'function' && typeof core.searchConfiguredTraces === 'function' && typeof core.getConfiguredTrace === 'function' && !('agentscope' in core) && !('CoreRedactionError' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
       "};",
+      "export const verifyCoordinator = (homeRoot, platform) => runOperationalCoordinatorForTesting({ kind: 'preload', homeRoot, platform }, 1000, {});",
     ].join("\n"),
   );
   await build({
@@ -784,10 +898,23 @@ try {
     format: "esm",
     platform: "node",
     outfile: output,
+    define: {
+      __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__:
+        JSON.stringify(coordinatorProgram),
+    },
   });
   const bundled = await import(`${pathToFileURL(output).href}?artifact=1`);
   if ((await bundled.verify()) !== true)
     throw new Error("Bundled lifecycle registry verification failed.");
+  const bundledCoordinatorSnapshot = await bundled.verifyCoordinator(
+    directory,
+    process.platform,
+  );
+  if (
+    bundledCoordinatorSnapshot.nextSequence !== 0 ||
+    bundledCoordinatorSnapshot.checkpoints.length !== 0
+  )
+    throw new Error("Bundled coordinator preload verification failed.");
 } finally {
   rmSync(directory, { recursive: true, force: true });
 }

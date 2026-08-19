@@ -179,6 +179,7 @@ const runChild = (
       if (code !== 0) failed = true;
       finish();
     });
+    child.stdin.once("error", stop);
     try {
       signal?.addEventListener("abort", abort, { once: true });
       if (signalIsAborted(signal)) stop();

@@ -4,8 +4,50 @@ import {
   MockModelServer,
   MockTelemetryCollector,
   assertHarnessExit,
+  composeHarnessScenario,
   runHarnessScenario,
 } from "../index.js";
+
+test("generic scenario composition runs family adapter data without runner changes", async () => {
+  const scenario = composeHarnessScenario(
+    {
+      scenarioVersion: 1,
+      scenarioId: "reference-v1",
+      harnessId: "reference",
+      harnessPackage: "@agentscope/harness-reference",
+      representativeVersion: "1.2.3",
+      fixtureId: "reference-session-v1",
+      tags: ["contract"],
+      commandArguments: ["-e", "process.stdout.write('reference-fixture')"],
+    },
+    {
+      command: process.execPath,
+      cwd: process.cwd(),
+      env: { AGENTSCOPE_SCENARIO: "reference-v1" },
+      timeoutMs: 1_000,
+      expect: {
+        modelPaths: ["/v1/responses"],
+        telemetryPaths: ["/v1/traces"],
+        exitCode: 0,
+      },
+    },
+  );
+  assert.deepEqual(
+    { id: scenario.id, harness: scenario.harness, args: scenario.args },
+    {
+      id: "reference-v1",
+      harness: "reference",
+      args: ["-e", "process.stdout.write('reference-fixture')"],
+    },
+  );
+  assert.equal(Object.isFrozen(scenario), true);
+  assert.equal(Object.isFrozen(scenario.args), true);
+  assert.equal(Object.isFrozen(scenario.env), true);
+  assert.equal(Object.isFrozen(scenario.expect), true);
+  const result = await runHarnessScenario(scenario);
+  assertHarnessExit(result, scenario);
+  assert.equal(result.stdout, "reference-fixture");
+});
 
 test("mock model server records OpenAI-compatible requests", async () => {
   const server = new MockModelServer();

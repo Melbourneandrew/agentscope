@@ -80,9 +80,15 @@
     },
     "packages/harnesses/core": {
       "role": "harness-contract",
-      "unitTests": "marker-only",
-      "maxSourceFiles": 1,
-      "maxSourceLines": 1
+      "unitTests": "required",
+      "coverage": {
+        "statements": 100,
+        "branches": 100,
+        "functions": 100,
+        "lines": 100
+      },
+      "maxSourceFiles": 6,
+      "maxSourceLines": 1400
     },
     "packages/harnesses/claude-code": {
       "role": "harness-adapter",

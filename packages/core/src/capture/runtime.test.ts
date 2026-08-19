@@ -1186,6 +1186,63 @@ describe("semantic candidate rejection", () => {
   });
 });
 
+describe("semantic absence pair rejection", () => {
+  it("accepts every governed unavailable state family", async () => {
+    const base = candidate();
+    await expect(
+      capture({
+        ...base,
+        operations: [
+          {
+            ...base.operations[0]!,
+            unavailable: [
+              {
+                field: "input.value",
+                source: "native-artifact",
+                state: "observed-empty",
+                reason: "empty-native-value",
+              },
+              {
+                field: "output.value",
+                source: "native-artifact",
+                state: "not-applicable",
+                reason: "not-applicable",
+              },
+              {
+                field: "family.tool.activity",
+                source: "native-artifact",
+                state: "unavailable",
+                reason: "unsupported",
+              },
+            ],
+          },
+        ],
+      }),
+    ).resolves.toSatisfy(isCapturedTrace);
+  });
+
+  it("rejects mismatched unavailable state and reason pairs", async () => {
+    for (const unavailable of [
+      {
+        field: "family.tool.activity",
+        source: "native-artifact" as const,
+        state: "observed-empty" as const,
+        reason: "not-emitted" as const,
+      },
+      {
+        field: "family.tool.activity",
+        source: "native-artifact" as const,
+        state: "unavailable" as const,
+        reason: "empty-native-value" as const,
+      },
+    ])
+      await fixedFailure({
+        ...candidate(),
+        operations: [{ ...operation(), unavailable: [unavailable] }],
+      });
+  });
+});
+
 describe("harness timing authority", () => {
   it("rejects non-native bases, states, sources, and malformed points", async () => {
     const invalidTimings = [

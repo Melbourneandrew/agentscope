@@ -25,14 +25,17 @@ import {
   createOperationalStateStore,
   createOperationalStateStoreForTesting,
   inspectOperationalState,
+  inspectOperationalStateForHookForCore,
   inspectOperationalStateLock,
   operationalStateStoreMatchesHomeForCore,
+  operationalStateStoreUsesNativeFileSystemForCore,
   OperationalStateError,
   recoverAbandonedOperationalStateLock,
   recordHookOperationalEvidence,
   recordPipelineHealth,
   recordSanitizedDiagnostic,
   resolveCaptureCheckpointForCore,
+  resolveCaptureCheckpointFromSnapshotForCore,
 } from "./operational-state.js";
 import { createConfigurationProcessIdentity } from "./transaction.js";
 
@@ -556,6 +559,19 @@ describe("non-hook checkpoint resolution", () => {
       disposition: "retained",
       startPosition: 10,
     });
+    const snapshot = await inspectOperationalState(store);
+    expect(
+      resolveCaptureCheckpointFromSnapshotForCore(
+        snapshot,
+        request({ connectionIds: [connectionId, connectionId] }),
+      ),
+    ).toEqual({ disposition: "unavailable", startPosition: 0 });
+    expect(
+      resolveCaptureCheckpointFromSnapshotForCore(
+        { ...snapshot, version: 2 } as never,
+        request(),
+      ),
+    ).toEqual({ disposition: "unavailable", startPosition: 0 });
     expect(
       resolveCaptureCheckpointForCore(
         store,
@@ -579,6 +595,21 @@ describe("non-hook checkpoint resolution", () => {
       disposition: "unavailable",
       startPosition: 0,
     });
+  });
+
+  it("rejects an invalid hook preload clock", async () => {
+    const home = await homeFixture();
+    const store = createOperationalStateStoreForTesting({
+      home,
+      owner,
+      now: () => Number.NaN,
+    });
+    await expect(
+      inspectOperationalStateForHookForCore(store),
+    ).rejects.toThrow();
+    expect(operationalStateStoreUsesNativeFileSystemForCore({} as never)).toBe(
+      false,
+    );
   });
 });
 

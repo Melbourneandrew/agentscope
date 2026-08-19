@@ -9,9 +9,11 @@ import type { CapturedTrace } from "../capture/types.js";
 import type { CredentialBackendRegistry } from "../configuration/credential-adapter.js";
 import {
   operationalStateStoreMatchesHomeForCore,
+  resolveCaptureCheckpointFromSnapshotForCore,
   type CaptureCheckpointResume,
   type CaptureCheckpointInput,
   type HookOperationalEvidenceWriteResult,
+  type OperationalStateSnapshot,
   type OperationalStateStore,
   type PipelineHealthInput,
   type SanitizedDiagnosticInput,
@@ -33,6 +35,10 @@ import {
   type CaptureInvocationPreparationInput,
   type InvocationPreparationFailure,
 } from "./snapshot.js";
+import {
+  commitOperationalEvidenceForCore,
+  preloadOperationalStateForCore,
+} from "./operational-coordinator.js";
 
 export type ResolvedTraceLifecycleInput = CaptureInvocationPreparationInput &
   Readonly<{
@@ -109,6 +115,7 @@ const freezeEvidence = (
   diagnostics: readonly SanitizedDiagnosticInput[],
   health: readonly PipelineHealthInput[],
   persistence: ResolvedLifecycleOperationalEvidence["persistence"] = skippedPersistence,
+  checkpoints: HookOperationalEvidenceWriteResult["checkpoints"] = [],
 ): ResolvedLifecycleOperationalEvidence =>
   Object.freeze({
     diagnostics: Object.freeze(
@@ -129,7 +136,9 @@ const freezeEvidence = (
     ),
     health: Object.freeze(health.map((entry) => Object.freeze({ ...entry }))),
     persistence: Object.freeze({ ...persistence }),
-    checkpoints: Object.freeze([]),
+    checkpoints: Object.freeze(
+      checkpoints.map((entry) => Object.freeze({ ...entry })),
+    ),
   });
 
 const withEvidence = (
@@ -210,7 +219,10 @@ const captureCheckpointBoundary = (
   });
 };
 
-const createCheckpointResolver = (): Readonly<{
+const createCheckpointResolver = (
+  preparation: Preparation,
+  operationalSnapshot: OperationalStateSnapshot | undefined,
+): Readonly<{
   resolve: (request: CaptureResumeRequest) => CaptureCheckpointResume;
   observed: () =>
     | Readonly<{
@@ -272,13 +284,33 @@ const createCheckpointResolver = (): Readonly<{
         snapshot.nativeIdentity.length > 1_024
       )
         throw new Error("core.lifecycle.invalid");
-      const result = Object.freeze({
-        disposition:
-          snapshot.availableStartPosition > 0
-            ? ("source-loss" as const)
-            : ("unavailable" as const),
-        startPosition: snapshot.availableStartPosition,
-      });
+      const adapterId = `@agentscope/harness-${preparation.snapshot.invocation.harnessRegistryId}`;
+      const sourceIdentityDigest = createHash("sha256")
+        .update("agentscope.capture-checkpoint-source.v1\0", "utf8")
+        .update(adapterId, "utf8")
+        .update("\0", "utf8")
+        .update(snapshot.nativeIdentityKind, "utf8")
+        .update("\0", "utf8")
+        .update(snapshot.nativeIdentity, "utf8")
+        .digest("hex");
+      const result = operationalSnapshot
+        ? resolveCaptureCheckpointFromSnapshotForCore(operationalSnapshot, {
+            adapterId,
+            sourceIdentityDigest,
+            nativeIdentityKind: snapshot.nativeIdentityKind,
+            sourceGeneration: snapshot.sourceGeneration,
+            positionKind: snapshot.positionKind,
+            availableStartPosition: snapshot.availableStartPosition,
+            connectionIds:
+              preparation.snapshot.configuration.selectedConnectionIds,
+          })
+        : Object.freeze({
+            disposition:
+              snapshot.availableStartPosition > 0
+                ? ("source-loss" as const)
+                : ("unavailable" as const),
+            startPosition: snapshot.availableStartPosition,
+          });
       resolution = Object.freeze({ request: snapshot, result });
       return result;
     },
@@ -368,35 +400,59 @@ const connectionHealth = (
   });
 };
 
-const persistEvidence = (
-  _input: ResolvedTraceLifecycleInput,
+const persistEvidence = async (
+  input: ResolvedTraceLifecycleInput,
   preparation: Preparation,
   diagnostics: readonly SanitizedDiagnosticInput[],
   health: readonly PipelineHealthInput[],
   checkpointEvidence: Readonly<{
     checkpoints: readonly CaptureCheckpointInput[];
   }>,
-): ResolvedLifecycleOperationalEvidence => {
+): Promise<ResolvedLifecycleOperationalEvidence> => {
   const { checkpoints } = checkpointEvidence;
   const remaining = reporterDeadlineRemainingMilliseconds(
     preparation.snapshot.deadline,
   );
+  if (remaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS)
+    return freezeEvidence(
+      [...diagnostics, ...checkpointUnavailableDiagnostics(checkpoints)],
+      health,
+      deadlinePersistence,
+    );
+  const home = configurationStoreHomeForCore(input.configurationStore);
+  const committed = await commitOperationalEvidenceForCore(
+    home,
+    input.operationalStateStore,
+    Object.freeze({ diagnostics, health, checkpoints }),
+    Math.floor(
+      remaining - OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS,
+    ),
+    input.signal,
+  );
+  if (!committed.ok || !committed.result.recorded)
+    return freezeEvidence(
+      [...diagnostics, ...checkpointUnavailableDiagnostics(checkpoints)],
+      health,
+      Object.freeze({
+        recorded: false,
+        code: committed.ok ? committed.result.code : "unavailable",
+      }),
+    );
   return freezeEvidence(
-    [...diagnostics, ...checkpointUnavailableDiagnostics(checkpoints)],
+    [...diagnostics, ...committed.result.diagnostics],
     health,
-    remaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS
-      ? deadlinePersistence
-      : skippedPersistence,
+    Object.freeze({ recorded: true, code: "recorded" }),
+    committed.result.checkpoints,
   );
 };
 
-const routingEvidence = (
+const routingEvidence = async (
   input: ResolvedTraceLifecycleInput,
   preparation: Preparation,
   result: RoutingDeliveryResult,
   boundary: CheckpointBoundary | undefined,
   resolution: CheckpointResolution | undefined,
-): ResolvedLifecycleOperationalEvidence => {
+): Promise<ResolvedLifecycleOperationalEvidence> => {
   const checkpointDiagnostics = checkpointResolutionDiagnostics(
     resolution,
     preparation,
@@ -420,7 +476,7 @@ const routingEvidence = (
         receipt: null,
       },
     ];
-    return persistEvidence(
+    return await persistEvidence(
       input,
       preparation,
       [...diagnostics, ...checkpointDiagnostics],
@@ -472,7 +528,7 @@ const routingEvidence = (
           };
         })
     : [];
-  return persistEvidence(input, preparation, diagnostics, health, {
+  return await persistEvidence(input, preparation, diagnostics, health, {
     checkpoints,
   });
 };
@@ -516,6 +572,7 @@ const lifecycleEvidence = (
 const executeCaptureStage = (
   input: ResolvedTraceLifecycleInput,
   preparation: Preparation,
+  operationalSnapshot: OperationalStateSnapshot | undefined,
 ): Readonly<{
   lifecycle: LifecycleResult;
   redacted: RedactedCanonicalTrace | undefined;
@@ -524,7 +581,10 @@ const executeCaptureStage = (
 }> => {
   let redacted: RedactedCanonicalTrace | undefined;
   let boundary: CheckpointBoundary | undefined;
-  const checkpointResolver = createCheckpointResolver();
+  const checkpointResolver = createCheckpointResolver(
+    preparation,
+    operationalSnapshot,
+  );
   let lifecycle: LifecycleResult;
   try {
     lifecycle = runFailOpenTraceLifecycle({
@@ -568,6 +628,98 @@ const executeCaptureStage = (
   });
 };
 
+const executePreparedLifecycle = async (
+  input: ResolvedTraceLifecycleInput,
+  preparation: Preparation,
+): Promise<ResolvedTraceLifecycleResult> => {
+  if (preparation.snapshot.configuration.selectedConnectionIds.length === 0) {
+    const routing = Object.freeze({
+      outcome: "routing-unselected" as const,
+      connections: Object.freeze([]),
+    });
+    const evidence = await routingEvidence(
+      input,
+      preparation,
+      routing,
+      undefined,
+      undefined,
+    );
+    return withEvidence(resolvedRoutingResult(preparation, routing), evidence);
+  }
+  const preloadRemaining = reporterDeadlineRemainingMilliseconds(
+    preparation.snapshot.deadline,
+  );
+  /* v8 ignore next -- an exact final-reserve race is defensive; deadline
+   * consumption after preload is covered at the persistence boundary. */
+  const preload =
+    preloadRemaining <= OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS
+      ? Object.freeze({ ok: false as const })
+      : await preloadOperationalStateForCore(
+          configurationStoreHomeForCore(input.configurationStore),
+          input.operationalStateStore,
+          Math.floor(
+            preloadRemaining -
+              OPERATIONAL_PERSISTENCE_CLEANUP_RESERVE_MILLISECONDS,
+          ),
+          input.signal,
+        );
+  const { lifecycle, redacted, boundary, checkpointResolution } =
+    executeCaptureStage(
+      input,
+      preparation,
+      preload.ok ? preload.snapshot : undefined,
+    );
+  if (lifecycle.outcome !== "sink-returned") {
+    const evidence = lifecycleEvidence(preparation, lifecycle);
+    const diagnostics = [
+      ...evidence.diagnostics,
+      ...checkpointResolutionDiagnostics(checkpointResolution, preparation),
+    ];
+    return withEvidence(
+      lifecycle,
+      await persistEvidence(input, preparation, diagnostics, evidence.health, {
+        checkpoints: [],
+      }),
+    );
+  }
+  /* v8 ignore next 6 -- the internal sink assigns the exact trace before the
+     synchronous lifecycle can produce sink-returned. */
+  if (!redacted) {
+    const failed = Object.freeze({
+      outcome: "failed-open" as const,
+      stage: "sink" as const,
+      reason: "failed" as const,
+    });
+    const evidence = lifecycleEvidence(preparation, failed);
+    return withEvidence(
+      failed,
+      await persistEvidence(
+        input,
+        preparation,
+        evidence.diagnostics,
+        evidence.health,
+        { checkpoints: [] },
+      ),
+    );
+  }
+  const routing = await routeRedactedTraceBatch({
+    traces: [redacted],
+    configuration: preparation.snapshot.configuration,
+    credentialBackendRegistry: input.credentialBackendRegistry,
+    transportExecutor: input.transportExecutor,
+    deadline: preparation.snapshot.deadline,
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  const evidence = await routingEvidence(
+    input,
+    preparation,
+    routing,
+    boundary,
+    checkpointResolution,
+  );
+  return withEvidence(resolvedRoutingResult(preparation, routing), evidence);
+};
+
 export const runResolvedTraceLifecycle = async (
   input: ResolvedTraceLifecycleInput,
 ): Promise<ResolvedTraceLifecycleResult> => {
@@ -587,74 +739,7 @@ export const runResolvedTraceLifecycle = async (
     if (!preparation.ok)
       return withEvidence(preparation, preparationEvidence(preparation));
     completedPreparation = preparation;
-    if (preparation.snapshot.configuration.selectedConnectionIds.length === 0) {
-      const routing = Object.freeze({
-        outcome: "routing-unselected" as const,
-        connections: Object.freeze([]),
-      });
-      const evidence = routingEvidence(
-        input,
-        preparation,
-        routing,
-        undefined,
-        undefined,
-      );
-      return withEvidence(
-        resolvedRoutingResult(preparation, routing),
-        evidence,
-      );
-    }
-    const { lifecycle, redacted, boundary, checkpointResolution } =
-      executeCaptureStage(input, preparation);
-    if (lifecycle.outcome !== "sink-returned") {
-      const evidence = lifecycleEvidence(preparation, lifecycle);
-      const diagnostics = [
-        ...evidence.diagnostics,
-        ...checkpointResolutionDiagnostics(checkpointResolution, preparation),
-      ];
-      return withEvidence(
-        lifecycle,
-        persistEvidence(input, preparation, diagnostics, evidence.health, {
-          checkpoints: [],
-        }),
-      );
-    }
-    /* v8 ignore next 6 -- the internal sink assigns the exact trace before the
-       synchronous lifecycle can produce sink-returned. */
-    if (!redacted) {
-      const failed = Object.freeze({
-        outcome: "failed-open" as const,
-        stage: "sink" as const,
-        reason: "failed" as const,
-      });
-      const evidence = lifecycleEvidence(preparation, failed);
-      return withEvidence(
-        failed,
-        persistEvidence(
-          input,
-          preparation,
-          evidence.diagnostics,
-          evidence.health,
-          { checkpoints: [] },
-        ),
-      );
-    }
-    const routing = await routeRedactedTraceBatch({
-      traces: [redacted],
-      configuration: preparation.snapshot.configuration,
-      credentialBackendRegistry: input.credentialBackendRegistry,
-      transportExecutor: input.transportExecutor,
-      deadline: preparation.snapshot.deadline,
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-    });
-    const evidence = routingEvidence(
-      input,
-      preparation,
-      routing,
-      boundary,
-      checkpointResolution,
-    );
-    return withEvidence(resolvedRoutingResult(preparation, routing), evidence);
+    return await executePreparedLifecycle(input, preparation);
   } catch {
     if (completedPreparation) {
       const failed = Object.freeze({
@@ -665,7 +750,7 @@ export const runResolvedTraceLifecycle = async (
       const evidence = lifecycleEvidence(completedPreparation, failed);
       return withEvidence(
         failed,
-        persistEvidence(
+        await persistEvidence(
           input,
           completedPreparation,
           evidence.diagnostics,

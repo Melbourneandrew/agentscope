@@ -138,6 +138,7 @@ test("rejects testing entrypoints from Core production sources", () => {
   try {
     for (const [name, specifier] of [
       ["destination-testing", "@agentscope/destinations-core/testing"],
+      ["harness-testing", "@agentscope/harnesses-core/testing"],
       ["protocol-testing", "@agentscope/protocol/testing"],
     ]) {
       const production = join(value.root, `packages/core/${name}.ts`);
