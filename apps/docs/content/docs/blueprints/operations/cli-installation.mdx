@@ -17,9 +17,13 @@ The `agentscope` command must be easy to install, stable for hooks, and publisha
 
 ### ADR-002: Hook config calls an owned launcher, not embedded implementation
 
-**Decision:** Generated harness configuration invokes an absolute Agentscope-owned launcher or verified shim with a versioned stable hook subcommand, separately encoded arguments, and an owned machine-home resolution that ignores project-inherited environment overrides.
+**Decision:** Generated harness configuration invokes the version-1 launcher at the exact machine-home path `<agentscope-home>/bin/agentscope-hook-v1` on POSIX and `<agentscope-home>\\bin\\agentscope-hook-v1.exe` on Windows. The launcher is an Agentscope-owned regular file rather than a symbolic link. Installation binds its contract version, exact physical path, release identity, runtime executable, bundled machine-entry path, digest, and mode in owned metadata and replaces it through the same durable transaction used for owned hook configuration. A POSIX verified script names one absolute Node executable in its shebang; a Windows launcher is a directly executable artifact. Neither form invokes a shell, searches `PATH`, consults a file association, or embeds harness-specific capture logic.
 
-**Context:** Upgrades should replace one launcher rather than rewrite bespoke code into every harness config, while avoiding hook-time `PATH` lookup or shell interpretation.
+The launcher verifies its physical path and embedded home authority, derives no home or registry authority from the process environment, and enters the bundled machine command in the same process with that already resolved home. Generated harness configuration supplies only the exact versioned argument vector and the harness-native per-invocation evidence stream. Project `AGENTSCOPE_HOME` and process-current-directory changes cannot redirect the launcher or its machine home. A platform is unsupported for hook installation until its exact launcher form and replacement behavior are present in the release support manifest and verified on a native runner.
+
+**Context:** Upgrades should replace one stable launcher rather than rewrite bespoke code into every harness config, while avoiding hook-time `PATH` lookup, shell interpretation, environment-selected loaders, or relocation ambiguity.
+
+**Consequences:** A release upgrade changes the verified launcher at its stable machine-home path and leaves a compatible installed hook block unchanged. A missing, relocated, digest-mismatched, mode-mismatched, newer, or otherwise incompatible launcher is reported by status and Doctor before hook mutation; it is never adopted or downgraded implicitly. Launch failure remains fail-open at the harness-owned call site. Native-runner tests cover clean packed installation, absolute runtime resolution, environment redirection, relocation, compatible replacement, downgrade refusal, and removal.
 
 ### ADR-003: Make platform support a release-gated manifest
 
