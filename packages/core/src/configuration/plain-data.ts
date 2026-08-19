@@ -1,4 +1,7 @@
-import type { JsonObject, JsonValue } from "@agentscope/destinations-core";
+import type {
+  JsonObject,
+  JsonValue,
+} from "@agentscope/destinations-core/configuration";
 
 const MAXIMUM_ARRAY_ITEMS = 512;
 const MAXIMUM_DEPTH = 24;

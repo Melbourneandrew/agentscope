@@ -1,0 +1,52 @@
+---
+title: Agentscope CLI
+description: Root command, output modes, diagnostics, and exit behavior.
+command: agentscope
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+The `agentscope` command is the composition root for capture, configuration, installation, destination, retrieval, and diagnostic workflows. The currently shipped configuration surface is plan-first: `init` does not mutate without `--yes`, destination configuration is descriptor-driven, and routing is always explicit.
+
+## Current availability
+
+This release establishes the generic CLI and Core composition contracts. The packed production registry intentionally contains no concrete destination descriptors or harness adapters yet. Destination commands that require a provider return `destination.type-missing`; harness commands report an empty roster or `harness.adapter-missing`. The first-party Langfuse and Local SQLite packages, followed by the seven real harness adapters, are separate delivery phases. Their user-facing acceptance criteria remain planned until those packages are registered and pack-tested end to end.
+
+## Syntax
+
+```bash
+agentscope [--help] [--version] [command]
+```
+
+Root help and version use the `human` output mode and do not read configuration, resolve credentials, mutate state, or access the network.
+
+## Output and exits
+
+The CLI owns stdout, stderr, and process exit status. Domain packages return typed values and never write directly to terminal streams.
+
+| Category            | Exit | Meaning                                       |
+| ------------------- | ---: | --------------------------------------------- |
+| `success`           |    0 | The requested operation completed.            |
+| `usage`             |    2 | Arguments or an output mode were invalid.     |
+| `not-found`         |    3 | The requested named resource was not found.   |
+| `conflict`          |    4 | Current state prevented the requested change. |
+| `unavailable`       |    5 | A required local or remote service failed.    |
+| `permission-denied` |    6 | Required authority was not available.         |
+| `internal-error`    |   70 | A closed internal contract failed.            |
+
+## Automation
+
+The root command currently supports only `human`. Public leaf commands that support `json` or `jsonl` declare a command-specific versioned data schema. JSON emits one newline-terminated result document. JSONL emits independently typed data records followed by one summary record. For a plan-first `--yes` mutation, the exact pre-mutation plan is written and flushed to stderr using the same selected presentation mode before Core receives the one-use apply authority; the final result remains the sole stdout result. JSON plans use `agentscope.cli.plan.v1`, and JSONL plans use `agentscope.cli.plan-record.v1`; neither is a result or diagnostic envelope. Machine-readable diagnostics are separate newline-terminated records on stderr, and failures emit no final machine result on stdout.
+
+## Diagnostics
+
+Diagnostics contain a stable code and closed category, never a stack trace, credential, provider response body, raw exception message, or echoed hostile argument. Root command failures use `cli.usage` or `cli.internal`.
+
+## Examples
+
+```bash
+agentscope --help
+agentscope --version
+agentscope init
+agentscope destination list
+agentscope routing list
+```

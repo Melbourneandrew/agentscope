@@ -1,0 +1,37 @@
+---
+title: Rotate a destination credential
+description: Replace a credential reference through the fenced credential lifecycle.
+command: agentscope destination rotate
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+Rotation creates or validates the replacement reference, atomically commits the new configuration generation, retains the prior credential while active or backup configuration references it, and retires it only after proof-bound backup advancement.
+
+The current generic CLI does not yet register a production rotation backend, so this command returns `destination.credential-rotation-unsupported` after validating the connection and slot. Provider-backed rotation remains part of the first-party destination phase.
+
+## Syntax
+
+```bash
+agentscope destination rotate <name> --slot <slot> --environment-variable <VARIABLE> [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human`, `json`, and `jsonl` report only the connection, slot, and generation under `agentscope.cli.destination-rotate.v1`; they never render a credential value.
+
+## Automation
+
+The environment variable name is stored as a reference. The command does not accept the secret itself as an argument.
+
+## Diagnostics
+
+- `configuration.conflict` and `configuration.unavailable` describe lifecycle fencing.
+- `destination.connection-missing` rejects an unknown connection.
+- `destination.credential-slot-missing` rejects a slot absent from the connection descriptor.
+- `destination.credential-rotation-unsupported` means the selected production backend is not yet available.
+
+## Examples
+
+```bash
+agentscope destination rotate primary --slot secret-key --environment-variable LANGFUSE_SECRET_KEY_NEXT
+```

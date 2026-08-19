@@ -12,7 +12,7 @@ import { join } from "node:path";
 import {
   getDestinationDescriptor,
   type DestinationRegistry,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 import { z } from "zod";
 
 import {
@@ -462,6 +462,11 @@ export const isConfigurationStore = (
   value: unknown,
 ): value is ConfigurationStore =>
   typeof value === "object" && value !== null && storeRegistry.has(value);
+
+export const configurationStoreUsesRegistry = (
+  store: ConfigurationStore,
+  registry: DestinationRegistry,
+): boolean => storeRegistry.get(store)?.registry === registry;
 
 export const isConfigurationProcessIdentity = (
   value: unknown,

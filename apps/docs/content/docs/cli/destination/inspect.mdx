@@ -1,0 +1,33 @@
+---
+title: Inspect a destination
+description: Inspect safe descriptor and connection metadata by name.
+command: agentscope destination inspect
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+Inspection reports the selected state, transport class, settings keys, credential slot identifiers, and descriptor documentation path. It does not resolve credentials or render setting values.
+
+## Syntax
+
+```bash
+agentscope destination inspect <name> [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human`, `json`, and `jsonl` expose the same bounded non-secret facts under `agentscope.cli.destination-inspect.v1`.
+
+## Automation
+
+Use this command to discover descriptor fields without accessing provider endpoints or secret backends.
+
+## Diagnostics
+
+- `configuration.missing` and `configuration.unavailable` describe configuration reads.
+- `destination.connection-missing` means no connection has the exact name.
+
+## Examples
+
+```bash
+agentscope destination inspect primary --output json
+```

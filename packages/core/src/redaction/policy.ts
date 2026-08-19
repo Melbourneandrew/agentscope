@@ -8,6 +8,9 @@ import {
 import { z } from "zod";
 
 import { cloneConfigurationDocument } from "../configuration/plain-data.js";
+import { BUILTIN_REDACTION_POLICY_REFERENCES } from "./policy-reference.js";
+
+export { BUILTIN_REDACTION_POLICY_REFERENCES } from "./policy-reference.js";
 
 const deepFreeze = <T>(value: T): T => {
   if (typeof value === "object" && value !== null) {
@@ -169,11 +172,6 @@ export const REDACTION_POLICY_IDENTITIES = deepFreeze({
 
 export const MAXIMUM_REDACTION_RULES = 64;
 export const MAXIMUM_REDACTION_POLICY_BYTES = 32_768;
-export const BUILTIN_REDACTION_POLICY_REFERENCES = deepFreeze({
-  baseline: "core-redaction-policy-v1-baseline",
-  strict: "core-redaction-policy-v1-strict",
-});
-
 const referencePattern = /^[a-z0-9][a-z0-9._-]{0,255}$/u;
 const selectorPattern = /^[a-z][a-z\d_.-]{0,255}$/u;
 const selectorSchema = z.discriminatedUnion("kind", [

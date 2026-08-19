@@ -29,6 +29,7 @@ const coordinatorProgram = coordinatorBuild.outputFiles[0].text;
 await build({
   bundle: true,
   define: {
+    __AGENTSCOPE_CLI_VERSION__: JSON.stringify(manifest.version),
     __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__:
       JSON.stringify(coordinatorProgram),
   },

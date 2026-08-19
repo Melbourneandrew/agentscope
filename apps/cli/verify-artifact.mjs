@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 
-// AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4
+// AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
 const artifactDirectory = resolve(repositoryRoot, "artifacts/npm");
@@ -27,8 +27,9 @@ const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
 mkdirSync(artifactDirectory, { recursive: true });
 
-function run(command, arguments_, options = {}) {
-  const result = spawnSync(command, arguments_, {
+function runRaw(command, arguments_, options = {}) {
+  const { env, ...spawnOptions } = options;
+  return spawnSync(command, arguments_, {
     cwd: packageRoot,
     encoding: "utf8",
     env: {
@@ -37,9 +38,14 @@ function run(command, arguments_, options = {}) {
       USERPROFILE: isolatedHome,
       npm_config_cache: join(installRoot, "npm-cache"),
       npm_config_userconfig: npmUserConfig,
+      ...env,
     },
-    ...options,
+    ...spawnOptions,
   });
+}
+
+function run(command, arguments_, options = {}) {
+  const result = runRaw(command, arguments_, options);
   assert.equal(
     result.status,
     0,
@@ -123,10 +129,78 @@ try {
   };
   const help = run(executable, ["--help"], executableOptions);
   assert.match(help.stdout, /^Usage: agentscope \[options\]/u);
+  assert.match(help.stdout, /Documentation: https:\/\//u);
   assert.equal(help.stderr, "");
   const version = run(executable, ["--version"], executableOptions);
   assert.equal(version.stdout, `${installedManifest.version}\n`);
   assert.equal(version.stderr, "");
+  const harnesses = run(
+    executable,
+    ["harness", "list", "--output", "json"],
+    executableOptions,
+  );
+  assert.deepEqual(JSON.parse(harnesses.stdout), {
+    command: "agentscope harness list",
+    completion: "complete",
+    dataSchema: "agentscope.cli.harness-list.v1",
+    records: [],
+    schema: "agentscope.cli.result.v1",
+  });
+  assert.equal(harnesses.stderr, "");
+  for (const mode of ["json", "jsonl"]) {
+    const agentscopeHome = join(installRoot, `agentscope-home-${mode}`);
+    mkdirSync(agentscopeHome);
+    const initialized = run(executable, ["init", "--yes", "--output", mode], {
+      ...executableOptions,
+      env: { HOME: agentscopeHome, USERPROFILE: agentscopeHome },
+    });
+    const planRecords = initialized.stderr
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const resultRecords = initialized.stdout
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    if (mode === "json") {
+      assert.equal(planRecords.length, 1);
+      assert.equal(planRecords[0].schema, "agentscope.cli.plan.v1");
+      assert.equal(resultRecords.length, 1);
+      assert.equal(resultRecords[0].schema, "agentscope.cli.result.v1");
+    } else {
+      assert.deepEqual(
+        planRecords.map((record) => [record.schema, record.kind]),
+        [
+          ["agentscope.cli.plan-record.v1", "plan"],
+          ["agentscope.cli.plan-record.v1", "summary"],
+        ],
+      );
+      assert.deepEqual(
+        resultRecords.map((record) => [record.schema, record.kind]),
+        [
+          ["agentscope.cli.record.v1", "data"],
+          ["agentscope.cli.record.v1", "summary"],
+        ],
+      );
+    }
+  }
+  const invalid = runRaw(
+    executable,
+    ["--does-not-exist-CANARY_SECRET"],
+    executableOptions,
+  );
+  assert.equal(invalid.status, 2);
+  assert.equal(invalid.stdout, "");
+  assert.equal(invalid.stderr, "error [cli.input.invalid]\n");
+  assert.doesNotMatch(invalid.stderr, /CANARY|Error:|\bat\s/u);
+  const unsafe = runRaw(
+    executable,
+    ["--does-not-exist", "CANARY\nSECRET"],
+    executableOptions,
+  );
+  assert.equal(unsafe.status, 2);
+  assert.equal(unsafe.stdout, "");
+  assert.equal(unsafe.stderr, "error [cli.input.invalid]\n");
 
   const bundle = readFileSync(
     join(installRoot, "node_modules/@agentscope/cli/dist/bin/agentscope.js"),

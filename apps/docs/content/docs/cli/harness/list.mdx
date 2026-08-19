@@ -1,0 +1,35 @@
+---
+title: Discover harnesses
+description: Read the installed, absent, unsupported, or indeterminate state of every registered harness.
+command: agentscope harness list
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+`agentscope harness list` runs only adapter-owned executable, version, and known configuration-location probes. Unsupported installed versions remain distinct from absent harnesses, and ambiguous or unavailable evidence is `indeterminate`.
+
+The current packed registry is intentionally empty, so this release returns an empty list. Concrete discovery results begin only after the first-party harness adapters are registered and certified.
+
+## Syntax
+
+```bash
+agentscope harness list [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` emits one content-free summary per adapter. `json` emits `agentscope.cli.harness-list.v1`; `jsonl` emits one record per harness. Configuration output contains counts, never paths.
+
+## Automation
+
+Branch on the exact `state` and `reason` fields. Do not treat `unsupported` or `indeterminate` as absence, and do not infer installation safety from configuration-location counts.
+
+## Diagnostics
+
+- `harness.unavailable` means the registered discovery composition could not complete safely.
+
+## Examples
+
+```bash
+agentscope harness list
+agentscope harness list --output jsonl
+```

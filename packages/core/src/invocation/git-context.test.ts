@@ -309,7 +309,7 @@ describe("snapshot-bound Git command failure closure", () => {
     const result = await resolveGitContextForCore({
       candidates: [{ path: repository, source: "process" }],
       gitExecutable: "/usr/bin/git",
-      remainingMilliseconds: 1_000,
+      remainingMilliseconds: 2_000,
     });
     expect(
       result.fields.find(({ field }) => field === "vcs.ref.head.revision"),

@@ -2,7 +2,7 @@ import type {
   CredentialSlotId,
   DestinationConnectionId,
   DestinationTypeId,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 
 import {
   isCredentialBackendRegistry,

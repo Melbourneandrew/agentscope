@@ -4,6 +4,10 @@ import {
 } from "@agentscope/protocol";
 
 import {
+  isRegisteredDestinationReporter,
+  registerDestinationReporterForCore,
+} from "./capability-brand.js";
+import {
   isReporterDeadline,
   reporterDeadlineRemainingMilliseconds,
   type ReporterDeadline,
@@ -160,6 +164,7 @@ export const createDestinationReporter = (
       return invalid();
     const reporter = Object.freeze(Object.create(null)) as Reporter;
     reporterRegistry.set(reporter, report.value);
+    registerDestinationReporterForCore(reporter);
     return reporter;
   } catch {
     return invalid();
@@ -167,7 +172,7 @@ export const createDestinationReporter = (
 };
 
 export const isDestinationReporter = (value: unknown): value is Reporter =>
-  typeof value === "object" && value !== null && reporterRegistry.has(value);
+  isRegisteredDestinationReporter(value);
 
 type ObservedSettlement =
   | Readonly<{ kind: "fulfilled"; value: unknown }>

@@ -1,0 +1,35 @@
+---
+title: Destination connections
+description: Configure and inspect reusable named trace destination connections.
+command: agentscope destination
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+Destination commands operate on named connections described by reviewed first-party descriptors. Core owns the outer configuration document, credential references, and routing invariants; provider packages never own terminal output or configuration transactions.
+
+The current packed CLI contains the generic descriptor-driven command surface but no concrete destination descriptors. Until the first-party destination phase registers them, configuration requests return `destination.type-missing`; provider-specific rotation and deletion remain unavailable. These pages define the stable command contract, not a claim that Langfuse or Local SQLite is already usable.
+
+## Syntax
+
+```bash
+agentscope destination <configure|list|inspect|unconfigure|delete|rotate>
+```
+
+## Output and exits
+
+Group help uses `human`. Leaf commands additionally support their declared machine modes and fixed diagnostic-to-exit mapping.
+
+## Automation
+
+Configuration accepts non-secret JSON and explicit CI environment references. Secrets are never accepted as settings or rendered in results. Local data deletion is separate from unconfiguration and always requires confirmation.
+
+## Diagnostics
+
+Leaf command pages list their exact fixed diagnostics. Group parsing failures use the root `cli.usage` contract.
+
+## Examples
+
+```bash
+agentscope destination list
+agentscope destination configure langfuse --name primary --settings '{"endpoint":"https://example.com"}'
+```

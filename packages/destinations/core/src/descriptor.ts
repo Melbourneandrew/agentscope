@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import {
+  isRegisteredDestinationReporter,
+  isRegisteredDestinationRetriever,
+} from "./capability-brand.js";
+import {
   createReporterCredentialAccessor,
   type CredentialSlot,
   type ReporterCredentialAccessor,
@@ -23,8 +27,8 @@ import {
   settingsContainCredentialKey,
   type JsonObject,
 } from "./plain-data.js";
-import { isDestinationReporter, type Reporter } from "./reporter.js";
-import { isDestinationRetriever, type Retriever } from "./retriever.js";
+import type { Reporter } from "./reporter.js";
+import type { Retriever } from "./retriever.js";
 import {
   isBoundDestinationTransport,
   type BoundDestinationTransport,
@@ -1033,7 +1037,7 @@ export const prepareDestinationReporter = (
     const reporter = preparedCapability.stored.storedDescriptor.createReporter(
       preparedCapability.context,
     );
-    if (!isDestinationReporter(reporter)) {
+    if (!isRegisteredDestinationReporter(reporter)) {
       observeUnexpectedPromise(reporter);
       return invalid();
     }
@@ -1055,7 +1059,7 @@ export const prepareDestinationRetriever = (
     /* v8 ignore next -- the same immutable stored descriptor was checked before credential binding. */
     if (!factory) return invalid();
     const retriever = factory(preparedCapability.context);
-    if (!isDestinationRetriever(retriever)) {
+    if (!isRegisteredDestinationRetriever(retriever)) {
       observeUnexpectedPromise(retriever);
       return invalid();
     }

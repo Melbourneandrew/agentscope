@@ -1,0 +1,11 @@
+{
+  "pages": [
+    "index",
+    "destination",
+    "harness",
+    "init",
+    "install",
+    "routing",
+    "uninstall"
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "pages": [
+    "index",
+    "configure",
+    "delete",
+    "inspect",
+    "list",
+    "rotate",
+    "unconfigure"
+  ]
+}

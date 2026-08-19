@@ -4,6 +4,10 @@ import {
   type ReporterDeadline,
 } from "./deadline.js";
 import {
+  isRegisteredDestinationRetriever,
+  registerDestinationRetrieverForCore,
+} from "./capability-brand.js";
+import {
   createDestinationConnectionId,
   createDestinationTypeId,
   type DestinationConnectionId,
@@ -308,6 +312,7 @@ export const createDestinationRetriever = (
       get: get.value,
       search: search.value,
     });
+    registerDestinationRetrieverForCore(retriever);
     return retriever;
   } catch {
     return invalid();
@@ -315,7 +320,7 @@ export const createDestinationRetriever = (
 };
 
 export const isDestinationRetriever = (value: unknown): value is Retriever =>
-  typeof value === "object" && value !== null && retrieverRegistry.has(value);
+  isRegisteredDestinationRetriever(value);
 
 type ObservedSettlement =
   | Readonly<{ kind: "fulfilled"; value: unknown }>

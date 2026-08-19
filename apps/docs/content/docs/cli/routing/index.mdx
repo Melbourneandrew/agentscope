@@ -1,0 +1,33 @@
+---
+title: Destination routing
+description: Inspect or replace the explicit set of active destination connections.
+command: agentscope routing
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+Routing is a Core-owned list of exact configured connection identities. Harness extraction is independent of destination choice, and no configured connection is selected implicitly.
+
+## Syntax
+
+```bash
+agentscope routing <list|set>
+```
+
+## Output and exits
+
+Group help uses `human`. Leaf commands support `human`, `json`, and `jsonl` with versioned schemas.
+
+## Automation
+
+An empty selection is valid and disables delivery. Unknown and duplicate names are rejected before hook-time delivery.
+
+## Diagnostics
+
+Leaf pages list the exact configuration and routing diagnostics. Group parsing failures use `cli.usage`.
+
+## Examples
+
+```bash
+agentscope routing list
+agentscope routing set primary archive
+```

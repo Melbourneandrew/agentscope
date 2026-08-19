@@ -1,0 +1,35 @@
+---
+title: Initialize Agentscope
+description: Inspect current authoritative state and optionally apply a non-destructive initialization plan.
+command: agentscope init
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+`agentscope init` is a stateless, plan-first orchestrator. Without `--yes` it reports the complete current plan and performs no mutation. With `--yes`, Core inspects one exact one-use plan, the CLI displays and flushes that plan, and Core applies only the same authority if it remains current. A replacement, deletion, or conflict always requires fresh explicit authority.
+
+## Syntax
+
+```bash
+agentscope init [--yes] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` explains every planned or applied step. `json` emits one versioned result and `jsonl` emits one record per step. With `--yes`, the exact plan is flushed to stderr before mutation and the final applied result is written to stdout afterward. Success is exit 0; conflicts and unavailable configuration services use their stable category exit.
+
+## Automation
+
+Use `--yes` only after accepting that this invocation may create the default Agentscope configuration. The command never enables Local SQLite, chooses a destination, replaces a hook, or deletes data implicitly.
+
+## Diagnostics
+
+- `configuration.conflict` means authoritative state changed or a fenced writer won.
+- `configuration.unavailable` means current state could not be read or committed safely.
+- `initialization.destructive-plan` means `--yes` could not authorize newly discovered destructive work.
+
+## Examples
+
+```bash
+agentscope init
+agentscope init --yes --output json
+```

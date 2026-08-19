@@ -10,6 +10,7 @@ import { auditCoreFinalizationImports } from "../restricted-import-policy.mjs";
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-import-policy-"));
   const packages = new Map([
+    ["apps/cli", "@agentscope/cli"],
     ["packages/core", "@agentscope/core"],
     ["packages/destination", "@agentscope/destination"],
   ]);
@@ -58,6 +59,31 @@ test("permits the Core finalization entrypoint only inside Core", () => {
         /Core-only/,
       );
       rmSync(path);
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("permits configuration and harness management authority only inside the CLI", () => {
+  const value = fixture();
+  try {
+    writeFileSync(
+      join(value.root, "apps/cli/configuration.ts"),
+      'import { initializeAgentscopeConfiguration } from "@agentscope/core/configuration-management";\nimport { inspectHarnessInstallation } from "@agentscope/harnesses-core/cli-management";\nvoid initializeAgentscopeConfiguration;\nvoid inspectHarnessInstallation;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    for (const [packagePath, specifier] of [
+      ["packages/core", "@agentscope/core/configuration-management"],
+      ["packages/destination", "@agentscope/harnesses-core/cli-management"],
+    ]) {
+      const forbidden = join(value.root, packagePath, "configuration.ts");
+      writeFileSync(forbidden, `import "${specifier}";\n`);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /CLI-only/u,
+      );
+      rmSync(forbidden);
     }
   } finally {
     rmSync(value.root, { recursive: true, force: true });
@@ -285,6 +311,37 @@ test("rejects computed Core authority loads from tests and testkit", () => {
       );
       rmSync(source);
     }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("reserves terminal stream ownership for the CLI", () => {
+  const value = fixture();
+  try {
+    const production = join(value.root, "packages/destination/output.ts");
+    for (const source of [
+      'process.stdout.write("unsafe");\n',
+      'import { stderr } from "node:process";\nstderr.write("unsafe");\n',
+      'const runtime = process;\nruntime["stdout"].write("unsafe");\n',
+      'const { stderr: err } = globalThis.process;\nerr.write("unsafe");\n',
+    ]) {
+      writeFileSync(production, source);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /streams are CLI-owned/u,
+      );
+    }
+    rmSync(production);
+    writeFileSync(
+      join(value.root, "packages/destination/output.test.ts"),
+      'process.stdout.write("test fixture");\n',
+    );
+    writeFileSync(
+      join(value.root, "packages/destination/verify-artifact.mjs"),
+      'process.stdout.write("verification result");\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }

@@ -1,0 +1,33 @@
+---
+title: List destinations
+description: List configured connection metadata without resolving credentials.
+command: agentscope destination list
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+---
+
+Listing reads the current validated configuration and returns bounded non-secret connection metadata. It performs no credential lookup and no network or destination I/O.
+
+## Syntax
+
+```bash
+agentscope destination list [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` prints one connection per line or an exact empty-state message. `json` and `jsonl` use `agentscope.cli.destination-list.v1`.
+
+## Automation
+
+The order is deterministic. An empty list does not imply or create a default destination.
+
+## Diagnostics
+
+- `configuration.missing` means initialization has not created the configuration.
+- `configuration.unavailable` means it could not be read safely.
+
+## Examples
+
+```bash
+agentscope destination list --output json
+```

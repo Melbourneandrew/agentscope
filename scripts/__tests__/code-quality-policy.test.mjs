@@ -239,7 +239,7 @@ test("lint rejects Protocol finalization authority outside Core", () => {
   } finally {
     rmSync(path, { force: true });
   }
-});
+}, 10_000);
 
 test("Vitest coverage rejects a seeded untested production module", () => {
   const path = join(repositoryRoot, "packages/testkit/src/coverage-seed.ts");

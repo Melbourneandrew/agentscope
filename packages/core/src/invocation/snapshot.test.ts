@@ -454,8 +454,8 @@ describe("capture invocation preparation failure closure", () => {
 
   it("closes every deadline and context-resolution failure boundary", async () => {
     const value = await fixture(BUILTIN_REDACTION_POLICY_REFERENCES.baseline);
-    const result = await resolve(value.store, 50, async () => {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 60));
+    const result = await resolve(value.store, 1_000, async () => {
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_050));
       return context;
     });
     expect(result).toMatchObject({

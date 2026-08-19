@@ -72,15 +72,29 @@
         "AC-CLI-001.1",
         "AC-CLI-001.2",
         "AC-CLI-001.4",
+        "AC-CLI-002.1",
+        "AC-CLI-002.2",
+        "AC-CLI-002.3",
+        "AC-CLI-002.4",
         "AC-INS-001.1",
         "AC-INS-001.2"
       ]
+    },
+    {
+      "id": "test:cli-command-documentation",
+      "kind": "automated-test",
+      "path": "apps/cli/scripts/verify-command-docs.mjs",
+      "criteria": ["AC-CLI-001.3"]
     },
     {
       "id": "test:cli-packed-artifact",
       "kind": "automated-test",
       "path": "apps/cli/verify-artifact.mjs",
       "criteria": [
+        "AC-CLI-001.1",
+        "AC-CLI-001.2",
+        "AC-CLI-001.4",
+        "AC-CLI-002.2",
         "AC-INS-001.1",
         "AC-INS-001.2",
         "AC-INS-001.3",
