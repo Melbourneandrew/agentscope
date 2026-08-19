@@ -252,13 +252,21 @@ type ConfigurationSettlement =
   | Readonly<{ kind: "settled"; value: HookConfigurationReadResult }>
   | Readonly<{ kind: "expired" }>;
 
+const signalIsAborted = (signal: AbortSignal | undefined): boolean => {
+  try {
+    return signal?.aborted === true;
+  } catch {
+    return true;
+  }
+};
+
 const readConfigurationWithinRetrievalDeadline = async (
   store: ConfigurationStore,
   deadline: ReporterDeadline,
   signal: AbortSignal | undefined,
 ): Promise<ConfigurationSettlement> => {
   const remaining = reporterDeadlineRemainingMilliseconds(deadline);
-  if (remaining <= 0 || signal?.aborted === true)
+  if (remaining <= 0 || signalIsAborted(signal))
     return Object.freeze({ kind: "expired" });
   const controller = new AbortController();
   const abort = (): void => {

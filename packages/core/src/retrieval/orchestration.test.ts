@@ -336,6 +336,17 @@ describe("Core retrieval preparation failure", () => {
     await expect(
       prepareCoreRetrievalRuntime({ ...input, signal: hostileSignal }),
     ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
+    const hostileAbortedGetter = Object.defineProperty({}, "aborted", {
+      get: () => {
+        throw new Error("CANARY_SIGNAL");
+      },
+    }) as AbortSignal;
+    await expect(
+      prepareCoreRetrievalRuntime({
+        ...input,
+        signal: hostileAbortedGetter,
+      }),
+    ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
     const delayedController = new AbortController();
     const delayedStore = createConfigurationStoreForTesting(
       home,

@@ -47,6 +47,7 @@ import {
 } from "./dist/index.js";
 import {
   getConfiguredTrace,
+  prepareCoreRetrievalRuntime,
   searchConfiguredTraces,
 } from "./dist/retrieval/orchestration-index.js";
 import {
@@ -269,6 +270,23 @@ const migratedConfiguration = migrateConfigurationDocument(
   artifactRegistry,
 );
 const artifactStore = createConfigurationStore(artifactHome, artifactRegistry);
+const hostileAbortSignal = Object.defineProperty({}, "aborted", {
+  get: () => {
+    throw new Error("CANARY_SIGNAL");
+  },
+});
+const hostileAbortPreparation = await prepareCoreRetrievalRuntime({
+  configurationStore: artifactStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  signal: hostileAbortSignal,
+});
+if (
+  hostileAbortPreparation.ok ||
+  hostileAbortPreparation.code !== "deadline-exceeded"
+)
+  throw new Error("Hostile AbortSignal escaped retrieval preparation.");
 const artifactOwner = createConfigurationProcessIdentity(
   process.pid,
   `process-start-v1-${"d".repeat(64)}`,
