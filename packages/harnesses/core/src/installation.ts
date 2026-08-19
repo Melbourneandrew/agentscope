@@ -158,6 +158,8 @@ const isCanonicalAbsolutePath = (path: string): boolean =>
   path.length <= MAXIMUM_PATH_LENGTH &&
   resolve(path) === path;
 
+/* v8 ignore next 12 -- exercised by the required Darwin filesystem matrix;
+   Linux coverage cannot execute the platform-gated caseless identity. */
 const darwinPathIdentity = (path: string): string => {
   let identity = path.normalize("NFD");
   for (let iteration = 0; iteration < 3; iteration += 1) {
