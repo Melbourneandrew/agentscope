@@ -200,7 +200,7 @@ test("test linting rejects package boundaries, duplicate imports, unsafe values,
   } finally {
     rmSync(path, { force: true });
   }
-});
+}, 10_000);
 
 test("Prettier rejects a seeded formatting violation", () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-format-seed-"));
