@@ -4,7 +4,6 @@ import {
   reporterDeadlineRemainingMilliseconds,
   type ReporterDeadline,
 } from "@agentscope/destinations-core";
-import { createReporterDeadline } from "@agentscope/destinations-core/core-orchestration";
 
 import type {
   CaptureInvocationContext,
@@ -16,8 +15,6 @@ import {
 } from "../configuration/transaction.js";
 import {
   serializeAgentscopeConfiguration,
-  MAXIMUM_HOOK_DEADLINE_MILLISECONDS,
-  MINIMUM_HOOK_DEADLINE_MILLISECONDS,
   type AgentscopeConfigurationSnapshot,
 } from "../configuration/schema.js";
 import {
@@ -29,6 +26,10 @@ import {
   type GitContextSnapshot,
   type WorkspaceCandidate,
 } from "./git-context.js";
+import {
+  readHookEntryAuthorityForCore,
+  type HookEntryAuthority,
+} from "./hook-authority.js";
 
 export const INVOCATION_PREPARATION_CODES = Object.freeze([
   "configuration-unavailable",
@@ -56,7 +57,7 @@ export type CaptureInvocationSnapshot = Readonly<{
   invocation: CaptureInvocationContext;
   deadline: ReporterDeadline;
   deadlineProvenance: Readonly<{
-    bootstrapDeadlineMilliseconds: number;
+    launcherDeadlineMilliseconds: number;
     configuredDeadlineMilliseconds: number;
     effectiveDeadlineMilliseconds: number;
   }>;
@@ -97,8 +98,6 @@ const signalIsAborted = (signal: AbortSignal | undefined) => {
   }
 };
 
-const monotonicNow = performance.now.bind(performance);
-
 export type CaptureInvocationPreparationInput = Readonly<{
   configurationStore: ConfigurationStore;
   policyRegistry: RedactionPolicyRegistry;
@@ -108,7 +107,7 @@ export type CaptureInvocationPreparationInput = Readonly<{
   operationIdScope: CaptureInvocationContext["operationIdScope"];
   workspaceCandidates: readonly WorkspaceCandidate[];
   gitExecutable: string;
-  bootstrapDeadlineMilliseconds: number;
+  hookEntryAuthority: HookEntryAuthority;
   signal?: AbortSignal;
 }>;
 
@@ -205,23 +204,20 @@ type PreparedConfiguration = Readonly<{
 
 const prepareConfiguration = async (
   input: CaptureInvocationPreparationInput,
-  startedAt: number,
 ): Promise<PreparedConfiguration | InvocationPreparationFailure> => {
-  const bootstrapDeadlineMilliseconds = input.bootstrapDeadlineMilliseconds;
-  if (
-    !Number.isSafeInteger(bootstrapDeadlineMilliseconds) ||
-    bootstrapDeadlineMilliseconds < MINIMUM_HOOK_DEADLINE_MILLISECONDS ||
-    bootstrapDeadlineMilliseconds > MAXIMUM_HOOK_DEADLINE_MILLISECONDS
-  )
+  let entryAuthority;
+  try {
+    entryAuthority = readHookEntryAuthorityForCore(input.hookEntryAuthority);
+  } catch {
     return failure(
       "configuration",
-      "deadline-exceeded",
-      "capture-failed",
+      "configuration-unavailable",
+      "configuration-invalid",
       null,
     );
-  const bootstrapDeadline = createReporterDeadline(
-    bootstrapDeadlineMilliseconds,
-  );
+  }
+  const launcherDeadlineMilliseconds = entryAuthority.durationMilliseconds;
+  const launcherDeadline = entryAuthority.deadline;
   if (signalIsAborted(input.signal))
     return failure(
       "configuration",
@@ -231,7 +227,7 @@ const prepareConfiguration = async (
     );
   const settlement = await readConfigurationWithinDeadline(
     input.configurationStore,
-    bootstrapDeadline,
+    launcherDeadline,
     input.signal,
   );
   if (settlement.kind === "expired")
@@ -250,16 +246,18 @@ const prepareConfiguration = async (
     );
   const configuration = settlement.value.snapshot;
   const configuredDeadlineMilliseconds = configuration.hookDeadlineMilliseconds;
-  const effectiveDeadlineMilliseconds = Math.min(
-    bootstrapDeadlineMilliseconds,
-    configuredDeadlineMilliseconds,
-  );
-  const deadline = createReporterDeadline(
-    Math.max(
-      0,
-      Math.floor(effectiveDeadlineMilliseconds - (monotonicNow() - startedAt)),
-    ),
-  );
+  if (configuredDeadlineMilliseconds !== launcherDeadlineMilliseconds)
+    return failure(
+      "configuration",
+      "configuration-unavailable",
+      "configuration-invalid",
+      configuration.generation,
+    );
+  const effectiveDeadlineMilliseconds = launcherDeadlineMilliseconds;
+  const deadline = launcherDeadline;
+  /* v8 ignore next -- the owned configuration reader resolves expiry under
+     this same deadline; the second clause is a defensive instruction-edge
+     check after a successful settlement. */
   if (
     signalIsAborted(input.signal) ||
     reporterDeadlineRemainingMilliseconds(deadline) <= 0
@@ -275,7 +273,7 @@ const prepareConfiguration = async (
     configuration,
     deadline,
     deadlineProvenance: Object.freeze({
-      bootstrapDeadlineMilliseconds,
+      launcherDeadlineMilliseconds,
       configuredDeadlineMilliseconds,
       effectiveDeadlineMilliseconds,
     }),
@@ -286,8 +284,7 @@ const resolveSnapshot = async (
   input: CaptureInvocationPreparationInput,
   contextResolver: ContextResolver,
 ): Promise<InvocationPreparationResult> => {
-  const startedAt = monotonicNow();
-  const prepared = await prepareConfiguration(input, startedAt);
+  const prepared = await prepareConfiguration(input);
   if (!prepared.ok) return prepared;
   const { configuration, deadline, deadlineProvenance } = prepared;
   const effectiveRemainingMilliseconds = (): number =>
@@ -370,6 +367,9 @@ export const resolveCaptureInvocationSnapshot = async (
   try {
     return await resolveSnapshot(input, resolveGitContextForCore);
   } catch {
+    /* v8 ignore next 6 -- every owned stage is a total fixed-result boundary;
+       this retains fail-open closure for an unexpected runtime defect without
+       exposing its thrown value. */
     return failure(
       "configuration",
       "configuration-unavailable",

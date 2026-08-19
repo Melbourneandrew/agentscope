@@ -16,6 +16,7 @@ import {
   createDestinationReporter,
   createReporterReceipt,
   defineDestinationDescriptor,
+  reporterDeadlineRemainingMilliseconds,
   type ReporterOutcome,
 } from "@agentscope/destinations-core";
 import { serializeRedactedCanonicalTrace } from "@agentscope/protocol";
@@ -46,6 +47,10 @@ import {
 import { redactCapturedTrace } from "../redaction/pipeline.js";
 import { runResolvedTraceLifecycle } from "./lifecycle.js";
 import {
+  createHookEntryAuthority,
+  readHookEntryAuthorityForCore,
+} from "./hook-authority.js";
+import {
   BUILTIN_REDACTION_POLICY_REFERENCES,
   compileRedactionPolicyRegistry,
   DEFAULT_REDACTION_POLICY_REGISTRY,
@@ -66,6 +71,25 @@ afterEach(async () => {
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   );
 });
+
+const hookAuthority = (durationMilliseconds: number) =>
+  createHookEntryAuthority({
+    durationMilliseconds,
+    startedAt: performance.now(),
+  });
+
+const hookAuthorityForFailureTest = (durationMilliseconds: number) => {
+  if (durationMilliseconds === 0)
+    return createHookEntryAuthority({
+      durationMilliseconds: 50,
+      startedAt: Math.max(0, performance.now() - 100),
+    });
+  try {
+    return hookAuthority(durationMilliseconds);
+  } catch {
+    return Object.freeze({}) as ReturnType<typeof hookAuthority>;
+  }
+};
 
 const connectionId =
   "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -109,7 +133,7 @@ const createRuntime = (
 const fixture = async (
   reference: string,
   selected = true,
-  hookDeadlineMilliseconds = 2_000,
+  hookDeadlineMilliseconds = 1_000,
   reporterOutcome: ReporterOutcome = "accepted",
   options: Readonly<{
     reporterNeverSettles?: boolean;
@@ -174,6 +198,7 @@ const fixture = async (
     ...runtime,
     configuredConnectionIds,
     home,
+    hookDeadlineMilliseconds,
     store: createConfigurationStore(home, runtime.destinationRegistry),
     operationalStateStore: createOperationalStateStore(
       home,
@@ -280,7 +305,7 @@ const runWithOperationalStore = async (
     operationIdScope: "session-global",
     workspaceCandidates: [],
     gitExecutable: "/usr/bin/git",
-    bootstrapDeadlineMilliseconds: 1_000,
+    hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
     ...(signal === undefined ? {} : { signal }),
     capture,
   });
@@ -312,7 +337,7 @@ const context = Object.freeze({
 
 const resolve = async (
   store: ReturnType<typeof createConfigurationStore>,
-  bootstrapDeadlineMilliseconds = 1_000,
+  hookDeadlineMilliseconds = 1_000,
   contextResolver: Parameters<
     typeof resolveCaptureInvocationSnapshotForTesting
   >[0]["contextResolver"] = () => Promise.resolve(context),
@@ -330,7 +355,7 @@ const resolve = async (
     operationIdScope: "session-global",
     workspaceCandidates: [],
     gitExecutable: "/usr/bin/git",
-    bootstrapDeadlineMilliseconds,
+    hookEntryAuthority: hookAuthorityForFailureTest(hookDeadlineMilliseconds),
     contextResolver,
   });
 
@@ -375,8 +400,8 @@ describe("immutable capture invocation snapshot", () => {
       /^configuration-v1-sha256-/u,
     );
     expect(result.snapshot.deadlineProvenance).toEqual({
-      bootstrapDeadlineMilliseconds: 1_000,
-      configuredDeadlineMilliseconds: 2_000,
+      launcherDeadlineMilliseconds: 1_000,
+      configuredDeadlineMilliseconds: 1_000,
       effectiveDeadlineMilliseconds: 1_000,
     });
     expect(Object.isFrozen(result.snapshot)).toBe(true);
@@ -389,6 +414,68 @@ describe("immutable capture invocation snapshot", () => {
     );
     expect(serialized).toContain("main");
     expect(serialized).toContain("agentscope.redaction.effective.v1.baseline");
+  });
+});
+
+describe("hook entry deadline authority", () => {
+  it("requires one genuine entry-anchored authority and exact duration", async () => {
+    for (const input of [
+      null,
+      [],
+      {},
+      { durationMilliseconds: 49, startedAt: performance.now() },
+      { durationMilliseconds: 60_001, startedAt: performance.now() },
+      { durationMilliseconds: 1_000, startedAt: Number.NaN },
+      Object.defineProperty({ durationMilliseconds: 1_000 }, "startedAt", {
+        get: () => performance.now(),
+      }),
+      new Proxy(
+        {},
+        {
+          getPrototypeOf: () => {
+            throw new Error("CANARY_HOOK_AUTHORITY");
+          },
+        },
+      ),
+    ])
+      expect(() =>
+        createHookEntryAuthority(
+          input as Parameters<typeof createHookEntryAuthority>[0],
+        ),
+      ).toThrow("core.hook-authority.invalid");
+    expect(() =>
+      readHookEntryAuthorityForCore(Object.freeze({}) as never),
+    ).toThrow("core.hook-authority.invalid");
+    expect(() => readHookEntryAuthorityForCore(null as never)).toThrow(
+      "core.hook-authority.invalid",
+    );
+    expect(() =>
+      readHookEntryAuthorityForCore(
+        new Proxy(
+          {},
+          {
+            isExtensible: () => {
+              throw new Error("CANARY_HOOK_AUTHORITY");
+            },
+          },
+        ) as never,
+      ),
+    ).toThrow("core.hook-authority.invalid");
+    const expired = createHookEntryAuthority({
+      durationMilliseconds: 50,
+      startedAt: Math.max(0, performance.now() - 100),
+    });
+    expect(
+      reporterDeadlineRemainingMilliseconds(
+        readHookEntryAuthorityForCore(expired).deadline,
+      ),
+    ).toBe(0);
+    const value = await fixture(BUILTIN_REDACTION_POLICY_REFERENCES.baseline);
+    await expect(resolve(value.store, 2_000)).resolves.toMatchObject({
+      ok: false,
+      stage: "configuration",
+      code: "configuration-unavailable",
+    });
   });
 });
 
@@ -418,11 +505,11 @@ describe("capture invocation preparation failure closure", () => {
       resolve(value.store, Number.POSITIVE_INFINITY),
     ).resolves.toMatchObject({
       stage: "configuration",
-      code: "deadline-exceeded",
+      code: "configuration-unavailable",
     });
     await expect(resolve(value.store, 60_001)).resolves.toMatchObject({
       stage: "configuration",
-      code: "deadline-exceeded",
+      code: "configuration-unavailable",
     });
     await expect(
       resolveCaptureInvocationSnapshotForTesting({
@@ -438,7 +525,7 @@ describe("capture invocation preparation failure closure", () => {
         operationIdScope: "session-global",
         workspaceCandidates: [],
         gitExecutable: "/usr/bin/git",
-        bootstrapDeadlineMilliseconds: 1_000,
+        hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
         signal: Object.defineProperty({}, "aborted", {
           get: () => {
             throw new Error("CANARY_SECRET");
@@ -515,7 +602,7 @@ describe("capture invocation signal race closure", () => {
         operationIdScope: "session-global",
         workspaceCandidates: [],
         gitExecutable: "/usr/bin/git",
-        bootstrapDeadlineMilliseconds: 1_000,
+        hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
         signal: racingSignal,
         contextResolver: () => Promise.resolve(context),
       }),
@@ -573,7 +660,7 @@ describe("configured capture deadline", () => {
         operationIdScope: "session-global",
         workspaceCandidates: [],
         gitExecutable: "/usr/bin/git",
-        bootstrapDeadlineMilliseconds: 1_000,
+        hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
         signal: controller.signal,
         contextResolver: () => Promise.resolve(context),
       }),
@@ -602,7 +689,7 @@ describe("configured capture deadline", () => {
         operationIdScope: "session-global",
         workspaceCandidates: [],
         gitExecutable: "/usr/bin/git",
-        bootstrapDeadlineMilliseconds: 1_000,
+        hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
         signal: hostileSignal,
         contextResolver: () => Promise.resolve(context),
       }),
@@ -623,7 +710,7 @@ describe("configured capture deadline", () => {
       value.destinationRegistry,
       60,
     );
-    await expect(resolve(slowStore, 1_000)).resolves.toMatchObject({
+    await expect(resolve(slowStore, 50)).resolves.toMatchObject({
       stage: "configuration",
       code: "deadline-exceeded",
     });
@@ -635,7 +722,7 @@ describe("configured capture deadline", () => {
       true,
       50,
     );
-    const result = await resolve(value.store, 1_000, async () => {
+    const result = await resolve(value.store, 50, async () => {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 60));
       return context;
     });
@@ -714,7 +801,7 @@ describe("resolved fail-open trace lifecycle", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       signal: controller.signal,
       capture(factory, _signal, resolver) {
         if (resolver === undefined) throw new Error("missing resolver");
@@ -748,7 +835,7 @@ describe("resolved fail-open trace lifecycle", () => {
       operationIdScope: "session-global" as const,
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
     };
     Object.defineProperty(hostileCapture, "capture", {
       get() {
@@ -788,7 +875,7 @@ describe("routing-disabled trace lifecycle", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture(factory) {
         captureCalls += 1;
         return factory.capture(candidate());
@@ -847,7 +934,7 @@ describe("resolved operational-store authority", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture(factory) {
         captureCalls += 1;
         return factory.capture(candidate());
@@ -881,7 +968,7 @@ describe("resolved operational-store authority", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       signal: controller.signal,
       capture: captureCandidate,
     });
@@ -912,7 +999,7 @@ describe("resolved configured trace lifecycle", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture(factory) {
         captureCalls += 1;
         return factory.capture(candidate());
@@ -941,7 +1028,7 @@ describe("resolved configured trace lifecycle", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [{ path: process.cwd(), source: "process" }],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture: (factory, _signal, resolver) => {
         if (resolver === undefined) throw new Error("missing resolver");
         const value = candidate();
@@ -988,7 +1075,7 @@ describe("resolved configured trace lifecycle", () => {
         operationIdScope: "session-global",
         workspaceCandidates: [{ path: process.cwd(), source: "process" }],
         gitExecutable: "/usr/bin/git",
-        bootstrapDeadlineMilliseconds: 1_000,
+        hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
         signal: new AbortController().signal,
         capture: captureCandidate,
       }),
@@ -1021,7 +1108,7 @@ describe("resolved checkpoint lifecycle evidence", () => {
         operationIdScope: "session-global",
         workspaceCandidates: [],
         gitExecutable: "/usr/bin/git",
-        bootstrapDeadlineMilliseconds: 1_000,
+        hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
         capture(factory, _signal, resolver) {
           if (resolver === undefined) throw new Error("missing resolver");
           const input = candidate();
@@ -1098,7 +1185,7 @@ describe("resolved checkpoint lifecycle evidence", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture(factory) {
         const input = candidate();
         return factory.capture({
@@ -1364,7 +1451,7 @@ describe("checkpoint source-loss across routing membership", () => {
       });
     };
     const result = await runWithOperationalStore(
-      value,
+      { ...value, hookDeadlineMilliseconds: 2_000 },
       value.operationalStateStore,
       undefined,
       sourceTransition,
@@ -1574,7 +1661,7 @@ describe("resolved negative lifecycle evidence", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture: captureCandidate,
     });
     expect(result).toMatchObject({
@@ -1624,7 +1711,7 @@ describe("resolved negative lifecycle evidence", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture: captureCandidate,
     });
     expect(result.operationalEvidence).toMatchObject({
@@ -1856,7 +1943,7 @@ describe("configured user-policy lifecycle", () => {
       operationIdScope: "session-global",
       workspaceCandidates: [],
       gitExecutable: "/usr/bin/git",
-      bootstrapDeadlineMilliseconds: 1_000,
+      hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
       capture(factory, _signal, resolver) {
         if (resolver === undefined) throw new Error("missing resolver");
         const input = candidate();

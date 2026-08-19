@@ -459,17 +459,15 @@ export const createHarnessContractSuite = (
       name: "harness:launcher-and-installation",
       run: async () => {
         const invocation = createOwnedHarnessHookInvocation({
-          executablePath: "/opt/agentscope/bin/agentscope",
+          agentscopeHome: "/opt/agentscope",
           harnessType: adapter.descriptor.harnessType,
-          contextEvidence: adapter.contextEvidence,
+          hookDeadlineMilliseconds: 2_000,
+          platform: "posix",
         });
         assert(
-          invocation.arguments.length === 5 &&
-            invocation.arguments[0] === "capture-hook-v1" &&
-            invocation.arguments[4] === adapter.descriptor.harnessType &&
-            invocation.arguments.every(
-              (argument) => !shellSyntax.test(argument),
-            ),
+          invocation.arguments.length === 0 &&
+            invocation.launcherPath.startsWith("/opt/agentscope/bin/") &&
+            !shellSyntax.test(invocation.launcherPath),
           "harness.contract.launcher.arguments",
         );
         await runInstallationContract(adapter, invocation);
