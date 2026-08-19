@@ -23,7 +23,8 @@
     "test": "vitest run --config ../../vitest.config.ts",
     "coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "clean": "node ../../scripts/clean-workspace.mjs",
-    "verify:artifact": "node verify-artifact.mjs"
+    "verify:artifact": "node verify-artifact.mjs",
+    "verify:docs": "node --import tsx scripts/verify-command-docs.mjs"
   },
   "devDependencies": {
     "@agentscope/core": "workspace:*",

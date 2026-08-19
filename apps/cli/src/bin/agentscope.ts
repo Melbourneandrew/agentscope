@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
-import { createProgram } from "../program.js";
+import { runCli } from "../program.js";
 
-await createProgram().parseAsync(process.argv);
+declare const __AGENTSCOPE_CLI_VERSION__: string;
+
+process.exitCode = await runCli(process.argv.slice(2), {
+  version: __AGENTSCOPE_CLI_VERSION__,
+});

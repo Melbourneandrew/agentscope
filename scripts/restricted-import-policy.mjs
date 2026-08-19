@@ -17,6 +17,7 @@ const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const homeAuthoritySource = "packages/core/src/configuration/home.ts";
 const applicationSource = /^(?:apps|packages)\//u;
+const integrationPackage = /^@agentscope\/(?:destination|harness)/u;
 const ignoredDirectories = new Set([
   ".next",
   "coverage",
@@ -138,6 +139,92 @@ const assertSingleHomeAuthority = (source, file) => {
       );
 };
 
+const assertNoIntegrationStreams = (source, file, packageName) => {
+  if (
+    !integrationPackage.test(packageName) ||
+    testSource.test(file) ||
+    artifactVerifier.test(file)
+  )
+    return;
+  const parsed = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    false,
+    ts.getScriptKindFromFileName(file),
+  );
+  const processAliases = new Set(["process"]);
+  const fail = () => {
+    throw new Error(
+      `terminal streams are CLI-owned; forbidden process authority in ${file}`,
+    );
+  };
+  const isProcessAuthority = (node) =>
+    (ts.isIdentifier(node) && processAliases.has(node.text)) ||
+    (ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "globalThis" &&
+      node.name.text === "process");
+  const registerImportAliases = (node) => {
+    if (
+      !ts.isImportDeclaration(node) ||
+      !isLiteralModuleSpecifier(node.moduleSpecifier) ||
+      node.moduleSpecifier.text !== "node:process"
+    )
+      return;
+    const clause = node.importClause;
+    if (clause?.name) processAliases.add(clause.name.text);
+    if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings))
+      processAliases.add(clause.namedBindings.name.text);
+    if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings))
+      for (const element of clause.namedBindings.elements)
+        if (
+          ["stdout", "stderr"].includes(
+            element.propertyName?.text ?? element.name.text,
+          )
+        )
+          fail();
+  };
+  const registerVariableAlias = (node) => {
+    if (
+      !ts.isVariableDeclaration(node) ||
+      !node.initializer ||
+      !isProcessAuthority(node.initializer)
+    )
+      return;
+    if (ts.isIdentifier(node.name)) {
+      processAliases.add(node.name.text);
+      return;
+    }
+    for (const element of node.name.elements)
+      if (
+        !ts.isOmittedExpression(element) &&
+        ts.isIdentifier(element.name) &&
+        ["stdout", "stderr"].includes(
+          element.propertyName && ts.isIdentifier(element.propertyName)
+            ? element.propertyName.text
+            : element.name.text,
+        )
+      )
+        fail();
+  };
+  const isStreamAccess = (node) =>
+    (ts.isPropertyAccessExpression(node) &&
+      isProcessAuthority(node.expression) &&
+      ["stdout", "stderr"].includes(node.name.text)) ||
+    (ts.isElementAccessExpression(node) &&
+      isProcessAuthority(node.expression) &&
+      isLiteralModuleSpecifier(node.argumentExpression) &&
+      ["stdout", "stderr"].includes(node.argumentExpression.text));
+  const visit = (node) => {
+    registerImportAliases(node);
+    registerVariableAlias(node);
+    if (isStreamAccess(node)) fail();
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed);
+};
+
 export const auditCoreFinalizationImports = (
   workspaceRoot,
   expectedPackages,
@@ -151,6 +238,7 @@ export const auditCoreFinalizationImports = (
       assertNoProductionTestingImports(source, workspaceFile, packageName);
       assertNoComputedModuleLoads(source, workspaceFile, packageName);
       assertSingleHomeAuthority(source, workspaceFile);
+      assertNoIntegrationStreams(source, workspaceFile, packageName);
     }
   }
 };

@@ -289,3 +289,34 @@ test("rejects computed Core authority loads from tests and testkit", () => {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("reserves terminal stream ownership for the CLI", () => {
+  const value = fixture();
+  try {
+    const production = join(value.root, "packages/destination/output.ts");
+    for (const source of [
+      'process.stdout.write("unsafe");\n',
+      'import { stderr } from "node:process";\nstderr.write("unsafe");\n',
+      'const runtime = process;\nruntime["stdout"].write("unsafe");\n',
+      'const { stderr: err } = globalThis.process;\nerr.write("unsafe");\n',
+    ]) {
+      writeFileSync(production, source);
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /streams are CLI-owned/u,
+      );
+    }
+    rmSync(production);
+    writeFileSync(
+      join(value.root, "packages/destination/output.test.ts"),
+      'process.stdout.write("test fixture");\n',
+    );
+    writeFileSync(
+      join(value.root, "packages/destination/verify-artifact.mjs"),
+      'process.stdout.write("verification result");\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
