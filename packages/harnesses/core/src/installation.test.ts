@@ -705,6 +705,37 @@ describe("harness installation recovery artifact integrity", () => {
 });
 
 describe("harness installation recovery ownership integrity", () => {
+  it("rejects a target that aliases another target's transaction artifact", async () => {
+    const root = await temporaryRoot();
+    const transactionId = "5".repeat(32);
+    const ordinaryTarget = join(root, "config.json");
+    const aliasedTarget = `${artifactPrefix(transactionId, ordinaryTarget)}.owner`;
+    const manifestPath = join(root, "transaction.json");
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "prepared",
+      targets: [ordinaryTarget, aliasedTarget].map((targetPath) => ({
+        targetPath,
+        beforeDigest: digest("before"),
+        beforeExists: true,
+        beforeMode: 0o600,
+        afterDigest: digest("after"),
+        afterExists: true,
+        afterMode: 0o600,
+        stagePath: `${artifactPrefix(transactionId, targetPath)}.stage`,
+        backupPath: `${artifactPrefix(transactionId, targetPath)}.backup`,
+      })),
+    };
+    await writeFile(aliasedTarget, "before", { mode: 0o600 });
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      rollbackHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "invalid" });
+    expect(await readFile(aliasedTarget, "utf8")).toBe("before");
+  });
+
   it("cancels an unclaimed prepared transaction from its preimage", async () => {
     const root = await temporaryRoot();
     const target = join(root, "created.json");

@@ -458,9 +458,24 @@ export const inspectHarnessInstallation = async (
     }
     if (targets.length === 0)
       return publicPlan("unchanged", parsed.targetPaths.length, 0);
+    const transactionId = randomBytes(16).toString("hex");
+    /* v8 ignore next -- new plans choose this 128-bit token only after caller
+       paths are fixed; recovery parsing tests the adversarial collision path. */
+    if (
+      !transactionPathsAreDisjoint(
+        parsed.manifestPath,
+        transactionId,
+        targets.map((target) => ({
+          targetPath: target.targetPath,
+          beforeExists: target.before.exists,
+          afterExists: target.after.exists,
+        })),
+      )
+    )
+      return publicPlan("invalid", parsed.targetPaths.length, 0);
     const state = Object.freeze({
       manifestPath: parsed.manifestPath,
-      transactionId: randomBytes(16).toString("hex"),
+      transactionId,
       targets: Object.freeze(targets),
     });
     return publicPlan(
@@ -519,6 +534,36 @@ const pathsAvoidOwnershipRecords = (
   return (
     !reserved.has(manifestPath) &&
     targetPaths.every((targetPath) => !reserved.has(targetPath))
+  );
+};
+
+const transactionPathsAreDisjoint = (
+  manifestPath: string,
+  transactionId: string,
+  targets: readonly Readonly<{
+    targetPath: string;
+    beforeExists: boolean;
+    afterExists: boolean;
+  }>[],
+): boolean => {
+  const targetPaths = new Set(targets.map((target) => target.targetPath));
+  const artifacts = [
+    `${manifestPath}.${transactionId}.tmp`,
+    ...targets.flatMap((target) => {
+      const prefix = artifactPrefix(transactionId, target.targetPath);
+      return [
+        ownershipCandidatePath(transactionId, target.targetPath),
+        ownershipMarkerPath(target.targetPath),
+        ownershipClaimPath(target.targetPath),
+        ...(target.afterExists ? [`${prefix}.stage`] : []),
+        ...(target.beforeExists ? [`${prefix}.backup`] : []),
+      ];
+    }),
+  ];
+  return (
+    new Set(artifacts).size === artifacts.length &&
+    !artifacts.includes(manifestPath) &&
+    artifacts.every((path) => !targetPaths.has(path))
   );
 };
 
@@ -1072,6 +1117,7 @@ const parseManifestRecord = (
       manifestPath,
       targets.map((target) => target.targetPath),
     ) ||
+    !transactionPathsAreDisjoint(manifestPath, transactionId, targets) ||
     targets.some((target) => {
       const prefix = artifactPrefix(transactionId, target.targetPath);
       return (
