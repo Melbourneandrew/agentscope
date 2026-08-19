@@ -28,6 +28,7 @@ const npmUserConfig = join(installRoot, "empty-npmrc");
 mkdirSync(artifactDirectory, { recursive: true });
 
 function runRaw(command, arguments_, options = {}) {
+  const { env, ...spawnOptions } = options;
   return spawnSync(command, arguments_, {
     cwd: packageRoot,
     encoding: "utf8",
@@ -37,8 +38,9 @@ function runRaw(command, arguments_, options = {}) {
       USERPROFILE: isolatedHome,
       npm_config_cache: join(installRoot, "npm-cache"),
       npm_config_userconfig: npmUserConfig,
+      ...env,
     },
-    ...options,
+    ...spawnOptions,
   });
 }
 
@@ -145,6 +147,43 @@ try {
     schema: "agentscope.cli.result.v1",
   });
   assert.equal(harnesses.stderr, "");
+  for (const mode of ["json", "jsonl"]) {
+    const agentscopeHome = join(installRoot, `agentscope-home-${mode}`);
+    mkdirSync(agentscopeHome);
+    const initialized = run(executable, ["init", "--yes", "--output", mode], {
+      ...executableOptions,
+      env: { HOME: agentscopeHome, USERPROFILE: agentscopeHome },
+    });
+    const planRecords = initialized.stderr
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    const resultRecords = initialized.stdout
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    if (mode === "json") {
+      assert.equal(planRecords.length, 1);
+      assert.equal(planRecords[0].schema, "agentscope.cli.plan.v1");
+      assert.equal(resultRecords.length, 1);
+      assert.equal(resultRecords[0].schema, "agentscope.cli.result.v1");
+    } else {
+      assert.deepEqual(
+        planRecords.map((record) => [record.schema, record.kind]),
+        [
+          ["agentscope.cli.plan-record.v1", "plan"],
+          ["agentscope.cli.plan-record.v1", "summary"],
+        ],
+      );
+      assert.deepEqual(
+        resultRecords.map((record) => [record.schema, record.kind]),
+        [
+          ["agentscope.cli.record.v1", "data"],
+          ["agentscope.cli.record.v1", "summary"],
+        ],
+      );
+    }
+  }
   const invalid = runRaw(
     executable,
     ["--does-not-exist-CANARY_SECRET"],

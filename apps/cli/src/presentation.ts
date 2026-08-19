@@ -3,6 +3,7 @@ import type {
   CliExitCategory,
   CliOutputMode,
 } from "./cli-contract.js";
+import { CLI_AUTOMATION_CONTRACT } from "./automation-contract.js";
 import { CLI_EXIT_CODES } from "./cli-contract.js";
 
 export type CliOutput = Readonly<{
@@ -172,7 +173,7 @@ export async function writeMachineResult(
       completion: input.completion,
       dataSchema: input.dataSchema,
       records,
-      schema: "agentscope.cli.result.v1",
+      schema: CLI_AUTOMATION_CONTRACT.resultJson,
     });
     await output.writeOut(line);
     return;
@@ -183,7 +184,7 @@ export async function writeMachineResult(
       data: record,
       dataSchema: input.dataSchema,
       kind: "data",
-      schema: "agentscope.cli.record.v1",
+      schema: CLI_AUTOMATION_CONTRACT.resultJsonl,
       sequence,
     }),
   );
@@ -194,7 +195,7 @@ export async function writeMachineResult(
       completion: input.completion,
       dataSchema: input.dataSchema,
       kind: "summary",
-      schema: "agentscope.cli.record.v1",
+      schema: CLI_AUTOMATION_CONTRACT.resultJsonl,
     }),
   );
   for (const line of lines) {
@@ -220,7 +221,7 @@ export async function writeMachinePlan(
         command: input.command,
         dataSchema: input.dataSchema,
         records,
-        schema: "agentscope.cli.plan.v1",
+        schema: CLI_AUTOMATION_CONTRACT.planJson,
       }),
     );
     return;
@@ -232,7 +233,7 @@ export async function writeMachinePlan(
         data: record,
         dataSchema: input.dataSchema,
         kind: "plan",
-        schema: "agentscope.cli.plan-record.v1",
+        schema: CLI_AUTOMATION_CONTRACT.planJsonl,
         sequence,
       }),
     );
@@ -243,7 +244,7 @@ export async function writeMachinePlan(
       count: records.length,
       dataSchema: input.dataSchema,
       kind: "summary",
-      schema: "agentscope.cli.plan-record.v1",
+      schema: CLI_AUTOMATION_CONTRACT.planJsonl,
     }),
   );
 }
@@ -263,7 +264,7 @@ export async function writeCliDiagnostic(
         code: diagnostic.code,
         command,
         ...(diagnostic.facts === undefined ? {} : { facts: diagnostic.facts }),
-        schema: "agentscope.cli.diagnostic.v1",
+        schema: CLI_AUTOMATION_CONTRACT.diagnosticJson,
       }),
     );
   }

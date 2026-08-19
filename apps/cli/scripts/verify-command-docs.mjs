@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createProgram } from "../src/program.ts";
 import { commandRegistry, commandPath } from "../src/command-registry.ts";
+import { CLI_AUTOMATION_CONTRACT } from "../src/automation-contract.ts";
 
 // AC-CLI-001.3
 
@@ -69,8 +70,13 @@ function registrySnapshot(registry) {
   }));
 }
 
-export function commandContractFingerprint(registry, program) {
+export function commandContractFingerprint(
+  registry,
+  program,
+  automationContract = CLI_AUTOMATION_CONTRACT,
+) {
   const contract = stableJson({
+    automation: automationContract,
     program: commandSnapshot(program),
     registry: registrySnapshot(registry),
     schema: "agentscope.cli.command-contract.v1",

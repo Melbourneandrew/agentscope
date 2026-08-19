@@ -2,7 +2,7 @@
 title: Delete destination data
 description: Delete one exact destination-owned local file after explicit confirmation.
 command: agentscope destination delete
-commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bfb7c97e08
+commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
 ---
 
 Deletion is intentionally separate from unconfiguration. The destination implementation must identify an exact owned local file and Core must validate ownership before removal. Remote destinations and descriptors without a governed deletion capability are unsupported.

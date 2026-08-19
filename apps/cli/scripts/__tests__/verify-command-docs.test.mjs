@@ -13,9 +13,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { commandRegistry } from "../../src/command-registry.ts";
 import {
+  commandContractFingerprint,
   createProductionProgramForDocumentation,
   verifyCommandDocumentation,
 } from "../verify-command-docs.mjs";
+import { CLI_AUTOMATION_CONTRACT } from "../../src/automation-contract.ts";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../../..");
 const sourceDocs = join(repositoryRoot, "apps/docs/content/docs");
@@ -47,6 +49,24 @@ afterEach(() => {
 describe("CLI command documentation verifier", () => {
   it("accepts the exact public command contract", () => {
     expect(verify(fixture())).toMatch(/^sha256:[a-f0-9]{64}$/u);
+  });
+
+  it("binds machine schemas and stream ordering into the fingerprint", () => {
+    const program = createProductionProgramForDocumentation();
+    const current = commandContractFingerprint(commandRegistry, program);
+    const changed = commandContractFingerprint(commandRegistry, program, {
+      ...CLI_AUTOMATION_CONTRACT,
+      planJson: "agentscope.cli.plan.v2",
+    });
+    const reordered = commandContractFingerprint(commandRegistry, program, {
+      ...CLI_AUTOMATION_CONTRACT,
+      channels: {
+        ...CLI_AUTOMATION_CONTRACT.channels,
+        plan: "stderr-after-mutation",
+      },
+    });
+    expect(changed).not.toBe(current);
+    expect(reordered).not.toBe(current);
   });
 
   it.each([
