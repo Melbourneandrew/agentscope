@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -40,6 +40,11 @@ if (hookVerifierBuild.outputFiles.length !== 1) {
   throw new Error("Hook verifier did not build as one program");
 }
 const hookVerifierProgram = hookVerifierBuild.outputFiles[0].text;
+await mkdir(new URL("dist/internal", import.meta.url), { recursive: true });
+await writeFile(
+  new URL("dist/internal/agentscope-hook-verifier.js", import.meta.url),
+  hookVerifierProgram,
+);
 await build({
   bundle: true,
   entryPoints: [new URL("src/hook-launcher.ts", import.meta.url).pathname],

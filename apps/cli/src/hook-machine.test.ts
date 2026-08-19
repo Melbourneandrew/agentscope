@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createOwnedHookLauncherArtifacts } from "./hook-launcher.js";
 import { runOwnedHookBootstrapForTesting } from "./hook-machine.js";
+import { parseHookLauncherDuration } from "./hook-verifier-contract.js";
 
 const roots: string[] = [];
 
@@ -60,20 +61,20 @@ const authority = (path: string, arguments_: readonly string[] = []) => ({
 });
 
 describe("owned machine hook bootstrap", () => {
-  it("accepts the canonical two-digit deadline range", async () => {
-    const { artifacts, machineEntryPath } = fixture(99);
-    let duration = 0;
-    await expect(
-      runOwnedHookBootstrapForTesting(authority(artifacts.launcherPath), {
-        machineEntryPath,
-        onEvidence: ({ launcher }) => {
-          duration = launcher.duration;
-        },
-        releaseIdentity: "0.1.0",
-        stdin: Readable.from([]),
-      }),
-    ).resolves.toBeUndefined();
-    expect(duration).toBe(99);
+  it("accepts the canonical two-digit deadline grammar deterministically", () => {
+    const digest = "a".repeat(64);
+    for (const duration of [50, 51, 98, 99])
+      expect(
+        parseHookLauncherDuration(
+          `/tmp/agentscope-hook-v1-${digest}-d${duration}`,
+        ),
+      ).toBe(duration);
+    for (const duration of [0, 49, 60_001, 99_999])
+      expect(
+        parseHookLauncherDuration(
+          `/tmp/agentscope-hook-v1-${digest}-d${duration}`,
+        ),
+      ).toBeUndefined();
   });
 
   it("verifies the launcher and copies one EOF-framed evidence value", async () => {

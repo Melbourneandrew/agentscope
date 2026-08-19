@@ -138,6 +138,10 @@ try {
     installedInternal,
     "agentscope-hook-machine.js",
   );
+  const verifierEntryPath = join(
+    installedInternal,
+    "agentscope-hook-verifier.js",
+  );
   const launcherModule = await import(
     pathToFileURL(join(installedInternal, "agentscope-hook-launcher.js")).href
   );
@@ -186,6 +190,38 @@ try {
           nodeExecutable: `/path${byte}node`,
         }),
       );
+    const twoDigitLauncher = launcherModule.createOwnedHookLauncherArtifacts({
+      ...launcherInput,
+      hookDeadlineMilliseconds: 99,
+    });
+    writeFileSync(
+      twoDigitLauncher.launcherPath,
+      twoDigitLauncher.launcherBytes,
+      { mode: twoDigitLauncher.mode },
+    );
+    chmodSync(twoDigitLauncher.launcherPath, twoDigitLauncher.mode);
+    writeFileSync(
+      twoDigitLauncher.metadataPath,
+      twoDigitLauncher.metadataBytes,
+    );
+    const verifiedTwoDigitLauncher = run(
+      process.execPath,
+      [verifierEntryPath],
+      {
+        input: JSON.stringify({
+          machineEntryPath,
+          nodeExecutable: process.execPath,
+          physicalPath: twoDigitLauncher.launcherPath,
+          releaseIdentity: installedManifest.version,
+        }),
+      },
+    );
+    assert.deepEqual(JSON.parse(verifiedTwoDigitLauncher.stdout), {
+      duration: 99,
+      harnessType: launcherInput.harnessType,
+      homeRoot: launcherHome,
+    });
+    assert.equal(verifiedTwoDigitLauncher.stderr, "");
     const launcher =
       launcherModule.createOwnedHookLauncherArtifacts(launcherInput);
     writeFileSync(launcher.launcherPath, launcher.launcherBytes, {

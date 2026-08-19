@@ -7,6 +7,8 @@ import {
   type HookEntryAuthority,
 } from "@agentscope/core/hook-orchestration";
 
+import { parseHookLauncherDuration } from "./hook-verifier-contract.js";
+
 export type { HookVerifierChildProgram } from "./hook-verifier-child.js";
 
 const MAXIMUM_EVIDENCE_BYTES = 65_536;
@@ -97,10 +99,8 @@ const exactAuthority = (value: unknown): BootstrapAuthority => {
 };
 
 const parseDuration = (path: string): number => {
-  const match = /(?:^|\/)agentscope-hook-v1-[a-f0-9]{64}-d(\d+)$/u.exec(path);
-  const duration = match ? Number(match[1]) : Number.NaN;
-  if (!Number.isSafeInteger(duration) || duration < 50 || duration > 60_000)
-    throw new Error("cli.hook.invalid");
+  const duration = parseHookLauncherDuration(path);
+  if (duration === undefined) throw new Error("cli.hook.invalid");
   return duration;
 };
 
