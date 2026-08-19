@@ -30,6 +30,11 @@ import type {
   CliConfigurationServices,
   CliInitializationValue,
 } from "./configuration-commands.js";
+import type { CliHarnessServices } from "./harness-commands.js";
+import {
+  createHarnessCliServices,
+  type CreateHarnessCliServicesInput,
+} from "./harness-services.js";
 
 type ServiceResult<Value> = CliOperationResult<Value>;
 
@@ -83,6 +88,7 @@ type ProductionState = Readonly<{
 
 export type CreateProductionCliServicesInput = Readonly<{
   environment?: object;
+  harnesses?: CreateHarnessCliServicesInput;
   homeResolver?: AgentscopeHomeResolver;
   registry?: DestinationRegistry;
 }>;
@@ -252,7 +258,7 @@ const createRotateService =
 
 export const createProductionCliServices = (
   input: CreateProductionCliServicesInput = {},
-): CliConfigurationServices => {
+): CliConfigurationServices & CliHarnessServices => {
   const state = createState(input);
   const list: CliConfigurationServices["listDestinations"] = async () => {
     try {
@@ -362,5 +368,8 @@ export const createProductionCliServices = (
       }
     },
   };
-  return Object.freeze(services);
+  return Object.freeze({
+    ...services,
+    ...createHarnessCliServices(input.harnesses),
+  });
 };

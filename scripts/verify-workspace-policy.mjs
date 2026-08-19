@@ -23,6 +23,7 @@ const expectedInternalDependencies = new Map([
       "@agentscope/harness-opencode",
       "@agentscope/harness-openclaw",
       "@agentscope/harness-pi",
+      "@agentscope/harnesses-core",
     ],
   ],
   ["@agentscope/docs", []],

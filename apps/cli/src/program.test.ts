@@ -30,15 +30,23 @@ describe("agentscope root command", () => {
       Capture coding-agent traces and report them to trace destinations.
 
       Options:
-        -V, --version   output the installed version
-        -h, --help      display help for command
+        -V, --version                  output the installed version
+        -h, --help                     display help for command
 
       Commands:
-        destination     Configure and inspect named trace destination connections.
-        init [options]  Inspect the machine and produce or apply a non-destructive
-                        initialization plan.
-        routing         Inspect or replace the explicit destination routing selection.
-        help [command]  display help for command
+        destination                    Configure and inspect named trace destination
+                                       connections.
+        harness                        Discover harnesses and inspect or migrate owned
+                                       integrations.
+        init [options]                 Inspect the machine and produce or apply a
+                                       non-destructive initialization plan.
+        install [options] <harness>    Inspect or apply an owned harness integration
+                                       plan.
+        routing                        Inspect or replace the explicit destination
+                                       routing selection.
+        uninstall [options] <harness>  Inspect or apply removal of only an
+                                       Agentscope-owned hook.
+        help [command]                 display help for command
 
       Documentation: https://melbourneandrew.github.io/agentscope/docs/cli/index
 

@@ -1,0 +1,40 @@
+---
+title: Install a harness integration
+description: Inspect or apply an Agentscope-owned, reversible harness hook plan.
+command: agentscope install
+commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bfb7c97e08
+---
+
+`agentscope install <harness>` is plan-first. It discovers the registered first-party harness, checks its descriptor-owned compatibility range, inspects every owned target through Harness Core, and performs no mutation unless `--yes` is present. Ordinary installation never replaces an overlapping vendor observability hook; use the separate migration command after reviewing the conflict.
+
+## Syntax
+
+```bash
+agentscope install <harness> [--yes] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` reports the plan disposition and bounded target counts. `json` emits one `agentscope.cli.install.v1` result and `jsonl` emits its record. A safe dry-run or applied/unchanged plan exits 0; a partial conflict or recovery requirement uses its stable nonzero category.
+
+## Automation
+
+Omit `--yes` when discovering changes. Add it only after accepting the exact current plan. Plans are one-use and Core rechecks target digest and mode before commit, so a concurrent edit cannot be silently overwritten. No target path, digest, configuration bytes, or native error enters command output.
+
+## Diagnostics
+
+- `harness.adapter-missing` means the name has no registered first-party adapter.
+- `harness.absent` means no supported executable was found.
+- `harness.discovery-indeterminate` means compatibility could not be determined safely.
+- `harness.version-unsupported` means the installed version is outside the evidence-backed range.
+- `harness.overlap-conflict` requires the separate explicit migration command.
+- `harness.installation-unsupported` means the target format cannot satisfy the ownership contract.
+- `harness.recovery-required` means an interrupted owned transaction requires reconciliation.
+- `harness.plan-invalid` and `harness.unavailable` mean no mutation was authorized.
+
+## Examples
+
+```bash
+agentscope install codex
+agentscope install codex --yes --output json
+```

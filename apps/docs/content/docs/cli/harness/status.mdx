@@ -1,0 +1,34 @@
+---
+title: Inspect harness status
+description: Combine read-only discovery with the owned installation plan disposition for one harness.
+command: agentscope harness status
+commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bfb7c97e08
+---
+
+`agentscope harness status <harness>` reports both compatibility discovery and the current install-plan disposition without applying the plan. A recovery-required disposition is preserved rather than guessed from a journal.
+
+## Syntax
+
+```bash
+agentscope harness status <harness> [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` prints the discovery and installation states. `json` emits one `agentscope.cli.harness-status.v1` result; `jsonl` emits the same single record.
+
+## Automation
+
+Use exact state values. `ready` means a fresh plan would change owned targets, not that mutation occurred. `unchanged` means no target change is currently planned.
+
+## Diagnostics
+
+- `harness.adapter-missing` means the requested first-party adapter is not registered.
+- `harness.unavailable` means discovery or safe installation inspection could not complete.
+
+## Examples
+
+```bash
+agentscope harness status codex
+agentscope harness status codex --output json
+```

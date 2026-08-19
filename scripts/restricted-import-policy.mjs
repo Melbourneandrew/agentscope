@@ -7,7 +7,10 @@ const restrictedSpecifiers = [
   "@agentscope/protocol/core-finalization",
   "@agentscope/destinations-core/core-orchestration",
 ];
-const cliOnlySpecifiers = ["@agentscope/core/configuration-management"];
+const cliOnlySpecifiers = [
+  "@agentscope/core/configuration-management",
+  "@agentscope/harnesses-core/cli-management",
+];
 const testingSpecifiers = [
   "@agentscope/destinations-core/testing",
   "@agentscope/harnesses-core/testing",

@@ -1,0 +1,37 @@
+---
+title: Migrate an overlapping harness hook
+description: Explicitly inspect or replace one overlapping vendor observability hook with the owned Agentscope integration.
+command: agentscope harness migrate
+commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bfb7c97e08
+---
+
+`agentscope harness migrate <harness>` is the only CLI authority that permits a descriptor planner's `replace-overlap` decision. It remains dry-run by default and uses the same conflict-safe, crash-recoverable transaction as install and uninstall.
+
+## Syntax
+
+```bash
+agentscope harness migrate <harness> [--yes] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` reports the migration disposition and bounded target counts. `json` emits one `agentscope.cli.harness-migrate.v1` result; `jsonl` emits its record. A conflict remains nonzero even when a partial plan record is available.
+
+## Automation
+
+Run without `--yes`, inspect the vendor-overlap plan outside Agentscope output as appropriate, then repeat with `--yes`. This command never expands authority to unrelated vendor blocks or changed targets.
+
+## Diagnostics
+
+- `harness.adapter-missing`, `harness.absent`, `harness.discovery-indeterminate`, and `harness.version-unsupported` close compatibility failures before mutation.
+- `harness.overlap-conflict` means the current overlap still cannot be migrated safely.
+- `harness.installation-unsupported` means the format cannot satisfy owned replacement.
+- `harness.recovery-required` means an earlier transaction must be reconciled.
+- `harness.plan-invalid` and `harness.unavailable` mean no migration was authorized.
+
+## Examples
+
+```bash
+agentscope harness migrate codex
+agentscope harness migrate codex --yes --output json
+```

@@ -65,20 +65,20 @@ test("permits the Core finalization entrypoint only inside Core", () => {
   }
 });
 
-test("permits configuration management authority only inside the CLI", () => {
+test("permits configuration and harness management authority only inside the CLI", () => {
   const value = fixture();
   try {
     writeFileSync(
       join(value.root, "apps/cli/configuration.ts"),
-      'import { initializeAgentscopeConfiguration } from "@agentscope/core/configuration-management";\nvoid initializeAgentscopeConfiguration;\n',
+      'import { initializeAgentscopeConfiguration } from "@agentscope/core/configuration-management";\nimport { inspectHarnessInstallation } from "@agentscope/harnesses-core/cli-management";\nvoid initializeAgentscopeConfiguration;\nvoid inspectHarnessInstallation;\n',
     );
     auditCoreFinalizationImports(value.root, value.packages);
-    for (const packagePath of ["packages/core", "packages/destination"]) {
+    for (const [packagePath, specifier] of [
+      ["packages/core", "@agentscope/core/configuration-management"],
+      ["packages/destination", "@agentscope/harnesses-core/cli-management"],
+    ]) {
       const forbidden = join(value.root, packagePath, "configuration.ts");
-      writeFileSync(
-        forbidden,
-        'import { initializeAgentscopeConfiguration } from "@agentscope/core/configuration-management";\nvoid initializeAgentscopeConfiguration;\n',
-      );
+      writeFileSync(forbidden, `import "${specifier}";\n`);
       assert.throws(
         () => auditCoreFinalizationImports(value.root, value.packages),
         /CLI-only/u,

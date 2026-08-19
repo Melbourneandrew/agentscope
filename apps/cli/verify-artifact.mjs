@@ -132,6 +132,19 @@ try {
   const version = run(executable, ["--version"], executableOptions);
   assert.equal(version.stdout, `${installedManifest.version}\n`);
   assert.equal(version.stderr, "");
+  const harnesses = run(
+    executable,
+    ["harness", "list", "--output", "json"],
+    executableOptions,
+  );
+  assert.deepEqual(JSON.parse(harnesses.stdout), {
+    command: "agentscope harness list",
+    completion: "complete",
+    dataSchema: "agentscope.cli.harness-list.v1",
+    records: [],
+    schema: "agentscope.cli.result.v1",
+  });
+  assert.equal(harnesses.stderr, "");
   const invalid = runRaw(
     executable,
     ["--does-not-exist-CANARY_SECRET"],

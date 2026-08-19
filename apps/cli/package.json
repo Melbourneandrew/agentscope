@@ -38,6 +38,7 @@
     "@agentscope/harness-openclaw": "workspace:*",
     "@agentscope/harness-opencode": "workspace:*",
     "@agentscope/harness-pi": "workspace:*",
+    "@agentscope/harnesses-core": "workspace:*",
     "@types/node": "^22.15.0",
     "commander": "^15.0.0",
     "esbuild": "^0.28.2",

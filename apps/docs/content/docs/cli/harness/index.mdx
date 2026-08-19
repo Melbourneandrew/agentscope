@@ -1,0 +1,34 @@
+---
+title: Harness management
+description: Discover harnesses and inspect explicit migration operations.
+command: agentscope harness
+commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bfb7c97e08
+---
+
+Harnesses are coding-agent runtimes such as Codex or Claude Code, not model providers. The harness commands expose descriptor-owned discovery and the distinct explicit migration authority. Install and uninstall remain top-level plan-first commands.
+
+## Syntax
+
+```bash
+agentscope harness <list|status|migrate>
+```
+
+## Output and exits
+
+This group help uses `human` output. Each subcommand documents its versioned `json` and `jsonl` result.
+
+## Automation
+
+Use `harness list` for a read-only roster, `harness status` for one adapter, and `harness migrate` only after an overlap diagnostic. No command infers a model provider from a harness name.
+
+## Diagnostics
+
+Group help performs no inspection and emits no operational diagnostic.
+
+## Examples
+
+```bash
+agentscope harness list
+agentscope harness status codex
+agentscope harness migrate codex
+```

@@ -1,0 +1,37 @@
+---
+title: Uninstall a harness integration
+description: Inspect or remove only an Agentscope-owned harness hook block.
+command: agentscope uninstall
+commandContract: sha256:538119798f5e0d6d2cabf68865893b78cfedd63598ffd3a6e3d3b9bfb7c97e08
+---
+
+`agentscope uninstall <harness>` inspects the adapter-owned configuration and removes only an exact Agentscope-owned integration. It does not require the harness executable to remain installed, and it leaves vendor or unrecognized configuration unchanged.
+
+## Syntax
+
+```bash
+agentscope uninstall <harness> [--yes] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` reports whether the owned plan is ready or unchanged. `json` emits one `agentscope.cli.uninstall.v1` result and `jsonl` emits its record. Without `--yes`, success is a read-only dry-run.
+
+## Automation
+
+Inspect first, then repeat with `--yes`. Harness Core rechecks ownership, bytes, and mode before removal. A vendor hook, third-party edit, or unsupported format is never interpreted as Agentscope ownership.
+
+## Diagnostics
+
+- `harness.adapter-missing` means the harness adapter is not registered.
+- `harness.overlap-conflict` means current state cannot be removed as owned.
+- `harness.installation-unsupported` means safe ownership classification is unavailable.
+- `harness.recovery-required` requires transaction reconciliation before another mutation.
+- `harness.plan-invalid` and `harness.unavailable` mean no removal was attempted.
+
+## Examples
+
+```bash
+agentscope uninstall codex
+agentscope uninstall codex --yes --output jsonl
+```
