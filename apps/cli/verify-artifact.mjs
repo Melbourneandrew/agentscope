@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { build } from "esbuild";
+
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 
 // AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2
@@ -138,10 +140,17 @@ try {
     installedInternal,
     "agentscope-hook-machine.js",
   );
-  const verifierEntryPath = join(
-    installedInternal,
-    "agentscope-hook-verifier.js",
-  );
+  const verifierEntryPath = join(installRoot, "agentscope-hook-verifier.mjs");
+  await build({
+    bundle: true,
+    entryPoints: [
+      new URL("src/hook-verifier-child.ts", import.meta.url).pathname,
+    ],
+    format: "esm",
+    outfile: verifierEntryPath,
+    platform: "node",
+    target: "node22",
+  });
   const launcherModule = await import(
     pathToFileURL(join(installedInternal, "agentscope-hook-launcher.js")).href
   );
