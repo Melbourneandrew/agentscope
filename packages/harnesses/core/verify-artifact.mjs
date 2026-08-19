@@ -1,4 +1,11 @@
-import { readdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
@@ -7,6 +14,9 @@ import {
   discoverHarness,
   harnessesCorePackageId,
   completeNativeCaptureBoundary,
+  createOwnedHarnessHookInvocation,
+  inspectHarnessInstallation,
+  applyHarnessInstallation,
   resolveNativeCaptureStart,
 } from "./dist/index.js";
 
@@ -106,3 +116,48 @@ if (
   boundary.exclusiveEndPosition !== 1
 )
   throw new Error("Harness Core built native mapping contract failed.");
+
+const invocation = createOwnedHarnessHookInvocation({
+  executablePath: resolve("/opt/agentscope/bin/agentscope"),
+  harnessType: descriptor.harnessType,
+  contextEvidence: new TextEncoder().encode("artifact-context"),
+});
+if (
+  invocation.contractVersion !== 1 ||
+  !/^agentscope-hook-v1-sha256-[0-9a-f]{64}$/u.test(
+    invocation.ownershipIdentity,
+  ) ||
+  JSON.stringify(invocation.arguments) !==
+    JSON.stringify([
+      "capture-hook-v1",
+      "--contract-version",
+      "1",
+      "--harness",
+      descriptor.harnessType,
+    ])
+)
+  throw new Error("Harness Core built launcher contract failed.");
+
+const installationRoot = mkdtempSync(join(tmpdir(), "agentscope-artifact-"));
+try {
+  const target = join(installationRoot, "harness.json");
+  writeFileSync(target, "vendor");
+  const plan = await inspectHarnessInstallation({
+    manifestPath: join(installationRoot, "transactions", "hook.json"),
+    operation: "install",
+    targetPaths: [target],
+    planner: () => ({
+      kind: "replace",
+      bytes: new TextEncoder().encode("agentscope-owned"),
+    }),
+  });
+  const applied = await applyHarnessInstallation(plan);
+  if (
+    !applied.ok ||
+    applied.state !== "committed" ||
+    readFileSync(target, "utf8") !== "agentscope-owned"
+  )
+    throw new Error("Harness Core built installation contract failed.");
+} finally {
+  rmSync(installationRoot, { recursive: true, force: true });
+}

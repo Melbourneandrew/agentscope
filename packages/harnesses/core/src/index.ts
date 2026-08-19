@@ -10,6 +10,21 @@ export {
 } from "./descriptor.js";
 export { HarnessDiscoveryError, discoverHarness } from "./discovery.js";
 export {
+  HarnessInstallationError,
+  applyHarnessInstallation,
+  inspectHarnessInstallation,
+  resumeHarnessInstallation,
+  rollbackHarnessInstallation,
+} from "./installation.js";
+export {
+  HARNESS_HOOK_COMMAND,
+  HARNESS_HOOK_CONTRACT_VERSION,
+  HarnessLauncherError,
+  createOwnedHarnessHookInvocation,
+  isOwnedHarnessHookInvocation,
+  readOwnedHarnessHookInvocationForCore,
+} from "./launcher.js";
+export {
   COMMON_NATIVE_SEMANTIC_FIELDS,
   NATIVE_BOUNDARY_KINDS,
   NATIVE_POSITION_KINDS,
@@ -65,3 +80,16 @@ export type {
   NativeUnavailableReason,
   NativeUnavailableState,
 } from "./native-mapping.js";
+export type {
+  HarnessInstallationDisposition,
+  HarnessInstallationPlan,
+  HarnessInstallationPlanInput,
+  HarnessInstallationPlanner,
+  HarnessInstallationResult,
+  HarnessTargetDecision,
+  HarnessTargetInspection,
+} from "./installation.js";
+export type {
+  OwnedHarnessHookInvocation,
+  OwnedHarnessHookInvocationInput,
+} from "./launcher.js";
