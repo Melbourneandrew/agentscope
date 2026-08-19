@@ -2,7 +2,7 @@
 title: Install a harness integration
 description: Inspect or apply an Agentscope-owned, reversible harness hook plan.
 command: agentscope install
-commandContract: sha256:afdf43536ce2282ee05492b0b16d79eefa6fa82194a4119d811f9998ce901a45
+commandContract: sha256:cee0b72028565d093651093d6a9a52397b2004665a4befe89da92a2708c172ee
 ---
 
 `agentscope install <harness>` is plan-first. It discovers the registered first-party harness, checks its descriptor-owned compatibility range, inspects every owned target through Harness Core, and performs no mutation unless `--yes` is present. Ordinary installation never replaces an overlapping vendor observability hook; use the separate migration command after reviewing the conflict.

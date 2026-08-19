@@ -165,6 +165,7 @@ export {
   type ResolvedTraceLifecycleResult,
 } from "./invocation/lifecycle.js";
 export {
+  createCoreRetrievalRuntime,
   getConfiguredTrace,
   searchConfiguredTraces,
   RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS,
@@ -173,6 +174,7 @@ export {
   type CoreRetrievalFailure,
   type CoreRetrievalFailureCode,
   type CoreRetrievalRuntime,
+  type CreateCoreRetrievalRuntimeInput,
   type CoreTraceGetResult,
   type CoreTraceSearchPage,
   type CoreTraceSearchResult,

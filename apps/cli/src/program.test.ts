@@ -44,6 +44,8 @@ describe("agentscope root command", () => {
                                        plan.
         routing                        Inspect or replace the explicit destination
                                        routing selection.
+        traces                         Search and retrieve portable traces from one
+                                       named destination.
         uninstall [options] <harness>  Inspect or apply removal of only an
                                        Agentscope-owned hook.
         help [command]                 display help for command

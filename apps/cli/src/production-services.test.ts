@@ -4,8 +4,14 @@ import { join } from "node:path";
 
 import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-management";
 import {
+  createDestinationRetriever,
   createDestinationReporter,
+  createRetrieverFailure,
   createReporterReceipt,
+  createRetrieverSearchPage,
+  createRetrieverSuccess,
+  createTraceLocator,
+  createTraceSummary,
 } from "@agentscope/destinations-core";
 import {
   compileDestinationRegistry,
@@ -21,8 +27,40 @@ import { createProductionCliServices } from "./production-services.js";
 const settingsSchema = z.strictObject({ project: z.string() });
 void settingsSchema.shape;
 z.toJSONSchema(settingsSchema);
+const retrievedTraceId = "0123456789abcdef0123456789abcdef";
 const descriptor = defineDestinationDescriptor({
   commandName: "example",
+  createRetriever: () =>
+    createDestinationRetriever({
+      get: () => Promise.resolve(createRetrieverFailure("not-found")),
+      search: (request) =>
+        Promise.resolve(
+          request.query.branch === "rate-limit"
+            ? createRetrieverFailure("rate-limited", 250)
+            : createRetrieverSuccess(
+                createRetrieverSearchPage({
+                  consistency: "snapshot",
+                  state: "exhaustive",
+                  summaries: [
+                    createTraceSummary({
+                      branch: "main",
+                      harness: "codex",
+                      locator: createTraceLocator({
+                        connectionId: request.connectionId,
+                        destinationType: request.destinationType,
+                        traceId: retrievedTraceId,
+                      }),
+                      models: ["gpt-5"],
+                      spanCount: 3,
+                      startTime: "2026-01-01T00:00:00.000Z",
+                      status: "ok",
+                      tags: ["fixture"],
+                    }),
+                  ],
+                }),
+              ),
+        ),
+    }),
   createReporter: () =>
     createDestinationReporter({
       report: () => Promise.resolve(createReporterReceipt("accepted")),
@@ -186,6 +224,184 @@ describe("production configuration composition", () => {
     completePlanWrite?.();
     await expect(invocation).resolves.toBe(0);
     await expect(access(join(root, "config.json"))).resolves.toBeUndefined();
+  });
+});
+
+describe("production trace retrieval composition", () => {
+  it("searches and gets through one configured Retriever with safe schemas", async () => {
+    const { services } = await productionFixture("agentscope-cli-retrieval-");
+    const invoke = async (arguments_: readonly string[]) => {
+      const captured = createCapturedOutput();
+      const exitCode = await runCli(arguments_, {
+        output: captured.output,
+        services,
+        version: "1.2.3",
+      });
+      return { captured, exitCode };
+    };
+    expect((await invoke(["init", "--yes"])).exitCode).toBe(0);
+    expect(
+      (
+        await invoke([
+          "destination",
+          "configure",
+          "example",
+          "--name",
+          "archive",
+        ])
+      ).exitCode,
+    ).toBe(0);
+
+    const search = await invoke([
+      "traces",
+      "search",
+      "--destination",
+      "archive",
+      "--trace-id",
+      retrievedTraceId,
+      "--from",
+      "2025-12-31T00:00:00Z",
+      "--to",
+      "2026-01-02T00:00:00Z",
+      "--harness",
+      "codex",
+      "--branch",
+      "main",
+      "--model",
+      "gpt-5",
+      "--session",
+      "session-1",
+      "--tag",
+      "fixture",
+      "--limit",
+      "25",
+      "--output",
+      "json",
+    ]);
+    expect(search.exitCode).toBe(0);
+    const searchDocument = JSON.parse(search.captured.stdout.join("")) as {
+      records: Array<{
+        summaries: Array<{
+          locator: {
+            connectionId: string;
+            destinationType: string;
+            traceId: string;
+          };
+        }>;
+      }>;
+    };
+    const returnedLocator = searchDocument.records[0]!.summaries[0]!.locator;
+    expect(returnedLocator.traceId).toBe(retrievedTraceId);
+
+    const get = await invoke([
+      "traces",
+      "get",
+      "--destination",
+      "archive",
+      "--trace-ref",
+      JSON.stringify(returnedLocator),
+      "--output",
+      "json",
+    ]);
+    expect(get.exitCode).toBe(3);
+    expect(get.captured.stdout).toEqual([]);
+    expect(JSON.parse(get.captured.stderr.join(""))).toMatchObject({
+      code: "traces.not-found",
+    });
+
+    expect(
+      (
+        await invoke([
+          "traces",
+          "get",
+          "--destination",
+          "archive",
+          "--trace-id",
+          retrievedTraceId,
+        ])
+      ).exitCode,
+    ).toBe(3);
+  });
+});
+
+describe("production trace retrieval selection", () => {
+  it("keeps selection explicit and rejects a cross-connection locator", async () => {
+    const { services } = await productionFixture(
+      "agentscope-cli-retrieval-selection-",
+    );
+    const invoke = async (arguments_: readonly string[]) => {
+      const captured = createCapturedOutput();
+      const exitCode = await runCli(arguments_, {
+        output: captured.output,
+        services,
+        version: "1.2.3",
+      });
+      return { captured, exitCode };
+    };
+    await invoke(["init", "--yes"]);
+    await invoke(["destination", "configure", "example", "--name", "archive"]);
+    await invoke([
+      "destination",
+      "configure",
+      "secret-example",
+      "--name",
+      "write-only",
+      "--credential-env",
+      "api-key=EXAMPLE_API_KEY",
+    ]);
+    const unknown = await invoke([
+      "traces",
+      "search",
+      "--destination",
+      "missing",
+    ]);
+    const mismatch = await invoke([
+      "traces",
+      "get",
+      "--destination",
+      "archive",
+      "--trace-ref",
+      JSON.stringify({
+        connectionId:
+          "destination-connection-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        destinationType: "@agentscope/destination-example",
+        traceId: retrievedTraceId,
+      }),
+    ]);
+    const unsupported = await invoke([
+      "traces",
+      "search",
+      "--destination",
+      "write-only",
+    ]);
+    const rateLimited = await invoke([
+      "traces",
+      "search",
+      "--destination",
+      "archive",
+      "--branch",
+      "rate-limit",
+      "--output",
+      "json",
+    ]);
+
+    expect(unknown.exitCode).toBe(3);
+    expect(unknown.captured.stderr).toEqual([
+      "error [traces.destination-unknown]\n",
+    ]);
+    expect(mismatch.exitCode).toBe(2);
+    expect(mismatch.captured.stderr).toEqual([
+      "error [traces.invalid-query]\n",
+    ]);
+    expect(unsupported.exitCode).toBe(5);
+    expect(unsupported.captured.stderr).toEqual([
+      "error [traces.retrieval-unsupported]\n",
+    ]);
+    expect(rateLimited.exitCode).toBe(5);
+    expect(JSON.parse(rateLimited.captured.stderr.join(""))).toMatchObject({
+      code: "traces.rate-limited",
+      facts: { retryAfterMilliseconds: 250 },
+    });
   });
 });
 

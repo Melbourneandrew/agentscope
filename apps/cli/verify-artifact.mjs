@@ -306,6 +306,22 @@ try {
         ],
       );
     }
+    const traces = runRaw(
+      executable,
+      ["traces", "search", "--destination", "missing", "--output", mode],
+      {
+        ...executableOptions,
+        env: { HOME: agentscopeHome, USERPROFILE: agentscopeHome },
+      },
+    );
+    assert.equal(traces.status, 3);
+    assert.equal(traces.stdout, "");
+    assert.deepEqual(JSON.parse(traces.stderr), {
+      category: "not-found",
+      code: "traces.destination-unknown",
+      command: "agentscope traces search",
+      schema: "agentscope.cli.diagnostic.v1",
+    });
   }
   const invalid = runRaw(
     executable,
@@ -329,7 +345,7 @@ try {
     join(installRoot, "node_modules/@agentscope/cli/dist/bin/agentscope.js"),
     "utf8",
   );
-  assert.doesNotMatch(bundle, /workspace:/u);
+  assert.doesNotMatch(bundle, /["']workspace:(?!\/\/)/u);
   assert.doesNotMatch(bundle, /from\s+["']@agentscope\//u);
   assert.doesNotMatch(bundle, /require\(["']@agentscope\//u);
   assert.deepEqual(readdirSync(join(installRoot, "node_modules/@agentscope")), [

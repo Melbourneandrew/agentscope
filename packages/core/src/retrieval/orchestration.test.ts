@@ -31,6 +31,7 @@ import {
   DEFAULT_REDACTION_POLICY_REGISTRY,
 } from "../redaction/policy.js";
 import {
+  createCoreRetrievalRuntime,
   getConfiguredTrace,
   searchConfiguredTraces,
   type CoreRetrievalRuntime,
@@ -218,13 +219,13 @@ const runtime = (
     },
     destinationRegistry,
   );
-  const value: CoreRetrievalRuntime = {
+  const value: CoreRetrievalRuntime = createCoreRetrievalRuntime({
     configuration,
     policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
     credentialBackendRegistry: compileCredentialBackendRegistry([]),
     transportExecutor: () => Promise.reject(new Error("unexpected transport")),
-    deadline: createReporterDeadline(2_000),
-  };
+    timeoutMilliseconds: 2_000,
+  });
   return {
     value,
     counts: () => ({ factoryCalls, searches, gets }),

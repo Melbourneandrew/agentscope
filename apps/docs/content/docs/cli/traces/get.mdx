@@ -1,0 +1,45 @@
+---
+title: Get a trace
+description: Retrieve one governed portable trace by canonical ID or exact structured locator.
+command: agentscope traces get
+commandContract: sha256:cee0b72028565d093651093d6a9a52397b2004665a4befe89da92a2708c172ee
+---
+
+Get resolves one named connection and returns only a canonical Agentscope graph that remains an unchanged fixed point under the current redaction policy. Malformed, oversized, or newly disallowed destination data is rejected before any terminal or structured output.
+
+## Syntax
+
+```bash
+agentscope traces get --destination <name> \
+  (--trace-id <lowercase-32-hex> | --trace-ref '<locator-json>') \
+  [--output human|json|jsonl]
+```
+
+Exactly one identity option is required. `--trace-id` is the portable W3C trace ID. `--trace-ref` accepts the exact `locator` object from structured search output and verifies its immutable connection ID and destination type against `--destination`.
+
+## Output and exits
+
+`human` prints the destination-qualified trace reference, consistency, effective policy identity, and canonical graph. `json` and `jsonl` use `agentscope.cli.traces-get.v1` and contain only the portable locator, governed canonical graph, consistency, and policy identity.
+
+## Automation
+
+Prefer `--trace-ref` when automation carries a prior search result. Use `--trace-id` for a deliberate lookup in the explicitly selected destination. Never parse human output as a locator.
+
+## Diagnostics
+
+- `configuration.missing` means Agentscope configuration has not been initialized.
+- `configuration.unavailable` means configuration could not be read safely.
+- `traces.invalid-query` includes malformed, conflicting, or cross-connection locators.
+- `traces.destination-unknown` means the named connection does not exist.
+- `traces.retrieval-unsupported` means the connection is write-only.
+- `traces.not-found` means the selected Retriever found no matching trace.
+- `traces.unauthorized` and `traces.forbidden` are fixed permission outcomes.
+- `traces.rate-limited`, `traces.unavailable`, and `traces.deadline-exceeded` are bounded availability outcomes.
+- `traces.malformed-response` and `traces.incompatible-trace` reject unsafe destination data before output.
+
+## Examples
+
+```bash
+agentscope traces get --destination archive --trace-id 0123456789abcdef0123456789abcdef
+agentscope traces get --destination archive --trace-ref "$LOCATOR_JSON" --output json
+```

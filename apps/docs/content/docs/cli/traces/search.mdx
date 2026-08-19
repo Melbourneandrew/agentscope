@@ -1,0 +1,49 @@
+---
+title: Search traces
+description: Search one configured retriever with portable bounded filters and continuation.
+command: agentscope traces search
+commandContract: sha256:cee0b72028565d093651093d6a9a52397b2004665a4befe89da92a2708c172ee
+---
+
+Search applies the same portable filters to every retrieval-capable destination. Different dimensions and all requested tags combine with AND. Equality is exact and case-sensitive except that harness identities must be canonical registered values.
+
+## Syntax
+
+```bash
+agentscope traces search --destination <name> \
+  [--trace-id <lowercase-32-hex>] \
+  [--from <rfc3339>] [--to <rfc3339>] \
+  [--harness <identity>] [--branch <name>] [--model <name>] \
+  [--session <id>] [--tag <tag...>] [--limit <1..200>] \
+  [--cursor <opaque-cursor>] [--output human|json|jsonl]
+```
+
+`from` is inclusive and `to` is exclusive. If `to` is omitted, Core fixes it to command start. The default limit is 50. A cursor can be reused only with the same destination connection, configuration, normalized filters, and fixed upper time bound.
+
+## Output and exits
+
+`human` prints destination-qualified trace IDs, portable summary fields, result state, and any continuation cursor. `json` and `jsonl` use `agentscope.cli.traces-search.v1`; the record contains the complete bounded page, full structured locators, consistency, partial state, and cursor. A partial page is emitted before a nonzero `traces.partial` diagnostic.
+
+## Automation
+
+Treat cursors as opaque short-lived continuation state, not credentials or bookmarks. Preserve the complete locator from structured output when the same trace may exist in multiple connections. Results are ordered by start time descending and trace ID ascending.
+
+## Diagnostics
+
+- `configuration.missing` means Agentscope configuration has not been initialized.
+- `configuration.unavailable` means configuration could not be read safely.
+- `traces.invalid-query` means a filter, range, limit, tag set, or cursor is invalid.
+- `traces.destination-unknown` means the named connection does not exist.
+- `traces.retrieval-unsupported` means the connection is write-only.
+- `traces.unauthorized` and `traces.forbidden` are fixed permission outcomes.
+- `traces.rate-limited`, `traces.unavailable`, and `traces.deadline-exceeded` are bounded availability outcomes.
+- `traces.malformed-response` and `traces.incompatible-trace` reject unsafe destination data before output.
+- `traces.not-found` is a stable empty-target outcome from a Retriever.
+- `traces.partial` accompanies a safely bounded partial page.
+
+## Examples
+
+```bash
+agentscope traces search --destination archive --branch main --tag release --limit 25
+agentscope traces search --destination archive --cursor "$CURSOR" --output json
+```

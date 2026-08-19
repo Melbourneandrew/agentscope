@@ -1,0 +1,34 @@
+---
+title: Traces
+description: Search and retrieve portable traces from one explicit destination connection.
+command: agentscope traces
+commandContract: sha256:cee0b72028565d093651093d6a9a52397b2004665a4befe89da92a2708c172ee
+---
+
+Trace commands query exactly one configured destination. They never use routing selection, fall back to another connection, or expose destination-native response bodies.
+
+## Syntax
+
+```bash
+agentscope traces search --destination <name> [options]
+agentscope traces get --destination <name> (--trace-id <id> | --trace-ref <json>)
+```
+
+## Output and exits
+
+The group exposes `human` help. Search and get support their documented `human`, JSON, and JSON Lines result contracts.
+
+## Automation
+
+Always pass `--destination`. Preserve search cursors and structured locators verbatim; both are bound to the selected immutable connection and current configuration.
+
+## Diagnostics
+
+Subcommands return fixed `traces.*` diagnostics without provider response bodies, credentials, paths, or stack traces.
+
+## Examples
+
+```bash
+agentscope traces search --destination archive --harness codex
+agentscope traces get --destination archive --trace-id 0123456789abcdef0123456789abcdef
+```

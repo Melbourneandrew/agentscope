@@ -13,6 +13,7 @@ import {
 } from "@agentscope/destinations-core";
 import {
   bindDestinationTransport,
+  createReporterDeadline,
   createRetrievalContext,
   createTraceGetRequest,
   createTraceSearchPage,
@@ -94,6 +95,27 @@ export type CoreRetrievalRuntime = Readonly<{
   deadline: ReporterDeadline;
   signal?: AbortSignal;
 }>;
+
+export type CreateCoreRetrievalRuntimeInput = Readonly<{
+  configuration: AgentscopeConfigurationSnapshot;
+  policyRegistry: RedactionPolicyRegistry;
+  credentialBackendRegistry: CredentialBackendRegistry;
+  transportExecutor: DestinationTransportExecutor;
+  timeoutMilliseconds: number;
+  signal?: AbortSignal;
+}>;
+
+export const createCoreRetrievalRuntime = (
+  input: CreateCoreRetrievalRuntimeInput,
+): CoreRetrievalRuntime =>
+  Object.freeze({
+    configuration: input.configuration,
+    policyRegistry: input.policyRegistry,
+    credentialBackendRegistry: input.credentialBackendRegistry,
+    transportExecutor: input.transportExecutor,
+    deadline: createReporterDeadline(input.timeoutMilliseconds),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
 
 const failure = (
   code: CoreRetrievalFailureCode,
