@@ -7,7 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,6 +37,37 @@ const fixture = async () => {
   await mkdir(commonDirectory);
   return { repository, workspace, commonDirectory };
 };
+
+const gitFixtureEnvironment = (
+  repository: string,
+  inherited: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(
+    Object.entries(inherited).filter(([key]) => !key.startsWith("GIT_")),
+  ),
+  GIT_CEILING_DIRECTORIES: dirname(repository),
+  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_DISCOVERY_ACROSS_FILESYSTEM: "0",
+  GIT_TERMINAL_PROMPT: "0",
+});
+
+const runFixtureGit = (
+  repository: string,
+  arguments_: readonly string[],
+  inherited?: NodeJS.ProcessEnv,
+): Promise<string> =>
+  new Promise((resolve, reject) => {
+    execFile(
+      "/usr/bin/git",
+      ["-C", repository, ...arguments_],
+      { env: gitFixtureEnvironment(repository, inherited), encoding: "utf8" },
+      (error, stdout) => {
+        if (error === null) resolve(stdout);
+        else reject(new Error("git fixture failed", { cause: error }));
+      },
+    );
+  });
 
 describe("snapshot-bound Git context observations", () => {
   it("records attached and detached field closures with exact provenance", async () => {
@@ -289,23 +320,24 @@ describe("snapshot-bound Git command failure closure", () => {
   it("uses only non-worktree plumbing and disables repository fsmonitor execution", async () => {
     const repository = await mkdtemp(join(tmpdir(), "agentscope-hostile-git-"));
     roots.push(repository);
-    await new Promise<void>((resolve, reject) => {
-      execFile("/usr/bin/git", ["-C", repository, "init", "-q"], (error) => {
-        if (error === null) resolve();
-        else reject(new Error("git fixture failed", { cause: error }));
-      });
-    });
-    const run = (arguments_: readonly string[]) =>
-      new Promise<void>((resolve, reject) => {
-        execFile("/usr/bin/git", ["-C", repository, ...arguments_], (error) => {
-          if (error === null) resolve();
-          else reject(new Error("git fixture failed", { cause: error }));
-        });
-      });
-    await run(["config", "user.email", "fixture@example.invalid"]);
-    await run(["config", "user.name", "Fixture"]);
-    await run(["commit", "--allow-empty", "-qm", "initial"]);
-    await run(["config", "core.fsmonitor", "/usr/bin/touch"]);
+    await runFixtureGit(repository, ["init", "-q"]);
+    await runFixtureGit(repository, [
+      "config",
+      "user.email",
+      "fixture@example.invalid",
+    ]);
+    await runFixtureGit(repository, ["config", "user.name", "Fixture"]);
+    await runFixtureGit(repository, [
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "initial",
+    ]);
+    await runFixtureGit(repository, [
+      "config",
+      "core.fsmonitor",
+      "/usr/bin/touch",
+    ]);
     const result = await resolveGitContextForCore({
       candidates: [{ path: repository, source: "process" }],
       gitExecutable: "/usr/bin/git",
@@ -317,7 +349,78 @@ describe("snapshot-bound Git command failure closure", () => {
     const entries = await readdir(repository);
     expect(entries).toEqual([".git"]);
   });
+});
 
+describe("real Git fixture isolation", () => {
+  it("isolates fixture commands from inherited Git hook repository authority", async () => {
+    const checkout = await mkdtemp(join(tmpdir(), "agentscope-checkout-"));
+    const repository = await mkdtemp(join(tmpdir(), "agentscope-git-fixture-"));
+    roots.push(checkout, repository);
+    await runFixtureGit(checkout, ["init", "-q"]);
+    await runFixtureGit(checkout, [
+      "config",
+      "user.email",
+      "checkout@example.invalid",
+    ]);
+    await runFixtureGit(checkout, ["config", "user.name", "Checkout"]);
+    await runFixtureGit(checkout, [
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "checkout",
+    ]);
+    const checkoutHead = await runFixtureGit(checkout, ["rev-parse", "HEAD"]);
+    const checkoutReflog = await runFixtureGit(checkout, ["reflog", "show"]);
+    const checkoutConfig = await runFixtureGit(checkout, [
+      "config",
+      "--local",
+      "--list",
+    ]);
+    const checkoutEntries = await readdir(checkout);
+    const inherited = {
+      ...process.env,
+      GIT_COMMON_DIR: join(checkout, ".git"),
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: join(checkout, "synthetic-hooks"),
+      GIT_DIR: join(checkout, ".git"),
+      GIT_INDEX_FILE: join(checkout, ".git", "index"),
+      GIT_PREFIX: "synthetic-prefix/",
+      GIT_WORK_TREE: checkout,
+    };
+    await runFixtureGit(repository, ["init", "-q"], inherited);
+    await runFixtureGit(
+      repository,
+      ["config", "user.email", "fixture@example.invalid"],
+      inherited,
+    );
+    await runFixtureGit(
+      repository,
+      ["config", "user.name", "Fixture"],
+      inherited,
+    );
+    await runFixtureGit(
+      repository,
+      ["commit", "--allow-empty", "-qm", "fixture"],
+      inherited,
+    );
+    expect(
+      await runFixtureGit(repository, ["rev-parse", "HEAD"], inherited),
+    ).toMatch(/^[a-f0-9]{40}\n$/u);
+    expect(await runFixtureGit(checkout, ["rev-parse", "HEAD"])).toBe(
+      checkoutHead,
+    );
+    expect(await runFixtureGit(checkout, ["reflog", "show"])).toBe(
+      checkoutReflog,
+    );
+    expect(await runFixtureGit(checkout, ["config", "--local", "--list"])).toBe(
+      checkoutConfig,
+    );
+    expect(await readdir(checkout)).toEqual(checkoutEntries);
+  });
+});
+
+describe("snapshot-bound Git command timeout closure", () => {
   it("shares one elapsed timeout across every sequential Git command", async () => {
     const observedTimeouts: number[] = [];
     let calls = 0;
