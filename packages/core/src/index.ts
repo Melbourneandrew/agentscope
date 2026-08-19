@@ -116,6 +116,19 @@ export {
   type ConfiguredDestinationConnection,
 } from "./configuration/schema.js";
 export {
+  ConfigurationManagementError,
+  configureDestinationConnection,
+  createConfigurationManagementRuntime,
+  initializeAgentscopeConfiguration,
+  listDestinationConnections,
+  setDestinationRouting,
+  unconfigureDestinationConnection,
+  type ConfigurationManagementRuntime,
+  type ConfigureDestinationConnectionInput,
+  type DestinationConfigurationResult,
+  type DestinationConnectionSummary,
+} from "./configuration/management.js";
+export {
   CONFIGURATION_TRANSACTION_STEPS,
   ConfigurationStoreError,
   createConfigurationProcessIdentity,
