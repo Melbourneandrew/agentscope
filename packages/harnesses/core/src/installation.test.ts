@@ -5,6 +5,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
   symlink,
   unlink,
@@ -26,7 +27,9 @@ import {
 
 const roots: string[] = [];
 const temporaryRoot = async (): Promise<string> => {
-  const root = await mkdtemp(join(tmpdir(), "agentscope-installation-"));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "agentscope-installation-")),
+  );
   roots.push(root);
   return root;
 };
@@ -34,11 +37,15 @@ const digest = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 const absentDigest = digest("");
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
+const pathIdentity = (path: string): string =>
+  process.platform === "win32" || process.platform === "darwin"
+    ? path.toLocaleLowerCase("en-US")
+    : path;
 const artifactPrefix = (transactionId: string, targetPath: string): string =>
   join(
     join(targetPath, ".."),
     `.agentscope-${transactionId}-${createHash("sha256")
-      .update(targetPath)
+      .update(pathIdentity(targetPath))
       .digest("hex")
       .slice(0, 16)}`,
   );
@@ -46,7 +53,7 @@ const ownershipMarkerPath = (targetPath: string): string =>
   join(
     join(targetPath, ".."),
     `.agentscope-installation-${createHash("sha256")
-      .update(targetPath)
+      .update(pathIdentity(targetPath))
       .digest("hex")}.owner`,
   );
 const ownershipClaimPath = (targetPath: string): string =>
@@ -312,6 +319,10 @@ describe("harness installation admission", () => {
       planInput(root, [target, marker], () => ({ kind: "unchanged" })),
       {
         ...planInput(root, [target], () => ({ kind: "unchanged" })),
+        manifestPath: target,
+      },
+      {
+        ...planInput(root, [target], () => ({ kind: "unchanged" })),
         manifestPath: marker,
       },
     ]) {
@@ -402,6 +413,78 @@ describe("harness installation admission", () => {
       state: "committed",
     });
     expect(await readFile(target, "utf8")).toBe("agentscope-hook");
+  });
+});
+
+describe("harness installation filesystem identity", () => {
+  it("normalizes symlinked parents before target ownership is derived", async () => {
+    const root = await temporaryRoot();
+    const realDirectory = join(root, "real");
+    const linkedDirectory = join(root, "linked");
+    await mkdir(realDirectory);
+    await symlink(realDirectory, linkedDirectory, "dir");
+    const realTarget = join(realDirectory, "config.json");
+    const linkedTarget = join(linkedDirectory, "config.json");
+    await writeFile(realTarget, "before");
+
+    await expect(
+      inspectHarnessInstallation(
+        planInput(root, [realTarget, linkedTarget], () => ({
+          kind: "replace",
+          bytes: bytes("after"),
+        })),
+      ),
+    ).resolves.toMatchObject({ disposition: "invalid" });
+
+    const plans = await Promise.all(
+      [realTarget, linkedTarget].map((targetPath, index) =>
+        inspectHarnessInstallation({
+          ...planInput(root, [targetPath], () => ({
+            kind: "replace",
+            bytes: bytes(`after-${index}`),
+          })),
+          manifestPath: join(root, "transactions", `hook-${index}.json`),
+        }),
+      ),
+    );
+    const outcomes = await Promise.all(plans.map(applyHarnessInstallation));
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([
+      expect.objectContaining({ state: "conflict" }),
+    ]);
+  });
+
+  it("uses one ownership identity for Darwin case aliases", async () => {
+    if (process.platform !== "darwin") return;
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const alias = join(root, "CONFIG.json");
+    await writeFile(target, "before");
+    await expect(
+      inspectHarnessInstallation(
+        planInput(root, [target, alias], () => ({
+          kind: "replace",
+          bytes: bytes("after"),
+        })),
+      ),
+    ).resolves.toMatchObject({ disposition: "invalid" });
+
+    const plans = await Promise.all(
+      [target, alias].map((targetPath, index) =>
+        inspectHarnessInstallation({
+          ...planInput(root, [targetPath], () => ({
+            kind: "replace",
+            bytes: bytes(`case-${index}`),
+          })),
+          manifestPath: join(root, "transactions", `case-${index}.json`),
+        }),
+      ),
+    );
+    const outcomes = await Promise.all(plans.map(applyHarnessInstallation));
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([
+      expect.objectContaining({ state: "conflict" }),
+    ]);
   });
 });
 
@@ -1248,5 +1331,39 @@ describe("harness installation manifest validation", () => {
       ok: false,
       state: "invalid",
     });
+  });
+
+  it("rejects a recovery manifest that retains a symlink-parent alias", async () => {
+    const root = await temporaryRoot();
+    const realDirectory = join(root, "real");
+    const linkedDirectory = join(root, "linked");
+    await mkdir(realDirectory);
+    await symlink(realDirectory, linkedDirectory, "dir");
+    const target = join(linkedDirectory, "target.json");
+    const manifestPath = join(root, "manifest.json");
+    const transactionId = "e".repeat(32);
+    const prefix = artifactPrefix(transactionId, target);
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "prepared",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: absentDigest,
+          beforeExists: false,
+          beforeMode: null,
+          afterDigest: digest("after"),
+          afterExists: true,
+          afterMode: 0o600,
+          stagePath: `${prefix}.stage`,
+          backupPath: null,
+        },
+      ],
+    };
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "invalid" });
   });
 });

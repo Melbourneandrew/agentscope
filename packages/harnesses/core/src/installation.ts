@@ -1,7 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { link, mkdir, open, rename, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  link,
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  unlink,
+} from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const MAXIMUM_TARGETS = 16;
 const MAXIMUM_TARGET_BYTES = 1_048_576;
@@ -151,10 +159,45 @@ const isCanonicalAbsolutePath = (path: string): boolean =>
   resolve(path) === path;
 
 const pathIdentity = (path: string): string => {
-  /* v8 ignore next -- exact Windows case-folding is exercised on the required
-     Windows matrix; other platforms retain case-sensitive path identity. */
-  if (process.platform === "win32") return path.toLocaleLowerCase("en-US");
+  /* v8 ignore next -- exact Windows and conservative Darwin case-folding are
+     exercised on their required platform matrices. Darwin folding can reject
+     distinct names on an uncommon case-sensitive volume, but never grants two
+     ownership identities to one entry on the default case-insensitive volume. */
+  if (process.platform === "win32" || process.platform === "darwin")
+    return path.toLocaleLowerCase("en-US");
+  /* v8 ignore next -- exercised on the required Linux matrix. */
   return path;
+};
+
+const canonicalFilesystemPath = async (path: string): Promise<string> => {
+  if (!isCanonicalAbsolutePath(path)) return invalid();
+  try {
+    if ((await lstat(path)).isSymbolicLink()) return invalid();
+  } catch (error) {
+    if (nodeErrorCode(error) !== "ENOENT") throw error;
+  }
+  let ancestor = path;
+  while (true) {
+    try {
+      const canonicalAncestor = await realpath(ancestor);
+      const suffix = relative(ancestor, path);
+      const canonical = suffix
+        ? resolve(canonicalAncestor, suffix)
+        : canonicalAncestor;
+      /* v8 ignore next -- realpath plus path.resolve produce a bounded
+         canonical absolute value after the bounded caller-path check. */
+      if (!isCanonicalAbsolutePath(canonical)) return invalid();
+      return canonical;
+    } catch (error) {
+      /* v8 ignore next -- lstat above reports stable non-ENOENT failures;
+         this branch only contains a concurrent filesystem-state change. */
+      if (nodeErrorCode(error) !== "ENOENT") throw error;
+      const parent = dirname(ancestor);
+      /* v8 ignore next -- an absolute path always reaches an existing root. */
+      if (parent === ancestor) return invalid();
+      ancestor = parent;
+    }
+  }
 };
 
 const invalid = (): never => {
@@ -250,14 +293,16 @@ const copyBytes = (value: unknown): Uint8Array | undefined => {
   }
 };
 
-const exactInput = (
+const exactInput = async (
   input: HarnessInstallationPlanInput,
-): Readonly<{
-  manifestPath: string;
-  operation: HarnessInstallationPlanInput["operation"];
-  targetPaths: readonly string[];
-  planner: HarnessInstallationPlanner;
-}> => {
+): Promise<
+  Readonly<{
+    manifestPath: string;
+    operation: HarnessInstallationPlanInput["operation"];
+    targetPaths: readonly string[];
+    planner: HarnessInstallationPlanner;
+  }>
+> => {
   try {
     if (
       typeof input !== "object" ||
@@ -287,28 +332,34 @@ const exactInput = (
       !targetPathValues
     )
       return invalid();
-    const targetPaths = targetPathValues.map((value) => {
-      if (
-        typeof value !== "string" ||
-        !isCanonicalAbsolutePath(value) ||
-        pathIdentity(value) === pathIdentity(manifestPath)
-      )
-        return invalid();
-      return value;
-    });
+    const canonicalManifestPath = await canonicalFilesystemPath(manifestPath);
+    const targetPaths = await Promise.all(
+      targetPathValues.map(async (value) => {
+        if (typeof value !== "string" || !isCanonicalAbsolutePath(value))
+          return invalid();
+        const canonicalTargetPath = await canonicalFilesystemPath(value);
+        if (
+          pathIdentity(canonicalTargetPath) ===
+          pathIdentity(canonicalManifestPath)
+        )
+          return invalid();
+        return canonicalTargetPath;
+      }),
+    );
     if (
       new Set(targetPaths.map(pathIdentity)).size !== targetPaths.length ||
-      !pathsAvoidOwnershipRecords(manifestPath, targetPaths)
+      !pathsAvoidOwnershipRecords(canonicalManifestPath, targetPaths)
     )
       return invalid();
     return Object.freeze({
-      manifestPath,
+      manifestPath: canonicalManifestPath,
       operation: operation as HarnessInstallationPlanInput["operation"],
       targetPaths: Object.freeze(targetPaths),
       planner: planner as HarnessInstallationPlanner,
     });
-  } catch {
-    return invalid();
+  } catch (error) {
+    if (error instanceof HarnessInstallationError) return invalid();
+    throw error;
   }
 };
 
@@ -347,6 +398,8 @@ const inspectFile = async (path: string): Promise<FileSnapshot> => {
       mode: metadata.mode & 0o777,
     });
   } catch (error) {
+    /* v8 ignore next -- admission rejects links; this contains a link swapped
+       into place during the subsequent target-inspection race. */
     if (nodeErrorCode(error) === "ELOOP") return invalid();
     if (nodeErrorCode(error) === "ENOENT")
       return Object.freeze({
@@ -434,7 +487,7 @@ export const inspectHarnessInstallation = async (
   input: HarnessInstallationPlanInput,
 ): Promise<HarnessInstallationPlan> => {
   try {
-    const parsed = exactInput(input);
+    const parsed = await exactInput(input);
     if (await manifestExists(parsed.manifestPath))
       return publicPlan("recovery-required", parsed.targetPaths.length, 0);
     const targets: PlannedTarget[] = [];
@@ -510,7 +563,7 @@ const artifactPrefix = (transactionId: string, targetPath: string): string =>
   join(
     dirname(targetPath),
     `.agentscope-${transactionId}-${createHash("sha256")
-      .update(targetPath)
+      .update(pathIdentity(targetPath))
       .digest("hex")
       .slice(0, 16)}`,
   );
@@ -524,7 +577,7 @@ const ownershipMarkerPath = (targetPath: string): string =>
   join(
     dirname(targetPath),
     `.agentscope-installation-${createHash("sha256")
-      .update(targetPath)
+      .update(pathIdentity(targetPath))
       .digest("hex")}.owner`,
   );
 
@@ -1196,14 +1249,40 @@ const parseManifestRecord = (
 };
 
 const parseManifest = async (path: string): Promise<TransactionManifest> => {
-  if (!isCanonicalAbsolutePath(path)) return invalid();
-  const snapshot = await inspectFile(path);
+  const canonicalPath = await canonicalFilesystemPath(path);
+  const snapshot = await inspectFile(canonicalPath);
   if (!snapshot.exists || !snapshot.bytes) return invalid();
   try {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(
       snapshot.bytes,
     );
-    return parseManifestRecord(JSON.parse(text) as unknown, text, path);
+    const manifest = parseManifestRecord(
+      JSON.parse(text) as unknown,
+      text,
+      canonicalPath,
+    );
+    const paths = [
+      canonicalPath,
+      ...manifest.targets.flatMap((target) => [
+        target.targetPath,
+        ...(target.stagePath ? [target.stagePath] : []),
+        ...(target.backupPath ? [target.backupPath] : []),
+        ownershipMarkerPath(target.targetPath),
+        ownershipClaimPath(target.targetPath),
+        ownershipCandidatePath(manifest.transactionId, target.targetPath),
+      ]),
+    ];
+    const canonicalPaths = await Promise.all(
+      paths.map((candidate) => canonicalFilesystemPath(candidate)),
+    );
+    if (
+      canonicalPaths.some(
+        (candidate, index) =>
+          pathIdentity(candidate) !== pathIdentity(paths[index]!),
+      )
+    )
+      return invalid();
+    return manifest;
   } catch (error) {
     if (error instanceof HarnessInstallationError) throw error;
     return invalid();
@@ -1250,9 +1329,10 @@ export const resumeHarnessInstallation = async (
   manifestPath: string,
 ): Promise<HarnessInstallationResult> => {
   try {
-    const manifest = await parseManifest(manifestPath);
-    await commitManifest(manifestPath, manifest);
-    await finishTransaction(manifestPath, withState(manifest, "committed"));
+    const canonicalPath = await canonicalFilesystemPath(manifestPath);
+    const manifest = await parseManifest(canonicalPath);
+    await commitManifest(canonicalPath, manifest);
+    await finishTransaction(canonicalPath, withState(manifest, "committed"));
     return result(true, "committed", manifest.targets.length);
   } catch (error) {
     return result(
@@ -1271,15 +1351,16 @@ export const rollbackHarnessInstallation = async (
   manifestPath: string,
 ): Promise<HarnessInstallationResult> => {
   try {
-    let manifest = await parseManifest(manifestPath);
+    const canonicalPath = await canonicalFilesystemPath(manifestPath);
+    let manifest = await parseManifest(canonicalPath);
     if (manifest.state === "prepared") {
-      await finishTransaction(manifestPath, manifest, true);
+      await finishTransaction(canonicalPath, manifest, true);
       return result(true, "rolled-back", manifest.targets.length);
     }
-    if (!(await ensureRecordedManifestOwnership(manifestPath, manifest)))
+    if (!(await ensureRecordedManifestOwnership(canonicalPath, manifest)))
       return result(false, "conflict", 0);
     manifest = withState(manifest, "rolling-back");
-    await replaceManifest(manifestPath, manifest);
+    await replaceManifest(canonicalPath, manifest);
     for (const target of [...manifest.targets].reverse()) {
       const current = await inspectFile(target.targetPath);
       if (
@@ -1302,7 +1383,7 @@ export const rollbackHarnessInstallation = async (
          a failure after the exact current-state classification above. */
       if (restoreFailure) return restoreFailure;
     }
-    await finishTransaction(manifestPath, manifest);
+    await finishTransaction(canonicalPath, manifest);
     return result(true, "rolled-back", manifest.targets.length);
   } catch (error) {
     return result(
