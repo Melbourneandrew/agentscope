@@ -286,7 +286,11 @@ const exactInput = (
         return invalid();
       return value;
     });
-    if (new Set(targetPaths).size !== targetPaths.length) return invalid();
+    if (
+      new Set(targetPaths).size !== targetPaths.length ||
+      !pathsAvoidOwnershipRecords(manifestPath, targetPaths)
+    )
+      return invalid();
     return Object.freeze({
       manifestPath,
       operation: operation as HarnessInstallationPlanInput["operation"],
@@ -502,6 +506,22 @@ const ownershipMarkerPath = (targetPath: string): string =>
 const ownershipClaimPath = (targetPath: string): string =>
   `${ownershipMarkerPath(targetPath)}.claim`;
 
+const pathsAvoidOwnershipRecords = (
+  manifestPath: string,
+  targetPaths: readonly string[],
+): boolean => {
+  const reserved = new Set(
+    targetPaths.flatMap((targetPath) => [
+      ownershipMarkerPath(targetPath),
+      ownershipClaimPath(targetPath),
+    ]),
+  );
+  return (
+    !reserved.has(manifestPath) &&
+    targetPaths.every((targetPath) => !reserved.has(targetPath))
+  );
+};
+
 const ownershipRecord = (
   manifestPath: string,
   transactionId: string,
@@ -543,6 +563,7 @@ const writeExclusive = async (
 ): Promise<void> => {
   const handle = await open(path, "wx", mode);
   try {
+    await handle.chmod(mode);
     await handle.writeFile(bytes);
     await handle.sync();
   } finally {
@@ -684,7 +705,7 @@ const ensureManifestOwnership = async (
     );
 };
 
-const manifestOwnershipIsExact = async (
+const ensureRecordedManifestOwnership = async (
   manifestPath: string,
   manifest: TransactionManifest,
 ): Promise<boolean> => {
@@ -698,14 +719,11 @@ const manifestOwnershipIsExact = async (
       !ownershipSnapshotMatches(
         await inspectFile(ownershipMarkerPath(target.targetPath)),
         expected,
-      ) ||
-      !ownershipSnapshotMatches(
-        await inspectFile(ownershipClaimPath(target.targetPath)),
-        expected,
       )
     )
       return false;
   }
+  await ensureManifestOwnership(manifestPath, manifest);
   return true;
 };
 
@@ -722,6 +740,21 @@ const removeExactOwnershipClaim = async (
   );
   if (ownershipSnapshotMatches(await inspectFile(claimPath), expected))
     await unlink(claimPath);
+};
+
+const removeExactOwnershipMarker = async (
+  manifestPath: string,
+  manifest: TransactionManifest,
+  targetPath: string,
+): Promise<void> => {
+  const markerPath = ownershipMarkerPath(targetPath);
+  const expected = ownershipRecord(
+    manifestPath,
+    manifest.transactionId,
+    targetPath,
+  );
+  if (ownershipSnapshotMatches(await inspectFile(markerPath), expected))
+    await unlink(markerPath);
 };
 
 const replaceManifest = async (
@@ -810,7 +843,7 @@ const commitManifest = async (
       )
         throw new HarnessInstallationConflictError();
     }
-  } else if (!(await manifestOwnershipIsExact(path, manifest))) {
+  } else if (!(await ensureRecordedManifestOwnership(path, manifest))) {
     throw new HarnessInstallationConflictError();
   }
   let working = withState(manifest, "committing");
@@ -887,10 +920,17 @@ const removeIfPresent = async (path: string | null): Promise<void> => {
 const finishTransaction = async (
   manifestPath: string,
   manifest: TransactionManifest,
+  removeOwnershipMarker = false,
 ) => {
   for (const target of manifest.targets) {
     await removeIfPresent(target.stagePath);
     await removeIfPresent(target.backupPath);
+    if (removeOwnershipMarker)
+      await removeExactOwnershipMarker(
+        manifestPath,
+        manifest,
+        target.targetPath,
+      );
     await removeIfPresent(
       ownershipCandidatePath(manifest.transactionId, target.targetPath),
     );
@@ -1028,6 +1068,10 @@ const parseManifestRecord = (
   if (
     new Set(targets.map((target) => target.targetPath)).size !==
       targets.length ||
+    !pathsAvoidOwnershipRecords(
+      manifestPath,
+      targets.map((target) => target.targetPath),
+    ) ||
     targets.some((target) => {
       const prefix = artifactPrefix(transactionId, target.targetPath);
       return (
@@ -1129,21 +1173,10 @@ export const rollbackHarnessInstallation = async (
   try {
     let manifest = await parseManifest(manifestPath);
     if (manifest.state === "prepared") {
-      for (const target of manifest.targets) {
-        if (
-          !snapshotMatchesManifestState(
-            await inspectFile(target.targetPath),
-            target.beforeExists,
-            target.beforeDigest,
-            target.beforeMode,
-          )
-        )
-          return result(false, "conflict", 0);
-      }
-      await finishTransaction(manifestPath, manifest);
+      await finishTransaction(manifestPath, manifest, true);
       return result(true, "rolled-back", manifest.targets.length);
     }
-    if (!(await manifestOwnershipIsExact(manifestPath, manifest)))
+    if (!(await ensureRecordedManifestOwnership(manifestPath, manifest)))
       return result(false, "conflict", 0);
     manifest = withState(manifest, "rolling-back");
     await replaceManifest(manifestPath, manifest);

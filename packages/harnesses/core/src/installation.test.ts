@@ -224,8 +224,19 @@ describe("harness installation target ownership", () => {
     const losingManifest = outcomes[0].ok ? secondManifest : firstManifest;
     await expect(
       rollbackHarnessInstallation(losingManifest),
-    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    ).resolves.toMatchObject({ ok: true, state: "rolled-back" });
     expect(await readFile(target, "utf8")).toBe("after");
+    const thirdPlan = await inspectHarnessInstallation({
+      manifestPath: join(root, "transactions", "third.json"),
+      operation: "install",
+      targetPaths: [target],
+      planner: () => ({ kind: "replace", bytes: bytes("third") }),
+    });
+    await expect(applyHarnessInstallation(thirdPlan)).resolves.toMatchObject({
+      ok: true,
+      state: "committed",
+    });
+    expect(await readFile(target, "utf8")).toBe("third");
   });
 
   it("reclaims a completed ownership marker for a later transaction", async () => {
@@ -250,9 +261,66 @@ describe("harness installation target ownership", () => {
     }
     expect(await readFile(target, "utf8")).toBe("third");
   });
+
+  it("recovers terminal cleanup after the exact ownership claim is removed", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const manifestPath = join(root, "transaction.json");
+    const transactionId = "a".repeat(32);
+    const prefix = artifactPrefix(transactionId, target);
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "committed",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: digest("before"),
+          beforeExists: true,
+          beforeMode: 0o600,
+          afterDigest: digest("after"),
+          afterExists: true,
+          afterMode: 0o600,
+          stagePath: `${prefix}.stage`,
+          backupPath: `${prefix}.backup`,
+        },
+      ],
+    };
+    await writeFile(target, "after", { mode: 0o600 });
+    await chmod(target, 0o600);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await writeOwnershipMarker(manifestPath, transactionId, target);
+    await unlink(ownershipClaimPath(target));
+
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: true, state: "committed" });
+    await expect(lstat(manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(ownershipClaimPath(target))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readFile(target, "utf8")).toBe("after");
+  });
 });
 
 describe("harness installation admission", () => {
+  it("rejects manifests and targets that overlap ownership records", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const marker = ownershipMarkerPath(target);
+    for (const input of [
+      planInput(root, [target, marker], () => ({ kind: "unchanged" })),
+      {
+        ...planInput(root, [target], () => ({ kind: "unchanged" })),
+        manifestPath: marker,
+      },
+    ]) {
+      await expect(inspectHarnessInstallation(input)).resolves.toMatchObject({
+        disposition: "invalid",
+      });
+    }
+  });
+
   it("treats equal replacement bytes as unchanged and rechecks manifest admission", async () => {
     const root = await temporaryRoot();
     const target = join(root, "config.json");
@@ -780,6 +848,29 @@ describe("harness installation recovery ownership records", () => {
 });
 
 describe("harness installation recovery mode integrity", () => {
+  it("preserves a permissive existing mode under a restrictive umask", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    await writeFile(target, "before", { mode: 0o666 });
+    await chmod(target, 0o666);
+    const previousUmask = process.umask(0o077);
+    try {
+      const plan = await inspectHarnessInstallation(
+        planInput(root, [target], () => ({
+          kind: "replace",
+          bytes: bytes("after"),
+        })),
+      );
+      await expect(applyHarnessInstallation(plan)).resolves.toMatchObject({
+        ok: true,
+        state: "committed",
+      });
+    } finally {
+      process.umask(previousUmask);
+    }
+    expect((await lstat(target)).mode & 0o777).toBe(0o666);
+  });
+
   it("rejects a wrong-mode staged artifact for a newly created target", async () => {
     const root = await temporaryRoot();
     const target = join(root, "created.json");
