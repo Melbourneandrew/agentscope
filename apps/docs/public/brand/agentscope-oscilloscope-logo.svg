@@ -6,7 +6,7 @@
       <rect x="53" y="67" width="150" height="94" rx="7"/>
     </clipPath>
   </defs>
-  <g stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+  <g stroke="#5A9820" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
     <rect x="28" y="42" width="200" height="172" rx="24"/>
     <rect x="48" y="62" width="160" height="104" rx="12"/>
     <path clip-path="url(#display-clip)" d="M62 114C72 114 74 82 88 82s16 64 30 64 16-64 30-64 16 64 30 64 16-32 20-32"/>

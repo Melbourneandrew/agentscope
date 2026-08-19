@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://melbourneandrew.github.io/agentscope/docs">
-    <img src="https://raw.githubusercontent.com/Melbourneandrew/agentscope/main/apps/docs/public/brand/agentscope-oscilloscope-logo-readme.svg" width="112" alt="Agentscope oscilloscope logo" />
+    <img src="https://raw.githubusercontent.com/Melbourneandrew/agentscope/main/apps/docs/public/brand/agentscope-oscilloscope-logo.svg" width="112" alt="Agentscope oscilloscope logo" />
   </a>
 </p>
 
