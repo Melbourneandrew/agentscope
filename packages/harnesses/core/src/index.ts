@@ -10,6 +10,17 @@ export {
 } from "./descriptor.js";
 export { HarnessDiscoveryError, discoverHarness } from "./discovery.js";
 export {
+  COMMON_NATIVE_SEMANTIC_FIELDS,
+  NATIVE_BOUNDARY_KINDS,
+  NATIVE_POSITION_KINDS,
+  NativeMappingError,
+  completeNativeCaptureBoundary,
+  createEphemeralCaptureBoundary,
+  createNativeFieldProvenance,
+  createNativeUnavailableField,
+  resolveNativeCaptureStart,
+} from "./native-mapping.js";
+export {
   compareStableSemver,
   parseStableSemver,
   stableSemverIsInRange,
@@ -39,3 +50,18 @@ export type {
   HarnessVersionProbeResult,
   StableSemver,
 } from "./types.js";
+export type {
+  EphemeralCaptureBoundary,
+  NativeBoundaryKind,
+  NativeCaptureBoundary,
+  NativeCaptureStart,
+  NativeCheckpointRequest,
+  NativeCheckpointResolver,
+  NativeCheckpointResume,
+  NativeFieldProvenance,
+  NativeMappingSource,
+  NativePositionKind,
+  NativeUnavailableField,
+  NativeUnavailableReason,
+  NativeUnavailableState,
+} from "./native-mapping.js";

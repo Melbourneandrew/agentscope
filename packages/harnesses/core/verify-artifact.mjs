@@ -6,6 +6,8 @@ import {
   defineHarnessDescriptor,
   discoverHarness,
   harnessesCorePackageId,
+  completeNativeCaptureBoundary,
+  resolveNativeCaptureStart,
 } from "./dist/index.js";
 
 const listRegularFiles = (directory, prefix = "") => {
@@ -82,3 +84,25 @@ const result = await discoverHarness(registry, descriptor.harnessType, {
 });
 if (result.state !== "installed" || result.version !== "1.1.0")
   throw new Error("Harness Core built contract failed.");
+
+const captureStart = resolveNativeCaptureStart(
+  {
+    nativeIdentityKind: "session",
+    nativeIdentity: "artifact-session",
+    sourceGeneration: 1,
+    positionKind: "sequence",
+    availableStartPosition: 0,
+  },
+  () => ({ disposition: "unavailable", startPosition: 0 }),
+);
+const boundary = completeNativeCaptureBoundary(captureStart, {
+  boundaryKind: "session",
+  boundaryId: "artifact-boundary",
+  exclusiveEndPosition: 1,
+});
+if (
+  boundary.session.nativeIdentity !== "artifact-session" ||
+  boundary.startPosition !== 0 ||
+  boundary.exclusiveEndPosition !== 1
+)
+  throw new Error("Harness Core built native mapping contract failed.");
