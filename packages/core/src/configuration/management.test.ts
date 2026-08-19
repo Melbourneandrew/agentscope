@@ -15,6 +15,7 @@ import { createAgentscopeHomeFromOwnedRootForCore } from "./home.js";
 import {
   ConfigurationManagementError,
   configureDestinationConnection,
+  createCiEnvironmentCredentialPreflight,
   createConfigurationManagementRuntime,
   initializeAgentscopeConfiguration,
   listDestinationConnections,
@@ -100,6 +101,53 @@ const environmentReference = {
 };
 
 describe("Core-owned destination configuration management", () => {
+  it("rejects unbranded runtimes, registries, stores, and owners", async () => {
+    const { runtime, store } = await fixture();
+    expect(() =>
+      createConfigurationManagementRuntime(
+        registry,
+        {} as never,
+        createConfigurationProcessIdentity(
+          process.pid,
+          `process-start-v1-${"c".repeat(64)}`,
+        ),
+      ),
+    ).toThrowError(ConfigurationManagementError);
+    expect(() =>
+      createConfigurationManagementRuntime(
+        {} as never,
+        store,
+        createConfigurationProcessIdentity(
+          process.pid,
+          `process-start-v1-${"d".repeat(64)}`,
+        ),
+      ),
+    ).toThrowError(ConfigurationManagementError);
+    await expect(
+      listDestinationConnections({ ...runtime }),
+    ).rejects.toThrowError(ConfigurationManagementError);
+  });
+
+  it("returns exact missing-state failures before initialization", async () => {
+    const { runtime } = await fixture();
+    for (const operation of [
+      listDestinationConnections(runtime),
+      configureDestinationConnection(runtime, {
+        commandName: "example",
+        credentialReferences: {},
+        name: "local",
+        settings: { project: "agentscope" },
+      }),
+      setDestinationRouting(runtime, []),
+      unconfigureDestinationConnection(runtime, "local"),
+    ])
+      await expect(operation).rejects.toMatchObject({
+        code: "core.configuration.missing",
+      });
+  });
+});
+
+describe("destination configuration lifecycle", () => {
   it("initializes once and atomically configures, routes, and unconfigures", async () => {
     const { runtime, store } = await fixture();
     await expect(initializeAgentscopeConfiguration(runtime)).resolves.toEqual({
@@ -141,7 +189,9 @@ describe("Core-owned destination configuration management", () => {
       (await readConfigurationSnapshot(store)).selectedConnectionIds,
     ).toEqual([]);
   });
+});
 
+describe("destination credential configuration", () => {
   it("validates descriptor settings and credential references before writes", async () => {
     const { runtime } = await fixture();
     await initializeAgentscopeConfiguration(runtime);
@@ -160,6 +210,23 @@ describe("Core-owned destination configuration management", () => {
         name: "remote",
         settings: { project: "agentscope" },
       }),
+    ).rejects.toMatchObject({
+      code: "core.destination.credential-unavailable",
+    });
+    await expect(
+      configureDestinationConnection(
+        runtime,
+        {
+          commandName: "secret-example",
+          credentialReferences: { "api-key": environmentReference },
+          name: "remote",
+          settings: { project: "agentscope" },
+        },
+        createCiEnvironmentCredentialPreflight(
+          { EXAMPLE_API_KEY: "secret" },
+          new AbortController().signal,
+        ),
+      ),
     ).resolves.toMatchObject({
       connection: { name: "remote", transport: "remote" },
     });
@@ -170,6 +237,53 @@ describe("Core-owned destination configuration management", () => {
     });
   });
 
+  it("preflights CI credential references before configuration mutation", async () => {
+    const { runtime, store } = await fixture();
+    await initializeAgentscopeConfiguration(runtime);
+    for (const environment of [{}, { EXAMPLE_API_KEY: 42 }]) {
+      await expect(
+        configureDestinationConnection(
+          runtime,
+          {
+            commandName: "secret-example",
+            credentialReferences: { "api-key": environmentReference },
+            name: "remote",
+            settings: { project: "agentscope" },
+          },
+          createCiEnvironmentCredentialPreflight(
+            environment,
+            new AbortController().signal,
+          ),
+        ),
+      ).rejects.toMatchObject({
+        code: "core.destination.credential-unavailable",
+      });
+      expect((await readConfigurationSnapshot(store)).generation).toBe(0);
+    }
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      configureDestinationConnection(
+        runtime,
+        {
+          commandName: "secret-example",
+          credentialReferences: { "api-key": environmentReference },
+          name: "remote",
+          settings: { project: "agentscope" },
+        },
+        createCiEnvironmentCredentialPreflight(
+          { EXAMPLE_API_KEY: "secret" },
+          controller.signal,
+        ),
+      ),
+    ).rejects.toMatchObject({
+      code: "core.destination.credential-unavailable",
+    });
+    expect((await readConfigurationSnapshot(store)).generation).toBe(0);
+  });
+});
+
+describe("destination configuration rejection and cleanup", () => {
   it("rejects duplicates, unknown routes, and hostile credential records", async () => {
     const { runtime } = await fixture();
     await initializeAgentscopeConfiguration(runtime);
@@ -192,6 +306,20 @@ describe("Core-owned destination configuration management", () => {
     ).rejects.toMatchObject({
       code: "core.destination.connection-missing",
     });
+    await expect(
+      setDestinationRouting(runtime, ["local", "local"]),
+    ).rejects.toMatchObject({ code: "core.configuration.invalid" });
+    await expect(
+      unconfigureDestinationConnection(runtime, "missing"),
+    ).rejects.toMatchObject({ code: "core.destination.connection-missing" });
+    await expect(
+      configureDestinationConnection(runtime, {
+        commandName: "unknown",
+        credentialReferences: {},
+        name: "unknown",
+        settings: {},
+      }),
+    ).rejects.toMatchObject({ code: "core.destination.type-missing" });
     const hostile = {} as Record<string, typeof environmentReference>;
     Object.defineProperty(hostile, "api-key", {
       enumerable: true,
@@ -205,5 +333,23 @@ describe("Core-owned destination configuration management", () => {
         settings: { project: "agentscope" },
       }),
     ).rejects.toThrowError(ConfigurationManagementError);
+  });
+
+  it("retains a destination namespace until its final connection is removed", async () => {
+    const { runtime } = await fixture();
+    await initializeAgentscopeConfiguration(runtime);
+    for (const name of ["first", "second"])
+      await configureDestinationConnection(runtime, {
+        commandName: "example",
+        credentialReferences: {},
+        name,
+        settings: { project: name },
+      });
+    await expect(
+      unconfigureDestinationConnection(runtime, "first"),
+    ).resolves.toMatchObject({ name: "first" });
+    await expect(listDestinationConnections(runtime)).resolves.toMatchObject([
+      { name: "second" },
+    ]);
   });
 });

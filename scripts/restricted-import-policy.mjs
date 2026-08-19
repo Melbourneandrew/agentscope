@@ -7,6 +7,7 @@ const restrictedSpecifiers = [
   "@agentscope/protocol/core-finalization",
   "@agentscope/destinations-core/core-orchestration",
 ];
+const cliOnlySpecifiers = ["@agentscope/core/configuration-management"];
 const testingSpecifiers = [
   "@agentscope/destinations-core/testing",
   "@agentscope/harnesses-core/testing",
@@ -43,10 +44,18 @@ const sourceFiles = (root) => {
 };
 
 const assertNoCoreOnlyImports = (source, file, packageName) => {
-  if (packageName === "@agentscope/core") return;
-  for (const specifier of restrictedSpecifiers)
-    if (source.includes(specifier))
-      throw new Error(`${specifier} is Core-only; forbidden import in ${file}`);
+  if (packageName !== "@agentscope/core")
+    for (const specifier of restrictedSpecifiers)
+      if (source.includes(specifier))
+        throw new Error(
+          `${specifier} is Core-only; forbidden import in ${file}`,
+        );
+  if (packageName !== "@agentscope/cli")
+    for (const specifier of cliOnlySpecifiers)
+      if (source.includes(specifier))
+        throw new Error(
+          `${specifier} is CLI-only; forbidden import in ${file}`,
+        );
 };
 
 const assertNoProductionTestingImports = (source, file, packageName) => {
@@ -67,6 +76,11 @@ const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
         throw new Error(
           `${restricted} is Core-only; forbidden import in ${file}`,
         );
+  if (
+    packageName !== "@agentscope/cli" &&
+    cliOnlySpecifiers.includes(specifier)
+  )
+    throw new Error(`${specifier} is CLI-only; forbidden import in ${file}`);
   if (packageName === "@agentscope/testkit" || testSource.test(file)) return;
   for (const testing of testingSpecifiers)
     if (specifier === testing)

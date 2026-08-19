@@ -67,6 +67,9 @@ importers:
       "@agentscope/destination-local-sqlite":
         specifier: workspace:*
         version: link:../../packages/destinations/local-sqlite
+      "@agentscope/destinations-core":
+        specifier: workspace:*
+        version: link:../../packages/destinations/core
       "@agentscope/harness-claude-code":
         specifier: workspace:*
         version: link:../../packages/harnesses/claude-code

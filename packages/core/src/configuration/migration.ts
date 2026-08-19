@@ -1,7 +1,7 @@
 import type {
   DestinationRegistry,
   JsonObject,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 
 import { cloneConfigurationDocument } from "./plain-data.js";
 import {

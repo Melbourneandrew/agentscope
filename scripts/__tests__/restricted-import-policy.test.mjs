@@ -10,6 +10,7 @@ import { auditCoreFinalizationImports } from "../restricted-import-policy.mjs";
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-import-policy-"));
   const packages = new Map([
+    ["apps/cli", "@agentscope/cli"],
     ["packages/core", "@agentscope/core"],
     ["packages/destination", "@agentscope/destination"],
   ]);
@@ -58,6 +59,31 @@ test("permits the Core finalization entrypoint only inside Core", () => {
         /Core-only/,
       );
       rmSync(path);
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("permits configuration management authority only inside the CLI", () => {
+  const value = fixture();
+  try {
+    writeFileSync(
+      join(value.root, "apps/cli/configuration.ts"),
+      'import { initializeAgentscopeConfiguration } from "@agentscope/core/configuration-management";\nvoid initializeAgentscopeConfiguration;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    for (const packagePath of ["packages/core", "packages/destination"]) {
+      const forbidden = join(value.root, packagePath, "configuration.ts");
+      writeFileSync(
+        forbidden,
+        'import { initializeAgentscopeConfiguration } from "@agentscope/core/configuration-management";\nvoid initializeAgentscopeConfiguration;\n',
+      );
+      assert.throws(
+        () => auditCoreFinalizationImports(value.root, value.packages),
+        /CLI-only/u,
+      );
+      rmSync(forbidden);
     }
   } finally {
     rmSync(value.root, { recursive: true, force: true });

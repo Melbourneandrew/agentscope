@@ -4,7 +4,7 @@ import type {
   DestinationConnectionId,
   DestinationTypeId,
   CredentialSlotId,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 
 import {
   createCiEnvironmentCredentialReference,

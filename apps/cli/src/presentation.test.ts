@@ -45,6 +45,13 @@ describe("CLI presentation bounds", () => {
         facts,
       }).success,
     ).toBe(false);
+    expect(
+      cliDiagnosticSchema.safeParse({
+        category: "unavailable",
+        code: "sample.unavailable",
+        facts: { retryable: true },
+      }).success,
+    ).toBe(true);
     expect(exitCodeForCategory("permission-denied")).toBe(6);
 
     const captured = sink();
@@ -88,6 +95,19 @@ describe("CLI presentation bounds", () => {
     expect(() =>
       reconstructCliValue(Array.from({ length: 4_096 }, () => [1, 2, 3, 4])),
     ).toThrow("cli.presentation.invalid");
+  });
+
+  it("rejects hostile array prototypes and symbol properties", () => {
+    const hostilePrototype: unknown[] = [];
+    Object.setPrototypeOf(hostilePrototype, null);
+    expect(() => reconstructCliValue(hostilePrototype)).toThrow(
+      "cli.presentation.invalid",
+    );
+    const hostileSymbol: unknown[] = [];
+    Object.defineProperty(hostileSymbol, Symbol("x"), { value: true });
+    expect(() => reconstructCliValue(hostileSymbol)).toThrow(
+      "cli.presentation.invalid",
+    );
   });
 
   it("validates a complete human result before its first write", async () => {

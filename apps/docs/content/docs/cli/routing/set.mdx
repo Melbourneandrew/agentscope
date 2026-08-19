@@ -1,0 +1,35 @@
+---
+title: Set routing
+description: Atomically replace the explicit destination selection.
+command: agentscope routing set
+commandContract: sha256:8c11a28f9c00826c721a727141f8b7d338aef963c531389b0d0ee6a160261f40
+---
+
+This command replaces, rather than merges, the complete selected set. Supplying no names writes an empty selection and disables delivery. Every name must resolve to one configured connection before the atomic commit.
+
+## Syntax
+
+```bash
+agentscope routing set [connections...] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human`, `json`, and `jsonl` report the new generation and selected names under `agentscope.cli.routing-set.v1`.
+
+## Automation
+
+The command rejects duplicates and unknown names; it never chooses the first configured connection or inspects harness content.
+
+## Diagnostics
+
+- `configuration.conflict` and `configuration.unavailable` describe the atomic write.
+- `routing.connection-missing` rejects an unknown name.
+- `routing.duplicate-connection` rejects repeated names.
+
+## Examples
+
+```bash
+agentscope routing set primary archive
+agentscope routing set
+```

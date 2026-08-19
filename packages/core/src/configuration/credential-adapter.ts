@@ -7,7 +7,7 @@ import {
   type CredentialSlotId,
   type DestinationConnectionId,
   type DestinationTypeId,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 
 import type { ConfigurationCredentialReference } from "./schema.js";
 

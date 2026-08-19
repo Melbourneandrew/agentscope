@@ -28,6 +28,7 @@
   },
   "devDependencies": {
     "@agentscope/core": "workspace:*",
+    "@agentscope/destinations-core": "workspace:*",
     "@agentscope/destination-langfuse": "workspace:*",
     "@agentscope/destination-local-sqlite": "workspace:*",
     "@agentscope/harness-claude-code": "workspace:*",

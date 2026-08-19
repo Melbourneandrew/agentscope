@@ -1,0 +1,35 @@
+---
+title: Configure a destination
+description: Create a named connection from a first-party destination descriptor.
+command: agentscope destination configure
+commandContract: sha256:8c11a28f9c00826c721a727141f8b7d338aef963c531389b0d0ee6a160261f40
+---
+
+The generic configure command resolves `<type>` through the compiled first-party registry, validates non-secret settings with the descriptor's detached strict schema, validates every declared credential slot, and commits one new configuration generation atomically.
+
+## Syntax
+
+```bash
+agentscope destination configure <type> --name <name> [--settings <json>] [--credential-env <slot=VARIABLE...>] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` reports the name, type, transport, routing state, and generation. `json` and `jsonl` use `agentscope.cli.destination-configure.v1`. Credential values are never output.
+
+## Automation
+
+Unknown settings, duplicate slots, missing required slots, credential-shaped settings, and an unavailable or malformed referenced variable fail before the atomic write. `--credential-env` resolves only the exact named variable for preflight and stores only its CI environment reference; the credential value is never copied into configuration, output, or diagnostics.
+
+## Diagnostics
+
+- `configuration.conflict`, `configuration.missing`, and `configuration.unavailable` describe the Core configuration boundary.
+- `destination.connection-exists` rejects duplicate names.
+- `destination.credential-unavailable` means a declared CI credential reference could not be safely resolved before mutation.
+- `destination.type-missing` rejects a type absent from the first-party registry.
+
+## Examples
+
+```bash
+agentscope destination configure langfuse --name primary --settings '{"project":"agentscope"}' --credential-env secret-key=LANGFUSE_SECRET_KEY
+```

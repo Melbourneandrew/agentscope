@@ -12,7 +12,7 @@ import { join } from "node:path";
 import {
   getDestinationDescriptor,
   type DestinationRegistry,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 import { z } from "zod";
 
 import {

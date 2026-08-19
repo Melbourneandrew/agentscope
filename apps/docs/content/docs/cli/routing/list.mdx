@@ -1,0 +1,33 @@
+---
+title: List routing
+description: Show the exact currently selected destination connections.
+command: agentscope routing list
+commandContract: sha256:8c11a28f9c00826c721a727141f8b7d338aef963c531389b0d0ee6a160261f40
+---
+
+The list command reads the current validated routing block and maps selected identities to connection names without resolving credentials or invoking destinations.
+
+## Syntax
+
+```bash
+agentscope routing list [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human` explicitly reports disabled delivery for an empty selection. `json` and `jsonl` use `agentscope.cli.routing-list.v1`.
+
+## Automation
+
+Results are sorted and deterministic. Empty output never triggers a fallback destination.
+
+## Diagnostics
+
+- `configuration.missing` means initialization has not created configuration.
+- `configuration.unavailable` means routing could not be inspected safely.
+
+## Examples
+
+```bash
+agentscope routing list --output json
+```

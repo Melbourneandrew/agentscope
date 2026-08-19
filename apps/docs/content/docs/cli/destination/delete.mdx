@@ -1,0 +1,35 @@
+---
+title: Delete destination data
+description: Delete one exact destination-owned local file after explicit confirmation.
+command: agentscope destination delete
+commandContract: sha256:8c11a28f9c00826c721a727141f8b7d338aef963c531389b0d0ee6a160261f40
+---
+
+Deletion is intentionally separate from unconfiguration. The destination implementation must identify an exact owned local file and Core must validate ownership before removal. Remote destinations and descriptors without a governed deletion capability are unsupported.
+
+## Syntax
+
+```bash
+agentscope destination delete <name> --confirm [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human`, `json`, and `jsonl` success uses `agentscope.cli.destination-delete.v1`. No command output contains deleted trace content or a credential.
+
+## Automation
+
+`--confirm` applies only to the exact file identified for this invocation. It cannot authorize a newly discovered path or a different connection.
+
+## Diagnostics
+
+- `configuration.unavailable` means ownership state could not be verified.
+- `destination.confirmation-required` means explicit confirmation was absent.
+- `destination.connection-missing` rejects an unknown connection.
+- `destination.data-delete-unsupported` means the descriptor has no governed local deletion capability.
+
+## Examples
+
+```bash
+agentscope destination delete local-history --confirm
+```

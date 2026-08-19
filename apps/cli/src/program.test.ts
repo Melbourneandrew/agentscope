@@ -25,13 +25,20 @@ describe("agentscope root command", () => {
     expect(exitCode).toBe(0);
     expect(captured.stderr).toEqual([]);
     expect(captured.stdout.join("")).toMatchInlineSnapshot(`
-      "Usage: agentscope [options]
+      "Usage: agentscope [options] [command]
 
       Capture coding-agent traces and report them to trace destinations.
 
       Options:
-        -V, --version  output the installed version
-        -h, --help     display help for command
+        -V, --version   output the installed version
+        -h, --help      display help for command
+
+      Commands:
+        destination     Configure and inspect named trace destination connections.
+        init [options]  Inspect the machine and produce or apply a non-destructive
+                        initialization plan.
+        routing         Inspect or replace the explicit destination routing selection.
+        help [command]  display help for command
 
       Documentation: https://melbourneandrew.github.io/agentscope/docs/cli/index
 

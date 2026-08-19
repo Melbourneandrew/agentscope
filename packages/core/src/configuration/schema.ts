@@ -9,7 +9,7 @@ import {
   type DestinationRegistry,
   type DestinationTypeId,
   type JsonObject,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 import { z } from "zod";
 
 import { cloneConfigurationDocument } from "./plain-data.js";

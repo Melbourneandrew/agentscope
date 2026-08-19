@@ -12,6 +12,10 @@
     "./harness-capture": {
       "types": "./dist/capture/index.d.ts",
       "import": "./dist/capture/index.js"
+    },
+    "./configuration-management": {
+      "types": "./dist/configuration/management-index.d.ts",
+      "import": "./dist/configuration/management-index.js"
     }
   },
   "files": [

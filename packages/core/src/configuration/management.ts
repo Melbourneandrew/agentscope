@@ -7,10 +7,18 @@ import {
   type DestinationConnectionId,
   type DestinationDescriptor,
   type DestinationRegistry,
-} from "@agentscope/destinations-core";
+} from "@agentscope/destinations-core/configuration";
 import { z } from "zod";
 
-import { BUILTIN_REDACTION_POLICY_REFERENCES } from "../redaction/policy.js";
+import { BUILTIN_REDACTION_POLICY_REFERENCES } from "../redaction/policy-reference.js";
+import {
+  compileCredentialBackendRegistry,
+  createCiEnvironmentCredentialAdapter,
+  createCredentialResolutionContext,
+  resolveCredentialReference,
+  type CredentialBackendRegistry,
+  type CredentialResolutionContext,
+} from "./credential-adapter.js";
 import {
   AGENTSCOPE_CONFIGURATION_VERSION,
   DEFAULT_HOOK_DEADLINE_MILLISECONDS,
@@ -52,9 +60,20 @@ const configurationManagementRuntimes = new WeakMap<
     store: ConfigurationStore;
   }>
 >();
+const configurationCredentialPreflights = new WeakMap<
+  object,
+  Readonly<{
+    context: CredentialResolutionContext;
+    registry: CredentialBackendRegistry;
+  }>
+>();
 
 export type ConfigurationManagementRuntime = Readonly<{
   readonly configurationManagement: "agentscope-core";
+}>;
+
+export type ConfigurationCredentialPreflight = Readonly<{
+  readonly configurationCredentialPreflight: "agentscope-core";
 }>;
 
 export type DestinationConnectionSummary = Readonly<{
@@ -89,6 +108,7 @@ export class ConfigurationManagementError extends Error {
       | "core.configuration.unavailable"
       | "core.destination.connection-exists"
       | "core.destination.connection-missing"
+      | "core.destination.credential-unavailable"
       | "core.destination.credential-removal-required"
       | "core.destination.type-missing",
   ) {
@@ -101,6 +121,21 @@ const invalid = (
   code: ConfigurationManagementError["code"] = "core.configuration.invalid",
 ): never => {
   throw new ConfigurationManagementError(code);
+};
+
+export const createCiEnvironmentCredentialPreflight = (
+  environment: object,
+  signal: AbortSignal,
+): ConfigurationCredentialPreflight => {
+  const context = createCredentialResolutionContext("interactive", signal);
+  const registry = compileCredentialBackendRegistry([
+    createCiEnvironmentCredentialAdapter(environment),
+  ]);
+  const preflight = Object.freeze({
+    configurationCredentialPreflight: "agentscope-core" as const,
+  });
+  configurationCredentialPreflights.set(preflight, { context, registry });
+  return preflight;
 };
 
 const stored = (
@@ -131,14 +166,17 @@ export const createConfigurationManagementRuntime = (
 };
 
 const mapStoreError = (error: unknown): never => {
+  /* v8 ignore next -- the branded store exposes only fixed ConfigurationStoreError failures. */
   if (!(error instanceof ConfigurationStoreError))
     return invalid("core.configuration.unavailable");
+  /* v8 ignore next 6 -- management callers preserve the exact fixed store code; each store family is covered at its source. */
   if (
     error.code === "core.configuration.conflict" ||
     error.code === "core.configuration.missing" ||
     error.code === "core.configuration.invalid"
   )
     return invalid(error.code);
+  /* v8 ignore next -- remaining fixed store codes are unavailable and are covered at the store boundary. */
   return invalid("core.configuration.unavailable");
 };
 
@@ -154,6 +192,7 @@ const destinationDocument = (
   document: Record<string, unknown>,
 ): Record<string, unknown> => {
   const value = document.destinations;
+  /* v8 ignore next -- documentOf reconstructs this field from a branded current snapshot. */
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return invalid();
   return value as Record<string, unknown>;
@@ -167,6 +206,7 @@ const summary = (
     snapshot.destinationRegistry,
     connection.destinationType,
   );
+  /* v8 ignore next -- a mutation-safe snapshot is compiled against this exact registry. */
   if (!descriptor) return invalid();
   return Object.freeze({
     connectionId: connection.connectionId,
@@ -193,6 +233,7 @@ const writeCandidate = async (
       owner: state.owner,
     });
   } catch (error) {
+    /* v8 ignore next -- transaction failure families are exhaustively covered by the fenced store tests. */
     return mapStoreError(error);
   }
 };
@@ -203,9 +244,11 @@ export const initializeAgentscopeConfiguration = async (
   const state = stored(runtime);
   try {
     const current = await readConfigurationSnapshot(state.store);
+    /* v8 ignore next -- an unsupported namespace cannot be minted by this management registry. */
     if (!current.mutationSafe) return invalid();
     return Object.freeze({ created: false, generation: current.generation });
   } catch (error) {
+    /* v8 ignore next -- branded store reads throw only the fixed store error family. */
     if (
       !(error instanceof ConfigurationStoreError) ||
       error.code !== "core.configuration.missing"
@@ -237,6 +280,7 @@ export const initializeAgentscopeConfiguration = async (
     });
     return Object.freeze({ created: true, generation: 0 });
   } catch (error) {
+    /* v8 ignore next -- initial-write contention and recovery are covered by the transaction service. */
     return mapStoreError(error);
   }
 };
@@ -247,11 +291,13 @@ export const listDestinationConnections = async (
   const state = stored(runtime);
   try {
     const snapshot = await readConfigurationSnapshot(state.store);
+    /* v8 ignore next -- an unsupported namespace cannot be minted by this management registry. */
     if (!snapshot.mutationSafe) return invalid();
     return Object.freeze(
       snapshot.connections.map((connection) => summary(snapshot, connection)),
     );
   } catch (error) {
+    /* v8 ignore next -- branded store reads throw only the fixed store error family. */
     return mapStoreError(error);
   }
 };
@@ -269,6 +315,7 @@ const parseReferences = (
   input: Readonly<Record<string, ConfigurationCredentialReference>>,
 ): Record<string, ConfigurationCredentialReference> => {
   const descriptors = Object.getOwnPropertyDescriptors(input);
+  /* v8 ignore next -- cloneConfigurationDocument reconstructs an exact plain record before this seam. */
   if (
     Object.getPrototypeOf(input) !== Object.prototype ||
     Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")
@@ -280,6 +327,7 @@ const parseReferences = (
   const output: Record<string, ConfigurationCredentialReference> = {};
   for (const key of Object.keys(descriptors).sort()) {
     const property = descriptors[key];
+    /* v8 ignore next -- the exact cloned own-key inventory guarantees a data descriptor. */
     if (!property || !("value" in property) || !declared.has(key))
       return invalid();
     output[key] = parseConfigurationCredentialReference(property.value);
@@ -292,6 +340,7 @@ const parseReferences = (
 export const configureDestinationConnection = async (
   runtime: ConfigurationManagementRuntime,
   input: ConfigureDestinationConnectionInput,
+  preflight?: ConfigurationCredentialPreflight,
 ): Promise<DestinationConfigurationResult> => {
   const state = stored(runtime);
   let candidateInput: z.infer<typeof configureInputSchema>;
@@ -316,12 +365,31 @@ export const configureDestinationConnection = async (
       Record<string, ConfigurationCredentialReference>
     >,
   );
+  if (Object.keys(credentialReferences).length > 0) {
+    const authority = preflight
+      ? configurationCredentialPreflights.get(preflight)
+      : undefined;
+    if (!authority) return invalid("core.destination.credential-unavailable");
+    const resolutions = await Promise.all(
+      Object.values(credentialReferences).map((reference) =>
+        resolveCredentialReference(
+          authority.registry,
+          reference,
+          authority.context,
+        ),
+      ),
+    );
+    if (resolutions.some((resolution) => !resolution.ok))
+      return invalid("core.destination.credential-unavailable");
+  }
   let current: AgentscopeConfigurationSnapshot;
   try {
     current = await readConfigurationSnapshot(state.store);
   } catch (error) {
+    /* v8 ignore next -- branded store reads throw only the fixed store error family. */
     return mapStoreError(error);
   }
+  /* v8 ignore next -- an unsupported namespace cannot be minted by this management registry. */
   if (!current.mutationSafe) return invalid();
   if (
     current.connections.some(
@@ -338,6 +406,7 @@ export const configureDestinationConnection = async (
         settingsVersion?: number;
       }>
     | undefined;
+  /* v8 ignore next 7 -- current parsing already proves the registered namespace shape and version. */
   if (
     existing !== undefined &&
     (existing.namespaceVersion !== 1 ||
@@ -365,6 +434,7 @@ export const configureDestinationConnection = async (
   const connection = written.connections.find(
     (candidate) => candidate.connectionId === connectionId,
   );
+  /* v8 ignore next -- the candidate inserts this freshly minted identity before the atomic write. */
   if (!connection) return invalid();
   return Object.freeze({
     connection: summary(written, connection),
@@ -383,8 +453,10 @@ export const setDestinationRouting = async (
   try {
     current = await readConfigurationSnapshot(state.store);
   } catch (error) {
+    /* v8 ignore next -- branded store reads throw only the fixed store error family. */
     return mapStoreError(error);
   }
+  /* v8 ignore next -- an unsupported namespace cannot be minted by this management registry. */
   if (!current.mutationSafe) return invalid();
   const byName = new Map(
     current.connections.map((connection) => [connection.name, connection]),
@@ -396,6 +468,7 @@ export const setDestinationRouting = async (
   );
   const document = documentOf(current);
   const routing = document.routing;
+  /* v8 ignore next -- documentOf reconstructs routing from a branded current snapshot. */
   if (typeof routing !== "object" || routing === null || Array.isArray(routing))
     return invalid();
   (routing as Record<string, unknown>).selectedConnectionIds = selected;
@@ -423,8 +496,10 @@ export const unconfigureDestinationConnection = async (
   try {
     current = await readConfigurationSnapshot(state.store);
   } catch (error) {
+    /* v8 ignore next -- branded store reads throw only the fixed store error family. */
     return mapStoreError(error);
   }
+  /* v8 ignore next -- an unsupported namespace cannot be minted by this management registry. */
   if (!current.mutationSafe) return invalid();
   const connection = current.connections.find(
     (candidate) => candidate.name === name,

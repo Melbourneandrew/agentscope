@@ -15,6 +15,7 @@ const expectedInternalDependencies = new Map([
       "@agentscope/core",
       "@agentscope/destination-langfuse",
       "@agentscope/destination-local-sqlite",
+      "@agentscope/destinations-core",
       "@agentscope/harness-claude-code",
       "@agentscope/harness-codex",
       "@agentscope/harness-gemini-cli",

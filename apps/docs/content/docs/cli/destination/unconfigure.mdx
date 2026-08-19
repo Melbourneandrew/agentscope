@@ -1,0 +1,34 @@
+---
+title: Unconfigure a destination
+description: Remove a named connection while preserving destination-owned data.
+command: agentscope destination unconfigure
+commandContract: sha256:8c11a28f9c00826c721a727141f8b7d338aef963c531389b0d0ee6a160261f40
+---
+
+Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Credential-bearing connections first require the proof-bound credential retirement lifecycle.
+
+## Syntax
+
+```bash
+agentscope destination unconfigure <name> [--output human|json|jsonl]
+```
+
+## Output and exits
+
+`human`, `json`, and `jsonl` report the committed generation and `dataPreserved: true` using `agentscope.cli.destination-unconfigure.v1`.
+
+## Automation
+
+This command is safe for local data retention but is not equivalent to data deletion. Use the separate confirmed delete command for an exact owned file.
+
+## Diagnostics
+
+- `configuration.conflict` and `configuration.unavailable` describe the atomic write.
+- `destination.connection-missing` rejects an unknown name.
+- `destination.credential-removal-required` prevents orphaning a referenced credential.
+
+## Examples
+
+```bash
+agentscope destination unconfigure local-history
+```

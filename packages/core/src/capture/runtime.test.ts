@@ -1582,6 +1582,7 @@ describe("compile boundary", () => {
     expect(Object.keys(packageJson.exports)).toEqual([
       ".",
       "./harness-capture",
+      "./configuration-management",
     ]);
 
     const productionSource = readdirSync(captureDirectory)

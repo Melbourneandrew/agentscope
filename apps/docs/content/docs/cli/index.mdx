@@ -2,15 +2,15 @@
 title: Agentscope CLI
 description: Root command, output modes, diagnostics, and exit behavior.
 command: agentscope
-commandContract: sha256:54eb7d3862717c7f88e9733944f713922bd1313be11df6e1683cd4921ca9e606
+commandContract: sha256:8c11a28f9c00826c721a727141f8b7d338aef963c531389b0d0ee6a160261f40
 ---
 
-The `agentscope` command is the composition root for capture, configuration, installation, destination, retrieval, and diagnostic workflows. This page documents only commands that are currently shipped; planned commands are not registered as placeholders.
+The `agentscope` command is the composition root for capture, configuration, installation, destination, retrieval, and diagnostic workflows. The currently shipped configuration surface is plan-first: `init` does not mutate without `--yes`, destination configuration is descriptor-driven, and routing is always explicit.
 
 ## Syntax
 
 ```bash
-agentscope [--help] [--version]
+agentscope [--help] [--version] [command]
 ```
 
 Root help and version use the `human` output mode and do not read configuration, resolve credentials, mutate state, or access the network.
@@ -42,4 +42,7 @@ Diagnostics contain a stable code and closed category, never a stack trace, cred
 ```bash
 agentscope --help
 agentscope --version
+agentscope init
+agentscope destination list
+agentscope routing list
 ```
