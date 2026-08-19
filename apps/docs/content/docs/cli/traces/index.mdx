@@ -2,10 +2,12 @@
 title: Traces
 description: Search and retrieve portable traces from one explicit destination connection.
 command: agentscope traces
-commandContract: sha256:cee0b72028565d093651093d6a9a52397b2004665a4befe89da92a2708c172ee
+commandContract: sha256:8b7cfb46132eb5d97a8412e4572a1ab541a659bb413312f8303f41d755eb5526
 ---
 
 Trace commands query exactly one configured destination. They never use routing selection, fall back to another connection, or expose destination-native response bodies.
+
+Core starts one fixed two-second absolute retrieval deadline at command entry, before configuration is read. This retrieval budget is independent of the configurable capture-hook deadline and bounds configuration, credential, transport, and Retriever work together.
 
 ## Syntax
 

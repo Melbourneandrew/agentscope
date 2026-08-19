@@ -54,6 +54,25 @@ const run = async (
 };
 
 describe("portable traces commands", () => {
+  it("documents required selection, the page default, and exact get identity", async () => {
+    const services: CliTraceServices = {
+      getTrace: () => ({ status: "success", value: getValue }),
+      searchTraces: () => ({ status: "success", value: searchValue }),
+    };
+    const search = await run(["traces", "search", "--help"], services);
+    const get = await run(["traces", "get", "--help"], services);
+    const searchHelp = search.stdout.join(" ").replace(/\s+/gu, " ");
+    const getHelp = get.stdout.join(" ").replace(/\s+/gu, " ");
+
+    expect(search.exitCode).toBe(0);
+    expect(searchHelp).toContain("required --destination");
+    expect(searchHelp).toContain("default --limit 50");
+    expect(searchHelp).toContain("default: 50");
+    expect(get.exitCode).toBe(0);
+    expect(getHelp).toContain("required --destination");
+    expect(getHelp).toContain("exactly one of --trace-id or --trace-ref");
+  });
+
   it("normalizes every search flag and renders the portable page", async () => {
     let received: unknown;
     const result = await run(

@@ -3,12 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   compileCredentialBackendRegistry,
   createCiEnvironmentCredentialAdapter,
-  createCoreRetrievalRuntime,
   DEFAULT_REDACTION_POLICY_REGISTRY,
-  getConfiguredTrace,
-  searchConfiguredTraces,
-  type CoreRetrievalFailure,
-  type CreateCoreRetrievalRuntimeInput,
   type CredentialBackendRegistry,
   type RedactionPolicyRegistry,
 } from "@agentscope/core";
@@ -32,6 +27,13 @@ import {
   type AgentscopeHomeResolver,
   type ConfigurationStore,
 } from "@agentscope/core/configuration-management";
+import {
+  getConfiguredTrace,
+  prepareCoreRetrievalRuntime,
+  searchConfiguredTraces,
+  type CoreRetrievalFailure,
+  type PrepareCoreRetrievalRuntimeInput,
+} from "@agentscope/core/retrieval-orchestration";
 import {
   compileDestinationRegistry,
   getDestinationDescriptor,
@@ -107,11 +109,11 @@ type ProductionState = Readonly<{
   policyRegistry: RedactionPolicyRegistry;
   registry: DestinationRegistry;
   store: ConfigurationStore;
-  transportExecutor: CreateCoreRetrievalRuntimeInput["transportExecutor"];
+  transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
 }>;
 
 /* v8 ignore next -- Phase 8 has no remote production descriptor; Phase 9 supplies Core's bound executor. */
-const unavailableTransportExecutor: CreateCoreRetrievalRuntimeInput["transportExecutor"] =
+const unavailableTransportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"] =
   () => Promise.reject(new Error("destination.transport.unavailable"));
 
 export type CreateProductionCliServicesInput = Readonly<{
@@ -121,7 +123,7 @@ export type CreateProductionCliServicesInput = Readonly<{
   credentialBackendRegistry?: CredentialBackendRegistry;
   policyRegistry?: RedactionPolicyRegistry;
   registry?: DestinationRegistry;
-  transportExecutor?: CreateCoreRetrievalRuntimeInput["transportExecutor"];
+  transportExecutor?: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
 }>;
 
 const createState = (
@@ -328,24 +330,32 @@ const RETRIEVAL_DIAGNOSTICS = Object.freeze({
   >
 >);
 
-const retrievalRuntime = async (state: ProductionState) => {
-  const configuration = await readConfigurationSnapshot(state.store);
-  return {
-    configuration,
-    runtime: createCoreRetrievalRuntime({
-      configuration,
-      credentialBackendRegistry: state.credentialBackendRegistry,
-      policyRegistry: state.policyRegistry,
-      timeoutMilliseconds: configuration.hookDeadlineMilliseconds,
-      transportExecutor: state.transportExecutor,
-    }),
-  };
-};
+const retrievalRuntime = (state: ProductionState) =>
+  prepareCoreRetrievalRuntime({
+    configurationStore: state.store,
+    credentialBackendRegistry: state.credentialBackendRegistry,
+    policyRegistry: state.policyRegistry,
+    transportExecutor: state.transportExecutor,
+  });
+
+const RETRIEVAL_PREPARATION_DIAGNOSTICS = Object.freeze({
+  "core.configuration.invalid": unavailable,
+  "core.configuration.missing": missingConfiguration,
+  "core.configuration.unavailable": unavailable,
+  "core.configuration.unsupported": unavailable,
+  "deadline-exceeded": diagnostic("unavailable", "traces.deadline-exceeded"),
+});
+
+const retrievalPreparationDiagnostic = (
+  code: keyof typeof RETRIEVAL_PREPARATION_DIAGNOSTICS,
+): CliDiagnostic => RETRIEVAL_PREPARATION_DIAGNOSTICS[code];
 
 const createTraceServices = (state: ProductionState): CliTraceServices => ({
   searchTraces: async (input) => {
     try {
       const prepared = await retrievalRuntime(state);
+      if (!prepared.ok)
+        return failure(retrievalPreparationDiagnostic(prepared.code));
       const { cursor, destination } = input;
       const result = await searchConfiguredTraces(prepared.runtime, {
         destinationName: destination,
@@ -380,9 +390,11 @@ const createTraceServices = (state: ProductionState): CliTraceServices => ({
   getTrace: async (input) => {
     try {
       const prepared = await retrievalRuntime(state);
+      if (!prepared.ok)
+        return failure(retrievalPreparationDiagnostic(prepared.code));
       const reference = input.traceReference;
       if (reference !== undefined) {
-        const connection = prepared.configuration.connections.find(
+        const connection = prepared.runtime.configuration.connections.find(
           ({ name }) => name === input.destination,
         );
         if (!connection)

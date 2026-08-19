@@ -10,6 +10,7 @@ const restrictedSpecifiers = [
 const cliOnlySpecifiers = [
   "@agentscope/core/configuration-management",
   "@agentscope/core/hook-orchestration",
+  "@agentscope/core/retrieval-orchestration",
   "@agentscope/harnesses-core/cli-management",
 ];
 const testingSpecifiers = [

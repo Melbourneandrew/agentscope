@@ -228,6 +228,29 @@ describe("production configuration composition", () => {
 });
 
 describe("production trace retrieval composition", () => {
+  it("maps missing and invalid configuration before retrieval authority", async () => {
+    const { root, services } = await productionFixture(
+      "agentscope-cli-retrieval-config-",
+    );
+    const input = { destination: "archive", tags: [] };
+
+    await expect(services.searchTraces(input)).resolves.toEqual({
+      diagnostic: {
+        category: "not-found",
+        code: "configuration.missing",
+      },
+      status: "failure",
+    });
+    await writeFile(join(root, "config.json"), "{}\n", { mode: 0o600 });
+    await expect(services.searchTraces(input)).resolves.toEqual({
+      diagnostic: {
+        category: "unavailable",
+        code: "configuration.unavailable",
+      },
+      status: "failure",
+    });
+  });
+
   it("searches and gets through one configured Retriever with safe schemas", async () => {
     const { services } = await productionFixture("agentscope-cli-retrieval-");
     const invoke = async (arguments_: readonly string[]) => {

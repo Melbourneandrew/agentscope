@@ -317,7 +317,8 @@ const rawCommandRegistry = [
     kind: "command",
     outputModes: ["human", "json", "jsonl"],
     path: ["traces", "search"],
-    summary: "Search one configured retriever with portable bounded filters.",
+    summary:
+      "Search one required --destination with bounded filters and default --limit 50.",
     visibility: "public",
   },
   {
@@ -343,7 +344,7 @@ const rawCommandRegistry = [
     outputModes: ["human", "json", "jsonl"],
     path: ["traces", "get"],
     summary:
-      "Retrieve one governed portable trace by ID or structured locator.",
+      "Retrieve from required --destination using exactly one of --trace-id or --trace-ref.",
     visibility: "public",
   },
   {

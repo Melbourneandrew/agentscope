@@ -169,7 +169,7 @@ const searchModule = defineCliCommandModule({
     command
       .requiredOption(
         "--destination <name>",
-        "configured destination connection",
+        "required configured destination connection",
       )
       .option("--trace-id <id>", "exact lowercase W3C trace ID")
       .option("--from <instant>", "inclusive RFC 3339 start instant")
@@ -179,7 +179,7 @@ const searchModule = defineCliCommandModule({
       .option("--model <name>", "exact normalized model identity")
       .option("--session <id>", "exact session identity")
       .option("--tag <tag...>", "one or more exact tags")
-      .option("--limit <count>", "page size from 1 through 200")
+      .option("--limit <count>", "page size from 1 through 200 (default: 50)")
       .option(
         "--cursor <cursor>",
         "opaque cursor from a prior matching search",
@@ -226,12 +226,12 @@ const getModule = defineCliCommandModule({
     command
       .requiredOption(
         "--destination <name>",
-        "configured destination connection",
+        "required configured destination connection",
       )
-      .option("--trace-id <id>", "exact lowercase W3C trace ID")
+      .option("--trace-id <id>", "exactly one identity: lowercase W3C trace ID")
       .option(
         "--trace-ref <json>",
-        "exact structured locator from machine-readable search output",
+        "exactly one identity: structured locator from search output",
       );
   },
   execute: (services: CliTraceServices, input) => services.getTrace(input),

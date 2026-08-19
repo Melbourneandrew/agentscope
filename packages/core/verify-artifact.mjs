@@ -40,13 +40,15 @@ import {
   readConfigurationSnapshot,
   recoverCredentialMutation,
   resolveCredentialReference,
-  searchConfiguredTraces,
-  getConfiguredTrace,
   runResolvedTraceLifecycle,
   retireCredentialReference,
   serializeAgentscopeConfiguration,
   writeConfigurationSnapshot,
 } from "./dist/index.js";
+import {
+  getConfiguredTrace,
+  searchConfiguredTraces,
+} from "./dist/retrieval/orchestration-index.js";
 import {
   createCiEnvironmentCredentialReference,
   createStoredCredentialReference,
@@ -470,6 +472,7 @@ try {
     throw error;
 }
 const retrievalRuntime = {
+  commandStartedAt: "2026-01-01T00:00:00.000Z",
   configuration: artifactConfiguration,
   policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
   credentialBackendRegistry: emptyCredentialRegistry,
@@ -940,7 +943,7 @@ try {
       "export const verify = async () => {",
       "  const home = createAgentscopeHomeResolver({ environment: { AGENTSCOPE_HOME: '/tmp/agentscope-bundle-home' }, environmentOverrideAuthority: 'test', platform: 'linux' })();",
       "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 2, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [], hookDeadlineMilliseconds: 2000 }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
-      "  return typeof core.runResolvedTraceLifecycle === 'function' && typeof core.searchConfiguredTraces === 'function' && typeof core.getConfiguredTrace === 'function' && !('agentscope' in core) && !('CoreRedactionError' in core) && !('createHookEntryAuthority' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
+      "  return typeof core.runResolvedTraceLifecycle === 'function' && !('searchConfiguredTraces' in core) && !('getConfiguredTrace' in core) && !('prepareCoreRetrievalRuntime' in core) && !('agentscope' in core) && !('CoreRedactionError' in core) && !('createHookEntryAuthority' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
       "};",
       "export const verifyCoordinator = (homeRoot, platform) => runOperationalCoordinatorForTesting({ kind: 'preload', homeRoot, platform }, 1000, {});",
     ].join("\n"),
