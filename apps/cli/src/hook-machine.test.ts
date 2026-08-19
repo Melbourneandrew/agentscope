@@ -60,6 +60,22 @@ const authority = (path: string, arguments_: readonly string[] = []) => ({
 });
 
 describe("owned machine hook bootstrap", () => {
+  it("accepts the canonical two-digit deadline range", async () => {
+    const { artifacts, machineEntryPath } = fixture(99);
+    let duration = 0;
+    await expect(
+      runOwnedHookBootstrapForTesting(authority(artifacts.launcherPath), {
+        machineEntryPath,
+        onEvidence: ({ launcher }) => {
+          duration = launcher.duration;
+        },
+        releaseIdentity: "0.1.0",
+        stdin: Readable.from([]),
+      }),
+    ).resolves.toBeUndefined();
+    expect(duration).toBe(99);
+  });
+
   it("verifies the launcher and copies one EOF-framed evidence value", async () => {
     const { artifacts, machineEntryPath } = fixture();
     const received: unknown[] = [];
@@ -254,6 +270,16 @@ describe("owned machine hook verification failures", () => {
       runOwnedHookBootstrapForTesting(
         authority(wrongMode.artifacts.launcherPath),
         { ...input, machineEntryPath: wrongMode.machineEntryPath },
+      ),
+    ).rejects.toThrow("cli.hook.invalid");
+
+    const oversized = fixture();
+    writeFileSync(oversized.artifacts.launcherPath, new Uint8Array(65_537));
+    chmodSync(oversized.artifacts.launcherPath, 0o700);
+    await expect(
+      runOwnedHookBootstrapForTesting(
+        authority(oversized.artifacts.launcherPath),
+        { ...input, machineEntryPath: oversized.machineEntryPath },
       ),
     ).rejects.toThrow("cli.hook.invalid");
 

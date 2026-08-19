@@ -141,6 +141,10 @@ try {
   const launcherModule = await import(
     pathToFileURL(join(installedInternal, "agentscope-hook-launcher.js")).href
   );
+  const machineModule = await import(
+    pathToFileURL(join(installedInternal, "agentscope-hook-machine.js")).href
+  );
+  assert.deepEqual(Object.keys(machineModule), ["runOwnedHookBootstrap"]);
   const launcherHome = join(installRoot, "launcher-home");
   mkdirSync(join(launcherHome, "bin"), { recursive: true });
   const launcherInput = {
@@ -160,6 +164,28 @@ try {
       }),
     );
   } else {
+    const exactShebang = launcherModule.createOwnedHookLauncherArtifacts({
+      ...launcherInput,
+      nodeExecutable: `/${"x".repeat(123)}`,
+    });
+    assert.equal(
+      exactShebang.launcherBytes.indexOf(10) + 1,
+      127,
+      "the exact maximum POSIX shebang must remain representable",
+    );
+    assert.throws(() =>
+      launcherModule.createOwnedHookLauncherArtifacts({
+        ...launcherInput,
+        nodeExecutable: `/${"x".repeat(124)}`,
+      }),
+    );
+    for (const byte of [" ", "\t", "\n", "\r", "\0"])
+      assert.throws(() =>
+        launcherModule.createOwnedHookLauncherArtifacts({
+          ...launcherInput,
+          nodeExecutable: `/path${byte}node`,
+        }),
+      );
     const launcher =
       launcherModule.createOwnedHookLauncherArtifacts(launcherInput);
     writeFileSync(launcher.launcherPath, launcher.launcherBytes, {

@@ -56,11 +56,16 @@ await build({
     __AGENTSCOPE_HOOK_HARNESS_TYPES__: JSON.stringify([]),
     __AGENTSCOPE_HOOK_VERIFIER_PROGRAM__: JSON.stringify(hookVerifierProgram),
   },
-  entryPoints: [new URL("src/hook-machine.ts", import.meta.url).pathname],
   format: "esm",
   outfile: `${packageRoot}dist/internal/agentscope-hook-machine.js`,
   platform: "node",
   sourcemap: false,
+  stdin: {
+    contents: 'export { runOwnedHookBootstrap } from "./src/hook-machine.ts";',
+    loader: "ts",
+    resolveDir: packageRoot,
+    sourcefile: "agentscope-hook-machine-entry.ts",
+  },
   target: "node22",
 });
 await build({

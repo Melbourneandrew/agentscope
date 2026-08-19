@@ -2,14 +2,15 @@
 export type HookVerifierChildProgram = never;
 
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
 const MAXIMUM_REQUEST_BYTES = 16_384;
 const MAXIMUM_METADATA_BYTES = 16_384;
 const MAXIMUM_LAUNCHER_BYTES = 65_536;
 const launcherName =
-  /^agentscope-hook-v1-([a-f0-9]{64})-d(50|[1-9][0-9]{2,4}|60000)$/u;
+  /^agentscope-hook-v1-([a-f0-9]{64})-d(5[0-9]|[6-9][0-9]|[1-9][0-9]{2,3}|[1-5][0-9]{4}|60000)$/u;
 const harnessType = /^@agentscope\/harness-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 
 const fail = (): never => {
@@ -42,12 +43,34 @@ const exactRecord = (
   );
 };
 
-const boundedFile = async (path: string, maximum: number): Promise<Buffer> => {
-  const information = await lstat(path);
-  if (!information.isFile() || information.isSymbolicLink()) return fail();
-  const bytes = await readFile(path);
-  if (bytes.byteLength > maximum) return fail();
-  return bytes;
+const boundedFile = async (
+  path: string,
+  maximum: number,
+): Promise<Readonly<{ bytes: Buffer; mode: number }>> => {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const information = await handle.stat();
+    if (!information.isFile() || information.size > maximum) return fail();
+    const bytes = Buffer.allocUnsafe(maximum + 1);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const result = await handle.read(
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        null,
+      );
+      if (result.bytesRead === 0) break;
+      offset += result.bytesRead;
+    }
+    if (offset > maximum) return fail();
+    return Object.freeze({
+      bytes: bytes.subarray(0, offset),
+      mode: information.mode & 0o777,
+    });
+  } finally {
+    await handle.close();
+  }
 };
 
 const main = async (): Promise<void> => {
@@ -74,17 +97,18 @@ const main = async (): Promise<void> => {
   if (physicalPath !== request.physicalPath) return fail();
   const match = launcherName.exec(basename(physicalPath));
   if (!match) return fail();
-  const information = await stat(physicalPath);
-  if (!information.isFile() || (information.mode & 0o777) !== 0o700)
-    return fail();
-  const launcherBytes = await boundedFile(physicalPath, MAXIMUM_LAUNCHER_BYTES);
+  const launcher = await boundedFile(physicalPath, MAXIMUM_LAUNCHER_BYTES);
+  if (launcher.mode !== 0o700) return fail();
+  const launcherBytes = launcher.bytes;
   const metadata = exactRecord(
     JSON.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(
-        await boundedFile(
-          `${physicalPath}.metadata.json`,
-          MAXIMUM_METADATA_BYTES,
-        ),
+        (
+          await boundedFile(
+            `${physicalPath}.metadata.json`,
+            MAXIMUM_METADATA_BYTES,
+          )
+        ).bytes,
       ),
     ) as unknown,
     [

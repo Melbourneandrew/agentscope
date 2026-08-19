@@ -122,10 +122,23 @@ export const runOwnedHookBootstrap = (authority) => {
       platform: "posix" as const,
       releaseIdentity: "0.1.0",
     };
+    const exactBoundary = createOwnedHookLauncherArtifacts({
+      ...valid,
+      nodeExecutable: `/${"x".repeat(123)}`,
+    });
+    expect(
+      exactBoundary.launcherBytes.subarray(
+        0,
+        exactBoundary.launcherBytes.indexOf(10) + 1,
+      ),
+    ).toHaveLength(127);
     for (const input of [
       { ...valid, platform: "win32" },
-      { ...valid, nodeExecutable: "/path with space/node" },
-      { ...valid, nodeExecutable: `/${"x".repeat(126)}` },
+      ...[" ", "\t", "\n", "\r", "\0"].map((byte) => ({
+        ...valid,
+        nodeExecutable: `/path${byte}node`,
+      })),
+      { ...valid, nodeExecutable: `/${"x".repeat(124)}` },
       { ...valid, machineEntryPath: "relative" },
       { ...valid, releaseIdentity: "bad identity" },
       { ...valid, hookDeadlineMilliseconds: 49 },
