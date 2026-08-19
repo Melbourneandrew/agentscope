@@ -12,7 +12,10 @@ import {
   defineDestinationDescriptor,
   type RetrieverFailureCode,
 } from "@agentscope/destinations-core";
-import { createReporterDeadline } from "@agentscope/destinations-core/core-orchestration";
+import {
+  createReporterDeadline,
+  readTraceSearchCursorUpperTimeBound,
+} from "@agentscope/destinations-core/core-orchestration";
 import { createSanitizedCanonicalTraceFixture } from "@agentscope/protocol/testing";
 import {
   parseCanonicalTraceGraph,
@@ -25,13 +28,20 @@ import {
   compileCredentialBackendRegistry,
   defineStoredCredentialBackendAdapter,
 } from "../configuration/credential-adapter.js";
-import { parseAgentscopeConfiguration } from "../configuration/schema.js";
+import { createAgentscopeHomeResolver } from "../configuration/home.js";
+import {
+  parseAgentscopeConfiguration,
+  serializeAgentscopeConfiguration,
+} from "../configuration/schema.js";
+import { createConfigurationStoreForTesting } from "../configuration/transaction.js";
 import {
   BUILTIN_REDACTION_POLICY_REFERENCES,
   DEFAULT_REDACTION_POLICY_REGISTRY,
 } from "../redaction/policy.js";
 import {
+  createCoreRetrievalRuntime,
   getConfiguredTrace,
+  prepareCoreRetrievalRuntime,
   searchConfiguredTraces,
   type CoreRetrievalRuntime,
 } from "./orchestration.js";
@@ -218,13 +228,13 @@ const runtime = (
     },
     destinationRegistry,
   );
-  const value: CoreRetrievalRuntime = {
+  const value: CoreRetrievalRuntime = createCoreRetrievalRuntime({
     configuration,
     policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
     credentialBackendRegistry: compileCredentialBackendRegistry([]),
     transportExecutor: () => Promise.reject(new Error("unexpected transport")),
-    deadline: createReporterDeadline(2_000),
-  };
+    timeoutMilliseconds: 2_000,
+  });
   return {
     value,
     counts: () => ({ factoryCalls, searches, gets }),
@@ -232,6 +242,208 @@ const runtime = (
 };
 
 describe("Core retrieval orchestration", () => {
+  it("anchors the command before bounded configuration resolution", async () => {
+    const fixture = runtime();
+    const serialized = serializeAgentscopeConfiguration(
+      fixture.value.configuration,
+    );
+    const home = createAgentscopeHomeResolver({
+      environment: { AGENTSCOPE_HOME: "/tmp/agentscope-retrieval-runtime" },
+      environmentOverrideAuthority: "test",
+      platform: "linux",
+    })();
+    const store = createConfigurationStoreForTesting(
+      home,
+      fixture.value.configuration.destinationRegistry,
+      { readForHook: () => Promise.resolve(serialized) },
+    );
+    const before = Date.now();
+    const controller = new AbortController();
+    const prepared = await prepareCoreRetrievalRuntime({
+      configurationStore: store,
+      credentialBackendRegistry: fixture.value.credentialBackendRegistry,
+      policyRegistry: fixture.value.policyRegistry,
+      signal: controller.signal,
+      transportExecutor: fixture.value.transportExecutor,
+    });
+
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(
+      Date.parse(prepared.runtime.commandStartedAt),
+    ).toBeGreaterThanOrEqual(before);
+    expect(prepared.runtime.configuration.generation).toBe(
+      fixture.value.configuration.generation,
+    );
+    expect(
+      createCoreRetrievalRuntime({
+        configuration: fixture.value.configuration,
+        credentialBackendRegistry: fixture.value.credentialBackendRegistry,
+        policyRegistry: fixture.value.policyRegistry,
+        signal: controller.signal,
+        timeoutMilliseconds: 2_000,
+        transportExecutor: fixture.value.transportExecutor,
+      }).signal,
+    ).toBe(controller.signal);
+    await expect(
+      prepareCoreRetrievalRuntime({
+        configurationStore: store,
+        credentialBackendRegistry: fixture.value.credentialBackendRegistry,
+        policyRegistry: fixture.value.policyRegistry,
+        transportExecutor: fixture.value.transportExecutor,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe("Core retrieval preparation failure", () => {
+  it("fails closed for missing, cancelled, and accessor preparation input", async () => {
+    const fixture = runtime();
+    const home = createAgentscopeHomeResolver({
+      environment: { AGENTSCOPE_HOME: "/tmp/agentscope-retrieval-failure" },
+      environmentOverrideAuthority: "test",
+      platform: "linux",
+    })();
+    const store = createConfigurationStoreForTesting(
+      home,
+      fixture.value.configuration.destinationRegistry,
+      { readForHook: () => Promise.resolve(undefined) },
+    );
+    const input = {
+      configurationStore: store,
+      credentialBackendRegistry: fixture.value.credentialBackendRegistry,
+      policyRegistry: fixture.value.policyRegistry,
+      transportExecutor: fixture.value.transportExecutor,
+    };
+    await expect(prepareCoreRetrievalRuntime(input)).resolves.toEqual({
+      ok: false,
+      code: "core.configuration.missing",
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      prepareCoreRetrievalRuntime({ ...input, signal: controller.signal }),
+    ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
+    const hostileSignal = {
+      aborted: false,
+      addEventListener: () => {
+        throw new Error("CANARY_SIGNAL");
+      },
+      removeEventListener: () => {
+        throw new Error("CANARY_SIGNAL");
+      },
+    } as never;
+    await expect(
+      prepareCoreRetrievalRuntime({ ...input, signal: hostileSignal }),
+    ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
+    const hostileAbortedGetter = Object.defineProperty({}, "aborted", {
+      get: () => {
+        throw new Error("CANARY_SIGNAL");
+      },
+    }) as AbortSignal;
+    await expect(
+      prepareCoreRetrievalRuntime({
+        ...input,
+        signal: hostileAbortedGetter,
+      }),
+    ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
+    const delayedController = new AbortController();
+    const delayedStore = createConfigurationStoreForTesting(
+      home,
+      fixture.value.configuration.destinationRegistry,
+      {
+        readForHook: (_path, signal) =>
+          new Promise((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                resolve(undefined);
+              },
+              { once: true },
+            );
+          }),
+      },
+    );
+    const delayed = prepareCoreRetrievalRuntime({
+      ...input,
+      configurationStore: delayedStore,
+      signal: delayedController.signal,
+    });
+    delayedController.abort();
+    await expect(delayed).resolves.toEqual({
+      ok: false,
+      code: "deadline-exceeded",
+    });
+    let reads = 0;
+    await expect(
+      prepareCoreRetrievalRuntime(
+        Object.defineProperty({}, "configurationStore", {
+          get: () => {
+            reads += 1;
+            return store;
+          },
+        }) as never,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      code: "core.configuration.unavailable",
+    });
+    expect(reads).toBe(0);
+  });
+});
+
+describe("Core retrieval cancellation registration", () => {
+  it("rechecks cancellation after registering the listener", async () => {
+    const fixture = runtime();
+    const home = createAgentscopeHomeResolver({
+      environment: { AGENTSCOPE_HOME: "/tmp/agentscope-retrieval-stateful" },
+      environmentOverrideAuthority: "test",
+      platform: "linux",
+    })();
+    let configurationReads = 0;
+    const store = createConfigurationStoreForTesting(
+      home,
+      fixture.value.configuration.destinationRegistry,
+      {
+        readForHook: () => {
+          configurationReads += 1;
+          return Promise.resolve(undefined);
+        },
+      },
+    );
+    const controller = new AbortController();
+    let signalReads = 0;
+    const signal = {
+      get aborted() {
+        signalReads += 1;
+        if (signalReads === 1) {
+          controller.abort();
+          return false;
+        }
+        return controller.signal.aborted;
+      },
+      addEventListener: controller.signal.addEventListener.bind(
+        controller.signal,
+      ),
+      removeEventListener: controller.signal.removeEventListener.bind(
+        controller.signal,
+      ),
+    } as AbortSignal;
+    await expect(
+      prepareCoreRetrievalRuntime({
+        configurationStore: store,
+        credentialBackendRegistry: fixture.value.credentialBackendRegistry,
+        policyRegistry: fixture.value.policyRegistry,
+        transportExecutor: fixture.value.transportExecutor,
+        signal,
+      }),
+    ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
+    expect(signalReads).toBe(2);
+    expect(configurationReads).toBe(0);
+  });
+});
+
+describe("Core retrieval query execution", () => {
   it("rejects a configuration snapshot not minted by the parser", async () => {
     const fixture = runtime();
     const forgedConfiguration = Object.freeze({
@@ -251,10 +463,14 @@ describe("Core retrieval orchestration", () => {
 
   it("searches exactly one named connection and binds continuation", async () => {
     const fixture = runtime();
-    const first = await searchConfiguredTraces(fixture.value, {
-      destinationName: "archive",
-      query: { harness: "codex" },
-    });
+    const commandStartedAt = "2025-12-31T23:59:59.000Z";
+    const first = await searchConfiguredTraces(
+      { ...fixture.value, commandStartedAt },
+      {
+        destinationName: "archive",
+        query: { harness: "codex" },
+      },
+    );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.page).toMatchObject({
@@ -268,6 +484,9 @@ describe("Core retrieval orchestration", () => {
       models: ["gpt-5"],
       tags: ["fixture"],
     });
+    expect(readTraceSearchCursorUpperTimeBound(first.page.nextCursor)).toBe(
+      commandStartedAt,
+    );
     const second = await searchConfiguredTraces(fixture.value, {
       destinationName: "archive",
       query: { harness: "codex" },
@@ -600,6 +819,7 @@ describe("Core retrieval connection setup", () => {
       },
     });
     const configuredRuntime = {
+      commandStartedAt: "2026-01-01T00:00:00.000Z",
       configuration,
       policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
       credentialBackendRegistry: compileCredentialBackendRegistry([backend]),
@@ -631,6 +851,7 @@ describe("Core retrieval connection setup", () => {
     await expect(
       searchConfiguredTraces(
         {
+          commandStartedAt: "2026-01-01T00:00:00.000Z",
           configuration,
           policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
           credentialBackendRegistry: compileCredentialBackendRegistry([denied]),
@@ -659,6 +880,7 @@ describe("Core retrieval connection setup", () => {
     await expect(
       searchConfiguredTraces(
         {
+          commandStartedAt: "2026-01-01T00:00:00.000Z",
           configuration,
           policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
           credentialBackendRegistry: compileCredentialBackendRegistry([
@@ -689,6 +911,7 @@ describe("Core retrieval connection setup", () => {
     await expect(
       searchConfiguredTraces(
         {
+          commandStartedAt: "2026-01-01T00:00:00.000Z",
           configuration,
           policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
           credentialBackendRegistry: compileCredentialBackendRegistry([
@@ -713,6 +936,7 @@ describe("Core retrieval connection setup", () => {
     await expect(
       searchConfiguredTraces(
         {
+          commandStartedAt: "2026-01-01T00:00:00.000Z",
           configuration,
           policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
           credentialBackendRegistry: compileCredentialBackendRegistry([

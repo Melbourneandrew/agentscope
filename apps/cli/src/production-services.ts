@@ -1,6 +1,13 @@
 import { randomBytes } from "node:crypto";
 
 import {
+  compileCredentialBackendRegistry,
+  createCiEnvironmentCredentialAdapter,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  type CredentialBackendRegistry,
+  type RedactionPolicyRegistry,
+} from "@agentscope/core";
+import {
   ConfigurationManagementError,
   ConfigurationStoreError,
   applyAgentscopeConfigurationInitialization,
@@ -21,6 +28,13 @@ import {
   type ConfigurationStore,
 } from "@agentscope/core/configuration-management";
 import {
+  getConfiguredTrace,
+  prepareCoreRetrievalRuntime,
+  searchConfiguredTraces,
+  type CoreRetrievalFailure,
+  type PrepareCoreRetrievalRuntimeInput,
+} from "@agentscope/core/retrieval-orchestration";
+import {
   compileDestinationRegistry,
   getDestinationDescriptor,
   type DestinationRegistry,
@@ -36,6 +50,7 @@ import {
   createHarnessCliServices,
   type CreateHarnessCliServicesInput,
 } from "./harness-services.js";
+import type { CliTraceServices } from "./trace-commands.js";
 
 // Type-only edges declare the process-private build entries to the source
 // closure audit without loading them into the ordinary Commander runtime.
@@ -53,7 +68,9 @@ const success = <Value>(value: Value): ServiceResult<Value> =>
 const diagnostic = (
   category: CliDiagnostic["category"],
   code: string,
-): CliDiagnostic => Object.freeze({ category, code });
+  facts?: CliDiagnostic["facts"],
+): CliDiagnostic =>
+  Object.freeze({ category, code, ...(facts === undefined ? {} : { facts }) });
 
 const unavailable = diagnostic("unavailable", "configuration.unavailable");
 const missingConfiguration = diagnostic("not-found", "configuration.missing");
@@ -86,17 +103,27 @@ const mapError = (error: unknown): CliDiagnostic => {
 };
 
 type ProductionState = Readonly<{
+  credentialBackendRegistry: CredentialBackendRegistry;
   environment: object;
   management: ConfigurationManagementRuntime;
+  policyRegistry: RedactionPolicyRegistry;
   registry: DestinationRegistry;
   store: ConfigurationStore;
+  transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
 }>;
+
+/* v8 ignore next -- Phase 8 has no remote production descriptor; Phase 9 supplies Core's bound executor. */
+const unavailableTransportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"] =
+  () => Promise.reject(new Error("destination.transport.unavailable"));
 
 export type CreateProductionCliServicesInput = Readonly<{
   environment?: object;
   harnesses?: CreateHarnessCliServicesInput;
   homeResolver?: AgentscopeHomeResolver;
+  credentialBackendRegistry?: CredentialBackendRegistry;
+  policyRegistry?: RedactionPolicyRegistry;
   registry?: DestinationRegistry;
+  transportExecutor?: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
 }>;
 
 const createState = (
@@ -113,10 +140,17 @@ const createState = (
     `process-start-v1-${randomBytes(32).toString("hex")}`,
   );
   return Object.freeze({
+    credentialBackendRegistry:
+      input.credentialBackendRegistry ??
+      compileCredentialBackendRegistry([
+        createCiEnvironmentCredentialAdapter(input.environment ?? process.env),
+      ]),
     environment: input.environment ?? process.env,
     management: createConfigurationManagementRuntime(registry, store, owner),
+    policyRegistry: input.policyRegistry ?? DEFAULT_REDACTION_POLICY_REGISTRY,
     registry,
     store,
+    transportExecutor: input.transportExecutor ?? unavailableTransportExecutor,
   });
 };
 
@@ -266,9 +300,130 @@ const createRotateService =
     );
   };
 
+const retrievalDiagnostic = (
+  failureValue: CoreRetrievalFailure,
+): CliDiagnostic => {
+  const [category, code] = RETRIEVAL_DIAGNOSTICS[failureValue.code];
+  const facts =
+    failureValue.retryAfterMilliseconds === undefined
+      ? undefined
+      : { retryAfterMilliseconds: failureValue.retryAfterMilliseconds };
+  return diagnostic(category, code, facts);
+};
+
+const RETRIEVAL_DIAGNOSTICS = Object.freeze({
+  "deadline-exceeded": ["unavailable", "traces.deadline-exceeded"],
+  forbidden: ["permission-denied", "traces.forbidden"],
+  "incompatible-trace": ["unavailable", "traces.incompatible-trace"],
+  "invalid-query": ["usage", "traces.invalid-query"],
+  "malformed-response": ["unavailable", "traces.malformed-response"],
+  "not-found": ["not-found", "traces.not-found"],
+  "rate-limited": ["unavailable", "traces.rate-limited"],
+  "retrieval-unsupported": ["unavailable", "traces.retrieval-unsupported"],
+  unauthorized: ["permission-denied", "traces.unauthorized"],
+  unavailable: ["unavailable", "traces.unavailable"],
+  "unknown-connection": ["not-found", "traces.destination-unknown"],
+} as const satisfies Readonly<
+  Record<
+    CoreRetrievalFailure["code"],
+    readonly [CliDiagnostic["category"], string]
+  >
+>);
+
+const retrievalRuntime = (state: ProductionState) =>
+  prepareCoreRetrievalRuntime({
+    configurationStore: state.store,
+    credentialBackendRegistry: state.credentialBackendRegistry,
+    policyRegistry: state.policyRegistry,
+    transportExecutor: state.transportExecutor,
+  });
+
+const RETRIEVAL_PREPARATION_DIAGNOSTICS = Object.freeze({
+  "core.configuration.invalid": unavailable,
+  "core.configuration.missing": missingConfiguration,
+  "core.configuration.unavailable": unavailable,
+  "core.configuration.unsupported": unavailable,
+  "deadline-exceeded": diagnostic("unavailable", "traces.deadline-exceeded"),
+});
+
+const retrievalPreparationDiagnostic = (
+  code: keyof typeof RETRIEVAL_PREPARATION_DIAGNOSTICS,
+): CliDiagnostic => RETRIEVAL_PREPARATION_DIAGNOSTICS[code];
+
+const createTraceServices = (state: ProductionState): CliTraceServices => ({
+  searchTraces: async (input) => {
+    try {
+      const prepared = await retrievalRuntime(state);
+      if (!prepared.ok)
+        return failure(retrievalPreparationDiagnostic(prepared.code));
+      const { cursor, destination } = input;
+      const result = await searchConfiguredTraces(prepared.runtime, {
+        destinationName: destination,
+        query: {
+          ...(input.branch === undefined ? {} : { branch: input.branch }),
+          ...(input.from === undefined ? {} : { from: input.from }),
+          ...(input.harness === undefined ? {} : { harness: input.harness }),
+          ...(input.limit === undefined ? {} : { limit: input.limit }),
+          ...(input.model === undefined ? {} : { model: input.model }),
+          ...(input.sessionId === undefined
+            ? {}
+            : { sessionId: input.sessionId }),
+          tags: input.tags,
+          ...(input.to === undefined ? {} : { to: input.to }),
+          ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
+        },
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (!result.ok) return failure(retrievalDiagnostic(result));
+      const value = result.page;
+      return value.state === "partial"
+        ? Object.freeze({
+            diagnostic: diagnostic("unavailable", "traces.partial"),
+            status: "partial" as const,
+            value,
+          })
+        : success(value);
+    } catch (error) {
+      return failure(mapError(error));
+    }
+  },
+  getTrace: async (input) => {
+    try {
+      const prepared = await retrievalRuntime(state);
+      if (!prepared.ok)
+        return failure(retrievalPreparationDiagnostic(prepared.code));
+      const reference = input.traceReference;
+      if (reference !== undefined) {
+        const connection = prepared.runtime.configuration.connections.find(
+          ({ name }) => name === input.destination,
+        );
+        if (!connection)
+          return failure(diagnostic("not-found", "traces.destination-unknown"));
+        if (
+          reference.connectionId !== connection.connectionId ||
+          reference.destinationType !== connection.destinationType
+        )
+          return failure(diagnostic("usage", "traces.invalid-query"));
+      }
+      const result = await getConfiguredTrace(prepared.runtime, {
+        destinationName: input.destination,
+        traceId: reference?.traceId ?? input.traceId ?? "",
+        ...(reference?.destinationTraceId === undefined
+          ? {}
+          : { destinationTraceId: reference.destinationTraceId }),
+      });
+      return result.ok
+        ? success(result.trace)
+        : failure(retrievalDiagnostic(result));
+    } catch (error) {
+      return failure(mapError(error));
+    }
+  },
+});
+
 export const createProductionCliServices = (
   input: CreateProductionCliServicesInput = {},
-): CliConfigurationServices & CliHarnessServices => {
+): CliConfigurationServices & CliHarnessServices & CliTraceServices => {
   const state = createState(input);
   const list: CliConfigurationServices["listDestinations"] = async () => {
     try {
@@ -381,5 +536,6 @@ export const createProductionCliServices = (
   return Object.freeze({
     ...services,
     ...createHarnessCliServices(input.harnesses),
+    ...createTraceServices(state),
   });
 };

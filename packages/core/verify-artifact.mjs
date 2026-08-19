@@ -40,19 +40,23 @@ import {
   readConfigurationSnapshot,
   recoverCredentialMutation,
   resolveCredentialReference,
-  searchConfiguredTraces,
-  getConfiguredTrace,
   runResolvedTraceLifecycle,
   retireCredentialReference,
   serializeAgentscopeConfiguration,
   writeConfigurationSnapshot,
 } from "./dist/index.js";
 import {
+  getConfiguredTrace,
+  prepareCoreRetrievalRuntime,
+  searchConfiguredTraces,
+} from "./dist/retrieval/orchestration-index.js";
+import {
   createCiEnvironmentCredentialReference,
   createStoredCredentialReference,
   getStoredCredentialImplementation,
   readResolvedCredentialForCore,
 } from "./dist/configuration/credential-adapter.js";
+import { createConfigurationStoreForTesting } from "./dist/configuration/transaction.js";
 import { createMacosKeychainCredentialAdapterForTesting } from "./dist/configuration/macos-keychain.js";
 import { createLinuxSecretServiceAdapterForTesting } from "./dist/configuration/linux-secret-service.js";
 import { createWindowsCredentialManagerAdapterForTesting } from "./dist/configuration/windows-credential-manager.js";
@@ -267,6 +271,66 @@ const migratedConfiguration = migrateConfigurationDocument(
   artifactRegistry,
 );
 const artifactStore = createConfigurationStore(artifactHome, artifactRegistry);
+const hostileAbortSignal = Object.defineProperty({}, "aborted", {
+  get: () => {
+    throw new Error("CANARY_SIGNAL");
+  },
+});
+const hostileAbortPreparation = await prepareCoreRetrievalRuntime({
+  configurationStore: artifactStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  signal: hostileAbortSignal,
+});
+if (
+  hostileAbortPreparation.ok ||
+  hostileAbortPreparation.code !== "deadline-exceeded"
+)
+  throw new Error("Hostile AbortSignal escaped retrieval preparation.");
+const statefulAbortController = new AbortController();
+let statefulAbortReads = 0;
+let statefulConfigurationReads = 0;
+const statefulAbortSignal = {
+  get aborted() {
+    statefulAbortReads += 1;
+    if (statefulAbortReads === 1) {
+      statefulAbortController.abort();
+      return false;
+    }
+    return statefulAbortController.signal.aborted;
+  },
+  addEventListener: statefulAbortController.signal.addEventListener.bind(
+    statefulAbortController.signal,
+  ),
+  removeEventListener: statefulAbortController.signal.removeEventListener.bind(
+    statefulAbortController.signal,
+  ),
+};
+const statefulAbortStore = createConfigurationStoreForTesting(
+  artifactHome,
+  artifactRegistry,
+  {
+    readForHook: () => {
+      statefulConfigurationReads += 1;
+      return Promise.resolve(undefined);
+    },
+  },
+);
+const statefulAbortPreparation = await prepareCoreRetrievalRuntime({
+  configurationStore: statefulAbortStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  signal: statefulAbortSignal,
+});
+if (
+  statefulAbortPreparation.ok ||
+  statefulAbortPreparation.code !== "deadline-exceeded" ||
+  statefulAbortReads !== 2 ||
+  statefulConfigurationReads !== 0
+)
+  throw new Error("Stateful AbortSignal escaped retrieval preparation.");
 const artifactOwner = createConfigurationProcessIdentity(
   process.pid,
   `process-start-v1-${"d".repeat(64)}`,
@@ -470,6 +534,7 @@ try {
     throw error;
 }
 const retrievalRuntime = {
+  commandStartedAt: "2026-01-01T00:00:00.000Z",
   configuration: artifactConfiguration,
   policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
   credentialBackendRegistry: emptyCredentialRegistry,
@@ -940,7 +1005,7 @@ try {
       "export const verify = async () => {",
       "  const home = createAgentscopeHomeResolver({ environment: { AGENTSCOPE_HOME: '/tmp/agentscope-bundle-home' }, environmentOverrideAuthority: 'test', platform: 'linux' })();",
       "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 2, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [], hookDeadlineMilliseconds: 2000 }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
-      "  return typeof core.runResolvedTraceLifecycle === 'function' && typeof core.searchConfiguredTraces === 'function' && typeof core.getConfiguredTrace === 'function' && !('agentscope' in core) && !('CoreRedactionError' in core) && !('createHookEntryAuthority' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
+      "  return typeof core.runResolvedTraceLifecycle === 'function' && !('searchConfiguredTraces' in core) && !('getConfiguredTrace' in core) && !('prepareCoreRetrievalRuntime' in core) && !('agentscope' in core) && !('CoreRedactionError' in core) && !('createHookEntryAuthority' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
       "};",
       "export const verifyCoordinator = (homeRoot, platform) => runOperationalCoordinatorForTesting({ kind: 'preload', homeRoot, platform }, 1000, {});",
     ].join("\n"),

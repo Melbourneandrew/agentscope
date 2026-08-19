@@ -165,19 +165,6 @@ export {
   type ResolvedTraceLifecycleResult,
 } from "./invocation/lifecycle.js";
 export {
-  getConfiguredTrace,
-  searchConfiguredTraces,
-  RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS,
-  RETRIEVAL_MAXIMUM_RESPONSE_BYTES,
-  type CoreRetrievedTrace,
-  type CoreRetrievalFailure,
-  type CoreRetrievalFailureCode,
-  type CoreRetrievalRuntime,
-  type CoreTraceGetResult,
-  type CoreTraceSearchPage,
-  type CoreTraceSearchResult,
-} from "./retrieval/orchestration.js";
-export {
   type CaptureAdapter,
   type CaptureResume,
   type CaptureResumeRequest,

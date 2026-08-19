@@ -20,6 +20,10 @@
     "./hook-orchestration": {
       "types": "./dist/invocation/hook-orchestration-index.d.ts",
       "import": "./dist/invocation/hook-orchestration-index.js"
+    },
+    "./retrieval-orchestration": {
+      "types": "./dist/retrieval/orchestration-index.d.ts",
+      "import": "./dist/retrieval/orchestration-index.js"
     }
   },
   "files": [

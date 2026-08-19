@@ -13,6 +13,7 @@ import {
 } from "@agentscope/destinations-core";
 import {
   bindDestinationTransport,
+  createReporterDeadline,
   createRetrievalContext,
   createTraceGetRequest,
   createTraceSearchPage,
@@ -36,6 +37,11 @@ import {
   type CredentialBackendRegistry,
 } from "../configuration/credential-adapter.js";
 import {
+  readConfigurationForHook,
+  type ConfigurationStore,
+  type HookConfigurationReadResult,
+} from "../configuration/transaction.js";
+import {
   serializeAgentscopeConfiguration,
   type AgentscopeConfigurationSnapshot,
   type ConfiguredDestinationConnection,
@@ -53,6 +59,7 @@ import {
 
 export const RETRIEVAL_MAXIMUM_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS = 8;
+export const RETRIEVAL_OPERATION_DEADLINE_MILLISECONDS = 2_000;
 
 export type CoreRetrievalFailureCode = RetrieverFailureCode;
 export type CoreRetrievalFailure = Readonly<{
@@ -87,6 +94,7 @@ export type CoreTraceGetResult =
   Readonly<{ ok: true; trace: CoreRetrievedTrace }> | CoreRetrievalFailure;
 
 export type CoreRetrievalRuntime = Readonly<{
+  commandStartedAt: string;
   configuration: AgentscopeConfigurationSnapshot;
   policyRegistry: RedactionPolicyRegistry;
   credentialBackendRegistry: CredentialBackendRegistry;
@@ -94,6 +102,48 @@ export type CoreRetrievalRuntime = Readonly<{
   deadline: ReporterDeadline;
   signal?: AbortSignal;
 }>;
+
+export type CreateCoreRetrievalRuntimeInput = Readonly<{
+  configuration: AgentscopeConfigurationSnapshot;
+  policyRegistry: RedactionPolicyRegistry;
+  credentialBackendRegistry: CredentialBackendRegistry;
+  transportExecutor: DestinationTransportExecutor;
+  timeoutMilliseconds: number;
+  signal?: AbortSignal;
+}>;
+
+export const createCoreRetrievalRuntime = (
+  input: CreateCoreRetrievalRuntimeInput,
+): CoreRetrievalRuntime =>
+  Object.freeze({
+    commandStartedAt: new Date().toISOString(),
+    configuration: input.configuration,
+    policyRegistry: input.policyRegistry,
+    credentialBackendRegistry: input.credentialBackendRegistry,
+    transportExecutor: input.transportExecutor,
+    deadline: createReporterDeadline(input.timeoutMilliseconds),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+
+export type PrepareCoreRetrievalRuntimeInput = Readonly<{
+  configurationStore: ConfigurationStore;
+  policyRegistry: RedactionPolicyRegistry;
+  credentialBackendRegistry: CredentialBackendRegistry;
+  transportExecutor: DestinationTransportExecutor;
+  signal?: AbortSignal;
+}>;
+
+export type CoreRetrievalRuntimePreparation =
+  | Readonly<{ ok: true; runtime: CoreRetrievalRuntime }>
+  | Readonly<{
+      ok: false;
+      code:
+        | "core.configuration.missing"
+        | "core.configuration.invalid"
+        | "core.configuration.unsupported"
+        | "core.configuration.unavailable"
+        | "deadline-exceeded";
+    }>;
 
 const failure = (
   code: CoreRetrievalFailureCode,
@@ -160,6 +210,7 @@ const readRuntime = (input: unknown): CoreRetrievalRuntime | undefined => {
   const descriptors = readInput(
     input,
     [
+      "commandStartedAt",
       "configuration",
       "credentialBackendRegistry",
       "deadline",
@@ -172,6 +223,10 @@ const readRuntime = (input: unknown): CoreRetrievalRuntime | undefined => {
   const signal = descriptorValue(descriptors, "signal") as
     AbortSignal | undefined;
   return Object.freeze({
+    commandStartedAt: descriptorValue(
+      descriptors,
+      "commandStartedAt",
+    ) as string,
     configuration: descriptorValue(
       descriptors,
       "configuration",
@@ -190,6 +245,141 @@ const readRuntime = (input: unknown): CoreRetrievalRuntime | undefined => {
     ) as DestinationTransportExecutor,
     deadline: descriptorValue(descriptors, "deadline") as ReporterDeadline,
     ...(signal === undefined ? {} : { signal }),
+  });
+};
+
+type ConfigurationSettlement =
+  | Readonly<{ kind: "settled"; value: HookConfigurationReadResult }>
+  | Readonly<{ kind: "expired" }>;
+
+const signalIsAborted = (signal: AbortSignal | undefined): boolean => {
+  try {
+    return signal?.aborted === true;
+  } catch {
+    return true;
+  }
+};
+
+const readConfigurationWithinRetrievalDeadline = async (
+  store: ConfigurationStore,
+  deadline: ReporterDeadline,
+  signal: AbortSignal | undefined,
+): Promise<ConfigurationSettlement> => {
+  const remaining = reporterDeadlineRemainingMilliseconds(deadline);
+  if (remaining <= 0 || signalIsAborted(signal))
+    return Object.freeze({ kind: "expired" });
+  const controller = new AbortController();
+  const abort = (): void => {
+    controller.abort();
+  };
+  const timer = setTimeout(abort, remaining);
+  try {
+    signal?.addEventListener("abort", abort, { once: true });
+  } catch {
+    controller.abort();
+  }
+  if (signalIsAborted(signal)) controller.abort();
+  if (controller.signal.aborted) {
+    clearTimeout(timer);
+    try {
+      signal?.removeEventListener("abort", abort);
+    } catch {
+      // Hostile optional cancellation is already represented by expiry.
+    }
+    return Object.freeze({ kind: "expired" });
+  }
+  const read = readConfigurationForHook(store, controller.signal);
+  const expired = new Promise<ConfigurationSettlement>((resolve) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => {
+        resolve(Object.freeze({ kind: "expired" }));
+      },
+      { once: true },
+    );
+  });
+  const settled = read.then(
+    (value): ConfigurationSettlement =>
+      Object.freeze({ kind: "settled", value }),
+    /* v8 ignore next 8 -- readConfigurationForHook is a total async boundary
+       that converts filesystem and parser rejection into a fixed result. */
+    (): ConfigurationSettlement =>
+      Object.freeze({
+        kind: "settled",
+        value: Object.freeze({
+          ok: false,
+          code: "core.configuration.unavailable",
+        }),
+      }),
+  );
+  const result = await Promise.race([settled, expired]);
+  clearTimeout(timer);
+  controller.abort();
+  try {
+    signal?.removeEventListener("abort", abort);
+  } catch {
+    // Hostile optional cancellation collapses to the fixed expiry result.
+  }
+  return result;
+};
+
+export const prepareCoreRetrievalRuntime = async (
+  input: PrepareCoreRetrievalRuntimeInput,
+): Promise<CoreRetrievalRuntimePreparation> => {
+  const commandStartedAt = new Date().toISOString();
+  const deadline = createReporterDeadline(
+    RETRIEVAL_OPERATION_DEADLINE_MILLISECONDS,
+  );
+  const descriptors = readInput(
+    input,
+    [
+      "configurationStore",
+      "credentialBackendRegistry",
+      "policyRegistry",
+      "transportExecutor",
+    ],
+    ["signal"],
+  );
+  if (!descriptors)
+    return Object.freeze({
+      ok: false,
+      code: "core.configuration.unavailable",
+    });
+  const signal = descriptorValue(descriptors, "signal") as
+    AbortSignal | undefined;
+  const settlement = await readConfigurationWithinRetrievalDeadline(
+    descriptorValue(descriptors, "configurationStore") as ConfigurationStore,
+    deadline,
+    signal,
+  );
+  if (settlement.kind === "expired")
+    return Object.freeze({ ok: false, code: "deadline-exceeded" });
+  if (!settlement.value.ok)
+    return Object.freeze({ ok: false, code: settlement.value.code });
+  /* v8 ignore next -- the same deadline owns and wins the configuration-read
+     race; this is the defensive instruction-edge check after settlement. */
+  if (reporterDeadlineRemainingMilliseconds(deadline) <= 0)
+    return Object.freeze({ ok: false, code: "deadline-exceeded" });
+  return Object.freeze({
+    ok: true,
+    runtime: Object.freeze({
+      commandStartedAt,
+      configuration: settlement.value.snapshot,
+      credentialBackendRegistry: descriptorValue(
+        descriptors,
+        "credentialBackendRegistry",
+      ) as CredentialBackendRegistry,
+      deadline,
+      policyRegistry: descriptorValue(
+        descriptors,
+        "policyRegistry",
+      ) as RedactionPolicyRegistry,
+      transportExecutor: descriptorValue(
+        descriptors,
+        "transportExecutor",
+      ) as DestinationTransportExecutor,
+      ...(signal === undefined ? {} : { signal }),
+    }),
   });
 };
 
@@ -392,7 +582,6 @@ export const searchConfiguredTraces = async (
 ): Promise<CoreTraceSearchResult> => {
   const boundedRuntime = readRuntime(runtime);
   if (!boundedRuntime) return failure("invalid-query");
-  const operationStartedAt = new Date().toISOString();
   const descriptors = readInput(
     input,
     ["destinationName", "query"],
@@ -405,7 +594,7 @@ export const searchConfiguredTraces = async (
     const cursor = descriptorValue(descriptors, "cursor");
     if (cursor !== undefined)
       upperTimeBound = readTraceSearchCursorUpperTimeBound(cursor);
-    else upperTimeBound = operationStartedAt;
+    else upperTimeBound = boundedRuntime.commandStartedAt;
     query = normalizeTraceSearchQuery(
       descriptorValue(descriptors, "query") as TraceSearchInput,
       {

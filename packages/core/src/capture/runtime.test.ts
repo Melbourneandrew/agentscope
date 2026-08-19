@@ -1584,6 +1584,7 @@ describe("compile boundary", () => {
       "./harness-capture",
       "./configuration-management",
       "./hook-orchestration",
+      "./retrieval-orchestration",
     ]);
 
     const productionSource = readdirSync(captureDirectory)

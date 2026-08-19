@@ -6,6 +6,7 @@
     "init",
     "install",
     "routing",
+    "traces",
     "uninstall"
   ]
 }
