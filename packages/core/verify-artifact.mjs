@@ -56,6 +56,7 @@ import {
   getStoredCredentialImplementation,
   readResolvedCredentialForCore,
 } from "./dist/configuration/credential-adapter.js";
+import { createConfigurationStoreForTesting } from "./dist/configuration/transaction.js";
 import { createMacosKeychainCredentialAdapterForTesting } from "./dist/configuration/macos-keychain.js";
 import { createLinuxSecretServiceAdapterForTesting } from "./dist/configuration/linux-secret-service.js";
 import { createWindowsCredentialManagerAdapterForTesting } from "./dist/configuration/windows-credential-manager.js";
@@ -287,6 +288,49 @@ if (
   hostileAbortPreparation.code !== "deadline-exceeded"
 )
   throw new Error("Hostile AbortSignal escaped retrieval preparation.");
+const statefulAbortController = new AbortController();
+let statefulAbortReads = 0;
+let statefulConfigurationReads = 0;
+const statefulAbortSignal = {
+  get aborted() {
+    statefulAbortReads += 1;
+    if (statefulAbortReads === 1) {
+      statefulAbortController.abort();
+      return false;
+    }
+    return statefulAbortController.signal.aborted;
+  },
+  addEventListener: statefulAbortController.signal.addEventListener.bind(
+    statefulAbortController.signal,
+  ),
+  removeEventListener: statefulAbortController.signal.removeEventListener.bind(
+    statefulAbortController.signal,
+  ),
+};
+const statefulAbortStore = createConfigurationStoreForTesting(
+  artifactHome,
+  artifactRegistry,
+  {
+    readForHook: () => {
+      statefulConfigurationReads += 1;
+      return Promise.resolve(undefined);
+    },
+  },
+);
+const statefulAbortPreparation = await prepareCoreRetrievalRuntime({
+  configurationStore: statefulAbortStore,
+  credentialBackendRegistry: emptyCredentialRegistry,
+  policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
+  transportExecutor: () => Promise.reject(new Error("unexpected transport")),
+  signal: statefulAbortSignal,
+});
+if (
+  statefulAbortPreparation.ok ||
+  statefulAbortPreparation.code !== "deadline-exceeded" ||
+  statefulAbortReads !== 2 ||
+  statefulConfigurationReads !== 0
+)
+  throw new Error("Stateful AbortSignal escaped retrieval preparation.");
 const artifactOwner = createConfigurationProcessIdentity(
   process.pid,
   `process-start-v1-${"d".repeat(64)}`,

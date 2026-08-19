@@ -278,6 +278,7 @@ const readConfigurationWithinRetrievalDeadline = async (
   } catch {
     controller.abort();
   }
+  if (signalIsAborted(signal)) controller.abort();
   if (controller.signal.aborted) {
     clearTimeout(timer);
     try {

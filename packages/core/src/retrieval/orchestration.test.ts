@@ -392,6 +392,57 @@ describe("Core retrieval preparation failure", () => {
   });
 });
 
+describe("Core retrieval cancellation registration", () => {
+  it("rechecks cancellation after registering the listener", async () => {
+    const fixture = runtime();
+    const home = createAgentscopeHomeResolver({
+      environment: { AGENTSCOPE_HOME: "/tmp/agentscope-retrieval-stateful" },
+      environmentOverrideAuthority: "test",
+      platform: "linux",
+    })();
+    let configurationReads = 0;
+    const store = createConfigurationStoreForTesting(
+      home,
+      fixture.value.configuration.destinationRegistry,
+      {
+        readForHook: () => {
+          configurationReads += 1;
+          return Promise.resolve(undefined);
+        },
+      },
+    );
+    const controller = new AbortController();
+    let signalReads = 0;
+    const signal = {
+      get aborted() {
+        signalReads += 1;
+        if (signalReads === 1) {
+          controller.abort();
+          return false;
+        }
+        return controller.signal.aborted;
+      },
+      addEventListener: controller.signal.addEventListener.bind(
+        controller.signal,
+      ),
+      removeEventListener: controller.signal.removeEventListener.bind(
+        controller.signal,
+      ),
+    } as AbortSignal;
+    await expect(
+      prepareCoreRetrievalRuntime({
+        configurationStore: store,
+        credentialBackendRegistry: fixture.value.credentialBackendRegistry,
+        policyRegistry: fixture.value.policyRegistry,
+        transportExecutor: fixture.value.transportExecutor,
+        signal,
+      }),
+    ).resolves.toEqual({ ok: false, code: "deadline-exceeded" });
+    expect(signalReads).toBe(2);
+    expect(configurationReads).toBe(0);
+  });
+});
+
 describe("Core retrieval query execution", () => {
   it("rejects a configuration snapshot not minted by the parser", async () => {
     const fixture = runtime();
