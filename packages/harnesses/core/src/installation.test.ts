@@ -37,16 +37,19 @@ const digest = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 const absentDigest = digest("");
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
-const pathIdentity = (path: string): string =>
-  process.platform === "darwin"
-    ? path
-        .normalize("NFD")
+const pathIdentity = (path: string): string => {
+  if (process.platform === "darwin") {
+    let identity = path.normalize("NFD");
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      identity = identity
         .toLocaleUpperCase("en-US")
         .toLocaleLowerCase("en-US")
-        .normalize("NFD")
-    : process.platform === "win32"
-      ? path.toLocaleLowerCase("en-US")
-      : path;
+        .normalize("NFD");
+    }
+    return identity;
+  }
+  return process.platform === "win32" ? path.toLocaleLowerCase("en-US") : path;
+};
 const artifactPrefix = (transactionId: string, targetPath: string): string =>
   join(
     join(targetPath, ".."),
@@ -539,11 +542,15 @@ describe("harness installation Darwin caseless identity", () => {
       ["long-ſ.json", "long-s.json"],
       ["sigma-ς.json", "sigma-σ.json"],
       ["eszett-ß.json", "eszett-ss.json"],
+      ["capital-ẞ.json", "capital-ß.json"],
+      ["capital-ẞ.json", "capital-ss.json"],
     ] as const;
 
-    for (const [leftName, rightName] of aliases) {
-      const left = join(root, leftName);
-      const right = join(root, rightName);
+    for (const [caseIndex, [leftName, rightName]] of aliases.entries()) {
+      const caseRoot = join(root, `case-${caseIndex}`);
+      await mkdir(caseRoot);
+      const left = join(caseRoot, leftName);
+      const right = join(caseRoot, rightName);
       await writeFile(left, "before");
       await expect(
         inspectHarnessInstallation(
@@ -562,7 +569,7 @@ describe("harness installation Darwin caseless identity", () => {
               bytes: bytes(`case-fold-${index}`),
             })),
             manifestPath: join(
-              root,
+              caseRoot,
               "transactions",
               `${leftName}-${index}.json`,
             ),

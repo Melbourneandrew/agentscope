@@ -158,12 +158,16 @@ const isCanonicalAbsolutePath = (path: string): boolean =>
   path.length <= MAXIMUM_PATH_LENGTH &&
   resolve(path) === path;
 
-const darwinPathIdentity = (path: string): string =>
-  path
-    .normalize("NFD")
-    .toLocaleUpperCase("en-US")
-    .toLocaleLowerCase("en-US")
-    .normalize("NFD");
+const darwinPathIdentity = (path: string): string => {
+  let identity = path.normalize("NFD");
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    identity = identity
+      .toLocaleUpperCase("en-US")
+      .toLocaleLowerCase("en-US")
+      .normalize("NFD");
+  }
+  return identity;
+};
 
 const pathIdentity = (path: string): string => {
   /* v8 ignore next -- exact Windows and conservative Darwin case-folding are
