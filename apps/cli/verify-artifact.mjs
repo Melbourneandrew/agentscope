@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -13,7 +14,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 
@@ -22,7 +25,9 @@ const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
 const artifactDirectory = resolve(repositoryRoot, "artifacts/npm");
 const stagingRoot = resolve(repositoryRoot, "artifacts/staging/cli");
-const installRoot = mkdtempSync(join(tmpdir(), "agentscope-cli-install-"));
+const installRoot = realpathSync(
+  mkdtempSync(join(tmpdir(), "agentscope-cli-install-")),
+);
 const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
 mkdirSync(artifactDirectory, { recursive: true });
@@ -127,6 +132,124 @@ try {
     cwd: installRoot,
     shell: process.platform === "win32",
   };
+  const installedInternal = join(
+    installRoot,
+    "node_modules/@agentscope/cli/dist/internal",
+  );
+  const machineEntryPath = join(
+    installedInternal,
+    "agentscope-hook-machine.js",
+  );
+  const verifierEntryPath = join(installRoot, "agentscope-hook-verifier.mjs");
+  await build({
+    bundle: true,
+    entryPoints: [
+      new URL("src/hook-verifier-child.ts", import.meta.url).pathname,
+    ],
+    format: "esm",
+    outfile: verifierEntryPath,
+    platform: "node",
+    target: "node22",
+  });
+  const launcherModule = await import(
+    pathToFileURL(join(installedInternal, "agentscope-hook-launcher.js")).href
+  );
+  const machineModule = await import(
+    pathToFileURL(join(installedInternal, "agentscope-hook-machine.js")).href
+  );
+  assert.deepEqual(Object.keys(machineModule), ["runOwnedHookBootstrap"]);
+  const launcherHome = join(installRoot, "launcher-home");
+  mkdirSync(join(launcherHome, "bin"), { recursive: true });
+  const launcherInput = {
+    agentscopeHome: launcherHome,
+    harnessType: "@agentscope/harness-artifact-fixture",
+    hookDeadlineMilliseconds: 2_000,
+    machineEntryPath,
+    nodeExecutable: process.execPath,
+    platform: "posix",
+    releaseIdentity: installedManifest.version,
+  };
+  if (process.platform === "win32") {
+    assert.throws(() =>
+      launcherModule.createOwnedHookLauncherArtifacts({
+        ...launcherInput,
+        platform: "win32",
+      }),
+    );
+  } else {
+    const exactShebang = launcherModule.createOwnedHookLauncherArtifacts({
+      ...launcherInput,
+      nodeExecutable: `/${"x".repeat(123)}`,
+    });
+    assert.equal(
+      exactShebang.launcherBytes.indexOf(10) + 1,
+      127,
+      "the exact maximum POSIX shebang must remain representable",
+    );
+    assert.throws(() =>
+      launcherModule.createOwnedHookLauncherArtifacts({
+        ...launcherInput,
+        nodeExecutable: `/${"x".repeat(124)}`,
+      }),
+    );
+    for (const byte of [" ", "\t", "\n", "\r", "\0"])
+      assert.throws(() =>
+        launcherModule.createOwnedHookLauncherArtifacts({
+          ...launcherInput,
+          nodeExecutable: `/path${byte}node`,
+        }),
+      );
+    const twoDigitLauncher = launcherModule.createOwnedHookLauncherArtifacts({
+      ...launcherInput,
+      hookDeadlineMilliseconds: 99,
+    });
+    writeFileSync(
+      twoDigitLauncher.launcherPath,
+      twoDigitLauncher.launcherBytes,
+      { mode: twoDigitLauncher.mode },
+    );
+    chmodSync(twoDigitLauncher.launcherPath, twoDigitLauncher.mode);
+    writeFileSync(
+      twoDigitLauncher.metadataPath,
+      twoDigitLauncher.metadataBytes,
+    );
+    const verifiedTwoDigitLauncher = run(
+      process.execPath,
+      [verifierEntryPath],
+      {
+        input: JSON.stringify({
+          machineEntryPath,
+          nodeExecutable: process.execPath,
+          physicalPath: twoDigitLauncher.launcherPath,
+          releaseIdentity: installedManifest.version,
+        }),
+      },
+    );
+    assert.deepEqual(JSON.parse(verifiedTwoDigitLauncher.stdout), {
+      duration: 99,
+      harnessType: launcherInput.harnessType,
+      homeRoot: launcherHome,
+    });
+    assert.equal(verifiedTwoDigitLauncher.stderr, "");
+    const launcher =
+      launcherModule.createOwnedHookLauncherArtifacts(launcherInput);
+    writeFileSync(launcher.launcherPath, launcher.launcherBytes, {
+      mode: launcher.mode,
+    });
+    chmodSync(launcher.launcherPath, launcher.mode);
+    writeFileSync(launcher.metadataPath, launcher.metadataBytes);
+    const hook = run(launcher.launcherPath, [], {
+      input: Buffer.from("bounded-artifact-evidence"),
+    });
+    assert.equal(hook.stdout, "");
+    assert.equal(hook.stderr, "");
+    const hookWithArguments = run(launcher.launcherPath, [
+      "--harness",
+      "other",
+    ]);
+    assert.equal(hookWithArguments.stdout, "");
+    assert.equal(hookWithArguments.stderr, "");
+  }
   const help = run(executable, ["--help"], executableOptions);
   assert.match(help.stdout, /^Usage: agentscope \[options\]/u);
   assert.match(help.stdout, /Documentation: https:\/\//u);

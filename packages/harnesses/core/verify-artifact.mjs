@@ -125,23 +125,20 @@ if (
   throw new Error("Harness Core built native mapping contract failed.");
 
 const invocation = createOwnedHarnessHookInvocation({
-  executablePath: resolve("/opt/agentscope/bin/agentscope"),
+  agentscopeHome: resolve("/opt/agentscope"),
   harnessType: descriptor.harnessType,
-  contextEvidence: new TextEncoder().encode("artifact-context"),
+  hookDeadlineMilliseconds: 2_000,
+  platform: "posix",
 });
 if (
   invocation.contractVersion !== 1 ||
   !/^agentscope-hook-v1-sha256-[0-9a-f]{64}$/u.test(
     invocation.ownershipIdentity,
   ) ||
-  JSON.stringify(invocation.arguments) !==
-    JSON.stringify([
-      "capture-hook-v1",
-      "--contract-version",
-      "1",
-      "--harness",
-      descriptor.harnessType,
-    ])
+  invocation.arguments.length !== 0 ||
+  !/\/bin\/agentscope-hook-v1-[0-9a-f]{64}-d2000$/u.test(
+    invocation.launcherPath,
+  )
 )
   throw new Error("Harness Core built launcher contract failed.");
 

@@ -37,6 +37,11 @@ import {
   type CreateHarnessCliServicesInput,
 } from "./harness-services.js";
 
+// Type-only edges declare the process-private build entries to the source
+// closure audit without loading them into the ordinary Commander runtime.
+export type { OwnedHookLauncherArtifacts } from "./hook-launcher.js";
+export type { HookMachineTestingInput } from "./hook-machine.js";
+
 type ServiceResult<Value> = CliOperationResult<Value>;
 
 const failure = <Value>(diagnostic: CliDiagnostic): ServiceResult<Value> =>

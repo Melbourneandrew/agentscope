@@ -1573,7 +1573,7 @@ describe("compile boundary", () => {
     >().returns.not.toEqualTypeOf<CapturedTraceCandidate>();
   });
 
-  it("publishes only root and type-only capture seams and has no lifecycle imports", () => {
+  it("publishes only governed root, capture, management, and hook seams", () => {
     const captureDirectory = dirname(fileURLToPath(import.meta.url));
     const packageRoot = join(captureDirectory, "..", "..");
     const packageJson = JSON.parse(
@@ -1583,6 +1583,7 @@ describe("compile boundary", () => {
       ".",
       "./harness-capture",
       "./configuration-management",
+      "./hook-orchestration",
     ]);
 
     const productionSource = readdirSync(captureDirectory)

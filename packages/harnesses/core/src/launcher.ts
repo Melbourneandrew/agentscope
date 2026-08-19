@@ -1,46 +1,32 @@
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import type { HarnessTypeId } from "./types.js";
 
 export const HARNESS_HOOK_CONTRACT_VERSION = 1 as const;
-export const HARNESS_HOOK_COMMAND = "capture-hook-v1" as const;
+export const MINIMUM_HOOK_DEADLINE_MILLISECONDS = 50 as const;
+export const MAXIMUM_HOOK_DEADLINE_MILLISECONDS = 60_000 as const;
 
 const maximumPathLength = 4_096;
-const maximumEvidenceBytes = 65_536;
 const harnessTypePattern = /^@agentscope\/harness-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const typedArrayPrototype = Object.getPrototypeOf(
-  Uint8Array.prototype,
-) as object;
-/* v8 ignore next -- the fallback is reachable only if a supported Node
-   runtime removes the intrinsic typed-array byteLength descriptor. */
-const typedArrayByteLength: unknown = Reflect.get(
-  Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteLength") ?? {},
-  "get",
-);
-const typedArraySlice: unknown = Reflect.get(Uint8Array.prototype, "slice");
 
 declare const invocationBrand: unique symbol;
 export type OwnedHarnessHookInvocation = Readonly<{
-  executablePath: string;
-  arguments: readonly [
-    typeof HARNESS_HOOK_COMMAND,
-    "--contract-version",
-    "1",
-    "--harness",
-    HarnessTypeId,
-  ];
+  launcherPath: string;
+  arguments: readonly [];
   contractVersion: typeof HARNESS_HOOK_CONTRACT_VERSION;
   harnessType: HarnessTypeId;
+  harnessDigest: string;
+  hookDeadlineMilliseconds: number;
   ownershipIdentity: string;
-  contextEvidence: Uint8Array;
   readonly [invocationBrand]: true;
 }>;
 
 export type OwnedHarnessHookInvocationInput = Readonly<{
-  executablePath: string;
+  agentscopeHome: string;
   harnessType: string;
-  contextEvidence: Uint8Array;
+  hookDeadlineMilliseconds: number;
+  platform: "posix" | "win32";
 }>;
 
 const invocations = new WeakSet<object>();
@@ -56,44 +42,13 @@ const invalid = (): never => {
   throw new HarnessLauncherError();
 };
 
-const copyEvidence = (value: unknown): Uint8Array => {
-  try {
-    if (
-      !(value instanceof Uint8Array) ||
-      Object.getPrototypeOf(value) !== Uint8Array.prototype ||
-      typeof typedArrayByteLength !== "function" ||
-      typeof typedArraySlice !== "function"
-    )
-      return invalid();
-    const length = Reflect.apply(typedArrayByteLength, value, []) as unknown;
-    if (
-      typeof length !== "number" ||
-      !Number.isSafeInteger(length) ||
-      length > maximumEvidenceBytes ||
-      Reflect.ownKeys(Object.getOwnPropertyDescriptors(value)).some(
-        (key) =>
-          typeof key !== "string" ||
-          !/^(0|[1-9][0-9]*)$/u.test(key) ||
-          Number(key) >= length,
-      )
-    )
-      return invalid();
-    const output: unknown = Reflect.apply(typedArraySlice, value, [0, length]);
-    /* v8 ignore next -- the captured native slice intrinsic returns a
-       Uint8Array after the exact receiver validation above. */
-    if (!(output instanceof Uint8Array)) return invalid();
-    return output;
-  } catch {
-    return invalid();
-  }
-};
-
 const exactInput = (
   input: OwnedHarnessHookInvocationInput,
 ): Readonly<{
-  executablePath: string;
+  agentscopeHome: string;
   harnessType: HarnessTypeId;
-  contextEvidence: Uint8Array;
+  hookDeadlineMilliseconds: number;
+  platform: "posix" | "win32";
 }> => {
   try {
     if (
@@ -107,62 +62,72 @@ const exactInput = (
     if (
       Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
       Object.keys(descriptors).sort().join("\0") !==
-        "contextEvidence\0executablePath\0harnessType" ||
+        "agentscopeHome\0harnessType\0hookDeadlineMilliseconds\0platform" ||
       Object.values(descriptors).some((descriptor) => !("value" in descriptor))
     )
       return invalid();
-    const executablePath = descriptors.executablePath.value as unknown;
+    const agentscopeHome = descriptors.agentscopeHome.value as unknown;
     const harnessType = descriptors.harnessType.value as unknown;
-    const contextEvidence = descriptors.contextEvidence.value as unknown;
+    const hookDeadlineMilliseconds = descriptors.hookDeadlineMilliseconds
+      .value as unknown;
+    const platform = descriptors.platform.value as unknown;
     if (
-      typeof executablePath !== "string" ||
-      !isAbsolute(executablePath) ||
-      executablePath.length === 0 ||
-      executablePath.length > maximumPathLength ||
+      typeof agentscopeHome !== "string" ||
+      !isAbsolute(agentscopeHome) ||
+      agentscopeHome.length === 0 ||
+      agentscopeHome.length > maximumPathLength ||
       typeof harnessType !== "string" ||
       !harnessTypePattern.test(harnessType) ||
-      !(contextEvidence instanceof Uint8Array)
+      !Number.isSafeInteger(hookDeadlineMilliseconds) ||
+      (hookDeadlineMilliseconds as number) <
+        MINIMUM_HOOK_DEADLINE_MILLISECONDS ||
+      (hookDeadlineMilliseconds as number) >
+        MAXIMUM_HOOK_DEADLINE_MILLISECONDS ||
+      (platform !== "posix" && platform !== "win32")
     )
       return invalid();
-    const copiedEvidence = copyEvidence(contextEvidence);
     return Object.freeze({
-      executablePath,
+      agentscopeHome,
       harnessType: harnessType as HarnessTypeId,
-      contextEvidence: copiedEvidence,
+      hookDeadlineMilliseconds: hookDeadlineMilliseconds as number,
+      platform,
     });
   } catch {
     return invalid();
   }
 };
 
+export const harnessIdentityDigest = (harnessType: HarnessTypeId): string =>
+  createHash("sha256").update(harnessType, "utf8").digest("hex");
+
 export const createOwnedHarnessHookInvocation = (
   input: OwnedHarnessHookInvocationInput,
 ): OwnedHarnessHookInvocation => {
   const parsed = exactInput(input);
-  const arguments_ = Object.freeze([
-    HARNESS_HOOK_COMMAND,
-    "--contract-version",
-    String(HARNESS_HOOK_CONTRACT_VERSION),
-    "--harness",
-    parsed.harnessType,
-  ]) as OwnedHarnessHookInvocation["arguments"];
+  const harnessDigest = harnessIdentityDigest(parsed.harnessType);
+  const basename = `agentscope-hook-v1-${harnessDigest}-d${parsed.hookDeadlineMilliseconds}${parsed.platform === "win32" ? ".exe" : ""}`;
+  const launcherPath = join(parsed.agentscopeHome, "bin", basename);
+  const arguments_: readonly [] = Object.freeze([]);
   const ownershipIdentity = `agentscope-hook-v1-sha256-${createHash("sha256")
     .update(
       JSON.stringify({
         contractVersion: HARNESS_HOOK_CONTRACT_VERSION,
-        executablePath: parsed.executablePath,
-        arguments: arguments_,
+        launcherPath,
+        harnessType: parsed.harnessType,
+        harnessDigest,
+        hookDeadlineMilliseconds: parsed.hookDeadlineMilliseconds,
       }),
       "utf8",
     )
     .digest("hex")}`;
   const invocation = Object.freeze({
-    executablePath: parsed.executablePath,
+    launcherPath,
     arguments: arguments_,
     contractVersion: HARNESS_HOOK_CONTRACT_VERSION,
     harnessType: parsed.harnessType,
+    harnessDigest,
+    hookDeadlineMilliseconds: parsed.hookDeadlineMilliseconds,
     ownershipIdentity,
-    contextEvidence: parsed.contextEvidence,
   }) as OwnedHarnessHookInvocation;
   invocations.add(invocation);
   return invocation;
@@ -172,20 +137,3 @@ export const isOwnedHarnessHookInvocation = (
   value: unknown,
 ): value is OwnedHarnessHookInvocation =>
   typeof value === "object" && value !== null && invocations.has(value);
-
-export const readOwnedHarnessHookInvocationForCore = (
-  invocation: OwnedHarnessHookInvocation,
-): Readonly<{
-  executablePath: string;
-  arguments: OwnedHarnessHookInvocation["arguments"];
-  ownershipIdentity: string;
-  contextEvidence: Uint8Array;
-}> => {
-  if (!isOwnedHarnessHookInvocation(invocation)) return invalid();
-  return Object.freeze({
-    executablePath: invocation.executablePath,
-    arguments: invocation.arguments,
-    ownershipIdentity: invocation.ownershipIdentity,
-    contextEvidence: new Uint8Array(invocation.contextEvidence),
-  });
-};

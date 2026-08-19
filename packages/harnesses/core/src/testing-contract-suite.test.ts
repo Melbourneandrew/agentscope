@@ -143,7 +143,7 @@ const referenceAdapter = (): HarnessContractAdapter => ({
   createInstallationPlanner: (operation, invocation) => {
     const ownedText = JSON.stringify({
       owner: invocation.ownershipIdentity,
-      command: invocation.executablePath,
+      command: invocation.launcherPath,
       arguments: invocation.arguments,
     });
     return ({ exists, bytes }) => {

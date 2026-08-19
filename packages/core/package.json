@@ -16,6 +16,10 @@
     "./configuration-management": {
       "types": "./dist/configuration/management-index.d.ts",
       "import": "./dist/configuration/management-index.js"
+    },
+    "./hook-orchestration": {
+      "types": "./dist/invocation/hook-orchestration-index.d.ts",
+      "import": "./dist/invocation/hook-orchestration-index.js"
     }
   },
   "files": [

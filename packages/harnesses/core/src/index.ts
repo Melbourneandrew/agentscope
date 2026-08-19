@@ -17,12 +17,13 @@ export {
   rollbackHarnessInstallation,
 } from "./installation.js";
 export {
-  HARNESS_HOOK_COMMAND,
   HARNESS_HOOK_CONTRACT_VERSION,
+  MAXIMUM_HOOK_DEADLINE_MILLISECONDS,
+  MINIMUM_HOOK_DEADLINE_MILLISECONDS,
   HarnessLauncherError,
   createOwnedHarnessHookInvocation,
+  harnessIdentityDigest,
   isOwnedHarnessHookInvocation,
-  readOwnedHarnessHookInvocationForCore,
 } from "./launcher.js";
 export {
   COMMON_NATIVE_SEMANTIC_FIELDS,
