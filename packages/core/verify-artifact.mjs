@@ -309,7 +309,7 @@ const lifecycleResult = await runResolvedTraceLifecycle({
   operationIdScope: "session-global",
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
-  bootstrapDeadlineMilliseconds: 1_000,
+  bootstrapDeadlineMilliseconds: 10_000,
   capture: captureArtifactCandidate,
 });
 const artifactOperationalSnapshot = await inspectOperationalState(
