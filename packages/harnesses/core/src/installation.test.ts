@@ -38,9 +38,11 @@ const digest = (value: string): string =>
 const absentDigest = digest("");
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
 const pathIdentity = (path: string): string =>
-  process.platform === "win32" || process.platform === "darwin"
-    ? path.toLocaleLowerCase("en-US")
-    : path;
+  process.platform === "darwin"
+    ? path.normalize("NFD").toLocaleLowerCase("en-US")
+    : process.platform === "win32"
+      ? path.toLocaleLowerCase("en-US")
+      : path;
 const artifactPrefix = (transactionId: string, targetPath: string): string =>
   join(
     join(targetPath, ".."),
@@ -477,6 +479,43 @@ describe("harness installation filesystem identity", () => {
             bytes: bytes(`case-${index}`),
           })),
           manifestPath: join(root, "transactions", `case-${index}.json`),
+        }),
+      ),
+    );
+    const outcomes = await Promise.all(plans.map(applyHarnessInstallation));
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+    expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([
+      expect.objectContaining({ state: "conflict" }),
+    ]);
+  });
+
+  it("uses one ownership identity for Darwin normalization aliases", async () => {
+    if (process.platform !== "darwin") return;
+    const root = await temporaryRoot();
+    const composed = join(root, "caf\u00e9.json");
+    const decomposed = join(root, "cafe\u0301.json");
+    await writeFile(composed, "before");
+    await expect(
+      inspectHarnessInstallation(
+        planInput(root, [composed, decomposed], () => ({
+          kind: "replace",
+          bytes: bytes("after"),
+        })),
+      ),
+    ).resolves.toMatchObject({ disposition: "invalid" });
+
+    const plans = await Promise.all(
+      [composed, decomposed].map((targetPath, index) =>
+        inspectHarnessInstallation({
+          ...planInput(root, [targetPath], () => ({
+            kind: "replace",
+            bytes: bytes(`normalization-${index}`),
+          })),
+          manifestPath: join(
+            root,
+            "transactions",
+            `normalization-${index}.json`,
+          ),
         }),
       ),
     );
