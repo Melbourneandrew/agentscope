@@ -7,6 +7,7 @@ import {
   readFile,
   rm,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -460,6 +461,60 @@ describe("harness installation recovery conflicts", () => {
       ok: false,
       state: "unavailable",
     });
+  });
+});
+
+describe("harness installation recovery artifact integrity", () => {
+  it("rejects corrupt staged and backup recovery artifacts before replacement", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const manifestPath = join(root, "transaction.json");
+    const transactionId = "7".repeat(32);
+    const prefix = artifactPrefix(transactionId, target);
+    const stagePath = `${prefix}.stage`;
+    const backupPath = `${prefix}.backup`;
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "prepared",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: digest("before"),
+          beforeExists: true,
+          beforeMode: 0o600,
+          afterDigest: digest("after"),
+          afterExists: true,
+          stagePath,
+          backupPath,
+        },
+      ],
+    };
+
+    await writeFile(target, "before", { mode: 0o600 });
+    await writeFile(stagePath, "corrupt-stage", { mode: 0o600 });
+    await writeFile(backupPath, "before", { mode: 0o600 });
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    expect(await readFile(target, "utf8")).toBe("before");
+    await unlink(stagePath);
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "unavailable" });
+    expect(await readFile(target, "utf8")).toBe("before");
+
+    await writeFile(target, "after", { mode: 0o600 });
+    await writeFile(backupPath, "corrupt-backup", { mode: 0o600 });
+    await writeFile(
+      manifestPath,
+      `${JSON.stringify({ ...manifest, state: "committed" })}\n`,
+    );
+    await expect(
+      rollbackHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    expect(await readFile(target, "utf8")).toBe("after");
   });
 });
 

@@ -593,6 +593,10 @@ const commitManifest = async (
       throw new HarnessInstallationConflictError();
     if (!snapshotMatches(current, target.afterExists, target.afterDigest)) {
       if (target.afterExists) {
+        const staged = await inspectFile(target.stagePath!);
+        if (!staged.exists) throw new Error("harness.installation.unavailable");
+        if (!snapshotMatches(staged, true, target.afterDigest))
+          throw new HarnessInstallationConflictError();
         await rename(target.stagePath!, target.targetPath);
       } else {
         await unlink(target.targetPath);
@@ -800,6 +804,13 @@ const restoreTarget = async (
     /* v8 ignore next -- manifest validation makes backup presence equivalent
        to beforeExists. */
     if (!target.backupPath) return result(false, "invalid", 0);
+    const backup = await inspectFile(target.backupPath);
+    if (!backup.exists) throw new Error("harness.installation.unavailable");
+    if (
+      !snapshotMatches(backup, true, target.beforeDigest) ||
+      backup.mode !== target.beforeMode
+    )
+      throw new HarnessInstallationConflictError();
     await rename(target.backupPath, target.targetPath);
   } else {
     /* v8 ignore else -- a current value matching an afterExists=true manifest
@@ -857,7 +868,11 @@ export const rollbackHarnessInstallation = async (
   } catch (error) {
     return result(
       false,
-      error instanceof HarnessInstallationError ? "invalid" : "unavailable",
+      error instanceof HarnessInstallationConflictError
+        ? "conflict"
+        : error instanceof HarnessInstallationError
+          ? "invalid"
+          : "unavailable",
       0,
     );
   }

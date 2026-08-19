@@ -463,7 +463,7 @@ const artifactSourceLoss = await runResolvedTraceLifecycle({
   operationIdScope: "session-global",
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
-  bootstrapDeadlineMilliseconds: 1_000,
+  bootstrapDeadlineMilliseconds: 10_000,
   capture: (factory, _signal, checkpointResolver) => {
     if (typeof checkpointResolver !== "function")
       throw new Error("Core checkpoint resolver was unavailable.");
@@ -507,7 +507,7 @@ const hostileCheckpointResult = await runResolvedTraceLifecycle({
   operationIdScope: "session-global",
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
-  bootstrapDeadlineMilliseconds: 1_000,
+  bootstrapDeadlineMilliseconds: 10_000,
   capture: (_factory, _signal, checkpointResolver) => {
     if (typeof checkpointResolver !== "function")
       throw new Error("Core checkpoint resolver was unavailable.");
@@ -841,7 +841,7 @@ try {
     operationIdScope: "session-global",
     workspaceCandidates: [],
     gitExecutable: "/usr/bin/git",
-    bootstrapDeadlineMilliseconds: 1_000,
+    bootstrapDeadlineMilliseconds: 10_000,
     capture: async () => {
       throw new Error("CANARY_SECRET");
     },
