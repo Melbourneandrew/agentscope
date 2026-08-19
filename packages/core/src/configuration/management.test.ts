@@ -130,20 +130,23 @@ describe("Core-owned destination configuration management", () => {
 
   it("returns exact missing-state failures before initialization", async () => {
     const { runtime } = await fixture();
-    for (const operation of [
-      listDestinationConnections(runtime),
+    await expect(listDestinationConnections(runtime)).rejects.toMatchObject({
+      code: "core.configuration.missing",
+    });
+    await expect(
       configureDestinationConnection(runtime, {
         commandName: "example",
         credentialReferences: {},
         name: "local",
         settings: { project: "agentscope" },
       }),
-      setDestinationRouting(runtime, []),
+    ).rejects.toMatchObject({ code: "core.configuration.missing" });
+    await expect(setDestinationRouting(runtime, [])).rejects.toMatchObject({
+      code: "core.configuration.missing",
+    });
+    await expect(
       unconfigureDestinationConnection(runtime, "local"),
-    ])
-      await expect(operation).rejects.toMatchObject({
-        code: "core.configuration.missing",
-      });
+    ).rejects.toMatchObject({ code: "core.configuration.missing" });
   });
 });
 
