@@ -1,4 +1,4 @@
 interface:
   display_name: "Review Agentscope"
   short_description: "Review Agentscope architecture, safety, and releases"
-  default_prompt: "Review this Agentscope change against its requirements, Blueprints, trust boundaries, lifecycle invariants, package surfaces, evidence, and release gates."
+  default_prompt: "Use $review-agentscope to review this change against its requirements, Blueprints, trust boundaries, lifecycle invariants, package surfaces, evidence, and release gates."

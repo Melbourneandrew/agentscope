@@ -46,10 +46,11 @@ Blueprint decisions are binding on implementation reviews.
    - Say `CLEAN` only for the exact reviewed commit when no material finding remains and the stated gates are green.
    - Distinguish source inspection, local reproduction, built-artifact reproduction, CI evidence, and inference.
 8. Evolve this skill.
-   - When a review reveals a reusable class of defect, create or update a durable task for the generalized lesson.
-   - Add the smallest non-duplicative checklist rule and, when useful, a deterministic validation or adversarial seed.
+   - During a read-only review, record any reusable lesson and recommend a durable follow-up; do not mutate a tracker, repository, PR, or external system.
+   - Only after explicit write and task-tracking authorization, create or update a durable task for the generalized lesson.
+   - In that separately authorized follow-up, add the smallest non-duplicative checklist rule and, when useful, a deterministic validation or adversarial seed.
    - Commit the skill update through its own reviewable PR or a clearly scoped follow-up; never leave durable review knowledge only in a PR comment.
-   - Run this skill's validator and skill-creator `quick_validate.py` after every change.
+   - Run this skill's repository validator and the installed skill-creator `quick_validate.py` after every authored change.
 
 ## Reference routing
 
@@ -64,10 +65,15 @@ Blueprint decisions are binding on implementation reviews.
 
 ## Required validation
 
-Run both commands from the repository root:
+The repository validator is the mandatory clean-tree gate and includes a strict local superset of skill-creator's frontmatter checks. Run it from the repository root:
 
 ```bash
 python3 .agents/skills/review-agentscope/scripts/validate_review_skill.py
+```
+
+When authoring or revising the skill, also run the installed skill-creator validator:
+
+```bash
 python3 "$CODEX_HOME/skills/.system/skill-creator/scripts/quick_validate.py" .agents/skills/review-agentscope
 ```
 
