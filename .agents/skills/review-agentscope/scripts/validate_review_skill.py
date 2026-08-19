@@ -82,6 +82,15 @@ A requirements conflict cannot be waived by an architectural exception; reconcil
 
 Use the project `software-factory` skill when proposing or reviewing changes to requirements or Blueprints."""
 
+EXPECTED_EVOLUTION_BLOCK = """8. Evolve this skill.
+   - During a read-only review, record any reusable lesson and recommend a durable follow-up; do not mutate a tracker, repository, PR, or external system.
+   - Only after explicit write and task-tracking authorization, create or update a durable task for the generalized lesson.
+   - In that separately authorized follow-up, add the smallest non-duplicative checklist rule and, when useful, a deterministic validation or adversarial seed.
+   - Commit the skill update through its own reviewable PR or a clearly scoped follow-up; never leave durable review knowledge only in a PR comment.
+   - Run this skill's repository validator and the installed skill-creator `quick_validate.py` after every authored change."""
+
+EXPECTED_AGENTS_REVIEW_POLICY = """Use the project-local `review-agentscope` skill for independent code, pull-request, architecture, trust-boundary, evidence, and release reviews. Approved Blueprint decisions are binding on implementation reviews. A compelling architectural exception must be approved and merged through an earlier standalone Blueprint-only PR; never revise architecture inside an implementation PR merely to justify divergence."""
+
 EXPECTED_REVIEW_LANGUAGE_SHA256 = (
     "5e1d899928979ce1ed4336a1583c277dba58936284dc7bd49ee2ce45968f60fc"
 )
@@ -144,6 +153,10 @@ def main() -> int:
         == EXPECTED_BLUEPRINT_GATE,
         "normative Blueprint gate changed or was weakened",
     )
+    require(
+        skill.count(EXPECTED_EVOLUTION_BLOCK) == 1,
+        "read-only evolution authority changed or was weakened",
+    )
 
     openai_yaml = (skill_root / "agents" / "openai.yaml").read_text(
         encoding="utf-8"
@@ -182,13 +195,12 @@ def main() -> int:
     )
 
     agents = (repository_root / "AGENTS.md").read_text(encoding="utf-8")
+    review_policy_lines = [
+        line for line in agents.splitlines() if "review-agentscope" in line
+    ]
     require(
-        "review-agentscope" in agents,
-        "AGENTS.md must make review-agentscope discoverable",
-    )
-    require(
-        "standalone Blueprint-only PR" in agents,
-        "AGENTS.md must preserve the Blueprint exception gate",
+        review_policy_lines == [EXPECTED_AGENTS_REVIEW_POLICY],
+        "AGENTS.md review policy changed or was weakened",
     )
 
     print(
