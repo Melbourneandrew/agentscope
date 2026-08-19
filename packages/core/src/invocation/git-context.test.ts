@@ -321,21 +321,23 @@ describe("snapshot-bound Git command failure closure", () => {
   it("shares one elapsed timeout across every sequential Git command", async () => {
     const observedTimeouts: number[] = [];
     let calls = 0;
+    let elapsed = 0;
     const operation = probeGitForTesting({
       executable: "/usr/bin/git",
       workspace: "/workspace",
       timeoutMilliseconds: 50,
-      execute: async (_executable, arguments_, options) => {
+      now: () => elapsed,
+      execute: (_executable, arguments_, options) => {
         observedTimeouts.push(options.timeout as number);
         calls += 1;
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        return {
+        elapsed += 30;
+        return Promise.resolve({
           stdout: arguments_.includes("--path-format=absolute")
             ? "/workspace\n/workspace/.git\n"
             : arguments_.includes("--verify")
               ? `${"a".repeat(40)}\n`
               : "refs/heads/main\n",
-        };
+        });
       },
     });
     await expect(operation).rejects.toThrow("core.git.unavailable");

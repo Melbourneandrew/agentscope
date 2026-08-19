@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   AgentscopeHomeError,
+  createAgentscopeHomeFromOwnedRootForCore,
   createAgentscopeHomeResolver,
   ensureAgentscopeHomeLayout,
 } from "./home.js";
@@ -129,6 +130,15 @@ describe("Agentscope home resolution", () => {
       platform: "darwin",
     })();
     expect(home.root).toBe("/Users/trusted/.agentscope");
+  });
+
+  it("reconstructs a launcher-owned absolute root for an isolated child", () => {
+    const home = createAgentscopeHomeFromOwnedRootForCore(
+      "/project/controlled",
+      "linux",
+    );
+    expect(home.root).toBe("/project/controlled");
+    expect(home.platform).toBe("linux");
   });
 });
 

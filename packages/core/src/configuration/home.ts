@@ -105,6 +105,16 @@ export const createAgentscopeHomeResolver = (
   return () => resolved;
 };
 
+export const createAgentscopeHomeFromOwnedRootForCore = (
+  root: string,
+  platform: NodeJS.Platform,
+): AgentscopeHome =>
+  resolveRoot({
+    environment: { [AGENTSCOPE_HOME_ENVIRONMENT_VARIABLE]: root },
+    environmentOverrideAuthority: "portable",
+    platform,
+  });
+
 export const isAgentscopeHome = (value: unknown): value is AgentscopeHome =>
   typeof value === "object" && value !== null && resolvedHomes.has(value);
 

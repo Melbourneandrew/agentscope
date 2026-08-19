@@ -1,4 +1,5 @@
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -57,6 +58,7 @@ import { createLinuxSecretServiceAdapterForTesting } from "./dist/configuration/
 import { createWindowsCredentialManagerAdapterForTesting } from "./dist/configuration/windows-credential-manager.js";
 import * as coreArtifactExports from "./dist/index.js";
 import { DEFAULT_REDACTION_POLICY_REGISTRY } from "./dist/redaction/policy.js";
+import { runOperationalCoordinatorForTesting } from "./dist/invocation/operational-coordinator.js";
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
 
 const listRegularFiles = (directory, prefix = "") => {
@@ -319,9 +321,12 @@ const serializedOperationalSnapshot = JSON.stringify(
 if (
   lifecycleResult.outcome !== "completed" ||
   lifecycleResult.connections[0]?.outcome !== "accepted" ||
-  lifecycleResult.operationalEvidence.persistence.code !== "not-attempted" ||
-  lifecycleResult.operationalEvidence.checkpoints.length !== 0 ||
-  artifactOperationalSnapshot.checkpoints.length !== 0 ||
+  lifecycleResult.operationalEvidence.persistence.code !== "recorded" ||
+  lifecycleResult.operationalEvidence.checkpoints[0]?.code !== "advanced" ||
+  lifecycleResult.operationalEvidence.checkpoints[0]
+    ?.acknowledgedExclusivePosition !== 1 ||
+  artifactOperationalSnapshot.checkpoints[0]?.acknowledgedExclusivePosition !==
+    1 ||
   serializedOperationalSnapshot.includes("artifact-thread") ||
   serializedOperationalSnapshot.includes(directTrace.delivery.identity) ||
   serializedOperationalSnapshot.includes(directTrace.graph.traceId) ||
@@ -329,6 +334,97 @@ if (
   isRedactedCanonicalTrace(structuredClone(directTrace))
 )
   throw new Error("Core resolved lifecycle artifact verification failed.");
+const artifactCheckpoint = artifactOperationalSnapshot.checkpoints[0];
+const lostAcknowledgementCommit = spawnSync(
+  process.execPath,
+  [
+    resolve(
+      import.meta.dirname,
+      "dist/invocation/operational-coordinator-child.js",
+    ),
+  ],
+  {
+    input: JSON.stringify({
+      kind: "commit",
+      homeRoot: artifactHome.root,
+      platform: artifactHome.platform,
+      evidence: {
+        diagnostics: [],
+        health: [
+          {
+            scope: "hook",
+            stage: "remote-acceptance",
+            outcome: "accepted",
+            configurationGeneration: 0,
+            policyMode: "baseline",
+            receipt: null,
+          },
+        ],
+        checkpoints: [
+          {
+            adapterId: artifactCheckpoint.adapterId,
+            sourceIdentityDigest: artifactCheckpoint.sourceIdentityDigest,
+            nativeIdentityKind: artifactCheckpoint.nativeIdentityKind,
+            sourceGeneration: artifactCheckpoint.sourceGeneration,
+            positionKind: artifactCheckpoint.positionKind,
+            startPosition: 1,
+            exclusiveEndPosition: 2,
+            configurationGeneration: 0,
+            destinationType: "@agentscope/destination-artifact",
+            connectionId: artifactConnectionId,
+          },
+        ],
+      },
+    }),
+    encoding: "utf8",
+  },
+);
+// Deliberately discard the successful reply to model replacement followed by
+// acknowledgement loss. The next owned preload is the reconciliation authority.
+if (lostAcknowledgementCommit.status !== 0)
+  throw new Error("Core coordinator acknowledgement-loss setup failed.");
+const reconciledOperationalSnapshot = await runOperationalCoordinatorForTesting(
+  {
+    kind: "preload",
+    homeRoot: artifactHome.root,
+    platform: artifactHome.platform,
+  },
+  1_000,
+  {},
+);
+if (
+  reconciledOperationalSnapshot.checkpoints[0]
+    ?.acknowledgedExclusivePosition !== 2
+)
+  throw new Error("Core coordinator acknowledgement reconciliation failed.");
+let hangingCoordinatorProcessId = 0;
+try {
+  await runOperationalCoordinatorForTesting(
+    {
+      kind: "preload",
+      homeRoot: artifactHome.root,
+      platform: artifactHome.platform,
+    },
+    20,
+    {
+      program: "process.stdin.resume(); setInterval(() => {}, 1000);",
+      onSpawn: (value) => {
+        hangingCoordinatorProcessId = value ?? 0;
+      },
+    },
+  );
+  throw new Error("Core coordinator accepted a hanging child.");
+} catch (error) {
+  if (error?.message !== "core.operational-coordinator.unavailable")
+    throw error;
+}
+try {
+  process.kill(hangingCoordinatorProcessId, 0);
+  throw new Error("Core coordinator did not join a timed-out child.");
+} catch (error) {
+  if (error?.message === "Core coordinator did not join a timed-out child.")
+    throw error;
+}
 const retrievalRuntime = {
   configuration: artifactConfiguration,
   policyRegistry: DEFAULT_REDACTION_POLICY_REGISTRY,
@@ -392,9 +488,9 @@ if (
   artifactSourceLoss.outcome !== "completed" ||
   artifactSourceLoss.operationalEvidence.diagnostics[0]?.code !==
     "native-source-loss" ||
-  artifactSourceLoss.operationalEvidence.diagnostics[1]?.code !==
-    "checkpoint-unavailable" ||
-  artifactSourceLoss.operationalEvidence.checkpoints.length !== 0
+  artifactSourceLoss.operationalEvidence.diagnostics.length !== 1 ||
+  artifactSourceLoss.operationalEvidence.checkpoints[0]?.code !== "stale" ||
+  artifactSourceLoss.operationalEvidence.persistence.code !== "recorded"
 )
   throw new Error("Core source-loss artifact verification failed.");
 let artifactCheckpointAccessorReads = 0;

@@ -922,6 +922,16 @@ export const operationalStateStoreMatchesHomeForCore = (
   }
 };
 
+export const operationalStateStoreUsesNativeFileSystemForCore = (
+  store: OperationalStateStore,
+): boolean => {
+  try {
+    return stored(store).fileSystem === nativeFileSystem;
+  } catch {
+    return false;
+  }
+};
+
 export const createOperationalStateStoreForTesting = (input: {
   home: AgentscopeHome;
   owner: ConfigurationProcessIdentity;
@@ -1390,8 +1400,69 @@ export const inspectOperationalState = async (
   return freezeDocument(await readDocument(state));
 };
 
-export const resolveCaptureCheckpointForCore = (
+export const inspectOperationalStateForHookForCore = async (
   store: OperationalStateStore,
+): Promise<OperationalStateSnapshot> => {
+  const state = stored(store);
+  const now = state.now();
+  if (!Number.isSafeInteger(now) || now < 0)
+    throw new OperationalStateUnavailableError();
+  return freezeDocument(prune(await readDocument(state), now));
+};
+
+export const parseOperationalStateSnapshotForCore = (
+  input: unknown,
+): OperationalStateSnapshot =>
+  freezeDocument(exactInput(documentSchema, input));
+
+const hookWriteResultSchema = z.strictObject({
+  recorded: z.boolean(),
+  code: z.enum(["recorded", "invalid", "unavailable"]),
+  losses: z.strictObject({
+    diagnostics: nonnegative,
+    health: nonnegative,
+    checkpoints: nonnegative,
+  }),
+  checkpoints: z
+    .array(
+      z.strictObject({
+        connectionId,
+        advanced: z.boolean(),
+        code: z.enum([
+          "advanced",
+          "stale",
+          "incompatible",
+          "invalid",
+          "unavailable",
+        ]),
+        acknowledgedExclusivePosition: nonnegative.nullable(),
+      }),
+    )
+    .max(32),
+  diagnostics: z.array(diagnosticInputSchema).max(MAXIMUM_HOOK_DIAGNOSTICS),
+});
+
+export const parseHookOperationalEvidenceWriteResultForCore = (
+  input: unknown,
+): HookOperationalEvidenceWriteResult => {
+  const parsed = exactInput(hookWriteResultSchema, input);
+  if (parsed.recorded !== (parsed.code === "recorded")) return invalid();
+  if (!parsed.recorded && parsed.checkpoints.length !== 0) return invalid();
+  if (!parsed.recorded && parsed.diagnostics.length !== 0) return invalid();
+  return Object.freeze({
+    ...parsed,
+    losses: Object.freeze({ ...parsed.losses }),
+    checkpoints: Object.freeze(
+      parsed.checkpoints.map((entry) => Object.freeze({ ...entry })),
+    ),
+    diagnostics: Object.freeze(
+      parsed.diagnostics.map((entry) => Object.freeze({ ...entry })),
+    ),
+  });
+};
+
+const resolveCheckpointFromSnapshot = (
+  snapshot: OperationalStateSnapshot,
   input: CaptureCheckpointResumeRequest,
 ): CaptureCheckpointResume => {
   let availableStartPosition = 0;
@@ -1409,24 +1480,14 @@ export const resolveCaptureCheckpointForCore = (
         connectionIds: z.array(connectionId).min(1).max(32),
       })
       .safeParse(input);
-    /* v8 ignore start -- the process-private lifecycle constructs this exact
-     * request from validated snapshot and adapter fields; retain totality for
-     * internal runtime-cast regressions. */
     if (
       !parsed.success ||
       new Set(parsed.data.connectionIds).size !==
         parsed.data.connectionIds.length
     )
       return invalid();
-    /* v8 ignore stop */
     availableStartPosition = parsed.data.availableStartPosition;
-    const state = stored(store);
-    const now = state.now();
-    /* v8 ignore next -- store construction binds the already-tested clock
-     * contract; this is defense against post-construction internal drift. */
-    if (!Number.isSafeInteger(now) || now < 0) return invalid();
-    const document = prune(readDocumentSynchronously(state), now);
-    const lineage = document.checkpoints.filter(
+    const lineage = snapshot.checkpoints.filter(
       (entry) =>
         entry.adapterId === parsed.data.adapterId &&
         entry.sourceIdentityDigest === parsed.data.sourceIdentityDigest &&
@@ -1446,7 +1507,9 @@ export const resolveCaptureCheckpointForCore = (
           (entry) => entry.sourceGeneration !== parsed.data.sourceGeneration,
         )
           ? ("source-loss" as const)
-          : ("replay-required" as const),
+          : parsed.data.availableStartPosition > 0
+            ? ("source-loss" as const)
+            : ("replay-required" as const),
         startPosition: parsed.data.availableStartPosition,
       });
     const retainedStart = Math.min(
@@ -1465,6 +1528,45 @@ export const resolveCaptureCheckpointForCore = (
     return Object.freeze({
       disposition: "unavailable",
       startPosition: availableStartPosition,
+    });
+  }
+};
+
+export const resolveCaptureCheckpointFromSnapshotForCore = (
+  snapshot: OperationalStateSnapshot,
+  input: CaptureCheckpointResumeRequest,
+): CaptureCheckpointResume => {
+  try {
+    return resolveCheckpointFromSnapshot(
+      parseOperationalStateSnapshotForCore(snapshot),
+      input,
+    );
+  } catch {
+    return Object.freeze({
+      disposition: "unavailable",
+      startPosition: 0,
+    });
+  }
+};
+
+export const resolveCaptureCheckpointForCore = (
+  store: OperationalStateStore,
+  input: CaptureCheckpointResumeRequest,
+): CaptureCheckpointResume => {
+  try {
+    const state = stored(store);
+    const now = state.now();
+    /* v8 ignore next -- store construction binds the already-tested clock
+     * contract; this is defense against post-construction internal drift. */
+    if (!Number.isSafeInteger(now) || now < 0) return invalid();
+    return resolveCheckpointFromSnapshot(
+      freezeDocument(prune(readDocumentSynchronously(state), now)),
+      input,
+    );
+  } catch {
+    return Object.freeze({
+      disposition: "unavailable",
+      startPosition: 0,
     });
   }
 };
