@@ -1,5 +1,6 @@
 export {
   createHarnessContractSuite,
+  deriveHarnessContractEvidenceDigests,
   HarnessContractAssertionError,
   type HarnessContractAdapter,
   type HarnessContractCase,

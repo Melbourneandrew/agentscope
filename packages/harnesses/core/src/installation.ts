@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { mkdir, open, rename, unlink } from "node:fs/promises";
+import { link, mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 const MAXIMUM_TARGETS = 16;
@@ -108,6 +108,7 @@ type ManifestTarget = Readonly<{
   beforeMode: number | null;
   afterDigest: string;
   afterExists: boolean;
+  afterMode: number | null;
   stagePath: string | null;
   backupPath: string | null;
 }>;
@@ -117,6 +118,13 @@ type TransactionManifest = Readonly<{
   transactionId: string;
   state: "prepared" | "committing" | "committed" | "rolling-back";
   targets: readonly ManifestTarget[];
+}>;
+
+type TargetOwnershipRecord = Readonly<{
+  version: 1;
+  transactionId: string;
+  manifestPath: string;
+  targetPath: string;
 }>;
 
 const plans = new WeakMap<
@@ -478,6 +486,37 @@ const artifactPrefix = (transactionId: string, targetPath: string): string =>
       .slice(0, 16)}`,
   );
 
+const ownershipCandidatePath = (
+  transactionId: string,
+  targetPath: string,
+): string => `${artifactPrefix(transactionId, targetPath)}.owner`;
+
+const ownershipMarkerPath = (targetPath: string): string =>
+  join(
+    dirname(targetPath),
+    `.agentscope-installation-${createHash("sha256")
+      .update(targetPath)
+      .digest("hex")}.owner`,
+  );
+
+const ownershipClaimPath = (targetPath: string): string =>
+  `${ownershipMarkerPath(targetPath)}.claim`;
+
+const ownershipRecord = (
+  manifestPath: string,
+  transactionId: string,
+  targetPath: string,
+): TargetOwnershipRecord =>
+  Object.freeze({
+    version: 1,
+    transactionId,
+    manifestPath,
+    targetPath,
+  });
+
+const canonicalOwnershipRecord = (record: TargetOwnershipRecord): string =>
+  `${JSON.stringify(record)}\n`;
+
 const manifestTarget = (
   state: PlanState,
   target: PlannedTarget,
@@ -491,6 +530,7 @@ const manifestTarget = (
     beforeMode: target.before.mode,
     afterDigest: target.after.digest,
     afterExists: target.after.exists,
+    afterMode: target.after.mode,
     stagePath: target.after.exists ? `${prefix}.stage` : null,
     backupPath: target.before.exists ? `${prefix}.backup` : null,
   });
@@ -519,6 +559,171 @@ const syncDirectory = async (path: string): Promise<void> => {
   }
 };
 
+const parseOwnershipRecord = (
+  snapshot: FileSnapshot,
+  expectedTargetPath: string,
+): TargetOwnershipRecord | undefined => {
+  if (!snapshot.exists || !snapshot.bytes || snapshot.mode !== FILE_MODE)
+    return undefined;
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(
+      snapshot.bytes,
+    );
+    const value = JSON.parse(text) as unknown;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    )
+      return undefined;
+    const record = value as Record<string, unknown>;
+    if (
+      Object.keys(record).sort().join("\0") !==
+        "manifestPath\0targetPath\0transactionId\0version" ||
+      record.version !== 1 ||
+      typeof record.transactionId !== "string" ||
+      !transactionPattern.test(record.transactionId) ||
+      typeof record.manifestPath !== "string" ||
+      !isAbsolute(record.manifestPath) ||
+      record.manifestPath.length > MAXIMUM_PATH_LENGTH ||
+      record.targetPath !== expectedTargetPath
+    )
+      return undefined;
+    const parsed = ownershipRecord(
+      record.manifestPath,
+      record.transactionId,
+      expectedTargetPath,
+    );
+    return canonicalOwnershipRecord(parsed) === text ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const ownershipSnapshotMatches = (
+  snapshot: FileSnapshot,
+  expected: TargetOwnershipRecord,
+): boolean =>
+  snapshot.exists &&
+  snapshot.mode === FILE_MODE &&
+  snapshot.digest ===
+    hash(new TextEncoder().encode(canonicalOwnershipRecord(expected)));
+
+const ensureTargetOwnership = async (
+  manifestPath: string,
+  transactionId: string,
+  targetPath: string,
+): Promise<void> => {
+  const expected = ownershipRecord(manifestPath, transactionId, targetPath);
+  const candidatePath = ownershipCandidatePath(transactionId, targetPath);
+  const markerPath = ownershipMarkerPath(targetPath);
+  const claimPath = ownershipClaimPath(targetPath);
+  const candidate = await inspectFile(candidatePath);
+  if (!candidate.exists) {
+    await writeExclusive(
+      candidatePath,
+      canonicalOwnershipRecord(expected),
+      FILE_MODE,
+    );
+    await syncDirectory(candidatePath);
+  } else if (!ownershipSnapshotMatches(candidate, expected)) {
+    throw new HarnessInstallationConflictError();
+  }
+  try {
+    await link(candidatePath, claimPath);
+    await syncDirectory(claimPath);
+  } catch (error) {
+    /* v8 ignore next 1 -- native hard-link failures other than an existing
+       fixed claim are surfaced unchanged as filesystem unavailability. */
+    if (nodeErrorCode(error) !== "EEXIST") throw error;
+    if (!ownershipSnapshotMatches(await inspectFile(claimPath), expected))
+      throw new HarnessInstallationConflictError();
+  }
+  try {
+    await link(candidatePath, markerPath);
+    await syncDirectory(markerPath);
+    return;
+  } catch (error) {
+    /* v8 ignore next 1 -- the fixed marker normally exists after the first
+       completed transaction; other native failures remain unavailable. */
+    if (nodeErrorCode(error) !== "EEXIST") throw error;
+  }
+  const marker = await inspectFile(markerPath);
+  if (ownershipSnapshotMatches(marker, expected)) return;
+  const prior = parseOwnershipRecord(marker, targetPath);
+  if (!prior || (await manifestExists(prior.manifestPath)))
+    throw new HarnessInstallationConflictError();
+  await unlink(markerPath);
+  await syncDirectory(markerPath);
+  try {
+    await link(candidatePath, markerPath);
+    await syncDirectory(markerPath);
+  } catch (error) {
+    /* v8 ignore next 2 -- requires another process to win the exact
+       unlink-to-link race; either winner remains authoritative. */
+    if (nodeErrorCode(error) === "EEXIST")
+      throw new HarnessInstallationConflictError();
+    /* v8 ignore next -- other native hard-link failures are unavailable. */
+    throw error;
+  }
+};
+
+const ensureManifestOwnership = async (
+  manifestPath: string,
+  manifest: TransactionManifest,
+): Promise<void> => {
+  const targets = [...manifest.targets].sort((left, right) =>
+    left.targetPath.localeCompare(right.targetPath),
+  );
+  for (const target of targets)
+    await ensureTargetOwnership(
+      manifestPath,
+      manifest.transactionId,
+      target.targetPath,
+    );
+};
+
+const manifestOwnershipIsExact = async (
+  manifestPath: string,
+  manifest: TransactionManifest,
+): Promise<boolean> => {
+  for (const target of manifest.targets) {
+    const expected = ownershipRecord(
+      manifestPath,
+      manifest.transactionId,
+      target.targetPath,
+    );
+    if (
+      !ownershipSnapshotMatches(
+        await inspectFile(ownershipMarkerPath(target.targetPath)),
+        expected,
+      ) ||
+      !ownershipSnapshotMatches(
+        await inspectFile(ownershipClaimPath(target.targetPath)),
+        expected,
+      )
+    )
+      return false;
+  }
+  return true;
+};
+
+const removeExactOwnershipClaim = async (
+  manifestPath: string,
+  manifest: TransactionManifest,
+  targetPath: string,
+): Promise<void> => {
+  const claimPath = ownershipClaimPath(targetPath);
+  const expected = ownershipRecord(
+    manifestPath,
+    manifest.transactionId,
+    targetPath,
+  );
+  if (ownershipSnapshotMatches(await inspectFile(claimPath), expected))
+    await unlink(claimPath);
+};
+
 const replaceManifest = async (
   path: string,
   manifest: TransactionManifest,
@@ -534,6 +739,14 @@ const snapshotMatches = (
   exists: boolean,
   digest: string,
 ) => snapshot.exists === exists && snapshot.digest === digest;
+
+const snapshotMatchesManifestState = (
+  snapshot: FileSnapshot,
+  exists: boolean,
+  digest: string,
+  mode: number | null,
+): boolean =>
+  snapshotMatches(snapshot, exists, digest) && snapshot.mode === mode;
 
 const prepareManifest = async (
   state: PlanState,
@@ -569,7 +782,9 @@ const prepareManifest = async (
         target.before.mode!,
       );
     }
+    await syncDirectory(target.targetPath);
   }
+  await ensureManifestOwnership(state.manifestPath, manifest);
   return manifest;
 };
 
@@ -582,20 +797,60 @@ const commitManifest = async (
   path: string,
   manifest: TransactionManifest,
 ): Promise<void> => {
+  if (manifest.state === "prepared") {
+    await ensureManifestOwnership(path, manifest);
+    for (const target of manifest.targets) {
+      if (
+        !snapshotMatchesManifestState(
+          await inspectFile(target.targetPath),
+          target.beforeExists,
+          target.beforeDigest,
+          target.beforeMode,
+        )
+      )
+        throw new HarnessInstallationConflictError();
+    }
+  } else if (!(await manifestOwnershipIsExact(path, manifest))) {
+    throw new HarnessInstallationConflictError();
+  }
   let working = withState(manifest, "committing");
   await replaceManifest(path, working);
   for (const target of working.targets) {
     const current = await inspectFile(target.targetPath);
     if (
-      !snapshotMatches(current, target.beforeExists, target.beforeDigest) &&
-      !snapshotMatches(current, target.afterExists, target.afterDigest)
+      !snapshotMatchesManifestState(
+        current,
+        target.beforeExists,
+        target.beforeDigest,
+        target.beforeMode,
+      ) &&
+      !snapshotMatchesManifestState(
+        current,
+        target.afterExists,
+        target.afterDigest,
+        target.afterMode,
+      )
     )
       throw new HarnessInstallationConflictError();
-    if (!snapshotMatches(current, target.afterExists, target.afterDigest)) {
+    if (
+      !snapshotMatchesManifestState(
+        current,
+        target.afterExists,
+        target.afterDigest,
+        target.afterMode,
+      )
+    ) {
       if (target.afterExists) {
         const staged = await inspectFile(target.stagePath!);
         if (!staged.exists) throw new Error("harness.installation.unavailable");
-        if (!snapshotMatches(staged, true, target.afterDigest))
+        if (
+          !snapshotMatchesManifestState(
+            staged,
+            true,
+            target.afterDigest,
+            target.afterMode,
+          )
+        )
           throw new HarnessInstallationConflictError();
         await rename(target.stagePath!, target.targetPath);
       } else {
@@ -606,7 +861,14 @@ const commitManifest = async (
     const verified = await inspectFile(target.targetPath);
     /* v8 ignore next 2 -- only an external write in the exact post-rename
        verification window can change the just-replaced target. */
-    if (!snapshotMatches(verified, target.afterExists, target.afterDigest))
+    if (
+      !snapshotMatchesManifestState(
+        verified,
+        target.afterExists,
+        target.afterDigest,
+        target.afterMode,
+      )
+    )
       throw new HarnessInstallationConflictError();
   }
   working = withState(working, "committed");
@@ -629,6 +891,11 @@ const finishTransaction = async (
   for (const target of manifest.targets) {
     await removeIfPresent(target.stagePath);
     await removeIfPresent(target.backupPath);
+    await removeIfPresent(
+      ownershipCandidatePath(manifest.transactionId, target.targetPath),
+    );
+    await removeExactOwnershipClaim(manifestPath, manifest, target.targetPath);
+    await syncDirectory(target.targetPath);
   }
   await removeIfPresent(`${manifestPath}.${manifest.transactionId}.tmp`);
   await removeIfPresent(manifestPath);
@@ -690,7 +957,7 @@ const parseManifestTarget = (input: unknown): ManifestTarget => {
   const target = input as Record<string, unknown>;
   if (
     Object.keys(target).sort().join("\0") !==
-      "afterDigest\0afterExists\0backupPath\0beforeDigest\0beforeExists\0beforeMode\0stagePath\0targetPath" ||
+      "afterDigest\0afterExists\0afterMode\0backupPath\0beforeDigest\0beforeExists\0beforeMode\0stagePath\0targetPath" ||
     typeof target.targetPath !== "string" ||
     !isAbsolute(target.targetPath) ||
     typeof target.beforeDigest !== "string" ||
@@ -702,6 +969,9 @@ const parseManifestTarget = (input: unknown): ManifestTarget => {
     (target.beforeMode !== null &&
       (typeof target.beforeMode !== "number" ||
         !Number.isSafeInteger(target.beforeMode))) ||
+    (target.afterMode !== null &&
+      (typeof target.afterMode !== "number" ||
+        !Number.isSafeInteger(target.afterMode))) ||
     (target.stagePath !== null &&
       (typeof target.stagePath !== "string" ||
         !isAbsolute(target.stagePath))) ||
@@ -716,6 +986,7 @@ const parseManifestTarget = (input: unknown): ManifestTarget => {
     beforeMode: target.beforeMode,
     afterDigest: target.afterDigest,
     afterExists: target.afterExists,
+    afterMode: target.afterMode,
     stagePath: target.stagePath,
     backupPath: target.backupPath,
   });
@@ -764,7 +1035,8 @@ const parseManifestRecord = (
         target.stagePath !== (target.afterExists ? `${prefix}.stage` : null) ||
         target.backupPath !==
           (target.beforeExists ? `${prefix}.backup` : null) ||
-        target.beforeExists !== (target.beforeMode !== null)
+        target.beforeExists !== (target.beforeMode !== null) ||
+        target.afterExists !== (target.afterMode !== null)
       );
     })
   )
@@ -798,7 +1070,14 @@ const restoreTarget = async (
   target: ManifestTarget,
   current: FileSnapshot,
 ): Promise<HarnessInstallationResult | undefined> => {
-  if (!snapshotMatches(current, target.afterExists, target.afterDigest))
+  if (
+    !snapshotMatchesManifestState(
+      current,
+      target.afterExists,
+      target.afterDigest,
+      target.afterMode,
+    )
+  )
     return undefined;
   if (target.beforeExists) {
     /* v8 ignore next -- manifest validation makes backup presence equivalent
@@ -849,13 +1128,40 @@ export const rollbackHarnessInstallation = async (
 ): Promise<HarnessInstallationResult> => {
   try {
     let manifest = await parseManifest(manifestPath);
+    if (manifest.state === "prepared") {
+      for (const target of manifest.targets) {
+        if (
+          !snapshotMatchesManifestState(
+            await inspectFile(target.targetPath),
+            target.beforeExists,
+            target.beforeDigest,
+            target.beforeMode,
+          )
+        )
+          return result(false, "conflict", 0);
+      }
+      await finishTransaction(manifestPath, manifest);
+      return result(true, "rolled-back", manifest.targets.length);
+    }
+    if (!(await manifestOwnershipIsExact(manifestPath, manifest)))
+      return result(false, "conflict", 0);
     manifest = withState(manifest, "rolling-back");
     await replaceManifest(manifestPath, manifest);
     for (const target of [...manifest.targets].reverse()) {
       const current = await inspectFile(target.targetPath);
       if (
-        !snapshotMatches(current, target.beforeExists, target.beforeDigest) &&
-        !snapshotMatches(current, target.afterExists, target.afterDigest)
+        !snapshotMatchesManifestState(
+          current,
+          target.beforeExists,
+          target.beforeDigest,
+          target.beforeMode,
+        ) &&
+        !snapshotMatchesManifestState(
+          current,
+          target.afterExists,
+          target.afterDigest,
+          target.afterMode,
+        )
       )
         return result(false, "conflict", 0);
       const restoreFailure = await restoreTarget(target, current);

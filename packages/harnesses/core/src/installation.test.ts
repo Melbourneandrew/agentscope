@@ -42,6 +42,34 @@ const artifactPrefix = (transactionId: string, targetPath: string): string =>
       .digest("hex")
       .slice(0, 16)}`,
   );
+const ownershipMarkerPath = (targetPath: string): string =>
+  join(
+    join(targetPath, ".."),
+    `.agentscope-installation-${createHash("sha256")
+      .update(targetPath)
+      .digest("hex")}.owner`,
+  );
+const ownershipClaimPath = (targetPath: string): string =>
+  `${ownershipMarkerPath(targetPath)}.claim`;
+const writeOwnershipMarker = async (
+  manifestPath: string,
+  transactionId: string,
+  targetPath: string,
+): Promise<void> => {
+  const contents = `${JSON.stringify({
+    version: 1,
+    transactionId,
+    manifestPath,
+    targetPath,
+  })}\n`;
+  for (const path of [
+    ownershipMarkerPath(targetPath),
+    ownershipClaimPath(targetPath),
+  ]) {
+    await writeFile(path, contents, { mode: 0o600 });
+    await chmod(path, 0o600);
+  }
+};
 
 afterEach(async () => {
   await Promise.all(
@@ -158,6 +186,72 @@ describe("harness installation transaction", () => {
   });
 });
 
+describe("harness installation target ownership", () => {
+  it("allows only one manifest to own an overlapping target", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const firstManifest = join(root, "transactions", "first.json");
+    const secondManifest = join(root, "transactions", "second.json");
+    await writeFile(target, "before", { mode: 0o600 });
+    await chmod(target, 0o600);
+    const planner: HarnessInstallationPlanInput["planner"] = () => ({
+      kind: "replace",
+      bytes: bytes("after"),
+    });
+    const [firstPlan, secondPlan] = await Promise.all([
+      inspectHarnessInstallation({
+        manifestPath: firstManifest,
+        operation: "install",
+        targetPaths: [target],
+        planner,
+      }),
+      inspectHarnessInstallation({
+        manifestPath: secondManifest,
+        operation: "install",
+        targetPaths: [target],
+        planner,
+      }),
+    ]);
+    const outcomes = await Promise.all([
+      applyHarnessInstallation(firstPlan),
+      applyHarnessInstallation(secondPlan),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.ok)).toHaveLength(1);
+    expect(
+      outcomes.filter((outcome) => !outcome.ok).map((outcome) => outcome.state),
+    ).toEqual(["conflict"]);
+    expect(await readFile(target, "utf8")).toBe("after");
+    const losingManifest = outcomes[0].ok ? secondManifest : firstManifest;
+    await expect(
+      rollbackHarnessInstallation(losingManifest),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    expect(await readFile(target, "utf8")).toBe("after");
+  });
+
+  it("reclaims a completed ownership marker for a later transaction", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    await writeFile(target, "first", { mode: 0o600 });
+    await chmod(target, 0o600);
+    for (const [name, value] of [
+      ["first", "second"],
+      ["second", "third"],
+    ] as const) {
+      const plan = await inspectHarnessInstallation({
+        manifestPath: join(root, "transactions", `${name}.json`),
+        operation: "install",
+        targetPaths: [target],
+        planner: () => ({ kind: "replace", bytes: bytes(value) }),
+      });
+      await expect(applyHarnessInstallation(plan)).resolves.toMatchObject({
+        ok: true,
+        state: "committed",
+      });
+    }
+    expect(await readFile(target, "utf8")).toBe("third");
+  });
+});
+
 describe("harness installation admission", () => {
   it("treats equal replacement bytes as unchanged and rechecks manifest admission", async () => {
     const root = await temporaryRoot();
@@ -267,6 +361,7 @@ describe("harness installation recovery", () => {
           beforeMode: 0o640,
           afterDigest: digest("after"),
           afterExists: true,
+          afterMode: 0o640,
           stagePath,
           backupPath,
         },
@@ -286,6 +381,7 @@ describe("harness installation recovery", () => {
       manifestPath,
       `${JSON.stringify({ ...manifest, state: "committed" })}\n`,
     );
+    await writeOwnershipMarker(manifestPath, transactionId, target);
     await expect(
       resumeHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({
@@ -299,6 +395,7 @@ describe("harness installation recovery", () => {
       manifestPath,
       `${JSON.stringify({ ...manifest, state: "committed" })}\n`,
     );
+    await writeOwnershipMarker(manifestPath, transactionId, target);
     await expect(
       rollbackHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({
@@ -326,13 +423,16 @@ describe("harness installation recovery", () => {
           beforeMode: null,
           afterDigest: digest("owned"),
           afterExists: true,
+          afterMode: 0o600,
           stagePath: `${artifactPrefix(transactionId, target)}.stage`,
           backupPath: null,
         },
       ],
     };
-    await writeFile(target, "owned");
+    await writeFile(target, "owned", { mode: 0o600 });
+    await chmod(target, 0o600);
     await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await writeOwnershipMarker(manifestPath, transactionId, target);
     await expect(
       rollbackHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({
@@ -372,14 +472,18 @@ describe("harness installation recovery conflicts", () => {
           beforeMode: 0o600,
           afterDigest: digest("after"),
           afterExists: true,
+          afterMode: 0o600,
           stagePath: `${prefix}.stage`,
           backupPath: `${prefix}.backup`,
         },
       ],
     };
-    await writeFile(target, "vendor");
-    await writeFile(`${prefix}.stage`, "after");
-    await writeFile(`${prefix}.backup`, "before");
+    await writeFile(target, "vendor", { mode: 0o600 });
+    await chmod(target, 0o600);
+    await writeFile(`${prefix}.stage`, "after", { mode: 0o600 });
+    await chmod(`${prefix}.stage`, 0o600);
+    await writeFile(`${prefix}.backup`, "before", { mode: 0o600 });
+    await chmod(`${prefix}.backup`, 0o600);
     await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
     await expect(
       resumeHarnessInstallation(manifestPath),
@@ -402,7 +506,8 @@ describe("harness installation recovery conflicts", () => {
     const manifestPath = join(root, "transaction.json");
     const transactionId = "e".repeat(32);
     const stagePath = `${artifactPrefix(transactionId, target)}.stage`;
-    await writeFile(target, "after");
+    await writeFile(target, "after", { mode: 0o600 });
+    await chmod(target, 0o600);
     await mkdir(stagePath);
     const manifest = {
       version: 1,
@@ -416,12 +521,14 @@ describe("harness installation recovery conflicts", () => {
           beforeMode: null,
           afterDigest: digest("after"),
           afterExists: true,
+          afterMode: 0o600,
           stagePath,
           backupPath: null,
         },
       ],
     };
     await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await writeOwnershipMarker(manifestPath, transactionId, target);
     await expect(
       resumeHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({
@@ -436,7 +543,8 @@ describe("harness installation recovery conflicts", () => {
     const manifestPath = join(root, "transaction.json");
     const transactionId = "f".repeat(32);
     const prefix = artifactPrefix(transactionId, target);
-    await writeFile(target, "after");
+    await writeFile(target, "after", { mode: 0o600 });
+    await chmod(target, 0o600);
     const manifest = {
       version: 1,
       transactionId,
@@ -449,12 +557,14 @@ describe("harness installation recovery conflicts", () => {
           beforeMode: 0o600,
           afterDigest: digest("after"),
           afterExists: true,
+          afterMode: 0o600,
           stagePath: `${prefix}.stage`,
           backupPath: `${prefix}.backup`,
         },
       ],
     };
     await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await writeOwnershipMarker(manifestPath, transactionId, target);
     await expect(
       rollbackHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({
@@ -485,6 +595,7 @@ describe("harness installation recovery artifact integrity", () => {
           beforeMode: 0o600,
           afterDigest: digest("after"),
           afterExists: true,
+          afterMode: 0o600,
           stagePath,
           backupPath,
         },
@@ -499,6 +610,13 @@ describe("harness installation recovery artifact integrity", () => {
       resumeHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({ ok: false, state: "conflict" });
     expect(await readFile(target, "utf8")).toBe("before");
+    await writeFile(stagePath, "after", { mode: 0o644 });
+    await chmod(stagePath, 0o644);
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    expect(await readFile(target, "utf8")).toBe("before");
+    expect((await lstat(target)).mode & 0o777).toBe(0o600);
     await unlink(stagePath);
     await expect(
       resumeHarnessInstallation(manifestPath),
@@ -515,6 +633,185 @@ describe("harness installation recovery artifact integrity", () => {
       rollbackHarnessInstallation(manifestPath),
     ).resolves.toMatchObject({ ok: false, state: "conflict" });
     expect(await readFile(target, "utf8")).toBe("after");
+  });
+});
+
+describe("harness installation recovery ownership integrity", () => {
+  it("cancels an unclaimed prepared transaction from its preimage", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "created.json");
+    const manifestPath = join(root, "transaction.json");
+    const transactionId = "5".repeat(32);
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "prepared",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: absentDigest,
+          beforeExists: false,
+          beforeMode: null,
+          afterDigest: digest("after"),
+          afterExists: true,
+          afterMode: 0o600,
+          stagePath: `${artifactPrefix(transactionId, target)}.stage`,
+          backupPath: null,
+        },
+      ],
+    };
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await expect(
+      rollbackHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: true, state: "rolled-back" });
+  });
+});
+
+describe("harness installation recovery ownership records", () => {
+  it("rejects malformed ownership candidates and fixed markers", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const manifestPath = join(root, "transaction.json");
+    const transactionId = "9".repeat(32);
+    const prefix = artifactPrefix(transactionId, target);
+    const stagePath = `${prefix}.stage`;
+    const candidatePath = `${prefix}.owner`;
+    const markerPath = ownershipMarkerPath(target);
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "prepared",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: digest("before"),
+          beforeExists: true,
+          beforeMode: 0o600,
+          afterDigest: digest("after"),
+          afterExists: true,
+          afterMode: 0o600,
+          stagePath,
+          backupPath: `${prefix}.backup`,
+        },
+      ],
+    };
+    await writeFile(target, "before", { mode: 0o600 });
+    await chmod(target, 0o600);
+    await writeFile(stagePath, "after", { mode: 0o600 });
+    await chmod(stagePath, 0o600);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await writeFile(candidatePath, "invalid", { mode: 0o600 });
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    await unlink(candidatePath);
+
+    for (const [content, mode] of [
+      ["{}\n", 0o644],
+      ["[]\n", 0o600],
+      ['{"version":2}\n', 0o600],
+      [
+        `${JSON.stringify({
+          targetPath: target,
+          manifestPath,
+          transactionId,
+          version: 1,
+        })}\n`,
+        0o600,
+      ],
+      ["{\n", 0o600],
+    ] as const) {
+      await writeFile(markerPath, content, { mode });
+      await chmod(markerPath, mode);
+      await expect(
+        resumeHarnessInstallation(manifestPath),
+      ).resolves.toMatchObject({ ok: false, state: "conflict" });
+      await unlink(markerPath);
+    }
+  });
+
+  it("requires committed recovery to retain exact target ownership", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "config.json");
+    const manifestPath = join(root, "transaction.json");
+    const transactionId = "6".repeat(32);
+    const prefix = artifactPrefix(transactionId, target);
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "committed",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: digest("before"),
+          beforeExists: true,
+          beforeMode: 0o600,
+          afterDigest: digest("after"),
+          afterExists: true,
+          afterMode: 0o600,
+          stagePath: `${prefix}.stage`,
+          backupPath: `${prefix}.backup`,
+        },
+      ],
+    };
+    await writeFile(target, "after", { mode: 0o600 });
+    await chmod(target, 0o600);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    await expect(
+      rollbackHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+
+    await writeOwnershipMarker(manifestPath, transactionId, target);
+    await writeFile(target, "vendor", { mode: 0o600 });
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    await expect(
+      rollbackHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    await writeFile(target, "before", { mode: 0o600 });
+    await expect(
+      rollbackHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: true, state: "rolled-back" });
+  });
+});
+
+describe("harness installation recovery mode integrity", () => {
+  it("rejects a wrong-mode staged artifact for a newly created target", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "created.json");
+    const manifestPath = join(root, "transaction.json");
+    const transactionId = "8".repeat(32);
+    const stagePath = `${artifactPrefix(transactionId, target)}.stage`;
+    const manifest = {
+      version: 1,
+      transactionId,
+      state: "prepared",
+      targets: [
+        {
+          targetPath: target,
+          beforeDigest: absentDigest,
+          beforeExists: false,
+          beforeMode: null,
+          afterDigest: digest("after"),
+          afterExists: true,
+          afterMode: 0o600,
+          stagePath,
+          backupPath: null,
+        },
+      ],
+    };
+    await writeFile(stagePath, "after", { mode: 0o644 });
+    await chmod(stagePath, 0o644);
+    await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+
+    await expect(
+      resumeHarnessInstallation(manifestPath),
+    ).resolves.toMatchObject({ ok: false, state: "conflict" });
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
@@ -684,6 +981,7 @@ describe("harness installation manifest validation", () => {
           beforeMode: null,
           afterDigest: digest("after"),
           afterExists: true,
+          afterMode: 0o600,
           stagePath: `${prefix}.stage`,
           backupPath: null,
         },

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +101,45 @@ const packagePattern = /^@agentscope\/harness-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const forbiddenFixtureText =
   /(?:bearer\s|api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|\/Users\/|\/home\/|[A-Za-z]:\\)/iu;
 const shellSyntax = /(?:[;&|`$<>\n\r]|\$\(|\{\{)/u;
+const contractCaseNames = Object.freeze([
+  "harness:compatibility-evidence",
+  "harness:discovery",
+  "harness:sanitized-native-mapping",
+  "harness:launcher-and-installation",
+  "harness:fail-open-deadline",
+  "harness:scenario-adapter",
+]);
+
+const canonicalEvidenceValue = (value: unknown): unknown => {
+  if (Array.isArray(value))
+    return value.map((member) => canonicalEvidenceValue(member));
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, canonicalEvidenceValue(record[key])]),
+    );
+  }
+  return value;
+};
+
+const evidenceDigest = (value: unknown): string =>
+  `sha256-${createHash("sha256")
+    .update(JSON.stringify(canonicalEvidenceValue(value)))
+    .digest("hex")}`;
+
+export const deriveHarnessContractEvidenceDigests = (
+  fixture: HarnessSanitizedFixture,
+  scenario: HarnessScenarioAdapter,
+): Readonly<{ contractSuiteDigest: string; realScenarioDigest: string }> =>
+  Object.freeze({
+    contractSuiteDigest: evidenceDigest({
+      contractVersion: 1,
+      cases: contractCaseNames,
+    }),
+    realScenarioDigest: evidenceDigest({ fixture, scenario }),
+  });
 
 const fixtureIsSanitized = (fixture: HarnessSanitizedFixture): boolean => {
   try {
@@ -122,10 +162,16 @@ const evidenceIsBound = (adapter: HarnessContractAdapter): boolean => {
       candidate.harnessType === adapter.descriptor.harnessType &&
       candidate.testedVersion === adapter.compatibleVersion,
   );
-  return Boolean(
-    entry &&
+  if (!entry) return false;
+  const expected = deriveHarnessContractEvidenceDigests(
+    adapter.fixture,
+    adapter.scenario,
+  );
+  return (
     digestPattern.test(entry.contractSuiteDigest) &&
-    digestPattern.test(entry.realScenarioDigest),
+    digestPattern.test(entry.realScenarioDigest) &&
+    entry.contractSuiteDigest === expected.contractSuiteDigest &&
+    entry.realScenarioDigest === expected.realScenarioDigest
   );
 };
 

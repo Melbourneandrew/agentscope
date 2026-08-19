@@ -9,14 +9,13 @@ import {
 } from "./native-mapping.js";
 import {
   createHarnessContractSuite,
+  deriveHarnessContractEvidenceDigests,
   type HarnessContractAdapter,
   type HarnessHookTestBehavior,
 } from "./testing-contract-suite.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const digest = `sha256-${"a".repeat(64)}`;
-
 const descriptor = defineHarnessDescriptor({
   descriptorVersion: 1,
   harnessType: "@agentscope/harness-reference",
@@ -55,6 +54,42 @@ const hookRunner = async (
   });
 };
 
+const referenceFixture = {
+  fixtureVersion: 1,
+  fixtureId: "reference-session-v1",
+  harnessVersion: "1.2.3",
+  nativeIdentityKind: "session",
+  nativeIdentity: "reference-session-1",
+  sourceGeneration: 1,
+  positionKind: "sequence",
+  availableStartPosition: 4,
+  boundaryKind: "turn",
+  boundaryId: "reference-turn-5",
+  exclusiveEndPosition: 5,
+  expectedFields: ["llm.model_name", "tool.name"],
+  sanitizedPayload: {
+    model: "reference-model",
+    operation: "summarize",
+    tokenCount: 7,
+  },
+} as const;
+
+const referenceScenario = {
+  scenarioVersion: 1,
+  scenarioId: "reference-v1",
+  harnessId: "reference",
+  harnessPackage: "@agentscope/harness-reference",
+  representativeVersion: "1.2.3",
+  fixtureId: "reference-session-v1",
+  tags: ["reference", "contract"],
+  commandArguments: ["run", "fixture-session"],
+} as const;
+
+const referenceEvidence = deriveHarnessContractEvidenceDigests(
+  referenceFixture,
+  referenceScenario,
+);
+
 const referenceAdapter = (): HarnessContractAdapter => ({
   descriptor,
   supportEvidence: {
@@ -64,45 +99,18 @@ const referenceAdapter = (): HarnessContractAdapter => ({
         harnessType: descriptor.harnessType,
         evidenceSlot: "reference-v1",
         testedVersion: "1.2.3",
-        contractSuiteDigest: digest,
-        realScenarioDigest: digest,
+        contractSuiteDigest: referenceEvidence.contractSuiteDigest,
+        realScenarioDigest: referenceEvidence.realScenarioDigest,
       },
     ],
   },
   compatibleVersion: "1.2.3",
   unsupportedVersion: "2.0.0",
-  fixture: {
-    fixtureVersion: 1,
-    fixtureId: "reference-session-v1",
-    harnessVersion: "1.2.3",
-    nativeIdentityKind: "session",
-    nativeIdentity: "reference-session-1",
-    sourceGeneration: 1,
-    positionKind: "sequence",
-    availableStartPosition: 4,
-    boundaryKind: "turn",
-    boundaryId: "reference-turn-5",
-    exclusiveEndPosition: 5,
-    expectedFields: ["llm.model_name", "tool.name"],
-    sanitizedPayload: {
-      model: "reference-model",
-      operation: "summarize",
-      tokenCount: 7,
-    },
-  },
-  scenario: {
-    scenarioVersion: 1,
-    scenarioId: "reference-v1",
-    harnessId: "reference",
-    harnessPackage: "@agentscope/harness-reference",
-    representativeVersion: "1.2.3",
-    fixtureId: "reference-session-v1",
-    tags: ["reference", "contract"],
-    commandArguments: ["run", "fixture-session"],
-  },
+  fixture: referenceFixture,
+  scenario: referenceScenario,
   contextEvidence: encoder.encode("reference-context"),
   mapFixture: (resolver) => {
-    const fixture = referenceAdapter().fixture;
+    const fixture = referenceFixture;
     const start = resolveNativeCaptureStart(
       {
         nativeIdentityKind: fixture.nativeIdentityKind,
@@ -306,7 +314,9 @@ describe("harness contract suite adversarial seeds", () => {
       ),
     ).rejects.toThrow("harness.contract.hook.deadline");
   });
+});
 
+describe("harness contract evidence and discovery seeds", () => {
   it("rejects stale compatibility and malformed discovery evidence", async () => {
     const compatibilityViolation = referenceAdapter();
     await expect(
@@ -326,6 +336,44 @@ describe("harness contract suite adversarial seeds", () => {
         "harness:compatibility-evidence",
       ),
     ).rejects.toThrow("harness.descriptor.invalid");
+
+    for (const field of [
+      "contractSuiteDigest",
+      "realScenarioDigest",
+    ] as const) {
+      const unbound = referenceAdapter();
+      await expect(
+        runCase(
+          {
+            ...unbound,
+            supportEvidence: {
+              ...unbound.supportEvidence,
+              entries: unbound.supportEvidence.entries.map((entry) => ({
+                ...entry,
+                [field]: `sha256-${"b".repeat(64)}`,
+              })),
+            },
+          },
+          "harness:compatibility-evidence",
+        ),
+      ).rejects.toThrow("harness.contract.compatibility");
+    }
+    await expect(
+      runCase(
+        { ...referenceAdapter(), compatibleVersion: "1.4.0" },
+        "harness:compatibility-evidence",
+      ),
+    ).rejects.toThrow("harness.contract.compatibility");
+    const scenarioDrift = referenceAdapter();
+    await expect(
+      runCase(
+        {
+          ...scenarioDrift,
+          scenario: { ...scenarioDrift.scenario, tags: ["changed"] },
+        },
+        "harness:compatibility-evidence",
+      ),
+    ).rejects.toThrow("harness.contract.compatibility");
 
     const discoveryViolation = referenceAdapter();
     await expect(
