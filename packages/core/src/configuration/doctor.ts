@@ -98,6 +98,11 @@ export type DoctorCredentialInspection = Readonly<{
   state: "available" | CredentialResolutionFailure;
 }>;
 
+export type DoctorConnectionInspection = Readonly<{
+  destinationType: DestinationTypeId;
+  connectionId: DestinationConnectionId;
+}>;
+
 export type DoctorReport = Readonly<{
   configuration:
     | Readonly<{ state: "valid"; generation: number }>
@@ -106,6 +111,7 @@ export type DoctorReport = Readonly<{
       }>;
   transaction: ConfigurationTransactionInspection;
   credentialMutation: CredentialMutationInspection;
+  connections: readonly DoctorConnectionInspection[];
   credentials: readonly DoctorCredentialInspection[];
   operationalState:
     | Readonly<{
@@ -383,6 +389,16 @@ export const inspectAgentscopeDoctor = async (
         configurationRead.snapshot.connections,
       )
     : Object.freeze([]);
+  const connections = configurationRead.ok
+    ? Object.freeze(
+        configurationRead.snapshot.connections.map((connection) =>
+          Object.freeze({
+            connectionId: connection.connectionId,
+            destinationType: connection.destinationType,
+          }),
+        ),
+      )
+    : Object.freeze([]);
   const findings: DoctorFinding[] = [
     configurationRead.ok
       ? finding("doctor.configuration.valid", "info", "none")
@@ -412,6 +428,7 @@ export const inspectAgentscopeDoctor = async (
     configuration,
     transaction,
     credentialMutation,
+    connections,
     credentials,
     operationalState,
     findings: Object.freeze(findings),

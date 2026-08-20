@@ -95,11 +95,33 @@
         "AC-CLI-001.2",
         "AC-CLI-001.4",
         "AC-CLI-002.2",
+        "AC-DOC-001.3",
+        "AC-DOC-001.7",
+        "AC-DOC-002.1",
+        "AC-DOC-002.2",
         "AC-INS-001.1",
         "AC-INS-001.2",
         "AC-INS-001.3",
         "AC-INS-001.4"
       ]
+    },
+    {
+      "id": "test:cli-doctor-composition",
+      "kind": "automated-test",
+      "path": "apps/cli/src/doctor-services.test.ts",
+      "criteria": [
+        "AC-DOC-001.4",
+        "AC-DOC-001.6",
+        "AC-DOC-001.7",
+        "AC-DOC-002.1",
+        "AC-DOC-002.2"
+      ]
+    },
+    {
+      "id": "test:cli-doctor-production-composition",
+      "kind": "automated-test",
+      "path": "apps/cli/src/production-services.test.ts",
+      "criteria": ["AC-DOC-001.3", "AC-DOC-001.4", "AC-DOC-001.6"]
     },
     {
       "id": "test:core-redaction-pipeline",

@@ -225,6 +225,12 @@ describe("Agentscope Doctor inspection", () => {
     });
 
     expect(report.configuration).toEqual({ state: "valid", generation: 0 });
+    expect(report.connections).toEqual([
+      {
+        destinationType: "@agentscope/destination-example",
+        connectionId,
+      },
+    ]);
     expect(report.transaction).toEqual({ state: "clean" });
     expect(report.credentials).toMatchObject([
       {

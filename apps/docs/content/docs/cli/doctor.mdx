@@ -1,0 +1,46 @@
+---
+title: Diagnose Agentscope
+description: Inspect the complete local Agentscope installation and apply only proof-bound safe repairs.
+command: agentscope doctor
+commandContract: sha256:b1b1531522c2607eab103adfa7fd6198a1875866064093b40eabf13b0d5195e1
+---
+
+`agentscope doctor` composes one read-only report from configuration and recovery state, opaque credential-reference checks, retained pipeline health, registered harness discovery and owned-hook inspection, destination-declared reachability probes, and the current Git workspace. Findings contain closed states and bounded non-content evidence; they never include credential values, trace content, provider responses, repository paths, or arbitrary error text.
+
+## Syntax
+
+```bash
+agentscope doctor [--fix] [--output human|json|jsonl]
+```
+
+Without `--fix`, Doctor performs no mutation. `--fix` may apply only the two reversible, proof-bound repairs defined by the operational-state contract: recovery of a dead-owner configuration transaction and removal of a dead-owner operational-state writer lock. The complete plan is written to stderr before either repair is attempted, and the final re-inspected report is written to stdout.
+
+## Output and exits
+
+`human` prints a summary followed by every finding's stable code, severity, closed evidence state, and suggested action. `json` emits one versioned report record. `jsonl` emits the same report as one data record followed by its completion summary. A successfully completed diagnosis exits 0 even when the report contains warnings or errors; command-input and internal presentation failures retain the CLI's stable category exits.
+
+## Automation
+
+Use `json` when a controller needs one immutable report and `jsonl` when it consumes the standard record stream. Treat `code`, `severity`, `evidence`, and `suggestedAction` as the diagnostic contract. Retained pipeline health proves only the local evidence boundary recorded by Agentscope; it does not prove remote trace retention.
+
+`--fix` does not replace vendor hooks, rotate or delete credentials, restore or delete configuration, reconcile recovery claims, write to a destination, or modify a Git repository. Use the separately documented explicit command for those operations.
+
+## Diagnostics
+
+Doctor health findings are returned in the report rather than as command diagnostics. Every finding code begins with `doctor.` and includes a closed severity, evidence record, and suggested action. If the CLI cannot validate or present the report, it uses the ordinary `cli.input.invalid` or `cli.internal` diagnostic boundary.
+
+## Examples
+
+Inspect without mutation:
+
+```bash
+agentscope doctor
+agentscope doctor --output json
+```
+
+Apply only currently provable safe repairs after displaying the exact plan:
+
+```bash
+agentscope doctor --fix
+agentscope doctor --fix --output jsonl
+```

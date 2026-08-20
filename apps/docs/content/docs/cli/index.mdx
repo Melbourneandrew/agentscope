@@ -2,14 +2,14 @@
 title: Agentscope CLI
 description: Root command, output modes, diagnostics, and exit behavior.
 command: agentscope
-commandContract: sha256:8b7cfb46132eb5d97a8412e4572a1ab541a659bb413312f8303f41d755eb5526
+commandContract: sha256:b1b1531522c2607eab103adfa7fd6198a1875866064093b40eabf13b0d5195e1
 ---
 
 The `agentscope` command is the composition root for capture, configuration, installation, destination, retrieval, and diagnostic workflows. The currently shipped configuration surface is plan-first: `init` does not mutate without `--yes`, destination configuration is descriptor-driven, and routing is always explicit.
 
 ## Current availability
 
-This release establishes the generic CLI and Core composition contracts. The packed production registry intentionally contains no concrete destination descriptors or harness adapters yet. Destination commands that require a provider return `destination.type-missing`; harness commands report an empty roster or `harness.adapter-missing`. The first-party Langfuse and Local SQLite packages, followed by the seven real harness adapters, are separate delivery phases. Their user-facing acceptance criteria remain planned until those packages are registered and pack-tested end to end.
+This release establishes the generic CLI and Core composition contracts. The packed production registry intentionally contains no concrete destination descriptors or harness adapters yet. Destination commands that require a provider return `destination.type-missing`; harness commands report an empty roster or `harness.adapter-missing`. `doctor` still inspects configuration, recovery, credential, retained health, and Git state, while declaring absent destination and harness integrations rather than inventing evidence. The first-party Langfuse and Local SQLite packages, followed by the seven real harness adapters, are separate delivery phases. Their provider- and harness-specific user-facing acceptance criteria remain planned until those packages are registered and pack-tested end to end.
 
 ## Syntax
 
@@ -47,6 +47,7 @@ Diagnostics contain a stable code and closed category, never a stack trace, cred
 agentscope --help
 agentscope --version
 agentscope init
+agentscope doctor --output json
 agentscope destination list
 agentscope routing list
 ```

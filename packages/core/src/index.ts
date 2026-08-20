@@ -42,6 +42,7 @@ export {
   repairDoctorConfigurationTransaction,
   repairDoctorOperationalStateLock,
   type DoctorCredentialInspection,
+  type DoctorConnectionInspection,
   type DoctorFinding,
   type DoctorFindingCode,
   type DoctorInspectionInput,
@@ -164,6 +165,10 @@ export {
   type ResolvedTraceLifecycleInput,
   type ResolvedTraceLifecycleResult,
 } from "./invocation/lifecycle.js";
+export {
+  inspectGitContextForDoctor,
+  type DoctorGitInspection,
+} from "./invocation/git-context.js";
 export {
   type CaptureAdapter,
   type CaptureResume,

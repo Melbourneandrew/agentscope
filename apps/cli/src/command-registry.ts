@@ -66,6 +66,18 @@ const rawCommandRegistry = [
     visibility: "public",
   },
   {
+    dataSchema: "agentscope.cli.doctor.v1",
+    diagnostics: [],
+    documentationPage: "cli/doctor.mdx",
+    id: "doctor",
+    kind: "command",
+    outputModes: ["human", "json", "jsonl"],
+    path: ["doctor"],
+    summary:
+      "Inspect installation health and optionally apply proof-bound safe repairs.",
+    visibility: "public",
+  },
+  {
     dataSchema: "agentscope.cli.init.v1",
     diagnostics: [
       "configuration.conflict",
