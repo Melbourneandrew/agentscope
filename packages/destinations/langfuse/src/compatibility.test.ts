@@ -46,6 +46,7 @@ const startFixtureServer = async (
         fixture.request.path,
         fixture.request.query,
         fixture.request.body,
+        fixture.request.headers,
       ),
       fixture,
     ]),
@@ -66,8 +67,9 @@ const startFixtureServer = async (
         requestKey(
           request.method ?? "GET",
           url.pathname,
-          Object.fromEntries(url.searchParams),
+          url.searchParams,
           raw ? (JSON.parse(raw) as LangfuseJson) : null,
+          request.headers,
         ),
       );
       if (!fixture) {
@@ -89,14 +91,25 @@ const startFixtureServer = async (
 const requestKey = (
   method: string,
   path: string,
-  query: Readonly<Record<string, string>>,
+  query: Readonly<Record<string, string>> | URLSearchParams,
   body: unknown,
+  headers: IncomingHttpHeaders | Readonly<Record<string, string>>,
 ): string =>
   JSON.stringify({
     method,
     path,
-    query: Object.fromEntries(
-      Object.entries(query).sort(([a], [b]) => a.localeCompare(b)),
+    query: (query instanceof URLSearchParams
+      ? [...query.entries()]
+      : Object.entries(query)
+    ).sort(([leftName, leftValue], [rightName, rightValue]) =>
+      leftName === rightName
+        ? leftValue.localeCompare(rightValue)
+        : leftName.localeCompare(rightName),
+    ),
+    headers: Object.fromEntries(
+      ["authorization", "content-type", "x-langfuse-ingestion-version"].map(
+        (name) => [name, headers[name] ?? null],
+      ),
     ),
     body,
   });
@@ -177,7 +190,7 @@ const stopServer = (server: Server): Promise<void> =>
 describe("Langfuse compatibility contract", () => {
   it("pins one immutable provisional manifest to reviewed official sources", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.manifestId).toBe(
-      "sha256:914b378357945f7a4d54e3f5ba91623023e60380db18f88f1b6e3bcaeda61c79",
+      "sha256:985872d5bd33116a4529685898e6d000f6fda17be76e645c961cd5cc70bd0bed",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.status).toBe(
       "provisional-contract-only",
@@ -342,11 +355,13 @@ describe("Langfuse compatibility fixtures", () => {
       modelTagPrefix: "agentscope:model:",
       maximumModels: 32,
       maximumTags: 32,
+      maximumSpans: 256,
       maximumValueCharacters: 200,
       maximumMetadataEntries: 72,
       maximumProjectionBytes: 16_384,
       maximumWireOverlayAttributes: 146,
-      countGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
+      indexedCountGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
+      spanCountGrammar: "^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-6])$",
       indexGrammar: "^(?:0[0-9]|[12][0-9]|3[01])$",
       valueGrammar: "nonempty-nfc-utf8-without-control-characters",
       indexedValues: "exactly-count-contiguous-zero-based-two-digit-indices",
@@ -388,8 +403,17 @@ describe("Langfuse compatibility fixtures", () => {
         },
       ],
     });
-    expect(new RegExp(projection.countGrammar, "u").test("32")).toBe(true);
-    expect(new RegExp(projection.countGrammar, "u").test("33")).toBe(false);
+    expect(new RegExp(projection.indexedCountGrammar, "u").test("32")).toBe(
+      true,
+    );
+    expect(new RegExp(projection.indexedCountGrammar, "u").test("33")).toBe(
+      false,
+    );
+    expect(new RegExp(projection.spanCountGrammar, "u").test("256")).toBe(true);
+    expect(new RegExp(projection.spanCountGrammar, "u").test("257")).toBe(
+      false,
+    );
+    expect(new RegExp(projection.spanCountGrammar, "u").test("0")).toBe(false);
     expect(new RegExp(projection.indexGrammar, "u").test("31")).toBe(true);
     expect(new RegExp(projection.indexGrammar, "u").test("32")).toBe(false);
   });
@@ -480,11 +504,29 @@ describe("Langfuse compatibility fixture replay", () => {
           expect(request.headers[name]).toBe(value);
         }
       }
+      const otlp = LANGFUSE_SANITIZED_HTTP_FIXTURES.find(
+        ({ fixtureId }) => fixtureId === "otlp-v4-json-root-v1",
+      );
+      if (!otlp) throw new Error("OTLP fixture missing");
+      const missingIngestionVersion = await fetch(
+        `${fixtureServer.origin}${otlp.request.path}`,
+        {
+          method: otlp.request.method,
+          headers: {
+            authorization: "[credential-slot]",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(otlp.request.body),
+        },
+      );
+      expect(missingIngestionVersion.status).toBe(400);
     } finally {
       await stopServer(fixtureServer.server);
     }
   });
+});
 
+describe("Langfuse portable-filter fixture replay", () => {
   it("replays exact match/miss queries and rejects nonconforming requests", async () => {
     const fixtureServer = await startFixtureServer(filterHttpFixtures);
     try {
@@ -503,17 +545,28 @@ describe("Langfuse compatibility fixture replay", () => {
       );
       expect(invalid.status).toBe(400);
       expect(await invalid.json()).toEqual({ code: "fixture.request.invalid" });
+      const exactV1 = LANGFUSE_FILTER_CONFORMANCE_FIXTURES.find(
+        ({ profile }) => profile === "v1-events",
+      );
+      if (!exactV1) throw new Error("v1 fixture missing");
+      const exactV1Query = new URLSearchParams(exactV1.request.query);
+      const missingAuthorization = await fetch(
+        `${fixtureServer.origin}${exactV1.request.path}?${exactV1Query}`,
+      );
+      expect(missingAuthorization.status).toBe(400);
+      exactV1Query.append("filter", exactV1.request.query.filter ?? "[]");
+      const duplicateFilter = await fetch(
+        `${fixtureServer.origin}${exactV1.request.path}?${exactV1Query}`,
+        { headers: exactV1.request.headers },
+      );
+      expect(duplicateFilter.status).toBe(400);
       for (const selector of [undefined, "false", "1"] as const) {
-        const fixture = LANGFUSE_FILTER_CONFORMANCE_FIXTURES.find(
-          ({ profile }) => profile === "v1-events",
-        );
-        if (!fixture) throw new Error("v1 fixture missing");
-        const query = { ...fixture.request.query };
+        const query = { ...exactV1.request.query };
         if (selector === undefined) delete query.useEventsTable;
         else query.useEventsTable = selector;
         const result = await fetch(
-          `${fixtureServer.origin}${fixture.request.path}?${new URLSearchParams(query)}`,
-          { headers: fixture.request.headers },
+          `${fixtureServer.origin}${exactV1.request.path}?${new URLSearchParams(query)}`,
+          { headers: exactV1.request.headers },
         );
         expect(result.status).toBe(400);
       }
