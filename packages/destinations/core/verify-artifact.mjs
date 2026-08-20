@@ -48,6 +48,20 @@ if (
   isDestinationReachabilityProbe({ ...reachabilityProbe })
 )
   throw new Error("Destination reachability brand is unavailable.");
+for (const destinationType of [
+  "@agentscope/destination--invalid",
+  "@agentscope/destination-invalid-",
+]) {
+  try {
+    defineDestinationReachabilityProbe({
+      destinationType,
+      inspect: () => Promise.resolve("available"),
+    });
+  } catch (error) {
+    if (error?.code === "destination.reachability.invalid") continue;
+  }
+  throw new Error("Destination reachability identity drift was accepted.");
+}
 const schema = z.strictObject({ endpoint: z.string() });
 void schema.shape;
 const materializeRoot = (candidate) => {

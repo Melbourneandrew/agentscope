@@ -28,6 +28,7 @@ import type {
 import type {
   CliHarnessDiscovery,
   CliHarnessServices,
+  CliHarnessStatusValue,
 } from "./harness-commands.js";
 
 const MAXIMUM_REACHABILITY_PROBES = 32;
@@ -51,7 +52,7 @@ const evidence = (input: CliDoctorEvidence): CliDoctorEvidence =>
   Object.freeze(input);
 
 const finding = (
-  code: string,
+  code: CliDoctorFinding["code"],
   severity: CliDoctorFinding["severity"],
   suggestedAction: CliDoctorFinding["suggestedAction"],
   findingEvidence: CliDoctorEvidence,
@@ -74,9 +75,11 @@ const scopeForCoreFinding = (
   return "operational-state";
 };
 
-const stateForCode = (code: string): string => {
+const stateForCode = (
+  code: DoctorFinding["code"],
+): CliDoctorEvidence["state"] => {
   const separator = code.lastIndexOf(".");
-  return code.slice(separator + 1);
+  return code.slice(separator + 1) as CliDoctorEvidence["state"];
 };
 
 const mapCoreFindings = (report: DoctorReport): CliDoctorFinding[] => {
@@ -167,7 +170,7 @@ const harnessDiscoveryFinding = (
 
 const hookFinding = (
   harness: string,
-  disposition: string,
+  disposition: CliHarnessStatusValue["installation"] | "unavailable",
 ): CliDoctorFinding => {
   const valid = disposition === "unchanged";
   const severity = valid

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { createCapturedOutput } from "./__tests__/cli-fixture.js";
-import type { CliDoctorReport, CliDoctorServices } from "./doctor-commands.js";
+import {
+  MAXIMUM_DOCTOR_FINDINGS,
+  type CliDoctorReport,
+  type CliDoctorServices,
+} from "./doctor-commands.js";
 import { runCli } from "./program.js";
 
 const report = (state: "planned" | "applied" | null): CliDoctorReport =>
@@ -50,6 +54,42 @@ const run = async (
 };
 
 describe("agentscope doctor command", () => {
+  it("renders the maximum valid Doctor finding inventory", async () => {
+    const finding = report(null).findings[0];
+    expect(finding).toBeDefined();
+    const findings = Object.freeze(
+      Array.from({ length: MAXIMUM_DOCTOR_FINDINGS }, () =>
+        Object.freeze({
+          ...finding!,
+          evidence: Object.freeze({ ...finding!.evidence }),
+        }),
+      ),
+    );
+    const maximumReport = Object.freeze({
+      ...report(null),
+      findings,
+      summary: Object.freeze({
+        errors: 0,
+        information: MAXIMUM_DOCTOR_FINDINGS,
+        warnings: 0,
+      }),
+    });
+
+    const result = await run(["doctor", "--output", "json"], () => ({
+      status: "success",
+      value: maximumReport,
+    }));
+
+    expect(result.exitCode).toBe(0);
+    const rendered = JSON.parse(result.stdout.join("")) as {
+      records: [{ findings: unknown[]; summary: { information: number } }];
+    };
+    expect(rendered.records[0].findings).toHaveLength(MAXIMUM_DOCTOR_FINDINGS);
+    expect(rendered.records[0].summary.information).toBe(
+      MAXIMUM_DOCTOR_FINDINGS,
+    );
+  });
+
   it("documents the exact safe repair boundary", async () => {
     const result = await run(["doctor", "--help"], () => ({
       status: "success",
@@ -75,6 +115,26 @@ describe("agentscope doctor command", () => {
     expect(result.stdout.join("")).toContain(
       "INFO [doctor.configuration.valid] valid; action=none",
     );
+  });
+
+  it("rejects finding codes outside the closed Doctor vocabulary", async () => {
+    const invalidReport = {
+      ...report(null),
+      findings: [
+        {
+          ...report(null).findings[0],
+          code: "doctor.synthetic.future",
+        },
+      ],
+    } as unknown as CliDoctorReport;
+    const result = await run(["doctor", "--output", "json"], () => ({
+      status: "success",
+      value: invalidReport,
+    }));
+
+    expect(result.exitCode).toBe(70);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr.join(" ")).toContain("cli.internal");
   });
 
   it("presents the --fix plan on stderr before the final machine report", async () => {

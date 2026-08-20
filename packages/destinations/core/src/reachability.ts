@@ -1,4 +1,8 @@
-import type { DestinationConnectionId, DestinationTypeId } from "./identity.js";
+import {
+  createDestinationTypeId,
+  type DestinationConnectionId,
+  type DestinationTypeId,
+} from "./identity.js";
 
 export type DestinationReachabilityState = "available" | "unavailable";
 
@@ -17,7 +21,6 @@ export type DestinationReachabilityProbeInput = Readonly<{
   inspect: DestinationReachabilityProbe["inspect"];
 }>;
 
-const destinationTypePattern = /^@agentscope\/destination-[a-z0-9-]{1,64}$/u;
 const probes = new WeakSet<object>();
 
 export class DestinationReachabilityError extends Error {
@@ -49,16 +52,17 @@ export const defineDestinationReachabilityProbe = (
     Object.values(descriptors).some((descriptor) => !("value" in descriptor))
   )
     return invalid();
-  const destinationType: unknown = descriptors.destinationType?.value;
+  const destinationTypeInput: unknown = descriptors.destinationType?.value;
   const inspect: unknown = descriptors.inspect?.value;
-  if (
-    typeof destinationType !== "string" ||
-    !destinationTypePattern.test(destinationType) ||
-    typeof inspect !== "function"
-  )
+  if (typeof inspect !== "function") return invalid();
+  let destinationType: DestinationTypeId;
+  try {
+    destinationType = createDestinationTypeId(destinationTypeInput);
+  } catch {
     return invalid();
+  }
   const probe = Object.freeze({
-    destinationType: destinationType as DestinationTypeId,
+    destinationType,
     inspect: inspect as DestinationReachabilityProbe["inspect"],
   });
   probes.add(probe);

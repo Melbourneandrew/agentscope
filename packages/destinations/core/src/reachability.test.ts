@@ -32,6 +32,14 @@ describe("destination-declared reachability", () => {
     null,
     {},
     { destinationType: "example", inspect: () => Promise.resolve("available") },
+    {
+      destinationType: "@agentscope/destination--example",
+      inspect: () => Promise.resolve("available"),
+    },
+    {
+      destinationType: "@agentscope/destination-example-",
+      inspect: () => Promise.resolve("available"),
+    },
     { destinationType: "@agentscope/destination-example", inspect: 1 },
     Object.defineProperty(input(), "inspect", { get: () => input().inspect }),
     Object.assign(input(), { extra: true }),
