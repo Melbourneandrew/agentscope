@@ -14,6 +14,7 @@ export type TraceLocator = Readonly<{
   destinationType: DestinationTypeId;
   traceId: W3CTraceId;
   destinationTraceId?: string;
+  destinationRevision?: string;
   readonly [traceLocatorBrand]: true;
 }>;
 
@@ -22,6 +23,7 @@ export type TraceLocatorInput = Readonly<{
   destinationType: DestinationTypeId;
   traceId: string;
   destinationTraceId?: string;
+  destinationRevision?: string;
 }>;
 
 const locatorRegistry = new WeakSet<object>();
@@ -57,12 +59,12 @@ const canonicalTraceId = (value: unknown): W3CTraceId => {
   return value as W3CTraceId;
 };
 
-const destinationNativeId = (value: unknown): string => {
+const destinationNativeId = (value: unknown, maximumBytes = 1_024): string => {
   if (
     typeof value !== "string" ||
     value.length === 0 ||
     value.length > 512 ||
-    textEncoder.encode(value).byteLength > 1_024 ||
+    textEncoder.encode(value).byteLength > maximumBytes ||
     /\p{Cc}/u.test(value)
   )
     return invalid();
@@ -77,13 +79,24 @@ export const createTraceLocator = (input: TraceLocatorInput): TraceLocator => {
     if (
       keys.some((key) => typeof key !== "string") ||
       (keys as string[]).sort().join(",") !==
-        ((keys as string[]).includes("destinationTraceId")
-          ? "connectionId,destinationTraceId,destinationType,traceId"
-          : "connectionId,destinationType,traceId")
+        [
+          "connectionId",
+          ...((keys as string[]).includes("destinationRevision")
+            ? ["destinationRevision"]
+            : []),
+          ...((keys as string[]).includes("destinationTraceId")
+            ? ["destinationTraceId"]
+            : []),
+          "destinationType",
+          "traceId",
+        ].join(",")
     )
       return invalid();
     const destinationTraceId = descriptors.destinationTraceId
       ? destinationNativeId(valueOf(descriptors, "destinationTraceId"))
+      : undefined;
+    const destinationRevision = descriptors.destinationRevision
+      ? destinationNativeId(valueOf(descriptors, "destinationRevision"), 256)
       : undefined;
     const locator = Object.freeze({
       connectionId: createDestinationConnectionId(
@@ -93,6 +106,7 @@ export const createTraceLocator = (input: TraceLocatorInput): TraceLocator => {
         valueOf(descriptors, "destinationType"),
       ),
       traceId: canonicalTraceId(valueOf(descriptors, "traceId")),
+      ...(destinationRevision === undefined ? {} : { destinationRevision }),
       ...(destinationTraceId === undefined ? {} : { destinationTraceId }),
     }) as TraceLocator;
     locatorRegistry.add(locator);

@@ -447,6 +447,9 @@ const createTraceServices = (state: ProductionState): CliTraceServices => ({
         ...(reference?.destinationTraceId === undefined
           ? {}
           : { destinationTraceId: reference.destinationTraceId }),
+        ...(reference?.destinationRevision === undefined
+          ? {}
+          : { destinationRevision: reference.destinationRevision }),
       });
       return result.ok
         ? success(result.trace)

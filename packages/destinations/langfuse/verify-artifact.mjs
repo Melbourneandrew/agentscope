@@ -1,14 +1,17 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 
 import {
+  createTraceLocator,
   isDestinationDescriptor,
   parseDestinationSettings,
 } from "@agentscope/destinations-core";
 
 import * as root from "./dist/index.js";
 import * as reporter from "./dist/reporter/index.js";
+import * as retriever from "./dist/retriever/public.js";
 import * as testing from "./dist/testing.js";
 
 const packageRoot = new URL(".", import.meta.url);
@@ -71,6 +74,11 @@ if (
 )
   throw new Error("Langfuse Reporter export surface drifted.");
 if (
+  JSON.stringify(Object.keys(retriever).sort()) !==
+  JSON.stringify(["langfuseRetrieverPackageId"])
+)
+  throw new Error("Langfuse Retriever export surface drifted.");
+if (
   JSON.stringify(Object.keys(testing).sort()) !==
   JSON.stringify(
     [
@@ -78,6 +86,7 @@ if (
       "LANGFUSE_SANITIZED_HTTP_FIXTURES",
       "createLangfuseDestinationTestAdapter",
       "createLangfuseReporterTestHarness",
+      "createLangfuseRetrieverTestHarness",
     ].sort(),
   )
 )
@@ -86,7 +95,7 @@ if (
   !isDestinationDescriptor(root.langfuseDestinationDescriptor) ||
   root.langfuseDestinationDescriptor.deliveryIdentitySupport !==
     "duplicates-possible" ||
-  root.langfuseDestinationDescriptor.retrievalSupport !== "unsupported" ||
+  root.langfuseDestinationDescriptor.retrievalSupport !== "search-and-get" ||
   JSON.stringify(
     root.LANGFUSE_COMPATIBILITY_MANIFEST.projection.modelAttributeKeys,
   ) !==
@@ -96,7 +105,7 @@ if (
       "reranker.model_name",
     ]) ||
   root.LANGFUSE_COMPATIBILITY_MANIFEST.manifestId !==
-    "sha256:0cebb10cc8b3ec59be2f85111971edfb79c90a33b75d0118149c6626512dccca"
+    "sha256:3ef86febf50fa98c3e8c574db77dbafec4f001c6689e1fc249a2332b2fe8f369"
 )
   throw new Error("Langfuse built descriptor or manifest identity is invalid.");
 try {
@@ -135,6 +144,18 @@ const rootSpan = body.resourceSpans[0].scopeSpans[0].spans.find(
 const attributes = new Map(
   rootSpan.attributes.map((entry) => [entry.key, entry.value]),
 );
+const capsuleResources = body.resourceSpans.filter((resource) =>
+  resource.scopeSpans.some(
+    (scope) => scope.scope?.name === "@agentscope/destination-langfuse/capsule",
+  ),
+);
+const capsuleHeader = capsuleResources
+  .flatMap((resource) => resource.scopeSpans)
+  .flatMap((scope) => scope.spans)
+  .find((span) => span.name === "agentscope.capsule.header.v1");
+const capsuleAttributes = new Map(
+  capsuleHeader.attributes.map((entry) => [entry.key, entry.value]),
+);
 if (
   result.outcome !== "accepted" ||
   requests.length !== 1 ||
@@ -142,14 +163,245 @@ if (
   request.headers.authorization !==
     `Basic ${Buffer.from("pk-fixture:sk-fixture", "utf8").toString("base64")}` ||
   request.headers["x-langfuse-ingestion-version"] !== "4" ||
+  capsuleResources.length !== 1 ||
+  JSON.stringify(
+    capsuleResources[0].resource.attributes.map(({ key }) => key),
+  ) !== JSON.stringify(["agentscope.protocol.manifest_id", "service.name"]) ||
   attributes.get("agentscope.harness.name")?.stringValue !==
     "fixture-harness" ||
-  attributes.get("langfuse.observation.metadata.agentscope_session")
+  capsuleAttributes.get("langfuse.observation.metadata.agentscope_session")
     ?.stringValue !== "artifact-session" ||
-  attributes.get("langfuse.trace.tags")?.arrayValue?.values?.[0]
+  capsuleAttributes.get("langfuse.trace.tags")?.arrayValue?.values?.[0]
     ?.stringValue !== "agentscope:model:artifact-model"
 )
   throw new Error("Langfuse built Reporter projection or transport drifted.");
+
+const observationFor = (span) => ({
+  id: span.spanId,
+  traceId: span.traceId,
+  parentObservationId: span.parentSpanId,
+  type: "SPAN",
+  isRootObservation: false,
+  name: span.name,
+  startTime: new Date(
+    Number(BigInt(span.startTimeUnixNano) / 1_000_000n),
+  ).toISOString(),
+  endTime: new Date(
+    Number(BigInt(span.endTimeUnixNano) / 1_000_000n),
+  ).toISOString(),
+  metadata: Object.fromEntries(
+    (span.attributes ?? [])
+      .filter((attribute) =>
+        attribute.key.startsWith("langfuse.observation.metadata."),
+      )
+      .map((attribute) => [
+        attribute.key.slice("langfuse.observation.metadata.".length),
+        attribute.value.stringValue ??
+          attribute.value.arrayValue.values.map((entry) => entry.stringValue),
+      ]),
+  ),
+});
+const artifactSpans = body.resourceSpans.flatMap((resource) =>
+  resource.scopeSpans.flatMap((scope) => scope.spans),
+);
+const artifactHeaders = artifactSpans
+  .filter((span) => span.name === "agentscope.capsule.header.v1")
+  .map(observationFor);
+const artifactCarriers = artifactSpans
+  .filter((span) => span.name === "agentscope.capsule.carrier.v1")
+  .map(observationFor);
+const retrievalRequests = [];
+const builtRetriever = testing.createLangfuseRetrieverTestHarness({
+  executor: async (providerRequest) => {
+    retrievalRequests.push(providerRequest);
+    const filter =
+      new URL(providerRequest.url).searchParams.get("filter") ?? "";
+    return {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          data: filter.includes("agentscope.capsule.carrier.v1")
+            ? artifactCarriers
+            : artifactHeaders,
+          meta: {},
+        }),
+      ),
+    };
+  },
+});
+const search = await builtRetriever.search({ harness: "fixture-harness" });
+if (!search.ok || search.value.summaries.length !== 1)
+  throw new Error("Langfuse built Retriever search failed.");
+const get = await builtRetriever.get(search.value.summaries[0].locator);
+const carrierFilter = JSON.parse(
+  new URL(retrievalRequests[2].url).searchParams.get("filter") ?? "[]",
+);
+const artifactDigest =
+  artifactHeaders[0].metadata.agentscope_capsule_graph_sha256;
+if (
+  !get.ok ||
+  get.value.representation.kind !== "canonical-graph" ||
+  retrievalRequests.length !== 3 ||
+  !carrierFilter.some(
+    ({ key, value }) =>
+      key === "agentscope_capsule_graph_sha256" && value === artifactDigest,
+  ) ||
+  !artifactCarriers.every(
+    ({ metadata }) =>
+      metadata.agentscope_capsule_graph_sha256 === artifactDigest,
+  ) ||
+  retrievalRequests.some(
+    (entry) =>
+      entry.headers.authorization !==
+      `Basic ${Buffer.from("pk-fixture:sk-fixture", "utf8").toString("base64")}`,
+  )
+)
+  throw new Error("Langfuse built Retriever round trip drifted.");
+
+const requestsBeforeInvalidRevision = retrievalRequests.length;
+const invalidRevisionResult = await builtRetriever.get(
+  createTraceLocator({
+    ...search.value.summaries[0].locator,
+    destinationRevision: "CANARY-INVALID-REVISION",
+  }),
+);
+if (
+  invalidRevisionResult.ok ||
+  invalidRevisionResult.code !== "invalid-query" ||
+  retrievalRequests.length !== requestsBeforeInvalidRevision
+)
+  throw new Error(
+    "Langfuse built Retriever performed I/O for an invalid revision.",
+  );
+
+const nonce = artifactHeaders[0].metadata.agentscope_capsule_nonce;
+const duplicateHeaderJson = JSON.stringify({
+  data: artifactHeaders,
+  meta: {},
+}).replace(
+  `"agentscope_capsule_nonce":"${nonce}"`,
+  `"agentscope_capsule_nonce":"${"0".repeat(32)}","agentscope_capsule_nonce":"${nonce}"`,
+);
+const duplicateRetriever = testing.createLangfuseRetrieverTestHarness({
+  executor: async () => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(duplicateHeaderJson),
+  }),
+});
+const duplicateResult = await duplicateRetriever.search();
+if (duplicateResult.ok || duplicateResult.code !== "malformed-response")
+  throw new Error("Langfuse built Retriever accepted duplicate JSON keys.");
+
+const invalidHeader = {
+  ...artifactHeaders[0],
+  metadata: { ...artifactHeaders[0].metadata, agentscope_status: "future" },
+};
+const invalidHeaderRetriever = testing.createLangfuseRetrieverTestHarness({
+  executor: async () => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(
+      JSON.stringify({ data: [invalidHeader], meta: {} }),
+    ),
+  }),
+});
+const invalidHeaderResult = await invalidHeaderRetriever.get(
+  search.value.summaries[0].locator,
+);
+if (invalidHeaderResult.ok || invalidHeaderResult.code !== "malformed-response")
+  throw new Error("Langfuse built Retriever accepted an invalid exact header.");
+
+const zeroNonce = "0".repeat(32);
+const zeroNonceHeader = {
+  ...artifactHeaders[0],
+  id: createHash("sha256")
+    .update(
+      `agentscope:langfuse:capsule:v1:${artifactHeaders[0].traceId}:${zeroNonce}:header:0`,
+    )
+    .digest("hex")
+    .slice(0, 16),
+  metadata: {
+    ...artifactHeaders[0].metadata,
+    agentscope_capsule_nonce: zeroNonce,
+  },
+};
+const zeroNonceRetriever = testing.createLangfuseRetrieverTestHarness({
+  executor: async () => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(
+      JSON.stringify({ data: [zeroNonceHeader], meta: {} }),
+    ),
+  }),
+});
+const zeroNonceResult = await zeroNonceRetriever.search();
+if (zeroNonceResult.ok || zeroNonceResult.code !== "malformed-response")
+  throw new Error("Langfuse built Retriever accepted an all-zero nonce.");
+
+const invalidStructureRetriever = testing.createLangfuseRetrieverTestHarness({
+  executor: async () => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(
+      JSON.stringify({
+        data: [{ ...artifactHeaders[0], type: "GENERATION" }],
+        meta: {},
+      }),
+    ),
+  }),
+});
+const invalidStructure = await invalidStructureRetriever.search();
+if (invalidStructure.ok || invalidStructure.code !== "malformed-response")
+  throw new Error("Langfuse built Retriever accepted a non-SPAN header.");
+
+const lastCarrier = artifactCarriers.at(-1);
+const originalChunks = lastCarrier.metadata.agentscope_capsule_chunks;
+if (!Array.isArray(originalChunks) || originalChunks.length < 2)
+  throw new Error("Langfuse built capsule lacks the chunk boundary fixture.");
+const penultimate = originalChunks.at(-2);
+const finalChunk = originalChunks.at(-1);
+const noncanonicalCarriers = [
+  ...artifactCarriers.slice(0, -1),
+  {
+    ...lastCarrier,
+    metadata: {
+      ...lastCarrier.metadata,
+      agentscope_capsule_chunks: [
+        ...originalChunks.slice(0, -2),
+        penultimate.slice(0, -1),
+        `${penultimate.at(-1)}${finalChunk}`,
+      ],
+    },
+  },
+];
+const boundaryRetriever = testing.createLangfuseRetrieverTestHarness({
+  executor: async (providerRequest) => ({
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(
+      JSON.stringify({
+        data: (
+          new URL(providerRequest.url).searchParams.get("filter") ?? ""
+        ).includes("agentscope.capsule.carrier.v1")
+          ? noncanonicalCarriers
+          : artifactHeaders,
+        meta: {},
+      }),
+    ),
+  }),
+});
+const boundarySearch = await boundaryRetriever.search();
+if (!boundarySearch.ok || boundarySearch.value.summaries[0] === undefined)
+  throw new Error("Langfuse built boundary fixture search failed.");
+const boundaryGet = await boundaryRetriever.get(
+  boundarySearch.value.summaries[0].locator,
+);
+if (boundaryGet.ok || boundaryGet.code !== "malformed-response")
+  throw new Error(
+    "Langfuse built Retriever accepted a shifted chunk boundary.",
+  );
 
 const rejected = await builtReporter.report({
   trace: {
@@ -221,5 +473,16 @@ if (
   ).includes("encodeLangfuseOtlpJsonBatchWithinLimitForTesting")
 )
   throw new Error("Langfuse Reporter artifact contains a test-only helper.");
+if (
+  readFileSync(
+    new URL("./dist/retriever/public.js", packageRoot),
+    "utf8",
+  ).includes("createLangfuseRetriever")
+)
+  throw new Error(
+    "Langfuse Retriever public artifact leaks factory authority.",
+  );
 
-process.stdout.write("Verified Langfuse descriptor and Reporter artifact.\n");
+process.stdout.write(
+  "Verified Langfuse descriptor, Reporter, and Retriever artifact.\n",
+);

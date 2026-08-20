@@ -1,14 +1,32 @@
 import {
+  bindDestinationTransport,
+  createReporterDeadline,
+  createRetrievalContext,
+  createTraceGetRequest,
+  createTraceSearchRequest,
+  invokeRetrieverGet,
+  invokeRetrieverSearch,
   invokeDestinationReporterForTesting,
+  normalizeTraceSearchQuery,
   prepareDestinationReporterForTesting,
+  prepareDestinationRetriever,
+  resolveDestinationConnection,
   type DestinationReporterTestPreparation,
   type DestinationTestAdapter,
   type ReporterTestBehavior,
   type ReporterTestLedgerEntry,
 } from "@agentscope/destinations-core/testing";
 import {
+  createDestinationConnectionId,
   createDestinationReporter,
+  createDestinationTypeId,
   createReporterReceipt,
+  type JsonValue,
+  type RetrievedTrace,
+  type RetrieverOperationResult,
+  type RetrieverSearchPage,
+  type TraceLocator,
+  type TraceSearchInput,
 } from "@agentscope/destinations-core";
 import {
   createSanitizedRedactedCanonicalTraceFixture,
@@ -77,6 +95,81 @@ export const createLangfuseReporterTestHarness = (
   });
 };
 
+export type LangfuseRetrieverTestHarnessInput = Readonly<{
+  executor: DestinationReporterTestPreparation["executor"];
+  profileId?: LangfuseReporterTestHarnessInput["profileId"];
+  maximumResponseBytes?: number;
+  maximumProviderRequests?: number;
+}>;
+
+export const createLangfuseRetrieverTestHarness = (
+  input: LangfuseRetrieverTestHarnessInput,
+): Readonly<{
+  search: (
+    query?: TraceSearchInput,
+    continuationToken?: JsonValue,
+  ) => Promise<RetrieverOperationResult<RetrieverSearchPage>>;
+  get: (
+    locator: TraceLocator,
+  ) => Promise<RetrieverOperationResult<RetrievedTrace>>;
+}> => {
+  const connectionId = createDestinationConnectionId(
+    "destination-connection-v1-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  );
+  const destinationType = createDestinationTypeId(
+    "@agentscope/destination-langfuse",
+  );
+  const prepared = resolveDestinationConnection(langfuseDestinationDescriptor, {
+    connectionId,
+    settings: {
+      endpoint: "http://127.0.0.1:4318",
+      allowInsecureLoopback: true,
+      profileId: input.profileId ?? "langfuse-cloud-v4",
+      compatibilityManifestId:
+        langfuseDestinationDescriptor.defaultSettings.compatibilityManifestId,
+      encoding: "application/json",
+    },
+  });
+  /* v8 ignore next 2 -- the fixed loopback endpoint is always remote; retain the testkit's defensive boundary. */
+  if (prepared.endpoint === null)
+    throw new Error("destination.langfuse.testing.remote-required");
+  const retriever = prepareDestinationRetriever(prepared, {
+    credentials: { "public-key": "pk-fixture", "secret-key": "sk-fixture" },
+    transport: bindDestinationTransport(prepared.endpoint, input.executor),
+  });
+  const context = () =>
+    createRetrievalContext({
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+      maximumResponseBytes: input.maximumResponseBytes ?? 1_048_576,
+      maximumProviderRequests: input.maximumProviderRequests ?? 4,
+    });
+  return Object.freeze({
+    search: (queryInput = {}, continuationToken) => {
+      const query = normalizeTraceSearchQuery(queryInput, {
+        commandStartedAt: "2026-12-31T00:00:00.000Z",
+        knownHarnessIds: ["fixture-harness"],
+        ordering: "start-time-desc-provider",
+      });
+      return invokeRetrieverSearch(
+        retriever,
+        createTraceSearchRequest(
+          query,
+          { connectionId, destinationType },
+          continuationToken,
+        ),
+        context(),
+      );
+    },
+    get: (locator) =>
+      invokeRetrieverGet(
+        retriever,
+        createTraceGetRequest(locator, { connectionId, destinationType }),
+        context(),
+      ),
+  });
+};
+
 const encodedResponse = (value: unknown): Uint8Array =>
   new TextEncoder().encode(JSON.stringify(value));
 
@@ -90,19 +183,17 @@ const wireTraceIds = (request: TestExecutorRequest): readonly string[] => {
       scopeSpans: { spans: { traceId: string }[] }[];
     }[];
   };
-  return Object.freeze(
-    decoded.resourceSpans.map((resource) => {
-      const identifiers = new Set(
-        resource.scopeSpans.flatMap((scope) =>
-          scope.spans.map((span) => span.traceId),
-        ),
-      );
-      /* v8 ignore next 2 -- reached only if the concrete Reporter emits an empty or mixed-identity resource, which must fail the shared contract. */
-      if (identifiers.size !== 1)
-        throw new Error("destination.langfuse.testing.invalid");
-      return [...identifiers][0]!;
-    }),
+  const identifiers = new Set(
+    decoded.resourceSpans.flatMap((resource) =>
+      resource.scopeSpans.flatMap((scope) =>
+        scope.spans.map((span) => span.traceId),
+      ),
+    ),
   );
+  /* v8 ignore next 2 -- reached only if the concrete Reporter emits an empty request, which must fail the shared contract. */
+  if (identifiers.size === 0)
+    throw new Error("destination.langfuse.testing.invalid");
+  return Object.freeze([...identifiers]);
 };
 
 const executorForBehavior = (

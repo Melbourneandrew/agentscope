@@ -114,6 +114,7 @@ const runtime = (
                     connectionId: request.connectionId,
                     destinationType: request.destinationType,
                     traceId: fixtureTraceId,
+                    destinationRevision: "1".repeat(32),
                   }),
                   startTime: "2026-01-01T00:00:00.000Z",
                   ...(options.sparseSummary
@@ -185,7 +186,22 @@ const runtime = (
                 return Promise.resolve(
                   createRetrieverSuccess(
                     createRetrievedTrace({
-                      locator: request.locator,
+                      locator:
+                        request.locator.destinationRevision === undefined
+                          ? createTraceLocator({
+                              connectionId: request.locator.connectionId,
+                              destinationType: request.locator.destinationType,
+                              traceId: request.locator.traceId,
+                              ...(request.locator.destinationTraceId ===
+                              undefined
+                                ? {}
+                                : {
+                                    destinationTraceId:
+                                      request.locator.destinationTraceId,
+                                  }),
+                              destinationRevision: "1".repeat(32),
+                            })
+                          : request.locator,
                       representation,
                       consistency: "snapshot",
                     }),
@@ -513,6 +529,7 @@ describe("Core retrieval query execution", () => {
       consistency: "snapshot",
     });
     expect(result.trace.locator.traceId).toBe(fixtureTraceId);
+    expect(result.trace.locator.destinationRevision).toBe("1".repeat(32));
     expect(result.trace.graph).not.toBe(graph);
     expect(fixture.counts()).toEqual({ factoryCalls: 1, searches: 0, gets: 1 });
   });
@@ -617,6 +634,7 @@ describe("Core retrieval failure and governance boundaries", () => {
         destinationName: "archive",
         traceId: fixtureTraceId,
         destinationTraceId: "provider-safe-id",
+        destinationRevision: "2".repeat(32),
       }),
     ).resolves.toMatchObject({ ok: true });
     const incompatible = runtime({ incompatible: true });

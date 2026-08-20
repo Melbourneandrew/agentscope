@@ -1,9 +1,9 @@
 export {
   langfuseDestinationDescriptor,
   langfuseReporterPackageId,
-  type LangfuseDestinationSettings,
 } from "./reporter/index.js";
-export { langfuseRetrieverPackageId } from "./retriever/index.js";
+export type { LangfuseDestinationSettings } from "./compatibility.js";
+export { langfuseRetrieverPackageId } from "./retriever/identity.js";
 export { LANGFUSE_COMPATIBILITY_MANIFEST } from "./compatibility.js";
 
 export const langfuseDestinationPackageId =

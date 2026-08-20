@@ -1,6 +1,7 @@
 import { createSanitizedCanonicalTraceFixture } from "@agentscope/protocol/testing";
 import { describe, expect, it } from "vitest";
 
+import { deriveLangfuseProjectionFilterKey } from "../compatibility.js";
 import { LangfuseProjectionError, projectLangfuseRoot } from "./projection.js";
 
 type Resource = Parameters<typeof projectLangfuseRoot>[0];
@@ -44,6 +45,15 @@ const expectInvalid = (value: Resource): void => {
 };
 
 describe("Langfuse root projection boundaries", () => {
+  it.each([
+    [1, "ok"],
+    [2, "error"],
+  ] as const)("projects canonical status code %i as %s", (code, status) => {
+    const value = resource();
+    root(value).status = { code };
+    expect(projectLangfuseRoot(value).metadata.agentscope_status).toBe(status);
+  });
+
   it("omits absent optional fields and keeps duplicate values once", () => {
     const value = resource();
     delete value.resource;
@@ -59,7 +69,9 @@ describe("Langfuse root projection boundaries", () => {
         agentscope_models_count: "0",
         agentscope_root: "true",
         agentscope_span_count: "3",
+        agentscope_status: "unset",
         agentscope_tag_00: "same",
+        [deriveLangfuseProjectionFilterKey("tag", "same")]: "same",
         agentscope_tags_count: "1",
       },
       tags: ["same"],
@@ -139,6 +151,8 @@ describe("Langfuse root projection boundaries", () => {
       "langfuse.trace.metadata.agentscope_root",
       "langfuse.observation.metadata.agentscope_model_31",
       "langfuse.trace.metadata.agentscope_tag_31",
+      "langfuse.observation.metadata.agentscope_model_exact_caller",
+      "langfuse.trace.metadata.agentscope_tag_exact_caller",
       "langfuse.trace.tags",
     ]) {
       const value = resource();

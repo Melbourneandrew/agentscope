@@ -13,30 +13,27 @@ import {
 import { readOtlpExportJsonResponse } from "@agentscope/protocol";
 import { z } from "zod";
 
-import { LANGFUSE_COMPATIBILITY_MANIFEST } from "../compatibility.js";
+import {
+  LANGFUSE_COMPATIBILITY_MANIFEST,
+  LANGFUSE_PROFILE_IDS,
+  type LangfuseDestinationSettings,
+} from "../compatibility.js";
 import { encodeLangfuseOtlpJsonBatch } from "./projection.js";
+import { createLangfuseRetriever } from "../retriever/index.js";
 
 export const langfuseReporterPackageId =
   "@agentscope/destination-langfuse/reporter" as const;
 
-const profileIds = [
-  "langfuse-cloud-v4",
-  "langfuse-self-hosted-v4",
-  "langfuse-self-hosted-v3-events-3.225.3",
-] as const;
-
 const settingsSchema = z.strictObject({
   endpoint: z.string(),
   allowInsecureLoopback: z.boolean(),
-  profileId: z.enum(profileIds),
+  profileId: z.enum(LANGFUSE_PROFILE_IDS),
   compatibilityManifestId: z.literal(
     LANGFUSE_COMPATIBILITY_MANIFEST.manifestId,
   ),
   encoding: z.literal("application/json"),
 });
 void settingsSchema.shape;
-
-export type LangfuseDestinationSettings = z.infer<typeof settingsSchema>;
 
 const publicKeySlot = createCredentialSlotId("public-key");
 const secretKeySlot = createCredentialSlotId("secret-key");
@@ -152,4 +149,6 @@ export const langfuseDestinationDescriptor: DestinationDescriptor<LangfuseDestin
       }),
     },
     createReporter: createLangfuseReporter,
+    createRetriever: createLangfuseRetriever,
+    retrievalOrdering: "start-time-desc-provider",
   });

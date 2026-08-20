@@ -546,7 +546,14 @@ export const invokeRetrieverGet = async (
     context,
     (value): value is RetrievedTrace =>
       isRetrievedTrace(value) &&
-      value.locator === request.locator &&
+      (value.locator === request.locator ||
+        (request.locator.destinationRevision === undefined &&
+          value.locator.connectionId === request.locator.connectionId &&
+          value.locator.destinationType === request.locator.destinationType &&
+          value.locator.traceId === request.locator.traceId &&
+          value.locator.destinationTraceId ===
+            request.locator.destinationTraceId &&
+          value.locator.destinationRevision !== undefined)) &&
       resultFitsResponseBudget(value, context),
   );
 };

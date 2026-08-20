@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Buffer } from "node:buffer";
 import {
   createServer,
   request as createHttpRequest,
@@ -215,12 +216,21 @@ const projectOtlpRoot = (fixture: LangfuseHttpFixture) => {
   const body = fixture.request.body as {
     resourceSpans: readonly {
       scopeSpans: readonly {
-        spans: readonly { attributes: readonly OtlpAttribute[] }[];
+        spans: readonly {
+          name: string;
+          attributes: readonly OtlpAttribute[];
+        }[];
       }[];
     }[];
   };
-  const attributes = body.resourceSpans[0]?.scopeSpans[0]?.spans[0]?.attributes;
-  if (!attributes) throw new Error("OTLP fixture lacks a root span");
+  const spans = body.resourceSpans.flatMap(({ scopeSpans }) =>
+    scopeSpans.flatMap(({ spans }) => spans),
+  );
+  const header = spans?.find(
+    ({ name }) => name === "agentscope.capsule.header.v1",
+  );
+  const attributes = header?.attributes;
+  if (!attributes) throw new Error("OTLP fixture lacks a capsule header");
   const metadata: Record<string, string> = {};
   let sessionId: string | undefined;
   let tags: readonly string[] | undefined;
@@ -252,7 +262,7 @@ const stopServer = (server: Server): Promise<void> =>
 describe("Langfuse compatibility contract", () => {
   it("pins one immutable provisional manifest to reviewed official sources", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.manifestId).toBe(
-      "sha256:0cebb10cc8b3ec59be2f85111971edfb79c90a33b75d0118149c6626512dccca",
+      "sha256:3ef86febf50fa98c3e8c574db77dbafec4f001c6689e1fc249a2332b2fe8f369",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.status).toBe(
       "provisional-contract-only",
@@ -274,6 +284,12 @@ describe("Langfuse compatibility contract", () => {
       responseMediaType: "ascii-case-insensitive-application-json",
       responseMediaTypeParameters: "none-or-one-charset-utf-8",
       missingWrongDuplicateOrAmbiguousMediaType: "outcome-unknown",
+    });
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.retrieverResponseProof).toEqual({
+      successStatus: "200-through-299",
+      responseMediaType: "ascii-case-insensitive-application-json",
+      responseMediaTypeParameters: "none-or-one-charset-utf-8",
+      missingWrongDuplicateOrAmbiguousMediaType: "malformed-response",
     });
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.sources).toMatchObject({
       langfuseOpenApi: {
@@ -347,16 +363,91 @@ describe("Langfuse compatibility profiles", () => {
       pagination: "page-offset",
       maximumLimit: 100,
     });
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.profiles[1]?.server).toEqual({
+      deployment: "self-hosted",
+      range: "=4.15.0",
+      sourceRevision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
+    });
+    expect(
+      LANGFUSE_COMPATIBILITY_MANIFEST.profiles[0]?.retriever,
+    ).toMatchObject({
+      summaryFieldGroups: [
+        "core",
+        "basic",
+        "time",
+        "metadata",
+        "trace_context",
+      ],
+      headerGetFieldGroups: [
+        "core",
+        "basic",
+        "time",
+        "metadata",
+        "trace_context",
+      ],
+      carrierGetFieldGroups: ["core", "basic", "time", "metadata"],
+    });
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.profiles[2]?.server).toEqual({
+      deployment: "self-hosted",
+      range: "=3.225.3",
+      sourceRevision: "f6c77b70842bd84e3f22d820471345819cd9a1b4",
+    });
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.v1SelectorConformance).toEqual([
-      { caseId: "present-true", value: "true", conforms: true },
-      { caseId: "omitted", value: null, conforms: false },
-      { caseId: "false", value: "false", conforms: false },
-      { caseId: "mutated", value: "1", conforms: false },
+      {
+        caseId: "present-true",
+        value: "true",
+        conforms: true,
+        fixtureId: "observations-v1-events-root-search-v1",
+      },
+      {
+        caseId: "omitted",
+        value: null,
+        conforms: false,
+        fixtureId: "observations-v1-events-selector-omitted-v1",
+      },
+      {
+        caseId: "false",
+        value: "false",
+        conforms: false,
+        fixtureId: "observations-v1-events-selector-false-v1",
+      },
+      {
+        caseId: "mutated",
+        value: "1",
+        conforms: false,
+        fixtureId: "observations-v1-events-selector-mutated-v1",
+      },
     ]);
   });
 });
 
 describe("Langfuse portable-filter contract", () => {
+  it("pins one typed ordered structured-filter wire grammar", () => {
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.structuredFilter).toEqual({
+      queryKey: "filter",
+      queryKeyCardinality: "exactly-one",
+      predicateOrder: [
+        "current-capsule-marker",
+        "trace-id",
+        "from-inclusive",
+        "to-exclusive",
+        "harness",
+        "branch",
+        "model",
+        "session",
+        "tags",
+      ],
+      propertyOrder: ["type", "column", "key-if-present", "operator", "value"],
+      construction: "closed-typed-values-as-data",
+      serialization: "ecmascript-json-stringify-once",
+      queryEncoding: "url-search-params-percent-encode-once",
+      individualPortableQueryKeys: "forbidden",
+      duplicateFilterKeys: "forbidden",
+      v1Selector: "one-independent-useEventsTable=true",
+      maximumRequestTargetBytes: 131_072,
+    });
+  });
+
   it("covers every portable predicate with provider-specific match and miss cases", () => {
     const expectedFilters = [
       "traceId",
@@ -403,13 +494,32 @@ describe("Langfuse portable-filter contract", () => {
         expect(pair[1]?.expectedTraceIds).toEqual([]);
       }
       for (const entry of profileCases) {
-        expect(JSON.parse(entry.request.query.filter ?? "[]")).toContainEqual({
+        const wireFilters = JSON.parse(
+          entry.request.query.filter ?? "[]",
+        ) as unknown[];
+        expect(wireFilters).toContainEqual({
           type: "stringObject",
           column: "metadata",
-          key: "agentscope_root",
+          key: "agentscope_capsule_marker",
           operator: "=",
-          value: "true",
+          value: "agentscope_capsule_v1",
         });
+        expect(wireFilters).toContainEqual({
+          type: "datetime",
+          column: "startTime",
+          operator: "<",
+          value:
+            entry.filter === "to" && entry.disposition === "miss"
+              ? "2026-01-02T03:04:05.000Z"
+              : "2026-01-02T03:04:06.000Z",
+        });
+        for (const forbidden of [
+          "traceId",
+          "fromStartTime",
+          "toStartTime",
+          "sessionId",
+        ])
+          expect(entry.request.query).not.toHaveProperty(forbidden);
         if (entry.profile === "v1-events")
           expect(entry.request.query.useEventsTable).toBe("true");
       }
@@ -432,7 +542,82 @@ describe("Langfuse portable-filter contract", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- the fixture family is verified as one immutable cross-profile contract.
 describe("Langfuse compatibility fixtures", () => {
+  it("causally binds the sanitized capsule request to the adjacent root response", () => {
+    const otlp = LANGFUSE_SANITIZED_HTTP_FIXTURES.find(
+      ({ fixtureId }) => fixtureId === "otlp-v4-json-root-v1",
+    );
+    const response = LANGFUSE_SANITIZED_HTTP_FIXTURES.find(
+      ({ fixtureId }) => fixtureId === "observations-v2-root-search-v1",
+    );
+    if (!otlp || !response) throw new Error("Capsule fixtures are incomplete");
+    const projection = projectOtlpRoot(otlp);
+    const row = (response.response.body as { data: readonly unknown[] })
+      .data[0] as {
+      id: string;
+      metadata: Readonly<Record<string, string>>;
+      name: string;
+      sessionId: string;
+      tags: readonly string[];
+    };
+    expect(row.id).toMatch(/^[\da-f]{16}$/u);
+    expect(row).toMatchObject({
+      name: "agentscope.capsule.header.v1",
+      sessionId: projection.sessionId,
+      tags: projection.tags,
+      metadata: projection.metadata,
+    });
+    expect(row.metadata).toMatchObject({
+      agentscope_capsule_marker: "agentscope_capsule_v1",
+      agentscope_capsule_nonce: "11111111111111111111111111111111",
+      agentscope_capsule_version: "1",
+      agentscope_capsule_carrier_count: "1",
+    });
+    expect(row.metadata.agentscope_capsule_graph_bytes).toMatch(/^[1-9]\d*$/u);
+    expect(row.metadata.agentscope_capsule_graph_sha256).toMatch(
+      /^[\da-f]{64}$/u,
+    );
+    expect(row.metadata.agentscope_capsule_chunk_count).toMatch(/^[1-9]\d*$/u);
+    const requestBody = otlp.request.body as unknown as {
+      resourceSpans: readonly {
+        scopeSpans: readonly {
+          scope?: { name?: string };
+          spans: readonly {
+            name: string;
+            attributes: readonly OtlpAttribute[];
+          }[];
+        }[];
+      }[];
+    };
+    const canonicalGraph = {
+      resourceSpans: requestBody.resourceSpans.filter(({ scopeSpans }) =>
+        scopeSpans.every(
+          ({ scope }) =>
+            scope?.name !== "@agentscope/destination-langfuse/capsule",
+        ),
+      ),
+    };
+    const graphBytes = Buffer.from(JSON.stringify(canonicalGraph), "utf8");
+    const carrier = requestBody.resourceSpans
+      .flatMap(({ scopeSpans }) => scopeSpans)
+      .flatMap(({ spans }) => spans)
+      .find(({ name }) => name === "agentscope.capsule.carrier.v1");
+    const chunks = carrier?.attributes
+      .find(({ key }) => key.endsWith("agentscope_capsule_chunks"))
+      ?.value.arrayValue?.values.map(({ stringValue }) => stringValue);
+    expect(row.metadata.agentscope_capsule_graph_bytes).toBe(
+      String(graphBytes.byteLength),
+    );
+    expect(row.metadata.agentscope_capsule_graph_sha256).toBe(
+      createHash("sha256").update(graphBytes).digest("hex"),
+    );
+    expect(Buffer.from((chunks ?? []).join(""), "base64url")).toEqual(
+      graphBytes,
+    );
+  });
+
+  // eslint-disable-next-line max-lines-per-function -- the complete projection/capsule manifest is asserted as one indivisible fixture grammar.
   it("closes the bounded root projection and indexed v1 response mirror", () => {
     const projection = LANGFUSE_COMPATIBILITY_MANIFEST.projection;
     expect(projection).toMatchObject({
@@ -441,11 +626,14 @@ describe("Langfuse compatibility fixtures", () => {
       harness: "agentscope_harness",
       branch: "agentscope_branch",
       repository: "agentscope_repository",
+      status: "agentscope_status",
       spanCount: "agentscope_span_count",
       modelCount: "agentscope_models_count",
       modelIndexPrefix: "agentscope_model_",
+      modelFilterKeyPrefix: "agentscope_model_exact_",
       tagCount: "agentscope_tags_count",
       tagIndexPrefix: "agentscope_tag_",
+      tagFilterKeyPrefix: "agentscope_tag_exact_",
       modelTagPrefix: "agentscope:model:",
       modelAttributeKeys: [
         "llm.model_name",
@@ -458,12 +646,12 @@ describe("Langfuse compatibility fixtures", () => {
       maximumValueCharacters: 200,
       valueCharacterUnit: "unicode-scalar-values-in-required-nfc",
       invalidUnicode: "reject-unpaired-utf16-surrogates",
-      maximumMetadataEntries: 72,
+      maximumMetadataEntries: 137,
       maximumProjectionBytes: 16_384,
       projectionByteEncoding: "utf-8-without-bom",
       projectionBytePreimage:
         "ecmascript-json-stringify([ascii-key-sorted-metadata-entry-tuples,session-value,ordered-tag-values])",
-      maximumWireOverlayAttributes: 146,
+      maximumWireOverlayAttributes: 276,
       normalization: "require-unicode-nfc",
       normalizationCollisions: "reject-before-transport",
       modelsSource:
@@ -477,6 +665,7 @@ describe("Langfuse compatibility fixtures", () => {
       indexGrammar: "^(?:0[0-9]|[12][0-9]|3[01])$",
       valueGrammar: "nonempty-nfc-utf8-without-control-characters",
       indexedValues: "exactly-count-contiguous-zero-based-two-digit-indices",
+      filterKeyDerivation: "prefix-plus-sha256-of-exact-nfc-utf8-value",
       reservedOwnership: "agentscope-exact-keys-and-index-prefixes",
       collisions: "reject-before-transport",
       truncation: "forbidden",
@@ -489,12 +678,39 @@ describe("Langfuse compatibility fixtures", () => {
         traceTagsAttribute: "langfuse.trace.tags",
       },
     });
-    expect(LANGFUSE_COMPATIBILITY_MANIFEST.rootObservation).toEqual({
-      selector: "metadata:agentscope_root:=:true",
-      cardinality: "exactly-one-per-trace",
-      missing: "malformed-response",
-      duplicate: "malformed-response",
-      summaryProjection: "root-observation-only",
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.capsule).toMatchObject({
+      maximumGraphBytes: 131_072,
+      chunkCharacters: 180,
+      maximumChunksPerCarrier: 96,
+      maximumCarriers: 11,
+      duplicateRows: "collapse-only-exact-closed-field-equality",
+      transportSpan: {
+        kind: "INTERNAL-1",
+        status: "UNSET-0",
+        flags: 0,
+        events: "empty",
+        links: "empty",
+        resource: "closed-routing-and-protocol-manifest-attributes-only",
+        resourceAttributeKeys: [
+          "agentscope.protocol.manifest_id",
+          "service.name",
+        ],
+      },
+      carrierMetadata: [
+        "nonce",
+        "version",
+        "graph-digest",
+        "carrier-index",
+        "chunks",
+      ],
+    });
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.capsuleHeader).toEqual({
+      selector: "metadata:agentscope_capsule_marker:=:agentscope_capsule_v1",
+      cardinality: "exactly-one-per-reporter-item-revision",
+      multipleRevisions: "validate-all-then-first-provider-order-per-trace",
+      exactDuplicate: "collapse",
+      malformedOrConflicting: "malformed-response",
+      summaryProjection: "selected-capsule-header-only",
     });
     const projectionNames = [
       projection.root,
@@ -505,8 +721,10 @@ describe("Langfuse compatibility fixtures", () => {
       projection.spanCount,
       projection.modelCount,
       projection.modelIndexPrefix,
+      projection.modelFilterKeyPrefix,
       projection.tagCount,
       projection.tagIndexPrefix,
+      projection.tagFilterKeyPrefix,
       projection.modelTagPrefix,
     ];
     expect(new Set(projectionNames).size).toBe(projectionNames.length);
@@ -745,6 +963,7 @@ describe("Langfuse compatibility evidence", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.rateLimit).toEqual({
       status: 429,
       retryHeader: "retry-after",
+      retryHeaderGrammar: "decimal-seconds-0-through-3600",
       result: "rate-limited",
       providerBody: "discarded",
     });

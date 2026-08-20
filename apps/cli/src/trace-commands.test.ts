@@ -10,6 +10,7 @@ const traceId = "0123456789abcdef0123456789abcdef";
 const locator = Object.freeze({
   connectionId,
   destinationType: "@agentscope/destination-example",
+  destinationRevision: "1".repeat(32),
   traceId,
 });
 const searchValue = Object.freeze({

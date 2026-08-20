@@ -32,6 +32,7 @@ const locatorSchema = z.strictObject({
   connectionId: connectionIdSchema,
   destinationType: destinationTypeSchema,
   destinationTraceId: z.string().min(1).max(512).optional(),
+  destinationRevision: z.string().min(1).max(256).optional(),
   traceId: traceIdSchema,
 });
 

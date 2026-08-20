@@ -101,7 +101,7 @@ describe("Langfuse destination descriptor", () => {
       commandName: "langfuse",
       settingsVersion: 1,
       deliveryIdentitySupport: "duplicates-possible",
-      retrievalSupport: "unsupported",
+      retrievalSupport: "search-and-get",
       transport: { kind: "remote" },
     });
     expect(langfuseDestinationDescriptor.credentialSlots).toEqual([
@@ -213,6 +213,7 @@ describe("Langfuse testing subpath", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- the suite keeps the exact transport, projection, resource-isolation, and receipt evidence together.
 describe("Langfuse OTLP Reporter", () => {
   it("sends one exact projected OTLP batch while preserving canonical fields", async () => {
     const requests: Record<string, unknown>[] = [];
@@ -252,25 +253,61 @@ describe("Langfuse OTLP Reporter", () => {
     const body = JSON.parse(new TextDecoder().decode(request.body)) as {
       resourceSpans: unknown[];
     };
-    expect(body.resourceSpans).toHaveLength(2);
+    expect(body.resourceSpans).toHaveLength(4);
+    const capsuleResources = (
+      body as {
+        resourceSpans: {
+          resource?: { attributes?: { key: string }[] };
+          scopeSpans: { scope?: { name?: string } }[];
+        }[];
+      }
+    ).resourceSpans.filter((resource) =>
+      resource.scopeSpans.some(
+        ({ scope }) =>
+          scope?.name === "@agentscope/destination-langfuse/capsule",
+      ),
+    );
+    expect(capsuleResources).toHaveLength(2);
+    expect(
+      capsuleResources.map((resource) =>
+        resource.resource?.attributes?.map(({ key }) => key),
+      ),
+    ).toEqual([
+      ["agentscope.protocol.manifest_id", "service.name"],
+      ["agentscope.protocol.manifest_id", "service.name"],
+    ]);
     const attributes = rootAttributes(body);
+    const capsuleAttributes = (
+      body as {
+        resourceSpans: {
+          scopeSpans: {
+            spans: { name: string; attributes?: typeof attributes }[];
+          }[];
+        }[];
+      }
+    ).resourceSpans
+      .flatMap((resource) => resource.scopeSpans)
+      .flatMap((scope) => scope.spans)
+      .find(
+        (span) => span.name === "agentscope.capsule.header.v1",
+      )!.attributes!;
     expect(attributes).toContainEqual({
       key: "agentscope.harness.name",
       value: { stringValue: "fixture-harness" },
     });
-    expect(attributes).toContainEqual({
+    expect(capsuleAttributes).toContainEqual({
       key: "langfuse.observation.metadata.agentscope_root",
       value: { stringValue: "true" },
     });
-    expect(attributes).toContainEqual({
+    expect(capsuleAttributes).toContainEqual({
       key: "langfuse.trace.metadata.agentscope_span_count",
       value: { stringValue: "3" },
     });
-    expect(attributes).toContainEqual({
+    expect(capsuleAttributes).toContainEqual({
       key: "session.id",
       value: { stringValue: "session-fixture" },
     });
-    expect(attributes).toContainEqual({
+    expect(capsuleAttributes).toContainEqual({
       key: "langfuse.trace.tags",
       value: {
         arrayValue: {
@@ -476,8 +513,10 @@ describe("Langfuse OTLP Reporter identity and projection", () => {
         spanId: span.spanId,
       }));
     });
-    expect(wireIdentities[0]).toEqual(wireIdentities[1]);
-    expect((requests[0] as { body: Uint8Array }).body).toEqual(
+    expect(wireIdentities[0]!.slice(0, 3)).toEqual(
+      wireIdentities[1]!.slice(0, 3),
+    );
+    expect((requests[0] as { body: Uint8Array }).body).not.toEqual(
       (requests[1] as { body: Uint8Array }).body,
     );
     expect(trace.delivery.identity).toBe(deliveryIdentity);
