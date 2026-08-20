@@ -9,6 +9,7 @@ import {
   isBoundDestinationTransport,
   MAXIMUM_TRANSPORT_REQUEST_BYTES,
   MAXIMUM_TRANSPORT_RESPONSE_BYTES,
+  MAXIMUM_TRANSPORT_PATH_AND_QUERY_BYTES,
   type DestinationTransportExecutor,
   type DestinationTransportRequest,
 } from "./transport.js";
@@ -86,6 +87,24 @@ describe("origin-bound destination transport", () => {
     expect(executor.mock.calls[0]?.[0].body).toBeUndefined();
   });
 
+  it("admits the bounded portable-filter request-target envelope", async () => {
+    const executor = vi.fn(validExecutor());
+    const pathAndQuery = `/?filter=${"x".repeat(4_096)}`;
+    const source = request();
+    await executeBoundDestinationRequest(
+      bindDestinationTransport(endpoint(), executor),
+      {
+        method: "GET",
+        pathAndQuery,
+        headers: source.headers,
+        signal: source.signal,
+        deadline: source.deadline,
+      },
+    );
+    expect(executor.mock.calls[0]?.[0].url).toContain(pathAndQuery);
+    expect(MAXIMUM_TRANSPORT_PATH_AND_QUERY_BYTES).toBe(131_072);
+  });
+
   it("rejects forged binding inputs", () => {
     expect(() =>
       bindDestinationTransport({} as never, validExecutor()),
@@ -107,7 +126,8 @@ describe("transport request validation", () => {
       { ...request(), pathAndQuery: "//example.com/same-origin" },
       { ...request(), pathAndQuery: "relative/path" },
       { ...request(), pathAndQuery: "/path#fragment" },
-      { ...request(), pathAndQuery: "x".repeat(2_049) },
+      { ...request(), pathAndQuery: `/${"x".repeat(131_072)}` },
+      { ...request(), pathAndQuery: `/${"é".repeat(65_536)}` },
       { ...request(), headers: { Host: "evil.example" } },
       { ...request(), headers: { host: "evil.example" } },
       { ...request(), headers: { connection: "keep-alive" } },

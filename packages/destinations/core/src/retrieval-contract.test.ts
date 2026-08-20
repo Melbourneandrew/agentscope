@@ -62,6 +62,7 @@ const locator = () =>
     destinationType,
     traceId,
     destinationTraceId: "native-trace-1",
+    destinationRevision: "revision-1",
   });
 
 const query = (
@@ -133,11 +134,17 @@ describe("portable retrieval identity and query", () => {
     const value = locator();
     expect(isTraceLocator(value)).toBe(true);
     expect(Object.isFrozen(value)).toBe(true);
-    expect(value).toMatchObject({ connectionId, destinationType, traceId });
+    expect(value).toMatchObject({
+      connectionId,
+      destinationType,
+      traceId,
+      destinationRevision: "revision-1",
+    });
     for (const invalid of [
       { ...value, traceId: "0".repeat(32) },
       { ...value, traceId: traceId.toUpperCase() },
       { ...value, destinationTraceId: "bad\nvalue" },
+      { ...value, destinationRevision: "bad\nvalue" },
       { ...value, extra: true },
     ]) {
       expect(() => createTraceLocator(invalid as never)).toThrowError(
@@ -209,6 +216,12 @@ describe("hostile retrieval identity and query inputs", () => {
         destinationType,
         traceId,
         destinationTraceId: "x".repeat(1_025),
+      },
+      {
+        connectionId,
+        destinationType,
+        traceId,
+        destinationRevision: "x".repeat(257),
       },
     ]) {
       expect(() => createTraceLocator(invalid as never)).toThrowError(
@@ -990,6 +1003,55 @@ describe("Retriever operation boundary", () => {
       invokeRetrieverGet(
         retriever,
         createTraceGetRequest(locator(), { connectionId, destinationType }),
+        context(),
+      ),
+    ).resolves.toMatchObject({ ok: false, code: "malformed-response" });
+  });
+
+  it("admits one selected revision only for a revision-less get locator", async () => {
+    const unpinned = createTraceLocator({
+      connectionId,
+      destinationType,
+      traceId,
+      destinationTraceId: "native-trace-1",
+    });
+    const selected = createTraceLocator({
+      connectionId,
+      destinationType,
+      traceId,
+      destinationTraceId: "native-trace-1",
+      destinationRevision: "revision-a",
+    });
+    const trace = createRetrievedTrace({
+      locator: selected,
+      representation: { kind: "canonical-graph", graph },
+      consistency: "best-effort",
+    });
+    const retriever = createDestinationRetriever({
+      search: () => Promise.resolve(createRetrieverFailure("not-found")),
+      get: () => Promise.resolve(createRetrieverSuccess(trace)),
+    });
+    await expect(
+      invokeRetrieverGet(
+        retriever,
+        createTraceGetRequest(unpinned, { connectionId, destinationType }),
+        context(),
+      ),
+    ).resolves.toEqual({ ok: true, value: trace });
+    const differentlyPinned = createTraceLocator({
+      connectionId,
+      destinationType,
+      traceId,
+      destinationTraceId: "native-trace-1",
+      destinationRevision: "revision-b",
+    });
+    await expect(
+      invokeRetrieverGet(
+        retriever,
+        createTraceGetRequest(differentlyPinned, {
+          connectionId,
+          destinationType,
+        }),
         context(),
       ),
     ).resolves.toMatchObject({ ok: false, code: "malformed-response" });

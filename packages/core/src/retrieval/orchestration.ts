@@ -722,6 +722,7 @@ export const getConfiguredTrace = async (
     destinationName: string;
     traceId: string;
     destinationTraceId?: string;
+    destinationRevision?: string;
   }>,
 ): Promise<CoreTraceGetResult> => {
   const boundedRuntime = readRuntime(runtime);
@@ -729,7 +730,7 @@ export const getConfiguredTrace = async (
   const descriptors = readInput(
     input,
     ["destinationName", "traceId"],
-    ["destinationTraceId"],
+    ["destinationTraceId", "destinationRevision"],
   );
   if (!descriptors) return failure("invalid-query");
   let locator: ReturnType<typeof createTraceLocator> | undefined;
@@ -741,6 +742,10 @@ export const getConfiguredTrace = async (
         descriptors,
         "destinationTraceId",
       );
+      const destinationRevision = descriptorValue(
+        descriptors,
+        "destinationRevision",
+      );
       locator = createTraceLocator({
         connectionId: connection.connectionId,
         destinationType: connection.destinationType,
@@ -748,6 +753,9 @@ export const getConfiguredTrace = async (
         ...(destinationTraceId === undefined
           ? {}
           : { destinationTraceId: destinationTraceId as string }),
+        ...(destinationRevision === undefined
+          ? {}
+          : { destinationRevision: destinationRevision as string }),
       });
     },
   );
@@ -771,7 +779,7 @@ export const getConfiguredTrace = async (
       trace: Object.freeze({
         schemaVersion: 1,
         connectionName: prepared.connection.name,
-        locator,
+        locator: result.value.locator,
         graph,
         consistency: result.value.consistency,
         policyIdentity: prepared.policy.identity,

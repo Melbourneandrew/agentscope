@@ -1,5 +1,20 @@
 import { createHash } from "node:crypto";
 
+export const LANGFUSE_PROFILE_IDS = [
+  "langfuse-cloud-v4",
+  "langfuse-self-hosted-v4",
+  "langfuse-self-hosted-v3-events-3.225.3",
+] as const;
+
+export type LangfuseProfileId = (typeof LANGFUSE_PROFILE_IDS)[number];
+export type LangfuseDestinationSettings = Readonly<{
+  endpoint: string;
+  allowInsecureLoopback: boolean;
+  profileId: LangfuseProfileId;
+  compatibilityManifestId: string;
+  encoding: "application/json";
+}>;
+
 const freeze = <T>(value: T): T => {
   if (typeof value !== "object" || value === null) return value;
   for (const nested of Object.values(value)) freeze(nested);
@@ -15,11 +30,14 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
   harness: "agentscope_harness",
   branch: "agentscope_branch",
   repository: "agentscope_repository",
+  status: "agentscope_status",
   spanCount: "agentscope_span_count",
   modelCount: "agentscope_models_count",
   modelIndexPrefix: "agentscope_model_",
+  modelFilterKeyPrefix: "agentscope_model_exact_",
   tagCount: "agentscope_tags_count",
   tagIndexPrefix: "agentscope_tag_",
+  tagFilterKeyPrefix: "agentscope_tag_exact_",
   modelTagPrefix: "agentscope:model:",
   modelAttributeKeys: [
     "llm.model_name",
@@ -32,12 +50,12 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
   maximumValueCharacters: 200,
   valueCharacterUnit: "unicode-scalar-values-in-required-nfc",
   invalidUnicode: "reject-unpaired-utf16-surrogates",
-  maximumMetadataEntries: 72,
+  maximumMetadataEntries: 137,
   maximumProjectionBytes: 16_384,
   projectionByteEncoding: "utf-8-without-bom",
   projectionBytePreimage:
     "ecmascript-json-stringify([ascii-key-sorted-metadata-entry-tuples,session-value,ordered-tag-values])",
-  maximumWireOverlayAttributes: 146,
+  maximumWireOverlayAttributes: 276,
   normalization: "require-unicode-nfc",
   normalizationCollisions: "reject-before-transport",
   modelsSource:
@@ -51,6 +69,7 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
   indexGrammar: "^(?:0[0-9]|[12][0-9]|3[01])$",
   valueGrammar: "nonempty-nfc-utf8-without-control-characters",
   indexedValues: "exactly-count-contiguous-zero-based-two-digit-indices",
+  filterKeyDerivation: "prefix-plus-sha256-of-exact-nfc-utf8-value",
   reservedOwnership: "agentscope-exact-keys-and-index-prefixes",
   collisions: "reject-before-transport",
   truncation: "forbidden",
@@ -63,6 +82,86 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
     traceTagsAttribute: "langfuse.trace.tags",
   },
 } as const;
+export const LANGFUSE_CAPSULE_CONTRACT = {
+  version: "1",
+  marker: "agentscope_capsule_v1",
+  headerName: "agentscope.capsule.header.v1",
+  carrierName: "agentscope.capsule.carrier.v1",
+  scopeName: "@agentscope/destination-langfuse/capsule",
+  maximumGraphBytes: 131_072,
+  chunkCharacters: 180,
+  maximumChunksPerCarrier: 96,
+  maximumCarriers: 11,
+  keys: {
+    marker: "agentscope_capsule_marker",
+    nonce: "agentscope_capsule_nonce",
+    version: "agentscope_capsule_version",
+    graphBytes: "agentscope_capsule_graph_bytes",
+    graphDigest: "agentscope_capsule_graph_sha256",
+    carrierCount: "agentscope_capsule_carrier_count",
+    chunkCount: "agentscope_capsule_chunk_count",
+    carrierIndex: "agentscope_capsule_carrier_index",
+    chunks: "agentscope_capsule_chunks",
+  },
+  nonceGrammar: "^[0-9a-f]{32}$",
+  nonceSource: "node-cryptographic-random-bytes-16-reject-all-zero",
+  graphDigest: "sha256-lowercase-hex",
+  graphEncoding: "protocol-current-external-otlp-compatible-json-utf8",
+  chunkEncoding: "unpadded-base64url-dense-fixed-width-except-final",
+  selectedCarrierFailure: "malformed-response-without-fallback",
+  graphByteMeasurement: "utf-8-byte-length-without-bom",
+  encodedCharacterFormula: "ceil(graph-bytes*8/6)-base64-padding",
+  chunkCountFormula: "ceil(encoded-characters/180)",
+  carrierCountFormula: "ceil(chunk-count/96)",
+  requestMeasurement:
+    "utf-8-byte-length-of-final-json-request-including-canonical-spans-and-carriers",
+  headerMetadata: [
+    "marker",
+    "nonce",
+    "version",
+    "graph-bytes",
+    "graph-digest",
+    "carrier-count",
+    "chunk-count",
+    "closed-summary-projection",
+  ],
+  carrierMetadata: [
+    "nonce",
+    "version",
+    "graph-digest",
+    "carrier-index",
+    "chunks",
+  ],
+  transportSpan: {
+    traceId: "canonical-trace-id",
+    parentSpanId: "canonical-root-span-id",
+    startTime: "canonical-trace-start",
+    endTime: "canonical-trace-start",
+    kind: "INTERNAL-1",
+    status: "UNSET-0",
+    flags: 0,
+    droppedCounts: 0,
+    events: "empty",
+    links: "empty",
+    scope: "dedicated-capsule-scope",
+    resource: "closed-routing-and-protocol-manifest-attributes-only",
+    resourceAttributeKeys: ["agentscope.protocol.manifest_id", "service.name"],
+    attributes: "closed-role-metadata-only",
+  },
+  duplicateRows: "collapse-only-exact-closed-field-equality",
+  providerSelection:
+    "validate-complete-bounded-header-response-then-first-provider-order",
+} as const;
+
+export const deriveLangfuseProjectionFilterKey = (
+  kind: "model" | "tag",
+  value: string,
+): string =>
+  `${
+    kind === "model"
+      ? LANGFUSE_PROJECTION_CONTRACT.modelFilterKeyPrefix
+      : LANGFUSE_PROJECTION_CONTRACT.tagFilterKeyPrefix
+  }${createHash("sha256").update(value, "utf8").digest("hex")}`;
 const profileSources = {
   langfuseOpenApi: {
     kind: "official-source",
@@ -134,26 +233,38 @@ const profileSources = {
 } as const;
 
 const portableFilters = {
-  traceId: { v2: "traceId", v1: "traceId" },
-  from: { v2: "fromStartTime:inclusive", v1: "fromStartTime:inclusive" },
-  to: { v2: "toStartTime:exclusive", v1: "toStartTime:exclusive" },
+  traceId: {
+    v2: "structured:string:traceId:=",
+    v1: "structured:string:traceId:=",
+  },
+  from: {
+    v2: "structured:datetime:startTime:>=",
+    v1: "structured:datetime:startTime:>=",
+  },
+  to: {
+    v2: "structured:datetime:startTime:<",
+    v1: "structured:datetime:startTime:<",
+  },
   harness: {
-    v2: `metadata:${LANGFUSE_PROJECTION_CONTRACT.harness}:=`,
-    v1: `metadata:${LANGFUSE_PROJECTION_CONTRACT.harness}:=`,
+    v2: `structured:metadata:${LANGFUSE_PROJECTION_CONTRACT.harness}:=`,
+    v1: `structured:metadata:${LANGFUSE_PROJECTION_CONTRACT.harness}:=`,
   },
   branch: {
-    v2: `metadata:${LANGFUSE_PROJECTION_CONTRACT.branch}:=`,
-    v1: `metadata:${LANGFUSE_PROJECTION_CONTRACT.branch}:=`,
+    v2: `structured:metadata:${LANGFUSE_PROJECTION_CONTRACT.branch}:=`,
+    v1: `structured:metadata:${LANGFUSE_PROJECTION_CONTRACT.branch}:=`,
   },
   model: {
-    v2: `traceTags:all of:${LANGFUSE_PROJECTION_CONTRACT.modelTagPrefix}`,
-    v1: `traceTags:all of:${LANGFUSE_PROJECTION_CONTRACT.modelTagPrefix}`,
+    v2: "structured:metadata:derived-model-key:=",
+    v1: "structured:metadata:derived-model-key:=",
   },
   session: {
-    v2: "sessionId",
-    v1: `metadata:${LANGFUSE_PROJECTION_CONTRACT.session}:=`,
+    v2: "structured:string:sessionId:=",
+    v1: `structured:metadata:${LANGFUSE_PROJECTION_CONTRACT.session}:=`,
   },
-  tags: { v2: "traceTags:all of", v1: "traceTags:all of" },
+  tags: {
+    v2: "structured:metadata:derived-tag-key:=",
+    v1: "structured:metadata:derived-tag-key:=",
+  },
 } as const;
 
 const filterNames = [
@@ -186,19 +297,31 @@ const portableFilterConformance = filterProfiles.flatMap(
 const fixtureDigests = [
   {
     fixtureId: "otlp-v4-json-root-v1",
-    sha256: "7c79fdaf964e096419187bc93dcf4ba96a20bcaa08a12a97313b62f14ade096b",
+    sha256: "9b73475561895aeb7d57f00f8722fb50f52c423a6e4cf0493a732e9ca0555f81",
   },
   {
     fixtureId: "observations-v2-root-search-v1",
-    sha256: "ac2c8ee9f8a443082645fa2cb381d474ba74d42c93d5efd2d2017c8ebd8a97b0",
+    sha256: "d7eb34114f17125edb751e0e8d51892d20c14b104fe8f7d76d815ae46d40737a",
   },
   {
     fixtureId: "observations-v1-events-root-search-v1",
-    sha256: "2ed8b63d19beb60b9a323384d310520cd42212f8c8580d5968f8c60ff5866331",
+    sha256: "d452d4f1a8318625dbea1be0ee881e8adbbfd150bd68af7996f5267425065cca",
   },
   {
     fixtureId: "observations-v2-rate-limit-v1",
     sha256: "86e270d7a8c38106fba1b274ce756939252325c1c0953fc0c0ec5586b1ee5ea1",
+  },
+  {
+    fixtureId: "observations-v1-events-selector-omitted-v1",
+    sha256: "f656ae97c70e95950de55e8bf07fa72d6a82765dbff7fa54aa6944c1ced921fd",
+  },
+  {
+    fixtureId: "observations-v1-events-selector-false-v1",
+    sha256: "e142f4a8a8ab889315678b5197c4796101e7d09239ea415fcf984ef8c68d306c",
+  },
+  {
+    fixtureId: "observations-v1-events-selector-mutated-v1",
+    sha256: "4d0b56eb8dff73222a80b463903b6c52199839701380bad8ada31ff487fc17a6",
   },
   {
     fixtureId: "trace-delete-accepted-v1",
@@ -208,195 +331,195 @@ const fixtureDigests = [
 const filterFixtureDigests = [
   {
     fixtureId: "langfuse-cloud-v4-traceId-match-v1",
-    sha256: "9a127bba27fe3d1bdcdadb92ff6b851afadef15b5a59e73204f69e19596a9556",
+    sha256: "2a6b81600cdd08d99adc02363bc8f44b0d310215e30cf15c261910696e40457b",
   },
   {
     fixtureId: "langfuse-cloud-v4-traceId-miss-v1",
-    sha256: "b7b36a13e68c1e121904b5c4b05d3ff88357bcd10f88390da2ccc31e9caf97c8",
+    sha256: "55dfeacc771d52433ac279979ef7a84fb2a3012cac416414319ec2130c804086",
   },
   {
     fixtureId: "langfuse-cloud-v4-from-match-v1",
-    sha256: "29a56ac16c99c23ba088dd82af3ce16a3a5c44f5244e2b5e6e0b0e5a53f79cb5",
+    sha256: "94a975414a7835a950a199c8c7c1e330b64ea8429a53932af3b29a61352954a6",
   },
   {
     fixtureId: "langfuse-cloud-v4-from-miss-v1",
-    sha256: "a6dcdb17a9cf272fa041ca0e111d78021ba2a1f5460f2c241d54ae93a049bad7",
+    sha256: "8016807e06c5b26d45f54c3d365ee62f898e92e9fda196608e32ea1c148ed9b6",
   },
   {
     fixtureId: "langfuse-cloud-v4-to-match-v1",
-    sha256: "cab5a1be2bf615b18c4853baf21bc670d1dfee6aace3f93e02bf1db0a32866bd",
+    sha256: "514122694a81ae634c87982be96e9f0894a51c0547a51920a6d281eb551c4c22",
   },
   {
     fixtureId: "langfuse-cloud-v4-to-miss-v1",
-    sha256: "add9c733b35d706a12e32c2869a441ae9d6aa16ea6d60d3f5ad6c91362201a74",
+    sha256: "7c53ddea93b0fb4e448ec6580145add6565dc0236e92863d8a5bdd35ea3bd4ad",
   },
   {
     fixtureId: "langfuse-cloud-v4-harness-match-v1",
-    sha256: "fcfeedd24edccfcec67f159a626fd52d98e8d46cac71e6c724e88c7983ad9a4a",
+    sha256: "6a4781166a6868184b523956b0104b9e9853bb023c7e27b938e34c2b8234f3b9",
   },
   {
     fixtureId: "langfuse-cloud-v4-harness-miss-v1",
-    sha256: "d1d263037b8a3cc81a134613deace5934cbb735425f643ad499223319de71505",
+    sha256: "146d1dfc90b5faf788206068fea079594356ebce426f098bff893f87fd492544",
   },
   {
     fixtureId: "langfuse-cloud-v4-branch-match-v1",
-    sha256: "59341e6924514d768cf74c6278bd9f7fb0fe8d6d7d3659f7724c1fdbc09e1273",
+    sha256: "bca003a7f3471e4f4e795bfcf7c033e5c9f41238330d80b86f5de017434b3c5a",
   },
   {
     fixtureId: "langfuse-cloud-v4-branch-miss-v1",
-    sha256: "c1b623c0491b57d091a5ceda1de496ecb8e51ddc2050b35fd90338defcae1468",
+    sha256: "9bd55635ce3f36ab4e0fb862d2769a70772ac24ee98f0ec6e5058b2e67ad8a63",
   },
   {
     fixtureId: "langfuse-cloud-v4-model-match-v1",
-    sha256: "5439bee9aef9b0cf8fd1c8eed2c29119bacde85521492dcda679ef813f08f762",
+    sha256: "c5008db9771b546bd203fd6b7cc9190f908a9f9ac47d7ebc22d35038cc28eba1",
   },
   {
     fixtureId: "langfuse-cloud-v4-model-miss-v1",
-    sha256: "9fe736b0830f6510e26b399c7b1434a5c054c92e4d0eb5746af33e2a6ac01ddd",
+    sha256: "a8cff95ac959dcd4bd50404d7ef5e787650d24e89fd9bf0bf100a62bac3dbbd4",
   },
   {
     fixtureId: "langfuse-cloud-v4-session-match-v1",
-    sha256: "9576c4d2fcdcc27fee89ce85c9007f65874c97a6b3342ef9c4b1f53a278f510f",
+    sha256: "67cd12737b1507268758abe0f284a30f1bd26f7f7eaddc3b242dba1036568be1",
   },
   {
     fixtureId: "langfuse-cloud-v4-session-miss-v1",
-    sha256: "6de3ccdf41857ac5d69cf594faf9cd58c02d0223ebb2734f9160763d996de85e",
+    sha256: "e7bea92be842d3d958e2b424979c5eaaece741273936bee1809d4ab5b38e74dc",
   },
   {
     fixtureId: "langfuse-cloud-v4-tags-match-v1",
-    sha256: "f7e1a618609620f61c2ac34845ee8ea6910aef9de57487b23cde0edf279a2b40",
+    sha256: "5a74871759f31fd265bd304d1f8ae79208c21487c096ccc9ac7aa8749dd62c82",
   },
   {
     fixtureId: "langfuse-cloud-v4-tags-miss-v1",
-    sha256: "ed9a73f28f92e108f52bed7a16b6e49fee7f933eca21ee1cf898154730b481e8",
+    sha256: "d579576598af031db70f86de98c52a883772a4258817ab89ca4daf09d804fef1",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-traceId-match-v1",
-    sha256: "54bd92d2b21942138285f9a5d0ae938bae5c286ec738ed55bbbc3375abf504a6",
+    sha256: "70d910465a19f87b58b96bd4667ee61d97eddfec4b970bfffc1ab036824e1721",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-traceId-miss-v1",
-    sha256: "525aef1adec46ec291513c4734b003e8f97a96d9acde81034eb7f3585fdba9f4",
+    sha256: "21081e2df9b4eef9845eae53367359ec4873d008ccb44065b84f807e4c11c6e8",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-from-match-v1",
-    sha256: "c870d2ff0357b7b6726397c02a848d8d78a2953902bc828edb0974bc7971e8f4",
+    sha256: "845f55b344e293813e371763375fdfe94da5cf5766ac316a6a51253f3922771f",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-from-miss-v1",
-    sha256: "0882402899cd5d2ce0fa5151b50cb8cfa86886ce550ea6b544229dee964f065f",
+    sha256: "89c87caf64e606ade34bc3c19c3cf0302cb77a5b5976e7d6629152a7cecb383f",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-to-match-v1",
-    sha256: "150fa26965cf51983c5fa50b8a4e6d2fc1357a3f4d660996025036e208adbc3f",
+    sha256: "a98a4e2752f4dfe88f91c54360d12897c444bed271f06f4a8797ce281e46b66c",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-to-miss-v1",
-    sha256: "e79ba7447ae7ff221795618e696e7da93f7927b833895e8d0b75915edb4a0d12",
+    sha256: "28cee585cff0ad4adcff179f941578561007a06b5a09477717e18ad445b8e7b4",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-harness-match-v1",
-    sha256: "c37319907578053d1d6beab2b003bc98b60129fe51b6fdefc604f121c2adb42a",
+    sha256: "d10966b269326eeb02ea10a2dd9739a6091b2ed54756c9c8498e96dd8a22d26d",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-harness-miss-v1",
-    sha256: "3184317da5634f67e5ef4a0da917b1b00bed675afd174ae0ea399caa8bb103d8",
+    sha256: "fa0e837b9a9d04f3c8a92e4ddb0218b406e29777474c02b9ecc8fa23a852505f",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-branch-match-v1",
-    sha256: "758fa09b6ccc294f796a769f4c0d4daccc3051fd8eea84d6d82c07849e95a449",
+    sha256: "f9bb31b340d84c6463173631a5db2d384c272a2136a9d3e2dbf61891bfa616fa",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-branch-miss-v1",
-    sha256: "1c583d75513c946b45a9c94d6baf1b070d2bf5813d83a25b673bb52bda85f5b5",
+    sha256: "a0f09b810d2ccb4c0dbde632905c0a78b037bab0d9203eaceb1a21098a4de446",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-model-match-v1",
-    sha256: "216856b1eb30c1852307f558eead01600168e12fc2ff2473af7b9b15a3346cde",
+    sha256: "75755d18db4c64716a32ddab98bdc4cf388182f0d781bcb1ed64c7f53bff24fa",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-model-miss-v1",
-    sha256: "e2965ba20bca108bacfe2bc7518a36eacb104f940c328f7b9ee8e72e53acfc50",
+    sha256: "c07a1fcd116aa1b2178f2579e637ba2e42e249c5eafb9fa4c570c327c215a2a3",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-session-match-v1",
-    sha256: "d9b1e7420ed793ad473bf6f8b55232965e937cb14f938af4a0945270d3e4d874",
+    sha256: "2d71e0fef2cbb26d6460f841a3d390473356b98797a5c2e88dd2d5bf30817b3b",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-session-miss-v1",
-    sha256: "f05d8de5ec37524545b8b3676c5d2d302d41f8a3756a937de3263403863636c2",
+    sha256: "2e5d5f3ca7e9c41f70d150d2a5c5894fcb5fd625f90de4abe6e02389d5d9dd7c",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-tags-match-v1",
-    sha256: "cd5a90ad0014b5a9a377a2694cef1fb682f69b9083b77812ae79d31d8d3ae151",
+    sha256: "b44e9c08854ec6d2e505cff5800ddc21d0073d54cc67c1dd35eedfaacfb98adc",
   },
   {
     fixtureId: "langfuse-self-hosted-v4-tags-miss-v1",
-    sha256: "9a221fb4a430a7fed102b69c6d81282179d0d30fa3e4f5ee2df5badf38418f71",
+    sha256: "a4e977093696846e79d4e147d389e614573a7139f3684c6123688ef8865f49e0",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-traceId-match-v1",
-    sha256: "cb2d7d4d3af410f910e9e59648507d90260ec6f5f660ca047cd222a82685f077",
+    sha256: "9960c6fb48b7419f927bf84d997c5e2a2b7c5853a0abbb0621d2fb160b5012fe",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-traceId-miss-v1",
-    sha256: "7d8cca489a01dccba25256f85522a311951106f6c9474168d68cb403af1cd5a2",
+    sha256: "02764b53c13b73e0f160770655f326a5f8a42a75ff02e70093a521c9ebc7640e",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-from-match-v1",
-    sha256: "eca1f0e29e1b9de13cefe4483bbb14236d751f5ead9511111ec93b6fcb7236ab",
+    sha256: "459e843db28df5138dc5ea8da3c55fbb977b0a73fbfc1e3a5f53dc442a6c6d10",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-from-miss-v1",
-    sha256: "6f66a29008862c7360bba87c62771ac3073cf42e8dae79e06ebfea780253ea74",
+    sha256: "dce3874ef2196562d1f9f5f8fb2777f2b1f2c342d82d65cd531745bbead27abc",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-to-match-v1",
-    sha256: "faaddd1ef15aa21ec574a3111600a70897067658e3bde13d059d563011cae469",
+    sha256: "5b90dd32f32b6359d24160bac5a2f06ee0acbf1b24694aca9254fe8f0f1f225e",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-to-miss-v1",
-    sha256: "be42f0cad21c9856d1ae22ba837a2597fcc72024a60dae944c544b2e1c177054",
+    sha256: "4ad70264f6841056b3a855583fc2a29917eadcdd9d1a78e447b2cda918c0cd02",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-harness-match-v1",
-    sha256: "0c1c5f31785fedeb3a462eb18fa407f637d1073577e7eff39a24b78385efc461",
+    sha256: "bae6ebd1dfd03b30006e8f6534848681a02d7f3c796302be534ee671eba7b41b",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-harness-miss-v1",
-    sha256: "4ce8fb7927a00094a25a973ea51d762c6ae4c82110c6a8ce10e86e6751827ea7",
+    sha256: "1910e3097942b5acf164c990d8d9d7546eae9ca64272809960b81ae9e8ec8572",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-branch-match-v1",
-    sha256: "1275a4f6c80218040122204106f881bdff66ec597e902e2511b39cb2530c1db5",
+    sha256: "d008451617aca3c5ffbcb72d0bed6c9bb539ae06f9314d1bd289369fec5007c7",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-branch-miss-v1",
-    sha256: "8866b31bb1516e76e8590f2243756489a9383f39b2370680de8c62691b4400f0",
+    sha256: "3086725a6b0afa2716c34b205a5499cd6c0b66c8991e1d6c465aff2d1a17b62a",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-model-match-v1",
-    sha256: "9f488f760b39b092d5fc4c06950e5a24489d3250975dc9796d18ceaae972e1ad",
+    sha256: "8c92d558b51606922188448bda0dc529cca45803941f3e45c26d1a654e8b5e80",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-model-miss-v1",
-    sha256: "e525bd4c7b54c7b35bdbc7af6c4cfab1e34ea8174e8713595b9cdc0ecbd2b9bd",
+    sha256: "8291b6b9c91fc63656356b2412bd616858b74eb2e55ebbd46dc2a1cccf313bc4",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-session-match-v1",
-    sha256: "af46981164c4733c2b499cb77dd8792812e5d146a74300dbf134c9e65ccb4ce6",
+    sha256: "24d9e392ee51750b43c057e046c3fb83aacd4e943b027d30fc5b0ed268c069f0",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-session-miss-v1",
-    sha256: "162a42f52a60e58a984764405563e31b0d018842b0bcf2ed16adab9ced1f9491",
+    sha256: "ceab90df61bb4a0c63f1e2785bb03d64479171d317a5afed97a49e7252ca38b9",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-tags-match-v1",
-    sha256: "a67362a291fa26cb5878fbf1757796ecc886c2f6d6a5318769b7ccb346432a24",
+    sha256: "2fd5237da5d454d1185ff91c46d847f36672617215e82b51ebd246f4cb672c42",
   },
   {
     fixtureId: "langfuse-self-hosted-v3-events-3.225.3-tags-miss-v1",
-    sha256: "7881aecdea5ca3d8af90c937d8ae0647029c49f420d562342501b2c5dd7395e8",
+    sha256: "a7c567784a6c1dd1412edd0c6dbc203011f67a02f7d35277c69bdb4efc445213",
   },
 ] as const;
 const manifestSource = {
@@ -414,18 +537,49 @@ const manifestSource = {
   },
   sources: profileSources,
   projection: LANGFUSE_PROJECTION_CONTRACT,
-  rootObservation: {
-    selector: `metadata:${LANGFUSE_PROJECTION_CONTRACT.root}:=:true`,
-    cardinality: "exactly-one-per-trace",
-    missing: "malformed-response",
-    duplicate: "malformed-response",
-    summaryProjection: "root-observation-only",
+  capsule: LANGFUSE_CAPSULE_CONTRACT,
+  capsuleHeader: {
+    selector: `metadata:${LANGFUSE_CAPSULE_CONTRACT.keys.marker}:=:${LANGFUSE_CAPSULE_CONTRACT.marker}`,
+    cardinality: "exactly-one-per-reporter-item-revision",
+    multipleRevisions: "validate-all-then-first-provider-order-per-trace",
+    exactDuplicate: "collapse",
+    malformedOrConflicting: "malformed-response",
+    summaryProjection: "selected-capsule-header-only",
   },
   reporterReceiptProof: {
     acceptedStatus: 200,
     responseMediaType: "ascii-case-insensitive-application-json",
     responseMediaTypeParameters: "none-or-one-charset-utf-8",
     missingWrongDuplicateOrAmbiguousMediaType: "outcome-unknown",
+  },
+  retrieverResponseProof: {
+    successStatus: "200-through-299",
+    responseMediaType: "ascii-case-insensitive-application-json",
+    responseMediaTypeParameters: "none-or-one-charset-utf-8",
+    missingWrongDuplicateOrAmbiguousMediaType: "malformed-response",
+  },
+  structuredFilter: {
+    queryKey: "filter",
+    queryKeyCardinality: "exactly-one",
+    predicateOrder: [
+      "current-capsule-marker",
+      "trace-id",
+      "from-inclusive",
+      "to-exclusive",
+      "harness",
+      "branch",
+      "model",
+      "session",
+      "tags",
+    ],
+    propertyOrder: ["type", "column", "key-if-present", "operator", "value"],
+    construction: "closed-typed-values-as-data",
+    serialization: "ecmascript-json-stringify-once",
+    queryEncoding: "url-search-params-percent-encode-once",
+    individualPortableQueryKeys: "forbidden",
+    duplicateFilterKeys: "forbidden",
+    v1Selector: "one-independent-useEventsTable=true",
+    maximumRequestTargetBytes: 131_072,
   },
   portableFilters,
   portableFilterConformance,
@@ -455,23 +609,23 @@ const manifestSource = {
           "metadata",
           "trace_context",
         ],
-        getFieldGroups: [
+        headerGetFieldGroups: [
           "core",
           "basic",
           "time",
-          "io",
           "metadata",
-          "model",
-          "usage",
-          "prompt",
-          "metrics",
           "trace_context",
         ],
+        carrierGetFieldGroups: ["core", "basic", "time", "metadata"],
       },
     },
     {
       profileId: "langfuse-self-hosted-v4",
-      server: { deployment: "self-hosted", range: ">=4.0.0 <5.0.0" },
+      server: {
+        deployment: "self-hosted",
+        range: "=4.15.0",
+        sourceRevision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
+      },
       reporter: {
         path: "/api/public/otel/v1/traces",
         encodings: ["application/json", "application/x-protobuf"],
@@ -494,23 +648,23 @@ const manifestSource = {
           "metadata",
           "trace_context",
         ],
-        getFieldGroups: [
+        headerGetFieldGroups: [
           "core",
           "basic",
           "time",
-          "io",
           "metadata",
-          "model",
-          "usage",
-          "prompt",
-          "metrics",
           "trace_context",
         ],
+        carrierGetFieldGroups: ["core", "basic", "time", "metadata"],
       },
     },
     {
       profileId: "langfuse-self-hosted-v3-events-3.225.3",
-      server: { deployment: "self-hosted", range: "=3.225.3" },
+      server: {
+        deployment: "self-hosted",
+        range: "=3.225.3",
+        sourceRevision: "f6c77b70842bd84e3f22d820471345819cd9a1b4",
+      },
       reporter: {
         path: "/api/public/otel/v1/traces",
         encodings: ["application/json", "application/x-protobuf"],
@@ -534,6 +688,7 @@ const manifestSource = {
   rateLimit: {
     status: 429,
     retryHeader: "retry-after",
+    retryHeaderGrammar: "decimal-seconds-0-through-3600",
     result: "rate-limited",
     providerBody: "discarded",
   },
@@ -544,10 +699,30 @@ const manifestSource = {
     immediateCompletionClaimed: false,
   },
   v1SelectorConformance: [
-    { caseId: "present-true", value: "true", conforms: true },
-    { caseId: "omitted", value: null, conforms: false },
-    { caseId: "false", value: "false", conforms: false },
-    { caseId: "mutated", value: "1", conforms: false },
+    {
+      caseId: "present-true",
+      value: "true",
+      conforms: true,
+      fixtureId: "observations-v1-events-root-search-v1",
+    },
+    {
+      caseId: "omitted",
+      value: null,
+      conforms: false,
+      fixtureId: "observations-v1-events-selector-omitted-v1",
+    },
+    {
+      caseId: "false",
+      value: "false",
+      conforms: false,
+      fixtureId: "observations-v1-events-selector-false-v1",
+    },
+    {
+      caseId: "mutated",
+      value: "1",
+      conforms: false,
+      fixtureId: "observations-v1-events-selector-mutated-v1",
+    },
   ],
   fixtureDigests,
   filterFixtureDigests,
@@ -576,7 +751,12 @@ const manifestSource = {
       claimId: "observations-v1-events-contract",
       disposition: "provisional-official",
       sources: ["langfuseV3Observations"],
-      fixtures: ["observations-v1-events-root-search-v1"],
+      fixtures: [
+        "observations-v1-events-root-search-v1",
+        "observations-v1-events-selector-omitted-v1",
+        "observations-v1-events-selector-false-v1",
+        "observations-v1-events-selector-mutated-v1",
+      ],
     },
     {
       claimId: "portable-filter-request-contract",

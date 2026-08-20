@@ -1,4 +1,14 @@
-import { LANGFUSE_PROJECTION_CONTRACT } from "./compatibility.js";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+
+import { encodeOtlpJson } from "@agentscope/protocol";
+import { createSanitizedRedactedCanonicalTraceFixture } from "@agentscope/protocol/testing";
+
+import {
+  deriveLangfuseProjectionFilterKey,
+  LANGFUSE_CAPSULE_CONTRACT,
+  LANGFUSE_PROJECTION_CONTRACT,
+} from "./compatibility.js";
 
 export type LangfuseJson =
   | null
@@ -56,10 +66,57 @@ const freeze = <T>(value: T): T => {
 };
 
 const projection = LANGFUSE_PROJECTION_CONTRACT;
-const traceId = "0123456789abcdef0123456789abcdef";
-const spanId = "0123456789abcdef";
-const startTime = "2026-01-02T03:04:05.000Z";
-const endTime = "2026-01-02T03:04:06.000Z";
+const capsule = LANGFUSE_CAPSULE_CONTRACT;
+const fixtureTrace = createSanitizedRedactedCanonicalTraceFixture({
+  sessionId: "session-fixture",
+  tags: ["fixture"],
+  modelName: "gpt-5",
+});
+const fixtureGraphJson = encodeOtlpJson(fixtureTrace);
+const fixtureGraph = JSON.parse(fixtureGraphJson) as {
+  resourceSpans: {
+    resource?: LangfuseJson;
+    scopeSpans: {
+      scope?: LangfuseJson;
+      spans: {
+        traceId: string;
+        spanId: string;
+        parentSpanId?: string;
+        startTimeUnixNano: string;
+        endTimeUnixNano: string;
+        [key: string]: LangfuseJson | undefined;
+      }[];
+    }[];
+  }[];
+};
+const fixtureRoot = fixtureGraph.resourceSpans
+  .flatMap(({ scopeSpans }) => scopeSpans)
+  .flatMap(({ spans }) => spans)
+  .find(({ parentSpanId }) => parentSpanId === undefined)!;
+const fixtureResourceAttributes = (
+  fixtureGraph.resourceSpans[0]!.resource as {
+    attributes: readonly { key: string; value: LangfuseJson }[];
+  }
+).attributes;
+const traceId = fixtureRoot.traceId;
+const spanId = fixtureRoot.spanId;
+const capsuleNonce = "11111111111111111111111111111111";
+const capsuleId = (role: "header" | "carrier", index: number) =>
+  createHash("sha256")
+    .update(
+      `agentscope:langfuse:capsule:v1:${traceId}:${capsuleNonce}:${role}:${String(index)}`,
+    )
+    .digest("hex")
+    .slice(0, 16);
+const capsuleHeaderId = capsuleId("header", 0);
+const capsuleCarrierId = capsuleId("carrier", 0);
+const milliseconds = (nanoseconds: string) =>
+  new Date(Number(BigInt(nanoseconds) / 1_000_000n)).toISOString();
+const startTime = milliseconds(fixtureRoot.startTimeUnixNano);
+const endTime = milliseconds(fixtureRoot.endTimeUnixNano);
+const filterTraceId = "0123456789abcdef0123456789abcdef";
+const filterStartTime = "2026-01-02T03:04:05.000Z";
+const filterEndTime = "2026-01-02T03:04:06.000Z";
 
 const rootMetadata = {
   [projection.root]: "true",
@@ -67,19 +124,74 @@ const rootMetadata = {
   [projection.harness]: "codex",
   [projection.branch]: "main",
   [projection.repository]: "repository-fixture",
-  [projection.spanCount]: "2",
+  [projection.status]: "unset",
+  [projection.spanCount]: "3",
   [projection.modelCount]: "1",
   [`${projection.modelIndexPrefix}00`]: "gpt-5",
+  [deriveLangfuseProjectionFilterKey("model", "gpt-5")]: "gpt-5",
   [projection.tagCount]: "1",
   [`${projection.tagIndexPrefix}00`]: "fixture",
+  [deriveLangfuseProjectionFilterKey("tag", "fixture")]: "fixture",
 } as const;
 
 const rootFilter = {
   type: "stringObject",
   column: "metadata",
-  key: projection.root,
+  key: capsule.keys.marker,
   operator: "=",
-  value: "true",
+  value: capsule.marker,
+} as const;
+
+const filter = (
+  type: string,
+  column: string,
+  operator: string,
+  value: unknown,
+  key?: string,
+) => ({
+  type,
+  column,
+  ...(key === undefined ? {} : { key }),
+  operator,
+  value,
+});
+
+const metadataFilter = (key: string, value: string) =>
+  filter("stringObject", "metadata", "=", value, key);
+
+const exactModelFilter = (value: string) =>
+  metadataFilter(deriveLangfuseProjectionFilterKey("model", value), value);
+const exactTagFilter = (value: string) =>
+  metadataFilter(deriveLangfuseProjectionFilterKey("tag", value), value);
+
+const fixtureGraphBytes = Buffer.from(fixtureGraphJson, "utf8");
+const capsuleGraphDigest = createHash("sha256")
+  .update(fixtureGraphBytes)
+  .digest("hex");
+const capsuleChunks = Array.from(
+  {
+    length: Math.ceil(
+      fixtureGraphBytes.toString("base64url").length / capsule.chunkCharacters,
+    ),
+  },
+  (_, index) =>
+    fixtureGraphBytes
+      .toString("base64url")
+      .slice(
+        index * capsule.chunkCharacters,
+        (index + 1) * capsule.chunkCharacters,
+      ),
+);
+
+const headerMetadata = {
+  ...rootMetadata,
+  [capsule.keys.marker]: capsule.marker,
+  [capsule.keys.nonce]: capsuleNonce,
+  [capsule.keys.version]: capsule.version,
+  [capsule.keys.graphBytes]: String(fixtureGraphBytes.byteLength),
+  [capsule.keys.graphDigest]: capsuleGraphDigest,
+  [capsule.keys.carrierCount]: "1",
+  [capsule.keys.chunkCount]: String(capsuleChunks.length),
 } as const;
 
 const rootProjectionAttributes = [
@@ -105,6 +217,50 @@ const rootProjectionAttributes = [
   },
 ] as const;
 
+const capsuleMetadataAttributes = (
+  metadata: Readonly<Record<string, string>>,
+) =>
+  Object.entries(metadata).map(([key, value]) => ({
+    key: `${projection.wire.observationMetadataPrefix}${key}`,
+    value: { stringValue: value },
+  }));
+
+const closedCapsuleSpan = (
+  id: string,
+  name: string,
+  attributes: readonly LangfuseJson[],
+) => ({
+  traceId,
+  spanId: id,
+  parentSpanId: spanId,
+  name,
+  kind: 1,
+  startTimeUnixNano: fixtureRoot.startTimeUnixNano,
+  endTimeUnixNano: fixtureRoot.startTimeUnixNano,
+  attributes,
+  droppedAttributesCount: 0,
+  events: [],
+  droppedEventsCount: 0,
+  links: [],
+  droppedLinksCount: 0,
+  flags: 0,
+  status: { code: 0 },
+});
+
+const basePortableFilters = [
+  rootFilter,
+  filter(
+    "datetime",
+    "startTime",
+    ">=",
+    new Date(Date.parse(startTime) - 1_000).toISOString(),
+  ),
+  filter("datetime", "startTime", "<", endTime),
+  exactModelFilter("gpt-5"),
+  filter("string", "sessionId", "=", "session-fixture"),
+  exactTagFilter("fixture"),
+] as const;
+
 const fixtures = [
   {
     fixtureId: "otlp-v4-json-root-v1",
@@ -120,20 +276,56 @@ const fixtures = [
       query: {},
       body: {
         resourceSpans: [
+          ...(fixtureGraph.resourceSpans as unknown as readonly LangfuseJson[]),
           {
-            resource: { attributes: [] },
+            resource: {
+              attributes: fixtureResourceAttributes.filter(({ key }) =>
+                capsule.transportSpan.resourceAttributeKeys.includes(
+                  key as "agentscope.protocol.manifest_id" | "service.name",
+                ),
+              ),
+              droppedAttributesCount: 0,
+            },
             scopeSpans: [
               {
-                scope: { name: "@agentscope/protocol" },
+                scope: { name: capsule.scopeName },
                 spans: [
-                  {
-                    traceId,
-                    spanId,
-                    name: "agent-root",
-                    startTimeUnixNano: "1767323045000000000",
-                    endTimeUnixNano: "1767323046000000000",
-                    attributes: rootProjectionAttributes,
-                  },
+                  closedCapsuleSpan(capsuleHeaderId, capsule.headerName, [
+                    ...rootProjectionAttributes,
+                    ...capsuleMetadataAttributes({
+                      [capsule.keys.marker]: capsule.marker,
+                      [capsule.keys.nonce]: capsuleNonce,
+                      [capsule.keys.version]: capsule.version,
+                      [capsule.keys.graphBytes]: String(
+                        fixtureGraphBytes.byteLength,
+                      ),
+                      [capsule.keys.graphDigest]: capsuleGraphDigest,
+                      [capsule.keys.carrierCount]: "1",
+                      [capsule.keys.chunkCount]: String(capsuleChunks.length),
+                    }),
+                    {
+                      key: projection.wire.sessionAttribute,
+                      value: { stringValue: "session-fixture" },
+                    },
+                  ]),
+                  closedCapsuleSpan(capsuleCarrierId, capsule.carrierName, [
+                    ...capsuleMetadataAttributes({
+                      [capsule.keys.nonce]: capsuleNonce,
+                      [capsule.keys.version]: capsule.version,
+                      [capsule.keys.graphDigest]: capsuleGraphDigest,
+                      [capsule.keys.carrierIndex]: "0",
+                    }),
+                    {
+                      key: `${projection.wire.observationMetadataPrefix}${capsule.keys.chunks}`,
+                      value: {
+                        arrayValue: {
+                          values: capsuleChunks.map((value) => ({
+                            stringValue: value,
+                          })),
+                        },
+                      },
+                    },
+                  ]),
                 ],
               },
             ],
@@ -152,11 +344,8 @@ const fixtures = [
       headers: { authorization: "[credential-slot]" },
       query: {
         fields: "core,basic,time,metadata,trace_context",
-        fromStartTime: "2026-01-01T00:00:00.000Z",
-        toStartTime: "2026-01-03T00:00:00.000Z",
         limit: "50",
-        sessionId: "session-fixture",
-        filter: JSON.stringify([rootFilter]),
+        filter: JSON.stringify(basePortableFilters),
       },
       body: null,
     },
@@ -166,19 +355,19 @@ const fixtures = [
       body: {
         data: [
           {
-            id: spanId,
+            id: capsuleHeaderId,
             traceId,
             projectId: "project-fixture",
-            parentObservationId: null,
+            parentObservationId: spanId,
             type: "SPAN",
             startTime,
-            endTime,
-            isRootObservation: true,
-            name: "agent-root",
+            endTime: startTime,
+            isRootObservation: false,
+            name: capsule.headerName,
             level: "DEFAULT",
             statusMessage: null,
             sessionId: "session-fixture",
-            metadata: rootMetadata,
+            metadata: headerMetadata,
             tags: ["agentscope:model:gpt-5", "fixture"],
             modelId: null,
             inputPrice: null,
@@ -201,23 +390,11 @@ const fixtures = [
         page: "1",
         limit: "50",
         useEventsTable: "true",
-        fromStartTime: "2026-01-01T00:00:00.000Z",
-        toStartTime: "2026-01-03T00:00:00.000Z",
         filter: JSON.stringify([
-          rootFilter,
-          {
-            type: "stringObject",
-            column: "metadata",
-            key: projection.session,
-            operator: "=",
-            value: "session-fixture",
-          },
-          {
-            type: "arrayOptions",
-            column: "traceTags",
-            operator: "all of",
-            value: ["agentscope:model:gpt-5", "fixture"],
-          },
+          ...basePortableFilters.filter(
+            (entry) => !(entry.column === "sessionId"),
+          ),
+          metadataFilter(projection.session, "session-fixture"),
         ]),
       },
       body: null,
@@ -228,21 +405,21 @@ const fixtures = [
       body: {
         data: [
           {
-            id: spanId,
+            id: capsuleHeaderId,
             projectId: "project-fixture",
             traceId,
-            parentObservationId: null,
-            name: "agent-root",
+            parentObservationId: spanId,
+            name: capsule.headerName,
             type: "SPAN",
             environment: "default",
             startTime,
-            endTime,
+            endTime: startTime,
             version: null,
             createdAt: startTime,
             updatedAt: endTime,
             input: null,
             output: null,
-            metadata: rootMetadata,
+            metadata: headerMetadata,
             level: "DEFAULT",
             statusMessage: null,
             model: null,
@@ -291,12 +468,46 @@ const fixtures = [
       body: { message: "SANITIZED_PROVIDER_MESSAGE" },
     },
   },
+  ...[
+    {
+      fixtureId: "observations-v1-events-selector-omitted-v1",
+      selector: undefined,
+    },
+    {
+      fixtureId: "observations-v1-events-selector-false-v1",
+      selector: "false",
+    },
+    {
+      fixtureId: "observations-v1-events-selector-mutated-v1",
+      selector: "1",
+    },
+  ].map(({ fixtureId, selector }) => ({
+    fixtureId,
+    profileId: "langfuse-self-hosted-v3-events-3.225.3",
+    request: {
+      method: "GET" as const,
+      path: "/api/public/observations",
+      headers: { authorization: "[credential-slot]" },
+      query: {
+        page: "1",
+        limit: "50",
+        ...(selector === undefined ? {} : { useEventsTable: selector }),
+        filter: JSON.stringify([rootFilter]),
+      },
+      body: null,
+    },
+    response: {
+      status: 400,
+      headers: { "content-type": "application/json" },
+      body: { message: "SANITIZED_PROVIDER_MESSAGE" },
+    },
+  })),
   {
     fixtureId: "trace-delete-accepted-v1",
     profileId: "langfuse-cloud-v4",
     request: {
       method: "DELETE",
-      path: `/api/public/traces/${traceId}`,
+      path: `/api/public/traces/${filterTraceId}`,
       headers: { authorization: "[credential-slot]" },
       query: {},
       body: null,
@@ -309,43 +520,26 @@ export const LANGFUSE_SANITIZED_HTTP_FIXTURES = freeze(fixtures);
 type FilterName = LangfuseFilterConformanceFixture["filter"];
 type FilterProfile = LangfuseFilterConformanceFixture["profile"];
 
-const metadataFilter = (key: string, value: string) => ({
-  type: "stringObject",
-  column: "metadata",
-  key,
-  operator: "=",
-  value,
-});
-
-const tagsFilter = (value: string) => ({
-  type: "arrayOptions",
-  column: "traceTags",
-  operator: "all of",
-  value: [value],
-});
-
 const filterQuery = (
   profile: FilterProfile,
-  query: Readonly<Record<string, string>>,
+  filters: readonly Readonly<Record<string, unknown>>[],
 ): Readonly<Record<string, string>> =>
   profile === "v2"
     ? {
         fields: "core,basic,time,metadata,trace_context",
         limit: "50",
-        filter: JSON.stringify([rootFilter]),
-        ...query,
+        filter: JSON.stringify(filters),
       }
     : {
         page: "1",
         limit: "50",
         useEventsTable: "true",
-        filter: JSON.stringify([rootFilter]),
-        ...query,
+        filter: JSON.stringify(filters),
       };
 
 const filterRequest = (
   profile: FilterProfile,
-  query: Readonly<Record<string, string>>,
+  filters: readonly Readonly<Record<string, unknown>>[],
 ) => ({
   method: "GET" as const,
   path:
@@ -353,63 +547,62 @@ const filterRequest = (
       ? "/api/public/v2/observations"
       : "/api/public/observations",
   headers: { authorization: "[credential-slot]" },
-  query: filterQuery(profile, query),
+  query: filterQuery(profile, filters),
   body: null,
 });
 
 const predicateQuery = (
   profile: FilterProfile,
-  filter: FilterName,
+  filterName: FilterName,
   value: string,
-): Readonly<Record<string, string>> => {
-  switch (filter) {
+): readonly Readonly<Record<string, unknown>>[] => {
+  const fixedUpperBound = filter("datetime", "startTime", "<", filterEndTime);
+  switch (filterName) {
     case "traceId":
-      return { traceId: value };
+      return [
+        rootFilter,
+        filter("string", "traceId", "=", value),
+        fixedUpperBound,
+      ];
     case "from":
-      return { fromStartTime: value };
+      return [
+        rootFilter,
+        filter("datetime", "startTime", ">=", value),
+        fixedUpperBound,
+      ];
     case "to":
-      return { toStartTime: value };
+      return [rootFilter, filter("datetime", "startTime", "<", value)];
     case "harness":
-      return {
-        filter: JSON.stringify([
-          rootFilter,
-          metadataFilter(projection.harness, value),
-        ]),
-      };
+      return [
+        rootFilter,
+        fixedUpperBound,
+        metadataFilter(projection.harness, value),
+      ];
     case "branch":
-      return {
-        filter: JSON.stringify([
-          rootFilter,
-          metadataFilter(projection.branch, value),
-        ]),
-      };
+      return [
+        rootFilter,
+        fixedUpperBound,
+        metadataFilter(projection.branch, value),
+      ];
     case "model":
-      return {
-        filter: JSON.stringify([
-          rootFilter,
-          tagsFilter(`${projection.modelTagPrefix}${value}`),
-        ]),
-      };
+      return [rootFilter, fixedUpperBound, exactModelFilter(value)];
     case "session":
-      return profile === "v2"
-        ? { sessionId: value }
-        : {
-            filter: JSON.stringify([
-              rootFilter,
-              metadataFilter(projection.session, value),
-            ]),
-          };
+      return [
+        rootFilter,
+        fixedUpperBound,
+        profile === "v2"
+          ? filter("string", "sessionId", "=", value)
+          : metadataFilter(projection.session, value),
+      ];
     case "tags":
-      return {
-        filter: JSON.stringify([rootFilter, tagsFilter(value)]),
-      };
+      return [rootFilter, fixedUpperBound, exactTagFilter(value)];
   }
 };
 
 const predicateValues = {
-  traceId: [traceId, "fedcba9876543210fedcba9876543210"],
-  from: [startTime, endTime],
-  to: [endTime, startTime],
+  traceId: [filterTraceId, "fedcba9876543210fedcba9876543210"],
+  from: [filterStartTime, filterEndTime],
+  to: [filterEndTime, filterStartTime],
   harness: ["codex", "claude-code"],
   branch: ["main", "release"],
   model: ["gpt-5", "different-model"],
@@ -439,7 +632,7 @@ const filterConformanceFixtures = filterConformanceProfiles.flatMap(
           profile,
           predicateQuery(profile, filter, predicateValues[filter][index]!),
         ),
-        expectedTraceIds: disposition === "match" ? [traceId] : [],
+        expectedTraceIds: disposition === "match" ? [filterTraceId] : [],
       })),
     ),
 ) satisfies LangfuseFilterConformanceFixture[];

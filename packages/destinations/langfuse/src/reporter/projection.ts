@@ -3,16 +3,18 @@ import {
   type OtlpAnyValue,
   type OtlpKeyValue,
   type OtlpResourceSpans,
+  type OtlpSpan,
   type RedactedCanonicalTrace,
 } from "@agentscope/protocol";
 import { MAXIMUM_TRANSPORT_REQUEST_BYTES } from "@agentscope/destinations-core";
 
-import { LANGFUSE_PROJECTION_CONTRACT } from "../compatibility.js";
+import {
+  deriveLangfuseProjectionFilterKey,
+  LANGFUSE_PROJECTION_CONTRACT,
+} from "../compatibility.js";
+import { appendLangfuseGraphCapsule } from "./capsule.js";
 
-type MutableSpan = {
-  parentSpanId?: string;
-  attributes?: OtlpKeyValue[];
-};
+type MutableSpan = OtlpSpan;
 
 type MutableResourceSpans = Omit<OtlpResourceSpans, "scopeSpans"> & {
   scopeSpans: {
@@ -128,6 +130,7 @@ const reservedMetadataKeys = new Set<string>([
   projection.harness,
   projection.branch,
   projection.repository,
+  projection.status,
   projection.spanCount,
   projection.modelCount,
   projection.tagCount,
@@ -149,6 +152,7 @@ const isReservedWireAttribute = (key: string): boolean => {
   return false;
 };
 
+/* eslint-disable max-lines-per-function -- one atomic projection validator owns the complete collision and boundedness ledger. */
 export const projectLangfuseRoot = (
   resourceSpans: MutableResourceSpans,
 ): LangfuseRootProjection => {
@@ -203,6 +207,14 @@ export const projectLangfuseRoot = (
   const tags = Object.freeze([...modelTags, ...userTags]);
   const metadataEntries: [string, string][] = [
     [projection.root, "true"],
+    [
+      projection.status,
+      root.status?.code === 2
+        ? "error"
+        : root.status?.code === 1
+          ? "ok"
+          : "unset",
+    ],
     [projection.spanCount, String(spans.length)],
     [projection.modelCount, String(models.length)],
     [projection.tagCount, String(userTags.length)],
@@ -211,16 +223,19 @@ export const projectLangfuseRoot = (
     if (value !== undefined)
       metadataEntries.push([key, exactProjectionValue(value)]);
   models.forEach((value, index) =>
-    metadataEntries.push([
-      `${projection.modelIndexPrefix}${String(index).padStart(2, "0")}`,
-      value,
-    ]),
+    metadataEntries.push(
+      [
+        `${projection.modelIndexPrefix}${String(index).padStart(2, "0")}`,
+        value,
+      ],
+      [deriveLangfuseProjectionFilterKey("model", value), value],
+    ),
   );
   userTags.forEach((value, index) =>
-    metadataEntries.push([
-      `${projection.tagIndexPrefix}${String(index).padStart(2, "0")}`,
-      value,
-    ]),
+    metadataEntries.push(
+      [`${projection.tagIndexPrefix}${String(index).padStart(2, "0")}`, value],
+      [deriveLangfuseProjectionFilterKey("tag", value), value],
+    ),
   );
   metadataEntries.sort(([left], [right]) => asciiCompare(left, right));
   /* v8 ignore next 2 -- the manifest's four fixed, four optional, and two bounded 32-entry mirrors total exactly the asserted maximum. */
@@ -253,7 +268,7 @@ export const projectLangfuseRoot = (
         },
       }),
     );
-  /* v8 ignore next 2 -- two overlays per bounded metadata entry plus one tag overlay total at most 145 under the manifest's independently asserted 146 ceiling. */
+  /* v8 ignore next 2 -- two overlays per bounded metadata entry plus one tag overlay remain within the manifest's independent ceiling. */
   if (overlays.length > projection.maximumWireOverlayAttributes)
     return invalid();
   root.attributes = [...(root.attributes ?? []), ...overlays];
@@ -265,12 +280,14 @@ export const projectLangfuseRoot = (
     tags,
   });
 };
+/* eslint-enable max-lines-per-function */
 
 const encodeLangfuseOtlpJsonBatchWithinLimit = (
   traces: readonly [RedactedCanonicalTrace, ...RedactedCanonicalTrace[]],
   maximumBytes: number,
 ): Uint8Array => {
   const resourceSpans: MutableResourceSpans[] = [];
+  const capsuleNonces = new Set<string>();
   let inputBytes = 0;
   for (const trace of traces) {
     const encoded = encodeOtlpJson(trace);
@@ -278,10 +295,26 @@ const encodeLangfuseOtlpJsonBatchWithinLimit = (
     /* v8 ignore next -- Protocol's branded batch and trace bounds keep valid inputs below the stricter transport ceiling. */
     if (inputBytes > maximumBytes) return invalid();
     const request = JSON.parse(encoded) as EncodedTraceRequest;
-    for (const resource of request.resourceSpans) {
-      projectLangfuseRoot(resource);
-      resourceSpans.push(resource);
-    }
+    const rootResources = request.resourceSpans.filter((resource) =>
+      resource.scopeSpans.some((scope) =>
+        scope.spans.some((span) => span.parentSpanId === undefined),
+      ),
+    );
+    /* v8 ignore next -- Protocol-branded canonical graphs already require exactly one root across all resources. */
+    if (rootResources.length !== 1) return invalid();
+    const rootResource = rootResources[0]!;
+    projectLangfuseRoot({
+      ...rootResource,
+      scopeSpans: request.resourceSpans.flatMap(
+        (resource) => resource.scopeSpans,
+      ),
+    });
+    const capsule = appendLangfuseGraphCapsule(rootResource, encoded);
+    /* v8 ignore next 2 -- independent CSPRNG collision protection retained for multiple logical items in one immutable request plan. */
+    if (capsuleNonces.has(capsule.nonce)) return invalid();
+    capsuleNonces.add(capsule.nonce);
+    resourceSpans.push(...request.resourceSpans);
+    resourceSpans.push(capsule.resourceSpans);
   }
   const body = textEncoder.encode(JSON.stringify({ resourceSpans }));
   /* v8 ignore next -- the input and projection ceilings jointly keep valid encoded batches below the transport ceiling. */

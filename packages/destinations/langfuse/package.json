@@ -13,8 +13,8 @@
       "import": "./dist/reporter/index.js"
     },
     "./retriever": {
-      "types": "./dist/retriever/index.d.ts",
-      "import": "./dist/retriever/index.js"
+      "types": "./dist/retriever/public.d.ts",
+      "import": "./dist/retriever/public.js"
     },
     "./testing": {
       "types": "./dist/testing.d.ts",

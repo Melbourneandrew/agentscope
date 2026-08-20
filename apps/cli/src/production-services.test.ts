@@ -54,6 +54,7 @@ const descriptor = defineDestinationDescriptor({
                         connectionId: request.connectionId,
                         destinationType: request.destinationType,
                         traceId: retrievedTraceId,
+                        destinationRevision: "1".repeat(32),
                       }),
                       models: ["gpt-5"],
                       spanCount: 3,
@@ -386,6 +387,7 @@ describe("production trace retrieval composition", () => {
           locator: {
             connectionId: string;
             destinationType: string;
+            destinationRevision: string;
             traceId: string;
           };
         }>;
@@ -393,6 +395,7 @@ describe("production trace retrieval composition", () => {
     };
     const returnedLocator = searchDocument.records[0]!.summaries[0]!.locator;
     expect(returnedLocator.traceId).toBe(retrievedTraceId);
+    expect(returnedLocator.destinationRevision).toBe("1".repeat(32));
 
     const get = await invoke([
       "traces",

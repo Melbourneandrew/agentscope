@@ -33,3 +33,15 @@ export {
   type DestinationReporterTestAttempt,
   type DestinationReporterTestPreparation,
 } from "./testing-orchestration.js";
+export {
+  bindDestinationTransport,
+  createReporterDeadline,
+  createRetrievalContext,
+  createTraceGetRequest,
+  createTraceSearchRequest,
+  invokeRetrieverGet,
+  invokeRetrieverSearch,
+  normalizeTraceSearchQuery,
+  prepareDestinationRetriever,
+  resolveDestinationConnection,
+} from "./core-orchestration.js";

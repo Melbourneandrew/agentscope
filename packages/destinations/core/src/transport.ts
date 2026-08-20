@@ -54,6 +54,7 @@ const abortedGetter = Object.getOwnPropertyDescriptor(
 
 export const MAXIMUM_TRANSPORT_REQUEST_BYTES = 16 * 1_024 * 1_024;
 export const MAXIMUM_TRANSPORT_RESPONSE_BYTES = 1 * 1_024 * 1_024;
+export const MAXIMUM_TRANSPORT_PATH_AND_QUERY_BYTES = 128 * 1_024;
 
 export class DestinationTransportError extends Error {
   public readonly code = "destination.transport.invalid";
@@ -184,7 +185,9 @@ export const isBoundDestinationTransport = (
 const isRelativePathAndQuery = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length > 0 &&
-  value.length <= 2_048 &&
+  value.length <= MAXIMUM_TRANSPORT_PATH_AND_QUERY_BYTES &&
+  textEncoder.encode(value).byteLength <=
+    MAXIMUM_TRANSPORT_PATH_AND_QUERY_BYTES &&
   value.startsWith("/") &&
   !value.startsWith("//");
 
