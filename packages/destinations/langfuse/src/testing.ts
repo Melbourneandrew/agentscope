@@ -4,4 +4,4 @@ export {
   type LangfuseFilterConformanceFixture,
   type LangfuseHttpFixture,
   type LangfuseJson,
-} from "./compatibility.js";
+} from "./compatibility-fixtures.js";

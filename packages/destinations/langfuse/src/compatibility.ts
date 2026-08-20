@@ -1,54 +1,5 @@
 import { createHash } from "node:crypto";
 
-export type LangfuseJson =
-  | null
-  | boolean
-  | number
-  | string
-  | readonly LangfuseJson[]
-  | { readonly [key: string]: LangfuseJson };
-
-export type LangfuseHttpFixture = Readonly<{
-  fixtureId: string;
-  profileId: string;
-  request: Readonly<{
-    method: "DELETE" | "GET" | "POST";
-    path: string;
-    headers: Readonly<Record<string, string>>;
-    query: Readonly<Record<string, string>>;
-    body: LangfuseJson;
-  }>;
-  response: Readonly<{
-    status: number;
-    headers: Readonly<Record<string, string>>;
-    body: LangfuseJson;
-  }>;
-}>;
-
-export type LangfuseFilterConformanceFixture = Readonly<{
-  fixtureId: string;
-  profileId: string;
-  profile: "v1-events" | "v2";
-  filter:
-    | "branch"
-    | "from"
-    | "harness"
-    | "model"
-    | "session"
-    | "tags"
-    | "to"
-    | "traceId";
-  disposition: "match" | "miss";
-  request: Readonly<{
-    method: "GET";
-    path: string;
-    headers: Readonly<Record<string, string>>;
-    query: Readonly<Record<string, string>>;
-    body: null;
-  }>;
-  expectedTraceIds: readonly string[];
-}>;
-
 const freeze = <T>(value: T): T => {
   if (typeof value !== "object" || value === null) return value;
   for (const nested of Object.values(value)) freeze(nested);
@@ -58,12 +9,7 @@ const freeze = <T>(value: T): T => {
 const sha256 = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-const traceId = "0123456789abcdef0123456789abcdef";
-const spanId = "0123456789abcdef";
-const startTime = "2026-01-02T03:04:05.000Z";
-const endTime = "2026-01-02T03:04:06.000Z";
-
-const projection = {
+export const LANGFUSE_PROJECTION_CONTRACT = {
   root: "agentscope_root",
   session: "agentscope_session",
   harness: "agentscope_harness",
@@ -99,257 +45,6 @@ const projection = {
     traceTagsAttribute: "langfuse.trace.tags",
   },
 } as const;
-
-const rootMetadata = {
-  [projection.root]: "true",
-  [projection.session]: "session-fixture",
-  [projection.harness]: "codex",
-  [projection.branch]: "main",
-  [projection.repository]: "repository-fixture",
-  [projection.spanCount]: "2",
-  [projection.modelCount]: "1",
-  [`${projection.modelIndexPrefix}00`]: "gpt-5",
-  [projection.tagCount]: "1",
-  [`${projection.tagIndexPrefix}00`]: "fixture",
-} as const;
-
-const rootFilter = {
-  type: "stringObject",
-  column: "metadata",
-  key: projection.root,
-  operator: "=",
-  value: "true",
-} as const;
-
-const rootProjectionAttributes = [
-  ...Object.entries(rootMetadata).map(([key, value]) => ({
-    key,
-    value: { stringValue: value },
-  })),
-  ...Object.entries(rootMetadata).map(([key, value]) => ({
-    key: `langfuse.observation.metadata.${key}`,
-    value: { stringValue: JSON.stringify(value) },
-  })),
-  ...Object.entries(rootMetadata).map(([key, value]) => ({
-    key: `langfuse.trace.metadata.${key}`,
-    value: { stringValue: JSON.stringify(value) },
-  })),
-  { key: "session.id", value: { stringValue: "session-fixture" } },
-  {
-    key: "langfuse.trace.tags",
-    value: {
-      arrayValue: {
-        values: [
-          { stringValue: "agentscope:model:gpt-5" },
-          { stringValue: "fixture" },
-        ],
-      },
-    },
-  },
-] as const;
-
-const fixtures = [
-  {
-    fixtureId: "otlp-v4-json-root-v1",
-    profileId: "langfuse-cloud-v4",
-    request: {
-      method: "POST",
-      path: "/api/public/otel/v1/traces",
-      headers: {
-        authorization: "[credential-slot]",
-        "content-type": "application/json",
-        "x-langfuse-ingestion-version": "4",
-      },
-      query: {},
-      body: {
-        resourceSpans: [
-          {
-            resource: { attributes: [] },
-            scopeSpans: [
-              {
-                scope: { name: "@agentscope/protocol" },
-                spans: [
-                  {
-                    traceId,
-                    spanId,
-                    name: "agent-root",
-                    startTimeUnixNano: "1767323045000000000",
-                    endTimeUnixNano: "1767323046000000000",
-                    attributes: rootProjectionAttributes,
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-    },
-    response: { status: 200, headers: {}, body: {} },
-  },
-  {
-    fixtureId: "observations-v2-root-search-v1",
-    profileId: "langfuse-cloud-v4",
-    request: {
-      method: "GET",
-      path: "/api/public/v2/observations",
-      headers: { authorization: "[credential-slot]" },
-      query: {
-        fields: "core,basic,time,metadata,trace_context",
-        fromStartTime: "2026-01-01T00:00:00.000Z",
-        toStartTime: "2026-01-03T00:00:00.000Z",
-        limit: "50",
-        sessionId: "session-fixture",
-        filter: JSON.stringify([rootFilter]),
-      },
-      body: null,
-    },
-    response: {
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: {
-        data: [
-          {
-            id: spanId,
-            traceId,
-            projectId: "project-fixture",
-            parentObservationId: null,
-            type: "SPAN",
-            startTime,
-            endTime,
-            isRootObservation: true,
-            name: "agent-root",
-            level: "DEFAULT",
-            statusMessage: null,
-            sessionId: "session-fixture",
-            metadata: rootMetadata,
-            tags: ["agentscope:model:gpt-5", "fixture"],
-            modelId: null,
-            inputPrice: null,
-            outputPrice: null,
-            totalPrice: null,
-          },
-        ],
-        meta: { cursor: "SANITIZED_CURSOR" },
-      },
-    },
-  },
-  {
-    fixtureId: "observations-v1-events-root-search-v1",
-    profileId: "langfuse-self-hosted-v3-events-3.225.3",
-    request: {
-      method: "GET",
-      path: "/api/public/observations",
-      headers: { authorization: "[credential-slot]" },
-      query: {
-        page: "1",
-        limit: "50",
-        useEventsTable: "true",
-        fromStartTime: "2026-01-01T00:00:00.000Z",
-        toStartTime: "2026-01-03T00:00:00.000Z",
-        filter: JSON.stringify([
-          rootFilter,
-          {
-            type: "stringObject",
-            column: "metadata",
-            key: projection.session,
-            operator: "=",
-            value: "session-fixture",
-          },
-          {
-            type: "arrayOptions",
-            column: "traceTags",
-            operator: "all of",
-            value: ["agentscope:model:gpt-5", "fixture"],
-          },
-        ]),
-      },
-      body: null,
-    },
-    response: {
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: {
-        data: [
-          {
-            id: spanId,
-            projectId: "project-fixture",
-            traceId,
-            parentObservationId: null,
-            name: "agent-root",
-            type: "SPAN",
-            environment: "default",
-            startTime,
-            endTime,
-            version: null,
-            createdAt: startTime,
-            updatedAt: endTime,
-            input: null,
-            output: null,
-            metadata: rootMetadata,
-            level: "DEFAULT",
-            statusMessage: null,
-            model: null,
-            modelParameters: null,
-            completionStartTime: null,
-            promptId: null,
-            promptName: null,
-            promptVersion: null,
-            usageDetails: {},
-            costDetails: {},
-            usage: { unit: "TOKENS", input: 0, output: 0, total: 0 },
-            unit: "TOKENS",
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            usagePricingTierName: null,
-            usagePricingTierId: null,
-            modelId: null,
-            inputPrice: null,
-            outputPrice: null,
-            totalPrice: null,
-            calculatedInputCost: null,
-            calculatedOutputCost: null,
-            calculatedTotalCost: null,
-            latency: 1,
-            timeToFirstToken: null,
-          },
-        ],
-        meta: { page: 1, limit: 50, totalItems: 1, totalPages: 1 },
-      },
-    },
-  },
-  {
-    fixtureId: "observations-v2-rate-limit-v1",
-    profileId: "langfuse-cloud-v4",
-    request: {
-      method: "GET",
-      path: "/api/public/v2/observations",
-      headers: { authorization: "[credential-slot]" },
-      query: { limit: "50" },
-      body: null,
-    },
-    response: {
-      status: 429,
-      headers: { "retry-after": "30" },
-      body: { message: "SANITIZED_PROVIDER_MESSAGE" },
-    },
-  },
-  {
-    fixtureId: "trace-delete-accepted-v1",
-    profileId: "langfuse-cloud-v4",
-    request: {
-      method: "DELETE",
-      path: `/api/public/traces/${traceId}`,
-      headers: { authorization: "[credential-slot]" },
-      query: {},
-      body: null,
-    },
-    response: { status: 200, headers: {}, body: { message: "Trace deleted" } },
-  },
-] as const satisfies readonly LangfuseHttpFixture[];
-
-export const LANGFUSE_SANITIZED_HTTP_FIXTURES = freeze(fixtures);
-
 const profileSources = {
   langfuseOpenApi: {
     kind: "official-source",
@@ -357,6 +52,40 @@ const profileSources = {
     revision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
     path: "web/public/generated/api/openapi.yml",
     sha256: "9ba51a22782a481ee2bf57513541a2bc3df1388e8d2c5c5a081f3a8e7e08366d",
+  },
+  langfuseV4ObservationTraversal: {
+    kind: "official-source",
+    repository: "https://github.com/langfuse/langfuse",
+    revision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
+    paths: [
+      {
+        path: "web/src/features/public-api/types/observations.ts",
+        sha256:
+          "a07fdbdbf2763135309205ac129fb7ce81788650caa95f6b1fee0a3e62b18e8a",
+      },
+      {
+        path: "packages/shared/src/server/repositories/events.ts",
+        sha256:
+          "ad9925d263d755b142b0800091570c7a6fd2cdff0bb2bdf4a8e7bf2ce76ec32a",
+      },
+    ],
+  },
+  langfuseOtelMetadataProjection: {
+    kind: "official-source",
+    repository: "https://github.com/langfuse/langfuse",
+    revision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
+    paths: [
+      {
+        path: "packages/shared/src/server/otel/OtelIngestionProcessor.ts",
+        sha256:
+          "48387fa64242f94504e657edaa1f0c5c7ef8c2cec045ead85468cd4f6b3cdf5f",
+      },
+      {
+        path: "packages/shared/src/server/otel/OtelIngestionProcessor.metadataDropped.test.ts",
+        sha256:
+          "771573718360a69196b82e7266c13dd5a8c0d0fa1d1fcb54340cff008b326e29",
+      },
+    ],
   },
   langfuseV3Observations: {
     kind: "official-source",
@@ -391,163 +120,267 @@ const portableFilters = {
   from: { v2: "fromStartTime:inclusive", v1: "fromStartTime:inclusive" },
   to: { v2: "toStartTime:exclusive", v1: "toStartTime:exclusive" },
   harness: {
-    v2: `metadata:${projection.harness}:=`,
-    v1: `metadata:${projection.harness}:=`,
+    v2: `metadata:${LANGFUSE_PROJECTION_CONTRACT.harness}:=`,
+    v1: `metadata:${LANGFUSE_PROJECTION_CONTRACT.harness}:=`,
   },
   branch: {
-    v2: `metadata:${projection.branch}:=`,
-    v1: `metadata:${projection.branch}:=`,
+    v2: `metadata:${LANGFUSE_PROJECTION_CONTRACT.branch}:=`,
+    v1: `metadata:${LANGFUSE_PROJECTION_CONTRACT.branch}:=`,
   },
   model: {
-    v2: `traceTags:all of:${projection.modelTagPrefix}`,
-    v1: `traceTags:all of:${projection.modelTagPrefix}`,
+    v2: `traceTags:all of:${LANGFUSE_PROJECTION_CONTRACT.modelTagPrefix}`,
+    v1: `traceTags:all of:${LANGFUSE_PROJECTION_CONTRACT.modelTagPrefix}`,
   },
-  session: { v2: "sessionId", v1: `metadata:${projection.session}:=` },
+  session: {
+    v2: "sessionId",
+    v1: `metadata:${LANGFUSE_PROJECTION_CONTRACT.session}:=`,
+  },
   tags: { v2: "traceTags:all of", v1: "traceTags:all of" },
 } as const;
 
-type FilterName = LangfuseFilterConformanceFixture["filter"];
-type FilterProfile = LangfuseFilterConformanceFixture["profile"];
-
-const metadataFilter = (key: string, value: string) => ({
-  type: "stringObject",
-  column: "metadata",
-  key,
-  operator: "=",
-  value,
-});
-
-const tagsFilter = (value: string) => ({
-  type: "arrayOptions",
-  column: "traceTags",
-  operator: "all of",
-  value: [value],
-});
-
-const filterQuery = (
-  profile: FilterProfile,
-  query: Readonly<Record<string, string>>,
-): Readonly<Record<string, string>> =>
-  profile === "v2"
-    ? {
-        fields: "core,basic,time,metadata,trace_context",
-        limit: "50",
-        filter: JSON.stringify([rootFilter]),
-        ...query,
-      }
-    : {
-        page: "1",
-        limit: "50",
-        useEventsTable: "true",
-        filter: JSON.stringify([rootFilter]),
-        ...query,
-      };
-
-const filterRequest = (
-  profile: FilterProfile,
-  query: Readonly<Record<string, string>>,
-) => ({
-  method: "GET" as const,
-  path:
-    profile === "v2"
-      ? "/api/public/v2/observations"
-      : "/api/public/observations",
-  headers: { authorization: "[credential-slot]" },
-  query: filterQuery(profile, query),
-  body: null,
-});
-
-const predicateQuery = (
-  profile: FilterProfile,
-  filter: FilterName,
-  value: string,
-): Readonly<Record<string, string>> => {
-  switch (filter) {
-    case "traceId":
-      return { traceId: value };
-    case "from":
-      return { fromStartTime: value };
-    case "to":
-      return { toStartTime: value };
-    case "harness":
-      return {
-        filter: JSON.stringify([
-          rootFilter,
-          metadataFilter(projection.harness, value),
-        ]),
-      };
-    case "branch":
-      return {
-        filter: JSON.stringify([
-          rootFilter,
-          metadataFilter(projection.branch, value),
-        ]),
-      };
-    case "model":
-      return {
-        filter: JSON.stringify([
-          rootFilter,
-          tagsFilter(`${projection.modelTagPrefix}${value}`),
-        ]),
-      };
-    case "session":
-      return profile === "v2"
-        ? { sessionId: value }
-        : {
-            filter: JSON.stringify([
-              rootFilter,
-              metadataFilter(projection.session, value),
-            ]),
-          };
-    case "tags":
-      return {
-        filter: JSON.stringify([rootFilter, tagsFilter(value)]),
-      };
-  }
-};
-
-const predicateValues = {
-  traceId: [traceId, "fedcba9876543210fedcba9876543210"],
-  from: [startTime, endTime],
-  to: [endTime, startTime],
-  harness: ["codex", "claude-code"],
-  branch: ["main", "release"],
-  model: ["gpt-5", "different-model"],
-  session: ["session-fixture", "session-miss"],
-  tags: ["fixture", "tag-miss"],
-} as const satisfies Record<FilterName, readonly [string, string]>;
-
-const filterConformanceProfiles = [
+const filterNames = [
+  "traceId",
+  "from",
+  "to",
+  "harness",
+  "branch",
+  "model",
+  "session",
+  "tags",
+] as const;
+const filterProfiles = [
   { profile: "v2", profileId: "langfuse-cloud-v4" },
   { profile: "v2", profileId: "langfuse-self-hosted-v4" },
-  {
-    profile: "v1-events",
-    profileId: "langfuse-self-hosted-v3-events-3.225.3",
-  },
+  { profile: "v1-events", profileId: "langfuse-self-hosted-v3-events-3.225.3" },
 ] as const;
-
-const filterConformanceFixtures = filterConformanceProfiles.flatMap(
+const portableFilterConformance = filterProfiles.flatMap(
   ({ profile, profileId }) =>
-    (Object.keys(predicateValues) as FilterName[]).flatMap((filter) =>
-      (["match", "miss"] as const).map((disposition, index) => ({
+    filterNames.flatMap((filter) =>
+      (["match", "miss"] as const).map((disposition) => ({
         fixtureId: `${profileId}-${filter}-${disposition}-v1`,
         profileId,
         profile,
         filter,
         disposition,
-        request: filterRequest(
-          profile,
-          predicateQuery(profile, filter, predicateValues[filter][index]!),
-        ),
-        expectedTraceIds: disposition === "match" ? [traceId] : [],
       })),
     ),
-) satisfies LangfuseFilterConformanceFixture[];
-
-export const LANGFUSE_FILTER_CONFORMANCE_FIXTURES = freeze(
-  filterConformanceFixtures,
 );
-
+const fixtureDigests = [
+  {
+    fixtureId: "otlp-v4-json-root-v1",
+    sha256: "6a1f1ec1af509f2afbed2ecdb35f4d240a2327aebe237a1c4c3ddc49cf3a1c32",
+  },
+  {
+    fixtureId: "observations-v2-root-search-v1",
+    sha256: "ac2c8ee9f8a443082645fa2cb381d474ba74d42c93d5efd2d2017c8ebd8a97b0",
+  },
+  {
+    fixtureId: "observations-v1-events-root-search-v1",
+    sha256: "2ed8b63d19beb60b9a323384d310520cd42212f8c8580d5968f8c60ff5866331",
+  },
+  {
+    fixtureId: "observations-v2-rate-limit-v1",
+    sha256: "86e270d7a8c38106fba1b274ce756939252325c1c0953fc0c0ec5586b1ee5ea1",
+  },
+  {
+    fixtureId: "trace-delete-accepted-v1",
+    sha256: "eb66acdf9a8e4e91799e6ae3b37fca58c70a37f78f016c002882c3d381419ed7",
+  },
+] as const;
+const filterFixtureDigests = [
+  {
+    fixtureId: "langfuse-cloud-v4-traceId-match-v1",
+    sha256: "9a127bba27fe3d1bdcdadb92ff6b851afadef15b5a59e73204f69e19596a9556",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-traceId-miss-v1",
+    sha256: "b7b36a13e68c1e121904b5c4b05d3ff88357bcd10f88390da2ccc31e9caf97c8",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-from-match-v1",
+    sha256: "29a56ac16c99c23ba088dd82af3ce16a3a5c44f5244e2b5e6e0b0e5a53f79cb5",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-from-miss-v1",
+    sha256: "a6dcdb17a9cf272fa041ca0e111d78021ba2a1f5460f2c241d54ae93a049bad7",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-to-match-v1",
+    sha256: "cab5a1be2bf615b18c4853baf21bc670d1dfee6aace3f93e02bf1db0a32866bd",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-to-miss-v1",
+    sha256: "add9c733b35d706a12e32c2869a441ae9d6aa16ea6d60d3f5ad6c91362201a74",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-harness-match-v1",
+    sha256: "fcfeedd24edccfcec67f159a626fd52d98e8d46cac71e6c724e88c7983ad9a4a",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-harness-miss-v1",
+    sha256: "d1d263037b8a3cc81a134613deace5934cbb735425f643ad499223319de71505",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-branch-match-v1",
+    sha256: "59341e6924514d768cf74c6278bd9f7fb0fe8d6d7d3659f7724c1fdbc09e1273",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-branch-miss-v1",
+    sha256: "c1b623c0491b57d091a5ceda1de496ecb8e51ddc2050b35fd90338defcae1468",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-model-match-v1",
+    sha256: "5439bee9aef9b0cf8fd1c8eed2c29119bacde85521492dcda679ef813f08f762",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-model-miss-v1",
+    sha256: "9fe736b0830f6510e26b399c7b1434a5c054c92e4d0eb5746af33e2a6ac01ddd",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-session-match-v1",
+    sha256: "9576c4d2fcdcc27fee89ce85c9007f65874c97a6b3342ef9c4b1f53a278f510f",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-session-miss-v1",
+    sha256: "6de3ccdf41857ac5d69cf594faf9cd58c02d0223ebb2734f9160763d996de85e",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-tags-match-v1",
+    sha256: "f7e1a618609620f61c2ac34845ee8ea6910aef9de57487b23cde0edf279a2b40",
+  },
+  {
+    fixtureId: "langfuse-cloud-v4-tags-miss-v1",
+    sha256: "ed9a73f28f92e108f52bed7a16b6e49fee7f933eca21ee1cf898154730b481e8",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-traceId-match-v1",
+    sha256: "54bd92d2b21942138285f9a5d0ae938bae5c286ec738ed55bbbc3375abf504a6",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-traceId-miss-v1",
+    sha256: "525aef1adec46ec291513c4734b003e8f97a96d9acde81034eb7f3585fdba9f4",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-from-match-v1",
+    sha256: "c870d2ff0357b7b6726397c02a848d8d78a2953902bc828edb0974bc7971e8f4",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-from-miss-v1",
+    sha256: "0882402899cd5d2ce0fa5151b50cb8cfa86886ce550ea6b544229dee964f065f",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-to-match-v1",
+    sha256: "150fa26965cf51983c5fa50b8a4e6d2fc1357a3f4d660996025036e208adbc3f",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-to-miss-v1",
+    sha256: "e79ba7447ae7ff221795618e696e7da93f7927b833895e8d0b75915edb4a0d12",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-harness-match-v1",
+    sha256: "c37319907578053d1d6beab2b003bc98b60129fe51b6fdefc604f121c2adb42a",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-harness-miss-v1",
+    sha256: "3184317da5634f67e5ef4a0da917b1b00bed675afd174ae0ea399caa8bb103d8",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-branch-match-v1",
+    sha256: "758fa09b6ccc294f796a769f4c0d4daccc3051fd8eea84d6d82c07849e95a449",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-branch-miss-v1",
+    sha256: "1c583d75513c946b45a9c94d6baf1b070d2bf5813d83a25b673bb52bda85f5b5",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-model-match-v1",
+    sha256: "216856b1eb30c1852307f558eead01600168e12fc2ff2473af7b9b15a3346cde",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-model-miss-v1",
+    sha256: "e2965ba20bca108bacfe2bc7518a36eacb104f940c328f7b9ee8e72e53acfc50",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-session-match-v1",
+    sha256: "d9b1e7420ed793ad473bf6f8b55232965e937cb14f938af4a0945270d3e4d874",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-session-miss-v1",
+    sha256: "f05d8de5ec37524545b8b3676c5d2d302d41f8a3756a937de3263403863636c2",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-tags-match-v1",
+    sha256: "cd5a90ad0014b5a9a377a2694cef1fb682f69b9083b77812ae79d31d8d3ae151",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v4-tags-miss-v1",
+    sha256: "9a221fb4a430a7fed102b69c6d81282179d0d30fa3e4f5ee2df5badf38418f71",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-traceId-match-v1",
+    sha256: "cb2d7d4d3af410f910e9e59648507d90260ec6f5f660ca047cd222a82685f077",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-traceId-miss-v1",
+    sha256: "7d8cca489a01dccba25256f85522a311951106f6c9474168d68cb403af1cd5a2",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-from-match-v1",
+    sha256: "eca1f0e29e1b9de13cefe4483bbb14236d751f5ead9511111ec93b6fcb7236ab",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-from-miss-v1",
+    sha256: "6f66a29008862c7360bba87c62771ac3073cf42e8dae79e06ebfea780253ea74",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-to-match-v1",
+    sha256: "faaddd1ef15aa21ec574a3111600a70897067658e3bde13d059d563011cae469",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-to-miss-v1",
+    sha256: "be42f0cad21c9856d1ae22ba837a2597fcc72024a60dae944c544b2e1c177054",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-harness-match-v1",
+    sha256: "0c1c5f31785fedeb3a462eb18fa407f637d1073577e7eff39a24b78385efc461",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-harness-miss-v1",
+    sha256: "4ce8fb7927a00094a25a973ea51d762c6ae4c82110c6a8ce10e86e6751827ea7",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-branch-match-v1",
+    sha256: "1275a4f6c80218040122204106f881bdff66ec597e902e2511b39cb2530c1db5",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-branch-miss-v1",
+    sha256: "8866b31bb1516e76e8590f2243756489a9383f39b2370680de8c62691b4400f0",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-model-match-v1",
+    sha256: "9f488f760b39b092d5fc4c06950e5a24489d3250975dc9796d18ceaae972e1ad",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-model-miss-v1",
+    sha256: "e525bd4c7b54c7b35bdbc7af6c4cfab1e34ea8174e8713595b9cdc0ecbd2b9bd",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-session-match-v1",
+    sha256: "af46981164c4733c2b499cb77dd8792812e5d146a74300dbf134c9e65ccb4ce6",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-session-miss-v1",
+    sha256: "162a42f52a60e58a984764405563e31b0d018842b0bcf2ed16adab9ced1f9491",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-tags-match-v1",
+    sha256: "a67362a291fa26cb5878fbf1757796ecc886c2f6d6a5318769b7ccb346432a24",
+  },
+  {
+    fixtureId: "langfuse-self-hosted-v3-events-3.225.3-tags-miss-v1",
+    sha256: "7881aecdea5ca3d8af90c937d8ae0647029c49f420d562342501b2c5dd7395e8",
+  },
+] as const;
 const manifestSource = {
   contractVersion: 1,
   status: "provisional-contract-only",
@@ -562,16 +395,16 @@ const manifestSource = {
     incompatiblePortableFilter: "retrieval-capability-withheld",
   },
   sources: profileSources,
-  projection,
+  projection: LANGFUSE_PROJECTION_CONTRACT,
   rootObservation: {
-    selector: `metadata:${projection.root}:=:true`,
+    selector: `metadata:${LANGFUSE_PROJECTION_CONTRACT.root}:=:true`,
     cardinality: "exactly-one-per-trace",
     missing: "malformed-response",
     duplicate: "malformed-response",
     summaryProjection: "root-observation-only",
   },
   portableFilters,
-  portableFilterConformance: filterConformanceFixtures,
+  portableFilterConformance,
   profiles: [
     {
       profileId: "langfuse-cloud-v4",
@@ -692,14 +525,8 @@ const manifestSource = {
     { caseId: "false", value: "false", conforms: false },
     { caseId: "mutated", value: "1", conforms: false },
   ],
-  fixtureDigests: fixtures.map((fixture) => ({
-    fixtureId: fixture.fixtureId,
-    sha256: sha256(fixture),
-  })),
-  filterFixtureDigests: filterConformanceFixtures.map((fixture) => ({
-    fixtureId: fixture.fixtureId,
-    sha256: sha256(fixture),
-  })),
+  fixtureDigests,
+  filterFixtureDigests,
   evidence: [
     {
       claimId: "otlp-http-contract",
@@ -708,13 +535,14 @@ const manifestSource = {
         "langfuseOpenApi",
         "langfuseJavascriptAttributes",
         "langfusePythonAttributes",
+        "langfuseOtelMetadataProjection",
       ],
       fixtures: ["otlp-v4-json-root-v1"],
     },
     {
       claimId: "observations-v2-contract",
       disposition: "provisional-official",
-      sources: ["langfuseOpenApi"],
+      sources: ["langfuseOpenApi", "langfuseV4ObservationTraversal"],
       fixtures: [
         "observations-v2-root-search-v1",
         "observations-v2-rate-limit-v1",
@@ -730,7 +558,7 @@ const manifestSource = {
       claimId: "portable-filter-request-contract",
       disposition: "provisional-official",
       sources: ["langfuseOpenApi", "langfuseV3Observations"],
-      filterFixtures: filterConformanceFixtures.map(
+      filterFixtures: portableFilterConformance.map(
         ({ fixtureId }) => fixtureId,
       ),
     },
@@ -760,7 +588,7 @@ const manifestSource = {
         "observations-v2-root-search-v1",
         "observations-v1-events-root-search-v1",
       ],
-      filterFixtures: filterConformanceFixtures.map(
+      filterFixtures: portableFilterConformance.map(
         ({ fixtureId }) => fixtureId,
       ),
     },

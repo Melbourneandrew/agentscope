@@ -168,7 +168,7 @@ const projectOtlpRoot = (fixture: LangfuseHttpFixture) => {
       if (value === undefined)
         throw new Error("Metadata overlay is not a string");
       metadata[attribute.key.slice("langfuse.observation.metadata.".length)] =
-        JSON.parse(value) as string;
+        value;
     }
     if (attribute.key === "session.id") sessionId = attribute.value.stringValue;
     if (attribute.key === "langfuse.trace.tags")
@@ -190,7 +190,7 @@ const stopServer = (server: Server): Promise<void> =>
 describe("Langfuse compatibility contract", () => {
   it("pins one immutable provisional manifest to reviewed official sources", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.manifestId).toBe(
-      "sha256:985872d5bd33116a4529685898e6d000f6fda17be76e645c961cd5cc70bd0bed",
+      "sha256:7bd05f96882a64268b6eee7773f1865c93c1783a7d7ea1183a701d524b9a8492",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.status).toBe(
       "provisional-contract-only",
@@ -212,6 +212,24 @@ describe("Langfuse compatibility contract", () => {
         revision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
         sha256:
           "9ba51a22782a481ee2bf57513541a2bc3df1388e8d2c5c5a081f3a8e7e08366d",
+      },
+      langfuseV4ObservationTraversal: {
+        revision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
+        paths: [
+          {
+            path: "web/src/features/public-api/types/observations.ts",
+            sha256:
+              "a07fdbdbf2763135309205ac129fb7ce81788650caa95f6b1fee0a3e62b18e8a",
+          },
+          {
+            path: "packages/shared/src/server/repositories/events.ts",
+            sha256:
+              "ad9925d263d755b142b0800091570c7a6fd2cdff0bb2bdf4a8e7bf2ce76ec32a",
+          },
+        ],
+      },
+      langfuseOtelMetadataProjection: {
+        revision: "249b25734235d6b66fa36e57adb2c6cac0f40f98",
       },
       langfuseV3Observations: {
         revision: "f6c77b70842bd84e3f22d820471345819cd9a1b4",
@@ -289,7 +307,7 @@ describe("Langfuse portable-filter contract", () => {
       "repository" in LANGFUSE_COMPATIBILITY_MANIFEST.portableFilters,
     ).toBe(false);
 
-    const cases = LANGFUSE_COMPATIBILITY_MANIFEST.portableFilterConformance;
+    const cases = LANGFUSE_FILTER_CONFORMANCE_FIXTURES;
     expect(cases).toHaveLength(48);
     for (const profileId of [
       "langfuse-cloud-v4",
@@ -328,7 +346,15 @@ describe("Langfuse portable-filter contract", () => {
           expect(entry.request.query.useEventsTable).toBe("true");
       }
     }
-    expect(cases).toEqual(LANGFUSE_FILTER_CONFORMANCE_FIXTURES);
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.portableFilterConformance).toEqual(
+      cases.map(
+        ({
+          request: _request,
+          expectedTraceIds: _expectedTraceIds,
+          ...entry
+        }) => entry,
+      ),
+    );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.filterFixtureDigests).toEqual(
       LANGFUSE_FILTER_CONFORMANCE_FIXTURES.map((fixture) => ({
         fixtureId: fixture.fixtureId,
