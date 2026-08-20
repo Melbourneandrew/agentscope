@@ -58,9 +58,13 @@
     },
     "packages/destinations/langfuse": {
       "role": "destination-adapter",
-      "unitTests": "marker-only",
-      "maxSourceFiles": 3,
-      "maxSourceLines": 8
+      "unitTests": "required",
+      "coverage": {
+        "statements": 100,
+        "branches": 100,
+        "functions": 100,
+        "lines": 100
+      }
     },
     "packages/destinations/local-sqlite": {
       "role": "destination-adapter",
