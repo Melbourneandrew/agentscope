@@ -33,6 +33,7 @@ z.toJSONSchema(settingsSchema);
 const retrievedTraceId = "0123456789abcdef0123456789abcdef";
 const descriptor = defineDestinationDescriptor({
   commandName: "example",
+  retrievalOrdering: "start-time-desc-trace-id-asc",
   createRetriever: () =>
     createDestinationRetriever({
       get: () => Promise.resolve(createRetrieverFailure("not-found")),
@@ -43,6 +44,7 @@ const descriptor = defineDestinationDescriptor({
             : createRetrieverSuccess(
                 createRetrieverSearchPage({
                   consistency: "snapshot",
+                  ordering: "start-time-desc-trace-id-asc",
                   state: "exhaustive",
                   summaries: [
                     createTraceSummary({

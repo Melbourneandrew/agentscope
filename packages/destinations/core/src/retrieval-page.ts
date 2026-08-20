@@ -11,6 +11,7 @@ import {
   type RetrieverSearchPage,
   type TraceSummary,
 } from "./retrieval-results.js";
+import type { TraceSearchOrdering } from "./retrieval-query.js";
 
 declare const traceSearchPageBrand: unique symbol;
 
@@ -20,6 +21,7 @@ export type TraceSearchPage = Readonly<{
   partialReason?: PartialResultReason;
   nextCursor?: TraceSearchCursor;
   consistency: RetrievalConsistency;
+  ordering: TraceSearchOrdering;
   exactTotal?: number;
   readonly [traceSearchPageBrand]: true;
 }>;
@@ -66,6 +68,7 @@ export const createTraceSearchPage = (
         : { partialReason: page.partialReason }),
       ...(nextCursor === undefined ? {} : { nextCursor }),
       consistency: page.consistency,
+      ordering: page.ordering,
       ...(page.exactTotal === undefined ? {} : { exactTotal: page.exactTotal }),
     }) as TraceSearchPage;
     pageRegistry.add(result);

@@ -55,7 +55,11 @@ const redactedTrace = (identity: string): RedactedCanonicalTrace => {
   return trace as RedactedCanonicalTrace;
 };
 
-const fixture = () => {
+const fixture = (
+  ordering:
+    | "start-time-desc-trace-id-asc"
+    | "start-time-desc-provider" = "start-time-desc-trace-id-asc",
+) => {
   const locator = createTraceLocator({
     connectionId,
     destinationType,
@@ -88,6 +92,7 @@ const fixture = () => {
   const queryCases = createRetrieverContractQueryMatrix({
     primaryTraceId: traceId,
     secondaryTraceId: secondTraceId,
+    ordering,
   });
   const searchCases = queryCases.map((queryCase) => {
     const summaries = queryCase.expectedTraceIds.map((id) =>
@@ -108,8 +113,12 @@ const fixture = () => {
           ? { partialReason: "provider-request-limit" as const }
           : {}),
         consistency:
-          queryCase.expectedState === "partial" ? "best-effort" : "snapshot",
-        ...(queryCase.expectedState === "exhaustive"
+          ordering === "start-time-desc-trace-id-asc"
+            ? "snapshot"
+            : "best-effort",
+        ordering,
+        ...(queryCase.expectedState === "exhaustive" &&
+        ordering === "start-time-desc-trace-id-asc"
           ? { exactTotal: summaries.length }
           : {}),
       }),
@@ -164,6 +173,7 @@ describe("shared Reporter contract suite", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- both declared ordering profiles run the same complete family oracle here.
 describe("shared Retriever contract suite", () => {
   it("passes every Retriever case against the in-memory reference", async () => {
     const values = fixture();
@@ -196,6 +206,24 @@ describe("shared Retriever contract suite", () => {
     adapter.reset();
     expect(snapshot.length).toBeGreaterThan(0);
     expect(adapter.readRetrievalLedger()).toEqual([]);
+  });
+
+  it("binds the complete reusable oracle to provider traversal", async () => {
+    const values = fixture("start-time-desc-provider");
+    expect(
+      values.queryCases.every(
+        ({ query }) => query.ordering === "start-time-desc-provider",
+      ),
+    ).toBe(true);
+    const cases = createRetrieverContractSuite({
+      adapter: createRetrieverTestAdapter(values),
+      queryCases: values.queryCases,
+      locator: values.locator,
+      connectionId,
+      destinationType,
+      configurationIdentity: "contract-config-provider-v1",
+    });
+    for (const testCase of cases) await testCase.run();
   });
 
   it("reports a precise assertion for a seeded Retriever violation", async () => {
@@ -257,6 +285,7 @@ describe("shared Retriever contract suite", () => {
     const differentlyBoundMatrix = createRetrieverContractQueryMatrix({
       primaryTraceId: secondTraceId,
       secondaryTraceId: "2123456789abcdef0123456789abcdef",
+      ordering: "start-time-desc-trace-id-asc",
     });
     expect(() =>
       createRetrieverContractSuite({
@@ -282,6 +311,7 @@ describe("Retriever contract suite rejection oracles", () => {
         createRetrieverContractQueryMatrix({
           primaryTraceId: traceId,
           secondaryTraceId: invalid,
+          ordering: "start-time-desc-trace-id-asc",
         }),
       ).toThrowError(
         new DestinationContractAssertionError(
@@ -289,6 +319,17 @@ describe("Retriever contract suite rejection oracles", () => {
         ),
       );
     }
+    expect(() =>
+      createRetrieverContractQueryMatrix({
+        primaryTraceId: traceId,
+        secondaryTraceId: secondTraceId,
+        ordering: "unknown" as never,
+      }),
+    ).toThrowError(
+      new DestinationContractAssertionError(
+        "destination.contract.retriever.query-matrix-ordering",
+      ),
+    );
   });
 
   it("rejects a Retriever that ignores the requested get locator", async () => {

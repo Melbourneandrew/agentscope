@@ -176,6 +176,7 @@ const artifactDescriptor = defineDestinationDescriptor({
         return Promise.resolve(createReporterReceipt("accepted"));
       },
     }),
+  retrievalOrdering: "start-time-desc-trace-id-asc",
   createRetriever: () =>
     createDestinationRetriever({
       search: (request) =>
@@ -200,6 +201,7 @@ const artifactDescriptor = defineDestinationDescriptor({
               ],
               state: "exhaustive",
               consistency: "snapshot",
+              ordering: "start-time-desc-trace-id-asc",
             }),
           ),
         ),
