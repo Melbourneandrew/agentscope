@@ -518,6 +518,7 @@ export const invokeRetrieverSearch = async (
     context,
     (value): value is RetrieverSearchPage =>
       isRetrieverSearchPage(value) &&
+      value.ordering === request.query.ordering &&
       value.summaries.length <= request.query.limit &&
       value.summaries.every(
         (summary) =>

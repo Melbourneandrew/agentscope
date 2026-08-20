@@ -64,7 +64,11 @@ const locator = () =>
     destinationTraceId: "native-trace-1",
   });
 
-const query = () =>
+const query = (
+  ordering:
+    | "start-time-desc-trace-id-asc"
+    | "start-time-desc-provider" = "start-time-desc-trace-id-asc",
+) =>
   normalizeTraceSearchQuery(
     {
       traceId,
@@ -79,6 +83,7 @@ const query = () =>
     {
       commandStartedAt: "2026-01-02T00:00:00Z",
       knownHarnessIds: ["codex", "claude-code"],
+      ordering,
     },
   );
 
@@ -151,12 +156,19 @@ describe("portable retrieval identity and query", () => {
     });
     expect(value.fingerprint).toMatch(/^sha256-[\da-f]{64}$/u);
     expect(query().fingerprint).toBe(value.fingerprint);
+    expect(query("start-time-desc-provider")).toMatchObject({
+      ordering: "start-time-desc-provider",
+    });
+    expect(query("start-time-desc-provider").fingerprint).not.toBe(
+      value.fingerprint,
+    );
     expect(
       normalizeTraceSearchQuery(
         {},
         {
           commandStartedAt: "2026-01-02T00:00:00Z",
           knownHarnessIds: ["codex"],
+          ordering: "start-time-desc-trace-id-asc",
         },
       ),
     ).toMatchObject({ limit: 50, tags: [] });
@@ -174,6 +186,7 @@ describe("portable retrieval identity and query", () => {
         normalizeTraceSearchQuery(invalid, {
           commandStartedAt: "2026-01-02T00:00:00Z",
           knownHarnessIds: ["codex"],
+          ordering: "start-time-desc-trace-id-asc",
         }),
       ).toThrowError(TraceQueryError);
     }
@@ -223,6 +236,7 @@ describe("hostile retrieval identity and query inputs", () => {
         normalizeTraceSearchQuery(invalid, {
           commandStartedAt: "2026-03-01T00:00:00Z",
           knownHarnessIds: ["codex"],
+          ordering: "start-time-desc-trace-id-asc",
         }),
       ).toThrowError(TraceQueryError);
     }
@@ -232,6 +246,7 @@ describe("hostile retrieval identity and query inputs", () => {
         {
           commandStartedAt: "2026-03-01T00:00:00Z",
           knownHarnessIds: known,
+          ordering: "start-time-desc-trace-id-asc",
         },
       ),
     ).toThrowError(TraceQueryError);
@@ -241,6 +256,7 @@ describe("hostile retrieval identity and query inputs", () => {
         {
           commandStartedAt: "2026-03-01T00:00:00Z",
           knownHarnessIds: ["codex", "codex"],
+          ordering: "start-time-desc-trace-id-asc",
         },
       ),
     ).toThrowError(TraceQueryError);
@@ -257,6 +273,7 @@ describe("hostile retrieval identity and query inputs", () => {
         {
           commandStartedAt: "2026-03-01T00:00:00Z",
           knownHarnessIds: ["codex"],
+          ordering: "start-time-desc-trace-id-asc",
         },
       ],
       [
@@ -264,14 +281,23 @@ describe("hostile retrieval identity and query inputs", () => {
         {
           commandStartedAt: "2026-03-01T00:00:00Z",
           knownHarnessIds: ["codex"],
+          ordering: "start-time-desc-trace-id-asc",
         },
       ],
-      [{}, { commandStartedAt: 1, knownHarnessIds: ["codex"] }],
+      [
+        {},
+        {
+          commandStartedAt: 1,
+          knownHarnessIds: ["codex"],
+          ordering: "start-time-desc-trace-id-asc",
+        },
+      ],
       [
         {},
         {
           commandStartedAt: "2026-03-01T00:00:00Z",
           knownHarnessIds: harnessAccessor,
+          ordering: "start-time-desc-trace-id-asc",
         },
       ],
     ] as const) {
@@ -290,14 +316,22 @@ describe("hostile query normalization authority", () => {
       {
         commandStartedAt: "invalid",
         knownHarnessIds: ["codex"],
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         commandStartedAt: "2026-01-01T00:00:00Z",
         knownHarnessIds: [],
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         commandStartedAt: "2026-01-01T00:00:00Z",
         knownHarnessIds: ["bad\nid"],
+        ordering: "start-time-desc-trace-id-asc",
+      },
+      {
+        commandStartedAt: "2026-01-01T00:00:00Z",
+        knownHarnessIds: ["codex"],
+        ordering: "provider-invented",
       },
     ]) {
       expect(() =>
@@ -347,13 +381,7 @@ describe("bound opaque retrieval cursor", () => {
       },
       {
         ...binding,
-        queryFingerprint: normalizeTraceSearchQuery(
-          {},
-          {
-            commandStartedAt: normalized.to,
-            knownHarnessIds: ["codex"],
-          },
-        ).fingerprint,
+        queryFingerprint: query("start-time-desc-provider").fingerprint,
       },
     ]) {
       expect(() => readTraceSearchCursor(cursor, changed)).toThrowError(
@@ -370,6 +398,7 @@ describe("bound opaque retrieval cursor", () => {
         state: "continuation",
         continuationToken: { offset: 25 },
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       }),
       binding,
     );
@@ -382,6 +411,7 @@ describe("bound opaque retrieval cursor", () => {
           state: "partial",
           partialReason: "deadline",
           consistency: "best-effort",
+          ordering: "start-time-desc-provider",
         }),
         binding,
       ),
@@ -396,6 +426,7 @@ describe("bound opaque retrieval cursor", () => {
           summaries: [],
           state: "exhaustive",
           consistency: "snapshot",
+          ordering: "start-time-desc-trace-id-asc",
         }),
         { ...binding, upperTimeBound: "2026-01-01" },
       ),
@@ -417,6 +448,7 @@ describe("bound opaque retrieval cursor", () => {
           ],
           state: "exhaustive",
           consistency: "snapshot",
+          ordering: "start-time-desc-trace-id-asc",
         }),
         binding,
       ),
@@ -487,7 +519,9 @@ describe("hostile cursor envelopes", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one result boundary fixture covers both closed ordering profiles and hostile page metadata.
 describe("portable retrieval results", () => {
+  // eslint-disable-next-line max-lines-per-function -- the paired profile matrix is clearest beside the shared summary fixtures.
   it("validates summary ordering, deduplication, and partial metadata", () => {
     const first = summary();
     const second = summary({
@@ -504,6 +538,7 @@ describe("portable retrieval results", () => {
       partialReason: "provider-request-limit",
       continuationToken: { offset: 2 },
       consistency: "best-effort",
+      ordering: "start-time-desc-provider",
     });
     expect(Object.isFrozen(page)).toBe(true);
     expect(
@@ -520,6 +555,7 @@ describe("portable retrieval results", () => {
       summaries: [first],
       state: "exhaustive",
       consistency: "snapshot",
+      ordering: "start-time-desc-trace-id-asc",
       exactTotal: 1,
     });
     expect(
@@ -531,16 +567,59 @@ describe("portable retrieval results", () => {
         upperTimeBound: query().to,
       }),
     ).toMatchObject({ exactTotal: 1, state: "exhaustive" });
+    const equalTimeHigh = summary({
+      locator: createTraceLocator({
+        connectionId,
+        destinationType,
+        traceId: "f123456789abcdef0123456789abcdef",
+      }),
+    });
+    const providerOrdered = createRetrieverSearchPage({
+      summaries: [equalTimeHigh, first],
+      state: "exhaustive",
+      consistency: "best-effort",
+      ordering: "start-time-desc-provider",
+    });
+    expect(providerOrdered.ordering).toBe("start-time-desc-provider");
+    expect(() =>
+      createRetrieverSearchPage({
+        summaries: [equalTimeHigh, first],
+        state: "exhaustive",
+        consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
+      }),
+    ).toThrowError(RetrievalResultError);
     for (const invalid of [
       {
         summaries: [second, first],
         state: "exhaustive",
+        consistency: "best-effort",
+        ordering: "start-time-desc-provider",
+      },
+      {
+        summaries: [],
+        state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-provider",
+      },
+      {
+        summaries: [],
+        state: "exhaustive",
+        consistency: "best-effort",
+        ordering: "start-time-desc-trace-id-asc",
+      },
+      { summaries: [], state: "exhaustive", consistency: "snapshot" },
+      {
+        summaries: [second, first],
+        state: "exhaustive",
+        consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         summaries: [first, first],
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       },
       { summaries: [], state: "continuation", consistency: "snapshot" },
       { summaries: [], state: "partial", consistency: "snapshot" },
@@ -548,18 +627,21 @@ describe("portable retrieval results", () => {
         summaries: [],
         state: "exhaustive",
         consistency: "best-effort",
+        ordering: "start-time-desc-provider",
         exactTotal: 0,
       },
       {
         summaries: [],
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
         continuationToken: 1,
       },
       {
         summaries: [],
         state: "continuation",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
         continuationToken: 1,
         partialReason: "deadline",
       },
@@ -592,7 +674,9 @@ describe("portable retrieval results", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- hostile containers share one reconstructed authority fixture.
 describe("hostile portable retrieval results", () => {
+  // eslint-disable-next-line max-lines-per-function -- malformed summaries and their containing page share reconstructed hostile arrays.
   it("rejects malformed summaries and page containers", () => {
     for (const invalid of [
       { status: "provider-native" },
@@ -640,26 +724,35 @@ describe("hostile portable retrieval results", () => {
     Object.defineProperty(accessorPageItems, "0", { get: () => summary() });
     for (const invalid of [
       null,
-      { summaries: pageItems, state: "exhaustive", consistency: "snapshot" },
+      {
+        summaries: pageItems,
+        state: "exhaustive",
+        consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
+      },
       {
         summaries: sparsePageItems,
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         summaries: accessorPageItems,
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         summaries: Array.from({ length: 201 }, () => summary()),
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         summaries: [],
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
         extra: true,
       },
       { summaries: [{}], state: "exhaustive", consistency: "snapshot" },
@@ -670,17 +763,20 @@ describe("hostile portable retrieval results", () => {
         state: "partial",
         partialReason: "provider-body",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       },
       {
         summaries: [],
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
         exactTotal: -1,
       },
       {
         summaries: [summary()],
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
         exactTotal: 0,
       },
     ]) {
@@ -702,6 +798,7 @@ describe("hostile portable retrieval results", () => {
         ],
         state: "exhaustive",
         consistency: "snapshot",
+        ordering: "start-time-desc-trace-id-asc",
       }),
     ).toThrowError(RetrievalResultError);
   });
@@ -790,6 +887,7 @@ describe("hostile retrieved trace representations", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- operation authority cases intentionally share one branded request fixture.
 describe("Retriever operation boundary", () => {
   it("requires complete search and get and returns typed successes", async () => {
     const selectedLocator = locator();
@@ -797,6 +895,7 @@ describe("Retriever operation boundary", () => {
       summaries: [summary()],
       state: "exhaustive",
       consistency: "snapshot",
+      ordering: "start-time-desc-trace-id-asc",
       exactTotal: 1,
     });
     const retrieved = createRetrievedTrace({
@@ -869,6 +968,7 @@ describe("Retriever operation boundary", () => {
       summaries: [summary({ locator: otherLocator })],
       state: "exhaustive",
       consistency: "snapshot",
+      ordering: "start-time-desc-trace-id-asc",
     });
     const otherTrace = createRetrievedTrace({
       locator: otherLocator,
@@ -893,6 +993,26 @@ describe("Retriever operation boundary", () => {
         context(),
       ),
     ).resolves.toMatchObject({ ok: false, code: "malformed-response" });
+  });
+
+  it("rejects a page whose declared ordering differs from the request", async () => {
+    const providerPage = createRetrieverSearchPage({
+      summaries: [],
+      state: "exhaustive",
+      consistency: "best-effort",
+      ordering: "start-time-desc-provider",
+    });
+    const retriever = createDestinationRetriever({
+      search: () => Promise.resolve(createRetrieverSuccess(providerPage)),
+      get: () => Promise.resolve(createRetrieverFailure("not-found")),
+    });
+    await expect(
+      invokeRetrieverSearch(
+        retriever,
+        createTraceSearchRequest(query(), { connectionId, destinationType }),
+        context(),
+      ),
+    ).resolves.toEqual({ ok: false, code: "malformed-response" });
   });
 });
 
@@ -1056,6 +1176,7 @@ describe("hostile Retriever contract inputs", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- malformed operation outcomes share one bounded response fixture.
 describe("hostile Retriever operation results", () => {
   it("rejects malformed success, oversized pages, and sync misuse", async () => {
     const many = Array.from({ length: 26 }, (_, index) =>
@@ -1074,6 +1195,7 @@ describe("hostile Retriever operation results", () => {
       summaries: many,
       state: "exhaustive",
       consistency: "snapshot",
+      ordering: "start-time-desc-trace-id-asc",
     });
     const syncThrow = createDestinationRetriever({
       search: () => {
@@ -1127,6 +1249,7 @@ describe("hostile Retriever operation results", () => {
                   summaries: [summary()],
                   state: "exhaustive",
                   consistency: "snapshot",
+                  ordering: "start-time-desc-trace-id-asc",
                 }),
               ),
             ),
@@ -1147,6 +1270,7 @@ describe("hostile Retriever operation results", () => {
       state: "continuation",
       continuationToken: null,
       consistency: "snapshot",
+      ordering: "start-time-desc-trace-id-asc",
     });
     await expect(
       invokeRetrieverSearch(

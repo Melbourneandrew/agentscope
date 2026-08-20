@@ -12,6 +12,8 @@ import {
 import { createTraceLocator, type TraceLocator } from "./retrieval-identity.js";
 import {
   normalizeTraceSearchQuery,
+  TRACE_SEARCH_ORDERINGS,
+  type TraceSearchOrdering,
   type TraceSearchInput,
   type TraceSearchQuery,
 } from "./retrieval-query.js";
@@ -248,17 +250,22 @@ export const RETRIEVER_CONTRACT_FIXTURE_VALUES = Object.freeze({
 type QueryMatrixBinding = Readonly<{
   primaryTraceId: string;
   missingTraceId: string;
+  ordering: TraceSearchOrdering;
 }>;
 const queryMatrixRegistry = new WeakMap<object, QueryMatrixBinding>();
 const traceIdPattern = /^[0-9a-f]{32}$/u;
 
-const contractQuery = (input: TraceSearchInput): TraceSearchQuery =>
+const contractQuery = (
+  input: TraceSearchInput,
+  ordering: TraceSearchOrdering,
+): TraceSearchQuery =>
   normalizeTraceSearchQuery(input, {
     commandStartedAt: RETRIEVER_CONTRACT_FIXTURE_VALUES.commandStartedAt,
     knownHarnessIds: [
       RETRIEVER_CONTRACT_FIXTURE_VALUES.harness,
       RETRIEVER_CONTRACT_FIXTURE_VALUES.nonmatchingHarness,
     ],
+    ordering,
   });
 
 type QueryCaseInput = Readonly<{
@@ -270,10 +277,13 @@ type QueryCaseInput = Readonly<{
   expectedContinuationToken?: JsonValue;
 }>;
 
-const freezeQueryCase = (input: QueryCaseInput): RetrieverContractQueryCase =>
+const freezeQueryCase = (
+  input: QueryCaseInput,
+  ordering: TraceSearchOrdering,
+): RetrieverContractQueryCase =>
   Object.freeze({
     name: input.name,
-    query: contractQuery(input.input),
+    query: contractQuery(input.input, ordering),
     expectedTraceIds: Object.freeze([...input.expectedTraceIds]),
     expectedState: input.expectedState ?? "exhaustive",
     ...(input.continuationToken === undefined
@@ -288,80 +298,83 @@ const scalarQueryCases = (
   primary: string,
   secondary: string,
   missingTraceId: string,
+  ordering: TraceSearchOrdering,
 ): readonly RetrieverContractQueryCase[] => {
   const values = RETRIEVER_CONTRACT_FIXTURE_VALUES;
+  const freezeCase = (input: QueryCaseInput): RetrieverContractQueryCase =>
+    freezeQueryCase(input, ordering);
   return [
-    freezeQueryCase({
+    freezeCase({
       name: "all",
       input: {},
       expectedTraceIds: [primary, secondary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "trace-id-match",
       input: { traceId: primary },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "trace-id-miss",
       input: { traceId: missingTraceId },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "from-match",
       input: { from: "2026-01-01T09:30:00Z" },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "from-miss",
       input: { from: "2026-01-02T00:00:00Z" },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "to-match",
       input: { to: "2026-01-01T10:30:00Z" },
       expectedTraceIds: [primary, secondary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "to-miss",
       input: { to: "2025-12-31T00:00:00Z" },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "harness-match",
       input: { harness: values.harness },
       expectedTraceIds: [primary, secondary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "harness-miss",
       input: { harness: values.nonmatchingHarness },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "branch-match",
       input: { branch: values.branch },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "branch-miss",
       input: { branch: values.nonmatchingBranch },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "model-match",
       input: { model: values.model },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "model-miss",
       input: { model: values.nonmatchingModel },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "session-id-match",
       input: { sessionId: values.sessionId },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "session-id-miss",
       input: { sessionId: values.nonmatchingSessionId },
       expectedTraceIds: [],
@@ -372,20 +385,23 @@ const scalarQueryCases = (
 const compoundQueryCases = (
   primary: string,
   secondary: string,
+  ordering: TraceSearchOrdering,
 ): readonly RetrieverContractQueryCase[] => {
   const values = RETRIEVER_CONTRACT_FIXTURE_VALUES;
+  const freezeCase = (input: QueryCaseInput): RetrieverContractQueryCase =>
+    freezeQueryCase(input, ordering);
   return [
-    freezeQueryCase({
+    freezeCase({
       name: "tags-match",
       input: { tags: values.matchingTags },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "tags-miss",
       input: { tags: [values.missingTag] },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "conjunction-match",
       input: {
         traceId: primary,
@@ -397,7 +413,7 @@ const compoundQueryCases = (
       },
       expectedTraceIds: [primary],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "conjunction-miss",
       input: {
         traceId: primary,
@@ -409,21 +425,21 @@ const compoundQueryCases = (
       },
       expectedTraceIds: [],
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "limit",
       input: { limit: 1 },
       expectedTraceIds: [primary],
       expectedState: "continuation",
       expectedContinuationToken: Object.freeze({ offset: 1 }),
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "continuation",
       input: { limit: 1 },
       expectedTraceIds: [secondary],
       expectedState: "exhaustive",
       continuationToken: Object.freeze({ offset: 1 }),
     }),
-    freezeQueryCase({
+    freezeCase({
       name: "partial",
       input: { model: values.model, limit: 2 },
       expectedTraceIds: [primary],
@@ -435,9 +451,11 @@ const compoundQueryCases = (
 export const createRetrieverContractQueryMatrix = (input: {
   primaryTraceId: string;
   secondaryTraceId: string;
+  ordering: TraceSearchOrdering;
 }): RetrieverContractQueryMatrix => {
   const primary = input.primaryTraceId;
   const secondary = input.secondaryTraceId;
+  const ordering = input.ordering;
   assert(
     traceIdPattern.test(primary) &&
       primary !== "0".repeat(32) &&
@@ -446,16 +464,24 @@ export const createRetrieverContractQueryMatrix = (input: {
       primary !== secondary,
     "destination.contract.retriever.query-matrix-trace-ids",
   );
+  assert(
+    TRACE_SEARCH_ORDERINGS.includes(ordering),
+    "destination.contract.retriever.query-matrix-ordering",
+  );
   const missingTraceId = ["f", "e", "d"]
     .map((digit) => digit.repeat(32))
     .find((candidate) => candidate !== primary && candidate !== secondary)!;
   const cases = Object.freeze([
-    ...scalarQueryCases(primary, secondary, missingTraceId),
-    ...compoundQueryCases(primary, secondary),
+    ...scalarQueryCases(primary, secondary, missingTraceId, ordering),
+    ...compoundQueryCases(primary, secondary, ordering),
   ]) as RetrieverContractQueryMatrix;
   queryMatrixRegistry.set(
     cases,
-    Object.freeze({ primaryTraceId: primary, missingTraceId }),
+    Object.freeze({
+      primaryTraceId: primary,
+      missingTraceId,
+      ordering,
+    }),
   );
   return cases;
 };
@@ -652,7 +678,12 @@ export const createRetrieverContractSuite = (
   });
   assert(
     queryMatrixRegistry.get(input.queryCases)?.primaryTraceId ===
-      input.locator.traceId,
+      input.locator.traceId &&
+      input.queryCases.every(
+        (queryCase) =>
+          queryCase.query.ordering ===
+          queryMatrixRegistry.get(input.queryCases)?.ordering,
+      ),
     "destination.contract.retriever.query-matrix",
   );
   const firstQuery = input.queryCases[0]!;

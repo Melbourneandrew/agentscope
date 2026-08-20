@@ -1035,9 +1035,13 @@ describe("DestinationDescriptor retrieval capability", () => {
     });
     const factory = vi.fn(() => retriever);
     const descriptor = defineDestinationDescriptor(
-      remoteInput({ createRetriever: factory }),
+      remoteInput({
+        createRetriever: factory,
+        retrievalOrdering: "start-time-desc-provider",
+      }),
     );
     expect(descriptor.retrievalSupport).toBe("search-and-get");
+    expect(descriptor.retrievalOrdering).toBe("start-time-desc-provider");
     const prepared = resolveDestinationConnection(descriptor, {
       connectionId,
       settings: {},
@@ -1055,6 +1059,7 @@ describe("DestinationDescriptor retrieval capability", () => {
 
     const writeOnly = defineDestinationDescriptor(remoteInput());
     expect(writeOnly.retrievalSupport).toBe("unsupported");
+    expect(writeOnly.retrievalOrdering).toBeNull();
     const writeOnlyPrepared = resolveDestinationConnection(writeOnly, {
       connectionId,
       settings: {},
@@ -1071,10 +1076,18 @@ describe("DestinationDescriptor retrieval capability", () => {
       }),
     ).toThrowError(DestinationDescriptorError);
     expect(() =>
-      defineDestinationDescriptor(remoteInput({ createRetriever: 1 as never })),
+      defineDestinationDescriptor(
+        remoteInput({
+          createRetriever: 1 as never,
+          retrievalOrdering: "start-time-desc-provider",
+        }),
+      ),
     ).toThrowError(DestinationDescriptorError);
     const malformed = defineDestinationDescriptor(
-      remoteInput({ createRetriever: (() => ({})) as never }),
+      remoteInput({
+        createRetriever: (() => ({})) as never,
+        retrievalOrdering: "start-time-desc-provider",
+      }),
     );
     const malformedPrepared = resolveDestinationConnection(malformed, {
       connectionId,
@@ -1091,6 +1104,15 @@ describe("DestinationDescriptor retrieval capability", () => {
         transport: malformedTransport,
       }),
     ).toThrowError(DestinationDescriptorError);
+    for (const invalid of [
+      { createRetriever: factory },
+      { retrievalOrdering: "start-time-desc-provider" },
+      { createRetriever: factory, retrievalOrdering: "unknown" },
+    ]) {
+      expect(() =>
+        defineDestinationDescriptor(remoteInput(invalid as never)),
+      ).toThrowError(DestinationDescriptorError);
+    }
   });
 });
 

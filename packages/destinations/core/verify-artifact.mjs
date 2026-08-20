@@ -13,6 +13,7 @@ import {
   executeBoundDestinationRequest,
   isDestinationReachabilityProbe,
   parseDestinationSettings,
+  TRACE_SEARCH_ORDERINGS,
 } from "./dist/index.js";
 import {
   bindDestinationTransport,
@@ -41,6 +42,12 @@ import {
 const connectionId = createDestinationConnectionId(
   "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 );
+if (
+  !Object.isFrozen(TRACE_SEARCH_ORDERINGS) ||
+  TRACE_SEARCH_ORDERINGS.join("|") !==
+    "start-time-desc-trace-id-asc|start-time-desc-provider"
+)
+  throw new Error("Retriever ordering vocabulary drifted.");
 const reachabilityProbe = defineDestinationReachabilityProbe({
   destinationType: "@agentscope/destination-example",
   inspect: () => Promise.resolve("available"),
@@ -111,6 +118,7 @@ try {
   const queryMatrix = createRetrieverContractQueryMatrix({
     primaryTraceId: "0123456789abcdef0123456789abcdef",
     secondaryTraceId: "1123456789abcdef0123456789abcdef",
+    ordering: "start-time-desc-trace-id-asc",
   });
   const limitCase = queryMatrix.find(({ name }) => name === "limit");
   const continuationCase = queryMatrix.find(
@@ -200,6 +208,7 @@ try {
 
   const retrieverDescriptor = defineDestinationDescriptor(
     input({
+      retrievalOrdering: "start-time-desc-trace-id-asc",
       createRetriever: () =>
         createDestinationRetriever({
           search: () =>
@@ -225,6 +234,7 @@ try {
     {
       commandStartedAt: "2026-08-17T00:00:00Z",
       knownHarnessIds: ["codex"],
+      ordering: "start-time-desc-trace-id-asc",
     },
   );
   const cursorBinding = {
@@ -265,9 +275,83 @@ try {
   if (
     retrievalResult.ok ||
     retrievalResult.code !== "retrieval-unsupported" ||
-    retrieverDescriptor.retrievalSupport !== "search-and-get"
+    retrieverDescriptor.retrievalSupport !== "search-and-get" ||
+    retrieverDescriptor.retrievalOrdering !== "start-time-desc-trace-id-asc"
   )
     throw new Error("Retriever dist contract verification failed.");
+  const providerQuery = normalizeTraceSearchQuery(
+    {},
+    {
+      commandStartedAt: query.to,
+      knownHarnessIds: ["codex"],
+      ordering: "start-time-desc-provider",
+    },
+  );
+  if (providerQuery.fingerprint === query.fingerprint)
+    throw new Error("Retriever ordering was omitted from query identity.");
+  try {
+    readTraceSearchCursor(cursor, {
+      ...cursorBinding,
+      queryFingerprint: providerQuery.fingerprint,
+    });
+    throw new Error("Retriever cursor crossed ordering profiles.");
+  } catch (error) {
+    if (error?.code !== "destination.trace-cursor.invalid") throw error;
+  }
+  const providerSummaries = [
+    "f123456789abcdef0123456789abcdef",
+    "0123456789abcdef0123456789abcdef",
+  ].map((traceId) =>
+    createTraceSummary({
+      locator: createTraceLocator({
+        connectionId,
+        destinationType: retrieverDescriptor.destinationType,
+        traceId,
+      }),
+      startTime: "2026-08-17T00:00:00.000Z",
+      models: [],
+      status: "ok",
+      spanCount: 1,
+      tags: [],
+    }),
+  );
+  const providerPage = createRetrieverSearchPage({
+    summaries: providerSummaries,
+    state: "exhaustive",
+    consistency: "best-effort",
+    ordering: "start-time-desc-provider",
+  });
+  const providerRetriever = createDestinationRetriever({
+    search: () => Promise.resolve(createRetrieverSuccess(providerPage)),
+    get: () => Promise.resolve(createRetrieverFailure("not-found")),
+  });
+  const operationContext = () =>
+    createRetrievalContext({
+      signal: new AbortController().signal,
+      deadline: createReporterDeadline(1_000),
+      maximumResponseBytes: 4_096,
+      maximumProviderRequests: 1,
+    });
+  const providerResult = await invokeRetrieverSearch(
+    providerRetriever,
+    createTraceSearchRequest(providerQuery, {
+      connectionId,
+      destinationType: retrieverDescriptor.destinationType,
+    }),
+    operationContext(),
+  );
+  if (!providerResult.ok)
+    throw new Error("Provider-ordered equal-time page was rejected.");
+  const mismatchedOrdering = await invokeRetrieverSearch(
+    providerRetriever,
+    createTraceSearchRequest(query, {
+      connectionId,
+      destinationType: retrieverDescriptor.destinationType,
+    }),
+    operationContext(),
+  );
+  if (mismatchedOrdering.ok || mismatchedOrdering.code !== "malformed-response")
+    throw new Error("Forged Retriever ordering profile was accepted.");
   const otherConnectionId = createDestinationConnectionId(
     "destination-connection-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   );
@@ -287,6 +371,7 @@ try {
     summaries: [wrongSummary],
     state: "exhaustive",
     consistency: "snapshot",
+    ordering: "start-time-desc-trace-id-asc",
   });
   const swappingRetriever = createDestinationRetriever({
     search: () => Promise.resolve(createRetrieverSuccess(wrongPage)),
@@ -309,6 +394,7 @@ try {
     throw new Error("Retriever accepted a cross-connection summary.");
   const asyncRetrieverDescriptor = defineDestinationDescriptor(
     input({
+      retrievalOrdering: "start-time-desc-trace-id-asc",
       createRetriever: async () => {
         throw new Error("CANARY_RETRIEVER_SECRET");
       },

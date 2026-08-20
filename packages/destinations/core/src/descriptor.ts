@@ -28,6 +28,10 @@ import {
   type JsonObject,
 } from "./plain-data.js";
 import type { Reporter } from "./reporter.js";
+import {
+  TRACE_SEARCH_ORDERINGS,
+  type TraceSearchOrdering,
+} from "./retrieval-query.js";
 import type { Retriever } from "./retriever.js";
 import {
   isBoundDestinationTransport,
@@ -69,6 +73,7 @@ export type DestinationDescriptor<Settings extends JsonObject = JsonObject> =
     documentationPath: string;
     deliveryIdentitySupport: DeliveryIdentitySupport;
     retrievalSupport: "search-and-get" | "unsupported";
+    retrievalOrdering: TraceSearchOrdering | null;
     transport: DestinationTransportDeclaration;
     readonly [destinationDescriptorBrand]: Settings;
   }>;
@@ -94,6 +99,7 @@ export type DestinationDescriptorInput<Settings extends JsonObject> = Readonly<{
       }>;
   createReporter: (context: ReporterFactoryContext<Settings>) => Reporter;
   createRetriever?: (context: RetrieverFactoryContext<Settings>) => Retriever;
+  retrievalOrdering?: TraceSearchOrdering;
 }>;
 
 type StoredDescriptor = Readonly<{
@@ -612,8 +618,38 @@ const descriptorInputKeysAreValid = (
   const keys = objectKeys(descriptors);
   return (
     required.every((key) => keys.includes(key)) &&
-    keys.every((key) => required.includes(key) || key === "createRetriever")
+    keys.every(
+      (key) =>
+        required.includes(key) ||
+        key === "createRetriever" ||
+        key === "retrievalOrdering",
+    )
   );
+};
+
+const parseRetrievalDeclaration = (
+  descriptors: PropertyDescriptorMap,
+): Readonly<{
+  factory?: (context: RetrieverFactoryContext<JsonObject>) => Retriever;
+  ordering: TraceSearchOrdering | null;
+}> => {
+  const hasFactory = descriptors.createRetriever !== undefined;
+  const hasOrdering = descriptors.retrievalOrdering !== undefined;
+  if (hasFactory !== hasOrdering) throw new DestinationDescriptorError();
+  if (!hasFactory) return Object.freeze({ ordering: null });
+  const factory = inputValue(descriptors, "createRetriever");
+  const ordering = inputValue(descriptors, "retrievalOrdering");
+  if (
+    typeof factory !== "function" ||
+    !TRACE_SEARCH_ORDERINGS.includes(ordering as TraceSearchOrdering)
+  )
+    throw new DestinationDescriptorError();
+  return Object.freeze({
+    factory: factory as (
+      context: RetrieverFactoryContext<JsonObject>,
+    ) => Retriever,
+    ordering: ordering as TraceSearchOrdering,
+  });
 };
 
 const observeUnexpectedPromise = (value: unknown): void => {
@@ -838,14 +874,7 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
     } else return invalid();
     const factory = inputValue(descriptors, "createReporter");
     if (typeof factory !== "function") return invalid();
-    const retrieverFactory = descriptors.createRetriever
-      ? inputValue(descriptors, "createRetriever")
-      : undefined;
-    if (
-      retrieverFactory !== undefined &&
-      typeof retrieverFactory !== "function"
-    )
-      return invalid();
+    const retrieval = parseRetrievalDeclaration(descriptors);
 
     const descriptor = Object.freeze({
       descriptorVersion: 1 as const,
@@ -864,7 +893,8 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
       ),
       deliveryIdentitySupport,
       retrievalSupport:
-        retrieverFactory === undefined ? "unsupported" : "search-and-get",
+        retrieval.factory === undefined ? "unsupported" : "search-and-get",
+      retrievalOrdering: retrieval.ordering,
       transport,
     }) as DestinationDescriptor<Settings>;
     descriptorRegistry.set(descriptor, {
@@ -874,12 +904,10 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
       createReporter: factory as (
         context: ReporterFactoryContext<JsonObject>,
       ) => Reporter,
-      ...(retrieverFactory === undefined
+      ...(retrieval.factory === undefined
         ? {}
         : {
-            createRetriever: retrieverFactory as (
-              context: RetrieverFactoryContext<JsonObject>,
-            ) => Retriever,
+            createRetriever: retrieval.factory,
           }),
     });
     return descriptor;

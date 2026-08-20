@@ -9,6 +9,7 @@ import {
   type RetrieverFailureCode,
   type TraceSearchCursor,
   type TraceSearchInput,
+  type TraceSearchOrdering,
   reporterDeadlineRemainingMilliseconds,
 } from "@agentscope/destinations-core";
 import {
@@ -167,6 +168,28 @@ const findConnection = (
   return configuration.connections.find(
     (connection) => connection.name === name,
   );
+};
+
+const selectRetrievalOrdering = (
+  configuration: AgentscopeConfigurationSnapshot,
+  destinationName: unknown,
+):
+  | Readonly<{ ok: true; ordering: TraceSearchOrdering }>
+  | CoreRetrievalFailure => {
+  const connection = findConnection(configuration, destinationName);
+  if (!connection) return failure("unknown-connection");
+  const descriptor = getDestinationDescriptor(
+    configuration.destinationRegistry,
+    connection.destinationType,
+  );
+  /* v8 ignore next -- parsed configuration guarantees every connection type exists in its branded registry. */
+  if (!descriptor) return failure("unknown-connection");
+  if (
+    descriptor.retrievalSupport !== "search-and-get" ||
+    descriptor.retrievalOrdering === null
+  )
+    return failure("retrieval-unsupported");
+  return Object.freeze({ ok: true, ordering: descriptor.retrievalOrdering });
 };
 
 const configurationIdentity = (
@@ -595,11 +618,17 @@ export const searchConfiguredTraces = async (
     if (cursor !== undefined)
       upperTimeBound = readTraceSearchCursorUpperTimeBound(cursor);
     else upperTimeBound = boundedRuntime.commandStartedAt;
+    const selection = selectRetrievalOrdering(
+      boundedRuntime.configuration,
+      descriptorValue(descriptors, "destinationName"),
+    );
+    if (!selection.ok) return selection;
     query = normalizeTraceSearchQuery(
       descriptorValue(descriptors, "query") as TraceSearchInput,
       {
         commandStartedAt: upperTimeBound,
         knownHarnessIds: FIRST_PARTY_HARNESS_IDS,
+        ordering: selection.ordering,
       },
     );
   } catch {

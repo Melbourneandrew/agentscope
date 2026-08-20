@@ -7,6 +7,10 @@ import {
 
 import { cloneJsonObject, type JsonValue } from "./plain-data.js";
 import { isTraceLocator, type TraceLocator } from "./retrieval-identity.js";
+import {
+  TRACE_SEARCH_ORDERINGS,
+  type TraceSearchOrdering,
+} from "./retrieval-query.js";
 
 export const TRACE_SUMMARY_STATUSES = Object.freeze([
   "unset",
@@ -44,6 +48,7 @@ export type RetrieverSearchPage = Readonly<{
   partialReason?: PartialResultReason;
   continuationToken?: JsonValue;
   consistency: RetrievalConsistency;
+  ordering: TraceSearchOrdering;
   exactTotal?: number;
   readonly [retrieverPageBrand]: true;
 }>;
@@ -218,7 +223,10 @@ export const createTraceSummary = (input: TraceSummaryInput): TraceSummary => {
 export const isTraceSummary = (value: unknown): value is TraceSummary =>
   typeof value === "object" && value !== null && summaryRegistry.has(value);
 
-const pageOrderIsValid = (summaries: readonly TraceSummary[]): boolean => {
+const pageOrderIsValid = (
+  summaries: readonly TraceSummary[],
+  ordering: TraceSearchOrdering,
+): boolean => {
   const ids = new Set<string>();
   for (let index = 0; index < summaries.length; index += 1) {
     const current = summaries[index]!;
@@ -228,6 +236,7 @@ const pageOrderIsValid = (summaries: readonly TraceSummary[]): boolean => {
     if (!previous) continue;
     if (previous.startTime < current.startTime) return false;
     if (
+      ordering === "start-time-desc-trace-id-asc" &&
       previous.startTime === current.startTime &&
       previous.locator.traceId > current.locator.traceId
     )
@@ -239,11 +248,17 @@ const pageOrderIsValid = (summaries: readonly TraceSummary[]): boolean => {
 const pageStateIsValid = (
   state: unknown,
   consistency: unknown,
+  ordering: unknown,
   partialReason: unknown,
   continuationToken: unknown,
 ): boolean =>
   ["exhaustive", "continuation", "partial"].includes(state as string) &&
   ["snapshot", "best-effort"].includes(consistency as string) &&
+  TRACE_SEARCH_ORDERINGS.includes(ordering as TraceSearchOrdering) &&
+  ((ordering === "start-time-desc-trace-id-asc" &&
+    consistency === "snapshot") ||
+    (ordering === "start-time-desc-provider" &&
+      consistency === "best-effort")) &&
   !(state === "exhaustive" && continuationToken !== undefined) &&
   !(state === "continuation" && continuationToken === undefined) &&
   (state === "partial") === (partialReason !== undefined) &&
@@ -273,7 +288,7 @@ export const createRetrieverSearchPage = (
     if (
       !exactOptionalKeys(
         descriptors,
-        ["consistency", "state", "summaries"],
+        ["consistency", "ordering", "state", "summaries"],
         ["continuationToken", "exactTotal", "partialReason"],
       )
     )
@@ -300,16 +315,29 @@ export const createRetrieverSearchPage = (
         return invalid();
       summaries.push(descriptor.value);
     }
-    if (!pageOrderIsValid(summaries)) return invalid();
     const state = valueOf(descriptors, "state");
     const consistency = valueOf(descriptors, "consistency");
+    const ordering = valueOf(descriptors, "ordering");
+    if (
+      !TRACE_SEARCH_ORDERINGS.includes(ordering as TraceSearchOrdering) ||
+      !pageOrderIsValid(summaries, ordering as TraceSearchOrdering)
+    )
+      return invalid();
     const partialReason = descriptors.partialReason
       ? valueOf(descriptors, "partialReason")
       : undefined;
     const continuationToken = descriptors.continuationToken
       ? valueOf(descriptors, "continuationToken")
       : undefined;
-    if (!pageStateIsValid(state, consistency, partialReason, continuationToken))
+    if (
+      !pageStateIsValid(
+        state,
+        consistency,
+        ordering,
+        partialReason,
+        continuationToken,
+      )
+    )
       return invalid();
     const exactTotal = descriptors.exactTotal
       ? valueOf(descriptors, "exactTotal")
@@ -335,6 +363,7 @@ export const createRetrieverSearchPage = (
             ]!,
           }),
       consistency: consistency as RetrievalConsistency,
+      ordering: ordering as TraceSearchOrdering,
       ...(exactTotal === undefined ? {} : { exactTotal: exactTotal as number }),
     }) as RetrieverSearchPage;
     pageRegistry.add(page);

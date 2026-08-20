@@ -97,9 +97,11 @@ export {
   TRACE_SEARCH_DEFAULT_LIMIT,
   TRACE_SEARCH_MAXIMUM_LIMIT,
   TRACE_SEARCH_MAXIMUM_TAGS,
+  TRACE_SEARCH_ORDERINGS,
   TraceQueryError,
   type TraceQueryFingerprint,
   type TraceSearchInput,
+  type TraceSearchOrdering,
   type TraceSearchQuery,
 } from "./retrieval-query.js";
 export {

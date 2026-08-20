@@ -94,6 +94,7 @@ const runtime = (
     ...(options.retrieval === false
       ? {}
       : {
+          retrievalOrdering: "start-time-desc-trace-id-asc" as const,
           createRetriever: () => {
             factoryCalls += 1;
             if (options.throwFactory) throw new Error("CANARY_PROVIDER_BODY");
@@ -150,6 +151,7 @@ const runtime = (
                             }
                           : {}),
                       consistency: "snapshot",
+                      ordering: "start-time-desc-trace-id-asc",
                       exactTotal: 1,
                     }),
                   ),
@@ -443,6 +445,7 @@ describe("Core retrieval cancellation registration", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one query boundary fixture covers selection, cursor, and result governance together.
 describe("Core retrieval query execution", () => {
   it("rejects a configuration snapshot not minted by the parser", async () => {
     const fixture = runtime();
@@ -522,6 +525,12 @@ describe("Core retrieval query execution", () => {
         query: {},
       }),
     ).resolves.toEqual({ ok: false, code: "unknown-connection" });
+    await expect(
+      getConfiguredTrace(supported.value, {
+        destinationName: "missing",
+        traceId: fixtureTraceId,
+      }),
+    ).resolves.toEqual({ ok: false, code: "unknown-connection" });
     expect(supported.counts().factoryCalls).toBe(0);
 
     const unsupported = runtime({ retrieval: false });
@@ -529,6 +538,12 @@ describe("Core retrieval query execution", () => {
       getConfiguredTrace(unsupported.value, {
         destinationName: "archive",
         traceId: fixtureTraceId,
+      }),
+    ).resolves.toEqual({ ok: false, code: "retrieval-unsupported" });
+    await expect(
+      searchConfiguredTraces(unsupported.value, {
+        destinationName: "archive",
+        query: {},
       }),
     ).resolves.toEqual({ ok: false, code: "retrieval-unsupported" });
     expect(unsupported.counts().factoryCalls).toBe(0);
@@ -747,22 +762,26 @@ describe("Core retrieval connection setup", () => {
         createDestinationReporter({
           report: () => Promise.resolve(createReporterReceipt("accepted")),
         }),
+      retrievalOrdering: "start-time-desc-provider",
       createRetriever: ({ endpoint, transport, credentials }) => {
         expect(endpoint?.href).toBe("https://example.com/api");
         expect(transport).not.toBeNull();
         expect(credentials).toBeDefined();
         constructed += 1;
         return createDestinationRetriever({
-          search: () =>
-            Promise.resolve(
+          search: (request) => {
+            expect(request.query.ordering).toBe("start-time-desc-provider");
+            return Promise.resolve(
               createRetrieverSuccess(
                 createRetrieverSearchPage({
                   summaries: [],
                   state: "exhaustive",
                   consistency: "best-effort",
+                  ordering: "start-time-desc-provider",
                 }),
               ),
-            ),
+            );
+          },
           get: () => Promise.resolve(createRetrieverFailure("not-found")),
         });
       },
@@ -838,7 +857,10 @@ describe("Core retrieval connection setup", () => {
         destinationName: "remote",
         query: {},
       }),
-    ).resolves.toMatchObject({ ok: true });
+    ).resolves.toMatchObject({
+      ok: true,
+      page: { consistency: "best-effort" },
+    });
     expect(credentialReads).toBe(1);
     expect(constructed).toBe(1);
     const denied = defineStoredCredentialBackendAdapter("macos-keychain", {

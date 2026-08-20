@@ -5,6 +5,11 @@ import type { W3CTraceId } from "@agentscope/protocol";
 export const TRACE_SEARCH_DEFAULT_LIMIT = 50;
 export const TRACE_SEARCH_MAXIMUM_LIMIT = 200;
 export const TRACE_SEARCH_MAXIMUM_TAGS = 32;
+export const TRACE_SEARCH_ORDERINGS = Object.freeze([
+  "start-time-desc-trace-id-asc",
+  "start-time-desc-provider",
+] as const);
+export type TraceSearchOrdering = (typeof TRACE_SEARCH_ORDERINGS)[number];
 
 declare const queryFingerprintBrand: unique symbol;
 export type TraceQueryFingerprint = string & {
@@ -33,13 +38,14 @@ export type TraceSearchQuery = Readonly<{
   sessionId?: string;
   tags: readonly string[];
   limit: number;
-  ordering: "start-time-desc-trace-id-asc";
+  ordering: TraceSearchOrdering;
   fingerprint: TraceQueryFingerprint;
 }>;
 
 export type TraceQueryNormalization = Readonly<{
   commandStartedAt: string;
   knownHarnessIds: readonly string[];
+  ordering: TraceSearchOrdering;
 }>;
 
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
@@ -216,12 +222,15 @@ export const normalizeTraceSearchQuery = (
         (key) => typeof key !== "string",
       ) ||
       objectKeys(normalizationDescriptors).sort().join(",") !==
-        "commandStartedAt,knownHarnessIds"
+        "commandStartedAt,knownHarnessIds,ordering"
     )
       return invalid();
     const known = knownHarnesses(
       valueOf(normalizationDescriptors, "knownHarnessIds"),
     );
+    const ordering = valueOf(normalizationDescriptors, "ordering");
+    if (!TRACE_SEARCH_ORDERINGS.includes(ordering as TraceSearchOrdering))
+      return invalid();
     const fromValue = optionalValue(inputDescriptors, "from");
     const toValue = optionalValue(inputDescriptors, "to");
     const harnessValue = optionalValue(inputDescriptors, "harness");
@@ -269,7 +278,7 @@ export const normalizeTraceSearchQuery = (
         : {}),
       tags: tags(optionalValue(inputDescriptors, "tags")),
       limit: limit as number,
-      ordering: "start-time-desc-trace-id-asc" as const,
+      ordering: ordering as TraceSearchOrdering,
     };
     const query = Object.freeze({
       ...material,
