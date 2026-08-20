@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import {
+  createServer,
+  request as createHttpRequest,
+  type IncomingHttpHeaders,
+  type Server,
+} from "node:http";
 
 import { describe, expect, it } from "vitest";
 
@@ -69,7 +74,7 @@ const startFixtureServer = async (
           url.pathname,
           url.searchParams,
           raw ? (JSON.parse(raw) as LangfuseJson) : null,
-          request.headers,
+          request.rawHeaders,
         ),
       );
       if (!fixture) {
@@ -93,7 +98,8 @@ const requestKey = (
   path: string,
   query: Readonly<Record<string, string>> | URLSearchParams,
   body: unknown,
-  headers: IncomingHttpHeaders | Readonly<Record<string, string>>,
+  headers:
+    IncomingHttpHeaders | Readonly<Record<string, string>> | readonly string[],
 ): string =>
   JSON.stringify({
     method,
@@ -106,12 +112,68 @@ const requestKey = (
         ? leftValue.localeCompare(rightValue)
         : leftName.localeCompare(rightName),
     ),
-    headers: Object.fromEntries(
-      ["authorization", "content-type", "x-langfuse-ingestion-version"].map(
-        (name) => [name, headers[name] ?? null],
-      ),
-    ),
+    headers: governedHeaderEntries(headers),
     body,
+  });
+
+const governedHeaderEntries = (
+  headers:
+    IncomingHttpHeaders | Readonly<Record<string, string>> | readonly string[],
+): readonly (readonly [string, string])[] => {
+  const governed = new Set([
+    "authorization",
+    "content-type",
+    "x-langfuse-ingestion-version",
+  ]);
+  const entries: [string, string][] = [];
+  if (Array.isArray(headers)) {
+    const rawHeaders = headers as readonly string[];
+    for (let index = 0; index < rawHeaders.length; index += 2) {
+      const name = rawHeaders[index]?.toLowerCase();
+      const value = rawHeaders[index + 1];
+      if (name && value !== undefined && governed.has(name))
+        entries.push([name, value]);
+    }
+  } else {
+    for (const [rawName, rawValue] of Object.entries(headers)) {
+      const name = rawName.toLowerCase();
+      if (!governed.has(name) || rawValue === undefined) continue;
+      for (const value of Array.isArray(rawValue) ? rawValue : [rawValue])
+        entries.push([name, value]);
+    }
+  }
+  return entries.sort(([leftName, leftValue], [rightName, rightValue]) =>
+    leftName === rightName
+      ? leftValue.localeCompare(rightValue)
+      : leftName.localeCompare(rightName),
+  );
+};
+
+const sendDuplicateAuthorization = async (
+  origin: string,
+  path: string,
+): Promise<number | undefined> =>
+  new Promise((resolve, reject) => {
+    const target = new URL(path, origin);
+    const request = createHttpRequest(
+      target,
+      {
+        headers: [
+          "Authorization",
+          "[credential-slot]",
+          "Authorization",
+          "[mutated-credential-slot]",
+        ],
+      },
+      (response) => {
+        response.resume();
+        response.once("end", () => {
+          resolve(response.statusCode);
+        });
+      },
+    );
+    request.once("error", reject);
+    request.end();
   });
 
 const filterHttpFixtures: readonly LangfuseHttpFixture[] =
@@ -190,7 +252,7 @@ const stopServer = (server: Server): Promise<void> =>
 describe("Langfuse compatibility contract", () => {
   it("pins one immutable provisional manifest to reviewed official sources", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.manifestId).toBe(
-      "sha256:7bd05f96882a64268b6eee7773f1865c93c1783a7d7ea1183a701d524b9a8492",
+      "sha256:b2ab211b2ff802f408783bf14025a9a7b4af192f9e358e18066e53346cd7d672",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.status).toBe(
       "provisional-contract-only",
@@ -383,8 +445,13 @@ describe("Langfuse compatibility fixtures", () => {
       maximumTags: 32,
       maximumSpans: 256,
       maximumValueCharacters: 200,
+      valueCharacterUnit: "unicode-scalar-values-after-nfc",
+      invalidUnicode: "reject-unpaired-utf16-surrogates",
       maximumMetadataEntries: 72,
       maximumProjectionBytes: 16_384,
+      projectionByteEncoding: "utf-8-without-bom",
+      projectionBytePreimage:
+        "ecmascript-json-stringify([ascii-key-sorted-metadata-entry-tuples,session-value,ordered-tag-values])",
       maximumWireOverlayAttributes: 146,
       indexedCountGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
       spanCountGrammar: "^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-6])$",
@@ -442,6 +509,18 @@ describe("Langfuse compatibility fixtures", () => {
     expect(new RegExp(projection.spanCountGrammar, "u").test("0")).toBe(false);
     expect(new RegExp(projection.indexGrammar, "u").test("31")).toBe(true);
     expect(new RegExp(projection.indexGrammar, "u").test("32")).toBe(false);
+    const astralBoundary = "😀".repeat(200).normalize("NFC");
+    expect([...astralBoundary]).toHaveLength(projection.maximumValueCharacters);
+    expect(astralBoundary).toHaveLength(400);
+    expect([...`${astralBoundary}😀`]).toHaveLength(201);
+    const bytePreimage = JSON.stringify([
+      [["agentscope_tag_00", astralBoundary]],
+      "session-fixture",
+      ["fixture"],
+    ]);
+    expect(Buffer.byteLength(bytePreimage, "utf8")).toBe(
+      new TextEncoder().encode(bytePreimage).byteLength,
+    );
   });
 
   it("derives the pinned retrieval projection from documented OTLP overlays", () => {
@@ -580,6 +659,12 @@ describe("Langfuse portable-filter fixture replay", () => {
         `${fixtureServer.origin}${exactV1.request.path}?${exactV1Query}`,
       );
       expect(missingAuthorization.status).toBe(400);
+      expect(
+        await sendDuplicateAuthorization(
+          fixtureServer.origin,
+          `${exactV1.request.path}?${exactV1Query}`,
+        ),
+      ).toBe(400);
       exactV1Query.append("filter", exactV1.request.query.filter ?? "[]");
       const duplicateFilter = await fetch(
         `${fixtureServer.origin}${exactV1.request.path}?${exactV1Query}`,

@@ -25,8 +25,13 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
   maximumTags: 32,
   maximumSpans: 256,
   maximumValueCharacters: 200,
+  valueCharacterUnit: "unicode-scalar-values-after-nfc",
+  invalidUnicode: "reject-unpaired-utf16-surrogates",
   maximumMetadataEntries: 72,
   maximumProjectionBytes: 16_384,
+  projectionByteEncoding: "utf-8-without-bom",
+  projectionBytePreimage:
+    "ecmascript-json-stringify([ascii-key-sorted-metadata-entry-tuples,session-value,ordered-tag-values])",
   maximumWireOverlayAttributes: 146,
   indexedCountGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
   spanCountGrammar: "^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-6])$",
