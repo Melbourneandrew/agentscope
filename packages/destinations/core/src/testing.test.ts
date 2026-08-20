@@ -1,5 +1,6 @@
 import type { RedactedCanonicalTrace } from "@agentscope/protocol";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const protocolMock = vi.hoisted(() => ({ brands: new WeakSet<object>() }));
 vi.mock("@agentscope/protocol", () => ({
@@ -10,9 +11,17 @@ vi.mock("@agentscope/protocol", () => ({
 }));
 
 import { createReporterDeadline } from "./deadline.js";
-import { invokeReporter, type ReporterOutcome } from "./reporter.js";
+import { defineDestinationDescriptor } from "./descriptor.js";
+import {
+  createDestinationReporter,
+  createReporterReceipt,
+  invokeReporter,
+  type ReporterOutcome,
+} from "./reporter.js";
 import {
   createDestinationTestAdapter,
+  invokeDestinationReporterForTesting,
+  prepareDestinationReporterForTesting,
   REPORTER_TEST_BEHAVIORS,
 } from "./testing.js";
 
@@ -71,5 +80,79 @@ describe("DestinationTestAdapter", () => {
     expect(adapter.readDeliveryLedger()).toEqual([]);
     expect(before).toHaveLength(1);
     expect(adapter.readDeliveryLedger()).not.toBe(before);
+  });
+
+  it("prepares and invokes one actual remote descriptor behind the testing subpath", async () => {
+    const schema = z.strictObject({ endpoint: z.string() });
+    void schema.shape;
+    const descriptor = defineDestinationDescriptor({
+      descriptorVersion: 1,
+      destinationType: "@agentscope/destination-testing",
+      commandName: "testing",
+      settingsVersion: 1,
+      settingsSchema: schema,
+      defaultSettings: { endpoint: "https://example.com" },
+      credentialSlots: [],
+      documentationPath: "/docs/destinations/testing",
+      deliveryIdentitySupport: "duplicates-possible",
+      transport: {
+        kind: "remote",
+        resolveEndpoint: ({ endpoint }) => ({
+          url: endpoint,
+          allowInsecureLoopback: false,
+        }),
+      },
+      createReporter: ({ transport }) => {
+        expect(transport).not.toBeNull();
+        return createDestinationReporter({
+          report: () => Promise.resolve(createReporterReceipt("accepted")),
+        });
+      },
+    });
+    const reporter = prepareDestinationReporterForTesting({
+      descriptor,
+      settings: {},
+      credentials: {},
+      executor: () =>
+        Promise.resolve({
+          status: 200,
+          headers: {},
+          body: new Uint8Array(),
+        }),
+    });
+    await expect(
+      invokeDestinationReporterForTesting(reporter, {
+        traces: [trace("delivery-testing")],
+      }),
+    ).resolves.toEqual({ outcome: "accepted" });
+    const local = defineDestinationDescriptor({
+      descriptorVersion: 1,
+      destinationType: "@agentscope/destination-testing-local",
+      commandName: "testing-local",
+      settingsVersion: 1,
+      settingsSchema: schema,
+      defaultSettings: { endpoint: "local" },
+      credentialSlots: [],
+      documentationPath: "/docs/destinations/testing-local",
+      deliveryIdentitySupport: "duplicates-possible",
+      transport: { kind: "local" },
+      createReporter: () =>
+        createDestinationReporter({
+          report: () => Promise.resolve(createReporterReceipt("accepted")),
+        }),
+    });
+    expect(() =>
+      prepareDestinationReporterForTesting({
+        descriptor: local,
+        settings: {},
+        credentials: {},
+        executor: () =>
+          Promise.resolve({
+            status: 200,
+            headers: {},
+            body: new Uint8Array(),
+          }),
+      }),
+    ).toThrowError("destination.testing.remote-required");
   });
 });

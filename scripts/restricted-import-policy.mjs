@@ -20,6 +20,7 @@ const testingSpecifiers = [
   "@agentscope/protocol/testing",
 ];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
+const testEntrypointSource = /(?:^|\/)src\/testing\.ts$/u;
 const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const homeAuthoritySource = "packages/core/src/configuration/home.ts";
@@ -65,7 +66,12 @@ const assertNoCoreOnlyImports = (source, file, packageName) => {
 };
 
 const assertNoProductionTestingImports = (source, file, packageName) => {
-  if (packageName === "@agentscope/testkit" || testSource.test(file)) return;
+  if (
+    packageName === "@agentscope/testkit" ||
+    testSource.test(file) ||
+    testEntrypointSource.test(file)
+  )
+    return;
   for (const specifier of testingSpecifiers)
     if (source.includes(specifier))
       throw new Error(`${specifier} is test-only; forbidden import in ${file}`);
@@ -87,7 +93,12 @@ const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
     cliOnlySpecifiers.includes(specifier)
   )
     throw new Error(`${specifier} is CLI-only; forbidden import in ${file}`);
-  if (packageName === "@agentscope/testkit" || testSource.test(file)) return;
+  if (
+    packageName === "@agentscope/testkit" ||
+    testSource.test(file) ||
+    testEntrypointSource.test(file)
+  )
+    return;
   for (const testing of testingSpecifiers)
     if (specifier === testing)
       throw new Error(`${testing} is test-only; forbidden import in ${file}`);

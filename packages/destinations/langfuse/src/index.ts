@@ -1,4 +1,8 @@
-export { langfuseReporterPackageId } from "./reporter/index.js";
+export {
+  langfuseDestinationDescriptor,
+  langfuseReporterPackageId,
+  type LangfuseDestinationSettings,
+} from "./reporter/index.js";
 export { langfuseRetrieverPackageId } from "./retriever/index.js";
 export { LANGFUSE_COMPATIBILITY_MANIFEST } from "./compatibility.js";
 

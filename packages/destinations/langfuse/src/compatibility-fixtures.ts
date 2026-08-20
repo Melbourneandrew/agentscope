@@ -84,10 +84,6 @@ const rootFilter = {
 
 const rootProjectionAttributes = [
   ...Object.entries(rootMetadata).map(([key, value]) => ({
-    key,
-    value: { stringValue: value },
-  })),
-  ...Object.entries(rootMetadata).map(([key, value]) => ({
     key: `langfuse.observation.metadata.${key}`,
     value: { stringValue: value },
   })),

@@ -34,6 +34,8 @@ import {
   createRetrieverTestAdapter,
   RETRIEVER_CONTRACT_FIXTURE_VALUES,
   RETRIEVER_CONTRACT_QUERY_CASE_NAMES,
+  invokeDestinationReporterForTesting,
+  prepareDestinationReporterForTesting,
 } from "./dist/testing.js";
 
 const connectionId = createDestinationConnectionId(
@@ -116,6 +118,8 @@ try {
   );
   if (
     !reporterCases.some(({ name }) => name === "reporter:accept") ||
+    typeof prepareDestinationReporterForTesting !== "function" ||
+    typeof invokeDestinationReporterForTesting !== "function" ||
     typeof createRetrieverTestAdapter !== "function" ||
     RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length !== 22 ||
     queryMatrix.length !== RETRIEVER_CONTRACT_QUERY_CASE_NAMES.length ||
