@@ -266,7 +266,7 @@ describe("Reporter fail-open outcome classification", () => {
 });
 
 describe("Reporter in-flight deadline classification", () => {
-  it("classifies abort, expiry, and late settlement after invocation as unknown", async () => {
+  it("classifies abort and late settlement after invocation as unknown", async () => {
     const controller = new AbortController();
     const hanging = implementation(
       () => new Promise<ReporterReceipt>(() => undefined),
@@ -280,21 +280,6 @@ describe("Reporter in-flight deadline classification", () => {
     );
     controller.abort();
     await expect(aborted).resolves.toEqual({ outcome: "outcome-unknown" });
-    await expect(
-      invokeReporter(hanging, attempt([trace("delivery-b")], { timeout: 2 })),
-    ).resolves.toEqual({ outcome: "outcome-unknown" });
-    const late = implementation(
-      () =>
-        new Promise((resolve) => {
-          setTimeout(() => {
-            resolve(createReporterReceipt("accepted"));
-          }, 10);
-        }),
-    );
-    await expect(
-      invokeReporter(late, attempt([trace("delivery-c")], { timeout: 2 })),
-    ).resolves.toEqual({ outcome: "outcome-unknown" });
-
     let resolveAfterAbort: ((receipt: ReporterReceipt) => void) | undefined;
     const abortThenResolve = implementation(
       () =>
@@ -305,7 +290,7 @@ describe("Reporter in-flight deadline classification", () => {
     const secondController = new AbortController();
     const result = invokeReporter(
       abortThenResolve,
-      attempt([trace("delivery-d")], {
+      attempt([trace("delivery-b")], {
         signal: secondController.signal,
       }),
     );

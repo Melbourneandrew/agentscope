@@ -197,6 +197,10 @@ const ledgerOutcome = (
 export const createLangfuseDestinationTestAdapter =
   (): DestinationTestAdapter => {
     let ledger: ReporterTestLedgerEntry[] = [];
+    let resolveDeliveryAttempt: (() => void) | undefined;
+    let deliveryAttempt = new Promise<void>((resolve) => {
+      resolveDeliveryAttempt = resolve;
+    });
     return Object.freeze({
       createReporter: (behavior) => {
         let identityByTraceId = new Map<
@@ -217,6 +221,7 @@ export const createLangfuseDestinationTestAdapter =
               outcome: ledgerOutcome(behavior),
             }),
           );
+          resolveDeliveryAttempt?.();
         };
         const actual = prepareLangfuseReporter(
           executorForBehavior(behavior, recordRequest),
@@ -256,8 +261,12 @@ export const createLangfuseDestinationTestAdapter =
             }),
           ),
         ),
+      waitForDeliveryAttempt: () => deliveryAttempt,
       reset: () => {
         ledger = [];
+        deliveryAttempt = new Promise<void>((resolve) => {
+          resolveDeliveryAttempt = resolve;
+        });
       },
     });
   };

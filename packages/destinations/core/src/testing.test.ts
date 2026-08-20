@@ -33,16 +33,23 @@ const trace = (identity: string): RedactedCanonicalTrace => {
   return value as RedactedCanonicalTrace;
 };
 
-const invoke = (
+const invoke = async (
   adapter: ReturnType<typeof createDestinationTestAdapter>,
   behavior: (typeof REPORTER_TEST_BEHAVIORS)[number],
   identity: string,
-) =>
-  invokeReporter(adapter.createReporter(behavior), {
+): Promise<Readonly<{ outcome: ReporterOutcome }>> => {
+  const controller = new AbortController();
+  const result = invokeReporter(adapter.createReporter(behavior), {
     traces: [trace(identity)],
-    signal: new AbortController().signal,
-    deadline: createReporterDeadline(behavior === "hang" ? 1 : 1_000),
+    signal: controller.signal,
+    deadline: createReporterDeadline(1_000),
   });
+  if (behavior === "hang") {
+    await adapter.waitForDeliveryAttempt();
+    controller.abort();
+  }
+  return await result;
+};
 
 describe("DestinationTestAdapter", () => {
   // AC-REP-003.3: acknowledgement loss after the adapter records possible

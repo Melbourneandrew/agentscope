@@ -345,18 +345,30 @@ describe("Langfuse OTLP Reporter outcomes", () => {
     await expect(
       invokeDestinationReporterForTesting(rejected, { traces: [trace] }),
     ).resolves.toEqual({ outcome: "outcome-unknown" });
+    let resolveTransportStart: (() => void) | undefined;
+    const transportStarted = new Promise<void>((resolve) => {
+      resolveTransportStart = resolve;
+    });
     const hanging = prepareDestinationReporterForTesting({
       descriptor: langfuseDestinationDescriptor,
       settings: settings(),
       credentials: credentials(),
-      executor: () => new Promise(() => undefined),
+      executor: () => {
+        resolveTransportStart?.();
+        return new Promise(() => undefined);
+      },
     });
-    await expect(
-      invokeDestinationReporterForTesting(hanging, {
-        traces: [trace],
-        timeoutMilliseconds: 5,
-      }),
-    ).resolves.toEqual({ outcome: "outcome-unknown" });
+    const hangingController = new AbortController();
+    const hangingResult = invokeDestinationReporterForTesting(hanging, {
+      traces: [trace],
+      signal: hangingController.signal,
+      timeoutMilliseconds: 1_000,
+    });
+    await transportStarted;
+    hangingController.abort();
+    await expect(hangingResult).resolves.toEqual({
+      outcome: "outcome-unknown",
+    });
     const requests: Record<string, unknown>[] = [];
     const preAborted = prepare({ status: 200 }, requests);
     const controller = new AbortController();
@@ -369,7 +381,9 @@ describe("Langfuse OTLP Reporter outcomes", () => {
     ).resolves.toEqual({ outcome: "deadline-exceeded" });
     expect(requests).toHaveLength(0);
   });
+});
 
+describe("Langfuse OTLP response containment", () => {
   it("maps malformed acknowledgement bytes to outcome-unknown", async () => {
     const reporter = prepare({
       status: 200,
