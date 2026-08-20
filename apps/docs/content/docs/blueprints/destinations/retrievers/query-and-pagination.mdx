@@ -27,11 +27,11 @@ The retrieval query model gives humans and coding agents deterministic filters, 
 
 ### ADR-003: Use destination-qualified stable trace identity
 
-**Decision:** Every summary returns a `TraceLocator` containing the immutable connection ID, canonical W3C trace ID, and optional destination-native trace ID. The human CLI prints the connection name and canonical trace ID; structured output includes the full locator. `traces get` verifies both the selected connection and locator before retrieval.
+**Decision:** Every summary returns a `TraceLocator` containing the immutable connection ID, canonical W3C TraceId, optional destination-native trace ID, and optional bounded opaque destination revision. The revision identifies one immutable destination representation of that canonical trace; it is not a second trace identity, portable ordering key, cursor, or authorization credential. The human CLI prints the connection name and canonical TraceId; structured output includes the full locator. `traces get` verifies the selected connection and every supplied locator member before retrieval. A destination that exposes revisions defines one deterministic default selection for canonical-TraceId-only get and returns the selected revision in every summary and retrieved result; a full locator must retrieve that exact revision or return not found/incompatible rather than silently switching.
 
 **Context:** The same canonical trace may be reported to multiple destinations, and connection names can be renamed. A provider ID alone is neither portable nor globally meaningful.
 
-**Consequences:** Renaming a connection does not invalidate stored locators because immutable connection identity is authoritative. Copying only a canonical trace ID remains convenient with an explicit `--destination`, while a full structured locator prevents accidental cross-project retrieval in automation.
+**Consequences:** Renaming a connection does not invalidate stored locators because immutable connection identity is authoritative. Copying only a canonical TraceId remains convenient with an explicit `--destination` and uses the destination's documented deterministic selection, while a full structured locator prevents accidental cross-project or cross-revision retrieval in automation. Revision grammar and length are family-bounded; provider payloads, timestamps, content, credentials, and configuration are forbidden.
 
 ### ADR-004: Wrap provider cursors in a bound opaque cursor
 
