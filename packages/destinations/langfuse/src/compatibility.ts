@@ -21,11 +21,16 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
   tagCount: "agentscope_tags_count",
   tagIndexPrefix: "agentscope_tag_",
   modelTagPrefix: "agentscope:model:",
+  modelAttributeKeys: [
+    "llm.model_name",
+    "embedding.model_name",
+    "reranker.model_name",
+  ],
   maximumModels: 32,
   maximumTags: 32,
   maximumSpans: 256,
   maximumValueCharacters: 200,
-  valueCharacterUnit: "unicode-scalar-values-after-nfc",
+  valueCharacterUnit: "unicode-scalar-values-in-required-nfc",
   invalidUnicode: "reject-unpaired-utf16-surrogates",
   maximumMetadataEntries: 72,
   maximumProjectionBytes: 16_384,
@@ -33,6 +38,14 @@ export const LANGFUSE_PROJECTION_CONTRACT = {
   projectionBytePreimage:
     "ecmascript-json-stringify([ascii-key-sorted-metadata-entry-tuples,session-value,ordered-tag-values])",
   maximumWireOverlayAttributes: 146,
+  normalization: "require-unicode-nfc",
+  normalizationCollisions: "reject-before-transport",
+  modelsSource:
+    "all-governed-model-attributes-on-all-spans-first-occurrence-in-canonical-order",
+  tagsSource: "all-spans-first-occurrence-in-canonical-order",
+  wireTagOrder: "reserved-model-tags-then-safe-user-tags",
+  missingOptionalValues: "omit",
+  modelTagMaximumIncludesPrefix: true,
   indexedCountGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
   spanCountGrammar: "^(?:[1-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-6])$",
   indexGrammar: "^(?:0[0-9]|[12][0-9]|3[01])$",
@@ -173,7 +186,7 @@ const portableFilterConformance = filterProfiles.flatMap(
 const fixtureDigests = [
   {
     fixtureId: "otlp-v4-json-root-v1",
-    sha256: "6a1f1ec1af509f2afbed2ecdb35f4d240a2327aebe237a1c4c3ddc49cf3a1c32",
+    sha256: "7c79fdaf964e096419187bc93dcf4ba96a20bcaa08a12a97313b62f14ade096b",
   },
   {
     fixtureId: "observations-v2-root-search-v1",
@@ -407,6 +420,12 @@ const manifestSource = {
     missing: "malformed-response",
     duplicate: "malformed-response",
     summaryProjection: "root-observation-only",
+  },
+  reporterReceiptProof: {
+    acceptedStatus: 200,
+    responseMediaType: "ascii-case-insensitive-application-json",
+    responseMediaTypeParameters: "none-or-one-charset-utf-8",
+    missingWrongDuplicateOrAmbiguousMediaType: "outcome-unknown",
   },
   portableFilters,
   portableFilterConformance,

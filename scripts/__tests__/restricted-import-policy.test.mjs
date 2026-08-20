@@ -123,6 +123,16 @@ test("permits the destination testing entrypoint only in tests and testkit", () 
       'import { createDestinationTestAdapter } from "@agentscope/destinations-core/testing";\nvoid createDestinationTestAdapter;\n',
     );
     auditCoreFinalizationImports(value.root, value.packages);
+    const testingEntrypointDirectory = join(
+      value.root,
+      "packages/destination/src",
+    );
+    mkdirSync(testingEntrypointDirectory, { recursive: true });
+    writeFileSync(
+      join(testingEntrypointDirectory, "testing.ts"),
+      'import { createDestinationTestAdapter } from "@agentscope/destinations-core/testing";\nvoid createDestinationTestAdapter;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
     const production = join(
       value.root,
       "packages/destination/production-adapter.ts",

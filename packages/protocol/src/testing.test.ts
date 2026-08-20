@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { parseCanonicalTraceGraph } from "./schema/canonical-graph.js";
-import { createSanitizedCanonicalTraceFixture } from "./testing.js";
+import {
+  createSanitizedCanonicalTraceFixture,
+  createSanitizedRedactedCanonicalTraceFixture,
+} from "./testing.js";
+import { isRedactedCanonicalTrace } from "./index.js";
 
 describe("Protocol testing fixture export", () => {
   it("returns fresh valid canonical fixture data", () => {
@@ -14,5 +18,27 @@ describe("Protocol testing fixture export", () => {
     expect(
       (second as { resourceSpans: unknown[] }).resourceSpans.length,
     ).toBeGreaterThan(0);
+  });
+
+  it("creates distinct branded redacted fixtures with bounded semantic options", () => {
+    const first = createSanitizedRedactedCanonicalTraceFixture({
+      sequence: 1,
+      sessionId: "session-a",
+      tags: ["safe"],
+      modelName: "model-a",
+    });
+    const second = createSanitizedRedactedCanonicalTraceFixture({
+      sequence: 2,
+    });
+    const defaulted = createSanitizedRedactedCanonicalTraceFixture();
+    expect(isRedactedCanonicalTrace(first)).toBe(true);
+    expect(first.delivery.identity).not.toBe(second.delivery.identity);
+    expect(defaulted.delivery.identity).not.toBe(first.delivery.identity);
+    expect(JSON.stringify(first.graph)).toContain("session-a");
+    expect(JSON.stringify(first.graph)).toContain("model-a");
+    for (const sequence of [-1, 1.5, 32])
+      expect(() =>
+        createSanitizedRedactedCanonicalTraceFixture({ sequence }),
+      ).toThrowError("protocol.testing.fixture.invalid");
   });
 });

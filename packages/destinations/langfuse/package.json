@@ -25,7 +25,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "node ../../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json",
+    "build": "node ../../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings=0",
     "test": "vitest run --config ../../../vitest.config.ts",
@@ -35,7 +35,8 @@
   },
   "dependencies": {
     "@agentscope/destinations-core": "workspace:*",
-    "@agentscope/protocol": "workspace:*"
+    "@agentscope/protocol": "workspace:*",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

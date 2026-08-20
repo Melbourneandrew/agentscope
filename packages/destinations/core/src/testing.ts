@@ -27,3 +27,9 @@ export {
   type RetrieverTestFixture,
   type RetrieverTestLedgerEntry,
 } from "./testing-retriever.js";
+export {
+  invokeDestinationReporterForTesting,
+  prepareDestinationReporterForTesting,
+  type DestinationReporterTestAttempt,
+  type DestinationReporterTestPreparation,
+} from "./testing-orchestration.js";
