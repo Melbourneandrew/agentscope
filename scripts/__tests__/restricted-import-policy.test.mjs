@@ -166,6 +166,7 @@ test("rejects testing entrypoints from Core production sources", () => {
   const value = fixture();
   try {
     for (const [name, specifier] of [
+      ["langfuse-testing", "@agentscope/destination-langfuse/testing"],
       ["destination-testing", "@agentscope/destinations-core/testing"],
       ["harness-testing", "@agentscope/harnesses-core/testing"],
       ["protocol-testing", "@agentscope/protocol/testing"],
