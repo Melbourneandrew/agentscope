@@ -28,11 +28,16 @@ export type ReporterTestLedgerEntry = Readonly<{
 export type DestinationTestAdapter = Readonly<{
   createReporter: (behavior: ReporterTestBehavior) => Reporter;
   readDeliveryLedger: () => readonly ReporterTestLedgerEntry[];
+  waitForDeliveryAttempt: () => Promise<void>;
   reset: () => void;
 }>;
 
 export const createDestinationTestAdapter = (): DestinationTestAdapter => {
   let ledger: ReporterTestLedgerEntry[] = [];
+  let resolveDeliveryAttempt: (() => void) | undefined;
+  let deliveryAttempt = new Promise<void>((resolve) => {
+    resolveDeliveryAttempt = resolve;
+  });
   const append = (
     deliveryIdentities: readonly DeliveryIdentity[],
     outcome: ReporterTestLedgerEntry["outcome"],
@@ -43,6 +48,7 @@ export const createDestinationTestAdapter = (): DestinationTestAdapter => {
         outcome,
       }),
     );
+    resolveDeliveryAttempt?.();
   };
   return Object.freeze({
     createReporter: (behavior) =>
@@ -88,8 +94,12 @@ export const createDestinationTestAdapter = (): DestinationTestAdapter => {
           }),
         ),
       ),
+    waitForDeliveryAttempt: () => deliveryAttempt,
     reset: () => {
       ledger = [];
+      deliveryAttempt = new Promise<void>((resolve) => {
+        resolveDeliveryAttempt = resolve;
+      });
     },
   });
 };

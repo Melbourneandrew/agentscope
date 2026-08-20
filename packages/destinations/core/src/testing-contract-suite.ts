@@ -30,6 +30,7 @@ import {
 import {
   REPORTER_TEST_BEHAVIORS,
   type DestinationTestAdapter,
+  type ReporterTestBehavior,
 } from "./testing-reporter.js";
 import type { RetrieverTestAdapter } from "./testing-retriever.js";
 
@@ -66,6 +67,42 @@ const reporterOutcomeByBehavior: Readonly<Record<string, ReporterOutcome>> =
     hang: "outcome-unknown",
   });
 
+const runReporterContractCase = async (
+  input: ReporterContractSuiteInput,
+  behavior: ReporterTestBehavior,
+): Promise<void> => {
+  input.adapter.reset();
+  const controller = new AbortController();
+  const resultPromise = invokeReporter(input.adapter.createReporter(behavior), {
+    traces: input.traces,
+    signal: controller.signal,
+    deadline: createReporterDeadline(1_000),
+  });
+  if (behavior === "hang") {
+    const attempted = await Promise.race([
+      input.adapter.waitForDeliveryAttempt().then(() => true),
+      resultPromise.then(() => false),
+    ]);
+    assert(attempted, "destination.contract.reporter.hang.delivery-attempt");
+    controller.abort();
+  }
+  const result = await resultPromise;
+  assert(
+    result.outcome === reporterOutcomeByBehavior[behavior],
+    `destination.contract.reporter.${behavior}.outcome`,
+  );
+  const ledger = input.adapter.readDeliveryLedger();
+  assert(
+    ledger.length === 1,
+    `destination.contract.reporter.${behavior}.ledger-count`,
+  );
+  assert(
+    ledger[0]?.deliveryIdentities.join("\0") ===
+      input.traces.map((trace) => trace.delivery.identity).join("\0"),
+    `destination.contract.reporter.${behavior}.delivery-identity`,
+  );
+};
+
 export const createReporterContractSuite = (
   input: ReporterContractSuiteInput,
 ): readonly DestinationContractCase[] =>
@@ -73,31 +110,7 @@ export const createReporterContractSuite = (
     ...REPORTER_TEST_BEHAVIORS.map((behavior) =>
       Object.freeze({
         name: `reporter:${behavior}`,
-        run: async (): Promise<void> => {
-          input.adapter.reset();
-          const result = await invokeReporter(
-            input.adapter.createReporter(behavior),
-            {
-              traces: input.traces,
-              signal: new AbortController().signal,
-              deadline: createReporterDeadline(behavior === "hang" ? 1 : 1_000),
-            },
-          );
-          assert(
-            result.outcome === reporterOutcomeByBehavior[behavior],
-            `destination.contract.reporter.${behavior}.outcome`,
-          );
-          const ledger = input.adapter.readDeliveryLedger();
-          assert(
-            ledger.length === 1,
-            `destination.contract.reporter.${behavior}.ledger-count`,
-          );
-          assert(
-            ledger[0]?.deliveryIdentities.join("\0") ===
-              input.traces.map((trace) => trace.delivery.identity).join("\0"),
-            `destination.contract.reporter.${behavior}.delivery-identity`,
-          );
-        },
+        run: () => runReporterContractCase(input, behavior),
       }),
     ),
     Object.freeze({
