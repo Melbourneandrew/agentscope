@@ -98,6 +98,7 @@ export type CliExecutionState = {
 };
 
 export type InstallCommandRuntimeInput = Readonly<{
+  createServices?: () => unknown;
   modules: readonly RuntimeModule[];
   output: CliOutput;
   program: Command;
@@ -238,8 +239,9 @@ async function executeCommand(
         planPresented = true;
       },
     });
+    const services = input.createServices?.() ?? input.services;
     const execution: unknown = module.execute(
-      input.services,
+      services,
       parsedInput.data,
       context,
     );

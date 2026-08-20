@@ -133,6 +133,64 @@ describe("process output", () => {
   });
 });
 
+describe("production bootstrap containment", () => {
+  it("does not construct services for help or version", async () => {
+    const captured = createCapturedOutput();
+    let calls = 0;
+    const createServices = () => {
+      calls += 1;
+      throw new Error("CANARY_HOME_PATH");
+    };
+
+    expect(
+      await runCli(["--help"], {
+        createServices,
+        output: captured.output,
+        version: "1.2.3",
+      }),
+    ).toBe(0);
+    expect(
+      await runCli(["--version"], {
+        createServices,
+        output: captured.output,
+        version: "1.2.3",
+      }),
+    ).toBe(0);
+    expect(calls).toBe(0);
+    expect(captured.stderr).toEqual([]);
+  });
+
+  it("contains service-construction failure behind the command diagnostic", async () => {
+    const captured = createCapturedOutput();
+    const exitCode = await runCli(["doctor", "--output", "json"], {
+      createServices: () => {
+        throw new Error("CANARY_HOME_PATH");
+      },
+      output: captured.output,
+      version: "1.2.3",
+    });
+
+    expect(exitCode).toBe(70);
+    expect(captured.stdout).toEqual([]);
+    expect(captured.stderr).toEqual([
+      '{"category":"internal-error","code":"cli.internal","command":"agentscope doctor","schema":"agentscope.cli.diagnostic.v1"}\n',
+    ]);
+    expect(captured.stderr.join("")).not.toContain("CANARY_HOME_PATH");
+  });
+
+  it("rejects ambiguous direct services and service factories", async () => {
+    const captured = createCapturedOutput();
+    expect(
+      await runCli(["--help"], {
+        createServices: () => ({}),
+        output: captured.output,
+        services: {},
+        version: "1.2.3",
+      }),
+    ).toBe(70);
+  });
+});
+
 describe("agentscope root command failures", () => {
   it("binds Commander help and error writers to the CLI output", () => {
     const captured = createCapturedOutput();

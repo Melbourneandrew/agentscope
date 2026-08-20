@@ -29,6 +29,7 @@ const MAXIMUM_ARGUMENT_CODE_UNITS = 8_192;
 const unsafeArgumentCharacter = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
 export type CreateProgramInput = Readonly<{
+  createServices?: () => unknown;
   modules?: readonly RuntimeCliCommandModule[];
   output: CliOutput;
   registry?: readonly CommandRegistration[];
@@ -38,6 +39,7 @@ export type CreateProgramInput = Readonly<{
 }>;
 
 export type RunCliInput = Readonly<{
+  createServices?: () => unknown;
   modules?: readonly RuntimeCliCommandModule[];
   output?: CliOutput;
   registry?: readonly CommandRegistration[];
@@ -115,6 +117,8 @@ function requestedOutputMode(arguments_: readonly string[]): CliOutputMode {
 }
 
 export function createProgram(input: CreateProgramInput): Command {
+  if (input.createServices !== undefined && input.services !== undefined)
+    throw new Error("cli.runtime.invalid");
   const version = semanticVersionSchema.parse(input.version);
   const registry = input.registry ?? commandRegistry;
   const root = registry.find((registration) => registration.kind === "root");
@@ -136,6 +140,9 @@ export function createProgram(input: CreateProgramInput): Command {
       },
     });
   installCommandRuntime({
+    ...(input.createServices === undefined
+      ? {}
+      : { createServices: input.createServices }),
     modules:
       input.modules ??
       Object.freeze([
