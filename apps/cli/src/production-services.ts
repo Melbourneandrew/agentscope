@@ -3,8 +3,13 @@ import { randomBytes } from "node:crypto";
 import {
   compileCredentialBackendRegistry,
   createCiEnvironmentCredentialAdapter,
+  createCredentialResolutionContext,
+  createOperationalStateStore,
   DEFAULT_REDACTION_POLICY_REGISTRY,
+  inspectGitContextForDoctor,
   type CredentialBackendRegistry,
+  type ConfigurationOwnerState,
+  type ConfigurationProcessIdentity,
   type RedactionPolicyRegistry,
 } from "@agentscope/core";
 import {
@@ -24,6 +29,7 @@ import {
   setDestinationRouting,
   unconfigureDestinationConnection,
   type ConfigurationManagementRuntime,
+  type AgentscopeHome,
   type AgentscopeHomeResolver,
   type ConfigurationStore,
 } from "@agentscope/core/configuration-management";
@@ -50,6 +56,9 @@ import {
   createHarnessCliServices,
   type CreateHarnessCliServicesInput,
 } from "./harness-services.js";
+import type { CliDoctorServices } from "./doctor-commands.js";
+import { createDoctorCliServices } from "./doctor-services.js";
+import type { DestinationReachabilityProbe } from "@agentscope/destinations-core";
 import type { CliTraceServices } from "./trace-commands.js";
 
 // Type-only edges declare the process-private build entries to the source
@@ -105,7 +114,9 @@ const mapError = (error: unknown): CliDiagnostic => {
 type ProductionState = Readonly<{
   credentialBackendRegistry: CredentialBackendRegistry;
   environment: object;
+  home: AgentscopeHome;
   management: ConfigurationManagementRuntime;
+  owner: ConfigurationProcessIdentity;
   policyRegistry: RedactionPolicyRegistry;
   registry: DestinationRegistry;
   store: ConfigurationStore;
@@ -123,7 +134,10 @@ export type CreateProductionCliServicesInput = Readonly<{
   credentialBackendRegistry?: CredentialBackendRegistry;
   policyRegistry?: RedactionPolicyRegistry;
   registry?: DestinationRegistry;
+  reachabilityProbes?: readonly DestinationReachabilityProbe[];
   transportExecutor?: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
+  gitExecutable?: string;
+  workspace?: string;
 }>;
 
 const createState = (
@@ -146,13 +160,35 @@ const createState = (
         createCiEnvironmentCredentialAdapter(input.environment ?? process.env),
       ]),
     environment: input.environment ?? process.env,
+    home,
     management: createConfigurationManagementRuntime(registry, store, owner),
+    owner,
     policyRegistry: input.policyRegistry ?? DEFAULT_REDACTION_POLICY_REGISTRY,
     registry,
     store,
     transportExecutor: input.transportExecutor ?? unavailableTransportExecutor,
   });
 };
+
+const productionOwnerState =
+  (
+    current: ConfigurationProcessIdentity,
+  ): ((owner: ConfigurationProcessIdentity) => ConfigurationOwnerState) =>
+  (owner) => {
+    if (
+      owner.processId === current.processId &&
+      owner.processStartIdentity === current.processStartIdentity
+    )
+      return "live";
+    try {
+      process.kill(owner.processId, 0);
+      return "unknown";
+    } catch (error) {
+      return error instanceof Error && "code" in error && error.code === "ESRCH"
+        ? "dead"
+        : "unknown";
+    }
+  };
 
 const snapshotGeneration = async (state: ProductionState): Promise<number> =>
   (await readConfigurationSnapshot(state.store)).generation;
@@ -421,11 +457,47 @@ const createTraceServices = (state: ProductionState): CliTraceServices => ({
   },
 });
 
-export const createProductionCliServices = (
-  input: CreateProductionCliServicesInput = {},
-): CliConfigurationServices & CliHarnessServices & CliTraceServices => {
-  const state = createState(input);
-  const list: CliConfigurationServices["listDestinations"] = async () => {
+const createProductionDoctorServices = (
+  state: ProductionState,
+  input: CreateProductionCliServicesInput,
+  harnessServices: CliHarnessServices,
+): CliDoctorServices =>
+  createDoctorCliServices({
+    configurationStore: state.store,
+    credentialRegistry: state.credentialBackendRegistry,
+    credentialResolutionContext: createCredentialResolutionContext(
+      "interactive",
+      new AbortController().signal,
+    ),
+    gitInspector: () =>
+      inspectGitContextForDoctor({
+        gitExecutable:
+          input.gitExecutable ??
+          (process.platform === "win32"
+            ? "C:\\Program Files\\Git\\cmd\\git.exe"
+            : "/usr/bin/git"),
+        timeoutMilliseconds: 1_000,
+        workspace: input.workspace ?? process.cwd(),
+      }),
+    harnessServices,
+    operationalStateStore: createOperationalStateStore(state.home, state.owner),
+    ownerState: productionOwnerState(state.owner),
+    ...(input.reachabilityProbes === undefined
+      ? {}
+      : {
+          reachabilityProbes: input.reachabilityProbes.map((probe) => {
+            if (
+              !getDestinationDescriptor(state.registry, probe.destinationType)
+            )
+              throw new Error("cli.doctor.invalid");
+            return probe;
+          }),
+        }),
+  });
+
+const createListService =
+  (state: ProductionState): CliConfigurationServices["listDestinations"] =>
+  async () => {
     try {
       return success({
         connections: [...(await listDestinationConnections(state.management))],
@@ -434,6 +506,16 @@ export const createProductionCliServices = (
       return failure(mapError(error));
     }
   };
+
+export const createProductionCliServices = (
+  input: CreateProductionCliServicesInput = {},
+): CliConfigurationServices &
+  CliDoctorServices &
+  CliHarnessServices &
+  CliTraceServices => {
+  const state = createState(input);
+  const harnessServices = createHarnessCliServices(input.harnesses);
+  const list = createListService(state);
   const services: CliConfigurationServices = {
     configureDestination: async (input) => {
       try {
@@ -535,7 +617,8 @@ export const createProductionCliServices = (
   };
   return Object.freeze({
     ...services,
-    ...createHarnessCliServices(input.harnesses),
+    ...createProductionDoctorServices(state, input, harnessServices),
+    ...harnessServices,
     ...createTraceServices(state),
   });
 };

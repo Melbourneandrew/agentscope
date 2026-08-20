@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +6,7 @@ import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-man
 import {
   createDestinationRetriever,
   createDestinationReporter,
+  defineDestinationReachabilityProbe,
   createRetrieverFailure,
   createReporterReceipt,
   createRetrieverSearchPage,
@@ -22,6 +23,8 @@ import { z } from "zod";
 
 import { createCapturedOutput } from "./__tests__/cli-fixture.js";
 import { runCli } from "./program.js";
+
+// AC-DOC-001.3 AC-DOC-001.4 AC-DOC-001.6
 import { createProductionCliServices } from "./production-services.js";
 
 const settingsSchema = z.strictObject({ project: z.string() });
@@ -108,7 +111,10 @@ afterEach(async () => {
   );
 });
 
-const productionFixture = async (prefix: string) => {
+const productionFixture = async (
+  prefix: string,
+  overrides: Parameters<typeof createProductionCliServices>[0] = {},
+) => {
   const root = await mkdtemp(join(tmpdir(), prefix));
   roots.push(root);
   const homeResolver = createAgentscopeHomeResolver({
@@ -123,6 +129,7 @@ const productionFixture = async (prefix: string) => {
       environment: { EXAMPLE_API_KEY: "secret" },
       homeResolver,
       registry,
+      ...overrides,
     }),
   };
 };
@@ -224,6 +231,75 @@ describe("production configuration composition", () => {
     completePlanWrite?.();
     await expect(invocation).resolves.toBe(0);
     await expect(access(join(root, "config.json"))).resolves.toBeUndefined();
+  });
+});
+
+describe("production Doctor composition", () => {
+  it("rejects a destination-declared probe absent from the exact registry", async () => {
+    await expect(
+      productionFixture("agentscope-cli-doctor-registry-", {
+        reachabilityProbes: [
+          defineDestinationReachabilityProbe({
+            destinationType: "@agentscope/destination-unknown",
+            inspect: () => Promise.resolve("available"),
+          }),
+        ],
+      }),
+    ).rejects.toThrow("cli.doctor.invalid");
+  });
+
+  it("uses the approved home, real Git inspector, and opaque credential checks", async () => {
+    const { services } = await productionFixture("agentscope-cli-doctor-");
+    await services.init({ apply: true, presentPlan });
+    await services.configureDestination({
+      credentialEnvironment: ["api-key=EXAMPLE_API_KEY"],
+      name: "secret",
+      settingsJson: JSON.stringify({ project: "fixture" }),
+      type: "secret-example",
+    });
+
+    const result = await services.doctor({
+      fix: false,
+      presentPlan: () => Promise.reject(new Error("unreachable")),
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("unreachable");
+    expect(result.value.findings.map(({ code }) => code)).toEqual(
+      expect.arrayContaining([
+        "doctor.configuration.valid",
+        "doctor.credential.available",
+      ]),
+    );
+    expect(JSON.stringify(result)).not.toContain("EXAMPLE_API_KEY");
+  });
+
+  it("classifies a live process with a different start identity as unknown", async () => {
+    const { root, services } = await productionFixture(
+      "agentscope-cli-doctor-owner-",
+    );
+    await mkdir(join(root, "health"), { recursive: true });
+    await writeFile(
+      join(root, "health", "operational-state.lock"),
+      `${JSON.stringify({
+        version: 1,
+        owner: {
+          processId: process.pid,
+          processStartIdentity: `process-start-v1-${"f".repeat(64)}`,
+        },
+        token: "e".repeat(32),
+      })}\n`,
+    );
+
+    const result = await services.doctor({
+      fix: false,
+      presentPlan: () => Promise.reject(new Error("unreachable")),
+    });
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("unreachable");
+    expect(result.value.findings.map(({ code }) => code)).toContain(
+      "doctor.operational-state.lock-owner-unknown",
+    );
   });
 });
 

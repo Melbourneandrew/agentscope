@@ -15,6 +15,7 @@ import { installCommandRuntime } from "./command-runtime.js";
 import { commandRegistry } from "./command-registry.js";
 import type { CommandRegistration } from "./command-registry.js";
 import { configurationCommandModules } from "./configuration-commands.js";
+import { doctorCommandModules } from "./doctor-commands.js";
 import { harnessCommandModules } from "./harness-commands.js";
 import { traceCommandModules } from "./trace-commands.js";
 import type { CliOutput } from "./presentation.js";
@@ -139,6 +140,7 @@ export function createProgram(input: CreateProgramInput): Command {
       input.modules ??
       Object.freeze([
         ...configurationCommandModules,
+        ...doctorCommandModules,
         ...harnessCommandModules,
         ...traceCommandModules,
       ]),

@@ -20,7 +20,7 @@ import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 
-// AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2
+// AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.3 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
 const artifactDirectory = resolve(repositoryRoot, "artifacts/npm");
@@ -270,6 +270,24 @@ try {
     schema: "agentscope.cli.result.v1",
   });
   assert.equal(harnesses.stderr, "");
+  const doctor = run(
+    executable,
+    ["doctor", "--fix", "--output", "json"],
+    executableOptions,
+  );
+  const doctorReport = JSON.parse(doctor.stdout);
+  assert.equal(doctor.stderr, "");
+  assert.equal(doctorReport.command, "agentscope doctor");
+  assert.equal(doctorReport.dataSchema, "agentscope.cli.doctor.v1");
+  assert.equal(doctorReport.records.length, 1);
+  assert.equal(doctorReport.records[0].fixed, false);
+  assert.deepEqual(doctorReport.records[0].repairs, []);
+  assert.ok(
+    doctorReport.records[0].findings.some(
+      (finding) => finding.code === "doctor.configuration.missing",
+    ),
+  );
+  assert.doesNotMatch(doctor.stdout, new RegExp(installRoot, "u"));
   for (const mode of ["json", "jsonl"]) {
     const agentscopeHome = join(installRoot, `agentscope-home-${mode}`);
     mkdirSync(agentscopeHome);

@@ -36,6 +36,8 @@ describe("agentscope root command", () => {
       Commands:
         destination                    Configure and inspect named trace destination
                                        connections.
+        doctor [options]               Inspect installation health and optionally
+                                       apply proof-bound safe repairs.
         harness                        Discover harnesses and inspect or migrate owned
                                        integrations.
         init [options]                 Inspect the machine and produce or apply a

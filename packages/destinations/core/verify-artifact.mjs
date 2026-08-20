@@ -8,8 +8,10 @@ import {
   createRetrieverSuccess,
   createTraceLocator,
   createTraceSummary,
+  defineDestinationReachabilityProbe,
   defineDestinationDescriptor,
   executeBoundDestinationRequest,
+  isDestinationReachabilityProbe,
   parseDestinationSettings,
 } from "./dist/index.js";
 import {
@@ -37,6 +39,29 @@ import {
 const connectionId = createDestinationConnectionId(
   "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 );
+const reachabilityProbe = defineDestinationReachabilityProbe({
+  destinationType: "@agentscope/destination-example",
+  inspect: () => Promise.resolve("available"),
+});
+if (
+  !isDestinationReachabilityProbe(reachabilityProbe) ||
+  isDestinationReachabilityProbe({ ...reachabilityProbe })
+)
+  throw new Error("Destination reachability brand is unavailable.");
+for (const destinationType of [
+  "@agentscope/destination--invalid",
+  "@agentscope/destination-invalid-",
+]) {
+  try {
+    defineDestinationReachabilityProbe({
+      destinationType,
+      inspect: () => Promise.resolve("available"),
+    });
+  } catch (error) {
+    if (error?.code === "destination.reachability.invalid") continue;
+  }
+  throw new Error("Destination reachability identity drift was accepted.");
+}
 const schema = z.strictObject({ endpoint: z.string() });
 void schema.shape;
 const materializeRoot = (candidate) => {

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  inspectGitContextForDoctor,
   probeGitForTesting,
   resolveGitContextForCore,
   resolveGitContextForTesting,
@@ -469,5 +470,110 @@ describe("snapshot-bound Git command timeout closure", () => {
     expect(calls).toBe(2);
     expect(observedTimeouts[0]).toBeLessThanOrEqual(50);
     expect(observedTimeouts[1]).toBeLessThan(observedTimeouts[0]!);
+  });
+});
+
+describe("Doctor Git projection", () => {
+  it("reports only closed availability state for a repository", async () => {
+    const { repository } = await fixture();
+    await runFixtureGit(repository, ["init", "-q"]);
+    await runFixtureGit(repository, [
+      "config",
+      "user.email",
+      "fixture@example.invalid",
+    ]);
+    await runFixtureGit(repository, ["config", "user.name", "Fixture"]);
+    await runFixtureGit(repository, [
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "fixture",
+    ]);
+
+    await expect(
+      inspectGitContextForDoctor({
+        gitExecutable: "/usr/bin/git",
+        timeoutMilliseconds: 1_000,
+        workspace: repository,
+      }),
+    ).resolves.toEqual({
+      head: "branch",
+      repository: "available",
+      workspace: "available",
+    });
+
+    await runFixtureGit(repository, ["checkout", "--detach", "-q"]);
+    await expect(
+      inspectGitContextForDoctor({
+        gitExecutable: "/usr/bin/git",
+        timeoutMilliseconds: 1_000,
+        workspace: repository,
+      }),
+    ).resolves.toEqual({
+      head: "detached",
+      repository: "available",
+      workspace: "available",
+    });
+  });
+
+  it("collapses an unavailable workspace without exposing its path", async () => {
+    await expect(
+      inspectGitContextForDoctor({
+        gitExecutable: "/usr/bin/git",
+        timeoutMilliseconds: 100,
+        workspace: "/definitely/not/an/agentscope-workspace",
+      }),
+    ).resolves.toEqual({
+      head: "unavailable",
+      repository: "unavailable",
+      workspace: "unavailable",
+    });
+  });
+
+  it("rejects hostile Doctor inputs without invoking accessors", async () => {
+    let reads = 0;
+    const hostile = {
+      gitExecutable: "/usr/bin/git",
+      timeoutMilliseconds: 100,
+      get workspace() {
+        reads += 1;
+        return "/tmp";
+      },
+    };
+    await expect(inspectGitContextForDoctor(hostile)).resolves.toEqual({
+      head: "unavailable",
+      repository: "unavailable",
+      workspace: "unavailable",
+    });
+    await expect(inspectGitContextForDoctor(null as never)).resolves.toEqual({
+      head: "unavailable",
+      repository: "unavailable",
+      workspace: "unavailable",
+    });
+    expect(reads).toBe(0);
+    await expect(
+      inspectGitContextForDoctor(
+        new Proxy(hostile, {
+          ownKeys: () => {
+            throw new Error("CANARY_SECRET");
+          },
+        }),
+      ),
+    ).resolves.toEqual({
+      head: "unavailable",
+      repository: "unavailable",
+      workspace: "unavailable",
+    });
+    await expect(
+      inspectGitContextForDoctor({
+        gitExecutable: "/usr/bin/git",
+        timeoutMilliseconds: 0,
+        workspace: "/tmp",
+      }),
+    ).resolves.toEqual({
+      head: "unavailable",
+      repository: "unavailable",
+      workspace: "unavailable",
+    });
   });
 });

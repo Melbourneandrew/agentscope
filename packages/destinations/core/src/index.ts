@@ -19,6 +19,14 @@ export {
   type RetrieverFactoryContext,
 } from "./descriptor.js";
 export {
+  DestinationReachabilityError,
+  defineDestinationReachabilityProbe,
+  isDestinationReachabilityProbe,
+  type DestinationReachabilityProbe,
+  type DestinationReachabilityProbeInput,
+  type DestinationReachabilityState,
+} from "./reachability.js";
+export {
   isReporterDeadline,
   MAXIMUM_REPORTER_TIMEOUT_MILLISECONDS,
   ReporterDeadlineError,

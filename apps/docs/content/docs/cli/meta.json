@@ -2,6 +2,7 @@
   "pages": [
     "index",
     "destination",
+    "doctor",
     "harness",
     "init",
     "install",

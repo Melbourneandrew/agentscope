@@ -384,6 +384,92 @@ export const resolveGitContextForCore = (
     inspectPaths: inspectPathsInChildForCore,
   });
 
+export type DoctorGitInspection = Readonly<{
+  repository: "available" | "unavailable";
+  head: "branch" | "detached" | "unavailable";
+  workspace: "available" | "unavailable";
+}>;
+
+type DoctorGitInspectionInput = Readonly<{
+  workspace: string;
+  gitExecutable: string;
+  timeoutMilliseconds: number;
+}>;
+
+const unavailableDoctorGitInspection = (): DoctorGitInspection =>
+  Object.freeze({
+    head: "unavailable",
+    repository: "unavailable",
+    workspace: "unavailable",
+  });
+
+const exactDoctorGitInput = (
+  input: DoctorGitInspectionInput,
+): DoctorGitInspectionInput | undefined => {
+  if (typeof input !== "object" || input === null) return undefined;
+  let descriptors: PropertyDescriptorMap;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(input);
+  } catch {
+    return undefined;
+  }
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    Object.keys(descriptors).sort().join(",") !==
+      "gitExecutable,timeoutMilliseconds,workspace" ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+  )
+    return undefined;
+  const gitExecutable: unknown = descriptors.gitExecutable?.value;
+  const timeoutMilliseconds: unknown = descriptors.timeoutMilliseconds?.value;
+  const workspace: unknown = descriptors.workspace?.value;
+  if (
+    typeof gitExecutable !== "string" ||
+    typeof workspace !== "string" ||
+    !Number.isSafeInteger(timeoutMilliseconds) ||
+    (timeoutMilliseconds as number) <= 0 ||
+    (timeoutMilliseconds as number) > MAXIMUM_GIT_STAGE_MILLISECONDS
+  )
+    return undefined;
+  return Object.freeze({
+    gitExecutable,
+    timeoutMilliseconds: timeoutMilliseconds as number,
+    workspace,
+  });
+};
+
+export const inspectGitContextForDoctor = async (
+  input: DoctorGitInspectionInput,
+): Promise<DoctorGitInspection> => {
+  const exact = exactDoctorGitInput(input);
+  if (!exact) return unavailableDoctorGitInspection();
+  const result = await resolveGitContextForCore({
+    candidates: Object.freeze([
+      Object.freeze({ path: exact.workspace, source: "process" as const }),
+    ]),
+    gitExecutable: exact.gitExecutable,
+    remainingMilliseconds: exact.timeoutMilliseconds,
+  });
+  const fields = new Set(result.fields.map((entry) => entry.field));
+  const workspace = fields.has("agentscope.workspace.directory")
+    ? "available"
+    : "unavailable";
+  const repository = fields.has("vcs.ref.head.revision")
+    ? "available"
+    : "unavailable";
+  const head = fields.has("vcs.ref.head.name")
+    ? "branch"
+    : result.unavailable.some(
+          (entry) =>
+            entry.field === "vcs.ref.head.name" &&
+            entry.state === "not-applicable" &&
+            entry.reason === "detached-head",
+        )
+      ? "detached"
+      : "unavailable";
+  return Object.freeze({ head, repository, workspace });
+};
+
 export const resolveGitContextForTesting = (
   input: Readonly<{
     candidates: readonly WorkspaceCandidate[];
