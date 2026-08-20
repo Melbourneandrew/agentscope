@@ -31,7 +31,7 @@ Retrievers let a named Trace Destination search and reconstruct previously repor
 
 **Context:** A user may configure multiple Langfuse projects and a Local SQLite database. A type name such as `langfuse` is not enough to identify which repository is queried.
 
-**Consequences:** Search results carry the connection name, immutable connection identifier, destination type, canonical trace ID, and destination-native trace ID when one exists. A trace reference from one connection cannot be used against another.
+**Consequences:** Search results carry the connection name, immutable connection identifier, destination type, canonical trace ID, destination-native trace ID when one exists, and a bounded opaque destination revision when the backend exposes multiple immutable reported representations for one canonical trace. A destination revision is created only by that Retriever from provider evidence, is always subordinate to the canonical TraceId and exact connection/configuration authority, and cannot select another connection or trace. A trace reference from one connection cannot be used against another.
 
 ### ADR-004: Use typed terminal outcomes
 
