@@ -10,6 +10,7 @@ The Local SQLite Trace Destination gives users an explicitly configured, machine
 ## Terminology
 
 - **Local database:** the SQLite file owned by a named Local SQLite destination connection.
+- **Retention policy:** the required maximum time since durable local admission, stored trace count, and stored Protocol-payload bytes for one local database.
 - **Unconfigure:** remove a destination connection without deleting its database.
 - **Delete:** permanently remove a selected Local SQLite database after explicit confirmation.
 
@@ -19,18 +20,20 @@ The Local SQLite Trace Destination gives users an explicitly configured, machine
 
 As a user, I want local trace storage to begin only after I configure it, so that Agentscope never silently retains my traces.
 
-- **AC-SQL-001.1:** When no Local SQLite destination is configured and selected, the system shall not create or write a trace database.
-- **AC-SQL-001.2:** When I configure a Local SQLite destination, the system shall disclose its resolved path and that redacted trace content will persist there.
+- **AC-SQL-001.1:** When no Local SQLite destination is configured and no user-confirmed configuration transaction is active, the system shall not create or write a trace database.
+- **AC-SQL-001.2:** When I configure a Local SQLite destination, the system shall disclose its resolved path, effective retention policy, and that redacted trace content will persist there before requesting confirmation.
 - **AC-SQL-001.3:** When reporting to a selected Local SQLite destination succeeds, the system shall durably store the same redacted Protocol trace accepted by its reporter.
+- **AC-SQL-001.4:** When the Local SQLite native dependency or filesystem capability is unsupported on my platform, the system shall identify only that unavailable capability and shall not create a database or record the destination.
 
 ### REQ-SQL-002: Predictable data lifecycle
 
 As a user, I want explicit retention and removal behavior, so that I control durable local trace data.
 
-- **AC-SQL-002.1:** When configured retention limits are reached, the system shall enforce them transactionally and report bounded non-content status.
+- **AC-SQL-002.1:** When I do not override retention, the system shall make traces admitted to the local database more than 30 days ago unavailable for retrieval, retain at most 100,000 traces and 1 GiB of stored Protocol payloads per local database, and disclose during configuration that physical age cleanup occurs at the next authorized mutating access because Agentscope runs no cleanup daemon.
 - **AC-SQL-002.2:** When I unconfigure a Local SQLite destination, the system shall leave its database unchanged and report its location.
-- **AC-SQL-002.3:** When I request database deletion, the system shall identify the exact owned file and require explicit confirmation before deletion.
+- **AC-SQL-002.3:** When I request database deletion, the system shall identify the exact owned file and effective connection, require explicit confirmation, and delete no unowned path.
 - **AC-SQL-002.4:** When the database is backed up or restored, the system shall preserve its Protocol-version and schema-version compatibility metadata.
+- **AC-SQL-002.5:** When reporting or an explicit maintenance operation accesses a local database after any configured retention limit is reached, the system shall transactionally enforce all limits in deterministic oldest-first order before reporting success; read-only retrieval shall exclude expired traces, while Doctor shall report the configured policy and a fixed unavailable status for any database-derived retention count it cannot prove without modifying or opening the database.
 
 ### REQ-SQL-003: Safe concurrent operation
 
