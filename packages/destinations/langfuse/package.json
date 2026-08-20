@@ -15,6 +15,10 @@
     "./retriever": {
       "types": "./dist/retriever/index.d.ts",
       "import": "./dist/retriever/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "files": [

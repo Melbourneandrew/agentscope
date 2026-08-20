@@ -3,14 +3,19 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 
 import { describe, expect, it } from "vitest";
 
+import * as langfuseRoot from "./index.js";
 import {
   LANGFUSE_COMPATIBILITY_MANIFEST,
-  LANGFUSE_SANITIZED_HTTP_FIXTURES,
   langfuseDestinationPackageId,
   langfuseReporterPackageId,
   langfuseRetrieverPackageId,
-  type LangfuseHttpFixture,
 } from "./index.js";
+import {
+  LANGFUSE_FILTER_CONFORMANCE_FIXTURES,
+  LANGFUSE_SANITIZED_HTTP_FIXTURES,
+  type LangfuseHttpFixture,
+  type LangfuseJson,
+} from "./testing.js";
 
 const digest = (value: unknown): string =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -34,7 +39,17 @@ const startFixtureServer = async (
   Readonly<{ origin: string; requests: RecordedRequest[]; server: Server }>
 > => {
   const requests: RecordedRequest[] = [];
-  let index = 0;
+  const fixtureByRequest = new Map(
+    fixtures.map((fixture) => [
+      requestKey(
+        fixture.request.method,
+        fixture.request.path,
+        fixture.request.query,
+        fixture.request.body,
+      ),
+      fixture,
+    ]),
+  );
   const server = createServer((request, response) => {
     void (async () => {
       const chunks: Uint8Array[] = [];
@@ -46,8 +61,20 @@ const startFixtureServer = async (
         method: request.method ?? "GET",
         path: request.url ?? "/",
       });
-      const fixture = fixtures[index++];
-      if (!fixture) throw new Error("Fixture server received an extra request");
+      const url = new URL(request.url ?? "/", "http://fixture.invalid");
+      const fixture = fixtureByRequest.get(
+        requestKey(
+          request.method ?? "GET",
+          url.pathname,
+          Object.fromEntries(url.searchParams),
+          raw ? (JSON.parse(raw) as LangfuseJson) : null,
+        ),
+      );
+      if (!fixture) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ code: "fixture.request.invalid" }));
+        return;
+      }
       response.writeHead(fixture.response.status, fixture.response.headers);
       response.end(JSON.stringify(fixture.response.body));
     })();
@@ -57,6 +84,86 @@ const startFixtureServer = async (
   if (!address || typeof address === "string")
     throw new Error("Fixture server did not bind a TCP port");
   return { origin: `http://127.0.0.1:${address.port}`, requests, server };
+};
+
+const requestKey = (
+  method: string,
+  path: string,
+  query: Readonly<Record<string, string>>,
+  body: unknown,
+): string =>
+  JSON.stringify({
+    method,
+    path,
+    query: Object.fromEntries(
+      Object.entries(query).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+    body,
+  });
+
+const filterHttpFixtures: readonly LangfuseHttpFixture[] =
+  LANGFUSE_FILTER_CONFORMANCE_FIXTURES.map((fixture) => ({
+    fixtureId: fixture.fixtureId,
+    profileId: fixture.profileId,
+    request: fixture.request,
+    response: {
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: {
+        data: fixture.expectedTraceIds.map((returnedTraceId) => ({
+          traceId: returnedTraceId,
+        })),
+        meta:
+          fixture.profile === "v2"
+            ? { cursor: null }
+            : {
+                page: 1,
+                limit: 50,
+                totalItems: fixture.expectedTraceIds.length,
+                totalPages: 1,
+              },
+      },
+    },
+  }));
+
+type OtlpAttribute = Readonly<{
+  key: string;
+  value: Readonly<{
+    stringValue?: string;
+    arrayValue?: Readonly<{
+      values: readonly Readonly<{ stringValue: string }>[];
+    }>;
+  }>;
+}>;
+
+const projectOtlpRoot = (fixture: LangfuseHttpFixture) => {
+  const body = fixture.request.body as {
+    resourceSpans: readonly {
+      scopeSpans: readonly {
+        spans: readonly { attributes: readonly OtlpAttribute[] }[];
+      }[];
+    }[];
+  };
+  const attributes = body.resourceSpans[0]?.scopeSpans[0]?.spans[0]?.attributes;
+  if (!attributes) throw new Error("OTLP fixture lacks a root span");
+  const metadata: Record<string, string> = {};
+  let sessionId: string | undefined;
+  let tags: readonly string[] | undefined;
+  for (const attribute of attributes) {
+    if (attribute.key.startsWith("langfuse.observation.metadata.")) {
+      const value = attribute.value.stringValue;
+      if (value === undefined)
+        throw new Error("Metadata overlay is not a string");
+      metadata[attribute.key.slice("langfuse.observation.metadata.".length)] =
+        JSON.parse(value) as string;
+    }
+    if (attribute.key === "session.id") sessionId = attribute.value.stringValue;
+    if (attribute.key === "langfuse.trace.tags")
+      tags = attribute.value.arrayValue?.values.map(
+        ({ stringValue }) => stringValue,
+      );
+  }
+  return { metadata, sessionId, tags };
 };
 
 const stopServer = (server: Server): Promise<void> =>
@@ -70,7 +177,7 @@ const stopServer = (server: Server): Promise<void> =>
 describe("Langfuse compatibility contract", () => {
   it("pins one immutable provisional manifest to reviewed official sources", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.manifestId).toBe(
-      "sha256:d8d845c901512659ea128e77837fc59e20eb5c7e1af81acf8a40d0ef01b17fda",
+      "sha256:914b378357945f7a4d54e3f5ba91623023e60380db18f88f1b6e3bcaeda61c79",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.status).toBe(
       "provisional-contract-only",
@@ -103,15 +210,18 @@ describe("Langfuse compatibility contract", () => {
       langfusePythonAttributes: {
         revision: "3b1357c2206dae90d0a2bcdc65b1bcf768c29543",
       },
-      officialDocumentation: {
-        revision: "b235e0dee03a8c6abcfd631c9c1341d232cbfa02",
-      },
     });
     expectDeeplyFrozen(LANGFUSE_COMPATIBILITY_MANIFEST);
     expectDeeplyFrozen(LANGFUSE_SANITIZED_HTTP_FIXTURES);
   });
+});
 
+describe("Langfuse compatibility profiles", () => {
   it("keeps package identities and compatibility profiles exact", () => {
+    expect(langfuseRoot).not.toHaveProperty("LANGFUSE_SANITIZED_HTTP_FIXTURES");
+    expect(langfuseRoot).not.toHaveProperty(
+      "LANGFUSE_FILTER_CONFORMANCE_FIXTURES",
+    );
     expect({
       destination: langfuseDestinationPackageId,
       reporter: langfuseReporterPackageId,
@@ -145,7 +255,9 @@ describe("Langfuse compatibility contract", () => {
       { caseId: "mutated", value: "1", conforms: false },
     ]);
   });
+});
 
+describe("Langfuse portable-filter contract", () => {
   it("covers every portable predicate with provider-specific match and miss cases", () => {
     const expectedFilters = [
       "traceId",
@@ -165,14 +277,51 @@ describe("Langfuse compatibility contract", () => {
     ).toBe(false);
 
     const cases = LANGFUSE_COMPATIBILITY_MANIFEST.portableFilterConformance;
-    expect(cases).toHaveLength(16);
-    for (const profile of ["v2", "v1-events"] as const) {
-      const profileCases = cases.filter((entry) => entry.profile === profile);
-      expect(profileCases.map(({ filter }) => filter)).toEqual(expectedFilters);
+    expect(cases).toHaveLength(48);
+    for (const profileId of [
+      "langfuse-cloud-v4",
+      "langfuse-self-hosted-v4",
+      "langfuse-self-hosted-v3-events-3.225.3",
+    ]) {
+      const profileCases = cases.filter(
+        (entry) => entry.profileId === profileId,
+      );
+      expect(
+        profileCases
+          .filter(({ disposition }) => disposition === "match")
+          .map(({ filter }) => filter),
+      ).toEqual(expectedFilters);
+      for (const filter of expectedFilters) {
+        const pair = profileCases.filter((entry) => entry.filter === filter);
+        expect(pair.map(({ disposition }) => disposition)).toEqual([
+          "match",
+          "miss",
+        ]);
+        expect(pair[0]?.request).not.toEqual(pair[1]?.request);
+        expect(pair[0]?.expectedTraceIds).toEqual([
+          "0123456789abcdef0123456789abcdef",
+        ]);
+        expect(pair[1]?.expectedTraceIds).toEqual([]);
+      }
       for (const entry of profileCases) {
-        expect(entry.request.positive).not.toBe(entry.request.negative);
+        expect(JSON.parse(entry.request.query.filter ?? "[]")).toContainEqual({
+          type: "stringObject",
+          column: "metadata",
+          key: "agentscope_root",
+          operator: "=",
+          value: "true",
+        });
+        if (entry.profile === "v1-events")
+          expect(entry.request.query.useEventsTable).toBe("true");
       }
     }
+    expect(cases).toEqual(LANGFUSE_FILTER_CONFORMANCE_FIXTURES);
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.filterFixtureDigests).toEqual(
+      LANGFUSE_FILTER_CONFORMANCE_FIXTURES.map((fixture) => ({
+        fixtureId: fixture.fixtureId,
+        sha256: digest(fixture),
+      })),
+    );
   });
 });
 
@@ -194,6 +343,24 @@ describe("Langfuse compatibility fixtures", () => {
       maximumModels: 32,
       maximumTags: 32,
       maximumValueCharacters: 200,
+      maximumMetadataEntries: 72,
+      maximumProjectionBytes: 16_384,
+      maximumWireOverlayAttributes: 146,
+      countGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
+      indexGrammar: "^(?:0[0-9]|[12][0-9]|3[01])$",
+      valueGrammar: "nonempty-nfc-utf8-without-control-characters",
+      indexedValues: "exactly-count-contiguous-zero-based-two-digit-indices",
+      reservedOwnership: "agentscope-exact-keys-and-index-prefixes",
+      collisions: "reject-before-transport",
+      truncation: "forbidden",
+      malformedResponse:
+        "missing-extra-duplicate-noncanonical-or-over-limit-mirror",
+      wire: {
+        observationMetadataPrefix: "langfuse.observation.metadata.",
+        traceMetadataPrefix: "langfuse.trace.metadata.",
+        sessionAttribute: "session.id",
+        traceTagsAttribute: "langfuse.trace.tags",
+      },
     });
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.rootObservation).toEqual({
       selector: "metadata:agentscope_root:=:true",
@@ -221,8 +388,38 @@ describe("Langfuse compatibility fixtures", () => {
         },
       ],
     });
+    expect(new RegExp(projection.countGrammar, "u").test("32")).toBe(true);
+    expect(new RegExp(projection.countGrammar, "u").test("33")).toBe(false);
+    expect(new RegExp(projection.indexGrammar, "u").test("31")).toBe(true);
+    expect(new RegExp(projection.indexGrammar, "u").test("32")).toBe(false);
   });
 
+  it("derives the pinned retrieval projection from documented OTLP overlays", () => {
+    const otlpFixture = LANGFUSE_SANITIZED_HTTP_FIXTURES.find(
+      ({ fixtureId }) => fixtureId === "otlp-v4-json-root-v1",
+    );
+    const v2Fixture = LANGFUSE_SANITIZED_HTTP_FIXTURES.find(
+      ({ fixtureId }) => fixtureId === "observations-v2-root-search-v1",
+    );
+    if (!otlpFixture || !v2Fixture) throw new Error("Required fixture missing");
+    const expected = (
+      v2Fixture.response.body as {
+        data: readonly {
+          metadata: Readonly<Record<string, string>>;
+          sessionId: string;
+          tags: readonly string[];
+        }[];
+      }
+    ).data[0];
+    expect(projectOtlpRoot(otlpFixture)).toEqual({
+      metadata: expected?.metadata,
+      sessionId: expected?.sessionId,
+      tags: expected?.tags,
+    });
+  });
+});
+
+describe("Langfuse compatibility fixture replay", () => {
   it("pins sanitized fixture digests without secret or local-path content", () => {
     expect(
       LANGFUSE_COMPATIBILITY_MANIFEST.fixtureDigests.map(
@@ -287,6 +484,43 @@ describe("Langfuse compatibility fixtures", () => {
       await stopServer(fixtureServer.server);
     }
   });
+
+  it("replays exact match/miss queries and rejects nonconforming requests", async () => {
+    const fixtureServer = await startFixtureServer(filterHttpFixtures);
+    try {
+      for (const fixture of filterHttpFixtures) {
+        const query = new URLSearchParams(fixture.request.query).toString();
+        const result = await fetch(
+          `${fixtureServer.origin}${fixture.request.path}?${query}`,
+          { headers: fixture.request.headers },
+        );
+        expect(result.status).toBe(200);
+        expect(await result.json()).toEqual(fixture.response.body);
+      }
+      const invalid = await fetch(
+        `${fixtureServer.origin}/api/public/observations?useEventsTable=false`,
+        { headers: { authorization: "[credential-slot]" } },
+      );
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ code: "fixture.request.invalid" });
+      for (const selector of [undefined, "false", "1"] as const) {
+        const fixture = LANGFUSE_FILTER_CONFORMANCE_FIXTURES.find(
+          ({ profile }) => profile === "v1-events",
+        );
+        if (!fixture) throw new Error("v1 fixture missing");
+        const query = { ...fixture.request.query };
+        if (selector === undefined) delete query.useEventsTable;
+        else query.useEventsTable = selector;
+        const result = await fetch(
+          `${fixtureServer.origin}${fixture.request.path}?${new URLSearchParams(query)}`,
+          { headers: fixture.request.headers },
+        );
+        expect(result.status).toBe(400);
+      }
+    } finally {
+      await stopServer(fixtureServer.server);
+    }
+  });
 });
 
 describe("Langfuse compatibility evidence", () => {
@@ -303,10 +537,16 @@ describe("Langfuse compatibility evidence", () => {
         pagination: "cursor",
         defaultLimit: 50,
         maximumLimit: 1000,
+        maximumResponseBytes: 1_048_576,
+        maximumResponseRows: 1000,
         consistency: "best-effort",
       });
     }
     expect(selfHostedV3?.reporter.headers).toEqual({});
+    expect(selfHostedV3?.retriever).toMatchObject({
+      maximumResponseBytes: 1_048_576,
+      maximumResponseRows: 100,
+    });
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.rateLimit).toEqual({
       status: 429,
       retryHeader: "retry-after",

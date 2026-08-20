@@ -14,6 +14,7 @@ const cliOnlySpecifiers = [
   "@agentscope/harnesses-core/cli-management",
 ];
 const testingSpecifiers = [
+  "@agentscope/destination-langfuse/testing",
   "@agentscope/destinations-core/testing",
   "@agentscope/harnesses-core/testing",
   "@agentscope/protocol/testing",

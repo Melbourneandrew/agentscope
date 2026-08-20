@@ -25,6 +25,30 @@ export type LangfuseHttpFixture = Readonly<{
   }>;
 }>;
 
+export type LangfuseFilterConformanceFixture = Readonly<{
+  fixtureId: string;
+  profileId: string;
+  profile: "v1-events" | "v2";
+  filter:
+    | "branch"
+    | "from"
+    | "harness"
+    | "model"
+    | "session"
+    | "tags"
+    | "to"
+    | "traceId";
+  disposition: "match" | "miss";
+  request: Readonly<{
+    method: "GET";
+    path: string;
+    headers: Readonly<Record<string, string>>;
+    query: Readonly<Record<string, string>>;
+    body: null;
+  }>;
+  expectedTraceIds: readonly string[];
+}>;
+
 const freeze = <T>(value: T): T => {
   if (typeof value !== "object" || value === null) return value;
   for (const nested of Object.values(value)) freeze(nested);
@@ -54,6 +78,24 @@ const projection = {
   maximumModels: 32,
   maximumTags: 32,
   maximumValueCharacters: 200,
+  maximumMetadataEntries: 72,
+  maximumProjectionBytes: 16_384,
+  maximumWireOverlayAttributes: 146,
+  countGrammar: "^(?:0|[1-9]|[12][0-9]|3[0-2])$",
+  indexGrammar: "^(?:0[0-9]|[12][0-9]|3[01])$",
+  valueGrammar: "nonempty-nfc-utf8-without-control-characters",
+  indexedValues: "exactly-count-contiguous-zero-based-two-digit-indices",
+  reservedOwnership: "agentscope-exact-keys-and-index-prefixes",
+  collisions: "reject-before-transport",
+  truncation: "forbidden",
+  malformedResponse:
+    "missing-extra-duplicate-noncanonical-or-over-limit-mirror",
+  wire: {
+    observationMetadataPrefix: "langfuse.observation.metadata.",
+    traceMetadataPrefix: "langfuse.trace.metadata.",
+    sessionAttribute: "session.id",
+    traceTagsAttribute: "langfuse.trace.tags",
+  },
 } as const;
 
 const rootMetadata = {
@@ -68,6 +110,41 @@ const rootMetadata = {
   [projection.tagCount]: "1",
   [`${projection.tagIndexPrefix}00`]: "fixture",
 } as const;
+
+const rootFilter = {
+  type: "stringObject",
+  column: "metadata",
+  key: projection.root,
+  operator: "=",
+  value: "true",
+} as const;
+
+const rootProjectionAttributes = [
+  ...Object.entries(rootMetadata).map(([key, value]) => ({
+    key,
+    value: { stringValue: value },
+  })),
+  ...Object.entries(rootMetadata).map(([key, value]) => ({
+    key: `langfuse.observation.metadata.${key}`,
+    value: { stringValue: JSON.stringify(value) },
+  })),
+  ...Object.entries(rootMetadata).map(([key, value]) => ({
+    key: `langfuse.trace.metadata.${key}`,
+    value: { stringValue: JSON.stringify(value) },
+  })),
+  { key: "session.id", value: { stringValue: "session-fixture" } },
+  {
+    key: "langfuse.trace.tags",
+    value: {
+      arrayValue: {
+        values: [
+          { stringValue: "agentscope:model:gpt-5" },
+          { stringValue: "fixture" },
+        ],
+      },
+    },
+  },
+] as const;
 
 const fixtures = [
   {
@@ -96,12 +173,7 @@ const fixtures = [
                     name: "agent-root",
                     startTimeUnixNano: "1767323045000000000",
                     endTimeUnixNano: "1767323046000000000",
-                    attributes: Object.entries(rootMetadata).map(
-                      ([key, value]) => ({
-                        key,
-                        value: { stringValue: value },
-                      }),
-                    ),
+                    attributes: rootProjectionAttributes,
                   },
                 ],
               },
@@ -125,15 +197,7 @@ const fixtures = [
         toStartTime: "2026-01-03T00:00:00.000Z",
         limit: "50",
         sessionId: "session-fixture",
-        filter: JSON.stringify([
-          {
-            type: "stringObject",
-            column: "metadata",
-            key: projection.root,
-            operator: "=",
-            value: "true",
-          },
-        ]),
+        filter: JSON.stringify([rootFilter]),
       },
       body: null,
     },
@@ -181,6 +245,7 @@ const fixtures = [
         fromStartTime: "2026-01-01T00:00:00.000Z",
         toStartTime: "2026-01-03T00:00:00.000Z",
         filter: JSON.stringify([
+          rootFilter,
           {
             type: "stringObject",
             column: "metadata",
@@ -317,17 +382,6 @@ const profileSources = {
     path: "langfuse/_client/attributes.py",
     sha256: "e7016e216e1aac43dde20cdceeabe4a66ee88056bebfcc8b49ca1b07708e6376",
   },
-  officialDocumentation: {
-    kind: "official-documentation",
-    repository: "https://github.com/langfuse/langfuse-docs",
-    revision: "b235e0dee03a8c6abcfd631c9c1341d232cbfa02",
-    urls: [
-      "https://langfuse.com/integrations/native/opentelemetry",
-      "https://langfuse.com/docs/api-and-data-platform/features/observations-api",
-      "https://langfuse.com/docs/api-and-data-platform/features/public-api",
-      "https://langfuse.com/self-hosting/upgrade/versioning",
-    ],
-  },
 } as const;
 
 const portableFilters = {
@@ -350,128 +404,147 @@ const portableFilters = {
   tags: { v2: "traceTags:all of", v1: "traceTags:all of" },
 } as const;
 
-const portableFilterConformance = [
-  {
-    profile: "v2",
-    filter: "traceId",
-    request: {
-      query: "traceId",
-      positive: traceId,
-      negative: "fedcba9876543210fedcba9876543210",
-    },
-  },
-  {
-    profile: "v2",
-    filter: "from",
-    request: { query: "fromStartTime", positive: startTime, negative: endTime },
-  },
-  {
-    profile: "v2",
-    filter: "to",
-    request: { query: "toStartTime", positive: endTime, negative: startTime },
-  },
-  {
-    profile: "v2",
-    filter: "harness",
-    request: {
-      metadata: projection.harness,
-      positive: "codex",
-      negative: "claude-code",
-    },
-  },
-  {
-    profile: "v2",
-    filter: "branch",
-    request: {
-      metadata: projection.branch,
-      positive: "main",
-      negative: "release",
-    },
-  },
-  {
-    profile: "v2",
-    filter: "model",
-    request: {
-      traceTags: "all of",
-      positive: `${projection.modelTagPrefix}gpt-5`,
-      negative: `${projection.modelTagPrefix}different-model`,
-    },
-  },
-  {
-    profile: "v2",
-    filter: "session",
-    request: {
-      query: "sessionId",
-      positive: "session-fixture",
-      negative: "session-miss",
-    },
-  },
-  {
-    profile: "v2",
-    filter: "tags",
-    request: { traceTags: "all of", positive: "fixture", negative: "tag-miss" },
-  },
-  {
-    profile: "v1-events",
-    filter: "traceId",
-    request: {
-      query: "traceId",
-      positive: traceId,
-      negative: "fedcba9876543210fedcba9876543210",
-    },
-  },
-  {
-    profile: "v1-events",
-    filter: "from",
-    request: { query: "fromStartTime", positive: startTime, negative: endTime },
-  },
-  {
-    profile: "v1-events",
-    filter: "to",
-    request: { query: "toStartTime", positive: endTime, negative: startTime },
-  },
-  {
-    profile: "v1-events",
-    filter: "harness",
-    request: {
-      metadata: projection.harness,
-      positive: "codex",
-      negative: "claude-code",
-    },
-  },
-  {
-    profile: "v1-events",
-    filter: "branch",
-    request: {
-      metadata: projection.branch,
-      positive: "main",
-      negative: "release",
-    },
-  },
-  {
-    profile: "v1-events",
-    filter: "model",
-    request: {
-      traceTags: "all of",
-      positive: `${projection.modelTagPrefix}gpt-5`,
-      negative: `${projection.modelTagPrefix}different-model`,
-    },
-  },
-  {
-    profile: "v1-events",
-    filter: "session",
-    request: {
-      metadata: projection.session,
-      positive: "session-fixture",
-      negative: "session-miss",
-    },
-  },
+type FilterName = LangfuseFilterConformanceFixture["filter"];
+type FilterProfile = LangfuseFilterConformanceFixture["profile"];
+
+const metadataFilter = (key: string, value: string) => ({
+  type: "stringObject",
+  column: "metadata",
+  key,
+  operator: "=",
+  value,
+});
+
+const tagsFilter = (value: string) => ({
+  type: "arrayOptions",
+  column: "traceTags",
+  operator: "all of",
+  value: [value],
+});
+
+const filterQuery = (
+  profile: FilterProfile,
+  query: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> =>
+  profile === "v2"
+    ? {
+        fields: "core,basic,time,metadata,trace_context",
+        limit: "50",
+        filter: JSON.stringify([rootFilter]),
+        ...query,
+      }
+    : {
+        page: "1",
+        limit: "50",
+        useEventsTable: "true",
+        filter: JSON.stringify([rootFilter]),
+        ...query,
+      };
+
+const filterRequest = (
+  profile: FilterProfile,
+  query: Readonly<Record<string, string>>,
+) => ({
+  method: "GET" as const,
+  path:
+    profile === "v2"
+      ? "/api/public/v2/observations"
+      : "/api/public/observations",
+  headers: { authorization: "[credential-slot]" },
+  query: filterQuery(profile, query),
+  body: null,
+});
+
+const predicateQuery = (
+  profile: FilterProfile,
+  filter: FilterName,
+  value: string,
+): Readonly<Record<string, string>> => {
+  switch (filter) {
+    case "traceId":
+      return { traceId: value };
+    case "from":
+      return { fromStartTime: value };
+    case "to":
+      return { toStartTime: value };
+    case "harness":
+      return {
+        filter: JSON.stringify([
+          rootFilter,
+          metadataFilter(projection.harness, value),
+        ]),
+      };
+    case "branch":
+      return {
+        filter: JSON.stringify([
+          rootFilter,
+          metadataFilter(projection.branch, value),
+        ]),
+      };
+    case "model":
+      return {
+        filter: JSON.stringify([
+          rootFilter,
+          tagsFilter(`${projection.modelTagPrefix}${value}`),
+        ]),
+      };
+    case "session":
+      return profile === "v2"
+        ? { sessionId: value }
+        : {
+            filter: JSON.stringify([
+              rootFilter,
+              metadataFilter(projection.session, value),
+            ]),
+          };
+    case "tags":
+      return {
+        filter: JSON.stringify([rootFilter, tagsFilter(value)]),
+      };
+  }
+};
+
+const predicateValues = {
+  traceId: [traceId, "fedcba9876543210fedcba9876543210"],
+  from: [startTime, endTime],
+  to: [endTime, startTime],
+  harness: ["codex", "claude-code"],
+  branch: ["main", "release"],
+  model: ["gpt-5", "different-model"],
+  session: ["session-fixture", "session-miss"],
+  tags: ["fixture", "tag-miss"],
+} as const satisfies Record<FilterName, readonly [string, string]>;
+
+const filterConformanceProfiles = [
+  { profile: "v2", profileId: "langfuse-cloud-v4" },
+  { profile: "v2", profileId: "langfuse-self-hosted-v4" },
   {
     profile: "v1-events",
-    filter: "tags",
-    request: { traceTags: "all of", positive: "fixture", negative: "tag-miss" },
+    profileId: "langfuse-self-hosted-v3-events-3.225.3",
   },
 ] as const;
+
+const filterConformanceFixtures = filterConformanceProfiles.flatMap(
+  ({ profile, profileId }) =>
+    (Object.keys(predicateValues) as FilterName[]).flatMap((filter) =>
+      (["match", "miss"] as const).map((disposition, index) => ({
+        fixtureId: `${profileId}-${filter}-${disposition}-v1`,
+        profileId,
+        profile,
+        filter,
+        disposition,
+        request: filterRequest(
+          profile,
+          predicateQuery(profile, filter, predicateValues[filter][index]!),
+        ),
+        expectedTraceIds: disposition === "match" ? [traceId] : [],
+      })),
+    ),
+) satisfies LangfuseFilterConformanceFixture[];
+
+export const LANGFUSE_FILTER_CONFORMANCE_FIXTURES = freeze(
+  filterConformanceFixtures,
+);
 
 const manifestSource = {
   contractVersion: 1,
@@ -496,7 +569,7 @@ const manifestSource = {
     summaryProjection: "root-observation-only",
   },
   portableFilters,
-  portableFilterConformance,
+  portableFilterConformance: filterConformanceFixtures,
   profiles: [
     {
       profileId: "langfuse-cloud-v4",
@@ -512,6 +585,8 @@ const manifestSource = {
         pagination: "cursor",
         defaultLimit: 50,
         maximumLimit: 1000,
+        maximumResponseBytes: 1_048_576,
+        maximumResponseRows: 1000,
         ordering: "start-time-desc-hash32-trace-id-desc-span-id-desc",
         consistency: "best-effort",
         summaryFieldGroups: [
@@ -549,6 +624,8 @@ const manifestSource = {
         pagination: "cursor",
         defaultLimit: 50,
         maximumLimit: 1000,
+        maximumResponseBytes: 1_048_576,
+        maximumResponseRows: 1000,
         ordering: "start-time-desc-hash32-trace-id-desc-span-id-desc",
         consistency: "best-effort",
         summaryFieldGroups: [
@@ -587,6 +664,8 @@ const manifestSource = {
         pagination: "page-offset",
         defaultLimit: 50,
         maximumLimit: 100,
+        maximumResponseBytes: 1_048_576,
+        maximumResponseRows: 100,
         ordering: "start-time-desc-hash32-trace-id-desc-span-id-desc",
         consistency: "best-effort",
         responseTags: "omitted-use-reserved-metadata-mirror",
@@ -615,17 +694,25 @@ const manifestSource = {
     fixtureId: fixture.fixtureId,
     sha256: sha256(fixture),
   })),
+  filterFixtureDigests: filterConformanceFixtures.map((fixture) => ({
+    fixtureId: fixture.fixtureId,
+    sha256: sha256(fixture),
+  })),
   evidence: [
     {
       claimId: "otlp-http-contract",
       disposition: "provisional-official",
-      sources: ["langfuseOpenApi", "officialDocumentation"],
+      sources: [
+        "langfuseOpenApi",
+        "langfuseJavascriptAttributes",
+        "langfusePythonAttributes",
+      ],
       fixtures: ["otlp-v4-json-root-v1"],
     },
     {
       claimId: "observations-v2-contract",
       disposition: "provisional-official",
-      sources: ["langfuseOpenApi", "officialDocumentation"],
+      sources: ["langfuseOpenApi"],
       fixtures: [
         "observations-v2-root-search-v1",
         "observations-v2-rate-limit-v1",
@@ -638,9 +725,17 @@ const manifestSource = {
       fixtures: ["observations-v1-events-root-search-v1"],
     },
     {
+      claimId: "portable-filter-request-contract",
+      disposition: "provisional-official",
+      sources: ["langfuseOpenApi", "langfuseV3Observations"],
+      filterFixtures: filterConformanceFixtures.map(
+        ({ fixtureId }) => fixtureId,
+      ),
+    },
+    {
       claimId: "trace-cleanup-contract",
       disposition: "provisional-official",
-      sources: ["langfuseOpenApi", "officialDocumentation"],
+      sources: ["langfuseOpenApi"],
       fixtures: ["trace-delete-accepted-v1"],
     },
     {
@@ -663,6 +758,9 @@ const manifestSource = {
         "observations-v2-root-search-v1",
         "observations-v1-events-root-search-v1",
       ],
+      filterFixtures: filterConformanceFixtures.map(
+        ({ fixtureId }) => fixtureId,
+      ),
     },
     {
       claimId: "asynchronous-cleanup-completion",
