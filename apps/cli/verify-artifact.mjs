@@ -20,7 +20,7 @@ import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 
-// AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.3 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
+// AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
 const artifactDirectory = resolve(repositoryRoot, "artifacts/npm");
@@ -257,6 +257,30 @@ try {
   const version = run(executable, ["--version"], executableOptions);
   assert.equal(version.stdout, `${installedManifest.version}\n`);
   assert.equal(version.stderr, "");
+  const invalidHomeOptions = {
+    ...executableOptions,
+    env: { HOME: "relative", USERPROFILE: "relative" },
+  };
+  const invalidHomeHelp = run(executable, ["--help"], invalidHomeOptions);
+  assert.match(invalidHomeHelp.stdout, /^Usage: agentscope \[options\]/u);
+  assert.equal(invalidHomeHelp.stderr, "");
+  const invalidHomeVersion = run(executable, ["--version"], invalidHomeOptions);
+  assert.equal(invalidHomeVersion.stdout, `${installedManifest.version}\n`);
+  assert.equal(invalidHomeVersion.stderr, "");
+  const invalidHomeDoctor = runRaw(
+    executable,
+    ["doctor", "--output", "json"],
+    invalidHomeOptions,
+  );
+  assert.equal(invalidHomeDoctor.status, 70);
+  assert.equal(invalidHomeDoctor.stdout, "");
+  assert.deepEqual(JSON.parse(invalidHomeDoctor.stderr), {
+    category: "internal-error",
+    code: "cli.internal",
+    command: "agentscope doctor",
+    schema: "agentscope.cli.diagnostic.v1",
+  });
+  assert.doesNotMatch(invalidHomeDoctor.stderr, /Error:|\bat\s|node_modules/u);
   const harnesses = run(
     executable,
     ["harness", "list", "--output", "json"],
@@ -287,6 +311,13 @@ try {
       (finding) => finding.code === "doctor.configuration.missing",
     ),
   );
+  for (const code of [
+    "doctor.harness.unavailable",
+    "doctor.destination.unavailable",
+  ])
+    assert.ok(
+      doctorReport.records[0].findings.some((finding) => finding.code === code),
+    );
   assert.doesNotMatch(doctor.stdout, new RegExp(installRoot, "u"));
   for (const mode of ["json", "jsonl"]) {
     const agentscopeHome = join(installRoot, `agentscope-home-${mode}`);

@@ -224,6 +224,23 @@ const inspectHarnesses = async (
       ),
     ]);
   const findings: CliDoctorFinding[] = [];
+  if (listed.value.harnesses.length === 0)
+    return Object.freeze([
+      finding(
+        "doctor.harness.unavailable",
+        "warning",
+        "retry",
+        evidence({
+          count: 0,
+          freshness: "unavailable",
+          lossCount: null,
+          scope: "harness",
+          state: "unavailable",
+          subject: null,
+          version: null,
+        }),
+      ),
+    ]);
   for (const harness of listed.value.harnesses) {
     findings.push(harnessDiscoveryFinding(harness));
     const status = await services.statusHarness({ harness: harness.harness });
@@ -326,12 +343,32 @@ const inspectOneDestination = async (
 const inspectDestinations = (
   report: DoctorReport,
   probes: ReadonlyMap<string, DestinationReachabilityProbe["inspect"]>,
-): Promise<readonly CliDoctorFinding[]> =>
-  Promise.all(
+): Promise<readonly CliDoctorFinding[]> => {
+  if (report.connections.length === 0)
+    return Promise.resolve(
+      Object.freeze([
+        finding(
+          "doctor.destination.unavailable",
+          "warning",
+          "inspect-destination",
+          evidence({
+            count: 0,
+            freshness: "unavailable",
+            lossCount: null,
+            scope: "destination",
+            state: "unavailable",
+            subject: null,
+            version: null,
+          }),
+        ),
+      ]),
+    );
+  return Promise.all(
     report.connections.map((connection) =>
       inspectOneDestination(connection, probes.get(connection.destinationType)),
     ),
   );
+};
 
 const gitFinding = (value: DoctorGitInspection): CliDoctorFinding => {
   const state =

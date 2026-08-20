@@ -153,6 +153,25 @@ const configureFixtureConnection = async (
 };
 
 describe("Doctor CLI composition", () => {
+  it("declares unavailable harness and destination inspection for empty registries", async () => {
+    const report = await inspect(await fixture());
+
+    const harness = report.findings.find(
+      ({ code }) => code === "doctor.harness.unavailable",
+    );
+    const destination = report.findings.find(
+      ({ code }) => code === "doctor.destination.unavailable",
+    );
+    expect(harness?.evidence).toMatchObject({
+      count: 0,
+      freshness: "unavailable",
+    });
+    expect(destination?.evidence).toMatchObject({
+      count: 0,
+      freshness: "unavailable",
+    });
+  });
+
   it("composes missing state, retained-health absence, and unavailable Git", async () => {
     const value = await fixture({
       gitInspector: () => Promise.reject(new Error("CANARY_SECRET")),
