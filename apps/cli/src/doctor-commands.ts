@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { DOCTOR_FINDING_CODES } from "@agentscope/core";
+import type { DoctorFinding } from "@agentscope/core";
 import { z } from "zod";
 
 import type { CliOperationResult } from "./cli-contract.js";
@@ -9,6 +9,52 @@ import {
 } from "./command-runtime.js";
 
 export const doctorSeveritySchema = z.enum(["info", "warning", "error"]);
+const CORE_DOCTOR_FINDING_CODES = Object.freeze([
+  "doctor.configuration.valid",
+  "doctor.configuration.missing",
+  "doctor.configuration.invalid",
+  "doctor.configuration.unsupported",
+  "doctor.configuration.unavailable",
+  "doctor.transaction.clean",
+  "doctor.transaction.active",
+  "doctor.transaction.owner-unknown",
+  "doctor.transaction.recoverable",
+  "doctor.transaction.reconciliation-required",
+  "doctor.transaction.conflict",
+  "doctor.transaction.invalid",
+  "doctor.transaction.unavailable",
+  "doctor.credential-mutation.clean",
+  "doctor.credential-mutation.active",
+  "doctor.credential-mutation.owner-unknown",
+  "doctor.credential-mutation.recoverable",
+  "doctor.credential-mutation.reconciliation-required",
+  "doctor.credential-mutation.invalid",
+  "doctor.credential-mutation.unavailable",
+  "doctor.credential.available",
+  "doctor.credential.unavailable",
+  "doctor.credential.locked",
+  "doctor.credential.denied",
+  "doctor.credential.missing",
+  "doctor.credential.malformed",
+  "doctor.operational-state.available",
+  "doctor.operational-state.invalid",
+  "doctor.operational-state.lock-active",
+  "doctor.operational-state.lock-owner-unknown",
+  "doctor.operational-state.lock-recoverable",
+  "doctor.operational-state.lock-reconciliation-required",
+  "doctor.operational-state.lock-invalid",
+  "doctor.operational-state.lock-unavailable",
+] as const satisfies readonly DoctorFinding["code"][]);
+type MissingCoreDoctorFindingCode = Exclude<
+  DoctorFinding["code"],
+  (typeof CORE_DOCTOR_FINDING_CODES)[number]
+>;
+const coreDoctorFindingCodesAreExhaustive: [
+  MissingCoreDoctorFindingCode,
+] extends [never]
+  ? true
+  : never = true;
+void coreDoctorFindingCodesAreExhaustive;
 export const CLI_DOCTOR_FINDING_CODES = Object.freeze([
   "doctor.pipeline-health.unavailable",
   "doctor.pipeline-health.absent",
@@ -34,7 +80,7 @@ export const CLI_DOCTOR_FINDING_CODES = Object.freeze([
   "doctor.git.repository-unavailable",
 ] as const);
 export const doctorFindingCodeSchema = z.enum([
-  ...DOCTOR_FINDING_CODES,
+  ...CORE_DOCTOR_FINDING_CODES,
   ...CLI_DOCTOR_FINDING_CODES,
 ]);
 export const doctorEvidenceStateSchema = z.enum([
