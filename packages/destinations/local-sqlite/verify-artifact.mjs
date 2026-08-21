@@ -4,11 +4,12 @@ import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { standardsManifest } from "@agentscope/protocol";
+import { isDestinationRetriever } from "@agentscope/destinations-core";
 
 import * as root from "./dist/index.js";
 import * as reporter from "./dist/reporter/index.js";
 import { executePreparedLocalSqliteTransaction } from "./dist/reporter/transaction.js";
-import * as retriever from "./dist/retriever/index.js";
+import * as retriever from "./dist/retriever/public.js";
 import * as testing from "./dist/testing.js";
 
 const packageRoot = new URL(".", import.meta.url);
@@ -77,8 +78,8 @@ if (
 )
   throw new Error("Local SQLite Reporter export surface drifted.");
 if (
-  JSON.stringify(Object.keys(retriever)) !==
-  JSON.stringify(["localSqliteRetrieverPackageId"])
+  JSON.stringify(Object.keys(retriever).sort()) !==
+  JSON.stringify(["localSqliteRetrieverPackageId"].sort())
 )
   throw new Error("Local SQLite Retriever export surface drifted.");
 if (
@@ -92,6 +93,9 @@ if (
       "compileReleaseTarArchiveForTesting",
       "compileLocalSqliteMigrationInventoryForTesting",
       "compileLocalSqliteMigrationSqlForTesting",
+      "compileLocalSqliteGetPlan",
+      "compileLocalSqliteSearchPlan",
+      "createLocalSqliteRetriever",
       "inspectLocalSqliteNativeSupportManifestForTesting",
       "compileLocalSqlitePhysicalNamespaceEvidence",
       "createLocalSqliteLifecycleHandlerForTesting",
@@ -109,6 +113,7 @@ if (
       "LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID",
       "LOCAL_SQLITE_REPORTER_POLICY_MANIFEST",
       "LOCAL_SQLITE_REPORTER_POLICY_VERSION",
+      "LOCAL_SQLITE_RETRIEVER_PLAN_VERSION",
       "applyLocalSqliteMaintenance",
       "decodeLocalSqliteBackupReceipt",
       "decodeLocalSqliteMaintenanceIntent",
@@ -844,15 +849,20 @@ if (
   testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID !==
     standardsManifest.manifestId ||
   !/^sha256:[a-f0-9]{64}$/u.test(testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID) ||
-  testing.LOCAL_SQLITE_MIGRATIONS.length !== 1 ||
+  testing.LOCAL_SQLITE_MIGRATIONS.length !== 2 ||
   testing.LOCAL_SQLITE_MIGRATIONS[0]?.name !== "0001-initialize.sql" ||
   testing.LOCAL_SQLITE_MIGRATIONS[0]?.sha256 !==
     "616f0f680cd8d86d36e3f880caf0925e6c0a16138d50e4af98e907bcfb855d24" ||
   testing.LOCAL_SQLITE_MIGRATIONS[0]?.protocolCompatibilityId !==
     standardsManifest.manifestId ||
+  testing.LOCAL_SQLITE_MIGRATIONS[1]?.name !== "0002-retrieval-indexes.sql" ||
+  testing.LOCAL_SQLITE_MIGRATIONS[1]?.sha256 !==
+    "48472b1673ed36f4bb77494b3f8c6b425c99467004a2c3da2f042e896e693a3e" ||
+  testing.LOCAL_SQLITE_MIGRATIONS[1]?.protocolCompatibilityId !==
+    standardsManifest.manifestId ||
   testing.compileLocalSqliteMigrationInventoryForTesting(
     testing.LOCAL_SQLITE_MIGRATIONS,
-  )?.length !== 1 ||
+  )?.length !== 2 ||
   testing.compileLocalSqliteMigrationSqlForTesting(
     "CREATE TABLE payload_copy AS SELECT payload FROM traces;",
   ) !== undefined
@@ -912,8 +922,8 @@ const migrationResult = testing.runLocalSqliteMigrations(migrationDatabase);
 if (
   migrationResult.ok !== true ||
   migrationResult.state !== "migrated" ||
-  migrationState.statements.length !== 6 ||
-  migrationState.ledger.length !== 1 ||
+  migrationState.statements.length !== 8 ||
+  migrationState.ledger.length !== 2 ||
   migrationState.committed !== true ||
   migrationState.rolledBack !== false
 )
@@ -1068,6 +1078,46 @@ if (
   preparedTrace.dimensions.length !== 1
 )
   throw new Error("Local SQLite built Reporter transaction drifted.");
+
+const builtRetriever = testing.createLocalSqliteRetriever(
+  Object.freeze({
+    search: () => Promise.reject(new Error("artifact-static-only")),
+    get: () => Promise.reject(new Error("artifact-static-only")),
+  }),
+);
+const builtExecutionBounds = Object.freeze({
+  maximumResponseBytes: 4_096,
+  maximumWorkMilliseconds: 250,
+});
+const builtSearchPlan = testing.compileLocalSqliteSearchPlan(
+  {
+    query: {
+      to: "2099-01-01T00:00:00.000Z",
+      tags: [],
+      limit: 1,
+    },
+  },
+  builtExecutionBounds,
+);
+const builtGetPlan = testing.compileLocalSqliteGetPlan(
+  { locator: { traceId: "a".repeat(32) } },
+  builtExecutionBounds,
+);
+if (
+  testing.LOCAL_SQLITE_RETRIEVER_PLAN_VERSION !== 1 ||
+  !isDestinationRetriever(builtRetriever) ||
+  builtSearchPlan?.maximumResponseBytes !== 4_096 ||
+  builtSearchPlan.maximumWorkMilliseconds !== 250 ||
+  !builtSearchPlan.sql.includes(
+    "admission_time_sort_key >= :retentionCutoffSortKey",
+  ) ||
+  !builtSearchPlan.sql.includes(
+    "t2.admission_time_sort_key >= :retentionCutoffSortKey",
+  ) ||
+  builtGetPlan?.maximumResponseBytes !== 4_096 ||
+  builtGetPlan.maximumWorkMilliseconds !== 250
+)
+  throw new Error("Local SQLite built Retriever artifact drifted.");
 
 let corruptAdmissionCommitted = false;
 const corruptAdmissionDatabase = Object.freeze({

@@ -10,8 +10,11 @@ export const createSanitizedCanonicalTraceFixture = (): unknown =>
   JSON.parse(serializedCanonicalFixture) as unknown;
 
 export type SanitizedRedactedTraceFixtureOptions = Readonly<{
+  branchName?: string;
+  harnessName?: string;
   sequence?: number;
   sessionId?: string;
+  startTimeUnixNano?: string;
   tags?: readonly string[];
   modelName?: string;
 }>;
@@ -45,6 +48,8 @@ const updateProvenance = (
   provenance.value.stringValue = JSON.stringify(ledger);
 };
 
+/* eslint-disable max-lines-per-function -- one closed fixture compiler keeps
+ * identity, timing, and semantic provenance updates causally adjacent. */
 export const createSanitizedRedactedCanonicalTraceFixture = (
   options: SanitizedRedactedTraceFixtureOptions = {},
 ): RedactedCanonicalTrace => {
@@ -82,11 +87,16 @@ export const createSanitizedRedactedCanonicalTraceFixture = (
   });
   const fixture = JSON.parse(serializedCanonicalFixture) as {
     resourceSpans: {
+      resource?: {
+        attributes: { key: string; value: Record<string, unknown> }[];
+      };
       scopeSpans: {
         spans: {
           traceId: string;
           spanId: string;
           parentSpanId?: string;
+          startTimeUnixNano: string;
+          endTimeUnixNano?: string;
           attributes: { key: string; value: Record<string, unknown> }[];
           logicalOperationKey?: string;
         }[];
@@ -108,6 +118,37 @@ export const createSanitizedRedactedCanonicalTraceFixture = (
   }
   const root = spans[0]!;
   const addedRootFields: string[] = [];
+  if (options.startTimeUnixNano !== undefined) {
+    const target = BigInt(options.startTimeUnixNano);
+    const delta = target - BigInt(root.startTimeUnixNano);
+    for (const span of spans) {
+      span.startTimeUnixNano = (
+        BigInt(span.startTimeUnixNano) + delta
+      ).toString();
+      /* v8 ignore else -- every span in the embedded closed fixture has an end. */
+      if (span.endTimeUnixNano !== undefined)
+        span.endTimeUnixNano = (
+          BigInt(span.endTimeUnixNano) + delta
+        ).toString();
+    }
+  }
+  if (options.harnessName !== undefined) {
+    const harness = root.attributes.find(
+      ({ key }) => key === "agentscope.harness.name",
+    );
+    /* v8 ignore next 2 -- the embedded fixture owns the required harness attribute. */
+    if (harness === undefined)
+      throw new Error("protocol.testing.fixture.invalid");
+    harness.value = { stringValue: options.harnessName };
+  }
+  if (options.branchName !== undefined) {
+    const attributes = fixture.resourceSpans[0]!.resource!.attributes;
+    const branch = attributes.find(({ key }) => key === "vcs.ref.head.name");
+    /* v8 ignore next 2 -- the embedded fixture owns the required VCS branch attribute. */
+    if (branch === undefined)
+      throw new Error("protocol.testing.fixture.invalid");
+    branch.value = { stringValue: options.branchName };
+  }
   if (options.sessionId !== undefined) {
     root.attributes.push({
       key: "session.id",
@@ -141,3 +182,4 @@ export const createSanitizedRedactedCanonicalTraceFixture = (
     graph: fixture,
   });
 };
+/* eslint-enable max-lines-per-function */

@@ -1,7 +1,10 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const migrations = Object.freeze(["0001-initialize.sql"]);
+const migrations = Object.freeze([
+  "0001-initialize.sql",
+  "0002-retrieval-indexes.sql",
+]);
 const sourceRoot = new URL("../src/migrations/", import.meta.url);
 const destinationRoot = new URL("../dist/migrations/", import.meta.url);
 

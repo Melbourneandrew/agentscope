@@ -25,7 +25,11 @@ export type PersistedCanonicalEnvelope = Readonly<{
 }>;
 
 export type PersistedEnvelopeReadResult =
-  | Readonly<{ ok: true; envelope: PersistedCanonicalEnvelope }>
+  | Readonly<{
+      ok: true;
+      envelope: PersistedCanonicalEnvelope;
+      sourceProtocolManifestId: string;
+    }>
   | Readonly<{
       ok: false;
       code: "protocol.reader.invalid" | "protocol.reader.unsupported";
@@ -258,6 +262,7 @@ export const readPersistedEnvelopeAgainstSupport = (
     if (!graph.success) return invalidResult;
     return deepFreeze({
       ok: true,
+      sourceProtocolManifestId: manifest,
       envelope: {
         envelopeVersion: descriptor.envelope.version,
         protocolManifestId:

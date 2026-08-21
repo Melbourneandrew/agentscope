@@ -108,3 +108,15 @@ export {
   type LocalSqliteMaintenanceRecoveryPhase,
   type LocalSqliteVerifiedSnapshotEvidence,
 } from "./lifecycle/maintenance.js";
+export {
+  compileLocalSqliteGetPlan,
+  compileLocalSqliteSearchPlan,
+  createLocalSqliteRetriever,
+  LOCAL_SQLITE_RETRIEVER_PLAN_VERSION,
+  type LocalSqliteGetPlan,
+  type LocalSqliteGetEvidence,
+  type LocalSqliteRetrievalRow,
+  type LocalSqliteRetrieverDatabase,
+  type LocalSqliteSearchEvidence,
+  type LocalSqliteSearchPlan,
+} from "./retriever/index.js";

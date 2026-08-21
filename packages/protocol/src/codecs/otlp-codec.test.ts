@@ -378,6 +378,7 @@ describe("persisted envelope and response readers", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.envelope).toEqual(trace);
+      expect(result.sourceProtocolManifestId).toBe(trace.protocolManifestId);
       expect(isRedactedCanonicalTrace(result.envelope)).toBe(false);
       expect(Object.isFrozen(result.envelope.graph)).toBe(true);
     }
@@ -410,6 +411,9 @@ describe("persisted envelope and response readers", () => {
     const result = readPersistedCanonicalEnvelope(JSON.stringify(source));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    expect(result.sourceProtocolManifestId).toBe(
+      historicalV1Manifest.manifestId,
+    );
     expect(result.envelope.protocolManifestId).toBe(
       standardsManifest.manifestId,
     );

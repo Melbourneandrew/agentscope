@@ -83,6 +83,13 @@ const migrationFiles = Object.freeze([
     protocolCompatibilityId:
       "agentscope-protocol-2_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-2-sha256-682b98c09e5f1e2c5827d2eb06885968d5cd1610c57a2ddc28022d0fdd37165d_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-2-sha256-691b475677538ec480cc5db480e4d95a2242c06a0ad5517b34dc8da7000a830c_codec-1-sha256-37cd4d040eab9d914496acd83545ca46e7fa3dd78314aa067407d999e966e278_compatibility-1-sha256-86d3c71d7f25f75da3af52cf46ec4ac1ba104684f55146c87db02c1d8de444ca",
   }),
+  Object.freeze({
+    name: "0002-retrieval-indexes.sql",
+    bytes: 180,
+    sha256: "48472b1673ed36f4bb77494b3f8c6b425c99467004a2c3da2f042e896e693a3e",
+    protocolCompatibilityId:
+      "agentscope-protocol-2_otel-1.60.0_otlp-1.11.0_otel-semconv-1.44.0_openinference-js-2.7.0_profile-2-sha256-682b98c09e5f1e2c5827d2eb06885968d5cd1610c57a2ddc28022d0fdd37165d_identity-1-sha256-2c10f312f8e0bf8e6e040843cf88bc5d384993609a4843038fd8e2ed27d8f66b_extensions-2-sha256-691b475677538ec480cc5db480e4d95a2242c06a0ad5517b34dc8da7000a830c_codec-1-sha256-37cd4d040eab9d914496acd83545ca46e7fa3dd78314aa067407d999e966e278_compatibility-1-sha256-86d3c71d7f25f75da3af52cf46ec4ac1ba104684f55146c87db02c1d8de444ca",
+  }),
 ] as const);
 const maximumMigrationBytes = 64 * 1024;
 const maximumMigrationStatements = 64;
