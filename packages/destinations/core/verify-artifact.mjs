@@ -2,6 +2,8 @@ import { z } from "zod";
 
 import {
   createDestinationConnectionId,
+  createDestinationReporter,
+  createReporterReceipt,
   createDestinationRetriever,
   createRetrieverFailure,
   createRetrieverSearchPage,
@@ -21,6 +23,7 @@ import {
   createReporterDeadline,
   createTraceSearchCursor,
   createTraceSearchRequest,
+  invokeReporter,
   invokeRetrieverSearch,
   normalizeTraceSearchQuery,
   prepareDestinationReporter,
@@ -111,6 +114,45 @@ const unhandled = [];
 const collectUnhandled = (reason) => unhandled.push(reason);
 process.on("unhandledRejection", collectUnhandled);
 try {
+  let reporterCalls = 0;
+  const reasonReporter = createDestinationReporter({
+    report: ({ admissionTimeUnixNano }) => {
+      reporterCalls += 1;
+      if (admissionTimeUnixNano !== "1000000")
+        throw new Error("Reporter admission time drifted.");
+      return Promise.resolve(
+        createReporterReceipt("unavailable", "destination-busy"),
+      );
+    },
+  });
+  const reporterAttempt = {
+    traces: [{}],
+    signal: new AbortController().signal,
+    deadline: createReporterDeadline(1_000),
+    admissionTimeUnixNano: "1000000",
+  };
+  const reasonReceipt = createReporterReceipt(
+    "unavailable",
+    "destination-busy",
+  );
+  if (
+    reasonReceipt.outcome !== "unavailable" ||
+    reasonReceipt.reason !== "destination-busy" ||
+    reporterCalls !== 0
+  )
+    throw new Error("Built Reporter reason authority drifted.");
+  try {
+    await invokeReporter(reasonReporter, {
+      ...reporterAttempt,
+      admissionTimeUnixNano: "01",
+    });
+    throw new Error("Built Reporter accepted an invalid admission time.");
+  } catch (error) {
+    if (error?.code !== "destination.reporter.invalid") throw error;
+  }
+  if (reporterCalls !== 0)
+    throw new Error("Invalid admission time reached the built Reporter.");
+
   const reporterCases = createReporterContractSuite({
     adapter: createDestinationTestAdapter(),
     traces: [{}],

@@ -70,6 +70,12 @@ export const SANITIZED_DIAGNOSTIC_CODES = Object.freeze([
   "reporter-unavailable",
   "reporter-deadline-exceeded",
   "reporter-outcome-unknown",
+  "destination-busy",
+  "destination-full",
+  "destination-corrupt",
+  "destination-migrating",
+  "destination-retention",
+  "destination-capacity",
 ] as const);
 export type SanitizedDiagnosticCode =
   (typeof SANITIZED_DIAGNOSTIC_CODES)[number];

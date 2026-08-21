@@ -17,10 +17,12 @@ import {
   isDestinationReporter,
   MAXIMUM_REPORTER_BATCH_ITEMS,
   REPORTER_OUTCOMES,
+  REPORTER_RECEIPT_REASONS,
   ReporterContractError,
   type ReporterAttempt,
   type ReporterImplementation,
   type ReporterReceipt,
+  type ReporterReceiptReason,
 } from "./reporter.js";
 
 const trace = (identity: string): RedactedCanonicalTrace => {
@@ -39,6 +41,7 @@ const attempt = (
     traces,
     signal: options.signal ?? new AbortController().signal,
     deadline: createReporterDeadline(options.timeout ?? 1_000),
+    admissionTimeUnixNano: "1000000",
   }) as ReporterAttempt;
 
 const implementation = (
@@ -61,6 +64,39 @@ describe("Reporter receipt and construction", () => {
     );
   });
 
+  it("constructs only the closed terminal-state and receipt-reason pairs", () => {
+    const allowed = [
+      ["rejected", "destination-retention"],
+      ["rejected", "destination-capacity"],
+      ...REPORTER_RECEIPT_REASONS.map(
+        (reason): readonly ["unavailable", ReporterReceiptReason] => [
+          "unavailable",
+          reason,
+        ],
+      ),
+    ] as const;
+    for (const [outcome, reason] of allowed) {
+      expect(createReporterReceipt(outcome, reason)).toEqual({
+        outcome,
+        reason,
+      });
+    }
+    expectTypeOf<ReporterReceiptReason>().toEqualTypeOf<
+      (typeof REPORTER_RECEIPT_REASONS)[number]
+    >();
+    for (const [outcome, reason] of [
+      ["accepted", "destination-busy"],
+      ["rejected", "destination-busy"],
+      ["deadline-exceeded", "destination-retention"],
+      ["outcome-unknown", "destination-capacity"],
+      ["unavailable", "provider-CANARY"],
+    ] as const) {
+      expect(() =>
+        createReporterReceipt(outcome as never, reason as never),
+      ).toThrowError(ReporterContractError);
+    }
+  });
+
   it("creates only exact synchronous reporter implementations", () => {
     const value = implementation(() =>
       Promise.resolve(createReporterReceipt("accepted")),
@@ -73,6 +109,10 @@ describe("Reporter receipt and construction", () => {
       { report: "not a function" },
       { report: () => Promise.resolve({ outcome: "accepted" }), extra: true },
       Object.defineProperty({}, "report", { get: () => "CANARY_SECRET" }),
+      Object.assign(
+        { report: () => Promise.resolve({ outcome: "accepted" }) },
+        { [Symbol("extra")]: true },
+      ),
     ]) {
       expect(() => createDestinationReporter(candidate as never)).toThrowError(
         ReporterContractError,
@@ -98,6 +138,7 @@ describe("Reporter branded batch boundary", () => {
     expect(observed?.traces[0]).toBe(first);
     expect(observed?.traces[1]).toBe(second);
     expect(Object.isFrozen(observed?.traces)).toBe(true);
+    expect(observed?.admissionTimeUnixNano).toBe("1000000");
   });
 
   it("accepts the exact maximum batch size", async () => {
@@ -123,6 +164,8 @@ describe("Reporter branded batch boundary", () => {
     Object.defineProperty(accessor, "length", { value: 1 });
     const extra = [valid];
     Object.defineProperty(extra, "named", { value: valid });
+    const symbolExtra = [valid];
+    Object.defineProperty(symbolExtra, Symbol("extra"), { value: valid });
     const hostile = new Proxy([valid], {
       ownKeys() {
         throw new Error("CANARY_SECRET");
@@ -137,6 +180,7 @@ describe("Reporter branded batch boundary", () => {
       sparse,
       accessor,
       extra,
+      symbolExtra,
       hostile,
       Array.from({ length: MAXIMUM_REPORTER_BATCH_ITEMS + 1 }, (_, index) =>
         trace(`delivery-${index}`),
@@ -164,6 +208,13 @@ describe("Reporter branded batch boundary", () => {
       { ...attempt([valid]), extra: true },
       { ...attempt([valid]), signal: {} },
       { ...attempt([valid]), deadline: {} },
+      { ...attempt([valid]), admissionTimeUnixNano: "01" },
+      { ...attempt([valid]), admissionTimeUnixNano: "18446744073709551616" },
+      { ...attempt([valid]), admissionTimeUnixNano: 1 },
+      Object.assign({ ...attempt([valid]) }, { [Symbol("extra")]: true }),
+      Object.defineProperty({ ...attempt([valid]) }, "admissionTimeUnixNano", {
+        get: () => "1000000",
+      }),
       Object.defineProperty({}, "traces", { get: () => [valid] }),
       new Proxy(attempt([valid]), {
         ownKeys() {
@@ -194,6 +245,38 @@ describe("Reporter fail-open outcome classification", () => {
       expect(receipt).toEqual(source);
       expect(receipt).not.toBe(source);
       expect(Object.isFrozen(receipt)).toBe(true);
+    }
+  });
+
+  it("reconstructs valid reasons and contains malformed reason evidence", async () => {
+    const source = {
+      outcome: "unavailable",
+      reason: "destination-busy",
+    } as const;
+    await expect(
+      invokeReporter(
+        implementation(() => Promise.resolve(source)),
+        attempt([trace("delivery-reason")]),
+      ),
+    ).resolves.toEqual(source);
+    for (const receipt of [
+      { outcome: "accepted", reason: "destination-busy" },
+      { outcome: "unavailable", reason: "provider-CANARY" },
+      { outcome: "unavailable", reason: undefined },
+      Object.defineProperty({ outcome: "unavailable" }, "reason", {
+        get: () => "destination-busy",
+      }),
+      Object.assign(
+        { outcome: "unavailable", reason: "destination-busy" },
+        { [Symbol("extra")]: true },
+      ),
+    ]) {
+      await expect(
+        invokeReporter(
+          implementation(() => Promise.resolve(receipt as never)),
+          attempt([trace("delivery-malformed-reason")]),
+        ),
+      ).resolves.toEqual({ outcome: "outcome-unknown" });
     }
   });
 

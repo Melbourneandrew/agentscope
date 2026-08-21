@@ -133,6 +133,7 @@ const routingFixture = (unavailableDelayMilliseconds = 0) => {
   const starts: string[] = [];
   const received: RedactedCanonicalTrace[] = [];
   const deadlines: object[] = [];
+  const admissionTimes: string[] = [];
   const settlements = new Map<string, (outcome: ReporterOutcome) => void>();
   const outcomes = new Map<string, ReporterOutcome>([
     [acceptedId, "accepted"],
@@ -159,10 +160,11 @@ const routingFixture = (unavailableDelayMilliseconds = 0) => {
         throw new Error("CANARY_SECRET");
       }
       return createDestinationReporter({
-        report: ({ deadline, traces }) => {
+        report: ({ admissionTimeUnixNano, deadline, traces }) => {
           starts.push(current);
           received.push(traces[0]);
           deadlines.push(deadline);
+          admissionTimes.push(admissionTimeUnixNano);
           return new Promise((resolve) => {
             settlements.set(current, (outcome) => {
               resolve(createReporterReceipt(outcome));
@@ -211,6 +213,7 @@ const routingFixture = (unavailableDelayMilliseconds = 0) => {
     starts,
     received,
     deadlines,
+    admissionTimes,
     settlements,
     outcomes,
     destinationRegistry,
@@ -228,12 +231,14 @@ describe("Core connection routing", () => {
       credentialBackendRegistry: compileCredentialBackendRegistry([]),
       transportExecutor: () => Promise.reject(new Error("unexpected")),
       deadline: createReporterDeadline(2_000),
+      admissionTimeUnixNano: "1000000",
     });
     await vi.waitFor(() => {
       expect(value.starts).toHaveLength(3);
     });
     expect(value.received.every((received) => received === trace)).toBe(true);
     expect(new Set(value.deadlines).size).toBe(1);
+    expect(value.admissionTimes).toEqual(["1000000", "1000000", "1000000"]);
     for (const [current, outcome] of value.outcomes)
       value.settlements.get(current)?.(outcome);
     await expect(resultPromise).resolves.toEqual({
@@ -273,6 +278,7 @@ describe("Core connection routing", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "routing-unselected",
@@ -356,6 +362,7 @@ describe("Core remote connection routing", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unused")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -469,6 +476,7 @@ describe("Core connection setup isolation", () => {
         credentialBackendRegistry,
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(2_000),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -567,6 +575,7 @@ describe("Core credential setup outcomes", () => {
         credentialBackendRegistry,
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -641,6 +650,7 @@ describe("Core connection deadline isolation", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(50),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -677,6 +687,7 @@ describe("Core routing boundary rejection", () => {
           credentialBackendRegistry: compileCredentialBackendRegistry([]),
           transportExecutor: () => Promise.reject(new Error("unexpected")),
           deadline: createReporterDeadline(1_000),
+          admissionTimeUnixNano: "1000000",
         }),
       ).rejects.toThrow("core.routing.invalid");
     expect(value.starts).toHaveLength(0);
@@ -697,6 +708,7 @@ describe("Core routing boundary rejection", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -712,6 +724,7 @@ describe("Core routing boundary rejection", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(0),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -724,6 +737,7 @@ describe("Core routing boundary rejection", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: {} as never,
+        admissionTimeUnixNano: "1000000",
       }),
     ).rejects.toThrow("core.routing.invalid");
 
@@ -740,6 +754,7 @@ describe("Core routing boundary rejection", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(50),
+        admissionTimeUnixNano: "1000000",
       }),
     ).resolves.toEqual({
       outcome: "completed",
@@ -774,6 +789,7 @@ describe("Core routing cancellation containment", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
         signal: throwingMethods,
       }),
     ).resolves.toEqual({
@@ -796,6 +812,7 @@ describe("Core routing cancellation containment", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
         signal: listenerSignal,
       }),
     ).resolves.toEqual({
@@ -816,6 +833,7 @@ describe("Core routing cancellation containment", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(1_000),
+        admissionTimeUnixNano: "1000000",
         signal: throwingAborted,
       }),
     ).resolves.toEqual({
@@ -840,6 +858,7 @@ describe("Core routing cancellation containment", () => {
         credentialBackendRegistry: compileCredentialBackendRegistry([]),
         transportExecutor: () => Promise.reject(new Error("unexpected")),
         deadline: createReporterDeadline(50),
+        admissionTimeUnixNano: "1000000",
         signal: delayedThrowingMethods,
       }),
     ).resolves.toEqual({

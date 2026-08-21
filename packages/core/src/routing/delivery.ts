@@ -8,6 +8,7 @@ import {
   type Reporter,
   type ReporterDeadline,
   type ReporterOutcome,
+  type ReporterReceiptReason,
 } from "@agentscope/destinations-core";
 import {
   bindDestinationTransport,
@@ -37,6 +38,7 @@ export const CONNECTION_SETUP_TIMEOUT_MILLISECONDS = 1_000;
 export type RoutedConnectionResult = Readonly<{
   connectionId: DestinationConnectionId;
   outcome: ReporterOutcome;
+  reason?: ReporterReceiptReason;
 }>;
 
 export type RoutingDeliveryResult = Readonly<{
@@ -50,13 +52,20 @@ export type RouteRedactedTraceBatchInput = Readonly<{
   credentialBackendRegistry: CredentialBackendRegistry;
   transportExecutor: DestinationTransportExecutor;
   deadline: ReporterDeadline;
+  admissionTimeUnixNano: string;
   signal?: AbortSignal;
 }>;
 
 const fixedResult = (
   connectionId: DestinationConnectionId,
   outcome: ReporterOutcome,
-): RoutedConnectionResult => Object.freeze({ connectionId, outcome });
+  reason?: ReporterReceiptReason,
+): RoutedConnectionResult =>
+  Object.freeze({
+    connectionId,
+    outcome,
+    ...(reason === undefined ? {} : { reason }),
+  });
 
 const signalIsAborted = (signal: AbortSignal | undefined): boolean => {
   try {
@@ -229,8 +238,9 @@ const routeConnection = async (
       traces,
       signal: controller.signal,
       deadline: input.deadline,
+      admissionTimeUnixNano: input.admissionTimeUnixNano,
     });
-    return fixedResult(connectionId, receipt.outcome);
+    return fixedResult(connectionId, receipt.outcome, receipt.reason);
   } catch {
     return fixedResult(
       connectionId,

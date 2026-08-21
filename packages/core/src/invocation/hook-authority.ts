@@ -15,10 +15,12 @@ export type HookEntryAuthority = Readonly<{
 type HookEntryAuthorityState = Readonly<{
   deadline: ReporterDeadline;
   durationMilliseconds: number;
+  admissionTimeUnixNano: string;
 }>;
 
 const authorityState = new WeakMap<object, HookEntryAuthorityState>();
 const monotonicNow = performance.now.bind(performance);
+const wallClockNow = Date.now.bind(Date);
 
 const invalid = (): never => {
   throw new Error("core.hook-authority.invalid");
@@ -72,11 +74,16 @@ export const createHookEntryAuthority = (
 ): HookEntryAuthority => {
   try {
     const parsed = exactInput(input);
+    const observedMonotonic = monotonicNow();
     const remainingMilliseconds = Math.max(
       0,
       Math.floor(
-        parsed.durationMilliseconds - (monotonicNow() - parsed.startedAt),
+        parsed.durationMilliseconds - (observedMonotonic - parsed.startedAt),
       ),
+    );
+    const entryWallMilliseconds = Math.max(
+      0,
+      Math.floor(wallClockNow() - (observedMonotonic - parsed.startedAt)),
     );
     const authority = Object.freeze({}) as HookEntryAuthority;
     authorityState.set(
@@ -84,6 +91,9 @@ export const createHookEntryAuthority = (
       Object.freeze({
         deadline: createReporterDeadline(remainingMilliseconds),
         durationMilliseconds: parsed.durationMilliseconds,
+        admissionTimeUnixNano: (
+          BigInt(entryWallMilliseconds) * 1_000_000n
+        ).toString(),
       }),
     );
     return authority;

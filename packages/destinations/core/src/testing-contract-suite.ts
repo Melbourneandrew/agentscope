@@ -77,6 +77,7 @@ const runReporterContractCase = async (
     traces: input.traces,
     signal: controller.signal,
     deadline: createReporterDeadline(1_000),
+    admissionTimeUnixNano: "1000000",
   });
   if (behavior === "hang") {
     const attempted = await Promise.race([
@@ -125,6 +126,7 @@ export const createReporterContractSuite = (
             traces: input.traces,
             signal: controller.signal,
             deadline: createReporterDeadline(1_000),
+            admissionTimeUnixNano: "1000000",
           },
         );
         assert(
@@ -144,6 +146,7 @@ export const createReporterContractSuite = (
             traces: [{ ...input.traces[0] }] as never,
             signal: new AbortController().signal,
             deadline: createReporterDeadline(1_000),
+            admissionTimeUnixNano: "1000000",
           });
         } catch {
           rejected = true;
@@ -163,6 +166,7 @@ export const createReporterContractSuite = (
             traces: [trace],
             signal: new AbortController().signal,
             deadline: createReporterDeadline(1_000),
+            admissionTimeUnixNano: "1000000",
           });
         }
         const expected = input.traces.map((trace) => trace.delivery.identity);
@@ -183,6 +187,7 @@ export const createReporterContractSuite = (
           traces: input.traces,
           signal: new AbortController().signal,
           deadline: createReporterDeadline(1_000),
+          admissionTimeUnixNano: "1000000",
         });
         const before = input.adapter.readDeliveryLedger();
         input.adapter.reset();
