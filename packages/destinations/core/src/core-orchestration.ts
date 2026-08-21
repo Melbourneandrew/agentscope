@@ -32,3 +32,10 @@ export {
   invokeRetrieverGet,
   invokeRetrieverSearch,
 } from "./retriever.js";
+export {
+  bindLocalResourceConfigurationAuthorityForCore,
+  type BindLocalResourceConfigurationAuthorityInput,
+} from "./local-resource-configuration-authority.js";
+export { bindLocalResourceLifecycleContextForCore } from "./local-resource-handler.js";
+export { bindLocalResourceLifecycleRecoveryContextForCore } from "./local-resource-handler.js";
+export { createLocalResourceLifecycleDeadlineForCore } from "./local-resource-handler.js";

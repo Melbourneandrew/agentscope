@@ -2,6 +2,15 @@ export const destinationsCorePackageId =
   "@agentscope/destinations-core" as const;
 
 export {
+  commitLocalResourceConfiguration,
+  isLocalResourceConfigurationCommitError,
+  LocalResourceConfigurationCommitError,
+  LocalResourceConfigurationAuthorityError,
+  type LocalResourceConfigurationAuthority,
+  type LocalResourceConfigurationCommitEvidence,
+} from "./local-resource-configuration-authority.js";
+
+export {
   defineLocalResourceLifecycleDeclaration,
   DestinationLocalResourceLifecycleError,
   isLocalResourceLifecycleCapability,
@@ -12,6 +21,29 @@ export {
   type LocalResourceLifecycleDeclarationInput,
   type LocalResourceLifecycleOperation,
 } from "./local-resource-lifecycle.js";
+export {
+  applyLocalResourceLifecyclePlan,
+  completeLocalResourceLifecycle,
+  recoverLocalResourceLifecycle,
+  compileLocalResourceLifecycleHandlerRegistry,
+  defineLocalResourceLifecycleHandler,
+  getLocalResourceLifecycleHandlerCapability,
+  inspectLocalResourceLifecyclePlan,
+  inspectRetainedLocalResourceDelete,
+  isLocalResourceLifecycleHandlerRegistry,
+  localResourceLifecycleHandlerRegistryUsesDestinationRegistry,
+  LocalResourceLifecycleHandlerError,
+  type LocalResourceLifecycleApplyResult,
+  type LocalResourceLifecycleContext,
+  type LocalResourceLifecycleDeadline,
+  type LocalResourceLifecycleHandler,
+  type LocalResourceLifecycleHandlerImplementation,
+  type LocalResourceLifecycleHandlerRegistry,
+  type LocalResourceLifecycleMutationOperation,
+  type LocalResourceLifecyclePlanEvidence,
+  type LocalResourceLifecycleRecoveryContext,
+  type LocalResourceRetainedDeleteAuthority,
+} from "./local-resource-handler.js";
 
 export {
   compileDestinationRegistry,
