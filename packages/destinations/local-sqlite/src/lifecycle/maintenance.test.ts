@@ -1171,16 +1171,20 @@ describe("Local SQLite maintenance evidence and Doctor", () => {
     const doctorContext = bindLocalResourceDoctorContextForTesting({
       destinationType: LOCAL_SQLITE_DESTINATION_TYPE,
       connectionId: `destination-connection-v1-${"4".repeat(64)}`,
-      connectionName: "local",
+      connectionName: "CANARY_CONNECTION_NAME",
       settings,
       configurationGeneration: 7,
       configurationDigest: `sha256-${"3".repeat(64)}`,
       signal: new AbortController().signal,
       deadline: createLocalResourceLifecycleDeadlineForTesting(10_000),
     });
-    await expect(
-      inspectLocalResourceDoctor(registryWith(port), doctorContext),
-    ).resolves.toEqual(doctorInspection());
+    const result = await inspectLocalResourceDoctor(
+      registryWith(port),
+      doctorContext,
+    );
+    expect(result).toEqual(doctorInspection());
+    expect(JSON.stringify(result)).not.toContain("CANARY_CONNECTION_NAME");
+    expect(JSON.stringify(result)).not.toContain(doctorContext.connectionId);
     expect(events).toEqual(["doctor"]);
   });
 

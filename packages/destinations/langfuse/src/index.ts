@@ -5,6 +5,11 @@ export {
 export type { LangfuseDestinationSettings } from "./compatibility.js";
 export { langfuseRetrieverPackageId } from "./retriever/identity.js";
 export { LANGFUSE_COMPATIBILITY_MANIFEST } from "./compatibility.js";
+export { createLangfuseReachabilityProbe } from "./doctor.js";
+export type {
+  LangfuseDoctorConnection,
+  LangfuseDoctorConnectionResolver,
+} from "./doctor.js";
 
 export const langfuseDestinationPackageId =
   "@agentscope/destination-langfuse" as const;

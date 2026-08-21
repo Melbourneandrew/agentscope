@@ -77,6 +77,7 @@ export {
 export {
   DestinationReachabilityError,
   defineDestinationReachabilityProbe,
+  inspectBoundDestinationReachability,
   isDestinationReachabilityProbe,
   type DestinationReachabilityProbe,
   type DestinationReachabilityProbeInput,

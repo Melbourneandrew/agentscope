@@ -21,6 +21,7 @@ import {
   defineLocalResourceLifecycleDeclaration,
   DestinationLocalResourceLifecycleError,
   executeBoundDestinationRequest,
+  inspectBoundDestinationReachability,
   isDestinationReachabilityProbe,
   parseDestinationSettings,
   TRACE_SEARCH_ORDERINGS,
@@ -45,6 +46,7 @@ import {
   prepareDestinationRetriever,
   readTraceSearchCursor,
   resolveDestinationConnection,
+  validateDestinationEndpoint,
 } from "./dist/core-orchestration.js";
 import {
   createDestinationTestAdapter,
@@ -75,6 +77,46 @@ if (
   isDestinationReachabilityProbe({ ...reachabilityProbe })
 )
   throw new Error("Destination reachability brand is unavailable.");
+const reachabilityRequests = [];
+const reachabilityState = await inspectBoundDestinationReachability(
+  bindDestinationTransport(
+    validateDestinationEndpoint("http://127.0.0.1:4318", {
+      allowInsecureLoopback: true,
+    }),
+    async (request) => {
+      reachabilityRequests.push(request);
+      return {
+        status: 405,
+        headers: { "x-canary": "CANARY_PROVIDER" },
+        body: new TextEncoder().encode("CANARY_TRACE_CONTENT"),
+      };
+    },
+  ),
+  "/api/public/otel/v1/traces",
+  new AbortController().signal,
+);
+if (
+  reachabilityState !== "available" ||
+  reachabilityRequests.length !== 1 ||
+  reachabilityRequests[0].method !== "GET" ||
+  reachabilityRequests[0].body !== undefined ||
+  Object.keys(reachabilityRequests[0].headers).length !== 0
+)
+  throw new Error("Built destination reachability request drifted.");
+for (const status of [302, 503]) {
+  const unavailable = await inspectBoundDestinationReachability(
+    bindDestinationTransport(
+      validateDestinationEndpoint("http://127.0.0.1:4318", {
+        allowInsecureLoopback: true,
+      }),
+      async () => ({ status, headers: {}, body: new Uint8Array() }),
+    ),
+    "/probe",
+    new AbortController().signal,
+  );
+  if (unavailable !== "unavailable")
+    throw new Error("Built reachability accepted redirect/unavailable status.");
+}
 for (const destinationType of [
   "@agentscope/destination--invalid",
   "@agentscope/destination-invalid-",

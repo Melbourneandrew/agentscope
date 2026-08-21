@@ -649,7 +649,9 @@ const builtDoctor = await testing.inspectLocalSqliteDoctor(
 );
 if (
   builtDoctor.databaseDerivedRetention.rowCount !== "unavailable" ||
-  builtDoctor.databaseDerivedRetention.payloadBytes !== "unavailable"
+  builtDoctor.databaseDerivedRetention.payloadBytes !== "unavailable" ||
+  JSON.stringify(builtDoctor).includes("built-local") ||
+  JSON.stringify(builtDoctor).includes(builtLifecycleConnectionId)
 )
   throw new Error("Built Local SQLite conservative Doctor drifted.");
 const artifactGrammarFingerprint = `sha256-${createHash("sha256")

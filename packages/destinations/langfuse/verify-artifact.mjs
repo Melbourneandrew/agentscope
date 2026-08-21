@@ -1,7 +1,22 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   createTraceLocator,
@@ -9,17 +24,12 @@ import {
   parseDestinationSettings,
 } from "@agentscope/destinations-core";
 
-import * as root from "./dist/index.js";
-import * as reporter from "./dist/reporter/index.js";
-import * as retriever from "./dist/retriever/public.js";
-import * as testing from "./dist/testing.js";
-
 const packageRoot = new URL(".", import.meta.url);
 const sourceRoot = new URL("./src/", packageRoot);
 const distRoot = new URL("./dist/", packageRoot);
 
 const regularFiles = (rootUrl) => {
-  const rootPath = rootUrl.pathname;
+  const rootPath = fileURLToPath(rootUrl);
   const files = [];
   const pending = [rootPath];
   while (pending.length > 0) {
@@ -52,12 +62,87 @@ if (JSON.stringify(actualDist) !== JSON.stringify(expectedDist))
 if (actualDist.some((file) => file.includes(".test.")))
   throw new Error("Langfuse dist contains compiled tests.");
 
+const snapshotDist = (files, rootPath) => {
+  const hash = createHash("sha256");
+  hash.update("agentscope-langfuse-dist-v1\0", "utf8");
+  let totalBytes = 0;
+  const snapshots = [];
+  for (const file of files) {
+    const name = Buffer.from(file, "utf8");
+    const path = resolve(rootPath, file);
+    const descriptor = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    let bytes;
+    try {
+      const metadata = fstatSync(descriptor);
+      if (
+        !metadata.isFile() ||
+        metadata.size < 1 ||
+        totalBytes + metadata.size > 16 * 1024 * 1024
+      )
+        throw new Error("Langfuse dist exceeds the verifier byte ceiling.");
+      bytes = Buffer.alloc(metadata.size);
+      let offset = 0;
+      while (offset < bytes.byteLength) {
+        const read = readSync(
+          descriptor,
+          bytes,
+          offset,
+          bytes.byteLength - offset,
+          null,
+        );
+        if (read === 0) break;
+        offset += read;
+      }
+      const overflow = Buffer.alloc(1);
+      if (offset !== metadata.size || readSync(descriptor, overflow) !== 0)
+        throw new Error("Langfuse dist changed while it was snapshotted.");
+      totalBytes += bytes.byteLength;
+    } finally {
+      closeSync(descriptor);
+    }
+    const framing = Buffer.alloc(16);
+    framing.writeBigUInt64BE(BigInt(name.byteLength), 0);
+    framing.writeBigUInt64BE(BigInt(bytes.byteLength), 8);
+    hash.update(framing);
+    hash.update(name);
+    hash.update(bytes);
+    snapshots.push(Object.freeze({ file, bytes }));
+  }
+  return Object.freeze({
+    digest: `sha256-${hash.digest("hex")}`,
+    files: Object.freeze(snapshots),
+  });
+};
+
+const distSnapshot = snapshotDist(actualDist, fileURLToPath(distRoot));
+const candidateArtifactDigest = distSnapshot.digest;
+const privateCandidateRoot = mkdtempSync(
+  resolve(fileURLToPath(packageRoot), ".langfuse-artifact-verifier-"),
+);
+process.once("exit", () => rmSync(privateCandidateRoot, { recursive: true }));
+for (const snapshot of distSnapshot.files) {
+  const target = resolve(privateCandidateRoot, snapshot.file);
+  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+  writeFileSync(target, snapshot.bytes, { flag: "wx", mode: 0o400 });
+}
+const privateCandidateUrl = pathToFileURL(`${privateCandidateRoot}${sep}`);
+const [root, reporter, retriever, testing] = await Promise.all([
+  import(new URL("./index.js", privateCandidateUrl).href),
+  import(new URL("./reporter/index.js", privateCandidateUrl).href),
+  import(new URL("./retriever/public.js", privateCandidateUrl).href),
+  import(new URL("./testing.js", privateCandidateUrl).href),
+]);
+
 const rootKeys = Object.keys(root).sort();
 if (
   JSON.stringify(rootKeys) !==
   JSON.stringify(
     [
       "LANGFUSE_COMPATIBILITY_MANIFEST",
+      "createLangfuseReachabilityProbe",
       "langfuseDestinationDescriptor",
       "langfuseDestinationPackageId",
       "langfuseReporterPackageId",
@@ -85,12 +170,56 @@ if (
       "LANGFUSE_FILTER_CONFORMANCE_FIXTURES",
       "LANGFUSE_SANITIZED_HTTP_FIXTURES",
       "createLangfuseDestinationTestAdapter",
+      "createLangfuseReachabilityProbeTestHarness",
+      "executeLangfuseMockRoundTrip",
       "createLangfuseReporterTestHarness",
       "createLangfuseRetrieverTestHarness",
     ].sort(),
   )
 )
   throw new Error("Langfuse testing export surface drifted.");
+
+const doctorRequests = [];
+const doctorHarness = testing.createLangfuseReachabilityProbeTestHarness(
+  async (request) => {
+    doctorRequests.push(request);
+    return {
+      status: 405,
+      headers: { "x-canary": "CANARY_PROVIDER" },
+      body: new TextEncoder().encode("CANARY_TRACE_CONTENT"),
+    };
+  },
+);
+const doctorState = await doctorHarness.probe.inspect({
+  connectionId: doctorHarness.connectionId,
+  signal: new AbortController().signal,
+});
+if (
+  doctorState !== "available" ||
+  doctorRequests.length !== 1 ||
+  doctorRequests[0].method !== "GET" ||
+  doctorRequests[0].body !== undefined ||
+  Object.keys(doctorRequests[0].headers).length !== 0
+)
+  throw new Error("Langfuse built Doctor probe drifted.");
+
+const mockResult = await testing.executeLangfuseMockRoundTrip({
+  runId: candidateArtifactDigest.slice("sha256-".length, "sha256-".length + 16),
+  visibilityDelayAttempts: 1,
+});
+const mockEvidence = Object.freeze({
+  evidenceVersion: 1,
+  candidateArtifactDigest,
+  ...mockResult,
+});
+if (
+  mockEvidence.outcome !== "passed" ||
+  mockEvidence.visibilityAttempts !== 2 ||
+  mockEvidence.candidateArtifactDigest !== candidateArtifactDigest ||
+  JSON.stringify(mockEvidence).includes("fixture") ||
+  JSON.stringify(mockEvidence).includes("traceId")
+)
+  throw new Error("Langfuse built mock evidence drifted.");
 if (
   !isDestinationDescriptor(root.langfuseDestinationDescriptor) ||
   root.langfuseDestinationDescriptor.deliveryIdentitySupport !==
@@ -455,7 +584,7 @@ if ((await parameterizedResponseReporter.report()).outcome !== "accepted")
     "Langfuse built Reporter rejected the governed parameterized media type.",
   );
 
-const source = readFileSync(new URL("./dist/index.js", packageRoot), "utf8");
+const source = readFileSync(new URL("./index.js", privateCandidateUrl), "utf8");
 for (const forbidden of [
   "LANGFUSE_SANITIZED_HTTP_FIXTURES",
   "encodeLangfuseOtlpJsonBatchWithinLimitForTesting",
@@ -464,18 +593,20 @@ for (const forbidden of [
   if (source.includes(forbidden))
     throw new Error(`Langfuse root artifact leaks ${forbidden}.`);
 
-if (!statSync(new URL("./dist/reporter/projection.js", packageRoot)).isFile())
+if (
+  !statSync(new URL("./reporter/projection.js", privateCandidateUrl)).isFile()
+)
   throw new Error("Langfuse Reporter projection artifact is absent.");
 if (
   readFileSync(
-    new URL("./dist/reporter/projection.js", packageRoot),
+    new URL("./reporter/projection.js", privateCandidateUrl),
     "utf8",
   ).includes("encodeLangfuseOtlpJsonBatchWithinLimitForTesting")
 )
   throw new Error("Langfuse Reporter artifact contains a test-only helper.");
 if (
   readFileSync(
-    new URL("./dist/retriever/public.js", packageRoot),
+    new URL("./retriever/public.js", privateCandidateUrl),
     "utf8",
   ).includes("createLangfuseRetriever")
 )
@@ -483,6 +614,14 @@ if (
     "Langfuse Retriever public artifact leaks factory authority.",
   );
 
+const finalCandidateFiles = regularFiles(privateCandidateUrl);
+if (
+  JSON.stringify(finalCandidateFiles) !== JSON.stringify(actualDist) ||
+  snapshotDist(finalCandidateFiles, privateCandidateRoot).digest !==
+    candidateArtifactDigest
+)
+  throw new Error("Langfuse dist changed while its evidence was executing.");
+
 process.stdout.write(
-  "Verified Langfuse descriptor, Reporter, and Retriever artifact.\n",
+  `${JSON.stringify({ langfuseMockRoundTripEvidence: mockEvidence })}\nVerified Langfuse descriptor, Reporter, and Retriever artifact (${candidateArtifactDigest}).\n`,
 );
