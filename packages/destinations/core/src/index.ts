@@ -2,6 +2,18 @@ export const destinationsCorePackageId =
   "@agentscope/destinations-core" as const;
 
 export {
+  defineLocalResourceLifecycleDeclaration,
+  DestinationLocalResourceLifecycleError,
+  isLocalResourceLifecycleCapability,
+  isLocalResourceLifecycleDeclaration,
+  LOCAL_RESOURCE_LIFECYCLE_OPERATIONS,
+  type LocalResourceLifecycleCapability,
+  type LocalResourceLifecycleDeclaration,
+  type LocalResourceLifecycleDeclarationInput,
+  type LocalResourceLifecycleOperation,
+} from "./local-resource-lifecycle.js";
+
+export {
   compileDestinationRegistry,
   defineDestinationDescriptor,
   DestinationDescriptorError,

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 import {
@@ -26,7 +28,14 @@ import {
   cloneJsonObject,
   settingsContainCredentialKey,
   type JsonObject,
+  type JsonValue,
 } from "./plain-data.js";
+import {
+  bindLocalResourceLifecycleCapability,
+  isLocalResourceLifecycleDeclaration,
+  type LocalResourceLifecycleCapability,
+  type LocalResourceLifecycleDeclaration,
+} from "./local-resource-lifecycle.js";
 import type { Reporter } from "./reporter.js";
 import {
   TRACE_SEARCH_ORDERINGS,
@@ -74,6 +83,7 @@ export type DestinationDescriptor<Settings extends JsonObject = JsonObject> =
     deliveryIdentitySupport: DeliveryIdentitySupport;
     retrievalSupport: "search-and-get" | "unsupported";
     retrievalOrdering: TraceSearchOrdering | null;
+    localResourceLifecycle: LocalResourceLifecycleCapability | null;
     transport: DestinationTransportDeclaration;
     readonly [destinationDescriptorBrand]: Settings;
   }>;
@@ -100,6 +110,7 @@ export type DestinationDescriptorInput<Settings extends JsonObject> = Readonly<{
   createReporter: (context: ReporterFactoryContext<Settings>) => Reporter;
   createRetriever?: (context: RetrieverFactoryContext<Settings>) => Retriever;
   retrievalOrdering?: TraceSearchOrdering;
+  localResourceLifecycle?: LocalResourceLifecycleDeclaration;
 }>;
 
 type StoredDescriptor = Readonly<{
@@ -163,6 +174,54 @@ type CompiledSettingsSchema = Readonly<{
   identity: JsonObject;
   settingKeys: readonly string[];
 }>;
+
+type CanonicalSchemaValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly CanonicalSchemaValue[]
+  | CanonicalSchemaObject;
+
+type CanonicalSchemaObject = Readonly<{
+  [key: string]: CanonicalSchemaValue;
+}>;
+
+const canonicalizeSettingsSchemaIdentity = (
+  value: JsonValue,
+  parentKey?: string,
+): CanonicalSchemaValue => {
+  if (Array.isArray(value)) {
+    const arrayValue = value as readonly JsonValue[];
+    const items = arrayValue.map((item) =>
+      canonicalizeSettingsSchemaIdentity(item, parentKey),
+    );
+    if (
+      parentKey === "required" ||
+      parentKey === "enum" ||
+      parentKey === "allOf" ||
+      parentKey === "anyOf" ||
+      parentKey === "oneOf" ||
+      parentKey === "type"
+    )
+      items.sort((left, right) => {
+        const leftJson = JSON.stringify(left);
+        const rightJson = JSON.stringify(right);
+        return Number(leftJson > rightJson) - Number(leftJson < rightJson);
+      });
+    return items;
+  }
+  if (value !== null && typeof value === "object") {
+    const output: Record<string, CanonicalSchemaValue> = Object.create(
+      null,
+    ) as Record<string, CanonicalSchemaValue>;
+    const record = value as JsonObject;
+    for (const key of Object.keys(record).sort())
+      output[key] = canonicalizeSettingsSchemaIdentity(record[key]!, key);
+    return output;
+  }
+  return value;
+};
 
 const nonDeclarativeSchemaTypes = new Set([
   "catch",
@@ -622,8 +681,39 @@ const descriptorInputKeysAreValid = (
       (key) =>
         required.includes(key) ||
         key === "createRetriever" ||
-        key === "retrievalOrdering",
+        key === "retrievalOrdering" ||
+        key === "localResourceLifecycle",
     )
+  );
+};
+
+const parseLocalResourceLifecycle = (
+  descriptors: PropertyDescriptorMap,
+  destinationType: DestinationTypeId,
+  settingsVersion: number,
+  settingKeys: readonly string[],
+  settingsSchemaIdentity: JsonObject,
+): LocalResourceLifecycleCapability | null => {
+  if (descriptors.localResourceLifecycle === undefined) return null;
+  const declaration = inputValue(descriptors, "localResourceLifecycle");
+  if (
+    !isLocalResourceLifecycleDeclaration(declaration) ||
+    declaration.destinationType !== destinationType ||
+    declaration.settingsVersion !== settingsVersion ||
+    declaration.settingKeys.length !== settingKeys.length ||
+    declaration.settingKeys.some((key, index) => key !== settingKeys[index])
+  )
+    return invalid();
+  const settingsSchemaFingerprint = `sha256-${createHash("sha256")
+    .update(
+      JSON.stringify(
+        canonicalizeSettingsSchemaIdentity(settingsSchemaIdentity),
+      ),
+    )
+    .digest("hex")}`;
+  return bindLocalResourceLifecycleCapability(
+    declaration,
+    settingsSchemaFingerprint,
   );
 };
 
@@ -876,11 +966,21 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
     if (typeof factory !== "function") return invalid();
     const retrieval = parseRetrievalDeclaration(descriptors);
 
+    const destinationType = createDestinationTypeId(
+      inputValue(descriptors, "destinationType"),
+    );
+    const localResourceLifecycle = parseLocalResourceLifecycle(
+      descriptors,
+      destinationType,
+      settingsVersion as number,
+      settingKeys,
+      schemaAuthority.identity,
+    );
+    if (localResourceLifecycle !== null && transport.kind !== "local")
+      return invalid();
     const descriptor = Object.freeze({
       descriptorVersion: 1 as const,
-      destinationType: createDestinationTypeId(
-        inputValue(descriptors, "destinationType"),
-      ),
+      destinationType,
       commandName: createDestinationCommandName(
         inputValue(descriptors, "commandName"),
       ),
@@ -895,6 +995,7 @@ export const defineDestinationDescriptor = <Settings extends JsonObject>(
       retrievalSupport:
         retrieval.factory === undefined ? "unsupported" : "search-and-get",
       retrievalOrdering: retrieval.ordering,
+      localResourceLifecycle,
       transport,
     }) as DestinationDescriptor<Settings>;
     descriptorRegistry.set(descriptor, {

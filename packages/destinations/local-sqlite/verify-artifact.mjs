@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,7 +61,10 @@ if (actualDist.some((file) => file.includes(".test.")))
 const expectedRoot = [
   "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST",
   "inspectLocalSqliteNativeSupport",
+  "LOCAL_SQLITE_DESTINATION_TYPE",
+  "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
   "localSqliteDestinationPackageId",
+  "localSqliteLifecycleDeclaration",
   "localSqliteReporterPackageId",
   "localSqliteRetrieverPackageId",
 ].sort();
@@ -85,12 +89,17 @@ if (
       "compileLocalSqliteMigrationInventoryForTesting",
       "compileLocalSqliteMigrationSqlForTesting",
       "inspectLocalSqliteNativeSupportManifestForTesting",
+      "compileLocalSqlitePhysicalNamespaceEvidence",
+      "LocalSqliteNamespaceError",
+      "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR",
+      "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT",
       "LOCAL_SQLITE_DESTINATION_FORMAT",
       "LOCAL_SQLITE_MIGRATION_MANIFEST_ID",
       "LOCAL_SQLITE_MIGRATIONS",
       "LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID",
       "LOCAL_SQLITE_REPORTER_POLICY_MANIFEST",
       "LOCAL_SQLITE_REPORTER_POLICY_VERSION",
+      "planLocalSqliteNamespace",
       "createLocalSqliteDatabaseFailureForTesting",
       "createLocalSqliteReporterForTesting",
       "prepareLocalSqliteTraceForTesting",
@@ -101,11 +110,169 @@ if (
 )
   throw new Error("Local SQLite testing export surface drifted.");
 if (
+  root.LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION !== 1 ||
+  root.LOCAL_SQLITE_DESTINATION_TYPE !==
+    "@agentscope/destination-local-sqlite" ||
+  root.localSqliteLifecycleDeclaration.destinationType !==
+    "@agentscope/destination-local-sqlite" ||
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.schemaVersion !== 1 ||
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeBinaries.length !== 0 ||
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.supportedPlatforms.length !== 0
 )
   throw new Error("Local SQLite artifact claimed an unproved native tuple.");
+const artifactGrammarFingerprint = `sha256-${createHash("sha256")
+  .update(JSON.stringify(testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR))
+  .digest("hex")}`;
+if (
+  artifactGrammarFingerprint !==
+    testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT ||
+  root.localSqliteLifecycleDeclaration.artifactGrammarFingerprint !==
+    artifactGrammarFingerprint ||
+  !root.localSqliteLifecycleDeclaration.artifactKinds.includes(
+    "configure-database-candidate",
+  ) ||
+  !root.localSqliteLifecycleDeclaration.artifactKinds.includes(
+    "restore-database-candidate",
+  )
+)
+  throw new Error("Local SQLite lifecycle artifact grammar drifted.");
+const artifactsByKind = new Map(
+  testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.artifacts.map((artifact) => [
+    artifact.kind,
+    artifact,
+  ]),
+);
+const sameDirectoryRoles = [
+  "configure-database-candidate",
+  "restore-database-candidate",
+  "rollback-preimage",
+];
+const lifecycleLimits =
+  testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.inspectionLimits;
+if (
+  artifactsByKind.get("active-database")?.relativePathGrammar !==
+    "traces.sqlite" ||
+  sameDirectoryRoles.some((kind) =>
+    artifactsByKind.get(kind)?.relativePathGrammar.includes("/"),
+  ) ||
+  lifecycleLimits.maximumBackupDirectoryEntries !== 32 ||
+  lifecycleLimits.maximumPublishedBackups !== 8 ||
+  lifecycleLimits.maximumMetadataAggregateBytes !== 65_536 ||
+  lifecycleLimits.maximumTransientDatabaseCandidates !== 1 ||
+  lifecycleLimits.maximumTransientRollbackPreimages !== 1 ||
+  lifecycleLimits.leaseRecordBytes !== 256 ||
+  testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.supportManifest
+    .maximumSnapshotBytes !== 0 ||
+  testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.supportManifest
+    .nativeAdmission !== "no-admitted-native-tuples"
+)
+  throw new Error(
+    "Local SQLite lifecycle bounds or candidate placement drifted.",
+  );
+const transientGroups = new Map(
+  testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.transientRoleGroups.map(
+    (group) => [group.name, group],
+  ),
+);
+const candidateGroup = transientGroups.get("database-candidate");
+const preimageGroup = transientGroups.get("rollback-preimage");
+if (
+  candidateGroup?.maximumCountAcrossKinds !== 1 ||
+  candidateGroup.maximumBytesPerArtifact !==
+    "supportManifest.maximumSnapshotBytes" ||
+  candidateGroup.kinds.join(",") !==
+    "backup-candidate,configure-database-candidate,restore-database-candidate" ||
+  preimageGroup?.maximumCountAcrossKinds !== 1 ||
+  preimageGroup.maximumBytesPerArtifact !==
+    "supportManifest.maximumSnapshotBytes" ||
+  preimageGroup.kinds.join(",") !== "rollback-preimage"
+)
+  throw new Error("Local SQLite transient role grouping drifted.");
+
+const namespacePlan = testing.planLocalSqliteNamespace({
+  agentscopeHome: "/home/artifact/.agentscope",
+  connectionId:
+    "destination-connection-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  platform: "posix",
+});
+const namespaceEvidence = testing.compileLocalSqlitePhysicalNamespaceEvidence(
+  namespacePlan,
+  {
+    absenceBoundary: null,
+    existingAncestors: [
+      ["agentscope-home", namespacePlan.agentscopeHome, "dev1:ino1"],
+      ["destinations", namespacePlan.destinationsDirectory, "dev1:ino2"],
+      ["destination-type", namespacePlan.destinationTypeDirectory, "dev1:ino3"],
+      ["connection-namespace", namespacePlan.connectionNamespace, "dev1:ino4"],
+    ].map(([role, path, physicalIdentity]) => ({
+      currentUserOnly: true,
+      kind: "directory",
+      noFollow: true,
+      path,
+      physicalIdentity,
+      role,
+      state: "existing",
+    })),
+    filesystemProfile: "local-ext4",
+    plannedAbsentAncestors: [],
+    schemaVersion: 1,
+  },
+);
+if (
+  namespacePlan.databasePath !==
+    `${namespacePlan.connectionNamespace}/traces.sqlite` ||
+  namespaceEvidence.namespaceFingerprint !== namespacePlan.fingerprint
+)
+  throw new Error("Local SQLite built namespace authority drifted.");
+const firstConfigureEvidence = {
+  absenceBoundary: {
+    firstAbsentPath: namespacePlan.destinationsDirectory,
+    firstAbsentRole: "destinations",
+    nameCollisionFree: true,
+    noFollow: true,
+    parentPath: namespacePlan.agentscopeHome,
+    parentPhysicalIdentity: "dev1:ino1",
+    parentRole: "agentscope-home",
+  },
+  existingAncestors: [
+    {
+      currentUserOnly: true,
+      kind: "directory",
+      noFollow: true,
+      path: namespacePlan.agentscopeHome,
+      physicalIdentity: "dev1:ino1",
+      role: "agentscope-home",
+      state: "existing",
+    },
+  ],
+  filesystemProfile: "local-ext4",
+  plannedAbsentAncestors: [
+    ["destinations", namespacePlan.destinationsDirectory],
+    ["destination-type", namespacePlan.destinationTypeDirectory],
+    ["connection-namespace", namespacePlan.connectionNamespace],
+  ].map(([role, path]) => ({
+    createMode: "current-user-only",
+    noFollow: true,
+    path,
+    role,
+    state: "planned-absent",
+  })),
+  schemaVersion: 1,
+};
+const firstConfigureBefore = JSON.stringify(firstConfigureEvidence);
+const firstConfigureCompiled =
+  testing.compileLocalSqlitePhysicalNamespaceEvidence(
+    namespacePlan,
+    firstConfigureEvidence,
+  );
+if (
+  JSON.stringify(firstConfigureEvidence) !== firstConfigureBefore ||
+  firstConfigureCompiled.existingAncestors.length !== 1 ||
+  firstConfigureCompiled.plannedAbsentAncestors.length !== 3 ||
+  new testing.LocalSqliteNamespaceError().code !==
+    "destination.local-sqlite.namespace-invalid"
+)
+  throw new Error("Local SQLite built first-configure authority drifted.");
 
 const runtimeIdentity = {
   nodeAbi: 127,

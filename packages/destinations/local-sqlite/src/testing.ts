@@ -4,6 +4,22 @@ export {
   type ReleaseArchiveManifest,
 } from "./release-archive.js";
 export {
+  compileLocalSqlitePhysicalNamespaceEvidence,
+  LocalSqliteNamespaceError,
+  planLocalSqliteNamespace,
+  type LocalSqliteNamespacePlan,
+  type LocalSqliteNamespacePlanInput,
+  type LocalSqliteAbsenceBoundaryEvidence,
+  type LocalSqliteExistingAncestorEvidence,
+  type LocalSqlitePhysicalNamespaceEvidence,
+  type LocalSqlitePhysicalNamespaceEvidenceInput,
+  type LocalSqlitePlannedAbsentAncestor,
+} from "./lifecycle/namespace.js";
+export {
+  LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR,
+  LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
+} from "./lifecycle/capability.js";
+export {
   inspectLocalSqliteNativeSupportManifestForTesting,
   type LocalSqliteNativeSupportManifest,
 } from "./native-support.js";
