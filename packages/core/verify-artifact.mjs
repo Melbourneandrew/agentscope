@@ -12,6 +12,8 @@ import {
 } from "../destinations/core/dist/core-orchestration.js";
 import {
   compileDestinationRegistry,
+  compileLocalResourceLifecycleHandlerRegistry,
+  commitLocalResourceConfiguration,
   createDestinationReporter,
   createDestinationRetriever,
   createReporterReceipt,
@@ -21,6 +23,8 @@ import {
   createTraceLocator,
   createTraceSummary,
   defineDestinationDescriptor,
+  defineLocalResourceLifecycleDeclaration,
+  defineLocalResourceLifecycleHandler,
 } from "../destinations/core/dist/index.js";
 import { z } from "zod";
 import {
@@ -67,8 +71,12 @@ import { runOperationalCoordinatorForTesting } from "./dist/invocation/operation
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
 import {
   applyAgentscopeConfigurationInitialization,
+  applyDestinationLifecyclePlan,
   createConfigurationManagementRuntime,
   inspectAgentscopeConfigurationInitialization,
+  inspectDestinationConfigureLifecyclePlan,
+  inspectDestinationLifecyclePlan,
+  recoverDestinationLifecycleMutation,
 } from "./dist/configuration/management-index.js";
 
 const listRegularFiles = (directory, prefix = "") => {
@@ -999,6 +1007,156 @@ try {
 } finally {
   process.off("unhandledRejection", collectUnhandled);
 }
+
+const lifecycleSettingsSchema = z.strictObject({ project: z.string() });
+void lifecycleSettingsSchema.shape;
+const lifecycleDeclaration = defineLocalResourceLifecycleDeclaration({
+  artifactGrammarFingerprint: `sha256-${"1".repeat(64)}`,
+  artifactGrammarVersion: 1,
+  artifactKinds: ["active-database", "lifecycle-intent", "ownership-receipt"],
+  capabilityVersion: 1,
+  destinationType: "@agentscope/destination-artifact-local",
+  operations: ["configure", "delete", "recover", "unconfigure"],
+  receiptReasons: ["destination-busy"],
+  recoveryHandlerId: "@agentscope/destination-artifact-local/lifecycle-v1",
+  settingKeys: ["project"],
+  settingsVersion: 1,
+});
+const lifecycleDescriptor = defineDestinationDescriptor({
+  descriptorVersion: 1,
+  destinationType: lifecycleDeclaration.destinationType,
+  commandName: "artifact-local",
+  settingsVersion: 1,
+  settingsSchema: lifecycleSettingsSchema,
+  defaultSettings: { project: "artifact" },
+  credentialSlots: [],
+  documentationPath: "/docs/destinations/artifact-local",
+  deliveryIdentitySupport: "duplicates-possible",
+  localResourceLifecycle: lifecycleDeclaration,
+  transport: { kind: "local" },
+  createReporter: () =>
+    createDestinationReporter({
+      report: () => Promise.resolve(createReporterReceipt("accepted")),
+    }),
+});
+const lifecycleArtifactRegistry = compileDestinationRegistry([
+  lifecycleDescriptor,
+]);
+const lifecycleCapability =
+  lifecycleArtifactRegistry.descriptors[0].localResourceLifecycle;
+let failLifecycleCompletion = false;
+let lifecycleRecoveryCalls = 0;
+const lifecycleArtifactHandlers = compileLocalResourceLifecycleHandlerRegistry(
+  lifecycleArtifactRegistry,
+  [
+    defineLocalResourceLifecycleHandler({
+      capability: lifecycleCapability,
+      complete: () => {
+        if (failLifecycleCompletion) {
+          failLifecycleCompletion = false;
+          return Promise.reject(new Error("simulated completion crash"));
+        }
+        return Promise.resolve();
+      },
+      inspectPlan: () =>
+        Promise.resolve({
+          namespaceFingerprint: `sha256-${"2".repeat(64)}`,
+          physicalEvidenceFingerprint: `sha256-${"3".repeat(64)}`,
+          displayPath: "/owned/artifact-local",
+          persistentDataNotice: true,
+          retentionPolicy: {
+            maximumAgeNanoseconds: "1",
+            maximumTraceCount: 1,
+            maximumPayloadBytes: 1,
+            physicalCleanupTrigger: "next-authorized-mutation",
+          },
+        }),
+      inspectRetainedDelete: () => Promise.resolve(null),
+      apply: async (context) => {
+        await commitLocalResourceConfiguration(context.configurationAuthority, {
+          destinationType: context.destinationType,
+          connectionId: context.connectionId,
+          operationId: context.operationId,
+          lifecycleFingerprint: lifecycleCapability.fingerprint,
+          recoveryHandlerId: lifecycleCapability.recoveryHandlerId,
+        });
+        return context.operation === "unconfigure"
+          ? {
+              ok: true,
+              state: "retained",
+              retainedAuthority: {
+                receiptDigest: `sha256-${"4".repeat(64)}`,
+                databaseFamilyPhysicalIdentity: "dev:1:ino:2",
+              },
+            }
+          : { ok: true, state: "configured" };
+      },
+      recover: () => {
+        lifecycleRecoveryCalls += 1;
+        return Promise.resolve({ ok: true, state: "rolled-back" });
+      },
+    }),
+  ],
+);
+const lifecycleArtifactHome = createAgentscopeHomeResolver({
+  environment: {
+    AGENTSCOPE_HOME: join(artifactConfigurationDirectory, "lifecycle-home"),
+  },
+  environmentOverrideAuthority: "test",
+  platform: process.platform,
+})();
+const lifecycleArtifactStore = createConfigurationStore(
+  lifecycleArtifactHome,
+  lifecycleArtifactRegistry,
+);
+const lifecycleArtifactRuntime = createConfigurationManagementRuntime(
+  lifecycleArtifactRegistry,
+  lifecycleArtifactStore,
+  artifactOwner,
+  lifecycleArtifactHandlers,
+);
+await applyAgentscopeConfigurationInitialization(
+  await inspectAgentscopeConfigurationInitialization(lifecycleArtifactRuntime),
+);
+await applyDestinationLifecyclePlan(
+  await inspectDestinationConfigureLifecyclePlan(
+    lifecycleArtifactRuntime,
+    {
+      commandName: "artifact-local",
+      credentialReferences: {},
+      name: "artifact-local",
+      settings: { project: "artifact" },
+    },
+    new AbortController().signal,
+  ),
+);
+failLifecycleCompletion = true;
+try {
+  await applyDestinationLifecyclePlan(
+    await inspectDestinationLifecyclePlan(
+      lifecycleArtifactRuntime,
+      "unconfigure",
+      "artifact-local",
+      new AbortController().signal,
+    ),
+  );
+  throw new Error("Built retained completion crash was not surfaced.");
+} catch (error) {
+  if (error?.code !== "core.destination.lifecycle-outcome-unknown") throw error;
+}
+const recoveredRetained = await recoverDestinationLifecycleMutation(
+  lifecycleArtifactRuntime,
+  () => "unknown",
+  new AbortController().signal,
+);
+if (
+  recoveredRetained.state !== "retained" ||
+  !/^destination-connection-v1-[0-9a-f]{64}$/u.test(
+    recoveredRetained.retainedDeleteSelector ?? "",
+  ) ||
+  lifecycleRecoveryCalls !== 0
+)
+  throw new Error("Built retained recovery selector drifted.");
 rmSync(artifactConfigurationDirectory, { recursive: true, force: true });
 
 const directory = mkdtempSync(join(tmpdir(), "agentscope-core-artifact-"));

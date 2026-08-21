@@ -77,3 +77,14 @@ export {
   type LocalSqliteReporterPolicy,
   type LocalSqliteStoredTraceEvidence,
 } from "./reporter/transaction.js";
+export {
+  createLocalSqliteLifecycleHandlerForTesting,
+  decodeLocalSqliteLifecycleIntent,
+  decodeLocalSqliteOwnershipReceipt,
+  LocalSqliteLifecycleError,
+  encodeLocalSqliteLifecycleIntent,
+  encodeLocalSqliteOwnershipReceipt,
+  type LocalSqliteLifecycleIntent,
+  type LocalSqliteLifecyclePort,
+  type LocalSqliteOwnershipReceipt,
+} from "./lifecycle/configuration.js";

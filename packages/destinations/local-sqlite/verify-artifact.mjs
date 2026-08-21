@@ -63,6 +63,7 @@ const expectedRoot = [
   "inspectLocalSqliteNativeSupport",
   "LOCAL_SQLITE_DESTINATION_TYPE",
   "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
+  "createLocalSqliteLifecycleHandler",
   "localSqliteDestinationPackageId",
   "localSqliteLifecycleDeclaration",
   "localSqliteReporterPackageId",
@@ -93,6 +94,8 @@ if (
       "compileLocalSqliteMigrationSqlForTesting",
       "inspectLocalSqliteNativeSupportManifestForTesting",
       "compileLocalSqlitePhysicalNamespaceEvidence",
+      "createLocalSqliteLifecycleHandlerForTesting",
+      "LocalSqliteLifecycleError",
       "LocalSqliteNamespaceError",
       "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR",
       "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT",
@@ -106,9 +109,13 @@ if (
       "createLocalSqliteDatabaseFailureForTesting",
       "createLocalSqliteReporterForTesting",
       "decodeLocalSqliteFenceRecord",
+      "decodeLocalSqliteLifecycleIntent",
       "decodeLocalSqliteLeaseRecord",
+      "decodeLocalSqliteOwnershipReceipt",
       "encodeLocalSqliteFenceRecord",
+      "encodeLocalSqliteLifecycleIntent",
       "encodeLocalSqliteLeaseRecord",
+      "encodeLocalSqliteOwnershipReceipt",
       "inspectLocalSqliteLifecycleInventory",
       "prepareLocalSqliteTraceForTesting",
       "LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS",
@@ -134,6 +141,58 @@ if (
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.supportedPlatforms.length !== 0
 )
   throw new Error("Local SQLite artifact claimed an unproved native tuple.");
+const builtLifecycleConnectionId = `destination-connection-v1-${"2".repeat(64)}`;
+const builtLifecycleIntentBytes = `${JSON.stringify({
+  artifactGrammarFingerprint:
+    testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
+  artifactGrammarVersion: 1,
+  candidateConfigurationDigest: `sha256-${"4".repeat(64)}`,
+  candidateConfigurationGeneration: 2,
+  capabilityVersion: 1,
+  connectionDigest: createHash("sha256")
+    .update(
+      JSON.stringify({
+        connectionId: builtLifecycleConnectionId,
+        destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+      }),
+    )
+    .digest("hex"),
+  connectionId: builtLifecycleConnectionId,
+  destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+  destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+  expectedConfigurationDigest: `sha256-${"3".repeat(64)}`,
+  expectedConfigurationGeneration: 1,
+  lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
+  migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
+  namespaceFingerprint: `sha256-${"6".repeat(64)}`,
+  operation: "configure",
+  owner: {
+    processId: 1,
+    processStartIdentity: `process-start-v1-${"7".repeat(64)}`,
+  },
+  physicalEvidenceFingerprint: `sha256-${"8".repeat(64)}`,
+  protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+  recordVersion: 1,
+  recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  retainedDatabaseFamilyPhysicalIdentity: null,
+  retainedReceiptDigest: null,
+  transactionId: "1".repeat(32),
+})}\n`;
+const builtLifecycleIntent = testing.decodeLocalSqliteLifecycleIntent(
+  builtLifecycleIntentBytes,
+);
+if (
+  !builtLifecycleIntent ||
+  testing.encodeLocalSqliteLifecycleIntent(builtLifecycleIntent) !==
+    builtLifecycleIntentBytes
+)
+  throw new Error("Local SQLite built lifecycle intent codec drifted.");
+try {
+  testing.encodeLocalSqliteLifecycleIntent({ ...builtLifecycleIntent });
+  throw new Error("Local SQLite copied lifecycle intent was accepted.");
+} catch (error) {
+  if (error?.code !== "reconciliation-required") throw error;
+}
 const artifactGrammarFingerprint = `sha256-${createHash("sha256")
   .update(JSON.stringify(testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR))
   .digest("hex")}`;

@@ -35,6 +35,9 @@ const LOCK_FILE_NAME = "config.lock";
 const RECOVERY_CLAIM_FILE_NAME = "config.recovery.lock";
 const CREDENTIAL_INTENT_FILE_NAME = "credential.lock";
 const CREDENTIAL_RECOVERY_CLAIM_FILE_NAME = "credential.recovery.lock";
+const LOCAL_RESOURCE_INTENT_FILE_NAME = "local-resource.lock";
+const LOCAL_RESOURCE_RECOVERY_CLAIM_FILE_NAME = "local-resource.recovery.lock";
+const LOCAL_RESOURCE_COMPLETION_FILE_NAME = "local-resource.completion.lock";
 const MAXIMUM_CREDENTIAL_INTENT_BYTES = 4_096;
 /* v8 ignore next -- every supported Node platform exposes O_NOFOLLOW. */
 const noFollow = constants.O_NOFOLLOW ?? 0;
@@ -70,6 +73,7 @@ export type ConfigurationWriteInput = Readonly<{
   candidate: AgentscopeConfigurationSnapshot;
   owner: ConfigurationProcessIdentity;
   credentialMutationIntent?: CredentialMutationIntent;
+  localResourceMutationIntent?: LocalResourceMutationIntent;
 }>;
 
 export type HookConfigurationReadResult =
@@ -116,6 +120,34 @@ export type CredentialMutationIntent = Readonly<{
 }>;
 
 export type CredentialMutationInspection = Readonly<{
+  state:
+    | "clean"
+    | "active"
+    | "owner-unknown"
+    | "recoverable"
+    | "reconciliation-required"
+    | "invalid"
+    | "unavailable";
+}>;
+
+export type LocalResourceMutationIntent = Readonly<{
+  recordVersion: 1;
+  operation: "configure" | "delete" | "unconfigure";
+  operationId: string;
+  owner: ConfigurationProcessIdentity;
+  destinationType: string;
+  connectionId: string;
+  lifecycleFingerprint: string;
+  recoveryHandlerId: string;
+  expectedGeneration: number;
+  expectedDigest: string;
+  authorizedCandidates: readonly Readonly<{
+    generation: number;
+    digest: string;
+  }>[];
+}>;
+
+export type LocalResourceMutationInspection = Readonly<{
   state:
     | "clean"
     | "active"
@@ -173,6 +205,9 @@ const storeRegistry = new WeakMap<object, ConfigurationStoreInternals>();
 const processIdentityRegistry = new WeakSet<object>();
 const credentialMutationIntentRegistry = new WeakSet<object>();
 const claimedCredentialIntents = new WeakSet<object>();
+const localResourceMutationIntentRegistry = new WeakSet<object>();
+const claimedLocalResourceIntents = new WeakSet<object>();
+const completedLocalResourceIntents = new WeakSet<object>();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 const lockRecordSchema = z.strictObject({
@@ -204,10 +239,47 @@ const credentialIntentSchema = z.strictObject({
   reference: z.unknown(),
 });
 
+const localResourceIntentSchema = z.strictObject({
+  recordVersion: z.literal(1),
+  operation: z.enum(["configure", "delete", "unconfigure"]),
+  operationId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
+  owner: lockRecordSchema.shape.owner,
+  destinationType: z
+    .string()
+    .regex(/^@agentscope\/destination-[a-z0-9-]{1,64}$/u),
+  connectionId: z.string().regex(/^destination-connection-v1-[0-9a-f]{64}$/u),
+  lifecycleFingerprint: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
+  recoveryHandlerId: z.string().min(1).max(256),
+  expectedGeneration: z.number().int().nonnegative().safe(),
+  expectedDigest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
+  authorizedCandidates: z
+    .array(
+      z.strictObject({
+        generation: z.number().int().nonnegative().safe(),
+        digest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
+      }),
+    )
+    .min(1)
+    .max(2),
+});
+
 type ConfigurationLockRecord = z.infer<typeof lockRecordSchema>;
 
 const credentialIntentPath = (state: ConfigurationStoreInternals): string =>
   join(state.home.mutationDirectory, CREDENTIAL_INTENT_FILE_NAME);
+
+const localResourceIntentPath = (state: ConfigurationStoreInternals): string =>
+  join(state.home.mutationDirectory, LOCAL_RESOURCE_INTENT_FILE_NAME);
+
+const localResourceRecoveryClaimPath = (
+  state: ConfigurationStoreInternals,
+): string =>
+  join(state.home.mutationDirectory, LOCAL_RESOURCE_RECOVERY_CLAIM_FILE_NAME);
+
+const localResourceCompletionPath = (
+  state: ConfigurationStoreInternals,
+): string =>
+  join(state.home.mutationDirectory, LOCAL_RESOURCE_COMPLETION_FILE_NAME);
 
 const recoveryClaimPath = (state: ConfigurationStoreInternals): string =>
   join(state.home.mutationDirectory, RECOVERY_CLAIM_FILE_NAME);
@@ -577,6 +649,8 @@ const assertWriteInput = (
   candidateText: string;
   owner: ConfigurationProcessIdentity;
   credentialMutationIntent: CredentialMutationIntent | undefined;
+  localResourceMutationIntent: LocalResourceMutationIntent | undefined;
+  // eslint-disable-next-line complexity -- hostile exact-record validation remains in one noncoercing boundary.
 }> => {
   const descriptors =
     typeof input === "object" && input !== null
@@ -587,6 +661,7 @@ const assertWriteInput = (
     Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
     ![
       "candidate,credentialMutationIntent,expectedGeneration,owner",
+      "candidate,expectedGeneration,localResourceMutationIntent,owner",
       "candidate,expectedGeneration,owner",
     ].includes(Object.keys(descriptors).sort().join(",")) ||
     Reflect.ownKeys(descriptors).some((key) => {
@@ -600,6 +675,8 @@ const assertWriteInput = (
   const owner = descriptors.owner?.value as unknown;
   const credentialMutationIntent = descriptors.credentialMutationIntent
     ?.value as unknown;
+  const localResourceMutationIntent = descriptors.localResourceMutationIntent
+    ?.value as unknown;
   if (
     (!Number.isSafeInteger(expectedGeneration) &&
       expectedGeneration !== null) ||
@@ -612,7 +689,15 @@ const assertWriteInput = (
     (credentialMutationIntent !== undefined &&
       (typeof credentialMutationIntent !== "object" ||
         credentialMutationIntent === null ||
-        !credentialMutationIntentRegistry.has(credentialMutationIntent)))
+        !credentialMutationIntentRegistry.has(credentialMutationIntent))) ||
+    (localResourceMutationIntent !== undefined &&
+      (typeof localResourceMutationIntent !== "object" ||
+        localResourceMutationIntent === null ||
+        !localResourceMutationIntentRegistry.has(
+          localResourceMutationIntent,
+        ))) ||
+    (credentialMutationIntent !== undefined &&
+      localResourceMutationIntent !== undefined)
   )
     return invalid("core.configuration.invalid");
   const typedCandidate = candidate as AgentscopeConfigurationSnapshot;
@@ -636,7 +721,114 @@ const assertWriteInput = (
     owner: owner as ConfigurationProcessIdentity,
     credentialMutationIntent: credentialMutationIntent as
       CredentialMutationIntent | undefined,
+    localResourceMutationIntent: localResourceMutationIntent as
+      LocalResourceMutationIntent | undefined,
   });
+};
+
+const parseLocalResourceIntent = (
+  value: string,
+): LocalResourceMutationIntent => {
+  try {
+    if (Buffer.byteLength(value, "utf8") > MAXIMUM_CREDENTIAL_INTENT_BYTES)
+      return invalid("core.configuration.invalid");
+    const parsed = localResourceIntentSchema.parse(JSON.parse(value));
+    for (
+      let index = 0;
+      index < parsed.authorizedCandidates.length;
+      index += 1
+    ) {
+      if (
+        parsed.authorizedCandidates[index]!.generation !==
+        parsed.expectedGeneration + index + 1
+      )
+        return invalid("core.configuration.invalid");
+    }
+    return Object.freeze({
+      ...parsed,
+      owner: Object.freeze(parsed.owner),
+      authorizedCandidates: Object.freeze(
+        parsed.authorizedCandidates.map((candidate) =>
+          Object.freeze(candidate),
+        ),
+      ),
+    });
+  } catch (error) {
+    if (error instanceof ConfigurationStoreError) throw error;
+    return invalid("core.configuration.invalid");
+  }
+};
+
+const sameLocalResourceIntent = (
+  left: LocalResourceMutationIntent,
+  right: LocalResourceMutationIntent,
+): boolean => JSON.stringify(left) === JSON.stringify(right);
+
+const authorizeLocalResourceFence = async (
+  state: ConfigurationStoreInternals,
+  intent: LocalResourceMutationIntent | undefined,
+  candidate: AgentscopeConfigurationSnapshot,
+  candidateText: string,
+): Promise<void> => {
+  const fixedValue = await readBoundedFile(
+    state.fileSystem,
+    localResourceIntentPath(state),
+  );
+  const claimValue = await readBoundedFile(
+    state.fileSystem,
+    localResourceRecoveryClaimPath(state),
+  );
+  const completionValue = await readBoundedFile(
+    state.fileSystem,
+    localResourceCompletionPath(state),
+  );
+  if (
+    claimValue !== undefined &&
+    (intent === undefined ||
+      !localResourceMutationIntentRegistry.has(intent) ||
+      !claimedLocalResourceIntents.has(intent) ||
+      !sameLocalResourceIntent(parseLocalResourceIntent(claimValue), intent))
+  )
+    return invalid("core.configuration.contention");
+  if (
+    completionValue !== undefined &&
+    (intent === undefined ||
+      !localResourceMutationIntentRegistry.has(intent) ||
+      !completedLocalResourceIntents.has(intent) ||
+      !sameLocalResourceIntent(
+        parseLocalResourceIntent(completionValue),
+        intent,
+      ))
+  )
+    return invalid("core.configuration.contention");
+  if (
+    [fixedValue, claimValue, completionValue]
+      .filter((value): value is string => value !== undefined)
+      .some(
+        (value, _index, values) =>
+          !sameLocalResourceIntent(
+            parseLocalResourceIntent(value),
+            parseLocalResourceIntent(values[0]!),
+          ),
+      )
+  )
+    return invalid("core.configuration.contention");
+  const value = completionValue ?? claimValue ?? fixedValue;
+  if (value === undefined) {
+    if (intent !== undefined) return invalid("core.configuration.conflict");
+    return;
+  }
+  if (
+    intent === undefined ||
+    !localResourceMutationIntentRegistry.has(intent) ||
+    !sameLocalResourceIntent(parseLocalResourceIntent(value), intent) ||
+    !intent.authorizedCandidates.some(
+      (authorized) =>
+        authorized.generation === candidate.generation &&
+        authorized.digest === `sha256-${digest(candidateText)}`,
+    )
+  )
+    return invalid("core.configuration.contention");
 };
 
 const configurationFencePresent = async (
@@ -648,6 +840,20 @@ const configurationFencePresent = async (
   )) !== undefined ||
   (await readBoundedFile(state.fileSystem, recoveryClaimPath(state))) !==
     undefined;
+
+const localResourceFencePresent = async (
+  state: ConfigurationStoreInternals,
+): Promise<boolean> =>
+  (await readBoundedFile(state.fileSystem, localResourceIntentPath(state))) !==
+    undefined ||
+  (await readBoundedFile(
+    state.fileSystem,
+    localResourceRecoveryClaimPath(state),
+  )) !== undefined ||
+  (await readBoundedFile(
+    state.fileSystem,
+    localResourceCompletionPath(state),
+  )) !== undefined;
 
 const authorizeCredentialFence = async (
   state: ConfigurationStoreInternals,
@@ -805,6 +1011,12 @@ export const writeConfigurationSnapshot = async (
     await acquireLock(state, paths.lock, record);
     lockAcquired = true;
     await authorizeCredentialFence(state, validated.credentialMutationIntent);
+    await authorizeLocalResourceFence(
+      state,
+      validated.localResourceMutationIntent,
+      validated.candidate,
+      validated.candidateText,
+    );
     const lockedText = await readBoundedFile(
       state.fileSystem,
       state.home.configFile,
@@ -957,6 +1169,359 @@ const sameCredentialIntent = (
   right: CredentialMutationIntent,
 ): boolean => JSON.stringify(left) === JSON.stringify(right);
 
+const readLocalResourceIntent = async (
+  state: ConfigurationStoreInternals,
+  path = localResourceIntentPath(state),
+): Promise<LocalResourceMutationIntent> => {
+  const value = await readBoundedFile(state.fileSystem, path);
+  if (value === undefined) return invalid("core.configuration.missing");
+  return parseLocalResourceIntent(value);
+};
+
+export const createLocalResourceMutationIntent = async (
+  store: ConfigurationStore,
+  input: LocalResourceMutationIntent,
+  // eslint-disable-next-line max-lines-per-function, complexity -- exact hostile reconstruction and reciprocal publication are one atomic boundary.
+): Promise<LocalResourceMutationIntent> => {
+  const state = stored(store);
+  let record: LocalResourceMutationIntent;
+  try {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      Array.isArray(input) ||
+      Object.getPrototypeOf(input) !== Object.prototype
+    )
+      return invalid("core.configuration.invalid");
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = [
+      "authorizedCandidates",
+      "connectionId",
+      "destinationType",
+      "expectedDigest",
+      "expectedGeneration",
+      "lifecycleFingerprint",
+      "operation",
+      "operationId",
+      "owner",
+      "recordVersion",
+      "recoveryHandlerId",
+    ];
+    if (
+      Reflect.ownKeys(descriptors).length !== keys.length ||
+      Reflect.ownKeys(descriptors).some(
+        (key) => typeof key !== "string" || !keys.includes(key),
+      ) ||
+      Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+    )
+      return invalid("core.configuration.invalid");
+    const candidatesValue = descriptors.authorizedCandidates?.value as unknown;
+    if (!Array.isArray(candidatesValue))
+      return invalid("core.configuration.invalid");
+    const arrayDescriptors = Object.getOwnPropertyDescriptors(
+      candidatesValue,
+    ) as unknown as PropertyDescriptorMap;
+    const length = arrayDescriptors.length?.value as unknown;
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 1 ||
+      length > 2 ||
+      Reflect.ownKeys(arrayDescriptors).length !== length + 1 ||
+      Reflect.ownKeys(arrayDescriptors).some(
+        (key) =>
+          typeof key !== "string" ||
+          (key !== "length" && !/^(?:0|1)$/u.test(key)),
+      )
+    )
+      return invalid("core.configuration.invalid");
+    const authorizedCandidates = [];
+    for (let index = 0; index < length; index += 1) {
+      const arrayDescriptor = arrayDescriptors[String(index)];
+      if (!arrayDescriptor || !("value" in arrayDescriptor))
+        return invalid("core.configuration.invalid");
+      const candidate = arrayDescriptor.value as unknown;
+      if (
+        typeof candidate !== "object" ||
+        candidate === null ||
+        Array.isArray(candidate) ||
+        Object.getPrototypeOf(candidate) !== Object.prototype
+      )
+        return invalid("core.configuration.invalid");
+      const candidateDescriptors = Object.getOwnPropertyDescriptors(candidate);
+      if (
+        Object.keys(candidateDescriptors).sort().join(",") !==
+          "digest,generation" ||
+        Reflect.ownKeys(candidateDescriptors).length !== 2 ||
+        Object.values(candidateDescriptors).some(
+          (descriptor) => !("value" in descriptor),
+        )
+      )
+        return invalid("core.configuration.invalid");
+      authorizedCandidates.push({
+        generation: candidateDescriptors.generation?.value as unknown,
+        digest: candidateDescriptors.digest?.value as unknown,
+      });
+    }
+    const ownerValue = descriptors.owner?.value as unknown;
+    if (!isConfigurationProcessIdentity(ownerValue))
+      return invalid("core.configuration.invalid");
+    record = parseLocalResourceIntent(
+      `${JSON.stringify({
+        recordVersion: descriptors.recordVersion?.value,
+        operation: descriptors.operation?.value,
+        operationId: descriptors.operationId?.value,
+        owner: ownerValue,
+        destinationType: descriptors.destinationType?.value,
+        connectionId: descriptors.connectionId?.value,
+        lifecycleFingerprint: descriptors.lifecycleFingerprint?.value,
+        recoveryHandlerId: descriptors.recoveryHandlerId?.value,
+        expectedGeneration: descriptors.expectedGeneration?.value,
+        expectedDigest: descriptors.expectedDigest?.value,
+        authorizedCandidates,
+      })}\n`,
+    );
+    await ensureAgentscopeHomeLayout(state.home);
+    if (
+      (await configurationFencePresent(state)) ||
+      (await readBoundedFile(state.fileSystem, credentialIntentPath(state))) !==
+        undefined ||
+      (await readBoundedFile(
+        state.fileSystem,
+        credentialRecoveryClaimPath(state),
+      )) !== undefined ||
+      (await readBoundedFile(
+        state.fileSystem,
+        localResourceRecoveryClaimPath(state),
+      )) !== undefined ||
+      (await readBoundedFile(
+        state.fileSystem,
+        localResourceCompletionPath(state),
+      )) !== undefined
+    )
+      return invalid("core.configuration.contention");
+    await writeDurableExclusive(
+      state.fileSystem,
+      localResourceIntentPath(state),
+      `${JSON.stringify(record)}\n`,
+    );
+    await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+    if (
+      (await configurationFencePresent(state)) ||
+      (await readBoundedFile(state.fileSystem, credentialIntentPath(state))) !==
+        undefined ||
+      (await readBoundedFile(
+        state.fileSystem,
+        credentialRecoveryClaimPath(state),
+      )) !== undefined ||
+      (await readBoundedFile(
+        state.fileSystem,
+        localResourceRecoveryClaimPath(state),
+      )) !== undefined ||
+      (await readBoundedFile(
+        state.fileSystem,
+        localResourceCompletionPath(state),
+      )) !== undefined
+    ) {
+      const current = await readLocalResourceIntent(state);
+      if (sameLocalResourceIntent(current, record))
+        await state.fileSystem.unlink(localResourceIntentPath(state));
+      return invalid("core.configuration.contention");
+    }
+    localResourceMutationIntentRegistry.add(record);
+    return record;
+  } catch (error) {
+    if (nodeErrorCode(error) === "EEXIST")
+      return invalid("core.configuration.contention");
+    if (error instanceof ConfigurationStoreError) throw error;
+    return invalid("core.configuration.unavailable");
+  }
+};
+
+export const completeLocalResourceMutationIntent = async (
+  store: ConfigurationStore,
+  expected: LocalResourceMutationIntent,
+): Promise<void> => {
+  if (
+    typeof expected !== "object" ||
+    expected === null ||
+    !localResourceMutationIntentRegistry.has(expected)
+  )
+    return invalid("core.configuration.invalid");
+  const state = stored(store);
+  if (completedLocalResourceIntents.has(expected)) {
+    const completed = await readLocalResourceIntent(
+      state,
+      localResourceCompletionPath(state),
+    );
+    if (!sameLocalResourceIntent(completed, expected))
+      return invalid("core.configuration.conflict");
+    return;
+  }
+  const path = claimedLocalResourceIntents.has(expected)
+    ? localResourceRecoveryClaimPath(state)
+    : localResourceIntentPath(state);
+  const current = await readLocalResourceIntent(state, path);
+  if (!sameLocalResourceIntent(current, expected))
+    return invalid("core.configuration.conflict");
+  try {
+    await linkForState(state, path, localResourceCompletionPath(state));
+    await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+    await state.fileSystem.unlink(path);
+    await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+    completedLocalResourceIntents.add(expected);
+  } catch {
+    return invalid("core.configuration.unavailable");
+  }
+};
+
+export const isLocalResourceMutationCompletion = (
+  intent: LocalResourceMutationIntent,
+): boolean =>
+  typeof intent === "object" &&
+  intent !== null &&
+  localResourceMutationIntentRegistry.has(intent) &&
+  completedLocalResourceIntents.has(intent);
+
+export const finalizeLocalResourceMutationCompletion = async (
+  store: ConfigurationStore,
+  expected: LocalResourceMutationIntent,
+): Promise<void> => {
+  if (
+    typeof expected !== "object" ||
+    expected === null ||
+    !localResourceMutationIntentRegistry.has(expected) ||
+    !completedLocalResourceIntents.has(expected)
+  )
+    return invalid("core.configuration.invalid");
+  const state = stored(store);
+  const completion = await readLocalResourceIntent(
+    state,
+    localResourceCompletionPath(state),
+  );
+  if (!sameLocalResourceIntent(completion, expected))
+    return invalid("core.configuration.conflict");
+  try {
+    for (const path of [
+      localResourceRecoveryClaimPath(state),
+      localResourceIntentPath(state),
+      localResourceCompletionPath(state),
+    ]) {
+      const value = await readBoundedFile(state.fileSystem, path);
+      if (value === undefined) continue;
+      if (!sameLocalResourceIntent(parseLocalResourceIntent(value), expected))
+        return invalid("core.configuration.conflict");
+      await state.fileSystem.unlink(path);
+    }
+    await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+  } catch {
+    return invalid("core.configuration.unavailable");
+  }
+};
+
+export const inspectLocalResourceMutation = async (
+  store: ConfigurationStore,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+): Promise<LocalResourceMutationInspection> => {
+  try {
+    const state = stored(store);
+    const completion = await readBoundedFile(
+      state.fileSystem,
+      localResourceCompletionPath(state),
+    );
+    if (completion !== undefined) {
+      parseLocalResourceIntent(completion);
+      return Object.freeze({ state: "recoverable" });
+    }
+    const claim = await readBoundedFile(
+      state.fileSystem,
+      localResourceRecoveryClaimPath(state),
+    );
+    if (claim !== undefined) {
+      parseLocalResourceIntent(claim);
+      return Object.freeze({ state: "reconciliation-required" });
+    }
+    const record = await readLocalResourceIntent(state);
+    const disposition = ownerDisposition(ownerState, record);
+    return Object.freeze({
+      state:
+        disposition === "live"
+          ? "active"
+          : disposition === "dead"
+            ? "recoverable"
+            : "owner-unknown",
+    });
+  } catch (error) {
+    if (!(error instanceof ConfigurationStoreError))
+      return Object.freeze({ state: "unavailable" });
+    if (error.code === "core.configuration.missing")
+      return Object.freeze({ state: "clean" });
+    if (error.code === "core.configuration.invalid")
+      return Object.freeze({ state: "invalid" });
+    return Object.freeze({ state: "unavailable" });
+  }
+};
+
+export const readRecoverableLocalResourceMutationIntent = async (
+  store: ConfigurationStore,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+): Promise<LocalResourceMutationIntent> => {
+  const state = stored(store);
+  const completion = await readBoundedFile(
+    state.fileSystem,
+    localResourceCompletionPath(state),
+  );
+  if (completion !== undefined) {
+    const record = parseLocalResourceIntent(completion);
+    completedLocalResourceIntents.add(record);
+    localResourceMutationIntentRegistry.add(record);
+    return record;
+  }
+  const record = await readLocalResourceIntent(state);
+  const disposition = ownerDisposition(ownerState, record);
+  if (disposition === "live")
+    return invalid("core.configuration.recovery-owner-live");
+  if (disposition !== "dead")
+    return invalid("core.configuration.recovery-owner-unknown");
+  try {
+    await linkForState(
+      state,
+      localResourceIntentPath(state),
+      localResourceRecoveryClaimPath(state),
+    );
+    await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+  } catch {
+    return invalid("core.configuration.contention");
+  }
+  const claimed = await readLocalResourceIntent(
+    state,
+    localResourceRecoveryClaimPath(state),
+  );
+  const fixed = await readLocalResourceIntent(state);
+  if (
+    !sameLocalResourceIntent(claimed, record) ||
+    !sameLocalResourceIntent(fixed, record)
+  ) {
+    await unlinkIfPresent(
+      state.fileSystem,
+      localResourceRecoveryClaimPath(state),
+    );
+    return invalid("core.configuration.conflict");
+  }
+  if (ownerDisposition(ownerState, claimed) !== "dead") {
+    await unlinkIfPresent(
+      state.fileSystem,
+      localResourceRecoveryClaimPath(state),
+    );
+    return invalid("core.configuration.recovery-owner-unknown");
+  }
+  await state.fileSystem.unlink(localResourceIntentPath(state));
+  await syncDirectory(state.fileSystem, state.home.mutationDirectory);
+  claimedLocalResourceIntents.add(claimed);
+  localResourceMutationIntentRegistry.add(claimed);
+  return claimed;
+};
+
 export const createCredentialMutationIntent = async (
   store: ConfigurationStore,
   input: CredentialMutationIntent,
@@ -1016,7 +1581,10 @@ export const createCredentialMutationIntent = async (
   );
   try {
     await ensureAgentscopeHomeLayout(state.home);
-    if (await configurationFencePresent(state))
+    if (
+      (await configurationFencePresent(state)) ||
+      (await localResourceFencePresent(state))
+    )
       return invalid("core.configuration.contention");
     if (
       (await readBoundedFile(
@@ -1036,7 +1604,8 @@ export const createCredentialMutationIntent = async (
         state.fileSystem,
         credentialRecoveryClaimPath(state),
       )) !== undefined ||
-      (await configurationFencePresent(state))
+      (await configurationFencePresent(state)) ||
+      (await localResourceFencePresent(state))
     ) {
       const current = await readCredentialIntent(state);
       if (sameCredentialIntent(current, record))
@@ -1228,9 +1797,35 @@ export const inspectConfigurationTransaction = async (
 export const recoverAbandonedConfigurationTransaction = async (
   store: ConfigurationStore,
   ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+  localResourceIntent?: LocalResourceMutationIntent,
 ): Promise<ConfigurationRecoveryResult> => {
   const state = stored(store);
+  if (await localResourceFencePresent(state)) {
+    if (
+      !localResourceIntent ||
+      !localResourceMutationIntentRegistry.has(localResourceIntent) ||
+      !claimedLocalResourceIntents.has(localResourceIntent)
+    )
+      return invalid("core.configuration.contention");
+    const claimed = await readLocalResourceIntent(
+      state,
+      localResourceRecoveryClaimPath(state),
+    );
+    if (!sameLocalResourceIntent(claimed, localResourceIntent))
+      return invalid("core.configuration.contention");
+  } else if (localResourceIntent !== undefined) {
+    return invalid("core.configuration.conflict");
+  }
   const record = await readLock(state);
+  if (
+    localResourceIntent &&
+    !localResourceIntent.authorizedCandidates.some(
+      (candidate) =>
+        candidate.generation === record.candidateGeneration &&
+        candidate.digest === `sha256-${record.candidateDigest}`,
+    )
+  )
+    return invalid("core.configuration.conflict");
   const disposition = ownerDisposition(ownerState, record);
   if (disposition === "live")
     return invalid("core.configuration.recovery-owner-live");

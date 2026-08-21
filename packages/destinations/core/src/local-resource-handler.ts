@@ -1,0 +1,953 @@
+import {
+  getDestinationDescriptor,
+  type DestinationRegistry,
+} from "./descriptor.js";
+import type { JsonObject } from "./plain-data.js";
+import {
+  bindLocalResourceConfigurationAuthorityForInvocation,
+  type LocalResourceConfigurationAuthority,
+} from "./local-resource-configuration-authority.js";
+import {
+  isLocalResourceLifecycleCapability,
+  type LocalResourceLifecycleCapability,
+} from "./local-resource-lifecycle.js";
+
+export type LocalResourceLifecycleMutationOperation =
+  "configure" | "delete" | "unconfigure";
+
+export type LocalResourceLifecycleDeadline = Readonly<{
+  expiresAtMonotonicMilliseconds: number;
+}>;
+
+export type LocalResourceLifecycleContext = Readonly<{
+  readonly localResourceLifecycleContext: "agentscope-destinations-core";
+  operation: LocalResourceLifecycleMutationOperation;
+  operationId: string;
+  destinationType: string;
+  connectionId: string;
+  connectionName: string;
+  owner: Readonly<{
+    processId: number;
+    processStartIdentity: string;
+  }>;
+  settings: JsonObject;
+  expectedConfigurationGeneration: number;
+  candidateConfigurationGeneration: number;
+  expectedConfigurationDigest: string;
+  candidateConfigurationDigest: string;
+  signal: AbortSignal;
+  deadline: LocalResourceLifecycleDeadline;
+}>;
+
+export type LocalResourceLifecycleRecoveryContext = Readonly<{
+  readonly localResourceLifecycleRecoveryContext: "agentscope-destinations-core";
+  operation: LocalResourceLifecycleMutationOperation;
+  operationId: string;
+  destinationType: string;
+  connectionId: string;
+  owner: Readonly<{
+    processId: number;
+    processStartIdentity: string;
+  }>;
+  lifecycleFingerprint: string;
+  recoveryHandlerId: string;
+  expectedConfigurationGeneration: number;
+  expectedConfigurationDigest: string;
+  authorizedCandidates: readonly Readonly<{
+    generation: number;
+    digest: string;
+  }>[];
+  configurationState: "committed" | "intermediate" | "prior";
+  signal: AbortSignal;
+  deadline: LocalResourceLifecycleDeadline;
+  configurationAuthority?: LocalResourceConfigurationAuthority;
+}>;
+
+export type LocalResourceLifecyclePlanEvidence = Readonly<{
+  namespaceFingerprint: string;
+  physicalEvidenceFingerprint: string;
+  displayPath: string;
+  persistentDataNotice: true;
+  retentionPolicy: Readonly<{
+    maximumAgeNanoseconds: string;
+    maximumTraceCount: number;
+    maximumPayloadBytes: number;
+    physicalCleanupTrigger: "next-authorized-mutation";
+  }>;
+}>;
+
+export type LocalResourceRetainedDeleteAuthority = Readonly<{
+  receiptDigest: string;
+  databaseFamilyPhysicalIdentity: string;
+}>;
+
+export type LocalResourceLifecycleApplyResult =
+  | Readonly<{
+      ok: true;
+      state: "configured" | "deleted" | "rolled-back";
+    }>
+  | Readonly<{
+      ok: true;
+      state: "retained";
+      retainedAuthority: LocalResourceRetainedDeleteAuthority;
+    }>
+  | Readonly<{
+      ok: false;
+      state:
+        | "configuration-committed"
+        | "prepared"
+        | "reconciliation-required"
+        | "unchanged";
+      code:
+        "busy" | "outcome-unknown" | "reconciliation-required" | "unavailable";
+    }>;
+
+export type LocalResourceLifecycleHandlerImplementation = Readonly<{
+  capability: LocalResourceLifecycleCapability;
+  inspectPlan(
+    context: LocalResourceLifecycleContext,
+  ): Promise<LocalResourceLifecyclePlanEvidence>;
+  inspectRetainedDelete(
+    connectionId: string,
+    signal: AbortSignal,
+    deadline: LocalResourceLifecycleDeadline,
+  ): Promise<null | Readonly<{
+    destinationType: string;
+    connectionId: string;
+    connectionName: string;
+    planEvidence: LocalResourceLifecyclePlanEvidence;
+    retainedAuthority: LocalResourceRetainedDeleteAuthority;
+  }>>;
+  apply(
+    context: LocalResourceLifecycleContext &
+      Readonly<{
+        planEvidence: LocalResourceLifecyclePlanEvidence;
+        configurationAuthority: LocalResourceConfigurationAuthority;
+        retainedAuthority?: LocalResourceRetainedDeleteAuthority;
+      }>,
+  ): Promise<LocalResourceLifecycleApplyResult>;
+  recover(
+    context: LocalResourceLifecycleRecoveryContext,
+  ): Promise<LocalResourceLifecycleApplyResult>;
+  complete(
+    operationId: string,
+    signal: AbortSignal,
+    deadline: LocalResourceLifecycleDeadline,
+  ): Promise<void>;
+}>;
+
+export type LocalResourceLifecycleHandler = Readonly<{
+  readonly localResourceLifecycleHandler: "agentscope-destinations-core";
+}>;
+
+export type LocalResourceLifecycleHandlerRegistry = Readonly<{
+  readonly localResourceLifecycleHandlerRegistry: "agentscope-destinations-core";
+}>;
+
+type StoredHandler = Readonly<{
+  capability: LocalResourceLifecycleCapability;
+  inspectPlan: LocalResourceLifecycleHandlerImplementation["inspectPlan"];
+  inspectRetainedDelete: LocalResourceLifecycleHandlerImplementation["inspectRetainedDelete"];
+  apply: LocalResourceLifecycleHandlerImplementation["apply"];
+  recover: LocalResourceLifecycleHandlerImplementation["recover"];
+  complete: LocalResourceLifecycleHandlerImplementation["complete"];
+}>;
+
+const handlers = new WeakMap<object, StoredHandler>();
+type StoredRegistry = Readonly<{
+  currentByDestinationType: ReadonlyMap<string, StoredHandler>;
+  recoveryByIdentity: ReadonlyMap<string, StoredHandler>;
+}>;
+const registries = new WeakMap<object, StoredRegistry>();
+const registryOwners = new WeakMap<object, DestinationRegistry>();
+const contexts = new WeakSet<object>();
+const recoveryContexts = new WeakSet<object>();
+const deadlines = new WeakSet<object>();
+const monotonicNow = performance.now.bind(performance);
+// eslint-disable-next-line @typescript-eslint/unbound-method -- invoked only through Reflect.apply with a verified signal receiver.
+const abortGetter = Object.getOwnPropertyDescriptor(
+  AbortSignal.prototype,
+  "aborted",
+)!.get!;
+// eslint-disable-next-line @typescript-eslint/unbound-method -- invoked only through Reflect.apply with a verified signal receiver.
+const eventTargetAdd = EventTarget.prototype.addEventListener;
+// eslint-disable-next-line @typescript-eslint/unbound-method -- invoked only through Reflect.apply with a verified signal receiver.
+const eventTargetRemove = EventTarget.prototype.removeEventListener;
+const signalAborted = (signal: AbortSignal): boolean => {
+  try {
+    return Reflect.apply(abortGetter, signal, []) as boolean;
+  } catch {
+    /* v8 ignore next -- the captured intrinsic cannot throw for the verified native AbortSignal accepted by both public binders. */
+    return true;
+  }
+};
+
+export const createLocalResourceLifecycleDeadlineForCore = (
+  timeoutMilliseconds: number,
+): LocalResourceLifecycleDeadline => {
+  if (
+    !Number.isFinite(timeoutMilliseconds) ||
+    timeoutMilliseconds < 1 ||
+    timeoutMilliseconds > 60_000
+  )
+    return invalid();
+  const deadline = Object.freeze({
+    expiresAtMonotonicMilliseconds: monotonicNow() + timeoutMilliseconds,
+  });
+  deadlines.add(deadline);
+  return deadline;
+};
+
+const deadlineRemaining = (
+  deadline: LocalResourceLifecycleDeadline,
+): number => {
+  /* v8 ignore next -- all callers receive the deadline only through a branded context/recovery context or an explicit public preflight. */
+  if (!deadlines.has(deadline)) return invalid();
+  return Math.max(0, deadline.expiresAtMonotonicMilliseconds - monotonicNow());
+};
+
+const bounded = async <T>(
+  invoke: (ownedSignal: AbortSignal) => Promise<T>,
+  signal: AbortSignal,
+  deadline: LocalResourceLifecycleDeadline,
+  joinAfterCancellation = false,
+): Promise<T> => {
+  const remaining = deadlineRemaining(deadline);
+  if (remaining === 0 || signalAborted(signal)) return invalid();
+  const controller = new AbortController();
+  let promise: Promise<T>;
+  try {
+    promise = invoke(controller.signal);
+  } catch {
+    return invalid();
+  }
+  if (
+    typeof promise !== "object" ||
+    promise === null ||
+    Object.getPrototypeOf(promise) !== Promise.prototype
+  )
+    return invalid();
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let cancelled = false;
+    const finish = (action: () => void): void => {
+      /* v8 ignore next -- multiple cancellation sources and promise settlement are idempotently contained. */
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      Reflect.apply(eventTargetRemove, signal, ["abort", cancel]);
+      controller.abort();
+      action();
+    };
+    const cancel = (): void => {
+      cancelled = true;
+      controller.abort();
+      if (!joinAfterCancellation)
+        finish(() => {
+          reject(new LocalResourceLifecycleHandlerError());
+        });
+    };
+    const timer = setTimeout(cancel, remaining);
+    Reflect.apply(eventTargetAdd, signal, ["abort", cancel, { once: true }]);
+    if (signalAborted(signal)) {
+      cancel();
+      return;
+    }
+    void promise.then(
+      (value) => {
+        finish(() => {
+          if (cancelled) reject(new LocalResourceLifecycleHandlerError());
+          else resolve(value);
+        });
+      },
+      (error) => {
+        finish(() => {
+          if (cancelled) reject(new LocalResourceLifecycleHandlerError());
+          else
+            reject(
+              error instanceof Error
+                ? error
+                : new LocalResourceLifecycleHandlerError(),
+            );
+        });
+      },
+    );
+  });
+};
+
+export class LocalResourceLifecycleHandlerError extends Error {
+  public readonly code = "destination.local-resource-handler.invalid";
+
+  public constructor() {
+    super("destination.local-resource-handler.invalid");
+    this.name = "LocalResourceLifecycleHandlerError";
+  }
+}
+
+const invalid = (): never => {
+  throw new LocalResourceLifecycleHandlerError();
+};
+
+export const bindLocalResourceLifecycleContextForCore = (
+  input: Omit<LocalResourceLifecycleContext, "localResourceLifecycleContext">,
+): LocalResourceLifecycleContext => {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !["configure", "delete", "unconfigure"].includes(input.operation) ||
+    !/^[0-9a-f]{32}$/u.test(input.operationId) ||
+    /^0{32}$/u.test(input.operationId) ||
+    !/^@agentscope\/destination-[a-z0-9-]{1,64}$/u.test(
+      input.destinationType,
+    ) ||
+    !/^destination-connection-v1-[0-9a-f]{64}$/u.test(input.connectionId) ||
+    !(input.signal instanceof AbortSignal) ||
+    !deadlines.has(input.deadline) ||
+    !Number.isSafeInteger(input.expectedConfigurationGeneration) ||
+    input.expectedConfigurationGeneration < 0 ||
+    !Number.isSafeInteger(input.candidateConfigurationGeneration) ||
+    input.candidateConfigurationGeneration <=
+      input.expectedConfigurationGeneration ||
+    input.candidateConfigurationGeneration >
+      input.expectedConfigurationGeneration + 2 ||
+    !/^sha256-[0-9a-f]{64}$/u.test(input.expectedConfigurationDigest) ||
+    !/^sha256-[0-9a-f]{64}$/u.test(input.candidateConfigurationDigest)
+  )
+    return invalid();
+  const context = Object.freeze({
+    ...input,
+    localResourceLifecycleContext: "agentscope-destinations-core" as const,
+    owner: Object.freeze({ ...input.owner }),
+  });
+  contexts.add(context);
+  return context;
+};
+
+export const bindLocalResourceLifecycleRecoveryContextForCore = (
+  input: Omit<
+    LocalResourceLifecycleRecoveryContext,
+    "localResourceLifecycleRecoveryContext"
+  >,
+): LocalResourceLifecycleRecoveryContext => {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !["configure", "delete", "unconfigure"].includes(input.operation) ||
+    !/^(?!0{32}$)[0-9a-f]{32}$/u.test(input.operationId) ||
+    !/^@agentscope\/destination-[a-z0-9-]{1,64}$/u.test(
+      input.destinationType,
+    ) ||
+    !/^destination-connection-v1-[0-9a-f]{64}$/u.test(input.connectionId) ||
+    !/^sha256-[0-9a-f]{64}$/u.test(input.lifecycleFingerprint) ||
+    typeof input.recoveryHandlerId !== "string" ||
+    !Number.isSafeInteger(input.expectedConfigurationGeneration) ||
+    input.expectedConfigurationGeneration < 0 ||
+    !/^sha256-[0-9a-f]{64}$/u.test(input.expectedConfigurationDigest) ||
+    !Array.isArray(input.authorizedCandidates) ||
+    input.authorizedCandidates.length < 1 ||
+    input.authorizedCandidates.length > 2 ||
+    !["committed", "intermediate", "prior"].includes(
+      input.configurationState,
+    ) ||
+    !(input.signal instanceof AbortSignal) ||
+    !deadlines.has(input.deadline)
+  )
+    return invalid();
+  const authorizedCandidates = input.authorizedCandidates.map(
+    (candidate, index) => {
+      const value = candidate as unknown as Record<string, unknown>;
+      if (
+        typeof candidate !== "object" ||
+        candidate === null ||
+        value.generation !==
+          input.expectedConfigurationGeneration + index + 1 ||
+        typeof value.digest !== "string" ||
+        !/^sha256-[0-9a-f]{64}$/u.test(value.digest)
+      )
+        return invalid();
+      return Object.freeze({
+        generation: value.generation,
+        digest: value.digest,
+      });
+    },
+  );
+  const context = Object.freeze({
+    ...input,
+    localResourceLifecycleRecoveryContext:
+      "agentscope-destinations-core" as const,
+    owner: Object.freeze({ ...input.owner }),
+    authorizedCandidates: Object.freeze(authorizedCandidates),
+  });
+  recoveryContexts.add(context);
+  return context;
+};
+
+const dataMethod = (
+  descriptors: PropertyDescriptorMap,
+  key:
+    "apply" | "complete" | "inspectPlan" | "inspectRetainedDelete" | "recover",
+): ((...input: never[]) => unknown) => {
+  const descriptor = descriptors[key];
+  if (
+    !descriptor ||
+    !("value" in descriptor) ||
+    typeof descriptor.value !== "function"
+  )
+    return invalid();
+  return descriptor.value as (...input: never[]) => unknown;
+};
+
+export const defineLocalResourceLifecycleHandler = (
+  implementation: LocalResourceLifecycleHandlerImplementation,
+): LocalResourceLifecycleHandler => {
+  if (
+    typeof implementation !== "object" ||
+    implementation === null ||
+    Array.isArray(implementation) ||
+    Object.getPrototypeOf(implementation) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(implementation);
+  const keys = Reflect.ownKeys(descriptors);
+  if (
+    keys.length !== 6 ||
+    keys.some(
+      (key) =>
+        typeof key !== "string" ||
+        ![
+          "apply",
+          "capability",
+          "complete",
+          "inspectPlan",
+          "inspectRetainedDelete",
+          "recover",
+        ].includes(key),
+    )
+  )
+    return invalid();
+  const capabilityDescriptor = descriptors.capability;
+  if (
+    !capabilityDescriptor ||
+    !("value" in capabilityDescriptor) ||
+    !isLocalResourceLifecycleCapability(capabilityDescriptor.value)
+  )
+    return invalid();
+  const handler = Object.freeze({
+    localResourceLifecycleHandler: "agentscope-destinations-core" as const,
+  });
+  handlers.set(
+    handler,
+    Object.freeze({
+      capability: capabilityDescriptor.value,
+      inspectPlan: dataMethod(
+        descriptors,
+        "inspectPlan",
+      ) as StoredHandler["inspectPlan"],
+      inspectRetainedDelete: dataMethod(
+        descriptors,
+        "inspectRetainedDelete",
+      ) as StoredHandler["inspectRetainedDelete"],
+      apply: dataMethod(descriptors, "apply") as StoredHandler["apply"],
+      complete: dataMethod(
+        descriptors,
+        "complete",
+      ) as StoredHandler["complete"],
+      recover: dataMethod(descriptors, "recover") as StoredHandler["recover"],
+    }),
+  );
+  return handler;
+};
+
+export const compileLocalResourceLifecycleHandlerRegistry = (
+  destinationRegistry: DestinationRegistry,
+  input: readonly LocalResourceLifecycleHandler[],
+): LocalResourceLifecycleHandlerRegistry => {
+  if (!Array.isArray(input) || input.length > 64) return invalid();
+  const inventory = Object.getOwnPropertyDescriptors(input);
+  const expected = new Set([
+    "length",
+    ...Array.from({ length: input.length }, (_, index) => String(index)),
+  ]);
+  if (
+    Reflect.ownKeys(inventory).length !== expected.size ||
+    Reflect.ownKeys(inventory).some(
+      (key) => typeof key !== "string" || !expected.has(key),
+    )
+  )
+    return invalid();
+  const currentByDestinationType = new Map<string, StoredHandler>();
+  const recoveryByIdentity = new Map<string, StoredHandler>();
+  for (const candidate of input as readonly unknown[]) {
+    if (typeof candidate !== "object" || candidate === null) return invalid();
+    const stored = handlers.get(candidate);
+    if (!stored) return invalid();
+    const descriptor = getDestinationDescriptor(
+      destinationRegistry,
+      stored.capability.destinationType,
+    );
+    if (!descriptor?.localResourceLifecycle) return invalid();
+    const recoveryIdentity = `${stored.capability.destinationType}\u0000${stored.capability.fingerprint}\u0000${stored.capability.recoveryHandlerId}`;
+    const isCurrent =
+      descriptor.localResourceLifecycle.fingerprint ===
+        stored.capability.fingerprint &&
+      descriptor.localResourceLifecycle.recoveryHandlerId ===
+        stored.capability.recoveryHandlerId;
+    if (
+      !stored.capability.operations.includes("recover") ||
+      (isCurrent &&
+        currentByDestinationType.has(stored.capability.destinationType)) ||
+      recoveryByIdentity.has(recoveryIdentity)
+    )
+      return invalid();
+    recoveryByIdentity.set(recoveryIdentity, stored);
+    if (isCurrent) {
+      currentByDestinationType.set(stored.capability.destinationType, stored);
+    }
+  }
+  if (
+    destinationRegistry.descriptors.some(
+      (descriptor) =>
+        descriptor.localResourceLifecycle !== null &&
+        !currentByDestinationType.has(descriptor.destinationType),
+    )
+  )
+    return invalid();
+  const registry = Object.freeze({
+    localResourceLifecycleHandlerRegistry:
+      "agentscope-destinations-core" as const,
+  });
+  registries.set(
+    registry,
+    Object.freeze({ currentByDestinationType, recoveryByIdentity }),
+  );
+  registryOwners.set(registry, destinationRegistry);
+  return registry;
+};
+
+export const isLocalResourceLifecycleHandlerRegistry = (
+  value: unknown,
+): value is LocalResourceLifecycleHandlerRegistry =>
+  typeof value === "object" && value !== null && registries.has(value);
+
+export const localResourceLifecycleHandlerRegistryUsesDestinationRegistry = (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  destinationRegistry: DestinationRegistry,
+): boolean => registryOwners.get(registry) === destinationRegistry;
+
+export const getLocalResourceLifecycleHandlerCapability = (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  destinationType: string,
+): LocalResourceLifecycleCapability | undefined =>
+  registries.get(registry)?.currentByDestinationType.get(destinationType)
+    ?.capability;
+
+const normalizePlanEvidence = (
+  result: unknown,
+  // eslint-disable-next-line complexity -- one closed DTO boundary validates every nested field without coercion.
+): LocalResourceLifecyclePlanEvidence => {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Object.getPrototypeOf(result) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  const keys = [
+    "displayPath",
+    "namespaceFingerprint",
+    "persistentDataNotice",
+    "physicalEvidenceFingerprint",
+    "retentionPolicy",
+  ];
+  if (
+    Reflect.ownKeys(descriptors).length !== keys.length ||
+    keys.some((key) => {
+      const descriptor = descriptors[key];
+      return !descriptor || !("value" in descriptor);
+    })
+  )
+    return invalid();
+  const namespaceFingerprint = descriptors.namespaceFingerprint
+    ?.value as unknown;
+  const physicalEvidenceFingerprint = descriptors.physicalEvidenceFingerprint
+    ?.value as unknown;
+  const displayPath = descriptors.displayPath?.value as unknown;
+  const retentionPolicy = descriptors.retentionPolicy?.value as unknown;
+  if (
+    typeof namespaceFingerprint !== "string" ||
+    !/^sha256-[0-9a-f]{64}$/u.test(namespaceFingerprint) ||
+    typeof physicalEvidenceFingerprint !== "string" ||
+    !/^sha256-[0-9a-f]{64}$/u.test(physicalEvidenceFingerprint) ||
+    typeof displayPath !== "string" ||
+    Buffer.byteLength(displayPath, "utf8") > 4_096 ||
+    descriptors.persistentDataNotice?.value !== true
+  )
+    return invalid();
+  if (
+    typeof retentionPolicy !== "object" ||
+    retentionPolicy === null ||
+    Object.getPrototypeOf(retentionPolicy) !== Object.prototype
+  )
+    return invalid();
+  const retentionDescriptors =
+    Object.getOwnPropertyDescriptors(retentionPolicy);
+  if (
+    Object.keys(retentionDescriptors).sort().join(",") !==
+      "maximumAgeNanoseconds,maximumPayloadBytes,maximumTraceCount,physicalCleanupTrigger" ||
+    Reflect.ownKeys(retentionDescriptors).length !== 4 ||
+    Object.values(retentionDescriptors).some(
+      (descriptor) => !("value" in descriptor),
+    )
+  )
+    return invalid();
+  const maximumAgeNanoseconds = retentionDescriptors.maximumAgeNanoseconds
+    ?.value as unknown;
+  const maximumTraceCount = retentionDescriptors.maximumTraceCount
+    ?.value as unknown;
+  const maximumPayloadBytes = retentionDescriptors.maximumPayloadBytes
+    ?.value as unknown;
+  if (
+    typeof maximumAgeNanoseconds !== "string" ||
+    !/^(?:0|[1-9][0-9]{0,19})$/u.test(maximumAgeNanoseconds) ||
+    typeof maximumTraceCount !== "number" ||
+    !Number.isSafeInteger(maximumTraceCount) ||
+    maximumTraceCount < 1 ||
+    typeof maximumPayloadBytes !== "number" ||
+    !Number.isSafeInteger(maximumPayloadBytes) ||
+    maximumPayloadBytes < 1 ||
+    retentionDescriptors.physicalCleanupTrigger?.value !==
+      "next-authorized-mutation"
+  )
+    return invalid();
+  return Object.freeze({
+    namespaceFingerprint,
+    physicalEvidenceFingerprint,
+    displayPath,
+    persistentDataNotice: true,
+    retentionPolicy: Object.freeze({
+      maximumAgeNanoseconds,
+      maximumTraceCount,
+      maximumPayloadBytes,
+      physicalCleanupTrigger: "next-authorized-mutation" as const,
+    }),
+  });
+};
+
+export const inspectLocalResourceLifecyclePlan = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceLifecycleContext,
+): Promise<LocalResourceLifecyclePlanEvidence> => {
+  if (!contexts.has(context)) return invalid();
+  const stored = registries
+    .get(registry)
+    ?.currentByDestinationType.get(context.destinationType);
+  if (!stored || !stored.capability.operations.includes(context.operation))
+    return invalid();
+  return normalizePlanEvidence(
+    await bounded(
+      (ownedSignal) =>
+        stored.inspectPlan(Object.freeze({ ...context, signal: ownedSignal })),
+      context.signal,
+      context.deadline,
+    ),
+  );
+};
+
+const normalizeRetainedAuthority = (
+  authority: unknown,
+): LocalResourceRetainedDeleteAuthority => {
+  if (
+    typeof authority !== "object" ||
+    authority === null ||
+    Object.getPrototypeOf(authority) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(authority);
+  if (
+    Object.keys(descriptors).sort().join(",") !==
+      "databaseFamilyPhysicalIdentity,receiptDigest" ||
+    Reflect.ownKeys(descriptors).length !== 2 ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+  )
+    return invalid();
+  const receiptDigest = descriptors.receiptDigest?.value as unknown;
+  const databaseFamilyPhysicalIdentity = descriptors
+    .databaseFamilyPhysicalIdentity?.value as unknown;
+  if (
+    typeof receiptDigest !== "string" ||
+    !/^sha256-[0-9a-f]{64}$/u.test(receiptDigest) ||
+    typeof databaseFamilyPhysicalIdentity !== "string" ||
+    databaseFamilyPhysicalIdentity.length < 1 ||
+    databaseFamilyPhysicalIdentity.length > 192 ||
+    !/^[A-Za-z0-9][A-Za-z0-9:._-]*$/u.test(databaseFamilyPhysicalIdentity)
+  )
+    return invalid();
+  return Object.freeze({ receiptDigest, databaseFamilyPhysicalIdentity });
+};
+
+export const inspectRetainedLocalResourceDelete = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  connectionId: string,
+  signal: AbortSignal,
+  deadline: LocalResourceLifecycleDeadline,
+): Promise<null | Readonly<{
+  destinationType: string;
+  connectionId: string;
+  connectionName: string;
+  planEvidence: LocalResourceLifecyclePlanEvidence;
+  retainedAuthority: LocalResourceRetainedDeleteAuthority;
+}>> => {
+  const storedRegistry = registries.get(registry);
+  if (
+    !storedRegistry ||
+    !/^destination-connection-v1-[0-9a-f]{64}$/u.test(connectionId) ||
+    !(signal instanceof AbortSignal) ||
+    !deadlines.has(deadline)
+  )
+    return invalid();
+  const matches = [];
+  for (const stored of storedRegistry.currentByDestinationType.values()) {
+    if (!stored.capability.operations.includes("delete")) continue;
+    const result = await bounded(
+      (ownedSignal) =>
+        stored.inspectRetainedDelete(connectionId, ownedSignal, deadline),
+      signal,
+      deadline,
+    );
+    if (result === null) continue;
+    if (
+      typeof result !== "object" ||
+      Object.getPrototypeOf(result) !== Object.prototype
+    )
+      return invalid();
+    const descriptors = Object.getOwnPropertyDescriptors(result);
+    const keys = [
+      "connectionId",
+      "connectionName",
+      "destinationType",
+      "planEvidence",
+      "retainedAuthority",
+    ];
+    if (
+      Reflect.ownKeys(descriptors).length !== keys.length ||
+      keys.some((key) => {
+        const descriptor = descriptors[key];
+        return !descriptor || !("value" in descriptor);
+      })
+    )
+      return invalid();
+    const destinationType = descriptors.destinationType?.value as unknown;
+    const returnedConnectionId = descriptors.connectionId?.value as unknown;
+    const returnedName = descriptors.connectionName?.value as unknown;
+    if (
+      destinationType !== stored.capability.destinationType ||
+      returnedConnectionId !== connectionId ||
+      returnedName !== "retained"
+    )
+      return invalid();
+    const authority = normalizeRetainedAuthority(
+      descriptors.retainedAuthority?.value,
+    );
+    matches.push(
+      Object.freeze({
+        destinationType: stored.capability.destinationType,
+        connectionId: returnedConnectionId,
+        connectionName: returnedName,
+        planEvidence: normalizePlanEvidence(
+          descriptors.planEvidence?.value as unknown,
+        ),
+        retainedAuthority: authority,
+      }),
+    );
+  }
+  if (matches.length > 1) return invalid();
+  return matches[0] ?? null;
+};
+
+const normalizeApplyResult = (
+  result: unknown,
+): LocalResourceLifecycleApplyResult => {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Object.getPrototypeOf(result) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  const ok = descriptors.ok?.value as unknown;
+  const state = descriptors.state?.value as unknown;
+  const keys =
+    ok === true
+      ? state === "retained"
+        ? ["ok", "retainedAuthority", "state"]
+        : ["ok", "state"]
+      : ["code", "ok", "state"];
+  if (
+    Reflect.ownKeys(descriptors).length !== keys.length ||
+    keys.some((key) => {
+      const descriptor = descriptors[key];
+      return !descriptor || !("value" in descriptor);
+    })
+  )
+    return invalid();
+  if (
+    ok === true &&
+    (state === "configured" || state === "deleted" || state === "rolled-back")
+  )
+    return Object.freeze({ ok: true, state });
+  if (ok === true && state === "retained")
+    return Object.freeze({
+      ok: true,
+      state,
+      retainedAuthority: normalizeRetainedAuthority(
+        descriptors.retainedAuthority?.value,
+      ),
+    });
+  const code = descriptors.code?.value as unknown;
+  if (
+    ok !== false ||
+    ![
+      "configuration-committed",
+      "prepared",
+      "reconciliation-required",
+      "unchanged",
+    ].includes(state as string) ||
+    ![
+      "busy",
+      "outcome-unknown",
+      "reconciliation-required",
+      "unavailable",
+    ].includes(code as string)
+  )
+    return invalid();
+  return Object.freeze({
+    ok: false,
+    state: state as Exclude<
+      LocalResourceLifecycleApplyResult,
+      { ok: true }
+    >["state"],
+    code: code as Exclude<
+      LocalResourceLifecycleApplyResult,
+      { ok: true }
+    >["code"],
+  });
+};
+
+export const applyLocalResourceLifecyclePlan = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceLifecycleContext,
+  planEvidence: LocalResourceLifecyclePlanEvidence,
+  configurationAuthority: LocalResourceConfigurationAuthority,
+  retainedAuthority?: LocalResourceRetainedDeleteAuthority,
+): Promise<LocalResourceLifecycleApplyResult> => {
+  if (!contexts.has(context)) return invalid();
+  const stored = registries
+    .get(registry)
+    ?.currentByDestinationType.get(context.destinationType);
+  if (!stored || !stored.capability.operations.includes(context.operation))
+    return invalid();
+  const result = await bounded(
+    (ownedSignal) => {
+      const invocation = bindLocalResourceConfigurationAuthorityForInvocation(
+        configurationAuthority,
+        ownedSignal,
+      );
+      const result = stored.apply(
+        Object.freeze({
+          ...context,
+          signal: ownedSignal,
+          planEvidence,
+          configurationAuthority: invocation.authority,
+          ...(retainedAuthority ? { retainedAuthority } : {}),
+        }),
+      );
+      return result.then(
+        async (value) => {
+          await invocation.awaitCommitSettlement();
+          return value;
+        },
+        async (error: unknown) => {
+          await invocation.awaitCommitSettlement();
+          throw error;
+        },
+      );
+    },
+    context.signal,
+    context.deadline,
+    true,
+  );
+  return normalizeApplyResult(result);
+};
+
+export const recoverLocalResourceLifecycle = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceLifecycleRecoveryContext,
+): Promise<LocalResourceLifecycleApplyResult> => {
+  if (!recoveryContexts.has(context)) return invalid();
+  const recoveryIdentity = `${context.destinationType}\u0000${context.lifecycleFingerprint}\u0000${context.recoveryHandlerId}`;
+  const stored = registries
+    .get(registry)
+    ?.recoveryByIdentity.get(recoveryIdentity);
+  if (
+    !stored ||
+    stored.capability.fingerprint !== context.lifecycleFingerprint ||
+    stored.capability.recoveryHandlerId !== context.recoveryHandlerId ||
+    !stored.capability.operations.includes("recover")
+  )
+    return invalid();
+  const result = await bounded(
+    (ownedSignal) => {
+      const invocation = context.configurationAuthority
+        ? bindLocalResourceConfigurationAuthorityForInvocation(
+            context.configurationAuthority,
+            ownedSignal,
+          )
+        : undefined;
+      const result = stored.recover(
+        Object.freeze({
+          ...context,
+          signal: ownedSignal,
+          ...(invocation
+            ? { configurationAuthority: invocation.authority }
+            : {}),
+        }),
+      );
+      return result.then(
+        async (value) => {
+          await invocation?.awaitCommitSettlement();
+          return value;
+        },
+        async (error: unknown) => {
+          await invocation?.awaitCommitSettlement();
+          throw error;
+        },
+      );
+    },
+    context.signal,
+    context.deadline,
+    true,
+  );
+  return normalizeApplyResult(result);
+};
+
+export const completeLocalResourceLifecycle = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context:
+    LocalResourceLifecycleContext | LocalResourceLifecycleRecoveryContext,
+): Promise<void> => {
+  const isRecovery = recoveryContexts.has(context);
+  const storedRegistry = registries.get(registry);
+  const stored = isRecovery
+    ? storedRegistry?.recoveryByIdentity.get(
+        `${context.destinationType}\u0000${(context as LocalResourceLifecycleRecoveryContext).lifecycleFingerprint}\u0000${(context as LocalResourceLifecycleRecoveryContext).recoveryHandlerId}`,
+      )
+    : storedRegistry?.currentByDestinationType.get(context.destinationType);
+  if ((!isRecovery && !contexts.has(context)) || !stored) return invalid();
+  await bounded(
+    (ownedSignal) =>
+      stored.complete(context.operationId, ownedSignal, context.deadline),
+    context.signal,
+    context.deadline,
+    true,
+  );
+};

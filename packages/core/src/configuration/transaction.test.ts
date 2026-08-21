@@ -11,6 +11,7 @@ import {
   writeFile,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,12 +43,17 @@ import {
   createConfigurationStore,
   createConfigurationStoreForTesting,
   createCredentialMutationIntent,
+  createLocalResourceMutationIntent,
   completeCredentialMutationIntent,
+  completeLocalResourceMutationIntent,
+  finalizeLocalResourceMutationCompletion,
   inspectCredentialMutation,
   inspectConfigurationTransaction,
+  inspectLocalResourceMutation,
   readConfigurationForHook,
   readConfigurationSnapshot,
   readRecoverableCredentialMutationIntent,
+  readRecoverableLocalResourceMutationIntent,
   recoverAbandonedConfigurationTransaction,
   writeConfigurationSnapshot,
   type ConfigurationTransactionStep,
@@ -114,6 +120,10 @@ const snapshot = (generation: number, reference?: string) =>
   parseAgentscopeConfiguration(document(generation, reference), registry);
 const snapshotText = (generation: number, reference?: string) =>
   serializeAgentscopeConfiguration(snapshot(generation, reference));
+const snapshotDigest = (value: ReturnType<typeof snapshot>): string =>
+  `sha256-${createHash("sha256")
+    .update(serializeAgentscopeConfiguration(value))
+    .digest("hex")}`;
 
 const errorCode = async (operation: Promise<unknown>): Promise<string> => {
   try {
@@ -124,7 +134,170 @@ const errorCode = async (operation: Promise<unknown>): Promise<string> => {
   }
 };
 
+// eslint-disable-next-line max-lines-per-function -- the suite shares one filesystem cleanup and generation fixture.
 describe("fenced configuration writes", () => {
+  it("removes the completion authority last across cleanup crashes", async () => {
+    const { home } = await homeFixture();
+    let failCleanup = false;
+    let cleanupUnlinks = 0;
+    const store = createConfigurationStoreForTesting(home, registry, {
+      fileSystem: {
+        link: nodeLink,
+        open: nodeOpen,
+        rename: nodeRename,
+        unlink: async (path) => {
+          if (failCleanup) {
+            cleanupUnlinks += 1;
+            if (cleanupUnlinks === 2) throw new Error("simulated crash");
+          }
+          await nodeUnlink(path);
+        },
+      },
+    });
+    const initial = snapshot(0);
+    await writeConfigurationSnapshot(store, {
+      expectedGeneration: null,
+      candidate: initial,
+      owner,
+    });
+    const intent = await createLocalResourceMutationIntent(store, {
+      recordVersion: 1,
+      operation: "configure",
+      operationId: "8".repeat(32),
+      owner,
+      destinationType: "@agentscope/destination-example",
+      connectionId: `destination-connection-v1-${"b".repeat(64)}`,
+      lifecycleFingerprint: `sha256-${"c".repeat(64)}`,
+      recoveryHandlerId: "@agentscope/destination-example/lifecycle-v1",
+      expectedGeneration: 0,
+      expectedDigest: snapshotDigest(initial),
+      authorizedCandidates: Object.freeze([
+        Object.freeze({
+          generation: 1,
+          digest: snapshotDigest(snapshot(1, "policy-a")),
+        }),
+      ]),
+    });
+    await completeLocalResourceMutationIntent(store, intent);
+    await nodeLink(
+      join(home.mutationDirectory, "local-resource.completion.lock"),
+      join(home.mutationDirectory, "local-resource.recovery.lock"),
+    );
+    failCleanup = true;
+    await expect(
+      finalizeLocalResourceMutationCompletion(store, intent),
+    ).rejects.toMatchObject({ code: "core.configuration.unavailable" });
+    failCleanup = false;
+    await expect(
+      inspectLocalResourceMutation(store, () => "unknown"),
+    ).resolves.toEqual({ state: "recoverable" });
+    const recovered = await readRecoverableLocalResourceMutationIntent(
+      store,
+      () => "unknown",
+    );
+    await finalizeLocalResourceMutationCompletion(store, recovered);
+    await expect(
+      inspectLocalResourceMutation(store, () => "unknown"),
+    ).resolves.toEqual({ state: "clean" });
+  });
+
+  it("reciprocally fences the exact Local-resource candidate sequence", async () => {
+    const { store } = await homeFixture();
+    const initial = snapshot(0);
+    const first = snapshot(1, "policy-a");
+    const final = snapshot(2, "policy-a");
+    await writeConfigurationSnapshot(store, {
+      expectedGeneration: null,
+      candidate: initial,
+      owner,
+    });
+    const intent = await createLocalResourceMutationIntent(store, {
+      recordVersion: 1,
+      operation: "delete",
+      operationId: "1".repeat(32),
+      owner,
+      destinationType: "@agentscope/destination-example",
+      connectionId: `destination-connection-v1-${"b".repeat(64)}`,
+      lifecycleFingerprint: `sha256-${"c".repeat(64)}`,
+      recoveryHandlerId: "@agentscope/destination-example/lifecycle-v1",
+      expectedGeneration: 0,
+      expectedDigest: snapshotDigest(initial),
+      authorizedCandidates: Object.freeze([
+        Object.freeze({ generation: 1, digest: snapshotDigest(first) }),
+        Object.freeze({ generation: 2, digest: snapshotDigest(final) }),
+      ]),
+    });
+    await expect(
+      writeConfigurationSnapshot(store, {
+        expectedGeneration: 0,
+        candidate: first,
+        owner,
+      }),
+    ).rejects.toMatchObject({ code: "core.configuration.contention" });
+    await writeConfigurationSnapshot(store, {
+      expectedGeneration: 0,
+      candidate: first,
+      owner,
+      localResourceMutationIntent: intent,
+    });
+    await writeConfigurationSnapshot(store, {
+      expectedGeneration: 1,
+      candidate: final,
+      owner,
+      localResourceMutationIntent: intent,
+    });
+    await completeLocalResourceMutationIntent(store, intent);
+    await expect(
+      inspectLocalResourceMutation(store, () => "dead"),
+    ).resolves.toEqual({ state: "recoverable" });
+    const completed = await readRecoverableLocalResourceMutationIntent(
+      store,
+      () => "unknown",
+    );
+    expect(completed).toEqual(intent);
+    await completeLocalResourceMutationIntent(store, completed);
+    await finalizeLocalResourceMutationCompletion(store, completed);
+    await expect(readConfigurationSnapshot(store)).resolves.toMatchObject({
+      generation: 2,
+    });
+
+    const recoverable = await createLocalResourceMutationIntent(store, {
+      recordVersion: 1,
+      operation: "unconfigure",
+      operationId: "2".repeat(32),
+      owner,
+      destinationType: "@agentscope/destination-example",
+      connectionId: `destination-connection-v1-${"b".repeat(64)}`,
+      lifecycleFingerprint: `sha256-${"c".repeat(64)}`,
+      recoveryHandlerId: "@agentscope/destination-example/lifecycle-v1",
+      expectedGeneration: 2,
+      expectedDigest: snapshotDigest(final),
+      authorizedCandidates: Object.freeze([
+        Object.freeze({
+          generation: 3,
+          digest: snapshotDigest(snapshot(3, "policy-a")),
+        }),
+      ]),
+    });
+    await expect(
+      inspectLocalResourceMutation(store, () => "dead"),
+    ).resolves.toEqual({ state: "recoverable" });
+    const claimed = await readRecoverableLocalResourceMutationIntent(
+      store,
+      () => "dead",
+    );
+    expect(claimed).toEqual(recoverable);
+    await expect(
+      writeConfigurationSnapshot(store, {
+        expectedGeneration: 2,
+        candidate: snapshot(3, "policy-a"),
+        owner,
+      }),
+    ).rejects.toMatchObject({ code: "core.configuration.contention" });
+    await completeLocalResourceMutationIntent(store, claimed);
+    await finalizeLocalResourceMutationCompletion(store, claimed);
+  });
+
   it("atomically creates and then replaces the active generation", async () => {
     const { home, store } = await homeFixture();
     const first = snapshot(0);

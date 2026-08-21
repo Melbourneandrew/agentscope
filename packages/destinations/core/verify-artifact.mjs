@@ -10,17 +10,28 @@ import {
   createRetrieverSuccess,
   createTraceLocator,
   createTraceSummary,
+  compileDestinationRegistry,
+  compileLocalResourceLifecycleHandlerRegistry,
+  applyLocalResourceLifecyclePlan,
+  commitLocalResourceConfiguration,
+  completeLocalResourceLifecycle,
   defineDestinationReachabilityProbe,
   defineDestinationDescriptor,
+  defineLocalResourceLifecycleHandler,
   defineLocalResourceLifecycleDeclaration,
   DestinationLocalResourceLifecycleError,
   executeBoundDestinationRequest,
   isDestinationReachabilityProbe,
   parseDestinationSettings,
   TRACE_SEARCH_ORDERINGS,
+  recoverLocalResourceLifecycle,
 } from "./dist/index.js";
 import {
+  bindLocalResourceConfigurationAuthorityForCore,
+  bindLocalResourceLifecycleContextForCore,
   bindDestinationTransport,
+  bindLocalResourceLifecycleRecoveryContextForCore,
+  createLocalResourceLifecycleDeadlineForCore,
   createRetrievalContext,
   createReporterDeadline,
   createTraceSearchCursor,
@@ -156,6 +167,310 @@ if (
   )
 )
   throw new Error("Built descriptor lost local-resource lifecycle authority.");
+const historicalLifecycleDeclaration = defineLocalResourceLifecycleDeclaration({
+  ...lifecycleDeclaration,
+  artifactGrammarFingerprint: `sha256-${"b".repeat(64)}`,
+});
+const historicalLifecycleDescriptor = defineDestinationDescriptor(
+  input({
+    commandName: "local-sqlite",
+    credentialSlots: [],
+    destinationType: "@agentscope/destination-local-sqlite",
+    localResourceLifecycle: historicalLifecycleDeclaration,
+    transport: { kind: "local" },
+  }),
+);
+const lifecycleRegistry = compileDestinationRegistry([
+  localLifecycleDescriptor,
+]);
+let historicalRecoveries = 0;
+let historicalCompletions = 0;
+const unusedLifecycleCallback = () => Promise.reject(new Error("unused"));
+const lifecycleHandlers = compileLocalResourceLifecycleHandlerRegistry(
+  lifecycleRegistry,
+  [
+    defineLocalResourceLifecycleHandler({
+      capability: localLifecycleDescriptor.localResourceLifecycle,
+      complete: unusedLifecycleCallback,
+      inspectPlan: unusedLifecycleCallback,
+      inspectRetainedDelete: unusedLifecycleCallback,
+      apply: unusedLifecycleCallback,
+      recover: unusedLifecycleCallback,
+    }),
+    defineLocalResourceLifecycleHandler({
+      capability: historicalLifecycleDescriptor.localResourceLifecycle,
+      complete: () => {
+        historicalCompletions += 1;
+        return Promise.resolve();
+      },
+      inspectPlan: unusedLifecycleCallback,
+      inspectRetainedDelete: unusedLifecycleCallback,
+      apply: unusedLifecycleCallback,
+      recover: () => {
+        historicalRecoveries += 1;
+        return Promise.resolve({ ok: true, state: "rolled-back" });
+      },
+    }),
+  ],
+);
+const historicalRecoveryContext =
+  bindLocalResourceLifecycleRecoveryContextForCore({
+    operation: "configure",
+    operationId: "1".repeat(32),
+    destinationType: "@agentscope/destination-local-sqlite",
+    connectionId,
+    owner: {
+      processId: 1,
+      processStartIdentity: `process-start-v1-${"2".repeat(64)}`,
+    },
+    lifecycleFingerprint:
+      historicalLifecycleDescriptor.localResourceLifecycle.fingerprint,
+    recoveryHandlerId:
+      historicalLifecycleDescriptor.localResourceLifecycle.recoveryHandlerId,
+    expectedConfigurationGeneration: 1,
+    expectedConfigurationDigest: `sha256-${"3".repeat(64)}`,
+    authorizedCandidates: [
+      { generation: 2, digest: `sha256-${"4".repeat(64)}` },
+    ],
+    configurationState: "prior",
+    signal: new AbortController().signal,
+    deadline: createLocalResourceLifecycleDeadlineForCore(1_000),
+  });
+const historicalRecoveryResult = await recoverLocalResourceLifecycle(
+  lifecycleHandlers,
+  historicalRecoveryContext,
+);
+await completeLocalResourceLifecycle(
+  lifecycleHandlers,
+  historicalRecoveryContext,
+);
+if (
+  !historicalRecoveryResult.ok ||
+  historicalRecoveryResult.state !== "rolled-back" ||
+  historicalRecoveries !== 1 ||
+  historicalCompletions !== 1
+)
+  throw new Error("Built historical lifecycle recovery dispatch drifted.");
+
+let releaseCancelledApply;
+let enterCancelledApply;
+const cancelledApplyBlocked = new Promise((resolve) => {
+  releaseCancelledApply = resolve;
+});
+const cancelledApplyEntered = new Promise((resolve) => {
+  enterCancelledApply = resolve;
+});
+let cancelledAuthorityDenied = false;
+let cancelledAuthorityCommits = 0;
+const cancellationHandlers = compileLocalResourceLifecycleHandlerRegistry(
+  lifecycleRegistry,
+  [
+    defineLocalResourceLifecycleHandler({
+      capability: localLifecycleDescriptor.localResourceLifecycle,
+      complete: unusedLifecycleCallback,
+      inspectPlan: unusedLifecycleCallback,
+      inspectRetainedDelete: unusedLifecycleCallback,
+      recover: unusedLifecycleCallback,
+      apply: async (context) => {
+        enterCancelledApply();
+        await cancelledApplyBlocked;
+        try {
+          await commitLocalResourceConfiguration(
+            context.configurationAuthority,
+            {
+              destinationType: context.destinationType,
+              connectionId: context.connectionId,
+              operationId: context.operationId,
+              lifecycleFingerprint:
+                localLifecycleDescriptor.localResourceLifecycle.fingerprint,
+              recoveryHandlerId:
+                localLifecycleDescriptor.localResourceLifecycle
+                  .recoveryHandlerId,
+            },
+          );
+        } catch (error) {
+          cancelledAuthorityDenied =
+            error?.code === "destination.local-resource-configuration.invalid";
+        }
+        return { ok: true, state: "configured" };
+      },
+    }),
+  ],
+);
+const cancellationSource = new AbortController();
+const cancellationContext = bindLocalResourceLifecycleContextForCore({
+  operation: "configure",
+  operationId: "5".repeat(32),
+  destinationType: localLifecycleDescriptor.destinationType,
+  connectionId,
+  connectionName: "local",
+  owner: {
+    processId: 1,
+    processStartIdentity: `process-start-v1-${"6".repeat(64)}`,
+  },
+  settings: { endpoint: "local" },
+  expectedConfigurationGeneration: 1,
+  candidateConfigurationGeneration: 2,
+  expectedConfigurationDigest: `sha256-${"7".repeat(64)}`,
+  candidateConfigurationDigest: `sha256-${"8".repeat(64)}`,
+  signal: cancellationSource.signal,
+  deadline: createLocalResourceLifecycleDeadlineForCore(1_000),
+});
+const cancellationAuthority = bindLocalResourceConfigurationAuthorityForCore({
+  destinationType: cancellationContext.destinationType,
+  connectionId: cancellationContext.connectionId,
+  operationId: cancellationContext.operationId,
+  lifecycleFingerprint:
+    localLifecycleDescriptor.localResourceLifecycle.fingerprint,
+  recoveryHandlerId:
+    localLifecycleDescriptor.localResourceLifecycle.recoveryHandlerId,
+  priorGeneration: 1,
+  candidateGeneration: 2,
+  candidateDigest: cancellationContext.candidateConfigurationDigest,
+  commit: () => {
+    cancelledAuthorityCommits += 1;
+    return Promise.resolve({
+      priorGeneration: 1,
+      committedGeneration: 2,
+      candidateDigest: cancellationContext.candidateConfigurationDigest,
+    });
+  },
+});
+const cancelledApply = applyLocalResourceLifecyclePlan(
+  cancellationHandlers,
+  cancellationContext,
+  {
+    namespaceFingerprint: `sha256-${"9".repeat(64)}`,
+    physicalEvidenceFingerprint: `sha256-${"a".repeat(64)}`,
+    displayPath: "/owned",
+    persistentDataNotice: true,
+    retentionPolicy: {
+      maximumAgeNanoseconds: "1",
+      maximumTraceCount: 1,
+      maximumPayloadBytes: 1,
+      physicalCleanupTrigger: "next-authorized-mutation",
+    },
+  },
+  cancellationAuthority,
+);
+await cancelledApplyEntered;
+let cancelledApplySettled = false;
+void cancelledApply.then(
+  () => {
+    cancelledApplySettled = true;
+  },
+  () => {
+    cancelledApplySettled = true;
+  },
+);
+cancellationSource.abort();
+await Promise.resolve();
+if (cancelledApplySettled)
+  throw new Error("Built mutation returned before callback settlement.");
+releaseCancelledApply();
+try {
+  await cancelledApply;
+  throw new Error("Built cancelled mutation was accepted.");
+} catch (error) {
+  if (error?.code !== "destination.local-resource-handler.invalid") throw error;
+}
+if (!cancelledAuthorityDenied || cancelledAuthorityCommits !== 0)
+  throw new Error("Built cancelled mutation retained Configuration authority.");
+
+let releaseDetachedCommit;
+const detachedCommitBlocked = new Promise((resolve) => {
+  releaseDetachedCommit = resolve;
+});
+let detachedCommitMutation = false;
+let detachedCommitError;
+const detachedHandlers = compileLocalResourceLifecycleHandlerRegistry(
+  lifecycleRegistry,
+  [
+    defineLocalResourceLifecycleHandler({
+      capability: localLifecycleDescriptor.localResourceLifecycle,
+      complete: unusedLifecycleCallback,
+      inspectPlan: unusedLifecycleCallback,
+      inspectRetainedDelete: unusedLifecycleCallback,
+      recover: unusedLifecycleCallback,
+      apply: (context) => {
+        void commitLocalResourceConfiguration(context.configurationAuthority, {
+          destinationType: context.destinationType,
+          connectionId: context.connectionId,
+          operationId: context.operationId,
+          lifecycleFingerprint:
+            localLifecycleDescriptor.localResourceLifecycle.fingerprint,
+          recoveryHandlerId:
+            localLifecycleDescriptor.localResourceLifecycle.recoveryHandlerId,
+        }).catch((error) => {
+          detachedCommitError = error;
+        });
+        return Promise.resolve({ ok: true, state: "configured" });
+      },
+    }),
+  ],
+);
+const detachedContext = bindLocalResourceLifecycleContextForCore({
+  ...cancellationContext,
+  operationId: "b".repeat(32),
+  candidateConfigurationDigest: `sha256-${"c".repeat(64)}`,
+  signal: new AbortController().signal,
+  deadline: createLocalResourceLifecycleDeadlineForCore(1_000),
+});
+const detachedAuthority = bindLocalResourceConfigurationAuthorityForCore({
+  destinationType: detachedContext.destinationType,
+  connectionId: detachedContext.connectionId,
+  operationId: detachedContext.operationId,
+  lifecycleFingerprint:
+    localLifecycleDescriptor.localResourceLifecycle.fingerprint,
+  recoveryHandlerId:
+    localLifecycleDescriptor.localResourceLifecycle.recoveryHandlerId,
+  priorGeneration: 1,
+  candidateGeneration: 2,
+  candidateDigest: detachedContext.candidateConfigurationDigest,
+  commit: async () => {
+    await detachedCommitBlocked;
+    detachedCommitMutation = true;
+    return {
+      priorGeneration: 1,
+      committedGeneration: 2,
+      candidateDigest: detachedContext.candidateConfigurationDigest,
+    };
+  },
+});
+const detachedApply = applyLocalResourceLifecyclePlan(
+  detachedHandlers,
+  detachedContext,
+  {
+    namespaceFingerprint: `sha256-${"9".repeat(64)}`,
+    physicalEvidenceFingerprint: `sha256-${"a".repeat(64)}`,
+    displayPath: "/owned",
+    persistentDataNotice: true,
+    retentionPolicy: {
+      maximumAgeNanoseconds: "1",
+      maximumTraceCount: 1,
+      maximumPayloadBytes: 1,
+      physicalCleanupTrigger: "next-authorized-mutation",
+    },
+  },
+  detachedAuthority,
+);
+let detachedApplySettled = false;
+void detachedApply.then(() => {
+  detachedApplySettled = true;
+});
+await Promise.resolve();
+await Promise.resolve();
+if (detachedApplySettled || detachedCommitMutation)
+  throw new Error("Built detached Configuration commit was not joined.");
+releaseDetachedCommit();
+const detachedResult = await detachedApply;
+if (
+  !detachedResult.ok ||
+  detachedResult.state !== "configured" ||
+  !detachedCommitMutation ||
+  detachedCommitError
+)
+  throw new Error("Built detached Configuration commit settlement drifted.");
 
 const unhandled = [];
 const collectUnhandled = (reason) => unhandled.push(reason);

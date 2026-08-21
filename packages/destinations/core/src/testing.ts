@@ -45,3 +45,7 @@ export {
   prepareDestinationRetriever,
   resolveDestinationConnection,
 } from "./core-orchestration.js";
+export { bindLocalResourceConfigurationAuthorityForCore as bindLocalResourceConfigurationAuthorityForTesting } from "./local-resource-configuration-authority.js";
+export { bindLocalResourceLifecycleContextForCore as bindLocalResourceLifecycleContextForTesting } from "./local-resource-handler.js";
+export { bindLocalResourceLifecycleRecoveryContextForCore as bindLocalResourceLifecycleRecoveryContextForTesting } from "./local-resource-handler.js";
+export { createLocalResourceLifecycleDeadlineForCore as createLocalResourceLifecycleDeadlineForTesting } from "./local-resource-handler.js";

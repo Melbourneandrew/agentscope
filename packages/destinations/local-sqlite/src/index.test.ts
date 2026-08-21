@@ -13,6 +13,7 @@ describe("Local SQLite package boundaries", () => {
         "inspectLocalSqliteNativeSupport",
         "LOCAL_SQLITE_DESTINATION_TYPE",
         "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
+        "createLocalSqliteLifecycleHandler",
         "localSqliteDestinationPackageId",
         "localSqliteLifecycleDeclaration",
         "localSqliteReporterPackageId",
