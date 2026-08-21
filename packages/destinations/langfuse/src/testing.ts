@@ -35,6 +35,7 @@ import {
 import type { RedactedCanonicalTrace } from "@agentscope/protocol";
 
 import { langfuseDestinationDescriptor } from "./reporter/index.js";
+import { createLangfuseReachabilityProbe } from "./doctor.js";
 
 export {
   LANGFUSE_FILTER_CONFORMANCE_FIXTURES,
@@ -43,6 +44,12 @@ export {
   type LangfuseHttpFixture,
   type LangfuseJson,
 } from "./compatibility-fixtures.js";
+export {
+  executeLangfuseMockRoundTrip,
+  type LangfuseMockRoundTripResult,
+  type LangfuseMockRoundTripFailure,
+  type LangfuseMockRoundTripInput,
+} from "./mock-roundtrip.js";
 
 export type LangfuseReporterTestHarnessInput = Readonly<{
   executor: DestinationReporterTestPreparation["executor"];
@@ -92,6 +99,35 @@ export const createLangfuseReporterTestHarness = (
           ? {}
           : { timeoutMilliseconds: attempt.timeoutMilliseconds }),
       }),
+  });
+};
+
+export const createLangfuseReachabilityProbeTestHarness = (
+  executor: DestinationReporterTestPreparation["executor"],
+) => {
+  const connectionId = createDestinationConnectionId(
+    `destination-connection-v1-${"d".repeat(64)}`,
+  );
+  const prepared = resolveDestinationConnection(langfuseDestinationDescriptor, {
+    connectionId,
+    settings: {
+      ...langfuseDestinationDescriptor.defaultSettings,
+      endpoint: "http://127.0.0.1:4318",
+      allowInsecureLoopback: true,
+    },
+  });
+  /* v8 ignore next 2 -- the fixed loopback endpoint is always remote; retain the testkit's defensive boundary. */
+  if (prepared.endpoint === null)
+    throw new Error("destination.langfuse.testing.remote-required");
+  return Object.freeze({
+    connectionId,
+    probe: createLangfuseReachabilityProbe(() =>
+      Promise.resolve({
+        connectionId,
+        profileId: "langfuse-cloud-v4",
+        transport: bindDestinationTransport(prepared.endpoint!, executor),
+      }),
+    ),
   });
 };
 

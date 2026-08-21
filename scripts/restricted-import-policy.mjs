@@ -21,7 +21,7 @@ const testingSpecifiers = [
 ];
 const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
 const testEntrypointSource =
-  /(?:^|\/)src\/testing\.ts$|(?:^|\/)packages\/destinations\/langfuse\/src\/compatibility-fixtures\.ts$/u;
+  /(?:^|\/)src\/testing\.ts$|(?:^|\/)packages\/destinations\/langfuse\/src\/(?:compatibility-fixtures|mock-roundtrip)\.ts$/u;
 const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const homeAuthoritySource = "packages/core/src/configuration/home.ts";

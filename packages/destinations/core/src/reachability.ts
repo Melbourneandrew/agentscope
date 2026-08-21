@@ -3,6 +3,11 @@ import {
   type DestinationConnectionId,
   type DestinationTypeId,
 } from "./identity.js";
+import { createReporterDeadline } from "./deadline.js";
+import {
+  executeBoundDestinationRequest,
+  type BoundDestinationTransport,
+} from "./transport.js";
 
 export type DestinationReachabilityState = "available" | "unavailable";
 
@@ -73,3 +78,27 @@ export const isDestinationReachabilityProbe = (
   value: unknown,
 ): value is DestinationReachabilityProbe =>
   typeof value === "object" && value !== null && probes.has(value);
+
+export const inspectBoundDestinationReachability = async (
+  transport: BoundDestinationTransport,
+  pathAndQuery: string,
+  signal: AbortSignal,
+): Promise<DestinationReachabilityState> => {
+  try {
+    const response = await executeBoundDestinationRequest(transport, {
+      method: "GET",
+      pathAndQuery,
+      headers: Object.freeze({}),
+      signal,
+      deadline: createReporterDeadline(900),
+    });
+    const provesReachableEndpoint =
+      (response.status >= 200 && response.status < 300) ||
+      [400, 401, 403, 405, 413, 415, 422, 429].includes(response.status);
+    return signal.aborted || !provesReachableEndpoint
+      ? "unavailable"
+      : "available";
+  } catch {
+    return "unavailable";
+  }
+};
