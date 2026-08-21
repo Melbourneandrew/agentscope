@@ -84,6 +84,9 @@ if (
   JSON.stringify(Object.keys(testing)) !==
   JSON.stringify(
     [
+      "acquireLocalSqliteExclusiveFence",
+      "acquireLocalSqliteSharedLease",
+      "amendLocalSqliteLeaseWithChild",
       "canonicalizeLocalSqliteEvidenceForTesting",
       "compileReleaseTarArchiveForTesting",
       "compileLocalSqliteMigrationInventoryForTesting",
@@ -102,7 +105,18 @@ if (
       "planLocalSqliteNamespace",
       "createLocalSqliteDatabaseFailureForTesting",
       "createLocalSqliteReporterForTesting",
+      "decodeLocalSqliteFenceRecord",
+      "decodeLocalSqliteLeaseRecord",
+      "encodeLocalSqliteFenceRecord",
+      "encodeLocalSqliteLeaseRecord",
+      "inspectLocalSqliteLifecycleInventory",
       "prepareLocalSqliteTraceForTesting",
+      "LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS",
+      "parseLocalSqliteFenceRecord",
+      "parseLocalSqliteLeaseRecord",
+      "recoverDeadLocalSqliteLease",
+      "releaseLocalSqliteExclusiveFence",
+      "releaseLocalSqliteSharedLease",
       "runLocalSqliteMigrations",
       "runLocalSqliteMigrationsWithInventoryForTesting",
     ].sort(),
@@ -684,3 +698,329 @@ try {
 }
 if (!rejectedPolicy)
   throw new Error("Local SQLite built Reporter policy ceiling drifted.");
+
+const builtLifecycleFingerprint = `sha256-${"a".repeat(64)}`;
+const builtLeaseRecord = testing.parseLocalSqliteLeaseRecord({
+  leaseId: "1".repeat(32),
+  lifecycleFingerprint: builtLifecycleFingerprint,
+  lifecycleGeneration: 1,
+  parent: { pid: 101, startIdentity: "2".repeat(32) },
+  child: null,
+});
+const builtFenceRecord = testing.parseLocalSqliteFenceRecord({
+  transactionId: "3".repeat(32),
+  lifecycleFingerprint: builtLifecycleFingerprint,
+  lifecycleGeneration: 1,
+  purpose: "lifecycle",
+});
+const builtLeaseBytes = testing.encodeLocalSqliteLeaseRecord(builtLeaseRecord);
+const builtFenceBytes = testing.encodeLocalSqliteFenceRecord(builtFenceRecord);
+if (
+  builtLeaseBytes?.length !== 256 ||
+  builtFenceBytes?.length !== 256 ||
+  testing.decodeLocalSqliteLeaseRecord(builtLeaseBytes)?.leaseId !==
+    builtLeaseRecord?.leaseId ||
+  testing.decodeLocalSqliteFenceRecord(builtFenceBytes)?.transactionId !==
+    builtFenceRecord?.transactionId ||
+  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumLeases !== 64
+)
+  throw new Error("Local SQLite built lifecycle record grammar drifted.");
+
+const lifecycleArtifacts = new Map();
+let lifecycleIdentity = 0;
+const nextLifecycleIdentity = () => `dev1:ino${(lifecycleIdentity += 1)}`;
+const createLifecycleArtifact = (filename, content) => {
+  if (lifecycleArtifacts.has(filename)) return { state: "exists" };
+  const physicalIdentity = nextLifecycleIdentity();
+  lifecycleArtifacts.set(filename, { content, physicalIdentity });
+  return { state: "created", physicalIdentity };
+};
+const lifecyclePort = Object.freeze({
+  classifyOwner: () => ({ state: "live" }),
+  createFenceDurably: ({ filename, content }) =>
+    createLifecycleArtifact(filename, content),
+  createLeaseDurably: ({ filename, content }) =>
+    createLifecycleArtifact(filename, content),
+  createRecoveryClaim: () => ({ state: "mismatch" }),
+  listLifecycle: () => ({
+    entries: [...lifecycleArtifacts.entries()].map(([name, artifact]) => ({
+      name,
+      bytes: artifact.content.length,
+      physicalIdentity: artifact.physicalIdentity,
+    })),
+  }),
+  readArtifact: ({ filename }) => {
+    const artifact = lifecycleArtifacts.get(filename);
+    return artifact === undefined
+      ? { state: "absent" }
+      : { state: "present", ...artifact };
+  },
+  removeArtifactIfIdentity: ({ filename, physicalIdentity }) => {
+    const artifact = lifecycleArtifacts.get(filename);
+    if (artifact?.physicalIdentity !== physicalIdentity)
+      return { state: "mismatch" };
+    lifecycleArtifacts.delete(filename);
+    return { state: "removed" };
+  },
+  replaceLeaseDurably: () => ({ state: "mismatch" }),
+});
+const builtShared = await testing.acquireLocalSqliteSharedLease(lifecyclePort, {
+  leaseId: builtLeaseRecord.leaseId,
+  lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+  lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+  parent: builtLeaseRecord.parent,
+});
+if (!builtShared.ok)
+  throw new Error("Local SQLite built shared lifecycle gate drifted.");
+const builtRelease = await testing.releaseLocalSqliteSharedLease(
+  lifecyclePort,
+  builtShared.value,
+);
+if (!builtRelease.ok || lifecycleArtifacts.size !== 0)
+  throw new Error("Local SQLite built shared release drifted.");
+
+for (const [name, content] of [
+  ["intent-v1.json", "intent"],
+  [`recovery-claim-${builtFenceRecord.transactionId}`, builtLeaseBytes],
+]) {
+  lifecycleArtifacts.set(name, {
+    content,
+    physicalIdentity: nextLifecycleIdentity(),
+  });
+  const blockedShared = await testing.acquireLocalSqliteSharedLease(
+    lifecyclePort,
+    {
+      leaseId: builtLeaseRecord.leaseId,
+      lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+      lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+      parent: builtLeaseRecord.parent,
+    },
+  );
+  if (blockedShared.ok || blockedShared.state !== "reconciliation-required")
+    throw new Error("Local SQLite built open-artifact fence drifted.");
+  lifecycleArtifacts.clear();
+}
+
+const racedBlockerPort = Object.freeze({
+  ...lifecyclePort,
+  createLeaseDurably: ({ filename, content }) => {
+    const created = createLifecycleArtifact(filename, content);
+    lifecycleArtifacts.set("intent-v1.json", {
+      content: "intent",
+      physicalIdentity: "dev1:racing-intent",
+    });
+    return created;
+  },
+});
+const racedBlockerShared = await testing.acquireLocalSqliteSharedLease(
+  racedBlockerPort,
+  {
+    leaseId: builtLeaseRecord.leaseId,
+    lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+    parent: builtLeaseRecord.parent,
+  },
+);
+if (
+  racedBlockerShared.ok ||
+  racedBlockerShared.state !== "reconciliation-required" ||
+  lifecycleArtifacts.has(`lease-${builtLeaseRecord.leaseId}.json`)
+)
+  throw new Error("Local SQLite built final-inventory fence drifted.");
+lifecycleArtifacts.clear();
+
+lifecycleArtifacts.set(`lease-${builtLeaseRecord.leaseId}.json`, {
+  content: "malformed".padEnd(256, " "),
+  physicalIdentity: nextLifecycleIdentity(),
+});
+const malformedLeaseInspection =
+  await testing.inspectLocalSqliteLifecycleInventory(lifecyclePort);
+if (
+  malformedLeaseInspection.ok ||
+  malformedLeaseInspection.state !== "reconciliation-required"
+)
+  throw new Error("Local SQLite built lease inspection drifted.");
+lifecycleArtifacts.clear();
+
+const amendShared = await testing.acquireLocalSqliteSharedLease(lifecyclePort, {
+  leaseId: builtLeaseRecord.leaseId,
+  lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+  lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+  parent: builtLeaseRecord.parent,
+});
+if (!amendShared.ok)
+  throw new Error("Local SQLite built amend fixture failed.");
+const amendRacePort = Object.freeze({
+  ...lifecyclePort,
+  readArtifact: ({ filename }) => {
+    if (filename === "exclusive-fence-v1")
+      lifecycleArtifacts.set(filename, {
+        content: builtFenceBytes,
+        physicalIdentity: "dev1:racing-fence",
+      });
+    return lifecyclePort.readArtifact({ filename });
+  },
+  replaceLeaseDurably: ({ filename, physicalIdentity, content }) => {
+    const artifact = lifecycleArtifacts.get(filename);
+    if (artifact?.physicalIdentity !== physicalIdentity)
+      return { state: "mismatch" };
+    const replacementIdentity = nextLifecycleIdentity();
+    lifecycleArtifacts.set(filename, {
+      content,
+      physicalIdentity: replacementIdentity,
+    });
+    return { state: "replaced", physicalIdentity: replacementIdentity };
+  },
+});
+const racedAmend = await testing.amendLocalSqliteLeaseWithChild(
+  amendRacePort,
+  amendShared.value,
+  { nonce: "4".repeat(32), pid: 202, startIdentity: "5".repeat(32) },
+);
+if (
+  racedAmend.ok ||
+  racedAmend.state !== "busy" ||
+  lifecycleArtifacts.has(amendShared.value.filename) ||
+  !lifecycleArtifacts.has("exclusive-fence-v1")
+)
+  throw new Error("Local SQLite built child-amend fence race drifted.");
+lifecycleArtifacts.clear();
+
+lifecycleArtifacts.set("exclusive-fence-v1", {
+  content: "malformed".padEnd(256, " "),
+  physicalIdentity: nextLifecycleIdentity(),
+});
+const malformedSharedFence = await testing.acquireLocalSqliteSharedLease(
+  lifecyclePort,
+  {
+    leaseId: builtLeaseRecord.leaseId,
+    lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+    parent: builtLeaseRecord.parent,
+  },
+);
+const malformedExclusiveFence = await testing.acquireLocalSqliteExclusiveFence(
+  lifecyclePort,
+  builtFenceRecord,
+);
+if (
+  malformedSharedFence.ok ||
+  malformedSharedFence.state !== "reconciliation-required" ||
+  malformedExclusiveFence.ok ||
+  malformedExclusiveFence.state !== "reconciliation-required"
+)
+  throw new Error("Local SQLite built malformed-fence handling drifted.");
+lifecycleArtifacts.clear();
+
+const deadLifecyclePort = Object.freeze({
+  ...lifecyclePort,
+  classifyOwner: () => ({ state: "dead" }),
+});
+const lifecycleMismatchShared = await testing.acquireLocalSqliteSharedLease(
+  deadLifecyclePort,
+  {
+    leaseId: builtLeaseRecord.leaseId,
+    lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+    parent: builtLeaseRecord.parent,
+  },
+);
+if (!lifecycleMismatchShared.ok)
+  throw new Error("Local SQLite built mismatch fixture failed.");
+const lifecycleMismatchFence = await testing.acquireLocalSqliteExclusiveFence(
+  deadLifecyclePort,
+  {
+    ...builtFenceRecord,
+    lifecycleFingerprint: `sha256-${"b".repeat(64)}`,
+    purpose: "recovery",
+  },
+);
+if (
+  lifecycleMismatchFence.ok ||
+  lifecycleMismatchFence.state !== "reconciliation-required"
+)
+  throw new Error("Local SQLite built lifecycle-identity handling drifted.");
+await testing.releaseLocalSqliteSharedLease(
+  deadLifecyclePort,
+  lifecycleMismatchShared.value,
+);
+
+const claimShared = await testing.acquireLocalSqliteSharedLease(
+  deadLifecyclePort,
+  {
+    leaseId: builtLeaseRecord.leaseId,
+    lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+    parent: builtLeaseRecord.parent,
+  },
+);
+if (!claimShared.ok)
+  throw new Error("Local SQLite built claim fixture failed.");
+const claimFence = await testing.acquireLocalSqliteExclusiveFence(
+  deadLifecyclePort,
+  { ...builtFenceRecord, purpose: "recovery" },
+);
+if (!claimFence.ok)
+  throw new Error("Local SQLite built claim fence fixture failed.");
+const claimFilename = `recovery-claim-${builtFenceRecord.transactionId}`;
+const claimCrashPort = Object.freeze({
+  ...deadLifecyclePort,
+  createRecoveryClaim: ({ leaseName }) => {
+    const lease = lifecycleArtifacts.get(leaseName);
+    if (lease === undefined) return { state: "mismatch" };
+    lifecycleArtifacts.set(claimFilename, lease);
+    return undefined;
+  },
+});
+const claimCrash = await testing.recoverDeadLocalSqliteLease(
+  claimCrashPort,
+  claimFence.value,
+  claimShared.value.filename,
+);
+const claimResume = await testing.recoverDeadLocalSqliteLease(
+  Object.freeze({
+    ...deadLifecyclePort,
+    createRecoveryClaim: () => ({ state: "exists" }),
+  }),
+  claimFence.value,
+  claimShared.value.filename,
+);
+if (
+  claimCrash.ok ||
+  claimCrash.state !== "reconciliation-required" ||
+  !claimResume.ok ||
+  lifecycleArtifacts.has(claimFilename) ||
+  lifecycleArtifacts.has(claimShared.value.filename)
+)
+  throw new Error("Local SQLite built recovery-claim resume drifted.");
+await testing.releaseLocalSqliteExclusiveFence(
+  deadLifecyclePort,
+  claimFence.value,
+);
+
+let lifecycleCoercions = 0;
+const hostileLifecycleResult = await testing.acquireLocalSqliteSharedLease(
+  Object.freeze({
+    ...lifecyclePort,
+    readArtifact: () => ({
+      state: {
+        toString() {
+          lifecycleCoercions += 1;
+          return "absent";
+        },
+      },
+    }),
+  }),
+  {
+    leaseId: builtLeaseRecord.leaseId,
+    lifecycleFingerprint: builtLeaseRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtLeaseRecord.lifecycleGeneration,
+    parent: builtLeaseRecord.parent,
+  },
+);
+if (
+  hostileLifecycleResult.ok ||
+  hostileLifecycleResult.state !== "reconciliation-required" ||
+  lifecycleCoercions !== 0
+)
+  throw new Error("Local SQLite built lifecycle containment drifted.");
