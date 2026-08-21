@@ -12,6 +12,8 @@ import {
   createTraceSummary,
   defineDestinationReachabilityProbe,
   defineDestinationDescriptor,
+  defineLocalResourceLifecycleDeclaration,
+  DestinationLocalResourceLifecycleError,
   executeBoundDestinationRequest,
   isDestinationReachabilityProbe,
   parseDestinationSettings,
@@ -109,6 +111,51 @@ const expectFixedRejection = (action) => {
   }
   throw new Error("Destination artifact callback misuse was not rejected.");
 };
+
+const lifecycleDeclaration = defineLocalResourceLifecycleDeclaration({
+  artifactGrammarFingerprint: `sha256-${"a".repeat(64)}`,
+  artifactGrammarVersion: 1,
+  artifactKinds: ["active-database", "lifecycle-intent"],
+  capabilityVersion: 1,
+  destinationType: "@agentscope/destination-local-sqlite",
+  operations: ["configure", "recover"],
+  receiptReasons: ["destination-busy"],
+  recoveryHandlerId: "@agentscope/destination-local-sqlite/lifecycle-v1",
+  settingKeys: ["endpoint"],
+  settingsVersion: 1,
+});
+if (
+  new DestinationLocalResourceLifecycleError().code !==
+  "destination.local-resource-lifecycle.invalid"
+)
+  throw new Error("Built lifecycle fixed error code drifted.");
+if (lifecycleDeclaration.operations.join("|") !== "configure|recover")
+  throw new Error("Built local-resource lifecycle authority drifted.");
+expectFixedRejection(() =>
+  defineDestinationDescriptor(
+    input({
+      localResourceLifecycle: lifecycleDeclaration,
+    }),
+  ),
+);
+const localLifecycleDescriptor = defineDestinationDescriptor(
+  input({
+    commandName: "local-sqlite",
+    credentialSlots: [],
+    destinationType: "@agentscope/destination-local-sqlite",
+    localResourceLifecycle: lifecycleDeclaration,
+    transport: { kind: "local" },
+  }),
+);
+if (
+  !/^sha256-[a-f0-9]{64}$/u.test(
+    localLifecycleDescriptor.localResourceLifecycle.fingerprint,
+  ) ||
+  !/^sha256-[a-f0-9]{64}$/u.test(
+    localLifecycleDescriptor.localResourceLifecycle.settingsSchemaFingerprint,
+  )
+)
+  throw new Error("Built descriptor lost local-resource lifecycle authority.");
 
 const unhandled = [];
 const collectUnhandled = (reason) => unhandled.push(reason);
