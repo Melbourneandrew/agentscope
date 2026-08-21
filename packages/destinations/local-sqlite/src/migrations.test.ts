@@ -35,10 +35,33 @@ type DatabaseState = {
   loseTransactionAfterExecute?: boolean;
 };
 
-const expectedMetadata = () => ({
+const manifestIdFor = (
+  resources: readonly (typeof LOCAL_SQLITE_MIGRATIONS)[number][],
+) =>
+  `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        format: "agentscope.local-sqlite.v1",
+        migrations: resources.map(
+          ({ version, ordinal, name, sha256, protocolCompatibilityId }) => ({
+            version,
+            ordinal,
+            name,
+            sha256,
+            protocolCompatibilityId,
+          }),
+        ),
+      }),
+    )
+    .digest("hex")}`;
+
+const expectedMetadata = (ledgerLength = LOCAL_SQLITE_MIGRATIONS.length) => ({
   destinationFormat: "agentscope.local-sqlite.v1",
-  migrationManifestId: LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
-  protocolCompatibilityId: LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+  migrationManifestId: manifestIdFor(
+    LOCAL_SQLITE_MIGRATIONS.slice(0, ledgerLength),
+  ),
+  protocolCompatibilityId:
+    LOCAL_SQLITE_MIGRATIONS[ledgerLength - 1]!.protocolCompatibilityId,
 });
 
 const runLocalSqliteMigrations = (database: LocalSqliteMigrationDatabase) =>
@@ -59,7 +82,7 @@ const database = (
     ...overrides,
   };
   if (state.ledger.length > 0 && state.metadata === undefined)
-    state.metadata = expectedMetadata();
+    state.metadata = expectedMetadata(state.ledger.length);
   const adapter: LocalSqliteMigrationDatabase = Object.freeze({
     beginExclusive: () => {
       if (state.failAt === "begin") throw new Error("begin");
@@ -214,9 +237,10 @@ describe("Local SQLite migration compiler", () => {
     const compiled = compileLocalSqliteMigrationInventoryForTesting(
       LOCAL_SQLITE_MIGRATIONS,
     );
-    expect(compiled).toHaveLength(1);
+    expect(compiled).toHaveLength(2);
     expect(compiled?.[0]?.resource).toEqual(LOCAL_SQLITE_MIGRATIONS[0]);
     expect(compiled?.[0]?.statements).toHaveLength(6);
+    expect(compiled?.[1]?.statements).toHaveLength(2);
     expect(LOCAL_SQLITE_MIGRATION_MANIFEST_ID).toMatch(
       /^sha256:[a-f0-9]{64}$/u,
     );
@@ -327,13 +351,19 @@ describe("Local SQLite migration runner", () => {
       ok: true,
       state: "migrated",
     });
-    expect(first.state.statements).toHaveLength(6);
+    expect(first.state.statements).toHaveLength(8);
     expect(first.state.ledger).toEqual([
       {
         version: 1,
         ordinal: 1,
         name: "0001-initialize.sql",
         sha256: LOCAL_SQLITE_MIGRATIONS[0]!.sha256,
+      },
+      {
+        version: 2,
+        ordinal: 2,
+        name: "0002-retrieval-indexes.sql",
+        sha256: LOCAL_SQLITE_MIGRATIONS[1]!.sha256,
       },
     ]);
     expect(first.state.committed).toBe(true);
@@ -566,6 +596,14 @@ describe("Local SQLite migration runtime failures", () => {
       overrideDatabase(database().adapter, {
         writeDestinationMetadata: () => undefined,
       }),
+      (() => {
+        const target = database();
+        return overrideDatabase(target.adapter, {
+          writeDestinationMetadata: () => {
+            target.state.transaction = false;
+          },
+        });
+      })(),
       overrideDatabase(
         database({
           ledger: [

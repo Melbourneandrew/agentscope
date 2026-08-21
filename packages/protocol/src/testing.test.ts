@@ -22,8 +22,11 @@ describe("Protocol testing fixture export", () => {
 
   it("creates distinct branded redacted fixtures with bounded semantic options", () => {
     const first = createSanitizedRedactedCanonicalTraceFixture({
+      branchName: "main",
+      harnessName: "codex",
       sequence: 1,
       sessionId: "session-a",
+      startTimeUnixNano: "2000000000",
       tags: ["safe"],
       modelName: "model-a",
     });
@@ -36,6 +39,11 @@ describe("Protocol testing fixture export", () => {
     expect(defaulted.delivery.identity).not.toBe(first.delivery.identity);
     expect(JSON.stringify(first.graph)).toContain("session-a");
     expect(JSON.stringify(first.graph)).toContain("model-a");
+    expect(JSON.stringify(first.graph)).toContain("main");
+    expect(JSON.stringify(first.graph)).toContain("codex");
+    expect(
+      first.graph.resourceSpans[0]!.scopeSpans[0]!.spans[0]!.startTimeUnixNano,
+    ).toBe("2000000000");
     for (const sequence of [-1, 1.5, 32])
       expect(() =>
         createSanitizedRedactedCanonicalTraceFixture({ sequence }),
