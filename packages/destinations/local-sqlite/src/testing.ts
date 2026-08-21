@@ -16,6 +16,28 @@ export {
   type LocalSqlitePlannedAbsentAncestor,
 } from "./lifecycle/namespace.js";
 export {
+  acquireLocalSqliteExclusiveFence,
+  acquireLocalSqliteSharedLease,
+  amendLocalSqliteLeaseWithChild,
+  decodeLocalSqliteFenceRecord,
+  decodeLocalSqliteLeaseRecord,
+  encodeLocalSqliteFenceRecord,
+  encodeLocalSqliteLeaseRecord,
+  inspectLocalSqliteLifecycleInventory,
+  LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS,
+  parseLocalSqliteFenceRecord,
+  parseLocalSqliteLeaseRecord,
+  recoverDeadLocalSqliteLease,
+  releaseLocalSqliteExclusiveFence,
+  releaseLocalSqliteSharedLease,
+  type LocalSqliteExclusiveFenceAuthority,
+  type LocalSqliteFenceRecord,
+  type LocalSqliteLifecycleGateFailure,
+  type LocalSqliteLifecycleGatePort,
+  type LocalSqliteLeaseRecord,
+  type LocalSqliteSharedLeaseAuthority,
+} from "./lifecycle/fence.js";
+export {
   LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR,
   LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
 } from "./lifecycle/capability.js";
