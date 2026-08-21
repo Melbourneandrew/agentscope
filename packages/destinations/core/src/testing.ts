@@ -48,4 +48,7 @@ export {
 export { bindLocalResourceConfigurationAuthorityForCore as bindLocalResourceConfigurationAuthorityForTesting } from "./local-resource-configuration-authority.js";
 export { bindLocalResourceLifecycleContextForCore as bindLocalResourceLifecycleContextForTesting } from "./local-resource-handler.js";
 export { bindLocalResourceLifecycleRecoveryContextForCore as bindLocalResourceLifecycleRecoveryContextForTesting } from "./local-resource-handler.js";
+export { bindLocalResourceMaintenanceContextForCore as bindLocalResourceMaintenanceContextForTesting } from "./local-resource-handler.js";
+export { bindLocalResourceMaintenanceRecoveryContextForCore as bindLocalResourceMaintenanceRecoveryContextForTesting } from "./local-resource-handler.js";
+export { bindLocalResourceDoctorContextForCore as bindLocalResourceDoctorContextForTesting } from "./local-resource-handler.js";
 export { createLocalResourceLifecycleDeadlineForCore as createLocalResourceLifecycleDeadlineForTesting } from "./local-resource-handler.js";

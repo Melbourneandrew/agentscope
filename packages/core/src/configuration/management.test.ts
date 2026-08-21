@@ -12,6 +12,7 @@ import {
   defineLocalResourceLifecycleDeclaration,
   defineLocalResourceLifecycleHandler,
   type LocalResourceLifecyclePlanEvidence,
+  type LocalResourceMaintenancePlanEvidence,
 } from "@agentscope/destinations-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -20,6 +21,7 @@ import { createAgentscopeHomeFromOwnedRootForCore } from "./home.js";
 import {
   ConfigurationManagementError,
   applyDestinationLifecyclePlan,
+  applyDestinationMaintenancePlan,
   applyAgentscopeConfigurationInitialization,
   configureDestinationConnection,
   createCiEnvironmentCredentialPreflight,
@@ -28,6 +30,8 @@ import {
   inspectAgentscopeConfigurationInitialization,
   inspectDestinationConfigureLifecyclePlan,
   inspectDestinationLifecyclePlan,
+  inspectDestinationLocalResourceDoctor,
+  inspectDestinationMaintenancePlan,
   listDestinationConnections,
   recoverDestinationLifecycleMutation,
   setDestinationRouting,
@@ -707,6 +711,378 @@ describe("local-resource configuration lifecycle plans", () => {
       /^destination-connection-v1-[0-9a-f]{64}$/u,
     );
     expect(recoverCalls).toBe(recoveryCallsBeforeRetainedCompletion);
+  });
+});
+
+// eslint-disable-next-line max-lines-per-function -- one exact runtime fixture covers maintenance planning, recovery, and Doctor.
+describe("local-resource backup, restore, and Doctor orchestration", () => {
+  const maintenanceSettingsSchema = z.strictObject({
+    maximumAgeNanoseconds: z.string(),
+    maximumPayloadBytes: z.number().int(),
+    maximumTraceCount: z.number().int(),
+  });
+  void maintenanceSettingsSchema.shape;
+  const maintenanceDeclaration = defineLocalResourceLifecycleDeclaration({
+    artifactGrammarFingerprint: `sha256-${"5".repeat(64)}`,
+    artifactGrammarVersion: 1,
+    artifactKinds: [
+      "active-database",
+      "backup",
+      "backup-candidate",
+      "backup-receipt",
+      "lifecycle-intent",
+      "rollback-preimage",
+    ],
+    capabilityVersion: 1,
+    destinationType: "@agentscope/destination-maintained-local",
+    operations: [
+      "backup",
+      "configure",
+      "delete",
+      "doctor",
+      "recover",
+      "restore",
+      "unconfigure",
+    ],
+    receiptReasons: ["destination-busy", "destination-capacity"],
+    recoveryHandlerId: "@agentscope/destination-maintained-local/lifecycle-v1",
+    settingKeys: [
+      "maximumAgeNanoseconds",
+      "maximumPayloadBytes",
+      "maximumTraceCount",
+    ],
+    settingsVersion: 1,
+  });
+  const maintainedDescriptor = defineDestinationDescriptor({
+    commandName: "maintained-local",
+    createReporter: () =>
+      createDestinationReporter({
+        report: () => Promise.resolve(createReporterReceipt("accepted")),
+      }),
+    credentialSlots: [],
+    defaultSettings: {
+      maximumAgeNanoseconds: "2592000000000000",
+      maximumPayloadBytes: 1_000_000,
+      maximumTraceCount: 10_000,
+    },
+    deliveryIdentitySupport: "duplicates-possible",
+    descriptorVersion: 1,
+    destinationType: "@agentscope/destination-maintained-local",
+    documentationPath: "/docs/destinations/maintained-local",
+    localResourceLifecycle: maintenanceDeclaration,
+    settingsSchema: maintenanceSettingsSchema,
+    settingsVersion: 1,
+    transport: { kind: "local" },
+  });
+
+  // eslint-disable-next-line max-lines-per-function -- all crash prefixes reuse one durable runtime and exact evidence ledger.
+  it("keeps configuration stable while applying and recovering maintenance", async () => {
+    const localRegistry = compileDestinationRegistry([maintainedDescriptor]);
+    const capability = localRegistry.descriptors[0]!.localResourceLifecycle!;
+    const retainedBackup = Object.freeze({
+      backupId: "a".repeat(32),
+      receiptDigest: `sha256-${"b".repeat(64)}`,
+      snapshotPhysicalIdentity: "dev:1:ino:20",
+    });
+    let failCompletion = false;
+    let failMaintenance = false;
+    let recoverRolledBack = false;
+    let recoverMaintenanceCalls = 0;
+    let lastMaintenanceOperationId = "";
+    let inspectedMaintenanceDeadline: unknown;
+    let appliedMaintenanceDeadline: unknown;
+    const lifecyclePlanEvidence: LocalResourceLifecyclePlanEvidence = {
+      namespaceFingerprint: `sha256-${"6".repeat(64)}`,
+      physicalEvidenceFingerprint: `sha256-${"7".repeat(64)}`,
+      displayPath: "/owned/maintained-local",
+      persistentDataNotice: true,
+      retentionPolicy: Object.freeze({
+        maximumAgeNanoseconds: "2592000000000000",
+        maximumTraceCount: 10_000,
+        maximumPayloadBytes: 1_000_000,
+        physicalCleanupTrigger: "next-authorized-mutation" as const,
+      }),
+    };
+    const handler = defineLocalResourceLifecycleHandler({
+      capability,
+      complete: () => {
+        if (failCompletion) {
+          failCompletion = false;
+          return Promise.reject(new Error("completion crash"));
+        }
+        return Promise.resolve();
+      },
+      inspectPlan: () => Promise.resolve(lifecyclePlanEvidence),
+      inspectRetainedDelete: () => Promise.resolve(null),
+      apply: async (context) => {
+        await commitLocalResourceConfiguration(context.configurationAuthority, {
+          destinationType: context.destinationType,
+          connectionId: context.connectionId,
+          operationId: context.operationId,
+          lifecycleFingerprint: capability.fingerprint,
+          recoveryHandlerId: capability.recoveryHandlerId,
+        });
+        return { ok: true, state: "configured" };
+      },
+      recover: () => Promise.resolve({ ok: true, state: "configured" }),
+      inspectMaintenancePlan: (context) => {
+        lastMaintenanceOperationId = context.operationId;
+        inspectedMaintenanceDeadline = context.deadline;
+        return Promise.resolve({
+          planEvidence: lifecyclePlanEvidence,
+          resourceSelector: context.resourceSelector,
+          selectedBackupAuthority:
+            context.operation === "restore"
+              ? Object.freeze({
+                  ...retainedBackup,
+                  backupId: context.resourceSelector,
+                })
+              : null,
+        } satisfies LocalResourceMaintenancePlanEvidence);
+      },
+      applyMaintenance: (context) => {
+        appliedMaintenanceDeadline = context.deadline;
+        if (failMaintenance) {
+          failMaintenance = false;
+          return Promise.reject(new Error("maintenance crash"));
+        }
+        return Promise.resolve(
+          context.operation === "backup"
+            ? {
+                ok: true as const,
+                state: "backed-up" as const,
+                backupAuthority: Object.freeze({
+                  ...retainedBackup,
+                  backupId: context.resourceSelector,
+                }),
+              }
+            : { ok: true as const, state: "restored" as const },
+        );
+      },
+      recoverMaintenance: (context) => {
+        recoverMaintenanceCalls += 1;
+        if (recoverRolledBack)
+          return Promise.resolve({
+            ok: true as const,
+            state: "rolled-back" as const,
+          });
+        return Promise.resolve(
+          context.operation === "backup"
+            ? {
+                ok: true as const,
+                state: "backed-up" as const,
+                backupAuthority: Object.freeze({
+                  ...retainedBackup,
+                  backupId: context.resourceSelector,
+                }),
+              }
+            : { ok: true as const, state: "restored" as const },
+        );
+      },
+      inspectDoctor: () =>
+        Promise.resolve({
+          state: "available",
+          lifecycleState: "clean",
+          databaseState: "present",
+          backupState: "available",
+          sharedLeaseCount: 0,
+          publishedBackupCount: 1,
+          retentionPolicy: lifecyclePlanEvidence.retentionPolicy,
+          databaseDerivedRetention: {
+            cutoff: "unavailable",
+            clockContinuity: "unavailable",
+            rowCount: "unavailable",
+            payloadBytes: "unavailable",
+          },
+        }),
+    });
+    const lifecycleHandlers = compileLocalResourceLifecycleHandlerRegistry(
+      localRegistry,
+      [handler],
+    );
+    const root = await mkdtemp(join(tmpdir(), "agentscope-maintenance-plan-"));
+    roots.push(root);
+    const home = createAgentscopeHomeFromOwnedRootForCore(
+      root,
+      process.platform,
+    );
+    const store = createConfigurationStore(home, localRegistry);
+    const owner = createConfigurationProcessIdentity(
+      process.pid,
+      `process-start-v1-${"8".repeat(64)}`,
+    );
+    const runtime = createConfigurationManagementRuntime(
+      localRegistry,
+      store,
+      owner,
+      lifecycleHandlers,
+    );
+    await initializeAgentscopeConfiguration(runtime);
+    await applyDestinationLifecyclePlan(
+      await inspectDestinationConfigureLifecyclePlan(
+        runtime,
+        {
+          commandName: "maintained-local",
+          credentialReferences: {},
+          name: "local",
+          settings: {
+            maximumAgeNanoseconds: "2592000000000000",
+            maximumPayloadBytes: 1_000_000,
+            maximumTraceCount: 10_000,
+          },
+        },
+        new AbortController().signal,
+      ),
+    );
+    const generation = (await readConfigurationSnapshot(store)).generation;
+
+    const backupPlan = await inspectDestinationMaintenancePlan(
+      runtime,
+      "backup",
+      "local",
+      undefined,
+      new AbortController().signal,
+    );
+    expect(backupPlan.backupSelector).toMatch(/^[0-9a-f]{32}$/u);
+    expect(backupPlan.backupSelector).not.toBe(lastMaintenanceOperationId);
+    const backedUp = await applyDestinationMaintenancePlan(backupPlan);
+    expect(appliedMaintenanceDeadline).not.toBe(inspectedMaintenanceDeadline);
+    expect(backedUp).toEqual({
+      operation: "backup",
+      connectionName: "local",
+      state: "backed-up",
+      backupSelector: backupPlan.backupSelector,
+    });
+    expect((await readConfigurationSnapshot(store)).generation).toBe(
+      generation,
+    );
+    await expect(
+      applyDestinationMaintenancePlan(backupPlan),
+    ).rejects.toMatchObject({ code: "core.configuration.invalid" });
+
+    const restorePlan = await inspectDestinationMaintenancePlan(
+      runtime,
+      "restore",
+      "local",
+      backedUp.backupSelector,
+      new AbortController().signal,
+    );
+    await expect(applyDestinationMaintenancePlan(restorePlan)).resolves.toEqual(
+      {
+        operation: "restore",
+        connectionName: "local",
+        state: "restored",
+        backupSelector: backedUp.backupSelector,
+      },
+    );
+    expect((await readConfigurationSnapshot(store)).generation).toBe(
+      generation,
+    );
+
+    await expect(
+      inspectDestinationLocalResourceDoctor(
+        runtime,
+        "local",
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({
+      connectionName: "local",
+      destinationType: "@agentscope/destination-maintained-local",
+      inspection: {
+        state: "available",
+        databaseDerivedRetention: {
+          cutoff: "unavailable",
+          clockContinuity: "unavailable",
+          rowCount: "unavailable",
+          payloadBytes: "unavailable",
+        },
+      },
+    });
+
+    failMaintenance = true;
+    const interrupted = await inspectDestinationMaintenancePlan(
+      runtime,
+      "backup",
+      "local",
+      undefined,
+      new AbortController().signal,
+    );
+    await expect(
+      applyDestinationMaintenancePlan(interrupted),
+    ).rejects.toMatchObject({
+      code: "core.destination.lifecycle-outcome-unknown",
+    });
+    await expect(
+      recoverDestinationLifecycleMutation(
+        runtime,
+        () => "dead",
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({
+      generation,
+      state: "backed-up",
+      backupSelector: interrupted.backupSelector,
+    });
+    expect(recoverMaintenanceCalls).toBe(1);
+
+    failCompletion = true;
+    const completionCrash = await inspectDestinationMaintenancePlan(
+      runtime,
+      "backup",
+      "local",
+      undefined,
+      new AbortController().signal,
+    );
+    await expect(
+      applyDestinationMaintenancePlan(completionCrash),
+    ).rejects.toMatchObject({
+      code: "core.destination.lifecycle-outcome-unknown",
+    });
+    await expect(
+      recoverDestinationLifecycleMutation(
+        runtime,
+        () => "unknown",
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({
+      generation,
+      state: "backed-up",
+      backupSelector: completionCrash.backupSelector,
+    });
+    expect(recoverMaintenanceCalls).toBe(1);
+
+    failMaintenance = true;
+    const rolledBack = await inspectDestinationMaintenancePlan(
+      runtime,
+      "backup",
+      "local",
+      undefined,
+      new AbortController().signal,
+    );
+    await expect(
+      applyDestinationMaintenancePlan(rolledBack),
+    ).rejects.toMatchObject({
+      code: "core.destination.lifecycle-outcome-unknown",
+    });
+    recoverRolledBack = true;
+    failCompletion = true;
+    await expect(
+      recoverDestinationLifecycleMutation(
+        runtime,
+        () => "dead",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "core.destination.lifecycle-outcome-unknown",
+    });
+    await expect(
+      recoverDestinationLifecycleMutation(
+        runtime,
+        () => "unknown",
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual({ generation, state: "rolled-back" });
+    expect(recoverMaintenanceCalls).toBe(2);
   });
 });
 

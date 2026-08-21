@@ -2,7 +2,7 @@ import {
   getDestinationDescriptor,
   type DestinationRegistry,
 } from "./descriptor.js";
-import type { JsonObject } from "./plain-data.js";
+import { cloneJsonObject, type JsonObject } from "./plain-data.js";
 import {
   bindLocalResourceConfigurationAuthorityForInvocation,
   type LocalResourceConfigurationAuthority,
@@ -14,6 +14,8 @@ import {
 
 export type LocalResourceLifecycleMutationOperation =
   "configure" | "delete" | "unconfigure";
+
+export type LocalResourceMaintenanceOperation = "backup" | "restore";
 
 export type LocalResourceLifecycleDeadline = Readonly<{
   expiresAtMonotonicMilliseconds: number;
@@ -63,6 +65,44 @@ export type LocalResourceLifecycleRecoveryContext = Readonly<{
   configurationAuthority?: LocalResourceConfigurationAuthority;
 }>;
 
+export type LocalResourceMaintenanceContext = Readonly<{
+  readonly localResourceMaintenanceContext: "agentscope-destinations-core";
+  operation: LocalResourceMaintenanceOperation;
+  operationId: string;
+  resourceSelector: string;
+  destinationType: string;
+  connectionId: string;
+  connectionName: string;
+  owner: Readonly<{
+    processId: number;
+    processStartIdentity: string;
+  }>;
+  settings: JsonObject;
+  configurationGeneration: number;
+  configurationDigest: string;
+  signal: AbortSignal;
+  deadline: LocalResourceLifecycleDeadline;
+}>;
+
+export type LocalResourceMaintenanceRecoveryContext = Readonly<{
+  readonly localResourceMaintenanceRecoveryContext: "agentscope-destinations-core";
+  operation: LocalResourceMaintenanceOperation;
+  operationId: string;
+  resourceSelector: string;
+  destinationType: string;
+  connectionId: string;
+  owner: Readonly<{
+    processId: number;
+    processStartIdentity: string;
+  }>;
+  lifecycleFingerprint: string;
+  recoveryHandlerId: string;
+  configurationGeneration: number;
+  configurationDigest: string;
+  signal: AbortSignal;
+  deadline: LocalResourceLifecycleDeadline;
+}>;
+
 export type LocalResourceLifecyclePlanEvidence = Readonly<{
   namespaceFingerprint: string;
   physicalEvidenceFingerprint: string;
@@ -79,6 +119,64 @@ export type LocalResourceLifecyclePlanEvidence = Readonly<{
 export type LocalResourceRetainedDeleteAuthority = Readonly<{
   receiptDigest: string;
   databaseFamilyPhysicalIdentity: string;
+}>;
+
+export type LocalResourceBackupAuthority = Readonly<{
+  backupId: string;
+  receiptDigest: string;
+  snapshotPhysicalIdentity: string;
+}>;
+
+export type LocalResourceMaintenancePlanEvidence = Readonly<{
+  planEvidence: LocalResourceLifecyclePlanEvidence;
+  resourceSelector: string;
+  selectedBackupAuthority: LocalResourceBackupAuthority | null;
+}>;
+
+export type LocalResourceMaintenanceResult =
+  | Readonly<{
+      ok: true;
+      state: "backed-up";
+      backupAuthority: LocalResourceBackupAuthority;
+    }>
+  | Readonly<{ ok: true; state: "restored" | "rolled-back" }>
+  | Readonly<{
+      ok: false;
+      state: "prepared" | "reconciliation-required" | "unchanged";
+      code:
+        | "busy"
+        | "capacity"
+        | "outcome-unknown"
+        | "reconciliation-required"
+        | "unavailable";
+    }>;
+
+export type LocalResourceDoctorContext = Readonly<{
+  readonly localResourceDoctorContext: "agentscope-destinations-core";
+  destinationType: string;
+  connectionId: string;
+  connectionName: string;
+  settings: JsonObject;
+  configurationGeneration: number;
+  configurationDigest: string;
+  signal: AbortSignal;
+  deadline: LocalResourceLifecycleDeadline;
+}>;
+
+export type LocalResourceDoctorInspection = Readonly<{
+  state: "available" | "reconciliation-required" | "unavailable";
+  lifecycleState: "clean" | "busy" | "reconciliation-required" | "unavailable";
+  databaseState: "present" | "missing" | "unavailable";
+  backupState: "available" | "reconciliation-required" | "unavailable";
+  sharedLeaseCount: number | null;
+  publishedBackupCount: number | null;
+  retentionPolicy: LocalResourceLifecyclePlanEvidence["retentionPolicy"];
+  databaseDerivedRetention: Readonly<{
+    cutoff: "unavailable";
+    clockContinuity: "unavailable";
+    rowCount: "unavailable";
+    payloadBytes: "unavailable";
+  }>;
 }>;
 
 export type LocalResourceLifecycleApplyResult =
@@ -130,10 +228,26 @@ export type LocalResourceLifecycleHandlerImplementation = Readonly<{
     context: LocalResourceLifecycleRecoveryContext,
   ): Promise<LocalResourceLifecycleApplyResult>;
   complete(
+    operation:
+      | LocalResourceLifecycleMutationOperation
+      | LocalResourceMaintenanceOperation,
     operationId: string,
     signal: AbortSignal,
     deadline: LocalResourceLifecycleDeadline,
   ): Promise<void>;
+  inspectMaintenancePlan?(
+    context: LocalResourceMaintenanceContext,
+  ): Promise<LocalResourceMaintenancePlanEvidence>;
+  applyMaintenance?(
+    context: LocalResourceMaintenanceContext &
+      Readonly<{ planEvidence: LocalResourceMaintenancePlanEvidence }>,
+  ): Promise<LocalResourceMaintenanceResult>;
+  recoverMaintenance?(
+    context: LocalResourceMaintenanceRecoveryContext,
+  ): Promise<LocalResourceMaintenanceResult>;
+  inspectDoctor?(
+    context: LocalResourceDoctorContext,
+  ): Promise<LocalResourceDoctorInspection>;
 }>;
 
 export type LocalResourceLifecycleHandler = Readonly<{
@@ -151,6 +265,18 @@ type StoredHandler = Readonly<{
   apply: LocalResourceLifecycleHandlerImplementation["apply"];
   recover: LocalResourceLifecycleHandlerImplementation["recover"];
   complete: LocalResourceLifecycleHandlerImplementation["complete"];
+  inspectMaintenancePlan?: NonNullable<
+    LocalResourceLifecycleHandlerImplementation["inspectMaintenancePlan"]
+  >;
+  applyMaintenance?: NonNullable<
+    LocalResourceLifecycleHandlerImplementation["applyMaintenance"]
+  >;
+  recoverMaintenance?: NonNullable<
+    LocalResourceLifecycleHandlerImplementation["recoverMaintenance"]
+  >;
+  inspectDoctor?: NonNullable<
+    LocalResourceLifecycleHandlerImplementation["inspectDoctor"]
+  >;
 }>;
 
 const handlers = new WeakMap<object, StoredHandler>();
@@ -162,6 +288,9 @@ const registries = new WeakMap<object, StoredRegistry>();
 const registryOwners = new WeakMap<object, DestinationRegistry>();
 const contexts = new WeakSet<object>();
 const recoveryContexts = new WeakSet<object>();
+const maintenanceContexts = new WeakSet<object>();
+const maintenanceRecoveryContexts = new WeakSet<object>();
+const doctorContexts = new WeakSet<object>();
 const deadlines = new WeakSet<object>();
 const monotonicNow = performance.now.bind(performance);
 // eslint-disable-next-line @typescript-eslint/unbound-method -- invoked only through Reflect.apply with a verified signal receiver.
@@ -382,10 +511,207 @@ export const bindLocalResourceLifecycleRecoveryContextForCore = (
   return context;
 };
 
+const exactConnectionContext = (
+  input: Readonly<{
+    destinationType: string;
+    connectionId: string;
+    signal: AbortSignal;
+    deadline: LocalResourceLifecycleDeadline;
+    configurationGeneration: number;
+    configurationDigest: string;
+  }>,
+): void => {
+  if (
+    !/^@agentscope\/destination-[a-z0-9-]{1,64}$/u.test(
+      input.destinationType,
+    ) ||
+    !/^destination-connection-v1-[0-9a-f]{64}$/u.test(input.connectionId) ||
+    !(input.signal instanceof AbortSignal) ||
+    !deadlines.has(input.deadline) ||
+    !Number.isSafeInteger(input.configurationGeneration) ||
+    input.configurationGeneration < 0 ||
+    !/^sha256-[0-9a-f]{64}$/u.test(input.configurationDigest)
+  )
+    return invalid();
+};
+
+const exactDataRecord = (
+  input: unknown,
+  keys: readonly string[],
+): Readonly<Record<string, unknown>> => {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input) ||
+    Object.getPrototypeOf(input) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  if (
+    Reflect.ownKeys(descriptors).length !== keys.length ||
+    keys.some((key) => {
+      const descriptor = descriptors[key];
+      return !descriptor || !("value" in descriptor);
+    })
+  )
+    return invalid();
+  return Object.freeze(
+    Object.fromEntries(
+      keys.map((key) => [key, descriptors[key]!.value as unknown]),
+    ),
+  );
+};
+
+const exactOwner = (
+  value: unknown,
+): LocalResourceMaintenanceContext["owner"] => {
+  const owner = exactDataRecord(value, ["processId", "processStartIdentity"]);
+  if (
+    !Number.isSafeInteger(owner.processId) ||
+    (owner.processId as number) < 1 ||
+    typeof owner.processStartIdentity !== "string" ||
+    !/^process-start-v1-[0-9a-f]{64}$/u.test(owner.processStartIdentity)
+  )
+    return invalid();
+  return Object.freeze({
+    processId: owner.processId as number,
+    processStartIdentity: owner.processStartIdentity,
+  });
+};
+
+export const bindLocalResourceMaintenanceContextForCore = (
+  input: Omit<
+    LocalResourceMaintenanceContext,
+    "localResourceMaintenanceContext"
+  >,
+): LocalResourceMaintenanceContext => {
+  const record = exactDataRecord(input, [
+    "configurationDigest",
+    "configurationGeneration",
+    "connectionId",
+    "connectionName",
+    "deadline",
+    "destinationType",
+    "operation",
+    "operationId",
+    "owner",
+    "resourceSelector",
+    "settings",
+    "signal",
+  ]);
+  if (
+    !["backup", "restore"].includes(record.operation as string) ||
+    typeof record.operationId !== "string" ||
+    !/^(?!0{32}$)[0-9a-f]{32}$/u.test(record.operationId) ||
+    typeof record.resourceSelector !== "string" ||
+    !/^(?!0{32}$)[0-9a-f]{32}$/u.test(record.resourceSelector) ||
+    typeof record.connectionName !== "string" ||
+    record.connectionName.length < 1 ||
+    record.connectionName.length > 128
+  )
+    return invalid();
+  exactConnectionContext(
+    record as unknown as Parameters<typeof exactConnectionContext>[0],
+  );
+  const context = Object.freeze({
+    ...record,
+    localResourceMaintenanceContext: "agentscope-destinations-core" as const,
+    owner: exactOwner(record.owner),
+    settings: cloneJsonObject(record.settings),
+  }) as LocalResourceMaintenanceContext;
+  maintenanceContexts.add(context);
+  return context;
+};
+
+export const bindLocalResourceMaintenanceRecoveryContextForCore = (
+  input: Omit<
+    LocalResourceMaintenanceRecoveryContext,
+    "localResourceMaintenanceRecoveryContext"
+  >,
+): LocalResourceMaintenanceRecoveryContext => {
+  const record = exactDataRecord(input, [
+    "configurationDigest",
+    "configurationGeneration",
+    "connectionId",
+    "deadline",
+    "destinationType",
+    "lifecycleFingerprint",
+    "operation",
+    "operationId",
+    "owner",
+    "recoveryHandlerId",
+    "resourceSelector",
+    "signal",
+  ]);
+  if (
+    !["backup", "restore"].includes(record.operation as string) ||
+    typeof record.operationId !== "string" ||
+    !/^(?!0{32}$)[0-9a-f]{32}$/u.test(record.operationId) ||
+    typeof record.resourceSelector !== "string" ||
+    !/^(?!0{32}$)[0-9a-f]{32}$/u.test(record.resourceSelector) ||
+    typeof record.lifecycleFingerprint !== "string" ||
+    !/^sha256-[0-9a-f]{64}$/u.test(record.lifecycleFingerprint) ||
+    typeof record.recoveryHandlerId !== "string" ||
+    record.recoveryHandlerId.length < 1 ||
+    record.recoveryHandlerId.length > 256
+  )
+    return invalid();
+  exactConnectionContext(
+    record as unknown as Parameters<typeof exactConnectionContext>[0],
+  );
+  const context = Object.freeze({
+    ...record,
+    localResourceMaintenanceRecoveryContext:
+      "agentscope-destinations-core" as const,
+    owner: exactOwner(record.owner),
+  }) as LocalResourceMaintenanceRecoveryContext;
+  maintenanceRecoveryContexts.add(context);
+  return context;
+};
+
+export const bindLocalResourceDoctorContextForCore = (
+  input: Omit<LocalResourceDoctorContext, "localResourceDoctorContext">,
+): LocalResourceDoctorContext => {
+  const record = exactDataRecord(input, [
+    "configurationDigest",
+    "configurationGeneration",
+    "connectionId",
+    "connectionName",
+    "deadline",
+    "destinationType",
+    "settings",
+    "signal",
+  ]);
+  if (
+    typeof record.connectionName !== "string" ||
+    record.connectionName.length < 1 ||
+    record.connectionName.length > 128
+  )
+    return invalid();
+  exactConnectionContext(
+    record as unknown as Parameters<typeof exactConnectionContext>[0],
+  );
+  const context = Object.freeze({
+    ...record,
+    localResourceDoctorContext: "agentscope-destinations-core" as const,
+    settings: cloneJsonObject(record.settings),
+  }) as LocalResourceDoctorContext;
+  doctorContexts.add(context);
+  return context;
+};
+
 const dataMethod = (
   descriptors: PropertyDescriptorMap,
   key:
-    "apply" | "complete" | "inspectPlan" | "inspectRetainedDelete" | "recover",
+    | "apply"
+    | "applyMaintenance"
+    | "complete"
+    | "inspectDoctor"
+    | "inspectMaintenancePlan"
+    | "inspectPlan"
+    | "inspectRetainedDelete"
+    | "recover"
+    | "recoverMaintenance",
 ): ((...input: never[]) => unknown) => {
   const descriptor = descriptors[key];
   if (
@@ -396,6 +722,16 @@ const dataMethod = (
     return invalid();
   return descriptor.value as (...input: never[]) => unknown;
 };
+
+const optionalDataMethod = (
+  descriptors: PropertyDescriptorMap,
+  key:
+    | "applyMaintenance"
+    | "inspectDoctor"
+    | "inspectMaintenancePlan"
+    | "recoverMaintenance",
+): ((...input: never[]) => unknown) | undefined =>
+  descriptors[key] ? dataMethod(descriptors, key) : undefined;
 
 export const defineLocalResourceLifecycleHandler = (
   implementation: LocalResourceLifecycleHandlerImplementation,
@@ -410,17 +746,22 @@ export const defineLocalResourceLifecycleHandler = (
   const descriptors = Object.getOwnPropertyDescriptors(implementation);
   const keys = Reflect.ownKeys(descriptors);
   if (
-    keys.length !== 6 ||
+    keys.length < 6 ||
+    keys.length > 10 ||
     keys.some(
       (key) =>
         typeof key !== "string" ||
         ![
           "apply",
+          "applyMaintenance",
           "capability",
           "complete",
+          "inspectDoctor",
+          "inspectMaintenancePlan",
           "inspectPlan",
           "inspectRetainedDelete",
           "recover",
+          "recoverMaintenance",
         ].includes(key),
     )
   )
@@ -453,6 +794,38 @@ export const defineLocalResourceLifecycleHandler = (
         "complete",
       ) as StoredHandler["complete"],
       recover: dataMethod(descriptors, "recover") as StoredHandler["recover"],
+      ...(optionalDataMethod(descriptors, "inspectMaintenancePlan")
+        ? {
+            inspectMaintenancePlan: optionalDataMethod(
+              descriptors,
+              "inspectMaintenancePlan",
+            ) as NonNullable<StoredHandler["inspectMaintenancePlan"]>,
+          }
+        : {}),
+      ...(optionalDataMethod(descriptors, "applyMaintenance")
+        ? {
+            applyMaintenance: optionalDataMethod(
+              descriptors,
+              "applyMaintenance",
+            ) as NonNullable<StoredHandler["applyMaintenance"]>,
+          }
+        : {}),
+      ...(optionalDataMethod(descriptors, "recoverMaintenance")
+        ? {
+            recoverMaintenance: optionalDataMethod(
+              descriptors,
+              "recoverMaintenance",
+            ) as NonNullable<StoredHandler["recoverMaintenance"]>,
+          }
+        : {}),
+      ...(optionalDataMethod(descriptors, "inspectDoctor")
+        ? {
+            inspectDoctor: optionalDataMethod(
+              descriptors,
+              "inspectDoctor",
+            ) as NonNullable<StoredHandler["inspectDoctor"]>,
+          }
+        : {}),
     }),
   );
   return handler;
@@ -481,6 +854,15 @@ export const compileLocalResourceLifecycleHandlerRegistry = (
     if (typeof candidate !== "object" || candidate === null) return invalid();
     const stored = handlers.get(candidate);
     if (!stored) return invalid();
+    if (
+      ((stored.capability.operations.includes("backup") ||
+        stored.capability.operations.includes("restore")) &&
+        (!stored.inspectMaintenancePlan ||
+          !stored.applyMaintenance ||
+          !stored.recoverMaintenance)) ||
+      (stored.capability.operations.includes("doctor") && !stored.inspectDoctor)
+    )
+      return invalid();
     const descriptor = getDestinationDescriptor(
       destinationRegistry,
       stored.capability.destinationType,
@@ -685,6 +1067,80 @@ const normalizeRetainedAuthority = (
   return Object.freeze({ receiptDigest, databaseFamilyPhysicalIdentity });
 };
 
+const normalizeBackupAuthority = (
+  authority: unknown,
+): LocalResourceBackupAuthority => {
+  if (
+    typeof authority !== "object" ||
+    authority === null ||
+    Object.getPrototypeOf(authority) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(authority);
+  if (
+    Object.keys(descriptors).sort().join(",") !==
+      "backupId,receiptDigest,snapshotPhysicalIdentity" ||
+    Reflect.ownKeys(descriptors).length !== 3 ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+  )
+    return invalid();
+  const backupId = descriptors.backupId?.value as unknown;
+  const receiptDigest = descriptors.receiptDigest?.value as unknown;
+  const snapshotPhysicalIdentity = descriptors.snapshotPhysicalIdentity
+    ?.value as unknown;
+  if (
+    typeof backupId !== "string" ||
+    !/^(?!0{32}$)[0-9a-f]{32}$/u.test(backupId) ||
+    typeof receiptDigest !== "string" ||
+    !/^sha256-[0-9a-f]{64}$/u.test(receiptDigest) ||
+    typeof snapshotPhysicalIdentity !== "string" ||
+    snapshotPhysicalIdentity.length < 1 ||
+    snapshotPhysicalIdentity.length > 192 ||
+    !/^[A-Za-z0-9][A-Za-z0-9:._-]*$/u.test(snapshotPhysicalIdentity)
+  )
+    return invalid();
+  return Object.freeze({ backupId, receiptDigest, snapshotPhysicalIdentity });
+};
+
+const normalizeMaintenancePlanEvidence = (
+  result: unknown,
+  context: LocalResourceMaintenanceContext,
+): LocalResourceMaintenancePlanEvidence => {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Object.getPrototypeOf(result) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  if (
+    Object.keys(descriptors).sort().join(",") !==
+      "planEvidence,resourceSelector,selectedBackupAuthority" ||
+    Reflect.ownKeys(descriptors).length !== 3 ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
+    descriptors.resourceSelector?.value !== context.resourceSelector
+  )
+    return invalid();
+  const selected = descriptors.selectedBackupAuthority?.value as unknown;
+  if (
+    (context.operation === "backup" && selected !== null) ||
+    (context.operation === "restore" && selected === null)
+  )
+    return invalid();
+  const selectedBackupAuthority =
+    selected === null ? null : normalizeBackupAuthority(selected);
+  if (
+    selectedBackupAuthority !== null &&
+    selectedBackupAuthority.backupId !== context.resourceSelector
+  )
+    return invalid();
+  return Object.freeze({
+    planEvidence: normalizePlanEvidence(descriptors.planEvidence?.value),
+    resourceSelector: context.resourceSelector,
+    selectedBackupAuthority,
+  });
+};
+
 export const inspectRetainedLocalResourceDelete = async (
   registry: LocalResourceLifecycleHandlerRegistry,
   connectionId: string,
@@ -762,6 +1218,283 @@ export const inspectRetainedLocalResourceDelete = async (
   }
   if (matches.length > 1) return invalid();
   return matches[0] ?? null;
+};
+
+export const inspectLocalResourceMaintenancePlan = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceMaintenanceContext,
+): Promise<LocalResourceMaintenancePlanEvidence> => {
+  if (!maintenanceContexts.has(context)) return invalid();
+  const stored = registries
+    .get(registry)
+    ?.currentByDestinationType.get(context.destinationType);
+  if (
+    !stored ||
+    !stored.inspectMaintenancePlan ||
+    !stored.capability.operations.includes(context.operation)
+  )
+    return invalid();
+  return normalizeMaintenancePlanEvidence(
+    await bounded(
+      (ownedSignal) =>
+        stored.inspectMaintenancePlan!(
+          Object.freeze({ ...context, signal: ownedSignal }),
+        ),
+      context.signal,
+      context.deadline,
+    ),
+    context,
+  );
+};
+
+const normalizeMaintenanceResult = (
+  result: unknown,
+  context:
+    LocalResourceMaintenanceContext | LocalResourceMaintenanceRecoveryContext,
+): LocalResourceMaintenanceResult => {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Object.getPrototypeOf(result) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  const ok = descriptors.ok?.value as unknown;
+  const state = descriptors.state?.value as unknown;
+  const keys =
+    ok === true && state === "backed-up"
+      ? ["backupAuthority", "ok", "state"]
+      : ok === true
+        ? ["ok", "state"]
+        : ["code", "ok", "state"];
+  if (
+    Object.keys(descriptors).sort().join(",") !== keys.sort().join(",") ||
+    Reflect.ownKeys(descriptors).length !== keys.length ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+  )
+    return invalid();
+  if (ok === true && state === "backed-up") {
+    if (context.operation !== "backup") return invalid();
+    const backupAuthority = normalizeBackupAuthority(
+      descriptors.backupAuthority?.value,
+    );
+    if (backupAuthority.backupId !== context.resourceSelector) return invalid();
+    return Object.freeze({ ok: true, state, backupAuthority });
+  }
+  if (ok === true && (state === "restored" || state === "rolled-back")) {
+    if (state === "restored" && context.operation !== "restore")
+      return invalid();
+    return Object.freeze({ ok: true, state });
+  }
+  const code = descriptors.code?.value as unknown;
+  if (
+    ok !== false ||
+    !["prepared", "reconciliation-required", "unchanged"].includes(
+      state as string,
+    ) ||
+    ![
+      "busy",
+      "capacity",
+      "outcome-unknown",
+      "reconciliation-required",
+      "unavailable",
+    ].includes(code as string)
+  )
+    return invalid();
+  return Object.freeze({
+    ok: false,
+    state: state as Exclude<
+      LocalResourceMaintenanceResult,
+      { ok: true }
+    >["state"],
+    code: code as Exclude<LocalResourceMaintenanceResult, { ok: true }>["code"],
+  });
+};
+
+export const applyLocalResourceMaintenancePlan = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceMaintenanceContext,
+  planEvidence: LocalResourceMaintenancePlanEvidence,
+): Promise<LocalResourceMaintenanceResult> => {
+  if (!maintenanceContexts.has(context)) return invalid();
+  const stored = registries
+    .get(registry)
+    ?.currentByDestinationType.get(context.destinationType);
+  if (
+    !stored ||
+    !stored.applyMaintenance ||
+    !stored.capability.operations.includes(context.operation)
+  )
+    return invalid();
+  const result = await bounded(
+    (ownedSignal) =>
+      stored.applyMaintenance!(
+        Object.freeze({ ...context, signal: ownedSignal, planEvidence }),
+      ),
+    context.signal,
+    context.deadline,
+    true,
+  );
+  return normalizeMaintenanceResult(result, context);
+};
+
+export const recoverLocalResourceMaintenance = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceMaintenanceRecoveryContext,
+): Promise<LocalResourceMaintenanceResult> => {
+  if (!maintenanceRecoveryContexts.has(context)) return invalid();
+  const recoveryIdentity = `${context.destinationType}\u0000${context.lifecycleFingerprint}\u0000${context.recoveryHandlerId}`;
+  const stored = registries
+    .get(registry)
+    ?.recoveryByIdentity.get(recoveryIdentity);
+  if (
+    !stored ||
+    !stored.recoverMaintenance ||
+    stored.capability.fingerprint !== context.lifecycleFingerprint ||
+    stored.capability.recoveryHandlerId !== context.recoveryHandlerId ||
+    !stored.capability.operations.includes("recover") ||
+    !stored.capability.operations.includes(context.operation)
+  )
+    return invalid();
+  const result = await bounded(
+    (ownedSignal) =>
+      stored.recoverMaintenance!(
+        Object.freeze({ ...context, signal: ownedSignal }),
+      ),
+    context.signal,
+    context.deadline,
+    true,
+  );
+  return normalizeMaintenanceResult(result, context);
+};
+
+const normalizeDoctorInspection = (
+  result: unknown,
+  // eslint-disable-next-line complexity -- one closed nonmutating Doctor DTO is reconstructed atomically.
+): LocalResourceDoctorInspection => {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Object.getPrototypeOf(result) !== Object.prototype
+  )
+    return invalid();
+  const descriptors = Object.getOwnPropertyDescriptors(result);
+  const keys = [
+    "backupState",
+    "databaseDerivedRetention",
+    "databaseState",
+    "lifecycleState",
+    "publishedBackupCount",
+    "retentionPolicy",
+    "sharedLeaseCount",
+    "state",
+  ];
+  if (
+    Object.keys(descriptors).sort().join(",") !== keys.sort().join(",") ||
+    Reflect.ownKeys(descriptors).length !== keys.length ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+  )
+    return invalid();
+  const state = descriptors.state?.value as unknown;
+  const lifecycleState = descriptors.lifecycleState?.value as unknown;
+  const databaseState = descriptors.databaseState?.value as unknown;
+  const backupState = descriptors.backupState?.value as unknown;
+  const sharedLeaseCount = descriptors.sharedLeaseCount?.value as unknown;
+  const publishedBackupCount = descriptors.publishedBackupCount
+    ?.value as unknown;
+  if (
+    !["available", "reconciliation-required", "unavailable"].includes(
+      state as string,
+    ) ||
+    !["clean", "busy", "reconciliation-required", "unavailable"].includes(
+      lifecycleState as string,
+    ) ||
+    !["present", "missing", "unavailable"].includes(databaseState as string) ||
+    !["available", "reconciliation-required", "unavailable"].includes(
+      backupState as string,
+    ) ||
+    !(
+      sharedLeaseCount === null ||
+      (Number.isSafeInteger(sharedLeaseCount) &&
+        (sharedLeaseCount as number) >= 0 &&
+        (sharedLeaseCount as number) <= 64)
+    ) ||
+    !(
+      publishedBackupCount === null ||
+      (Number.isSafeInteger(publishedBackupCount) &&
+        (publishedBackupCount as number) >= 0 &&
+        (publishedBackupCount as number) <= 8)
+    )
+  )
+    return invalid();
+  const retentionPolicy = normalizePlanEvidence({
+    namespaceFingerprint: `sha256-${"0".repeat(64)}`,
+    physicalEvidenceFingerprint: `sha256-${"0".repeat(64)}`,
+    displayPath: "",
+    persistentDataNotice: true,
+    retentionPolicy: descriptors.retentionPolicy?.value as unknown,
+  }).retentionPolicy;
+  const retention = descriptors.databaseDerivedRetention?.value as unknown;
+  if (
+    typeof retention !== "object" ||
+    retention === null ||
+    Object.getPrototypeOf(retention) !== Object.prototype
+  )
+    return invalid();
+  const retentionDescriptors = Object.getOwnPropertyDescriptors(retention);
+  if (
+    Object.keys(retentionDescriptors).sort().join(",") !==
+      "clockContinuity,cutoff,payloadBytes,rowCount" ||
+    Reflect.ownKeys(retentionDescriptors).length !== 4 ||
+    Object.values(retentionDescriptors).some(
+      (descriptor) =>
+        !("value" in descriptor) || descriptor.value !== "unavailable",
+    )
+  )
+    return invalid();
+  return Object.freeze({
+    state: state as LocalResourceDoctorInspection["state"],
+    lifecycleState:
+      lifecycleState as LocalResourceDoctorInspection["lifecycleState"],
+    databaseState:
+      databaseState as LocalResourceDoctorInspection["databaseState"],
+    backupState: backupState as LocalResourceDoctorInspection["backupState"],
+    sharedLeaseCount: sharedLeaseCount as number | null,
+    publishedBackupCount: publishedBackupCount as number | null,
+    retentionPolicy,
+    databaseDerivedRetention: Object.freeze({
+      cutoff: "unavailable",
+      clockContinuity: "unavailable",
+      rowCount: "unavailable",
+      payloadBytes: "unavailable",
+    }),
+  });
+};
+
+export const inspectLocalResourceDoctor = async (
+  registry: LocalResourceLifecycleHandlerRegistry,
+  context: LocalResourceDoctorContext,
+): Promise<LocalResourceDoctorInspection> => {
+  if (!doctorContexts.has(context)) return invalid();
+  const stored = registries
+    .get(registry)
+    ?.currentByDestinationType.get(context.destinationType);
+  if (
+    !stored ||
+    !stored.inspectDoctor ||
+    !stored.capability.operations.includes("doctor")
+  )
+    return invalid();
+  return normalizeDoctorInspection(
+    await bounded(
+      (ownedSignal) =>
+        stored.inspectDoctor!(
+          Object.freeze({ ...context, signal: ownedSignal }),
+        ),
+      context.signal,
+      context.deadline,
+    ),
+  );
 };
 
 const normalizeApplyResult = (
@@ -933,19 +1666,37 @@ export const recoverLocalResourceLifecycle = async (
 export const completeLocalResourceLifecycle = async (
   registry: LocalResourceLifecycleHandlerRegistry,
   context:
-    LocalResourceLifecycleContext | LocalResourceLifecycleRecoveryContext,
+    | LocalResourceLifecycleContext
+    | LocalResourceLifecycleRecoveryContext
+    | LocalResourceMaintenanceContext
+    | LocalResourceMaintenanceRecoveryContext,
 ): Promise<void> => {
   const isRecovery = recoveryContexts.has(context);
+  const isMaintenanceRecovery = maintenanceRecoveryContexts.has(context);
+  const isMaintenance = maintenanceContexts.has(context);
   const storedRegistry = registries.get(registry);
-  const stored = isRecovery
-    ? storedRegistry?.recoveryByIdentity.get(
-        `${context.destinationType}\u0000${(context as LocalResourceLifecycleRecoveryContext).lifecycleFingerprint}\u0000${(context as LocalResourceLifecycleRecoveryContext).recoveryHandlerId}`,
-      )
-    : storedRegistry?.currentByDestinationType.get(context.destinationType);
-  if ((!isRecovery && !contexts.has(context)) || !stored) return invalid();
+  const stored =
+    isRecovery || isMaintenanceRecovery
+      ? storedRegistry?.recoveryByIdentity.get(
+          `${context.destinationType}\u0000${(context as LocalResourceLifecycleRecoveryContext | LocalResourceMaintenanceRecoveryContext).lifecycleFingerprint}\u0000${(context as LocalResourceLifecycleRecoveryContext | LocalResourceMaintenanceRecoveryContext).recoveryHandlerId}`,
+        )
+      : storedRegistry?.currentByDestinationType.get(context.destinationType);
+  if (
+    (!isRecovery &&
+      !isMaintenanceRecovery &&
+      !isMaintenance &&
+      !contexts.has(context)) ||
+    !stored
+  )
+    return invalid();
   await bounded(
     (ownedSignal) =>
-      stored.complete(context.operationId, ownedSignal, context.deadline),
+      stored.complete(
+        context.operation,
+        context.operationId,
+        ownedSignal,
+        context.deadline,
+      ),
     context.signal,
     context.deadline,
     true,

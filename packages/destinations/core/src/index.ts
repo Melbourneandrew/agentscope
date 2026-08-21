@@ -23,8 +23,12 @@ export {
 } from "./local-resource-lifecycle.js";
 export {
   applyLocalResourceLifecyclePlan,
+  applyLocalResourceMaintenancePlan,
   completeLocalResourceLifecycle,
+  inspectLocalResourceDoctor,
+  inspectLocalResourceMaintenancePlan,
   recoverLocalResourceLifecycle,
+  recoverLocalResourceMaintenance,
   compileLocalResourceLifecycleHandlerRegistry,
   defineLocalResourceLifecycleHandler,
   getLocalResourceLifecycleHandlerCapability,
@@ -42,6 +46,14 @@ export {
   type LocalResourceLifecycleMutationOperation,
   type LocalResourceLifecyclePlanEvidence,
   type LocalResourceLifecycleRecoveryContext,
+  type LocalResourceBackupAuthority,
+  type LocalResourceDoctorContext,
+  type LocalResourceDoctorInspection,
+  type LocalResourceMaintenanceContext,
+  type LocalResourceMaintenanceOperation,
+  type LocalResourceMaintenancePlanEvidence,
+  type LocalResourceMaintenanceRecoveryContext,
+  type LocalResourceMaintenanceResult,
   type LocalResourceRetainedDeleteAuthority,
 } from "./local-resource-handler.js";
 
