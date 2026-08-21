@@ -4,6 +4,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -13,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
@@ -57,6 +58,25 @@ function run(command, arguments_, options = {}) {
     `${command} ${arguments_.join(" ")} failed:\n${result.stdout}${result.stderr}`,
   );
   return result;
+}
+
+function regularFiles(root) {
+  const files = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const name of readdirSync(directory)) {
+      const path = join(directory, name);
+      const metadata = lstatSync(path);
+      assert.equal(metadata.isSymbolicLink(), false);
+      if (metadata.isDirectory()) pending.push(path);
+      else {
+        assert.equal(metadata.isFile(), true);
+        files.push(relative(root, path));
+      }
+    }
+  }
+  return files.sort();
 }
 
 try {
@@ -400,6 +420,17 @@ try {
   assert.deepEqual(readdirSync(join(installRoot, "node_modules/@agentscope")), [
     "cli",
   ]);
+  const installedRoot = join(installRoot, "node_modules/@agentscope/cli");
+  const installedFiles = regularFiles(installedRoot);
+  assert.equal(
+    installedFiles.some((file) =>
+      /(?:^|\/)(?:binding\.gyp|build|prebuilds?|src)(?:\/|$)|\.node$/u.test(
+        file,
+      ),
+    ),
+    false,
+  );
+  assert.doesNotMatch(bundle, /better-sqlite3|node-gyp|binding\.gyp/u);
 
   process.stdout.write(
     `Verified clean install of ${basename(tarball)} (${packReport[0].integrity})\n`,
