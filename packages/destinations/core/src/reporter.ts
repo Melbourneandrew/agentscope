@@ -24,7 +24,20 @@ export const REPORTER_OUTCOMES = Object.freeze([
 ] as const);
 
 export type ReporterOutcome = (typeof REPORTER_OUTCOMES)[number];
-export type ReporterReceipt = Readonly<{ outcome: ReporterOutcome }>;
+export const REPORTER_RECEIPT_REASON_VERSION = 1 as const;
+export const REPORTER_RECEIPT_REASONS = Object.freeze([
+  "destination-busy",
+  "destination-full",
+  "destination-corrupt",
+  "destination-migrating",
+  "destination-retention",
+  "destination-capacity",
+] as const);
+export type ReporterReceiptReason = (typeof REPORTER_RECEIPT_REASONS)[number];
+export type ReporterReceipt = Readonly<{
+  outcome: ReporterOutcome;
+  reason?: ReporterReceiptReason;
+}>;
 export type RedactedTraceBatch = readonly [
   RedactedCanonicalTrace,
   ...RedactedCanonicalTrace[],
@@ -34,6 +47,7 @@ export type ReporterAttempt = Readonly<{
   traces: RedactedTraceBatch;
   signal: AbortSignal;
   deadline: ReporterDeadline;
+  admissionTimeUnixNano: string;
 }>;
 
 export type ReporterImplementation = Readonly<{
@@ -48,7 +62,7 @@ const reporterRegistry = new WeakMap<
   ReporterImplementation["report"]
 >();
 const objectGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
-const objectKeys = Object.keys;
+const reflectOwnKeys = Reflect.ownKeys;
 const reflectApply = Reflect.apply;
 // eslint-disable-next-line @typescript-eslint/unbound-method -- captured before caller-controlled prototype mutation.
 const promiseThen = Promise.prototype.then;
@@ -81,6 +95,28 @@ const unknownReceipt = Object.freeze({
 const deadlineReceipt = Object.freeze({
   outcome: "deadline-exceeded",
 }) as ReporterReceipt;
+const maximumUnsignedInt64 = 18_446_744_073_709_551_615n;
+const unsignedInt64Pattern = /^(?:0|[1-9][0-9]{0,19})$/u;
+
+const receiptPairIsValid = (
+  outcome: ReporterOutcome,
+  reason: ReporterReceiptReason | undefined,
+): boolean => {
+  if (reason === undefined) return true;
+  if (outcome === "rejected")
+    return (
+      reason === "destination-retention" || reason === "destination-capacity"
+    );
+  return outcome === "unavailable";
+};
+
+const admissionTimeIsValid = (value: unknown): value is string => {
+  return (
+    typeof value === "string" &&
+    unsignedInt64Pattern.test(value) &&
+    BigInt(value) <= maximumUnsignedInt64
+  );
+};
 
 const signalIsAborted = (signal: unknown): boolean | undefined => {
   try {
@@ -96,7 +132,10 @@ const parseReceipt = (value: unknown): ReporterReceipt | undefined => {
   try {
     if (typeof value !== "object" || value === null) return undefined;
     const descriptors = objectGetOwnPropertyDescriptors(value);
-    if (objectKeys(descriptors).join(",") !== "outcome") return undefined;
+    const ownKeys = reflectOwnKeys(descriptors);
+    if (ownKeys.some((key) => typeof key !== "string")) return undefined;
+    const keys = ownKeys.sort().join(",");
+    if (keys !== "outcome" && keys !== "outcome,reason") return undefined;
     const descriptor = descriptors.outcome;
     if (
       !descriptor ||
@@ -104,7 +143,24 @@ const parseReceipt = (value: unknown): ReporterReceipt | undefined => {
       !REPORTER_OUTCOMES.includes(descriptor.value as ReporterOutcome)
     )
       return undefined;
-    return Object.freeze({ outcome: descriptor.value as ReporterOutcome });
+    const outcome = descriptor.value as ReporterOutcome;
+    const reasonDescriptor = descriptors.reason;
+    const reason = reasonDescriptor?.value as unknown;
+    if (
+      (reasonDescriptor !== undefined &&
+        (!("value" in reasonDescriptor) ||
+          !REPORTER_RECEIPT_REASONS.includes(
+            reason as ReporterReceiptReason,
+          ))) ||
+      !receiptPairIsValid(outcome, reason as ReporterReceiptReason | undefined)
+    )
+      return undefined;
+    return Object.freeze({
+      outcome,
+      ...(reason === undefined
+        ? {}
+        : { reason: reason as ReporterReceiptReason }),
+    });
   } catch {
     return undefined;
   }
@@ -134,8 +190,11 @@ const validateBatch = (input: unknown): RedactedTraceBatch => {
       identities.add(trace.delivery.identity);
       traces.push(trace);
     }
-    for (const key of objectKeys(descriptors)) {
-      if (key !== "length" && !/^(?:0|[1-9][0-9]*)$/.test(key))
+    for (const key of reflectOwnKeys(descriptors)) {
+      if (
+        typeof key !== "string" ||
+        (key !== "length" && !/^(?:0|[1-9][0-9]*)$/.test(key))
+      )
         return invalid();
     }
     return Object.freeze(traces) as RedactedTraceBatch;
@@ -146,9 +205,18 @@ const validateBatch = (input: unknown): RedactedTraceBatch => {
 
 export const createReporterReceipt = (
   outcome: ReporterOutcome,
+  reason?: ReporterReceiptReason,
 ): ReporterReceipt => {
-  if (!REPORTER_OUTCOMES.includes(outcome)) return invalid();
-  return Object.freeze({ outcome });
+  if (
+    !REPORTER_OUTCOMES.includes(outcome) ||
+    (reason !== undefined && !REPORTER_RECEIPT_REASONS.includes(reason)) ||
+    !receiptPairIsValid(outcome, reason)
+  )
+    return invalid();
+  return Object.freeze({
+    outcome,
+    ...(reason === undefined ? {} : { reason }),
+  });
 };
 
 export const createDestinationReporter = (
@@ -158,7 +226,7 @@ export const createDestinationReporter = (
     if (typeof implementation !== "object" || implementation === null)
       return invalid();
     const descriptors = objectGetOwnPropertyDescriptors(implementation);
-    if (objectKeys(descriptors).join(",") !== "report") return invalid();
+    if (reflectOwnKeys(descriptors).join(",") !== "report") return invalid();
     const report = descriptors.report;
     if (!report || !("value" in report) || typeof report.value !== "function")
       return invalid();
@@ -258,11 +326,15 @@ export const invokeReporter = async (
     if (!report || typeof attempt !== "object" || attempt === null)
       return invalid();
     const descriptors = objectGetOwnPropertyDescriptors(attempt);
-    if (objectKeys(descriptors).sort().join(",") !== "deadline,signal,traces")
+    if (
+      reflectOwnKeys(descriptors).sort().join(",") !==
+      "admissionTimeUnixNano,deadline,signal,traces"
+    )
       return invalid();
     const traces = descriptors.traces;
     const signal = descriptors.signal;
     const deadline = descriptors.deadline;
+    const admissionTimeUnixNano = descriptors.admissionTimeUnixNano;
     if (
       !traces ||
       !("value" in traces) ||
@@ -271,7 +343,10 @@ export const invokeReporter = async (
       signalIsAborted(signal.value) === undefined ||
       !deadline ||
       !("value" in deadline) ||
-      !isReporterDeadline(deadline.value)
+      !isReporterDeadline(deadline.value) ||
+      !admissionTimeUnixNano ||
+      !("value" in admissionTimeUnixNano) ||
+      !admissionTimeIsValid(admissionTimeUnixNano.value)
     )
       return invalid();
     if (
@@ -283,6 +358,7 @@ export const invokeReporter = async (
       traces: validateBatch(traces.value),
       signal: signal.value,
       deadline: deadline.value,
+      admissionTimeUnixNano: admissionTimeUnixNano.value,
     });
     let returned: unknown;
     try {

@@ -27,6 +27,7 @@ describe("Reporter in-flight deadline expiry", () => {
           traces: [createSanitizedRedactedCanonicalTraceFixture()],
           signal: new AbortController().signal,
           deadline: deadline.createReporterDeadline(1_000),
+          admissionTimeUnixNano: "1000000",
         },
       );
       expect(implementation).toHaveBeenCalledOnce();

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { reporterDeadlineRemainingMilliseconds } from "@agentscope/destinations-core";
+import {
+  reporterDeadlineRemainingMilliseconds,
+  type ReporterReceiptReason,
+} from "@agentscope/destinations-core";
 import type { DestinationTransportExecutor } from "@agentscope/destinations-core/core-orchestration";
 import type { RedactedCanonicalTrace } from "@agentscope/protocol";
 
@@ -39,6 +42,20 @@ import {
   commitOperationalEvidenceForCore,
   preloadOperationalStateForCore,
 } from "./operational-coordinator.js";
+
+const reporterReasonDiagnosticMapping = Object.freeze({
+  version: 1 as const,
+  codes: Object.freeze({
+    "destination-busy": "destination-busy",
+    "destination-full": "destination-full",
+    "destination-corrupt": "destination-corrupt",
+    "destination-migrating": "destination-migrating",
+    "destination-retention": "destination-retention",
+    "destination-capacity": "destination-capacity",
+  } satisfies Readonly<
+    Record<ReporterReceiptReason, SanitizedDiagnosticInput["code"]>
+  >),
+});
 
 export type ResolvedTraceLifecycleInput = CaptureInvocationPreparationInput &
   Readonly<{
@@ -363,12 +380,16 @@ const diagnosticForConnection = (
   /* v8 ignore next -- routing results are minted from the same immutable
    * configured-connection snapshot used by this lookup. */
   if (!configured) return undefined;
-  const code = {
-    rejected: "reporter-rejected",
-    unavailable: "reporter-unavailable",
-    "deadline-exceeded": "reporter-deadline-exceeded",
-    "outcome-unknown": "reporter-outcome-unknown",
-  }[connection.outcome] as SanitizedDiagnosticInput["code"];
+  const code =
+    (connection.reason === undefined
+      ? undefined
+      : reporterReasonDiagnosticMapping.codes[connection.reason]) ??
+    ({
+      rejected: "reporter-rejected",
+      unavailable: "reporter-unavailable",
+      "deadline-exceeded": "reporter-deadline-exceeded",
+      "outcome-unknown": "reporter-outcome-unknown",
+    }[connection.outcome] as SanitizedDiagnosticInput["code"]);
   return Object.freeze({
     code,
     severity: "warning",
@@ -708,6 +729,7 @@ const executePreparedLifecycle = async (
     credentialBackendRegistry: input.credentialBackendRegistry,
     transportExecutor: input.transportExecutor,
     deadline: preparation.snapshot.deadline,
+    admissionTimeUnixNano: preparation.snapshot.admissionTimeUnixNano,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   const evidence = await routingEvidence(

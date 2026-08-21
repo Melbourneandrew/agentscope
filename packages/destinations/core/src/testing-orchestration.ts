@@ -48,6 +48,7 @@ export type DestinationReporterTestAttempt = Readonly<{
   signal?: AbortSignal;
   deadline?: ReporterDeadline;
   timeoutMilliseconds?: number;
+  admissionTimeUnixNano?: string;
 }>;
 
 export const invokeDestinationReporterForTesting = (
@@ -60,4 +61,5 @@ export const invokeDestinationReporterForTesting = (
     deadline:
       input.deadline ??
       createReporterDeadline(input.timeoutMilliseconds ?? 1_000),
+    admissionTimeUnixNano: input.admissionTimeUnixNano ?? "1",
   });

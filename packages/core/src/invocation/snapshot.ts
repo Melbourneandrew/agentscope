@@ -56,6 +56,7 @@ export type CaptureInvocationSnapshot = Readonly<{
   configuration: AgentscopeConfigurationSnapshot;
   invocation: CaptureInvocationContext;
   deadline: ReporterDeadline;
+  admissionTimeUnixNano: string;
   deadlineProvenance: Readonly<{
     launcherDeadlineMilliseconds: number;
     configuredDeadlineMilliseconds: number;
@@ -199,6 +200,7 @@ type PreparedConfiguration = Readonly<{
   ok: true;
   configuration: AgentscopeConfigurationSnapshot;
   deadline: ReporterDeadline;
+  admissionTimeUnixNano: string;
   deadlineProvenance: CaptureInvocationSnapshot["deadlineProvenance"];
 }>;
 
@@ -272,6 +274,7 @@ const prepareConfiguration = async (
     ok: true,
     configuration,
     deadline,
+    admissionTimeUnixNano: entryAuthority.admissionTimeUnixNano,
     deadlineProvenance: Object.freeze({
       launcherDeadlineMilliseconds,
       configuredDeadlineMilliseconds,
@@ -286,7 +289,8 @@ const resolveSnapshot = async (
 ): Promise<InvocationPreparationResult> => {
   const prepared = await prepareConfiguration(input);
   if (!prepared.ok) return prepared;
-  const { configuration, deadline, deadlineProvenance } = prepared;
+  const { configuration, deadline, admissionTimeUnixNano, deadlineProvenance } =
+    prepared;
   const effectiveRemainingMilliseconds = (): number =>
     reporterDeadlineRemainingMilliseconds(deadline);
   const deadlineExpired = (): boolean => {
@@ -356,6 +360,7 @@ const resolveSnapshot = async (
       configuration,
       invocation,
       deadline,
+      admissionTimeUnixNano,
       deadlineProvenance,
     }),
   });

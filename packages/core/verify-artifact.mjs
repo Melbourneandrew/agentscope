@@ -916,11 +916,35 @@ const directAttempt = {
   traces: [directTrace],
   signal: new AbortController().signal,
   deadline: createReporterDeadline(1_000),
+  admissionTimeUnixNano: "1000000",
 };
 if (
   (await invokeReporter(directReporter, directAttempt)).outcome !== "accepted"
 )
   throw new Error("Reporter rejected a Core-minted branded trace.");
+const reasonReporter = createDestinationReporter({
+  report: ({ admissionTimeUnixNano }) =>
+    Promise.resolve(
+      admissionTimeUnixNano === "1000000"
+        ? createReporterReceipt("unavailable", "destination-busy")
+        : { outcome: "accepted", reason: "destination-busy" },
+    ),
+});
+const reasonReceipt = await invokeReporter(reasonReporter, directAttempt);
+if (
+  reasonReceipt.outcome !== "unavailable" ||
+  reasonReceipt.reason !== "destination-busy"
+)
+  throw new Error("Reporter lost the exact Core admission time or reason.");
+const invalidReasonReporter = createDestinationReporter({
+  report: () =>
+    Promise.resolve({ outcome: "accepted", reason: "destination-busy" }),
+});
+if (
+  (await invokeReporter(invalidReasonReporter, directAttempt)).outcome !==
+  "outcome-unknown"
+)
+  throw new Error("Reporter accepted an invalid outcome/reason pair.");
 const hangingReporter = createDestinationReporter({
   report: () => new Promise(() => undefined),
 });

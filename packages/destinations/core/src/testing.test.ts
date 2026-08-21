@@ -43,6 +43,7 @@ const invoke = async (
     traces: [trace(identity)],
     signal: controller.signal,
     deadline: createReporterDeadline(1_000),
+    admissionTimeUnixNano: "1000000",
   });
   if (behavior === "hang") {
     await adapter.waitForDeliveryAttempt();

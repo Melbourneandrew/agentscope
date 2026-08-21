@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdtemp,
   open,
@@ -18,6 +18,7 @@ import {
   defineDestinationDescriptor,
   reporterDeadlineRemainingMilliseconds,
   type ReporterOutcome,
+  type ReporterReceiptReason,
 } from "@agentscope/destinations-core";
 import { serializeRedactedCanonicalTrace } from "@agentscope/protocol";
 import { z } from "zod";
@@ -100,8 +101,10 @@ z.toJSONSchema(emptySettings);
 const createRuntime = (
   reporterOutcome: ReporterOutcome = "accepted",
   reporterNeverSettles = false,
+  reporterReason?: ReporterReceiptReason,
 ) => {
   const deliveries: string[] = [];
+  const admissionTimes: string[] = [];
   const descriptor = defineDestinationDescriptor({
     descriptorVersion: 1,
     destinationType: "@agentscope/destination-test",
@@ -115,15 +118,19 @@ const createRuntime = (
     transport: { kind: "local" },
     createReporter: () =>
       createDestinationReporter({
-        report: ({ traces }) => {
+        report: ({ admissionTimeUnixNano, traces }) => {
           deliveries.push(serializeRedactedCanonicalTrace(traces[0]));
+          admissionTimes.push(admissionTimeUnixNano);
           if (reporterNeverSettles) return new Promise(() => undefined);
-          return Promise.resolve(createReporterReceipt(reporterOutcome));
+          return Promise.resolve(
+            createReporterReceipt(reporterOutcome, reporterReason),
+          );
         },
       }),
   });
   return {
     deliveries,
+    admissionTimes,
     destinationRegistry: compileDestinationRegistry([descriptor]),
     credentialBackendRegistry: compileCredentialBackendRegistry([]),
     transportExecutor: () => Promise.reject(new Error("unexpected transport")),
@@ -138,11 +145,13 @@ const fixture = async (
   options: Readonly<{
     reporterNeverSettles?: boolean;
     connectionCount?: number;
+    reporterReason?: ReporterReceiptReason;
   }> = {},
 ) => {
   const runtime = createRuntime(
     reporterOutcome,
     options.reporterNeverSettles ?? false,
+    options.reporterReason,
   );
   const root = await mkdtemp(join(tmpdir(), "agentscope-invocation-"));
   roots.push(root);
@@ -404,6 +413,9 @@ describe("immutable capture invocation snapshot", () => {
       configuredDeadlineMilliseconds: 1_000,
       effectiveDeadlineMilliseconds: 1_000,
     });
+    expect(result.snapshot.admissionTimeUnixNano).toMatch(
+      /^(?:0|[1-9][0-9]{0,19})$/u,
+    );
     expect(Object.isFrozen(result.snapshot)).toBe(true);
     const captured = await withCaptureInvocation(
       result.snapshot.invocation,
@@ -461,6 +473,22 @@ describe("hook entry deadline authority", () => {
         ) as never,
       ),
     ).toThrow("core.hook-authority.invalid");
+    vi.resetModules();
+    const wallClock = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const monotonicClock = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    try {
+      const isolatedAuthority = await import("./hook-authority.js");
+      const current = isolatedAuthority.readHookEntryAuthorityForCore(
+        isolatedAuthority.createHookEntryAuthority({
+          durationMilliseconds: 1_000,
+          startedAt: 750,
+        }),
+      );
+      expect(current.admissionTimeUnixNano).toBe("1699999999750000000");
+    } finally {
+      monotonicClock.mockRestore();
+      wallClock.mockRestore();
+    }
     const expired = createHookEntryAuthority({
       durationMilliseconds: 50,
       startedAt: Math.max(0, performance.now() - 100),
@@ -1055,6 +1083,8 @@ describe("resolved configured trace lifecycle", () => {
       connections: [{ connectionId, outcome: "accepted" }],
     });
     const delivered = value.deliveries[0] ?? "";
+    expect(value.admissionTimes[0]).toMatch(/^[1-9][0-9]{15,19}$/u);
+    expect(value.admissionTimes[0]).not.toBe("100");
     expect(delivered).toContain("vcs.ref.head.revision");
     expect(delivered).not.toContain(process.cwd());
     expect(delivered).not.toContain("CANARY_SECRET");
@@ -1687,7 +1717,9 @@ describe("resolved negative lifecycle evidence", () => {
       (await inspectOperationalState(value.operationalStateStore)).checkpoints,
     ).toEqual([]);
   });
+});
 
+describe("destination receipt reason evidence", () => {
   it.each([
     ["unavailable", "reporter-unavailable"],
     ["deadline-exceeded", "reporter-deadline-exceeded"],
@@ -1730,6 +1762,45 @@ describe("resolved negative lifecycle evidence", () => {
       checkpoints: [],
     });
   });
+
+  it.each([
+    ["unavailable", "destination-busy"],
+    ["unavailable", "destination-full"],
+    ["unavailable", "destination-corrupt"],
+    ["unavailable", "destination-migrating"],
+    ["unavailable", "destination-retention"],
+    ["unavailable", "destination-capacity"],
+    ["rejected", "destination-retention"],
+    ["rejected", "destination-capacity"],
+  ] as const)(
+    "maps the fixed %s/%s receipt reason into Operational State",
+    async (outcome, reason) => {
+      const value = await fixture(
+        BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+        true,
+        2_000,
+        outcome,
+        { reporterReason: reason },
+      );
+      const result = await runWithOperationalStore(
+        value,
+        value.operationalStateStore,
+      );
+      expect(result).toMatchObject({
+        connections: [{ connectionId, outcome, reason }],
+        operationalEvidence: {
+          diagnostics: [
+            { code: reason, connectionId, severity: "warning" },
+            {
+              code: "checkpoint-unavailable",
+              connectionId,
+              severity: "warning",
+            },
+          ],
+        },
+      });
+    },
+  );
 });
 
 describe("maximum fanout operational evidence", () => {

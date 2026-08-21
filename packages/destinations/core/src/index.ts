@@ -56,6 +56,8 @@ export {
   isDestinationReporter,
   MAXIMUM_REPORTER_BATCH_ITEMS,
   REPORTER_OUTCOMES,
+  REPORTER_RECEIPT_REASON_VERSION,
+  REPORTER_RECEIPT_REASONS,
   ReporterContractError,
   type RedactedTraceBatch,
   type Reporter,
@@ -63,6 +65,7 @@ export {
   type ReporterImplementation,
   type ReporterOutcome,
   type ReporterReceipt,
+  type ReporterReceiptReason,
 } from "./reporter.js";
 export {
   DestinationTransportError,
