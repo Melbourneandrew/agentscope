@@ -130,7 +130,7 @@ export type CredentialMutationInspection = Readonly<{
     | "unavailable";
 }>;
 
-export type LocalResourceMutationIntent = Readonly<{
+export type LocalResourceConfigurationMutationIntent = Readonly<{
   recordVersion: 1;
   operation: "configure" | "delete" | "unconfigure";
   operationId: string;
@@ -146,6 +146,44 @@ export type LocalResourceMutationIntent = Readonly<{
     digest: string;
   }>[];
 }>;
+
+export type LocalResourceMaintenanceMutationIntent = Readonly<{
+  recordVersion: 2;
+  operation: "backup" | "restore";
+  operationId: string;
+  resourceSelector: string;
+  owner: ConfigurationProcessIdentity;
+  destinationType: string;
+  connectionId: string;
+  lifecycleFingerprint: string;
+  recoveryHandlerId: string;
+  expectedGeneration: number;
+  expectedDigest: string;
+  authorizedCandidates: readonly [];
+}>;
+
+export type LocalResourceMaintenanceMutationCompletion = Readonly<{
+  recordVersion: 3;
+  operation: "backup" | "restore";
+  operationId: string;
+  resourceSelector: string;
+  owner: ConfigurationProcessIdentity;
+  destinationType: string;
+  connectionId: string;
+  lifecycleFingerprint: string;
+  recoveryHandlerId: string;
+  expectedGeneration: number;
+  expectedDigest: string;
+  authorizedCandidates: readonly [];
+  terminalState: "backed-up" | "restored" | "rolled-back";
+}>;
+
+export type LocalResourceMutationIntent =
+  | LocalResourceConfigurationMutationIntent
+  | LocalResourceMaintenanceMutationIntent;
+
+export type LocalResourceMutationRecord =
+  LocalResourceMutationIntent | LocalResourceMaintenanceMutationCompletion;
 
 export type LocalResourceMutationInspection = Readonly<{
   state:
@@ -239,9 +277,7 @@ const credentialIntentSchema = z.strictObject({
   reference: z.unknown(),
 });
 
-const localResourceIntentSchema = z.strictObject({
-  recordVersion: z.literal(1),
-  operation: z.enum(["configure", "delete", "unconfigure"]),
+const localResourceIntentCommonSchema = {
   operationId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
   owner: lockRecordSchema.shape.owner,
   destinationType: z
@@ -252,16 +288,39 @@ const localResourceIntentSchema = z.strictObject({
   recoveryHandlerId: z.string().min(1).max(256),
   expectedGeneration: z.number().int().nonnegative().safe(),
   expectedDigest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
-  authorizedCandidates: z
-    .array(
-      z.strictObject({
-        generation: z.number().int().nonnegative().safe(),
-        digest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
-      }),
-    )
-    .min(1)
-    .max(2),
-});
+} as const;
+
+const localResourceIntentSchema = z.discriminatedUnion("recordVersion", [
+  z.strictObject({
+    recordVersion: z.literal(1),
+    operation: z.enum(["configure", "delete", "unconfigure"]),
+    ...localResourceIntentCommonSchema,
+    authorizedCandidates: z
+      .array(
+        z.strictObject({
+          generation: z.number().int().nonnegative().safe(),
+          digest: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
+        }),
+      )
+      .min(1)
+      .max(2),
+  }),
+  z.strictObject({
+    recordVersion: z.literal(2),
+    operation: z.enum(["backup", "restore"]),
+    resourceSelector: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
+    ...localResourceIntentCommonSchema,
+    authorizedCandidates: z.tuple([]),
+  }),
+  z.strictObject({
+    recordVersion: z.literal(3),
+    operation: z.enum(["backup", "restore"]),
+    resourceSelector: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
+    ...localResourceIntentCommonSchema,
+    authorizedCandidates: z.tuple([]),
+    terminalState: z.enum(["backed-up", "restored", "rolled-back"]),
+  }),
+]);
 
 type ConfigurationLockRecord = z.infer<typeof lockRecordSchema>;
 
@@ -728,7 +787,7 @@ const assertWriteInput = (
 
 const parseLocalResourceIntent = (
   value: string,
-): LocalResourceMutationIntent => {
+): LocalResourceMutationRecord => {
   try {
     if (Buffer.byteLength(value, "utf8") > MAXIMUM_CREDENTIAL_INTENT_BYTES)
       return invalid("core.configuration.invalid");
@@ -744,6 +803,19 @@ const parseLocalResourceIntent = (
       )
         return invalid("core.configuration.invalid");
     }
+    if (
+      parsed.recordVersion === 3 &&
+      ((parsed.operation === "backup" && parsed.terminalState === "restored") ||
+        (parsed.operation === "restore" &&
+          parsed.terminalState === "backed-up"))
+    )
+      return invalid("core.configuration.invalid");
+    if (parsed.recordVersion !== 1)
+      return Object.freeze({
+        ...parsed,
+        owner: Object.freeze(parsed.owner),
+        authorizedCandidates: Object.freeze([] satisfies []),
+      });
     return Object.freeze({
       ...parsed,
       owner: Object.freeze(parsed.owner),
@@ -760,9 +832,19 @@ const parseLocalResourceIntent = (
 };
 
 const sameLocalResourceIntent = (
-  left: LocalResourceMutationIntent,
-  right: LocalResourceMutationIntent,
-): boolean => JSON.stringify(left) === JSON.stringify(right);
+  left: LocalResourceMutationRecord,
+  right: LocalResourceMutationRecord,
+): boolean => {
+  if (left.recordVersion === 3 && right.recordVersion === 3)
+    return JSON.stringify(left) === JSON.stringify(right);
+  const base = (record: LocalResourceMutationRecord): object => {
+    if (record.recordVersion !== 3) return record;
+    const { terminalState, ...intent } = record;
+    void terminalState;
+    return { ...intent, recordVersion: 2 };
+  };
+  return JSON.stringify(base(left)) === JSON.stringify(base(right));
+};
 
 const authorizeLocalResourceFence = async (
   state: ConfigurationStoreInternals,
@@ -1172,7 +1254,7 @@ const sameCredentialIntent = (
 const readLocalResourceIntent = async (
   state: ConfigurationStoreInternals,
   path = localResourceIntentPath(state),
-): Promise<LocalResourceMutationIntent> => {
+): Promise<LocalResourceMutationRecord> => {
   const value = await readBoundedFile(state.fileSystem, path);
   if (value === undefined) return invalid("core.configuration.missing");
   return parseLocalResourceIntent(value);
@@ -1194,7 +1276,7 @@ export const createLocalResourceMutationIntent = async (
     )
       return invalid("core.configuration.invalid");
     const descriptors = Object.getOwnPropertyDescriptors(input);
-    const keys = [
+    const commonKeys = [
       "authorizedCandidates",
       "connectionId",
       "destinationType",
@@ -1204,9 +1286,13 @@ export const createLocalResourceMutationIntent = async (
       "operation",
       "operationId",
       "owner",
-      "recordVersion",
       "recoveryHandlerId",
     ];
+    const recordVersion = descriptors.recordVersion?.value as unknown;
+    const keys =
+      recordVersion === 2
+        ? [...commonKeys, "recordVersion", "resourceSelector"]
+        : [...commonKeys, "recordVersion"];
     if (
       Reflect.ownKeys(descriptors).length !== keys.length ||
       Reflect.ownKeys(descriptors).some(
@@ -1225,7 +1311,7 @@ export const createLocalResourceMutationIntent = async (
     if (
       typeof length !== "number" ||
       !Number.isSafeInteger(length) ||
-      length < 1 ||
+      length < 0 ||
       length > 2 ||
       Reflect.ownKeys(arrayDescriptors).length !== length + 1 ||
       Reflect.ownKeys(arrayDescriptors).some(
@@ -1266,10 +1352,15 @@ export const createLocalResourceMutationIntent = async (
     const ownerValue = descriptors.owner?.value as unknown;
     if (!isConfigurationProcessIdentity(ownerValue))
       return invalid("core.configuration.invalid");
-    record = parseLocalResourceIntent(
+    const parsedRecord = parseLocalResourceIntent(
       `${JSON.stringify({
-        recordVersion: descriptors.recordVersion?.value,
+        recordVersion,
         operation: descriptors.operation?.value,
+        ...(recordVersion === 2
+          ? {
+              resourceSelector: descriptors.resourceSelector?.value as unknown,
+            }
+          : {}),
         operationId: descriptors.operationId?.value,
         owner: ownerValue,
         destinationType: descriptors.destinationType?.value,
@@ -1281,6 +1372,9 @@ export const createLocalResourceMutationIntent = async (
         authorizedCandidates,
       })}\n`,
     );
+    if (parsedRecord.recordVersion === 3)
+      return invalid("core.configuration.invalid");
+    record = parsedRecord;
     await ensureAgentscopeHomeLayout(state.home);
     if (
       (await configurationFencePresent(state)) ||
@@ -1340,8 +1434,9 @@ export const createLocalResourceMutationIntent = async (
 
 export const completeLocalResourceMutationIntent = async (
   store: ConfigurationStore,
-  expected: LocalResourceMutationIntent,
-): Promise<void> => {
+  expected: LocalResourceMutationRecord,
+  terminalState?: "backed-up" | "restored" | "rolled-back",
+): Promise<LocalResourceMutationRecord> => {
   if (
     typeof expected !== "object" ||
     expected === null ||
@@ -1356,8 +1451,17 @@ export const completeLocalResourceMutationIntent = async (
     );
     if (!sameLocalResourceIntent(completed, expected))
       return invalid("core.configuration.conflict");
-    return;
+    return completed;
   }
+  if (
+    expected.recordVersion === 3 ||
+    (expected.recordVersion === 1 && terminalState !== undefined) ||
+    (expected.recordVersion === 2 &&
+      (terminalState === undefined ||
+        (expected.operation === "backup" && terminalState === "restored") ||
+        (expected.operation === "restore" && terminalState === "backed-up")))
+  )
+    return invalid("core.configuration.invalid");
   const path = claimedLocalResourceIntents.has(expected)
     ? localResourceRecoveryClaimPath(state)
     : localResourceIntentPath(state);
@@ -1365,18 +1469,34 @@ export const completeLocalResourceMutationIntent = async (
   if (!sameLocalResourceIntent(current, expected))
     return invalid("core.configuration.conflict");
   try {
-    await linkForState(state, path, localResourceCompletionPath(state));
+    const completion: LocalResourceMutationRecord =
+      expected.recordVersion === 2
+        ? Object.freeze({
+            ...expected,
+            recordVersion: 3 as const,
+            terminalState: terminalState!,
+          })
+        : expected;
+    if (completion.recordVersion === 3)
+      await writeDurableExclusive(
+        state.fileSystem,
+        localResourceCompletionPath(state),
+        `${JSON.stringify(completion)}\n`,
+      );
+    else await linkForState(state, path, localResourceCompletionPath(state));
     await syncDirectory(state.fileSystem, state.home.mutationDirectory);
     await state.fileSystem.unlink(path);
     await syncDirectory(state.fileSystem, state.home.mutationDirectory);
-    completedLocalResourceIntents.add(expected);
+    localResourceMutationIntentRegistry.add(completion);
+    completedLocalResourceIntents.add(completion);
+    return completion;
   } catch {
     return invalid("core.configuration.unavailable");
   }
 };
 
 export const isLocalResourceMutationCompletion = (
-  intent: LocalResourceMutationIntent,
+  intent: LocalResourceMutationRecord,
 ): boolean =>
   typeof intent === "object" &&
   intent !== null &&
@@ -1385,7 +1505,7 @@ export const isLocalResourceMutationCompletion = (
 
 export const finalizeLocalResourceMutationCompletion = async (
   store: ConfigurationStore,
-  expected: LocalResourceMutationIntent,
+  expected: LocalResourceMutationRecord,
 ): Promise<void> => {
   if (
     typeof expected !== "object" ||
@@ -1465,7 +1585,7 @@ export const inspectLocalResourceMutation = async (
 export const readRecoverableLocalResourceMutationIntent = async (
   store: ConfigurationStore,
   ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
-): Promise<LocalResourceMutationIntent> => {
+): Promise<LocalResourceMutationRecord> => {
   const state = stored(store);
   const completion = await readBoundedFile(
     state.fileSystem,

@@ -136,6 +136,73 @@ const errorCode = async (operation: Promise<unknown>): Promise<string> => {
 
 // eslint-disable-next-line max-lines-per-function -- the suite shares one filesystem cleanup and generation fixture.
 describe("fenced configuration writes", () => {
+  it("persists and exactly finalizes version-three maintenance authority", async () => {
+    const { home, store } = await homeFixture();
+    const initial = snapshot(0);
+    await writeConfigurationSnapshot(store, {
+      expectedGeneration: null,
+      candidate: initial,
+      owner,
+    });
+    const intent = await createLocalResourceMutationIntent(store, {
+      recordVersion: 2,
+      operation: "backup",
+      operationId: "9".repeat(32),
+      resourceSelector: "8".repeat(32),
+      owner,
+      destinationType: "@agentscope/destination-example",
+      connectionId: `destination-connection-v1-${"b".repeat(64)}`,
+      lifecycleFingerprint: `sha256-${"c".repeat(64)}`,
+      recoveryHandlerId: "@agentscope/destination-example/lifecycle-v1",
+      expectedGeneration: 0,
+      expectedDigest: snapshotDigest(initial),
+      authorizedCandidates: Object.freeze([]),
+    });
+    expect(intent).toMatchObject({
+      recordVersion: 2,
+      operation: "backup",
+      resourceSelector: "8".repeat(32),
+      authorizedCandidates: [],
+    });
+    await expect(
+      writeConfigurationSnapshot(store, {
+        expectedGeneration: 0,
+        candidate: snapshot(1),
+        owner,
+      }),
+    ).rejects.toMatchObject({ code: "core.configuration.contention" });
+    const recovered = await readRecoverableLocalResourceMutationIntent(
+      store,
+      () => "dead",
+    );
+    expect(recovered).toEqual(intent);
+    const completion = await completeLocalResourceMutationIntent(
+      store,
+      recovered,
+      "backed-up",
+    );
+    expect(completion).toMatchObject({
+      recordVersion: 3,
+      terminalState: "backed-up",
+    });
+    const completionPath = join(
+      home.mutationDirectory,
+      "local-resource.completion.lock",
+    );
+    await writeFileAsync(
+      completionPath,
+      `${JSON.stringify({ ...completion, terminalState: "rolled-back" })}\n`,
+    );
+    await expect(
+      finalizeLocalResourceMutationCompletion(store, completion),
+    ).rejects.toMatchObject({ code: "core.configuration.conflict" });
+    await writeFileAsync(completionPath, `${JSON.stringify(completion)}\n`);
+    await finalizeLocalResourceMutationCompletion(store, completion);
+    await expect(readConfigurationSnapshot(store)).resolves.toMatchObject({
+      generation: 0,
+    });
+  });
+
   it("removes the completion authority last across cleanup crashes", async () => {
     const { home } = await homeFixture();
     let failCleanup = false;

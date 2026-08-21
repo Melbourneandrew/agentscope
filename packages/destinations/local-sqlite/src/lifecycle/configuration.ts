@@ -9,12 +9,15 @@ import {
   type LocalResourceLifecycleHandler,
   type LocalResourceLifecyclePlanEvidence,
   type LocalResourceLifecycleRecoveryContext,
+  type LocalResourceMaintenanceContext,
   type LocalResourceRetainedDeleteAuthority,
 } from "@agentscope/destinations-core";
 
 import {
   LOCAL_SQLITE_DESTINATION_TYPE,
   LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
+  LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+  localSqliteLifecycleArtifactGrammarFingerprintForTesting,
 } from "./capability.js";
 import {
   LOCAL_SQLITE_DESTINATION_FORMAT,
@@ -22,6 +25,12 @@ import {
   LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
 } from "../migrations.js";
 import type { LocalSqliteExclusiveFenceAuthority } from "./fence.js";
+import {
+  applyLocalSqliteMaintenance,
+  inspectLocalSqliteDoctor,
+  recoverLocalSqliteMaintenance,
+  type LocalSqliteMaintenancePort,
+} from "./maintenance.js";
 
 export type LocalSqliteLifecycleIntent = Readonly<{
   recordVersion: 1;
@@ -538,7 +547,7 @@ const failed = (
 };
 
 const policyEvidenceMatchesContext = (
-  context: LocalResourceLifecycleContext,
+  context: LocalResourceLifecycleContext | LocalResourceMaintenanceContext,
   evidence: LocalResourceLifecyclePlanEvidence,
 ): boolean =>
   evidence.retentionPolicy.maximumAgeNanoseconds ===
@@ -773,19 +782,33 @@ const recoverWithPort = async (
 const createHandler = (
   capability: LocalResourceLifecycleCapability,
   port: LocalSqliteLifecyclePort | undefined,
+  maintenancePort?: LocalSqliteMaintenancePort,
+  maximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+  // eslint-disable-next-line max-lines-per-function -- one handler binds the complete versioned Local SQLite lifecycle family.
 ): LocalResourceLifecycleHandler => {
   if (
     !isLocalResourceLifecycleCapability(capability) ||
     capability.destinationType !== LOCAL_SQLITE_DESTINATION_TYPE ||
     capability.artifactGrammarFingerprint !==
-      LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT
+      localSqliteLifecycleArtifactGrammarFingerprintForTesting(
+        maximumSnapshotBytes,
+      )
   )
     throw new LocalSqliteLifecycleError("reconciliation-required");
   return defineLocalResourceLifecycleHandler({
     capability,
-    complete: async (operationId, signal) => {
-      if (!port) throw new LocalSqliteLifecycleError("unavailable");
-      await port.completeFinalization(operationId, signal);
+    complete: async (operation, operationId, signal) => {
+      if (operation === "backup" || operation === "restore") {
+        if (!maintenancePort)
+          throw new LocalSqliteLifecycleError("unavailable");
+        await maintenancePort.completeMaintenanceFinalization(
+          operationId,
+          signal,
+        );
+      } else {
+        if (!port) throw new LocalSqliteLifecycleError("unavailable");
+        await port.completeFinalization(operationId, signal);
+      }
       requireActive(signal);
     },
     inspectPlan: async (context) => {
@@ -829,6 +852,62 @@ const createHandler = (
               code: "unavailable" as const,
             }),
           ),
+    inspectMaintenancePlan: async (context) => {
+      if (!maintenancePort) throw new LocalSqliteLifecycleError("unavailable");
+      const evidence = await maintenancePort.inspectMaintenance(context);
+      if (!policyEvidenceMatchesContext(context, evidence.planEvidence))
+        throw new LocalSqliteLifecycleError("reconciliation-required");
+      return evidence;
+    },
+    applyMaintenance: (context) =>
+      maintenancePort
+        ? applyLocalSqliteMaintenance(
+            capability.fingerprint,
+            capability.recoveryHandlerId,
+            maximumSnapshotBytes,
+            maintenancePort,
+            context,
+          )
+        : Promise.resolve(
+            Object.freeze({
+              ok: false as const,
+              state: "unchanged" as const,
+              code: "unavailable" as const,
+            }),
+          ),
+    recoverMaintenance: (context) =>
+      maintenancePort
+        ? recoverLocalSqliteMaintenance(
+            capability.fingerprint,
+            capability.recoveryHandlerId,
+            maximumSnapshotBytes,
+            maintenancePort,
+            context,
+          )
+        : Promise.resolve(
+            Object.freeze({
+              ok: false as const,
+              state: "unchanged" as const,
+              code: "unavailable" as const,
+            }),
+          ),
+    inspectDoctor: async (context) => {
+      if (!maintenancePort) throw new LocalSqliteLifecycleError("unavailable");
+      const inspection = await inspectLocalSqliteDoctor(
+        maintenancePort,
+        context,
+      );
+      if (
+        inspection.retentionPolicy.maximumAgeNanoseconds !==
+          context.settings.maximumAgeNanoseconds ||
+        inspection.retentionPolicy.maximumTraceCount !==
+          context.settings.maximumTraceCount ||
+        inspection.retentionPolicy.maximumPayloadBytes !==
+          context.settings.maximumPayloadBytes
+      )
+        throw new LocalSqliteLifecycleError("reconciliation-required");
+      return inspection;
+    },
   });
 };
 
@@ -839,5 +918,8 @@ export const createLocalSqliteLifecycleHandler = (
 export const createLocalSqliteLifecycleHandlerForTesting = (
   capability: LocalResourceLifecycleCapability,
   port: LocalSqliteLifecyclePort,
-): LocalResourceLifecycleHandler => createHandler(capability, port);
+  maintenancePort?: LocalSqliteMaintenancePort,
+  maximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+): LocalResourceLifecycleHandler =>
+  createHandler(capability, port, maintenancePort, maximumSnapshotBytes);
 import { createHash } from "node:crypto";

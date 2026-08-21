@@ -99,12 +99,23 @@ if (
       "LocalSqliteNamespaceError",
       "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR",
       "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT",
+      "LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES",
+      "LOCAL_SQLITE_TEST_MAXIMUM_SNAPSHOT_BYTES",
+      "createLocalSqliteLifecycleArtifactGrammarForTesting",
+      "localSqliteLifecycleArtifactGrammarFingerprintForTesting",
       "LOCAL_SQLITE_DESTINATION_FORMAT",
       "LOCAL_SQLITE_MIGRATION_MANIFEST_ID",
       "LOCAL_SQLITE_MIGRATIONS",
       "LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID",
       "LOCAL_SQLITE_REPORTER_POLICY_MANIFEST",
       "LOCAL_SQLITE_REPORTER_POLICY_VERSION",
+      "applyLocalSqliteMaintenance",
+      "decodeLocalSqliteBackupReceipt",
+      "decodeLocalSqliteMaintenanceIntent",
+      "encodeLocalSqliteBackupReceipt",
+      "encodeLocalSqliteMaintenanceIntent",
+      "inspectLocalSqliteDoctor",
+      "LocalSqliteMaintenanceError",
       "planLocalSqliteNamespace",
       "createLocalSqliteDatabaseFailureForTesting",
       "createLocalSqliteReporterForTesting",
@@ -122,6 +133,7 @@ if (
       "parseLocalSqliteFenceRecord",
       "parseLocalSqliteLeaseRecord",
       "recoverDeadLocalSqliteLease",
+      "recoverLocalSqliteMaintenance",
       "releaseLocalSqliteExclusiveFence",
       "releaseLocalSqliteSharedLease",
       "runLocalSqliteMigrations",
@@ -193,6 +205,448 @@ try {
 } catch (error) {
   if (error?.code !== "reconciliation-required") throw error;
 }
+const builtMaintenanceIntentBytes = `${JSON.stringify({
+  recordVersion: 1,
+  operation: "backup",
+  transactionId: "9".repeat(32),
+  backupId: "8".repeat(32),
+  destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+  connectionId: builtLifecycleConnectionId,
+  connectionDigest: createHash("sha256")
+    .update(
+      JSON.stringify({
+        connectionId: builtLifecycleConnectionId,
+        destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+      }),
+    )
+    .digest("hex"),
+  owner: {
+    processId: 1,
+    processStartIdentity: `process-start-v1-${"7".repeat(64)}`,
+  },
+  namespaceFingerprint: `sha256-${"6".repeat(64)}`,
+  physicalEvidenceFingerprint: `sha256-${"8".repeat(64)}`,
+  lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
+  recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  artifactGrammarFingerprint:
+    testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
+  artifactGrammarVersion: 1,
+  capabilityVersion: 1,
+  destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+  migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
+  protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+  configurationGeneration: 1,
+  configurationDigest: `sha256-${"3".repeat(64)}`,
+  maximumAgeNanoseconds: "1",
+  maximumTraceCount: 1,
+  maximumPayloadBytes: 1,
+  selectedReceiptDigest: null,
+  selectedSnapshotPhysicalIdentity: null,
+})}\n`;
+const builtMaintenanceIntent = testing.decodeLocalSqliteMaintenanceIntent(
+  builtMaintenanceIntentBytes,
+);
+if (
+  !builtMaintenanceIntent ||
+  testing.encodeLocalSqliteMaintenanceIntent(builtMaintenanceIntent) !==
+    builtMaintenanceIntentBytes
+)
+  throw new Error("Local SQLite built maintenance intent codec drifted.");
+try {
+  testing.encodeLocalSqliteMaintenanceIntent({ ...builtMaintenanceIntent });
+  throw new Error("Local SQLite copied maintenance intent was accepted.");
+} catch (error) {
+  if (error?.code !== "reconciliation-required") throw error;
+}
+
+const syntheticMaximumSnapshotBytes =
+  testing.LOCAL_SQLITE_TEST_MAXIMUM_SNAPSHOT_BYTES;
+const syntheticArtifactFingerprint =
+  testing.localSqliteLifecycleArtifactGrammarFingerprintForTesting(
+    syntheticMaximumSnapshotBytes,
+  );
+const maintenanceEvents = [];
+let capturedMaintenanceIntent = "";
+let builtPublishedReceipt = "";
+let maintenanceCandidateCalls = 0;
+const maintenanceFence = Object.freeze({
+  state: "exclusive",
+  filename: "exclusive-fence-v1",
+  physicalIdentity: "dev:1:ino:9",
+  record: Object.freeze({
+    transactionId: "9".repeat(32),
+    lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
+    lifecycleGeneration: 1,
+    purpose: "lifecycle",
+  }),
+  deadLeaseNames: Object.freeze([]),
+});
+const maintenanceContext = Object.freeze({
+  operation: "backup",
+  operationId: "9".repeat(32),
+  resourceSelector: "8".repeat(32),
+  destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+  connectionId: builtLifecycleConnectionId,
+  connectionName: "built-local",
+  owner: {
+    processId: 1,
+    processStartIdentity: `process-start-v1-${"7".repeat(64)}`,
+  },
+  settings: {
+    maximumAgeNanoseconds: "1",
+    maximumTraceCount: 1,
+    maximumPayloadBytes: 1,
+  },
+  configurationGeneration: 1,
+  configurationDigest: `sha256-${"3".repeat(64)}`,
+  signal: new AbortController().signal,
+  deadline: Object.freeze({ expiresAtMonotonicMilliseconds: 10_000 }),
+});
+const builtPlanEvidence = Object.freeze({
+  namespaceFingerprint: `sha256-${"6".repeat(64)}`,
+  physicalEvidenceFingerprint: `sha256-${"8".repeat(64)}`,
+  displayPath: "/synthetic/local-sqlite/backups",
+  persistentDataNotice: true,
+  retentionPolicy: Object.freeze({
+    ...maintenanceContext.settings,
+    physicalCleanupTrigger: "next-authorized-mutation",
+  }),
+});
+const unused = () => Promise.reject(new Error("unused built maintenance port"));
+const builtMaintenancePort = {
+  inspectMaintenance: unused,
+  publishMaintenanceIntent: (_intent, bytes) => {
+    maintenanceEvents.push("intent");
+    capturedMaintenanceIntent = bytes;
+    return Promise.resolve();
+  },
+  acquireExclusiveFence: () => Promise.resolve(maintenanceFence),
+  revalidatePhysicalEvidence: () => Promise.resolve(),
+  inspectBackupInventory: () =>
+    Promise.resolve({ entries: [], hasCapacity: true }),
+  cleanupRetention: () => Promise.resolve(),
+  createBackupCandidate: () => {
+    maintenanceCandidateCalls += 1;
+    return Promise.resolve();
+  },
+  verifyBackupCandidate: () =>
+    Promise.resolve({
+      snapshotPhysicalIdentity: "dev:1:ino:20",
+      snapshotBytes: 4_096,
+      destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+      migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
+      protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+    }),
+  publishBackup: (_intent, _receipt, canonicalReceipt) => {
+    maintenanceEvents.push("publish");
+    builtPublishedReceipt = canonicalReceipt;
+    return Promise.resolve();
+  },
+  readPublishedBackupReceipt: unused,
+  verifyPublishedBackup: () =>
+    Promise.resolve({
+      snapshotPhysicalIdentity: "dev:1:ino:20",
+      snapshotBytes: 4_096,
+      destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+      migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
+      protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+    }),
+  readSelectedBackupReceipt: unused,
+  createRestoreCandidate: unused,
+  verifyRestoreCandidate: unused,
+  enforceRestoreRetention: unused,
+  replaceActiveWithRestoreCandidate: unused,
+  verifyRestoredActive: unused,
+  rollbackRestoredActive: unused,
+  verifyRolledBackActive: () => {
+    maintenanceEvents.push("verify-rollback");
+    return Promise.resolve();
+  },
+  removeRollbackPreimage: unused,
+  claimMaintenanceIntent: unused,
+  inspectRecoveryPhase: unused,
+  rollbackPreparedMaintenance: unused,
+  finalizeMaintenance: () => {
+    maintenanceEvents.push("finalize");
+    return Promise.resolve();
+  },
+  completeMaintenanceFinalization: () => Promise.resolve(),
+  inspectDoctor: () =>
+    Promise.resolve({
+      state: "available",
+      lifecycleState: "clean",
+      databaseState: "present",
+      backupState: "available",
+      sharedLeaseCount: 0,
+      publishedBackupCount: 1,
+      retentionPolicy: builtPlanEvidence.retentionPolicy,
+      databaseDerivedRetention: {
+        cutoff: "unavailable",
+        clockContinuity: "unavailable",
+        rowCount: "unavailable",
+        payloadBytes: "unavailable",
+      },
+    }),
+};
+const builtBackupResult = await testing.applyLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  builtMaintenancePort,
+  Object.freeze({
+    ...maintenanceContext,
+    planEvidence: Object.freeze({
+      planEvidence: builtPlanEvidence,
+      resourceSelector: maintenanceContext.resourceSelector,
+      selectedBackupAuthority: null,
+    }),
+  }),
+);
+if (
+  !builtBackupResult.ok ||
+  builtBackupResult.state !== "backed-up" ||
+  maintenanceCandidateCalls !== 1 ||
+  maintenanceEvents.join("|") !== "intent|publish|finalize"
+)
+  throw new Error("Built Local SQLite backup orchestration drifted.");
+const fullBuiltInventory = Array.from({ length: 8 }, (_, index) => {
+  const artifactId = (index + 1).toString(16).repeat(32).slice(0, 32);
+  return [
+    {
+      role: "published-snapshot",
+      artifactId,
+      physicalIdentity: `dev:2:ino:${index + 1}`,
+      bytes: 1,
+      sparse: false,
+    },
+    {
+      role: "backup-receipt",
+      artifactId,
+      physicalIdentity: `dev:3:ino:${index + 1}`,
+      bytes: 1,
+      sparse: false,
+    },
+  ];
+}).flat();
+const capacityResult = await testing.applyLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  {
+    ...builtMaintenancePort,
+    inspectBackupInventory: () =>
+      Promise.resolve({ entries: fullBuiltInventory, hasCapacity: true }),
+  },
+  Object.freeze({
+    ...maintenanceContext,
+    planEvidence: Object.freeze({
+      planEvidence: builtPlanEvidence,
+      resourceSelector: maintenanceContext.resourceSelector,
+      selectedBackupAuthority: null,
+    }),
+  }),
+);
+if (
+  capacityResult.ok ||
+  capacityResult.code !== "capacity" ||
+  maintenanceCandidateCalls !== 1
+)
+  throw new Error("Built Local SQLite full-inventory capacity gate drifted.");
+const backupRecoveryContext = Object.freeze({
+  operation: "backup",
+  operationId: "9".repeat(32),
+  resourceSelector: "8".repeat(32),
+  destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+  connectionId: builtLifecycleConnectionId,
+  owner: maintenanceContext.owner,
+  lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
+  recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  configurationGeneration: 1,
+  configurationDigest: `sha256-${"3".repeat(64)}`,
+  signal: new AbortController().signal,
+  deadline: Object.freeze({ expiresAtMonotonicMilliseconds: 10_000 }),
+});
+const replacedPublished = await testing.recoverLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  {
+    ...builtMaintenancePort,
+    claimMaintenanceIntent: () =>
+      Promise.resolve({
+        canonicalBytes: capturedMaintenanceIntent,
+        fence: maintenanceFence,
+      }),
+    inspectRecoveryPhase: () => Promise.resolve("backup-published"),
+    readPublishedBackupReceipt: () => Promise.resolve(builtPublishedReceipt),
+    verifyPublishedBackup: () =>
+      Promise.resolve({
+        snapshotPhysicalIdentity: "dev:1:ino:999",
+        snapshotBytes: 4_096,
+        destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+        migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
+        protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+      }),
+  },
+  backupRecoveryContext,
+);
+const wrongCandidate = await testing.recoverLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  {
+    ...builtMaintenancePort,
+    claimMaintenanceIntent: () =>
+      Promise.resolve({
+        canonicalBytes: capturedMaintenanceIntent,
+        fence: maintenanceFence,
+      }),
+    inspectRecoveryPhase: () => Promise.resolve("backup-candidate"),
+    inspectBackupInventory: () =>
+      Promise.resolve({
+        entries: [
+          {
+            role: "database-candidate",
+            artifactId: "6".repeat(32),
+            physicalIdentity: "dev:1:ino:40",
+            bytes: 4_096,
+            sparse: false,
+          },
+        ],
+        hasCapacity: true,
+      }),
+  },
+  backupRecoveryContext,
+);
+const wrongTransactionReceipt = JSON.parse(builtPublishedReceipt);
+wrongTransactionReceipt.transactionId = "6".repeat(32);
+const wrongTransaction = await testing.recoverLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  {
+    ...builtMaintenancePort,
+    claimMaintenanceIntent: () =>
+      Promise.resolve({
+        canonicalBytes: capturedMaintenanceIntent,
+        fence: maintenanceFence,
+      }),
+    inspectRecoveryPhase: () => Promise.resolve("backup-published"),
+    readPublishedBackupReceipt: () =>
+      Promise.resolve(`${JSON.stringify(wrongTransactionReceipt)}\n`),
+  },
+  backupRecoveryContext,
+);
+if (
+  replacedPublished.ok ||
+  replacedPublished.code !== "reconciliation-required" ||
+  wrongCandidate.ok ||
+  wrongCandidate.code !== "reconciliation-required" ||
+  wrongTransaction.ok ||
+  wrongTransaction.code !== "reconciliation-required"
+)
+  throw new Error("Built Local SQLite recovery identity gates drifted.");
+const restoreIntentRecord = JSON.parse(capturedMaintenanceIntent);
+restoreIntentRecord.operation = "restore";
+restoreIntentRecord.transactionId = "7".repeat(32);
+restoreIntentRecord.selectedReceiptDigest = `sha256-${"4".repeat(64)}`;
+restoreIntentRecord.selectedSnapshotPhysicalIdentity = "dev:1:ino:20";
+const restoreIntentBytes = `${JSON.stringify(restoreIntentRecord)}\n`;
+if (
+  !testing.decodeLocalSqliteMaintenanceIntent(
+    restoreIntentBytes,
+    syntheticArtifactFingerprint,
+  )
+)
+  throw new Error("Built synthetic restore intent was not canonical.");
+const recoveryContext = Object.freeze({
+  operation: "restore",
+  operationId: "7".repeat(32),
+  resourceSelector: "8".repeat(32),
+  destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+  connectionId: builtLifecycleConnectionId,
+  owner: maintenanceContext.owner,
+  lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
+  recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  configurationGeneration: 1,
+  configurationDigest: `sha256-${"3".repeat(64)}`,
+  signal: new AbortController().signal,
+  deadline: Object.freeze({ expiresAtMonotonicMilliseconds: 10_000 }),
+});
+const recovered = await testing.recoverLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  {
+    ...builtMaintenancePort,
+    claimMaintenanceIntent: () =>
+      Promise.resolve({
+        canonicalBytes: restoreIntentBytes,
+        fence: maintenanceFence,
+      }),
+    inspectRecoveryPhase: () => Promise.resolve("restore-rolled-back"),
+  },
+  recoveryContext,
+);
+if (
+  !recovered.ok ||
+  recovered.state !== "rolled-back" ||
+  maintenanceEvents.at(-2) !== "verify-rollback" ||
+  maintenanceEvents.at(-1) !== "finalize"
+)
+  throw new Error("Built Local SQLite rollback recovery drifted.");
+let builtRestoreRollbackCalls = 0;
+let builtPreimageRemovalCalls = 0;
+const swappedActive = await testing.recoverLocalSqliteMaintenance(
+  `sha256-${"5".repeat(64)}`,
+  root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  syntheticMaximumSnapshotBytes,
+  {
+    ...builtMaintenancePort,
+    claimMaintenanceIntent: () =>
+      Promise.resolve({
+        canonicalBytes: restoreIntentBytes,
+        fence: maintenanceFence,
+      }),
+    inspectRecoveryPhase: () => Promise.resolve("restore-verified"),
+    verifyRestoredActive: () => Promise.resolve(false),
+    rollbackRestoredActive: () => {
+      builtRestoreRollbackCalls += 1;
+      return Promise.resolve();
+    },
+    removeRollbackPreimage: () => {
+      builtPreimageRemovalCalls += 1;
+      return Promise.resolve();
+    },
+  },
+  recoveryContext,
+);
+if (
+  swappedActive.ok ||
+  swappedActive.code !== "unavailable" ||
+  builtRestoreRollbackCalls !== 1 ||
+  builtPreimageRemovalCalls !== 0
+)
+  throw new Error("Built Local SQLite restore revalidation drifted.");
+const doctorContext = Object.freeze({
+  destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+  connectionId: builtLifecycleConnectionId,
+  connectionName: "built-local",
+  settings: maintenanceContext.settings,
+  configurationGeneration: 1,
+  configurationDigest: `sha256-${"3".repeat(64)}`,
+  signal: new AbortController().signal,
+  deadline: Object.freeze({ expiresAtMonotonicMilliseconds: 10_000 }),
+});
+const builtDoctor = await testing.inspectLocalSqliteDoctor(
+  builtMaintenancePort,
+  doctorContext,
+);
+if (
+  builtDoctor.databaseDerivedRetention.rowCount !== "unavailable" ||
+  builtDoctor.databaseDerivedRetention.payloadBytes !== "unavailable"
+)
+  throw new Error("Built Local SQLite conservative Doctor drifted.");
 const artifactGrammarFingerprint = `sha256-${createHash("sha256")
   .update(JSON.stringify(testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR))
   .digest("hex")}`;
@@ -236,6 +690,7 @@ if (
   lifecycleLimits.leaseRecordBytes !== 256 ||
   testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.supportManifest
     .maximumSnapshotBytes !== 0 ||
+  testing.LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES !== 0 ||
   testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.supportManifest
     .nativeAdmission !== "no-admitted-native-tuples"
 )

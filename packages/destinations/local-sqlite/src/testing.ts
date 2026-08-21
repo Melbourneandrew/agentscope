@@ -40,6 +40,10 @@ export {
 export {
   LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR,
   LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
+  LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+  LOCAL_SQLITE_TEST_MAXIMUM_SNAPSHOT_BYTES,
+  createLocalSqliteLifecycleArtifactGrammarForTesting,
+  localSqliteLifecycleArtifactGrammarFingerprintForTesting,
 } from "./lifecycle/capability.js";
 export {
   inspectLocalSqliteNativeSupportManifestForTesting,
@@ -88,3 +92,19 @@ export {
   type LocalSqliteLifecyclePort,
   type LocalSqliteOwnershipReceipt,
 } from "./lifecycle/configuration.js";
+export {
+  applyLocalSqliteMaintenance,
+  decodeLocalSqliteBackupReceipt,
+  decodeLocalSqliteMaintenanceIntent,
+  encodeLocalSqliteBackupReceipt,
+  encodeLocalSqliteMaintenanceIntent,
+  inspectLocalSqliteDoctor,
+  LocalSqliteMaintenanceError,
+  recoverLocalSqliteMaintenance,
+  type LocalSqliteBackupInventoryEvidence,
+  type LocalSqliteBackupReceipt,
+  type LocalSqliteMaintenanceIntent,
+  type LocalSqliteMaintenancePort,
+  type LocalSqliteMaintenanceRecoveryPhase,
+  type LocalSqliteVerifiedSnapshotEvidence,
+} from "./lifecycle/maintenance.js";

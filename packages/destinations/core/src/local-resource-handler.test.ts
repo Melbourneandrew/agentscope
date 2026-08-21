@@ -12,16 +12,23 @@ import {
 } from "./local-resource-configuration-authority.js";
 import {
   applyLocalResourceLifecyclePlan,
+  applyLocalResourceMaintenancePlan,
+  bindLocalResourceDoctorContextForCore,
+  bindLocalResourceMaintenanceContextForCore,
+  bindLocalResourceMaintenanceRecoveryContextForCore,
   completeLocalResourceLifecycle,
   compileLocalResourceLifecycleHandlerRegistry,
   defineLocalResourceLifecycleHandler,
   inspectLocalResourceLifecyclePlan,
+  inspectLocalResourceDoctor,
+  inspectLocalResourceMaintenancePlan,
   inspectRetainedLocalResourceDelete,
   isLocalResourceLifecycleHandlerRegistry,
   localResourceLifecycleHandlerRegistryUsesDestinationRegistry,
   getLocalResourceLifecycleHandlerCapability,
   LocalResourceLifecycleHandlerError,
   recoverLocalResourceLifecycle,
+  recoverLocalResourceMaintenance,
   type LocalResourceLifecycleContext,
 } from "./local-resource-handler.js";
 import {
@@ -41,7 +48,13 @@ void schema.shape;
 const declaration = (
   destinationType = "@agentscope/destination-local-sqlite",
   operations: readonly (
-    "configure" | "delete" | "recover" | "unconfigure"
+    | "backup"
+    | "configure"
+    | "delete"
+    | "doctor"
+    | "recover"
+    | "restore"
+    | "unconfigure"
   )[] = ["configure", "delete", "recover", "unconfigure"],
   artifactFingerprintCharacter = "a",
 ) =>
@@ -60,7 +73,15 @@ const declaration = (
 
 const descriptor = (
   destinationType = "@agentscope/destination-local-sqlite",
-  operations?: readonly ("configure" | "delete" | "recover" | "unconfigure")[],
+  operations?: readonly (
+    | "backup"
+    | "configure"
+    | "delete"
+    | "doctor"
+    | "recover"
+    | "restore"
+    | "unconfigure"
+  )[],
   artifactFingerprintCharacter = "a",
 ) =>
   defineDestinationDescriptor({
@@ -327,6 +348,479 @@ describe("local resource configuration authority", () => {
     await expect(committing).rejects.toThrow(
       LocalResourceConfigurationCommitError,
     );
+  });
+});
+
+// eslint-disable-next-line max-lines-per-function -- one exact fixture exercises the complete maintenance/Doctor family boundary.
+describe("local resource maintenance and Doctor boundary", () => {
+  const maintenanceDescriptor = descriptor(undefined, [
+    "backup",
+    "configure",
+    "delete",
+    "doctor",
+    "recover",
+    "restore",
+    "unconfigure",
+  ]);
+  const destinationRegistry = compileDestinationRegistry([
+    maintenanceDescriptor,
+  ]);
+  const capability = maintenanceDescriptor.localResourceLifecycle!;
+  const unused = () => Promise.reject(new Error("unused"));
+  const planEvidence = Object.freeze({
+    namespaceFingerprint: `sha256-${"1".repeat(64)}`,
+    physicalEvidenceFingerprint: `sha256-${"2".repeat(64)}`,
+    displayPath: "/owned/local.sqlite",
+    persistentDataNotice: true as const,
+    retentionPolicy: Object.freeze({
+      maximumAgeNanoseconds: "1",
+      maximumTraceCount: 1,
+      maximumPayloadBytes: 1,
+      physicalCleanupTrigger: "next-authorized-mutation" as const,
+    }),
+  });
+  const backupAuthority = Object.freeze({
+    backupId: "3".repeat(32),
+    receiptDigest: `sha256-${"4".repeat(64)}`,
+    snapshotPhysicalIdentity: "dev:1:ino:3",
+  });
+  const handlerRegistry = (
+    overrides: Readonly<{
+      plan?: unknown;
+      apply?: unknown;
+      recover?: unknown;
+      doctor?: unknown;
+    }> = {},
+  ) =>
+    compileLocalResourceLifecycleHandlerRegistry(destinationRegistry, [
+      defineLocalResourceLifecycleHandler({
+        capability,
+        complete: () => Promise.resolve(),
+        inspectPlan: unused,
+        inspectRetainedDelete: unused,
+        apply: unused,
+        recover: unused,
+        inspectMaintenancePlan: (value) =>
+          Promise.resolve(
+            (overrides.plan === undefined
+              ? {
+                  planEvidence,
+                  resourceSelector: value.resourceSelector,
+                  selectedBackupAuthority:
+                    value.operation === "restore" ? backupAuthority : null,
+                }
+              : overrides.plan) as never,
+          ),
+        applyMaintenance: (value) =>
+          Promise.resolve(
+            (overrides.apply === undefined
+              ? value.operation === "backup"
+                ? {
+                    ok: true as const,
+                    state: "backed-up" as const,
+                    backupAuthority,
+                  }
+                : { ok: true as const, state: "restored" as const }
+              : overrides.apply) as never,
+          ),
+        recoverMaintenance: () =>
+          Promise.resolve(
+            (overrides.recover === undefined
+              ? { ok: true, state: "rolled-back" }
+              : overrides.recover) as never,
+          ),
+        inspectDoctor: () =>
+          Promise.resolve(
+            (overrides.doctor === undefined
+              ? {
+                  state: "available",
+                  lifecycleState: "clean",
+                  databaseState: "present",
+                  backupState: "available",
+                  sharedLeaseCount: 0,
+                  publishedBackupCount: 1,
+                  retentionPolicy: planEvidence.retentionPolicy,
+                  databaseDerivedRetention: {
+                    cutoff: "unavailable",
+                    clockContinuity: "unavailable",
+                    rowCount: "unavailable",
+                    payloadBytes: "unavailable",
+                  },
+                }
+              : overrides.doctor) as never,
+          ),
+      }),
+    ]);
+  const input = (operation: "backup" | "restore") =>
+    bindLocalResourceMaintenanceContextForCore({
+      operation,
+      operationId: "5".repeat(32),
+      resourceSelector: "3".repeat(32),
+      destinationType: capability.destinationType,
+      connectionId: `destination-connection-v1-${"6".repeat(64)}`,
+      connectionName: "local",
+      owner: {
+        processId: 123,
+        processStartIdentity: `process-start-v1-${"7".repeat(64)}`,
+      },
+      settings: { maximumTraceCount: 1 },
+      configurationGeneration: 1,
+      configurationDigest: `sha256-${"8".repeat(64)}`,
+      signal: new AbortController().signal,
+      deadline: createLocalResourceLifecycleDeadlineForCore(10_000),
+    });
+
+  it("normalizes maintenance plans, results, recovery, and Doctor evidence", async () => {
+    const registry = handlerRegistry();
+    const backup = input("backup");
+    const evidence = await inspectLocalResourceMaintenancePlan(
+      registry,
+      backup,
+    );
+    await expect(
+      applyLocalResourceMaintenancePlan(registry, backup, evidence),
+    ).resolves.toEqual({
+      ok: true,
+      state: "backed-up",
+      backupAuthority,
+    });
+    const recovery = bindLocalResourceMaintenanceRecoveryContextForCore({
+      operation: "backup",
+      operationId: backup.operationId,
+      resourceSelector: backup.resourceSelector,
+      destinationType: backup.destinationType,
+      connectionId: backup.connectionId,
+      owner: backup.owner,
+      lifecycleFingerprint: capability.fingerprint,
+      recoveryHandlerId: capability.recoveryHandlerId,
+      configurationGeneration: backup.configurationGeneration,
+      configurationDigest: backup.configurationDigest,
+      signal: backup.signal,
+      deadline: createLocalResourceLifecycleDeadlineForCore(10_000),
+    });
+    await expect(
+      recoverLocalResourceMaintenance(registry, recovery),
+    ).resolves.toEqual({ ok: true, state: "rolled-back" });
+    const doctor = bindLocalResourceDoctorContextForCore({
+      destinationType: backup.destinationType,
+      connectionId: backup.connectionId,
+      connectionName: backup.connectionName,
+      settings: backup.settings,
+      configurationGeneration: backup.configurationGeneration,
+      configurationDigest: backup.configurationDigest,
+      signal: backup.signal,
+      deadline: createLocalResourceLifecycleDeadlineForCore(10_000),
+    });
+    await expect(
+      inspectLocalResourceDoctor(registry, doctor),
+    ).resolves.toMatchObject({
+      state: "available",
+      databaseDerivedRetention: { cutoff: "unavailable" },
+    });
+  });
+
+  it("rejects accessor-backed context data without invoking caller code", () => {
+    let calls = 0;
+    const hostile = Object.defineProperty(
+      { ...input("backup") },
+      "resourceSelector",
+      {
+        enumerable: true,
+        get: () => {
+          calls += 1;
+          return "3".repeat(32);
+        },
+      },
+    );
+    expect(() =>
+      bindLocalResourceMaintenanceContextForCore(hostile as never),
+    ).toThrow(LocalResourceLifecycleHandlerError);
+    expect(calls).toBe(0);
+  });
+
+  it("requires maintenance and Doctor implementations for advertised operations", () => {
+    expect(() =>
+      compileLocalResourceLifecycleHandlerRegistry(destinationRegistry, [
+        defineLocalResourceLifecycleHandler({
+          capability,
+          complete: unused,
+          inspectPlan: unused,
+          inspectRetainedDelete: unused,
+          apply: unused,
+          recover: unused,
+        }),
+      ]),
+    ).toThrow(LocalResourceLifecycleHandlerError);
+  });
+
+  it("reconstructs exact maintenance, recovery, and Doctor inputs", () => {
+    const branded = input("backup");
+    const { localResourceMaintenanceContext: _brand, ...raw } = branded;
+    void _brand;
+    for (const candidate of [
+      null,
+      { ...raw, extra: true },
+      { ...raw, operation: "delete" },
+      { ...raw, destinationType: "bad" },
+      { ...raw, connectionName: "" },
+      { ...raw, owner: { ...raw.owner, processId: 0 } },
+    ])
+      expect(() =>
+        bindLocalResourceMaintenanceContextForCore(candidate as never),
+      ).toThrow(LocalResourceLifecycleHandlerError);
+
+    const recovery = {
+      operation: "backup" as const,
+      operationId: branded.operationId,
+      resourceSelector: branded.resourceSelector,
+      destinationType: branded.destinationType,
+      connectionId: branded.connectionId,
+      owner: branded.owner,
+      lifecycleFingerprint: capability.fingerprint,
+      recoveryHandlerId: capability.recoveryHandlerId,
+      configurationGeneration: branded.configurationGeneration,
+      configurationDigest: branded.configurationDigest,
+      signal: branded.signal,
+      deadline: branded.deadline,
+    };
+    for (const candidate of [
+      { ...recovery, operationId: "bad" },
+      { ...recovery, lifecycleFingerprint: "bad" },
+      { ...recovery, recoveryHandlerId: "" },
+    ])
+      expect(() =>
+        bindLocalResourceMaintenanceRecoveryContextForCore(candidate as never),
+      ).toThrow(LocalResourceLifecycleHandlerError);
+
+    const doctor = {
+      destinationType: branded.destinationType,
+      connectionId: branded.connectionId,
+      connectionName: branded.connectionName,
+      settings: branded.settings,
+      configurationGeneration: branded.configurationGeneration,
+      configurationDigest: branded.configurationDigest,
+      signal: branded.signal,
+      deadline: branded.deadline,
+    };
+    expect(() =>
+      bindLocalResourceDoctorContextForCore({
+        ...doctor,
+        connectionName: "",
+      }),
+    ).toThrow(LocalResourceLifecycleHandlerError);
+  });
+
+  it("fails closed on malformed maintenance plan and result DTOs", async () => {
+    const backup = input("backup");
+    const restore = input("restore");
+    const invalidPlans: unknown[] = [
+      null,
+      { planEvidence, resourceSelector: backup.resourceSelector },
+      {
+        planEvidence,
+        resourceSelector: "9".repeat(32),
+        selectedBackupAuthority: null,
+      },
+      {
+        planEvidence,
+        resourceSelector: backup.resourceSelector,
+        selectedBackupAuthority: backupAuthority,
+      },
+      {
+        planEvidence,
+        resourceSelector: backup.resourceSelector,
+        selectedBackupAuthority: {
+          ...backupAuthority,
+          backupId: "9".repeat(32),
+        },
+      },
+    ];
+    for (const plan of invalidPlans)
+      await expect(
+        inspectLocalResourceMaintenancePlan(handlerRegistry({ plan }), backup),
+      ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    for (const selectedBackupAuthority of [
+      null,
+      "bad",
+      { ...backupAuthority, extra: true },
+      { ...backupAuthority, receiptDigest: "bad" },
+      { ...backupAuthority, backupId: "9".repeat(32) },
+    ])
+      await expect(
+        inspectLocalResourceMaintenancePlan(
+          handlerRegistry({
+            plan: {
+              planEvidence,
+              resourceSelector: restore.resourceSelector,
+              selectedBackupAuthority,
+            },
+          }),
+          restore,
+        ),
+      ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+
+    const evidence = await inspectLocalResourceMaintenancePlan(
+      handlerRegistry(),
+      backup,
+    );
+    const invalidResults: unknown[] = [
+      null,
+      { ok: true, state: "backed-up" },
+      {
+        ok: true,
+        state: "backed-up",
+        backupAuthority: { ...backupAuthority, backupId: "9".repeat(32) },
+      },
+      { ok: true, state: "restored" },
+      { ok: false, state: "bad", code: "bad" },
+    ];
+    for (const apply of invalidResults)
+      await expect(
+        applyLocalResourceMaintenancePlan(
+          handlerRegistry({ apply }),
+          backup,
+          evidence,
+        ),
+      ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    const restoreEvidence = await inspectLocalResourceMaintenancePlan(
+      handlerRegistry(),
+      restore,
+    );
+    await expect(
+      applyLocalResourceMaintenancePlan(
+        handlerRegistry({
+          apply: {
+            ok: true,
+            state: "backed-up",
+            backupAuthority,
+          },
+        }),
+        restore,
+        restoreEvidence,
+      ),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    await expect(
+      applyLocalResourceMaintenancePlan(
+        handlerRegistry({
+          apply: { ok: false, state: "unchanged", code: "capacity" },
+        }),
+        backup,
+        evidence,
+      ),
+    ).resolves.toEqual({ ok: false, state: "unchanged", code: "capacity" });
+  });
+
+  it("fails closed on malformed Doctor DTOs and unbranded invocation", async () => {
+    const backup = input("backup");
+    const doctor = bindLocalResourceDoctorContextForCore({
+      destinationType: backup.destinationType,
+      connectionId: backup.connectionId,
+      connectionName: backup.connectionName,
+      settings: backup.settings,
+      configurationGeneration: backup.configurationGeneration,
+      configurationDigest: backup.configurationDigest,
+      signal: backup.signal,
+      deadline: backup.deadline,
+    });
+    const baseInspection = await inspectLocalResourceDoctor(
+      handlerRegistry(),
+      doctor,
+    );
+    for (const result of [
+      null,
+      { ...baseInspection, extra: true },
+      { ...baseInspection, state: "bad" },
+      { ...baseInspection, sharedLeaseCount: 65 },
+      { ...baseInspection, retentionPolicy: { maximumAgeNanoseconds: "0" } },
+      { ...baseInspection, databaseDerivedRetention: null },
+      {
+        ...baseInspection,
+        databaseDerivedRetention: {
+          ...baseInspection.databaseDerivedRetention,
+          cutoff: "available",
+        },
+      },
+    ])
+      await expect(
+        inspectLocalResourceDoctor(handlerRegistry({ doctor: result }), doctor),
+      ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+
+    await expect(
+      inspectLocalResourceMaintenancePlan(handlerRegistry(), {
+        ...backup,
+      }),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    await expect(
+      applyLocalResourceMaintenancePlan(
+        handlerRegistry(),
+        { ...backup },
+        {
+          planEvidence,
+          resourceSelector: backup.resourceSelector,
+          selectedBackupAuthority: null,
+        },
+      ),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    const missing = bindLocalResourceMaintenanceContextForCore({
+      operation: backup.operation,
+      operationId: backup.operationId,
+      resourceSelector: backup.resourceSelector,
+      destinationType: "@agentscope/destination-missing",
+      connectionId: backup.connectionId,
+      connectionName: backup.connectionName,
+      owner: backup.owner,
+      settings: backup.settings,
+      configurationGeneration: backup.configurationGeneration,
+      configurationDigest: backup.configurationDigest,
+      signal: backup.signal,
+      deadline: backup.deadline,
+    });
+    await expect(
+      inspectLocalResourceMaintenancePlan(handlerRegistry(), missing),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    await expect(
+      applyLocalResourceMaintenancePlan(handlerRegistry(), missing, {
+        planEvidence,
+        resourceSelector: missing.resourceSelector,
+        selectedBackupAuthority: null,
+      }),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    const recovery = bindLocalResourceMaintenanceRecoveryContextForCore({
+      operation: backup.operation,
+      operationId: backup.operationId,
+      resourceSelector: backup.resourceSelector,
+      destinationType: backup.destinationType,
+      connectionId: backup.connectionId,
+      owner: backup.owner,
+      lifecycleFingerprint: `sha256-${"9".repeat(64)}`,
+      recoveryHandlerId: capability.recoveryHandlerId,
+      configurationGeneration: backup.configurationGeneration,
+      configurationDigest: backup.configurationDigest,
+      signal: backup.signal,
+      deadline: backup.deadline,
+    });
+    await expect(
+      recoverLocalResourceMaintenance(handlerRegistry(), { ...recovery }),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    await expect(
+      recoverLocalResourceMaintenance(handlerRegistry(), recovery),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    await expect(
+      inspectLocalResourceDoctor(handlerRegistry(), { ...doctor }),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
+    const missingDoctor = bindLocalResourceDoctorContextForCore({
+      destinationType: missing.destinationType,
+      connectionId: missing.connectionId,
+      connectionName: missing.connectionName,
+      settings: missing.settings,
+      configurationGeneration: missing.configurationGeneration,
+      configurationDigest: missing.configurationDigest,
+      signal: missing.signal,
+      deadline: missing.deadline,
+    });
+    await expect(
+      inspectLocalResourceDoctor(handlerRegistry(), missingDoctor),
+    ).rejects.toThrow(LocalResourceLifecycleHandlerError);
   });
 });
 

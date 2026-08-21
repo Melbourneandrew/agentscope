@@ -28,6 +28,8 @@ import {
 } from "./dist/index.js";
 import {
   bindLocalResourceConfigurationAuthorityForCore,
+  bindLocalResourceDoctorContextForCore,
+  bindLocalResourceMaintenanceContextForCore,
   bindLocalResourceLifecycleContextForCore,
   bindDestinationTransport,
   bindLocalResourceLifecycleRecoveryContextForCore,
@@ -135,6 +137,55 @@ const lifecycleDeclaration = defineLocalResourceLifecycleDeclaration({
   settingKeys: ["endpoint"],
   settingsVersion: 1,
 });
+let maintenanceAccessorCalls = 0;
+const maintenanceDeadline = createLocalResourceLifecycleDeadlineForCore(1_000);
+const hostileMaintenanceContext = Object.defineProperty(
+  {
+    operation: "backup",
+    operationId: "9".repeat(32),
+    resourceSelector: "8".repeat(32),
+    destinationType: "@agentscope/destination-local-sqlite",
+    connectionId: `destination-connection-v1-${"a".repeat(64)}`,
+    connectionName: "local",
+    owner: {
+      processId: 1,
+      processStartIdentity: `process-start-v1-${"b".repeat(64)}`,
+    },
+    settings: { endpoint: "https://example.com" },
+    configurationGeneration: 1,
+    configurationDigest: `sha256-${"c".repeat(64)}`,
+    signal: new AbortController().signal,
+    deadline: maintenanceDeadline,
+  },
+  "resourceSelector",
+  {
+    enumerable: true,
+    get() {
+      maintenanceAccessorCalls += 1;
+      return "8".repeat(32);
+    },
+  },
+);
+try {
+  bindLocalResourceMaintenanceContextForCore(hostileMaintenanceContext);
+  throw new Error("Built maintenance context accepted an accessor.");
+} catch (error) {
+  if (error?.code !== "destination.local-resource-handler.invalid") throw error;
+}
+if (maintenanceAccessorCalls !== 0)
+  throw new Error("Built maintenance context invoked caller code.");
+const doctorContext = bindLocalResourceDoctorContextForCore({
+  destinationType: "@agentscope/destination-local-sqlite",
+  connectionId: `destination-connection-v1-${"a".repeat(64)}`,
+  connectionName: "local",
+  settings: { endpoint: "https://example.com" },
+  configurationGeneration: 1,
+  configurationDigest: `sha256-${"c".repeat(64)}`,
+  signal: new AbortController().signal,
+  deadline: maintenanceDeadline,
+});
+if (doctorContext.localResourceDoctorContext !== "agentscope-destinations-core")
+  throw new Error("Built Doctor context brand drifted.");
 if (
   new DestinationLocalResourceLifecycleError().code !==
   "destination.local-resource-lifecycle.invalid"

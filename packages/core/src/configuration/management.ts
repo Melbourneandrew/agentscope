@@ -10,24 +10,35 @@ import {
 } from "@agentscope/destinations-core/configuration";
 import {
   applyLocalResourceLifecyclePlan,
+  applyLocalResourceMaintenancePlan,
   completeLocalResourceLifecycle,
   getLocalResourceLifecycleHandlerCapability,
   inspectLocalResourceLifecyclePlan,
+  inspectLocalResourceMaintenancePlan,
+  inspectLocalResourceDoctor,
   inspectRetainedLocalResourceDelete,
   LocalResourceConfigurationCommitError,
   isLocalResourceLifecycleHandlerRegistry,
   localResourceLifecycleHandlerRegistryUsesDestinationRegistry,
   recoverLocalResourceLifecycle,
+  recoverLocalResourceMaintenance,
+  type LocalResourceDoctorInspection,
   type LocalResourceLifecycleApplyResult,
   type LocalResourceLifecycleContext,
   type LocalResourceLifecycleHandlerRegistry,
   type LocalResourceLifecyclePlanEvidence,
+  type LocalResourceMaintenanceContext,
+  type LocalResourceMaintenancePlanEvidence,
+  type LocalResourceMaintenanceResult,
   type LocalResourceRetainedDeleteAuthority,
 } from "@agentscope/destinations-core";
 import {
   bindLocalResourceConfigurationAuthorityForCore,
   bindLocalResourceLifecycleContextForCore,
   bindLocalResourceLifecycleRecoveryContextForCore,
+  bindLocalResourceMaintenanceContextForCore,
+  bindLocalResourceMaintenanceRecoveryContextForCore,
+  bindLocalResourceDoctorContextForCore,
   createLocalResourceLifecycleDeadlineForCore,
 } from "@agentscope/destinations-core/core-orchestration";
 import { z } from "zod";
@@ -121,6 +132,16 @@ const destinationLifecyclePlans = new WeakMap<
   }>
 >();
 const consumedDestinationLifecyclePlans = new WeakSet<object>();
+const destinationMaintenancePlans = new WeakMap<
+  object,
+  Readonly<{
+    runtime: ConfigurationManagementRuntime;
+    context: LocalResourceMaintenanceContext;
+    evidence: LocalResourceMaintenancePlanEvidence;
+    connectionName: string;
+  }>
+>();
+const consumedDestinationMaintenancePlans = new WeakSet<object>();
 
 export type ConfigurationManagementRuntime = Readonly<{
   readonly configurationManagement: "agentscope-core";
@@ -144,6 +165,30 @@ export type DestinationLifecyclePlan = Readonly<{
   readonly displayPath: string;
   readonly persistentDataNotice: true;
   readonly retentionPolicy: LocalResourceLifecyclePlanEvidence["retentionPolicy"];
+}>;
+
+export type DestinationMaintenancePlan = Readonly<{
+  readonly destinationMaintenancePlan: "agentscope-core";
+  readonly operation: "backup" | "restore";
+  readonly connectionName: string;
+  readonly destinationType: string;
+  readonly displayPath: string;
+  readonly persistentDataNotice: true;
+  readonly retentionPolicy: LocalResourceLifecyclePlanEvidence["retentionPolicy"];
+  readonly backupSelector: string;
+}>;
+
+export type DestinationMaintenanceResult = Readonly<{
+  operation: "backup" | "restore";
+  connectionName: string;
+  state: "backed-up" | "restored";
+  backupSelector: string;
+}>;
+
+export type DestinationDoctorInspection = Readonly<{
+  connectionName: string;
+  destinationType: string;
+  inspection: LocalResourceDoctorInspection;
 }>;
 
 export type DestinationConnectionSummary = Readonly<{
@@ -181,6 +226,7 @@ export class ConfigurationManagementError extends Error {
       | "core.destination.credential-unavailable"
       | "core.destination.credential-removal-required"
       | "core.destination.lifecycle-busy"
+      | "core.destination.lifecycle-capacity"
       | "core.destination.lifecycle-outcome-unknown"
       | "core.destination.lifecycle-reconciliation-required"
       | "core.destination.lifecycle-unavailable"
@@ -1001,6 +1047,291 @@ const mapLifecycleFailure = (
   return invalid("core.destination.lifecycle-unavailable");
 };
 
+const mapMaintenanceFailure = (
+  result: Exclude<LocalResourceMaintenanceResult, { ok: true }>,
+): never => {
+  if (result.code === "busy") return invalid("core.destination.lifecycle-busy");
+  if (result.code === "capacity")
+    return invalid("core.destination.lifecycle-capacity");
+  if (result.code === "reconciliation-required")
+    return invalid("core.destination.lifecycle-reconciliation-required");
+  if (result.code === "outcome-unknown")
+    return invalid("core.destination.lifecycle-outcome-unknown");
+  return invalid("core.destination.lifecycle-unavailable");
+};
+
+export const inspectDestinationMaintenancePlan = async (
+  runtime: ConfigurationManagementRuntime,
+  operation: "backup" | "restore",
+  nameInput: string,
+  backupSelectorInput: string | undefined,
+  signal: AbortSignal,
+): Promise<DestinationMaintenancePlan> => {
+  const state = stored(runtime);
+  const parsedName = connectionNameSchema.safeParse(nameInput);
+  if (
+    !parsedName.success ||
+    !(signal instanceof AbortSignal) ||
+    signalAborted(signal)
+  )
+    return invalid("core.destination.lifecycle-unavailable");
+  if (
+    (operation === "backup" && backupSelectorInput !== undefined) ||
+    (operation === "restore" &&
+      (typeof backupSelectorInput !== "string" ||
+        !/^(?!0{32}$)[0-9a-f]{32}$/u.test(backupSelectorInput)))
+  )
+    return invalid();
+  let current: AgentscopeConfigurationSnapshot;
+  try {
+    current = await readConfigurationSnapshot(state.store);
+  } catch (error) {
+    return mapStoreError(error);
+  }
+  if (!current.mutationSafe)
+    return invalid("core.destination.lifecycle-unavailable");
+  const connection = current.connections.find(
+    (candidate) => candidate.name === parsedName.data,
+  );
+  if (!connection) return invalid("core.destination.connection-missing");
+  const capability = getDestinationDescriptor(
+    state.registry,
+    connection.destinationType,
+  )?.localResourceLifecycle;
+  const registered = state.lifecycleHandlers
+    ? getLocalResourceLifecycleHandlerCapability(
+        state.lifecycleHandlers,
+        connection.destinationType,
+      )
+    : undefined;
+  if (
+    !state.lifecycleHandlers ||
+    !capability ||
+    !registered ||
+    registered.fingerprint !== capability.fingerprint ||
+    !capability.operations.includes(operation)
+  )
+    return invalid("core.destination.lifecycle-unavailable");
+  const operationId = createOperationId();
+  const resourceSelector =
+    operation === "backup" ? createOperationId() : backupSelectorInput!;
+  const context = bindLocalResourceMaintenanceContextForCore({
+    operation,
+    operationId,
+    resourceSelector,
+    destinationType: connection.destinationType,
+    connectionId: connection.connectionId,
+    connectionName: connection.name,
+    owner: state.owner,
+    settings: connection.settings,
+    configurationGeneration: current.generation,
+    configurationDigest: snapshotDigest(current),
+    signal,
+    deadline: createLocalResourceLifecycleDeadlineForCore(
+      DEFAULT_HOOK_DEADLINE_MILLISECONDS,
+    ),
+  });
+  let evidence: LocalResourceMaintenancePlanEvidence;
+  try {
+    evidence = await inspectLocalResourceMaintenancePlan(
+      state.lifecycleHandlers,
+      context,
+    );
+  } catch {
+    return invalid("core.destination.lifecycle-unavailable");
+  }
+  if (signalAborted(signal))
+    return invalid("core.destination.lifecycle-unavailable");
+  const plan = Object.freeze({
+    destinationMaintenancePlan: "agentscope-core" as const,
+    operation,
+    connectionName: connection.name,
+    destinationType: connection.destinationType,
+    displayPath: evidence.planEvidence.displayPath,
+    persistentDataNotice: true as const,
+    retentionPolicy: evidence.planEvidence.retentionPolicy,
+    backupSelector: resourceSelector,
+  });
+  destinationMaintenancePlans.set(
+    plan,
+    Object.freeze({
+      runtime,
+      context,
+      evidence,
+      connectionName: connection.name,
+    }),
+  );
+  return plan;
+};
+
+export const applyDestinationMaintenancePlan = async (
+  plan: DestinationMaintenancePlan,
+): Promise<DestinationMaintenanceResult> => {
+  const authority = destinationMaintenancePlans.get(plan);
+  if (!authority || consumedDestinationMaintenancePlans.has(plan))
+    return invalid();
+  consumedDestinationMaintenancePlans.add(plan);
+  const state = stored(authority.runtime);
+  if (!state.lifecycleHandlers || signalAborted(authority.context.signal))
+    return invalid("core.destination.lifecycle-unavailable");
+  let current: AgentscopeConfigurationSnapshot;
+  try {
+    current = await readConfigurationSnapshot(state.store);
+  } catch (error) {
+    return mapStoreError(error);
+  }
+  if (
+    !current.mutationSafe ||
+    current.generation !== authority.context.configurationGeneration ||
+    snapshotDigest(current) !== authority.context.configurationDigest
+  )
+    return invalid("core.configuration.conflict");
+  const capability = getLocalResourceLifecycleHandlerCapability(
+    state.lifecycleHandlers,
+    authority.context.destinationType,
+  );
+  if (!capability) return invalid("core.destination.lifecycle-unavailable");
+  const context = bindLocalResourceMaintenanceContextForCore({
+    operation: authority.context.operation,
+    operationId: authority.context.operationId,
+    resourceSelector: authority.context.resourceSelector,
+    destinationType: authority.context.destinationType,
+    connectionId: authority.context.connectionId,
+    connectionName: authority.context.connectionName,
+    owner: authority.context.owner,
+    settings: authority.context.settings,
+    configurationGeneration: authority.context.configurationGeneration,
+    configurationDigest: authority.context.configurationDigest,
+    signal: authority.context.signal,
+    deadline: createLocalResourceLifecycleDeadlineForCore(
+      DEFAULT_HOOK_DEADLINE_MILLISECONDS,
+    ),
+  });
+  let lifecycleIntent;
+  try {
+    lifecycleIntent = await createLocalResourceMutationIntent(state.store, {
+      recordVersion: 2,
+      operation: context.operation,
+      operationId: context.operationId,
+      resourceSelector: context.resourceSelector,
+      owner: state.owner,
+      destinationType: context.destinationType,
+      connectionId: context.connectionId,
+      lifecycleFingerprint: capability.fingerprint,
+      recoveryHandlerId: capability.recoveryHandlerId,
+      expectedGeneration: context.configurationGeneration,
+      expectedDigest: context.configurationDigest,
+      authorizedCandidates: Object.freeze([]),
+    });
+  } catch (error) {
+    return mapStoreError(error);
+  }
+  let result: LocalResourceMaintenanceResult;
+  try {
+    result = await applyLocalResourceMaintenancePlan(
+      state.lifecycleHandlers,
+      context,
+      authority.evidence,
+    );
+  } catch {
+    return invalid("core.destination.lifecycle-outcome-unknown");
+  }
+  if (!result.ok) return mapMaintenanceFailure(result);
+  const expectedState =
+    context.operation === "backup" ? "backed-up" : "restored";
+  if (result.state !== expectedState)
+    return invalid("core.destination.lifecycle-outcome-unknown");
+  try {
+    const completion = await completeLocalResourceMutationIntent(
+      state.store,
+      lifecycleIntent,
+      result.state,
+    );
+    await completeLocalResourceLifecycle(state.lifecycleHandlers, context);
+    await finalizeLocalResourceMutationCompletion(state.store, completion);
+  } catch {
+    return invalid("core.destination.lifecycle-outcome-unknown");
+  }
+  return Object.freeze({
+    operation: context.operation,
+    connectionName: authority.connectionName,
+    state: expectedState,
+    backupSelector:
+      result.state === "backed-up"
+        ? result.backupAuthority.backupId
+        : context.resourceSelector,
+  });
+};
+
+export const inspectDestinationLocalResourceDoctor = async (
+  runtime: ConfigurationManagementRuntime,
+  nameInput: string,
+  signal: AbortSignal,
+): Promise<DestinationDoctorInspection> => {
+  const state = stored(runtime);
+  const parsedName = connectionNameSchema.safeParse(nameInput);
+  if (
+    !parsedName.success ||
+    !(signal instanceof AbortSignal) ||
+    signalAborted(signal)
+  )
+    return invalid("core.destination.lifecycle-unavailable");
+  let current: AgentscopeConfigurationSnapshot;
+  try {
+    current = await readConfigurationSnapshot(state.store);
+  } catch (error) {
+    return mapStoreError(error);
+  }
+  const connection = current.connections.find(
+    (candidate) => candidate.name === parsedName.data,
+  );
+  if (!connection) return invalid("core.destination.connection-missing");
+  const capability = getDestinationDescriptor(
+    state.registry,
+    connection.destinationType,
+  )?.localResourceLifecycle;
+  const registered = state.lifecycleHandlers
+    ? getLocalResourceLifecycleHandlerCapability(
+        state.lifecycleHandlers,
+        connection.destinationType,
+      )
+    : undefined;
+  if (
+    !state.lifecycleHandlers ||
+    !capability ||
+    !registered ||
+    capability.fingerprint !== registered.fingerprint ||
+    !capability.operations.includes("doctor")
+  )
+    return invalid("core.destination.lifecycle-unavailable");
+  const context = bindLocalResourceDoctorContextForCore({
+    destinationType: connection.destinationType,
+    connectionId: connection.connectionId,
+    connectionName: connection.name,
+    settings: connection.settings,
+    configurationGeneration: current.generation,
+    configurationDigest: snapshotDigest(current),
+    signal,
+    deadline: createLocalResourceLifecycleDeadlineForCore(
+      DEFAULT_HOOK_DEADLINE_MILLISECONDS,
+    ),
+  });
+  let inspection: LocalResourceDoctorInspection;
+  try {
+    inspection = await inspectLocalResourceDoctor(
+      state.lifecycleHandlers,
+      context,
+    );
+  } catch {
+    return invalid("core.destination.lifecycle-unavailable");
+  }
+  return Object.freeze({
+    connectionName: connection.name,
+    destinationType: connection.destinationType,
+    inspection,
+  });
+};
+
 const freshLifecycleContext = (
   context: LocalResourceLifecycleContext,
 ): LocalResourceLifecycleContext =>
@@ -1161,10 +1492,17 @@ export const recoverDestinationLifecycleMutation = async (
 ): Promise<
   Readonly<{
     generation: number;
-    state: "configured" | "deleted" | "retained" | "rolled-back";
+    state:
+      | "backed-up"
+      | "configured"
+      | "deleted"
+      | "restored"
+      | "retained"
+      | "rolled-back";
+    backupSelector?: string;
     retainedDeleteSelector?: string;
   }>
-  // eslint-disable-next-line max-lines-per-function -- recovery claims, classifies, dispatches, and finalizes one durable lifecycle transaction.
+  // eslint-disable-next-line max-lines-per-function, complexity -- recovery claims, classifies, dispatches, and finalizes both versioned durable lifecycle transactions.
 > => {
   const state = stored(runtime);
   if (
@@ -1183,7 +1521,7 @@ export const recoverDestinationLifecycleMutation = async (
       state.store,
       ownerState,
     );
-    if (transaction.state === "recoverable")
+    if (transaction.state === "recoverable" && intent.recordVersion === 1)
       await recoverAbandonedConfigurationTransaction(
         state.store,
         ownerState,
@@ -1199,6 +1537,77 @@ export const recoverDestinationLifecycleMutation = async (
     current = await readConfigurationSnapshot(state.store);
   } catch (error) {
     return mapStoreError(error);
+  }
+  if (intent.recordVersion === 2 || intent.recordVersion === 3) {
+    if (
+      current.generation !== intent.expectedGeneration ||
+      snapshotDigest(current) !== intent.expectedDigest
+    )
+      return invalid("core.destination.lifecycle-reconciliation-required");
+    const context = bindLocalResourceMaintenanceRecoveryContextForCore({
+      operation: intent.operation,
+      operationId: intent.operationId,
+      resourceSelector: intent.resourceSelector,
+      destinationType: intent.destinationType,
+      connectionId: intent.connectionId,
+      owner: intent.owner,
+      lifecycleFingerprint: intent.lifecycleFingerprint,
+      recoveryHandlerId: intent.recoveryHandlerId,
+      configurationGeneration: intent.expectedGeneration,
+      configurationDigest: intent.expectedDigest,
+      signal,
+      deadline: createLocalResourceLifecycleDeadlineForCore(
+        DEFAULT_HOOK_DEADLINE_MILLISECONDS,
+      ),
+    });
+    if (isLocalResourceMutationCompletion(intent)) {
+      if (intent.recordVersion !== 3)
+        return invalid("core.destination.lifecycle-reconciliation-required");
+      try {
+        await completeLocalResourceLifecycle(state.lifecycleHandlers, context);
+        await finalizeLocalResourceMutationCompletion(state.store, intent);
+      } catch {
+        return invalid("core.destination.lifecycle-outcome-unknown");
+      }
+      return Object.freeze({
+        generation: current.generation,
+        state: intent.terminalState,
+        ...(intent.terminalState === "backed-up" ||
+        intent.terminalState === "restored"
+          ? { backupSelector: intent.resourceSelector }
+          : {}),
+      });
+    }
+    if (intent.recordVersion !== 2)
+      return invalid("core.destination.lifecycle-reconciliation-required");
+    let result: LocalResourceMaintenanceResult;
+    try {
+      result = await recoverLocalResourceMaintenance(
+        state.lifecycleHandlers,
+        context,
+      );
+    } catch {
+      return invalid("core.destination.lifecycle-outcome-unknown");
+    }
+    if (!result.ok) return mapMaintenanceFailure(result);
+    try {
+      const completion = await completeLocalResourceMutationIntent(
+        state.store,
+        intent,
+        result.state,
+      );
+      await completeLocalResourceLifecycle(state.lifecycleHandlers, context);
+      await finalizeLocalResourceMutationCompletion(state.store, completion);
+    } catch {
+      return invalid("core.destination.lifecycle-outcome-unknown");
+    }
+    return Object.freeze({
+      generation: current.generation,
+      state: result.state,
+      ...(result.state === "backed-up" || result.state === "restored"
+        ? { backupSelector: intent.resourceSelector }
+        : {}),
+    });
   }
   const currentDigest = snapshotDigest(current);
   const last =

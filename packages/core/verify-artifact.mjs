@@ -1,4 +1,10 @@
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -72,10 +78,13 @@ import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
 import {
   applyAgentscopeConfigurationInitialization,
   applyDestinationLifecyclePlan,
+  applyDestinationMaintenancePlan,
   createConfigurationManagementRuntime,
   inspectAgentscopeConfigurationInitialization,
   inspectDestinationConfigureLifecyclePlan,
   inspectDestinationLifecyclePlan,
+  inspectDestinationLocalResourceDoctor,
+  inspectDestinationMaintenancePlan,
   recoverDestinationLifecycleMutation,
 } from "./dist/configuration/management-index.js";
 
@@ -1013,11 +1022,25 @@ void lifecycleSettingsSchema.shape;
 const lifecycleDeclaration = defineLocalResourceLifecycleDeclaration({
   artifactGrammarFingerprint: `sha256-${"1".repeat(64)}`,
   artifactGrammarVersion: 1,
-  artifactKinds: ["active-database", "lifecycle-intent", "ownership-receipt"],
+  artifactKinds: [
+    "active-database",
+    "backup",
+    "backup-receipt",
+    "lifecycle-intent",
+    "ownership-receipt",
+  ],
   capabilityVersion: 1,
   destinationType: "@agentscope/destination-artifact-local",
-  operations: ["configure", "delete", "recover", "unconfigure"],
-  receiptReasons: ["destination-busy"],
+  operations: [
+    "backup",
+    "configure",
+    "delete",
+    "doctor",
+    "recover",
+    "restore",
+    "unconfigure",
+  ],
+  receiptReasons: ["destination-busy", "destination-capacity"],
   recoveryHandlerId: "@agentscope/destination-artifact-local/lifecycle-v1",
   settingKeys: ["project"],
   settingsVersion: 1,
@@ -1046,12 +1069,27 @@ const lifecycleCapability =
   lifecycleArtifactRegistry.descriptors[0].localResourceLifecycle;
 let failLifecycleCompletion = false;
 let lifecycleRecoveryCalls = 0;
+let failBuiltMaintenance = false;
+let builtMaintenanceRecoveryCalls = 0;
+let substituteTerminalOnCompletion = false;
+let lifecycleCompletionPath;
 const lifecycleArtifactHandlers = compileLocalResourceLifecycleHandlerRegistry(
   lifecycleArtifactRegistry,
   [
     defineLocalResourceLifecycleHandler({
       capability: lifecycleCapability,
       complete: () => {
+        if (substituteTerminalOnCompletion) {
+          substituteTerminalOnCompletion = false;
+          const completion = JSON.parse(
+            readFileSync(lifecycleCompletionPath, "utf8"),
+          );
+          completion.terminalState = "backed-up";
+          writeFileSync(
+            lifecycleCompletionPath,
+            `${JSON.stringify(completion)}\n`,
+          );
+        }
         if (failLifecycleCompletion) {
           failLifecycleCompletion = false;
           return Promise.reject(new Error("simulated completion crash"));
@@ -1095,6 +1133,74 @@ const lifecycleArtifactHandlers = compileLocalResourceLifecycleHandlerRegistry(
         lifecycleRecoveryCalls += 1;
         return Promise.resolve({ ok: true, state: "rolled-back" });
       },
+      inspectMaintenancePlan: (context) =>
+        Promise.resolve({
+          planEvidence: {
+            namespaceFingerprint: `sha256-${"2".repeat(64)}`,
+            physicalEvidenceFingerprint: `sha256-${"3".repeat(64)}`,
+            displayPath: "/owned/artifact-local/backups",
+            persistentDataNotice: true,
+            retentionPolicy: {
+              maximumAgeNanoseconds: "1",
+              maximumTraceCount: 1,
+              maximumPayloadBytes: 1,
+              physicalCleanupTrigger: "next-authorized-mutation",
+            },
+          },
+          resourceSelector: context.resourceSelector,
+          selectedBackupAuthority:
+            context.operation === "restore"
+              ? {
+                  backupId: context.resourceSelector,
+                  receiptDigest: `sha256-${"6".repeat(64)}`,
+                  snapshotPhysicalIdentity: "dev:1:ino:20",
+                }
+              : null,
+        }),
+      applyMaintenance: (context) => {
+        if (failBuiltMaintenance) {
+          failBuiltMaintenance = false;
+          return Promise.reject(new Error("simulated maintenance crash"));
+        }
+        return Promise.resolve(
+          context.operation === "backup"
+            ? {
+                ok: true,
+                state: "backed-up",
+                backupAuthority: {
+                  backupId: context.resourceSelector,
+                  receiptDigest: `sha256-${"6".repeat(64)}`,
+                  snapshotPhysicalIdentity: "dev:1:ino:20",
+                },
+              }
+            : { ok: true, state: "restored" },
+        );
+      },
+      recoverMaintenance: () => {
+        builtMaintenanceRecoveryCalls += 1;
+        return Promise.resolve({ ok: true, state: "rolled-back" });
+      },
+      inspectDoctor: () =>
+        Promise.resolve({
+          state: "available",
+          lifecycleState: "clean",
+          databaseState: "present",
+          backupState: "available",
+          sharedLeaseCount: 0,
+          publishedBackupCount: 1,
+          retentionPolicy: {
+            maximumAgeNanoseconds: "1",
+            maximumTraceCount: 1,
+            maximumPayloadBytes: 1,
+            physicalCleanupTrigger: "next-authorized-mutation",
+          },
+          databaseDerivedRetention: {
+            cutoff: "unavailable",
+            clockContinuity: "unavailable",
+            rowCount: "unavailable",
+            payloadBytes: "unavailable",
+          },
+        }),
     }),
   ],
 );
@@ -1108,6 +1214,10 @@ const lifecycleArtifactHome = createAgentscopeHomeResolver({
 const lifecycleArtifactStore = createConfigurationStore(
   lifecycleArtifactHome,
   lifecycleArtifactRegistry,
+);
+lifecycleCompletionPath = join(
+  lifecycleArtifactHome.mutationDirectory,
+  "local-resource.completion.lock",
 );
 const lifecycleArtifactRuntime = createConfigurationManagementRuntime(
   lifecycleArtifactRegistry,
@@ -1130,6 +1240,92 @@ await applyDestinationLifecyclePlan(
     new AbortController().signal,
   ),
 );
+const builtBackupPlan = await inspectDestinationMaintenancePlan(
+  lifecycleArtifactRuntime,
+  "backup",
+  "artifact-local",
+  undefined,
+  new AbortController().signal,
+);
+const builtBackup = await applyDestinationMaintenancePlan(builtBackupPlan);
+if (
+  builtBackup.state !== "backed-up" ||
+  !/^[0-9a-f]{32}$/u.test(builtBackup.backupSelector)
+)
+  throw new Error("Built Core backup plan/apply orchestration drifted.");
+const builtRestore = await applyDestinationMaintenancePlan(
+  await inspectDestinationMaintenancePlan(
+    lifecycleArtifactRuntime,
+    "restore",
+    "artifact-local",
+    builtBackup.backupSelector,
+    new AbortController().signal,
+  ),
+);
+if (
+  builtRestore.state !== "restored" ||
+  builtRestore.backupSelector !== builtBackup.backupSelector
+)
+  throw new Error("Built Core restore plan/apply orchestration drifted.");
+const builtDoctor = await inspectDestinationLocalResourceDoctor(
+  lifecycleArtifactRuntime,
+  "artifact-local",
+  new AbortController().signal,
+);
+if (
+  builtDoctor.inspection.databaseDerivedRetention.rowCount !== "unavailable" ||
+  builtDoctor.inspection.databaseDerivedRetention.payloadBytes !== "unavailable"
+)
+  throw new Error("Built Core conservative Doctor orchestration drifted.");
+const rolledBackPlan = await inspectDestinationMaintenancePlan(
+  lifecycleArtifactRuntime,
+  "backup",
+  "artifact-local",
+  undefined,
+  new AbortController().signal,
+);
+failBuiltMaintenance = true;
+try {
+  await applyDestinationMaintenancePlan(rolledBackPlan);
+  throw new Error("Built Core interrupted maintenance was not surfaced.");
+} catch (error) {
+  if (error?.code !== "core.destination.lifecycle-outcome-unknown") throw error;
+}
+failLifecycleCompletion = true;
+try {
+  await recoverDestinationLifecycleMutation(
+    lifecycleArtifactRuntime,
+    () => "dead",
+    new AbortController().signal,
+  );
+  throw new Error("Built Core rolled-back completion crash was not surfaced.");
+} catch (error) {
+  if (error?.code !== "core.destination.lifecycle-outcome-unknown") throw error;
+}
+const builtCompletionBytes = readFileSync(lifecycleCompletionPath, "utf8");
+substituteTerminalOnCompletion = true;
+try {
+  await recoverDestinationLifecycleMutation(
+    lifecycleArtifactRuntime,
+    () => "unknown",
+    new AbortController().signal,
+  );
+  throw new Error("Built Core terminal-state substitution was accepted.");
+} catch (error) {
+  if (error?.code !== "core.destination.lifecycle-outcome-unknown") throw error;
+}
+writeFileSync(lifecycleCompletionPath, builtCompletionBytes);
+const recoveredRollback = await recoverDestinationLifecycleMutation(
+  lifecycleArtifactRuntime,
+  () => "unknown",
+  new AbortController().signal,
+);
+if (
+  recoveredRollback.state !== "rolled-back" ||
+  "backupSelector" in recoveredRollback ||
+  builtMaintenanceRecoveryCalls !== 1
+)
+  throw new Error("Built Core rolled-back completion state drifted.");
 failLifecycleCompletion = true;
 try {
   await applyDestinationLifecyclePlan(
