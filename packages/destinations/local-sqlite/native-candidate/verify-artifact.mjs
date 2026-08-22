@@ -383,6 +383,49 @@ const expectedBuildExecutableLedger = Object.freeze([
   "/usr/lib/gcc/x86_64-linux-gnu/12/lto1",
   "/usr/bin/as",
 ]);
+const canonicalBuildExecutable = (executable) => {
+  switch (executable) {
+    case "/usr/bin/python3.11":
+      return "/usr/bin/python3";
+    case "/usr/bin/x86_64-linux-gnu-gcc-12":
+      return "/usr/bin/cc";
+    case "/usr/bin/x86_64-linux-gnu-as":
+      return "/usr/bin/as";
+    case "/usr/bin/x86_64-linux-gnu-ar":
+      return "/usr/bin/ar";
+    case "/usr/bin/x86_64-linux-gnu-g++-12":
+      return "/usr/bin/g++";
+    case "/usr/bin/x86_64-linux-gnu-ld.bfd":
+      return "/usr/bin/ld";
+    case "/usr/bin/true":
+      return "/bin/true";
+    default:
+      return executable;
+  }
+};
+const verifyBuildExecutableCanonicalization = () => {
+  assert.deepEqual(
+    [
+      "/usr/bin/python3.11",
+      "/usr/bin/x86_64-linux-gnu-gcc-12",
+      "/usr/bin/x86_64-linux-gnu-as",
+      "/usr/bin/x86_64-linux-gnu-ar",
+      "/usr/bin/x86_64-linux-gnu-g++-12",
+      "/usr/bin/x86_64-linux-gnu-ld.bfd",
+      "/usr/bin/true",
+    ].map(canonicalBuildExecutable),
+    [
+      "/usr/bin/python3",
+      "/usr/bin/cc",
+      "/usr/bin/as",
+      "/usr/bin/ar",
+      "/usr/bin/g++",
+      "/usr/bin/ld",
+      "/bin/true",
+    ],
+  );
+  assert.equal(canonicalBuildExecutable("/hostile/cc"), "/hostile/cc");
+};
 const allowedBuildExecutables = new Set([
   "/usr/bin/ar",
   "/usr/bin/as",
@@ -464,7 +507,10 @@ const build = (materialDirectories, execSupervisor) => {
       `native candidate container failed: ${supervisedFailureDiagnostic(observed)}`,
     );
   assert.equal(observed.unexpectedStderr.length, 0);
-  assert.deepEqual(observed.observed, expectedBuildExecutableLedger);
+  assert.deepEqual(
+    observed.observed.map(canonicalBuildExecutable),
+    expectedBuildExecutableLedger,
+  );
   const result = JSON.parse(observed.output.split("\n").at(-1));
   const binary = Buffer.from(result.outputBase64, "base64");
   const runtime = Buffer.from(result.runtimeBase64, "base64");
@@ -866,9 +912,12 @@ const verifyHostileBuildInputs = (
     120_000,
   );
   assert.equal(descendant.exitCode, 0);
-  assert(descendant.observed.includes("/bin/true"));
+  const canonicalDescendantExecutables = descendant.observed.map(
+    canonicalBuildExecutable,
+  );
+  assert(canonicalDescendantExecutables.includes("/bin/true"));
   assert(
-    descendant.observed.some(
+    canonicalDescendantExecutables.some(
       (executable) => !allowedBuildExecutables.has(executable),
     ),
   );
@@ -883,12 +932,18 @@ const verifyHostileBuildInputs = (
   );
   assert.equal(extraAllowed.exitCode, 0);
   assert.deepEqual(extraAllowed.unexpectedStderr, []);
+  const canonicalExtraAllowedExecutables = extraAllowed.observed.map(
+    canonicalBuildExecutable,
+  );
   assert(
-    extraAllowed.observed.every((executable) =>
+    canonicalExtraAllowedExecutables.every((executable) =>
       allowedBuildExecutables.has(executable),
     ),
   );
-  assert.notDeepEqual(extraAllowed.observed, expectedBuildExecutableLedger);
+  assert.notDeepEqual(
+    canonicalExtraAllowedExecutables,
+    expectedBuildExecutableLedger,
+  );
   for (const mode of ["unexpected-output"]) {
     const name = `agentscope-native-build-hostile-output-${randomUUID()}`;
     runContainerFailure(
@@ -1225,6 +1280,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
 const temporary = mkdtempSync(join(tmpdir(), "agentscope-native-candidate-"));
 try {
   verifySupervisedFailureDiagnostic();
+  verifyBuildExecutableCanonicalization();
   verifyArchiveCompilerHostileFixtures();
   verifyMaterializerParentSwapFixture();
   validateRecords();
