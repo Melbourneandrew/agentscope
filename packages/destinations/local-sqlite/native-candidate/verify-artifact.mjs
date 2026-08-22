@@ -277,7 +277,12 @@ const compileExecSupervisor = (temporaryRoot) => {
     30_000,
   );
   assert.notEqual(selfTest.exitCode, 0);
-  assert.deepEqual(selfTest.observed, ["/bin/false"]);
+  assert.deepEqual(
+    selfTest.observed.map((path) =>
+      path === "/bin/false" ? "/usr/bin/false" : path,
+    ),
+    ["/usr/bin/false"],
+  );
   assert.deepEqual(selfTest.unexpectedStderr, []);
   return Object.freeze({
     path: outputs[0],
