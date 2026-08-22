@@ -229,6 +229,8 @@ const compileExecSupervisor = (temporaryRoot) => {
         "ALL",
         "--security-opt",
         "no-new-privileges",
+        "--user",
+        `${process.getuid()}:${process.getgid()}`,
         "--tmpfs",
         "/tmp:rw,nosuid,size=16m",
         "-v",
