@@ -47,34 +47,52 @@ const manifest = (
     platform,
   ],
 ): LocalSqliteNativeSupportManifest => ({
-  schemaVersion: 1,
-  capability: "local-sqlite",
+  ...LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST,
+  artifactFiles: [
+    ...LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.artifactFiles.filter(
+      ({ kind }) => kind !== "native-binary",
+    ),
+    ...nativeBinaries.map((candidate) => ({
+      kind: "native-binary" as const,
+      relativePath: candidate.relativePath,
+      bytes: candidate.bytes,
+      digest: candidate.digest,
+    })),
+  ],
   nativeBinaries,
   supportedPlatforms,
 });
 
 describe("Local SQLite native support authority", () => {
-  it("ships with no admitted native tuple", () => {
-    expect(LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST).toEqual({
-      schemaVersion: 1,
-      capability: "local-sqlite",
-      nativeBinaries: [],
-      supportedPlatforms: [],
-    });
+  it("ships one proposed tuple without claiming release admission", () => {
+    expect(LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.disposition).toBe(
+      "proposed-unpublished-execution-eligible",
+    );
+    expect(LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeBinaries).toHaveLength(1);
+    expect(
+      LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.supportedPlatforms,
+    ).toHaveLength(1);
     expect(
       inspectLocalSqliteNativeSupport(
         runtime,
         LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST,
       ),
     ).toEqual({
-      state: "unavailable",
-      code: "destination.local-sqlite.native-unavailable",
+      state: "available",
+      admission: "proposed-unpublished",
+      platformId: "linux-x64-node22-ci-ext4-proposed",
+      nativeTupleId: "node127-linux-x64-glibc",
+      relativePath: "native/node127-linux-x64-glibc/agentscope_sqlite.node",
+      bytes: 2_213_824,
+      digest:
+        "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
     });
   });
 
   it("selects one exact full-platform to native-tuple projection", () => {
     expect(inspectLocalSqliteNativeSupport(runtime, manifest())).toEqual({
       state: "available",
+      admission: "proposed-unpublished",
       platformId: platform.platformId,
       nativeTupleId: binary.tupleId,
       relativePath: binary.relativePath,
@@ -170,7 +188,47 @@ describe("Local SQLite native evidence rejection", () => {
       );
     },
   );
+});
 
+describe("Local SQLite release closure rejection", () => {
+  it("rejects incomplete or substituted release closure evidence", () => {
+    const complete = manifest();
+    const without = (kind: string) =>
+      complete.artifactFiles.filter((artifact) => artifact.kind !== kind);
+    for (const candidate of [
+      { ...complete, artifactFiles: without("loader") },
+      { ...complete, artifactFiles: without("runtime") },
+      { ...complete, artifactFiles: without("provenance") },
+      { ...complete, artifactFiles: without("release-materials") },
+      { ...complete, artifactFiles: without("sbom") },
+      {
+        ...complete,
+        artifactFiles: complete.artifactFiles.filter(
+          (artifact, index) => artifact.kind !== "notice" || index !== 2,
+        ),
+      },
+      { ...complete, provenanceDigest: `sha256:${"b".repeat(64)}` },
+      {
+        ...complete,
+        releaseMaterialManifestDigest: `sha256:${"b".repeat(64)}`,
+      },
+      { ...complete, sbomDigest: `sha256:${"b".repeat(64)}` },
+      { ...complete, noticeInventoryDigest: `sha256:${"b".repeat(64)}` },
+      {
+        ...complete,
+        artifactFiles: [
+          ...complete.artifactFiles,
+          { ...complete.artifactFiles[0]!, relativePath: "loader/extra.cjs" },
+        ],
+      },
+    ] as LocalSqliteNativeSupportManifest[])
+      expect(inspectLocalSqliteNativeSupport(runtime, candidate).state).toBe(
+        "unavailable",
+      );
+  });
+});
+
+describe("Local SQLite native manifest rejection", () => {
   it.each([
     { ...binary, tupleId: "BAD" },
     { ...binary, nodeAbi: 0 },
@@ -358,6 +416,8 @@ describe("Local SQLite native authority containment", () => {
     const other = {
       ...binary,
       tupleId: "other",
+      nodeAbi: 128,
+      admittedNodeMajors: [23],
       relativePath: "native/other/agentscope_sqlite.node",
       digest: `sha256:${"b".repeat(64)}`,
     };

@@ -10,7 +10,7 @@ describe("Local SQLite package boundaries", () => {
     expect(Object.keys(root).sort()).toEqual(
       [
         "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST",
-        "inspectLocalSqliteNativeSupport",
+        "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST",
         "LOCAL_SQLITE_DESTINATION_TYPE",
         "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
         "createLocalSqliteLifecycleHandler",
@@ -42,33 +42,6 @@ describe("Local SQLite package boundaries", () => {
     );
     expect(root.LOCAL_SQLITE_DESTINATION_TYPE).toBe(
       "@agentscope/destination-local-sqlite",
-    );
-    expect(
-      root.inspectLocalSqliteNativeSupport({
-        nodeAbi: 127,
-        nodeMajor: 22,
-        platform: "darwin",
-        osVersion: "15.0",
-        architecture: "arm64",
-        libcFamily: null,
-        libcVersion: null,
-        credentialBackend: "keychain",
-        filesystemProfile: "local-apfs",
-      }),
-    ).toEqual({
-      state: "unavailable",
-      code: "destination.local-sqlite.native-unavailable",
-    });
-    const hostileRuntime = new Proxy(
-      {} as Parameters<typeof root.inspectLocalSqliteNativeSupport>[0],
-      {
-        getPrototypeOf: () => {
-          throw new Error("CANARY");
-        },
-      },
-    );
-    expect(root.inspectLocalSqliteNativeSupport(hostileRuntime).state).toBe(
-      "unavailable",
     );
   });
 });

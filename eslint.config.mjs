@@ -72,6 +72,7 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/.nx/**",
       "packages/protocol/src/generated/otlp/**",
+      "packages/destinations/local-sqlite/native-candidate/files/**",
       ".beads/**",
     ],
   },

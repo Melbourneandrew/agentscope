@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -571,11 +572,47 @@ setTimeout(() => process.exit(3), 10_000).unref();
   ]);
   const installedRoot = join(installRoot, "node_modules/@agentscope/cli");
   const installedFiles = regularFiles(installedRoot);
+  const candidateRoot = join(installedRoot, "dist/internal/local-sqlite");
+  const supportManifestPath = join(
+    candidateRoot,
+    "records/support-manifest.json",
+  );
+  const supportManifestBytes = readFileSync(supportManifestPath);
   assert.equal(
-    installedFiles.some((file) =>
-      /(?:^|\/)(?:binding\.gyp|build|prebuilds?|src)(?:\/|$)|\.node$/u.test(
-        file,
-      ),
+    createHash("sha256").update(supportManifestBytes).digest("hex"),
+    "3ea1609c5e323ac59d5fc3d471e37897fe4c7c60367d7bcc39320ad73d7f6337",
+  );
+  const supportManifest = JSON.parse(supportManifestBytes);
+  assert.equal(
+    supportManifest.disposition,
+    "proposed-unpublished-execution-eligible",
+  );
+  assert.equal(supportManifest.nativeBinaries.length, 1);
+  assert.equal(supportManifest.supportedPlatforms.length, 1);
+  const declaredCandidateFiles = supportManifest.artifactFiles
+    .map(({ relativePath }) => relativePath)
+    .concat("records/support-manifest.json")
+    .sort();
+  assert.deepEqual(regularFiles(candidateRoot), declaredCandidateFiles);
+  for (const artifact of supportManifest.artifactFiles) {
+    const bytes = readFileSync(join(candidateRoot, artifact.relativePath));
+    assert.equal(bytes.length, artifact.bytes);
+    assert.equal(
+      `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+      artifact.digest,
+    );
+  }
+  const permittedNative =
+    "dist/internal/local-sqlite/native/node127-linux-x64-glibc/agentscope_sqlite.node";
+  assert.deepEqual(
+    installedFiles.filter((file) => file.endsWith(".node")),
+    [permittedNative],
+  );
+  assert.equal(
+    installedFiles.some(
+      (file) =>
+        file !== permittedNative &&
+        /(?:^|\/)(?:binding\.gyp|build|prebuilds?|src)(?:\/|$)/u.test(file),
     ),
     false,
   );

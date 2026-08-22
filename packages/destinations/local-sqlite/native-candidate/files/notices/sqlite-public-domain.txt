@@ -1,0 +1,5 @@
+SQLite is in the public domain.
+
+The SQLite source incorporated into this native binary is dedicated to the
+public domain by its authors. The upstream dedication and blessing are
+published at https://www.sqlite.org/copyright.html.

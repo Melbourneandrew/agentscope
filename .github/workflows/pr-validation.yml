@@ -38,6 +38,7 @@ jobs:
       - run: pnpm coverage
       - run: pnpm build
       - run: pnpm verify:cli-artifact
+      - run: pnpm verify:native-candidate
 
   docs:
     name: Documentation
