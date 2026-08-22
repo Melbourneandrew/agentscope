@@ -25,7 +25,11 @@ import { createCapturedOutput } from "./__tests__/cli-fixture.js";
 import { runCli } from "./program.js";
 
 // AC-DOC-001.3 AC-DOC-001.4 AC-DOC-001.6
-import { createProductionCliServices } from "./production-services.js";
+import {
+  createProductionCliServices,
+  createProductionCliServicesForTesting,
+  requireExactProductDestinationRegistryForTesting,
+} from "./production-services.js";
 
 const settingsSchema = z.strictObject({ project: z.string() });
 void settingsSchema.shape;
@@ -128,7 +132,7 @@ const productionFixture = async (
   return {
     homeResolver,
     root,
-    services: createProductionCliServices({
+    services: createProductionCliServicesForTesting({
       environment: { EXAMPLE_API_KEY: "secret" },
       homeResolver,
       registry,
@@ -136,6 +140,79 @@ const productionFixture = async (
     }),
   };
 };
+
+const productionLangfuseFixture = async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentscope-cli-langfuse-"));
+  roots.push(root);
+  const homeResolver = createAgentscopeHomeResolver({
+    environment: { AGENTSCOPE_HOME: root },
+    environmentOverrideAuthority: "test",
+    platform: process.platform,
+  });
+  const requests: unknown[] = [];
+  const services = createProductionCliServices({
+    environment: {
+      LANGFUSE_PUBLIC_KEY: "public-canary",
+      LANGFUSE_SECRET_KEY: "secret-canary",
+    },
+    homeResolver,
+    transportExecutor: (request) => {
+      requests.push(request);
+      return Promise.resolve({
+        status: 405,
+        headers: { "x-canary": "discarded" },
+        body: new TextEncoder().encode("discarded-provider-body"),
+      });
+    },
+    workspace: root,
+  });
+  await services.init({ apply: true, presentPlan });
+  const configured = services.configureDestination({
+    credentialEnvironment: [
+      "public-key=LANGFUSE_PUBLIC_KEY",
+      "secret-key=LANGFUSE_SECRET_KEY",
+    ],
+    name: "langfuse",
+    settingsJson: JSON.stringify({
+      allowInsecureLoopback: true,
+      endpoint: "http://127.0.0.1:4318",
+    }),
+    type: "langfuse",
+  });
+  return { configured, requests, services };
+};
+
+describe("production destination registry boundary", () => {
+  it("rejects every non-product destination registry inventory", () => {
+    let executableReads = 0;
+    const hostile = Object.defineProperty({}, "descriptors", {
+      get: () => {
+        executableReads += 1;
+        return [];
+      },
+    });
+    expect(() =>
+      requireExactProductDestinationRegistryForTesting(hostile as never),
+    ).toThrow("cli.product-destination-registry.invalid");
+    expect(executableReads).toBe(0);
+    expect(() =>
+      requireExactProductDestinationRegistryForTesting(
+        compileDestinationRegistry([]),
+      ),
+    ).toThrow("cli.product-destination-registry.invalid");
+    expect(() =>
+      requireExactProductDestinationRegistryForTesting(
+        compileDestinationRegistry([descriptor]),
+      ),
+    ).toThrow("cli.product-destination-registry.invalid");
+    expect(() =>
+      requireExactProductDestinationRegistryForTesting(registry),
+    ).toThrow("cli.product-destination-registry.invalid");
+    expect(() => compileDestinationRegistry([descriptor, descriptor])).toThrow(
+      "destination.descriptor.invalid",
+    );
+  });
+});
 
 describe("production configuration composition", () => {
   it("writes the exact initialization plan before --yes mutation", async () => {
@@ -238,6 +315,57 @@ describe("production configuration composition", () => {
 });
 
 describe("production Doctor composition", () => {
+  it("composes the immutable Langfuse descriptor and its bound Doctor probe by default", async () => {
+    const { configured, requests, services } =
+      await productionLangfuseFixture();
+    await expect(configured).resolves.toMatchObject({
+      status: "success",
+      value: {
+        connection: {
+          destinationType: "@agentscope/destination-langfuse",
+          name: "langfuse",
+          transport: "remote",
+        },
+      },
+    });
+    await expect(
+      services.inspectDestination({ name: "langfuse" }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: {
+        credentialSlots: ["public-key", "secret-key"],
+        settingKeys: [
+          "allowInsecureLoopback",
+          "compatibilityManifestId",
+          "encoding",
+          "endpoint",
+          "profileId",
+        ],
+      },
+    });
+
+    const report = await services.doctor({
+      fix: false,
+      presentPlan: () => Promise.reject(new Error("unreachable")),
+    });
+    expect(report.status).toBe("success");
+    if (report.status !== "success") throw new Error("unreachable");
+    expect(report.value.findings.map(({ code }) => code)).toEqual(
+      expect.arrayContaining([
+        "doctor.credential.available",
+        "doctor.destination.available",
+      ]),
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      headers: {},
+      method: "GET",
+      url: "http://127.0.0.1:4318/api/public/otel/v1/traces",
+    });
+    expect(requests[0]).not.toHaveProperty("body");
+    expect(JSON.stringify(report)).not.toContain("canary");
+  });
+
   it("rejects a destination-declared probe absent from the exact registry", async () => {
     await expect(
       productionFixture("agentscope-cli-doctor-registry-", {
@@ -718,7 +846,10 @@ describe("production configuration diagnostics", () => {
       diagnostic: { code: "configuration.unavailable" },
     });
 
-    const defaults = createProductionCliServices({ homeResolver, registry });
+    const defaults = createProductionCliServicesForTesting({
+      homeResolver,
+      registry,
+    });
     await expect(
       defaults.init({ apply: false, presentPlan }),
     ).resolves.toMatchObject({

@@ -22,7 +22,10 @@ import {
   type OperationalStateSnapshot,
   type OperationalStateStore,
 } from "./operational-state.js";
-import type { ConfigurationCredentialReference } from "./schema.js";
+import {
+  createAgentscopeConfigurationIdentity,
+  type ConfigurationCredentialReference,
+} from "./schema.js";
 import {
   inspectConfigurationTransaction,
   inspectCredentialMutation,
@@ -105,7 +108,11 @@ export type DoctorConnectionInspection = Readonly<{
 
 export type DoctorReport = Readonly<{
   configuration:
-    | Readonly<{ state: "valid"; generation: number }>
+    | Readonly<{
+        state: "valid";
+        generation: number;
+        identity: string;
+      }>
     | Readonly<{
         state: "missing" | "invalid" | "unsupported" | "unavailable";
       }>;
@@ -380,6 +387,9 @@ export const inspectAgentscopeDoctor = async (
     ? Object.freeze({
         state: "valid" as const,
         generation: configurationRead.snapshot.generation,
+        identity: createAgentscopeConfigurationIdentity(
+          configurationRead.snapshot,
+        ),
       })
     : configurationState(configurationRead);
   const credentials = configurationRead.ok

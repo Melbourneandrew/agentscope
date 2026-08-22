@@ -29,6 +29,8 @@ describe("destination-declared reachability", () => {
     expect(isDestinationReachabilityProbe({ ...probe })).toBe(false);
     await expect(
       probe.inspect({
+        configurationGeneration: 1,
+        configurationIdentity: `sha256-${"a".repeat(64)}`,
         connectionId: `destination-connection-v1-${"a".repeat(64)}` as never,
         signal: new AbortController().signal,
       }),

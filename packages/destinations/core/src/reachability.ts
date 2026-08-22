@@ -15,6 +15,8 @@ export type DestinationReachabilityProbe = Readonly<{
   destinationType: DestinationTypeId;
   inspect: (
     input: Readonly<{
+      configurationGeneration: number;
+      configurationIdentity: string;
       connectionId: DestinationConnectionId;
       signal: AbortSignal;
     }>,

@@ -35,6 +35,7 @@ import {
 } from "@agentscope/core/configuration-management";
 import {
   getConfiguredTrace,
+  prepareConfiguredDestinationReachability,
   prepareCoreRetrievalRuntime,
   searchConfiguredTraces,
   type CoreRetrievalFailure,
@@ -45,6 +46,11 @@ import {
   getDestinationDescriptor,
   type DestinationRegistry,
 } from "@agentscope/destinations-core/configuration";
+import {
+  createLangfuseReachabilityProbe,
+  langfuseDestinationDescriptor,
+  type LangfuseDestinationSettings,
+} from "@agentscope/destination-langfuse";
 
 import type { CliDiagnostic, CliOperationResult } from "./cli-contract.js";
 import type {
@@ -60,6 +66,7 @@ import type { CliDoctorServices } from "./doctor-commands.js";
 import { createDoctorCliServices } from "./doctor-services.js";
 import type { DestinationReachabilityProbe } from "@agentscope/destinations-core";
 import type { CliTraceServices } from "./trace-commands.js";
+import { productionDestinationTransportExecutor } from "./destination-transport.js";
 
 // Type-only edges declare the process-private build entries to the source
 // closure audit without loading them into the ordinary Commander runtime.
@@ -123,9 +130,32 @@ type ProductionState = Readonly<{
   transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
 }>;
 
-/* v8 ignore next -- Phase 8 has no remote production descriptor; Phase 9 supplies Core's bound executor. */
-const unavailableTransportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"] =
-  () => Promise.reject(new Error("destination.transport.unavailable"));
+const PRODUCT_DESTINATION_REGISTRY = compileDestinationRegistry([
+  langfuseDestinationDescriptor,
+]);
+
+const requireExactProductDestinationRegistry = (
+  registry: DestinationRegistry,
+): DestinationRegistry => {
+  try {
+    if (
+      getDestinationDescriptor(
+        registry,
+        langfuseDestinationDescriptor.destinationType,
+      ) === langfuseDestinationDescriptor &&
+      registry.descriptors.length === 1 &&
+      registry.descriptors[0] === langfuseDestinationDescriptor
+    )
+      return registry;
+  } catch {
+    // The fixed product inventory error remains authoritative.
+  }
+  throw new Error("cli.product-destination-registry.invalid");
+};
+
+export const requireExactProductDestinationRegistryForTesting = (
+  registry: DestinationRegistry,
+): DestinationRegistry => requireExactProductDestinationRegistry(registry);
 
 export type CreateProductionCliServicesInput = Readonly<{
   environment?: object;
@@ -133,7 +163,6 @@ export type CreateProductionCliServicesInput = Readonly<{
   homeResolver?: AgentscopeHomeResolver;
   credentialBackendRegistry?: CredentialBackendRegistry;
   policyRegistry?: RedactionPolicyRegistry;
-  registry?: DestinationRegistry;
   reachabilityProbes?: readonly DestinationReachabilityProbe[];
   transportExecutor?: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
   gitExecutable?: string;
@@ -142,11 +171,8 @@ export type CreateProductionCliServicesInput = Readonly<{
 
 const createState = (
   input: CreateProductionCliServicesInput,
+  registry: DestinationRegistry,
 ): ProductionState => {
-  // Phase 9 registers concrete first-party descriptors. An empty registry is
-  // intentional here: it makes init/list/routing useful without inventing
-  // placeholder provider behavior.
-  const registry = input.registry ?? compileDestinationRegistry([]);
   const home = (input.homeResolver ?? createAgentscopeHomeResolver())();
   const store = createConfigurationStore(home, registry);
   const owner = createConfigurationProcessIdentity(
@@ -166,7 +192,8 @@ const createState = (
     policyRegistry: input.policyRegistry ?? DEFAULT_REDACTION_POLICY_REGISTRY,
     registry,
     store,
-    transportExecutor: input.transportExecutor ?? unavailableTransportExecutor,
+    transportExecutor:
+      input.transportExecutor ?? productionDestinationTransportExecutor,
   });
 };
 
@@ -460,6 +487,57 @@ const createTraceServices = (state: ProductionState): CliTraceServices => ({
   },
 });
 
+const createProductionLangfuseProbe = (
+  state: ProductionState,
+): DestinationReachabilityProbe =>
+  createLangfuseReachabilityProbe(
+    async (
+      connectionId,
+      configurationGeneration,
+      configurationIdentity,
+      signal,
+    ) => {
+      try {
+        if (signal.aborted) return null;
+        const preparation = await prepareCoreRetrievalRuntime({
+          configurationStore: state.store,
+          credentialBackendRegistry: state.credentialBackendRegistry,
+          policyRegistry: state.policyRegistry,
+          signal,
+          transportExecutor: state.transportExecutor,
+        });
+        if (!preparation.ok || signal.aborted) return null;
+        const connection = prepareConfiguredDestinationReachability(
+          preparation.runtime,
+          connectionId,
+          langfuseDestinationDescriptor.destinationType,
+          configurationGeneration,
+          configurationIdentity,
+        );
+        if (!connection.ok) return null;
+        const profileId = connection.settings.profileId;
+        if (typeof profileId !== "string") return null;
+        return Object.freeze({
+          connectionId,
+          profileId: profileId as LangfuseDestinationSettings["profileId"],
+          transport: connection.transport,
+        });
+      } catch {
+        return null;
+      }
+    },
+  );
+
+const defaultProductionReachabilityProbes = (
+  state: ProductionState,
+): readonly DestinationReachabilityProbe[] =>
+  getDestinationDescriptor(
+    state.registry,
+    langfuseDestinationDescriptor.destinationType,
+  ) === langfuseDestinationDescriptor
+    ? Object.freeze([createProductionLangfuseProbe(state)])
+    : Object.freeze([]);
+
 const createProductionDoctorServices = (
   state: ProductionState,
   input: CreateProductionCliServicesInput,
@@ -485,17 +563,13 @@ const createProductionDoctorServices = (
     harnessServices,
     operationalStateStore: createOperationalStateStore(state.home, state.owner),
     ownerState: productionOwnerState(state.owner),
-    ...(input.reachabilityProbes === undefined
-      ? {}
-      : {
-          reachabilityProbes: input.reachabilityProbes.map((probe) => {
-            if (
-              !getDestinationDescriptor(state.registry, probe.destinationType)
-            )
-              throw new Error("cli.doctor.invalid");
-            return probe;
-          }),
-        }),
+    reachabilityProbes: (
+      input.reachabilityProbes ?? defaultProductionReachabilityProbes(state)
+    ).map((probe) => {
+      if (!getDestinationDescriptor(state.registry, probe.destinationType))
+        throw new Error("cli.doctor.invalid");
+      return probe;
+    }),
   });
 
 const createListService =
@@ -510,13 +584,14 @@ const createListService =
     }
   };
 
-export const createProductionCliServices = (
-  input: CreateProductionCliServicesInput = {},
+const createCliServices = (
+  input: CreateProductionCliServicesInput,
+  registry: DestinationRegistry,
 ): CliConfigurationServices &
   CliDoctorServices &
   CliHarnessServices &
   CliTraceServices => {
-  const state = createState(input);
+  const state = createState(input, registry);
   const harnessServices = createHarnessCliServices(input.harnesses);
   const list = createListService(state);
   const services: CliConfigurationServices = {
@@ -625,3 +700,22 @@ export const createProductionCliServices = (
     ...createTraceServices(state),
   });
 };
+
+export const createProductionCliServices = (
+  input: CreateProductionCliServicesInput = {},
+): CliConfigurationServices &
+  CliDoctorServices &
+  CliHarnessServices &
+  CliTraceServices =>
+  createCliServices(
+    input,
+    requireExactProductDestinationRegistry(PRODUCT_DESTINATION_REGISTRY),
+  );
+
+export const createProductionCliServicesForTesting = (
+  input: CreateProductionCliServicesInput &
+    Readonly<{ registry: DestinationRegistry }>,
+): CliConfigurationServices &
+  CliDoctorServices &
+  CliHarnessServices &
+  CliTraceServices => createCliServices(input, input.registry);

@@ -21,6 +21,8 @@ export type LangfuseDoctorConnection = Readonly<{
 
 export type LangfuseDoctorConnectionResolver = (
   connectionId: DestinationConnectionId,
+  configurationGeneration: number,
+  configurationIdentity: string,
   signal: AbortSignal,
 ) => Promise<LangfuseDoctorConnection | null>;
 
@@ -72,11 +74,27 @@ export const createLangfuseReachabilityProbe = (
     throw new Error("destination.langfuse.doctor.invalid");
   return defineDestinationReachabilityProbe({
     destinationType: "@agentscope/destination-langfuse",
-    inspect: async ({ connectionId, signal }) => {
+    inspect: async ({
+      configurationGeneration,
+      configurationIdentity,
+      connectionId,
+      signal,
+    }) => {
       try {
-        if (signal.aborted) return "unavailable";
+        if (
+          signal.aborted ||
+          !Number.isSafeInteger(configurationGeneration) ||
+          configurationGeneration < 0 ||
+          !/^sha256-[0-9a-f]{64}$/u.test(configurationIdentity)
+        )
+          return "unavailable";
         const connection = snapshotConnection(
-          await resolveConnection(connectionId, signal),
+          await resolveConnection(
+            connectionId,
+            configurationGeneration,
+            configurationIdentity,
+            signal,
+          ),
         );
         if (
           !connection ||

@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -279,8 +286,8 @@ describe("Doctor destination composition", () => {
       reachabilityProbes: [
         defineDestinationReachabilityProbe({
           destinationType: descriptor.destinationType,
-          inspect: ({ connectionId, signal }) => {
-            probes.push({ connectionId, signal });
+          inspect: ({ configurationGeneration, connectionId, signal }) => {
+            probes.push({ configurationGeneration, connectionId, signal });
             return Promise.resolve("available");
           },
         }),
@@ -289,7 +296,9 @@ describe("Doctor destination composition", () => {
     await configureFixtureConnection(value);
     const report = await inspect(value);
 
-    expect(probes).toHaveLength(1);
+    expect(probes).toEqual([
+      expect.objectContaining({ configurationGeneration: 1 }),
+    ]);
     expect(report.findings).toContainEqual(
       expect.objectContaining({ code: "doctor.destination.available" }),
     );
@@ -305,6 +314,54 @@ describe("Doctor destination composition", () => {
     if (unsupportedResult.status !== "success") throw new Error("unreachable");
     expect(unsupportedResult.value.findings.map(({ code }) => code)).toContain(
       "doctor.destination.probe-unsupported",
+    );
+  });
+
+  it("downgrades same-generation configuration substitution during probing", async () => {
+    const value = await fixture();
+    await configureFixtureConnection(value);
+    const services = createDoctorCliServices({
+      ...value.input,
+      reachabilityProbes: [
+        defineDestinationReachabilityProbe({
+          destinationType: descriptor.destinationType,
+          inspect: async () => {
+            const document: unknown = JSON.parse(
+              await readFile(value.home.configFile, "utf8"),
+            );
+            const configuration = document as {
+              destinations: Record<
+                string,
+                { connections: Array<{ settings: { project: string } }> }
+              >;
+            };
+            configuration.destinations[
+              descriptor.destinationType
+            ]!.connections[0]!.settings.project =
+              "same-generation-substitution";
+            await writeFile(
+              value.home.configFile,
+              `${JSON.stringify(document)}\n`,
+            );
+            return "available";
+          },
+        }),
+      ],
+    });
+    const result = await services.doctor({
+      fix: false,
+      presentPlan: () => Promise.reject(new Error("unreachable")),
+    });
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("unreachable");
+    expect(result.value.findings.map(({ code }) => code)).toEqual(
+      expect.arrayContaining([
+        "doctor.configuration.unavailable",
+        "doctor.destination.unavailable",
+      ]),
+    );
+    expect(result.value.findings.map(({ code }) => code)).not.toContain(
+      "doctor.destination.available",
     );
   });
 

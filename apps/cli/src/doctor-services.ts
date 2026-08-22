@@ -1,5 +1,7 @@
 import {
   inspectAgentscopeDoctor,
+  createAgentscopeConfigurationIdentity,
+  readConfigurationSnapshot,
   repairDoctorConfigurationTransaction,
   repairDoctorOperationalStateLock,
   type ConfigurationOwnerState,
@@ -282,6 +284,8 @@ const snapshotReachabilityProbes = (
 
 const inspectOneDestination = async (
   connection: DoctorReport["connections"][number],
+  configurationGeneration: number,
+  configurationIdentity: string,
   probe: DestinationReachabilityProbe["inspect"] | undefined,
 ): Promise<CliDoctorFinding> => {
   if (!probe)
@@ -311,6 +315,8 @@ const inspectOneDestination = async (
   try {
     operation = Promise.resolve(
       probe({
+        configurationGeneration,
+        configurationIdentity,
         connectionId: connection.connectionId,
         signal: controller.signal,
       }),
@@ -365,10 +371,52 @@ const inspectDestinations = (
     );
   return Promise.all(
     report.connections.map((connection) =>
-      inspectOneDestination(connection, probes.get(connection.destinationType)),
+      inspectOneDestination(
+        connection,
+        report.configuration.state === "valid"
+          ? report.configuration.generation
+          : -1,
+        report.configuration.state === "valid"
+          ? report.configuration.identity
+          : "unavailable",
+        probes.get(connection.destinationType),
+      ),
     ),
   );
 };
+
+const unavailableConfigurationEvidence = (
+  entry: CliDoctorFinding,
+): CliDoctorFinding =>
+  entry.evidence.scope === "configuration" ||
+  entry.evidence.scope === "credential"
+    ? finding(
+        entry.evidence.scope === "configuration"
+          ? "doctor.configuration.unavailable"
+          : "doctor.credential.unavailable",
+        "warning",
+        "retry",
+        evidence({
+          ...entry.evidence,
+          freshness: "unavailable",
+          state: "unavailable",
+        }),
+      )
+    : entry;
+
+const unavailableDestinationEvidence = (
+  entry: CliDoctorFinding,
+): CliDoctorFinding =>
+  finding(
+    "doctor.destination.unavailable",
+    "warning",
+    "inspect-destination",
+    evidence({
+      ...entry.evidence,
+      freshness: "unavailable",
+      state: "unavailable",
+    }),
+  );
 
 const gitFinding = (value: DoctorGitInspection): CliDoctorFinding => {
   const state =
@@ -438,11 +486,27 @@ const inspectAll = async (
       }),
     ),
   ]);
+  let stableConfiguration = core.configuration.state !== "valid";
+  if (core.configuration.state === "valid") {
+    try {
+      stableConfiguration =
+        createAgentscopeConfigurationIdentity(
+          await readConfigurationSnapshot(input.configurationStore),
+        ) === core.configuration.identity;
+    } catch {
+      stableConfiguration = false;
+    }
+  }
+  const coreFindings = mapCoreFindings(core);
   return Object.freeze([
-    ...mapCoreFindings(core),
+    ...(stableConfiguration
+      ? coreFindings
+      : coreFindings.map(unavailableConfigurationEvidence)),
     pipelineFinding(core),
     ...harnesses,
-    ...destinations,
+    ...(stableConfiguration
+      ? destinations
+      : destinations.map(unavailableDestinationEvidence)),
     gitFinding(git),
   ]);
 };

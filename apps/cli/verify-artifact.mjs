@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -31,6 +31,7 @@ const installRoot = realpathSync(
 );
 const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
+let loopbackServer;
 mkdirSync(artifactDirectory, { recursive: true });
 
 function runRaw(command, arguments_, options = {}) {
@@ -77,6 +78,15 @@ function regularFiles(root) {
     }
   }
   return files.sort();
+}
+
+function waitForFile(path, child) {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(path)) {
+    assert.equal(child.exitCode, null, "loopback server exited early");
+    assert.ok(Date.now() < deadline, "loopback server did not become ready");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
 }
 
 try {
@@ -392,6 +402,145 @@ try {
       schema: "agentscope.cli.diagnostic.v1",
     });
   }
+  const langfuseHome = join(installRoot, "agentscope-home-langfuse");
+  mkdirSync(langfuseHome);
+  const loopbackScript = join(installRoot, "langfuse-loopback.mjs");
+  const loopbackReady = join(installRoot, "langfuse-loopback-ready");
+  const loopbackLedger = join(installRoot, "langfuse-loopback-ledger.json");
+  writeFileSync(
+    loopbackScript,
+    `import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+const [readyPath, ledgerPath] = process.argv.slice(2);
+const server = createServer((request, response) => {
+  let bodyBytes = 0;
+  request.on("data", (chunk) => { bodyBytes += chunk.byteLength; });
+  request.on("end", () => {
+    writeFileSync(ledgerPath, JSON.stringify({
+      bodyBytes,
+      headers: request.headers,
+      method: request.method,
+      url: request.url,
+    }));
+    response.writeHead(405, {
+      "content-type": "text/plain",
+      "x-provider-canary": "discarded-provider-header",
+    });
+    response.end("discarded-provider-body");
+    server.close();
+  });
+});
+server.listen(0, "127.0.0.1", () => {
+  const address = server.address();
+  if (address === null || typeof address === "string") process.exit(2);
+  writeFileSync(readyPath, String(address.port));
+});
+setTimeout(() => process.exit(3), 10_000).unref();
+`,
+  );
+  loopbackServer = spawn(
+    process.execPath,
+    [loopbackScript, loopbackReady, loopbackLedger],
+    {
+      cwd: installRoot,
+      stdio: "ignore",
+    },
+  );
+  waitForFile(loopbackReady, loopbackServer);
+  const loopbackPort = Number(readFileSync(loopbackReady, "utf8"));
+  assert.ok(Number.isInteger(loopbackPort) && loopbackPort > 0);
+  const langfuseEnvironment = {
+    HOME: langfuseHome,
+    USERPROFILE: langfuseHome,
+    LANGFUSE_PUBLIC_KEY: "packed-public-canary",
+    LANGFUSE_SECRET_KEY: "packed-secret-canary",
+  };
+  run(executable, ["init", "--yes", "--output", "json"], {
+    ...executableOptions,
+    env: langfuseEnvironment,
+  });
+  const configuredLangfuse = run(
+    executable,
+    [
+      "destination",
+      "configure",
+      "langfuse",
+      "--name",
+      "packed-langfuse",
+      "--settings",
+      `{"endpoint":"http://127.0.0.1:${loopbackPort}","allowInsecureLoopback":true}`,
+      "--credential-env",
+      "public-key=LANGFUSE_PUBLIC_KEY",
+      "secret-key=LANGFUSE_SECRET_KEY",
+      "--output",
+      "json",
+    ],
+    { ...executableOptions, env: langfuseEnvironment },
+  );
+  assert.deepEqual(JSON.parse(configuredLangfuse.stdout).records, [
+    {
+      connectionId: JSON.parse(configuredLangfuse.stdout).records[0]
+        .connectionId,
+      destinationType: "@agentscope/destination-langfuse",
+      name: "packed-langfuse",
+      routed: false,
+      settingsVersion: 1,
+      transport: "remote",
+    },
+  ]);
+  assert.equal(configuredLangfuse.stderr, "");
+  const inspectedLangfuse = run(
+    executable,
+    ["destination", "inspect", "packed-langfuse", "--output", "json"],
+    { ...executableOptions, env: langfuseEnvironment },
+  );
+  assert.deepEqual(JSON.parse(inspectedLangfuse.stdout).records, [
+    {
+      connection: JSON.parse(configuredLangfuse.stdout).records[0],
+      credentialSlots: ["public-key", "secret-key"],
+      documentationPath: "/docs/cli/destination/configure",
+      settingKeys: [
+        "allowInsecureLoopback",
+        "compatibilityManifestId",
+        "encoding",
+        "endpoint",
+        "profileId",
+      ],
+    },
+  ]);
+  assert.equal(inspectedLangfuse.stderr, "");
+  const langfuseDoctor = run(executable, ["doctor", "--output", "json"], {
+    ...executableOptions,
+    env: langfuseEnvironment,
+  });
+  const langfuseDoctorReport = JSON.parse(langfuseDoctor.stdout);
+  assert.ok(
+    langfuseDoctorReport.records[0].findings.some(
+      (finding) => finding.code === "doctor.credential.available",
+    ),
+  );
+  assert.ok(
+    langfuseDoctorReport.records[0].findings.some(
+      (finding) => finding.code === "doctor.destination.available",
+    ),
+  );
+  const loopbackRequest = JSON.parse(readFileSync(loopbackLedger, "utf8"));
+  assert.deepEqual(loopbackRequest, {
+    bodyBytes: 0,
+    headers: loopbackRequest.headers,
+    method: "GET",
+    url: "/api/public/otel/v1/traces",
+  });
+  assert.equal(loopbackRequest.headers.authorization, undefined);
+  assert.equal(loopbackRequest.headers.cookie, undefined);
+  assert.doesNotMatch(
+    JSON.stringify(loopbackRequest),
+    /packed-(?:public|secret)-canary/u,
+  );
+  assert.doesNotMatch(
+    `${langfuseDoctor.stdout}${langfuseDoctor.stderr}`,
+    /packed-(?:public|secret)-canary|discarded-provider/u,
+  );
   const invalid = runRaw(
     executable,
     ["--does-not-exist-CANARY_SECRET"],
@@ -436,5 +585,6 @@ try {
     `Verified clean install of ${basename(tarball)} (${packReport[0].integrity})\n`,
   );
 } finally {
+  loopbackServer?.kill();
   rmSync(installRoot, { force: true, recursive: true });
 }

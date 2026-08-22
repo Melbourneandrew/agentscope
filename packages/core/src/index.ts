@@ -110,6 +110,7 @@ export {
   MAXIMUM_CONFIGURED_CONNECTIONS,
   MAXIMUM_DESTINATION_NAMESPACES,
   MAXIMUM_ROUTED_CONNECTIONS,
+  createAgentscopeConfigurationIdentity,
   parseAgentscopeConfiguration,
   serializeAgentscopeConfiguration,
   type AgentscopeConfigurationSnapshot,
