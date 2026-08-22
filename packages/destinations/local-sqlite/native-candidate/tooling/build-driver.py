@@ -104,6 +104,7 @@ generated = Path("/work/generated")
 output_root = Path("/work/output")
 for directory in (source, generated, output_root, Path("/work/home"), Path("/work/tmp")):
     directory.mkdir(mode=0o700)
+Path("/work/home/.cache/rosetta").mkdir(mode=0o700, parents=True)
 shutil.copytree("/materials/better-sqlite3", source, dirs_exist_ok=True)
 shutil.copytree("/materials/node-addon-api", source / "node-addon-api")
 for name in ("sqlite3.c", "sqlite3.h", "sqlite3ext.h"):

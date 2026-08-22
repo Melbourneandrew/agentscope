@@ -6,8 +6,8 @@
   "loaderContract": "owned-absolute-no-discovery-v1",
   "buildSandboxProfile": "agentscope-owned-native-build-v1",
   "executionSandboxProfile": "agentscope-sacrificial-native-execution-v1",
-  "releaseMaterialManifestDigest": "sha256:90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397",
-  "provenanceDigest": "sha256:eaf233d92058f04d151f3cec1cbc6a424bda561222031d602ff9b97f820ac8a5",
+  "releaseMaterialManifestDigest": "sha256:6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3",
+  "provenanceDigest": "sha256:b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f",
   "sbomDigest": "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
   "noticeInventoryDigest": "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
   "artifactFiles": [
@@ -15,7 +15,7 @@
       "kind": "loader",
       "relativePath": "loader/owned-loader.cjs",
       "bytes": 11637,
-      "digest": "sha256:c5ba7d73671cf20ee857de8c278e76e5edc106337b1aaf8b98942997329881ce"
+      "digest": "sha256:469d659e54c8d4d3bf1a67b7486664a6e078b21466f184a07d8983cff7d5d599"
     },
     {
       "kind": "native-binary",
@@ -51,13 +51,13 @@
       "kind": "release-materials",
       "relativePath": "records/release-materials.json",
       "bytes": 18738,
-      "digest": "sha256:90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397"
+      "digest": "sha256:6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3"
     },
     {
       "kind": "provenance",
       "relativePath": "records/provenance.json",
       "bytes": 3145,
-      "digest": "sha256:eaf233d92058f04d151f3cec1cbc6a424bda561222031d602ff9b97f820ac8a5"
+      "digest": "sha256:b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f"
     },
     {
       "kind": "sbom",
