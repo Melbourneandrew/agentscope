@@ -411,6 +411,8 @@ const buildContainerArguments = (
   "ALL",
   "--security-opt",
   "no-new-privileges",
+  "--user",
+  `${process.getuid()}:${process.getgid()}`,
   "--pids-limit",
   "128",
   "--memory",
