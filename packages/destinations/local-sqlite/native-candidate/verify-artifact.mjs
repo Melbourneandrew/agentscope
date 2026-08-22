@@ -315,6 +315,49 @@ const runSupervisedBuildContainer = (name, arguments_, timeout = 180_000) => {
     assertNoContainer(name);
   }
 };
+const supervisedFailureDiagnostic = (observed) => {
+  const maximumLines = 64;
+  const maximumLineCharacters = 512;
+  const bounded = (lines) =>
+    lines
+      .slice(0, maximumLines)
+      .map((line) =>
+        line.length <= maximumLineCharacters
+          ? line
+          : `${line.slice(0, maximumLineCharacters)}[truncated]`,
+      );
+  return JSON.stringify({
+    errorCode:
+      typeof observed.error?.code === "string" ? observed.error.code : null,
+    exitCode: Number.isInteger(observed.exitCode) ? observed.exitCode : null,
+    observedExecutables: bounded(observed.observed),
+    observedExecutablesTruncated: observed.observed.length > maximumLines,
+    unexpectedStderr: bounded(observed.unexpectedStderr),
+    unexpectedStderrTruncated: observed.unexpectedStderr.length > maximumLines,
+  });
+};
+const verifySupervisedFailureDiagnostic = () => {
+  const diagnostic = JSON.parse(
+    supervisedFailureDiagnostic({
+      error: Object.assign(new Error("SYNTHETIC_SECRET_CANARY"), {
+        code: "ETIMEDOUT",
+      }),
+      exitCode: null,
+      observed: Array.from({ length: 65 }, (_, index) => `/owned/${index}`),
+      unexpectedStderr: ["x".repeat(513)],
+    }),
+  );
+  assert.equal(diagnostic.errorCode, "ETIMEDOUT");
+  assert.equal(diagnostic.exitCode, null);
+  assert.equal(diagnostic.observedExecutables.length, 64);
+  assert.equal(diagnostic.observedExecutablesTruncated, true);
+  assert.equal(diagnostic.unexpectedStderr[0], `${"x".repeat(512)}[truncated]`);
+  assert.equal(diagnostic.unexpectedStderrTruncated, false);
+  assert.equal(
+    JSON.stringify(diagnostic).includes("SYNTHETIC_SECRET_CANARY"),
+    false,
+  );
+};
 const expectedBuildExecutableLedger = Object.freeze([
   "/usr/bin/python3",
   "/usr/bin/cc",
@@ -415,7 +458,9 @@ const build = (materialDirectories, execSupervisor) => {
     buildContainerArguments(materialDirectories, execSupervisor),
   );
   if (observed.exitCode !== 0)
-    throw new Error("native candidate container failed");
+    throw new Error(
+      `native candidate container failed: ${supervisedFailureDiagnostic(observed)}`,
+    );
   assert.equal(observed.unexpectedStderr.length, 0);
   assert.deepEqual(observed.observed, expectedBuildExecutableLedger);
   const result = JSON.parse(observed.output.split("\n").at(-1));
@@ -1177,6 +1222,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
 
 const temporary = mkdtempSync(join(tmpdir(), "agentscope-native-candidate-"));
 try {
+  verifySupervisedFailureDiagnostic();
   verifyArchiveCompilerHostileFixtures();
   verifyMaterializerParentSwapFixture();
   validateRecords();
