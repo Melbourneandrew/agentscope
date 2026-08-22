@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   createCredentialSlotId,
   createDestinationConnectionId,
@@ -313,3 +315,10 @@ export const serializeAgentscopeConfiguration = (
     return invalid();
   }
 };
+
+export const createAgentscopeConfigurationIdentity = (
+  snapshot: AgentscopeConfigurationSnapshot,
+): string =>
+  `sha256-${createHash("sha256")
+    .update(serializeAgentscopeConfiguration(snapshot), "utf8")
+    .digest("hex")}`;

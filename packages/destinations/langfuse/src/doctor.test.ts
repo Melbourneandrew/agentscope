@@ -42,6 +42,8 @@ describe("Langfuse Doctor reachability", () => {
     expect(harness.connectionId).toBe(connectionId);
     await expect(
       probe.inspect({
+        configurationGeneration: 1,
+        configurationIdentity: `sha256-${"a".repeat(64)}`,
         connectionId,
         signal: new AbortController().signal,
       }),
@@ -92,6 +94,8 @@ describe("Langfuse Doctor reachability", () => {
       const probe = createLangfuseReachabilityProbe(resolver);
       await expect(
         probe.inspect({
+          configurationGeneration: 1,
+          configurationIdentity: `sha256-${"a".repeat(64)}`,
           connectionId,
           signal: new AbortController().signal,
         }),
@@ -105,7 +109,12 @@ describe("Langfuse Doctor reachability", () => {
       return Promise.resolve(null);
     });
     await expect(
-      probe.inspect({ connectionId, signal: controller.signal }),
+      probe.inspect({
+        configurationGeneration: 1,
+        configurationIdentity: `sha256-${"a".repeat(64)}`,
+        connectionId,
+        signal: controller.signal,
+      }),
     ).resolves.toBe("unavailable");
     expect(calls).toBe(0);
     const afterController = new AbortController();
@@ -120,7 +129,12 @@ describe("Langfuse Doctor reachability", () => {
       });
     });
     await expect(
-      afterProbe.inspect({ connectionId, signal: afterController.signal }),
+      afterProbe.inspect({
+        configurationGeneration: 1,
+        configurationIdentity: `sha256-${"a".repeat(64)}`,
+        connectionId,
+        signal: afterController.signal,
+      }),
     ).resolves.toBe("unavailable");
   });
 
@@ -140,6 +154,8 @@ describe("Langfuse Doctor reachability", () => {
     );
     await expect(
       probe.inspect({
+        configurationGeneration: 1,
+        configurationIdentity: `sha256-${"a".repeat(64)}`,
         connectionId,
         signal: new AbortController().signal,
       }),

@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import {
   getDestinationDescriptor,
   createTraceLocator,
+  type BoundDestinationTransport,
   type DestinationDescriptor,
+  type JsonObject,
   type ReporterDeadline,
   type Retriever,
   type RetrieverFailureCode,
@@ -43,6 +45,7 @@ import {
   type HookConfigurationReadResult,
 } from "../configuration/transaction.js";
 import {
+  createAgentscopeConfigurationIdentity,
   serializeAgentscopeConfiguration,
   type AgentscopeConfigurationSnapshot,
   type ConfiguredDestinationConnection,
@@ -144,6 +147,18 @@ export type CoreRetrievalRuntimePreparation =
         | "core.configuration.unsupported"
         | "core.configuration.unavailable"
         | "deadline-exceeded";
+    }>;
+
+export type CoreDestinationReachabilityPreparation =
+  | Readonly<{
+      ok: true;
+      connectionId: string;
+      settings: JsonObject;
+      transport: BoundDestinationTransport;
+    }>
+  | Readonly<{
+      ok: false;
+      code: "deadline-exceeded" | "unknown-connection" | "unavailable";
     }>;
 
 const failure = (
@@ -269,6 +284,75 @@ const readRuntime = (input: unknown): CoreRetrievalRuntime | undefined => {
     deadline: descriptorValue(descriptors, "deadline") as ReporterDeadline,
     ...(signal === undefined ? {} : { signal }),
   });
+};
+
+export const prepareConfiguredDestinationReachability = (
+  input: unknown,
+  connectionId: unknown,
+  destinationType: unknown,
+  configurationGeneration: unknown,
+  configurationIdentity: unknown,
+): CoreDestinationReachabilityPreparation => {
+  const runtime = readRuntime(input);
+  if (!runtime) return Object.freeze({ ok: false, code: "unavailable" });
+  try {
+    serializeAgentscopeConfiguration(runtime.configuration);
+  } catch {
+    return Object.freeze({ ok: false, code: "unavailable" });
+  }
+  if (
+    signalIsAborted(runtime.signal) ||
+    reporterDeadlineRemainingMilliseconds(runtime.deadline) <= 0
+  )
+    return Object.freeze({ ok: false, code: "deadline-exceeded" });
+  if (
+    typeof connectionId !== "string" ||
+    typeof destinationType !== "string" ||
+    !Number.isSafeInteger(configurationGeneration) ||
+    (configurationGeneration as number) < 0 ||
+    typeof configurationIdentity !== "string" ||
+    !/^sha256-[0-9a-f]{64}$/u.test(configurationIdentity)
+  )
+    return Object.freeze({ ok: false, code: "unknown-connection" });
+  if (runtime.configuration.generation !== configurationGeneration)
+    return Object.freeze({ ok: false, code: "unavailable" });
+  if (
+    createAgentscopeConfigurationIdentity(runtime.configuration) !==
+    configurationIdentity
+  )
+    return Object.freeze({ ok: false, code: "unavailable" });
+  const connection = runtime.configuration.connections.find(
+    (candidate) =>
+      candidate.connectionId === connectionId &&
+      candidate.destinationType === destinationType,
+  );
+  if (!connection)
+    return Object.freeze({ ok: false, code: "unknown-connection" });
+  const descriptor = getDestinationDescriptor(
+    runtime.configuration.destinationRegistry,
+    connection.destinationType,
+  );
+  if (!descriptor)
+    return Object.freeze({ ok: false, code: "unknown-connection" });
+  try {
+    const prepared = resolveDestinationConnection(descriptor, {
+      connectionId: connection.connectionId,
+      settings: connection.settings,
+    });
+    if (prepared.endpoint === null)
+      return Object.freeze({ ok: false, code: "unavailable" });
+    return Object.freeze({
+      ok: true,
+      connectionId: connection.connectionId,
+      settings: connection.settings,
+      transport: bindDestinationTransport(
+        prepared.endpoint,
+        runtime.transportExecutor,
+      ),
+    });
+  } catch {
+    return Object.freeze({ ok: false, code: "unavailable" });
+  }
 };
 
 type ConfigurationSettlement =

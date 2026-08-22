@@ -191,6 +191,8 @@ const doctorHarness = testing.createLangfuseReachabilityProbeTestHarness(
   },
 );
 const doctorState = await doctorHarness.probe.inspect({
+  configurationGeneration: 1,
+  configurationIdentity: `sha256-${"a".repeat(64)}`,
   connectionId: doctorHarness.connectionId,
   signal: new AbortController().signal,
 });

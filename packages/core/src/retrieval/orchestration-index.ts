@@ -1,11 +1,13 @@
 export {
   getConfiguredTrace,
+  prepareConfiguredDestinationReachability,
   prepareCoreRetrievalRuntime,
   searchConfiguredTraces,
   RETRIEVAL_MAXIMUM_PROVIDER_REQUESTS,
   RETRIEVAL_MAXIMUM_RESPONSE_BYTES,
   RETRIEVAL_OPERATION_DEADLINE_MILLISECONDS,
   type CoreRetrievedTrace,
+  type CoreDestinationReachabilityPreparation,
   type CoreRetrievalFailure,
   type CoreRetrievalFailureCode,
   type CoreRetrievalRuntime,

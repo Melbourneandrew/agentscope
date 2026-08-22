@@ -30,6 +30,7 @@ import {
 } from "../configuration/credential-adapter.js";
 import { createAgentscopeHomeResolver } from "../configuration/home.js";
 import {
+  createAgentscopeConfigurationIdentity,
   parseAgentscopeConfiguration,
   serializeAgentscopeConfiguration,
 } from "../configuration/schema.js";
@@ -41,6 +42,7 @@ import {
 import {
   createCoreRetrievalRuntime,
   getConfiguredTrace,
+  prepareConfiguredDestinationReachability,
   prepareCoreRetrievalRuntime,
   searchConfiguredTraces,
   type CoreRetrievalRuntime,
@@ -70,6 +72,7 @@ const runtime = (
     hang?: boolean;
     sparseSummary?: boolean;
     oversizedToken?: boolean;
+    remote?: boolean;
   }> = {},
   // eslint-disable-next-line max-lines-per-function -- one fixture binds one exact descriptor and configuration authority.
 ) => {
@@ -86,7 +89,15 @@ const runtime = (
     credentialSlots: [],
     documentationPath: "/docs/destinations/retrieval-test",
     deliveryIdentitySupport: "duplicates-possible",
-    transport: { kind: "local" },
+    transport: options.remote
+      ? {
+          kind: "remote" as const,
+          resolveEndpoint: () => ({
+            allowInsecureLoopback: false,
+            url: "https://example.com",
+          }),
+        }
+      : { kind: "local" as const },
     createReporter: () =>
       createDestinationReporter({
         report: () => Promise.resolve(createReporterReceipt("accepted")),
@@ -260,6 +271,61 @@ const runtime = (
 };
 
 describe("Core retrieval orchestration", () => {
+  it("binds only the exact configured remote connection for reachability", () => {
+    const fixture = runtime({ remote: true });
+    const configurationIdentity = createAgentscopeConfigurationIdentity(
+      fixture.value.configuration,
+    );
+    const prepared = prepareConfiguredDestinationReachability(
+      fixture.value,
+      connectionId,
+      "@agentscope/destination-retrieval-test",
+      9,
+      configurationIdentity,
+    );
+    expect(prepared).toMatchObject({
+      connectionId,
+      ok: true,
+      settings: {},
+    });
+    expect(
+      prepareConfiguredDestinationReachability(
+        fixture.value,
+        connectionId,
+        "@agentscope/destination-other",
+        9,
+        configurationIdentity,
+      ),
+    ).toEqual({ ok: false, code: "unknown-connection" });
+    expect(
+      prepareConfiguredDestinationReachability(
+        fixture.value,
+        "destination-connection-v1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "@agentscope/destination-retrieval-test",
+        9,
+        configurationIdentity,
+      ),
+    ).toEqual({ ok: false, code: "unknown-connection" });
+    expect(
+      prepareConfiguredDestinationReachability(
+        fixture.value,
+        connectionId,
+        "@agentscope/destination-retrieval-test",
+        10,
+        configurationIdentity,
+      ),
+    ).toEqual({ ok: false, code: "unavailable" });
+    expect(
+      prepareConfiguredDestinationReachability(
+        fixture.value,
+        connectionId,
+        "@agentscope/destination-retrieval-test",
+        9,
+        `sha256-${"f".repeat(64)}`,
+      ),
+    ).toEqual({ ok: false, code: "unavailable" });
+  });
+
   it("anchors the command before bounded configuration resolution", async () => {
     const fixture = runtime();
     const serialized = serializeAgentscopeConfiguration(

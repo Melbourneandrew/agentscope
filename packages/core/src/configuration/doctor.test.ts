@@ -224,7 +224,12 @@ describe("Agentscope Doctor inspection", () => {
       ownerState: () => "dead",
     });
 
-    expect(report.configuration).toEqual({ state: "valid", generation: 0 });
+    expect(report.configuration).toMatchObject({
+      state: "valid",
+      generation: 0,
+    });
+    if (report.configuration.state !== "valid") throw new Error("unreachable");
+    expect(report.configuration.identity).toMatch(/^sha256-[0-9a-f]{64}$/u);
     expect(report.connections).toEqual([
       {
         destinationType: "@agentscope/destination-example",

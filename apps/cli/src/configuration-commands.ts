@@ -12,6 +12,11 @@ const nameSchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u);
+const settingKeySchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][A-Za-z0-9]*$/u);
 const typeSchema = nameSchema;
 const slotAssignmentSchema = z
   .string()
@@ -56,7 +61,7 @@ const inspectValueSchema = z.strictObject({
   connection: connectionSchema,
   credentialSlots: z.array(nameSchema).max(16),
   documentationPath: z.string().min(1).max(256),
-  settingKeys: z.array(nameSchema).max(64),
+  settingKeys: z.array(settingKeySchema).max(64),
 });
 const unconfigureValueSchema = z.strictObject({
   dataPreserved: z.literal(true),

@@ -1,4 +1,5 @@
 export { createCiEnvironmentCredentialReference } from "./credential-adapter.js";
+export { createAgentscopeConfigurationIdentity } from "./schema.js";
 export {
   applyDestinationLifecyclePlan,
   applyDestinationMaintenancePlan,
