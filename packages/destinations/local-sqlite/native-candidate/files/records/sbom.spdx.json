@@ -1,0 +1,115 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "agentscope-local-sqlite-node127-linux-x64-glibc",
+  "documentNamespace": "https://melbourneandrew.github.io/agentscope/sbom/local-sqlite/node127-linux-x64-glibc/v1",
+  "creationInfo": {
+    "created": "2026-08-22T00:00:00Z",
+    "creators": ["Tool: agentscope-owned-native-build-v1"]
+  },
+  "packages": [
+    {
+      "name": "better-sqlite3",
+      "SPDXID": "SPDXRef-Package-better-sqlite3",
+      "versionInfo": "13.0.3",
+      "downloadLocation": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-13.0.3.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "77e0513dc1a469fb3bceec4c7fb5ad3f403109787eda05be047ec17fd56868cb"
+        }
+      ]
+    },
+    {
+      "name": "node-addon-api",
+      "SPDXID": "SPDXRef-Package-node-addon-api",
+      "versionInfo": "8.5.0",
+      "downloadLocation": "https://registry.npmjs.org/node-addon-api/-/node-addon-api-8.5.0.tgz",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "d12f07c8162283b6213551855f1da8dac162331374629830b5e640f130f07910"
+        }
+      ]
+    },
+    {
+      "name": "SQLite",
+      "SPDXID": "SPDXRef-Package-SQLite",
+      "versionInfo": "3.53.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "blessing",
+      "licenseDeclared": "blessing"
+    }
+  ],
+  "files": [
+    {
+      "fileName": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
+      "SPDXID": "SPDXRef-File-native",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+        }
+      ],
+      "licenseConcluded": "MIT AND blessing",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "runtime/better-sqlite3.cjs",
+      "SPDXID": "SPDXRef-File-runtime",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e5b029abcc18d9bc3981616bc9f0e9247be23390584f75cabe13515bccb50849"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "copyrightText": "NOASSERTION"
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-better-sqlite3"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-node-addon-api"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-SQLite"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-better-sqlite3",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-runtime"
+    },
+    {
+      "spdxElementId": "SPDXRef-File-native",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-Package-SQLite"
+    },
+    {
+      "spdxElementId": "SPDXRef-File-native",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-Package-better-sqlite3"
+    },
+    {
+      "spdxElementId": "SPDXRef-File-native",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-Package-node-addon-api"
+    }
+  ]
+}

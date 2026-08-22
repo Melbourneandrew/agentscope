@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const IDENTIFIER = /^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?$/u;
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 const VERSION = /^(?:0|[1-9][0-9]{0,5})(?:\.(?:0|[1-9][0-9]{0,5})){0,3}$/u;
@@ -5,6 +7,20 @@ const VERSION = /^(?:0|[1-9][0-9]{0,5})(?:\.(?:0|[1-9][0-9]{0,5})){0,3}$/u;
 type NativePlatform = "darwin" | "linux" | "win32";
 type NativeArchitecture = "arm64" | "x64";
 type LibcFamily = "glibc" | "musl";
+type NativeArtifactKind =
+  | "loader"
+  | "native-binary"
+  | "notice"
+  | "provenance"
+  | "release-materials"
+  | "runtime"
+  | "sbom";
+type NativeArtifactFile = Readonly<{
+  kind: NativeArtifactKind;
+  relativePath: string;
+  bytes: number;
+  digest: string;
+}>;
 type NativeBinary = Readonly<{
   tupleId: string;
   nodeAbi: number;
@@ -29,6 +45,16 @@ type SupportedPlatform = Readonly<{
 export type LocalSqliteNativeSupportManifest = Readonly<{
   schemaVersion: 1;
   capability: "local-sqlite";
+  disposition: "proposed-unpublished-execution-eligible";
+  artifactRoot: "internal/local-sqlite";
+  loaderContract: "owned-absolute-no-discovery-v1";
+  buildSandboxProfile: "agentscope-owned-native-build-v1";
+  executionSandboxProfile: "agentscope-sacrificial-native-execution-v1";
+  releaseMaterialManifestDigest: string;
+  provenanceDigest: string;
+  sbomDigest: string;
+  noticeInventoryDigest: string;
+  artifactFiles: readonly NativeArtifactFile[];
   nativeBinaries: readonly NativeBinary[];
   supportedPlatforms: readonly SupportedPlatform[];
 }>;
@@ -48,6 +74,7 @@ export type LocalSqliteNativeSupportResult =
       state: "available";
       platformId: string;
       nativeTupleId: string;
+      admission: "proposed-unpublished";
       relativePath: string;
       bytes: number;
       digest: string;
@@ -57,13 +84,118 @@ export type LocalSqliteNativeSupportResult =
       code: "destination.local-sqlite.native-unavailable";
     }>;
 
+const candidateBinary = Object.freeze({
+  tupleId: "node127-linux-x64-glibc",
+  nodeAbi: 127,
+  admittedNodeMajors: Object.freeze([22]),
+  platform: "linux" as const,
+  minimumOsVersion: "5.15",
+  architecture: "x64" as const,
+  libcFamily: "glibc" as const,
+  minimumLibcVersion: "2.34",
+  relativePath: "native/node127-linux-x64-glibc/agentscope_sqlite.node",
+  bytes: 2_213_824,
+  digest:
+    "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
+});
+
+const candidateArtifacts = Object.freeze([
+  Object.freeze({
+    kind: "loader" as const,
+    relativePath: "loader/owned-loader.cjs",
+    bytes: 11_637,
+    digest:
+      "sha256:c5ba7d73671cf20ee857de8c278e76e5edc106337b1aaf8b98942997329881ce",
+  }),
+  Object.freeze({
+    kind: "native-binary" as const,
+    relativePath: candidateBinary.relativePath,
+    bytes: candidateBinary.bytes,
+    digest: candidateBinary.digest,
+  }),
+  Object.freeze({
+    kind: "runtime" as const,
+    relativePath: "runtime/better-sqlite3.cjs",
+    bytes: 29_878,
+    digest:
+      "sha256:e5b029abcc18d9bc3981616bc9f0e9247be23390584f75cabe13515bccb50849",
+  }),
+  Object.freeze({
+    kind: "notice" as const,
+    relativePath: "notices/better-sqlite3-MIT.txt",
+    bytes: 1_078,
+    digest:
+      "sha256:09856b52897c91ab67e7456ef43067019f31dfd3b87fda72e655736b1ebdee55",
+  }),
+  Object.freeze({
+    kind: "notice" as const,
+    relativePath: "notices/node-addon-api-MIT.txt",
+    bytes: 1_150,
+    digest:
+      "sha256:89024017b88a9f2b763f79b941a4f2db3b4428edfcacdc0b23866b2da633ad0c",
+  }),
+  Object.freeze({
+    kind: "notice" as const,
+    relativePath: "notices/sqlite-public-domain.txt",
+    bytes: 231,
+    digest:
+      "sha256:1d0f05cf16e1c2bbf53b9a00b49480fc802acec5248443c8eaef2e515333da95",
+  }),
+  Object.freeze({
+    kind: "release-materials" as const,
+    relativePath: "records/release-materials.json",
+    bytes: 18_738,
+    digest:
+      "sha256:90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397",
+  }),
+  Object.freeze({
+    kind: "provenance" as const,
+    relativePath: "records/provenance.json",
+    bytes: 3_145,
+    digest:
+      "sha256:eaf233d92058f04d151f3cec1cbc6a424bda561222031d602ff9b97f820ac8a5",
+  }),
+  Object.freeze({
+    kind: "sbom" as const,
+    relativePath: "records/sbom.spdx.json",
+    bytes: 3_537,
+    digest:
+      "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
+  }),
+]);
+
 export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManifest =
   Object.freeze({
     schemaVersion: 1,
     capability: "local-sqlite",
-    nativeBinaries: Object.freeze([]),
-    supportedPlatforms: Object.freeze([]),
+    disposition: "proposed-unpublished-execution-eligible",
+    artifactRoot: "internal/local-sqlite",
+    loaderContract: "owned-absolute-no-discovery-v1",
+    buildSandboxProfile: "agentscope-owned-native-build-v1",
+    executionSandboxProfile: "agentscope-sacrificial-native-execution-v1",
+    releaseMaterialManifestDigest:
+      "sha256:90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397",
+    provenanceDigest:
+      "sha256:eaf233d92058f04d151f3cec1cbc6a424bda561222031d602ff9b97f820ac8a5",
+    sbomDigest:
+      "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
+    noticeInventoryDigest:
+      "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
+    artifactFiles: candidateArtifacts,
+    nativeBinaries: Object.freeze([candidateBinary]),
+    supportedPlatforms: Object.freeze([
+      Object.freeze({
+        platformId: "linux-x64-node22-ci-ext4-proposed",
+        nativeTupleId: candidateBinary.tupleId,
+        nodeMajor: 22,
+        credentialBackend: "ci-environment",
+        filesystemProfile: "local-ext4",
+      }),
+    ]),
   });
+
+export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST =
+  "sha256:ef38a3e08469d9780d59282273ea2955242d57e80ed9553f982053348f22f486" as const;
 
 const unavailable = (): LocalSqliteNativeSupportResult =>
   Object.freeze({
@@ -156,6 +288,12 @@ const validRelativePath = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length <= 256 &&
   /^native\/[a-z0-9._-]+\/[a-z0-9._-]+\.node$/u.test(value);
+const validArtifactPath = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length <= 256 &&
+  /^(?:loader\/[a-z0-9._-]+\.cjs|native\/[a-z0-9._-]+\/[a-z0-9._-]+\.node|runtime\/[a-z0-9._-]+\.cjs|notices\/[A-Za-z0-9._-]+\.txt|records\/[a-z0-9._-]+\.json)$/u.test(
+    value,
+  );
 
 const compareVersions = (left: string, right: string): number => {
   const leftParts = left.split(".").map(Number);
@@ -297,6 +435,34 @@ const snapshotPlatform = (value: unknown): SupportedPlatform | undefined => {
   return Object.freeze(record) as SupportedPlatform;
 };
 
+const snapshotArtifact = (value: unknown): NativeArtifactFile | undefined => {
+  const record = exactRecord(value, [
+    "kind",
+    "relativePath",
+    "bytes",
+    "digest",
+  ]);
+  if (
+    record === undefined ||
+    typeof record.kind !== "string" ||
+    ![
+      "native-binary",
+      "loader",
+      "notice",
+      "provenance",
+      "release-materials",
+      "runtime",
+      "sbom",
+    ].includes(record.kind) ||
+    !validArtifactPath(record.relativePath) ||
+    !validInteger(record.bytes, 1, 16 * 1024 * 1024) ||
+    typeof record.digest !== "string" ||
+    !SHA256.test(record.digest)
+  )
+    return undefined;
+  return Object.freeze(record) as NativeArtifactFile;
+};
+
 const runtimeMatchesBinary = (
   runtime: LocalSqliteRuntimeIdentity,
   binary: NativeBinary,
@@ -311,82 +477,204 @@ const runtimeMatchesBinary = (
       runtime.libcVersion !== null &&
       compareVersions(runtime.libcVersion, binary.minimumLibcVersion!) >= 0));
 
-const inspectManifest = (
-  runtimeValue: unknown,
-  manifestValue: unknown,
-): LocalSqliteNativeSupportResult => {
-  const runtime = snapshotRuntime(runtimeValue);
-  const manifest = exactRecord(manifestValue, [
-    "schemaVersion",
-    "capability",
-    "nativeBinaries",
-    "supportedPlatforms",
-  ]);
-  if (runtime === undefined || manifest === undefined) return unavailable();
+const MANIFEST_KEYS = Object.freeze([
+  "schemaVersion",
+  "capability",
+  "disposition",
+  "artifactRoot",
+  "loaderContract",
+  "buildSandboxProfile",
+  "executionSandboxProfile",
+  "releaseMaterialManifestDigest",
+  "provenanceDigest",
+  "sbomDigest",
+  "noticeInventoryDigest",
+  "artifactFiles",
+  "nativeBinaries",
+  "supportedPlatforms",
+]);
+
+type ManifestEnvelope = Readonly<{
+  manifest: Readonly<Record<string, unknown>>;
+  artifactValues: readonly unknown[];
+  nativeValues: readonly unknown[];
+  platformValues: readonly unknown[];
+}>;
+
+const snapshotManifestEnvelope = (
+  value: unknown,
+): ManifestEnvelope | undefined => {
+  const manifest = exactRecord(value, MANIFEST_KEYS);
+  if (manifest === undefined) return undefined;
+  const artifactValues = exactArray(manifest.artifactFiles, 64);
   const nativeValues = exactArray(manifest.nativeBinaries, 16);
   const platformValues = exactArray(manifest.supportedPlatforms, 64);
   if (
     manifest.schemaVersion !== 1 ||
     manifest.capability !== "local-sqlite" ||
+    manifest.disposition !== "proposed-unpublished-execution-eligible" ||
+    manifest.artifactRoot !== "internal/local-sqlite" ||
+    manifest.loaderContract !== "owned-absolute-no-discovery-v1" ||
+    manifest.buildSandboxProfile !== "agentscope-owned-native-build-v1" ||
+    manifest.executionSandboxProfile !==
+      "agentscope-sacrificial-native-execution-v1" ||
+    typeof manifest.releaseMaterialManifestDigest !== "string" ||
+    !SHA256.test(manifest.releaseMaterialManifestDigest) ||
+    typeof manifest.provenanceDigest !== "string" ||
+    !SHA256.test(manifest.provenanceDigest) ||
+    typeof manifest.sbomDigest !== "string" ||
+    !SHA256.test(manifest.sbomDigest) ||
+    typeof manifest.noticeInventoryDigest !== "string" ||
+    !SHA256.test(manifest.noticeInventoryDigest) ||
+    artifactValues === undefined ||
     nativeValues === undefined ||
     platformValues === undefined
   )
-    return unavailable();
+    return undefined;
+  return Object.freeze({
+    manifest,
+    artifactValues,
+    nativeValues,
+    platformValues,
+  });
+};
+
+const snapshotArtifactInventory = (
+  envelope: ManifestEnvelope,
+): ReadonlyMap<string, NativeArtifactFile> | undefined => {
+  const artifacts = new Map<string, NativeArtifactFile>();
+  const digests = new Set<string>();
+  const kinds = new Map<NativeArtifactKind, number>();
+  for (const value of envelope.artifactValues) {
+    const artifact = snapshotArtifact(value);
+    if (
+      artifact === undefined ||
+      artifacts.has(artifact.relativePath) ||
+      digests.has(artifact.digest)
+    )
+      return undefined;
+    artifacts.set(artifact.relativePath, artifact);
+    digests.add(artifact.digest);
+    kinds.set(artifact.kind, (kinds.get(artifact.kind) ?? 0) + 1);
+  }
+  const { manifest, nativeValues } = envelope;
+  if (
+    kinds.get("native-binary") !== nativeValues.length ||
+    kinds.get("loader") !== 1 ||
+    kinds.get("runtime") !== 1 ||
+    kinds.get("provenance") !== 1 ||
+    kinds.get("release-materials") !== 1 ||
+    kinds.get("sbom") !== 1 ||
+    kinds.get("notice") !== 3 ||
+    artifacts.get("records/provenance.json")?.digest !==
+      manifest.provenanceDigest ||
+    artifacts.get("records/release-materials.json")?.digest !==
+      manifest.releaseMaterialManifestDigest ||
+    artifacts.get("records/sbom.spdx.json")?.digest !== manifest.sbomDigest
+  )
+    return undefined;
+  const notices = [...artifacts.values()]
+    .filter(({ kind }) => kind === "notice")
+    .sort((left, right) => left.relativePath.localeCompare(right.relativePath))
+    .map(({ relativePath, bytes, digest }) => ({
+      relativePath,
+      bytes,
+      digest,
+    }));
+  const noticeDigest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(notices))
+    .digest("hex")}`;
+  return noticeDigest === manifest.noticeInventoryDigest
+    ? Object.freeze(artifacts)
+    : undefined;
+};
+
+const snapshotBinaries = (
+  values: readonly unknown[],
+  artifacts: ReadonlyMap<string, NativeArtifactFile>,
+): ReadonlyMap<string, NativeBinary> | undefined => {
   const binaries = new Map<string, NativeBinary>();
   const paths = new Set<string>();
   const digests = new Set<string>();
   const projections = new Set<string>();
-  for (const value of nativeValues) {
+  for (const value of values) {
     const binary = snapshotBinary(value);
-    const projection =
-      binary === undefined ? undefined : nativeProjectionKey(binary);
+    const projection = binary && nativeProjectionKey(binary);
+    const artifact = binary && artifacts.get(binary.relativePath);
     if (
       binary === undefined ||
       projection === undefined ||
       binaries.has(binary.tupleId) ||
       paths.has(binary.relativePath) ||
       digests.has(binary.digest) ||
-      projections.has(projection)
+      projections.has(projection) ||
+      artifact?.kind !== "native-binary" ||
+      artifact.bytes !== binary.bytes ||
+      artifact.digest !== binary.digest
     )
-      return unavailable();
+      return undefined;
     binaries.set(binary.tupleId, binary);
     paths.add(binary.relativePath);
     digests.add(binary.digest);
     projections.add(projection);
   }
+  return Object.freeze(binaries);
+};
+
+const selectPlatform = (
+  runtime: LocalSqliteRuntimeIdentity,
+  values: readonly unknown[],
+  binaries: ReadonlyMap<string, NativeBinary>,
+):
+  | Readonly<{ platform: SupportedPlatform; binary: NativeBinary }>
+  | undefined => {
   const references = new Set<string>();
   const platformIds = new Set<string>();
   let selected:
     Readonly<{ platform: SupportedPlatform; binary: NativeBinary }> | undefined;
-  for (const value of platformValues) {
+  for (const value of values) {
     const platform = snapshotPlatform(value);
-    const binary =
-      platform === undefined ? undefined : binaries.get(platform.nativeTupleId);
+    const binary = platform && binaries.get(platform.nativeTupleId);
     if (
       platform === undefined ||
       binary === undefined ||
       !binary.admittedNodeMajors.includes(platform.nodeMajor) ||
       platformIds.has(platform.platformId)
     )
-      return unavailable();
+      return undefined;
     platformIds.add(platform.platformId);
     references.add(platform.nativeTupleId);
-    if (
+    const matches =
       platform.nodeMajor === runtime.nodeMajor &&
       platform.credentialBackend === runtime.credentialBackend &&
       platform.filesystemProfile === runtime.filesystemProfile &&
-      runtimeMatchesBinary(runtime, binary)
-    ) {
-      if (selected !== undefined) return unavailable();
+      runtimeMatchesBinary(runtime, binary);
+    if (matches) {
+      if (selected !== undefined) return undefined;
       selected = Object.freeze({ platform, binary });
     }
   }
-  if (references.size !== binaries.size || selected === undefined)
-    return unavailable();
+  return references.size === binaries.size ? selected : undefined;
+};
+
+const inspectManifest = (
+  runtimeValue: unknown,
+  manifestValue: unknown,
+): LocalSqliteNativeSupportResult => {
+  const runtime = snapshotRuntime(runtimeValue);
+  const envelope = snapshotManifestEnvelope(manifestValue);
+  if (runtime === undefined || envelope === undefined) return unavailable();
+  const artifacts = snapshotArtifactInventory(envelope);
+  if (artifacts === undefined) return unavailable();
+  const binaries = snapshotBinaries(envelope.nativeValues, artifacts);
+  if (binaries === undefined) return unavailable();
+  const selected = selectPlatform(runtime, envelope.platformValues, binaries);
+  if (selected === undefined) return unavailable();
   return Object.freeze({
     state: "available",
     platformId: selected.platform.platformId,
     nativeTupleId: selected.binary.tupleId,
+    admission: "proposed-unpublished",
     relativePath: selected.binary.relativePath,
     bytes: selected.binary.bytes,
     digest: selected.binary.digest,
@@ -399,16 +687,6 @@ export const inspectLocalSqliteNativeSupportManifestForTesting = (
 ): LocalSqliteNativeSupportResult => {
   try {
     return inspectManifest(runtime, manifest);
-  } catch {
-    return unavailable();
-  }
-};
-
-export const inspectLocalSqliteNativeSupport = (
-  runtime: LocalSqliteRuntimeIdentity,
-): LocalSqliteNativeSupportResult => {
-  try {
-    return inspectManifest(runtime, LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST);
   } catch {
     return unavailable();
   }

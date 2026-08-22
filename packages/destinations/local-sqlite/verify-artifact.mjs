@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,12 +44,17 @@ const sourceFiles = regularFiles(sourceRoot).filter(
 const migrationFiles = regularFiles(sourceRoot).filter(
   (file) => file.startsWith("migrations/") && file.endsWith(".sql"),
 );
+const nativeCandidateRoot = new URL("./native-candidate/files/", packageRoot);
+const nativeCandidateFiles = regularFiles(nativeCandidateRoot).map(
+  (file) => `native-candidate/${file}`,
+);
 const expectedDist = [
   ...sourceFiles.flatMap((file) => [
     file.replace(/\.ts$/u, ".d.ts"),
     file.replace(/\.ts$/u, ".js"),
   ]),
   ...migrationFiles,
+  ...nativeCandidateFiles,
 ].sort();
 const actualDist = regularFiles(distRoot);
 if (JSON.stringify(actualDist) !== JSON.stringify(expectedDist))
@@ -61,7 +66,7 @@ if (actualDist.some((file) => file.includes(".test.")))
 
 const expectedRoot = [
   "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST",
-  "inspectLocalSqliteNativeSupport",
+  "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST",
   "LOCAL_SQLITE_DESTINATION_TYPE",
   "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
   "createLocalSqliteLifecycleHandler",
@@ -154,10 +159,130 @@ if (
   root.localSqliteLifecycleDeclaration.destinationType !==
     "@agentscope/destination-local-sqlite" ||
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.schemaVersion !== 1 ||
-  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeBinaries.length !== 0 ||
-  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.supportedPlatforms.length !== 0
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.disposition !==
+    "proposed-unpublished-execution-eligible" ||
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeBinaries.length !== 1 ||
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.supportedPlatforms.length !== 1 ||
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.artifactFiles.length !== 9
 )
-  throw new Error("Local SQLite artifact claimed an unproved native tuple.");
+  throw new Error("Local SQLite proposed native tuple closure drifted.");
+const builtCandidateRoot = fileURLToPath(
+  new URL("./dist/native-candidate/", packageRoot),
+);
+const declaredCandidateFiles =
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.artifactFiles
+    .map(({ relativePath }) => relativePath)
+    .sort();
+declaredCandidateFiles.push("records/support-manifest.json");
+declaredCandidateFiles.sort();
+if (
+  JSON.stringify(
+    regularFiles(new URL("./dist/native-candidate/", packageRoot)),
+  ) !== JSON.stringify(declaredCandidateFiles)
+)
+  throw new Error("Local SQLite native candidate inventory drifted.");
+const supportManifestBytes = readFileSync(
+  resolve(builtCandidateRoot, "records/support-manifest.json"),
+);
+if (
+  `sha256:${createHash("sha256").update(supportManifestBytes).digest("hex")}` !==
+    root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST ||
+  JSON.stringify(JSON.parse(supportManifestBytes)) !==
+    JSON.stringify(root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST)
+)
+  throw new Error("Local SQLite native support manifest drifted.");
+for (const artifact of root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST
+  .artifactFiles) {
+  const bytes = readFileSync(
+    resolve(builtCandidateRoot, artifact.relativePath),
+  );
+  if (
+    bytes.length !== artifact.bytes ||
+    `sha256:${createHash("sha256").update(bytes).digest("hex")}` !==
+      artifact.digest
+  )
+    throw new Error(
+      `Local SQLite native candidate artifact drifted: ${artifact.relativePath}`,
+    );
+}
+const releaseMaterials = JSON.parse(
+  readFileSync(resolve(builtCandidateRoot, "records/release-materials.json")),
+);
+if (
+  releaseMaterials.schemaVersion !== 3 ||
+  releaseMaterials.archiveCompiler?.grammar !==
+    "single-gzip-member-ustar-regular-file-only-v2" ||
+  releaseMaterials.archiveCompiler?.maximumPathBytes !== 91 ||
+  releaseMaterials.archiveCompiler?.maximumArchivePathBytes !== 99 ||
+  releaseMaterials.archiveCompiler?.maximumSegmentBytes !== 91 ||
+  releaseMaterials.archiveCompiler?.maximumFileBytes !== 16 * 1024 * 1024 ||
+  releaseMaterials.buildGraph?.identity !==
+    "agentscope-owned-cc-ar-cxx-link-v1" ||
+  releaseMaterials.buildGraph?.upstreamBuildMetadata !== "never-evaluated" ||
+  releaseMaterials.buildGraph?.processAuthority !==
+    "ptrace-all-process-creation-exact-exec-path-and-driver-ledger-v4" ||
+  releaseMaterials.buildGraph?.outputClosure !==
+    "exact-whole-writable-root-inventory-with-32MiB-output-cap-v2" ||
+  releaseMaterials.materials?.length !== 2 ||
+  releaseMaterials.toolchainClosure?.image !==
+    "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2" ||
+  releaseMaterials.toolchainClosure?.imageId !==
+    "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b" ||
+  releaseMaterials.materials.some(
+    (material) =>
+      !Array.isArray(material.entries) ||
+      material.entries.length < 1 ||
+      material.entries.length > 128 ||
+      new Set(material.entries.map(({ path }) => path)).size !==
+        material.entries.length,
+  )
+)
+  throw new Error("Local SQLite release material authority drifted.");
+const provenance = JSON.parse(
+  readFileSync(resolve(builtCandidateRoot, "records/provenance.json")),
+);
+const releaseMaterialDigest = createHash("sha256")
+  .update(
+    readFileSync(resolve(builtCandidateRoot, "records/release-materials.json")),
+  )
+  .digest("hex");
+if (
+  provenance.releaseMaterialManifestSha256 !== releaseMaterialDigest ||
+  provenance.output?.sha256 !==
+    "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37" ||
+  provenance.output?.repeatBuildSha256 !== provenance.output.sha256 ||
+  provenance.ownedBuild?.containerImage !==
+    releaseMaterials.toolchainClosure.image ||
+  provenance.ownedBuild?.containerImageId !==
+    releaseMaterials.toolchainClosure.imageId
+)
+  throw new Error("Local SQLite build provenance authority drifted.");
+const sbom = JSON.parse(
+  readFileSync(resolve(builtCandidateRoot, "records/sbom.spdx.json")),
+);
+const generatedFrom = new Set(
+  sbom.relationships
+    ?.filter(
+      ({ spdxElementId, relationshipType }) =>
+        spdxElementId === "SPDXRef-File-native" &&
+        relationshipType === "GENERATED_FROM",
+    )
+    .map(({ relatedSpdxElement }) => relatedSpdxElement),
+);
+if (
+  sbom.spdxVersion !== "SPDX-2.3" ||
+  sbom.packages?.length !== 3 ||
+  !sbom.packages.every(({ filesAnalyzed }) => filesAnalyzed === false) ||
+  JSON.stringify([...generatedFrom].sort()) !==
+    JSON.stringify(
+      [
+        "SPDXRef-Package-SQLite",
+        "SPDXRef-Package-better-sqlite3",
+        "SPDXRef-Package-node-addon-api",
+      ].sort(),
+    )
+)
+  throw new Error("Local SQLite SPDX material closure drifted.");
 const builtLifecycleConnectionId = `destination-connection-v1-${"2".repeat(64)}`;
 const builtLifecycleIntentBytes = `${JSON.stringify({
   artifactGrammarFingerprint:
@@ -820,9 +945,18 @@ const runtimeIdentity = {
   credentialBackend: "ci-environment",
   filesystemProfile: "local-ext4",
 };
-const unavailable = root.inspectLocalSqliteNativeSupport(runtimeIdentity);
+const proposed = testing.inspectLocalSqliteNativeSupportManifestForTesting(
+  runtimeIdentity,
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST,
+);
+const unavailable = testing.inspectLocalSqliteNativeSupportManifestForTesting(
+  { ...runtimeIdentity, nodeAbi: 128 },
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST,
+);
 if (
-  root.inspectLocalSqliteNativeSupport.length !== 1 ||
+  proposed.state !== "available" ||
+  proposed.admission !== "proposed-unpublished" ||
+  proposed.nativeTupleId !== "node127-linux-x64-glibc" ||
   unavailable.state !== "unavailable" ||
   unavailable.code !== "destination.local-sqlite.native-unavailable"
 )

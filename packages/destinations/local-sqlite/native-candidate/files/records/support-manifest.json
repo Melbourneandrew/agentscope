@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "capability": "local-sqlite",
+  "disposition": "proposed-unpublished-execution-eligible",
+  "artifactRoot": "internal/local-sqlite",
+  "loaderContract": "owned-absolute-no-discovery-v1",
+  "buildSandboxProfile": "agentscope-owned-native-build-v1",
+  "executionSandboxProfile": "agentscope-sacrificial-native-execution-v1",
+  "releaseMaterialManifestDigest": "sha256:90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397",
+  "provenanceDigest": "sha256:eaf233d92058f04d151f3cec1cbc6a424bda561222031d602ff9b97f820ac8a5",
+  "sbomDigest": "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
+  "noticeInventoryDigest": "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
+  "artifactFiles": [
+    {
+      "kind": "loader",
+      "relativePath": "loader/owned-loader.cjs",
+      "bytes": 11637,
+      "digest": "sha256:c5ba7d73671cf20ee857de8c278e76e5edc106337b1aaf8b98942997329881ce"
+    },
+    {
+      "kind": "native-binary",
+      "relativePath": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
+      "bytes": 2213824,
+      "digest": "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+    },
+    {
+      "kind": "runtime",
+      "relativePath": "runtime/better-sqlite3.cjs",
+      "bytes": 29878,
+      "digest": "sha256:e5b029abcc18d9bc3981616bc9f0e9247be23390584f75cabe13515bccb50849"
+    },
+    {
+      "kind": "notice",
+      "relativePath": "notices/better-sqlite3-MIT.txt",
+      "bytes": 1078,
+      "digest": "sha256:09856b52897c91ab67e7456ef43067019f31dfd3b87fda72e655736b1ebdee55"
+    },
+    {
+      "kind": "notice",
+      "relativePath": "notices/node-addon-api-MIT.txt",
+      "bytes": 1150,
+      "digest": "sha256:89024017b88a9f2b763f79b941a4f2db3b4428edfcacdc0b23866b2da633ad0c"
+    },
+    {
+      "kind": "notice",
+      "relativePath": "notices/sqlite-public-domain.txt",
+      "bytes": 231,
+      "digest": "sha256:1d0f05cf16e1c2bbf53b9a00b49480fc802acec5248443c8eaef2e515333da95"
+    },
+    {
+      "kind": "release-materials",
+      "relativePath": "records/release-materials.json",
+      "bytes": 18738,
+      "digest": "sha256:90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397"
+    },
+    {
+      "kind": "provenance",
+      "relativePath": "records/provenance.json",
+      "bytes": 3145,
+      "digest": "sha256:eaf233d92058f04d151f3cec1cbc6a424bda561222031d602ff9b97f820ac8a5"
+    },
+    {
+      "kind": "sbom",
+      "relativePath": "records/sbom.spdx.json",
+      "bytes": 3537,
+      "digest": "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb"
+    }
+  ],
+  "nativeBinaries": [
+    {
+      "tupleId": "node127-linux-x64-glibc",
+      "nodeAbi": 127,
+      "admittedNodeMajors": [22],
+      "platform": "linux",
+      "minimumOsVersion": "5.15",
+      "architecture": "x64",
+      "libcFamily": "glibc",
+      "minimumLibcVersion": "2.34",
+      "relativePath": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
+      "bytes": 2213824,
+      "digest": "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+    }
+  ],
+  "supportedPlatforms": [
+    {
+      "platformId": "linux-x64-node22-ci-ext4-proposed",
+      "nativeTupleId": "node127-linux-x64-glibc",
+      "nodeMajor": 22,
+      "credentialBackend": "ci-environment",
+      "filesystemProfile": "local-ext4"
+    }
+  ]
+}

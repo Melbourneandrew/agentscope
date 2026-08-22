@@ -222,6 +222,56 @@ test("rejects computed module loads from production sources", () => {
   }
 });
 
+test("excludes only the verified Local SQLite native candidate closure", () => {
+  const value = fixture();
+  const packagePath = "packages/destinations/local-sqlite";
+  value.packages.set(packagePath, "@agentscope/destination-local-sqlite");
+  try {
+    const candidate = join(
+      value.root,
+      packagePath,
+      "native-candidate/files/runtime",
+    );
+    mkdirSync(candidate, { recursive: true });
+    writeFileSync(
+      join(candidate, "runtime.cjs"),
+      'const moduleName = "native-binding"; module.exports = require(moduleName);\n',
+    );
+    const tooling = join(value.root, packagePath, "native-candidate/tooling");
+    mkdirSync(tooling, { recursive: true });
+    writeFileSync(
+      join(tooling, "guest-driver.cjs"),
+      'process.stdout.write("bounded evidence");\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    writeFileSync(
+      join(tooling, "guest-driver.cjs"),
+      'const moduleName = "native-binding"; module.exports = require(moduleName);\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /computed module load/u,
+    );
+    writeFileSync(
+      join(tooling, "guest-driver.cjs"),
+      'process.stdout.write("bounded evidence");\n',
+    );
+
+    const production = join(value.root, packagePath, "src/runtime.cjs");
+    mkdirSync(join(value.root, packagePath, "src"), { recursive: true });
+    writeFileSync(
+      production,
+      'const moduleName = "native-binding"; module.exports = require(moduleName);\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /computed module load/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("permits exactly one production Agentscope home authority", () => {
   const value = fixture();
   try {
