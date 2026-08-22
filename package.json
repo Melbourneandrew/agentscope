@@ -34,6 +34,7 @@
     "verify:acceptance-evidence": "node scripts/verify-acceptance-evidence.mjs",
     "verify:acceptance-evidence:release": "node scripts/verify-acceptance-evidence.mjs --require-verified",
     "verify:cli-artifact": "pnpm --filter @agentscope/cli verify:artifact",
+    "verify:native-candidate": "node packages/destinations/local-sqlite/native-candidate/verify-artifact.mjs",
     "prepack": "node scripts/refuse-private-package.mjs",
     "verify:workspace": "pnpm verify:review-skill && pnpm --filter @agentscope/cli verify:docs && node scripts/verify-workspace-policy.mjs && pnpm verify:targets",
     "verify:review-skill": "python3 .agents/skills/review-agentscope/scripts/validate_review_skill.py",
@@ -41,7 +42,7 @@
     "test:workspace-policy": "vitest run --config vitest.config.ts scripts/__tests__",
     "verify:quality": "node scripts/verify-code-quality-policy.mjs",
     "verify:coverage-ratchet": "node scripts/verify-coverage-ratchet.mjs",
-    "validate": "pnpm verify:workspace && pnpm verify:acceptance-evidence && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm coverage && pnpm build && pnpm verify:cli-artifact",
+    "validate": "pnpm verify:workspace && pnpm verify:acceptance-evidence && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm coverage && pnpm build && pnpm verify:cli-artifact && pnpm verify:native-candidate",
     "prepare": "husky",
     "precommit": "lint-staged && node scripts/typecheck-staged.mjs",
     "prepush": "pnpm validate"

@@ -23,6 +23,10 @@ const testSource = /(?:^|\/)(?:[^/]+\.)?(?:test|spec)\.[^.]+$/u;
 const testEntrypointSource =
   /(?:^|\/)src\/testing\.ts$|(?:^|\/)packages\/destinations\/langfuse\/src\/(?:compatibility-fixtures|mock-roundtrip)\.ts$/u;
 const artifactVerifier = /(?:^|\/)verify-artifact\.mjs$/u;
+const ownedLocalSqliteNativeCandidate =
+  /^packages\/destinations\/local-sqlite\/native-candidate\/files\//u;
+const ownedLocalSqliteNativeTooling =
+  /^packages\/destinations\/local-sqlite\/native-candidate\/tooling\//u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const homeAuthoritySource = "packages/core/src/configuration/home.ts";
 const applicationSource = /^(?:apps|packages)\//u;
@@ -175,7 +179,8 @@ const assertNoIntegrationStreams = (source, file, packageName) => {
   if (
     !integrationPackage.test(packageName) ||
     testSource.test(file) ||
-    artifactVerifier.test(file)
+    artifactVerifier.test(file) ||
+    ownedLocalSqliteNativeTooling.test(file)
   )
     return;
   const parsed = ts.createSourceFile(
@@ -264,8 +269,9 @@ export const auditCoreFinalizationImports = (
   for (const [packagePath, packageName] of expectedPackages) {
     const root = join(workspaceRoot, packagePath);
     for (const file of sourceFiles(root)) {
-      const source = readFileSync(file, "utf8");
       const workspaceFile = relative(workspaceRoot, file);
+      if (ownedLocalSqliteNativeCandidate.test(workspaceFile)) continue;
+      const source = readFileSync(file, "utf8");
       assertNoCoreOnlyImports(source, workspaceFile, packageName);
       assertNoProductionTestingImports(source, workspaceFile, packageName);
       assertNoComputedModuleLoads(source, workspaceFile, packageName);

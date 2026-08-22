@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "candidateDisposition": "proposed-unpublished-execution-eligible",
+  "nativeTupleId": "node127-linux-x64-glibc",
+  "releaseMaterialManifestSha256": "90051ac04ae224b85629858af62b6aa80638c8adfb30e07b70e4f9be5b40e397",
+  "sourceMaterials": [
+    {
+      "name": "better-sqlite3",
+      "version": "13.0.3",
+      "registry": "https://registry.npmjs.org",
+      "sourceRepository": "https://github.com/WiseLibs/better-sqlite3.git",
+      "sourceTag": "v13.0.3",
+      "sourceRevision": "dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb",
+      "tarballBytes": 11402131,
+      "tarballIntegrity": "sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==",
+      "tarballSha256": "77e0513dc1a469fb3bceec4c7fb5ad3f403109787eda05be047ec17fd56868cb",
+      "sourceAuthority": "verified-git-tag-revision-plus-exact-registry-tarball"
+    },
+    {
+      "name": "node-addon-api",
+      "version": "8.5.0",
+      "registry": "https://registry.npmjs.org",
+      "sourceRepository": "https://github.com/nodejs/node-addon-api.git",
+      "sourceTag": "v8.5.0",
+      "sourceRevision": "6babc960154752f686a7dca8e712991a976a754b",
+      "tarballBytes": 60410,
+      "tarballIntegrity": "sha512-/bRZty2mXUIFY/xU5HLvveNHlswNJej+RnxBjOMkidWfwZzgTbPG1E3K5TOxRLOR+5hX7bSofy8yf1hZevMS8A==",
+      "tarballSha256": "d12f07c8162283b6213551855f1da8dac162331374629830b5e640f130f07910",
+      "sourceAuthority": "verified-git-tag-revision-plus-exact-registry-tarball"
+    }
+  ],
+  "ownedBuild": {
+    "profile": "agentscope-owned-native-build-v1",
+    "containerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "containerImageId": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+    "node": "22.18.0",
+    "nodeAbi": 127,
+    "python": "3.11.2",
+    "gcc": "12.2.0-14+deb12u1",
+    "binutils": "2.40",
+    "commandProfile": "agentscope-owned-cc-ar-cxx-link-v1",
+    "upstreamBuildMetadata": "never-evaluated",
+    "archiveCompiler": "single-gzip-member-ustar-regular-file-only-v2",
+    "network": "denied",
+    "credentials": "none",
+    "capabilities": "all-dropped",
+    "rootFilesystem": "read-only",
+    "inputMounts": "read-only",
+    "outputRoot": "fresh-bounded-single-writable-root",
+    "resourceCaps": {
+      "cpus": 2,
+      "memoryBytes": 2147483648,
+      "processes": 128,
+      "writableRootBytes": 536870912
+    }
+  },
+  "output": {
+    "path": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
+    "bytes": 2213824,
+    "sha256": "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
+    "format": "ELF64-x86-64-shared-object",
+    "maximumGlibcSymbolVersion": "2.34",
+    "maximumGlibcxxSymbolVersion": "3.4.29",
+    "repeatBuildSha256": "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+  },
+  "runtimeBundle": {
+    "profile": "agentscope-owned-exact-commonjs-module-map-v1",
+    "source": "better-sqlite3-13.0.3/lib-exact-js-inventory",
+    "path": "runtime/better-sqlite3.cjs",
+    "bytes": 29878,
+    "sha256": "e5b029abcc18d9bc3981616bc9f0e9247be23390584f75cabe13515bccb50849"
+  }
+}

@@ -8,4 +8,5 @@ out
 dist
 coverage
 packages/protocol/src/generated/otlp
+packages/destinations/local-sqlite/native-candidate/files
 .husky/_

@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { cp, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -83,6 +83,14 @@ await build({
   sourcemap: false,
   target: "node22",
 });
+await cp(
+  new URL(
+    "../../packages/destinations/local-sqlite/native-candidate/files/",
+    import.meta.url,
+  ),
+  new URL("dist/internal/local-sqlite/", import.meta.url),
+  { errorOnExist: true, force: false, recursive: true },
+);
 
 const bundle = await readFile(
   new URL("dist/bin/agentscope.js", import.meta.url),
