@@ -14,7 +14,7 @@
     "materialization": "descriptor-relative-openat-exclusive-create-same-handle-final-namespace-verify-v3"
   },
   "buildGraph": {
-    "identity": "agentscope-owned-cc-ar-cxx-link-v1",
+    "identity": "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2",
     "commands": ["/usr/bin/cc", "/usr/bin/ar", "/usr/bin/g++", "/usr/bin/g++"],
     "upstreamBuildMetadata": "never-evaluated",
     "environment": "closed-six-variable-v1",
@@ -28,7 +28,9 @@
     "archiveCompilerSha256": "81669934c98c189cd68eef207d29c6aefb9c03c47454f6cc707ef68a15a22e46",
     "materializeHelperSha256": "8dac5f559bb0c220b3c6532d60072e5d26a0a8aa884ce8d13f2f6eb2d271dfd6",
     "execSupervisorSourceSha256": "9cf8b6916cadaeaa4632966fbdf33e863b1154c368088b7eb6e9fdc0928c9264",
-    "buildDriverSha256": "18414152e8de8ef9abc789f9c7fcb747c0634ac5f94a8e0ce384afb5425ac0a0",
+    "buildDriverSha256": "cb99f65ac972cced11c5906cb6ab97b3ff10d21621695a5ba4f43bccf1a1e312",
+    "namespaceHelperSourceSha256": "9e1f2531cbc13d7d3598ebaa88031a7d1feffb19aa58029e09a7b77620be4ae0",
+    "namespaceHelperLicense": "MIT",
     "runtimeBundlerSha256": "0edd81721b6f45f24f4855a2ccc70e0171af102dd1f7a8ddbb3b3eb76b0a9597"
   },
   "toolchainClosure": {

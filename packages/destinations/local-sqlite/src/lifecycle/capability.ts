@@ -8,9 +8,9 @@ import {
 export const LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION = 1 as const;
 export const LOCAL_SQLITE_DESTINATION_TYPE =
   "@agentscope/destination-local-sqlite" as const;
-export const LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES = 0;
+export const LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES = 16 * 1_024 * 1_024 * 1_024;
 export const LOCAL_SQLITE_TEST_MAXIMUM_SNAPSHOT_BYTES =
-  16 * 1_024 * 1_024 * 1_024;
+  8 * 1_024 * 1_024 * 1_024;
 
 const artifact = (
   kind: string,
@@ -40,6 +40,7 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
       artifact("exclusive-fence", "lifecycle/exclusive-fence-v1", 1),
       artifact("shared-lease", "lifecycle/lease-<owner-identity>.json", 64),
       artifact("lifecycle-intent", "lifecycle/intent-v1.json", 1),
+      artifact("operation-phase", "lifecycle/operation-phase-v1.json", 1),
       artifact(
         "recovery-claim",
         "lifecycle/recovery-claim-<transaction-id>",
@@ -88,9 +89,11 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
     supportManifest: Object.freeze({
       maximumSnapshotBytes,
       nativeAdmission:
-        maximumSnapshotBytes === 0
-          ? "no-admitted-native-tuples"
-          : "synthetic-testing-only",
+        maximumSnapshotBytes === LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES
+          ? "proposed-unpublished-execution-eligible"
+          : maximumSnapshotBytes === 0
+            ? "no-admitted-native-tuples"
+            : "synthetic-testing-only",
       schemaVersion: 1,
     }),
     transientRoleGroups: Object.freeze([

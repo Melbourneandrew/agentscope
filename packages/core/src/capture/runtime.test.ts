@@ -1583,6 +1583,7 @@ describe("compile boundary", () => {
       ".",
       "./harness-capture",
       "./configuration-management",
+      "./home-authority",
       "./hook-orchestration",
       "./retrieval-orchestration",
     ]);

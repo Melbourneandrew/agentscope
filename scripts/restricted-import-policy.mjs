@@ -27,6 +27,8 @@ const ownedLocalSqliteNativeCandidate =
   /^packages\/destinations\/local-sqlite\/native-candidate\/files\//u;
 const ownedLocalSqliteNativeTooling =
   /^packages\/destinations\/local-sqlite\/native-candidate\/tooling\//u;
+const ownedLocalSqliteReporterChild =
+  /^packages\/destinations\/local-sqlite\/src\/production\/(?:reporter|retriever)-child\.ts$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const homeAuthoritySource = "packages/core/src/configuration/home.ts";
 const applicationSource = /^(?:apps|packages)\//u;
@@ -180,7 +182,8 @@ const assertNoIntegrationStreams = (source, file, packageName) => {
     !integrationPackage.test(packageName) ||
     testSource.test(file) ||
     artifactVerifier.test(file) ||
-    ownedLocalSqliteNativeTooling.test(file)
+    ownedLocalSqliteNativeTooling.test(file) ||
+    ownedLocalSqliteReporterChild.test(file)
   )
     return;
   const parsed = ts.createSourceFile(

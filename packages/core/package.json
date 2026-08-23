@@ -17,6 +17,10 @@
       "types": "./dist/configuration/management-index.d.ts",
       "import": "./dist/configuration/management-index.js"
     },
+    "./home-authority": {
+      "types": "./dist/configuration/home-authority-index.d.ts",
+      "import": "./dist/configuration/home-authority-index.js"
+    },
     "./hook-orchestration": {
       "types": "./dist/invocation/hook-orchestration-index.d.ts",
       "import": "./dist/invocation/hook-orchestration-index.js"

@@ -25,6 +25,11 @@
   "files": [
     "dist"
   ],
+  "agentscopeInternalProcessEntrypoints": [
+    "./dist/production/reporter-child.js",
+    "./dist/production/reporter-watchdog.js",
+    "./dist/production/retriever-child.js"
+  ],
   "scripts": {
     "build": "node ../../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json && node scripts/copy-migrations.mjs && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

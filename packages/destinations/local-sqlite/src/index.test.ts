@@ -14,6 +14,7 @@ describe("Local SQLite package boundaries", () => {
         "LOCAL_SQLITE_DESTINATION_TYPE",
         "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
         "createLocalSqliteLifecycleHandler",
+        "localSqliteDestinationDescriptor",
         "localSqliteDestinationPackageId",
         "localSqliteLifecycleDeclaration",
         "localSqliteReporterPackageId",
@@ -80,10 +81,18 @@ describe("Local SQLite lifecycle artifact grammar", () => {
       sparseOrHugeEvidence: "reconciliation-required",
     });
     expect(grammar.supportManifest).toEqual({
-      maximumSnapshotBytes: 0,
-      nativeAdmission: "no-admitted-native-tuples",
+      maximumSnapshotBytes: 16 * 1_024 * 1_024 * 1_024,
+      nativeAdmission: "proposed-unpublished-execution-eligible",
       schemaVersion: 1,
     });
+    expect(
+      testing.createLocalSqliteLifecycleArtifactGrammarForTesting(0)
+        .supportManifest.nativeAdmission,
+    ).toBe("no-admitted-native-tuples");
+    expect(
+      testing.createLocalSqliteLifecycleArtifactGrammarForTesting(1)
+        .supportManifest.nativeAdmission,
+    ).toBe("synthetic-testing-only");
     expect(grammar.transientRoleGroups).toEqual([
       {
         kinds: [

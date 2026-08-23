@@ -83,9 +83,12 @@ describe("Local SQLite native support authority", () => {
       platformId: "linux-x64-node22-ci-ext4-proposed",
       nativeTupleId: "node127-linux-x64-glibc",
       relativePath: "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-      bytes: 2_213_824,
+      bytes: 2_222_616,
+      maximumSnapshotBytes: 17_179_869_184,
+      minimumNativeChildBudgetMilliseconds: 50,
+      nativeTeardownReserveMilliseconds: 250,
       digest:
-        "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
+        "sha256:c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c",
     });
   });
 
@@ -97,6 +100,9 @@ describe("Local SQLite native support authority", () => {
       nativeTupleId: binary.tupleId,
       relativePath: binary.relativePath,
       bytes: 1,
+      maximumSnapshotBytes: 17_179_869_184,
+      minimumNativeChildBudgetMilliseconds: 50,
+      nativeTeardownReserveMilliseconds: 250,
       digest: binary.digest,
     });
     expect(
@@ -175,6 +181,11 @@ describe("Local SQLite native evidence rejection", () => {
   it.each([
     { ...manifest(), schemaVersion: 2 },
     { ...manifest(), capability: "other" },
+    { ...manifest(), loaderContract: "owned-absolute-no-discovery-v1" },
+    { ...manifest(), namespaceMutationContract: "rename-by-path" },
+    { ...manifest(), maximumSnapshotBytes: 0 },
+    { ...manifest(), maximumSnapshotBytes: 64 * 1024 * 1024 * 1024 + 1 },
+    { ...manifest(), maximumSnapshotBytes: 1.5 },
     { ...manifest(), nativeBinaries: Array.from({ length: 17 }, () => binary) },
     {
       ...manifest(),

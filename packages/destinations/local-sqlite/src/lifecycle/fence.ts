@@ -293,17 +293,16 @@ export const parseLocalSqliteFenceRecord = (
 };
 
 const encodeParsedLeaseRecord = (record: LocalSqliteLeaseRecord): string =>
-  JSON.stringify({
-    v: 1,
-    l: record.leaseId,
-    f: record.lifecycleFingerprint,
-    g: record.lifecycleGeneration,
-    p: [record.parent.pid, record.parent.startIdentity],
-    c:
-      record.child === null
-        ? null
-        : [record.child.nonce, record.child.pid, record.child.startIdentity],
-  }).padEnd(LEASE_RECORD_BYTES, " ");
+  JSON.stringify([
+    1,
+    record.leaseId,
+    record.lifecycleFingerprint.slice("sha256-".length),
+    record.lifecycleGeneration,
+    [record.parent.pid, record.parent.startIdentity],
+    record.child === null
+      ? null
+      : [record.child.nonce, record.child.pid, record.child.startIdentity],
+  ]).padEnd(LEASE_RECORD_BYTES, " ");
 
 export const encodeLocalSqliteLeaseRecord = (
   value: unknown,
@@ -313,13 +312,13 @@ export const encodeLocalSqliteLeaseRecord = (
 };
 
 const encodeParsedFenceRecord = (record: LocalSqliteFenceRecord): string =>
-  JSON.stringify({
-    v: 1,
-    t: record.transactionId,
-    f: record.lifecycleFingerprint,
-    g: record.lifecycleGeneration,
-    o: record.purpose,
-  }).padEnd(LEASE_RECORD_BYTES, " ");
+  JSON.stringify([
+    1,
+    record.transactionId,
+    record.lifecycleFingerprint.slice("sha256-".length),
+    record.lifecycleGeneration,
+    record.purpose,
+  ]).padEnd(LEASE_RECORD_BYTES, " ");
 
 export const encodeLocalSqliteFenceRecord = (
   value: unknown,
@@ -338,26 +337,19 @@ export const decodeLocalSqliteLeaseRecord = (
   )
     return undefined;
   try {
-    const compact = exactRecord(JSON.parse(content.trimEnd()), [
-      "v",
-      "l",
-      "f",
-      "g",
-      "p",
-      "c",
-    ]);
-    if (compact === undefined || compact.v !== 1) return undefined;
-    const parentArray = exactArray(compact.p, 2);
-    const childArray = compact.c === null ? null : exactArray(compact.c, 3);
+    const compact = exactArray(JSON.parse(content.trimEnd()), 6);
+    if (compact?.length !== 6 || compact[0] !== 1) return undefined;
+    const parentArray = exactArray(compact[4], 2);
+    const childArray = compact[5] === null ? null : exactArray(compact[5], 3);
     if (
       parentArray?.length !== 2 ||
       (childArray !== null && childArray?.length !== 3)
     )
       return undefined;
     const parsed = parseLocalSqliteLeaseRecord({
-      leaseId: compact.l,
-      lifecycleFingerprint: compact.f,
-      lifecycleGeneration: compact.g,
+      leaseId: compact[1],
+      lifecycleFingerprint: `sha256-${String(compact[2])}`,
+      lifecycleGeneration: compact[3],
       parent: { pid: parentArray[0], startIdentity: parentArray[1] },
       child:
         childArray === null
@@ -387,19 +379,13 @@ export const decodeLocalSqliteFenceRecord = (
   )
     return undefined;
   try {
-    const compact = exactRecord(JSON.parse(content.trimEnd()), [
-      "v",
-      "t",
-      "f",
-      "g",
-      "o",
-    ]);
-    if (compact === undefined || compact.v !== 1) return undefined;
+    const compact = exactArray(JSON.parse(content.trimEnd()), 5);
+    if (compact?.length !== 5 || compact[0] !== 1) return undefined;
     const parsed = parseLocalSqliteFenceRecord({
-      transactionId: compact.t,
-      lifecycleFingerprint: compact.f,
-      lifecycleGeneration: compact.g,
-      purpose: compact.o,
+      transactionId: compact[1],
+      lifecycleFingerprint: `sha256-${String(compact[2])}`,
+      lifecycleGeneration: compact[3],
+      purpose: compact[4],
     });
     return parsed !== undefined &&
       encodeLocalSqliteFenceRecord(parsed) === content
@@ -490,6 +476,7 @@ const parseRemove = (value: unknown): RemoveResult | undefined => {
 const knownLifecycleName = (name: string): boolean =>
   name === FENCE_NAME ||
   name === "intent-v1.json" ||
+  name === "operation-phase-v1.json" ||
   name === "ownership-receipt-v1.json" ||
   /^lease-[a-f0-9]{32}\.json$/u.test(name) ||
   /^recovery-claim-[a-f0-9]{32}$/u.test(name);
@@ -598,7 +585,9 @@ const inspectInventory = async (
   parseInventory(await invoke(port.listLifecycle));
 
 const blocksDatabaseOpen = (entry: InventoryEntry): boolean =>
-  entry.name === "intent-v1.json" || entry.name.startsWith("recovery-claim-");
+  entry.name === "intent-v1.json" ||
+  entry.name === "operation-phase-v1.json" ||
+  entry.name.startsWith("recovery-claim-");
 
 const sameInventory = (
   left: readonly InventoryEntry[],

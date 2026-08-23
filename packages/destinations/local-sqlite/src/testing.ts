@@ -120,3 +120,27 @@ export {
   type LocalSqliteSearchEvidence,
   type LocalSqliteSearchPlan,
 } from "./retriever/index.js";
+export {
+  bindLocalSqliteProductionRuntimeForTesting,
+  type LocalSqliteProductionRuntime,
+} from "./production/runtime.js";
+export { createLocalSqliteDestinationDescriptorForTesting } from "./production/descriptor.js";
+export {
+  createLocalSqliteProductionLifecyclePort,
+  type LocalSqliteProductionHome,
+  type OwnedSqliteOpener,
+} from "./production/lifecycle-port.js";
+export { createLocalSqliteProductionMaintenancePort } from "./production/maintenance-port.js";
+export {
+  createLocalSqliteFilesystemGatePort,
+  currentProcessStartIdentity,
+} from "./production/filesystem-port.js";
+export {
+  createOwnedMigrationDatabase,
+  createOwnedReporterDatabase,
+  createOwnedRetrieverDatabase,
+  initializeOwnedSqliteConnection,
+  type LocalSqliteExecutionPolicy,
+  type OwnedSqliteConnection,
+  type OwnedSqliteStatement,
+} from "./production/sqlite-port.js";

@@ -573,6 +573,16 @@ setTimeout(() => process.exit(3), 10_000).unref();
   const installedRoot = join(installRoot, "node_modules/@agentscope/cli");
   const installedFiles = regularFiles(installedRoot);
   const candidateRoot = join(installedRoot, "dist/internal/local-sqlite");
+  assert.deepEqual(
+    regularFiles(join(installedRoot, "dist/internal/local-sqlite-runtime")),
+    [
+      "migrations/0001-initialize.sql",
+      "migrations/0002-retrieval-indexes.sql",
+      "reporter-child.js",
+      "reporter-watchdog.js",
+      "retriever-child.js",
+    ],
+  );
   const supportManifestPath = join(
     candidateRoot,
     "records/support-manifest.json",
@@ -580,7 +590,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
   const supportManifestBytes = readFileSync(supportManifestPath);
   assert.equal(
     createHash("sha256").update(supportManifestBytes).digest("hex"),
-    "3ea1609c5e323ac59d5fc3d471e37897fe4c7c60367d7bcc39320ad73d7f6337",
+    "8378d2274f11b4cc9e0f654fe305488d35985a3f8dad3028f193c6a10004f4ab",
   );
   const supportManifest = JSON.parse(supportManifestBytes);
   assert.equal(

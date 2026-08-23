@@ -10,6 +10,9 @@ export {
   localSqliteLifecycleDeclaration,
 } from "./lifecycle/capability.js";
 export { createLocalSqliteLifecycleHandler } from "./lifecycle/configuration.js";
-
+export {
+  localSqliteDestinationDescriptor,
+  type LocalSqliteDestinationSettings,
+} from "./production/descriptor.js";
 export const localSqliteDestinationPackageId =
   "@agentscope/destination-local-sqlite" as const;

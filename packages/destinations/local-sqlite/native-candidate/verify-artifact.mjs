@@ -36,8 +36,8 @@ const executionImage =
 const executionImageId =
   "sha256:955b467cb9a2a941cb181f7cf1d2405c1dd24b4566a3598b7eae7ecca1a769d1";
 const expectedBinary = Object.freeze({
-  bytes: 2_213_824,
-  sha256: "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
+  bytes: 2_222_616,
+  sha256: "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c",
 });
 const materials = Object.freeze([
   Object.freeze({
@@ -888,6 +888,8 @@ const buildContainerArguments = (
   "-v",
   `${join(root, "tooling/build-driver.py")}:/authority/build-driver.py:ro`,
   "-v",
+  `${join(root, "tooling/namespace-helper.cpp")}:/authority/namespace-helper.cpp:ro`,
+  "-v",
   `${join(root, "tooling/runtime-bundler.py")}:/authority/runtime_bundler.py:ro`,
   "-v",
   `${execSupervisor}:/authority/exec-supervisor:ro`,
@@ -922,7 +924,10 @@ const build = (materialDirectories, execSupervisor) => {
   assert.equal(binary.length, expectedBinary.bytes);
   assert.equal(sha("sha256", binary), expectedBinary.sha256);
   assert.equal(result.schemaVersion, 2);
-  assert.equal(result.buildGraph, "agentscope-owned-cc-ar-cxx-link-v1");
+  assert.equal(
+    result.buildGraph,
+    "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2",
+  );
   assert.deepEqual(result.commands, ["cc", "ar", "cxx", "link"]);
   assert.deepEqual(result.commandLedger, [
     "/usr/bin/cc",
@@ -938,7 +943,13 @@ const build = (materialDirectories, execSupervisor) => {
   assert(result.workTreeNodes.includes("source/"));
   assert.deepEqual(
     result.generatedInventory.map(({ path: relative }) => relative),
-    ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"],
+    [
+      "better_sqlite3.cpp",
+      "namespace-helper.cpp",
+      "sqlite3.c",
+      "sqlite3.h",
+      "sqlite3ext.h",
+    ],
   );
   assert.equal(result.outputBytes, expectedBinary.bytes);
   assert.equal(result.outputSha256, expectedBinary.sha256);
@@ -984,7 +995,7 @@ const validateRecords = () => {
       "descriptor-relative-openat-exclusive-create-same-handle-final-namespace-verify-v3",
   });
   assert.deepEqual(lock.buildGraph, {
-    identity: "agentscope-owned-cc-ar-cxx-link-v1",
+    identity: "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2",
     commands: ["/usr/bin/cc", "/usr/bin/ar", "/usr/bin/g++", "/usr/bin/g++"],
     upstreamBuildMetadata: "never-evaluated",
     environment: "closed-six-variable-v1",
@@ -1016,6 +1027,11 @@ const validateRecords = () => {
       "sha256",
       snapshot(join(root, "tooling/build-driver.py"), 64 * 1024),
     ),
+    namespaceHelperSourceSha256: sha(
+      "sha256",
+      snapshot(join(root, "tooling/namespace-helper.cpp"), 16 * 1024),
+    ),
+    namespaceHelperLicense: "MIT",
     runtimeBundlerSha256: sha(
       "sha256",
       snapshot(join(root, "tooling/runtime-bundler.py"), 32 * 1024),
@@ -1152,7 +1168,7 @@ const validateRecords = () => {
       python: "3.11.2",
       gcc: "12.2.0-14+deb12u1",
       binutils: "2.40",
-      commandProfile: "agentscope-owned-cc-ar-cxx-link-v1",
+      commandProfile: "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2",
       upstreamBuildMetadata: "never-evaluated",
       archiveCompiler: archiveLimits.archiveGrammar,
       network: "denied",
@@ -1160,6 +1176,11 @@ const validateRecords = () => {
       capabilities: "all-dropped",
       rootFilesystem: "read-only",
       inputMounts: "read-only",
+      namespaceMutation: {
+        primitive: "linux-renameat2-exchange-exact-inode-v1",
+        sourceSha256: lock.ownedTooling.namespaceHelperSourceSha256,
+        license: lock.ownedTooling.namespaceHelperLicense,
+      },
       outputRoot: "fresh-bounded-single-writable-root",
       resourceCaps: {
         cpus: 2,
@@ -1234,6 +1255,21 @@ const validateRecords = () => {
         licenseConcluded: "blessing",
         licenseDeclared: "blessing",
       },
+      {
+        name: "Agentscope Local SQLite namespace helper",
+        SPDXID: "SPDXRef-Package-AgentscopeNamespaceHelper",
+        versionInfo: "1",
+        downloadLocation: "NOASSERTION",
+        filesAnalyzed: false,
+        licenseConcluded: lock.ownedTooling.namespaceHelperLicense,
+        licenseDeclared: lock.ownedTooling.namespaceHelperLicense,
+        checksums: [
+          {
+            algorithm: "SHA256",
+            checksumValue: lock.ownedTooling.namespaceHelperSourceSha256,
+          },
+        ],
+      },
     ],
     files: [
       {
@@ -1259,6 +1295,11 @@ const validateRecords = () => {
       ["SPDXRef-DOCUMENT", "DESCRIBES", "SPDXRef-Package-better-sqlite3"],
       ["SPDXRef-DOCUMENT", "DESCRIBES", "SPDXRef-Package-node-addon-api"],
       ["SPDXRef-DOCUMENT", "DESCRIBES", "SPDXRef-Package-SQLite"],
+      [
+        "SPDXRef-DOCUMENT",
+        "DESCRIBES",
+        "SPDXRef-Package-AgentscopeNamespaceHelper",
+      ],
       ["SPDXRef-Package-better-sqlite3", "CONTAINS", "SPDXRef-File-runtime"],
       ["SPDXRef-File-native", "GENERATED_FROM", "SPDXRef-Package-SQLite"],
       [
@@ -1270,6 +1311,11 @@ const validateRecords = () => {
         "SPDXRef-File-native",
         "GENERATED_FROM",
         "SPDXRef-Package-node-addon-api",
+      ],
+      [
+        "SPDXRef-File-native",
+        "GENERATED_FROM",
+        "SPDXRef-Package-AgentscopeNamespaceHelper",
       ],
     ].map(([spdxElementId, relationshipType, relatedSpdxElement]) => ({
       spdxElementId,
@@ -1493,13 +1539,15 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     "/usr/bin/python3",
     image,
     "-c",
-    "import os,sqlite3; assert os.listdir('/evidence')==['proof.sqlite']; assert 0<os.stat('/evidence/proof.sqlite').st_size<=1048576; c=sqlite3.connect('file:/evidence/proof.sqlite?mode=ro',uri=True); assert c.execute(\"select name from sqlite_master where type='table'\").fetchall()==[('proof',)]; assert c.execute('select value from proof').fetchall()==[('packed-ok',)]; c.close(); print('externally-observed-packed-ok')",
+    "import os,sqlite3; assert sorted(os.listdir('/evidence'))==['proof.sqlite','traces.sqlite','traces.sqlite-shm','traces.sqlite-wal']; assert 0<os.stat('/evidence/proof.sqlite').st_size<=1048576; assert 0<os.stat('/evidence/traces.sqlite').st_size<=1048576; assert 0<os.stat('/evidence/traces.sqlite-shm').st_size<=65536; assert 0<=os.stat('/evidence/traces.sqlite-wal').st_size<=1048576; c=sqlite3.connect('file:/evidence/proof.sqlite?mode=ro',uri=True); assert c.execute(\"select name from sqlite_master where type='table'\").fetchall()==[('proof',)]; assert c.execute('select value from proof').fetchall()==[('packed-ok',)]; c.close(); r=sqlite3.connect('file:/evidence/traces.sqlite?mode=ro',uri=True); assert r.execute('select delivery_identity,trace_id,admission_time_unix_nano from traces').fetchall()==[('2'*64,'3'*32,'5')]; assert r.execute(\"select value from destination_metadata where key='last_trusted_time_unix_nano'\").fetchall()==[('5',)]; r.close(); print('externally-observed-packed-ok')",
   ]);
   assert.equal(oracle, "externally-observed-packed-ok");
   const result = Object.freeze({
     outcome: "passed",
     observedTuple: "node127-linux-x64-glibc",
     observedValue: "packed-ok",
+    reporterChildOutcome: "accepted-and-durably-confirmed",
+    retrieverChildOutcome: "search-matched-and-joined",
     node: "22.18.0",
     nodeAbi: 127,
     platform: "linux",
@@ -1766,10 +1814,29 @@ try {
   assert.equal(testAuthority.executionImage, executionImage);
   assert.equal(testAuthority.executionImageId, executionImageId);
   assert.match(testAuthority.supportManifestDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.deepEqual(testAuthority.steps, [
+    "offline-clean-install-scripts-enabled",
+    "owned-loader-load",
+    "file-database-create-insert-select-close",
+    "descriptor-bound-native-open-substitution-rejected",
+    "descriptor-relative-atomic-exchange-and-substitution-rejected",
+    "packed-reporter-child-ready-permission-transaction-settlement",
+    "packed-retriever-child-ready-permission-search-settlement",
+    "external-read-only-database-oracle",
+    "post-load-runtime-path-substitution-rejected",
+    "invalid-authority-descriptor-leak-and-accessor-rejected",
+    "network-egress-rejected",
+    "host-mutation-rejected",
+    "retained-child-destroyed",
+    "output-overflow-rejected",
+    "forged-and-partial-guest-evidence-rejected",
+  ]);
   assert.deepEqual(testAuthority.expected, {
     outcome: "passed",
     observedTuple: "node127-linux-x64-glibc",
     observedValue: "packed-ok",
+    reporterChildOutcome: "accepted-and-durably-confirmed",
+    retrieverChildOutcome: "search-matched-and-joined",
     replacementOutcome: "native-unavailable",
     invalidAuthorityDescriptors: "rejected-without-leak-or-callback",
     networkEgress: "rejected",

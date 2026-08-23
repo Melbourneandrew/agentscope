@@ -149,18 +149,24 @@ describe("DestinationTestAdapter", () => {
           report: () => Promise.resolve(createReporterReceipt("accepted")),
         }),
     });
-    expect(() =>
-      prepareDestinationReporterForTesting({
-        descriptor: local,
-        settings: {},
-        credentials: {},
-        executor: () =>
-          Promise.resolve({
-            status: 200,
-            headers: {},
-            body: new Uint8Array(),
-          }),
+    const localExecutor = vi.fn(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: new Uint8Array(),
       }),
-    ).toThrowError("destination.testing.remote-required");
+    );
+    const localReporter = prepareDestinationReporterForTesting({
+      descriptor: local,
+      settings: {},
+      credentials: {},
+      executor: localExecutor,
+    });
+    await expect(
+      invokeDestinationReporterForTesting(localReporter, {
+        traces: [trace("delivery-testing-local")],
+      }),
+    ).resolves.toEqual({ outcome: "accepted" });
+    expect(localExecutor).not.toHaveBeenCalled();
   });
 });

@@ -210,7 +210,7 @@ const searchSql = (dimensionCount: number): string => {
   ).join("\n");
   return `SELECT t.delivery_identity, t.trace_id, t.start_time_sort_key,
        t.admission_time_sort_key, t.protocol_compatibility_id,
-       t.payload, t.payload_sha256, t.payload_bytes
+       t.payload_sha256, t.payload_bytes
 FROM traces t
   WHERE t.delivery_identity = (
     SELECT MIN(t2.delivery_identity) FROM traces t2
@@ -226,6 +226,152 @@ FROM traces t
   ${dimensions}
 ORDER BY t.start_time_sort_key DESC, t.trace_id ASC
 LIMIT :maximumRows`;
+};
+
+const getSql = `SELECT delivery_identity, trace_id, start_time_sort_key,
+       admission_time_sort_key, protocol_compatibility_id,
+       payload_sha256, payload_bytes
+FROM traces WHERE trace_id = :traceId
+  AND admission_time_sort_key >= :retentionCutoffSortKey
+ORDER BY delivery_identity ASC LIMIT 1`;
+
+const exactParameterRecord = (
+  value: unknown,
+  keys: readonly string[],
+): Readonly<Record<string, unknown>> | undefined => exactRecord(value, keys);
+
+export const isLocalSqliteSearchPlan = (
+  value: unknown,
+  // eslint-disable-next-line complexity -- the IPC authority validates every exact query-plan field before native execution.
+): value is LocalSqliteSearchPlan => {
+  const record =
+    exactRecord(value, [
+      "maximumResponseBytes",
+      "maximumRows",
+      "maximumWorkMilliseconds",
+      "parameters",
+      "planVersion",
+      "retentionCutoffParameter",
+      "snapshotToken",
+      "sql",
+    ]) ??
+    exactRecord(value, [
+      "maximumResponseBytes",
+      "maximumRows",
+      "maximumWorkMilliseconds",
+      "parameters",
+      "planVersion",
+      "retentionCutoffParameter",
+      "sql",
+    ]);
+  if (
+    record === undefined ||
+    record.planVersion !== LOCAL_SQLITE_RETRIEVER_PLAN_VERSION ||
+    typeof record.sql !== "string" ||
+    typeof record.maximumRows !== "number" ||
+    !Number.isSafeInteger(record.maximumRows) ||
+    record.maximumRows < 2 ||
+    record.maximumRows > 201 ||
+    typeof record.maximumResponseBytes !== "number" ||
+    !Number.isSafeInteger(record.maximumResponseBytes) ||
+    record.maximumResponseBytes < 1 ||
+    record.maximumResponseBytes > 8 * 1024 * 1024 ||
+    typeof record.maximumWorkMilliseconds !== "number" ||
+    !Number.isSafeInteger(record.maximumWorkMilliseconds) ||
+    record.maximumWorkMilliseconds < 1 ||
+    record.maximumWorkMilliseconds > 60_000 ||
+    record.retentionCutoffParameter !== "retentionCutoffSortKey" ||
+    (record.snapshotToken !== undefined &&
+      (typeof record.snapshotToken !== "string" ||
+        !sha256Pattern.test(record.snapshotToken)))
+  )
+    return false;
+  const dimensionCount = Array.from({ length: 37 }, (_, index) => index).find(
+    (count) => record.sql === searchSql(count),
+  );
+  if (dimensionCount === undefined) return false;
+  const parameterKeys = [
+    "cursorStart",
+    "cursorTraceId",
+    "fromSortKey",
+    "maximumRows",
+    "toSortKey",
+    "traceId",
+    ...Array.from({ length: dimensionCount }, (_, index) => [
+      `dimensionKind${index}`,
+      `dimensionValue${index}`,
+    ]).flat(),
+  ];
+  const parameters = exactParameterRecord(record.parameters, parameterKeys);
+  if (
+    parameters === undefined ||
+    parameters.maximumRows !== record.maximumRows ||
+    typeof parameters.toSortKey !== "string" ||
+    !sortKeyPattern.test(parameters.toSortKey) ||
+    typeof parameters.fromSortKey !== "string" ||
+    (parameters.fromSortKey !== "" &&
+      !sortKeyPattern.test(parameters.fromSortKey)) ||
+    typeof parameters.traceId !== "string" ||
+    (parameters.traceId !== "" &&
+      (!traceIdPattern.test(parameters.traceId) ||
+        parameters.traceId === "0".repeat(32))) ||
+    typeof parameters.cursorStart !== "string" ||
+    (parameters.cursorStart !== "" &&
+      !sortKeyPattern.test(parameters.cursorStart)) ||
+    typeof parameters.cursorTraceId !== "string" ||
+    (parameters.cursorTraceId !== "" &&
+      (!traceIdPattern.test(parameters.cursorTraceId) ||
+        parameters.cursorTraceId === "0".repeat(32))) ||
+    (parameters.cursorStart === "") !== (parameters.cursorTraceId === "") ||
+    (parameters.cursorStart === "") !== (record.snapshotToken === undefined)
+  )
+    return false;
+  for (let index = 0; index < dimensionCount; index += 1) {
+    const kind = parameters[`dimensionKind${index}`];
+    const dimensionValue = parameters[`dimensionValue${index}`];
+    if (
+      !["branch", "harness", "model", "session", "tag"].includes(
+        kind as string,
+      ) ||
+      typeof dimensionValue !== "string" ||
+      dimensionValue.length < 1 ||
+      encoder.encode(dimensionValue).byteLength > 512
+    )
+      return false;
+  }
+  return true;
+};
+
+export const isLocalSqliteGetPlan = (
+  value: unknown,
+): value is LocalSqliteGetPlan => {
+  const record = exactRecord(value, [
+    "maximumResponseBytes",
+    "maximumWorkMilliseconds",
+    "parameters",
+    "planVersion",
+    "retentionCutoffParameter",
+    "sql",
+  ]);
+  const parameters = exactParameterRecord(record?.parameters, ["traceId"]);
+  return (
+    record !== undefined &&
+    record.planVersion === LOCAL_SQLITE_RETRIEVER_PLAN_VERSION &&
+    record.sql === getSql &&
+    typeof record.maximumResponseBytes === "number" &&
+    Number.isSafeInteger(record.maximumResponseBytes) &&
+    record.maximumResponseBytes >= 1 &&
+    record.maximumResponseBytes <= 8 * 1024 * 1024 &&
+    typeof record.maximumWorkMilliseconds === "number" &&
+    Number.isSafeInteger(record.maximumWorkMilliseconds) &&
+    record.maximumWorkMilliseconds >= 1 &&
+    record.maximumWorkMilliseconds <= 60_000 &&
+    record.retentionCutoffParameter === "retentionCutoffSortKey" &&
+    parameters !== undefined &&
+    typeof parameters.traceId === "string" &&
+    traceIdPattern.test(parameters.traceId) &&
+    parameters.traceId !== "0".repeat(32)
+  );
 };
 
 export const compileLocalSqliteSearchPlan = (
@@ -301,12 +447,7 @@ export const compileLocalSqliteGetPlan = (
     return undefined;
   return Object.freeze({
     planVersion: LOCAL_SQLITE_RETRIEVER_PLAN_VERSION,
-    sql: `SELECT delivery_identity, trace_id, start_time_sort_key,
-       admission_time_sort_key, protocol_compatibility_id,
-       payload, payload_sha256, payload_bytes
-FROM traces WHERE trace_id = :traceId
-  AND admission_time_sort_key >= :retentionCutoffSortKey
-ORDER BY delivery_identity ASC LIMIT 1`,
+    sql: getSql,
     parameters: Object.freeze({ traceId: request.locator.traceId }),
     maximumResponseBytes: bounds.maximumResponseBytes,
     maximumWorkMilliseconds: bounds.maximumWorkMilliseconds,

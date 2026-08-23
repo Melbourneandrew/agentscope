@@ -783,6 +783,7 @@ describe("Local SQLite existing shared-lease validation", () => {
 
     for (const [name, content] of [
       ["intent-v1.json", "intent"],
+      ["operation-phase-v1.json", "phase"],
       [`recovery-claim-${transactionId}`, "malformed"],
       [
         `recovery-claim-${transactionId}`,
@@ -1492,15 +1493,17 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
     const fenceBytes = encodeLocalSqliteFenceRecord(fence)!;
     const compactLease = leaseBytes.trimEnd();
     const compactFence = fenceBytes.trimEnd();
+    const leaseValues = JSON.parse(compactLease) as unknown[];
+    const fenceValues = JSON.parse(compactFence) as unknown[];
     const invalidLeaseBytes = [
       undefined,
       "short",
       `${leaseBytes.slice(0, 255)}\n`,
       "{".padEnd(256, " "),
-      compactLease.replace('"v":1', '"v":2').padEnd(256, " "),
-      compactLease.replace('"p":[101', '"p":[]').padEnd(256, " "),
-      compactLease.replace('"c":null', '"c":[]').padEnd(256, " "),
-      compactLease.replace('"l":', '"extra":1,"l":').padEnd(256, " "),
+      JSON.stringify([2, ...leaseValues.slice(1)]).padEnd(256, " "),
+      JSON.stringify([...leaseValues.slice(0, 4), [], null]).padEnd(256, " "),
+      JSON.stringify([...leaseValues.slice(0, 5), []]).padEnd(256, " "),
+      JSON.stringify([...leaseValues, "extra"]).padEnd(256, " "),
       ` ${compactLease}`.padEnd(256, " "),
     ];
     for (const bytes of invalidLeaseBytes)
@@ -1510,8 +1513,8 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
       "short",
       `${fenceBytes.slice(0, 255)}\n`,
       "{".padEnd(256, " "),
-      compactFence.replace('"v":1', '"v":2').padEnd(256, " "),
-      compactFence.replace('"t":', '"extra":1,"t":').padEnd(256, " "),
+      JSON.stringify([2, ...fenceValues.slice(1)]).padEnd(256, " "),
+      JSON.stringify([...fenceValues, "extra"]).padEnd(256, " "),
       ` ${compactFence}`.padEnd(256, " "),
     ];
     for (const bytes of invalidFenceBytes)
@@ -1553,10 +1556,10 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
     const lease = parseLocalSqliteLeaseRecord(leaseRecord());
     if (lease === undefined) throw new Error("lease");
     const encoded = encodeLocalSqliteLeaseRecord(lease)!;
-    const compact = JSON.parse(encoded.trimEnd()) as Record<string, unknown>;
+    const compact = JSON.parse(encoded.trimEnd()) as unknown[];
     const sparse = new Array<unknown>(2);
     sparse[1] = parentStart;
-    compact.p = sparse;
+    compact[4] = sparse;
     expect(
       decodeLocalSqliteLeaseRecord(JSON.stringify(compact).padEnd(256, " ")),
     ).toBeUndefined();

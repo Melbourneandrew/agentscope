@@ -81,13 +81,16 @@ def expected_tree_nodes(files: list[str]) -> list[str]:
 
 authority = Path("/authority")
 material_lock = json.loads((authority / "release-materials.json").read_text())
+namespace_helper = (authority / "namespace-helper.cpp").read_bytes()
 if (
     material_lock.get("schemaVersion") != 3
     or len(material_lock.get("materials", [])) != 2
     or material_lock.get("buildGraph", {}).get("identity")
-    != "agentscope-owned-cc-ar-cxx-link-v1"
+    != "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2"
     or material_lock.get("toolchainClosure", {}).get("image")
     != "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2"
+    or material_lock.get("ownedTooling", {}).get("namespaceHelperSourceSha256")
+    != sha256(namespace_helper)
 ):
     fail()
 
@@ -109,6 +112,24 @@ shutil.copytree("/materials/better-sqlite3", source, dirs_exist_ok=True)
 shutil.copytree("/materials/node-addon-api", source / "node-addon-api")
 for name in ("sqlite3.c", "sqlite3.h", "sqlite3ext.h"):
     shutil.copyfile(source / "deps/sqlite3" / name, generated / name)
+namespace_helper_path = generated / "namespace-helper.cpp"
+namespace_helper_path.write_bytes(namespace_helper)
+namespace_helper_path.chmod(0o400)
+better_sqlite_source = (source / "src/better_sqlite3.cpp").read_text(encoding="utf-8")
+include_anchor = '#include "objects/statement-iterator.hpp"\n'
+return_anchor = "\treturn exports;\n}"
+if better_sqlite_source.count(include_anchor) != 1 or better_sqlite_source.count(return_anchor) != 1:
+    fail()
+better_sqlite_source = better_sqlite_source.replace(
+    include_anchor,
+    f'{include_anchor}#include "namespace-helper.cpp"\n',
+).replace(
+    return_anchor,
+    "\tRegisterAgentscopeNamespace(env, exports);\n\n\treturn exports;\n}",
+)
+better_sqlite_path = generated / "better_sqlite3.cpp"
+better_sqlite_path.write_text(better_sqlite_source, encoding="utf-8")
+better_sqlite_path.chmod(0o400)
 
 closed_environment = {
     "HOME": "/work/home",
@@ -199,9 +220,9 @@ sqlite_archive = output_root / "sqlite3.a"
 run("/usr/bin/ar", ["crs", str(sqlite_archive), str(sqlite_object)])
 addon_object = output_root / "better_sqlite3.o"
 run("/usr/bin/g++", [
-    "-o", str(addon_object), str(source / "src/better_sqlite3.cpp"), *node_defines,
+    "-o", str(addon_object), str(better_sqlite_path), *node_defines,
     "-DNAPI_VERSION=10", "-DNAPI_DISABLE_CPP_EXCEPTIONS", "-DNODE_API_SWALLOW_UNTHROWABLE_EXCEPTIONS",
-    "-DBUILDING_NODE_EXTENSION", "-DNDEBUG", *includes, f"-I{source / 'node-addon-api'}", f"-I{generated}",
+    "-DBUILDING_NODE_EXTENSION", "-DNDEBUG", *includes, f"-I{source / 'node-addon-api'}", f"-I{source / 'src'}", f"-I{generated}",
     *common, "-fno-rtti", "-fno-exceptions", "-fno-strict-aliasing", "-std=c++20",
     "-fvisibility=hidden", "-fvisibility-inlines-hidden", "-flto", "-c",
 ])
@@ -224,7 +245,7 @@ expected_source_inventory = sorted(
         for entry in material_lock["materials"][1]["entries"]
     ]], key=lambda entry: entry["path"],
 )
-generated_paths = ["sqlite3.c", "sqlite3.h", "sqlite3ext.h"]
+generated_paths = ["better_sqlite3.cpp", "namespace-helper.cpp", "sqlite3.c", "sqlite3.h", "sqlite3ext.h"]
 output_paths = ["better_sqlite3.node", "better_sqlite3.o", "sqlite3.a", "sqlite3.o"]
 expected_work_files = [
     *[f"source/{entry['path']}" for entry in expected_source_inventory],
@@ -249,7 +270,10 @@ if sum(int(entry["bytes"]) for entry in output_inventory) > 32 * 1024 * 1024:
 if command_ledger != expected_programs:
     fail()
 output = output_path.read_bytes()
-if len(output) != 2_213_824 or sha256(output) != "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37":
+if (
+    len(output) != 2_222_616
+    or sha256(output) != "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c"
+):
     fail()
 runtime = bundle_runtime(source)
 result = {

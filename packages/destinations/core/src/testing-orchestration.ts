@@ -35,11 +35,12 @@ export const prepareDestinationReporterForTesting = (
     connectionId: TEST_CONNECTION_ID,
     settings: input.settings,
   });
-  if (prepared.endpoint === null)
-    throw new Error("destination.testing.remote-required");
   return prepareDestinationReporter(prepared, {
     credentials: input.credentials,
-    transport: bindDestinationTransport(prepared.endpoint, input.executor),
+    transport:
+      prepared.endpoint === null
+        ? null
+        : bindDestinationTransport(prepared.endpoint, input.executor),
   });
 };
 

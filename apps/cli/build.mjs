@@ -49,6 +49,56 @@ await build({
   sourcemap: false,
   target: "node22",
 });
+await cp(
+  new URL(
+    "../../packages/destinations/local-sqlite/src/migrations/",
+    import.meta.url,
+  ),
+  new URL("dist/internal/local-sqlite-runtime/migrations/", import.meta.url),
+  { errorOnExist: true, force: false, recursive: true },
+);
+await build({
+  bundle: true,
+  entryPoints: [
+    new URL(
+      "../../packages/destinations/local-sqlite/src/production/reporter-child.ts",
+      import.meta.url,
+    ).pathname,
+  ],
+  format: "esm",
+  outfile: `${packageRoot}dist/internal/local-sqlite-runtime/reporter-child.js`,
+  platform: "node",
+  sourcemap: false,
+  target: "node22",
+});
+await build({
+  bundle: true,
+  entryPoints: [
+    new URL(
+      "../../packages/destinations/local-sqlite/src/production/retriever-child.ts",
+      import.meta.url,
+    ).pathname,
+  ],
+  format: "esm",
+  outfile: `${packageRoot}dist/internal/local-sqlite-runtime/retriever-child.js`,
+  platform: "node",
+  sourcemap: false,
+  target: "node22",
+});
+await build({
+  bundle: true,
+  entryPoints: [
+    new URL(
+      "../../packages/destinations/local-sqlite/src/production/reporter-watchdog.ts",
+      import.meta.url,
+    ).pathname,
+  ],
+  format: "esm",
+  outfile: `${packageRoot}dist/internal/local-sqlite-runtime/reporter-watchdog.js`,
+  platform: "node",
+  sourcemap: false,
+  target: "node22",
+});
 await build({
   bundle: true,
   define: {

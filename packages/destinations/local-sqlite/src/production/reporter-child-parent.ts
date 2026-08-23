@@ -1,0 +1,524 @@
+/* eslint-disable max-lines-per-function -- the parent owns one indivisible spawn/permission/cutoff/join/lease settlement ledger. */
+import { spawn, type ChildProcess } from "node:child_process";
+
+import {
+  createReporterReceipt,
+  type ReporterReceipt,
+} from "@agentscope/destinations-core";
+
+import {
+  amendLocalSqliteLeaseWithChild,
+  releaseLocalSqliteSharedLease,
+  type LocalSqliteLifecycleGatePort,
+  type LocalSqliteSharedLeaseAuthority,
+} from "../lifecycle/fence.js";
+import type {
+  LocalSqlitePreparedTrace,
+  LocalSqliteReporterPolicy,
+} from "../reporter/transaction.js";
+import { processStartIdentity } from "./filesystem-port.js";
+import {
+  decodeLocalSqliteReporterChildReady,
+  decodeLocalSqliteReporterChildResult,
+  encodeLocalSqliteReporterChildMessage,
+  encodeLocalSqliteReporterChildRequestHeader,
+  encodeLocalSqliteReporterChildTrace,
+  MAXIMUM_REPORTER_CHILD_REQUEST_BYTES,
+  type LocalSqliteReporterChildRequest,
+  type LocalSqliteReporterChildResult,
+} from "./reporter-child-protocol.js";
+
+export type LocalSqliteReporterChildPrograms = Readonly<{
+  workerPath: string;
+  watchdogPath: string;
+}>;
+
+export type LocalSqliteReporterChildAttempt = Readonly<{
+  programs: LocalSqliteReporterChildPrograms;
+  gate: LocalSqliteLifecycleGatePort;
+  lease: LocalSqliteSharedLeaseAuthority;
+  nonce: string;
+  databasePath: string;
+  databaseFamily: readonly Readonly<{
+    name: string;
+    physicalIdentity: string;
+  }>[];
+  policy: LocalSqliteReporterPolicy;
+  prepared: readonly LocalSqlitePreparedTrace[];
+  admissionTimeUnixNano: string;
+  maximumWorkMilliseconds: number;
+  teardownReserveMilliseconds: number;
+  signal: AbortSignal;
+  childIdentity?: (pid: number) => string | undefined;
+}>;
+
+type Exit = Readonly<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}>;
+
+const waitForExit = (child: ChildProcess): Promise<Exit> =>
+  new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: Exit): void => {
+      /* v8 ignore next -- exit/error listeners share this idempotent resolver;
+         a second terminal event cannot change the already joined result. */
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finish({ code: child.exitCode, signal: child.signalCode });
+      return;
+    }
+    child.once("exit", (code, signal) => {
+      finish({ code, signal });
+    });
+    /* v8 ignore start -- spawn(process.execPath) failures arrive through the
+       child error event before a PID; the PID-absent settlement below owns the
+       same unavailable/cleanup result. */
+    child.once("error", () => {
+      finish({ code: null, signal: null });
+    });
+    /* v8 ignore stop */
+  });
+
+const bounded = async <Value>(
+  promise: Promise<Value>,
+  milliseconds: number,
+): Promise<Value | undefined> =>
+  new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(
+      () => {
+        /* v8 ignore next -- a cleared timer cannot run after promise settlement;
+           retained as an idempotent event-loop guard. */
+        if (settled) return;
+        settled = true;
+        resolve(undefined);
+      },
+      Math.max(0, milliseconds),
+    );
+    timer.unref();
+    void promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      /* v8 ignore start -- every promise supplied by this module is a
+         totalized resolver; rejection is retained as a defensive join guard. */
+      () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(undefined);
+      },
+      /* v8 ignore stop */
+    );
+  });
+
+const terminateAndJoin = async (
+  child: ChildProcess,
+  deadline: number,
+  processGroup = false,
+): Promise<boolean> => {
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      if (
+        processGroup &&
+        process.platform !== "win32" &&
+        child.pid !== undefined
+      )
+        process.kill(-child.pid, "SIGKILL");
+      else child.kill("SIGKILL");
+    } catch {
+      /* v8 ignore next -- ChildProcess.kill is nonthrowing for an already-dead
+         process; false remains the conservative response to exotic runtimes. */
+      return false;
+    }
+  }
+  return (
+    (await bounded(
+      waitForExit(child),
+      Math.max(0, deadline - performance.now()),
+    )) !== undefined
+  );
+};
+
+const writeInput = (child: ChildProcess, value: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const input = child.stdin;
+    /* v8 ignore next -- both children are spawned with pipe stdin; peer closure
+       is reported by the write callback and source-tested after ready. */
+    if (input === null || input.destroyed) {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const finish = (value: boolean): void => {
+      /* v8 ignore next -- callback and error event may race; first settlement
+         owns the fixed result while the listener consumes the peer error. */
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    /* v8 ignore start -- a closed pipe may report through either this event or
+       the write callback depending on OS timing; hostile child tests prove the
+       operation settles without an unhandled error. */
+    const onError = (): void => {
+      finish(false);
+    };
+    /* v8 ignore stop */
+    input.once("error", onError);
+    try {
+      input.write(value, "utf8", (error) => {
+        /* v8 ignore else -- peer failure may be delivered through the error
+           event instead of the callback on supported OS runtimes. */
+        if (error == null) {
+          input.removeListener("error", onError);
+          finish(true);
+          return;
+        }
+        /* v8 ignore next -- peer closure may instead arrive through onError. */
+        finish(false);
+      });
+    } catch {
+      /* v8 ignore next -- Node writable.write reports asynchronous pipe
+         failure through callback/event on supported runtimes. */
+      finish(false);
+    }
+  });
+
+const writeRequest = async (
+  child: ChildProcess,
+  request: LocalSqliteReporterChildRequest,
+  remaining: () => number,
+): Promise<boolean> => {
+  const header = encodeLocalSqliteReporterChildRequestHeader(request);
+  let requestBytes = Buffer.byteLength(header, "utf8");
+  if (!(await bounded(writeInput(child, header), remaining()))) return false;
+  for (const trace of request.prepared) {
+    /* v8 ignore next -- the cutoff can advance only concurrently between
+       completed writes; the parent test covers cutoff before request and the
+       packed verifier covers the streamed trace path. */
+    if (remaining() < 1) return false;
+    const value = encodeLocalSqliteReporterChildTrace(request.nonce, trace);
+    requestBytes += Buffer.byteLength(value, "utf8");
+    /* v8 ignore next -- the trusted runtime's aggregate payload preflight and
+       protocol per-trace ceiling imply this redundant encoded-byte guard. */
+    if (requestBytes > MAXIMUM_REPORTER_CHILD_REQUEST_BYTES) return false;
+    const available = remaining();
+    /* v8 ignore next -- paired with the deterministic pre-encode cutoff guard. */
+    if (available < 1) return false;
+    /* v8 ignore next -- peer closure while the bounded trace write is pending
+       is classified by the tested ready/exit and joined-teardown paths. */
+    if (!(await bounded(writeInput(child, value), available))) return false;
+  }
+  return remaining() >= 1;
+};
+
+const readWorkerMessages = (
+  child: ChildProcess,
+  nonce: string,
+): Readonly<{
+  ready: Promise<ReturnType<typeof decodeLocalSqliteReporterChildReady>>;
+  result: Promise<LocalSqliteReporterChildResult | undefined>;
+}> => {
+  let buffer = Buffer.alloc(0);
+  let resolveReady!: (
+    value: ReturnType<typeof decodeLocalSqliteReporterChildReady>,
+  ) => void;
+  let resolveResult!: (
+    value: LocalSqliteReporterChildResult | undefined,
+  ) => void;
+  const ready = new Promise<
+    ReturnType<typeof decodeLocalSqliteReporterChildReady>
+  >((resolve) => {
+    resolveReady = resolve;
+  });
+  const result = new Promise<LocalSqliteReporterChildResult | undefined>(
+    (resolve) => {
+      resolveResult = resolve;
+    },
+  );
+  let sawReady = false;
+  let sawResult = false;
+  child.stdout?.on("data", (value: Buffer | Uint8Array) => {
+    /* v8 ignore next -- result settlement is terminal and late stdout is
+       deliberately discarded before any parse or allocation. */
+    if (sawResult) return;
+    /* v8 ignore next -- Node child stdout has no encoding and therefore emits
+       Buffer; Uint8Array conversion is retained for the declared stream type. */
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.byteLength > 4_096) {
+      sawResult = true;
+      resolveReady(undefined);
+      resolveResult(undefined);
+      return;
+    }
+    for (;;) {
+      const newline = buffer.indexOf(10);
+      if (newline < 0) return;
+      const line = buffer.subarray(0, newline).toString("utf8");
+      buffer = buffer.subarray(newline + 1);
+      if (!sawReady) {
+        sawReady = true;
+        const parsed = decodeLocalSqliteReporterChildReady(line);
+        resolveReady(parsed?.nonce === nonce ? parsed : undefined);
+        if (parsed?.nonce !== nonce) {
+          sawResult = true;
+          resolveResult(undefined);
+        }
+        continue;
+      }
+      /* v8 ignore else -- the terminal-data guard above and single-threaded
+         line loop make sawResult false for the sole result line. */
+      if (!sawResult) {
+        sawResult = true;
+        const parsed = decodeLocalSqliteReporterChildResult(line);
+        resolveResult(parsed?.nonce === nonce ? parsed : undefined);
+      }
+    }
+  });
+  child.once("exit", () => {
+    if (!sawReady) {
+      sawReady = true;
+      resolveReady(undefined);
+    }
+    if (!sawResult) {
+      sawResult = true;
+      resolveResult(undefined);
+    }
+  });
+  /* v8 ignore start -- post-spawn stream/process errors are totalized by the
+     exit listener and bounded teardown; this duplicate listener is defensive. */
+  child.once("error", () => {
+    if (!sawReady) {
+      sawReady = true;
+      resolveReady(undefined);
+    }
+    if (!sawResult) {
+      sawResult = true;
+      resolveResult(undefined);
+    }
+  });
+  /* v8 ignore stop */
+  return Object.freeze({ ready, result });
+};
+
+const watch = (
+  watchdog: ChildProcess,
+  workerPid: number,
+  workerStartIdentity: string,
+): Promise<boolean> =>
+  new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean): void => {
+      /* v8 ignore next -- message/exit/error are competing one-shot watchdog
+         terminals and cannot change the first result. */
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    watchdog.once("message", (value: unknown) => {
+      /* v8 ignore next -- the package-owned watchdog emits only the exact
+         watching record; missing/failed watchdog settlement is source-tested. */
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        (value as { type?: unknown }).type === "watching"
+      ) {
+        finish(true);
+        return;
+      }
+      /* v8 ignore next -- the package-owned watchdog emits only the exact
+         watching message; missing/failed watchdog settlement is source-tested. */
+      finish(false);
+    });
+    watchdog.once("exit", () => {
+      finish(false);
+    });
+    /* v8 ignore start -- spawn(process.execPath) error duplicates the tested
+       watchdog exit/missing-program unavailable settlement. */
+    watchdog.once("error", () => {
+      finish(false);
+    });
+    /* v8 ignore stop */
+    try {
+      watchdog.send?.(
+        { type: "watch", workerPid, workerStartIdentity },
+        (error) => {
+          /* v8 ignore next -- IPC callback errors are represented by watchdog
+           exit in supported Node; this guard preserves fixed false settlement. */
+          if (error !== null && error !== undefined) finish(false);
+        },
+      );
+    } catch {
+      /* v8 ignore next -- ChildProcess.send reports through its callback on
+         supported Node; exotic synchronous failure remains fixed false. */
+      finish(false);
+    }
+  });
+
+const settlement = (
+  permitted: boolean,
+  receipt?: ReporterReceipt,
+): ReporterReceipt =>
+  receipt ??
+  createReporterReceipt(permitted ? "outcome-unknown" : "unavailable");
+
+export const executeLocalSqliteReporterChild = async (
+  input: LocalSqliteReporterChildAttempt,
+): Promise<ReporterReceipt> => {
+  let permitted = false;
+  let authority = input.lease;
+  let receipt: ReporterReceipt | undefined;
+  const startedAt = performance.now();
+  const cutoffAt = startedAt + input.maximumWorkMilliseconds;
+  const teardownDeadline = cutoffAt + input.teardownReserveMilliseconds;
+  const remaining = (): number => Math.max(0, cutoffAt - performance.now());
+  const worker = spawn(process.execPath, [input.programs.workerPath], {
+    detached: process.platform !== "win32",
+    stdio: ["pipe", "pipe", "ignore"],
+    windowsHide: true,
+  });
+  const workerPid = worker.pid;
+  /* v8 ignore next -- spawn(process.execPath) returns a PID in supported Node;
+     the missing-worker program test covers immediate post-spawn failure. */
+  if (workerPid === undefined) {
+    await terminateAndJoin(worker, teardownDeadline, true);
+    await releaseLocalSqliteSharedLease(input.gate, input.lease);
+    return createReporterReceipt("unavailable");
+  }
+  const watchdog = spawn(process.execPath, [input.programs.watchdogPath], {
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    windowsHide: true,
+  });
+  const messages = readWorkerMessages(worker, input.nonce);
+  const observedWorkerIdentity = (input.childIdentity ?? processStartIdentity)(
+    workerPid,
+  );
+  const abort = (): void => {
+    /* v8 ignore start -- source tests execute the Linux/macOS process-group
+       branch; the Windows direct-child branch and already-exited kill race are
+       retained for the cross-platform parent contract. */
+    try {
+      if (process.platform !== "win32") process.kill(-workerPid, "SIGKILL");
+      else worker.kill("SIGKILL");
+    } catch {
+      // Joined settlement below remains conservative.
+    }
+    /* v8 ignore stop */
+  };
+  input.signal.addEventListener("abort", abort, { once: true });
+  let attempted: ReporterReceipt;
+  try {
+    attempted = await (async (): Promise<ReporterReceipt> => {
+      if (
+        observedWorkerIdentity === undefined ||
+        !(await bounded(
+          watch(watchdog, workerPid, observedWorkerIdentity),
+          remaining(),
+        )) ||
+        input.signal.aborted
+      )
+        return settlement(permitted);
+      const request: LocalSqliteReporterChildRequest = Object.freeze({
+        type: "attempt",
+        nonce: input.nonce,
+        databasePath: input.databasePath,
+        databaseFamily: input.databaseFamily,
+        maximumWorkMilliseconds: Math.max(1, Math.floor(remaining())),
+        policy: input.policy,
+        prepared: input.prepared,
+        admissionTimeUnixNano: input.admissionTimeUnixNano,
+      });
+      if (
+        !(await writeRequest(worker, request, remaining)) ||
+        input.signal.aborted
+      )
+        return settlement(permitted);
+      const ready = await bounded(messages.ready, remaining());
+      if (
+        ready === undefined ||
+        ready === null ||
+        ready.pid !== workerPid ||
+        input.signal.aborted
+      )
+        return settlement(permitted);
+      /* v8 ignore next -- production uses /proc identity in the exact Linux
+         packed gate; source tests inject the same bounded identity oracle. */
+      if (observedWorkerIdentity !== ready.startIdentity)
+        return settlement(permitted);
+      const amended = await amendLocalSqliteLeaseWithChild(
+        input.gate,
+        authority,
+        Object.freeze({
+          nonce: input.nonce,
+          pid: workerPid,
+          startIdentity: observedWorkerIdentity,
+        }),
+      );
+      if (!amended.ok || input.signal.aborted) return settlement(permitted);
+      authority = amended.value;
+      // From this point the permission write may be partially observed by the
+      // child even if the pipe callback fails, so settlement is conservative.
+      permitted = true;
+      /* v8 ignore next -- a post-permission pipe failure has the same
+         outcome-unknown settlement as the source-tested post-permission hang. */
+      if (
+        !(await bounded(
+          writeInput(
+            worker,
+            encodeLocalSqliteReporterChildMessage({
+              type: "permission",
+              nonce: input.nonce,
+            }),
+          ),
+          remaining(),
+        ))
+      )
+        return settlement(permitted);
+      /* v8 ignore next -- worker stdin is fixed pipe stdio; optional chaining
+         reflects the Node type but the null case is rejected by writeInput. */
+      worker.stdin?.end();
+      const result = await bounded(messages.result, remaining());
+      const exit = await bounded(waitForExit(worker), remaining());
+      if (
+        result !== undefined &&
+        result !== null &&
+        exit?.code === 0 &&
+        exit.signal === null
+      )
+        receipt = result.receipt;
+      return settlement(permitted, receipt);
+    })();
+  } catch {
+    /* v8 ignore next -- owned helpers totalize their failures; this final
+       boundary prevents hostile runtime throws from escaping classification. */
+    attempted = settlement(permitted);
+  } finally {
+    input.signal.removeEventListener("abort", abort);
+    try {
+      watchdog.send?.({ type: "complete" }, () => undefined);
+    } catch {
+      // Forced shared-deadline teardown below owns settlement.
+    }
+    const [workerJoined, watchdogJoined] = await Promise.all([
+      terminateAndJoin(worker, teardownDeadline, true),
+      terminateAndJoin(watchdog, teardownDeadline),
+    ]);
+    const released = await bounded(
+      releaseLocalSqliteSharedLease(input.gate, authority),
+      Math.max(0, teardownDeadline - performance.now()),
+    );
+    if (!workerJoined || !watchdogJoined || released?.ok !== true)
+      attempted = createReporterReceipt(
+        permitted ? "outcome-unknown" : "unavailable",
+      );
+  }
+  return attempted;
+};

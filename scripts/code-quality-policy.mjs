@@ -85,6 +85,7 @@ function entryFiles(packageRoot, manifest) {
   };
   collect(manifest.exports);
   collect(manifest.bin);
+  collect(manifest.agentscopeInternalProcessEntrypoints);
   return targets
     .filter((target) => target.includes("dist/"))
     .map((target) =>

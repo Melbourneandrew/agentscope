@@ -410,3 +410,28 @@ test("reserves terminal stream ownership for the CLI", () => {
     rmSync(value.root, { recursive: true, force: true });
   }
 });
+
+test("permits only the owned Local SQLite child pipe entrypoint", () => {
+  const value = fixture();
+  const packagePath = "packages/destinations/local-sqlite";
+  value.packages.set(packagePath, "@agentscope/destination-local-sqlite");
+  try {
+    const production = join(value.root, packagePath, "src/production");
+    mkdirSync(production, { recursive: true });
+    writeFileSync(
+      join(production, "reporter-child.ts"),
+      'process.stdout.write("bounded child protocol");\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+    writeFileSync(
+      join(production, "other-child.ts"),
+      'process.stdout.write("unsafe");\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /streams are CLI-owned/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});

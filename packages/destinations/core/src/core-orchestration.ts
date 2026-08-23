@@ -32,6 +32,7 @@ export {
   invokeRetrieverGet,
   invokeRetrieverSearch,
 } from "./retriever.js";
+export { bindLocalResourceHomeAuthorityForCore } from "./local-resource-home-authority.js";
 export {
   bindLocalResourceConfigurationAuthorityForCore,
   type BindLocalResourceConfigurationAuthorityInput,

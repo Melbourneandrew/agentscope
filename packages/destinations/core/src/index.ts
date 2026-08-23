@@ -2,6 +2,13 @@ export const destinationsCorePackageId =
   "@agentscope/destinations-core" as const;
 
 export {
+  resolveLocalResourceHomeAuthority,
+  LocalResourceHomeAuthorityError,
+  type LocalResourceHome,
+  type LocalResourceHomeAuthority,
+} from "./local-resource-home-authority.js";
+
+export {
   commitLocalResourceConfiguration,
   isLocalResourceConfigurationCommitError,
   LocalResourceConfigurationCommitError,
