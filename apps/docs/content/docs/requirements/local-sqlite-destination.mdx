@@ -13,6 +13,7 @@ The Local SQLite Trace Destination gives users an explicitly configured, machine
 - **Retention policy:** the required maximum time since durable local admission, stored trace count, and stored Protocol-payload bytes for one local database.
 - **Unconfigure:** remove a destination connection without deleting its database.
 - **Delete:** permanently remove a selected Local SQLite database after explicit confirmation.
+- **External filesystem interference:** a process acting outside Agentscope's lifecycle protocol changes a Local SQLite-owned directory entry while an Agentscope operation is using that namespace. A process running as the same operating-system user has the same discretionary filesystem authority as Agentscope and is outside the supported concurrency boundary.
 
 ## Requirements
 
@@ -31,9 +32,10 @@ As a user, I want explicit retention and removal behavior, so that I control dur
 
 - **AC-SQL-002.1:** When I do not override retention, the system shall make traces admitted to the local database more than 30 days ago unavailable for retrieval, retain at most 100,000 traces and 1 GiB of stored Protocol payloads per local database, and disclose during configuration that physical age cleanup occurs at the next authorized mutating access because Agentscope runs no cleanup daemon.
 - **AC-SQL-002.2:** When I unconfigure a Local SQLite destination, the system shall leave its database unchanged and report its location.
-- **AC-SQL-002.3:** When I request database deletion, the system shall identify the exact owned file and effective connection, require explicit confirmation, and delete no unowned path.
+- **AC-SQL-002.3:** When Agentscope exclusively controls its lifecycle namespace and I request database deletion, the system shall identify the exact owned file and effective connection, require explicit confirmation, and delete no other path.
 - **AC-SQL-002.4:** When the database is backed up or restored, the system shall preserve its Protocol-version and schema-version compatibility metadata.
 - **AC-SQL-002.5:** When reporting or an explicit maintenance operation accesses a local database after any configured retention limit is reached, the system shall transactionally enforce all limits in deterministic oldest-first order before reporting success; read-only retrieval shall exclude expired traces, while Doctor shall report the configured policy and a fixed unavailable status for any database-derived retention count it cannot prove without modifying or opening the database.
+- **AC-SQL-002.6:** When Agentscope detects external filesystem interference with a Local SQLite-owned name, the system shall not report the interrupted operation as successful, shall not interpret the substituted content, and shall require explicit reconciliation while preserving every still-identifiable database artifact.
 
 ### REQ-SQL-003: Safe concurrent operation
 
