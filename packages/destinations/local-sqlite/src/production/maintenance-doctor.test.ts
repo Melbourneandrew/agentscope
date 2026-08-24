@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   renameSync,
@@ -177,6 +178,28 @@ describe("production Local SQLite Doctor", () => {
         state: "available",
         databaseState: "present",
       });
+      writeFileSync(`${namespace.databasePath}-wal`, "wal", { mode: 0o600 });
+      writeFileSync(`${namespace.databasePath}-shm`, "shm", { mode: 0o600 });
+      await expect(port.inspectDoctor(context)).resolves.toMatchObject({
+        state: "available",
+        databaseState: "present",
+      });
+      writeFileSync(`${namespace.databasePath}-journal`, "journal", {
+        mode: 0o600,
+      });
+      await expect(port.inspectDoctor(context)).resolves.toMatchObject({
+        state: "reconciliation-required",
+        databaseState: "unavailable",
+      });
+      unlinkSync(`${namespace.databasePath}-journal`);
+      unlinkSync(namespace.databasePath);
+      await expect(port.inspectDoctor(context)).resolves.toMatchObject({
+        state: "reconciliation-required",
+        databaseState: "unavailable",
+      });
+      unlinkSync(`${namespace.databasePath}-wal`);
+      unlinkSync(`${namespace.databasePath}-shm`);
+      writeFileSync(namespace.databasePath, header, { mode: 0o600 });
       header[0] = 0;
       writeFileSync(namespace.databasePath, header, { mode: 0o600 });
       await expect(port.inspectDoctor(context)).resolves.toMatchObject({
@@ -187,6 +210,14 @@ describe("production Local SQLite Doctor", () => {
       const outside = join(root, "outside.sqlite");
       writeFileSync(outside, header, { mode: 0o600 });
       symlinkSync(outside, namespace.databasePath);
+      await expect(port.inspectDoctor(context)).resolves.toMatchObject({
+        state: "reconciliation-required",
+        databaseState: "unavailable",
+      });
+      unlinkSync(namespace.databasePath);
+      header.write("SQLite format 3\0", 0, "ascii");
+      writeFileSync(namespace.databasePath, header, { mode: 0o600 });
+      mkdirSync(`${namespace.databasePath}-wal`, { mode: 0o700 });
       await expect(port.inspectDoctor(context)).resolves.toMatchObject({
         state: "reconciliation-required",
         databaseState: "unavailable",
@@ -237,6 +268,66 @@ describe("production Local SQLite Doctor", () => {
           replaced = true;
           renameSync(candidate, displaced);
           writeFileSync(candidate, "same-size-b", { mode: 0o600 });
+        },
+      });
+      await expect(
+        port.inspectDoctor({
+          connectionId,
+          settings,
+          signal: new AbortController().signal,
+        } as never),
+      ).resolves.toMatchObject({
+        state: "unavailable",
+        databaseState: "unavailable",
+        backupState: "unavailable",
+      });
+      expect(replaced).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("downgrades active sidecar replacement during the final inventory scan", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-local-sidecar-race-"));
+    chmodSync(root, 0o700);
+    try {
+      const namespace = planLocalSqliteNamespace({
+        agentscopeHome: root,
+        connectionId,
+        platform: process.platform === "win32" ? "win32" : "posix",
+      });
+      for (const directory of [
+        namespace.destinationsDirectory,
+        namespace.destinationTypeDirectory,
+        namespace.connectionNamespace,
+        namespace.lifecycleDirectory,
+        namespace.backupsDirectory,
+      ])
+        ensurePrivateDirectory(directory, {
+          allowPathFallbackForTesting: true,
+        });
+      const header = Buffer.alloc(100);
+      header.write("SQLite format 3\0", 0, "ascii");
+      header[16] = 0x10;
+      writeFileSync(namespace.databasePath, header, { mode: 0o600 });
+      const sidecar = `${namespace.databasePath}-wal`;
+      const displaced = `${sidecar}.displaced`;
+      writeFileSync(sidecar, "same-size-a", { mode: 0o600 });
+      let replaced = false;
+      const port = createLocalSqliteProductionMaintenancePort({
+        home: { root, platform: process.platform },
+        filesystemProfile: "local-ext4",
+        opener: {
+          open: () => {
+            throw new Error("doctor opened database");
+          },
+        },
+        allowPathFallbackForTesting: true,
+        doctorAfterFirstScanForTesting: () => {
+          if (replaced) return;
+          replaced = true;
+          renameSync(sidecar, displaced);
+          writeFileSync(sidecar, "same-size-b", { mode: 0o600 });
         },
       });
       await expect(

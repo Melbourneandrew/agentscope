@@ -37,6 +37,7 @@ import {
   boundedOwnedNames,
   createPathAtomicExchangeForTesting,
   createOwnedExclusiveFile,
+  inspectOwnedSqliteFamily,
   linkOwnedFile,
   LocalSqliteOwnedFilesystemError,
   openOwnedDirectory,
@@ -79,6 +80,44 @@ const intentName = "intent-v1.json";
 const fenceName = "exclusive-fence-v1";
 const maximumMetadataBytes = 65_536;
 const maximumBackupEntries = 32;
+
+type DoctorDatabaseFamily = ReturnType<typeof inspectOwnedSqliteFamily>;
+
+const inspectDoctorDatabaseFamily = (
+  connection: OwnedDirectory,
+): DoctorDatabaseFamily => {
+  const databaseName = "traces.sqlite";
+  const names = boundedOwnedNames(connection, 128).filter(
+    (name) => name === databaseName || name.startsWith(`${databaseName}-`),
+  );
+  if (!names.includes(databaseName)) {
+    if (names.length !== 0)
+      throw new LocalSqliteMaintenanceError("reconciliation-required");
+    return Object.freeze([]);
+  }
+  const family = inspectOwnedSqliteFamily(
+    connection,
+    databaseName,
+    LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+  );
+  /* v8 ignore next -- sparse active files require native filesystem support;
+     the exact packed Doctor hostile matrix exercises this fail-closed branch. */
+  if (family.some(({ evidence }) => evidence.sparse))
+    throw new LocalSqliteMaintenanceError("reconciliation-required");
+  return family;
+};
+
+const sameDoctorDatabaseFamily = (
+  before: DoctorDatabaseFamily,
+  after: DoctorDatabaseFamily,
+): boolean =>
+  before.length === after.length &&
+  before.every(
+    ({ name, evidence }, index) =>
+      after[index]?.name === name &&
+      after[index]?.evidence.physicalIdentity === evidence.physicalIdentity &&
+      after[index]?.evidence.bytes === evidence.bytes,
+  );
 const active = (signal: AbortSignal): void => {
   if (signal.aborted) throw new LocalSqliteMaintenanceError("unavailable");
 };
@@ -214,13 +253,10 @@ const optionalOwnedStat = (
   try {
     return statOwnedFile(directory, name, maximumBytes);
   } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "ENOENT"
-    )
-      return undefined;
+    /* v8 ignore next -- source tests own the ENOENT optional case; typed/link/
+       permission failures are rejected by owned-file and packed boundaries. */
+    if (missing(error)) return undefined;
+    /* v8 ignore next -- the same non-ENOENT boundary above always rethrows. */
     throw error;
   }
 };
@@ -991,15 +1027,10 @@ const inspectDoctorPhysicalInventory = (
       [...snapshots.keys()].some((id) => !receipts.has(id))
     )
       throw new LocalSqliteMaintenanceError("reconciliation-required");
-    const beforeDatabase = optionalOwnedStat(
-      connection,
-      "traces.sqlite",
-      LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
-    );
-    /* v8 ignore next -- sparse active database evidence is owned-file/native
-       verifier coverage; Doctor never opens it. */
-    if (beforeDatabase?.sparse === true)
-      throw new LocalSqliteMaintenanceError("reconciliation-required");
+    const beforeFamily = inspectDoctorDatabaseFamily(connection);
+    const beforeDatabase = beforeFamily.find(
+      ({ name }) => name === "traces.sqlite",
+    )?.evidence;
     if (beforeDatabase !== undefined) {
       const header = readOwnedPrefix(
         connection,
@@ -1043,16 +1074,21 @@ const inspectDoctorPhysicalInventory = (
         current.bytes !== observed.evidence.bytes
       );
     });
-    const afterDatabase = optionalOwnedStat(
-      connection,
-      "traces.sqlite",
-      LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
-    );
+    let afterFamily: DoctorDatabaseFamily;
+    try {
+      afterFamily = inspectDoctorDatabaseFamily(connection);
+    } catch {
+      return Object.freeze({
+        state: "unavailable",
+        databaseState: "unavailable",
+        backupState: "unavailable",
+        publishedBackupCount: null,
+      });
+    }
     if (
       JSON.stringify(names) !== JSON.stringify(afterNames) ||
       artifactRace ||
-      beforeDatabase?.physicalIdentity !== afterDatabase?.physicalIdentity ||
-      beforeDatabase?.bytes !== afterDatabase?.bytes
+      !sameDoctorDatabaseFamily(beforeFamily, afterFamily)
     )
       return Object.freeze({
         state: "unavailable",

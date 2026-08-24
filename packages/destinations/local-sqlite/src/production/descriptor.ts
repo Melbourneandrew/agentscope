@@ -7,8 +7,10 @@ import {
   reporterDeadlineRemainingMilliseconds,
   type DestinationDescriptor,
   type ReporterFactoryContext,
+  type ReporterAttempt,
 } from "@agentscope/destinations-core";
 
+import { LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST } from "../native-support.js";
 import {
   prepareLocalSqliteTrace,
   type LocalSqliteReporterPolicy,
@@ -18,6 +20,7 @@ import {
   LOCAL_SQLITE_DESTINATION_TYPE,
   localSqliteLifecycleDeclaration,
 } from "../lifecycle/capability.js";
+import { MAXIMUM_REPORTER_CHILD_BATCH_PAYLOAD_BYTES } from "./reporter-child-protocol.js";
 import type { LocalSqliteExecutionPolicy } from "./sqlite-port.js";
 import { getLocalSqliteProductionRuntime } from "./runtime.js";
 import type { LocalSqliteProductionRuntime } from "./runtime.js";
@@ -48,6 +51,30 @@ const policyFor = (
     maximumTraceCount: settings.maximumTraceCount,
   });
 
+export const prepareLocalSqliteBatch = (
+  traces: ReporterAttempt["traces"],
+  admissionTimeUnixNano: string,
+  remainingMilliseconds: () => number,
+): readonly ReturnType<typeof prepareLocalSqliteTrace>[] | undefined => {
+  const minimumRemaining =
+    LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.minimumNativeChildBudgetMilliseconds +
+    LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeTeardownReserveMilliseconds;
+  const prepared: ReturnType<typeof prepareLocalSqliteTrace>[] = [];
+  let aggregatePayloadBytes = 0;
+  for (const trace of traces) {
+    if (remainingMilliseconds() < minimumRemaining) return undefined;
+    const value = prepareLocalSqliteTrace(trace, admissionTimeUnixNano);
+    aggregatePayloadBytes += value.payloadBytes;
+    if (
+      aggregatePayloadBytes > MAXIMUM_REPORTER_CHILD_BATCH_PAYLOAD_BYTES ||
+      remainingMilliseconds() < minimumRemaining
+    )
+      return undefined;
+    prepared.push(value);
+  }
+  return Object.freeze(prepared);
+};
+
 const createProductionReporter = (
   context: ReporterFactoryContext<LocalSqliteDestinationSettings>,
   runtime: () => LocalSqliteProductionRuntime,
@@ -57,9 +84,16 @@ const createProductionReporter = (
   return createDestinationReporter({
     report: async (attempt) => {
       try {
-        const prepared = attempt.traces.map((trace) =>
-          prepareLocalSqliteTrace(trace, attempt.admissionTimeUnixNano),
+        const remainingMilliseconds = () =>
+          reporterDeadlineRemainingMilliseconds(attempt.deadline);
+        const prepared = prepareLocalSqliteBatch(
+          attempt.traces,
+          attempt.admissionTimeUnixNano,
+          remainingMilliseconds,
         );
+        /* v8 ignore next -- the batch helper directly proves both pre/post
+           preparation exhaustion branches before runtime delegation. */
+        if (prepared === undefined) return createReporterReceipt("unavailable");
         return await runtime().reportPrepared({
           connectionId: context.connectionId,
           lifecycleFingerprint,
@@ -67,8 +101,7 @@ const createProductionReporter = (
           prepared,
           admissionTimeUnixNano: attempt.admissionTimeUnixNano,
           signal: attempt.signal,
-          remainingMilliseconds: () =>
-            reporterDeadlineRemainingMilliseconds(attempt.deadline),
+          remainingMilliseconds,
         });
       } catch {
         return createReporterReceipt("unavailable");

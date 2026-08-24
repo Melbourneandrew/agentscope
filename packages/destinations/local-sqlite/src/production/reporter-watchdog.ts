@@ -63,14 +63,11 @@ const exactRecord = (
 };
 
 const killWorker = (): void => {
-  if (
-    workerPid === undefined ||
-    workerStartIdentity === undefined ||
-    currentStartIdentity(workerPid) !== workerStartIdentity
-  )
-    return;
+  if (workerPid === undefined || workerStartIdentity === undefined) return;
   try {
-    process.kill(-workerPid, "SIGKILL");
+    if (process.platform !== "win32") process.kill(-workerPid, "SIGKILL");
+    else if (currentStartIdentity(workerPid) === workerStartIdentity)
+      process.kill(workerPid, "SIGKILL");
   } catch (error) {
     if (
       typeof error !== "object" ||

@@ -47,9 +47,27 @@ type Loader = Readonly<{
 }>;
 
 const fail = (): never => {
-  process.exitCode = 70;
-  throw new Error("destination.local-sqlite.child.invalid");
+  process.exit(70);
 };
+
+type SqliteFamily = ReturnType<typeof inspectOwnedSqliteFamily>;
+
+const sameFamily = (expected: SqliteFamily, observed: SqliteFamily): boolean =>
+  expected.length === observed.length &&
+  expected.every(
+    ({ name, evidence }, index) =>
+      observed[index]?.name === name &&
+      observed[index]?.evidence.physicalIdentity === evidence.physicalIdentity,
+  );
+
+const admittedFinalFamily = (
+  expected: SqliteFamily,
+  observed: SqliteFamily,
+): boolean =>
+  observed.every(({ name, evidence }) => {
+    const prior = expected.find((entry) => entry.name === name);
+    return prior?.evidence.physicalIdentity === evidence.physicalIdentity;
+  });
 
 const readLines = (): Readonly<{
   request: Promise<LocalSqliteRetrieverChildRequest>;
@@ -57,6 +75,7 @@ const readLines = (): Readonly<{
 }> => {
   let buffer = Buffer.alloc(0);
   let requestValue: LocalSqliteRetrieverChildRequest | undefined;
+  let sawPermission = false;
   let resolveRequest!: (value: LocalSqliteRetrieverChildRequest) => void;
   let resolvePermission!: (value: string) => void;
   const request = new Promise<LocalSqliteRetrieverChildRequest>((resolve) => {
@@ -82,12 +101,18 @@ const readLines = (): Readonly<{
         resolveRequest(requestValue);
         continue;
       }
+      sawPermission = true;
       process.stdin.pause();
       resolvePermission(line);
       if (buffer.byteLength !== 0) fail();
       return;
     }
   });
+  const failOnPrematurePipeLoss = (): void => {
+    if (!sawPermission) fail();
+  };
+  process.stdin.on("end", failOnPrematurePipeLoss);
+  process.stdin.on("close", failOnPrematurePipeLoss);
   return Object.freeze({ request, permission });
 };
 
@@ -117,6 +142,7 @@ const main = async (): Promise<void> => {
   let database: ReturnType<OwnedSqliteOpener["open"]> | undefined;
   let directory: ReturnType<typeof openOwnedDirectory> | undefined;
   let databaseFile: OwnedFile | undefined;
+  let admittedFamily: SqliteFamily | undefined;
   try {
     const loaderUrl = new URL(
       "../local-sqlite/loader/owned-loader.cjs",
@@ -185,6 +211,12 @@ const main = async (): Promise<void> => {
     )
       return fail();
     initializeOwnedSqliteConnection(database, remaining());
+    admittedFamily = inspectOwnedSqliteFamily(
+      directory,
+      databaseName,
+      LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+    );
+    if (!preservesRequest(admittedFamily)) return fail();
     const retriever = createOwnedRetrieverDatabase(
       database,
       request.policy,
@@ -197,7 +229,8 @@ const main = async (): Promise<void> => {
         : await retriever.get(request.plan as LocalSqliteGetPlan, signal);
     if (
       remaining() < 1 ||
-      !preservesRequest(
+      !sameFamily(
+        admittedFamily,
         inspectOwnedSqliteFamily(
           directory,
           databaseName,
@@ -218,6 +251,24 @@ const main = async (): Promise<void> => {
   try {
     database?.close();
     databaseFile?.assertCurrent();
+    if (
+      directory !== undefined &&
+      databaseFile !== undefined &&
+      admittedFamily !== undefined &&
+      !admittedFinalFamily(
+        admittedFamily,
+        inspectOwnedSqliteFamily(
+          directory,
+          basename(request.databasePath),
+          LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+        ),
+      )
+    )
+      result = Object.freeze({
+        type: "retrieval-result",
+        nonce: request.nonce,
+        ok: false,
+      });
   } catch {
     result = Object.freeze({
       type: "retrieval-result",

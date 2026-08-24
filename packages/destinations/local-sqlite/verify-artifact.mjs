@@ -111,6 +111,41 @@ const waitForChildEvent = (child, event, timeoutMilliseconds) =>
     child.once("error", onError);
   });
 
+for (const entry of [
+  "./dist/production/reporter-child.js",
+  "./dist/production/retriever-child.js",
+]) {
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL(entry, packageRoot))],
+    {
+      stdio: ["pipe", "ignore", "ignore"],
+    },
+  );
+  const exited = waitForChildEvent(child, "exit", 5_000);
+  child.stdin.end();
+  const [code] = await exited;
+  if (code !== 70)
+    throw new Error(
+      `Built ${entry} did not fail closed on pre-permission pipe loss.`,
+    );
+}
+
+const waitForProcessAbsence = async (pid, timeoutMilliseconds) => {
+  const deadline = Date.now() + timeoutMilliseconds;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() >= deadline)
+      throw new Error("Built watchdog left a descendant after leader exit.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+};
+
 if (process.platform === "linux") {
   const worker = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
     detached: true,
@@ -156,6 +191,73 @@ if (process.platform === "linux") {
       worker.kill("SIGKILL");
     if (watchdog.exitCode === null && watchdog.signalCode === null)
       watchdog.kill("SIGKILL");
+  }
+
+  const groupWorker = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const {spawn}=require("node:child_process");
+process.on("message",()=>{
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});
+  process.send({type:"descendant",pid:child.pid});
+  setTimeout(()=>process.exit(0),20);
+});`,
+    ],
+    { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  const groupWatchdog = fork(
+    fileURLToPath(
+      new URL("./dist/production/reporter-watchdog.js", packageRoot),
+    ),
+    [],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  let descendantPid;
+  try {
+    const stat = readFileSync(`/proc/${groupWorker.pid}/stat`, "utf8");
+    const workerStartIdentity = createHash("sha256")
+      .update(
+        `${groupWorker.pid}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`,
+      )
+      .digest("hex")
+      .slice(0, 32);
+    const watching = waitForChildEvent(groupWatchdog, "message", 5_000);
+    groupWatchdog.send({
+      type: "watch",
+      workerPid: groupWorker.pid,
+      workerStartIdentity,
+    });
+    const [acknowledgement] = await watching;
+    if (acknowledgement?.type !== "watching")
+      throw new Error("Built watchdog did not arm for group-leader exit.");
+    const descendant = waitForChildEvent(groupWorker, "message", 5_000);
+    const workerExit = waitForChildEvent(groupWorker, "exit", 5_000);
+    groupWorker.send("exit-with-descendant");
+    const [message] = await descendant;
+    descendantPid = message?.pid;
+    await workerExit;
+    const watchdogExit = waitForChildEvent(groupWatchdog, "exit", 5_000);
+    groupWatchdog.disconnect();
+    const [watchdogCode] = await watchdogExit;
+    if (watchdogCode !== 70 || !Number.isSafeInteger(descendantPid))
+      throw new Error("Built watchdog group-leader exit settlement drifted.");
+    await waitForProcessAbsence(descendantPid, 5_000);
+  } finally {
+    if (groupWorker.exitCode === null && groupWorker.signalCode === null)
+      try {
+        process.kill(-groupWorker.pid, "SIGKILL");
+      } catch {
+        // The process group may already be absent after the watchdog result.
+      }
+    if (groupWatchdog.exitCode === null && groupWatchdog.signalCode === null)
+      groupWatchdog.kill("SIGKILL");
+    if (Number.isSafeInteger(descendantPid))
+      try {
+        process.kill(descendantPid, "SIGKILL");
+      } catch {
+        // The descendant is expected to have been removed by the watchdog.
+      }
   }
 }
 

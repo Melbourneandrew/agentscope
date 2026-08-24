@@ -24,7 +24,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { runLocalSqliteMigrations } from "../migrations.js";
 import { prepareLocalSqliteTrace } from "../reporter/transaction.js";
-import { createLocalSqliteDestinationDescriptorForTesting } from "./descriptor.js";
+import {
+  createLocalSqliteDestinationDescriptorForTesting,
+  prepareLocalSqliteBatch,
+} from "./descriptor.js";
 import type { LocalSqliteProductionRuntime } from "./runtime.js";
 import {
   createOwnedMigrationDatabase,
@@ -95,6 +98,18 @@ const settings = Object.freeze({
 
 /* eslint-disable max-lines-per-function -- each case keeps one complete Core-to-owned-database authority path visible. */
 describe("Local SQLite production descriptor", () => {
+  it("admits preparation only while the complete child and teardown budget remains", () => {
+    const trace = createSanitizedRedactedCanonicalTraceFixture();
+    expect(prepareLocalSqliteBatch([trace], "200", () => 300)).toEqual([
+      prepareLocalSqliteTrace(trace, "200"),
+    ]);
+    expect(prepareLocalSqliteBatch([trace], "200", () => 299)).toBeUndefined();
+    const observations = [300, 299];
+    expect(
+      prepareLocalSqliteBatch([trace], "200", () => observations.shift() ?? 0),
+    ).toBeUndefined();
+  });
+
   it("prepares through Core and delegates exact Reporter authority", async () => {
     const native = new DatabaseSync(":memory:");
     const database = owned(native);

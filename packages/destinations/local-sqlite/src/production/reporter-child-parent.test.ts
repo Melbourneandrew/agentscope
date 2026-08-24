@@ -96,6 +96,8 @@ const attempt = async (
     missingWorker?: boolean;
     omitChildIdentity?: boolean;
     maximumWorkMilliseconds?: number;
+    minimumUsefulWorkMilliseconds?: number;
+    monotonicNowForTesting?: () => number;
     teardownReserveMilliseconds?: number;
     stubbornWatchdog?: boolean;
     withTrace?: boolean;
@@ -195,8 +197,13 @@ const attempt = async (
         maximumWorkMilliseconds:
           options.maximumWorkMilliseconds ??
           (state === "accepted" || state === "result-error" ? 1_000 : 300),
+        minimumUsefulWorkMilliseconds:
+          options.minimumUsefulWorkMilliseconds ?? 10,
         teardownReserveMilliseconds: options.teardownReserveMilliseconds ?? 500,
         signal: controller.signal,
+        ...(options.monotonicNowForTesting === undefined
+          ? {}
+          : { monotonicNowForTesting: options.monotonicNowForTesting }),
         ...(options.omitChildIdentity === true
           ? {}
           : {
@@ -226,6 +233,28 @@ describe("bounded Local SQLite Reporter child", () => {
     const result = await attempt("accepted", { withTrace: true });
     expect(result.receipt).toEqual({ outcome: "accepted" });
     expect(result.entries).toEqual([]);
+  });
+
+  it("refuses wire encoding before spawn when the useful budget expires", async () => {
+    const beforeClock = [0, 2];
+    const before = await attempt("accepted", {
+      withTrace: true,
+      maximumWorkMilliseconds: 2,
+      minimumUsefulWorkMilliseconds: 1,
+      monotonicNowForTesting: () => beforeClock.shift() ?? 2,
+    });
+    expect(before.receipt).toEqual({ outcome: "unavailable" });
+    expect(before.entries).toEqual([]);
+
+    const afterClock = [0, 0, 2];
+    const after = await attempt("accepted", {
+      withTrace: true,
+      maximumWorkMilliseconds: 2,
+      minimumUsefulWorkMilliseconds: 1,
+      monotonicNowForTesting: () => afterClock.shift() ?? 2,
+    });
+    expect(after.receipt).toEqual({ outcome: "unavailable" });
+    expect(after.entries).toEqual([]);
   });
   for (const [state, outcome] of [
     ["accepted", "accepted"],

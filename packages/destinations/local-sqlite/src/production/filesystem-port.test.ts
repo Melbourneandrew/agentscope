@@ -6,6 +6,8 @@ import {
   renameSync,
   rmSync,
   statSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +25,22 @@ type Mutation =
   | Readonly<{ state: "created" | "replaced"; physicalIdentity: string }>
   | Readonly<{ state: "exists" | "mismatch" }>;
 type ConcreteGate = Readonly<{
+  acquireRecoveryFenceLock: (
+    input: Readonly<{
+      filename: string;
+      physicalIdentity: string;
+    }>,
+  ) => Readonly<
+    | { state: "acquired"; token: Readonly<Record<string, never>> }
+    | { state: "busy" | "mismatch" }
+  >;
+  assertRecoveryFenceLock: (
+    input: Readonly<{
+      filename: string;
+      physicalIdentity: string;
+      token: Readonly<Record<string, never>>;
+    }>,
+  ) => Readonly<{ state: "held" | "not-held" }>;
   classifyOwner: (
     input: Readonly<{
       owner: Readonly<{ pid: number; startIdentity: string }>;
@@ -67,6 +85,13 @@ type ConcreteGate = Readonly<{
       physicalIdentity: string;
     }>,
   ) => Readonly<{ state: "absent" | "mismatch" | "removed" }>;
+  releaseRecoveryFenceLock: (
+    input: Readonly<{
+      filename: string;
+      physicalIdentity: string;
+      token: Readonly<Record<string, never>>;
+    }>,
+  ) => Readonly<{ state: "released" | "not-held" }>;
   replaceLeaseDurably: (
     input: Readonly<{
       filename: string;
@@ -214,6 +239,14 @@ describe("production Local SQLite lifecycle filesystem port", () => {
     chmodSync(root, 0o700);
     try {
       ensurePrivateDirectory(lifecycle, { allowPathFallbackForTesting: true });
+      expect(() =>
+        createLocalSqliteFilesystemGatePort(lifecycle, {
+          lockOwnedFile: () => "acquired",
+        }).acquireRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: "dev:0:ino:0",
+        }),
+      ).toThrow("destination.local-sqlite.native-unavailable");
       const gate = gateFor(lifecycle);
       const current = currentProcessStartIdentity();
       expect(current).toMatch(/^[a-f0-9]{32}$/u);
@@ -242,6 +275,135 @@ describe("production Local SQLite lifecycle filesystem port", () => {
           }),
         ).toEqual({ state: "indeterminate" });
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("holds, verifies, and releases one exact fallback recovery-fence lock", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-gate-lock-"));
+    const lifecycle = join(root, "lifecycle");
+    chmodSync(root, 0o700);
+    try {
+      ensurePrivateDirectory(lifecycle, { allowPathFallbackForTesting: true });
+      const gate = gateFor(lifecycle);
+      expect(() =>
+        createLocalSqliteFilesystemGatePort(lifecycle).acquireRecoveryFenceLock(
+          {
+            filename: "exclusive-fence-v1",
+            physicalIdentity: "dev:0:ino:0",
+          },
+        ),
+      ).toThrow("destination.local-sqlite.native-unavailable");
+      const fence = gate.createFenceDurably({
+        filename: "exclusive-fence-v1",
+        content: "fence-v1",
+      });
+      if (fence.state !== "created") throw new Error("expected fence");
+      expect(
+        gate.acquireRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: "dev:0:ino:0",
+        }),
+      ).toEqual({ state: "mismatch" });
+      const acquired = gate.acquireRecoveryFenceLock({
+        filename: "exclusive-fence-v1",
+        physicalIdentity: fence.physicalIdentity,
+      });
+      expect(acquired.state).toBe("acquired");
+      if (acquired.state !== "acquired") throw new Error("expected lock");
+      expect(
+        gate.acquireRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+        }),
+      ).toEqual({ state: "busy" });
+      expect(
+        gate.assertRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: acquired.token,
+        }),
+      ).toEqual({ state: "held" });
+      expect(
+        gate.assertRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: "dev:0:ino:0",
+          token: acquired.token,
+        }),
+      ).toEqual({ state: "not-held" });
+      const fencePath = join(lifecycle, "exclusive-fence-v1");
+      const displaced = `${fencePath}.displaced`;
+      renameSync(fencePath, displaced);
+      writeFileSync(fencePath, "replacement", { mode: 0o600 });
+      expect(
+        gate.assertRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: acquired.token,
+        }),
+      ).toEqual({ state: "not-held" });
+
+      unlinkSync(fencePath);
+      renameSync(displaced, fencePath);
+      expect(
+        gate.assertRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: Object.freeze({}),
+        }),
+      ).toEqual({ state: "not-held" });
+
+      let unlocks = 0;
+      const nativeGate = createLocalSqliteFilesystemGatePort(lifecycle, {
+        allowPathFallbackForTesting: true,
+        lockOwnedFile: () => "acquired",
+        unlockOwnedFile: () => {
+          unlocks += 1;
+        },
+      }) as ConcreteGate;
+      const nativeAcquired = nativeGate.acquireRecoveryFenceLock({
+        filename: "exclusive-fence-v1",
+        physicalIdentity: fence.physicalIdentity,
+      });
+      if (nativeAcquired.state !== "acquired")
+        throw new Error("expected injected native lock");
+      expect(
+        nativeGate.releaseRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: nativeAcquired.token,
+        }),
+      ).toEqual({ state: "released" });
+      expect(unlocks).toBe(1);
+      expect(
+        gate.releaseRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: "dev:0:ino:0",
+          token: acquired.token,
+        }),
+      ).toEqual({ state: "not-held" });
+      expect(
+        gate.releaseRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: Object.freeze({}),
+        }),
+      ).toEqual({ state: "not-held" });
+      expect(
+        gate.releaseRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: acquired.token,
+        }),
+      ).toEqual({ state: "released" });
+      expect(
+        gate.assertRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: acquired.token,
+        }),
+      ).toEqual({ state: "not-held" });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

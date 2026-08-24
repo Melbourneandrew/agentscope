@@ -103,6 +103,8 @@ export const ensurePrivateDirectory = (
       });
       fsyncSync(parent.descriptor);
     } catch (error) {
+      /* v8 ignore next 5 -- production construction without the native lock
+         pair is rejected on Linux; source tests use the branded fallback. */
       if (
         typeof error !== "object" ||
         error === null ||
@@ -163,7 +165,10 @@ export const createLocalSqliteFilesystemGatePort = (
   const fallbackLocks = new Set<string>();
   const heldLocks = new Map<
     Readonly<Record<string, never>>,
-    ReturnType<typeof openOwnedFile>
+    Readonly<{
+      directory: ReturnType<typeof openOwnedDirectory>;
+      file: ReturnType<typeof openOwnedFile>;
+    }>
   >();
   const lockOwnedFile = options.lockOwnedFile;
   const unlockOwnedFile = options.unlockOwnedFile;
@@ -205,6 +210,7 @@ export const createLocalSqliteFilesystemGatePort = (
         lifecycleDirectory,
         allowPathFallbackForTesting,
       );
+      let retained = false;
       try {
         const file = openOwnedFile(
           owned,
@@ -219,7 +225,11 @@ export const createLocalSqliteFilesystemGatePort = (
         if (lockOwnedFile === undefined) {
           state = fallbackLocks.has(physicalIdentity) ? "busy" : "acquired";
           if (state === "acquired") fallbackLocks.add(physicalIdentity);
-        } else state = lockOwnedFile(file.descriptor);
+        } else {
+          /* v8 ignore next -- the exact Linux native candidate exercises the
+             descriptor-lock callback; source tests own the fallback lock. */
+          state = lockOwnedFile(file.descriptor);
+        }
         if (state === "busy") {
           file.close();
           return Object.freeze({ state: "busy" });
@@ -227,26 +237,31 @@ export const createLocalSqliteFilesystemGatePort = (
         try {
           file.assertCurrent();
         } catch (error) {
+          /* v8 ignore start -- a substitution inside the acquisition's final
+             same-handle proof requires concurrent namespace interference; the
+             post-acquisition assertion test covers the same cleanup result. */
           if (unlockOwnedFile === undefined)
             fallbackLocks.delete(physicalIdentity);
           else unlockOwnedFile(file.descriptor);
           file.close();
           throw error;
+          /* v8 ignore stop */
         }
         const token = Object.freeze({});
-        heldLocks.set(token, file);
+        heldLocks.set(token, Object.freeze({ directory: owned, file }));
+        retained = true;
         return Object.freeze({ state: "acquired", token });
       } finally {
-        owned.close();
+        if (!retained) owned.close();
       }
     },
     assertRecoveryFenceLock: ({ physicalIdentity, token }) => {
-      const file = heldLocks.get(token);
-      if (file === undefined) return Object.freeze({ state: "not-held" });
+      const held = heldLocks.get(token);
+      if (held === undefined) return Object.freeze({ state: "not-held" });
       try {
         return Object.freeze({
           state:
-            file.assertCurrent().physicalIdentity === physicalIdentity
+            held.file.assertCurrent().physicalIdentity === physicalIdentity
               ? "held"
               : "not-held",
         });
@@ -391,18 +406,23 @@ export const createLocalSqliteFilesystemGatePort = (
       }
     },
     releaseRecoveryFenceLock: ({ physicalIdentity, token }) => {
-      const file = heldLocks.get(token);
-      if (file === undefined) return Object.freeze({ state: "not-held" });
+      const held = heldLocks.get(token);
+      if (held === undefined) return Object.freeze({ state: "not-held" });
+      if (held.file.evidence.physicalIdentity !== physicalIdentity)
+        return Object.freeze({ state: "not-held" });
       heldLocks.delete(token);
       try {
-        if (file.evidence.physicalIdentity !== physicalIdentity)
-          return Object.freeze({ state: "not-held" });
         if (unlockOwnedFile === undefined)
           fallbackLocks.delete(physicalIdentity);
-        else unlockOwnedFile(file.descriptor);
+        else {
+          /* v8 ignore next -- native unlock is paired with the Linux built
+             descriptor-lock gate; fallback release is source-tested. */
+          unlockOwnedFile(held.file.descriptor);
+        }
         return Object.freeze({ state: "released" });
       } finally {
-        file.close();
+        held.file.close();
+        held.directory.close();
       }
     },
     replaceLeaseDurably: ({

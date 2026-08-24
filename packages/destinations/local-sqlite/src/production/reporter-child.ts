@@ -50,8 +50,7 @@ type Loader = Readonly<{
 }>;
 
 const fail = (): never => {
-  process.exitCode = 70;
-  throw new Error("destination.local-sqlite.child.invalid");
+  process.exit(70);
 };
 
 const write = (
@@ -59,6 +58,25 @@ const write = (
 ): void => {
   process.stdout.write(encodeLocalSqliteReporterChildMessage(value));
 };
+
+type SqliteFamily = ReturnType<typeof inspectOwnedSqliteFamily>;
+
+const sameFamily = (expected: SqliteFamily, observed: SqliteFamily): boolean =>
+  expected.length === observed.length &&
+  expected.every(
+    ({ name, evidence }, index) =>
+      observed[index]?.name === name &&
+      observed[index]?.evidence.physicalIdentity === evidence.physicalIdentity,
+  );
+
+const admittedFinalFamily = (
+  expected: SqliteFamily,
+  observed: SqliteFamily,
+): boolean =>
+  observed.every(({ name, evidence }) => {
+    const prior = expected.find((entry) => entry.name === name);
+    return prior?.evidence.physicalIdentity === evidence.physicalIdentity;
+  });
 
 // eslint-disable-next-line max-lines-per-function -- the isolated child owns one closed request/permission/native/settlement ledger.
 const main = async (): Promise<void> => {
@@ -140,6 +158,11 @@ const main = async (): Promise<void> => {
       offset = newline + 1;
     }
   });
+  const failOnPrematurePipeLoss = (): void => {
+    if (!sawPermission) fail();
+  };
+  process.stdin.on("end", failOnPrematurePipeLoss);
+  process.stdin.on("close", failOnPrematurePipeLoss);
   while (header === undefined || prepared.length !== header.preparedCount)
     await new Promise((resolve) => setTimeout(resolve, 1));
   const request: LocalSqliteReporterChildRequest = Object.freeze({
@@ -165,6 +188,7 @@ const main = async (): Promise<void> => {
   let database: ReturnType<OwnedSqliteOpener["open"]> | undefined;
   let directory: ReturnType<typeof openOwnedDirectory> | undefined;
   let databaseFile: OwnedFile | undefined;
+  let admittedFamily: SqliteFamily | undefined;
   try {
     const loaderUrl = new URL(
       "../local-sqlite/loader/owned-loader.cjs",
@@ -222,11 +246,17 @@ const main = async (): Promise<void> => {
       databaseName,
       LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
     );
-    if (!matchesRequest(opened)) return fail();
+    if (!preservesRequest(opened)) return fail();
     const remainingAfterOpen = Math.floor(expiresAt - performance.now());
     if (remainingAfterOpen < 1)
       throw new Error("child budget exhausted after open");
     initializeOwnedSqliteConnection(database, remainingAfterOpen);
+    admittedFamily = inspectOwnedSqliteFamily(
+      directory,
+      databaseName,
+      LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+    );
+    if (!preservesRequest(admittedFamily)) return fail();
     receipt = executePreparedLocalSqliteTransaction(
       createOwnedReporterDatabase(database),
       request.policy,
@@ -239,7 +269,7 @@ const main = async (): Promise<void> => {
       databaseName,
       LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
     );
-    if (!preservesRequest(after))
+    if (!sameFamily(admittedFamily, after))
       receipt = createReporterReceipt("outcome-unknown");
   } catch {
     receipt = createReporterReceipt("outcome-unknown");
@@ -247,6 +277,20 @@ const main = async (): Promise<void> => {
   try {
     database?.close();
     databaseFile?.assertCurrent();
+    if (
+      directory !== undefined &&
+      databaseFile !== undefined &&
+      admittedFamily !== undefined &&
+      !admittedFinalFamily(
+        admittedFamily,
+        inspectOwnedSqliteFamily(
+          directory,
+          basename(request.databasePath),
+          LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+        ),
+      )
+    )
+      receipt = createReporterReceipt("outcome-unknown");
   } catch {
     receipt = createReporterReceipt("outcome-unknown");
   }

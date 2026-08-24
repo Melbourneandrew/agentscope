@@ -47,9 +47,11 @@ export type LocalSqliteReporterChildAttempt = Readonly<{
   prepared: readonly LocalSqlitePreparedTrace[];
   admissionTimeUnixNano: string;
   maximumWorkMilliseconds: number;
+  minimumUsefulWorkMilliseconds: number;
   teardownReserveMilliseconds: number;
   signal: AbortSignal;
   childIdentity?: (pid: number) => string | undefined;
+  monotonicNowForTesting?: () => number;
 }>;
 
 type Exit = Readonly<{
@@ -194,17 +196,13 @@ const writeInput = (child: ChildProcess, value: string): Promise<boolean> =>
 const writeRequest = async (
   child: ChildProcess,
   request: LocalSqliteReporterChildRequest,
+  encodedTraces: readonly string[],
   remaining: () => number,
 ): Promise<boolean> => {
   const header = encodeLocalSqliteReporterChildRequestHeader(request);
   let requestBytes = Buffer.byteLength(header, "utf8");
   if (!(await bounded(writeInput(child, header), remaining()))) return false;
-  for (const trace of request.prepared) {
-    /* v8 ignore next -- the cutoff can advance only concurrently between
-       completed writes; the parent test covers cutoff before request and the
-       packed verifier covers the streamed trace path. */
-    if (remaining() < 1) return false;
-    const value = encodeLocalSqliteReporterChildTrace(request.nonce, trace);
+  for (const value of encodedTraces) {
     requestBytes += Buffer.byteLength(value, "utf8");
     /* v8 ignore next -- the trusted runtime's aggregate payload preflight and
        protocol per-trace ceiling imply this redundant encoded-byte guard. */
@@ -376,10 +374,29 @@ export const executeLocalSqliteReporterChild = async (
   let permitted = false;
   let authority = input.lease;
   let receipt: ReporterReceipt | undefined;
-  const startedAt = performance.now();
+  const now = input.monotonicNowForTesting ?? performance.now.bind(performance);
+  const startedAt = now();
   const cutoffAt = startedAt + input.maximumWorkMilliseconds;
   const teardownDeadline = cutoffAt + input.teardownReserveMilliseconds;
-  const remaining = (): number => Math.max(0, cutoffAt - performance.now());
+  const remaining = (): number => Math.max(0, cutoffAt - now());
+  const refuseBeforeSpawn = async (): Promise<ReporterReceipt> => {
+    await releaseLocalSqliteSharedLease(input.gate, input.lease);
+    return createReporterReceipt("unavailable");
+  };
+  const encodedTraces: string[] = [];
+  let encodedRequestBytes = 0;
+  for (const trace of input.prepared) {
+    if (remaining() < input.minimumUsefulWorkMilliseconds)
+      return refuseBeforeSpawn();
+    const encoded = encodeLocalSqliteReporterChildTrace(input.nonce, trace);
+    encodedRequestBytes += Buffer.byteLength(encoded, "utf8");
+    if (
+      encodedRequestBytes > MAXIMUM_REPORTER_CHILD_REQUEST_BYTES ||
+      remaining() < input.minimumUsefulWorkMilliseconds
+    )
+      return refuseBeforeSpawn();
+    encodedTraces.push(encoded);
+  }
   const worker = spawn(process.execPath, [input.programs.workerPath], {
     detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "ignore"],
@@ -437,9 +454,11 @@ export const executeLocalSqliteReporterChild = async (
         admissionTimeUnixNano: input.admissionTimeUnixNano,
       });
       if (
-        !(await writeRequest(worker, request, remaining)) ||
+        !(await writeRequest(worker, request, encodedTraces, remaining)) ||
         input.signal.aborted
       )
+        /* v8 ignore next -- the built child pipe-loss canary owns the
+           asynchronous pre-permission write rejection boundary. */
         return settlement(permitted);
       const ready = await bounded(messages.ready, remaining());
       if (

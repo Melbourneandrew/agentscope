@@ -398,6 +398,7 @@ const reportPreparedWithChild = async (
     prepared: attempt.prepared,
     admissionTimeUnixNano: attempt.admissionTimeUnixNano,
     maximumWorkMilliseconds: available,
+    minimumUsefulWorkMilliseconds: minimum,
     teardownReserveMilliseconds: reserve,
     signal: attempt.signal,
     ...(input.childIdentity === undefined
