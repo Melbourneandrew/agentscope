@@ -293,6 +293,8 @@ describe("local-resource configuration lifecycle plans", () => {
     transport: { kind: "local" },
   });
 
+  // This integration-style sequence has no wall-clock assertion; its explicit
+  // runner guard only accommodates aggregate coverage instrumentation.
   // eslint-disable-next-line max-lines-per-function -- one sequence proves configure, retained ownership, and two-generation deletion.
   it("retains on unconfigure and advances two generations before delete", async () => {
     const localRegistry = compileDestinationRegistry([plannedDescriptor]);
@@ -711,7 +713,7 @@ describe("local-resource configuration lifecycle plans", () => {
       /^destination-connection-v1-[0-9a-f]{64}$/u,
     );
     expect(recoverCalls).toBe(recoveryCallsBeforeRetainedCompletion);
-  });
+  }, 15_000);
 });
 
 // eslint-disable-next-line max-lines-per-function -- one exact runtime fixture covers maintenance planning, recovery, and Doctor.
