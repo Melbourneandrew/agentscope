@@ -271,8 +271,8 @@ if command_ledger != expected_programs:
     fail()
 output = output_path.read_bytes()
 if (
-    len(output) != 2_222_616
-    or sha256(output) != "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c"
+    len(output) != 2_222_856
+    or sha256(output) != "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
 ):
     fail()
 runtime = bundle_runtime(source)

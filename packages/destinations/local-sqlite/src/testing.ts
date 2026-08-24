@@ -23,6 +23,7 @@ export {
   decodeLocalSqliteLeaseRecord,
   encodeLocalSqliteFenceRecord,
   encodeLocalSqliteLeaseRecord,
+  inspectLocalSqliteDeadLeaseRecoveryPlan,
   inspectLocalSqliteLifecycleInventory,
   LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS,
   parseLocalSqliteFenceRecord,
@@ -31,10 +32,13 @@ export {
   releaseLocalSqliteExclusiveFence,
   releaseLocalSqliteSharedLease,
   type LocalSqliteExclusiveFenceAuthority,
+  type LocalSqliteDeadLeaseRecoveryEntry,
+  type LocalSqliteDeadLeaseRecoveryPlanResult,
   type LocalSqliteFenceRecord,
   type LocalSqliteLifecycleGateFailure,
   type LocalSqliteLifecycleGatePort,
   type LocalSqliteLeaseRecord,
+  type LocalSqliteRecoveryFenceRecord,
   type LocalSqliteSharedLeaseAuthority,
 } from "./lifecycle/fence.js";
 export {

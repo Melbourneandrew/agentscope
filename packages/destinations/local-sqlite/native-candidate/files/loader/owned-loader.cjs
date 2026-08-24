@@ -17,8 +17,8 @@ const root = path.resolve(__dirname, '..');
 const expected = Object.freeze([
   Object.freeze({
     path: 'native/node127-linux-x64-glibc/agentscope_sqlite.node',
-    bytes: 2222616,
-    sha256: 'c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c',
+    bytes: 2222856,
+    sha256: 'b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9',
   }),
   Object.freeze({
     path: 'notices/better-sqlite3-MIT.txt',
@@ -38,17 +38,17 @@ const expected = Object.freeze([
   Object.freeze({
     path: 'records/provenance.json',
     bytes: 3369,
-    sha256: '3083b290b3a15fb32435636b5a872b280c121235bd8bcff50abf77591c5eb84e',
+    sha256: '0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df',
   }),
   Object.freeze({
     path: 'records/release-materials.json',
     bytes: 18893,
-    sha256: '0c30388b36fe6a15035285752b10b708c549e8b6d41a9a0156872d10b48e7439',
+    sha256: '01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f',
   }),
   Object.freeze({
     path: 'records/sbom.spdx.json',
     bytes: 4349,
-    sha256: 'ae84eddb6e4fce9b8dd3256e6fc64590c0bc380b36adcadeb4c13ed13aab516e',
+    sha256: '04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08',
   }),
   Object.freeze({
     path: 'runtime/better-sqlite3.cjs',
@@ -263,6 +263,8 @@ const verifyClosure = (authority) => {
       'owned-absolute-no-discovery-plus-exchange-v2' ||
     manifest.namespaceMutationContract !==
       'linux-renameat2-exchange-exact-inode-v1' ||
+    manifest.recoveryFenceLockContract !==
+      'linux-flock-exclusive-nonblocking-open-description-process-death-release-v1' ||
     manifest.maximumSnapshotBytes !== 17179869184 ||
     manifest.minimumNativeChildBudgetMilliseconds !== 50 ||
     manifest.nativeTeardownReserveMilliseconds !== 250 ||
@@ -279,8 +281,8 @@ const verifyClosure = (authority) => {
       libcFamily: 'glibc',
       minimumLibcVersion: '2.34',
       relativePath: 'native/node127-linux-x64-glibc/agentscope_sqlite.node',
-      bytes: 2222616,
-      digest: 'sha256:c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c',
+      bytes: 2222856,
+      digest: 'sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9',
     }) ||
     JSON.stringify(manifest.supportedPlatforms[0]) !== JSON.stringify({
       platformId: 'linux-x64-node22-ci-ext4-proposed',
@@ -356,12 +358,28 @@ module.exports = Object.freeze({
       nativeBinding,
       'agentscopeExchangeOwnedFiles',
     );
+    const lockDescriptor = Object.getOwnPropertyDescriptor(
+      nativeBinding,
+      'agentscopeLockOwnedFile',
+    );
+    const unlockDescriptor = Object.getOwnPropertyDescriptor(
+      nativeBinding,
+      'agentscopeUnlockOwnedFile',
+    );
     if (
       exchangeDescriptor === undefined ||
       !('value' in exchangeDescriptor) ||
-      typeof exchangeDescriptor.value !== 'function'
+      typeof exchangeDescriptor.value !== 'function' ||
+      lockDescriptor === undefined ||
+      !('value' in lockDescriptor) ||
+      typeof lockDescriptor.value !== 'function' ||
+      unlockDescriptor === undefined ||
+      !('value' in unlockDescriptor) ||
+      typeof unlockDescriptor.value !== 'function'
     ) fail();
     const exchangeOwnedFiles = exchangeDescriptor.value;
+    const lockOwnedFile = lockDescriptor.value;
+    const unlockOwnedFile = unlockDescriptor.value;
     for (const snapshot of snapshots.all) verifySnapshot(snapshot);
     if (JSON.stringify(regularFiles()) !== JSON.stringify([
       'loader/owned-loader.cjs',
@@ -417,6 +435,25 @@ module.exports = Object.freeze({
           ]);
           if (!['exchanged', 'mismatch', 'raced'].includes(result)) fail();
           return result;
+        } catch {
+          return fail();
+        }
+      },
+      lockOwnedFile(descriptor) {
+        try {
+          if (!Number.isSafeInteger(descriptor) || descriptor < 0) fail();
+          for (const snapshot of snapshots.all) verifySnapshot(snapshot);
+          const result = Reflect.apply(lockOwnedFile, undefined, [descriptor]);
+          if (!['acquired', 'busy'].includes(result)) fail();
+          return result;
+        } catch {
+          return fail();
+        }
+      },
+      unlockOwnedFile(descriptor) {
+        try {
+          if (!Number.isSafeInteger(descriptor) || descriptor < 0) fail();
+          Reflect.apply(unlockOwnedFile, undefined, [descriptor]);
         } catch {
           return fail();
         }

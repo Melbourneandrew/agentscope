@@ -243,6 +243,7 @@ if (
       "encodeLocalSqliteLifecycleIntent",
       "encodeLocalSqliteLeaseRecord",
       "encodeLocalSqliteOwnershipReceipt",
+      "inspectLocalSqliteDeadLeaseRecoveryPlan",
       "inspectLocalSqliteLifecycleInventory",
       "prepareLocalSqliteTraceForTesting",
       "LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS",
@@ -301,7 +302,9 @@ if (
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.loaderContract !==
     "owned-absolute-no-discovery-plus-exchange-v2" ||
   root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.namespaceMutationContract !==
-    "linux-renameat2-exchange-exact-inode-v1"
+    "linux-renameat2-exchange-exact-inode-v1" ||
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.recoveryFenceLockContract !==
+    "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1"
 )
   throw new Error("Local SQLite native namespace authority drifted.");
 for (const artifact of root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST
@@ -362,7 +365,7 @@ const releaseMaterialDigest = createHash("sha256")
 if (
   provenance.releaseMaterialManifestSha256 !== releaseMaterialDigest ||
   provenance.output?.sha256 !==
-    "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c" ||
+    "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9" ||
   provenance.output?.repeatBuildSha256 !== provenance.output.sha256 ||
   provenance.ownedBuild?.containerImage !==
     releaseMaterials.toolchainClosure.image ||
@@ -1787,12 +1790,15 @@ if (
     builtLeaseRecord?.leaseId ||
   testing.decodeLocalSqliteFenceRecord(builtFenceBytes)?.transactionId !==
     builtFenceRecord?.transactionId ||
-  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumLeases !== 64
+  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumLeases !== 64 ||
+  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumFenceRecordBytes !==
+    32_768
 )
   throw new Error("Local SQLite built lifecycle record grammar drifted.");
 
 const lifecycleArtifacts = new Map();
 let lifecycleIdentity = 0;
+let lifecycleRecoveryLock;
 const nextLifecycleIdentity = () => `dev1:ino${(lifecycleIdentity += 1)}`;
 const createLifecycleArtifact = (filename, content) => {
   if (lifecycleArtifacts.has(filename)) return { state: "exists" };
@@ -1801,6 +1807,20 @@ const createLifecycleArtifact = (filename, content) => {
   return { state: "created", physicalIdentity };
 };
 const lifecyclePort = Object.freeze({
+  acquireRecoveryFenceLock: ({ filename, physicalIdentity }) => {
+    if (lifecycleArtifacts.get(filename)?.physicalIdentity !== physicalIdentity)
+      return { state: "mismatch" };
+    if (lifecycleRecoveryLock !== undefined) return { state: "busy" };
+    lifecycleRecoveryLock = Object.freeze({});
+    return { state: "acquired", token: lifecycleRecoveryLock };
+  },
+  assertRecoveryFenceLock: ({ filename, physicalIdentity, token }) => ({
+    state:
+      token === lifecycleRecoveryLock &&
+      lifecycleArtifacts.get(filename)?.physicalIdentity === physicalIdentity
+        ? "held"
+        : "not-held",
+  }),
   classifyOwner: () => ({ state: "live" }),
   createFenceDurably: ({ filename, content }) =>
     createLifecycleArtifact(filename, content),
@@ -1840,6 +1860,11 @@ const lifecyclePort = Object.freeze({
       return { state: "mismatch" };
     lifecycleArtifacts.delete(filename);
     return { state: "removed" };
+  },
+  releaseRecoveryFenceLock: ({ token }) => {
+    if (token !== lifecycleRecoveryLock) return { state: "not-held" };
+    lifecycleRecoveryLock = undefined;
+    return { state: "released" };
   },
   replaceLeaseDurably: () => ({ state: "mismatch" }),
 });
@@ -1993,7 +2018,9 @@ lifecycleArtifacts.clear();
 
 const deadLifecyclePort = Object.freeze({
   ...lifecyclePort,
-  classifyOwner: () => ({ state: "dead" }),
+  classifyOwner: ({ owner }) => ({
+    state: owner.startIdentity === "6".repeat(32) ? "live" : "dead",
+  }),
 });
 const lifecycleMismatchShared = await testing.acquireLocalSqliteSharedLease(
   deadLifecyclePort,
@@ -2014,10 +2041,7 @@ const lifecycleMismatchFence = await testing.acquireLocalSqliteExclusiveFence(
     purpose: "recovery",
   },
 );
-if (
-  lifecycleMismatchFence.ok ||
-  lifecycleMismatchFence.state !== "reconciliation-required"
-)
+if (lifecycleMismatchFence.ok || lifecycleMismatchFence.state !== "unavailable")
   throw new Error("Local SQLite built lifecycle-identity handling drifted.");
 await testing.releaseLocalSqliteSharedLease(
   deadLifecyclePort,
@@ -2035,9 +2059,20 @@ const claimShared = await testing.acquireLocalSqliteSharedLease(
 );
 if (!claimShared.ok)
   throw new Error("Local SQLite built claim fixture failed.");
+const claimPlan = await testing.inspectLocalSqliteDeadLeaseRecoveryPlan(
+  deadLifecyclePort,
+  {
+    transactionId: builtFenceRecord.transactionId,
+    lifecycleFingerprint: builtFenceRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtFenceRecord.lifecycleGeneration,
+    recoveryOwner: { pid: 303, startIdentity: "6".repeat(32) },
+  },
+);
+if (!claimPlan.ok)
+  throw new Error("Local SQLite built recovery plan fixture failed.");
 const claimFence = await testing.acquireLocalSqliteExclusiveFence(
   deadLifecyclePort,
-  { ...builtFenceRecord, purpose: "recovery" },
+  claimPlan.value,
 );
 if (!claimFence.ok)
   throw new Error("Local SQLite built claim fence fixture failed.");

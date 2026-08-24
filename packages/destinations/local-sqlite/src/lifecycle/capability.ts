@@ -58,6 +58,7 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
     ]),
     inspectionLimits: Object.freeze({
       leaseRecordBytes: 256,
+      maximumRecoveryFenceRecordBytes: 32_768,
       maximumBackupDirectoryEntries: 32,
       maximumDirectoryEntries: 192,
       maximumInspectionBytes: 98_304,
@@ -73,6 +74,12 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
         "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes)",
       sizeArithmetic: "exact-nonnegative-filesystem-integer-checked",
       sparseOrHugeEvidence: "reconciliation-required",
+    }),
+    recoveryFence: Object.freeze({
+      lockContract:
+        "package-owned-nonblocking-descriptor-advisory-exclusive-process-death-release-v1",
+      recordContract:
+        "immutable-owner-plus-canonical-dead-lease-vector-and-monotonic-suffix-v1",
     }),
     identifiers: Object.freeze({
       backupId: "nonzero-128-bit-lowercase-hex-32",

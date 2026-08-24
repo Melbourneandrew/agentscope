@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "candidateDisposition": "proposed-unpublished-execution-eligible",
   "nativeTupleId": "node127-linux-x64-glibc",
-  "releaseMaterialManifestSha256": "0c30388b36fe6a15035285752b10b708c549e8b6d41a9a0156872d10b48e7439",
+  "releaseMaterialManifestSha256": "01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
   "sourceMaterials": [
     {
       "name": "better-sqlite3",
@@ -48,7 +48,7 @@
     "inputMounts": "read-only",
     "namespaceMutation": {
       "primitive": "linux-renameat2-exchange-exact-inode-v1",
-      "sourceSha256": "9e1f2531cbc13d7d3598ebaa88031a7d1feffb19aa58029e09a7b77620be4ae0",
+      "sourceSha256": "b272a64d95d184924e3cae5d3ed661bd45d863948a16b4b019ad48b92a22a162",
       "license": "MIT"
     },
     "outputRoot": "fresh-bounded-single-writable-root",
@@ -61,12 +61,12 @@
   },
   "output": {
     "path": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-    "bytes": 2222616,
-    "sha256": "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c",
+    "bytes": 2222856,
+    "sha256": "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9",
     "format": "ELF64-x86-64-shared-object",
     "maximumGlibcSymbolVersion": "2.34",
     "maximumGlibcxxSymbolVersion": "3.4.29",
-    "repeatBuildSha256": "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c"
+    "repeatBuildSha256": "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
   },
   "runtimeBundle": {
     "profile": "agentscope-owned-exact-commonjs-module-map-v1",

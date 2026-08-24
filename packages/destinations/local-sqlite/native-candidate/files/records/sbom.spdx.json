@@ -59,7 +59,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "9e1f2531cbc13d7d3598ebaa88031a7d1feffb19aa58029e09a7b77620be4ae0"
+          "checksumValue": "b272a64d95d184924e3cae5d3ed661bd45d863948a16b4b019ad48b92a22a162"
         }
       ]
     }
@@ -71,7 +71,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c"
+          "checksumValue": "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
         }
       ],
       "licenseConcluded": "MIT AND blessing",

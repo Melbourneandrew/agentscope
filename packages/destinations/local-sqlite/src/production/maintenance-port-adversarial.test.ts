@@ -242,8 +242,8 @@ describe("production Local SQLite maintenance adversarial boundaries", () => {
           signal: new AbortController().signal,
         } as never),
       ).resolves.toMatchObject({
-        state: "reconciliation-required",
-        lifecycleState: "reconciliation-required",
+        state: "available",
+        lifecycleState: "busy",
       });
       await port.finalizeMaintenance(
         intent,

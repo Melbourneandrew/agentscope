@@ -49,6 +49,7 @@ export type LocalSqliteNativeSupportManifest = Readonly<{
   artifactRoot: "internal/local-sqlite";
   loaderContract: "owned-absolute-no-discovery-plus-exchange-v2";
   namespaceMutationContract: "linux-renameat2-exchange-exact-inode-v1";
+  recoveryFenceLockContract: "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1";
   buildSandboxProfile: "agentscope-owned-native-build-v1";
   executionSandboxProfile: "agentscope-sacrificial-native-execution-v1";
   maximumSnapshotBytes: 17_179_869_184;
@@ -101,18 +102,18 @@ const candidateBinary = Object.freeze({
   libcFamily: "glibc" as const,
   minimumLibcVersion: "2.34",
   relativePath: "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-  bytes: 2_222_616,
+  bytes: 2_222_856,
   digest:
-    "sha256:c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c",
+    "sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9",
 });
 
 const candidateArtifacts = Object.freeze([
   Object.freeze({
     kind: "loader" as const,
     relativePath: "loader/owned-loader.cjs",
-    bytes: 14_478,
+    bytes: 15_896,
     digest:
-      "sha256:60761724d65b1370931f21c30a808a8f1a8d74f56db657610863b2fb234f1b7e",
+      "sha256:f1bf552b702d1249f23e2e2b5bfdab9be8328a24e600b212cdf40df05963e0ba",
   }),
   Object.freeze({
     kind: "native-binary" as const,
@@ -153,21 +154,21 @@ const candidateArtifacts = Object.freeze([
     relativePath: "records/release-materials.json",
     bytes: 18_893,
     digest:
-      "sha256:0c30388b36fe6a15035285752b10b708c549e8b6d41a9a0156872d10b48e7439",
+      "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
   }),
   Object.freeze({
     kind: "provenance" as const,
     relativePath: "records/provenance.json",
     bytes: 3_369,
     digest:
-      "sha256:3083b290b3a15fb32435636b5a872b280c121235bd8bcff50abf77591c5eb84e",
+      "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
   }),
   Object.freeze({
     kind: "sbom" as const,
     relativePath: "records/sbom.spdx.json",
     bytes: 4_349,
     digest:
-      "sha256:ae84eddb6e4fce9b8dd3256e6fc64590c0bc380b36adcadeb4c13ed13aab516e",
+      "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
   }),
 ]);
 
@@ -179,17 +180,19 @@ export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManif
     artifactRoot: "internal/local-sqlite",
     loaderContract: "owned-absolute-no-discovery-plus-exchange-v2",
     namespaceMutationContract: "linux-renameat2-exchange-exact-inode-v1",
+    recoveryFenceLockContract:
+      "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1",
     buildSandboxProfile: "agentscope-owned-native-build-v1",
     executionSandboxProfile: "agentscope-sacrificial-native-execution-v1",
     maximumSnapshotBytes: 17_179_869_184,
     minimumNativeChildBudgetMilliseconds: 50,
     nativeTeardownReserveMilliseconds: 250,
     releaseMaterialManifestDigest:
-      "sha256:0c30388b36fe6a15035285752b10b708c549e8b6d41a9a0156872d10b48e7439",
+      "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
     provenanceDigest:
-      "sha256:3083b290b3a15fb32435636b5a872b280c121235bd8bcff50abf77591c5eb84e",
+      "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
     sbomDigest:
-      "sha256:ae84eddb6e4fce9b8dd3256e6fc64590c0bc380b36adcadeb4c13ed13aab516e",
+      "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
     noticeInventoryDigest:
       "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
     artifactFiles: candidateArtifacts,
@@ -206,7 +209,7 @@ export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManif
   });
 
 export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST =
-  "sha256:8378d2274f11b4cc9e0f654fe305488d35985a3f8dad3028f193c6a10004f4ab" as const;
+  "sha256:07059633fd124a278d16a1421d3dbd27f5778b1b26f5fecca9f24f27addedd2d" as const;
 
 const unavailable = (): LocalSqliteNativeSupportResult =>
   Object.freeze({
@@ -495,6 +498,7 @@ const MANIFEST_KEYS = Object.freeze([
   "artifactRoot",
   "loaderContract",
   "namespaceMutationContract",
+  "recoveryFenceLockContract",
   "buildSandboxProfile",
   "executionSandboxProfile",
   "maximumSnapshotBytes",
@@ -533,6 +537,8 @@ const snapshotManifestEnvelope = (
       "owned-absolute-no-discovery-plus-exchange-v2" ||
     manifest.namespaceMutationContract !==
       "linux-renameat2-exchange-exact-inode-v1" ||
+    manifest.recoveryFenceLockContract !==
+      "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1" ||
     manifest.buildSandboxProfile !== "agentscope-owned-native-build-v1" ||
     manifest.executionSandboxProfile !==
       "agentscope-sacrificial-native-execution-v1" ||

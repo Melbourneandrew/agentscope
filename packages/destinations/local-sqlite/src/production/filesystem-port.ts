@@ -9,6 +9,7 @@ import {
   createPathAtomicExchangeForTesting,
   linkOwnedFile,
   openOwnedDirectory,
+  openOwnedFile,
   readOwnedUtf8,
   removeOwnedFile,
   replaceOwnedFile,
@@ -144,6 +145,8 @@ export const createLocalSqliteFilesystemGatePort = (
   options: Readonly<{
     allowPathFallbackForTesting?: boolean;
     atomicExchange?: OwnedAtomicExchange | undefined;
+    lockOwnedFile?: ((descriptor: number) => "acquired" | "busy") | undefined;
+    unlockOwnedFile?: ((descriptor: number) => void) | undefined;
   }> = {},
 ): LocalSqliteLifecycleGatePort => {
   const allowPathFallbackForTesting =
@@ -157,6 +160,13 @@ export const createLocalSqliteFilesystemGatePort = (
       ? createPathAtomicExchangeForTesting(lifecycleDirectory)
       : undefined);
   /* v8 ignore stop */
+  const fallbackLocks = new Set<string>();
+  const heldLocks = new Map<
+    Readonly<Record<string, never>>,
+    ReturnType<typeof openOwnedFile>
+  >();
+  const lockOwnedFile = options.lockOwnedFile;
+  const unlockOwnedFile = options.unlockOwnedFile;
   const list = () => {
     const owned = openOwnedDirectory(
       lifecycleDirectory,
@@ -185,6 +195,65 @@ export const createLocalSqliteFilesystemGatePort = (
     }
   };
   return Object.freeze({
+    acquireRecoveryFenceLock: ({ filename, physicalIdentity }) => {
+      if (
+        (lockOwnedFile === undefined || unlockOwnedFile === undefined) &&
+        !allowPathFallbackForTesting
+      )
+        throw new Error("destination.local-sqlite.native-unavailable");
+      const owned = openOwnedDirectory(
+        lifecycleDirectory,
+        allowPathFallbackForTesting,
+      );
+      try {
+        const file = openOwnedFile(
+          owned,
+          exactLifecycleName(filename),
+          maximumArtifactBytes,
+        );
+        if (file.evidence.physicalIdentity !== physicalIdentity) {
+          file.close();
+          return Object.freeze({ state: "mismatch" });
+        }
+        let state: "acquired" | "busy";
+        if (lockOwnedFile === undefined) {
+          state = fallbackLocks.has(physicalIdentity) ? "busy" : "acquired";
+          if (state === "acquired") fallbackLocks.add(physicalIdentity);
+        } else state = lockOwnedFile(file.descriptor);
+        if (state === "busy") {
+          file.close();
+          return Object.freeze({ state: "busy" });
+        }
+        try {
+          file.assertCurrent();
+        } catch (error) {
+          if (unlockOwnedFile === undefined)
+            fallbackLocks.delete(physicalIdentity);
+          else unlockOwnedFile(file.descriptor);
+          file.close();
+          throw error;
+        }
+        const token = Object.freeze({});
+        heldLocks.set(token, file);
+        return Object.freeze({ state: "acquired", token });
+      } finally {
+        owned.close();
+      }
+    },
+    assertRecoveryFenceLock: ({ physicalIdentity, token }) => {
+      const file = heldLocks.get(token);
+      if (file === undefined) return Object.freeze({ state: "not-held" });
+      try {
+        return Object.freeze({
+          state:
+            file.assertCurrent().physicalIdentity === physicalIdentity
+              ? "held"
+              : "not-held",
+        });
+      } catch {
+        return Object.freeze({ state: "not-held" });
+      }
+    },
     classifyOwner: ({ owner }) => {
       /* v8 ignore next -- Linux owner classification is exercised by the
          exact Linux native/packed gate; macOS admits only indeterminate. */
@@ -319,6 +388,21 @@ export const createLocalSqliteFilesystemGatePort = (
         });
       } finally {
         owned.close();
+      }
+    },
+    releaseRecoveryFenceLock: ({ physicalIdentity, token }) => {
+      const file = heldLocks.get(token);
+      if (file === undefined) return Object.freeze({ state: "not-held" });
+      heldLocks.delete(token);
+      try {
+        if (file.evidence.physicalIdentity !== physicalIdentity)
+          return Object.freeze({ state: "not-held" });
+        if (unlockOwnedFile === undefined)
+          fallbackLocks.delete(physicalIdentity);
+        else unlockOwnedFile(file.descriptor);
+        return Object.freeze({ state: "released" });
+      } finally {
+        file.close();
       }
     },
     replaceLeaseDurably: ({

@@ -66,12 +66,14 @@ describe("Local SQLite lifecycle artifact grammar", () => {
     expect(grammar.inspectionLimits).toEqual({
       leaseRecordBytes: 256,
       maximumBackupDirectoryEntries: 32,
-      maximumDirectoryEntries: 128,
-      maximumInspectionBytes: 65_536,
+      maximumDirectoryEntries: 192,
+      maximumInspectionBytes: 98_304,
       maximumMetadataAggregateBytes: 65_536,
       maximumPublishedBackups: 8,
       maximumPublishedSnapshotBytes:
         "checked-multiply(maximumPublishedBackups,supportManifest.maximumSnapshotBytes)",
+      maximumRecoveryFenceRecordBytes: 32_768,
+      maximumSharedLeaseCleanupClaims: 64,
       maximumSharedLeases: 64,
       maximumTransientDatabaseCandidates: 1,
       maximumTransientRollbackPreimages: 1,
@@ -79,6 +81,12 @@ describe("Local SQLite lifecycle artifact grammar", () => {
         "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes)",
       sizeArithmetic: "exact-nonnegative-filesystem-integer-checked",
       sparseOrHugeEvidence: "reconciliation-required",
+    });
+    expect(grammar.recoveryFence).toEqual({
+      lockContract:
+        "package-owned-nonblocking-descriptor-advisory-exclusive-process-death-release-v1",
+      recordContract:
+        "immutable-owner-plus-canonical-dead-lease-vector-and-monotonic-suffix-v1",
     });
     expect(grammar.supportManifest).toEqual({
       maximumSnapshotBytes: 16 * 1_024 * 1_024 * 1_024,

@@ -273,7 +273,10 @@ describe("bounded Local SQLite Reporter child", () => {
   it("preserves ambiguity when exact lease release fails", async () => {
     const result = await attempt("accepted", { failRelease: true });
     expect(result.receipt).toEqual({ outcome: "outcome-unknown" });
-    expect(result.entries).toEqual([`lease-${"1".repeat(32)}.json`]);
+    expect(result.entries).toEqual([
+      `lease-${"1".repeat(32)}.json`,
+      `lease-cleanup-${"1".repeat(32)}.json`,
+    ]);
   });
 
   it("rejects missing child identity and failed or throwing lease amendment", async () => {
@@ -295,7 +298,10 @@ describe("bounded Local SQLite Reporter child", () => {
       maximumWorkMilliseconds: 40,
     });
     expect(result.receipt).toEqual({ outcome: "unavailable" });
-    expect(result.entries).toEqual([`lease-${"1".repeat(32)}.json`]);
+    expect(result.entries).toEqual([
+      `lease-${"1".repeat(32)}.json`,
+      `lease-cleanup-${"1".repeat(32)}.json`,
+    ]);
   });
 
   it("forces a nonsettling watchdog and worker group inside one reserve", async () => {

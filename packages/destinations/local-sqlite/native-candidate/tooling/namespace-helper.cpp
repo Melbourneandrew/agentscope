@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <string>
 #include <string_view>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -121,6 +122,56 @@ Napi::Value ExchangeOwnedFiles(const Napi::CallbackInfo& info) {
 	return Napi::String::New(env, "exchanged");
 }
 
+Napi::Value LockOwnedFile(const Napi::CallbackInfo& info) {
+	Napi::Env env = info.Env();
+	if (info.Length() != 1 || !info[0].IsNumber()) {
+		Napi::Error::New(env, "destination.local-sqlite.namespace.invalid")
+			.ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+	const double descriptorValue = info[0].As<Napi::Number>().DoubleValue();
+	if (descriptorValue < 0 || descriptorValue > INT_MAX ||
+		static_cast<double>(static_cast<int>(descriptorValue)) != descriptorValue) {
+		Napi::Error::New(env, "destination.local-sqlite.namespace.invalid")
+			.ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+	const int descriptor = static_cast<int>(descriptorValue);
+	struct stat state {};
+	if (fstat(descriptor, &state) != 0 || !S_ISREG(state.st_mode)) {
+		Napi::Error::New(env, "destination.local-sqlite.namespace.invalid")
+			.ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+	if (flock(descriptor, LOCK_EX | LOCK_NB) == 0) {
+		return Napi::String::New(env, "acquired");
+	}
+	if (errno == EWOULDBLOCK || errno == EAGAIN) {
+		return Napi::String::New(env, "busy");
+	}
+	Napi::Error::New(env, "destination.local-sqlite.namespace.unavailable")
+		.ThrowAsJavaScriptException();
+	return env.Undefined();
+}
+
+Napi::Value UnlockOwnedFile(const Napi::CallbackInfo& info) {
+	Napi::Env env = info.Env();
+	if (info.Length() != 1 || !info[0].IsNumber()) {
+		Napi::Error::New(env, "destination.local-sqlite.namespace.invalid")
+			.ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+	const double descriptorValue = info[0].As<Napi::Number>().DoubleValue();
+	if (descriptorValue < 0 || descriptorValue > INT_MAX ||
+		static_cast<double>(static_cast<int>(descriptorValue)) != descriptorValue ||
+		flock(static_cast<int>(descriptorValue), LOCK_UN) != 0) {
+		Napi::Error::New(env, "destination.local-sqlite.namespace.unavailable")
+			.ThrowAsJavaScriptException();
+		return env.Undefined();
+	}
+	return env.Undefined();
+}
+
 }  // namespace
 
 void RegisterAgentscopeNamespace(Napi::Env env, Napi::Object exports) {
@@ -131,5 +182,13 @@ void RegisterAgentscopeNamespace(Napi::Env env, Napi::Object exports) {
 			ExchangeOwnedFiles,
 			"agentscopeExchangeOwnedFiles"
 		)
+	);
+	exports.Set(
+		"agentscopeLockOwnedFile",
+		Napi::Function::New(env, LockOwnedFile, "agentscopeLockOwnedFile")
+	);
+	exports.Set(
+		"agentscopeUnlockOwnedFile",
+		Napi::Function::New(env, UnlockOwnedFile, "agentscopeUnlockOwnedFile")
 	);
 }

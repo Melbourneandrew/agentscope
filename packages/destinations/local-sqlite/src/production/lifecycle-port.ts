@@ -73,6 +73,8 @@ export type OwnedSqliteOpener = Readonly<{
     options?: Readonly<Record<string, unknown>>,
   ) => OwnedSqliteConnection;
   exchangeOwnedFiles?: OwnedAtomicExchange;
+  lockOwnedFile?: (descriptor: number) => "acquired" | "busy";
+  unlockOwnedFile?: (descriptor: number) => void;
 }>;
 
 export const openOwnedSqliteDescriptor = (
@@ -696,6 +698,8 @@ export const createLocalSqliteProductionLifecyclePort = (
     createLocalSqliteFilesystemGatePort(directory, {
       allowPathFallbackForTesting: input.allowPathFallbackForTesting === true,
       atomicExchange: opener.exchangeOwnedFiles,
+      lockOwnedFile: opener.lockOwnedFile,
+      unlockOwnedFile: opener.unlockOwnedFile,
     });
   const plan = (connectionId: string) => planFor(home, connectionId);
   return Object.freeze({
@@ -1084,7 +1088,7 @@ export const createLocalSqliteProductionLifecyclePort = (
       if (fenceState === undefined) {
         const acquired = await acquireLocalSqliteExclusiveFence(
           gateFor(namespace.lifecycleDirectory),
-          fenceRequest(intent, "recovery"),
+          fenceRequest(intent, "lifecycle"),
         );
         /* v8 ignore next -- competing/malformed fence outcomes are exhaustively
            covered by the fence module and acquireExclusiveFence adapter path. */
@@ -1104,7 +1108,7 @@ export const createLocalSqliteProductionLifecyclePort = (
       return Object.freeze({
         canonicalBytes,
         fence: Object.freeze({
-          state: "exclusive-recovery" as const,
+          state: "exclusive" as const,
           filename: fenceName,
           physicalIdentity: fenceState.physicalIdentity,
           record,

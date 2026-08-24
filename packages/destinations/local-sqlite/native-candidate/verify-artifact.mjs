@@ -36,8 +36,8 @@ const executionImage =
 const executionImageId =
   "sha256:955b467cb9a2a941cb181f7cf1d2405c1dd24b4566a3598b7eae7ecca1a769d1";
 const expectedBinary = Object.freeze({
-  bytes: 2_222_616,
-  sha256: "c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c",
+  bytes: 2_222_856,
+  sha256: "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9",
 });
 const materials = Object.freeze([
   Object.freeze({
@@ -1548,6 +1548,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     observedValue: "packed-ok",
     reporterChildOutcome: "accepted-and-durably-confirmed",
     retrieverChildOutcome: "search-matched-and-joined",
+    recoveryFenceLockOutcome: "contention-and-process-release-proved",
     node: "22.18.0",
     nodeAbi: 127,
     platform: "linux",
@@ -1820,6 +1821,7 @@ try {
     "file-database-create-insert-select-close",
     "descriptor-bound-native-open-substitution-rejected",
     "descriptor-relative-atomic-exchange-and-substitution-rejected",
+    "descriptor-recovery-fence-lock-contention-and-process-release",
     "packed-reporter-child-ready-permission-transaction-settlement",
     "packed-retriever-child-ready-permission-search-settlement",
     "external-read-only-database-oracle",
@@ -1838,6 +1840,7 @@ try {
     reporterChildOutcome: "accepted-and-durably-confirmed",
     retrieverChildOutcome: "search-matched-and-joined",
     replacementOutcome: "native-unavailable",
+    recoveryFenceLockOutcome: "contention-and-process-release-proved",
     invalidAuthorityDescriptors: "rejected-without-leak-or-callback",
     networkEgress: "rejected",
     hostMutation: "rejected",
@@ -1916,7 +1919,7 @@ try {
     )}`,
     testDriverDigest: `sha256:${sha(
       "sha256",
-      snapshot(join(root, "tooling/test-driver.cjs"), 16 * 1024),
+      snapshot(join(root, "tooling/test-driver.cjs"), 24 * 1024),
     )}`,
     replacementDriverDigest: `sha256:${sha(
       "sha256",

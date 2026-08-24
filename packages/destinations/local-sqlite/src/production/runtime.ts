@@ -190,6 +190,8 @@ const withSharedDatabase = async <Value>(
     createLocalSqliteFilesystemGatePort(namespace.lifecycleDirectory, {
       allowPathFallbackForTesting,
       atomicExchange: opener.exchangeOwnedFiles,
+      lockOwnedFile: opener.lockOwnedFile,
+      unlockOwnedFile: opener.unlockOwnedFile,
     });
   const acquired = await acquireLocalSqliteSharedLease(gate, {
     leaseId: randomBytes(16).toString("hex"),
@@ -342,6 +344,8 @@ const reportPreparedWithChild = async (
     {
       allowPathFallbackForTesting,
       atomicExchange: opener.exchangeOwnedFiles,
+      lockOwnedFile: opener.lockOwnedFile,
+      unlockOwnedFile: opener.unlockOwnedFile,
     },
   );
   const acquired = await acquireLocalSqliteSharedLease(gate, {
@@ -446,6 +450,8 @@ const retrieveWithChild = async (
     {
       allowPathFallbackForTesting,
       atomicExchange: opener.exchangeOwnedFiles,
+      lockOwnedFile: opener.lockOwnedFile,
+      unlockOwnedFile: opener.unlockOwnedFile,
     },
   );
   const acquired = await acquireLocalSqliteSharedLease(gate, {

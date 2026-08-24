@@ -402,6 +402,103 @@ void (async () => {
     ])
       unlinkSync(`/evidence/${name}`);
   }
+  writeFileSync("/evidence/recovery-fence-lock", "lock", { mode: 0o600 });
+  const firstLockDescriptor = openSync(
+    "/evidence/recovery-fence-lock",
+    constants.O_RDWR | constants.O_NOFOLLOW,
+  );
+  const secondLockDescriptor = openSync(
+    "/evidence/recovery-fence-lock",
+    constants.O_RDWR | constants.O_NOFOLLOW,
+  );
+  try {
+    assert.equal(loader.lockOwnedFile(firstLockDescriptor), "acquired");
+    assert.equal(loader.lockOwnedFile(secondLockDescriptor), "busy");
+    loader.unlockOwnedFile(firstLockDescriptor);
+    assert.equal(loader.lockOwnedFile(secondLockDescriptor), "acquired");
+    closeSync(secondLockDescriptor);
+    const postCloseDescriptor = openSync(
+      "/evidence/recovery-fence-lock",
+      constants.O_RDWR | constants.O_NOFOLLOW,
+    );
+    try {
+      assert.equal(loader.lockOwnedFile(postCloseDescriptor), "acquired");
+      loader.unlockOwnedFile(postCloseDescriptor);
+    } finally {
+      closeSync(postCloseDescriptor);
+    }
+  } finally {
+    loader.unlockOwnedFile(firstLockDescriptor);
+    closeSync(firstLockDescriptor);
+    try {
+      closeSync(secondLockDescriptor);
+    } catch {
+      // The descriptor-close path above is the process-death-release analogue.
+    }
+    unlinkSync("/evidence/recovery-fence-lock");
+  }
+  writeFileSync("/evidence/recovery-fence-process-lock", "lock", {
+    mode: 0o600,
+  });
+  const lockChild = spawn(
+    process.execPath,
+    [
+      "-e",
+      `
+        const { constants, openSync } = require("node:fs");
+        const loader = require("/work/node_modules/@agentscope/cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(Object.freeze({
+          manifestDigest: process.argv[1],
+          nativeTupleId: "node127-linux-x64-glibc",
+          platformTupleId: "linux-x64-node22-ci-ext4-proposed",
+        }));
+        const descriptor = openSync("/evidence/recovery-fence-process-lock", constants.O_RDWR | constants.O_NOFOLLOW);
+        if (loader.lockOwnedFile(descriptor) !== "acquired") process.exit(2);
+        process.stdout.write("locked\\n");
+        setInterval(() => {}, 1_000);
+      `,
+      manifestDigest,
+    ],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const lockChildOutput = createInterface({ input: lockChild.stdout });
+  await within(
+    new Promise((resolve, reject) => {
+      lockChildOutput.once("line", (line) =>
+        line === "locked"
+          ? resolve(undefined)
+          : reject(
+              new Error("destination.local-sqlite.native-execution.invalid"),
+            ),
+      );
+      lockChild.once("exit", (code) =>
+        reject(
+          new Error(
+            `destination.local-sqlite.native-execution.invalid:${String(code)}`,
+          ),
+        ),
+      );
+    }),
+    5_000,
+  );
+  const parentLockDescriptor = openSync(
+    "/evidence/recovery-fence-process-lock",
+    constants.O_RDWR | constants.O_NOFOLLOW,
+  );
+  try {
+    assert.equal(loader.lockOwnedFile(parentLockDescriptor), "busy");
+    lockChild.kill("SIGKILL");
+    await within(
+      new Promise((resolve) => lockChild.once("exit", resolve)),
+      5_000,
+    );
+    assert.equal(loader.lockOwnedFile(parentLockDescriptor), "acquired");
+    loader.unlockOwnedFile(parentLockDescriptor);
+  } finally {
+    lockChildOutput.close();
+    lockChild.kill("SIGKILL");
+    closeSync(parentLockDescriptor);
+    unlinkSync("/evidence/recovery-fence-process-lock");
+  }
   await executePackedReporterChild(loader);
   await executePackedRetrieverChild();
 

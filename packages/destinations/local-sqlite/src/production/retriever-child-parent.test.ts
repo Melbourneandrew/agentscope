@@ -287,6 +287,9 @@ describe("Local SQLite Retriever child parent", () => {
       state: "rejected",
       message: "destination.local-sqlite.outcome-unknown",
     });
-    expect(result.lifecycleEntries).toEqual([`lease-${"1".repeat(32)}.json`]);
+    expect(result.lifecycleEntries).toEqual([
+      `lease-${"1".repeat(32)}.json`,
+      `lease-cleanup-${"1".repeat(32)}.json`,
+    ]);
   });
 });

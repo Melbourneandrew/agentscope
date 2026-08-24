@@ -2,6 +2,7 @@ const HEX_128 = /^[a-f0-9]{32}$/u;
 const SHA256 = /^sha256-[a-f0-9]{64}$/u;
 const PHYSICAL_IDENTITY = /^[\x21-\x7e]{1,128}$/u;
 const LEASE_RECORD_BYTES = 256;
+const MAXIMUM_FENCE_RECORD_BYTES = 32_768;
 const MAXIMUM_DIRECTORY_ENTRIES = 192;
 const MAXIMUM_INSPECTION_BYTES = 98_304;
 const MAXIMUM_LEASES = 64;
@@ -27,12 +28,33 @@ export type LocalSqliteLeaseRecord = Readonly<{
   child: ChildIdentity | null;
 }>;
 
-export type LocalSqliteFenceRecord = Readonly<{
+type LocalSqliteLifecycleFenceRecord = Readonly<{
   transactionId: string;
   lifecycleFingerprint: string;
   lifecycleGeneration: number;
-  purpose: "lifecycle" | "recovery";
+  purpose: "lifecycle";
 }>;
+
+export type LocalSqliteLeaseCleanupState =
+  "lease-only" | "lease+cleanup-claim" | "cleanup-claim-only";
+
+export type LocalSqliteDeadLeaseRecoveryEntry = Readonly<{
+  originalState: LocalSqliteLeaseCleanupState;
+  physicalIdentity: string;
+  record: LocalSqliteLeaseRecord;
+}>;
+
+export type LocalSqliteRecoveryFenceRecord = Readonly<{
+  transactionId: string;
+  lifecycleFingerprint: string;
+  lifecycleGeneration: number;
+  purpose: "recovery";
+  recoveryOwner: OwnerIdentity;
+  deadLeaseVector: readonly LocalSqliteDeadLeaseRecoveryEntry[];
+}>;
+
+export type LocalSqliteFenceRecord =
+  LocalSqliteLifecycleFenceRecord | LocalSqliteRecoveryFenceRecord;
 
 export type LocalSqliteSharedLeaseAuthority = Readonly<{
   state: "shared";
@@ -41,13 +63,21 @@ export type LocalSqliteSharedLeaseAuthority = Readonly<{
   record: LocalSqliteLeaseRecord;
 }>;
 
-export type LocalSqliteExclusiveFenceAuthority = Readonly<{
-  state: "exclusive" | "exclusive-recovery";
+type LocalSqliteExclusiveFenceAuthorityBase = Readonly<{
   filename: typeof FENCE_NAME;
   physicalIdentity: string;
   record: LocalSqliteFenceRecord;
   deadLeaseNames: readonly string[];
 }>;
+
+export type LocalSqliteExclusiveFenceAuthority =
+  | (LocalSqliteExclusiveFenceAuthorityBase & Readonly<{ state: "exclusive" }>)
+  | (LocalSqliteExclusiveFenceAuthorityBase &
+      Readonly<{
+        state: "exclusive-recovery";
+        recoveryLockToken: Readonly<Record<string, never>>;
+        recoveryVector: readonly LocalSqliteDeadLeaseRecoveryEntry[];
+      }>);
 
 export type LocalSqliteLifecycleGateFailure = Readonly<{
   ok: false;
@@ -63,7 +93,21 @@ export type LocalSqliteExclusiveFenceResult =
   | Readonly<{ ok: true; value: LocalSqliteExclusiveFenceAuthority }>
   | LocalSqliteLifecycleGateFailure;
 
+export type LocalSqliteDeadLeaseRecoveryPlanResult =
+  | Readonly<{ ok: true; value: LocalSqliteRecoveryFenceRecord }>
+  | LocalSqliteLifecycleGateFailure;
+
 export type LocalSqliteLifecycleGatePort = Readonly<{
+  acquireRecoveryFenceLock: (
+    input: Readonly<{ filename: string; physicalIdentity: string }>,
+  ) => unknown;
+  assertRecoveryFenceLock: (
+    input: Readonly<{
+      filename: string;
+      physicalIdentity: string;
+      token: Readonly<Record<string, never>>;
+    }>,
+  ) => unknown;
   classifyOwner: (input: Readonly<{ owner: OwnerIdentity }>) => unknown;
   createFenceDurably: (
     input: Readonly<{ filename: string; content: string }>,
@@ -82,6 +126,13 @@ export type LocalSqliteLifecycleGatePort = Readonly<{
   readArtifact: (input: Readonly<{ filename: string }>) => unknown;
   removeArtifactIfIdentity: (
     input: Readonly<{ filename: string; physicalIdentity: string }>,
+  ) => unknown;
+  releaseRecoveryFenceLock: (
+    input: Readonly<{
+      filename: string;
+      physicalIdentity: string;
+      token: Readonly<Record<string, never>>;
+    }>,
   ) => unknown;
   replaceLeaseDurably: (
     input: Readonly<{
@@ -268,15 +319,67 @@ export const parseLocalSqliteLeaseRecord = (
   });
 };
 
+const cleanupStateRank = (state: LocalSqliteLeaseCleanupState): number =>
+  state === "lease-only" ? 0 : state === "lease+cleanup-claim" ? 1 : 2;
+
+const parseDeadLeaseRecoveryVector = (
+  value: unknown,
+  lifecycle?: Readonly<{
+    lifecycleFingerprint: string;
+    lifecycleGeneration: number;
+  }>,
+): readonly LocalSqliteDeadLeaseRecoveryEntry[] | undefined => {
+  const values = exactArray(value, MAXIMUM_LEASES);
+  if (values === undefined || values.length === 0) return undefined;
+  const entries: LocalSqliteDeadLeaseRecoveryEntry[] = [];
+  let previousLeaseId: string | undefined;
+  for (const value of values) {
+    const entry = exactRecord(value, [
+      "originalState",
+      "physicalIdentity",
+      "record",
+    ]);
+    const record = parseLocalSqliteLeaseRecord(entry?.record);
+    if (
+      entry === undefined ||
+      !isOneOf(entry.originalState, [
+        "lease-only",
+        "lease+cleanup-claim",
+        "cleanup-claim-only",
+      ]) ||
+      typeof entry.physicalIdentity !== "string" ||
+      !PHYSICAL_IDENTITY.test(entry.physicalIdentity) ||
+      record === undefined ||
+      (previousLeaseId !== undefined && record.leaseId <= previousLeaseId) ||
+      (lifecycle !== undefined &&
+        (record.lifecycleFingerprint !== lifecycle.lifecycleFingerprint ||
+          record.lifecycleGeneration !== lifecycle.lifecycleGeneration))
+    )
+      return undefined;
+    previousLeaseId = record.leaseId;
+    entries.push(
+      Object.freeze({
+        originalState: entry.originalState,
+        physicalIdentity: entry.physicalIdentity,
+        record,
+      }),
+    );
+  }
+  return Object.freeze(entries);
+};
+
 export const parseLocalSqliteFenceRecord = (
   value: unknown,
 ): LocalSqliteFenceRecord | undefined => {
-  const record = exactRecord(value, [
+  const commonKeys = [
     "transactionId",
     "lifecycleFingerprint",
     "lifecycleGeneration",
     "purpose",
-  ]);
+  ];
+  const record =
+    exactRecord(value, [...commonKeys, "recoveryOwner", "deadLeaseVector"]) ??
+    exactRecord(value, commonKeys);
   if (
     record === undefined ||
     !validHex128(record.transactionId) ||
@@ -286,12 +389,26 @@ export const parseLocalSqliteFenceRecord = (
     !isOneOf(record.purpose, ["lifecycle", "recovery"])
   )
     return undefined;
-  return Object.freeze({
+  const common = Object.freeze({
     transactionId: record.transactionId,
     lifecycleFingerprint: record.lifecycleFingerprint,
     lifecycleGeneration: record.lifecycleGeneration,
-    purpose: record.purpose,
   });
+  if (record.purpose === "lifecycle")
+    return Object.freeze({ ...common, purpose: "lifecycle" as const });
+  const recoveryOwner = parseOwner(record.recoveryOwner);
+  const deadLeaseVector = parseDeadLeaseRecoveryVector(
+    record.deadLeaseVector,
+    common,
+  );
+  return recoveryOwner === undefined || deadLeaseVector === undefined
+    ? undefined
+    : Object.freeze({
+        ...common,
+        purpose: "recovery" as const,
+        recoveryOwner,
+        deadLeaseVector,
+      });
 };
 
 const encodeParsedLeaseRecord = (record: LocalSqliteLeaseRecord): string =>
@@ -313,20 +430,53 @@ export const encodeLocalSqliteLeaseRecord = (
   return record === undefined ? undefined : encodeParsedLeaseRecord(record);
 };
 
-const encodeParsedFenceRecord = (record: LocalSqliteFenceRecord): string =>
-  JSON.stringify([
-    1,
+const compactLeaseRecord = (
+  record: LocalSqliteLeaseRecord,
+): readonly unknown[] =>
+  Object.freeze([
+    record.leaseId,
+    record.parent.pid,
+    record.parent.startIdentity,
+    record.child === null
+      ? null
+      : Object.freeze([
+          record.child.nonce,
+          record.child.pid,
+          record.child.startIdentity,
+        ]),
+  ]);
+
+const encodeParsedFenceRecord = (record: LocalSqliteFenceRecord): string => {
+  if (record.purpose === "lifecycle")
+    return JSON.stringify([
+      1,
+      record.transactionId,
+      record.lifecycleFingerprint.slice("sha256-".length),
+      record.lifecycleGeneration,
+      record.purpose,
+    ]).padEnd(LEASE_RECORD_BYTES, " ");
+  return JSON.stringify([
+    2,
     record.transactionId,
     record.lifecycleFingerprint.slice("sha256-".length),
     record.lifecycleGeneration,
     record.purpose,
-  ]).padEnd(LEASE_RECORD_BYTES, " ");
+    [record.recoveryOwner.pid, record.recoveryOwner.startIdentity],
+    record.deadLeaseVector.map((entry) => [
+      entry.originalState,
+      entry.physicalIdentity,
+      compactLeaseRecord(entry.record),
+    ]),
+  ]);
+};
 
 export const encodeLocalSqliteFenceRecord = (
   value: unknown,
 ): string | undefined => {
   const record = parseLocalSqliteFenceRecord(value);
-  return record === undefined ? undefined : encodeParsedFenceRecord(record);
+  if (record === undefined) return undefined;
+  const content = encodeParsedFenceRecord(record);
+  return content.length <= MAXIMUM_FENCE_RECORD_BYTES ? content : undefined;
 };
 
 export const decodeLocalSqliteLeaseRecord = (
@@ -376,19 +526,66 @@ export const decodeLocalSqliteFenceRecord = (
 ): LocalSqliteFenceRecord | undefined => {
   if (
     typeof content !== "string" ||
-    content.length !== LEASE_RECORD_BYTES ||
+    content.length < 1 ||
+    content.length > MAXIMUM_FENCE_RECORD_BYTES ||
     /[^\x20-\x7e]/u.test(content)
   )
     return undefined;
   try {
-    const compact = exactArray(JSON.parse(content.trimEnd()), 5);
-    if (compact?.length !== 5 || compact[0] !== 1) return undefined;
-    const parsed = parseLocalSqliteFenceRecord({
-      transactionId: compact[1],
-      lifecycleFingerprint: `sha256-${String(compact[2])}`,
-      lifecycleGeneration: compact[3],
-      purpose: compact[4],
-    });
+    const compact = exactArray(JSON.parse(content.trimEnd()), 7);
+    if (compact === undefined) return undefined;
+    let candidate: unknown;
+    if (compact.length === 5 && compact[0] === 1)
+      candidate = {
+        transactionId: compact[1],
+        lifecycleFingerprint: `sha256-${String(compact[2])}`,
+        lifecycleGeneration: compact[3],
+        purpose: compact[4],
+      };
+    else if (compact.length === 7 && compact[0] === 2) {
+      const owner = exactArray(compact[5], 2);
+      const vector = exactArray(compact[6], MAXIMUM_LEASES);
+      if (owner?.length !== 2 || vector === undefined) return undefined;
+      const entries: unknown[] = [];
+      for (const value of vector) {
+        const entry = exactArray(value, 3);
+        const lease = exactArray(entry?.[2], 4);
+        const child = lease?.[3] === null ? null : exactArray(lease?.[3], 3);
+        if (
+          entry?.length !== 3 ||
+          lease?.length !== 4 ||
+          (child !== null && child?.length !== 3)
+        )
+          return undefined;
+        entries.push({
+          originalState: entry[0],
+          physicalIdentity: entry[1],
+          record: {
+            leaseId: lease[0],
+            lifecycleFingerprint: `sha256-${String(compact[2])}`,
+            lifecycleGeneration: compact[3],
+            parent: { pid: lease[1], startIdentity: lease[2] },
+            child:
+              child === null
+                ? null
+                : {
+                    nonce: child[0],
+                    pid: child[1],
+                    startIdentity: child[2],
+                  },
+          },
+        });
+      }
+      candidate = {
+        transactionId: compact[1],
+        lifecycleFingerprint: `sha256-${String(compact[2])}`,
+        lifecycleGeneration: compact[3],
+        purpose: compact[4],
+        recoveryOwner: { pid: owner[0], startIdentity: owner[1] },
+        deadLeaseVector: entries,
+      };
+    } else return undefined;
+    const parsed = parseLocalSqliteFenceRecord(candidate);
     return parsed !== undefined &&
       encodeLocalSqliteFenceRecord(parsed) === content
       ? parsed
@@ -400,6 +597,8 @@ export const decodeLocalSqliteFenceRecord = (
 
 const parsePort = (value: unknown): ParsedPort | undefined => {
   const keys = [
+    "acquireRecoveryFenceLock",
+    "assertRecoveryFenceLock",
     "classifyOwner",
     "createFenceDurably",
     "createLeaseDurably",
@@ -407,6 +606,7 @@ const parsePort = (value: unknown): ParsedPort | undefined => {
     "listLifecycle",
     "readArtifact",
     "removeArtifactIfIdentity",
+    "releaseRecoveryFenceLock",
     "replaceLeaseDurably",
   ];
   const record = exactRecord(value, keys);
@@ -475,6 +675,73 @@ const parseRemove = (value: unknown): RemoveResult | undefined => {
   return Object.freeze({ state: record.state });
 };
 
+const parseLockToken = (
+  value: unknown,
+): Readonly<Record<string, never>> | undefined => {
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Object.getPrototypeOf(value) !== Object.prototype ||
+      Reflect.ownKeys(value).length !== 0 ||
+      !Object.isFrozen(value)
+    )
+      return undefined;
+    return value as Readonly<Record<string, never>>;
+  } catch {
+    return undefined;
+  }
+};
+
+const acquireRecoveryLock = async (
+  port: ParsedPort,
+  physicalIdentity: string,
+): Promise<
+  | Readonly<{ state: "acquired"; token: Readonly<Record<string, never>> }>
+  | Readonly<{ state: "busy" }>
+  | undefined
+> => {
+  const result = await invoke(port.acquireRecoveryFenceLock, {
+    filename: FENCE_NAME,
+    physicalIdentity,
+  });
+  const base = exactRecord(result, ["state"]);
+  if (base?.state === "busy") return Object.freeze({ state: "busy" });
+  const acquired = exactRecord(result, ["state", "token"]);
+  const token = parseLockToken(acquired?.token);
+  return acquired?.state === "acquired" && token !== undefined
+    ? Object.freeze({ state: "acquired", token })
+    : undefined;
+};
+
+const assertRecoveryLock = async (
+  port: ParsedPort,
+  physicalIdentity: string,
+  token: Readonly<Record<string, never>>,
+): Promise<boolean> =>
+  exactRecord(
+    await invoke(port.assertRecoveryFenceLock, {
+      filename: FENCE_NAME,
+      physicalIdentity,
+      token,
+    }),
+    ["state"],
+  )?.state === "held";
+
+const releaseRecoveryLock = async (
+  port: ParsedPort,
+  physicalIdentity: string,
+  token: Readonly<Record<string, never>>,
+): Promise<boolean> =>
+  exactRecord(
+    await invoke(port.releaseRecoveryFenceLock, {
+      filename: FENCE_NAME,
+      physicalIdentity,
+      token,
+    }),
+    ["state"],
+  )?.state === "released";
+
 const knownLifecycleName = (name: string): boolean =>
   name === FENCE_NAME ||
   name === "intent-v1.json" ||
@@ -514,7 +781,10 @@ const parseInventory = (
       if (entry.bytes !== LEASE_RECORD_BYTES || leases > MAXIMUM_LEASES)
         return undefined;
     }
-    if (entry.name === FENCE_NAME && entry.bytes !== LEASE_RECORD_BYTES)
+    if (
+      entry.name === FENCE_NAME &&
+      (entry.bytes < 1 || entry.bytes > MAXIMUM_FENCE_RECORD_BYTES)
+    )
       return undefined;
     if (entry.name.startsWith("lease-cleanup-")) {
       cleanupClaims += 1;
@@ -636,6 +906,76 @@ const sameLeaseRecord = (
   right: LocalSqliteLeaseRecord,
 ): boolean =>
   encodeLocalSqliteLeaseRecord(left) === encodeLocalSqliteLeaseRecord(right);
+
+const validateRecoverySuffix = async (
+  port: ParsedPort,
+  inventory: readonly InventoryEntry[],
+  vector: readonly LocalSqliteDeadLeaseRecoveryEntry[],
+): Promise<Readonly<{ firstRemainingIndex: number }> | undefined> => {
+  const inventoryIds = inventoryLeaseIds(inventory);
+  const remainingIds: string[] = [];
+  let firstRemainingIndex = vector.length;
+  let remainingStarted = false;
+  for (let index = 0; index < vector.length; index += 1) {
+    const expected = vector[index]!;
+    const current = await inspectLeaseCleanupState(
+      port,
+      expected.record.leaseId,
+    );
+    if (current === undefined) return undefined;
+    if (current.state === "absent") {
+      if (remainingStarted) return undefined;
+      continue;
+    }
+    if (!remainingStarted) {
+      remainingStarted = true;
+      firstRemainingIndex = index;
+      if (
+        cleanupStateRank(current.state) <
+        cleanupStateRank(expected.originalState)
+      )
+        return undefined;
+    } else if (current.state !== expected.originalState) return undefined;
+    if (
+      current.physicalIdentity !== expected.physicalIdentity ||
+      !sameLeaseRecord(current.record, expected.record)
+    )
+      return undefined;
+    remainingIds.push(expected.record.leaseId);
+  }
+  return inventoryIds.length === remainingIds.length &&
+    inventoryIds.every((id, index) => id === remainingIds[index])
+    ? Object.freeze({ firstRemainingIndex })
+    : undefined;
+};
+
+const validateExactRecoveryVector = async (
+  port: ParsedPort,
+  inventory: readonly InventoryEntry[],
+  vector: readonly LocalSqliteDeadLeaseRecoveryEntry[],
+): Promise<boolean> => {
+  const inventoryIds = inventoryLeaseIds(inventory);
+  if (
+    inventoryIds.length !== vector.length ||
+    !inventoryIds.every((id, index) => id === vector[index]?.record.leaseId)
+  )
+    return false;
+  for (const expected of vector) {
+    const current = await inspectLeaseCleanupState(
+      port,
+      expected.record.leaseId,
+    );
+    if (
+      current === undefined ||
+      current.state === "absent" ||
+      current.state !== expected.originalState ||
+      current.physicalIdentity !== expected.physicalIdentity ||
+      !sameLeaseRecord(current.record, expected.record)
+    )
+      return false;
+  }
+  return true;
+};
 
 const completeLeaseCleanup = async (
   port: ParsedPort,
@@ -916,6 +1256,308 @@ const classifyLease = async (
   return child.state;
 };
 
+const parseRecoveryPlanRequest = (
+  value: unknown,
+):
+  | Readonly<{
+      transactionId: string;
+      lifecycleFingerprint: string;
+      lifecycleGeneration: number;
+      recoveryOwner: OwnerIdentity;
+    }>
+  | undefined => {
+  const record = exactRecord(value, [
+    "transactionId",
+    "lifecycleFingerprint",
+    "lifecycleGeneration",
+    "recoveryOwner",
+  ]);
+  const recoveryOwner = parseOwner(record?.recoveryOwner);
+  if (
+    record === undefined ||
+    !validHex128(record.transactionId) ||
+    typeof record.lifecycleFingerprint !== "string" ||
+    !SHA256.test(record.lifecycleFingerprint) ||
+    !validInteger(record.lifecycleGeneration, 2_147_483_647) ||
+    recoveryOwner === undefined
+  )
+    return undefined;
+  return Object.freeze({
+    transactionId: record.transactionId,
+    lifecycleFingerprint: record.lifecycleFingerprint,
+    lifecycleGeneration: record.lifecycleGeneration,
+    recoveryOwner,
+  });
+};
+
+export const inspectLocalSqliteDeadLeaseRecoveryPlan = async (
+  portValue: unknown,
+  requestValue: unknown,
+): Promise<LocalSqliteDeadLeaseRecoveryPlanResult> => {
+  const port = parsePort(portValue);
+  const request = parseRecoveryPlanRequest(requestValue);
+  if (port === undefined || request === undefined)
+    return failure("unavailable");
+  const fence = await readArtifact(port, FENCE_NAME);
+  if (fence === undefined) return failure("unavailable");
+  if (fence.state === "present") {
+    const record = decodeLocalSqliteFenceRecord(fence.content);
+    if (
+      record === undefined ||
+      record.lifecycleFingerprint !== request.lifecycleFingerprint ||
+      record.lifecycleGeneration !== request.lifecycleGeneration
+    )
+      return failure("reconciliation-required");
+    return record.purpose === "recovery"
+      ? Object.freeze({ ok: true, value: record })
+      : failure("busy");
+  }
+  const inventory = await inspectInventory(port);
+  if (
+    inventory === undefined ||
+    inventory.some(
+      (entry) =>
+        entry.name === "intent-v1.json" ||
+        entry.name === "operation-phase-v1.json",
+    )
+  )
+    return failure("reconciliation-required");
+  const vector: LocalSqliteDeadLeaseRecoveryEntry[] = [];
+  for (const leaseId of inventoryLeaseIds(inventory)) {
+    const cleanup = await inspectLeaseCleanupState(port, leaseId);
+    if (
+      cleanup === undefined ||
+      cleanup.state === "absent" ||
+      cleanup.record.lifecycleFingerprint !== request.lifecycleFingerprint ||
+      cleanup.record.lifecycleGeneration !== request.lifecycleGeneration
+    )
+      return failure("reconciliation-required");
+    const owner = await classifyLease(port, cleanup.record);
+    if (owner === undefined) return failure("unavailable");
+    if (owner !== "dead") return failure("busy");
+    vector.push(
+      Object.freeze({
+        originalState: cleanup.state,
+        physicalIdentity: cleanup.physicalIdentity,
+        record: cleanup.record,
+      }),
+    );
+  }
+  if (vector.length === 0) return failure("reconciliation-required");
+  const finalInventory = await inspectInventory(port);
+  if (finalInventory === undefined || !sameInventory(inventory, finalInventory))
+    return failure("unavailable");
+  const value = parseLocalSqliteFenceRecord({
+    ...request,
+    purpose: "recovery",
+    deadLeaseVector: vector,
+  });
+  return value?.purpose === "recovery"
+    ? Object.freeze({ ok: true, value })
+    : failure("unavailable");
+};
+
+const recoveryAuthority = (
+  record: LocalSqliteRecoveryFenceRecord,
+  physicalIdentity: string,
+  token: Readonly<Record<string, never>>,
+): LocalSqliteExclusiveFenceAuthority =>
+  Object.freeze({
+    state: "exclusive-recovery",
+    filename: FENCE_NAME,
+    physicalIdentity,
+    record,
+    deadLeaseNames: Object.freeze(
+      record.deadLeaseVector.map((entry) => leaseName(entry.record.leaseId)),
+    ),
+    recoveryLockToken: token,
+    recoveryVector: record.deadLeaseVector,
+  });
+
+const releaseRecoveryLockAndFail = async (
+  port: ParsedPort,
+  physicalIdentity: string,
+  token: Readonly<Record<string, never>>,
+  state: LocalSqliteLifecycleGateFailure["state"],
+): Promise<LocalSqliteLifecycleGateFailure> => {
+  if (!(await releaseRecoveryLock(port, physicalIdentity, token)))
+    return failure("reconciliation-required");
+  return failure(state);
+};
+
+const remainingLeaseOwnerFailure = async (
+  port: ParsedPort,
+  vector: readonly LocalSqliteDeadLeaseRecoveryEntry[],
+  firstRemainingIndex: number,
+): Promise<LocalSqliteLifecycleGateFailure | undefined> => {
+  for (let index = firstRemainingIndex; index < vector.length; index += 1) {
+    const state = await classifyLease(port, vector[index]!.record);
+    if (state === undefined) return failure("unavailable");
+    if (state !== "dead") return failure("busy");
+  }
+  return undefined;
+};
+
+const resumeExistingRecoveryFence = async (
+  port: ParsedPort,
+  record: LocalSqliteRecoveryFenceRecord,
+  content: string,
+): Promise<LocalSqliteExclusiveFenceResult> => {
+  const existing = await readArtifact(port, FENCE_NAME);
+  if (existing?.state !== "present" || existing.content !== content)
+    return failure("reconciliation-required");
+  const lock = await acquireRecoveryLock(port, existing.physicalIdentity);
+  if (lock?.state === "busy") return failure("busy");
+  if (lock?.state !== "acquired") return failure("unavailable");
+  const ownerState = await classifyLease(port, {
+    leaseId: record.transactionId,
+    lifecycleFingerprint: record.lifecycleFingerprint,
+    lifecycleGeneration: record.lifecycleGeneration,
+    parent: record.recoveryOwner,
+    child: null,
+  });
+  const inventory = await inspectInventory(port);
+  const suffix =
+    inventory === undefined
+      ? undefined
+      : await validateRecoverySuffix(port, inventory, record.deadLeaseVector);
+  const finalInventory = await inspectInventory(port);
+  if (
+    ownerState !== "dead" ||
+    inventory === undefined ||
+    suffix === undefined ||
+    finalInventory === undefined ||
+    !sameInventory(inventory, finalInventory)
+  )
+    return releaseRecoveryLockAndFail(
+      port,
+      existing.physicalIdentity,
+      lock.token,
+      ownerState === "live" ? "busy" : "reconciliation-required",
+    );
+  const ownerFailure = await remainingLeaseOwnerFailure(
+    port,
+    record.deadLeaseVector,
+    suffix.firstRemainingIndex,
+  );
+  if (ownerFailure !== undefined)
+    return releaseRecoveryLockAndFail(
+      port,
+      existing.physicalIdentity,
+      lock.token,
+      ownerFailure.state,
+    );
+  return Object.freeze({
+    ok: true,
+    value: recoveryAuthority(record, existing.physicalIdentity, lock.token),
+  });
+};
+
+const inspectCreatedFenceInventory = async (
+  port: ParsedPort,
+  record: LocalSqliteFenceRecord,
+  physicalIdentity: string,
+): Promise<
+  | LocalSqliteLifecycleGateFailure
+  | Readonly<{
+      inventory: readonly InventoryEntry[];
+      deadLeaseNames: readonly string[];
+    }>
+> => {
+  const inventory = await inspectInventory(port);
+  const inventoryFence = inventory?.find((entry) => entry.name === FENCE_NAME);
+  if (
+    inventory === undefined ||
+    inventoryFence?.physicalIdentity !== physicalIdentity
+  )
+    return releaseFenceAfterFailure(
+      port,
+      physicalIdentity,
+      "reconciliation-required",
+    );
+  const deadLeaseNames: string[] = [];
+  for (const leaseId of inventoryLeaseIds(inventory)) {
+    const cleanup = await inspectLeaseCleanupState(port, leaseId);
+    if (
+      cleanup === undefined ||
+      cleanup.state === "absent" ||
+      !sameLifecycle(cleanup.record, record)
+    )
+      return releaseFenceAfterFailure(
+        port,
+        physicalIdentity,
+        "reconciliation-required",
+      );
+    const state = await classifyLease(port, cleanup.record);
+    if (state === undefined)
+      return releaseFenceAfterFailure(
+        port,
+        physicalIdentity,
+        "reconciliation-required",
+      );
+    if (state !== "dead")
+      return releaseFenceAfterFailure(port, physicalIdentity, "busy");
+    deadLeaseNames.push(leaseName(leaseId));
+  }
+  return Object.freeze({
+    inventory,
+    deadLeaseNames: Object.freeze(deadLeaseNames),
+  });
+};
+
+const acquireCreatedRecoveryFence = async (
+  port: ParsedPort,
+  record: LocalSqliteRecoveryFenceRecord,
+  physicalIdentity: string,
+  inspected: Readonly<{
+    inventory: readonly InventoryEntry[];
+    deadLeaseNames: readonly string[];
+  }>,
+): Promise<LocalSqliteExclusiveFenceResult> => {
+  const lock = await acquireRecoveryLock(port, physicalIdentity);
+  if (lock?.state === "busy") return failure("busy");
+  if (lock?.state !== "acquired") return failure("unavailable");
+  const ownerState = await classifyLease(port, {
+    leaseId: record.transactionId,
+    lifecycleFingerprint: record.lifecycleFingerprint,
+    lifecycleGeneration: record.lifecycleGeneration,
+    parent: record.recoveryOwner,
+    child: null,
+  });
+  const lockedInventory = await inspectInventory(port);
+  const exactOriginal =
+    lockedInventory !== undefined &&
+    (await validateExactRecoveryVector(
+      port,
+      lockedInventory,
+      record.deadLeaseVector,
+    )) &&
+    record.deadLeaseVector.every((entry) =>
+      inspected.deadLeaseNames.includes(leaseName(entry.record.leaseId)),
+    ) &&
+    inspected.deadLeaseNames.length === record.deadLeaseVector.length;
+  const finalInventory = await inspectInventory(port);
+  if (
+    ownerState !== "live" ||
+    !exactOriginal ||
+    lockedInventory === undefined ||
+    finalInventory === undefined ||
+    !sameInventory(lockedInventory, finalInventory)
+  ) {
+    if (!(await releaseRecoveryLock(port, physicalIdentity, lock.token)))
+      return failure("reconciliation-required");
+    return releaseFenceAfterFailure(
+      port,
+      physicalIdentity,
+      ownerState === "indeterminate" ? "busy" : "reconciliation-required",
+    );
+  }
+  return Object.freeze({
+    ok: true,
+    value: recoveryAuthority(record, physicalIdentity, lock.token),
+  });
+};
+
 export const acquireLocalSqliteExclusiveFence = async (
   portValue: unknown,
   requestValue: unknown,
@@ -932,10 +1574,11 @@ export const acquireLocalSqliteExclusiveFence = async (
   );
   if (created?.state !== "created") {
     if (created?.state !== "exists") return failure("reconciliation-required");
-    const existingFence = await readArtifact(port, FENCE_NAME);
-    if (existingFence === undefined) return failure("reconciliation-required");
+    if (record.purpose === "recovery")
+      return resumeExistingRecoveryFence(port, record, content);
+    const existing = await readArtifact(port, FENCE_NAME);
     return failure(
-      readFenceState(existingFence, record) === "current"
+      existing !== undefined && readFenceState(existing, record) === "current"
         ? "busy"
         : "reconciliation-required",
     );
@@ -948,67 +1591,34 @@ export const acquireLocalSqliteExclusiveFence = async (
     decodeLocalSqliteFenceRecord(fence.content) === undefined
   )
     return failure("reconciliation-required");
-  const inventory = await inspectInventory(port);
-  if (inventory === undefined)
-    return releaseFenceAfterFailure(
+  const inspected = await inspectCreatedFenceInventory(
+    port,
+    record,
+    created.physicalIdentity,
+  );
+  if ("ok" in inspected) return inspected;
+  if (record.purpose === "recovery")
+    return acquireCreatedRecoveryFence(
       port,
+      record,
       created.physicalIdentity,
-      "reconciliation-required",
+      inspected,
     );
-  const inventoryFence = inventory.find((entry) => entry.name === FENCE_NAME);
-  if (
-    inventoryFence === undefined ||
-    inventoryFence.physicalIdentity !== created.physicalIdentity
-  )
-    return releaseFenceAfterFailure(
-      port,
-      created.physicalIdentity,
-      "reconciliation-required",
-    );
-  let sawDead = false;
-  const deadLeaseNames: string[] = [];
-  for (const leaseId of inventoryLeaseIds(inventory)) {
-    const cleanup = await inspectLeaseCleanupState(port, leaseId);
-    if (cleanup === undefined || cleanup.state === "absent")
-      return releaseFenceAfterFailure(
-        port,
-        created.physicalIdentity,
-        "reconciliation-required",
-      );
-    if (!sameLifecycle(cleanup.record, record))
-      return releaseFenceAfterFailure(
-        port,
-        created.physicalIdentity,
-        "reconciliation-required",
-      );
-    const state = await classifyLease(port, cleanup.record);
-    if (state === undefined)
-      return releaseFenceAfterFailure(
-        port,
-        created.physicalIdentity,
-        "reconciliation-required",
-      );
-    if (state === "dead") {
-      sawDead = true;
-      deadLeaseNames.push(leaseName(leaseId));
-    } else
-      return releaseFenceAfterFailure(port, created.physicalIdentity, "busy");
-  }
-  if (sawDead && record.purpose !== "recovery")
+  if (inspected.deadLeaseNames.length > 0)
     return releaseFenceAfterFailure(
       port,
       created.physicalIdentity,
       "recovery-required",
     );
+  const baseAuthority = Object.freeze({
+    deadLeaseNames: inspected.deadLeaseNames,
+    filename: FENCE_NAME,
+    physicalIdentity: created.physicalIdentity,
+    record,
+  });
   return Object.freeze({
     ok: true,
-    value: Object.freeze({
-      deadLeaseNames: Object.freeze(deadLeaseNames),
-      filename: FENCE_NAME,
-      physicalIdentity: created.physicalIdentity,
-      record,
-      state: sawDead ? "exclusive-recovery" : "exclusive",
-    }),
+    value: Object.freeze({ ...baseAuthority, state: "exclusive" as const }),
   });
 };
 
@@ -1136,6 +1746,92 @@ export const releaseLocalSqliteSharedLease = async (
     : failure("reconciliation-required");
 };
 
+const parseExclusiveAuthority = (
+  value: unknown,
+): LocalSqliteExclusiveFenceAuthority | undefined => {
+  const authority =
+    exactRecord(value, [
+      "state",
+      "filename",
+      "physicalIdentity",
+      "record",
+      "deadLeaseNames",
+      "recoveryLockToken",
+      "recoveryVector",
+    ]) ??
+    exactRecord(value, [
+      "state",
+      "filename",
+      "physicalIdentity",
+      "record",
+      "deadLeaseNames",
+    ]);
+  const record = parseLocalSqliteFenceRecord(authority?.record);
+  if (
+    !isOneOf(authority?.state, ["exclusive", "exclusive-recovery"]) ||
+    authority.filename !== FENCE_NAME ||
+    typeof authority.physicalIdentity !== "string" ||
+    record === undefined
+  )
+    return undefined;
+  const deadLeaseNames = exactArray(authority.deadLeaseNames, MAXIMUM_LEASES);
+  if (
+    deadLeaseNames === undefined ||
+    deadLeaseNames.some((name) => typeof name !== "string")
+  )
+    return undefined;
+  if (authority.state === "exclusive")
+    return record.purpose === "lifecycle"
+      ? Object.freeze({
+          state: "exclusive",
+          filename: FENCE_NAME,
+          physicalIdentity: authority.physicalIdentity,
+          record,
+          deadLeaseNames: Object.freeze(
+            deadLeaseNames.filter(
+              (name): name is string => typeof name === "string",
+            ),
+          ),
+        })
+      : undefined;
+  const recoveryVector = parseDeadLeaseRecoveryVector(
+    authority.recoveryVector,
+    record,
+  );
+  const token = parseLockToken(authority.recoveryLockToken);
+  if (
+    record.purpose !== "recovery" ||
+    recoveryVector === undefined ||
+    token === undefined ||
+    JSON.stringify(recoveryVector) !== JSON.stringify(record.deadLeaseVector)
+  )
+    return undefined;
+  return Object.freeze({
+    state: "exclusive-recovery",
+    filename: FENCE_NAME,
+    physicalIdentity: authority.physicalIdentity,
+    record,
+    deadLeaseNames: Object.freeze(deadLeaseNames as string[]),
+    recoveryLockToken: token,
+    recoveryVector,
+  });
+};
+
+const recoveryFenceIsComplete = async (
+  port: ParsedPort,
+  vector: readonly LocalSqliteDeadLeaseRecoveryEntry[],
+): Promise<boolean> => {
+  const inventory = await inspectInventory(port);
+  if (inventory === undefined) return false;
+  const suffix = await validateRecoverySuffix(port, inventory, vector);
+  const finalInventory = await inspectInventory(port);
+  return (
+    suffix?.firstRemainingIndex === vector.length &&
+    finalInventory !== undefined &&
+    sameInventory(inventory, finalInventory)
+  );
+};
+
 export const releaseLocalSqliteExclusiveFence = async (
   portValue: unknown,
   authorityValue: unknown,
@@ -1143,30 +1839,45 @@ export const releaseLocalSqliteExclusiveFence = async (
   LocalSqliteLifecycleGateFailure | Readonly<{ ok: true; state: "released" }>
 > => {
   const port = parsePort(portValue);
-  const authority = exactRecord(authorityValue, [
-    "state",
-    "filename",
-    "physicalIdentity",
-    "record",
-    "deadLeaseNames",
-  ]);
-  const record = parseLocalSqliteFenceRecord(authority?.record);
-  if (
-    port === undefined ||
-    !isOneOf(authority?.state, ["exclusive", "exclusive-recovery"]) ||
-    authority.filename !== FENCE_NAME ||
-    typeof authority.physicalIdentity !== "string" ||
-    record === undefined
-  )
+  const authority = parseExclusiveAuthority(authorityValue);
+  if (port === undefined || authority === undefined)
     return failure("unavailable");
   const current = await readArtifact(port, FENCE_NAME);
   if (
     current?.state !== "present" ||
     current.physicalIdentity !== authority.physicalIdentity ||
-    encodeLocalSqliteFenceRecord(record) !== current.content
+    encodeLocalSqliteFenceRecord(authority.record) !== current.content
   )
     return failure("reconciliation-required");
-  return (await removeExact(port, FENCE_NAME, authority.physicalIdentity))
+  const lockToken =
+    authority.state === "exclusive-recovery"
+      ? authority.recoveryLockToken
+      : undefined;
+  if (
+    authority.state === "exclusive-recovery" &&
+    (lockToken === undefined ||
+      !(await assertRecoveryLock(port, authority.physicalIdentity, lockToken)))
+  )
+    return failure("reconciliation-required");
+  if (
+    authority.state === "exclusive-recovery" &&
+    !(await recoveryFenceIsComplete(port, authority.recoveryVector))
+  )
+    return failure("reconciliation-required");
+  const removed = await removeExact(
+    port,
+    FENCE_NAME,
+    authority.physicalIdentity,
+  );
+  if (lockToken !== undefined) {
+    const released = await releaseRecoveryLock(
+      port,
+      authority.physicalIdentity,
+      lockToken,
+    );
+    if (!released) return failure("reconciliation-required");
+  }
+  return removed
     ? Object.freeze({ ok: true, state: "released" })
     : failure("reconciliation-required");
 };
@@ -1179,6 +1890,8 @@ const parseRecoveryRequest = (
       physicalIdentity: string;
       fenceRecord: LocalSqliteFenceRecord;
       leaseFilename: string;
+      recoveryLockToken: Readonly<Record<string, never>>;
+      recoveryVector: readonly LocalSqliteDeadLeaseRecoveryEntry[];
     }>
   | undefined => {
   const exclusive = exactRecord(exclusiveValue, [
@@ -1187,15 +1900,31 @@ const parseRecoveryRequest = (
     "physicalIdentity",
     "record",
     "deadLeaseNames",
+    "recoveryLockToken",
+    "recoveryVector",
   ]);
   const fenceRecord = parseLocalSqliteFenceRecord(exclusive?.record);
   const deadLeaseNames = exactArray(exclusive?.deadLeaseNames, MAXIMUM_LEASES);
+  const recoveryLockToken = parseLockToken(exclusive?.recoveryLockToken);
+  const recoveryVector = parseDeadLeaseRecoveryVector(
+    exclusive?.recoveryVector,
+    fenceRecord,
+  );
   if (
     exclusive?.state !== "exclusive-recovery" ||
     exclusive.filename !== FENCE_NAME ||
     typeof exclusive.physicalIdentity !== "string" ||
     fenceRecord?.purpose !== "recovery" ||
     deadLeaseNames === undefined ||
+    recoveryLockToken === undefined ||
+    recoveryVector === undefined ||
+    JSON.stringify(recoveryVector) !==
+      JSON.stringify(fenceRecord.deadLeaseVector) ||
+    deadLeaseNames.length !== recoveryVector.length ||
+    deadLeaseNames.some(
+      (name, index) =>
+        name !== leaseName(recoveryVector[index]!.record.leaseId),
+    ) ||
     deadLeaseNames.some(
       (name) =>
         typeof name !== "string" || !/^lease-[a-f0-9]{32}\.json$/u.test(name),
@@ -1209,6 +1938,8 @@ const parseRecoveryRequest = (
     physicalIdentity: exclusive.physicalIdentity,
     fenceRecord,
     leaseFilename: leaseFilenameValue,
+    recoveryLockToken,
+    recoveryVector,
   });
 };
 
@@ -1230,22 +1961,145 @@ export const recoverDeadLocalSqliteLease = async (
     fence.content !== encodeLocalSqliteFenceRecord(request.fenceRecord)
   )
     return failure("reconciliation-required");
-  const leaseId = request.leaseFilename.slice("lease-".length, -".json".length);
-  const cleanup = await inspectLeaseCleanupState(port, leaseId);
-  if (cleanup === undefined || cleanup.state === "absent")
+  if (
+    !(await assertRecoveryLock(
+      port,
+      request.physicalIdentity,
+      request.recoveryLockToken,
+    ))
+  )
     return failure("reconciliation-required");
-  if (!sameLifecycle(cleanup.record, request.fenceRecord))
+  const inventory = await inspectInventory(port);
+  const suffix =
+    inventory === undefined
+      ? undefined
+      : await validateRecoverySuffix(port, inventory, request.recoveryVector);
+  const firstRemainingIndex = suffix?.firstRemainingIndex;
+  const expected =
+    firstRemainingIndex === undefined
+      ? undefined
+      : request.recoveryVector[firstRemainingIndex];
+  if (
+    firstRemainingIndex === undefined ||
+    expected === undefined ||
+    leaseName(expected.record.leaseId) !== request.leaseFilename
+  )
     return failure("reconciliation-required");
-  if ((await classifyLease(port, cleanup.record)) !== "dead")
+  if (!sameLifecycle(expected.record, request.fenceRecord))
+    return failure("reconciliation-required");
+  if ((await classifyLease(port, expected.record)) !== "dead")
     return failure("busy");
   if (
     !(await completeLeaseCleanup(port, {
-      physicalIdentity: cleanup.physicalIdentity,
-      record: cleanup.record,
+      physicalIdentity: expected.physicalIdentity,
+      record: expected.record,
     }))
   )
     return failure("reconciliation-required");
+  const finalInventory = await inspectInventory(port);
+  const finalSuffix =
+    finalInventory === undefined
+      ? undefined
+      : await validateRecoverySuffix(
+          port,
+          finalInventory,
+          request.recoveryVector,
+        );
+  if (finalSuffix?.firstRemainingIndex !== firstRemainingIndex + 1)
+    return failure("reconciliation-required");
   return Object.freeze({ ok: true, state: "recovered" });
+};
+
+type LifecycleInspectionObservation = Readonly<{
+  sawBusy: boolean;
+  sawDead: boolean;
+}>;
+
+const inspectRecoveryFenceForDoctor = async (
+  port: ParsedPort,
+  inventory: readonly InventoryEntry[],
+  fenceEntry: InventoryEntry,
+  record: LocalSqliteRecoveryFenceRecord,
+): Promise<
+  LocalSqliteLifecycleGateFailure | LifecycleInspectionObservation
+> => {
+  const lock = await acquireRecoveryLock(port, fenceEntry.physicalIdentity);
+  if (lock?.state === "busy")
+    return Object.freeze({ sawBusy: true, sawDead: false });
+  if (lock?.state !== "acquired") return failure("unavailable");
+  const ownerState = await classifyLease(port, {
+    leaseId: record.transactionId,
+    lifecycleFingerprint: record.lifecycleFingerprint,
+    lifecycleGeneration: record.lifecycleGeneration,
+    parent: record.recoveryOwner,
+    child: null,
+  });
+  const suffix = await validateRecoverySuffix(
+    port,
+    inventory,
+    record.deadLeaseVector,
+  );
+  const remainingFailure =
+    ownerState === "dead" && suffix !== undefined
+      ? await remainingLeaseOwnerFailure(
+          port,
+          record.deadLeaseVector,
+          suffix.firstRemainingIndex,
+        )
+      : undefined;
+  const released = await releaseRecoveryLock(
+    port,
+    fenceEntry.physicalIdentity,
+    lock.token,
+  );
+  if (!released || ownerState === undefined) return failure("unavailable");
+  if (suffix === undefined) return failure("reconciliation-required");
+  if (remainingFailure?.state === "unavailable") return remainingFailure;
+  return Object.freeze({
+    sawBusy: ownerState !== "dead" || remainingFailure?.state === "busy",
+    sawDead: ownerState === "dead",
+  });
+};
+
+const inspectLeaseOwnersForDoctor = async (
+  port: ParsedPort,
+  inventory: readonly InventoryEntry[],
+  initialLifecycle:
+    | Pick<
+        LocalSqliteLeaseRecord,
+        "lifecycleFingerprint" | "lifecycleGeneration"
+      >
+    | undefined,
+): Promise<
+  | LocalSqliteLifecycleGateFailure
+  | (LifecycleInspectionObservation &
+      Readonly<{
+        lifecycle:
+          | Pick<
+              LocalSqliteLeaseRecord,
+              "lifecycleFingerprint" | "lifecycleGeneration"
+            >
+          | undefined;
+      }>)
+> => {
+  let lifecycle = initialLifecycle;
+  let sawBusy = false;
+  let sawDead = false;
+  for (const leaseId of inventoryLeaseIds(inventory)) {
+    const lease = await inspectLeaseCleanupState(port, leaseId);
+    if (
+      lease === undefined ||
+      lease.state === "absent" ||
+      (lifecycle !== undefined && !sameLifecycle(lease.record, lifecycle))
+    )
+      return failure("reconciliation-required");
+    lifecycle ??= lease.record;
+    const owner = await classifyLease(port, lease.record);
+    if (owner === undefined) return failure("unavailable");
+    if (owner === "dead") sawDead = true;
+    else sawBusy = true;
+  }
+  return Object.freeze({ lifecycle, sawBusy, sawDead });
 };
 
 export const inspectLocalSqliteLifecycleInventory = async (
@@ -1279,9 +2133,10 @@ export const inspectLocalSqliteLifecycleInventory = async (
         "lifecycleFingerprint" | "lifecycleGeneration"
       >
     | undefined;
+  let fenceRecord: LocalSqliteFenceRecord | undefined;
   if (fenceEntry !== undefined) {
     const fence = await readArtifact(port, FENCE_NAME);
-    const fenceRecord =
+    fenceRecord =
       fence?.state === "present"
         ? decodeLocalSqliteFenceRecord(fence.content)
         : undefined;
@@ -1293,22 +2148,23 @@ export const inspectLocalSqliteLifecycleInventory = async (
       return failure("reconciliation-required");
     lifecycle = fenceRecord;
   }
-  let sawBusy = fenceEntry !== undefined || hasMutationRecord;
+  let sawBusy = hasMutationRecord || fenceRecord?.purpose === "lifecycle";
   let sawDead = false;
-  for (const leaseId of inventoryLeaseIds(inventory)) {
-    const lease = await inspectLeaseCleanupState(port, leaseId);
-    if (
-      lease === undefined ||
-      lease.state === "absent" ||
-      (lifecycle !== undefined && !sameLifecycle(lease.record, lifecycle))
-    )
-      return failure("reconciliation-required");
-    lifecycle ??= lease.record;
-    const owner = await classifyLease(port, lease.record);
-    if (owner === undefined) return failure("unavailable");
-    if (owner === "dead") sawDead = true;
-    else sawBusy = true;
+  if (fenceEntry !== undefined && fenceRecord?.purpose === "recovery") {
+    const recovery = await inspectRecoveryFenceForDoctor(
+      port,
+      inventory,
+      fenceEntry,
+      fenceRecord,
+    );
+    if ("ok" in recovery) return recovery;
+    sawBusy ||= recovery.sawBusy;
+    sawDead ||= recovery.sawDead;
   }
+  const leases = await inspectLeaseOwnersForDoctor(port, inventory, lifecycle);
+  if ("ok" in leases) return leases;
+  sawBusy ||= leases.sawBusy;
+  sawDead ||= leases.sawDead;
   const finalInventory = await inspectInventory(port);
   if (finalInventory === undefined || !sameInventory(inventory, finalInventory))
     return failure("unavailable");
@@ -1326,6 +2182,7 @@ export const LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS = Object.freeze({
   exclusiveFenceName: FENCE_NAME,
   leaseRecordBytes: LEASE_RECORD_BYTES,
   maximumDirectoryEntries: MAXIMUM_DIRECTORY_ENTRIES,
+  maximumFenceRecordBytes: MAXIMUM_FENCE_RECORD_BYTES,
   maximumInspectionBytes: MAXIMUM_INSPECTION_BYTES,
   maximumLeases: MAXIMUM_LEASES,
 });

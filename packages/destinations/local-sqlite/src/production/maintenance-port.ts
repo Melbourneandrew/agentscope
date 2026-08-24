@@ -1124,6 +1124,8 @@ export const createLocalSqliteProductionMaintenancePort = (
     createLocalSqliteFilesystemGatePort(directory, {
       allowPathFallbackForTesting: input.allowPathFallbackForTesting === true,
       atomicExchange: opener.exchangeOwnedFiles,
+      lockOwnedFile: opener.lockOwnedFile,
+      unlockOwnedFile: opener.unlockOwnedFile,
     });
   return Object.freeze({
     inspectMaintenance: async (context: LocalResourceMaintenanceContext) => {
@@ -1911,7 +1913,7 @@ export const createLocalSqliteProductionMaintenancePort = (
             transactionId: intent.transactionId,
             lifecycleFingerprint: intent.lifecycleFingerprint,
             lifecycleGeneration: intent.capabilityVersion,
-            purpose: "recovery",
+            purpose: "lifecycle",
           },
         );
         /* v8 ignore next -- competing/malformed recovery fence outcomes are
@@ -1933,7 +1935,7 @@ export const createLocalSqliteProductionMaintenancePort = (
       return Object.freeze({
         canonicalBytes,
         fence: Object.freeze({
-          state: "exclusive-recovery" as const,
+          state: "exclusive" as const,
           filename: fenceName,
           physicalIdentity: fenceState.physicalIdentity,
           record,

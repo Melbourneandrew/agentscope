@@ -83,12 +83,12 @@ describe("Local SQLite native support authority", () => {
       platformId: "linux-x64-node22-ci-ext4-proposed",
       nativeTupleId: "node127-linux-x64-glibc",
       relativePath: "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-      bytes: 2_222_616,
+      bytes: 2_222_856,
       maximumSnapshotBytes: 17_179_869_184,
       minimumNativeChildBudgetMilliseconds: 50,
       nativeTeardownReserveMilliseconds: 250,
       digest:
-        "sha256:c580e8f3254f6603a0642db03f48569eaacf471a04497fe15bc1a0567e35292c",
+        "sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9",
     });
   });
 
