@@ -39,13 +39,13 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
       ),
       artifact("exclusive-fence", "lifecycle/exclusive-fence-v1", 1),
       artifact("shared-lease", "lifecycle/lease-<owner-identity>.json", 64),
+      artifact(
+        "shared-lease-cleanup-claim",
+        "lifecycle/lease-cleanup-<owner-identity>.json",
+        64,
+      ),
       artifact("lifecycle-intent", "lifecycle/intent-v1.json", 1),
       artifact("operation-phase", "lifecycle/operation-phase-v1.json", 1),
-      artifact(
-        "recovery-claim",
-        "lifecycle/recovery-claim-<transaction-id>",
-        1,
-      ),
       artifact("ownership-receipt", "lifecycle/ownership-receipt-v1.json", 1),
       artifact(
         "rollback-preimage",
@@ -59,13 +59,14 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
     inspectionLimits: Object.freeze({
       leaseRecordBytes: 256,
       maximumBackupDirectoryEntries: 32,
-      maximumDirectoryEntries: 128,
-      maximumInspectionBytes: 65_536,
+      maximumDirectoryEntries: 192,
+      maximumInspectionBytes: 98_304,
       maximumMetadataAggregateBytes: 65_536,
       maximumPublishedBackups: 8,
       maximumPublishedSnapshotBytes:
         "checked-multiply(maximumPublishedBackups,supportManifest.maximumSnapshotBytes)",
       maximumSharedLeases: 64,
+      maximumSharedLeaseCleanupClaims: 64,
       maximumTransientDatabaseCandidates: 1,
       maximumTransientRollbackPreimages: 1,
       namespaceByteCeiling:

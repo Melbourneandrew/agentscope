@@ -2267,20 +2267,18 @@ export const createLocalSqliteProductionMaintenancePort = (
         /* v8 ignore next -- unreachable unavailable combinations are owned by the
            fence/physical inspectors; source tests cover available/reconciliation. */
         state:
-          gate.ok && physical.state === "available"
-            ? "available"
-            : gate.ok && physical.state === "reconciliation-required"
-              ? "reconciliation-required"
-              : !gate.ok && gate.state === "reconciliation-required"
+          gate.ok && gate.state === "recovery-required"
+            ? "recovery-required"
+            : gate.ok && physical.state === "available"
+              ? "available"
+              : gate.ok && physical.state === "reconciliation-required"
                 ? "reconciliation-required"
-                : "unavailable",
+                : !gate.ok && gate.state === "reconciliation-required"
+                  ? "reconciliation-required"
+                  : "unavailable",
         /* v8 ignore next -- a valid active fence is exercised by the built Doctor
            replay; source tests cover clean and reconciliation outcomes. */
-        lifecycleState: gate.ok
-          ? gate.fence === "absent"
-            ? "clean"
-            : "busy"
-          : gate.state,
+        lifecycleState: gate.ok ? gate.state : gate.state,
         databaseState: physical.databaseState,
         backupState: physical.backupState,
         sharedLeaseCount: gate.ok ? gate.leases : null,

@@ -40,9 +40,9 @@ type ConcreteGate = Readonly<{
       content: string;
     }>,
   ) => Mutation;
-  createRecoveryClaim: (
+  createLeaseCleanupClaim: (
     input: Readonly<{
-      claimName: string;
+      cleanupClaimName: string;
       leaseName: string;
       leasePhysicalIdentity: string;
     }>,
@@ -125,9 +125,9 @@ describe("production Local SQLite lifecycle filesystem port", () => {
       if (replacement.state !== "replaced")
         throw new Error("expected replacement");
       expect(readFileSync(join(lifecycle, leaseName), "utf8")).toBe("lease-v2");
-      const claimName = `recovery-claim-${"2".repeat(32)}`;
-      const claim = gate.createRecoveryClaim({
-        claimName,
+      const claimName = `lease-cleanup-${"1".repeat(32)}.json`;
+      const claim = gate.createLeaseCleanupClaim({
+        cleanupClaimName: claimName,
         leaseName,
         leasePhysicalIdentity: replacement.physicalIdentity,
       });
@@ -136,15 +136,15 @@ describe("production Local SQLite lifecycle filesystem port", () => {
         physicalIdentity: replacement.physicalIdentity,
       });
       expect(
-        gate.createRecoveryClaim({
-          claimName,
+        gate.createLeaseCleanupClaim({
+          cleanupClaimName: claimName,
           leaseName,
           leasePhysicalIdentity: replacement.physicalIdentity,
         }),
       ).toEqual({ state: "exists" });
       expect(() =>
-        gate.createRecoveryClaim({
-          claimName: `recovery-claim-${"9".repeat(32)}`,
+        gate.createLeaseCleanupClaim({
+          cleanupClaimName: `lease-cleanup-${"9".repeat(32)}.json`,
           leaseName,
           leasePhysicalIdentity: "dev:0:ino:0",
         }),

@@ -1806,7 +1806,21 @@ const lifecyclePort = Object.freeze({
     createLifecycleArtifact(filename, content),
   createLeaseDurably: ({ filename, content }) =>
     createLifecycleArtifact(filename, content),
-  createRecoveryClaim: () => ({ state: "mismatch" }),
+  createLeaseCleanupClaim: ({
+    cleanupClaimName,
+    leaseName,
+    leasePhysicalIdentity,
+  }) => {
+    const lease = lifecycleArtifacts.get(leaseName);
+    if (
+      lease === undefined ||
+      lease.physicalIdentity !== leasePhysicalIdentity ||
+      lifecycleArtifacts.has(cleanupClaimName)
+    )
+      return { state: "mismatch" };
+    lifecycleArtifacts.set(cleanupClaimName, lease);
+    return { state: "created", physicalIdentity: lease.physicalIdentity };
+  },
   listLifecycle: () => ({
     entries: [...lifecycleArtifacts.entries()].map(([name, artifact]) => ({
       name,
@@ -1846,7 +1860,7 @@ if (!builtRelease.ok || lifecycleArtifacts.size !== 0)
 
 for (const [name, content] of [
   ["intent-v1.json", "intent"],
-  [`recovery-claim-${builtFenceRecord.transactionId}`, builtLeaseBytes],
+  [`lease-cleanup-${builtLeaseRecord.leaseId}.json`, builtLeaseBytes],
 ]) {
   lifecycleArtifacts.set(name, {
     content,
@@ -2027,10 +2041,10 @@ const claimFence = await testing.acquireLocalSqliteExclusiveFence(
 );
 if (!claimFence.ok)
   throw new Error("Local SQLite built claim fence fixture failed.");
-const claimFilename = `recovery-claim-${builtFenceRecord.transactionId}`;
+const claimFilename = `lease-cleanup-${builtLeaseRecord.leaseId}.json`;
 const claimCrashPort = Object.freeze({
   ...deadLifecyclePort,
-  createRecoveryClaim: ({ leaseName }) => {
+  createLeaseCleanupClaim: ({ leaseName }) => {
     const lease = lifecycleArtifacts.get(leaseName);
     if (lease === undefined) return { state: "mismatch" };
     lifecycleArtifacts.set(claimFilename, lease);
@@ -2045,7 +2059,7 @@ const claimCrash = await testing.recoverDeadLocalSqliteLease(
 const claimResume = await testing.recoverDeadLocalSqliteLease(
   Object.freeze({
     ...deadLifecyclePort,
-    createRecoveryClaim: () => ({ state: "exists" }),
+    createLeaseCleanupClaim: () => ({ state: "exists" }),
   }),
   claimFence.value,
   claimShared.value.filename,
@@ -2057,7 +2071,7 @@ if (
   lifecycleArtifacts.has(claimFilename) ||
   lifecycleArtifacts.has(claimShared.value.filename)
 )
-  throw new Error("Local SQLite built recovery-claim resume drifted.");
+  throw new Error("Local SQLite built lease-cleanup resume drifted.");
 await testing.releaseLocalSqliteExclusiveFence(
   deadLifecyclePort,
   claimFence.value,

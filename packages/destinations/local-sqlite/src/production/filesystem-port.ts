@@ -18,9 +18,9 @@ import {
 } from "./owned-filesystem.js";
 
 const maximumArtifactBytes = 65_536;
-const maximumEntries = 128;
+const maximumEntries = 192;
 const lifecycleName =
-  /^(?:exclusive-fence-v1|intent-v1\.json|operation-phase-v1\.json|ownership-receipt-v1\.json|lease-[a-f0-9]{32}\.json|recovery-claim-[a-f0-9]{32})$/u;
+  /^(?:exclusive-fence-v1|intent-v1\.json|operation-phase-v1\.json|ownership-receipt-v1\.json|lease-[a-f0-9]{32}\.json|lease-cleanup-[a-f0-9]{32}\.json)$/u;
 
 const exactLifecycleName = (filename: string): string => {
   if (!lifecycleName.test(filename) || basename(filename) !== filename)
@@ -244,7 +244,11 @@ export const createLocalSqliteFilesystemGatePort = (
         throw error;
       }
     },
-    createRecoveryClaim: ({ claimName, leaseName, leasePhysicalIdentity }) => {
+    createLeaseCleanupClaim: ({
+      cleanupClaimName,
+      leaseName,
+      leasePhysicalIdentity,
+    }) => {
       const owned = openOwnedDirectory(
         lifecycleDirectory,
         allowPathFallbackForTesting,
@@ -253,7 +257,7 @@ export const createLocalSqliteFilesystemGatePort = (
         const linked = linkOwnedFile(
           owned,
           exactLifecycleName(leaseName),
-          exactLifecycleName(claimName),
+          exactLifecycleName(cleanupClaimName),
           leasePhysicalIdentity,
         );
         return Object.freeze({

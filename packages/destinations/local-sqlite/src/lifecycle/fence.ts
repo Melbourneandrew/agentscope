@@ -2,9 +2,10 @@ const HEX_128 = /^[a-f0-9]{32}$/u;
 const SHA256 = /^sha256-[a-f0-9]{64}$/u;
 const PHYSICAL_IDENTITY = /^[\x21-\x7e]{1,128}$/u;
 const LEASE_RECORD_BYTES = 256;
-const MAXIMUM_DIRECTORY_ENTRIES = 128;
-const MAXIMUM_INSPECTION_BYTES = 65_536;
+const MAXIMUM_DIRECTORY_ENTRIES = 192;
+const MAXIMUM_INSPECTION_BYTES = 98_304;
 const MAXIMUM_LEASES = 64;
+const MAXIMUM_CLEANUP_CLAIMS = 64;
 const FENCE_NAME = "exclusive-fence-v1";
 
 type OwnerIdentity = Readonly<{
@@ -50,7 +51,8 @@ export type LocalSqliteExclusiveFenceAuthority = Readonly<{
 
 export type LocalSqliteLifecycleGateFailure = Readonly<{
   ok: false;
-  state: "busy" | "reconciliation-required" | "unavailable";
+  state:
+    "busy" | "reconciliation-required" | "recovery-required" | "unavailable";
 }>;
 
 export type LocalSqliteSharedLeaseResult =
@@ -69,9 +71,9 @@ export type LocalSqliteLifecycleGatePort = Readonly<{
   createLeaseDurably: (
     input: Readonly<{ filename: string; content: string }>,
   ) => unknown;
-  createRecoveryClaim: (
+  createLeaseCleanupClaim: (
     input: Readonly<{
-      claimName: string;
+      cleanupClaimName: string;
       leaseName: string;
       leasePhysicalIdentity: string;
     }>,
@@ -401,7 +403,7 @@ const parsePort = (value: unknown): ParsedPort | undefined => {
     "classifyOwner",
     "createFenceDurably",
     "createLeaseDurably",
-    "createRecoveryClaim",
+    "createLeaseCleanupClaim",
     "listLifecycle",
     "readArtifact",
     "removeArtifactIfIdentity",
@@ -479,7 +481,7 @@ const knownLifecycleName = (name: string): boolean =>
   name === "operation-phase-v1.json" ||
   name === "ownership-receipt-v1.json" ||
   /^lease-[a-f0-9]{32}\.json$/u.test(name) ||
-  /^recovery-claim-[a-f0-9]{32}$/u.test(name);
+  /^lease-cleanup-[a-f0-9]{32}\.json$/u.test(name);
 
 const parseInventory = (
   value: unknown,
@@ -491,7 +493,7 @@ const parseInventory = (
   const names = new Set<string>();
   let bytes = 0;
   let leases = 0;
-  let recoveryClaims = 0;
+  let cleanupClaims = 0;
   for (const value of values) {
     const entry = exactRecord(value, ["name", "bytes", "physicalIdentity"]);
     if (
@@ -514,9 +516,12 @@ const parseInventory = (
     }
     if (entry.name === FENCE_NAME && entry.bytes !== LEASE_RECORD_BYTES)
       return undefined;
-    if (entry.name.startsWith("recovery-claim-")) {
-      recoveryClaims += 1;
-      if (entry.bytes !== LEASE_RECORD_BYTES || recoveryClaims > 1)
+    if (entry.name.startsWith("lease-cleanup-")) {
+      cleanupClaims += 1;
+      if (
+        entry.bytes !== LEASE_RECORD_BYTES ||
+        cleanupClaims > MAXIMUM_CLEANUP_CLAIMS
+      )
         return undefined;
     }
     names.add(entry.name);
@@ -534,8 +539,8 @@ const parseInventory = (
 };
 
 const leaseName = (leaseId: string): string => `lease-${leaseId}.json`;
-const claimName = (transactionId: string): string =>
-  `recovery-claim-${transactionId}`;
+const cleanupClaimName = (leaseId: string): string =>
+  `lease-cleanup-${leaseId}.json`;
 
 const readArtifact = async (
   port: ParsedPort,
@@ -579,6 +584,118 @@ const readValidatedLease = async (
   return Object.freeze({ artifact, record });
 };
 
+type LeaseCleanupState =
+  | Readonly<{ state: "absent" }>
+  | Readonly<{
+      state: "lease-only" | "cleanup-claim-only" | "lease+cleanup-claim";
+      record: LocalSqliteLeaseRecord;
+      content: string;
+      physicalIdentity: string;
+    }>;
+
+const inspectLeaseCleanupState = async (
+  port: ParsedPort,
+  leaseId: string,
+): Promise<LeaseCleanupState | undefined> => {
+  const leaseFilename = leaseName(leaseId);
+  const claimFilename = cleanupClaimName(leaseId);
+  const [lease, claim] = await Promise.all([
+    readArtifact(port, leaseFilename),
+    readArtifact(port, claimFilename),
+  ]);
+  if (lease === undefined || claim === undefined) return undefined;
+  if (lease.state === "absent" && claim.state === "absent")
+    return Object.freeze({ state: "absent" });
+  const present = lease.state === "present" ? lease : claim;
+  if (present.state !== "present") return undefined;
+  const record = decodeLocalSqliteLeaseRecord(present.content);
+  if (record === undefined || record.leaseId !== leaseId) return undefined;
+  if (lease.state === "present" && claim.state === "present") {
+    if (
+      lease.physicalIdentity !== claim.physicalIdentity ||
+      lease.content !== claim.content
+    )
+      return undefined;
+    return Object.freeze({
+      state: "lease+cleanup-claim",
+      record,
+      content: lease.content,
+      physicalIdentity: lease.physicalIdentity,
+    });
+  }
+  return Object.freeze({
+    state: lease.state === "present" ? "lease-only" : "cleanup-claim-only",
+    record,
+    content: present.content,
+    physicalIdentity: present.physicalIdentity,
+  });
+};
+
+const sameLeaseRecord = (
+  left: LocalSqliteLeaseRecord,
+  right: LocalSqliteLeaseRecord,
+): boolean =>
+  encodeLocalSqliteLeaseRecord(left) === encodeLocalSqliteLeaseRecord(right);
+
+const completeLeaseCleanup = async (
+  port: ParsedPort,
+  expected: Readonly<{
+    record: LocalSqliteLeaseRecord;
+    physicalIdentity: string;
+  }>,
+): Promise<boolean> => {
+  let state = await inspectLeaseCleanupState(port, expected.record.leaseId);
+  if (state === undefined) return false;
+  if (state.state === "absent") return true;
+  if (
+    state.physicalIdentity !== expected.physicalIdentity ||
+    !sameLeaseRecord(state.record, expected.record)
+  )
+    return false;
+  const leaseFilename = leaseName(expected.record.leaseId);
+  const claimFilename = cleanupClaimName(expected.record.leaseId);
+  if (state.state === "lease-only") {
+    const linked = parseMutation(
+      await invoke(port.createLeaseCleanupClaim, {
+        cleanupClaimName: claimFilename,
+        leaseName: leaseFilename,
+        leasePhysicalIdentity: expected.physicalIdentity,
+      }),
+    );
+    if (
+      !isOneOf(linked?.state, ["created", "exists"]) ||
+      (linked.state === "created" &&
+        linked.physicalIdentity !== expected.physicalIdentity)
+    )
+      return false;
+    state = await inspectLeaseCleanupState(port, expected.record.leaseId);
+    if (
+      state?.state !== "lease+cleanup-claim" ||
+      state.physicalIdentity !== expected.physicalIdentity ||
+      !sameLeaseRecord(state.record, expected.record)
+    )
+      return false;
+  }
+  if (state.state === "lease+cleanup-claim") {
+    if (!(await removeExact(port, leaseFilename, expected.physicalIdentity)))
+      return false;
+    state = await inspectLeaseCleanupState(port, expected.record.leaseId);
+    if (
+      state?.state !== "cleanup-claim-only" ||
+      state.physicalIdentity !== expected.physicalIdentity ||
+      !sameLeaseRecord(state.record, expected.record)
+    )
+      return false;
+  }
+  if (state.state !== "cleanup-claim-only") return false;
+  if (!(await removeExact(port, claimFilename, expected.physicalIdentity)))
+    return false;
+  return (
+    (await inspectLeaseCleanupState(port, expected.record.leaseId))?.state ===
+    "absent"
+  );
+};
+
 const inspectInventory = async (
   port: ParsedPort,
 ): Promise<readonly InventoryEntry[] | undefined> =>
@@ -587,7 +704,7 @@ const inspectInventory = async (
 const blocksDatabaseOpen = (entry: InventoryEntry): boolean =>
   entry.name === "intent-v1.json" ||
   entry.name === "operation-phase-v1.json" ||
-  entry.name.startsWith("recovery-claim-");
+  entry.name.startsWith("lease-cleanup-");
 
 const sameInventory = (
   left: readonly InventoryEntry[],
@@ -600,6 +717,19 @@ const sameInventory = (
       entry.bytes === right[index].bytes &&
       entry.physicalIdentity === right[index].physicalIdentity,
   );
+
+const inventoryLeaseIds = (
+  inventory: readonly InventoryEntry[],
+): readonly string[] => {
+  const ids = new Set<string>();
+  for (const entry of inventory) {
+    const lease = /^lease-([a-f0-9]{32})\.json$/u.exec(entry.name);
+    const claim = /^lease-cleanup-([a-f0-9]{32})\.json$/u.exec(entry.name);
+    const id = lease?.[1] ?? claim?.[1];
+    if (id !== undefined) ids.add(id);
+  }
+  return Object.freeze([...ids].sort());
+};
 
 const sameLifecycle = (
   left: Pick<
@@ -755,7 +885,7 @@ const parseFenceRequest = (
 const releaseFenceAfterFailure = async (
   port: ParsedPort,
   physicalIdentity: string,
-  state: "busy" | "reconciliation-required",
+  state: "busy" | "reconciliation-required" | "recovery-required",
 ): Promise<LocalSqliteLifecycleGateFailure> =>
   (await removeExact(port, FENCE_NAME, physicalIdentity))
     ? failure(state)
@@ -837,26 +967,21 @@ export const acquireLocalSqliteExclusiveFence = async (
     );
   let sawDead = false;
   const deadLeaseNames: string[] = [];
-  for (const entry of inventory) {
-    if (!entry.name.startsWith("lease-")) continue;
-    const lease = await readValidatedLease(
-      port,
-      entry.name,
-      entry.physicalIdentity,
-    );
-    if (lease === undefined)
+  for (const leaseId of inventoryLeaseIds(inventory)) {
+    const cleanup = await inspectLeaseCleanupState(port, leaseId);
+    if (cleanup === undefined || cleanup.state === "absent")
       return releaseFenceAfterFailure(
         port,
         created.physicalIdentity,
         "reconciliation-required",
       );
-    if (!sameLifecycle(lease.record, record))
+    if (!sameLifecycle(cleanup.record, record))
       return releaseFenceAfterFailure(
         port,
         created.physicalIdentity,
         "reconciliation-required",
       );
-    const state = await classifyLease(port, lease.record);
+    const state = await classifyLease(port, cleanup.record);
     if (state === undefined)
       return releaseFenceAfterFailure(
         port,
@@ -865,7 +990,7 @@ export const acquireLocalSqliteExclusiveFence = async (
       );
     if (state === "dead") {
       sawDead = true;
-      deadLeaseNames.push(entry.name);
+      deadLeaseNames.push(leaseName(leaseId));
     } else
       return releaseFenceAfterFailure(port, created.physicalIdentity, "busy");
   }
@@ -873,7 +998,7 @@ export const acquireLocalSqliteExclusiveFence = async (
     return releaseFenceAfterFailure(
       port,
       created.physicalIdentity,
-      "reconciliation-required",
+      "recovery-required",
     );
   return Object.freeze({
     ok: true,
@@ -1003,22 +1128,10 @@ export const releaseLocalSqliteSharedLease = async (
     leaseName(record.leaseId) !== authority.filename
   )
     return failure("unavailable");
-  const current = await readValidatedLease(
-    port,
-    authority.filename,
-    authority.physicalIdentity,
-  );
-  if (
-    current === undefined ||
-    encodeLocalSqliteLeaseRecord(current.record) !==
-      encodeLocalSqliteLeaseRecord(record)
-  )
-    return failure("reconciliation-required");
-  return (await removeExact(
-    port,
-    authority.filename,
-    authority.physicalIdentity,
-  ))
+  return (await completeLeaseCleanup(port, {
+    physicalIdentity: authority.physicalIdentity,
+    record,
+  }))
     ? Object.freeze({ ok: true, state: "released" })
     : failure("reconciliation-required");
 };
@@ -1066,7 +1179,6 @@ const parseRecoveryRequest = (
       physicalIdentity: string;
       fenceRecord: LocalSqliteFenceRecord;
       leaseFilename: string;
-      transactionId: string;
     }>
   | undefined => {
   const exclusive = exactRecord(exclusiveValue, [
@@ -1097,7 +1209,6 @@ const parseRecoveryRequest = (
     physicalIdentity: exclusive.physicalIdentity,
     fenceRecord,
     leaseFilename: leaseFilenameValue,
-    transactionId: fenceRecord.transactionId,
   });
 };
 
@@ -1119,52 +1230,19 @@ export const recoverDeadLocalSqliteLease = async (
     fence.content !== encodeLocalSqliteFenceRecord(request.fenceRecord)
   )
     return failure("reconciliation-required");
-  const lease = await readValidatedLease(port, request.leaseFilename);
-  if (lease === undefined) return failure("reconciliation-required");
-  if (!sameLifecycle(lease.record, request.fenceRecord))
+  const leaseId = request.leaseFilename.slice("lease-".length, -".json".length);
+  const cleanup = await inspectLeaseCleanupState(port, leaseId);
+  if (cleanup === undefined || cleanup.state === "absent")
     return failure("reconciliation-required");
-  if ((await classifyLease(port, lease.record)) !== "dead")
+  if (!sameLifecycle(cleanup.record, request.fenceRecord))
+    return failure("reconciliation-required");
+  if ((await classifyLease(port, cleanup.record)) !== "dead")
     return failure("busy");
-  const recoveryClaimName = claimName(request.transactionId);
-  const claimed = parseMutation(
-    await invoke(port.createRecoveryClaim, {
-      claimName: recoveryClaimName,
-      leaseName: request.leaseFilename,
-      leasePhysicalIdentity: lease.artifact.physicalIdentity,
-    }),
-  );
   if (
-    !isOneOf(claimed?.state, ["created", "exists"]) ||
-    (claimed.state === "created" &&
-      claimed.physicalIdentity !== lease.artifact.physicalIdentity)
-  )
-    return failure("reconciliation-required");
-  const [leaseAfterClaim, claim] = await Promise.all([
-    readValidatedLease(
-      port,
-      request.leaseFilename,
-      lease.artifact.physicalIdentity,
-    ),
-    readArtifact(port, recoveryClaimName),
-  ]);
-  if (
-    leaseAfterClaim === undefined ||
-    claim?.state !== "present" ||
-    claim.physicalIdentity !== lease.artifact.physicalIdentity ||
-    claim.content !== lease.artifact.content
-  )
-    return failure("reconciliation-required");
-  if (
-    !(await removeExact(
-      port,
-      recoveryClaimName,
-      lease.artifact.physicalIdentity,
-    )) ||
-    !(await removeExact(
-      port,
-      request.leaseFilename,
-      lease.artifact.physicalIdentity,
-    ))
+    !(await completeLeaseCleanup(port, {
+      physicalIdentity: cleanup.physicalIdentity,
+      record: cleanup.record,
+    }))
   )
     return failure("reconciliation-required");
   return Object.freeze({ ok: true, state: "recovered" });
@@ -1176,7 +1254,7 @@ export const inspectLocalSqliteLifecycleInventory = async (
   | LocalSqliteLifecycleGateFailure
   | Readonly<{
       ok: true;
-      state: "available";
+      state: "busy" | "clean" | "recovery-required";
       entries: number;
       leases: number;
       bytes: number;
@@ -1187,9 +1265,14 @@ export const inspectLocalSqliteLifecycleInventory = async (
   if (port === undefined) return failure("unavailable");
   const inventory = await inspectInventory(port);
   if (inventory === undefined) return failure("reconciliation-required");
-  if (inventory.some(blocksDatabaseOpen))
-    return failure("reconciliation-required");
   const fenceEntry = inventory.find((entry) => entry.name === FENCE_NAME);
+  const hasMutationRecord = inventory.some(
+    (entry) =>
+      entry.name === "intent-v1.json" ||
+      entry.name === "operation-phase-v1.json",
+  );
+  if (hasMutationRecord && fenceEntry === undefined)
+    return failure("reconciliation-required");
   let lifecycle:
     | Pick<
         LocalSqliteLeaseRecord,
@@ -1210,26 +1293,28 @@ export const inspectLocalSqliteLifecycleInventory = async (
       return failure("reconciliation-required");
     lifecycle = fenceRecord;
   }
-  for (const entry of inventory) {
-    if (!entry.name.startsWith("lease-")) continue;
-    const lease = await readValidatedLease(
-      port,
-      entry.name,
-      entry.physicalIdentity,
-    );
+  let sawBusy = fenceEntry !== undefined || hasMutationRecord;
+  let sawDead = false;
+  for (const leaseId of inventoryLeaseIds(inventory)) {
+    const lease = await inspectLeaseCleanupState(port, leaseId);
     if (
       lease === undefined ||
+      lease.state === "absent" ||
       (lifecycle !== undefined && !sameLifecycle(lease.record, lifecycle))
     )
       return failure("reconciliation-required");
     lifecycle ??= lease.record;
+    const owner = await classifyLease(port, lease.record);
+    if (owner === undefined) return failure("unavailable");
+    if (owner === "dead") sawDead = true;
+    else sawBusy = true;
   }
   const finalInventory = await inspectInventory(port);
   if (finalInventory === undefined || !sameInventory(inventory, finalInventory))
     return failure("unavailable");
   return Object.freeze({
     ok: true,
-    state: "available",
+    state: sawBusy ? "busy" : sawDead ? "recovery-required" : "clean",
     entries: inventory.length,
     leases: inventory.filter((entry) => entry.name.startsWith("lease-")).length,
     bytes: inventory.reduce((total, entry) => total + entry.bytes, 0),

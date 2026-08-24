@@ -164,8 +164,17 @@ export type LocalResourceDoctorContext = Readonly<{
 }>;
 
 export type LocalResourceDoctorInspection = Readonly<{
-  state: "available" | "reconciliation-required" | "unavailable";
-  lifecycleState: "clean" | "busy" | "reconciliation-required" | "unavailable";
+  state:
+    | "available"
+    | "reconciliation-required"
+    | "recovery-required"
+    | "unavailable";
+  lifecycleState:
+    | "clean"
+    | "busy"
+    | "reconciliation-required"
+    | "recovery-required"
+    | "unavailable";
   databaseState: "present" | "missing" | "unavailable";
   backupState: "available" | "reconciliation-required" | "unavailable";
   sharedLeaseCount: number | null;
@@ -1403,12 +1412,19 @@ const normalizeDoctorInspection = (
   const publishedBackupCount = descriptors.publishedBackupCount
     ?.value as unknown;
   if (
-    !["available", "reconciliation-required", "unavailable"].includes(
-      state as string,
-    ) ||
-    !["clean", "busy", "reconciliation-required", "unavailable"].includes(
-      lifecycleState as string,
-    ) ||
+    ![
+      "available",
+      "reconciliation-required",
+      "recovery-required",
+      "unavailable",
+    ].includes(state as string) ||
+    ![
+      "clean",
+      "busy",
+      "reconciliation-required",
+      "recovery-required",
+      "unavailable",
+    ].includes(lifecycleState as string) ||
     !["present", "missing", "unavailable"].includes(databaseState as string) ||
     !["available", "reconciliation-required", "unavailable"].includes(
       backupState as string,
