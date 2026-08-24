@@ -314,14 +314,31 @@ describe("operational state retention", () => {
       now: () => now,
       randomId: () => (++temporary).toString(16).padStart(32, "0"),
     });
-    for (let index = 0; index < 129; index += 1) {
+    const diagnostic = {
+      code: "capture-failed" as const,
+      severity: "warning" as const,
+      configurationGeneration: null,
+    };
+    for (let batch = 0; batch < 2; batch += 1) {
       now += 1;
-      await recordSanitizedDiagnostic(store, {
-        code: "capture-failed",
-        severity: "warning",
-        configurationGeneration: null,
+      const result = await recordHookOperationalEvidence(store, {
+        diagnostics: Array.from({ length: 64 }, () => ({ ...diagnostic })),
+        health: [
+          {
+            scope: "hook",
+            stage: "capture",
+            outcome: "completed",
+            configurationGeneration: 1,
+            policyMode: "baseline",
+            receipt: null,
+          },
+        ],
+        checkpoints: [],
       });
+      expect(result.recorded, result.code).toBe(true);
     }
+    now += 1;
+    await recordSanitizedDiagnostic(store, diagnostic);
     let snapshot = await inspectOperationalState(store);
     expect(snapshot.diagnostics).toHaveLength(128);
     expect(snapshot.losses.diagnostics).toBe(1);

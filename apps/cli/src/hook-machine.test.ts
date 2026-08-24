@@ -298,14 +298,20 @@ describe("owned machine hook verification failures", () => {
     ).rejects.toThrow("cli.hook.invalid");
 
     const expired = fixture(50);
+    const expiredStream = new Readable({ read: () => undefined });
     await expect(
       runOwnedHookBootstrapForTesting(
         {
           ...authority(expired.artifacts.launcherPath),
           deadlineStartedAt: performance.now() - 51,
         },
-        { ...input, machineEntryPath: expired.machineEntryPath },
+        {
+          ...input,
+          machineEntryPath: expired.machineEntryPath,
+          stdin: expiredStream,
+        },
       ),
     ).rejects.toThrow("cli.hook.invalid");
+    expect(expiredStream.destroyed).toBe(true);
   });
 });

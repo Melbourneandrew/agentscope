@@ -253,27 +253,34 @@ const run = async (
   authorityInput: unknown,
   input: HookMachineTestingInput,
 ): Promise<void> => {
-  const authority = exactAuthority(authorityInput);
-  const duration = authority.duration;
-  const hookEntryAuthority = createHookEntryAuthority({
-    durationMilliseconds: duration,
-    startedAt: authority.deadlineStartedAt,
-  });
-  const remaining = (): number =>
-    Math.max(
-      0,
-      Math.floor(duration - (performance.now() - authority.deadlineStartedAt)),
+  try {
+    const authority = exactAuthority(authorityInput);
+    const duration = authority.duration;
+    const hookEntryAuthority = createHookEntryAuthority({
+      durationMilliseconds: duration,
+      startedAt: authority.deadlineStartedAt,
+    });
+    const remaining = (): number =>
+      Math.max(
+        0,
+        Math.floor(
+          duration - (performance.now() - authority.deadlineStartedAt),
+        ),
+      );
+    const verificationBudget = remaining();
+    if (verificationBudget <= 0) throw new Error("cli.hook.invalid");
+    const launcher = await runVerifier(authority, input, verificationBudget);
+    const evidenceBudget = remaining();
+    if (evidenceBudget <= 0) throw new Error("cli.hook.invalid");
+    const evidence = await readEvidence(input.stdin, evidenceBudget);
+    if (remaining() <= 0) throw new Error("cli.hook.invalid");
+    await input.onEvidence(
+      Object.freeze({ evidence, hookEntryAuthority, launcher }),
     );
-  const verificationBudget = remaining();
-  if (verificationBudget <= 0) throw new Error("cli.hook.invalid");
-  const launcher = await runVerifier(authority, input, verificationBudget);
-  const evidenceBudget = remaining();
-  if (evidenceBudget <= 0) throw new Error("cli.hook.invalid");
-  const evidence = await readEvidence(input.stdin, evidenceBudget);
-  if (remaining() <= 0) throw new Error("cli.hook.invalid");
-  await input.onEvidence(
-    Object.freeze({ evidence, hookEntryAuthority, launcher }),
-  );
+  } catch (error) {
+    input.stdin.destroy();
+    throw error;
+  }
 };
 
 /* v8 ignore start -- production-only packed entry; verify-artifact executes the
