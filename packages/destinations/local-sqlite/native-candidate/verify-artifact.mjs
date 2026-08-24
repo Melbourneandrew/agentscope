@@ -170,44 +170,350 @@ const verifySourceRevision = (material, temporaryRoot) => {
     expected,
   );
 };
-const assertNoContainer = (name) => {
-  assert.equal(
-    command("docker", [
-      "ps",
-      "-a",
-      "--filter",
-      `name=^/${name}$`,
-      "--format",
-      "{{.ID}}",
-    ]),
-    "",
+const CONTAINER_SETUP_BUDGET_MILLISECONDS = 60_000;
+const DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS = 30_000;
+const CONTAINER_ABSENCE_PROOF_RESERVE_MILLISECONDS = 5_000;
+const assertNoContainer = (
+  name,
+  timeout = DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS,
+) => {
+  const result = spawnSync(
+    "docker",
+    ["ps", "-a", "--filter", `name=^/${name}$`, "--format", "{{.ID}}"],
+    { encoding: "utf8", maxBuffer: 64 * 1024, timeout },
   );
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), "");
 };
-const runContainer = (name, arguments_, timeout = 180_000) => {
-  const result = spawnSync("docker", ["run", "--name", name, ...arguments_], {
+const boundedWaitState = new Int32Array(new SharedArrayBuffer(4));
+const boundedTimeoutResult = () =>
+  Object.freeze({
+    error: Object.assign(new Error("bounded container timeout"), {
+      code: "ETIMEDOUT",
+    }),
+    status: null,
+    stdout: "",
+    stderr: "",
+  });
+const remainingMilliseconds = (deadline, now = () => performance.now()) =>
+  Math.max(0, Math.floor(deadline - now()));
+const performBoundedContainer = (context) => {
+  const {
+    name,
+    arguments_,
+    workTimeout,
+    teardownReserve,
+    setupDeadline,
+    absoluteDeadline,
+    dockerCommand,
+    now,
+    cleanupState,
+  } = context;
+  const createArguments =
+    arguments_[0] === "--rm" ? arguments_.slice(1) : arguments_;
+  assert.equal(createArguments.includes("--rm"), false);
+  const createTimeout = remainingMilliseconds(setupDeadline, now);
+  if (createTimeout < 1) return boundedTimeoutResult();
+  cleanupState.createAttempted = true;
+  const create = dockerCommand(
+    "docker",
+    ["create", "--name", name, ...createArguments],
+    {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: createTimeout,
+    },
+  );
+  cleanupState.cleanupRequired =
+    create.status === 0 || !Number.isInteger(create.status);
+  if (create.error || create.status !== 0) return create;
+  const startTimeout = remainingMilliseconds(setupDeadline, now);
+  if (startTimeout < 1) return boundedTimeoutResult();
+  const start = dockerCommand("docker", ["start", name], {
     encoding: "utf8",
     maxBuffer: 4 * 1024 * 1024,
-    timeout,
+    timeout: startTimeout,
   });
-  spawnSync("docker", ["rm", "-f", name], { encoding: "utf8" });
-  assertNoContainer(name);
+  if (start.error || start.status !== 0) return start;
+  const workDeadline = Math.min(
+    now() + workTimeout,
+    absoluteDeadline - teardownReserve,
+  );
+  for (;;) {
+    const inspectTimeout = remainingMilliseconds(workDeadline, now);
+    if (inspectTimeout < 1) return boundedTimeoutResult();
+    const inspect = dockerCommand(
+      "docker",
+      ["inspect", "--format", "{{json .State}}", name],
+      {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024,
+        timeout: inspectTimeout,
+      },
+    );
+    if (inspect.error || inspect.status !== 0) return inspect;
+    const state = JSON.parse(inspect.stdout);
+    if (state.Running === false) {
+      const logsTimeout = remainingMilliseconds(workDeadline, now);
+      if (logsTimeout < 1) return boundedTimeoutResult();
+      const logs = dockerCommand("docker", ["logs", name], {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: logsTimeout,
+      });
+      return Object.freeze({
+        error: logs.error,
+        status: logs.error ? null : state.ExitCode,
+        stdout: logs.stdout ?? "",
+        stderr: logs.stderr ?? "",
+      });
+    }
+    if (now() >= workDeadline) return boundedTimeoutResult();
+    Atomics.wait(boundedWaitState, 0, 0, 50);
+  }
+};
+const cleanupBoundedContainer = (context) => {
+  const {
+    name,
+    absoluteDeadline,
+    teardownReserve,
+    cleanupState,
+    dockerCommand,
+    proveAbsent,
+    now,
+  } = context;
+  const failures = [];
+  const absenceProofReserve = Math.min(
+    teardownReserve,
+    CONTAINER_ABSENCE_PROOF_RESERVE_MILLISECONDS,
+  );
+  const cleanupDeadline = absoluteDeadline - absenceProofReserve;
+  if (cleanupState.cleanupRequired) {
+    const cleanupTimeout = remainingMilliseconds(cleanupDeadline, now);
+    if (cleanupTimeout < 1) {
+      failures.push(new Error("container cleanup reserve exhausted"));
+    } else {
+      const cleanup = dockerCommand("docker", ["rm", "-f", name], {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024,
+        timeout: cleanupTimeout,
+      });
+      if (cleanup.error || cleanup.status !== 0)
+        failures.push(
+          cleanup.error ?? new Error("container cleanup command failed"),
+        );
+    }
+  }
+  if (!cleanupState.createAttempted) return failures;
+  const verificationTimeout = remainingMilliseconds(absoluteDeadline, now);
+  if (verificationTimeout < 1) {
+    failures.push(
+      new Error("container absence verification reserve exhausted"),
+    );
+    return failures;
+  }
+  try {
+    proveAbsent(name, verificationTimeout);
+  } catch (error) {
+    failures.push(error);
+  }
+  return failures;
+};
+const runBoundedContainer = (
+  name,
+  arguments_,
+  workTimeout,
+  teardownReserve = DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS,
+  runtime = {},
+) => {
+  const now = runtime.now ?? (() => performance.now());
+  const startedAt = now();
+  const setupDeadline = startedAt + CONTAINER_SETUP_BUDGET_MILLISECONDS;
+  const context = {
+    name,
+    arguments_,
+    workTimeout,
+    teardownReserve,
+    setupDeadline,
+    absoluteDeadline: setupDeadline + workTimeout + teardownReserve,
+    dockerCommand: runtime.dockerCommand ?? spawnSync,
+    proveAbsent: runtime.proveAbsent ?? assertNoContainer,
+    now,
+    cleanupState: { createAttempted: false, cleanupRequired: false },
+  };
+  let result;
+  let operationError;
+  try {
+    result = performBoundedContainer(context);
+  } catch (error) {
+    operationError = error;
+  }
+  const cleanupFailures = cleanupBoundedContainer(context);
+  if (cleanupFailures.length > 0)
+    throw new AggregateError(
+      cleanupFailures,
+      "bounded container cleanup was not proved",
+    );
+  if (operationError) throw operationError;
+  return result;
+};
+const verifyCreateUncertaintyCleanup = () => {
+  const calls = [];
+  let absenceChecks = 0;
+  const timeout = Object.assign(new Error("synthetic create timeout"), {
+    code: "ETIMEDOUT",
+  });
+  const result = runBoundedContainer(
+    "synthetic-create-uncertainty",
+    ["image"],
+    1_000,
+    1_000,
+    {
+      dockerCommand: (_program, arguments_) => {
+        calls.push(arguments_);
+        if (arguments_[0] === "create")
+          return { error: timeout, status: null, stdout: "", stderr: "" };
+        if (arguments_[0] === "rm")
+          return { error: undefined, status: 0, stdout: "", stderr: "" };
+        throw new Error("unexpected synthetic Docker command");
+      },
+      proveAbsent: () => {
+        absenceChecks += 1;
+      },
+    },
+  );
+  assert.equal(result.error, timeout);
+  assert.equal(result.status, null);
+  assert.deepEqual(
+    calls.map((arguments_) => arguments_.slice(0, 3)),
+    [
+      ["create", "--name", "synthetic-create-uncertainty"],
+      ["rm", "-f", "synthetic-create-uncertainty"],
+    ],
+  );
+  assert.equal(absenceChecks, 1);
+  let failedAbsenceChecks = 0;
+  assert.throws(
+    () =>
+      runBoundedContainer(
+        "synthetic-create-cleanup-failure",
+        ["image"],
+        1_000,
+        1_000,
+        {
+          dockerCommand: (_program, arguments_) => {
+            if (arguments_[0] === "create")
+              return { error: timeout, status: null, stdout: "", stderr: "" };
+            return {
+              error: new Error("synthetic cleanup failure"),
+              status: null,
+              stdout: "",
+              stderr: "",
+            };
+          },
+          proveAbsent: () => {
+            failedAbsenceChecks += 1;
+            throw new Error("synthetic container still present");
+          },
+        },
+      ),
+    /bounded container cleanup was not proved/u,
+  );
+  assert.equal(failedAbsenceChecks, 1);
+  let clock = 0;
+  let timedOutAbsenceChecks = 0;
+  let observedProofTimeout = 0;
+  assert.throws(
+    () =>
+      runBoundedContainer(
+        "synthetic-create-cleanup-timeout",
+        ["image"],
+        1_000,
+        1_000,
+        {
+          now: () => clock,
+          dockerCommand: (_program, arguments_, options) => {
+            if (arguments_[0] === "create")
+              return { error: timeout, status: null, stdout: "", stderr: "" };
+            assert.equal(arguments_[0], "rm");
+            clock += options.timeout;
+            return {
+              error: timeout,
+              status: null,
+              stdout: "",
+              stderr: "",
+            };
+          },
+          proveAbsent: (_name, proofTimeout) => {
+            timedOutAbsenceChecks += 1;
+            observedProofTimeout = proofTimeout;
+          },
+        },
+      ),
+    /bounded container cleanup was not proved/u,
+  );
+  assert.equal(timedOutAbsenceChecks, 1);
+  assert.equal(observedProofTimeout, 1_000);
+};
+const runContainer = (
+  name,
+  arguments_,
+  workTimeout = 180_000,
+  teardownReserve = DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS,
+) => {
+  const result = runBoundedContainer(
+    name,
+    arguments_,
+    workTimeout,
+    teardownReserve,
+  );
   if (result.error || result.status !== 0)
     throw new Error(
       `native candidate container failed: ${result.stderr ?? ""}`,
     );
   return result.stdout.trim();
 };
-const runContainerFailure = (name, arguments_, timeout = 60_000) => {
-  const result = spawnSync("docker", ["run", "--name", name, ...arguments_], {
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-    timeout,
-  });
-  spawnSync("docker", ["rm", "-f", name], { encoding: "utf8" });
-  assertNoContainer(name);
-  assert(result.error || result.status !== 0);
+const runContainerFailure = (
+  name,
+  arguments_,
+  workTimeout = 60_000,
+  teardownReserve = DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS,
+) => {
+  const result = runBoundedContainer(
+    name,
+    arguments_,
+    workTimeout,
+    teardownReserve,
+  );
+  if (result.error)
+    throw new Error(
+      `native candidate failure oracle unavailable: ${typeof result.error.code === "string" ? result.error.code : "unknown"}`,
+    );
+  assert(Number.isInteger(result.status));
+  assert.notEqual(result.status, 0);
   return Object.freeze({
     status: result.status,
+    rejected: true,
+    outputDiscarded: true,
+  });
+};
+const runContainerOutputOverflow = (
+  name,
+  arguments_,
+  workTimeout = 60_000,
+  teardownReserve = DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS,
+) => {
+  const result = runBoundedContainer(
+    name,
+    arguments_,
+    workTimeout,
+    teardownReserve,
+  );
+  assert.equal(result.error?.code, "ENOBUFS");
+  assert.equal(result.status, null);
+  return Object.freeze({
+    status: null,
     rejected: true,
     outputDiscarded: true,
   });
@@ -289,32 +595,44 @@ const compileExecSupervisor = (temporaryRoot) => {
     sha256: sha("sha256", first),
   });
 };
-const runSupervisedBuildContainer = (name, arguments_, timeout = 180_000) => {
-  const result = spawnSync("docker", ["run", "--name", name, ...arguments_], {
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-    timeout,
+const runSupervisedBuildContainer = (
+  name,
+  arguments_,
+  workTimeout = 180_000,
+  teardownReserve = DEFAULT_CONTAINER_TEARDOWN_RESERVE_MILLISECONDS,
+) => {
+  const result = runBoundedContainer(
+    name,
+    arguments_,
+    workTimeout,
+    teardownReserve,
+  );
+  const lines = (result.stderr ?? "").trim().split("\n").filter(Boolean);
+  return Object.freeze({
+    exitCode: result.status,
+    output: (result.stdout ?? "").trim(),
+    error: result.error,
+    observed: Object.freeze(
+      lines
+        .filter((line) => line.startsWith("AGENTSCOPE_EXEC\t"))
+        .map((line) => line.slice("AGENTSCOPE_EXEC\t".length)),
+    ),
+    unexpectedStderr: Object.freeze(
+      lines.filter((line) => !line.startsWith("AGENTSCOPE_EXEC\t")),
+    ),
   });
-  try {
-    const lines = (result.stderr ?? "").trim().split("\n").filter(Boolean);
-    return Object.freeze({
-      exitCode: result.status,
-      output: (result.stdout ?? "").trim(),
-      error: result.error,
-      observed: Object.freeze(
-        lines
-          .filter((line) => line.startsWith("AGENTSCOPE_EXEC\t"))
-          .map((line) => line.slice("AGENTSCOPE_EXEC\t".length)),
-      ),
-      unexpectedStderr: Object.freeze(
-        lines.filter((line) => !line.startsWith("AGENTSCOPE_EXEC\t")),
-      ),
-    });
-  } finally {
-    spawnSync("docker", ["rm", "-f", name], { encoding: "utf8" });
-    assertNoContainer(name);
-  }
 };
+const BUILD_PROCESS_COUNT = 4;
+const BUILD_PROCESS_TIMEOUT_MILLISECONDS = 120_000;
+const HOSTILE_PRELUDE_TIMEOUT_MILLISECONDS = 5_000;
+const BUILD_TEARDOWN_RESERVE_MILLISECONDS = 60_000;
+// The external authority covers the complete sequential inner graph and owns
+// an exclusive teardown reserve. An outer timeout is cleanup evidence only; it
+// is never accepted as a semantic hostile-input rejection.
+const BUILD_WORK_TIMEOUT_MILLISECONDS =
+  BUILD_PROCESS_COUNT * BUILD_PROCESS_TIMEOUT_MILLISECONDS;
+const HOSTILE_BUILD_WORK_TIMEOUT_MILLISECONDS =
+  BUILD_WORK_TIMEOUT_MILLISECONDS + HOSTILE_PRELUDE_TIMEOUT_MILLISECONDS;
 const supervisedFailureDiagnostic = (observed) => {
   const maximumLines = 64;
   const maximumLineCharacters = 512;
@@ -439,6 +757,91 @@ const allowedBuildExecutables = new Set([
   "/usr/lib/gcc/x86_64-linux-gnu/12/lto1",
   "/usr/bin/python3",
 ]);
+const timingContainerProfile = (execSupervisor) => [
+  "--platform",
+  "linux/amd64",
+  "--network",
+  "none",
+  "--read-only",
+  "--cap-drop",
+  "ALL",
+  "--security-opt",
+  "no-new-privileges",
+  "--user",
+  `${process.getuid()}:${process.getgid()}`,
+  "--pids-limit",
+  "16",
+  "--memory",
+  "128m",
+  "--cpus",
+  "1",
+  "--tmpfs",
+  "/work:rw,exec,nosuid,size=8m",
+  "-v",
+  `${execSupervisor}:/authority/exec-supervisor:ro`,
+  "--entrypoint",
+  "/authority/exec-supervisor",
+];
+const verifyControlledSlowCompiler = (temporaryRoot, execSupervisor) => {
+  const driver = join(temporaryRoot, "controlled-slow-compiler.py");
+  writeFileSync(
+    driver,
+    [
+      "import os, signal, subprocess",
+      'fifo = "/work/controlled-slow.c"',
+      "os.mkfifo(fifo, 0o600)",
+      'child = subprocess.Popen(["/usr/bin/cc", "-x", "c", "-c", fifo, "-o", "/work/controlled-slow.o"], cwd="/work", env={"HOME":"/work","LANG":"C","LC_ALL":"C","PATH":"/usr/bin:/bin","TMPDIR":"/work"}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)',
+      "try:",
+      "    child.wait(timeout=0.25)",
+      "except subprocess.TimeoutExpired:",
+      "    os.killpg(child.pid, signal.SIGKILL)",
+      "    child.wait(timeout=1)",
+      "    raise SystemExit(124)",
+      "raise SystemExit(125)",
+      "",
+    ].join("\n"),
+    { mode: 0o400 },
+  );
+  const observed = runSupervisedBuildContainer(
+    `agentscope-native-controlled-slow-compiler-${randomUUID()}`,
+    [
+      "--rm",
+      ...timingContainerProfile(execSupervisor),
+      "-v",
+      `${driver}:/authority/controlled-slow-compiler.py:ro`,
+      image,
+      "/usr/bin/python3",
+      "-B",
+      "/authority/controlled-slow-compiler.py",
+    ],
+    30_000,
+  );
+  assert.equal(observed.error, undefined);
+  assert.equal(observed.exitCode, 124);
+  assert.equal(observed.output, "");
+  assert.deepEqual(observed.unexpectedStderr, []);
+  const executables = observed.observed.map(canonicalBuildExecutable);
+  assert.equal(executables[0], "/usr/bin/python3");
+  assert(executables.includes("/usr/bin/cc"));
+};
+const verifySupervisedSignalCleanup = (execSupervisor) => {
+  const name = `agentscope-native-supervised-signal-${randomUUID()}`;
+  const observed = runSupervisedBuildContainer(
+    name,
+    [
+      "--rm",
+      ...timingContainerProfile(execSupervisor),
+      image,
+      "/bin/sleep",
+      "30",
+    ],
+    250,
+  );
+  assert.equal(observed.error?.code, "ETIMEDOUT");
+  assert.equal(observed.exitCode, null);
+  assert.equal(observed.output, "");
+  assertNoContainer(name);
+};
 const buildContainerArguments = (
   materialDirectories,
   execSupervisor,
@@ -501,6 +904,8 @@ const build = (materialDirectories, execSupervisor) => {
   const observed = runSupervisedBuildContainer(
     name,
     buildContainerArguments(materialDirectories, execSupervisor),
+    BUILD_WORK_TIMEOUT_MILLISECONDS,
+    BUILD_TEARDOWN_RESERVE_MILLISECONDS,
   );
   if (observed.exitCode !== 0)
     throw new Error(
@@ -909,7 +1314,8 @@ const verifyHostileBuildInputs = (
       execSupervisor,
       "unexpected-descendant",
     ),
-    120_000,
+    HOSTILE_BUILD_WORK_TIMEOUT_MILLISECONDS,
+    BUILD_TEARDOWN_RESERVE_MILLISECONDS,
   );
   assert.equal(descendant.exitCode, 0);
   const canonicalDescendantExecutables = descendant.observed.map(
@@ -928,7 +1334,8 @@ const verifyHostileBuildInputs = (
       execSupervisor,
       "extra-allowed-executable",
     ),
-    120_000,
+    HOSTILE_BUILD_WORK_TIMEOUT_MILLISECONDS,
+    BUILD_TEARDOWN_RESERVE_MILLISECONDS,
   );
   assert.equal(extraAllowed.exitCode, 0);
   assert.deepEqual(extraAllowed.unexpectedStderr, []);
@@ -949,7 +1356,8 @@ const verifyHostileBuildInputs = (
     runContainerFailure(
       name,
       buildContainerArguments(materialDirectories, execSupervisor, mode),
-      120_000,
+      HOSTILE_BUILD_WORK_TIMEOUT_MILLISECONDS,
+      BUILD_TEARDOWN_RESERVE_MILLISECONDS,
     );
   }
   return Object.freeze({
@@ -1197,35 +1605,41 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   assert.equal(authorityResult.accessorCalls, 0);
   assert.equal(authorityResult.proxyCanaryEscaped, false);
   assert(authorityResult.after <= authorityResult.before + 1);
-  const hostileResults = {};
-  for (const mode of ["partial", "overflow"]) {
-    const hostileName = `agentscope-native-hostile-${mode}-${randomUUID()}`;
-    hostileResults[mode] = runContainerFailure(hostileName, [
-      "--rm",
-      "--platform",
-      "linux/amd64",
-      "--network",
-      "none",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      "--pids-limit",
-      "16",
-      "--memory",
-      "128m",
-      "--cpus",
-      "0.5",
-      "-v",
-      `${join(root, "tooling/hostile-driver.cjs")}:/authority/hostile-driver.cjs:ro`,
-      "--entrypoint",
-      "/usr/local/bin/node",
-      executionImage,
-      "/authority/hostile-driver.cjs",
-      mode,
-    ]);
-  }
+  const hostileArguments = (mode) => [
+    "--rm",
+    "--platform",
+    "linux/amd64",
+    "--network",
+    "none",
+    "--read-only",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--pids-limit",
+    "16",
+    "--memory",
+    "128m",
+    "--cpus",
+    "0.5",
+    "-v",
+    `${join(root, "tooling/hostile-driver.cjs")}:/authority/hostile-driver.cjs:ro`,
+    "--entrypoint",
+    "/usr/local/bin/node",
+    executionImage,
+    "/authority/hostile-driver.cjs",
+    mode,
+  ];
+  const hostileResults = {
+    partial: runContainerFailure(
+      `agentscope-native-hostile-partial-${randomUUID()}`,
+      hostileArguments("partial"),
+    ),
+    overflow: runContainerOutputOverflow(
+      `agentscope-native-hostile-overflow-${randomUUID()}`,
+      hostileArguments("overflow"),
+    ),
+  };
   const forgedName = `agentscope-native-hostile-forged-${randomUUID()}`;
   const forged = runContainer(forgedName, [
     "--rm",
@@ -1280,6 +1694,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
 const temporary = mkdtempSync(join(tmpdir(), "agentscope-native-candidate-"));
 try {
   verifySupervisedFailureDiagnostic();
+  verifyCreateUncertaintyCleanup();
   verifyBuildExecutableCanonicalization();
   verifyArchiveCompilerHostileFixtures();
   verifyMaterializerParentSwapFixture();
@@ -1321,6 +1736,8 @@ try {
     join(materialDirectory, `${name}-compiled`),
   );
   const execSupervisor = compileExecSupervisor(temporary);
+  verifyControlledSlowCompiler(temporary, execSupervisor.path);
+  verifySupervisedSignalCleanup(execSupervisor.path);
   const first = build(materialDirectories, execSupervisor.path);
   const second = build(materialDirectories, execSupervisor.path);
   assert.deepEqual(first, second);

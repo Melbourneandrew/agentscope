@@ -88,6 +88,13 @@ import {
   recoverDestinationLifecycleMutation,
 } from "./dist/configuration/management-index.js";
 
+// Artifact verification runs inside the aggregate Nx graph, where process
+// startup can be delayed by concurrent package builds. Keep this runner-only
+// guard separate from product hook deadlines, and exercise a delay longer than
+// the former one-second guard so the regression remains causal.
+const ARTIFACT_COORDINATOR_TIMEOUT_MILLISECONDS = 5_000;
+const ARTIFACT_COORDINATOR_STARTUP_DELAY_MILLISECONDS = 1_100;
+
 const listRegularFiles = (directory, prefix = "") => {
   const files = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -516,7 +523,7 @@ const reconciledOperationalSnapshot = await runOperationalCoordinatorForTesting(
     homeRoot: artifactHome.root,
     platform: artifactHome.platform,
   },
-  1_000,
+  ARTIFACT_COORDINATOR_TIMEOUT_MILLISECONDS,
   {},
 );
 if (
@@ -1374,7 +1381,10 @@ try {
   });
   if (coordinatorBuild.outputFiles.length !== 1)
     throw new Error("Core coordinator did not build as one program.");
-  const coordinatorProgram = coordinatorBuild.outputFiles[0].text;
+  const coordinatorProgram = [
+    `await new Promise((resolve) => setTimeout(resolve, ${ARTIFACT_COORDINATOR_STARTUP_DELAY_MILLISECONDS}));`,
+    coordinatorBuild.outputFiles[0].text,
+  ].join("\n");
   writeFileSync(
     entry,
     [
@@ -1387,7 +1397,7 @@ try {
       "  const configuration = parseAgentscopeConfiguration({ configurationVersion: 2, generation: 0, destinations: {}, routing: { version: 1, selectedConnectionIds: [], hookDeadlineMilliseconds: 2000 }, policy: { version: 1, reference: 'core-redaction-policy-v1-baseline' } }, compileDestinationRegistry([]));",
       "  return typeof core.runResolvedTraceLifecycle === 'function' && !('searchConfiguredTraces' in core) && !('getConfiguredTrace' in core) && !('prepareCoreRetrievalRuntime' in core) && !('agentscope' in core) && !('CoreRedactionError' in core) && !('createHookEntryAuthority' in core) && !('runFailOpenTraceLifecycle' in core) && !('withCaptureInvocation' in core) && !('redactCapturedTrace' in core) && !('resolveCaptureInvocationSnapshot' in core) && !('recordPipelineHealth' in core) && !('recordSanitizedDiagnostic' in core) && home.configFile.endsWith('config.json') && serializeAgentscopeConfiguration(configuration).endsWith('\\n') && typeof compileConfigurationMigrationRegistry === 'function' && typeof createConfigurationProcessIdentity === 'function' && typeof createConfigurationStore === 'function' && typeof createOperationalStateStore === 'function' && typeof inspectAgentscopeDoctor === 'function' && typeof migrateConfigurationDocument === 'function' && typeof readConfigurationSnapshot === 'function' && typeof writeConfigurationSnapshot === 'function';",
       "};",
-      "export const verifyCoordinator = (homeRoot, platform) => runOperationalCoordinatorForTesting({ kind: 'preload', homeRoot, platform }, 1000, {});",
+      `export const verifyCoordinator = (homeRoot, platform) => runOperationalCoordinatorForTesting({ kind: 'preload', homeRoot, platform }, ${ARTIFACT_COORDINATOR_TIMEOUT_MILLISECONDS}, {});`,
     ].join("\n"),
   );
   await build({
