@@ -37,6 +37,14 @@ const digest = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 const absentDigest = digest("");
 const bytes = (value: string): Uint8Array => new TextEncoder().encode(value);
+const writeFileWithExactMode = async (
+  path: string,
+  value: string,
+  mode: number,
+): Promise<void> => {
+  await writeFile(path, value, { mode });
+  await chmod(path, mode);
+};
 const pathIdentity = (path: string): string => {
   if (process.platform === "darwin") {
     let identity = path.normalize("NFD");
@@ -109,7 +117,7 @@ describe("harness installation transaction", () => {
     const root = await temporaryRoot();
     const first = join(root, "first.json");
     const second = join(root, "second.json");
-    await writeFile(first, "old-first", { mode: 0o640 });
+    await writeFileWithExactMode(first, "old-first", 0o640);
     const plan = await inspectHarnessInstallation(
       planInput(root, [first, second], ({ targetPath }) => ({
         kind: "replace",
@@ -594,9 +602,9 @@ describe("harness installation recovery", () => {
     const prefix = artifactPrefix(transactionId, target);
     const stagePath = `${prefix}.stage`;
     const backupPath = `${prefix}.backup`;
-    await writeFile(target, "before", { mode: 0o640 });
-    await writeFile(stagePath, "after", { mode: 0o640 });
-    await writeFile(backupPath, "before", { mode: 0o640 });
+    await writeFileWithExactMode(target, "before", 0o640);
+    await writeFileWithExactMode(stagePath, "after", 0o640);
+    await writeFileWithExactMode(backupPath, "before", 0o640);
     const manifest = {
       version: 1,
       transactionId,
@@ -624,7 +632,7 @@ describe("harness installation recovery", () => {
     });
     expect(await readFile(target, "utf8")).toBe("after");
 
-    await writeFile(backupPath, "before", { mode: 0o640 });
+    await writeFileWithExactMode(backupPath, "before", 0o640);
     await writeFile(
       manifestPath,
       `${JSON.stringify({ ...manifest, state: "committed" })}\n`,
@@ -637,8 +645,8 @@ describe("harness installation recovery", () => {
       state: "committed",
     });
 
-    await writeFile(stagePath, "after", { mode: 0o640 });
-    await writeFile(backupPath, "before", { mode: 0o640 });
+    await writeFileWithExactMode(stagePath, "after", 0o640);
+    await writeFileWithExactMode(backupPath, "before", 0o640);
     await writeFile(
       manifestPath,
       `${JSON.stringify({ ...manifest, state: "committed" })}\n`,
