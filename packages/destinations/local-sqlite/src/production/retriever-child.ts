@@ -21,6 +21,10 @@ import {
   type OwnedFile,
 } from "./owned-filesystem.js";
 import {
+  admitsOwnedSqliteFamilyExpansion,
+  admitsOwnedSqliteFamilySettlement,
+} from "./sqlite-family-authority.js";
+import {
   decodeLocalSqliteReporterChildPermission,
   encodeLocalSqliteReporterChildMessage,
 } from "./reporter-child-protocol.js";
@@ -51,23 +55,6 @@ const fail = (): never => {
 };
 
 type SqliteFamily = ReturnType<typeof inspectOwnedSqliteFamily>;
-
-const sameFamily = (expected: SqliteFamily, observed: SqliteFamily): boolean =>
-  expected.length === observed.length &&
-  expected.every(
-    ({ name, evidence }, index) =>
-      observed[index]?.name === name &&
-      observed[index]?.evidence.physicalIdentity === evidence.physicalIdentity,
-  );
-
-const admittedFinalFamily = (
-  expected: SqliteFamily,
-  observed: SqliteFamily,
-): boolean =>
-  observed.every(({ name, evidence }) => {
-    const prior = expected.find((entry) => entry.name === name);
-    return prior?.evidence.physicalIdentity === evidence.physicalIdentity;
-  });
 
 const readLines = (): Readonly<{
   request: Promise<LocalSqliteRetrieverChildRequest>;
@@ -227,18 +214,17 @@ const main = async (): Promise<void> => {
       request.operation === "search"
         ? await retriever.search(request.plan as LocalSqliteSearchPlan, signal)
         : await retriever.get(request.plan as LocalSqliteGetPlan, signal);
+    const after = inspectOwnedSqliteFamily(
+      directory,
+      databaseName,
+      LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+    );
     if (
       remaining() < 1 ||
-      !sameFamily(
-        admittedFamily,
-        inspectOwnedSqliteFamily(
-          directory,
-          databaseName,
-          LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
-        ),
-      )
+      !admitsOwnedSqliteFamilyExpansion(admittedFamily, after)
     )
       return fail();
+    admittedFamily = after;
     result = Object.freeze({
       type: "retrieval-result",
       nonce: request.nonce,
@@ -255,7 +241,7 @@ const main = async (): Promise<void> => {
       directory !== undefined &&
       databaseFile !== undefined &&
       admittedFamily !== undefined &&
-      !admittedFinalFamily(
+      !admitsOwnedSqliteFamilySettlement(
         admittedFamily,
         inspectOwnedSqliteFamily(
           directory,

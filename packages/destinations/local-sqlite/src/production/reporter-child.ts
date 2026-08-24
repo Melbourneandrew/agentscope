@@ -25,6 +25,10 @@ import {
   openOwnedFile,
   type OwnedFile,
 } from "./owned-filesystem.js";
+import {
+  admitsOwnedSqliteFamilyExpansion,
+  admitsOwnedSqliteFamilySettlement,
+} from "./sqlite-family-authority.js";
 import { LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES } from "../lifecycle/capability.js";
 import {
   decodeLocalSqliteReporterChildPermission,
@@ -60,23 +64,6 @@ const write = (
 };
 
 type SqliteFamily = ReturnType<typeof inspectOwnedSqliteFamily>;
-
-const sameFamily = (expected: SqliteFamily, observed: SqliteFamily): boolean =>
-  expected.length === observed.length &&
-  expected.every(
-    ({ name, evidence }, index) =>
-      observed[index]?.name === name &&
-      observed[index]?.evidence.physicalIdentity === evidence.physicalIdentity,
-  );
-
-const admittedFinalFamily = (
-  expected: SqliteFamily,
-  observed: SqliteFamily,
-): boolean =>
-  observed.every(({ name, evidence }) => {
-    const prior = expected.find((entry) => entry.name === name);
-    return prior?.evidence.physicalIdentity === evidence.physicalIdentity;
-  });
 
 // eslint-disable-next-line max-lines-per-function -- the isolated child owns one closed request/permission/native/settlement ledger.
 const main = async (): Promise<void> => {
@@ -269,8 +256,9 @@ const main = async (): Promise<void> => {
       databaseName,
       LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
     );
-    if (!sameFamily(admittedFamily, after))
+    if (!admitsOwnedSqliteFamilyExpansion(admittedFamily, after))
       receipt = createReporterReceipt("outcome-unknown");
+    else admittedFamily = after;
   } catch {
     receipt = createReporterReceipt("outcome-unknown");
   }
@@ -281,7 +269,7 @@ const main = async (): Promise<void> => {
       directory !== undefined &&
       databaseFile !== undefined &&
       admittedFamily !== undefined &&
-      !admittedFinalFamily(
+      !admitsOwnedSqliteFamilySettlement(
         admittedFamily,
         inspectOwnedSqliteFamily(
           directory,
