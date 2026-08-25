@@ -23,6 +23,7 @@ export {
   decodeLocalSqliteLeaseRecord,
   encodeLocalSqliteFenceRecord,
   encodeLocalSqliteLeaseRecord,
+  inspectLocalSqliteDeadLeaseRecoveryPlan,
   inspectLocalSqliteLifecycleInventory,
   LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS,
   parseLocalSqliteFenceRecord,
@@ -31,10 +32,13 @@ export {
   releaseLocalSqliteExclusiveFence,
   releaseLocalSqliteSharedLease,
   type LocalSqliteExclusiveFenceAuthority,
+  type LocalSqliteDeadLeaseRecoveryEntry,
+  type LocalSqliteDeadLeaseRecoveryPlanResult,
   type LocalSqliteFenceRecord,
   type LocalSqliteLifecycleGateFailure,
   type LocalSqliteLifecycleGatePort,
   type LocalSqliteLeaseRecord,
+  type LocalSqliteRecoveryFenceRecord,
   type LocalSqliteSharedLeaseAuthority,
 } from "./lifecycle/fence.js";
 export {
@@ -120,3 +124,27 @@ export {
   type LocalSqliteSearchEvidence,
   type LocalSqliteSearchPlan,
 } from "./retriever/index.js";
+export {
+  bindLocalSqliteProductionRuntimeForTesting,
+  type LocalSqliteProductionRuntime,
+} from "./production/runtime.js";
+export { createLocalSqliteDestinationDescriptorForTesting } from "./production/descriptor.js";
+export {
+  createLocalSqliteProductionLifecyclePort,
+  type LocalSqliteProductionHome,
+  type OwnedSqliteOpener,
+} from "./production/lifecycle-port.js";
+export { createLocalSqliteProductionMaintenancePort } from "./production/maintenance-port.js";
+export {
+  createLocalSqliteFilesystemGatePort,
+  currentProcessStartIdentity,
+} from "./production/filesystem-port.js";
+export {
+  createOwnedMigrationDatabase,
+  createOwnedReporterDatabase,
+  createOwnedRetrieverDatabase,
+  initializeOwnedSqliteConnection,
+  type LocalSqliteExecutionPolicy,
+  type OwnedSqliteConnection,
+  type OwnedSqliteStatement,
+} from "./production/sqlite-port.js";

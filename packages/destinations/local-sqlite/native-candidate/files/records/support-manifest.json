@@ -3,25 +3,30 @@
   "capability": "local-sqlite",
   "disposition": "proposed-unpublished-execution-eligible",
   "artifactRoot": "internal/local-sqlite",
-  "loaderContract": "owned-absolute-no-discovery-v1",
+  "loaderContract": "owned-absolute-no-discovery-plus-exchange-v2",
+  "namespaceMutationContract": "linux-renameat2-exchange-exact-inode-v1",
+  "recoveryFenceLockContract": "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1",
   "buildSandboxProfile": "agentscope-owned-native-build-v1",
   "executionSandboxProfile": "agentscope-sacrificial-native-execution-v1",
-  "releaseMaterialManifestDigest": "sha256:6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3",
-  "provenanceDigest": "sha256:b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f",
-  "sbomDigest": "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
+  "maximumSnapshotBytes": 17179869184,
+  "minimumNativeChildBudgetMilliseconds": 50,
+  "nativeTeardownReserveMilliseconds": 250,
+  "releaseMaterialManifestDigest": "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
+  "provenanceDigest": "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
+  "sbomDigest": "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
   "noticeInventoryDigest": "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
   "artifactFiles": [
     {
       "kind": "loader",
       "relativePath": "loader/owned-loader.cjs",
-      "bytes": 11637,
-      "digest": "sha256:469d659e54c8d4d3bf1a67b7486664a6e078b21466f184a07d8983cff7d5d599"
+      "bytes": 15896,
+      "digest": "sha256:f1bf552b702d1249f23e2e2b5bfdab9be8328a24e600b212cdf40df05963e0ba"
     },
     {
       "kind": "native-binary",
       "relativePath": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-      "bytes": 2213824,
-      "digest": "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+      "bytes": 2222856,
+      "digest": "sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
     },
     {
       "kind": "runtime",
@@ -50,20 +55,20 @@
     {
       "kind": "release-materials",
       "relativePath": "records/release-materials.json",
-      "bytes": 18738,
-      "digest": "sha256:6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3"
+      "bytes": 18893,
+      "digest": "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f"
     },
     {
       "kind": "provenance",
       "relativePath": "records/provenance.json",
-      "bytes": 3145,
-      "digest": "sha256:b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f"
+      "bytes": 3369,
+      "digest": "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df"
     },
     {
       "kind": "sbom",
       "relativePath": "records/sbom.spdx.json",
-      "bytes": 3537,
-      "digest": "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb"
+      "bytes": 4349,
+      "digest": "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08"
     }
   ],
   "nativeBinaries": [
@@ -77,8 +82,8 @@
       "libcFamily": "glibc",
       "minimumLibcVersion": "2.34",
       "relativePath": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-      "bytes": 2213824,
-      "digest": "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+      "bytes": 2222856,
+      "digest": "sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
     }
   ],
   "supportedPlatforms": [

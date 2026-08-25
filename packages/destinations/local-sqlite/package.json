@@ -25,10 +25,15 @@
   "files": [
     "dist"
   ],
+  "agentscopeInternalProcessEntrypoints": [
+    "./dist/production/reporter-child.js",
+    "./dist/production/reporter-watchdog.js",
+    "./dist/production/retriever-child.js"
+  ],
   "scripts": {
     "build": "node ../../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json && node scripts/copy-migrations.mjs && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src verify-artifact.mjs native-candidate/verify-artifact.mjs native-candidate/tooling --max-warnings=0",
+    "lint": "eslint src verify-artifact.mjs verify-production-composition.test.mjs native-candidate/verify-artifact.mjs native-candidate/tooling --max-warnings=0",
     "test": "vitest run --config ../../../vitest.config.ts",
     "coverage": "vitest run --config ../../../vitest.config.ts --coverage",
     "clean": "node ../../../scripts/clean-workspace.mjs",

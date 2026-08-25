@@ -8,9 +8,9 @@ import {
 export const LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION = 1 as const;
 export const LOCAL_SQLITE_DESTINATION_TYPE =
   "@agentscope/destination-local-sqlite" as const;
-export const LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES = 0;
+export const LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES = 16 * 1_024 * 1_024 * 1_024;
 export const LOCAL_SQLITE_TEST_MAXIMUM_SNAPSHOT_BYTES =
-  16 * 1_024 * 1_024 * 1_024;
+  8 * 1_024 * 1_024 * 1_024;
 
 const artifact = (
   kind: string,
@@ -39,13 +39,19 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
       ),
       artifact("exclusive-fence", "lifecycle/exclusive-fence-v1", 1),
       artifact("shared-lease", "lifecycle/lease-<owner-identity>.json", 64),
-      artifact("lifecycle-intent", "lifecycle/intent-v1.json", 1),
       artifact(
-        "recovery-claim",
-        "lifecycle/recovery-claim-<transaction-id>",
+        "shared-lease-cleanup-claim",
+        "lifecycle/lease-cleanup-<owner-identity>.json",
+        64,
+      ),
+      artifact("lifecycle-intent", "lifecycle/intent-v1.json", 1),
+      artifact("operation-phase", "lifecycle/operation-phase-v1.json", 1),
+      artifact("ownership-receipt", "lifecycle/ownership-receipt-v1.json", 1),
+      artifact(
+        "namespace-removal-claim",
+        "{connection,lifecycle,backups}/namespace-claim-v1-<lowercase-hex-encoded-public-name>",
         1,
       ),
-      artifact("ownership-receipt", "lifecycle/ownership-receipt-v1.json", 1),
       artifact(
         "rollback-preimage",
         "rollback-preimage-<transaction-id>.sqlite",
@@ -57,20 +63,29 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
     ]),
     inspectionLimits: Object.freeze({
       leaseRecordBytes: 256,
+      maximumRecoveryFenceRecordBytes: 32_768,
       maximumBackupDirectoryEntries: 32,
-      maximumDirectoryEntries: 128,
-      maximumInspectionBytes: 65_536,
+      maximumDirectoryEntries: 192,
+      maximumInspectionBytes: 98_304,
       maximumMetadataAggregateBytes: 65_536,
       maximumPublishedBackups: 8,
       maximumPublishedSnapshotBytes:
         "checked-multiply(maximumPublishedBackups,supportManifest.maximumSnapshotBytes)",
+      maximumNamespaceRemovalClaims: 1,
       maximumSharedLeases: 64,
+      maximumSharedLeaseCleanupClaims: 64,
       maximumTransientDatabaseCandidates: 1,
       maximumTransientRollbackPreimages: 1,
       namespaceByteCeiling:
-        "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes)",
+        "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes,namespaceRemovalClaimBytes)",
       sizeArithmetic: "exact-nonnegative-filesystem-integer-checked",
       sparseOrHugeEvidence: "reconciliation-required",
+    }),
+    recoveryFence: Object.freeze({
+      lockContract:
+        "package-owned-nonblocking-descriptor-advisory-exclusive-process-death-release-v1",
+      recordContract:
+        "immutable-owner-plus-canonical-dead-lease-vector-and-monotonic-suffix-v1",
     }),
     identifiers: Object.freeze({
       backupId: "nonzero-128-bit-lowercase-hex-32",
@@ -88,9 +103,11 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
     supportManifest: Object.freeze({
       maximumSnapshotBytes,
       nativeAdmission:
-        maximumSnapshotBytes === 0
-          ? "no-admitted-native-tuples"
-          : "synthetic-testing-only",
+        maximumSnapshotBytes === LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES
+          ? "proposed-unpublished-execution-eligible"
+          : maximumSnapshotBytes === 0
+            ? "no-admitted-native-tuples"
+            : "synthetic-testing-only",
       schemaVersion: 1,
     }),
     transientRoleGroups: Object.freeze([
@@ -109,6 +126,12 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
         maximumBytesPerArtifact: "supportManifest.maximumSnapshotBytes",
         maximumCountAcrossKinds: 1,
         name: "rollback-preimage",
+      }),
+      Object.freeze({
+        kinds: Object.freeze(["namespace-removal-claim"]),
+        maximumBytesPerArtifact: "mapped-public-artifact-maximum",
+        maximumCountAcrossKinds: 1,
+        name: "namespace-removal-claim",
       }),
     ]),
   });

@@ -130,6 +130,16 @@ if (
   throw new Error("Core production artifact inventory is not exact.");
 if (actualArtifactFiles.some((file) => file.includes(".test.")))
   throw new Error("Core production artifact contains compiled tests.");
+const lifecycleArtifactSource = readFileSync(
+  resolve(import.meta.dirname, "dist/lifecycle.js"),
+  "utf8",
+);
+if (
+  /node:(?:fs|http|https|net|tls)|\bfetch\s*\(|\bconsole\.|process\.(?:stdout|stderr)/u.test(
+    lifecycleArtifactSource,
+  )
+)
+  throw new Error("Core lifecycle artifact contains direct IO authority.");
 const candidate = {
   captureBoundary: {
     session: {

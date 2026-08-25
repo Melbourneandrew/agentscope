@@ -98,8 +98,11 @@ export type LocalSqliteVerifiedSnapshotEvidence = Readonly<{
   snapshotPhysicalIdentity: string;
   snapshotBytes: number;
   destinationFormat: string;
+  lifecycleCapabilityVersion: 1;
+  lifecycleFingerprint: string;
   migrationManifestId: string;
   protocolCompatibilityId: string;
+  recoveryHandlerId: string;
 }>;
 
 export type LocalSqliteMaintenanceRecoveryPhase =
@@ -214,7 +217,9 @@ export type LocalSqliteMaintenancePort = Readonly<{
     fence: LocalSqliteExclusiveFenceAuthority,
     signal: AbortSignal,
   ): Promise<void>;
-  claimMaintenanceIntent(signal: AbortSignal): Promise<
+  claimMaintenanceIntent(
+    context: LocalResourceMaintenanceRecoveryContext,
+  ): Promise<
     Readonly<{
       canonicalBytes: string;
       fence: LocalSqliteExclusiveFenceAuthority;
@@ -475,8 +480,11 @@ const receiptFor = (
     evidence.snapshotBytes < 1 ||
     evidence.snapshotBytes > maximumSnapshotBytes ||
     evidence.destinationFormat !== intent.destinationFormat ||
+    evidence.lifecycleCapabilityVersion !== intent.capabilityVersion ||
+    evidence.lifecycleFingerprint !== intent.lifecycleFingerprint ||
     evidence.migrationManifestId !== intent.migrationManifestId ||
-    evidence.protocolCompatibilityId !== intent.protocolCompatibilityId
+    evidence.protocolCompatibilityId !== intent.protocolCompatibilityId ||
+    evidence.recoveryHandlerId !== intent.recoveryHandlerId
   )
     throw new LocalSqliteMaintenanceError("reconciliation-required");
   const receipt = Object.freeze({
@@ -1203,7 +1211,7 @@ export const recoverLocalSqliteMaintenance = async (
       localSqliteLifecycleArtifactGrammarFingerprintForTesting(
         maximumSnapshotBytes,
       );
-    const claimed = await port.claimMaintenanceIntent(context.signal);
+    const claimed = await port.claimMaintenanceIntent(context);
     active(context.signal);
     const intent = decodeLocalSqliteMaintenanceIntent(
       claimed.canonicalBytes,

@@ -1,6 +1,18 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { fork, spawn } from "node:child_process";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { standardsManifest } from "@agentscope/protocol";
@@ -11,6 +23,19 @@ import * as reporter from "./dist/reporter/index.js";
 import { executePreparedLocalSqliteTransaction } from "./dist/reporter/transaction.js";
 import * as retriever from "./dist/retriever/public.js";
 import * as testing from "./dist/testing.js";
+import {
+  decodeLocalSqliteOperationPhase,
+  encodeLocalSqliteOperationPhase,
+} from "./dist/production/operation-phase.js";
+import {
+  boundedOwnedNames,
+  openOwnedDirectory,
+  removeOwnedFile,
+  retireOwnedFile,
+  localSqliteNamespaceClaimName,
+  renameOwnedFile,
+  statOwnedFile,
+} from "./dist/production/owned-filesystem.js";
 
 const packageRoot = new URL(".", import.meta.url);
 const sourceRoot = new URL("./src/", packageRoot);
@@ -64,12 +89,188 @@ if (JSON.stringify(actualDist) !== JSON.stringify(expectedDist))
 if (actualDist.some((file) => file.includes(".test.")))
   throw new Error("Local SQLite dist contains compiled tests.");
 
+const waitForChildEvent = (child, event, timeoutMilliseconds) =>
+  new Promise((resolvePromise, rejectPromise) => {
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off(event, onEvent);
+      child.off("error", onError);
+    };
+    const onEvent = (...values) => {
+      cleanup();
+      resolvePromise(values);
+    };
+    const onError = (error) => {
+      cleanup();
+      rejectPromise(error);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectPromise(new Error(`Timed out waiting for child ${event}.`));
+    }, timeoutMilliseconds);
+    timer.unref();
+    child.once(event, onEvent);
+    child.once("error", onError);
+  });
+
+for (const entry of [
+  "./dist/production/reporter-child.js",
+  "./dist/production/retriever-child.js",
+]) {
+  const child = spawn(
+    process.execPath,
+    [fileURLToPath(new URL(entry, packageRoot))],
+    {
+      stdio: ["pipe", "ignore", "ignore"],
+    },
+  );
+  const exited = waitForChildEvent(child, "exit", 5_000);
+  child.stdin.end();
+  const [code] = await exited;
+  if (code !== 70)
+    throw new Error(
+      `Built ${entry} did not fail closed on pre-permission pipe loss.`,
+    );
+}
+
+const waitForProcessAbsence = async (pid, timeoutMilliseconds) => {
+  const deadline = Date.now() + timeoutMilliseconds;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
+      throw error;
+    }
+    if (Date.now() >= deadline)
+      throw new Error("Built watchdog left a descendant after leader exit.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+};
+
+if (process.platform === "linux") {
+  const worker = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+    detached: true,
+    stdio: "ignore",
+  });
+  const watchdog = fork(
+    fileURLToPath(
+      new URL("./dist/production/reporter-watchdog.js", packageRoot),
+    ),
+    [],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  const workerExit = waitForChildEvent(worker, "exit", 5_000);
+  const watchdogExit = waitForChildEvent(watchdog, "exit", 5_000);
+  try {
+    const watching = waitForChildEvent(watchdog, "message", 5_000);
+    const stat = readFileSync(`/proc/${worker.pid}/stat`, "utf8");
+    const workerStartIdentity = createHash("sha256")
+      .update(
+        `${worker.pid}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`,
+      )
+      .digest("hex")
+      .slice(0, 32);
+    watchdog.send({
+      type: "watch",
+      workerPid: worker.pid,
+      workerStartIdentity,
+    });
+    const [message] = await watching;
+    if (message?.type !== "watching")
+      throw new Error("Built Reporter watchdog acknowledgement drifted.");
+    watchdog.disconnect();
+    const [watchdogCode] = await watchdogExit;
+    const [workerCode, workerSignal] = await workerExit;
+    if (
+      watchdogCode !== 70 ||
+      workerCode !== null ||
+      workerSignal !== "SIGKILL"
+    )
+      throw new Error("Built Reporter watchdog parent-death cleanup drifted.");
+  } finally {
+    if (worker.exitCode === null && worker.signalCode === null)
+      worker.kill("SIGKILL");
+    if (watchdog.exitCode === null && watchdog.signalCode === null)
+      watchdog.kill("SIGKILL");
+  }
+
+  const groupWorker = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const {spawn}=require("node:child_process");
+process.on("message",()=>{
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});
+  process.send({type:"descendant",pid:child.pid});
+  setTimeout(()=>process.exit(0),20);
+});`,
+    ],
+    { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  const groupWatchdog = fork(
+    fileURLToPath(
+      new URL("./dist/production/reporter-watchdog.js", packageRoot),
+    ),
+    [],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  let descendantPid;
+  try {
+    const stat = readFileSync(`/proc/${groupWorker.pid}/stat`, "utf8");
+    const workerStartIdentity = createHash("sha256")
+      .update(
+        `${groupWorker.pid}:${stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]}`,
+      )
+      .digest("hex")
+      .slice(0, 32);
+    const watching = waitForChildEvent(groupWatchdog, "message", 5_000);
+    groupWatchdog.send({
+      type: "watch",
+      workerPid: groupWorker.pid,
+      workerStartIdentity,
+    });
+    const [acknowledgement] = await watching;
+    if (acknowledgement?.type !== "watching")
+      throw new Error("Built watchdog did not arm for group-leader exit.");
+    const descendant = waitForChildEvent(groupWorker, "message", 5_000);
+    const workerExit = waitForChildEvent(groupWorker, "exit", 5_000);
+    groupWorker.send("exit-with-descendant");
+    const [message] = await descendant;
+    descendantPid = message?.pid;
+    await workerExit;
+    const watchdogExit = waitForChildEvent(groupWatchdog, "exit", 5_000);
+    groupWatchdog.disconnect();
+    const [watchdogCode] = await watchdogExit;
+    if (watchdogCode !== 70 || !Number.isSafeInteger(descendantPid))
+      throw new Error("Built watchdog group-leader exit settlement drifted.");
+    await waitForProcessAbsence(descendantPid, 5_000);
+  } finally {
+    if (groupWorker.exitCode === null && groupWorker.signalCode === null)
+      try {
+        process.kill(-groupWorker.pid, "SIGKILL");
+      } catch {
+        // The process group may already be absent after the watchdog result.
+      }
+    if (groupWatchdog.exitCode === null && groupWatchdog.signalCode === null)
+      groupWatchdog.kill("SIGKILL");
+    if (Number.isSafeInteger(descendantPid))
+      try {
+        process.kill(descendantPid, "SIGKILL");
+      } catch {
+        // The descendant is expected to have been removed by the watchdog.
+      }
+  }
+}
+
 const expectedRoot = [
   "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST",
   "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST",
   "LOCAL_SQLITE_DESTINATION_TYPE",
   "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
   "createLocalSqliteLifecycleHandler",
+  "initializeLocalSqliteProductionComposition",
+  "localSqliteDestinationDescriptor",
   "localSqliteDestinationPackageId",
   "localSqliteLifecycleDeclaration",
   "localSqliteReporterPackageId",
@@ -77,6 +278,7 @@ const expectedRoot = [
 ].sort();
 if (JSON.stringify(Object.keys(root).sort()) !== JSON.stringify(expectedRoot))
   throw new Error("Local SQLite root export surface drifted.");
+await import("./verify-production-composition.test.mjs");
 if (
   JSON.stringify(Object.keys(reporter)) !==
   JSON.stringify(["localSqliteReporterPackageId"])
@@ -104,6 +306,16 @@ if (
       "inspectLocalSqliteNativeSupportManifestForTesting",
       "compileLocalSqlitePhysicalNamespaceEvidence",
       "createLocalSqliteLifecycleHandlerForTesting",
+      "createLocalSqliteDestinationDescriptorForTesting",
+      "createLocalSqliteProductionLifecyclePort",
+      "createLocalSqliteProductionMaintenancePort",
+      "bindLocalSqliteProductionRuntimeForTesting",
+      "createLocalSqliteFilesystemGatePort",
+      "createOwnedMigrationDatabase",
+      "createOwnedReporterDatabase",
+      "createOwnedRetrieverDatabase",
+      "currentProcessStartIdentity",
+      "initializeOwnedSqliteConnection",
       "LocalSqliteLifecycleError",
       "LocalSqliteNamespaceError",
       "LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR",
@@ -137,6 +349,7 @@ if (
       "encodeLocalSqliteLifecycleIntent",
       "encodeLocalSqliteLeaseRecord",
       "encodeLocalSqliteOwnershipReceipt",
+      "inspectLocalSqliteDeadLeaseRecoveryPlan",
       "inspectLocalSqliteLifecycleInventory",
       "prepareLocalSqliteTraceForTesting",
       "LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS",
@@ -191,6 +404,15 @@ if (
     JSON.stringify(root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST)
 )
   throw new Error("Local SQLite native support manifest drifted.");
+if (
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.loaderContract !==
+    "owned-absolute-no-discovery-plus-exchange-v2" ||
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.namespaceMutationContract !==
+    "linux-renameat2-exchange-exact-inode-v1" ||
+  root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.recoveryFenceLockContract !==
+    "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1"
+)
+  throw new Error("Local SQLite native namespace authority drifted.");
 for (const artifact of root.LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST
   .artifactFiles) {
   const bytes = readFileSync(
@@ -217,7 +439,7 @@ if (
   releaseMaterials.archiveCompiler?.maximumSegmentBytes !== 91 ||
   releaseMaterials.archiveCompiler?.maximumFileBytes !== 16 * 1024 * 1024 ||
   releaseMaterials.buildGraph?.identity !==
-    "agentscope-owned-cc-ar-cxx-link-v1" ||
+    "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2" ||
   releaseMaterials.buildGraph?.upstreamBuildMetadata !== "never-evaluated" ||
   releaseMaterials.buildGraph?.processAuthority !==
     "ptrace-all-process-creation-exact-exec-path-and-driver-ledger-v4" ||
@@ -249,7 +471,7 @@ const releaseMaterialDigest = createHash("sha256")
 if (
   provenance.releaseMaterialManifestSha256 !== releaseMaterialDigest ||
   provenance.output?.sha256 !==
-    "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37" ||
+    "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9" ||
   provenance.output?.repeatBuildSha256 !== provenance.output.sha256 ||
   provenance.ownedBuild?.containerImage !==
     releaseMaterials.toolchainClosure.image ||
@@ -271,7 +493,7 @@ const generatedFrom = new Set(
 );
 if (
   sbom.spdxVersion !== "SPDX-2.3" ||
-  sbom.packages?.length !== 3 ||
+  sbom.packages?.length !== 4 ||
   !sbom.packages.every(({ filesAnalyzed }) => filesAnalyzed === false) ||
   JSON.stringify([...generatedFrom].sort()) !==
     JSON.stringify(
@@ -279,6 +501,7 @@ if (
         "SPDXRef-Package-SQLite",
         "SPDXRef-Package-better-sqlite3",
         "SPDXRef-Package-node-addon-api",
+        "SPDXRef-Package-AgentscopeNamespaceHelper",
       ].sort(),
     )
 )
@@ -316,6 +539,12 @@ const builtLifecycleIntentBytes = `${JSON.stringify({
   protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
   recordVersion: 1,
   recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
+  retentionPolicy: {
+    maximumAgeNanoseconds: "2592000000000000",
+    maximumPayloadBytes: 1_073_741_824,
+    maximumTraceCount: 100_000,
+    physicalCleanupTrigger: "next-authorized-mutation",
+  },
   retainedDatabaseFamilyPhysicalIdentity: null,
   retainedReceiptDigest: null,
   transactionId: "1".repeat(32),
@@ -408,6 +637,7 @@ const maintenanceFence = Object.freeze({
     lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
     lifecycleGeneration: 1,
     purpose: "lifecycle",
+    owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
   }),
   deadLeaseNames: Object.freeze([]),
 });
@@ -464,8 +694,11 @@ const builtMaintenancePort = {
       snapshotPhysicalIdentity: "dev:1:ino:20",
       snapshotBytes: 4_096,
       destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+      lifecycleCapabilityVersion: 1,
+      lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
       migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
       protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+      recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
     }),
   publishBackup: (_intent, _receipt, canonicalReceipt) => {
     maintenanceEvents.push("publish");
@@ -478,8 +711,11 @@ const builtMaintenancePort = {
       snapshotPhysicalIdentity: "dev:1:ino:20",
       snapshotBytes: 4_096,
       destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+      lifecycleCapabilityVersion: 1,
+      lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
       migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
       protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+      recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
     }),
   readSelectedBackupReceipt: unused,
   createRestoreCandidate: unused,
@@ -779,6 +1015,118 @@ if (
   JSON.stringify(builtDoctor).includes(builtLifecycleConnectionId)
 )
   throw new Error("Built Local SQLite conservative Doctor drifted.");
+
+const replacementRoot = mkdtempSync(
+  join(tmpdir(), "agentscope-built-local-replacement-"),
+);
+chmodSync(replacementRoot, 0o700);
+try {
+  const replacementNamespace = testing.planLocalSqliteNamespace({
+    agentscopeHome: replacementRoot,
+    connectionId: builtLifecycleConnectionId,
+    platform: process.platform === "win32" ? "win32" : "posix",
+  });
+  for (const directory of [
+    replacementNamespace.destinationsDirectory,
+    replacementNamespace.destinationTypeDirectory,
+    replacementNamespace.connectionNamespace,
+    replacementNamespace.lifecycleDirectory,
+    replacementNamespace.backupsDirectory,
+  ]) {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    chmodSync(directory, 0o700);
+  }
+  const replacementBackupId = "a".repeat(32);
+  const replacementCandidate = join(
+    replacementNamespace.backupsDirectory,
+    `candidate-${replacementBackupId}.sqlite`,
+  );
+  const displacedCandidate = `${replacementCandidate}.displaced`;
+  writeFileSync(replacementCandidate, "same-size-a", { mode: 0o600 });
+  let doctorReplaced = false;
+  const replacementBase = {
+    home: { root: replacementRoot, platform: process.platform },
+    filesystemProfile: "local-ext4",
+    opener: {
+      open: () => {
+        throw new Error("built replacement verifier opened SQLite");
+      },
+    },
+    allowPathFallbackForTesting: true,
+  };
+  const doctorReplacementPort =
+    testing.createLocalSqliteProductionMaintenancePort({
+      ...replacementBase,
+      doctorAfterFirstScanForTesting: () => {
+        if (doctorReplaced) return;
+        doctorReplaced = true;
+        renameSync(replacementCandidate, displacedCandidate);
+        writeFileSync(replacementCandidate, "same-size-b", { mode: 0o600 });
+      },
+    });
+  const replacementDoctor = await doctorReplacementPort.inspectDoctor({
+    connectionId: builtLifecycleConnectionId,
+    settings: maintenanceContext.settings,
+    signal: new AbortController().signal,
+  });
+  if (
+    !doctorReplaced ||
+    replacementDoctor.state !== "unavailable" ||
+    replacementDoctor.backupState !== "unavailable"
+  )
+    throw new Error("Built Local SQLite Doctor replacement gate drifted.");
+
+  rmSync(displacedCandidate);
+  writeFileSync(replacementCandidate, "same-size-a", { mode: 0o600 });
+  let inventoryReplaced = false;
+  const inventoryReplacementPort =
+    testing.createLocalSqliteProductionMaintenancePort({
+      ...replacementBase,
+      maintenanceAfterFirstInventoryScanForTesting: () => {
+        if (inventoryReplaced) return;
+        inventoryReplaced = true;
+        renameSync(replacementCandidate, displacedCandidate);
+        writeFileSync(replacementCandidate, "same-size-b", { mode: 0o600 });
+      },
+    });
+  const replacementIntent = {
+    operation: "backup",
+    transactionId: "b".repeat(32),
+    backupId: replacementBackupId,
+    connectionId: builtLifecycleConnectionId,
+    lifecycleFingerprint: root.localSqliteLifecycleDeclaration.fingerprint,
+    capabilityVersion: 1,
+    artifactGrammarFingerprint:
+      testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT,
+  };
+  const replacementFence = Object.freeze({
+    state: "exclusive",
+    filename: "exclusive-fence-v1",
+    physicalIdentity: "dev:1:ino:1",
+    record: Object.freeze({
+      transactionId: replacementIntent.transactionId,
+      lifecycleFingerprint: replacementIntent.lifecycleFingerprint,
+      lifecycleGeneration: 1,
+      purpose: "lifecycle",
+      owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
+    }),
+    deadLeaseNames: Object.freeze([]),
+  });
+  let inventoryRejected = false;
+  try {
+    await inventoryReplacementPort.inspectBackupInventory(
+      replacementIntent,
+      replacementFence,
+      new AbortController().signal,
+    );
+  } catch (error) {
+    inventoryRejected = error?.code === "reconciliation-required";
+  }
+  if (!inventoryReplaced || !inventoryRejected)
+    throw new Error("Built Local SQLite inventory replacement gate drifted.");
+} finally {
+  rmSync(replacementRoot, { recursive: true, force: true });
+}
 const artifactGrammarFingerprint = `sha256-${createHash("sha256")
   .update(JSON.stringify(testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR))
   .digest("hex")}`;
@@ -792,6 +1140,9 @@ if (
   ) ||
   !root.localSqliteLifecycleDeclaration.artifactKinds.includes(
     "restore-database-candidate",
+  ) ||
+  !root.localSqliteLifecycleDeclaration.artifactKinds.includes(
+    "operation-phase",
   )
 )
   throw new Error("Local SQLite lifecycle artifact grammar drifted.");
@@ -801,6 +1152,136 @@ const artifactsByKind = new Map(
     artifact,
   ]),
 );
+const builtOperationPhase = Object.freeze({
+  schemaVersion: 1,
+  operation: "restore",
+  phase: "restore-verified",
+  transactionId: "1".repeat(32),
+  lifecycleFingerprint: `sha256-${"2".repeat(64)}`,
+  artifactGrammarFingerprint,
+  artifactPhysicalIdentity: "dev:1:ino:2",
+});
+const builtOperationPhaseBytes =
+  encodeLocalSqliteOperationPhase(builtOperationPhase);
+if (
+  JSON.stringify(decodeLocalSqliteOperationPhase(builtOperationPhaseBytes)) !==
+    JSON.stringify(builtOperationPhase) ||
+  decodeLocalSqliteOperationPhase(
+    `${JSON.stringify({
+      ...builtOperationPhase,
+      extra: true,
+    })}\n`,
+  ) !== undefined ||
+  decodeLocalSqliteOperationPhase(
+    `${JSON.stringify({ ...builtOperationPhase, operation: "backup" })}\n`,
+  ) !== undefined
+)
+  throw new Error("Built Local SQLite operation-phase codec drifted.");
+const builtPhaseRoot = mkdtempSync(join(tmpdir(), "agentscope-built-phase-"));
+chmodSync(builtPhaseRoot, 0o700);
+try {
+  const builtPhaseConnectionId = `destination-connection-v1-${"7".repeat(64)}`;
+  const builtPhasePlan = testing.planLocalSqliteNamespace({
+    agentscopeHome: builtPhaseRoot,
+    connectionId: builtPhaseConnectionId,
+    platform: process.platform === "win32" ? "win32" : "posix",
+  });
+  mkdirSync(builtPhasePlan.lifecycleDirectory, {
+    recursive: true,
+    mode: 0o700,
+  });
+  for (const directory of [
+    dirname(dirname(builtPhasePlan.connectionNamespace)),
+    dirname(builtPhasePlan.connectionNamespace),
+    builtPhasePlan.connectionNamespace,
+    builtPhasePlan.lifecycleDirectory,
+  ])
+    chmodSync(directory, 0o700);
+  writeFileSync(
+    join(
+      builtPhasePlan.connectionNamespace,
+      `configure-${"1".repeat(32)}.sqlite`,
+    ),
+    "",
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    join(builtPhasePlan.lifecycleDirectory, "operation-phase-v1.json"),
+    encodeLocalSqliteOperationPhase({
+      ...builtOperationPhase,
+      operation: "configure",
+      phase: "configured-active",
+      transactionId: "9".repeat(32),
+    }),
+    { mode: 0o600 },
+  );
+  let builtOpenerCalls = 0;
+  const builtLifecyclePort = testing.createLocalSqliteProductionLifecyclePort({
+    home: { root: builtPhaseRoot, platform: process.platform },
+    filesystemProfile: "local-ext4",
+    opener: {
+      open: () => {
+        builtOpenerCalls += 1;
+        throw new Error("built operation phase must reject before native open");
+      },
+    },
+    allowPathFallbackForTesting: true,
+  });
+  let builtPhaseRejected = false;
+  try {
+    await builtLifecyclePort.activateConfigure(
+      {
+        recordVersion: 1,
+        operation: "configure",
+        transactionId: "1".repeat(32),
+        destinationType: root.LOCAL_SQLITE_DESTINATION_TYPE,
+        connectionId: builtPhaseConnectionId,
+        connectionDigest: builtPhasePlan.connectionDigest,
+        owner: { processId: process.pid, processStartIdentity: "owner" },
+        namespaceFingerprint: builtPhasePlan.fingerprint,
+        physicalEvidenceFingerprint: `sha256-${"3".repeat(64)}`,
+        lifecycleFingerprint: builtOperationPhase.lifecycleFingerprint,
+        recoveryHandlerId: "built-recovery-handler",
+        artifactGrammarFingerprint,
+        artifactGrammarVersion: 1,
+        capabilityVersion: 1,
+        destinationFormat: "built-format",
+        migrationManifestId: "built-migration",
+        protocolCompatibilityId: "built-protocol",
+        expectedConfigurationGeneration: 1,
+        candidateConfigurationGeneration: 2,
+        expectedConfigurationDigest: `sha256-${"4".repeat(64)}`,
+        candidateConfigurationDigest: `sha256-${"5".repeat(64)}`,
+        retainedReceiptDigest: null,
+        retainedDatabaseFamilyPhysicalIdentity: null,
+        retentionPolicy: {
+          maximumAgeNanoseconds: "1",
+          maximumTraceCount: 1,
+          maximumPayloadBytes: 1,
+          physicalCleanupTrigger: "next-authorized-mutation",
+        },
+      },
+      {
+        state: "exclusive",
+        filename: "exclusive-fence-v1",
+        physicalIdentity: "dev:1:ino:3",
+        record: {
+          transactionId: "1".repeat(32),
+          lifecycleFingerprint: builtOperationPhase.lifecycleFingerprint,
+          lifecycleGeneration: 1,
+        },
+        deadLeaseNames: [],
+      },
+      new AbortController().signal,
+    );
+  } catch (error) {
+    builtPhaseRejected = error?.code === "reconciliation-required";
+  }
+  if (!builtPhaseRejected || builtOpenerCalls !== 0)
+    throw new Error("Built Local SQLite operation-phase authority drifted.");
+} finally {
+  rmSync(builtPhaseRoot, { recursive: true, force: true });
+}
 const sameDirectoryRoles = [
   "configure-database-candidate",
   "restore-database-candidate",
@@ -821,10 +1302,11 @@ if (
   lifecycleLimits.maximumTransientRollbackPreimages !== 1 ||
   lifecycleLimits.leaseRecordBytes !== 256 ||
   testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.supportManifest
-    .maximumSnapshotBytes !== 0 ||
-  testing.LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES !== 0 ||
+    .maximumSnapshotBytes !==
+    16 * 1024 * 1024 * 1024 ||
+  testing.LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES !== 16 * 1024 * 1024 * 1024 ||
   testing.LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR.supportManifest
-    .nativeAdmission !== "no-admitted-native-tuples"
+    .nativeAdmission !== "proposed-unpublished-execution-eligible"
 )
   throw new Error(
     "Local SQLite lifecycle bounds or candidate placement drifted.",
@@ -1412,6 +1894,7 @@ const builtFenceRecord = testing.parseLocalSqliteFenceRecord({
   lifecycleFingerprint: builtLifecycleFingerprint,
   lifecycleGeneration: 1,
   purpose: "lifecycle",
+  owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
 });
 const builtLeaseBytes = testing.encodeLocalSqliteLeaseRecord(builtLeaseRecord);
 const builtFenceBytes = testing.encodeLocalSqliteFenceRecord(builtFenceRecord);
@@ -1422,12 +1905,15 @@ if (
     builtLeaseRecord?.leaseId ||
   testing.decodeLocalSqliteFenceRecord(builtFenceBytes)?.transactionId !==
     builtFenceRecord?.transactionId ||
-  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumLeases !== 64
+  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumLeases !== 64 ||
+  testing.LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS.maximumFenceRecordBytes !==
+    32_768
 )
   throw new Error("Local SQLite built lifecycle record grammar drifted.");
 
 const lifecycleArtifacts = new Map();
 let lifecycleIdentity = 0;
+let lifecycleRecoveryLock;
 const nextLifecycleIdentity = () => `dev1:ino${(lifecycleIdentity += 1)}`;
 const createLifecycleArtifact = (filename, content) => {
   if (lifecycleArtifacts.has(filename)) return { state: "exists" };
@@ -1436,12 +1922,40 @@ const createLifecycleArtifact = (filename, content) => {
   return { state: "created", physicalIdentity };
 };
 const lifecyclePort = Object.freeze({
+  acquireRecoveryFenceLock: ({ filename, physicalIdentity }) => {
+    if (lifecycleArtifacts.get(filename)?.physicalIdentity !== physicalIdentity)
+      return { state: "mismatch" };
+    if (lifecycleRecoveryLock !== undefined) return { state: "busy" };
+    lifecycleRecoveryLock = Object.freeze({});
+    return { state: "acquired", token: lifecycleRecoveryLock };
+  },
+  assertRecoveryFenceLock: ({ filename, physicalIdentity, token }) => ({
+    state:
+      token === lifecycleRecoveryLock &&
+      lifecycleArtifacts.get(filename)?.physicalIdentity === physicalIdentity
+        ? "held"
+        : "not-held",
+  }),
   classifyOwner: () => ({ state: "live" }),
   createFenceDurably: ({ filename, content }) =>
     createLifecycleArtifact(filename, content),
   createLeaseDurably: ({ filename, content }) =>
     createLifecycleArtifact(filename, content),
-  createRecoveryClaim: () => ({ state: "mismatch" }),
+  createLeaseCleanupClaim: ({
+    cleanupClaimName,
+    leaseName,
+    leasePhysicalIdentity,
+  }) => {
+    const lease = lifecycleArtifacts.get(leaseName);
+    if (
+      lease === undefined ||
+      lease.physicalIdentity !== leasePhysicalIdentity ||
+      lifecycleArtifacts.has(cleanupClaimName)
+    )
+      return { state: "mismatch" };
+    lifecycleArtifacts.set(cleanupClaimName, lease);
+    return { state: "created", physicalIdentity: lease.physicalIdentity };
+  },
   listLifecycle: () => ({
     entries: [...lifecycleArtifacts.entries()].map(([name, artifact]) => ({
       name,
@@ -1462,6 +1976,11 @@ const lifecyclePort = Object.freeze({
     lifecycleArtifacts.delete(filename);
     return { state: "removed" };
   },
+  releaseRecoveryFenceLock: ({ token }) => {
+    if (token !== lifecycleRecoveryLock) return { state: "not-held" };
+    lifecycleRecoveryLock = undefined;
+    return { state: "released" };
+  },
   replaceLeaseDurably: () => ({ state: "mismatch" }),
 });
 const builtShared = await testing.acquireLocalSqliteSharedLease(lifecyclePort, {
@@ -1481,7 +2000,7 @@ if (!builtRelease.ok || lifecycleArtifacts.size !== 0)
 
 for (const [name, content] of [
   ["intent-v1.json", "intent"],
-  [`recovery-claim-${builtFenceRecord.transactionId}`, builtLeaseBytes],
+  [`lease-cleanup-${builtLeaseRecord.leaseId}.json`, builtLeaseBytes],
 ]) {
   lifecycleArtifacts.set(name, {
     content,
@@ -1614,7 +2133,9 @@ lifecycleArtifacts.clear();
 
 const deadLifecyclePort = Object.freeze({
   ...lifecyclePort,
-  classifyOwner: () => ({ state: "dead" }),
+  classifyOwner: ({ owner }) => ({
+    state: owner.startIdentity === "6".repeat(32) ? "live" : "dead",
+  }),
 });
 const lifecycleMismatchShared = await testing.acquireLocalSqliteSharedLease(
   deadLifecyclePort,
@@ -1635,10 +2156,7 @@ const lifecycleMismatchFence = await testing.acquireLocalSqliteExclusiveFence(
     purpose: "recovery",
   },
 );
-if (
-  lifecycleMismatchFence.ok ||
-  lifecycleMismatchFence.state !== "reconciliation-required"
-)
+if (lifecycleMismatchFence.ok || lifecycleMismatchFence.state !== "unavailable")
   throw new Error("Local SQLite built lifecycle-identity handling drifted.");
 await testing.releaseLocalSqliteSharedLease(
   deadLifecyclePort,
@@ -1656,16 +2174,27 @@ const claimShared = await testing.acquireLocalSqliteSharedLease(
 );
 if (!claimShared.ok)
   throw new Error("Local SQLite built claim fixture failed.");
+const claimPlan = await testing.inspectLocalSqliteDeadLeaseRecoveryPlan(
+  deadLifecyclePort,
+  {
+    transactionId: builtFenceRecord.transactionId,
+    lifecycleFingerprint: builtFenceRecord.lifecycleFingerprint,
+    lifecycleGeneration: builtFenceRecord.lifecycleGeneration,
+    recoveryOwner: { pid: 303, startIdentity: "6".repeat(32) },
+  },
+);
+if (!claimPlan.ok)
+  throw new Error("Local SQLite built recovery plan fixture failed.");
 const claimFence = await testing.acquireLocalSqliteExclusiveFence(
   deadLifecyclePort,
-  { ...builtFenceRecord, purpose: "recovery" },
+  claimPlan.value,
 );
 if (!claimFence.ok)
   throw new Error("Local SQLite built claim fence fixture failed.");
-const claimFilename = `recovery-claim-${builtFenceRecord.transactionId}`;
+const claimFilename = `lease-cleanup-${builtLeaseRecord.leaseId}.json`;
 const claimCrashPort = Object.freeze({
   ...deadLifecyclePort,
-  createRecoveryClaim: ({ leaseName }) => {
+  createLeaseCleanupClaim: ({ leaseName }) => {
     const lease = lifecycleArtifacts.get(leaseName);
     if (lease === undefined) return { state: "mismatch" };
     lifecycleArtifacts.set(claimFilename, lease);
@@ -1680,7 +2209,7 @@ const claimCrash = await testing.recoverDeadLocalSqliteLease(
 const claimResume = await testing.recoverDeadLocalSqliteLease(
   Object.freeze({
     ...deadLifecyclePort,
-    createRecoveryClaim: () => ({ state: "exists" }),
+    createLeaseCleanupClaim: () => ({ state: "exists" }),
   }),
   claimFence.value,
   claimShared.value.filename,
@@ -1692,7 +2221,7 @@ if (
   lifecycleArtifacts.has(claimFilename) ||
   lifecycleArtifacts.has(claimShared.value.filename)
 )
-  throw new Error("Local SQLite built recovery-claim resume drifted.");
+  throw new Error("Local SQLite built lease-cleanup resume drifted.");
 await testing.releaseLocalSqliteExclusiveFence(
   deadLifecyclePort,
   claimFence.value,
@@ -1724,3 +2253,89 @@ if (
   lifecycleCoercions !== 0
 )
   throw new Error("Local SQLite built lifecycle containment drifted.");
+
+const builtClaimRoot = mkdtempSync(join(tmpdir(), "agentscope-built-claim-"));
+chmodSync(builtClaimRoot, 0o700);
+const builtClaimDirectory = openOwnedDirectory(builtClaimRoot, true);
+try {
+  writeFileSync(join(builtClaimRoot, "remove"), "owned", { mode: 0o600 });
+  const removeIdentity = statOwnedFile(
+    builtClaimDirectory,
+    "remove",
+  ).physicalIdentity;
+  if (
+    removeOwnedFile(builtClaimDirectory, "remove", removeIdentity, () =>
+      writeFileSync(join(builtClaimRoot, "remove"), "replacement", {
+        mode: 0o600,
+      }),
+    ) !== "mismatch" ||
+    readFileSync(join(builtClaimRoot, "remove"), "utf8") !== "replacement"
+  )
+    throw new Error("Local SQLite built raw removal race drifted.");
+  writeFileSync(join(builtClaimRoot, "retire"), "owned", { mode: 0o600 });
+  const retireIdentity = statOwnedFile(
+    builtClaimDirectory,
+    "retire",
+  ).physicalIdentity;
+  const retirementClaim = localSqliteNamespaceClaimName("retire");
+  try {
+    retireOwnedFile(builtClaimDirectory, "retire", retireIdentity, () => {
+      if (
+        statOwnedFile(builtClaimDirectory, retirementClaim).physicalIdentity !==
+        retireIdentity
+      )
+        throw new Error("Local SQLite built retirement identity drifted.");
+      throw new Error("built-synthetic-interruption");
+    });
+    throw new Error("Local SQLite built retirement interruption was lost.");
+  } catch (error) {
+    if (error?.message !== "built-synthetic-interruption") throw error;
+  }
+  if (
+    retireOwnedFile(builtClaimDirectory, "retire", retireIdentity) !==
+      "removed" ||
+    boundedOwnedNames(builtClaimDirectory, 16).includes(retirementClaim)
+  )
+    throw new Error("Local SQLite built retirement resume drifted.");
+  writeFileSync(join(builtClaimRoot, "source"), "owned", { mode: 0o600 });
+  const sourceIdentity = statOwnedFile(
+    builtClaimDirectory,
+    "source",
+  ).physicalIdentity;
+  try {
+    renameOwnedFile(
+      builtClaimDirectory,
+      "source",
+      builtClaimDirectory,
+      "destination",
+      sourceIdentity,
+      () => {
+        renameSync(
+          join(builtClaimRoot, "source"),
+          join(builtClaimRoot, "source-retained"),
+        );
+        writeFileSync(join(builtClaimRoot, "source"), "replacement", {
+          mode: 0o600,
+        });
+      },
+    );
+    throw new Error("Local SQLite built private rename race was accepted.");
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      error.message !== "destination.local-sqlite.filesystem.raced"
+    )
+      throw error;
+  }
+  if (
+    readFileSync(join(builtClaimRoot, "source"), "utf8") !== "replacement" ||
+    readFileSync(join(builtClaimRoot, "destination"), "utf8") !== "owned" ||
+    boundedOwnedNames(builtClaimDirectory, 16).some((name) =>
+      name.startsWith(".agentscope-private-"),
+    )
+  )
+    throw new Error("Local SQLite built private claim cleanup drifted.");
+} finally {
+  builtClaimDirectory.close();
+  rmSync(builtClaimRoot, { recursive: true, force: true });
+}

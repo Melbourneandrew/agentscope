@@ -17,8 +17,8 @@ const root = path.resolve(__dirname, '..');
 const expected = Object.freeze([
   Object.freeze({
     path: 'native/node127-linux-x64-glibc/agentscope_sqlite.node',
-    bytes: 2213824,
-    sha256: 'f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37',
+    bytes: 2222856,
+    sha256: 'b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9',
   }),
   Object.freeze({
     path: 'notices/better-sqlite3-MIT.txt',
@@ -37,18 +37,18 @@ const expected = Object.freeze([
   }),
   Object.freeze({
     path: 'records/provenance.json',
-    bytes: 3145,
-    sha256: 'b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f',
+    bytes: 3369,
+    sha256: '0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df',
   }),
   Object.freeze({
     path: 'records/release-materials.json',
-    bytes: 18738,
-    sha256: '6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3',
+    bytes: 18893,
+    sha256: '01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f',
   }),
   Object.freeze({
     path: 'records/sbom.spdx.json',
-    bytes: 3537,
-    sha256: '01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb',
+    bytes: 4349,
+    sha256: '04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08',
   }),
   Object.freeze({
     path: 'runtime/better-sqlite3.cjs',
@@ -189,6 +189,34 @@ const verifySnapshot = (snapshot) => {
   }
 };
 
+const exactDataRecord = (value, keys) => {
+  try {
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    ) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      Reflect.ownKeys(descriptors).length !== keys.length ||
+      Reflect.ownKeys(descriptors).some(
+        (key) => typeof key !== 'string' || !keys.includes(key),
+      )
+    ) return undefined;
+    const result = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (descriptor === undefined || !('value' in descriptor))
+        return undefined;
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+};
+
 const verifyClosure = (authority) => {
   const snapshots = [];
   try {
@@ -231,7 +259,15 @@ const verifyClosure = (authority) => {
     manifest.schemaVersion !== 1 ||
     manifest.capability !== 'local-sqlite' ||
     manifest.disposition !== 'proposed-unpublished-execution-eligible' ||
-    manifest.loaderContract !== 'owned-absolute-no-discovery-v1' ||
+    manifest.loaderContract !==
+      'owned-absolute-no-discovery-plus-exchange-v2' ||
+    manifest.namespaceMutationContract !==
+      'linux-renameat2-exchange-exact-inode-v1' ||
+    manifest.recoveryFenceLockContract !==
+      'linux-flock-exclusive-nonblocking-open-description-process-death-release-v1' ||
+    manifest.maximumSnapshotBytes !== 17179869184 ||
+    manifest.minimumNativeChildBudgetMilliseconds !== 50 ||
+    manifest.nativeTeardownReserveMilliseconds !== 250 ||
     manifest.nativeBinaries?.length !== 1 ||
     manifest.supportedPlatforms?.length !== 1 ||
     manifest.artifactFiles?.length !== expected.length + 1 ||
@@ -245,8 +281,8 @@ const verifyClosure = (authority) => {
       libcFamily: 'glibc',
       minimumLibcVersion: '2.34',
       relativePath: 'native/node127-linux-x64-glibc/agentscope_sqlite.node',
-      bytes: 2213824,
-      digest: 'sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37',
+      bytes: 2222856,
+      digest: 'sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9',
     }) ||
     JSON.stringify(manifest.supportedPlatforms[0]) !== JSON.stringify({
       platformId: 'linux-x64-node22-ci-ext4-proposed',
@@ -318,6 +354,32 @@ module.exports = Object.freeze({
     nativeModule.filename = binaryPath;
     process.dlopen(nativeModule, binaryPath);
     const nativeBinding = nativeModule.exports;
+    const exchangeDescriptor = Object.getOwnPropertyDescriptor(
+      nativeBinding,
+      'agentscopeExchangeOwnedFiles',
+    );
+    const lockDescriptor = Object.getOwnPropertyDescriptor(
+      nativeBinding,
+      'agentscopeLockOwnedFile',
+    );
+    const unlockDescriptor = Object.getOwnPropertyDescriptor(
+      nativeBinding,
+      'agentscopeUnlockOwnedFile',
+    );
+    if (
+      exchangeDescriptor === undefined ||
+      !('value' in exchangeDescriptor) ||
+      typeof exchangeDescriptor.value !== 'function' ||
+      lockDescriptor === undefined ||
+      !('value' in lockDescriptor) ||
+      typeof lockDescriptor.value !== 'function' ||
+      unlockDescriptor === undefined ||
+      !('value' in unlockDescriptor) ||
+      typeof unlockDescriptor.value !== 'function'
+    ) fail();
+    const exchangeOwnedFiles = exchangeDescriptor.value;
+    const lockOwnedFile = lockDescriptor.value;
+    const unlockOwnedFile = unlockDescriptor.value;
     for (const snapshot of snapshots.all) verifySnapshot(snapshot);
     if (JSON.stringify(regularFiles()) !== JSON.stringify([
       'loader/owned-loader.cjs',
@@ -339,6 +401,62 @@ module.exports = Object.freeze({
           ...options,
           nativeBinding,
         });
+      },
+      openDescriptor(descriptor, options = {}) {
+        if (!Number.isSafeInteger(descriptor) || descriptor < 0) fail();
+        const state = fstatSync(descriptor, { bigint: true });
+        if (!state.isFile()) fail();
+        for (const snapshot of snapshots.all) verifySnapshot(snapshot);
+        return new Database(`/proc/self/fd/${descriptor}`, {
+          ...options,
+          nativeBinding,
+        });
+      },
+      exchangeOwnedFiles(directoryDescriptor, request) {
+        try {
+          for (const snapshot of snapshots.all) verifySnapshot(snapshot);
+          const exchangeRequest = exactDataRecord(request, [
+            'sourceName',
+            'destinationName',
+            'sourceDevice',
+            'sourceInode',
+            'destinationDevice',
+            'destinationInode',
+          ]);
+          if (exchangeRequest === undefined) fail();
+          const result = Reflect.apply(exchangeOwnedFiles, undefined, [
+            directoryDescriptor,
+            exchangeRequest.sourceName,
+            exchangeRequest.destinationName,
+            exchangeRequest.sourceDevice,
+            exchangeRequest.sourceInode,
+            exchangeRequest.destinationDevice,
+            exchangeRequest.destinationInode,
+          ]);
+          if (!['exchanged', 'mismatch', 'raced'].includes(result)) fail();
+          return result;
+        } catch {
+          return fail();
+        }
+      },
+      lockOwnedFile(descriptor) {
+        try {
+          if (!Number.isSafeInteger(descriptor) || descriptor < 0) fail();
+          for (const snapshot of snapshots.all) verifySnapshot(snapshot);
+          const result = Reflect.apply(lockOwnedFile, undefined, [descriptor]);
+          if (!['acquired', 'busy'].includes(result)) fail();
+          return result;
+        } catch {
+          return fail();
+        }
+      },
+      unlockOwnedFile(descriptor) {
+        try {
+          if (!Number.isSafeInteger(descriptor) || descriptor < 0) fail();
+          Reflect.apply(unlockOwnedFile, undefined, [descriptor]);
+        } catch {
+          return fail();
+        }
       },
     });
     } catch {

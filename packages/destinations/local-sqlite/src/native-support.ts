@@ -47,9 +47,14 @@ export type LocalSqliteNativeSupportManifest = Readonly<{
   capability: "local-sqlite";
   disposition: "proposed-unpublished-execution-eligible";
   artifactRoot: "internal/local-sqlite";
-  loaderContract: "owned-absolute-no-discovery-v1";
+  loaderContract: "owned-absolute-no-discovery-plus-exchange-v2";
+  namespaceMutationContract: "linux-renameat2-exchange-exact-inode-v1";
+  recoveryFenceLockContract: "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1";
   buildSandboxProfile: "agentscope-owned-native-build-v1";
   executionSandboxProfile: "agentscope-sacrificial-native-execution-v1";
+  maximumSnapshotBytes: 17_179_869_184;
+  minimumNativeChildBudgetMilliseconds: 50;
+  nativeTeardownReserveMilliseconds: 250;
   releaseMaterialManifestDigest: string;
   provenanceDigest: string;
   sbomDigest: string;
@@ -78,6 +83,9 @@ export type LocalSqliteNativeSupportResult =
       relativePath: string;
       bytes: number;
       digest: string;
+      maximumSnapshotBytes: number;
+      minimumNativeChildBudgetMilliseconds: number;
+      nativeTeardownReserveMilliseconds: number;
     }>
   | Readonly<{
       state: "unavailable";
@@ -94,18 +102,18 @@ const candidateBinary = Object.freeze({
   libcFamily: "glibc" as const,
   minimumLibcVersion: "2.34",
   relativePath: "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-  bytes: 2_213_824,
+  bytes: 2_222_856,
   digest:
-    "sha256:f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
+    "sha256:b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9",
 });
 
 const candidateArtifacts = Object.freeze([
   Object.freeze({
     kind: "loader" as const,
     relativePath: "loader/owned-loader.cjs",
-    bytes: 11_637,
+    bytes: 15_896,
     digest:
-      "sha256:469d659e54c8d4d3bf1a67b7486664a6e078b21466f184a07d8983cff7d5d599",
+      "sha256:f1bf552b702d1249f23e2e2b5bfdab9be8328a24e600b212cdf40df05963e0ba",
   }),
   Object.freeze({
     kind: "native-binary" as const,
@@ -144,23 +152,23 @@ const candidateArtifacts = Object.freeze([
   Object.freeze({
     kind: "release-materials" as const,
     relativePath: "records/release-materials.json",
-    bytes: 18_738,
+    bytes: 18_893,
     digest:
-      "sha256:6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3",
+      "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
   }),
   Object.freeze({
     kind: "provenance" as const,
     relativePath: "records/provenance.json",
-    bytes: 3_145,
+    bytes: 3_369,
     digest:
-      "sha256:b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f",
+      "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
   }),
   Object.freeze({
     kind: "sbom" as const,
     relativePath: "records/sbom.spdx.json",
-    bytes: 3_537,
+    bytes: 4_349,
     digest:
-      "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
+      "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
   }),
 ]);
 
@@ -170,15 +178,21 @@ export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManif
     capability: "local-sqlite",
     disposition: "proposed-unpublished-execution-eligible",
     artifactRoot: "internal/local-sqlite",
-    loaderContract: "owned-absolute-no-discovery-v1",
+    loaderContract: "owned-absolute-no-discovery-plus-exchange-v2",
+    namespaceMutationContract: "linux-renameat2-exchange-exact-inode-v1",
+    recoveryFenceLockContract:
+      "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1",
     buildSandboxProfile: "agentscope-owned-native-build-v1",
     executionSandboxProfile: "agentscope-sacrificial-native-execution-v1",
+    maximumSnapshotBytes: 17_179_869_184,
+    minimumNativeChildBudgetMilliseconds: 50,
+    nativeTeardownReserveMilliseconds: 250,
     releaseMaterialManifestDigest:
-      "sha256:6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3",
+      "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
     provenanceDigest:
-      "sha256:b80bd9b46e4338cf80560e952abfbabad5e762e1279b5582b16e9351e778657f",
+      "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
     sbomDigest:
-      "sha256:01a210d8666ffd2c742be1d98adfba697bda5e2cf79caee947d9b8fd85da13cb",
+      "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
     noticeInventoryDigest:
       "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
     artifactFiles: candidateArtifacts,
@@ -195,7 +209,7 @@ export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManif
   });
 
 export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST =
-  "sha256:3ea1609c5e323ac59d5fc3d471e37897fe4c7c60367d7bcc39320ad73d7f6337" as const;
+  "sha256:07059633fd124a278d16a1421d3dbd27f5778b1b26f5fecca9f24f27addedd2d" as const;
 
 const unavailable = (): LocalSqliteNativeSupportResult =>
   Object.freeze({
@@ -483,8 +497,13 @@ const MANIFEST_KEYS = Object.freeze([
   "disposition",
   "artifactRoot",
   "loaderContract",
+  "namespaceMutationContract",
+  "recoveryFenceLockContract",
   "buildSandboxProfile",
   "executionSandboxProfile",
+  "maximumSnapshotBytes",
+  "minimumNativeChildBudgetMilliseconds",
+  "nativeTeardownReserveMilliseconds",
   "releaseMaterialManifestDigest",
   "provenanceDigest",
   "sbomDigest",
@@ -514,10 +533,25 @@ const snapshotManifestEnvelope = (
     manifest.capability !== "local-sqlite" ||
     manifest.disposition !== "proposed-unpublished-execution-eligible" ||
     manifest.artifactRoot !== "internal/local-sqlite" ||
-    manifest.loaderContract !== "owned-absolute-no-discovery-v1" ||
+    manifest.loaderContract !==
+      "owned-absolute-no-discovery-plus-exchange-v2" ||
+    manifest.namespaceMutationContract !==
+      "linux-renameat2-exchange-exact-inode-v1" ||
+    manifest.recoveryFenceLockContract !==
+      "linux-flock-exclusive-nonblocking-open-description-process-death-release-v1" ||
     manifest.buildSandboxProfile !== "agentscope-owned-native-build-v1" ||
     manifest.executionSandboxProfile !==
       "agentscope-sacrificial-native-execution-v1" ||
+    !validInteger(
+      manifest.maximumSnapshotBytes,
+      1,
+      64 * 1_024 * 1_024 * 1_024,
+    ) ||
+    !validInteger(manifest.minimumNativeChildBudgetMilliseconds, 1, 1_000) ||
+    !validInteger(manifest.nativeTeardownReserveMilliseconds, 1, 5_000) ||
+    manifest.minimumNativeChildBudgetMilliseconds +
+      manifest.nativeTeardownReserveMilliseconds >
+      60_000 ||
     typeof manifest.releaseMaterialManifestDigest !== "string" ||
     !SHA256.test(manifest.releaseMaterialManifestDigest) ||
     typeof manifest.provenanceDigest !== "string" ||
@@ -678,6 +712,11 @@ const inspectManifest = (
     relativePath: selected.binary.relativePath,
     bytes: selected.binary.bytes,
     digest: selected.binary.digest,
+    maximumSnapshotBytes: envelope.manifest.maximumSnapshotBytes as number,
+    minimumNativeChildBudgetMilliseconds: envelope.manifest
+      .minimumNativeChildBudgetMilliseconds as number,
+    nativeTeardownReserveMilliseconds: envelope.manifest
+      .nativeTeardownReserveMilliseconds as number,
   });
 };
 

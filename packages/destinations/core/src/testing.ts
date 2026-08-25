@@ -52,3 +52,4 @@ export { bindLocalResourceMaintenanceContextForCore as bindLocalResourceMaintena
 export { bindLocalResourceMaintenanceRecoveryContextForCore as bindLocalResourceMaintenanceRecoveryContextForTesting } from "./local-resource-handler.js";
 export { bindLocalResourceDoctorContextForCore as bindLocalResourceDoctorContextForTesting } from "./local-resource-handler.js";
 export { createLocalResourceLifecycleDeadlineForCore as createLocalResourceLifecycleDeadlineForTesting } from "./local-resource-handler.js";
+export { bindLocalResourceHomeAuthorityForCore as bindLocalResourceHomeAuthorityForTesting } from "./local-resource-home-authority.js";

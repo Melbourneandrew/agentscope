@@ -8,6 +8,7 @@ import {
   decodeLocalSqliteLeaseRecord,
   encodeLocalSqliteFenceRecord,
   encodeLocalSqliteLeaseRecord,
+  inspectLocalSqliteDeadLeaseRecoveryPlan,
   inspectLocalSqliteLifecycleInventory,
   LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS,
   parseLocalSqliteFenceRecord,
@@ -15,15 +16,19 @@ import {
   recoverDeadLocalSqliteLease,
   releaseLocalSqliteExclusiveFence,
   releaseLocalSqliteSharedLease,
+  resumeLocalSqliteLifecycleFence,
   type LocalSqliteLifecycleGatePort,
 } from "./fence.js";
 
 const fingerprint = `sha256-${"a".repeat(64)}`;
 const leaseId = "11111111111111111111111111111111";
+const secondLeaseId = "77777777777777777777777777777777";
 const transactionId = "22222222222222222222222222222222";
 const childNonce = "33333333333333333333333333333333";
 const parentStart = "44444444444444444444444444444444";
+const secondParentStart = "88888888888888888888888888888888";
 const childStart = "55555555555555555555555555555555";
+const recoveryStart = "66666666666666666666666666666666";
 
 const sharedRequest = () => ({
   leaseId,
@@ -33,11 +38,18 @@ const sharedRequest = () => ({
 });
 const leaseRecord = () => ({ ...sharedRequest(), child: null });
 
-const fenceRequest = (purpose: "lifecycle" | "recovery" = "lifecycle") => ({
+const fenceRequest = () => ({
   transactionId,
   lifecycleFingerprint: fingerprint,
   lifecycleGeneration: 1,
-  purpose,
+  purpose: "lifecycle" as const,
+  owner: Object.freeze({ pid: 101, startIdentity: parentStart }),
+});
+const recoveryPlanRequest = () => ({
+  transactionId,
+  lifecycleFingerprint: fingerprint,
+  lifecycleGeneration: 1,
+  recoveryOwner: { pid: 303, startIdentity: recoveryStart },
 });
 
 type Stored = { content: string; physicalIdentity: string };
@@ -53,16 +65,18 @@ type ReplaceLeaseInput = Parameters<
 type RemoveArtifactInput = Parameters<
   LocalSqliteLifecycleGatePort["removeArtifactIfIdentity"]
 >[0];
-type CreateRecoveryClaimInput = Parameters<
-  LocalSqliteLifecycleGatePort["createRecoveryClaim"]
+type CreateLeaseCleanupClaimInput = Parameters<
+  LocalSqliteLifecycleGatePort["createLeaseCleanupClaim"]
 >[0];
 
+// eslint-disable-next-line max-lines-per-function -- the in-memory filesystem keeps every mutation boundary observable in one fixture.
 const createMemoryPort = () => {
   const artifacts = new Map<string, Stored>();
   const ownerStates = new Map<string, "live" | "dead" | "indeterminate">();
   let identity = 0;
   let fenceReads = 0;
   let publishFenceOnSecondRead = false;
+  let recoveryLockToken: Readonly<Record<string, never>> | undefined;
   const nextIdentity = () => `dev1:ino${(identity += 1)}`;
   const readArtifact: LocalSqliteLifecycleGatePort["readArtifact"] = (
     input,
@@ -90,20 +104,39 @@ const createMemoryPort = () => {
     return { state: "created", physicalIdentity };
   };
   const port: LocalSqliteLifecycleGatePort = {
+    acquireRecoveryFenceLock: ({ filename, physicalIdentity }) => {
+      const fence = artifacts.get(filename);
+      if (fence?.physicalIdentity !== physicalIdentity)
+        return { state: "mismatch" };
+      if (recoveryLockToken !== undefined) return { state: "busy" };
+      recoveryLockToken = Object.freeze({});
+      return { state: "acquired", token: recoveryLockToken };
+    },
+    assertRecoveryFenceLock: ({ filename, physicalIdentity, token }) => ({
+      state:
+        recoveryLockToken === token &&
+        artifacts.get(filename)?.physicalIdentity === physicalIdentity
+          ? "held"
+          : "not-held",
+    }),
     classifyOwner: ({ owner }) => ({
       state: ownerStates.get(owner.startIdentity) ?? "live",
     }),
     createFenceDurably: ({ filename, content }) => create(filename, content),
     createLeaseDurably: ({ filename, content }) => create(filename, content),
-    createRecoveryClaim: ({ claimName, leaseName, leasePhysicalIdentity }) => {
+    createLeaseCleanupClaim: ({
+      cleanupClaimName,
+      leaseName,
+      leasePhysicalIdentity,
+    }) => {
       const lease = artifacts.get(leaseName);
       if (
         lease === undefined ||
         lease.physicalIdentity !== leasePhysicalIdentity ||
-        artifacts.has(claimName)
+        artifacts.has(cleanupClaimName)
       )
         return { state: "mismatch" };
-      artifacts.set(claimName, lease);
+      artifacts.set(cleanupClaimName, lease);
       return { state: "created", physicalIdentity: lease.physicalIdentity };
     },
     listLifecycle: () => ({
@@ -122,6 +155,11 @@ const createMemoryPort = () => {
       artifacts.delete(filename);
       return { state: "removed" };
     },
+    releaseRecoveryFenceLock: ({ token }) => {
+      if (recoveryLockToken !== token) return { state: "not-held" };
+      recoveryLockToken = undefined;
+      return { state: "released" };
+    },
     replaceLeaseDurably: ({ filename, physicalIdentity, content }) => {
       const artifact = artifacts.get(filename);
       if (artifact?.physicalIdentity !== physicalIdentity)
@@ -138,6 +176,44 @@ const createMemoryPort = () => {
     artifacts,
     ownerStates,
     port,
+    recoveryRequest: () => {
+      const leaseIds = new Set<string>();
+      for (const name of artifacts.keys()) {
+        const match = /^(?:lease|lease-cleanup)-([a-f0-9]{32})\.json$/u.exec(
+          name,
+        );
+        if (match?.[1] !== undefined) leaseIds.add(match[1]);
+      }
+      const deadLeaseVector = [...leaseIds].sort().map((id) => {
+        const lease = artifacts.get(`lease-${id}.json`);
+        const claim = artifacts.get(`lease-cleanup-${id}.json`);
+        const stored = lease ?? claim;
+        if (stored === undefined) throw new Error("recovery fixture");
+        const record = decodeLocalSqliteLeaseRecord(stored.content);
+        if (record === undefined) throw new Error("recovery record fixture");
+        return {
+          originalState:
+            lease !== undefined && claim !== undefined
+              ? ("lease+cleanup-claim" as const)
+              : lease !== undefined
+                ? ("lease-only" as const)
+                : ("cleanup-claim-only" as const),
+          physicalIdentity: stored.physicalIdentity,
+          record,
+        };
+      });
+      return {
+        transactionId,
+        lifecycleFingerprint: fingerprint,
+        lifecycleGeneration: 1,
+        purpose: "recovery" as const,
+        recoveryOwner: { pid: 303, startIdentity: recoveryStart },
+        deadLeaseVector,
+      };
+    },
+    dropRecoveryLock: () => {
+      recoveryLockToken = undefined;
+    },
     setFenceRace: () => {
       publishFenceOnSecondRead = true;
     },
@@ -152,12 +228,45 @@ const createDeadLeaseRecovery = async () => {
   );
   if (!shared.ok) throw new Error("expected shared authority");
   memory.ownerStates.set(parentStart, "dead");
+  const plan = await inspectLocalSqliteDeadLeaseRecoveryPlan(
+    memory.port,
+    recoveryPlanRequest(),
+  );
+  if (!plan.ok) throw new Error("expected recovery plan");
   const recovery = await acquireLocalSqliteExclusiveFence(
     memory.port,
-    fenceRequest("recovery"),
+    plan.value,
   );
   if (!recovery.ok) throw new Error("expected recovery authority");
   return { memory, recovery };
+};
+
+const prepareTwoDeadLeases = async () => {
+  const memory = createMemoryPort();
+  for (const request of [
+    sharedRequest(),
+    {
+      ...sharedRequest(),
+      leaseId: secondLeaseId,
+      parent: { pid: 404, startIdentity: secondParentStart },
+    },
+  ]) {
+    const acquired = await acquireLocalSqliteSharedLease(memory.port, request);
+    if (!acquired.ok) throw new Error("expected shared lease fixture");
+  }
+  memory.ownerStates.set(parentStart, "dead");
+  memory.ownerStates.set(secondParentStart, "dead");
+  const plan = await inspectLocalSqliteDeadLeaseRecoveryPlan(
+    memory.port,
+    recoveryPlanRequest(),
+  );
+  if (!plan.ok) throw new Error("expected recovery plan fixture");
+  const recovery = await acquireLocalSqliteExclusiveFence(
+    memory.port,
+    plan.value,
+  );
+  if (!recovery.ok) throw new Error("expected recovery fence fixture");
+  return { memory, plan, recovery };
 };
 
 describe("Local SQLite lifecycle gate", () => {
@@ -239,10 +348,16 @@ describe("Local SQLite lifecycle gate", () => {
     memory.ownerStates.set(parentStart, "dead");
     expect(
       await acquireLocalSqliteExclusiveFence(memory.port, fenceRequest()),
-    ).toEqual({ ok: false, state: "reconciliation-required" });
+    ).toEqual({ ok: false, state: "recovery-required" });
+    const plan = await inspectLocalSqliteDeadLeaseRecoveryPlan(
+      memory.port,
+      recoveryPlanRequest(),
+    );
+    expect(plan).toMatchObject({ ok: true });
+    if (!plan.ok) throw new Error("expected recovery plan");
     const recovery = await acquireLocalSqliteExclusiveFence(
       memory.port,
-      fenceRequest("recovery"),
+      plan.value,
     );
     expect(recovery).toMatchObject({
       ok: true,
@@ -263,6 +378,142 @@ describe("Local SQLite lifecycle gate", () => {
       await releaseLocalSqliteExclusiveFence(memory.port, recovery.value),
     ).toEqual({ ok: true, state: "released" });
     expect(memory.artifacts.size).toBe(0);
+  });
+});
+
+describe("Local SQLite canonical dead-lease recovery vector", () => {
+  it("drains only in canonical order and resumes the exact suffix", async () => {
+    const { memory, plan, recovery } = await prepareTwoDeadLeases();
+    expect(
+      plan.value.deadLeaseVector.map((entry) => entry.record.leaseId),
+    ).toEqual([leaseId, secondLeaseId]);
+    expect(
+      await recoverDeadLocalSqliteLease(
+        memory.port,
+        recovery.value,
+        `lease-${secondLeaseId}.json`,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+    expect(
+      await recoverDeadLocalSqliteLease(
+        memory.port,
+        recovery.value,
+        `lease-${leaseId}.json`,
+      ),
+    ).toEqual({ ok: true, state: "recovered" });
+    expect(
+      await releaseLocalSqliteExclusiveFence(memory.port, recovery.value),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    memory.dropRecoveryLock();
+    memory.ownerStates.set(recoveryStart, "dead");
+    const resumed = await acquireLocalSqliteExclusiveFence(
+      memory.port,
+      plan.value,
+    );
+    expect(resumed).toMatchObject({ ok: true });
+    if (!resumed.ok) throw new Error("expected resumed recovery");
+    expect(
+      await recoverDeadLocalSqliteLease(
+        memory.port,
+        resumed.value,
+        `lease-${secondLeaseId}.json`,
+      ),
+    ).toEqual({ ok: true, state: "recovered" });
+    expect(
+      await releaseLocalSqliteExclusiveFence(memory.port, resumed.value),
+    ).toEqual({ ok: true, state: "released" });
+  });
+
+  it("rejects a non-prefix absence and admits a same-inode monotonic first survivor", async () => {
+    const gap = await prepareTwoDeadLeases();
+    const second = gap.memory.artifacts.get(`lease-${secondLeaseId}.json`)!;
+    gap.memory.artifacts.delete(`lease-${secondLeaseId}.json`);
+    gap.memory.dropRecoveryLock();
+    gap.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await acquireLocalSqliteExclusiveFence(gap.memory.port, gap.plan.value),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+    gap.memory.artifacts.set(`lease-${secondLeaseId}.json`, second);
+
+    const advanced = await prepareTwoDeadLeases();
+    const first = advanced.memory.artifacts.get(`lease-${leaseId}.json`)!;
+    expect(
+      advanced.memory.port.createLeaseCleanupClaim({
+        cleanupClaimName: `lease-cleanup-${leaseId}.json`,
+        leaseName: `lease-${leaseId}.json`,
+        leasePhysicalIdentity: first.physicalIdentity,
+      }),
+    ).toMatchObject({ state: "created" });
+    advanced.memory.dropRecoveryLock();
+    advanced.memory.ownerStates.set(recoveryStart, "dead");
+    const resumed = await acquireLocalSqliteExclusiveFence(
+      advanced.memory.port,
+      advanced.plan.value,
+    );
+    expect(resumed).toMatchObject({ ok: true });
+  });
+});
+
+describe("Local SQLite recovery suffix containment", () => {
+  it("rejects a later cleanup-state change and an extra lease identity", async () => {
+    const changed = await prepareTwoDeadLeases();
+    const second = changed.memory.artifacts.get(`lease-${secondLeaseId}.json`)!;
+    changed.memory.artifacts.set(`lease-cleanup-${secondLeaseId}.json`, second);
+    changed.memory.dropRecoveryLock();
+    changed.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        changed.memory.port,
+        changed.plan.value,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    const extra = await prepareTwoDeadLeases();
+    const extraId = "9".repeat(32);
+    extra.memory.artifacts.set(`lease-cleanup-${extraId}.json`, {
+      physicalIdentity: "dev:extra",
+      content: encodeLocalSqliteLeaseRecord({
+        ...leaseRecord(),
+        leaseId: extraId,
+      })!,
+    });
+    extra.memory.dropRecoveryLock();
+    extra.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        extra.memory.port,
+        extra.plan.value,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("classifies a changed remaining lease owner before resuming", async () => {
+    const busy = await prepareTwoDeadLeases();
+    busy.memory.dropRecoveryLock();
+    busy.memory.ownerStates.set(recoveryStart, "dead");
+    busy.memory.ownerStates.set(secondParentStart, "live");
+    expect(
+      await acquireLocalSqliteExclusiveFence(busy.memory.port, busy.plan.value),
+    ).toEqual({ ok: false, state: "busy" });
+
+    const unavailable = await prepareTwoDeadLeases();
+    unavailable.memory.dropRecoveryLock();
+    unavailable.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        {
+          ...unavailable.memory.port,
+          classifyOwner: (
+            input: Parameters<LocalSqliteLifecycleGatePort["classifyOwner"]>[0],
+          ) =>
+            input.owner.startIdentity === secondParentStart
+              ? undefined
+              : unavailable.memory.port.classifyOwner(input),
+        },
+        unavailable.plan.value,
+      ),
+    ).toEqual({ ok: false, state: "unavailable" });
   });
 });
 
@@ -378,7 +629,7 @@ describe("Local SQLite final inventory admission", () => {
               memory.artifacts.set(
                 blocker === "intent"
                   ? "intent-v1.json"
-                  : `recovery-claim-${transactionId}`,
+                  : `lease-cleanup-${leaseId}.json`,
                 blocker === "intent"
                   ? { content: "intent", physicalIdentity: "dev:intent" }
                   : lease,
@@ -457,7 +708,7 @@ describe("Local SQLite lifecycle gate containment", () => {
     expect(
       await acquireLocalSqliteExclusiveFence(
         memory.port,
-        fenceRequest("recovery"),
+        memory.recoveryRequest(),
       ),
     ).toEqual({ ok: false, state: "busy" });
   });
@@ -466,7 +717,7 @@ describe("Local SQLite lifecycle gate containment", () => {
     const memory = createMemoryPort();
     expect(await inspectLocalSqliteLifecycleInventory(memory.port)).toEqual({
       ok: true,
-      state: "available",
+      state: "clean",
       entries: 0,
       leases: 0,
       bytes: 0,
@@ -515,7 +766,7 @@ describe("Local SQLite lifecycle gate containment", () => {
       },
       {
         entries: ["7", "8"].map((digit) => ({
-          name: `recovery-claim-${digit.repeat(32)}`,
+          name: `lease-cleanup-${digit.repeat(32)}.json`,
           bytes: 256,
           physicalIdentity: `dev:${digit}`,
         })),
@@ -549,7 +800,7 @@ describe("Local SQLite lifecycle hostile-input containment", () => {
     const shared = await acquireLocalSqliteSharedLease(port, sharedRequest());
     expect(shared.ok).toBe(true);
     expect(
-      await acquireLocalSqliteExclusiveFence(port, fenceRequest("recovery")),
+      await acquireLocalSqliteExclusiveFence(port, memory.recoveryRequest()),
     ).toEqual({ ok: false, state: "reconciliation-required" });
     expect(coercions).toBe(0);
 
@@ -608,8 +859,9 @@ describe("Local SQLite lifecycle hostile-input containment", () => {
     expect(LOCAL_SQLITE_LIFECYCLE_GATE_CONSTANTS).toEqual({
       exclusiveFenceName: "exclusive-fence-v1",
       leaseRecordBytes: 256,
-      maximumDirectoryEntries: 128,
-      maximumInspectionBytes: 65_536,
+      maximumDirectoryEntries: 192,
+      maximumFenceRecordBytes: 32_768,
+      maximumInspectionBytes: 98_304,
       maximumLeases: 64,
     });
   });
@@ -783,9 +1035,10 @@ describe("Local SQLite existing shared-lease validation", () => {
 
     for (const [name, content] of [
       ["intent-v1.json", "intent"],
-      [`recovery-claim-${transactionId}`, "malformed"],
+      ["operation-phase-v1.json", "phase"],
+      [`lease-cleanup-${leaseId}.json`, "malformed"],
       [
-        `recovery-claim-${transactionId}`,
+        `lease-cleanup-${"9".repeat(32)}.json`,
         encodeLocalSqliteLeaseRecord({
           ...leaseRecord(),
           leaseId: "9".repeat(32),
@@ -937,6 +1190,133 @@ describe("Local SQLite exclusive gate failure containment", () => {
   });
 });
 
+describe("Local SQLite lifecycle-fence recovery ownership", () => {
+  it("blocks a live owner and resumes only a dead owner's exact locked fence", async () => {
+    const live = createMemoryPort();
+    const record = parseLocalSqliteFenceRecord(fenceRequest())!;
+    live.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino99",
+    });
+    await expect(
+      resumeLocalSqliteLifecycleFence(live.port, {
+        physicalIdentity: "dev1:ino99",
+        record,
+      }),
+    ).resolves.toEqual({ ok: false, state: "busy" });
+
+    const dead = createMemoryPort();
+    dead.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino100",
+    });
+    dead.ownerStates.set(parentStart, "dead");
+    const resumed = await resumeLocalSqliteLifecycleFence(dead.port, {
+      physicalIdentity: "dev1:ino100",
+      record,
+    });
+    expect(resumed).toMatchObject({ ok: true });
+    if (!resumed.ok) throw new Error("expected resumed lifecycle fence");
+    await expect(
+      releaseLocalSqliteExclusiveFence(dead.port, resumed.value),
+    ).resolves.toEqual({ ok: true, state: "released" });
+
+    const substituted = createMemoryPort();
+    const substitutedRecord = parseLocalSqliteFenceRecord({
+      ...fenceRequest(),
+      owner: { pid: 404, startIdentity: secondParentStart },
+    })!;
+    substituted.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(substitutedRecord)!,
+      physicalIdentity: "dev1:ino101",
+    });
+    substituted.ownerStates.set(parentStart, "dead");
+    substituted.ownerStates.set(secondParentStart, "dead");
+    await expect(
+      resumeLocalSqliteLifecycleFence(substituted.port, {
+        physicalIdentity: "dev1:ino101",
+        record,
+      }),
+    ).resolves.toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("fails closed for invalid, busy, and unreleaseable recovery-lock states", async () => {
+    const record = parseLocalSqliteFenceRecord(fenceRequest())!;
+    const invalid = createMemoryPort();
+    await expect(
+      resumeLocalSqliteLifecycleFence(invalid.port, {
+        physicalIdentity: "",
+        record,
+      }),
+    ).resolves.toEqual({ ok: false, state: "unavailable" });
+
+    for (const [state, expected] of [
+      ["busy", "busy"],
+      ["mismatch", "reconciliation-required"],
+    ] as const) {
+      const memory = createMemoryPort();
+      memory.artifacts.set("exclusive-fence-v1", {
+        content: encodeLocalSqliteFenceRecord(record)!,
+        physicalIdentity: "dev1:ino200",
+      });
+      await expect(
+        resumeLocalSqliteLifecycleFence(
+          {
+            ...memory.port,
+            acquireRecoveryFenceLock: () => ({ state }),
+          },
+          { physicalIdentity: "dev1:ino200", record },
+        ),
+      ).resolves.toEqual({ ok: false, state: expected });
+    }
+
+    const cannotRelease = createMemoryPort();
+    cannotRelease.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino201",
+    });
+    await expect(
+      resumeLocalSqliteLifecycleFence(
+        {
+          ...cannotRelease.port,
+          releaseRecoveryFenceLock: () => ({ state: "not-held" }),
+        },
+        { physicalIdentity: "dev1:ino201", record },
+      ),
+    ).resolves.toEqual({ ok: false, state: "reconciliation-required" });
+
+    const unavailableOwner = createMemoryPort();
+    unavailableOwner.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino202",
+    });
+    await expect(
+      resumeLocalSqliteLifecycleFence(
+        { ...unavailableOwner.port, classifyOwner: () => undefined as never },
+        { physicalIdentity: "dev1:ino202", record },
+      ),
+    ).resolves.toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("rejects an ordinary lifecycle fence when its recovery lock is unavailable", async () => {
+    for (const [state, expected] of [
+      ["busy", "busy"],
+      ["mismatch", "reconciliation-required"],
+    ] as const) {
+      const memory = createMemoryPort();
+      await expect(
+        acquireLocalSqliteExclusiveFence(
+          {
+            ...memory.port,
+            acquireRecoveryFenceLock: () => ({ state }),
+          },
+          fenceRequest(),
+        ),
+      ).resolves.toEqual({ ok: false, state: expected });
+    }
+  });
+});
+
 describe("Local SQLite exclusive owner-proof containment", () => {
   it("rejects malformed owner proofs and missing lease evidence", async () => {
     for (const ownerResult of [undefined, { state: "future" }] as const) {
@@ -947,7 +1327,7 @@ describe("Local SQLite exclusive owner-proof containment", () => {
       expect(
         await acquireLocalSqliteExclusiveFence(
           { ...memory.port, classifyOwner: () => ownerResult },
-          fenceRequest("recovery"),
+          memory.recoveryRequest(),
         ),
       ).toEqual({ ok: false, state: "reconciliation-required" });
     }
@@ -972,7 +1352,7 @@ describe("Local SQLite exclusive owner-proof containment", () => {
           classifyOwner: () =>
             (classificationCalls += 1) === 1 ? { state: "dead" } : undefined,
         },
-        fenceRequest("recovery"),
+        childClassification.recoveryRequest(),
       ),
     ).toEqual({ ok: false, state: "reconciliation-required" });
 
@@ -990,7 +1370,7 @@ describe("Local SQLite exclusive owner-proof containment", () => {
               ? { state: "absent" }
               : originalRead(input),
         },
-        fenceRequest("recovery"),
+        missingLease.recoveryRequest(),
       ),
     ).toEqual({ ok: false, state: "reconciliation-required" });
     expect(await acquireLocalSqliteExclusiveFence({}, fenceRequest())).toEqual({
@@ -1007,10 +1387,10 @@ describe("Local SQLite exclusive owner-proof containment", () => {
     ).toMatchObject({ ok: true });
     expect(
       await acquireLocalSqliteExclusiveFence(mismatchedLifecycle.port, {
-        ...fenceRequest("recovery"),
+        ...mismatchedLifecycle.recoveryRequest(),
         lifecycleFingerprint: `sha256-${"b".repeat(64)}`,
       }),
-    ).toEqual({ ok: false, state: "reconciliation-required" });
+    ).toEqual({ ok: false, state: "unavailable" });
   });
 });
 
@@ -1103,7 +1483,7 @@ describe("Local SQLite gate authority containment", () => {
         { ...memory.port, readArtifact: () => ({ state: "absent" }) },
         acquired.value,
       ),
-    ).toEqual({ ok: false, state: "reconciliation-required" });
+    ).toEqual({ ok: true, state: "released" });
 
     const exclusiveMemory = createMemoryPort();
     const exclusive = await acquireLocalSqliteExclusiveFence(
@@ -1135,7 +1515,128 @@ describe("Local SQLite gate authority containment", () => {
   });
 });
 
+describe("Local SQLite exclusive authority purpose binding", () => {
+  it("rejects a recovery record relabeled as an ordinary exclusive fence", async () => {
+    const recovered = await createDeadLeaseRecovery();
+    const { filename, physicalIdentity, record, deadLeaseNames } =
+      recovered.recovery.value;
+    expect(
+      await releaseLocalSqliteExclusiveFence(recovered.memory.port, {
+        state: "exclusive",
+        filename,
+        physicalIdentity,
+        record,
+        deadLeaseNames,
+      }),
+    ).toEqual({ ok: false, state: "unavailable" });
+  });
+});
+
 describe("Local SQLite dead-lease recovery containment", () => {
+  it("rejects invalid, empty, fenced, live, and indeterminate recovery plans", async () => {
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan({}, recoveryPlanRequest()),
+    ).toEqual({ ok: false, state: "unavailable" });
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        createMemoryPort().port,
+        {},
+      ),
+    ).toEqual({ ok: false, state: "unavailable" });
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        createMemoryPort().port,
+        recoveryPlanRequest(),
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    const lifecycleFence = createMemoryPort();
+    const exclusive = await acquireLocalSqliteExclusiveFence(
+      lifecycleFence.port,
+      fenceRequest(),
+    );
+    expect(exclusive.ok).toBe(true);
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        lifecycleFence.port,
+        recoveryPlanRequest(),
+      ),
+    ).toEqual({ ok: false, state: "busy" });
+
+    const malformedFence = createMemoryPort();
+    malformedFence.artifacts.set("exclusive-fence-v1", {
+      content: "malformed",
+      physicalIdentity: "dev:malformed-fence",
+    });
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        malformedFence.port,
+        recoveryPlanRequest(),
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    const blocked = createMemoryPort();
+    blocked.artifacts.set("intent-v1.json", {
+      content: "intent",
+      physicalIdentity: "dev:intent",
+    });
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        blocked.port,
+        recoveryPlanRequest(),
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    for (const ownerState of ["live", "indeterminate"] as const) {
+      const memory = createMemoryPort();
+      const lease = await acquireLocalSqliteSharedLease(
+        memory.port,
+        sharedRequest(),
+      );
+      expect(lease.ok).toBe(true);
+      memory.ownerStates.set(parentStart, ownerState);
+      expect(
+        await inspectLocalSqliteDeadLeaseRecoveryPlan(
+          memory.port,
+          recoveryPlanRequest(),
+        ),
+      ).toEqual({ ok: false, state: "busy" });
+    }
+
+    const malformedRead = createMemoryPort();
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        { ...malformedRead.port, readArtifact: () => undefined },
+        recoveryPlanRequest(),
+      ),
+    ).toEqual({ ok: false, state: "unavailable" });
+
+    const unknownOwner = createMemoryPort();
+    const unknownLease = await acquireLocalSqliteSharedLease(
+      unknownOwner.port,
+      sharedRequest(),
+    );
+    expect(unknownLease.ok).toBe(true);
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        { ...unknownOwner.port, classifyOwner: () => undefined },
+        recoveryPlanRequest(),
+      ),
+    ).toEqual({ ok: false, state: "unavailable" });
+
+    const existingRecovery = await createDeadLeaseRecovery();
+    existingRecovery.memory.dropRecoveryLock();
+    existingRecovery.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        existingRecovery.memory.port,
+        recoveryPlanRequest(),
+      ),
+    ).toMatchObject({ ok: true, value: { purpose: "recovery" } });
+  });
+});
+
+describe("Local SQLite dead-lease recovery proof boundaries", () => {
   it("fails closed at every dead-lease recovery proof boundary", async () => {
     const filename = `lease-${leaseId}.json`;
     expect(await recoverDeadLocalSqliteLease({}, {}, filename)).toEqual({
@@ -1156,9 +1657,33 @@ describe("Local SQLite dead-lease recovery containment", () => {
     const claimFailure = await createDeadLeaseRecovery();
     expect(
       await recoverDeadLocalSqliteLease(
-        { ...claimFailure.memory.port, createRecoveryClaim: () => undefined },
+        {
+          ...claimFailure.memory.port,
+          createLeaseCleanupClaim: () => undefined,
+        },
         claimFailure.recovery.value,
         filename,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    const lostRecoveryLock = await createDeadLeaseRecovery();
+    expect(
+      await recoverDeadLocalSqliteLease(
+        {
+          ...lostRecoveryLock.memory.port,
+          assertRecoveryFenceLock: () => ({ state: "not-held" }),
+        },
+        lostRecoveryLock.recovery.value,
+        filename,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+    expect(
+      await releaseLocalSqliteExclusiveFence(
+        {
+          ...lostRecoveryLock.memory.port,
+          assertRecoveryFenceLock: () => ({ state: "not-held" }),
+        },
+        lostRecoveryLock.recovery.value,
       ),
     ).toEqual({ ok: false, state: "reconciliation-required" });
 
@@ -1189,7 +1714,7 @@ describe("Local SQLite dead-lease recovery containment", () => {
       await recoverDeadLocalSqliteLease(
         {
           ...claimDrift.memory.port,
-          createRecoveryClaim: () => ({
+          createLeaseCleanupClaim: () => ({
             state: "created",
             physicalIdentity: "dev:wrong",
           }),
@@ -1206,7 +1731,7 @@ describe("Local SQLite dead-lease recovery containment", () => {
         {
           ...claimReadDrift.memory.port,
           readArtifact: (input: ReadArtifactInput) =>
-            input.filename.startsWith("recovery-claim-")
+            input.filename.startsWith("lease-cleanup-")
               ? { state: "absent" }
               : originalRead(input),
         },
@@ -1214,6 +1739,93 @@ describe("Local SQLite dead-lease recovery containment", () => {
         filename,
       ),
     ).toEqual({ ok: false, state: "reconciliation-required" });
+  });
+});
+
+describe("Local SQLite recovery lock admission", () => {
+  it("preserves uncertain lock admission and cleans a rejected recovery owner", async () => {
+    const memory = createMemoryPort();
+    const lease = await acquireLocalSqliteSharedLease(
+      memory.port,
+      sharedRequest(),
+    );
+    if (!lease.ok) throw new Error("expected lease fixture");
+    memory.ownerStates.set(parentStart, "dead");
+    const plan = await inspectLocalSqliteDeadLeaseRecoveryPlan(
+      memory.port,
+      recoveryPlanRequest(),
+    );
+    if (!plan.ok) throw new Error("expected recovery plan");
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        { ...memory.port, acquireRecoveryFenceLock: () => undefined },
+        plan.value,
+      ),
+    ).toEqual({ ok: false, state: "unavailable" });
+    expect(memory.artifacts.has("exclusive-fence-v1")).toBe(true);
+
+    for (const [ownerState, resultState] of [
+      ["dead", "reconciliation-required"],
+      ["indeterminate", "busy"],
+    ] as const) {
+      const rejected = createMemoryPort();
+      const rejectedLease = await acquireLocalSqliteSharedLease(
+        rejected.port,
+        sharedRequest(),
+      );
+      if (!rejectedLease.ok) throw new Error("expected lease fixture");
+      rejected.ownerStates.set(parentStart, "dead");
+      const rejectedPlan = await inspectLocalSqliteDeadLeaseRecoveryPlan(
+        rejected.port,
+        recoveryPlanRequest(),
+      );
+      if (!rejectedPlan.ok) throw new Error("expected recovery plan");
+      rejected.ownerStates.set(recoveryStart, ownerState);
+      expect(
+        await acquireLocalSqliteExclusiveFence(
+          rejected.port,
+          rejectedPlan.value,
+        ),
+      ).toEqual({ ok: false, state: resultState });
+      expect(rejected.artifacts.has("exclusive-fence-v1")).toBe(false);
+    }
+  });
+});
+
+describe("Local SQLite existing recovery-fence admission", () => {
+  it("fails closed for malformed lock and inventory observations", async () => {
+    const malformedLock = await createDeadLeaseRecovery();
+    malformedLock.memory.dropRecoveryLock();
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        {
+          ...malformedLock.memory.port,
+          acquireRecoveryFenceLock: () => undefined,
+        },
+        malformedLock.recovery.value.record,
+      ),
+    ).toEqual({ ok: false, state: "unavailable" });
+
+    const missingInventory = await createDeadLeaseRecovery();
+    missingInventory.memory.dropRecoveryLock();
+    missingInventory.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        { ...missingInventory.memory.port, listLifecycle: () => undefined },
+        missingInventory.recovery.value.record,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("reports a still-live recovery owner as busy", async () => {
+    const live = await createDeadLeaseRecovery();
+    live.memory.dropRecoveryLock();
+    expect(
+      await acquireLocalSqliteExclusiveFence(
+        live.memory.port,
+        live.recovery.value.record,
+      ),
+    ).toEqual({ ok: false, state: "busy" });
   });
 });
 
@@ -1228,6 +1840,21 @@ describe("Local SQLite dead-lease cleanup crash containment", () => {
           removeArtifactIfIdentity: () => ({ state: "mismatch" }),
         },
         removalFailure.recovery.value,
+        filename,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    const lingeringLease = await createDeadLeaseRecovery();
+    expect(
+      await recoverDeadLocalSqliteLease(
+        {
+          ...lingeringLease.memory.port,
+          removeArtifactIfIdentity: (input: RemoveArtifactInput) =>
+            input.filename === filename
+              ? { state: "removed" }
+              : lingeringLease.memory.port.removeArtifactIfIdentity(input),
+        },
+        lingeringLease.recovery.value,
         filename,
       ),
     ).toEqual({ ok: false, state: "reconciliation-required" });
@@ -1247,7 +1874,10 @@ describe("Local SQLite dead-lease cleanup crash containment", () => {
         filename,
       ),
     ).toEqual({ ok: false, state: "reconciliation-required" });
-    expect(resumableRemoval.memory.artifacts.has(filename)).toBe(true);
+    expect(resumableRemoval.memory.artifacts.has(filename)).toBe(false);
+    expect(
+      resumableRemoval.memory.artifacts.has(`lease-cleanup-${leaseId}.json`),
+    ).toBe(true);
     expect(
       await recoverDeadLocalSqliteLease(
         resumableRemoval.memory.port,
@@ -1277,12 +1907,12 @@ describe("Local SQLite dead-lease cleanup crash containment", () => {
     ).toEqual({ ok: false, state: "reconciliation-required" });
 
     const claimCrash = await createDeadLeaseRecovery();
-    const createClaim = claimCrash.memory.port.createRecoveryClaim;
+    const createClaim = claimCrash.memory.port.createLeaseCleanupClaim;
     expect(
       await recoverDeadLocalSqliteLease(
         {
           ...claimCrash.memory.port,
-          createRecoveryClaim: (input: CreateRecoveryClaimInput) => {
+          createLeaseCleanupClaim: (input: CreateLeaseCleanupClaimInput) => {
             createClaim(input);
             return undefined;
           },
@@ -1295,7 +1925,7 @@ describe("Local SQLite dead-lease cleanup crash containment", () => {
       await recoverDeadLocalSqliteLease(
         {
           ...claimCrash.memory.port,
-          createRecoveryClaim: () => ({ state: "exists" }),
+          createLeaseCleanupClaim: () => ({ state: "exists" }),
         },
         claimCrash.recovery.value,
         filename,
@@ -1304,7 +1934,63 @@ describe("Local SQLite dead-lease cleanup crash containment", () => {
   });
 });
 
+describe("Local SQLite recovery inventory boundaries", () => {
+  it("rejects unavailable inventory before and after cleanup", async () => {
+    const initial = await createDeadLeaseRecovery();
+    expect(
+      await recoverDeadLocalSqliteLease(
+        { ...initial.memory.port, listLifecycle: () => undefined },
+        initial.recovery.value,
+        `lease-${leaseId}.json`,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+
+    const final = await createDeadLeaseRecovery();
+    const list = final.memory.port.listLifecycle;
+    let lists = 0;
+    expect(
+      await recoverDeadLocalSqliteLease(
+        {
+          ...final.memory.port,
+          listLifecycle: () => ((lists += 1) === 2 ? undefined : list()),
+        },
+        final.recovery.value,
+        `lease-${leaseId}.json`,
+      ),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+  });
+});
+
 describe("Local SQLite read-only lifecycle inspection", () => {
+  it("probes a recovery fence without advancing its cleanup vector", async () => {
+    const held = await createDeadLeaseRecovery();
+    expect(
+      await inspectLocalSqliteLifecycleInventory(held.memory.port),
+    ).toMatchObject({
+      ok: true,
+      state: "busy",
+      fence: "present",
+    });
+
+    held.memory.dropRecoveryLock();
+    expect(
+      await inspectLocalSqliteLifecycleInventory(held.memory.port),
+    ).toMatchObject({
+      ok: true,
+      state: "busy",
+      fence: "present",
+    });
+    held.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await inspectLocalSqliteLifecycleInventory(held.memory.port),
+    ).toMatchObject({
+      ok: true,
+      state: "recovery-required",
+      fence: "present",
+    });
+    expect(held.memory.artifacts.has(`lease-${leaseId}.json`)).toBe(true);
+  });
+
   it("validates a present fence during read-only inspection", async () => {
     const memory = createMemoryPort();
     const exclusive = await acquireLocalSqliteExclusiveFence(
@@ -1314,7 +2000,7 @@ describe("Local SQLite read-only lifecycle inspection", () => {
     if (!exclusive.ok) throw new Error("expected exclusive authority");
     expect(await inspectLocalSqliteLifecycleInventory(memory.port)).toEqual({
       ok: true,
-      state: "available",
+      state: "busy",
       entries: 1,
       leases: 0,
       bytes: 256,
@@ -1331,7 +2017,42 @@ describe("Local SQLite read-only lifecycle inspection", () => {
       state: "unavailable",
     });
   });
+});
 
+describe("Local SQLite recovery Doctor containment", () => {
+  it("rejects a recovery suffix identity change", async () => {
+    const changed = await createDeadLeaseRecovery();
+    changed.memory.dropRecoveryLock();
+    changed.memory.ownerStates.set(recoveryStart, "dead");
+    const stored = changed.memory.artifacts.get(`lease-${leaseId}.json`)!;
+    changed.memory.artifacts.set(`lease-${leaseId}.json`, {
+      ...stored,
+      physicalIdentity: "dev:changed",
+    });
+    expect(
+      await inspectLocalSqliteLifecycleInventory(changed.memory.port),
+    ).toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("reports an unavailable remaining-owner classification", async () => {
+    const changed = await prepareTwoDeadLeases();
+    changed.memory.dropRecoveryLock();
+    changed.memory.ownerStates.set(recoveryStart, "dead");
+    expect(
+      await inspectLocalSqliteLifecycleInventory({
+        ...changed.memory.port,
+        classifyOwner: (
+          input: Parameters<LocalSqliteLifecycleGatePort["classifyOwner"]>[0],
+        ) =>
+          input.owner.startIdentity === secondParentStart
+            ? undefined
+            : changed.memory.port.classifyOwner(input),
+      }),
+    ).toEqual({ ok: false, state: "unavailable" });
+  });
+});
+
+describe("Local SQLite read-only lease inventory", () => {
   it("decodes every lease and rejects blocking or raced inventory", async () => {
     const malformed = createMemoryPort();
     malformed.artifacts.set(`lease-${leaseId}.json`, {
@@ -1350,7 +2071,7 @@ describe("Local SQLite read-only lifecycle inspection", () => {
     });
     expect(await inspectLocalSqliteLifecycleInventory(valid.port)).toEqual({
       ok: true,
-      state: "available",
+      state: "busy",
       entries: 1,
       leases: 1,
       bytes: 256,
@@ -1373,7 +2094,7 @@ describe("Local SQLite read-only lifecycle inspection", () => {
             : inventory;
         },
       }),
-    ).toMatchObject({ ok: true, state: "available", entries: 2 });
+    ).toMatchObject({ ok: true, state: "busy", entries: 2 });
     valid.artifacts.delete("ownership-receipt-v1.json");
     valid.artifacts.set(`lease-${"9".repeat(32)}.json`, {
       content: encodeLocalSqliteLeaseRecord({
@@ -1438,6 +2159,22 @@ describe("Local SQLite lifecycle record codec", () => {
     expect(fenceBytes).toHaveLength(256);
     expect(decodeLocalSqliteLeaseRecord(leaseBytes)).toEqual(lease);
     expect(decodeLocalSqliteFenceRecord(fenceBytes)).toEqual(fence);
+    const recoveryFence = parseLocalSqliteFenceRecord({
+      ...recoveryPlanRequest(),
+      purpose: "recovery",
+      deadLeaseVector: [
+        {
+          originalState: "lease-only",
+          physicalIdentity: "dev:1:ino:2",
+          record: lease,
+        },
+      ],
+    });
+    expect(recoveryFence?.purpose).toBe("recovery");
+    const recoveryBytes = encodeLocalSqliteFenceRecord(recoveryFence);
+    expect(recoveryBytes?.length).toBeGreaterThan(256);
+    expect(recoveryBytes?.length).toBeLessThanOrEqual(32_768);
+    expect(decodeLocalSqliteFenceRecord(recoveryBytes)).toEqual(recoveryFence);
   });
 
   it.each([
@@ -1480,6 +2217,7 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
     { ...fenceRequest(), lifecycleFingerprint: "bad" },
     { ...fenceRequest(), lifecycleGeneration: 0 },
     { ...fenceRequest(), purpose: "future" },
+    { ...fenceRequest(), owner: null },
   ])("rejects invalid fence DTO %#", (value) => {
     expect(parseLocalSqliteFenceRecord(value)).toBeUndefined();
   });
@@ -1492,15 +2230,17 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
     const fenceBytes = encodeLocalSqliteFenceRecord(fence)!;
     const compactLease = leaseBytes.trimEnd();
     const compactFence = fenceBytes.trimEnd();
+    const leaseValues = JSON.parse(compactLease) as unknown[];
+    const fenceValues = JSON.parse(compactFence) as unknown[];
     const invalidLeaseBytes = [
       undefined,
       "short",
       `${leaseBytes.slice(0, 255)}\n`,
       "{".padEnd(256, " "),
-      compactLease.replace('"v":1', '"v":2').padEnd(256, " "),
-      compactLease.replace('"p":[101', '"p":[]').padEnd(256, " "),
-      compactLease.replace('"c":null', '"c":[]').padEnd(256, " "),
-      compactLease.replace('"l":', '"extra":1,"l":').padEnd(256, " "),
+      JSON.stringify([2, ...leaseValues.slice(1)]).padEnd(256, " "),
+      JSON.stringify([...leaseValues.slice(0, 4), [], null]).padEnd(256, " "),
+      JSON.stringify([...leaseValues.slice(0, 5), []]).padEnd(256, " "),
+      JSON.stringify([...leaseValues, "extra"]).padEnd(256, " "),
       ` ${compactLease}`.padEnd(256, " "),
     ];
     for (const bytes of invalidLeaseBytes)
@@ -1510,8 +2250,9 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
       "short",
       `${fenceBytes.slice(0, 255)}\n`,
       "{".padEnd(256, " "),
-      compactFence.replace('"v":1', '"v":2').padEnd(256, " "),
-      compactFence.replace('"t":', '"extra":1,"t":').padEnd(256, " "),
+      JSON.stringify([2, ...fenceValues.slice(1)]).padEnd(256, " "),
+      JSON.stringify([...fenceValues.slice(0, 5), []]).padEnd(256, " "),
+      JSON.stringify([...fenceValues, "extra"]).padEnd(256, " "),
       ` ${compactFence}`.padEnd(256, " "),
     ];
     for (const bytes of invalidFenceBytes)
@@ -1553,10 +2294,10 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
     const lease = parseLocalSqliteLeaseRecord(leaseRecord());
     if (lease === undefined) throw new Error("lease");
     const encoded = encodeLocalSqliteLeaseRecord(lease)!;
-    const compact = JSON.parse(encoded.trimEnd()) as Record<string, unknown>;
+    const compact = JSON.parse(encoded.trimEnd()) as unknown[];
     const sparse = new Array<unknown>(2);
     sparse[1] = parentStart;
-    compact.p = sparse;
+    compact[4] = sparse;
     expect(
       decodeLocalSqliteLeaseRecord(JSON.stringify(compact).padEnd(256, " ")),
     ).toBeUndefined();

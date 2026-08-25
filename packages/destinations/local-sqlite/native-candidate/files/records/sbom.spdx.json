@@ -47,6 +47,21 @@
       "filesAnalyzed": false,
       "licenseConcluded": "blessing",
       "licenseDeclared": "blessing"
+    },
+    {
+      "name": "Agentscope Local SQLite namespace helper",
+      "SPDXID": "SPDXRef-Package-AgentscopeNamespaceHelper",
+      "versionInfo": "1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b272a64d95d184924e3cae5d3ed661bd45d863948a16b4b019ad48b92a22a162"
+        }
+      ]
     }
   ],
   "files": [
@@ -56,7 +71,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+          "checksumValue": "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
         }
       ],
       "licenseConcluded": "MIT AND blessing",
@@ -92,6 +107,11 @@
       "relatedSpdxElement": "SPDXRef-Package-SQLite"
     },
     {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-Package-AgentscopeNamespaceHelper"
+    },
+    {
       "spdxElementId": "SPDXRef-Package-better-sqlite3",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-runtime"
@@ -110,6 +130,11 @@
       "spdxElementId": "SPDXRef-File-native",
       "relationshipType": "GENERATED_FROM",
       "relatedSpdxElement": "SPDXRef-Package-node-addon-api"
+    },
+    {
+      "spdxElementId": "SPDXRef-File-native",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-Package-AgentscopeNamespaceHelper"
     }
   ]
 }

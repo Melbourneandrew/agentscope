@@ -32,6 +32,13 @@ import {
   type LocalSqliteMaintenancePort,
 } from "./maintenance.js";
 
+type LocalSqliteRetentionPolicy = Readonly<{
+  maximumAgeNanoseconds: string;
+  maximumTraceCount: number;
+  maximumPayloadBytes: number;
+  physicalCleanupTrigger: "next-authorized-mutation";
+}>;
+
 export type LocalSqliteLifecycleIntent = Readonly<{
   recordVersion: 1;
   operation: "configure" | "delete" | "unconfigure";
@@ -59,6 +66,7 @@ export type LocalSqliteLifecycleIntent = Readonly<{
   candidateConfigurationDigest: string;
   retainedReceiptDigest: string | null;
   retainedDatabaseFamilyPhysicalIdentity: string | null;
+  retentionPolicy: LocalSqliteRetentionPolicy;
 }>;
 
 export type LocalSqliteOwnershipReceipt = Readonly<{
@@ -80,6 +88,7 @@ export type LocalSqliteOwnershipReceipt = Readonly<{
   originatingConfigurationGeneration: number;
   originatingConfigurationDigest: string;
   transactionId: string;
+  retentionPolicy: LocalSqliteRetentionPolicy;
 }>;
 
 export type LocalSqliteLifecyclePort = Readonly<{
@@ -137,7 +146,7 @@ export type LocalSqliteLifecyclePort = Readonly<{
     signal: AbortSignal,
     authority?: LocalResourceRetainedDeleteAuthority,
   ): Promise<void>;
-  claimRecoveryIntent(signal: AbortSignal): Promise<
+  claimRecoveryIntent(context: LocalResourceLifecycleRecoveryContext): Promise<
     Readonly<{
       canonicalBytes: string;
       fence: LocalSqliteExclusiveFenceAuthority;
@@ -218,12 +227,13 @@ const intentKeys = Object.freeze([
   "recoveryHandlerId",
   "retainedDatabaseFamilyPhysicalIdentity",
   "retainedReceiptDigest",
+  "retentionPolicy",
   "transactionId",
 ] as const);
 
 const decodeExactIntent = (
   bytes: unknown,
-  // eslint-disable-next-line complexity -- canonical durable intent validation is deliberately all-and-only.
+  // eslint-disable-next-line complexity, max-lines-per-function -- canonical durable intent validation is deliberately all-and-only.
 ): LocalSqliteLifecycleIntent | undefined => {
   if (
     typeof bytes !== "string" ||
@@ -257,6 +267,16 @@ const decodeExactIntent = (
         : {};
     const retainedReceiptDigest = record.retainedReceiptDigest;
     const retainedIdentity = record.retainedDatabaseFamilyPhysicalIdentity;
+    const retentionPolicy = record.retentionPolicy as Record<
+      string,
+      unknown
+    > | null;
+    /* v8 ignore next -- nonobject/null retention policy permutations are rejected by
+       the surrounding exact DTO predicate and hostile decoder matrix. */
+    const retentionDescriptors =
+      typeof retentionPolicy === "object" && retentionPolicy !== null
+        ? Object.getOwnPropertyDescriptors(retentionPolicy)
+        : {};
     if (
       record.recordVersion !== 1 ||
       !["configure", "delete", "unconfigure"].includes(
@@ -309,7 +329,22 @@ const decodeExactIntent = (
           /^sha256-[0-9a-f]{64}$/u.test(retainedReceiptDigest) &&
           typeof retainedIdentity === "string" &&
           /^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$/u.test(retainedIdentity))
-      )
+      ) ||
+      typeof retentionPolicy !== "object" ||
+      retentionPolicy === null ||
+      Object.keys(retentionDescriptors).sort().join(",") !==
+        "maximumAgeNanoseconds,maximumPayloadBytes,maximumTraceCount,physicalCleanupTrigger" ||
+      Reflect.ownKeys(retentionDescriptors).length !== 4 ||
+      Object.values(retentionDescriptors).some(
+        (descriptor) => !("value" in descriptor),
+      ) ||
+      typeof retentionPolicy.maximumAgeNanoseconds !== "string" ||
+      !/^[1-9][0-9]{0,19}$/u.test(retentionPolicy.maximumAgeNanoseconds) ||
+      !Number.isSafeInteger(retentionPolicy.maximumTraceCount) ||
+      (retentionPolicy.maximumTraceCount as number) < 1 ||
+      !Number.isSafeInteger(retentionPolicy.maximumPayloadBytes) ||
+      (retentionPolicy.maximumPayloadBytes as number) < 1 ||
+      retentionPolicy.physicalCleanupTrigger !== "next-authorized-mutation"
     )
       return undefined;
     if (`${JSON.stringify(value)}\n` !== bytes) return undefined;
@@ -344,6 +379,7 @@ const receiptKeys = Object.freeze([
   "recordVersion",
   "recoveryHandlerId",
   "transactionId",
+  "retentionPolicy",
 ] as const);
 
 export const decodeLocalSqliteOwnershipReceipt = (
@@ -375,6 +411,16 @@ export const decodeLocalSqliteOwnershipReceipt = (
     )
       return undefined;
     const record = value as Record<string, unknown>;
+    const retentionPolicy = record.retentionPolicy as Record<
+      string,
+      unknown
+    > | null;
+    /* v8 ignore next -- nonobject/null retention policy permutations are rejected by
+       the surrounding exact DTO predicate and hostile decoder matrix. */
+    const retentionDescriptors =
+      typeof retentionPolicy === "object" && retentionPolicy !== null
+        ? Object.getOwnPropertyDescriptors(retentionPolicy)
+        : {};
     if (
       record.recordVersion !== 1 ||
       record.destinationType !== LOCAL_SQLITE_DESTINATION_TYPE ||
@@ -405,6 +451,21 @@ export const decodeLocalSqliteOwnershipReceipt = (
       !/^sha256-[0-9a-f]{64}$/u.test(record.originatingConfigurationDigest) ||
       typeof record.transactionId !== "string" ||
       !/^(?!0{32}$)[0-9a-f]{32}$/u.test(record.transactionId) ||
+      typeof retentionPolicy !== "object" ||
+      retentionPolicy === null ||
+      Object.keys(retentionDescriptors).sort().join(",") !==
+        "maximumAgeNanoseconds,maximumPayloadBytes,maximumTraceCount,physicalCleanupTrigger" ||
+      Reflect.ownKeys(retentionDescriptors).length !== 4 ||
+      Object.values(retentionDescriptors).some(
+        (descriptor) => !("value" in descriptor),
+      ) ||
+      typeof retentionPolicy.maximumAgeNanoseconds !== "string" ||
+      !/^[1-9][0-9]{0,19}$/u.test(retentionPolicy.maximumAgeNanoseconds) ||
+      !Number.isSafeInteger(retentionPolicy.maximumTraceCount) ||
+      (retentionPolicy.maximumTraceCount as number) < 1 ||
+      !Number.isSafeInteger(retentionPolicy.maximumPayloadBytes) ||
+      (retentionPolicy.maximumPayloadBytes as number) < 1 ||
+      retentionPolicy.physicalCleanupTrigger !== "next-authorized-mutation" ||
       `${JSON.stringify(value)}\n` !== bytes
     )
       return undefined;
@@ -464,6 +525,7 @@ const intentFor = (
     retainedReceiptDigest: context.retainedAuthority?.receiptDigest ?? null,
     retainedDatabaseFamilyPhysicalIdentity:
       context.retainedAuthority?.databaseFamilyPhysicalIdentity ?? null,
+    retentionPolicy: Object.freeze({ ...evidence.retentionPolicy }),
   });
   lifecycleIntents.add(intent);
   return intent;
@@ -513,6 +575,7 @@ const receiptFor = async (
     originatingConfigurationGeneration: intent.expectedConfigurationGeneration,
     originatingConfigurationDigest: intent.expectedConfigurationDigest,
     transactionId: intent.transactionId,
+    retentionPolicy: Object.freeze({ ...intent.retentionPolicy }),
   });
   ownershipReceipts.add(receipt);
   return receipt;
@@ -698,7 +761,7 @@ const recoverWithPort = async (
        same branded recovery signal before entering this handler. */
     if (signalAborted(context.signal))
       throw new LocalSqliteLifecycleError("unavailable");
-    const claimed = await port.claimRecoveryIntent(context.signal);
+    const claimed = await port.claimRecoveryIntent(context);
     requireActive(context.signal);
     const intent = decodeLocalSqliteLifecycleIntent(claimed.canonicalBytes);
     if (!intent || !recoveryIntentMatches(capability, context, intent))
@@ -911,9 +974,35 @@ const createHandler = (
   });
 };
 
+let productionLifecyclePort: LocalSqliteLifecyclePort | undefined;
+let productionMaintenancePort: LocalSqliteMaintenancePort | undefined;
+let productionMaximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES;
+
+export const bindLocalSqliteProductionLifecyclePorts = (
+  port: LocalSqliteLifecyclePort,
+  maintenancePort: LocalSqliteMaintenancePort,
+  maximumSnapshotBytes: number,
+): void => {
+  if (
+    productionLifecyclePort !== undefined ||
+    !Number.isSafeInteger(maximumSnapshotBytes) ||
+    maximumSnapshotBytes !== LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES
+  )
+    throw new LocalSqliteLifecycleError("unavailable");
+  productionLifecyclePort = port;
+  productionMaintenancePort = maintenancePort;
+  productionMaximumSnapshotBytes = maximumSnapshotBytes;
+};
+
 export const createLocalSqliteLifecycleHandler = (
   capability: LocalResourceLifecycleCapability,
-): LocalResourceLifecycleHandler => createHandler(capability, undefined);
+): LocalResourceLifecycleHandler =>
+  createHandler(
+    capability,
+    productionLifecyclePort,
+    productionMaintenancePort,
+    productionMaximumSnapshotBytes,
+  );
 
 export const createLocalSqliteLifecycleHandlerForTesting = (
   capability: LocalResourceLifecycleCapability,

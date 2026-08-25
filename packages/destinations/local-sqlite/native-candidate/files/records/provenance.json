@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "candidateDisposition": "proposed-unpublished-execution-eligible",
   "nativeTupleId": "node127-linux-x64-glibc",
-  "releaseMaterialManifestSha256": "6268184819c0e00e2f81d542a9bb9986436eda805b4ad146640454aa665f47b3",
+  "releaseMaterialManifestSha256": "01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
   "sourceMaterials": [
     {
       "name": "better-sqlite3",
@@ -38,7 +38,7 @@
     "python": "3.11.2",
     "gcc": "12.2.0-14+deb12u1",
     "binutils": "2.40",
-    "commandProfile": "agentscope-owned-cc-ar-cxx-link-v1",
+    "commandProfile": "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2",
     "upstreamBuildMetadata": "never-evaluated",
     "archiveCompiler": "single-gzip-member-ustar-regular-file-only-v2",
     "network": "denied",
@@ -46,6 +46,11 @@
     "capabilities": "all-dropped",
     "rootFilesystem": "read-only",
     "inputMounts": "read-only",
+    "namespaceMutation": {
+      "primitive": "linux-renameat2-exchange-exact-inode-v1",
+      "sourceSha256": "b272a64d95d184924e3cae5d3ed661bd45d863948a16b4b019ad48b92a22a162",
+      "license": "MIT"
+    },
     "outputRoot": "fresh-bounded-single-writable-root",
     "resourceCaps": {
       "cpus": 2,
@@ -56,12 +61,12 @@
   },
   "output": {
     "path": "native/node127-linux-x64-glibc/agentscope_sqlite.node",
-    "bytes": 2213824,
-    "sha256": "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37",
+    "bytes": 2222856,
+    "sha256": "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9",
     "format": "ELF64-x86-64-shared-object",
     "maximumGlibcSymbolVersion": "2.34",
     "maximumGlibcxxSymbolVersion": "3.4.29",
-    "repeatBuildSha256": "f441cb347cd61f73faa62f14cbfeb3c3fb62524bfbb97f3208f79360a95ddc37"
+    "repeatBuildSha256": "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9"
   },
   "runtimeBundle": {
     "profile": "agentscope-owned-exact-commonjs-module-map-v1",

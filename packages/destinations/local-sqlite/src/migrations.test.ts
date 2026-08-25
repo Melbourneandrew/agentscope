@@ -11,6 +11,7 @@ import {
   LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
   runLocalSqliteMigrations as runProductionLocalSqliteMigrations,
   runLocalSqliteMigrationsWithInventoryForTesting,
+  type LocalSqliteDestinationMetadata,
   type LocalSqliteImmutableRowEvidence,
   type LocalSqliteMigrationDatabase,
   type LocalSqliteMigrationLedgerEntry,
@@ -23,11 +24,7 @@ type DatabaseState = {
   rolledBack: boolean;
   statements: string[];
   ledger: LocalSqliteMigrationLedgerEntry[];
-  metadata?: {
-    destinationFormat: string;
-    migrationManifestId: string;
-    protocolCompatibilityId: string;
-  };
+  metadata?: LocalSqliteDestinationMetadata;
   immutableReads: LocalSqliteImmutableRowEvidence[][];
   projections: LocalSqliteProjectionEvidence[];
   expectedProjections: LocalSqliteProjectionEvidence[];
@@ -57,11 +54,14 @@ const manifestIdFor = (
 
 const expectedMetadata = (ledgerLength = LOCAL_SQLITE_MIGRATIONS.length) => ({
   destinationFormat: "agentscope.local-sqlite.v1",
+  lifecycleCapabilityVersion: 1,
+  lifecycleFingerprint: `sha256-${"0".repeat(64)}`,
   migrationManifestId: manifestIdFor(
     LOCAL_SQLITE_MIGRATIONS.slice(0, ledgerLength),
   ),
   protocolCompatibilityId:
     LOCAL_SQLITE_MIGRATIONS[ledgerLength - 1]!.protocolCompatibilityId,
+  recoveryHandlerId: "@agentscope/destination-local-sqlite/lifecycle-v1",
 });
 
 const runLocalSqliteMigrations = (database: LocalSqliteMigrationDatabase) =>
@@ -467,6 +467,46 @@ describe("Local SQLite migration runner", () => {
     expect(valid.state.metadata?.protocolCompatibilityId).toBe(
       LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
     );
+  });
+});
+
+describe("Local SQLite lifecycle metadata authority", () => {
+  it("rejects every lifecycle identity mismatch before an append", () => {
+    const second = migrationWithSql(
+      "CREATE TABLE derived_v2 (value TEXT) STRICT;",
+    );
+    const inventory = [
+      LOCAL_SQLITE_MIGRATIONS[0]!,
+      { ...second, version: 2, ordinal: 2, name: "0002-derived.sql" },
+    ];
+    const ledger = [
+      {
+        version: 1,
+        ordinal: 1,
+        name: "0001-initialize.sql",
+        sha256: LOCAL_SQLITE_MIGRATIONS[0]!.sha256,
+      },
+    ];
+    for (const metadata of [
+      { ...expectedMetadata(1), lifecycleCapabilityVersion: 2 },
+      {
+        ...expectedMetadata(1),
+        lifecycleFingerprint: `sha256-${"9".repeat(64)}`,
+      },
+      {
+        ...expectedMetadata(1),
+        recoveryHandlerId: "@agentscope/destination-local-sqlite/other",
+      },
+    ]) {
+      const drifted = database({ ledger, metadata });
+      expect(
+        runLocalSqliteMigrationsWithInventoryForTesting(
+          drifted.adapter,
+          inventory,
+        ),
+      ).toEqual({ ok: false, state: "reconciliation-required" });
+      expect(drifted.state.statements).toEqual([]);
+    }
   });
 });
 

@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 
 import { standardsManifest } from "@agentscope/protocol";
 
+import { localSqliteLifecycleDeclaration } from "./lifecycle/capability.js";
+
 export const LOCAL_SQLITE_DESTINATION_FORMAT =
   "agentscope.local-sqlite.v1" as const;
 export const LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID =
@@ -26,9 +28,25 @@ export type LocalSqliteMigrationLedgerEntry = Readonly<{
 
 export type LocalSqliteDestinationMetadata = Readonly<{
   destinationFormat: string;
+  lifecycleCapabilityVersion: number;
+  lifecycleFingerprint: string;
   migrationManifestId: string;
   protocolCompatibilityId: string;
+  recoveryHandlerId: string;
 }>;
+
+export type LocalSqliteLifecycleMetadataIdentity = Readonly<{
+  capabilityVersion: 1;
+  fingerprint: string;
+  recoveryHandlerId: string;
+}>;
+
+const testLifecycleIdentity: LocalSqliteLifecycleMetadataIdentity =
+  Object.freeze({
+    capabilityVersion: 1,
+    fingerprint: `sha256-${"0".repeat(64)}`,
+    recoveryHandlerId: localSqliteLifecycleDeclaration.recoveryHandlerId,
+  });
 
 export type LocalSqliteImmutableRowEvidence = Readonly<{
   deliveryIdentity: string;
@@ -581,14 +599,20 @@ const snapshotMetadata = (
 ): LocalSqliteDestinationMetadata | undefined => {
   const record = exactRecord(value, [
     "destinationFormat",
+    "lifecycleCapabilityVersion",
+    "lifecycleFingerprint",
     "migrationManifestId",
     "protocolCompatibilityId",
+    "recoveryHandlerId",
   ]);
   if (
     !record ||
     record.destinationFormat !== expected.destinationFormat ||
+    record.lifecycleCapabilityVersion !== expected.lifecycleCapabilityVersion ||
+    record.lifecycleFingerprint !== expected.lifecycleFingerprint ||
     record.migrationManifestId !== expected.migrationManifestId ||
-    record.protocolCompatibilityId !== expected.protocolCompatibilityId
+    record.protocolCompatibilityId !== expected.protocolCompatibilityId ||
+    record.recoveryHandlerId !== expected.recoveryHandlerId
   )
     return undefined;
   return Object.freeze({
@@ -756,11 +780,14 @@ const executeMigrationTransaction = (
   if (ledger.length > 0) {
     const priorMetadata = Object.freeze({
       destinationFormat: LOCAL_SQLITE_DESTINATION_FORMAT,
+      lifecycleCapabilityVersion: expectedMetadata.lifecycleCapabilityVersion,
+      lifecycleFingerprint: expectedMetadata.lifecycleFingerprint,
       migrationManifestId: migrationManifestId(
         compiled.slice(0, ledger.length).map(({ resource }) => resource),
       ),
       protocolCompatibilityId:
         compiled[ledger.length - 1]!.resource.protocolCompatibilityId,
+      recoveryHandlerId: expectedMetadata.recoveryHandlerId,
     });
     if (!snapshotMetadata(database.readDestinationMetadata(), priorMetadata))
       throw new Error("metadata-mismatch");
@@ -799,16 +826,20 @@ const reconciliationErrors = new Set([
 const runMigrations = (
   database: LocalSqliteMigrationDatabase,
   inventory: unknown,
+  lifecycleIdentity: LocalSqliteLifecycleMetadataIdentity = testLifecycleIdentity,
 ): LocalSqliteMigrationResult => {
   const compiled = compileInventory(inventory);
   if (!compiled)
     return Object.freeze({ ok: false, state: "invalid-inventory" });
   const expectedMetadata = Object.freeze({
     destinationFormat: LOCAL_SQLITE_DESTINATION_FORMAT,
+    lifecycleCapabilityVersion: lifecycleIdentity.capabilityVersion,
+    lifecycleFingerprint: lifecycleIdentity.fingerprint,
     migrationManifestId: migrationManifestId(
       compiled.map(({ resource }) => resource),
     ),
     protocolCompatibilityId: compiled.at(-1)!.resource.protocolCompatibilityId,
+    recoveryHandlerId: lifecycleIdentity.recoveryHandlerId,
   });
   let began = false;
   let commitAttempted = false;
@@ -845,8 +876,9 @@ const runMigrations = (
 
 export const runLocalSqliteMigrations = (
   database: LocalSqliteMigrationDatabase,
+  lifecycleIdentity: LocalSqliteLifecycleMetadataIdentity = testLifecycleIdentity,
 ): LocalSqliteMigrationResult =>
-  runMigrations(database, LOCAL_SQLITE_MIGRATIONS);
+  runMigrations(database, LOCAL_SQLITE_MIGRATIONS, lifecycleIdentity);
 
 export const compileLocalSqliteMigrationInventoryForTesting = compileInventory;
 export const compileLocalSqliteMigrationSqlForTesting = compileStatements;
