@@ -2,9 +2,11 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readlinkSync,
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -12,7 +14,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { bindLocalResourceHomeAuthorityForTesting } from "@agentscope/destinations-core/testing";
+import {
+  bindLocalResourceHomeAuthorityForTesting,
+  createReporterDeadline,
+} from "@agentscope/destinations-core/testing";
 import { describe, expect, it } from "vitest";
 
 import { planLocalSqliteNamespace } from "../lifecycle/namespace.js";
@@ -109,7 +114,12 @@ process.on("message", (value) => {
 process.on("disconnect", () => process.exit(0));
 `;
 
-const runtimeFixture = (root: string) => {
+const runtimeFixture = (
+  root: string,
+  testingHooks?: Parameters<
+    typeof bindLocalSqliteProductionRuntimeForTesting
+  >[2],
+) => {
   let opens = 0;
   const runtime = bindLocalSqliteProductionRuntimeForTesting(
     bindLocalResourceHomeAuthorityForTesting(
@@ -121,6 +131,7 @@ const runtimeFixture = (root: string) => {
         throw new Error("native opener must not run");
       },
     }),
+    testingHooks,
   );
   return Object.freeze({ runtime, opens: () => opens });
 };
@@ -141,7 +152,7 @@ const report = (
     prepared: [],
     admissionTimeUnixNano: "1",
     signal,
-    remainingMilliseconds,
+    deadline: createReporterDeadline(remainingMilliseconds()),
   });
 
 const ownedDatabase = (
@@ -248,7 +259,7 @@ describe("Local SQLite production runtime budgets", () => {
           prepared,
           admissionTimeUnixNano: "1",
           signal: new AbortController().signal,
-          remainingMilliseconds: () => 1_000,
+          deadline: createReporterDeadline(1_000),
         }),
       ).resolves.toEqual({ outcome: "unavailable" });
       expect(fixture.opens()).toBe(0);
@@ -285,25 +296,30 @@ describe("Local SQLite production runtime budgets", () => {
           retrieverPrograms: { workerPath, watchdogPath },
         },
       );
-      const base = Object.freeze({
-        connectionId,
-        lifecycleFingerprint: fingerprint,
-        policy: {
-          maximumAgeNanoseconds: "1",
-          maximumPayloadBytes: 1,
-          maximumTraceCount: 1,
-        },
-        signal: new AbortController().signal,
-      });
+      const base = () =>
+        Object.freeze({
+          connectionId,
+          lifecycleFingerprint: fingerprint,
+          policy: {
+            maximumAgeNanoseconds: "1",
+            maximumPayloadBytes: 1,
+            maximumTraceCount: 1,
+          },
+          signal: new AbortController().signal,
+          // The plan retains its exact one-second native query budget. The
+          // outer fixture grants enough time for child spawn/IPC under the
+          // concurrently loaded Linux workspace test matrix.
+          deadline: createReporterDeadline(5_000),
+        });
       await expect(
-        runtime.search({ ...base, plan: searchPlan }),
+        runtime.search({ ...base(), plan: searchPlan }),
       ).resolves.toEqual({
         rows: [],
         responseByteLimitReached: false,
         retentionCutoffSortKey: "0".repeat(20),
         snapshotToken: "3".repeat(64),
       });
-      await expect(runtime.get({ ...base, plan: getPlan })).resolves.toEqual({
+      await expect(runtime.get({ ...base(), plan: getPlan })).resolves.toEqual({
         retentionCutoffSortKey: "0".repeat(20),
       });
       await expect(report(runtime, () => 1_000)).resolves.toEqual({
@@ -322,12 +338,13 @@ describe("Local SQLite production runtime budgets", () => {
         { retrieverPrograms: { workerPath, watchdogPath } },
       );
       await expect(
-        noIdentityRuntime.search({ ...base, plan: searchPlan }),
+        noIdentityRuntime.search({ ...base(), plan: searchPlan }),
       ).rejects.toThrow("destination.local-sqlite.unavailable");
       await expect(
         runtime.search({
-          ...base,
+          ...base(),
           plan: { ...searchPlan, maximumWorkMilliseconds: 1 },
+          deadline: createReporterDeadline(0),
         }),
       ).rejects.toThrow("destination.local-sqlite.unavailable");
 
@@ -339,11 +356,11 @@ describe("Local SQLite production runtime budgets", () => {
         },
       );
       await expect(
-        runtime.search({ ...base, plan: searchPlan }),
+        runtime.search({ ...base(), plan: searchPlan }),
       ).rejects.toThrow("destination.local-sqlite.reconciliation-required");
       unlinkSync(join(namespace.lifecycleDirectory, "intent-v1.json"));
       unlinkSync(namespace.databasePath);
-      await expect(runtime.get({ ...base, plan: getPlan })).rejects.toThrow(
+      await expect(runtime.get({ ...base(), plan: getPlan })).rejects.toThrow(
         "destination.local-sqlite.filesystem.invalid",
       );
       expect(readdirSync(namespace.lifecycleDirectory)).toEqual([]);
@@ -373,7 +390,7 @@ describe("Local SQLite production runtime budgets", () => {
       );
       await expect(
         corruptingRuntime.search({
-          ...base,
+          ...base(),
           plan: { ...searchPlan, maximumWorkMilliseconds: 1 },
         }),
       ).rejects.toThrow("destination.local-sqlite.outcome-unknown");
@@ -381,7 +398,7 @@ describe("Local SQLite production runtime budgets", () => {
         unlinkSync(join(namespace.lifecycleDirectory, name));
       unlinkSync(namespace.databasePath);
       await expect(
-        corruptingRuntime.get({ ...base, plan: getPlan }),
+        corruptingRuntime.get({ ...base(), plan: getPlan }),
       ).rejects.toThrow("destination.local-sqlite.outcome-unknown");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -393,15 +410,17 @@ describe("Local SQLite production runtime budgets", () => {
     chmodSync(root, 0o700);
     try {
       const namespace = createNamespace(root);
-      const fixture = runtimeFixture(root);
-      let reads = 0;
-      await expect(
-        report(fixture.runtime, () => {
-          reads += 1;
-          return reads === 1 ? 1_000 : 250;
-        }),
-      ).resolves.toEqual({ outcome: "unavailable" });
-      expect(reads).toBe(2);
+      const fixture = runtimeFixture(root, {
+        afterSharedLeaseAcquired: () => {
+          const until = performance.now() + 100;
+          while (performance.now() < until) {
+            // Deterministically consume the original deadline after admission.
+          }
+        },
+      });
+      await expect(report(fixture.runtime, () => 320)).resolves.toEqual({
+        outcome: "unavailable",
+      });
       expect(fixture.opens()).toBe(0);
       expect(readdirSync(namespace.lifecycleDirectory)).toEqual([]);
     } finally {
@@ -531,6 +550,7 @@ describe("Local SQLite production runtime budgets", () => {
     try {
       const namespace = createNamespace(root);
       let openedPath = "";
+      let openedTarget = "";
       let timeout = 0;
       const runtime = bindLocalSqliteProductionRuntimeForTesting(
         bindLocalResourceHomeAuthorityForTesting({
@@ -540,6 +560,8 @@ describe("Local SQLite production runtime budgets", () => {
         {
           open: (path, options) => {
             openedPath = path;
+            openedTarget =
+              process.platform === "linux" ? readlinkSync(path) : path;
             if (typeof options?.timeout !== "number")
               throw new Error("missing timeout authority");
             timeout = options.timeout;
@@ -566,7 +588,9 @@ describe("Local SQLite production runtime budgets", () => {
           },
         }),
       ).resolves.toBe("completed");
-      expect(openedPath.endsWith("traces.sqlite")).toBe(true);
+      if (process.platform === "linux")
+        expect(openedPath).toMatch(/^\/proc\/self\/fd\/\d+$/);
+      expect(openedTarget).toBe(namespace.databasePath);
       expect(timeout).toBeGreaterThan(0);
       expect(timeout).toBeLessThanOrEqual(1_000);
       expect(readdirSync(namespace.lifecycleDirectory)).toEqual([]);
@@ -582,119 +606,125 @@ describe("Local SQLite production runtime budgets", () => {
     }
   });
 
-  it("contains operation, abort, close, identity, and lease-cleanup failures", async () => {
-    for (const failure of [
-      "throw",
-      "hostile",
-      "abort",
-      "abort-open",
-      "close",
-      "family-replace",
-      "open-replace",
-      "replace",
-      "lease",
-    ] as const) {
-      const root = mkdtempSync(join(tmpdir(), "agentscope-local-runtime-"));
-      chmodSync(root, 0o700);
-      try {
-        const namespace = createNamespace(root);
-        if (failure === "family-replace")
-          writeFileSync(`${namespace.databasePath}-wal`, "prior", {
+  it.each([
+    "throw",
+    "hostile",
+    "abort",
+    "abort-open",
+    "close",
+    "family-replace",
+    "open-replace",
+    "replace",
+    "lease",
+  ] as const)("contains the %s failure", async (failure) => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-local-runtime-"));
+    chmodSync(root, 0o700);
+    try {
+      const namespace = createNamespace(root);
+      if (failure === "family-replace")
+        writeFileSync(`${namespace.databasePath}-wal`, "prior", {
+          mode: 0o600,
+        });
+      const controller = new AbortController();
+      const replaceWithDistinctFile = (target: string): void => {
+        const replacement = `${target}.replacement`;
+        const before = statSync(target, { bigint: true });
+        writeFileSync(replacement, "replacement", { mode: 0o600 });
+        const after = statSync(replacement, { bigint: true });
+        expect({ dev: after.dev, ino: after.ino }).not.toEqual({
+          dev: before.dev,
+          ino: before.ino,
+        });
+        renameSync(replacement, target);
+      };
+      const runtime = bindLocalSqliteProductionRuntimeForTesting(
+        bindLocalResourceHomeAuthorityForTesting({
+          root,
+          platform: process.platform,
+        }),
+        {
+          open: (path) => {
+            const database = new DatabaseSync(
+              failure === "open-replace" || failure === "family-replace"
+                ? ":memory:"
+                : path,
+            );
+            const openedTarget =
+              process.platform === "linux" ? readlinkSync(path) : path;
+            if (failure === "open-replace")
+              replaceWithDistinctFile(openedTarget);
+            if (failure === "family-replace") {
+              const sidecar = `${openedTarget}-wal`;
+              replaceWithDistinctFile(sidecar);
+            }
+            if (failure === "abort-open") controller.abort();
+            return ownedDatabase(
+              database,
+              failure === "close"
+                ? () => {
+                    database.close();
+                    throw new Error("synthetic close failure");
+                  }
+                : undefined,
+            );
+          },
+        },
+      );
+      const operation = () => {
+        if (failure === "throw") throw new Error("synthetic operation");
+        if (failure === "hostile") {
+          // Deliberately exercises normalization of a hostile non-Error rejection.
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          return Promise.reject("hostile non-error");
+        }
+        if (failure === "abort") controller.abort();
+        if (failure === "replace") {
+          renameSync(
+            namespace.databasePath,
+            `${namespace.databasePath}.replaced`,
+          );
+          writeFileSync(namespace.databasePath, "replacement", {
             mode: 0o600,
           });
-        const controller = new AbortController();
-        const runtime = bindLocalSqliteProductionRuntimeForTesting(
-          bindLocalResourceHomeAuthorityForTesting({
-            root,
-            platform: process.platform,
-          }),
-          {
-            open: (path) => {
-              const database = new DatabaseSync(
-                failure === "open-replace" || failure === "family-replace"
-                  ? ":memory:"
-                  : path,
-              );
-              if (failure === "open-replace") {
-                unlinkSync(path);
-                writeFileSync(path, "replacement", { mode: 0o600 });
-              }
-              if (failure === "family-replace") {
-                const sidecar = `${path}-wal`;
-                unlinkSync(sidecar);
-                writeFileSync(sidecar, "replacement", { mode: 0o600 });
-              }
-              if (failure === "abort-open") controller.abort();
-              return ownedDatabase(
-                database,
-                failure === "close"
-                  ? () => {
-                      database.close();
-                      throw new Error("synthetic close failure");
-                    }
-                  : undefined,
-              );
-            },
-          },
-        );
-        const operation = () => {
-          if (failure === "throw") throw new Error("synthetic operation");
-          if (failure === "hostile") {
-            // Deliberately exercises normalization of a hostile non-Error rejection.
-            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
-            return Promise.reject("hostile non-error");
-          }
-          if (failure === "abort") controller.abort();
-          if (failure === "replace") {
-            renameSync(
-              namespace.databasePath,
-              `${namespace.databasePath}.replaced`,
-            );
-            writeFileSync(namespace.databasePath, "replacement", {
-              mode: 0o600,
-            });
-          }
-          if (failure === "lease") {
-            const lease = readdirSync(namespace.lifecycleDirectory).find(
-              (name) => name.startsWith("lease-"),
-            );
-            if (lease === undefined) throw new Error("lease fixture missing");
-            writeFileSync(
-              join(namespace.lifecycleDirectory, lease),
-              "invalid",
-              { mode: 0o600 },
-            );
-          }
-          return "value";
-        };
-        const result = runtime.withSharedDatabase({
-          connectionId,
-          lifecycleFingerprint: fingerprint,
-          policy: {
-            maximumAgeNanoseconds: "1",
-            maximumPayloadBytes: 1,
-            maximumTraceCount: 1,
-          },
-          maximumWorkMilliseconds: 1_000,
-          signal: controller.signal,
-          operation,
-        });
-        const expected =
-          failure === "throw"
-            ? "synthetic operation"
-            : failure === "hostile" ||
-                failure === "abort" ||
-                failure === "abort-open"
-              ? "destination.local-sqlite.unavailable"
-              : failure === "family-replace"
-                ? "destination.local-sqlite.reconciliation-required"
-                : "destination.local-sqlite.outcome-unknown";
-        await expect(result, failure).rejects.toThrow(expected);
-        if (failure !== "lease")
-          expect(readdirSync(namespace.lifecycleDirectory)).toEqual([]);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+        }
+        if (failure === "lease") {
+          const lease = readdirSync(namespace.lifecycleDirectory).find((name) =>
+            name.startsWith("lease-"),
+          );
+          if (lease === undefined) throw new Error("lease fixture missing");
+          writeFileSync(join(namespace.lifecycleDirectory, lease), "invalid", {
+            mode: 0o600,
+          });
+        }
+        return "value";
+      };
+      const result = runtime.withSharedDatabase({
+        connectionId,
+        lifecycleFingerprint: fingerprint,
+        policy: {
+          maximumAgeNanoseconds: "1",
+          maximumPayloadBytes: 1,
+          maximumTraceCount: 1,
+        },
+        maximumWorkMilliseconds: 1_000,
+        signal: controller.signal,
+        operation,
+      });
+      const expected =
+        failure === "throw"
+          ? "synthetic operation"
+          : failure === "hostile" ||
+              failure === "abort" ||
+              failure === "abort-open"
+            ? "destination.local-sqlite.unavailable"
+            : failure === "family-replace"
+              ? "destination.local-sqlite.reconciliation-required"
+              : "destination.local-sqlite.outcome-unknown";
+      await expect(result).rejects.toThrow(expected);
+      if (failure !== "lease")
+        expect(readdirSync(namespace.lifecycleDirectory)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

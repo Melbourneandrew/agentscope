@@ -40,6 +40,7 @@ const fence = Object.freeze({
     lifecycleFingerprint,
     lifecycleGeneration: 1,
     purpose: "lifecycle" as const,
+    owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
   }),
   deadLeaseNames: Object.freeze([]),
 }) as LocalSqliteExclusiveFenceAuthority;

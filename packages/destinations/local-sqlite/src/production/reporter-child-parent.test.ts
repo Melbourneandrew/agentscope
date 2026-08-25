@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,30 +17,57 @@ import { describe, expect, it } from "vitest";
 
 import { acquireLocalSqliteSharedLease } from "../lifecycle/fence.js";
 import { createLocalSqliteFilesystemGatePort } from "./filesystem-port.js";
+import { readLocalSqliteReporterChildMessages } from "./reporter-child-output.js";
 import { executeLocalSqliteReporterChild } from "./reporter-child-parent.js";
 
 const fingerprint = `sha256-${"a".repeat(64)}`;
 const childIdentity = "5".repeat(32);
 type WorkerState =
   | "accepted"
+  | "accepted-descendant"
   | "before"
   | "after"
   | "malformed"
   | "oversized"
   | "wrong-start"
-  | "close-after-ready"
-  | "exit-after-ready"
+  | "close-before-header"
+  | "close-after-permission"
+  | "exit-after-permission"
   | "descendant"
   | "result-error"
   | "wrong-result";
 
-const watchdogProgram = (stubborn = false) => `
+const permissionObservedStates: ReadonlySet<WorkerState> = new Set([
+  "after",
+  "close-after-permission",
+  "exit-after-permission",
+  "result-error",
+  "wrong-result",
+]);
+
+const extendedWorkStates: ReadonlySet<WorkerState> = new Set([
+  "accepted",
+  "accepted-descendant",
+  ...permissionObservedStates,
+  "oversized",
+]);
+
+const watchdogProgram = (
+  stubborn = false,
+  watchAcknowledgementDelayMilliseconds = 0,
+  closedInputMarkerPath?: string,
+) => `
+const {existsSync}=require("node:fs");
 let worker;
 let complete = false;
 process.on("message", (value) => {
   if (value?.type === "watch") {
     worker = value.workerPid;
-    process.send({type:"watching"});
+    const acknowledge = () => {
+      ${closedInputMarkerPath === undefined ? "" : `if (!existsSync(${JSON.stringify(closedInputMarkerPath)})) { setTimeout(acknowledge, 1); return; }`}
+      process.send({type:"watching"});
+    };
+    setTimeout(acknowledge, ${watchAcknowledgementDelayMilliseconds});
   } else if (value?.type === "complete") {
     ${stubborn ? "setInterval(()=>{},1000); return;" : ""}
     complete = true;
@@ -52,16 +80,32 @@ process.on("disconnect", () => {
 });
 `;
 
-const workerProgram = (state: WorkerState, descendantPath: string) => `
+const workerProgram = (
+  state: WorkerState,
+  descendantPath: string,
+  heartbeatPath: string,
+  stateObservedPath: string,
+) => {
+  const heartbeatProgram = `const {appendFileSync}=require("node:fs");setInterval(()=>appendFileSync(${JSON.stringify(heartbeatPath)},"x"),5);`;
+  return `
 const {spawn} = require("node:child_process");
-const {writeFileSync} = require("node:fs");
+const {closeSync,renameSync,writeFileSync} = require("node:fs");
+${state === "close-before-header" ? `closeSync(0); writeFileSync(${JSON.stringify(descendantPath)},"closed"); setInterval(()=>{},1000);` : ""}
+const publishDescendantPid = (pid) => {
+  const stage = ${JSON.stringify(`${descendantPath}.stage`)};
+  writeFileSync(stage, String(pid));
+  renameSync(stage, ${JSON.stringify(descendantPath)});
+};
+const publishObservedState = (value) => {
+  const stage = ${JSON.stringify(`${stateObservedPath}.stage`)};
+  writeFileSync(stage, value);
+  renameSync(stage, ${JSON.stringify(stateObservedPath)});
+};
 let buffer = "";
 let request;
 let traces = 0;
 const ready = () => {
-  ${state === "before" ? "return;" : state === "malformed" ? 'process.stdout.write("{}\\n"); process.exit(0);' : state === "oversized" ? 'process.stdout.write("x".repeat(4097)); process.exit(0);' : `process.stdout.write(JSON.stringify({type:"ready",nonce:request.nonce,pid:process.pid,startIdentity:"${state === "wrong-start" ? "6".repeat(32) : childIdentity}"})+"\\n");`}
-  ${state === "close-after-ready" ? "process.stdin.destroy(); setInterval(()=>{},1000);" : ""}
-  ${state === "exit-after-ready" ? "setTimeout(() => process.exit(0), 25);" : ""}
+  ${state === "before" ? "return;" : state === "malformed" ? 'process.stdout.write("{}\\n"); process.exit(0);' : state === "oversized" ? 'process.stdout.write("x".repeat(4097)); setInterval(()=>{},1000);' : `process.stdout.write(JSON.stringify({type:"ready",nonce:request.nonce,pid:process.pid,startIdentity:"${state === "wrong-start" ? "6".repeat(32) : childIdentity}"})+"\\n");`}
 };
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -79,16 +123,18 @@ process.stdin.on("data", (chunk) => {
       traces += 1;
       if (traces === request.preparedCount) ready();
     } else if (value.type === "permission") {
-      ${state === "accepted" ? 'process.stdout.write(JSON.stringify({type:"result",nonce:value.nonce,receipt:{outcome:"accepted"}})+"\\n"); process.exit(0);' : state === "result-error" ? 'process.stdout.write(JSON.stringify({type:"result",nonce:value.nonce,receipt:{outcome:"accepted"}})+"\\n"); process.exit(1);' : state === "wrong-result" ? 'process.stdout.write(JSON.stringify({type:"result",nonce:"0".repeat(32),receipt:{outcome:"accepted"}})+"\\n"); process.exit(0);' : state === "descendant" ? `const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"}); writeFileSync(${JSON.stringify(descendantPath)},String(child.pid)); setInterval(()=>{},1000);` : "setInterval(()=>{},1000);"}
+      ${state === "accepted" ? 'process.stdout.write(JSON.stringify({type:"result",nonce:value.nonce,receipt:{outcome:"accepted"}})+"\\n"); process.exit(0);' : state === "accepted-descendant" ? `const child=spawn(process.execPath,["-e",${JSON.stringify(heartbeatProgram)}],{stdio:"ignore"}); publishDescendantPid(child.pid); process.stdout.write(JSON.stringify({type:"result",nonce:value.nonce,receipt:{outcome:"accepted"}})+"\\n",()=>process.exit(0));` : state === "after" ? 'publishObservedState("permission"); process.exit(0);' : state === "close-after-permission" ? 'publishObservedState("permission"); closeSync(0); setInterval(()=>{},1000);' : state === "exit-after-permission" ? 'publishObservedState("permission"); process.exit(0);' : state === "result-error" ? 'publishObservedState("permission"); process.stdout.write(JSON.stringify({type:"result",nonce:value.nonce,receipt:{outcome:"accepted"}})+"\\n"); process.exit(1);' : state === "wrong-result" ? 'publishObservedState("permission"); process.stdout.write(JSON.stringify({type:"result",nonce:"0".repeat(32),receipt:{outcome:"accepted"}})+"\\n"); process.exit(0);' : state === "descendant" ? `const child=spawn(process.execPath,["-e",${JSON.stringify(heartbeatProgram)}],{stdio:"ignore"}); publishDescendantPid(child.pid); setInterval(()=>{},1000);` : "setInterval(()=>{},1000);"}
     }
   }
 });
 `;
+};
 
 const attempt = async (
   state: WorkerState,
   options: Readonly<{
     abortAfterMilliseconds?: number;
+    abortAfterDescendant?: boolean;
     failRelease?: boolean;
     failAmend?: boolean;
     throwAmend?: boolean;
@@ -100,6 +146,7 @@ const attempt = async (
     monotonicNowForTesting?: () => number;
     teardownReserveMilliseconds?: number;
     stubbornWatchdog?: boolean;
+    watchAcknowledgementDelayMilliseconds?: number;
     withTrace?: boolean;
   }> = {},
 ) => {
@@ -110,14 +157,26 @@ const attempt = async (
     const watchdogPath = join(root, "watchdog.cjs");
     const lifecycle = join(root, "lifecycle");
     const descendantPath = join(root, "descendant.pid");
+    const heartbeatPath = join(root, "descendant.heartbeat");
+    const stateObservedPath = join(root, "state.observed");
     mkdirSync(lifecycle, { mode: 0o700 });
     if (!options.missingWorker)
-      writeFileSync(workerPath, workerProgram(state, descendantPath), {
-        mode: 0o600,
-      });
-    writeFileSync(watchdogPath, watchdogProgram(options.stubbornWatchdog), {
-      mode: 0o600,
-    });
+      writeFileSync(
+        workerPath,
+        workerProgram(state, descendantPath, heartbeatPath, stateObservedPath),
+        {
+          mode: 0o600,
+        },
+      );
+    writeFileSync(
+      watchdogPath,
+      watchdogProgram(
+        options.stubbornWatchdog,
+        options.watchAcknowledgementDelayMilliseconds,
+        state === "close-before-header" ? descendantPath : undefined,
+      ),
+      { mode: 0o600 },
+    );
     const filesystemGate = createLocalSqliteFilesystemGatePort(lifecycle, {
       allowPathFallbackForTesting: true,
     });
@@ -152,6 +211,24 @@ const attempt = async (
         : {}),
     });
     const controller = new AbortController();
+    let descendantObservedAt: number | undefined;
+    let observedDescendantPid: number | undefined;
+    const descendantAbortTimer =
+      options.abortAfterDescendant === true
+        ? setInterval(() => {
+            if (descendantObservedAt !== undefined) return;
+            let encodedPid: string;
+            try {
+              encodedPid = readFileSync(descendantPath, "utf8");
+            } catch {
+              return;
+            }
+            if (!/^[1-9][0-9]*$/.test(encodedPid)) return;
+            observedDescendantPid = Number(encodedPid);
+            descendantObservedAt = performance.now();
+            controller.abort();
+          }, 1)
+        : undefined;
     const abortTimer =
       options.abortAfterMilliseconds === undefined
         ? undefined
@@ -159,6 +236,7 @@ const attempt = async (
             controller.abort();
           }, options.abortAfterMilliseconds);
     try {
+      const startedAt = performance.now();
       const receipt = await executeLocalSqliteReporterChild({
         programs: { workerPath, watchdogPath },
         gate,
@@ -194,9 +272,12 @@ const attempt = async (
             ]
           : [],
         admissionTimeUnixNano: "1",
-        maximumWorkMilliseconds:
-          options.maximumWorkMilliseconds ??
-          (state === "accepted" || state === "result-error" ? 1_000 : 300),
+        cutoffAtMonotonicMilliseconds:
+          (options.monotonicNowForTesting === undefined
+            ? performance.now()
+            : 0) +
+          (options.maximumWorkMilliseconds ??
+            (extendedWorkStates.has(state) ? 2_000 : 300)),
         minimumUsefulWorkMilliseconds:
           options.minimumUsefulWorkMilliseconds ?? 10,
         teardownReserveMilliseconds: options.teardownReserveMilliseconds ?? 500,
@@ -212,16 +293,51 @@ const attempt = async (
             }),
       });
       const descendantPid =
-        state === "descendant"
-          ? Number(readFileSync(descendantPath, "utf8"))
+        state === "descendant" || state === "accepted-descendant"
+          ? (observedDescendantPid ??
+            Number(readFileSync(descendantPath, "utf8")))
           : undefined;
+      let descendantStopped: boolean | undefined;
+      if (descendantPid !== undefined) {
+        const before = (() => {
+          try {
+            return readFileSync(heartbeatPath, "utf8");
+          } catch {
+            return "";
+          }
+        })();
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const after = (() => {
+          try {
+            return readFileSync(heartbeatPath, "utf8");
+          } catch {
+            return "";
+          }
+        })();
+        descendantStopped = after === before;
+      }
       return Object.freeze({
         receipt,
+        elapsed: performance.now() - startedAt,
+        cleanupElapsed:
+          descendantObservedAt === undefined
+            ? undefined
+            : performance.now() - descendantObservedAt,
         entries: readdirSync(lifecycle),
+        stateObserved: (() => {
+          try {
+            return readFileSync(stateObservedPath, "utf8");
+          } catch {
+            return undefined;
+          }
+        })(),
         descendantPid,
+        descendantStopped,
       });
     } finally {
       if (abortTimer !== undefined) clearTimeout(abortTimer);
+      if (descendantAbortTimer !== undefined)
+        clearInterval(descendantAbortTimer);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -235,8 +351,20 @@ describe("bounded Local SQLite Reporter child", () => {
     expect(result.entries).toEqual([]);
   });
 
+  it("rejects an oversized child frame at the bounded reader", async () => {
+    const stdout = new EventEmitter();
+    const child = Object.assign(new EventEmitter(), { stdout });
+    const messages = readLocalSqliteReporterChildMessages(
+      child as never,
+      "3".repeat(32),
+    );
+    stdout.emit("data", Buffer.alloc(4_097, "x"));
+    await expect(messages.ready).resolves.toBeUndefined();
+    await expect(messages.result).resolves.toBeUndefined();
+  });
+
   it("refuses wire encoding before spawn when the useful budget expires", async () => {
-    const beforeClock = [0, 2];
+    const beforeClock = [2];
     const before = await attempt("accepted", {
       withTrace: true,
       maximumWorkMilliseconds: 2,
@@ -246,7 +374,7 @@ describe("bounded Local SQLite Reporter child", () => {
     expect(before.receipt).toEqual({ outcome: "unavailable" });
     expect(before.entries).toEqual([]);
 
-    const afterClock = [0, 0, 2];
+    const afterClock = [0, 2];
     const after = await attempt("accepted", {
       withTrace: true,
       maximumWorkMilliseconds: 2,
@@ -268,6 +396,8 @@ describe("bounded Local SQLite Reporter child", () => {
       );
       expect(result.receipt).toEqual({ outcome });
       expect(result.entries).toEqual([]);
+      if (permissionObservedStates.has(state))
+        expect(result.stateObserved).toBe("permission");
     });
   }
 
@@ -275,8 +405,8 @@ describe("bounded Local SQLite Reporter child", () => {
     ["malformed", "unavailable"],
     ["oversized", "unavailable"],
     ["wrong-start", "unavailable"],
-    ["close-after-ready", "outcome-unknown"],
-    ["exit-after-ready", "outcome-unknown"],
+    ["close-after-permission", "outcome-unknown"],
+    ["exit-after-permission", "outcome-unknown"],
     ["result-error", "outcome-unknown"],
     ["wrong-result", "outcome-unknown"],
   ] as const) {
@@ -284,11 +414,22 @@ describe("bounded Local SQLite Reporter child", () => {
       const result = await attempt(state);
       expect(result.receipt).toEqual({ outcome });
       expect(result.entries).toEqual([]);
+      if (permissionObservedStates.has(state))
+        expect(result.stateObserved).toBe("permission");
     });
   }
 
   it("aborts before permission as proven noncommit", async () => {
     const result = await attempt("before", { abortAfterMilliseconds: 10 });
+    expect(result.receipt).toEqual({ outcome: "unavailable" });
+    expect(result.entries).toEqual([]);
+  });
+
+  it("rejects peer closure before the bounded header write", async () => {
+    const result = await attempt("close-before-header", {
+      maximumWorkMilliseconds: 1_000,
+      watchAcknowledgementDelayMilliseconds: 100,
+    });
     expect(result.receipt).toEqual({ outcome: "unavailable" });
     expect(result.entries).toEqual([]);
   });
@@ -334,19 +475,26 @@ describe("bounded Local SQLite Reporter child", () => {
   });
 
   it("forces a nonsettling watchdog and worker group inside one reserve", async () => {
-    const started = performance.now();
     const result = await attempt("descendant", {
-      maximumWorkMilliseconds: 200,
+      abortAfterDescendant: true,
+      maximumWorkMilliseconds: 1_000,
       stubbornWatchdog: true,
       teardownReserveMilliseconds: 80,
     });
-    expect(performance.now() - started).toBeLessThan(350);
+    expect(result.cleanupElapsed).toBeLessThan(250);
     expect(result.receipt).toEqual({ outcome: "outcome-unknown" });
     expect(result.descendantPid).toBeTypeOf("number");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(() => process.kill(result.descendantPid!, 0)).toThrow(
-      expect.objectContaining({ code: "ESRCH" }),
-    );
+    expect(result.descendantStopped).toBe(true);
+  });
+
+  it("reaps the complete group after a successful leader exits", async () => {
+    const result = await attempt("accepted-descendant", {
+      maximumWorkMilliseconds: 2_000,
+      teardownReserveMilliseconds: 1_000,
+    });
+    expect(result.receipt).toEqual({ outcome: "accepted" });
+    expect(result.descendantPid).toBeTypeOf("number");
+    expect(result.descendantStopped).toBe(true);
   });
 });
 

@@ -15,6 +15,7 @@ const cliOnlySpecifiers = [
 ];
 const testingSpecifiers = [
   "@agentscope/destination-langfuse/testing",
+  "@agentscope/destination-local-sqlite/testing",
   "@agentscope/destinations-core/testing",
   "@agentscope/harnesses-core/testing",
   "@agentscope/protocol/testing",

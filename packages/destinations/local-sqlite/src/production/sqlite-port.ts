@@ -312,18 +312,25 @@ export const createOwnedMigrationDatabase = (
         if (!tableExists(database, "destination_metadata")) return undefined;
         const rows = database
           .prepare(
-            "SELECT key, value FROM destination_metadata WHERE key IN ('destination_format', 'migration_manifest_id', 'protocol_compatibility_id') ORDER BY key ASC",
+            "SELECT key, value FROM destination_metadata WHERE key IN ('destination_format', 'lifecycle_capability_version', 'lifecycle_fingerprint', 'migration_manifest_id', 'protocol_compatibility_id', 'recovery_handler_id') ORDER BY key ASC",
           )
           .all()
           .map(rowRecord);
         const values = new Map(
           rows.map((row) => [String(row.key), String(row.value)]),
         );
-        if (values.size !== 3) return undefined;
+        if (values.size !== 6) return undefined;
+        const lifecycleCapabilityVersion = Number(
+          values.get("lifecycle_capability_version"),
+        );
+        if (!Number.isSafeInteger(lifecycleCapabilityVersion)) return undefined;
         return Object.freeze({
           destinationFormat: values.get("destination_format")!,
+          lifecycleCapabilityVersion,
+          lifecycleFingerprint: values.get("lifecycle_fingerprint")!,
           migrationManifestId: values.get("migration_manifest_id")!,
           protocolCompatibilityId: values.get("protocol_compatibility_id")!,
+          recoveryHandlerId: values.get("recovery_handler_id")!,
         });
       }),
     writeDestinationMetadata: (metadata: LocalSqliteDestinationMetadata) => {
@@ -332,11 +339,17 @@ export const createOwnedMigrationDatabase = (
           "INSERT INTO destination_metadata(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         );
         statement.run("destination_format", metadata.destinationFormat);
+        statement.run(
+          "lifecycle_capability_version",
+          String(metadata.lifecycleCapabilityVersion),
+        );
+        statement.run("lifecycle_fingerprint", metadata.lifecycleFingerprint);
         statement.run("migration_manifest_id", metadata.migrationManifestId);
         statement.run(
           "protocol_compatibility_id",
           metadata.protocolCompatibilityId,
         );
+        statement.run("recovery_handler_id", metadata.recoveryHandlerId);
       });
     },
     readImmutableRows: () =>

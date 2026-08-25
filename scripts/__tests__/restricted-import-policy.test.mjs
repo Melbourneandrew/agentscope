@@ -177,6 +177,7 @@ test("rejects testing entrypoints from Core production sources", () => {
   try {
     for (const [name, specifier] of [
       ["langfuse-testing", "@agentscope/destination-langfuse/testing"],
+      ["local-sqlite-testing", "@agentscope/destination-local-sqlite/testing"],
       ["destination-testing", "@agentscope/destinations-core/testing"],
       ["harness-testing", "@agentscope/harnesses-core/testing"],
       ["protocol-testing", "@agentscope/protocol/testing"],
@@ -350,6 +351,18 @@ test("checks artifact literals while permitting computed artifact loads", () => 
       () => auditCoreFinalizationImports(value.root, value.packages),
       /test-only/u,
     );
+    writeFileSync(
+      verifier,
+      'await import("./verify-production-composition.test.mjs");\n',
+    );
+    writeFileSync(
+      join(
+        value.root,
+        "packages/destination/verify-production-composition.test.mjs",
+      ),
+      'import "@agentscope/destinations-core/testing";\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }

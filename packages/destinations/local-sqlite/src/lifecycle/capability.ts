@@ -48,6 +48,11 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
       artifact("operation-phase", "lifecycle/operation-phase-v1.json", 1),
       artifact("ownership-receipt", "lifecycle/ownership-receipt-v1.json", 1),
       artifact(
+        "namespace-removal-claim",
+        "{connection,lifecycle,backups}/namespace-claim-v1-<lowercase-hex-encoded-public-name>",
+        1,
+      ),
+      artifact(
         "rollback-preimage",
         "rollback-preimage-<transaction-id>.sqlite",
         1,
@@ -66,12 +71,13 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
       maximumPublishedBackups: 8,
       maximumPublishedSnapshotBytes:
         "checked-multiply(maximumPublishedBackups,supportManifest.maximumSnapshotBytes)",
+      maximumNamespaceRemovalClaims: 1,
       maximumSharedLeases: 64,
       maximumSharedLeaseCleanupClaims: 64,
       maximumTransientDatabaseCandidates: 1,
       maximumTransientRollbackPreimages: 1,
       namespaceByteCeiling:
-        "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes)",
+        "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes,namespaceRemovalClaimBytes)",
       sizeArithmetic: "exact-nonnegative-filesystem-integer-checked",
       sparseOrHugeEvidence: "reconciliation-required",
     }),
@@ -120,6 +126,12 @@ export const createLocalSqliteLifecycleArtifactGrammarForTesting = (
         maximumBytesPerArtifact: "supportManifest.maximumSnapshotBytes",
         maximumCountAcrossKinds: 1,
         name: "rollback-preimage",
+      }),
+      Object.freeze({
+        kinds: Object.freeze(["namespace-removal-claim"]),
+        maximumBytesPerArtifact: "mapped-public-artifact-maximum",
+        maximumCountAcrossKinds: 1,
+        name: "namespace-removal-claim",
       }),
     ]),
   });

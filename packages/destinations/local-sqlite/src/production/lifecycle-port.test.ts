@@ -2,10 +2,12 @@
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,6 +40,7 @@ import { createLocalSqliteLifecycleHandlerForTesting } from "../lifecycle/config
 import { decodeLocalSqliteMaintenanceIntent } from "../lifecycle/maintenance.js";
 import { planLocalSqliteNamespace } from "../lifecycle/namespace.js";
 import { localSqliteDestinationDescriptor } from "./descriptor.js";
+import { localSqliteNamespaceClaimName } from "./owned-filesystem.js";
 import { bindLocalSqliteProductionRuntimeForTesting } from "./runtime.js";
 import type {
   OwnedSqliteConnection,
@@ -255,6 +258,13 @@ describe("production Local SQLite lifecycle port", () => {
         code: "reconciliation-required",
       });
       writeFileSync(phasePath, exactPhaseBytes, { mode: 0o600 });
+      linkSync(
+        join(
+          namespace.connectionNamespace,
+          `configure-${configureOperationId}.sqlite`,
+        ),
+        namespace.databasePath,
+      );
       const configureRecoveryContext =
         bindLocalResourceLifecycleRecoveryContextForTesting(
           configureRecoveryInput,
@@ -294,10 +304,33 @@ describe("production Local SQLite lifecycle port", () => {
           signal: new AbortController().signal,
           deadline: createLocalResourceLifecycleDeadlineForTesting(60_000),
         });
-      const inspectClaimedMaintenancePhase = async () => {
-        const claimed = await runtime.maintenancePort.claimMaintenanceIntent(
-          new AbortController().signal,
-        );
+      const recoveryContextForMaintenance = (
+        operation: "backup" | "restore",
+        operationId: string,
+        resourceSelector: string,
+      ) =>
+        bindLocalResourceMaintenanceRecoveryContextForTesting({
+          operation,
+          operationId,
+          resourceSelector,
+          destinationType: localSqliteDestinationDescriptor.destinationType,
+          connectionId,
+          owner: {
+            processId: process.pid,
+            processStartIdentity: `process-start-v1-${"7".repeat(64)}`,
+          },
+          lifecycleFingerprint: capability.fingerprint,
+          recoveryHandlerId: capability.recoveryHandlerId,
+          configurationGeneration: 2,
+          configurationDigest: `sha256-${"8".repeat(64)}`,
+          signal: new AbortController().signal,
+          deadline: createLocalResourceLifecycleDeadlineForTesting(60_000),
+        });
+      const inspectClaimedMaintenancePhase = async (
+        context: ReturnType<typeof recoveryContextForMaintenance>,
+      ) => {
+        const claimed =
+          await runtime.maintenancePort.claimMaintenanceIntent(context);
         const intent = decodeLocalSqliteMaintenanceIntent(
           claimed.canonicalBytes,
         );
@@ -340,9 +373,11 @@ describe("production Local SQLite lifecycle port", () => {
           backupEvidence,
         ),
       ).resolves.toMatchObject({ ok: false, state: "prepared" });
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "backup-published",
-      );
+      await expect(
+        inspectClaimedMaintenancePhase(
+          recoveryContextForMaintenance("backup", backupId, backupId),
+        ),
+      ).resolves.toBe("backup-published");
       const backupRecoveryContext =
         bindLocalResourceMaintenanceRecoveryContextForTesting({
           operation: "backup",
@@ -367,9 +402,9 @@ describe("production Local SQLite lifecycle port", () => {
       );
       expect(backedUp).toMatchObject({ ok: true, state: "backed-up" });
       expect(existsSync(phasePath)).toBe(true);
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "backup-published",
-      );
+      await expect(
+        inspectClaimedMaintenancePhase(backupRecoveryContext),
+      ).resolves.toBe("backup-published");
       rmSync(phasePath);
       await completeLocalResourceLifecycle(handlers, backupRecoveryContext);
 
@@ -404,8 +439,24 @@ describe("production Local SQLite lifecycle port", () => {
           candidateOnlyBackupEvidence,
         ),
       ).resolves.toMatchObject({ ok: false, state: "prepared" });
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "backup-candidate",
+      await expect(
+        inspectClaimedMaintenancePhase(
+          recoveryContextForMaintenance(
+            "backup",
+            candidateOnlyBackupId,
+            candidateOnlyBackupId,
+          ),
+        ),
+      ).resolves.toBe("backup-candidate");
+      linkSync(
+        join(
+          namespace.backupsDirectory,
+          `candidate-${candidateOnlyBackupId}.sqlite`,
+        ),
+        join(
+          namespace.backupsDirectory,
+          `backup-${candidateOnlyBackupId}.sqlite`,
+        ),
       );
       const candidateOnlyBackupRecoveryContext =
         bindLocalResourceMaintenanceRecoveryContextForTesting({
@@ -467,12 +518,22 @@ describe("production Local SQLite lifecycle port", () => {
           candidateOnlyRestoreEvidence,
         ),
       ).resolves.toMatchObject({ ok: false, state: "prepared" });
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "restore-candidate",
-      );
+      await expect(
+        inspectClaimedMaintenancePhase(
+          recoveryContextForMaintenance(
+            "restore",
+            candidateOnlyRestoreId,
+            backupId,
+          ),
+        ),
+      ).resolves.toBe("restore-candidate");
       const claimedCandidateRestore =
         await runtime.maintenancePort.claimMaintenanceIntent(
-          new AbortController().signal,
+          recoveryContextForMaintenance(
+            "restore",
+            candidateOnlyRestoreId,
+            backupId,
+          ),
         );
       const candidateRestoreIntent = decodeLocalSqliteMaintenanceIntent(
         claimedCandidateRestore.canonicalBytes,
@@ -573,9 +634,11 @@ describe("production Local SQLite lifecycle port", () => {
           restoreEvidence,
         ),
       ).resolves.toMatchObject({ ok: false, state: "prepared" });
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "restore-verified",
-      );
+      await expect(
+        inspectClaimedMaintenancePhase(
+          recoveryContextForMaintenance("restore", "5".repeat(32), backupId),
+        ),
+      ).resolves.toBe("restore-verified");
       const restoreRecoveryInput = {
         operation: "restore",
         operationId: "5".repeat(32),
@@ -642,7 +705,19 @@ describe("production Local SQLite lifecycle port", () => {
             runtime.lifecyclePort,
             {
               ...runtime.maintenancePort,
-              verifyRestoredActive: () => Promise.resolve(false),
+              verifyRestoredActive: () => {
+                linkSync(
+                  join(
+                    namespace.connectionNamespace,
+                    `rollback-preimage-${rollbackRestoreId}.sqlite`,
+                  ),
+                  join(
+                    namespace.connectionNamespace,
+                    `restore-${rollbackRestoreId}.sqlite`,
+                  ),
+                );
+                return Promise.resolve(false);
+              },
             },
             runtime.maximumSnapshotBytes,
           ),
@@ -654,15 +729,88 @@ describe("production Local SQLite lifecycle port", () => {
           rollbackRestoreEvidence,
         ),
       ).resolves.toMatchObject({ ok: false, state: "prepared" });
+      const claimedRollback =
+        await runtime.maintenancePort.claimMaintenanceIntent(
+          recoveryContextForMaintenance("restore", rollbackRestoreId, backupId),
+        );
+      const rollbackIntent = decodeLocalSqliteMaintenanceIntent(
+        claimedRollback.canonicalBytes,
+      );
+      if (rollbackIntent === undefined)
+        throw new Error("rollback maintenance intent did not decode");
+      const redundantRestoreName = `restore-${rollbackRestoreId}.sqlite`;
+      const redundantRestorePath = join(
+        namespace.connectionNamespace,
+        redundantRestoreName,
+      );
+      const rollbackPreimagePath = join(
+        namespace.connectionNamespace,
+        `rollback-preimage-${rollbackRestoreId}.sqlite`,
+      );
+      const preimageStat = statSync(rollbackPreimagePath);
+      expect(statSync(namespace.databasePath)).toMatchObject({
+        dev: preimageStat.dev,
+        ino: preimageStat.ino,
+      });
+      expect(statSync(redundantRestorePath).ino).not.toBe(preimageStat.ino);
+      const redundantRestoreClaimPath = join(
+        namespace.connectionNamespace,
+        localSqliteNamespaceClaimName(redundantRestoreName),
+      );
+      renameSync(namespace.databasePath, redundantRestoreClaimPath);
+      renameSync(redundantRestorePath, namespace.databasePath);
+      expect(statSync(redundantRestoreClaimPath)).toMatchObject({
+        dev: preimageStat.dev,
+        ino: preimageStat.ino,
+      });
+      expect(statSync(namespace.databasePath).ino).not.toBe(preimageStat.ino);
+      expect(existsSync(redundantRestorePath)).toBe(false);
+      await runtime.maintenancePort.rollbackRestoredActive(
+        rollbackIntent,
+        claimedRollback.fence,
+        new AbortController().signal,
+      );
+      expect(existsSync(redundantRestoreClaimPath)).toBe(false);
+      expect(statSync(namespace.databasePath)).toMatchObject({
+        dev: preimageStat.dev,
+        ino: preimageStat.ino,
+      });
+      expect(statSync(redundantRestorePath).ino).not.toBe(preimageStat.ino);
+      rmSync(namespace.databasePath);
+      await runtime.maintenancePort.rollbackRestoredActive(
+        rollbackIntent,
+        claimedRollback.fence,
+        new AbortController().signal,
+      );
+      rmSync(namespace.databasePath);
+      renameSync(
+        join(
+          namespace.connectionNamespace,
+          `restore-${rollbackRestoreId}.sqlite`,
+        ),
+        namespace.databasePath,
+      );
+      await runtime.maintenancePort.rollbackRestoredActive(
+        rollbackIntent,
+        claimedRollback.fence,
+        new AbortController().signal,
+      );
+      await runtime.maintenancePort.rollbackRestoredActive(
+        rollbackIntent,
+        claimedRollback.fence,
+        new AbortController().signal,
+      );
       expect(JSON.parse(readFileSync(phasePath, "utf8"))).toMatchObject({
         operation: "restore",
         phase: "restore-rolled-back",
         transactionId: rollbackRestoreId,
       });
       rmSync(phasePath);
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "restore-rolled-back",
-      );
+      await expect(
+        inspectClaimedMaintenancePhase(
+          recoveryContextForMaintenance("restore", rollbackRestoreId, backupId),
+        ),
+      ).resolves.toBe("restore-rolled-back");
       const rollbackRecoveryContext =
         bindLocalResourceMaintenanceRecoveryContextForTesting({
           operation: "restore",
@@ -718,9 +866,15 @@ describe("production Local SQLite lifecycle port", () => {
           maintenanceCrashEvidence,
         ),
       ).resolves.toMatchObject({ ok: false, state: "prepared" });
-      await expect(inspectClaimedMaintenancePhase()).resolves.toBe(
-        "intent-only",
-      );
+      await expect(
+        inspectClaimedMaintenancePhase(
+          recoveryContextForMaintenance(
+            "backup",
+            maintenanceCrashId,
+            maintenanceCrashId,
+          ),
+        ),
+      ).resolves.toBe("intent-only");
       const maintenanceRecoveryContext =
         bindLocalResourceMaintenanceRecoveryContextForTesting({
           operation: "backup",

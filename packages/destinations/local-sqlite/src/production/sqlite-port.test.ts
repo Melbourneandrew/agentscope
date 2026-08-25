@@ -593,6 +593,12 @@ FROM traces WHERE admission_time_sort_key >= :retentionCutoffSortKey`;
       expect(
         createOwnedMigrationDatabase(database).readDestinationMetadata(),
       ).toBeUndefined();
+      database.exec(
+        "DELETE FROM destination_metadata; INSERT INTO destination_metadata VALUES ('destination_format', 'x'), ('lifecycle_capability_version', '1.5'), ('lifecycle_fingerprint', 'x'), ('migration_manifest_id', 'x'), ('protocol_compatibility_id', 'x'), ('recovery_handler_id', 'x')",
+      );
+      expect(
+        createOwnedMigrationDatabase(database).readDestinationMetadata(),
+      ).toBeUndefined();
     } finally {
       database.close();
     }

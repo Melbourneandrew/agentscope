@@ -18,15 +18,13 @@ import type {
 } from "../reporter/transaction.js";
 import { processStartIdentity } from "./filesystem-port.js";
 import {
-  decodeLocalSqliteReporterChildReady,
-  decodeLocalSqliteReporterChildResult,
   encodeLocalSqliteReporterChildMessage,
   encodeLocalSqliteReporterChildRequestHeader,
   encodeLocalSqliteReporterChildTrace,
   MAXIMUM_REPORTER_CHILD_REQUEST_BYTES,
   type LocalSqliteReporterChildRequest,
-  type LocalSqliteReporterChildResult,
 } from "./reporter-child-protocol.js";
+import { readLocalSqliteReporterChildMessages } from "./reporter-child-output.js";
 
 export type LocalSqliteReporterChildPrograms = Readonly<{
   workerPath: string;
@@ -46,7 +44,7 @@ export type LocalSqliteReporterChildAttempt = Readonly<{
   policy: LocalSqliteReporterPolicy;
   prepared: readonly LocalSqlitePreparedTrace[];
   admissionTimeUnixNano: string;
-  maximumWorkMilliseconds: number;
+  cutoffAtMonotonicMilliseconds: number;
   minimumUsefulWorkMilliseconds: number;
   teardownReserveMilliseconds: number;
   signal: AbortSignal;
@@ -126,27 +124,38 @@ const terminateAndJoin = async (
   deadline: number,
   processGroup = false,
 ): Promise<boolean> => {
-  if (child.exitCode === null && child.signalCode === null) {
-    try {
-      if (
-        processGroup &&
-        process.platform !== "win32" &&
-        child.pid !== undefined
-      )
-        process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch {
-      /* v8 ignore next -- ChildProcess.kill is nonthrowing for an already-dead
-         process; false remains the conservative response to exotic runtimes. */
+  try {
+    /* v8 ignore else -- POSIX worker groups and direct watchdogs are both covered
+       by process-level settlement tests; one branch varies by owned child role. */
+    if (processGroup && process.platform !== "win32" && child.pid !== undefined)
+      // The group may outlive its leader, so absence of a live ChildProcess is
+      // not authority to skip the group-wide teardown syscall.
+      process.kill(-child.pid, "SIGKILL");
+    else if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+  } catch (error) {
+    /* v8 ignore start -- real-process teardown exercises ESRCH and success; any
+       other kernel kill failure is returned without additional authority. */
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      error.code !== "ESRCH"
+    )
       return false;
-    }
+    /* v8 ignore stop */
   }
-  return (
+  const joined =
     (await bounded(
       waitForExit(child),
       Math.max(0, deadline - performance.now()),
-    )) !== undefined
-  );
+    )) !== undefined;
+  /* v8 ignore next -- a nonsettling killed child is the bounded failure result. */
+  if (!joined) return false;
+  // A successful group SIGKILL terminates every current member. A dead zombie
+  // may remain observable until the platform's init process reaps it, but it
+  // cannot retain a native handle or perform work after hook return.
+  return true;
 };
 
 const writeInput = (child: ChildProcess, value: string): Promise<boolean> =>
@@ -217,96 +226,6 @@ const writeRequest = async (
   return remaining() >= 1;
 };
 
-const readWorkerMessages = (
-  child: ChildProcess,
-  nonce: string,
-): Readonly<{
-  ready: Promise<ReturnType<typeof decodeLocalSqliteReporterChildReady>>;
-  result: Promise<LocalSqliteReporterChildResult | undefined>;
-}> => {
-  let buffer = Buffer.alloc(0);
-  let resolveReady!: (
-    value: ReturnType<typeof decodeLocalSqliteReporterChildReady>,
-  ) => void;
-  let resolveResult!: (
-    value: LocalSqliteReporterChildResult | undefined,
-  ) => void;
-  const ready = new Promise<
-    ReturnType<typeof decodeLocalSqliteReporterChildReady>
-  >((resolve) => {
-    resolveReady = resolve;
-  });
-  const result = new Promise<LocalSqliteReporterChildResult | undefined>(
-    (resolve) => {
-      resolveResult = resolve;
-    },
-  );
-  let sawReady = false;
-  let sawResult = false;
-  child.stdout?.on("data", (value: Buffer | Uint8Array) => {
-    /* v8 ignore next -- result settlement is terminal and late stdout is
-       deliberately discarded before any parse or allocation. */
-    if (sawResult) return;
-    /* v8 ignore next -- Node child stdout has no encoding and therefore emits
-       Buffer; Uint8Array conversion is retained for the declared stream type. */
-    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-    buffer = Buffer.concat([buffer, chunk]);
-    if (buffer.byteLength > 4_096) {
-      sawResult = true;
-      resolveReady(undefined);
-      resolveResult(undefined);
-      return;
-    }
-    for (;;) {
-      const newline = buffer.indexOf(10);
-      if (newline < 0) return;
-      const line = buffer.subarray(0, newline).toString("utf8");
-      buffer = buffer.subarray(newline + 1);
-      if (!sawReady) {
-        sawReady = true;
-        const parsed = decodeLocalSqliteReporterChildReady(line);
-        resolveReady(parsed?.nonce === nonce ? parsed : undefined);
-        if (parsed?.nonce !== nonce) {
-          sawResult = true;
-          resolveResult(undefined);
-        }
-        continue;
-      }
-      /* v8 ignore else -- the terminal-data guard above and single-threaded
-         line loop make sawResult false for the sole result line. */
-      if (!sawResult) {
-        sawResult = true;
-        const parsed = decodeLocalSqliteReporterChildResult(line);
-        resolveResult(parsed?.nonce === nonce ? parsed : undefined);
-      }
-    }
-  });
-  child.once("exit", () => {
-    if (!sawReady) {
-      sawReady = true;
-      resolveReady(undefined);
-    }
-    if (!sawResult) {
-      sawResult = true;
-      resolveResult(undefined);
-    }
-  });
-  /* v8 ignore start -- post-spawn stream/process errors are totalized by the
-     exit listener and bounded teardown; this duplicate listener is defensive. */
-  child.once("error", () => {
-    if (!sawReady) {
-      sawReady = true;
-      resolveReady(undefined);
-    }
-    if (!sawResult) {
-      sawResult = true;
-      resolveResult(undefined);
-    }
-  });
-  /* v8 ignore stop */
-  return Object.freeze({ ready, result });
-};
-
 const watch = (
   watchdog: ChildProcess,
   workerPid: number,
@@ -375,8 +294,7 @@ export const executeLocalSqliteReporterChild = async (
   let authority = input.lease;
   let receipt: ReporterReceipt | undefined;
   const now = input.monotonicNowForTesting ?? performance.now.bind(performance);
-  const startedAt = now();
-  const cutoffAt = startedAt + input.maximumWorkMilliseconds;
+  const cutoffAt = input.cutoffAtMonotonicMilliseconds;
   const teardownDeadline = cutoffAt + input.teardownReserveMilliseconds;
   const remaining = (): number => Math.max(0, cutoffAt - now());
   const refuseBeforeSpawn = async (): Promise<ReporterReceipt> => {
@@ -390,6 +308,8 @@ export const executeLocalSqliteReporterChild = async (
       return refuseBeforeSpawn();
     const encoded = encodeLocalSqliteReporterChildTrace(input.nonce, trace);
     encodedRequestBytes += Buffer.byteLength(encoded, "utf8");
+    /* v8 ignore next 6 -- production aggregate admission is strictly below the
+       child protocol ceiling; this remains a defensive direct-call refusal. */
     if (
       encodedRequestBytes > MAXIMUM_REPORTER_CHILD_REQUEST_BYTES ||
       remaining() < input.minimumUsefulWorkMilliseconds
@@ -414,7 +334,7 @@ export const executeLocalSqliteReporterChild = async (
     stdio: ["ignore", "ignore", "ignore", "ipc"],
     windowsHide: true,
   });
-  const messages = readWorkerMessages(worker, input.nonce);
+  const messages = readLocalSqliteReporterChildMessages(worker, input.nonce);
   const observedWorkerIdentity = (input.childIdentity ?? processStartIdentity)(
     workerPid,
   );

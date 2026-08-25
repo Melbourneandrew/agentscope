@@ -31,6 +31,8 @@ import {
   boundedOwnedNames,
   openOwnedDirectory,
   removeOwnedFile,
+  retireOwnedFile,
+  localSqliteNamespaceClaimName,
   renameOwnedFile,
   statOwnedFile,
 } from "./dist/production/owned-filesystem.js";
@@ -267,6 +269,7 @@ const expectedRoot = [
   "LOCAL_SQLITE_DESTINATION_TYPE",
   "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
   "createLocalSqliteLifecycleHandler",
+  "initializeLocalSqliteProductionComposition",
   "localSqliteDestinationDescriptor",
   "localSqliteDestinationPackageId",
   "localSqliteLifecycleDeclaration",
@@ -275,6 +278,7 @@ const expectedRoot = [
 ].sort();
 if (JSON.stringify(Object.keys(root).sort()) !== JSON.stringify(expectedRoot))
   throw new Error("Local SQLite root export surface drifted.");
+await import("./verify-production-composition.test.mjs");
 if (
   JSON.stringify(Object.keys(reporter)) !==
   JSON.stringify(["localSqliteReporterPackageId"])
@@ -633,6 +637,7 @@ const maintenanceFence = Object.freeze({
     lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
     lifecycleGeneration: 1,
     purpose: "lifecycle",
+    owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
   }),
   deadLeaseNames: Object.freeze([]),
 });
@@ -689,8 +694,11 @@ const builtMaintenancePort = {
       snapshotPhysicalIdentity: "dev:1:ino:20",
       snapshotBytes: 4_096,
       destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+      lifecycleCapabilityVersion: 1,
+      lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
       migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
       protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+      recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
     }),
   publishBackup: (_intent, _receipt, canonicalReceipt) => {
     maintenanceEvents.push("publish");
@@ -703,8 +711,11 @@ const builtMaintenancePort = {
       snapshotPhysicalIdentity: "dev:1:ino:20",
       snapshotBytes: 4_096,
       destinationFormat: testing.LOCAL_SQLITE_DESTINATION_FORMAT,
+      lifecycleCapabilityVersion: 1,
+      lifecycleFingerprint: `sha256-${"5".repeat(64)}`,
       migrationManifestId: testing.LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
       protocolCompatibilityId: testing.LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
+      recoveryHandlerId: root.localSqliteLifecycleDeclaration.recoveryHandlerId,
     }),
   readSelectedBackupReceipt: unused,
   createRestoreCandidate: unused,
@@ -1097,6 +1108,7 @@ try {
       lifecycleFingerprint: replacementIntent.lifecycleFingerprint,
       lifecycleGeneration: 1,
       purpose: "lifecycle",
+      owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
     }),
     deadLeaseNames: Object.freeze([]),
   });
@@ -1882,6 +1894,7 @@ const builtFenceRecord = testing.parseLocalSqliteFenceRecord({
   lifecycleFingerprint: builtLifecycleFingerprint,
   lifecycleGeneration: 1,
   purpose: "lifecycle",
+  owner: Object.freeze({ pid: 7, startIdentity: "2".repeat(32) }),
 });
 const builtLeaseBytes = testing.encodeLocalSqliteLeaseRecord(builtLeaseRecord);
 const builtFenceBytes = testing.encodeLocalSqliteFenceRecord(builtFenceRecord);
@@ -2258,7 +2271,32 @@ try {
     ) !== "mismatch" ||
     readFileSync(join(builtClaimRoot, "remove"), "utf8") !== "replacement"
   )
-    throw new Error("Local SQLite built private removal claim drifted.");
+    throw new Error("Local SQLite built raw removal race drifted.");
+  writeFileSync(join(builtClaimRoot, "retire"), "owned", { mode: 0o600 });
+  const retireIdentity = statOwnedFile(
+    builtClaimDirectory,
+    "retire",
+  ).physicalIdentity;
+  const retirementClaim = localSqliteNamespaceClaimName("retire");
+  try {
+    retireOwnedFile(builtClaimDirectory, "retire", retireIdentity, () => {
+      if (
+        statOwnedFile(builtClaimDirectory, retirementClaim).physicalIdentity !==
+        retireIdentity
+      )
+        throw new Error("Local SQLite built retirement identity drifted.");
+      throw new Error("built-synthetic-interruption");
+    });
+    throw new Error("Local SQLite built retirement interruption was lost.");
+  } catch (error) {
+    if (error?.message !== "built-synthetic-interruption") throw error;
+  }
+  if (
+    retireOwnedFile(builtClaimDirectory, "retire", retireIdentity) !==
+      "removed" ||
+    boundedOwnedNames(builtClaimDirectory, 16).includes(retirementClaim)
+  )
+    throw new Error("Local SQLite built retirement resume drifted.");
   writeFileSync(join(builtClaimRoot, "source"), "owned", { mode: 0o600 });
   const sourceIdentity = statOwnedFile(
     builtClaimDirectory,
@@ -2271,10 +2309,15 @@ try {
       builtClaimDirectory,
       "destination",
       sourceIdentity,
-      () =>
+      () => {
+        renameSync(
+          join(builtClaimRoot, "source"),
+          join(builtClaimRoot, "source-retained"),
+        );
         writeFileSync(join(builtClaimRoot, "source"), "replacement", {
           mode: 0o600,
-        }),
+        });
+      },
     );
     throw new Error("Local SQLite built private rename race was accepted.");
   } catch (error) {

@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -9,6 +10,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeSync,
   writeFileSync,
 } from "node:fs";
@@ -18,23 +20,30 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  boundedOwnedLogicalNames,
   boundedOwnedNames,
   createPathAtomicExchangeForTesting,
   createOwnedExclusiveFile,
+  decodeLocalSqliteNamespaceClaimName,
+  inspectOwnedFileRetirement,
   inspectOwnedSqliteFamily,
   linkOwnedFile,
+  localSqliteNamespaceClaimName,
   LocalSqliteOwnedFilesystemError,
   openOwnedDirectory,
   openOwnedFile,
   readOwnedPrefix,
+  readOwnedRetirementUtf8,
   readOwnedUtf8,
   removeOwnedFile,
+  retireOwnedFile,
   renameOwnedFile,
   replaceOwnedFile,
   statOwnedFile,
   syncOwnedDirectory,
   syncOwnedFile,
   writeOwnedExclusive,
+  writeOwnedLogicalExclusive,
   type OwnedAtomicExchange,
 } from "./owned-filesystem.js";
 
@@ -75,6 +84,35 @@ const guardedPathExchange = (root: string): OwnedAtomicExchange => {
 
 /* eslint-disable max-lines-per-function -- the integration case keeps the retained directory authority and its whole operation sequence adjacent. */
 describe("owned Local SQLite filesystem authority", () => {
+  it("closes its descriptor when setup fails after the directory opens", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-owned-open-failure-"));
+    chmodSync(root, 0o700);
+    const platformDescriptor = Object.getOwnPropertyDescriptor(
+      process,
+      "platform",
+    );
+    if (platformDescriptor === undefined)
+      throw new Error("process.platform descriptor is unavailable");
+    const descriptorsBefore =
+      process.platform === "linux"
+        ? readdirSync("/proc/self/fd").sort()
+        : undefined;
+    try {
+      Object.defineProperty(process, "platform", {
+        ...platformDescriptor,
+        value: "darwin",
+      });
+      expect(() => openOwnedDirectory(root)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+    } finally {
+      Object.defineProperty(process, "platform", platformDescriptor);
+      rmSync(root, { recursive: true, force: true });
+    }
+    if (descriptorsBefore !== undefined)
+      expect(readdirSync("/proc/self/fd").sort()).toEqual(descriptorsBefore);
+  });
+
   it("admits only the exact bounded SQLite main/WAL/SHM family", () => {
     const root = mkdtempSync(join(tmpdir(), "agentscope-owned-family-"));
     chmodSync(root, 0o700);
@@ -268,6 +306,109 @@ describe("owned Local SQLite filesystem authority", () => {
         ).physicalIdentity,
       ).toBe(sameSource.physicalIdentity);
 
+      const interruptedSource = writeOwnedExclusive(
+        first,
+        "interrupted-source",
+        Buffer.from("interrupted"),
+        11,
+      );
+      expect(() =>
+        renameOwnedFile(
+          first,
+          "interrupted-source",
+          first,
+          "interrupted-destination",
+          interruptedSource.physicalIdentity,
+          () => {
+            throw new Error("synthetic post-link interruption");
+          },
+        ),
+      ).toThrow("synthetic post-link interruption");
+      expect(statOwnedFile(first, "interrupted-source").physicalIdentity).toBe(
+        interruptedSource.physicalIdentity,
+      );
+      expect(
+        statOwnedFile(first, "interrupted-destination").physicalIdentity,
+      ).toBe(interruptedSource.physicalIdentity);
+      expect(
+        renameOwnedFile(
+          first,
+          "interrupted-source",
+          first,
+          "interrupted-destination",
+          interruptedSource.physicalIdentity,
+        ).physicalIdentity,
+      ).toBe(interruptedSource.physicalIdentity);
+      expect(existsSync(join(firstPath, "interrupted-source"))).toBe(false);
+      expect(
+        readFileSync(join(firstPath, "interrupted-destination"), "utf8"),
+      ).toBe("interrupted");
+
+      expect(
+        writeOwnedLogicalExclusive(
+          first,
+          "logical-existing-race",
+          Buffer.from("owned"),
+          5,
+          {
+            afterAbsentInspectionForTesting: () => {
+              writeFileSync(join(firstPath, "logical-existing-race"), "prior", {
+                mode: 0o600,
+              });
+            },
+          },
+        ),
+      ).toEqual({ state: "exists" });
+      expect(
+        readFileSync(join(firstPath, "logical-existing-race"), "utf8"),
+      ).toBe("prior");
+
+      const logicalClaimName =
+        localSqliteNamespaceClaimName("logical-claim-race");
+      expect(
+        writeOwnedLogicalExclusive(
+          first,
+          "logical-claim-race",
+          Buffer.from("owned"),
+          5,
+          {
+            afterCreateForTesting: (created) => {
+              linkOwnedFile(
+                first,
+                "logical-claim-race",
+                logicalClaimName,
+                created.physicalIdentity,
+              );
+            },
+          },
+        ),
+      ).toEqual({ state: "exists" });
+      expect(existsSync(join(firstPath, "logical-claim-race"))).toBe(false);
+      expect(readFileSync(join(firstPath, logicalClaimName), "utf8")).toBe(
+        "owned",
+      );
+
+      expect(
+        writeOwnedLogicalExclusive(
+          first,
+          "logical-removed-race",
+          Buffer.from("owned"),
+          5,
+          {
+            afterCreateForTesting: (created) => {
+              expect(
+                removeOwnedFile(
+                  first,
+                  "logical-removed-race",
+                  created.physicalIdentity,
+                ),
+              ).toBe("removed");
+            },
+          },
+        ),
+      ).toEqual({ state: "exists" });
+      expect(existsSync(join(firstPath, "logical-removed-race"))).toBe(false);
+
       const retainedPath = join(root, "first-retained");
       renameSync(firstPath, retainedPath);
       mkdirSync(firstPath, { mode: 0o700 });
@@ -394,12 +535,14 @@ describe("owned Local SQLite filesystem authority", () => {
       ).physicalIdentity;
       expect(
         removeOwnedFile(directory, "remove-claim", removeClaimIdentity, () => {
-          const claim = readdirSync(root).find((name) =>
-            name.startsWith(".agentscope-private-"),
-          );
-          if (claim === undefined) throw new Error("claim fixture missing");
-          renameSync(join(root, claim), join(root, "remove-claim-retained"));
-          writeFileSync(join(root, claim), "replacement", { mode: 0o600 });
+          expect(
+            readdirSync(root).some((name) =>
+              name.startsWith(".agentscope-private-"),
+            ),
+          ).toBe(false);
+          writeFileSync(join(root, "remove-claim"), "replacement", {
+            mode: 0o600,
+          });
         }),
       ).toBe("mismatch");
       expect(readFileSync(join(root, "remove-claim"), "utf8")).toBe(
@@ -438,6 +581,7 @@ describe("owned Local SQLite filesystem authority", () => {
           "renamed",
           renameIdentity,
           () => {
+            renameSync(join(root, "rename"), join(root, "rename-retained"));
             writeFileSync(join(root, "rename"), "replacement", {
               mode: 0o600,
             });
@@ -460,12 +604,18 @@ describe("owned Local SQLite filesystem authority", () => {
           "rename-claim-output",
           renameClaimIdentity,
           () => {
-            const claim = readdirSync(root).find((name) =>
-              name.startsWith(".agentscope-private-"),
+            expect(
+              readdirSync(root).some((name) =>
+                name.startsWith(".agentscope-private-"),
+              ),
+            ).toBe(false);
+            renameSync(
+              join(root, "rename-claim"),
+              join(root, "rename-claim-retained"),
             );
-            if (claim === undefined) throw new Error("claim fixture missing");
-            renameSync(join(root, claim), join(root, "rename-claim-retained"));
-            writeFileSync(join(root, claim), "replacement", { mode: 0o600 });
+            writeFileSync(join(root, "rename-claim"), "replacement", {
+              mode: 0o600,
+            });
           },
         ),
       ).toThrow(LocalSqliteOwnedFilesystemError);
@@ -486,6 +636,10 @@ describe("owned Local SQLite filesystem authority", () => {
           "rename-conflict-output",
           renameConflictIdentity,
           () => {
+            renameSync(
+              join(root, "rename-conflict-output"),
+              join(root, "rename-conflict-output-retained"),
+            );
             writeFileSync(join(root, "rename-conflict-output"), "occupied", {
               mode: 0o600,
             });
@@ -586,6 +740,213 @@ describe("owned Local SQLite filesystem authority", () => {
           name.startsWith(".agentscope-private-"),
         ),
       ).toBe(false);
+    } finally {
+      directory.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes the canonical hard-link removal claim after every durable prefix", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-owned-retire-"));
+    chmodSync(root, 0o700);
+    const directory = openOwnedDirectory(root, true);
+    try {
+      const publicName = "traces.sqlite-wal";
+      const claimName = localSqliteNamespaceClaimName(publicName);
+      expect(decodeLocalSqliteNamespaceClaimName(claimName)).toBe(publicName);
+      expect(decodeLocalSqliteNamespaceClaimName("namespace-claim-v1-0")).toBe(
+        undefined,
+      );
+      expect(decodeLocalSqliteNamespaceClaimName(".")).toBe(undefined);
+      expect(decodeLocalSqliteNamespaceClaimName("namespace-claim-v1-ff")).toBe(
+        undefined,
+      );
+      expect(() => localSqliteNamespaceClaimName("x".repeat(101))).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      expect(() =>
+        localSqliteNamespaceClaimName("namespace-claim-v1-owned"),
+      ).toThrow(LocalSqliteOwnedFilesystemError);
+      writeFileSync(join(root, publicName), "owned", { mode: 0o600 });
+      const physicalIdentity = statOwnedFile(
+        directory,
+        publicName,
+      ).physicalIdentity;
+      expect(() =>
+        retireOwnedFile(directory, publicName, physicalIdentity, () => {
+          expect(statOwnedFile(directory, claimName).physicalIdentity).toBe(
+            physicalIdentity,
+          );
+          expect(statOwnedFile(directory, publicName).physicalIdentity).toBe(
+            physicalIdentity,
+          );
+          throw new Error("synthetic interruption");
+        }),
+      ).toThrow("synthetic interruption");
+      expect(retireOwnedFile(directory, publicName, physicalIdentity)).toBe(
+        "removed",
+      );
+      expect(existsSync(join(root, publicName))).toBe(false);
+      expect(existsSync(join(root, claimName))).toBe(false);
+
+      writeFileSync(join(root, publicName), "owned-again", { mode: 0o600 });
+      const secondIdentity = statOwnedFile(
+        directory,
+        publicName,
+      ).physicalIdentity;
+      expect(() =>
+        retireOwnedFile(directory, publicName, secondIdentity, () => {
+          expect(removeOwnedFile(directory, publicName, secondIdentity)).toBe(
+            "removed",
+          );
+          throw new Error("synthetic post-unlink interruption");
+        }),
+      ).toThrow("synthetic post-unlink interruption");
+      expect(existsSync(join(root, publicName))).toBe(false);
+      expect(statOwnedFile(directory, claimName).physicalIdentity).toBe(
+        secondIdentity,
+      );
+      const inspectedRetirement = inspectOwnedFileRetirement(
+        directory,
+        publicName,
+      );
+      expect(inspectedRetirement?.state).toBe("claim-only");
+      expect(inspectedRetirement?.evidence.physicalIdentity).toBe(
+        secondIdentity,
+      );
+      const readRetirement = readOwnedRetirementUtf8(directory, publicName, 11);
+      expect(readRetirement.content).toBe("owned-again");
+      expect(readRetirement.retirement.state).toBe("claim-only");
+      expect(readRetirement.retirement.evidence.physicalIdentity).toBe(
+        secondIdentity,
+      );
+      const retainedSecondPath = join(root, "retained-second");
+      linkSync(join(root, claimName), retainedSecondPath);
+      expect(retireOwnedFile(directory, publicName, secondIdentity)).toBe(
+        "removed",
+      );
+      expect(existsSync(join(root, claimName))).toBe(false);
+      expect(inspectOwnedFileRetirement(directory, publicName)).toBeUndefined();
+      expect(() => readOwnedRetirementUtf8(directory, publicName, 11)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      expect(retireOwnedFile(directory, publicName, secondIdentity)).toBe(
+        "absent",
+      );
+
+      writeFileSync(join(root, publicName), "third", { mode: 0o600 });
+      const thirdIdentity = statOwnedFile(
+        directory,
+        publicName,
+      ).physicalIdentity;
+      expect(retireOwnedFile(directory, publicName, secondIdentity)).toBe(
+        "mismatch",
+      );
+      rmSync(retainedSecondPath);
+      expect(() =>
+        retireOwnedFile(directory, publicName, thirdIdentity, () => {
+          renameSync(join(root, publicName), join(root, `${publicName}-owned`));
+          writeFileSync(join(root, publicName), "replacement", { mode: 0o600 });
+        }),
+      ).toThrow(LocalSqliteOwnedFilesystemError);
+      rmSync(join(root, publicName));
+      rmSync(join(root, `${publicName}-owned`));
+      rmSync(join(root, claimName));
+
+      writeFileSync(join(root, "symlink-target"), "target", { mode: 0o600 });
+      symlinkSync(join(root, "symlink-target"), join(root, publicName));
+      expect(() => inspectOwnedFileRetirement(directory, publicName)).toThrow();
+      expect(() => retireOwnedFile(directory, publicName)).toThrow();
+      rmSync(join(root, publicName));
+      symlinkSync(join(root, "symlink-target"), join(root, claimName));
+      expect(() => inspectOwnedFileRetirement(directory, publicName)).toThrow();
+
+      rmSync(join(root, claimName));
+      writeFileSync(join(root, publicName), "fourth", { mode: 0o600 });
+      const fourthIdentity = statOwnedFile(
+        directory,
+        publicName,
+      ).physicalIdentity;
+      expect(
+        retireOwnedFile(directory, publicName, fourthIdentity, () => {
+          renameSync(join(root, claimName), join(root, `${claimName}-owned`));
+          writeFileSync(join(root, claimName), "replacement", { mode: 0o600 });
+        }),
+      ).toBe("mismatch");
+    } finally {
+      directory.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("counts an exact public-and-claim pair as one bounded logical entry", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-owned-logical-"));
+    chmodSync(root, 0o700);
+    const directory = openOwnedDirectory(root, true);
+    try {
+      for (const invalidMaximum of [0, 1.5, Number.MAX_SAFE_INTEGER])
+        expect(() =>
+          boundedOwnedLogicalNames(directory, invalidMaximum),
+        ).toThrow(LocalSqliteOwnedFilesystemError);
+      for (const name of ["first", "second"])
+        writeFileSync(join(root, name), name, { mode: 0o600 });
+      writeFileSync(join(root, "third"), "third", { mode: 0o600 });
+      expect(() => boundedOwnedLogicalNames(directory, 2)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      rmSync(join(root, "third"));
+      const firstIdentity = statOwnedFile(directory, "first").physicalIdentity;
+      linkOwnedFile(
+        directory,
+        "first",
+        localSqliteNamespaceClaimName("first"),
+        firstIdentity,
+      );
+      expect(boundedOwnedLogicalNames(directory, 2)).toEqual([
+        "first",
+        "second",
+      ]);
+
+      writeFileSync(join(root, "third"), "third", { mode: 0o600 });
+      expect(() => boundedOwnedLogicalNames(directory, 2)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      rmSync(join(root, "third"));
+
+      const secondIdentity = statOwnedFile(
+        directory,
+        "second",
+      ).physicalIdentity;
+      linkOwnedFile(
+        directory,
+        "second",
+        localSqliteNamespaceClaimName("second"),
+        secondIdentity,
+      );
+      expect(() => boundedOwnedLogicalNames(directory, 2)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      unlinkSync(join(root, "first"));
+      unlinkSync(join(root, "second"));
+      expect(() => boundedOwnedLogicalNames(directory, 2)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      writeFileSync(join(root, "first"), "first", { mode: 0o600 });
+      writeFileSync(join(root, "second"), "second", { mode: 0o600 });
+      rmSync(join(root, localSqliteNamespaceClaimName("second")));
+
+      rmSync(join(root, localSqliteNamespaceClaimName("first")));
+      writeFileSync(
+        join(root, localSqliteNamespaceClaimName("first")),
+        "other",
+        {
+          mode: 0o600,
+        },
+      );
+      expect(() => boundedOwnedLogicalNames(directory, 2)).toThrow(
+        LocalSqliteOwnedFilesystemError,
+      );
+      expect(retireOwnedFile(directory, "first")).toBe("mismatch");
     } finally {
       directory.close();
       rmSync(root, { recursive: true, force: true });

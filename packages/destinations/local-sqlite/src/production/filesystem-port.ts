@@ -5,16 +5,20 @@ import { basename, dirname, join } from "node:path";
 
 import type { LocalSqliteLifecycleGatePort } from "../lifecycle/fence.js";
 import {
-  boundedOwnedNames,
+  boundedOwnedLogicalNames,
   createPathAtomicExchangeForTesting,
+  inspectOwnedFileRetirement,
   linkOwnedFile,
+  localSqliteNamespaceClaimName,
   openOwnedDirectory,
   openOwnedFile,
-  readOwnedUtf8,
+  readOwnedRetirementUtf8,
   removeOwnedFile,
+  retireOwnedFile,
   replaceOwnedFile,
   statOwnedFile,
   writeOwnedExclusive,
+  writeOwnedLogicalExclusive,
   type OwnedAtomicExchange,
 } from "./owned-filesystem.js";
 
@@ -149,6 +153,7 @@ export const createLocalSqliteFilesystemGatePort = (
     atomicExchange?: OwnedAtomicExchange | undefined;
     lockOwnedFile?: ((descriptor: number) => "acquired" | "busy") | undefined;
     unlockOwnedFile?: ((descriptor: number) => void) | undefined;
+    afterNamespaceClaimForTesting?: (() => void) | undefined;
   }> = {},
 ): LocalSqliteLifecycleGatePort => {
   const allowPathFallbackForTesting =
@@ -178,19 +183,24 @@ export const createLocalSqliteFilesystemGatePort = (
       allowPathFallbackForTesting,
     );
     try {
-      const names = boundedOwnedNames(owned, maximumEntries);
+      const logicalNames = boundedOwnedLogicalNames(owned, maximumEntries).map(
+        exactLifecycleName,
+      );
       return Object.freeze({
         entries: Object.freeze(
-          names.map((name) => {
-            const evidence = statOwnedFile(
+          logicalNames.map((name) => {
+            const retirement = inspectOwnedFileRetirement(
               owned,
-              exactLifecycleName(name),
+              name,
               maximumArtifactBytes,
             );
+            /* v8 ignore next -- every logical name came from its public or exact claim entry. */
+            if (retirement === undefined)
+              throw new Error("destination.local-sqlite.filesystem.raced");
             return Object.freeze({
               name,
-              bytes: evidence.bytes,
-              physicalIdentity: evidence.physicalIdentity,
+              bytes: retirement.evidence.bytes,
+              physicalIdentity: retirement.evidence.physicalIdentity,
             });
           }),
         ),
@@ -212,9 +222,19 @@ export const createLocalSqliteFilesystemGatePort = (
       );
       let retained = false;
       try {
+        const exactFilename = exactLifecycleName(filename);
+        const retirement = inspectOwnedFileRetirement(
+          owned,
+          exactFilename,
+          maximumArtifactBytes,
+        );
+        if (retirement === undefined)
+          return Object.freeze({ state: "mismatch" });
         const file = openOwnedFile(
           owned,
-          exactLifecycleName(filename),
+          retirement.state === "claim-only"
+            ? localSqliteNamespaceClaimName(exactFilename)
+            : exactFilename,
           maximumArtifactBytes,
         );
         if (file.evidence.physicalIdentity !== physicalIdentity) {
@@ -291,22 +311,21 @@ export const createLocalSqliteFilesystemGatePort = (
       /* v8 ignore stop */
     },
     createFenceDurably: ({ filename, content }) => {
+      if (Buffer.byteLength(content, "utf8") > maximumArtifactBytes)
+        throw new Error("destination.local-sqlite.filesystem.invalid");
+      const owned = openOwnedDirectory(
+        lifecycleDirectory,
+        allowPathFallbackForTesting,
+      );
       try {
-        return writeExclusive(
-          lifecycleDirectory,
-          filename,
-          content,
-          allowPathFallbackForTesting,
+        return writeOwnedLogicalExclusive(
+          owned,
+          exactLifecycleName(filename),
+          Buffer.from(content, "utf8"),
+          maximumArtifactBytes,
         );
-      } catch (error) {
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          "code" in error &&
-          error.code === "EEXIST"
-        )
-          return Object.freeze({ state: "exists" });
-        throw error;
+      } finally {
+        owned.close();
       }
     },
     createLeaseDurably: ({ filename, content }) => {
@@ -368,26 +387,26 @@ export const createLocalSqliteFilesystemGatePort = (
         allowPathFallbackForTesting,
       );
       try {
-        const read = readOwnedUtf8(
+        const exactFilename = exactLifecycleName(filename);
+        if (
+          inspectOwnedFileRetirement(
+            owned,
+            exactFilename,
+            maximumArtifactBytes,
+          ) === undefined
+        )
+          return Object.freeze({ state: "absent" });
+        const read = readOwnedRetirementUtf8(
           owned,
-          exactLifecycleName(filename),
+          exactFilename,
           maximumArtifactBytes,
           false,
         );
         return Object.freeze({
           state: "present",
-          physicalIdentity: read.evidence.physicalIdentity,
+          physicalIdentity: read.retirement.evidence.physicalIdentity,
           content: read.content,
         });
-      } catch (error) {
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          "code" in error &&
-          error.code === "ENOENT"
-        )
-          return Object.freeze({ state: "absent" });
-        throw error;
       } finally {
         owned.close();
       }
@@ -398,8 +417,16 @@ export const createLocalSqliteFilesystemGatePort = (
         allowPathFallbackForTesting,
       );
       try {
+        const exactFilename = exactLifecycleName(filename);
         return Object.freeze({
-          state: removeOwnedFile(owned, exactLifecycleName(filename), expected),
+          state: exactFilename.startsWith("lease-")
+            ? removeOwnedFile(owned, exactFilename, expected)
+            : retireOwnedFile(
+                owned,
+                exactFilename,
+                expected,
+                options.afterNamespaceClaimForTesting,
+              ),
         });
       } finally {
         owned.close();

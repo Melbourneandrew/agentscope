@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -13,14 +14,19 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { LOCAL_SQLITE_LIFECYCLE_ARTIFACT_GRAMMAR_FINGERPRINT } from "../lifecycle/capability.js";
-import type { LocalSqliteLifecycleIntent } from "../lifecycle/configuration.js";
+import type {
+  LocalSqliteLifecycleIntent,
+  LocalSqliteOwnershipReceipt,
+} from "../lifecycle/configuration.js";
 import { planLocalSqliteNamespace } from "../lifecycle/namespace.js";
+import { encodeLocalSqliteFenceRecord } from "../lifecycle/fence.js";
 import {
   LOCAL_SQLITE_DESTINATION_FORMAT,
   LOCAL_SQLITE_MIGRATION_MANIFEST_ID,
   LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
 } from "../migrations.js";
 import { localSqliteDestinationDescriptor } from "./descriptor.js";
+import { createLocalSqliteFilesystemGatePort } from "./filesystem-port.js";
 import {
   createLocalSqliteProductionLifecyclePort,
   inspectLocalSqliteProductionPlan,
@@ -40,12 +46,53 @@ const opener: OwnedSqliteOpener = Object.freeze({
   },
 });
 
-const directFixture = (root: string) => {
+const recoveryClaimContext = (
+  operationId = "1".repeat(32),
+  selectedConnectionId = connectionId,
+) =>
+  ({
+    connectionId: selectedConnectionId,
+    operationId,
+    signal: new AbortController().signal,
+  }) as never;
+
+const ownershipReceiptFor = (
+  intent: LocalSqliteLifecycleIntent,
+  overrides: Partial<LocalSqliteOwnershipReceipt> = {},
+): LocalSqliteOwnershipReceipt =>
+  Object.freeze({
+    recordVersion: 1,
+    destinationType: intent.destinationType,
+    connectionId: intent.connectionId,
+    connectionDigest: intent.connectionDigest,
+    namespaceFingerprint: intent.namespaceFingerprint,
+    physicalEvidenceFingerprint: intent.physicalEvidenceFingerprint,
+    databaseFamilyPhysicalIdentity: "dev:1:ino:1",
+    destinationFormat: intent.destinationFormat,
+    migrationManifestId: intent.migrationManifestId,
+    protocolCompatibilityId: intent.protocolCompatibilityId,
+    lifecycleFingerprint: intent.lifecycleFingerprint,
+    recoveryHandlerId: intent.recoveryHandlerId,
+    capabilityVersion: 1,
+    artifactGrammarVersion: 1,
+    artifactGrammarFingerprint: intent.artifactGrammarFingerprint,
+    originatingConfigurationGeneration: intent.expectedConfigurationGeneration,
+    originatingConfigurationDigest: intent.expectedConfigurationDigest,
+    transactionId: intent.transactionId,
+    retentionPolicy: intent.retentionPolicy,
+    ...overrides,
+  });
+
+const directFixture = (
+  root: string,
+  selectedConnectionId = connectionId,
+  transactionId = "1".repeat(32),
+) => {
   const home = Object.freeze({ root, platform: process.platform });
   const inspected = inspectLocalSqliteProductionPlan(
     home,
     "local-ext4",
-    connectionId,
+    selectedConnectionId,
     policy,
     true,
   );
@@ -53,9 +100,9 @@ const directFixture = (root: string) => {
   const intent = Object.freeze({
     recordVersion: 1,
     operation: "configure",
-    transactionId: "1".repeat(32),
+    transactionId,
     destinationType: localSqliteDestinationDescriptor.destinationType,
-    connectionId,
+    connectionId: selectedConnectionId,
     connectionDigest: inspected.namespace.connectionDigest,
     owner: Object.freeze({
       processId: process.pid,
@@ -95,6 +142,10 @@ const directFixture = (root: string) => {
       lifecycleFingerprint: intent.lifecycleFingerprint,
       lifecycleGeneration: intent.capabilityVersion,
       purpose: "lifecycle" as const,
+      owner: Object.freeze({
+        pid: intent.owner.processId,
+        startIdentity: intent.owner.processStartIdentity,
+      }),
     }),
     deadLeaseNames: Object.freeze([]),
   });
@@ -105,6 +156,85 @@ const directFixture = (root: string) => {
 // lifecycle port boundary shares one filesystem fixture and cleanup discipline.
 // eslint-disable-next-line max-lines-per-function
 describe("production Local SQLite lifecycle adversarial boundaries", () => {
+  it("adopts an exact claim-only recovery fence without creating a second inode", async () => {
+    const root = mkdtempSync(
+      join(tmpdir(), "agentscope-lifecycle-claim-only-"),
+    );
+    chmodSync(root, 0o700);
+    try {
+      const initial = directFixture(root);
+      for (const directory of [
+        initial.inspected.namespace.lifecycleDirectory,
+        initial.inspected.namespace.backupsDirectory,
+      ])
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const fixture = directFixture(root);
+      await fixture.port.publishIntent(
+        fixture.intent,
+        `${JSON.stringify(fixture.intent)}\n`,
+        new AbortController().signal,
+      );
+      const fenceRecord = Object.freeze({
+        transactionId: fixture.intent.transactionId,
+        lifecycleFingerprint: fixture.intent.lifecycleFingerprint,
+        lifecycleGeneration: fixture.intent.capabilityVersion,
+        purpose: "lifecycle" as const,
+        owner: Object.freeze({
+          pid: 2_147_483_647,
+          startIdentity: "1".repeat(32),
+        }),
+      });
+      const gate = createLocalSqliteFilesystemGatePort(
+        fixture.inspected.namespace.lifecycleDirectory,
+        {
+          allowPathFallbackForTesting: true,
+          afterNamespaceClaimForTesting: () => {
+            unlinkSync(
+              join(
+                fixture.inspected.namespace.lifecycleDirectory,
+                "exclusive-fence-v1",
+              ),
+            );
+            throw new Error("synthetic claim-only interruption");
+          },
+        },
+      );
+      const created = gate.createFenceDurably({
+        filename: "exclusive-fence-v1",
+        content: encodeLocalSqliteFenceRecord(fenceRecord)!,
+      }) as { state: "created"; physicalIdentity: string };
+      expect(() =>
+        gate.removeArtifactIfIdentity({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: created.physicalIdentity,
+        }),
+      ).toThrow("synthetic claim-only interruption");
+      const recovery = createLocalSqliteProductionLifecyclePort({
+        home: fixture.home,
+        filesystemProfile: "local-ext4",
+        opener,
+        allowPathFallbackForTesting: true,
+      }).claimRecoveryIntent(recoveryClaimContext());
+      if (process.platform === "linux")
+        await expect(recovery).resolves.toMatchObject({
+          fence: { physicalIdentity: created.physicalIdentity },
+        });
+      else
+        await expect(recovery).rejects.toThrow(
+          "destination.local-sqlite.lifecycle-busy",
+        );
+      expect(
+        readdirSync(fixture.inspected.namespace.lifecycleDirectory).filter(
+          (name) =>
+            name === "exclusive-fence-v1" ||
+            name.startsWith("namespace-claim-v1-"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects invalid settings, abort, and case-fold namespace collision", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentscope-lifecycle-negative-"));
     chmodSync(root, 0o700);
@@ -268,6 +398,7 @@ describe("production Local SQLite lifecycle adversarial boundaries", () => {
       "missing-lifecycle",
       "missing-intent",
       "malformed-intent",
+      "intent-race",
       "inventory-race",
     ] as const) {
       const root = mkdtempSync(join(tmpdir(), "agentscope-lifecycle-scan-"));
@@ -293,7 +424,11 @@ describe("production Local SQLite lifecycle adversarial boundaries", () => {
           });
         if (state === "missing-lifecycle" || state === "inventory-race")
           mkdirSync(namespace.connectionNamespace, { mode: 0o700 });
-        if (state === "missing-intent" || state === "malformed-intent")
+        if (
+          state === "missing-intent" ||
+          state === "malformed-intent" ||
+          state === "intent-race"
+        )
           mkdirSync(namespace.lifecycleDirectory, {
             recursive: true,
             mode: 0o700,
@@ -304,24 +439,49 @@ describe("production Local SQLite lifecycle adversarial boundaries", () => {
             "malformed",
             { mode: 0o600 },
           );
+        if (state === "intent-race") {
+          const intent = directFixture(root).intent;
+          writeFileSync(
+            join(namespace.lifecycleDirectory, "intent-v1.json"),
+            `${JSON.stringify(intent)}\n`,
+            { mode: 0o600 },
+          );
+        }
         const port = createLocalSqliteProductionLifecyclePort({
           home,
           filesystemProfile: "local-ext4",
           opener,
           allowPathFallbackForTesting: true,
           lifecycleAfterFirstIntentScanForTesting:
-            state === "inventory-race"
+            state === "inventory-race" || state === "intent-race"
               ? () => {
-                  mkdirSync(
-                    join(namespace.destinationTypeDirectory, "f".repeat(64)),
-                    { mode: 0o700 },
-                  );
+                  if (state === "inventory-race")
+                    mkdirSync(
+                      join(namespace.destinationTypeDirectory, "f".repeat(64)),
+                      { mode: 0o700 },
+                    );
+                  else {
+                    const changed = {
+                      ...directFixture(root).intent,
+                      transactionId: "2".repeat(32),
+                    };
+                    writeFileSync(
+                      join(namespace.lifecycleDirectory, "intent-v1.json"),
+                      `${JSON.stringify(changed)}\n`,
+                      { mode: 0o600 },
+                    );
+                  }
                 }
               : undefined,
         });
-        await expect(
-          port.claimRecoveryIntent(new AbortController().signal),
-        ).rejects.toThrow(
+        const operation =
+          state === "invalid-connection-name" || state === "inventory-race"
+            ? port.completeFinalization(
+                "1".repeat(32),
+                new AbortController().signal,
+              )
+            : port.claimRecoveryIntent(recoveryClaimContext());
+        await expect(operation).rejects.toThrow(
           "destination.local-sqlite.lifecycle-reconciliation-required",
         );
       } finally {
@@ -530,6 +690,116 @@ describe("production Local SQLite lifecycle adversarial boundaries", () => {
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("claims each requested connection independently when two intents coexist", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-lifecycle-multi-"));
+    chmodSync(root, 0o700);
+    try {
+      const secondConnectionId = `destination-connection-v1-${"9".repeat(64)}`;
+      const initial = [
+        directFixture(root),
+        directFixture(root, secondConnectionId, "2".repeat(32)),
+      ];
+      for (const fixture of initial)
+        for (const directory of [
+          fixture.inspected.namespace.lifecycleDirectory,
+          fixture.inspected.namespace.backupsDirectory,
+        ])
+          mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const first = directFixture(root);
+      const second = directFixture(root, secondConnectionId, "2".repeat(32));
+      for (const fixture of [first, second])
+        await first.port.publishIntent(
+          fixture.intent,
+          `${JSON.stringify(fixture.intent)}\n`,
+          new AbortController().signal,
+        );
+
+      const firstClaim = await first.port.claimRecoveryIntent(
+        recoveryClaimContext(first.intent.transactionId, connectionId),
+      );
+      expect(firstClaim.canonicalBytes).toBe(
+        `${JSON.stringify(first.intent)}\n`,
+      );
+      await first.port.completeFinalization(
+        first.intent.transactionId,
+        new AbortController().signal,
+      );
+      const secondClaim = await first.port.claimRecoveryIntent(
+        recoveryClaimContext(second.intent.transactionId, secondConnectionId),
+      );
+      expect(secondClaim.canonicalBytes).toBe(
+        `${JSON.stringify(second.intent)}\n`,
+      );
+      const restarted = createLocalSqliteProductionLifecyclePort({
+        home: first.home,
+        filesystemProfile: "local-ext4",
+        opener,
+        allowPathFallbackForTesting: true,
+      });
+      await restarted.completeFinalization(
+        second.intent.transactionId,
+        new AbortController().signal,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes only an exact ownership receipt during delete completion", async () => {
+    for (const state of [
+      "absent",
+      "malformed",
+      "mismatched",
+      "exact",
+    ] as const) {
+      const root = mkdtempSync(join(tmpdir(), "agentscope-delete-completion-"));
+      chmodSync(root, 0o700);
+      try {
+        const fixture = directFixture(root);
+        const intent = Object.freeze({
+          ...fixture.intent,
+          operation: "delete" as const,
+        });
+        await fixture.port.publishIntent(
+          intent,
+          `${JSON.stringify(intent)}\n`,
+          new AbortController().signal,
+        );
+        const receiptPath = join(
+          fixture.inspected.namespace.lifecycleDirectory,
+          "ownership-receipt-v1.json",
+        );
+        if (state === "malformed")
+          writeFileSync(receiptPath, "malformed", { mode: 0o600 });
+        if (state === "mismatched" || state === "exact") {
+          const receipt = ownershipReceiptFor(
+            intent,
+            state === "mismatched"
+              ? { connectionId: `destination-connection-v1-${"9".repeat(64)}` }
+              : {},
+          );
+          writeFileSync(receiptPath, `${JSON.stringify(receipt)}\n`, {
+            mode: 0o600,
+          });
+        }
+        const completion = fixture.port.completeFinalization(
+          intent.transactionId,
+          new AbortController().signal,
+        );
+        if (state === "malformed" || state === "mismatched")
+          await expect(completion).rejects.toThrow(
+            "destination.local-sqlite.lifecycle-reconciliation-required",
+          );
+        else {
+          await expect(completion).resolves.toBeUndefined();
+          expect(existsSync(receiptPath)).toBe(false);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 });

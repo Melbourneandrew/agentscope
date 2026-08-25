@@ -16,6 +16,7 @@ import {
   recoverDeadLocalSqliteLease,
   releaseLocalSqliteExclusiveFence,
   releaseLocalSqliteSharedLease,
+  resumeLocalSqliteLifecycleFence,
   type LocalSqliteLifecycleGatePort,
 } from "./fence.js";
 
@@ -42,6 +43,7 @@ const fenceRequest = () => ({
   lifecycleFingerprint: fingerprint,
   lifecycleGeneration: 1,
   purpose: "lifecycle" as const,
+  owner: Object.freeze({ pid: 101, startIdentity: parentStart }),
 });
 const recoveryPlanRequest = () => ({
   transactionId,
@@ -1188,6 +1190,133 @@ describe("Local SQLite exclusive gate failure containment", () => {
   });
 });
 
+describe("Local SQLite lifecycle-fence recovery ownership", () => {
+  it("blocks a live owner and resumes only a dead owner's exact locked fence", async () => {
+    const live = createMemoryPort();
+    const record = parseLocalSqliteFenceRecord(fenceRequest())!;
+    live.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino99",
+    });
+    await expect(
+      resumeLocalSqliteLifecycleFence(live.port, {
+        physicalIdentity: "dev1:ino99",
+        record,
+      }),
+    ).resolves.toEqual({ ok: false, state: "busy" });
+
+    const dead = createMemoryPort();
+    dead.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino100",
+    });
+    dead.ownerStates.set(parentStart, "dead");
+    const resumed = await resumeLocalSqliteLifecycleFence(dead.port, {
+      physicalIdentity: "dev1:ino100",
+      record,
+    });
+    expect(resumed).toMatchObject({ ok: true });
+    if (!resumed.ok) throw new Error("expected resumed lifecycle fence");
+    await expect(
+      releaseLocalSqliteExclusiveFence(dead.port, resumed.value),
+    ).resolves.toEqual({ ok: true, state: "released" });
+
+    const substituted = createMemoryPort();
+    const substitutedRecord = parseLocalSqliteFenceRecord({
+      ...fenceRequest(),
+      owner: { pid: 404, startIdentity: secondParentStart },
+    })!;
+    substituted.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(substitutedRecord)!,
+      physicalIdentity: "dev1:ino101",
+    });
+    substituted.ownerStates.set(parentStart, "dead");
+    substituted.ownerStates.set(secondParentStart, "dead");
+    await expect(
+      resumeLocalSqliteLifecycleFence(substituted.port, {
+        physicalIdentity: "dev1:ino101",
+        record,
+      }),
+    ).resolves.toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("fails closed for invalid, busy, and unreleaseable recovery-lock states", async () => {
+    const record = parseLocalSqliteFenceRecord(fenceRequest())!;
+    const invalid = createMemoryPort();
+    await expect(
+      resumeLocalSqliteLifecycleFence(invalid.port, {
+        physicalIdentity: "",
+        record,
+      }),
+    ).resolves.toEqual({ ok: false, state: "unavailable" });
+
+    for (const [state, expected] of [
+      ["busy", "busy"],
+      ["mismatch", "reconciliation-required"],
+    ] as const) {
+      const memory = createMemoryPort();
+      memory.artifacts.set("exclusive-fence-v1", {
+        content: encodeLocalSqliteFenceRecord(record)!,
+        physicalIdentity: "dev1:ino200",
+      });
+      await expect(
+        resumeLocalSqliteLifecycleFence(
+          {
+            ...memory.port,
+            acquireRecoveryFenceLock: () => ({ state }),
+          },
+          { physicalIdentity: "dev1:ino200", record },
+        ),
+      ).resolves.toEqual({ ok: false, state: expected });
+    }
+
+    const cannotRelease = createMemoryPort();
+    cannotRelease.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino201",
+    });
+    await expect(
+      resumeLocalSqliteLifecycleFence(
+        {
+          ...cannotRelease.port,
+          releaseRecoveryFenceLock: () => ({ state: "not-held" }),
+        },
+        { physicalIdentity: "dev1:ino201", record },
+      ),
+    ).resolves.toEqual({ ok: false, state: "reconciliation-required" });
+
+    const unavailableOwner = createMemoryPort();
+    unavailableOwner.artifacts.set("exclusive-fence-v1", {
+      content: encodeLocalSqliteFenceRecord(record)!,
+      physicalIdentity: "dev1:ino202",
+    });
+    await expect(
+      resumeLocalSqliteLifecycleFence(
+        { ...unavailableOwner.port, classifyOwner: () => undefined as never },
+        { physicalIdentity: "dev1:ino202", record },
+      ),
+    ).resolves.toEqual({ ok: false, state: "reconciliation-required" });
+  });
+
+  it("rejects an ordinary lifecycle fence when its recovery lock is unavailable", async () => {
+    for (const [state, expected] of [
+      ["busy", "busy"],
+      ["mismatch", "reconciliation-required"],
+    ] as const) {
+      const memory = createMemoryPort();
+      await expect(
+        acquireLocalSqliteExclusiveFence(
+          {
+            ...memory.port,
+            acquireRecoveryFenceLock: () => ({ state }),
+          },
+          fenceRequest(),
+        ),
+      ).resolves.toEqual({ ok: false, state: expected });
+    }
+  });
+});
+
 describe("Local SQLite exclusive owner-proof containment", () => {
   it("rejects malformed owner proofs and missing lease evidence", async () => {
     for (const ownerResult of [undefined, { state: "future" }] as const) {
@@ -2088,6 +2217,7 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
     { ...fenceRequest(), lifecycleFingerprint: "bad" },
     { ...fenceRequest(), lifecycleGeneration: 0 },
     { ...fenceRequest(), purpose: "future" },
+    { ...fenceRequest(), owner: null },
   ])("rejects invalid fence DTO %#", (value) => {
     expect(parseLocalSqliteFenceRecord(value)).toBeUndefined();
   });
@@ -2121,6 +2251,7 @@ describe("Local SQLite lifecycle encoded-record containment", () => {
       `${fenceBytes.slice(0, 255)}\n`,
       "{".padEnd(256, " "),
       JSON.stringify([2, ...fenceValues.slice(1)]).padEnd(256, " "),
+      JSON.stringify([...fenceValues.slice(0, 5), []]).padEnd(256, " "),
       JSON.stringify([...fenceValues, "extra"]).padEnd(256, " "),
       ` ${compactFence}`.padEnd(256, " "),
     ];

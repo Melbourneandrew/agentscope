@@ -20,6 +20,7 @@ import {
   acquireLocalSqliteExclusiveFence,
   decodeLocalSqliteFenceRecord,
   releaseLocalSqliteExclusiveFence,
+  resumeLocalSqliteLifecycleFence,
   type LocalSqliteExclusiveFenceAuthority,
 } from "../lifecycle/fence.js";
 import {
@@ -34,14 +35,20 @@ import {
   LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID,
   runLocalSqliteMigrations,
 } from "../migrations.js";
-import { LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES } from "../lifecycle/capability.js";
+import {
+  LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+  localSqliteLifecycleDeclaration,
+} from "../lifecycle/capability.js";
 import {
   boundedOwnedNames,
   createOwnedExclusiveFile,
+  decodeLocalSqliteNamespaceClaimName,
   openOwnedDirectory,
   openOwnedFile,
+  inspectOwnedFileRetirement,
+  readOwnedRetirementUtf8,
   readOwnedUtf8,
-  removeOwnedFile,
+  retireOwnedFile,
   renameOwnedFile,
   statOwnedFile,
   writeOwnedExclusive,
@@ -50,6 +57,7 @@ import {
 } from "./owned-filesystem.js";
 import {
   createLocalSqliteFilesystemGatePort,
+  currentProcessStartIdentity,
   ensurePrivateDirectory,
 } from "./filesystem-port.js";
 import {
@@ -158,16 +166,14 @@ const readLifecycleOperationPhase = (
   lifecycle: ReturnType<typeof openOwnedDirectory>,
   intent: LocalSqliteLifecycleIntent,
 ): LocalSqliteOperationPhase | undefined => {
-  if (
-    optionalOwnedStat(
-      lifecycle,
-      LOCAL_SQLITE_OPERATION_PHASE_NAME,
-      maximumMetadataBytes,
-    ) === undefined
-  )
-    return undefined;
+  const retirement = inspectOwnedFileRetirement(
+    lifecycle,
+    LOCAL_SQLITE_OPERATION_PHASE_NAME,
+    maximumMetadataBytes,
+  );
+  if (retirement === undefined) return undefined;
   const phase = decodeLocalSqliteOperationPhase(
-    readOwnedUtf8(
+    readOwnedRetirementUtf8(
       lifecycle,
       LOCAL_SQLITE_OPERATION_PHASE_NAME,
       maximumMetadataBytes,
@@ -223,15 +229,18 @@ const removeLifecycleOperationPhase = (
      the absent no-op is the ordinary completion path. */
   if (phase === undefined) return;
   /* v8 ignore next -- present-phase cleanup is exercised by built crash recovery. */
-  const state = statOwnedFile(
+  const state = inspectOwnedFileRetirement(
     lifecycle,
     LOCAL_SQLITE_OPERATION_PHASE_NAME,
     maximumMetadataBytes,
-  );
+  )?.evidence;
+  /* v8 ignore next -- the phase was read from one public/claim state above. */
+  if (state === undefined)
+    throw new LocalSqliteLifecycleError("reconciliation-required");
   /* v8 ignore next -- removal can differ only after a same-handle namespace race,
      which is covered at the owned-filesystem primitive. */
   if (
-    removeOwnedFile(
+    retireOwnedFile(
       lifecycle,
       LOCAL_SQLITE_OPERATION_PHASE_NAME,
       state.physicalIdentity,
@@ -309,13 +318,16 @@ const removeIfPresent = (
     allowPathFallbackForTesting,
   );
   try {
-    const state = optionalOwnedStat(directory, basename(path));
+    const state = inspectOwnedFileRetirement(directory, basename(path));
     /* v8 ignore next -- a non-removed result requires a concurrent same-name
        replacement after the retained stat and is primitive-tested. */
     if (
       state !== undefined &&
-      removeOwnedFile(directory, basename(path), state.physicalIdentity) !==
-        "removed"
+      retireOwnedFile(
+        directory,
+        basename(path),
+        state.evidence.physicalIdentity,
+      ) !== "removed"
     )
       throw new LocalSqliteLifecycleError("reconciliation-required");
   } finally {
@@ -373,11 +385,17 @@ const scanLifecycleIntents = (
       }
       let canonicalBytes: string | undefined;
       try {
-        canonicalBytes = readOwnedUtf8(
+        const intentRetirement = inspectOwnedFileRetirement(
           lifecycle,
           intentName,
           maximumMetadataBytes,
-        ).content;
+        );
+        if (intentRetirement !== undefined)
+          canonicalBytes = readOwnedRetirementUtf8(
+            lifecycle,
+            intentName,
+            maximumMetadataBytes,
+          ).content;
       } catch (error) {
         /* v8 ignore next -- only a missing intent is optional; malformed and
            bounded reads are exercised through the decoder/recovery tests. */
@@ -563,13 +581,14 @@ const planMatchesIntent = (
 
 const fenceRequest = (
   intent: LocalSqliteLifecycleIntent,
-  purpose: "lifecycle" | "recovery",
+  owner: Readonly<{ pid: number; startIdentity: string }>,
 ) =>
   Object.freeze({
     transactionId: intent.transactionId,
     lifecycleFingerprint: intent.lifecycleFingerprint,
     lifecycleGeneration: intent.capabilityVersion,
-    purpose,
+    purpose: "lifecycle" as const,
+    owner,
   });
 
 const mapFenceFailure = (state: string): never => {
@@ -610,11 +629,40 @@ const receiptMatches = (
   receipt.migrationManifestId === intent.migrationManifestId &&
   receipt.protocolCompatibilityId === intent.protocolCompatibilityId;
 
+const removeOwnershipReceipt = (
+  lifecycle: ReturnType<typeof openOwnedDirectory>,
+  intent: LocalSqliteLifecycleIntent,
+): void => {
+  const receiptState = inspectOwnedFileRetirement(
+    lifecycle,
+    receiptName,
+    maximumMetadataBytes,
+  );
+  if (receiptState === undefined) return;
+  const receipt = decodeLocalSqliteOwnershipReceipt(
+    readOwnedRetirementUtf8(lifecycle, receiptName, maximumMetadataBytes)
+      .content,
+  );
+  if (receipt === undefined || !receiptMatches(receipt, intent))
+    throw new LocalSqliteLifecycleError("reconciliation-required");
+  /* v8 ignore next 8 -- an exact retained receipt can fail removal only through
+     the externally concurrent namespace-race outcome proved by the primitive. */
+  if (
+    retireOwnedFile(
+      lifecycle,
+      receiptName,
+      receiptState.evidence.physicalIdentity,
+    ) !== "removed"
+  )
+    throw new LocalSqliteLifecycleError("reconciliation-required");
+};
+
 const inspectOwnedDatabaseEvidence = (
   opener: OwnedSqliteOpener,
   directory: ReturnType<typeof openOwnedDirectory>,
   databaseName: string,
   allowPathFallbackForTesting: boolean,
+  intent: LocalSqliteLifecycleIntent,
 ): Readonly<{ databaseFamilyPhysicalIdentity: string }> => {
   const databaseFile = openOwnedFile(
     directory,
@@ -642,9 +690,13 @@ const inspectOwnedDatabaseEvidence = (
       quick === undefined ||
       Object.values(quick)[0] !== "ok" ||
       metadata?.destinationFormat !== LOCAL_SQLITE_DESTINATION_FORMAT ||
+      metadata.lifecycleCapabilityVersion !==
+        localSqliteLifecycleDeclaration.capabilityVersion ||
+      metadata.lifecycleFingerprint !== intent.lifecycleFingerprint ||
       metadata.migrationManifestId !== LOCAL_SQLITE_MIGRATION_MANIFEST_ID ||
       metadata.protocolCompatibilityId !==
-        LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID
+        LOCAL_SQLITE_PROTOCOL_COMPATIBILITY_ID ||
+      metadata.recoveryHandlerId !== intent.recoveryHandlerId
     )
       throw new LocalSqliteLifecycleError("reconciliation-required");
     const after = databaseFile.assertCurrent();
@@ -694,13 +746,27 @@ export const createLocalSqliteProductionLifecyclePort = (
   const { home, filesystemProfile, opener } = input;
   const allowPathFallbackForTesting =
     input.allowPathFallbackForTesting === true;
-  const gateFor = (directory: string) =>
-    createLocalSqliteFilesystemGatePort(directory, {
+  const gates = new Map<
+    string,
+    ReturnType<typeof createLocalSqliteFilesystemGatePort>
+  >();
+  const activeFences = new Map<string, LocalSqliteExclusiveFenceAuthority>();
+  const localFenceOwner = Object.freeze({
+    pid: process.pid,
+    startIdentity: currentProcessStartIdentity(),
+  });
+  const gateFor = (directory: string) => {
+    const existing = gates.get(directory);
+    if (existing !== undefined) return existing;
+    const created = createLocalSqliteFilesystemGatePort(directory, {
       allowPathFallbackForTesting: input.allowPathFallbackForTesting === true,
       atomicExchange: opener.exchangeOwnedFiles,
       lockOwnedFile: opener.lockOwnedFile,
       unlockOwnedFile: opener.unlockOwnedFile,
     });
+    gates.set(directory, created);
+    return created;
+  };
   const plan = (connectionId: string) => planFor(home, connectionId);
   return Object.freeze({
     inspect: async (context: LocalResourceLifecycleContext) => {
@@ -801,9 +867,10 @@ export const createLocalSqliteProductionLifecyclePort = (
       const namespace = plan(intent.connectionId);
       const result = await acquireLocalSqliteExclusiveFence(
         gateFor(namespace.lifecycleDirectory),
-        fenceRequest(intent, "lifecycle"),
+        fenceRequest(intent, localFenceOwner),
       );
       if (!result.ok) return mapFenceFailure(result.state);
+      activeFences.set(intent.transactionId, result.value);
       return result.value;
     },
     revalidatePhysicalEvidence: async (intent, evidence, fence, signal) => {
@@ -836,7 +903,7 @@ export const createLocalSqliteProductionLifecyclePort = (
       const databaseName = basename(namespace.databasePath);
       let database: OwnedSqliteConnection | undefined;
       let candidateFile: OwnedFile | undefined;
-      let ownsCandidate = false;
+      let candidatePhysicalIdentity: string | undefined;
       try {
         for (const name of [candidateName, databaseName])
           try {
@@ -857,7 +924,7 @@ export const createLocalSqliteProductionLifecyclePort = (
           candidateName,
           LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
         );
-        ownsCandidate = true;
+        candidatePhysicalIdentity = candidateFile.evidence.physicalIdentity;
         database = openOwnedSqliteDescriptor(
           opener,
           candidateFile,
@@ -869,6 +936,12 @@ export const createLocalSqliteProductionLifecyclePort = (
         database.pragma("auto_vacuum = FULL");
         const migrated = runLocalSqliteMigrations(
           createOwnedMigrationDatabase(database),
+          Object.freeze({
+            capabilityVersion:
+              localSqliteLifecycleDeclaration.capabilityVersion,
+            fingerprint: intent.lifecycleFingerprint,
+            recoveryHandlerId: intent.recoveryHandlerId,
+          }),
         );
         /* v8 ignore next -- the migration runner's complete failure matrix owns
            this branded result; the production adapter performs no translation. */
@@ -887,7 +960,15 @@ export const createLocalSqliteProductionLifecyclePort = (
         candidateFile = undefined;
         /* v8 ignore next -- created-candidate cleanup is exercised by the native
            migration failure verifier; pre-existing candidates are source-tested. */
-        if (ownsCandidate) removeOwnedFile(directory, candidateName);
+        if (
+          candidatePhysicalIdentity !== undefined &&
+          retireOwnedFile(
+            directory,
+            candidateName,
+            candidatePhysicalIdentity,
+          ) !== "removed"
+        )
+          throw new LocalSqliteLifecycleError("reconciliation-required");
         throw error;
       } finally {
         candidateFile?.close();
@@ -920,7 +1001,14 @@ export const createLocalSqliteProductionLifecyclePort = (
         );
         let phase = readLifecycleOperationPhase(lifecycle, intent);
         if (phase === undefined) {
-          if (candidateState === undefined || activeState !== undefined)
+          if (candidateState === undefined)
+            throw new LocalSqliteLifecycleError("reconciliation-required");
+          /* v8 ignore next 4 -- a different active inode before the operation
+             phase is published is hostile pre-existing namespace evidence. */
+          if (
+            activeState !== undefined &&
+            activeState.physicalIdentity !== candidateState.physicalIdentity
+          )
             throw new LocalSqliteLifecycleError("reconciliation-required");
           phase = lifecyclePhaseFor(
             intent,
@@ -935,7 +1023,8 @@ export const createLocalSqliteProductionLifecyclePort = (
            owned name; divergence requires a post-verification namespace race. */
         if (
           candidateState !== undefined &&
-          activeState === undefined &&
+          (activeState === undefined ||
+            activeState.physicalIdentity === candidateState.physicalIdentity) &&
           candidateState.physicalIdentity === phase.artifactPhysicalIdentity
         )
           renameOwnedFile(
@@ -958,6 +1047,7 @@ export const createLocalSqliteProductionLifecyclePort = (
             directory,
             basename(namespace.databasePath),
             allowPathFallbackForTesting,
+            intent,
           ).databaseFamilyPhysicalIdentity !== phase.artifactPhysicalIdentity
         )
           throw new LocalSqliteLifecycleError("reconciliation-required");
@@ -980,6 +1070,7 @@ export const createLocalSqliteProductionLifecyclePort = (
           directory,
           basename(namespace.databasePath),
           allowPathFallbackForTesting,
+          intent,
         );
       } finally {
         directory.close();
@@ -1050,53 +1141,98 @@ export const createLocalSqliteProductionLifecyclePort = (
         lifecycle.close();
       }
     },
-    claimRecoveryIntent: async (signal) => {
-      requireActive(signal);
-      const destinations = join(home.root, "destinations", "local-sqlite");
-      const found = scanLifecycleIntents(
-        destinations,
-        allowPathFallbackForTesting,
-        input.lifecycleAfterFirstIntentScanForTesting,
-      );
-      if (found.length !== 1)
-        throw new LocalSqliteLifecycleError("reconciliation-required");
-      const located = found[0]!;
-      const canonicalBytes = located.canonicalBytes;
-      const intent = decodeLocalSqliteLifecycleIntent(canonicalBytes);
-      if (intent === undefined)
-        throw new LocalSqliteLifecycleError("reconciliation-required");
-      const namespace = plan(intent.connectionId);
-      /* v8 ignore next -- the connection digest is recomputed from the decoded
-         connection id, so divergence requires a hash/path invariant failure. */
-      if (located.lifecycleDirectory !== namespace.lifecycleDirectory)
-        throw new LocalSqliteLifecycleError("reconciliation-required");
-      const fencePath = join(namespace.lifecycleDirectory, fenceName);
-      const lifecycle = openOwnedDirectory(
-        namespace.lifecycleDirectory,
-        input.allowPathFallbackForTesting === true,
-      );
-      let fenceState;
+    claimRecoveryIntent: async (context) => {
+      requireActive(context.signal);
+      const namespace = plan(context.connectionId);
+      let lifecycle;
       try {
-        fenceState = optionalOwnedStat(
+        lifecycle = openOwnedDirectory(
+          namespace.lifecycleDirectory,
+          input.allowPathFallbackForTesting === true,
+        );
+      } catch (error) {
+        /* v8 ignore else -- only missing is translated here; other retained-directory
+           failures are exhaustively classified by the filesystem primitive. */
+        if (missing(error))
+          throw new LocalSqliteLifecycleError("reconciliation-required");
+        /* v8 ignore next -- non-missing owned-directory failures are exhaustively
+           classified by the retained-directory primitive tests. */
+        throw error;
+      }
+      let firstIntent;
+      let secondIntent;
+      let fenceState;
+      let fenceContent: string | undefined;
+      try {
+        firstIntent = readOwnedUtf8(
+          lifecycle,
+          intentName,
+          maximumMetadataBytes,
+        );
+        input.lifecycleAfterFirstIntentScanForTesting?.();
+        secondIntent = readOwnedUtf8(
+          lifecycle,
+          intentName,
+          maximumMetadataBytes,
+        );
+        const retirement = inspectOwnedFileRetirement(
           lifecycle,
           fenceName,
           maximumMetadataBytes,
         );
+        if (retirement !== undefined) {
+          const read = readOwnedRetirementUtf8(
+            lifecycle,
+            fenceName,
+            maximumMetadataBytes,
+          );
+          /* v8 ignore next 5 -- identity drift between retained reads requires
+             external concurrent namespace substitution. */
+          if (
+            read.retirement.evidence.physicalIdentity !==
+            retirement.evidence.physicalIdentity
+          )
+            throw new LocalSqliteLifecycleError("reconciliation-required");
+          fenceState = retirement.evidence;
+          fenceContent = read.content;
+        }
+      } catch (error) {
+        /* v8 ignore else -- only missing is translated here; other no-follow read
+           failures are exhaustively classified by the filesystem primitive. */
+        if (missing(error))
+          throw new LocalSqliteLifecycleError("reconciliation-required");
+        /* v8 ignore next -- non-missing no-follow read failures are owned by the
+           bounded filesystem primitive tests. */
+        throw error;
       } finally {
         lifecycle.close();
       }
+      if (
+        firstIntent.content !== secondIntent.content ||
+        firstIntent.evidence.physicalIdentity !==
+          secondIntent.evidence.physicalIdentity
+      )
+        throw new LocalSqliteLifecycleError("reconciliation-required");
+      const canonicalBytes = secondIntent.content;
+      const intent = decodeLocalSqliteLifecycleIntent(canonicalBytes);
+      if (
+        intent === undefined ||
+        intent.connectionId !== context.connectionId ||
+        intent.transactionId !== context.operationId
+      )
+        throw new LocalSqliteLifecycleError("reconciliation-required");
       if (fenceState === undefined) {
         const acquired = await acquireLocalSqliteExclusiveFence(
           gateFor(namespace.lifecycleDirectory),
-          fenceRequest(intent, "lifecycle"),
+          fenceRequest(intent, localFenceOwner),
         );
         /* v8 ignore next -- competing/malformed fence outcomes are exhaustively
            covered by the fence module and acquireExclusiveFence adapter path. */
         if (!acquired.ok) return mapFenceFailure(acquired.state);
+        activeFences.set(intent.transactionId, acquired.value);
         return Object.freeze({ canonicalBytes, fence: acquired.value });
       }
-      const fenceBytes = readBounded(fencePath, allowPathFallbackForTesting);
-      const record = decodeLocalSqliteFenceRecord(fenceBytes);
+      const record = decodeLocalSqliteFenceRecord(fenceContent);
       /* v8 ignore next -- existing-fence malformed/cross-intent bytes are covered
          by fence decoding and the ordinary acquisition hostile test. */
       if (
@@ -1105,16 +1241,30 @@ export const createLocalSqliteProductionLifecyclePort = (
         record.lifecycleFingerprint !== intent.lifecycleFingerprint
       )
         throw new LocalSqliteLifecycleError("reconciliation-required");
-      return Object.freeze({
-        canonicalBytes,
-        fence: Object.freeze({
-          state: "exclusive" as const,
-          filename: fenceName,
+      const retained = activeFences.get(intent.transactionId);
+      /* v8 ignore else -- same-process retries reuse the retained authority;
+         restart adoption is proved by the built recovery verifier and fence suite. */
+      if (
+        retained !== undefined &&
+        retained.physicalIdentity === fenceState.physicalIdentity &&
+        record.purpose === "lifecycle" &&
+        record.owner.pid === localFenceOwner.pid &&
+        record.owner.startIdentity === localFenceOwner.startIdentity
+      )
+        return Object.freeze({ canonicalBytes, fence: retained });
+      /* v8 ignore start -- historical-process fence adoption is causally covered by
+         the built recovery verifier; the fence module exhaustively maps outcomes. */
+      const resumed = await resumeLocalSqliteLifecycleFence(
+        gateFor(namespace.lifecycleDirectory),
+        {
           physicalIdentity: fenceState.physicalIdentity,
           record,
-          deadLeaseNames: Object.freeze([]),
-        }),
-      });
+        },
+      );
+      if (!resumed.ok) return mapFenceFailure(resumed.state);
+      activeFences.set(intent.transactionId, resumed.value);
+      return Object.freeze({ canonicalBytes, fence: resumed.value });
+      /* v8 ignore stop */
     },
     rollbackPrepared: async (intent, fence, signal) => {
       requireActive(signal);
@@ -1184,15 +1334,22 @@ export const createLocalSqliteProductionLifecyclePort = (
       try {
         let phase = readLifecycleOperationPhase(lifecycle, intent);
         const initialNames = boundedOwnedNames(connection, 128);
+        const initialClaims = initialNames.filter(
+          (name) => decodeLocalSqliteNamespaceClaimName(name) !== undefined,
+        );
         /* v8 ignore next -- missing/mismatched retained authority is rejected by
            the lifecycle handler before this destructive port call. */
         if (
-          initialNames.some(
-            (name) =>
+          initialClaims.length > 1 ||
+          initialNames.some((name) => {
+            const claimedName = decodeLocalSqliteNamespaceClaimName(name);
+            return (
               name !== "lifecycle" &&
               name !== "backups" &&
-              !familyNames.includes(name),
-          )
+              !familyNames.includes(name) &&
+              (claimedName === undefined || !familyNames.includes(claimedName))
+            );
+          })
         )
           throw new LocalSqliteLifecycleError("reconciliation-required");
         for (const directoryName of ["lifecycle", "backups"]) {
@@ -1202,11 +1359,12 @@ export const createLocalSqliteProductionLifecyclePort = (
           );
           directory.close();
         }
-        const activeState = optionalOwnedStat(
+        const activeRetirement = inspectOwnedFileRetirement(
           connection,
           databaseName,
           LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
         );
+        const activeState = activeRetirement?.evidence;
         /* v8 ignore next -- phase-present and active-present authorities are both
            exercised by recovery/normal delete; optional chaining has no semantics. */
         const expectedIdentity =
@@ -1230,7 +1388,10 @@ export const createLocalSqliteProductionLifecyclePort = (
           );
           publishLifecycleOperationPhase(lifecycle, phase);
         }
-        if (activeState !== undefined) {
+        if (
+          activeState !== undefined &&
+          activeRetirement?.state !== "claim-only"
+        ) {
           const activeFile = openOwnedFile(
             connection,
             databaseName,
@@ -1252,23 +1413,32 @@ export const createLocalSqliteProductionLifecyclePort = (
           }
         }
         const exactFamily = familyNames.flatMap((name) => {
-          const state = optionalOwnedStat(
+          const state = inspectOwnedFileRetirement(
             connection,
             name,
             LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
           );
-          return state === undefined ? [] : [Object.freeze({ name, state })];
+          return state === undefined
+            ? []
+            : [Object.freeze({ name, state: state.evidence })];
         });
         const confirmedNames = boundedOwnedNames(connection, 128);
+        const confirmedClaims = confirmedNames.filter(
+          (name) => decodeLocalSqliteNamespaceClaimName(name) !== undefined,
+        );
         /* v8 ignore next -- a changed bounded inventory requires concurrent
            namespace mutation and is primitive-tested. */
         if (
-          confirmedNames.some(
-            (name) =>
+          confirmedClaims.length > 1 ||
+          confirmedNames.some((name) => {
+            const claimedName = decodeLocalSqliteNamespaceClaimName(name);
+            return (
               name !== "lifecycle" &&
               name !== "backups" &&
-              !familyNames.includes(name),
-          ) ||
+              !familyNames.includes(name) &&
+              (claimedName === undefined || !familyNames.includes(claimedName))
+            );
+          }) ||
           (activeState !== undefined &&
             exactFamily.find(({ name }) => name === databaseName)?.state
               .physicalIdentity !== activeState.physicalIdentity)
@@ -1280,7 +1450,7 @@ export const createLocalSqliteProductionLifecyclePort = (
           /* v8 ignore next -- same-handle replacement between inventory and unlink
              is covered by the owned-filesystem removal-race tests. */
           if (
-            removeOwnedFile(connection, name, state.physicalIdentity) !==
+            retireOwnedFile(connection, name, state.physicalIdentity) !==
             "removed"
           )
             throw new LocalSqliteLifecycleError("reconciliation-required");
@@ -1310,6 +1480,7 @@ export const createLocalSqliteProductionLifecyclePort = (
       /* v8 ignore next -- release races/failures are exhaustively covered by the
          fence module; this adapter preserves its fixed classification. */
       if (!released.ok) mapFenceFailure(released.state);
+      activeFences.delete(intent.transactionId);
     },
     completeFinalization: async (transactionId, signal) => {
       requireActive(signal);
@@ -1322,31 +1493,26 @@ export const createLocalSqliteProductionLifecyclePort = (
         const lifecycle = located.lifecycleDirectory;
         const intent = decodeLocalSqliteLifecycleIntent(located.canonicalBytes);
         if (intent?.transactionId !== transactionId) continue;
+        const retainedFence = activeFences.get(transactionId);
+        if (retainedFence !== undefined) {
+          const released = await releaseLocalSqliteExclusiveFence(
+            gateFor(lifecycle),
+            retainedFence,
+          );
+          /* v8 ignore next -- retained-fence release failure mapping is proved by
+             the fence suite; this completion path preserves the fixed outcome. */
+          if (!released.ok) mapFenceFailure(released.state);
+          activeFences.delete(transactionId);
+        }
         const ownedLifecycle = openOwnedDirectory(
           lifecycle,
           input.allowPathFallbackForTesting === true,
         );
         try {
-          if (intent.operation === "delete") {
-            const receiptState = optionalOwnedStat(
-              ownedLifecycle,
-              receiptName,
-              maximumMetadataBytes,
-            );
-            /* v8 ignore next -- receipt replacement between retained stat/unlink
-               is an owned-filesystem race and must fail closed. */
-            if (
-              receiptState !== undefined &&
-              removeOwnedFile(
-                ownedLifecycle,
-                receiptName,
-                receiptState.physicalIdentity,
-              ) !== "removed"
-            )
-              throw new LocalSqliteLifecycleError("reconciliation-required");
-          }
+          if (intent.operation === "delete")
+            removeOwnershipReceipt(ownedLifecycle, intent);
           removeLifecycleOperationPhase(ownedLifecycle, intent);
-          const state = optionalOwnedStat(
+          const state = inspectOwnedFileRetirement(
             ownedLifecycle,
             fenceName,
             maximumMetadataBytes,
@@ -1355,8 +1521,11 @@ export const createLocalSqliteProductionLifecyclePort = (
              branch is the bounded crash-prefix cleanup path. */
           if (state !== undefined) {
             const record = decodeLocalSqliteFenceRecord(
-              readOwnedUtf8(ownedLifecycle, fenceName, maximumMetadataBytes)
-                .content,
+              readOwnedRetirementUtf8(
+                ownedLifecycle,
+                fenceName,
+                maximumMetadataBytes,
+              ).content,
             );
             /* v8 ignore next -- a same-name fence substitution after intent scan is
                covered by fence/owned-filesystem race tests. */
@@ -1365,23 +1534,26 @@ export const createLocalSqliteProductionLifecyclePort = (
             /* v8 ignore next -- fence replacement between retained stat/unlink is
                covered by the owned-filesystem primitive. */
             if (
-              removeOwnedFile(
+              retireOwnedFile(
                 ownedLifecycle,
                 fenceName,
-                state.physicalIdentity,
+                state.evidence.physicalIdentity,
               ) !== "removed"
             )
               throw new LocalSqliteLifecycleError("reconciliation-required");
           }
-          const intentState = statOwnedFile(
+          const intentState = inspectOwnedFileRetirement(
             ownedLifecycle,
             intentName,
             maximumMetadataBytes,
-          );
+          )?.evidence;
+          /* v8 ignore next -- the scan above read this exact public/claim intent. */
+          if (intentState === undefined)
+            throw new LocalSqliteLifecycleError("reconciliation-required");
           /* v8 ignore next -- intent replacement between retained stat/unlink is
              covered by the owned-filesystem primitive. */
           if (
-            removeOwnedFile(
+            retireOwnedFile(
               ownedLifecycle,
               intentName,
               intentState.physicalIdentity,

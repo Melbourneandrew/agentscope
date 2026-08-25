@@ -12,6 +12,7 @@ import {
   createTraceSummary,
   reporterDeadlineRemainingMilliseconds,
   type JsonValue,
+  type ReporterDeadline,
   type RetrievalContext,
   type Retriever,
   type TraceGetRequest,
@@ -69,10 +70,12 @@ export type LocalSqliteRetrieverDatabase = Readonly<{
   search: (
     plan: LocalSqliteSearchPlan,
     signal: AbortSignal,
+    deadline?: ReporterDeadline,
   ) => Promise<LocalSqliteSearchEvidence>;
   get: (
     plan: LocalSqliteGetPlan,
     signal: AbortSignal,
+    deadline?: ReporterDeadline,
   ) => Promise<LocalSqliteGetEvidence>;
 }>;
 
@@ -793,7 +796,7 @@ export const createLocalSqliteRetriever = (
       if (!hasTime(context)) return createRetrieverFailure("deadline-exceeded");
       let raw: unknown;
       try {
-        raw = await database.search(plan, context.signal);
+        raw = await database.search(plan, context.signal, context.deadline);
       } catch {
         return createRetrieverFailure("unavailable");
       }
@@ -902,7 +905,7 @@ export const createLocalSqliteRetriever = (
       if (!hasTime(context)) return createRetrieverFailure("deadline-exceeded");
       let raw: unknown;
       try {
-        raw = await database.get(plan, context.signal);
+        raw = await database.get(plan, context.signal, context.deadline);
       } catch {
         return createRetrieverFailure("unavailable");
       }

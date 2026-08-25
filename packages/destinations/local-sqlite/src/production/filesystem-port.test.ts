@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
@@ -233,6 +234,90 @@ describe("production Local SQLite lifecycle filesystem port", () => {
     }
   });
 
+  it("resumes an interrupted fixed-fence removal through its logical public name", () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-gate-claim-"));
+    const lifecycle = join(root, "lifecycle");
+    chmodSync(root, 0o700);
+    try {
+      ensurePrivateDirectory(lifecycle, { allowPathFallbackForTesting: true });
+      let interrupt = true;
+      const interrupted = createLocalSqliteFilesystemGatePort(lifecycle, {
+        allowPathFallbackForTesting: true,
+        afterNamespaceClaimForTesting: () => {
+          if (!interrupt) return;
+          interrupt = false;
+          throw new Error("synthetic interruption");
+        },
+      }) as ConcreteGate;
+      const fence = interrupted.createFenceDurably({
+        filename: "exclusive-fence-v1",
+        content: "fence-v1",
+      });
+      if (fence.state !== "created") throw new Error("expected fence");
+      expect(() =>
+        interrupted.removeArtifactIfIdentity({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+        }),
+      ).toThrow("synthetic interruption");
+      expect(interrupted.listLifecycle()).toEqual({
+        entries: [
+          {
+            name: "exclusive-fence-v1",
+            bytes: 8,
+            physicalIdentity: fence.physicalIdentity,
+          },
+        ],
+      });
+      expect(
+        interrupted.readArtifact({ filename: "exclusive-fence-v1" }),
+      ).toEqual({
+        state: "present",
+        content: "fence-v1",
+        physicalIdentity: fence.physicalIdentity,
+      });
+      expect(
+        interrupted.createFenceDurably({
+          filename: "exclusive-fence-v1",
+          content: "different",
+        }),
+      ).toEqual({ state: "exists" });
+      expect(readdirSync(lifecycle).sort()).toHaveLength(2);
+      unlinkSync(join(lifecycle, "exclusive-fence-v1"));
+      const resumed = gateFor(lifecycle);
+      const claimOnlyNames = readdirSync(lifecycle);
+      expect(
+        resumed.createFenceDurably({
+          filename: "exclusive-fence-v1",
+          content: "different",
+        }),
+      ).toEqual({ state: "exists" });
+      expect(readdirSync(lifecycle)).toEqual(claimOnlyNames);
+      const lock = resumed.acquireRecoveryFenceLock({
+        filename: "exclusive-fence-v1",
+        physicalIdentity: fence.physicalIdentity,
+      });
+      expect(lock.state).toBe("acquired");
+      if (lock.state !== "acquired") throw new Error("expected recovery lock");
+      expect(
+        resumed.releaseRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+          token: lock.token,
+        }),
+      ).toEqual({ state: "released" });
+      expect(
+        resumed.removeArtifactIfIdentity({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: fence.physicalIdentity,
+        }),
+      ).toEqual({ state: "removed" });
+      expect(readdirSync(lifecycle)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies the exact current owner and a nonexistent owner conservatively", () => {
     const root = mkdtempSync(join(tmpdir(), "agentscope-gate-owner-"));
     const lifecycle = join(root, "lifecycle");
@@ -248,8 +333,30 @@ describe("production Local SQLite lifecycle filesystem port", () => {
         }),
       ).toThrow("destination.local-sqlite.native-unavailable");
       const gate = gateFor(lifecycle);
+      expect(
+        gate.acquireRecoveryFenceLock({
+          filename: "exclusive-fence-v1",
+          physicalIdentity: "dev:0:ino:0",
+        }),
+      ).toEqual({ state: "mismatch" });
       const current = currentProcessStartIdentity();
       expect(current).toMatch(/^[a-f0-9]{32}$/u);
+      const platformDescriptor = Object.getOwnPropertyDescriptor(
+        process,
+        "platform",
+      );
+      if (platformDescriptor === undefined)
+        throw new Error("process.platform descriptor is unavailable");
+      try {
+        Object.defineProperty(process, "platform", {
+          ...platformDescriptor,
+          value: "win32",
+        });
+        expect(processStartIdentity(process.pid)).toBeUndefined();
+        expect(currentProcessStartIdentity()).toMatch(/^[a-f0-9]{32}$/u);
+      } finally {
+        Object.defineProperty(process, "platform", platformDescriptor);
+      }
       if (process.platform === "linux") {
         expect(processStartIdentity(process.pid)).toBe(current);
         expect(

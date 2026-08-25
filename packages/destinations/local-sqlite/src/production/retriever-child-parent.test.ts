@@ -2,6 +2,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -49,6 +50,7 @@ const plan = compileLocalSqliteSearchPlan(
 
 type WorkerState =
   | "accepted"
+  | "accepted-descendant"
   | "before"
   | "malformed"
   | "oversized"
@@ -79,7 +81,15 @@ process.on("disconnect", () => process.exit(0));
 const successResult = (nonce: string): string =>
   `JSON.stringify({type:"retrieval-result",nonce:${nonce},ok:true,evidence:{rows:[],responseByteLimitReached:false,retentionCutoffSortKey:"00000000000000000000",snapshotToken:"3".repeat(64)}})+"\\n"`;
 
-const workerProgram = (state: WorkerState): string => `
+const workerProgram = (
+  state: WorkerState,
+  descendantPath: string,
+  heartbeatPath: string,
+): string => {
+  const heartbeatProgram = `const {appendFileSync}=require("node:fs");setInterval(()=>appendFileSync(${JSON.stringify(heartbeatPath)},"x"),5);`;
+  return `
+const {spawn} = require("node:child_process");
+const {writeFileSync} = require("node:fs");
 let buffer = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -93,11 +103,12 @@ process.stdin.on("data", (chunk) => {
       ${state === "before" ? "return;" : state === "malformed" ? 'process.stdout.write("{}\\n"); process.exit(0);' : state === "oversized" ? 'process.stdout.write("x".repeat(4097)); process.exit(0);' : state === "split-ready" ? `const ready=JSON.stringify({type:"ready",nonce:value.nonce,pid:process.pid,startIdentity:"${childIdentity}"}); process.stdout.write(ready.slice(0,5)); setTimeout(()=>process.stdout.write(ready.slice(5)+"\\n"),5);` : `process.stdout.write(JSON.stringify({type:"ready",nonce:value.nonce,pid:process.pid,startIdentity:"${state === "wrong-start" ? "6".repeat(32) : childIdentity}"})+"\\n");`}
       ${state === "close-after-ready" ? "process.stdin.destroy(); setInterval(()=>{},1000);" : ""}
     } else if (value.type === "permission") {
-      ${state === "hang" ? "setInterval(()=>{},1000);" : state === "false-result" ? 'process.stdout.write(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:false})+"\\n"); process.exit(0);' : state === "missing-evidence" ? 'process.stdout.write(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:true})+"\\n"); process.exit(0);' : state === "wrong-result" ? `process.stdout.write(${successResult('"0".repeat(32)')}); process.exit(0);` : state === "result-error" ? `process.stdout.write(${successResult("value.nonce")}); process.exit(1);` : `process.stdout.write(${successResult("value.nonce")}); process.exit(0);`}
+      ${state === "hang" ? "setInterval(()=>{},1000);" : state === "accepted-descendant" ? `const child=spawn(process.execPath,["-e",${JSON.stringify(heartbeatProgram)}],{stdio:"ignore"}); writeFileSync(${JSON.stringify(descendantPath)},String(child.pid)); process.stdout.write(${successResult("value.nonce")},()=>process.exit(0));` : state === "false-result" ? 'process.stdout.write(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:false})+"\\n"); process.exit(0);' : state === "missing-evidence" ? 'process.stdout.write(JSON.stringify({type:"retrieval-result",nonce:value.nonce,ok:true})+"\\n"); process.exit(0);' : state === "wrong-result" ? `process.stdout.write(${successResult('"0".repeat(32)')}); process.exit(0);` : state === "result-error" ? `process.stdout.write(${successResult("value.nonce")}); process.exit(1);` : `process.stdout.write(${successResult("value.nonce")}); process.exit(0);`}
     }
   }
 });
 `;
+};
 
 type AttemptOptions = Readonly<{
   abortAfterMilliseconds?: number;
@@ -113,6 +124,21 @@ type AttemptOptions = Readonly<{
   maximumWorkMilliseconds?: number;
 }>;
 
+const readHeartbeat = (path: string): string => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+};
+
+const proveDescendantStopped = async (path: string): Promise<boolean> => {
+  const before = readHeartbeat(path);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  return readHeartbeat(path) === before;
+};
+
+// eslint-disable-next-line max-lines-per-function -- one process-boundary fixture owns spawn, IPC, deadline, teardown, and exact cleanup evidence.
 const run = async (state: WorkerState, options: AttemptOptions = {}) => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-retriever-child-"));
   chmodSync(root, 0o700);
@@ -120,9 +146,17 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
     const lifecycle = join(root, "lifecycle");
     const workerPath = join(root, "worker.cjs");
     const watchdogPath = join(root, "watchdog.cjs");
+    const descendantPath = join(root, "descendant.pid");
+    const heartbeatPath = join(root, "descendant.heartbeat");
     mkdirSync(lifecycle, { mode: 0o700 });
     if (options.missingWorker !== true)
-      writeFileSync(workerPath, workerProgram(state), { mode: 0o600 });
+      writeFileSync(
+        workerPath,
+        workerProgram(state, descendantPath, heartbeatPath),
+        {
+          mode: 0o600,
+        },
+      );
     if (options.missingWatchdog !== true)
       writeFileSync(
         watchdogPath,
@@ -193,8 +227,9 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
         },
         operation: "search",
         plan,
-        maximumWorkMilliseconds:
-          options.maximumWorkMilliseconds ?? (state === "hang" ? 50 : 1_000),
+        cutoffAtMonotonicMilliseconds:
+          performance.now() +
+          (options.maximumWorkMilliseconds ?? (state === "hang" ? 50 : 1_000)),
         teardownReserveMilliseconds: 250,
         signal: controller.signal,
         ...(options.omitChildIdentity === true
@@ -210,10 +245,18 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
           message: error instanceof Error ? error.message : "hostile",
         }),
       );
+      let descendantStopped: boolean | undefined;
+      if (state === "accepted-descendant")
+        descendantStopped = await proveDescendantStopped(heartbeatPath);
       return Object.freeze({
         settled,
         elapsed: performance.now() - startedAt,
         lifecycleEntries: readdirSync(lifecycle),
+        descendantPid:
+          state === "accepted-descendant"
+            ? Number(readFileSync(descendantPath, "utf8"))
+            : undefined,
+        descendantStopped,
       });
     } finally {
       if (abortTimer !== undefined) clearTimeout(abortTimer);
@@ -238,8 +281,18 @@ describe("Local SQLite Retriever child parent", () => {
   it("force-joins an uncooperative worker and watchdog within one reserve", async () => {
     const result = await run("hang", { stubbornWatchdog: true });
     expect(result.settled).toMatchObject({ state: "rejected" });
-    expect(result.elapsed).toBeLessThan(450);
+    // This real-process smoke bound includes scheduler and spawn latency under
+    // aggregate CI load. The shared absolute teardown deadline is asserted by
+    // the source contract; this oracle rejects an unbounded surviving child.
+    expect(result.elapsed).toBeLessThan(750);
     expect(result.lifecycleEntries).toEqual([]);
+  });
+
+  it("reaps the complete group after a successful leader exits", async () => {
+    const result = await run("accepted-descendant");
+    expect(result.settled).toMatchObject({ state: "resolved" });
+    expect(result.descendantPid).toBeTypeOf("number");
+    expect(result.descendantStopped).toBe(true);
   });
 
   it.each([

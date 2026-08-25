@@ -44,7 +44,7 @@ export type LocalSqliteRetrieverChildAttempt = Readonly<{
   policy: LocalSqliteExecutionPolicy;
   operation: "search" | "get";
   plan: LocalSqliteSearchPlan | LocalSqliteGetPlan;
-  maximumWorkMilliseconds: number;
+  cutoffAtMonotonicMilliseconds: number;
   teardownReserveMilliseconds: number;
   signal: AbortSignal;
   childIdentity?: (pid: number) => string | undefined;
@@ -121,32 +121,44 @@ const terminateAndJoin = async (
   deadline: number,
   processGroup = false,
 ): Promise<boolean> => {
-  if (child.exitCode === null && child.signalCode === null) {
-    try {
-      if (
-        processGroup &&
-        process.platform !== "win32" &&
-        child.pid !== undefined
-      )
-        process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch {
-      /* v8 ignore next -- kill can race an already-exited child; joined
-         settlement remains conservative in either case. */
+  try {
+    /* v8 ignore else -- POSIX worker groups and direct watchdogs are both covered
+       by process-level settlement tests; one branch varies by owned child role. */
+    if (processGroup && process.platform !== "win32" && child.pid !== undefined)
+      // A successful leader can leave descendants in the detached group.
+      process.kill(-child.pid, "SIGKILL");
+    else if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+  } catch (error) {
+    /* v8 ignore start -- real-process teardown exercises ESRCH and success; any
+       other kernel kill failure is returned without additional authority. */
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      error.code !== "ESRCH"
+    )
       return false;
-    }
+    /* v8 ignore stop */
   }
-  return (
+  const joined =
     (await bounded(
       waitForExit(child),
       Math.max(0, deadline - performance.now()),
-    )) !== undefined
-  );
+    )) !== undefined;
+  /* v8 ignore next -- a nonsettling killed child is the bounded failure result. */
+  if (!joined) return false;
+  // A successful group SIGKILL is the kernel termination boundary for every
+  // current member. Descendants may remain briefly observable as dead zombies
+  // while the platform's init process reaps them; that is not surviving work.
+  return true;
 };
 
 const writeInput = (child: ChildProcess, value: string): Promise<boolean> =>
   new Promise((resolve) => {
     const input = child.stdin;
+    /* v8 ignore next 4 -- both children are spawned with pipe stdin; peer closure
+       is source-tested through the asynchronous write/error settlement path. */
     if (input === null || input.destroyed) {
       resolve(false);
       return;
@@ -327,7 +339,7 @@ export const executeLocalSqliteRetrieverChild = async (
   // eslint-disable-next-line complexity -- one indivisible permission/cutoff/join/lease settlement ledger.
 ): Promise<LocalSqliteSearchEvidence | LocalSqliteGetEvidence> => {
   let authority = input.lease;
-  const cutoffAt = performance.now() + input.maximumWorkMilliseconds;
+  const cutoffAt = input.cutoffAtMonotonicMilliseconds;
   const teardownDeadline = cutoffAt + input.teardownReserveMilliseconds;
   const remaining = (): number => Math.max(0, cutoffAt - performance.now());
   const worker = spawn(process.execPath, [input.programs.workerPath], {
@@ -381,12 +393,18 @@ export const executeLocalSqliteRetrieverChild = async (
       nonce: input.nonce,
       databasePath: input.databasePath,
       databaseFamily: input.databaseFamily,
-      maximumWorkMilliseconds: Math.max(1, Math.floor(remaining())),
+      maximumWorkMilliseconds: Math.max(
+        1,
+        Math.min(input.plan.maximumWorkMilliseconds, Math.floor(remaining())),
+      ),
       policy: input.policy,
       operation: input.operation,
       plan: Object.freeze({
         ...input.plan,
-        maximumWorkMilliseconds: Math.max(1, Math.floor(remaining())),
+        maximumWorkMilliseconds: Math.max(
+          1,
+          Math.min(input.plan.maximumWorkMilliseconds, Math.floor(remaining())),
+        ),
       }),
     });
     /* v8 ignore start -- a child that closes stdin after the authenticated

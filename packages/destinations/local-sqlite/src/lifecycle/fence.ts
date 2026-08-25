@@ -33,6 +33,7 @@ type LocalSqliteLifecycleFenceRecord = Readonly<{
   lifecycleFingerprint: string;
   lifecycleGeneration: number;
   purpose: "lifecycle";
+  owner: OwnerIdentity;
 }>;
 
 export type LocalSqliteLeaseCleanupState =
@@ -379,7 +380,7 @@ export const parseLocalSqliteFenceRecord = (
   ];
   const record =
     exactRecord(value, [...commonKeys, "recoveryOwner", "deadLeaseVector"]) ??
-    exactRecord(value, commonKeys);
+    exactRecord(value, [...commonKeys, "owner"]);
   if (
     record === undefined ||
     !validHex128(record.transactionId) ||
@@ -394,8 +395,12 @@ export const parseLocalSqliteFenceRecord = (
     lifecycleFingerprint: record.lifecycleFingerprint,
     lifecycleGeneration: record.lifecycleGeneration,
   });
-  if (record.purpose === "lifecycle")
-    return Object.freeze({ ...common, purpose: "lifecycle" as const });
+  if (record.purpose === "lifecycle") {
+    const owner = parseOwner(record.owner);
+    return owner === undefined
+      ? undefined
+      : Object.freeze({ ...common, purpose: "lifecycle" as const, owner });
+  }
   const recoveryOwner = parseOwner(record.recoveryOwner);
   const deadLeaseVector = parseDeadLeaseRecoveryVector(
     record.deadLeaseVector,
@@ -454,6 +459,7 @@ const encodeParsedFenceRecord = (record: LocalSqliteFenceRecord): string => {
       record.lifecycleFingerprint.slice("sha256-".length),
       record.lifecycleGeneration,
       record.purpose,
+      [record.owner.pid, record.owner.startIdentity],
     ]).padEnd(LEASE_RECORD_BYTES, " ");
   return JSON.stringify([
     2,
@@ -523,6 +529,20 @@ export const decodeLocalSqliteLeaseRecord = (
   }
 };
 
+const decodeCompactLifecycleFence = (
+  compact: readonly unknown[],
+): Record<string, unknown> | undefined => {
+  const owner = exactArray(compact[5], 2);
+  if (owner?.length !== 2) return undefined;
+  return {
+    transactionId: compact[1],
+    lifecycleFingerprint: `sha256-${String(compact[2])}`,
+    lifecycleGeneration: compact[3],
+    purpose: compact[4],
+    owner: { pid: owner[0], startIdentity: owner[1] },
+  };
+};
+
 export const decodeLocalSqliteFenceRecord = (
   content: unknown,
 ): LocalSqliteFenceRecord | undefined => {
@@ -539,13 +559,8 @@ export const decodeLocalSqliteFenceRecord = (
        public decoder matrix; only canonical arrays reach the compact parser. */
     if (compact === undefined) return undefined;
     let candidate: unknown;
-    if (compact.length === 5 && compact[0] === 1)
-      candidate = {
-        transactionId: compact[1],
-        lifecycleFingerprint: `sha256-${String(compact[2])}`,
-        lifecycleGeneration: compact[3],
-        purpose: compact[4],
-      };
+    if (compact.length === 6 && compact[0] === 1)
+      candidate = decodeCompactLifecycleFence(compact);
     else if (compact.length === 7 && compact[0] === 2) {
       const owner = exactArray(compact[5], 2);
       const vector = exactArray(compact[6], MAXIMUM_LEASES);
@@ -1278,6 +1293,77 @@ const releaseFenceAfterFailure = async (
     ? failure(state)
     : failure("reconciliation-required");
 
+const lifecycleLockTokens = new WeakMap<
+  object,
+  Readonly<Record<string, never>>
+>();
+
+const lifecycleAuthority = (
+  record: LocalSqliteLifecycleFenceRecord,
+  physicalIdentity: string,
+  token: Readonly<Record<string, never>>,
+  deadLeaseNames: readonly string[] = Object.freeze([]),
+): LocalSqliteExclusiveFenceAuthority => {
+  const authority = Object.freeze({
+    state: "exclusive" as const,
+    filename: FENCE_NAME,
+    physicalIdentity,
+    record,
+    deadLeaseNames,
+  });
+  lifecycleLockTokens.set(authority, token);
+  return authority;
+};
+
+export const resumeLocalSqliteLifecycleFence = async (
+  portValue: unknown,
+  inputValue: unknown,
+): Promise<LocalSqliteExclusiveFenceResult> => {
+  const port = parsePort(portValue);
+  const input = exactRecord(inputValue, ["physicalIdentity", "record"]);
+  const record = parseLocalSqliteFenceRecord(input?.record);
+  if (
+    port === undefined ||
+    record?.purpose !== "lifecycle" ||
+    typeof input?.physicalIdentity !== "string" ||
+    !PHYSICAL_IDENTITY.test(input.physicalIdentity)
+  )
+    return failure("unavailable");
+  const current = await readArtifact(port, FENCE_NAME);
+  if (
+    current?.state !== "present" ||
+    current.physicalIdentity !== input.physicalIdentity ||
+    current.content !== encodeLocalSqliteFenceRecord(record)
+  )
+    return failure("reconciliation-required");
+  const lock = await acquireRecoveryLock(port, input.physicalIdentity);
+  if (lock?.state === "busy") return failure("busy");
+  if (lock?.state !== "acquired") return failure("reconciliation-required");
+  const owner = exactRecord(
+    await invoke(port.classifyOwner, { owner: record.owner }),
+    ["state"],
+  );
+  const locked = await readArtifact(port, FENCE_NAME);
+  if (
+    owner?.state !== "dead" ||
+    locked?.state !== "present" ||
+    locked.physicalIdentity !== input.physicalIdentity ||
+    locked.content !== current.content
+  ) {
+    if (!(await releaseRecoveryLock(port, input.physicalIdentity, lock.token)))
+      return failure("reconciliation-required");
+    return failure(
+      owner?.state === "live" || owner?.state === "indeterminate"
+        ? "busy"
+        : "reconciliation-required",
+    );
+  }
+  return Object.freeze({
+    ok: true,
+    value: lifecycleAuthority(record, input.physicalIdentity, lock.token),
+  });
+};
+
 const classifyLease = async (
   port: ParsedPort,
   record: LocalSqliteLeaseRecord,
@@ -1686,15 +1772,17 @@ export const acquireLocalSqliteExclusiveFence = async (
       created.physicalIdentity,
       "recovery-required",
     );
-  const baseAuthority = Object.freeze({
-    deadLeaseNames: inspected.deadLeaseNames,
-    filename: FENCE_NAME,
-    physicalIdentity: created.physicalIdentity,
-    record,
-  });
+  const lock = await acquireRecoveryLock(port, created.physicalIdentity);
+  if (lock?.state !== "acquired")
+    return failure(lock?.state === "busy" ? "busy" : "reconciliation-required");
   return Object.freeze({
     ok: true,
-    value: Object.freeze({ ...baseAuthority, state: "exclusive" as const }),
+    value: lifecycleAuthority(
+      record,
+      created.physicalIdentity,
+      lock.token,
+      inspected.deadLeaseNames,
+    ),
   });
 };
 
@@ -1874,13 +1962,13 @@ const parseExclusiveAuthority = (
     authority.recoveryVector,
     record,
   );
-  const token = parseLockToken(authority.recoveryLockToken);
+  const recoveryToken = parseLockToken(authority.recoveryLockToken);
   /* v8 ignore next 9 -- recovery authority tuple mismatch permutations share
      one fixed invalid-authority result and cannot reach filesystem I/O. */
   if (
     record.purpose !== "recovery" ||
     recoveryVector === undefined ||
-    token === undefined ||
+    recoveryToken === undefined ||
     JSON.stringify(recoveryVector) !== JSON.stringify(record.deadLeaseVector)
   )
     return undefined;
@@ -1890,7 +1978,7 @@ const parseExclusiveAuthority = (
     physicalIdentity: authority.physicalIdentity,
     record,
     deadLeaseNames: Object.freeze(deadLeaseNames as string[]),
-    recoveryLockToken: token,
+    recoveryLockToken: recoveryToken,
     recoveryVector,
   });
 };
@@ -1934,11 +2022,10 @@ export const releaseLocalSqliteExclusiveFence = async (
   const lockToken =
     authority.state === "exclusive-recovery"
       ? authority.recoveryLockToken
-      : undefined;
+      : lifecycleLockTokens.get(authorityValue as object);
   if (
-    authority.state === "exclusive-recovery" &&
-    (lockToken === undefined ||
-      !(await assertRecoveryLock(port, authority.physicalIdentity, lockToken)))
+    lockToken === undefined ||
+    !(await assertRecoveryLock(port, authority.physicalIdentity, lockToken))
   )
     return failure("reconciliation-required");
   if (
@@ -1951,16 +2038,14 @@ export const releaseLocalSqliteExclusiveFence = async (
     FENCE_NAME,
     authority.physicalIdentity,
   );
-  if (lockToken !== undefined) {
-    const released = await releaseRecoveryLock(
-      port,
-      authority.physicalIdentity,
-      lockToken,
-    );
-    /* v8 ignore next -- failed native unlock is covered by the Linux built
-       descriptor-lock gate and always remains reconciliation-required. */
-    if (!released) return failure("reconciliation-required");
-  }
+  const released = await releaseRecoveryLock(
+    port,
+    authority.physicalIdentity,
+    lockToken,
+  );
+  /* v8 ignore next -- failed native unlock is covered by the Linux built
+     descriptor-lock gate and always remains reconciliation-required. */
+  if (!released) return failure("reconciliation-required");
   return removed
     ? Object.freeze({ ok: true, state: "released" })
     : failure("reconciliation-required");

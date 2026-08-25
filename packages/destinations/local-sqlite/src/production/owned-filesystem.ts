@@ -47,6 +47,11 @@ export type OwnedSqliteFamilyEvidence = Readonly<{
   evidence: OwnedFileEvidence;
 }>;
 
+export type OwnedFileRetirementEvidence = Readonly<{
+  evidence: OwnedFileEvidence;
+  state: "public-only" | "public-and-claim" | "claim-only";
+}>;
+
 export type OwnedAtomicExchange = (
   directoryDescriptor: number,
   request: Readonly<{
@@ -111,13 +116,53 @@ const identityParts = (
   return Object.freeze({ device: match[1], inode: match[2] });
 };
 
-const privateClaimName = (): string =>
-  `.agentscope-private-${randomBytes(16).toString("hex")}`;
+const exchangeTemporaryNameForTesting = (): string =>
+  `.agentscope-exchange-testing-${randomBytes(16).toString("hex")}`;
+
+const namespaceClaimPrefix = "namespace-claim-v1-";
+const maximumClaimedNameBytes = 100;
+
+export const localSqliteNamespaceClaimName = (publicName: string): string => {
+  validName(publicName);
+  const publicBytes = Buffer.from(publicName, "utf8");
+  if (
+    publicBytes.byteLength < 1 ||
+    publicBytes.byteLength > maximumClaimedNameBytes ||
+    publicName.startsWith(namespaceClaimPrefix)
+  )
+    invalid();
+  const claimName = `${namespaceClaimPrefix}${publicBytes.toString("hex")}`;
+  validName(claimName);
+  return claimName;
+};
+
+export const decodeLocalSqliteNamespaceClaimName = (
+  claimName: string,
+): string | undefined => {
+  try {
+    validName(claimName);
+    if (!claimName.startsWith(namespaceClaimPrefix)) return undefined;
+    const encoded = claimName.slice(namespaceClaimPrefix.length);
+    if (
+      encoded.length < 2 ||
+      encoded.length > maximumClaimedNameBytes * 2 ||
+      encoded.length % 2 !== 0 ||
+      !/^[a-f0-9]+$/u.test(encoded)
+    )
+      return undefined;
+    const decoded = Buffer.from(encoded, "hex").toString("utf8");
+    return localSqliteNamespaceClaimName(decoded) === claimName
+      ? decoded
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 export const createPathAtomicExchangeForTesting =
   (directoryPath: string): OwnedAtomicExchange =>
   (_descriptor, { sourceName, destinationName }) => {
-    const temporaryName = privateClaimName();
+    const temporaryName = exchangeTemporaryNameForTesting();
     renameSync(
       join(directoryPath, sourceName),
       join(directoryPath, temporaryName),
@@ -132,84 +177,6 @@ export const createPathAtomicExchangeForTesting =
     );
     return "exchanged";
   };
-
-const removePrivateClaim = (
-  directory: OwnedDirectory,
-  name: string,
-  expectedPhysicalIdentity: string,
-): void => {
-  const evidence = statOwnedFile(directory, name);
-  /* v8 ignore next -- stat and unlink are adjacent under retained directory
-     authority; a kernel-level inode change here is treated as a race. */
-  if (evidence.physicalIdentity !== expectedPhysicalIdentity) raced();
-  unlinkSync(relativePath(directory, name));
-  fsyncSync(directory.descriptor);
-};
-
-const restoreQuarantinedName = (
-  directory: OwnedDirectory,
-  quarantineName: string,
-  publicName: string,
-  physicalIdentity: string,
-): void => {
-  try {
-    linkSync(
-      relativePath(directory, quarantineName),
-      relativePath(directory, publicName),
-    );
-    removePrivateClaim(directory, quarantineName, physicalIdentity);
-  } catch {
-    // Preserve both names for bounded reconciliation rather than overwrite one.
-  }
-};
-
-const quarantineOwnedName = (
-  directory: OwnedDirectory,
-  name: string,
-  expectedPhysicalIdentity: string,
-  afterQuarantineForTesting?: () => void,
-): Readonly<{ claimName: string; evidence: OwnedFileEvidence }> | undefined => {
-  const claimName = privateClaimName();
-  renameSync(relativePath(directory, name), relativePath(directory, claimName));
-  fsyncSync(directory.descriptor);
-  afterQuarantineForTesting?.();
-  const evidence = statOwnedFile(directory, claimName);
-  /* v8 ignore start -- a successful hard link necessarily shares the retained
-     source inode; contrary kernel evidence is fail-closed. */
-  if (evidence.physicalIdentity !== expectedPhysicalIdentity) {
-    restoreQuarantinedName(
-      directory,
-      claimName,
-      name,
-      evidence.physicalIdentity,
-    );
-    return undefined;
-  }
-  directory.assertCurrent();
-  return Object.freeze({ claimName, evidence });
-};
-
-const linkOwnedClaim = (
-  directory: OwnedDirectory,
-  sourceName: string,
-  expectedPhysicalIdentity: string,
-  afterClaimForTesting?: () => void,
-): string => {
-  const claimName = privateClaimName();
-  linkSync(
-    relativePath(directory, sourceName),
-    relativePath(directory, claimName),
-  );
-  const evidence = statOwnedFile(directory, claimName);
-  if (evidence.physicalIdentity !== expectedPhysicalIdentity) {
-    removePrivateClaim(directory, claimName, evidence.physicalIdentity);
-    raced();
-  }
-  /* v8 ignore stop */
-  fsyncSync(directory.descriptor);
-  afterClaimForTesting?.();
-  return claimName;
-};
 
 export const openOwnedDirectory = (
   path: string,
@@ -389,7 +356,9 @@ export const createOwnedExclusiveFile = (
     constants.O_CREAT | constants.O_EXCL | constants.O_RDWR | noFollowFlag,
     0o600,
   );
+  let createdPhysicalIdentity: string | undefined;
   try {
+    createdPhysicalIdentity = identity(fstatSync(descriptor, { bigint: true }));
     let offset = 0;
     while (offset < initialBytes.byteLength)
       offset += writeSync(
@@ -444,13 +413,20 @@ export const createOwnedExclusiveFile = (
     });
   } catch (error) {
     closeSync(descriptor);
-    try {
-      unlinkSync(path);
-    } catch {
-      /* v8 ignore next -- cleanup failure preserves the original fixed
-         acquisition error and leaves bounded reconciliation evidence. */
-      // Preserve the original fixed acquisition failure.
-    }
+    /* v8 ignore else -- after O_EXCL open, only a kernel fstat failure can leave
+       the created inode without a physical identity for cleanup. */
+    if (createdPhysicalIdentity !== undefined)
+      try {
+        // The create never returned authority for this inode. Remove only that
+        // exact inode through the retained directory descriptor even when the
+        // public directory name was replaced. removeOwnedFile may then report
+        // the triggering directory race, but the descriptor-rooted unlink has
+        // already prevented an unactionable failed-creation artifact.
+        removeOwnedFile(directory, name, createdPhysicalIdentity);
+      } catch {
+        /* v8 ignore next -- cleanup failure retains bounded reconciliation
+           evidence and preserves the original acquisition failure. */
+      }
     throw error;
   }
 };
@@ -632,6 +608,38 @@ export const boundedOwnedNames = (
   return Object.freeze(names.sort());
 };
 
+export const boundedOwnedLogicalNames = (
+  directory: OwnedDirectory,
+  maximumEntries: number,
+): readonly string[] => {
+  if (
+    !Number.isSafeInteger(maximumEntries) ||
+    maximumEntries < 1 ||
+    maximumEntries >= Number.MAX_SAFE_INTEGER
+  )
+    return invalid();
+  // One durable removal claim may coexist with its public name without
+  // consuming a second logical inventory slot.
+  const physicalNames = boundedOwnedNames(directory, maximumEntries + 1);
+  const claims = physicalNames.filter(
+    (name) => decodeLocalSqliteNamespaceClaimName(name) !== undefined,
+  );
+  if (claims.length > 1) return invalid();
+  const logicalNames = [
+    ...new Set(
+      physicalNames.map(
+        (name) => decodeLocalSqliteNamespaceClaimName(name) ?? name,
+      ),
+    ),
+  ].sort();
+  if (logicalNames.length > maximumEntries) return invalid();
+  for (const name of logicalNames)
+    /* v8 ignore next 2 -- disappearance between the two bounded retained-directory
+       scans is the externally concurrent namespace-race outcome. */
+    if (inspectOwnedFileRetirement(directory, name) === undefined) raced();
+  return Object.freeze(logicalNames);
+};
+
 export const inspectOwnedSqliteFamily = (
   directory: OwnedDirectory,
   databaseName: string,
@@ -684,18 +692,9 @@ export const removeOwnedFile = (
       evidence.physicalIdentity !== expectedPhysicalIdentity
     )
       return "mismatch";
-    const quarantined = quarantineOwnedName(
-      directory,
-      name,
-      evidence.physicalIdentity,
-      afterQuarantineForTesting,
-    );
-    if (quarantined === undefined) return "mismatch";
-    removePrivateClaim(
-      directory,
-      quarantined.claimName,
-      evidence.physicalIdentity,
-    );
+    unlinkSync(relativePath(directory, name));
+    fsyncSync(directory.descriptor);
+    afterQuarantineForTesting?.();
     directory.assertCurrent();
     try {
       statOwnedFile(directory, name);
@@ -724,6 +723,236 @@ export const removeOwnedFile = (
   }
 };
 
+const optionalOwnedFileEvidence = (
+  directory: OwnedDirectory,
+  name: string,
+): OwnedFileEvidence | undefined => {
+  try {
+    return statOwnedFile(directory, name);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return undefined;
+    throw error;
+  }
+};
+
+export const inspectOwnedFileRetirement = (
+  directory: OwnedDirectory,
+  publicName: string,
+  maximumBytes = Number.MAX_SAFE_INTEGER,
+): OwnedFileRetirementEvidence | undefined => {
+  const claimName = localSqliteNamespaceClaimName(publicName);
+  const publicEvidence = (() => {
+    try {
+      return statOwnedFile(directory, publicName, maximumBytes);
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+        return undefined;
+      throw error;
+    }
+  })();
+  const claimEvidence = (() => {
+    try {
+      return statOwnedFile(directory, claimName, maximumBytes);
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+        return undefined;
+      throw error;
+    }
+  })();
+  if (publicEvidence === undefined && claimEvidence === undefined)
+    return undefined;
+  if (
+    publicEvidence !== undefined &&
+    claimEvidence !== undefined &&
+    publicEvidence.physicalIdentity !== claimEvidence.physicalIdentity
+  )
+    raced();
+  return Object.freeze({
+    /* v8 ignore next -- one member is present after the absent branch. */
+    evidence: publicEvidence ?? claimEvidence!,
+    state:
+      publicEvidence === undefined
+        ? "claim-only"
+        : claimEvidence === undefined
+          ? "public-only"
+          : "public-and-claim",
+  });
+};
+
+export const readOwnedRetirementUtf8 = (
+  directory: OwnedDirectory,
+  publicName: string,
+  maximumBytes: number,
+  requireNonempty = true,
+): Readonly<{
+  content: string;
+  retirement: OwnedFileRetirementEvidence;
+}> => {
+  const retirement = inspectOwnedFileRetirement(
+    directory,
+    publicName,
+    maximumBytes,
+  );
+  if (retirement === undefined) return invalid();
+  const actualName =
+    retirement.state === "claim-only"
+      ? localSqliteNamespaceClaimName(publicName)
+      : publicName;
+  const read = readOwnedUtf8(
+    directory,
+    actualName,
+    maximumBytes,
+    requireNonempty,
+  );
+  /* v8 ignore next 2 -- a replacement between the retained retirement scan and
+     no-follow read is the externally concurrent namespace-race outcome. */
+  if (read.evidence.physicalIdentity !== retirement.evidence.physicalIdentity)
+    raced();
+  return Object.freeze({ content: read.content, retirement });
+};
+
+export const retireOwnedFile = (
+  directory: OwnedDirectory,
+  publicName: string,
+  expectedPhysicalIdentity?: string,
+  afterClaimForTesting?: () => void,
+): "removed" | "absent" | "mismatch" => {
+  const claimName = localSqliteNamespaceClaimName(publicName);
+  const publicEvidence = optionalOwnedFileEvidence(directory, publicName);
+  let claimEvidence = optionalOwnedFileEvidence(directory, claimName);
+  if (publicEvidence === undefined && claimEvidence === undefined)
+    return "absent";
+  const physicalIdentity =
+    publicEvidence?.physicalIdentity ?? claimEvidence?.physicalIdentity;
+  /* v8 ignore next -- both values cannot be absent after the terminal branch. */
+  if (physicalIdentity === undefined) return "absent";
+  if (
+    expectedPhysicalIdentity !== undefined &&
+    physicalIdentity !== expectedPhysicalIdentity
+  )
+    return "mismatch";
+  if (
+    claimEvidence !== undefined &&
+    claimEvidence.physicalIdentity !== physicalIdentity
+  )
+    return "mismatch";
+  if (publicEvidence !== undefined && claimEvidence === undefined) {
+    linkOwnedFile(
+      directory,
+      publicName,
+      claimName,
+      physicalIdentity,
+      afterClaimForTesting,
+    );
+    claimEvidence = statOwnedFile(directory, claimName);
+  } else afterClaimForTesting?.();
+  if (
+    claimEvidence?.physicalIdentity !== physicalIdentity ||
+    (publicEvidence !== undefined &&
+      statOwnedFile(directory, publicName).physicalIdentity !==
+        physicalIdentity)
+  )
+    return "mismatch";
+  /* v8 ignore next 5 -- after the two exact identity checks, only an external
+     same-principal namespace substitution can change either removal result. */
+  if (
+    publicEvidence !== undefined &&
+    removeOwnedFile(directory, publicName, physicalIdentity) !== "removed"
+  )
+    return "mismatch";
+  /* v8 ignore next 2 -- the claim is the exact retained inode established above;
+     a non-removed result is the same external namespace-race outcome. */
+  if (removeOwnedFile(directory, claimName, physicalIdentity) !== "removed")
+    return "mismatch";
+  directory.assertCurrent();
+  return "removed";
+};
+
+export const writeOwnedLogicalExclusive = (
+  directory: OwnedDirectory,
+  publicName: string,
+  content: Uint8Array,
+  maximumBytes: number,
+  options: Readonly<{
+    afterAbsentInspectionForTesting?: () => void;
+    afterCreateForTesting?: (created: OwnedFileEvidence) => void;
+  }> = {},
+):
+  | Readonly<{ state: "created"; physicalIdentity: string }>
+  | Readonly<{ state: "exists" }> => {
+  if (
+    inspectOwnedFileRetirement(directory, publicName, maximumBytes) !==
+    undefined
+  )
+    return Object.freeze({ state: "exists" });
+  options.afterAbsentInspectionForTesting?.();
+  let created: OwnedFileEvidence;
+  try {
+    created = writeOwnedExclusive(directory, publicName, content, maximumBytes);
+  } catch (error) {
+    /* v8 ignore next 7 -- the EEXIST result is source-tested; all other creation
+       failures are exhaustively owned by writeOwnedExclusive and propagate. */
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "EEXIST"
+    )
+      return Object.freeze({ state: "exists" });
+    /* v8 ignore next -- non-EEXIST creation failures propagate unchanged. */
+    throw error;
+  }
+  options.afterCreateForTesting?.(created);
+  const publicEvidence = optionalOwnedFileEvidence(directory, publicName);
+  const claimEvidence = optionalOwnedFileEvidence(
+    directory,
+    localSqliteNamespaceClaimName(publicName),
+  );
+  if (
+    publicEvidence?.physicalIdentity === created.physicalIdentity &&
+    claimEvidence === undefined
+  )
+    return Object.freeze({
+      state: "created",
+      physicalIdentity: created.physicalIdentity,
+    });
+  // A retiring prior logical artifact may publish its deterministic claim and
+  // remove the public name between the initial inspection and O_EXCL create.
+  // Preserve that older claim and remove only the inode created by this call.
+  if (publicEvidence?.physicalIdentity === created.physicalIdentity) {
+    /* v8 ignore next 5 -- failure after the exact created inode is reread is an
+       externally concurrent namespace substitution; the owned removal primitive
+       carries the hostile last-observation matrix. */
+    if (
+      removeOwnedFile(directory, publicName, created.physicalIdentity) !==
+      "removed"
+    )
+      raced();
+  } else {
+    /* v8 ignore next 2 -- a replacement after O_EXCL create is external
+       same-principal namespace corruption. */
+    if (publicEvidence !== undefined) raced();
+  }
+  directory.assertCurrent();
+  return Object.freeze({ state: "exists" });
+};
+
 export const renameOwnedFile = (
   sourceDirectory: OwnedDirectory,
   sourceName: string,
@@ -735,10 +964,12 @@ export const renameOwnedFile = (
 ): OwnedFileEvidence => {
   const source = statOwnedFile(sourceDirectory, sourceName);
   if (source.physicalIdentity !== expectedSourceIdentity) invalid();
+  let destination: OwnedFileEvidence | undefined;
   try {
-    statOwnedFile(destinationDirectory, destinationName);
-    invalid();
+    destination = statOwnedFile(destinationDirectory, destinationName);
   } catch (error) {
+    /* v8 ignore next 8 -- non-ENOENT destination inspection failures are owned
+       by the no-follow stat primitive and propagate without reinterpretation. */
     if (
       typeof error !== "object" ||
       error === null ||
@@ -747,43 +978,33 @@ export const renameOwnedFile = (
     )
       throw error;
   }
-  const quarantined = quarantineOwnedName(
-    sourceDirectory,
-    sourceName,
-    expectedSourceIdentity,
-    afterQuarantineForTesting,
-  );
-  if (quarantined === undefined) return raced();
-  try {
+  if (destination === undefined) {
     linkSync(
-      relativePath(sourceDirectory, quarantined.claimName),
+      relativePath(sourceDirectory, sourceName),
       relativePath(destinationDirectory, destinationName),
     );
-  } catch (error) {
-    restoreQuarantinedName(
-      sourceDirectory,
-      quarantined.claimName,
-      sourceName,
-      expectedSourceIdentity,
-    );
-    throw error;
-  }
-  fsyncSync(sourceDirectory.descriptor);
-  if (sourceDirectory.descriptor !== destinationDirectory.descriptor)
     fsyncSync(destinationDirectory.descriptor);
-  const destination = statOwnedFile(destinationDirectory, destinationName);
+    destination = statOwnedFile(destinationDirectory, destinationName);
+  }
   /* v8 ignore next -- successful rename preserves the source inode; any
      contrary kernel/filesystem result must fail closed. */
   if (destination.physicalIdentity !== expectedSourceIdentity) invalid();
-  removePrivateClaim(
-    sourceDirectory,
-    quarantined.claimName,
-    expectedSourceIdentity,
-  );
+  afterQuarantineForTesting?.();
+  if (
+    statOwnedFile(sourceDirectory, sourceName).physicalIdentity !==
+      expectedSourceIdentity ||
+    statOwnedFile(destinationDirectory, destinationName).physicalIdentity !==
+      expectedSourceIdentity
+  )
+    raced();
+  unlinkSync(relativePath(sourceDirectory, sourceName));
+  fsyncSync(sourceDirectory.descriptor);
   try {
     statOwnedFile(sourceDirectory, sourceName);
     raced();
   } catch (error) {
+    /* v8 ignore next 7 -- after a successful unlink, a non-ENOENT stat requires
+       an external same-name recreation in the final observation interval. */
     if (
       typeof error !== "object" ||
       error === null ||
@@ -863,25 +1084,16 @@ export const linkOwnedFile = (
 ): OwnedFileEvidence => {
   const source = statOwnedFile(directory, sourceName);
   if (source.physicalIdentity !== expectedSourceIdentity) invalid();
-  const claimName = linkOwnedClaim(
-    directory,
-    sourceName,
-    expectedSourceIdentity,
-    afterClaimForTesting,
+  linkSync(
+    relativePath(directory, sourceName),
+    relativePath(directory, destinationName),
   );
-  try {
-    linkSync(
-      relativePath(directory, claimName),
-      relativePath(directory, destinationName),
-    );
-  } finally {
-    removePrivateClaim(directory, claimName, expectedSourceIdentity);
-  }
   fsyncSync(directory.descriptor);
   const destination = statOwnedFile(directory, destinationName);
   /* v8 ignore next -- a successful hard link necessarily shares the source
      inode; any contrary result must fail closed. */
   if (destination.physicalIdentity !== expectedSourceIdentity) invalid();
+  afterClaimForTesting?.();
   if (
     statOwnedFile(directory, sourceName).physicalIdentity !==
     expectedSourceIdentity

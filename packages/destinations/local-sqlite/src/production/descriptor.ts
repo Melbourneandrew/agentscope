@@ -6,6 +6,7 @@ import {
   defineDestinationDescriptor,
   reporterDeadlineRemainingMilliseconds,
   type DestinationDescriptor,
+  type ReporterDeadline,
   type ReporterFactoryContext,
   type ReporterAttempt,
 } from "@agentscope/destinations-core";
@@ -101,7 +102,7 @@ const createProductionReporter = (
           prepared,
           admissionTimeUnixNano: attempt.admissionTimeUnixNano,
           signal: attempt.signal,
-          remainingMilliseconds,
+          deadline: attempt.deadline,
         });
       } catch {
         return createReporterReceipt("unavailable");
@@ -118,22 +119,34 @@ const createProductionRetriever = (
   const policy = policyFor(context.settings);
   return createLocalSqliteRetriever(
     Object.freeze({
-      search: (plan, signal) =>
-        runtime().search({
+      search: (plan, signal, deadline?: ReporterDeadline) => {
+        /* v8 ignore next 2 -- Destinations Core always supplies its branded
+           absolute deadline; malformed direct-port use is rejected defensively. */
+        if (deadline === undefined)
+          throw new Error("destination.local-sqlite.unavailable");
+        return runtime().search({
           connectionId: context.connectionId,
           lifecycleFingerprint,
           policy,
           plan,
           signal,
-        }),
-      get: (plan, signal) =>
-        runtime().get({
+          deadline,
+        });
+      },
+      get: (plan, signal, deadline?: ReporterDeadline) => {
+        /* v8 ignore next 2 -- Destinations Core always supplies its branded
+           absolute deadline; malformed direct-port use is rejected defensively. */
+        if (deadline === undefined)
+          throw new Error("destination.local-sqlite.unavailable");
+        return runtime().get({
           connectionId: context.connectionId,
           lifecycleFingerprint,
           policy,
           plan,
           signal,
-        }),
+          deadline,
+        });
+      },
     }),
   );
 };

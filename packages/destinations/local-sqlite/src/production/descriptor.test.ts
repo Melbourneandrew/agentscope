@@ -5,6 +5,7 @@ import {
   createDestinationConnectionId,
   createReporterReceipt,
   createTraceLocator,
+  reporterDeadlineRemainingMilliseconds,
 } from "@agentscope/destinations-core";
 import {
   createReporterDeadline,
@@ -117,7 +118,7 @@ describe("Local SQLite production descriptor", () => {
     const reportPrepared = vi.fn<
       LocalSqliteProductionRuntime["reportPrepared"]
     >((attempt) => {
-      remaining.push(attempt.remainingMilliseconds());
+      remaining.push(reporterDeadlineRemainingMilliseconds(attempt.deadline));
       return Promise.resolve(createReporterReceipt("accepted"));
     });
     const descriptor = createLocalSqliteDestinationDescriptorForTesting(

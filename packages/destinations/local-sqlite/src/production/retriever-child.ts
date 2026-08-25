@@ -1,7 +1,6 @@
 /* v8 ignore file -- this process entry is executed causally from the clean-installed packed CLI by the native-candidate verifier. */
 import { createRequire } from "node:module";
 import { basename, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES } from "../lifecycle/capability.js";
 import { LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST } from "../native-support.js";
@@ -39,6 +38,7 @@ import {
   createOwnedRetrieverDatabase,
   initializeOwnedSqliteConnection,
 } from "./sqlite-port.js";
+import { resolveLocalSqliteProductionArtifactLayout } from "./production-artifact-layout.js";
 
 type Loader = Readonly<{
   load: (
@@ -131,12 +131,8 @@ const main = async (): Promise<void> => {
   let databaseFile: OwnedFile | undefined;
   let admittedFamily: SqliteFamily | undefined;
   try {
-    const loaderUrl = new URL(
-      "../local-sqlite/loader/owned-loader.cjs",
-      import.meta.url,
-    );
     const loader = createRequire(import.meta.url)(
-      fileURLToPath(loaderUrl),
+      resolveLocalSqliteProductionArtifactLayout().loaderPath,
     ) as Loader;
     const opener = loader.load({
       manifestDigest: LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST,

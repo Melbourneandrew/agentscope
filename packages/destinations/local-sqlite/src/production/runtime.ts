@@ -1,11 +1,14 @@
 import { createRequire } from "node:module";
 import { randomBytes } from "node:crypto";
+import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   createReporterReceipt,
+  reporterDeadlineRemainingMilliseconds,
   resolveLocalResourceHomeAuthority,
   type ReporterReceipt,
+  type ReporterDeadline,
   type LocalResourceHome,
   type LocalResourceHomeAuthority,
 } from "@agentscope/destinations-core";
@@ -63,7 +66,7 @@ import {
   type OwnedDirectory,
   type OwnedFile,
 } from "./owned-filesystem.js";
-import { basename } from "node:path";
+import { resolveLocalSqliteProductionArtifactLayout } from "./production-artifact-layout.js";
 
 export type LocalSqliteProductionRuntime = Readonly<{
   home: LocalSqliteProductionHome;
@@ -84,7 +87,7 @@ export type LocalSqliteProductionRuntime = Readonly<{
       prepared: readonly LocalSqlitePreparedTrace[];
       admissionTimeUnixNano: string;
       signal: AbortSignal;
-      remainingMilliseconds: () => number;
+      deadline: ReporterDeadline;
     }>,
   ) => Promise<ReporterReceipt>;
   search: (
@@ -94,6 +97,7 @@ export type LocalSqliteProductionRuntime = Readonly<{
       policy: LocalSqliteExecutionPolicy;
       plan: LocalSqliteSearchPlan;
       signal: AbortSignal;
+      deadline: ReporterDeadline;
     }>,
   ) => Promise<LocalSqliteSearchEvidence>;
   get: (
@@ -103,6 +107,7 @@ export type LocalSqliteProductionRuntime = Readonly<{
       policy: LocalSqliteExecutionPolicy;
       plan: LocalSqliteGetPlan;
       signal: AbortSignal;
+      deadline: ReporterDeadline;
     }>,
   ) => Promise<LocalSqliteGetEvidence>;
   withSharedDatabase: <Value>(
@@ -139,6 +144,7 @@ type LocalSqliteRuntimeTestingHooks = Readonly<{
 }>;
 
 let productionRuntime: LocalSqliteProductionRuntime | undefined;
+let productionHome: LocalResourceHome | undefined;
 const monotonicNow = performance.now.bind(performance);
 
 const withSharedDatabase = async <Value>(
@@ -208,6 +214,8 @@ const withSharedDatabase = async <Value>(
   const remainingWorkMilliseconds = remaining();
   if (signal.aborted || remainingWorkMilliseconds < 1) {
     const released = await releaseLocalSqliteSharedLease(gate, acquired.value);
+    /* v8 ignore next 2 -- exact shared-lease cleanup failure classification is
+       proved in the fence module; this path preserves its fixed outcome. */
     if (!released.ok)
       throw new Error("destination.local-sqlite.outcome-unknown");
     throw new Error("destination.local-sqlite.unavailable");
@@ -317,6 +325,8 @@ const reportPreparedWithChild = async (
     opener: OwnedSqliteOpener;
     allowPathFallbackForTesting: boolean;
     childIdentity?: ((pid: number) => string | undefined) | undefined;
+    afterSharedLeaseAcquired?:
+      ((lifecycleDirectory: string) => void) | undefined;
     attempt: Parameters<LocalSqliteProductionRuntime["reportPrepared"]>[0];
   }>,
 ): Promise<ReporterReceipt> => {
@@ -327,7 +337,8 @@ const reportPreparedWithChild = async (
   const reserve = manifest.nativeTeardownReserveMilliseconds;
   if (
     attempt.signal.aborted ||
-    attempt.remainingMilliseconds() < minimum + reserve ||
+    reporterDeadlineRemainingMilliseconds(attempt.deadline) <
+      minimum + reserve ||
     !localSqliteReporterChildBatchFits(attempt.prepared)
   )
     return createReporterReceipt("unavailable");
@@ -358,8 +369,13 @@ const reportPreparedWithChild = async (
     }),
   });
   if (!acquired.ok) return createReporterReceipt("unavailable");
-  const available = Math.floor(attempt.remainingMilliseconds() - reserve);
-  if (attempt.signal.aborted || available < minimum) {
+  input.afterSharedLeaseAcquired?.(namespace.lifecycleDirectory);
+  const cutoffAtMonotonicMilliseconds =
+    attempt.deadline.expiresAtMonotonicMilliseconds - reserve;
+  if (
+    attempt.signal.aborted ||
+    cutoffAtMonotonicMilliseconds - monotonicNow() < minimum
+  ) {
     await releaseLocalSqliteSharedLease(gate, acquired.value);
     return createReporterReceipt("unavailable");
   }
@@ -397,7 +413,7 @@ const reportPreparedWithChild = async (
     policy: attempt.policy,
     prepared: attempt.prepared,
     admissionTimeUnixNano: attempt.admissionTimeUnixNano,
-    maximumWorkMilliseconds: available,
+    cutoffAtMonotonicMilliseconds,
     minimumUsefulWorkMilliseconds: minimum,
     teardownReserveMilliseconds: reserve,
     signal: attempt.signal,
@@ -423,6 +439,7 @@ const retrieveWithChild = async (
       policy: LocalSqliteExecutionPolicy;
       plan: LocalSqliteSearchPlan | LocalSqliteGetPlan;
       signal: AbortSignal;
+      deadline: ReporterDeadline;
     }>;
   }>,
 ): Promise<LocalSqliteSearchEvidence | LocalSqliteGetEvidence> => {
@@ -434,10 +451,10 @@ const retrieveWithChild = async (
     operation,
     attempt,
   } = input;
-  const reserve = 250;
-  const startedAt = monotonicNow();
-  const remaining = (): number =>
-    attempt.plan.maximumWorkMilliseconds - (monotonicNow() - startedAt);
+  const reserve =
+    LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.nativeTeardownReserveMilliseconds;
+  const cutoffAtMonotonicMilliseconds =
+    attempt.deadline.expiresAtMonotonicMilliseconds - reserve;
   /* v8 ignore start -- the admitted native tuple is Linux; Windows grammar is
      covered by the namespace compiler's cross-platform matrix. */
   const namespace = planLocalSqliteNamespace({
@@ -467,9 +484,13 @@ const retrieveWithChild = async (
   if (!acquired.ok)
     throw new Error(`destination.local-sqlite.${acquired.state}`);
   input.afterSharedLeaseAcquired?.(namespace.lifecycleDirectory);
-  const available = Math.floor(remaining() - reserve);
-  if (attempt.signal.aborted || available < 1) {
+  if (
+    attempt.signal.aborted ||
+    cutoffAtMonotonicMilliseconds - monotonicNow() < 1
+  ) {
     const released = await releaseLocalSqliteSharedLease(gate, acquired.value);
+    /* v8 ignore next 2 -- exact shared-lease cleanup failure classification is
+       proved in the fence module; this path preserves its fixed outcome. */
     if (!released.ok)
       throw new Error("destination.local-sqlite.outcome-unknown");
     throw new Error("destination.local-sqlite.unavailable");
@@ -512,7 +533,7 @@ const retrieveWithChild = async (
     policy: attempt.policy,
     operation,
     plan: attempt.plan,
-    maximumWorkMilliseconds: available,
+    cutoffAtMonotonicMilliseconds,
     teardownReserveMilliseconds: reserve,
     signal: attempt.signal,
     ...(input.childIdentity === undefined
@@ -543,30 +564,38 @@ const createRuntime = (
     opener,
     allowPathFallbackForTesting,
   });
+  /* v8 ignore next 2 -- the false branch is the emitted production layout and
+     is causally executed by the isolated Linux built-artifact verifier. */
+  const artifactLayout = allowPathFallbackForTesting
+    ? undefined
+    : resolveLocalSqliteProductionArtifactLayout();
   const reporterPrograms =
     testingHooks?.reporterPrograms ??
+    (artifactLayout === undefined
+      ? undefined
+      : Object.freeze({
+          workerPath: artifactLayout.reporterWorkerPath,
+          watchdogPath: artifactLayout.watchdogPath,
+        })) ??
     Object.freeze({
       workerPath: fileURLToPath(
-        new URL(
-          "../internal/local-sqlite-runtime/reporter-child.js",
-          import.meta.url,
-        ),
+        new URL("./reporter-child.js", import.meta.url),
       ),
       watchdogPath: fileURLToPath(
-        new URL(
-          "../internal/local-sqlite-runtime/reporter-watchdog.js",
-          import.meta.url,
-        ),
+        new URL("./reporter-watchdog.js", import.meta.url),
       ),
     });
   const retrieverPrograms =
     testingHooks?.retrieverPrograms ??
+    (artifactLayout === undefined
+      ? undefined
+      : Object.freeze({
+          workerPath: artifactLayout.retrieverWorkerPath,
+          watchdogPath: artifactLayout.watchdogPath,
+        })) ??
     Object.freeze({
       workerPath: fileURLToPath(
-        new URL(
-          "../internal/local-sqlite-runtime/retriever-child.js",
-          import.meta.url,
-        ),
+        new URL("./retriever-child.js", import.meta.url),
       ),
       watchdogPath: reporterPrograms.watchdogPath,
     });
@@ -586,6 +615,7 @@ const createRuntime = (
         programs: reporterPrograms,
         allowPathFallbackForTesting,
         childIdentity: testingHooks?.childIdentity,
+        afterSharedLeaseAcquired: testingHooks?.afterSharedLeaseAcquired,
         attempt,
       }),
     search: async (attempt) =>
@@ -636,10 +666,9 @@ const createRuntime = (
 /* v8 ignore start -- this loader/bootstrap path is executed causally from the
    exact clean-installed Linux candidate; source tests use the restricted
    testing binder because the admitted native tuple is not macOS. */
-export const initializeLocalSqliteProductionRuntime = (
-  homeAuthority: LocalResourceHomeAuthority,
+const initializeLocalSqliteProductionRuntimeForHome = (
+  home: LocalResourceHome,
 ): LocalSqliteProductionRuntime => {
-  const home = resolveLocalResourceHomeAuthority(homeAuthority);
   if (
     LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST.maximumSnapshotBytes !==
     LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES
@@ -653,12 +682,8 @@ export const initializeLocalSqliteProductionRuntime = (
       throw new Error("destination.local-sqlite.native-unavailable");
     return productionRuntime;
   }
-  const loaderUrl = new URL(
-    "../internal/local-sqlite/loader/owned-loader.cjs",
-    import.meta.url,
-  );
   const loader = createRequire(import.meta.url)(
-    fileURLToPath(loaderUrl),
+    resolveLocalSqliteProductionArtifactLayout().loaderPath,
   ) as Loader;
   const opener = loader.load({
     manifestDigest: LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST,
@@ -673,12 +698,36 @@ export const initializeLocalSqliteProductionRuntime = (
   );
   return productionRuntime;
 };
+
+export const bindLocalSqliteProductionHome = (
+  homeAuthority: LocalResourceHomeAuthority,
+): void => {
+  const home = resolveLocalResourceHomeAuthority(homeAuthority);
+  if (
+    productionHome !== undefined &&
+    (productionHome.root !== home.root ||
+      productionHome.platform !== home.platform)
+  )
+    throw new Error("destination.local-sqlite.native-unavailable");
+  productionHome = home;
+};
+
+export const initializeLocalSqliteProductionRuntime = (
+  homeAuthority: LocalResourceHomeAuthority,
+): LocalSqliteProductionRuntime => {
+  bindLocalSqliteProductionHome(homeAuthority);
+  return getLocalSqliteProductionRuntime();
+};
 /* v8 ignore stop */
 
 export const getLocalSqliteProductionRuntime =
   (): LocalSqliteProductionRuntime => {
-    /* v8 ignore else -- successful singleton retrieval follows the built-only
-       initializer and is asserted by the packed composition gate. */
+    /* v8 ignore next 2 -- successful lazy singleton initialization is asserted
+       by the built Linux composition gate. */
+    if (productionRuntime === undefined && productionHome !== undefined)
+      return initializeLocalSqliteProductionRuntimeForHome(productionHome);
+    /* v8 ignore else -- the built composition gate exercises the lazy-home case;
+       source tests cover both missing and already-bound singleton states. */
     if (productionRuntime === undefined)
       throw new Error("destination.local-sqlite.native-unavailable");
     /* v8 ignore next -- paired with the built-only singleton invariant above. */

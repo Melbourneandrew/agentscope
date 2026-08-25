@@ -146,7 +146,7 @@ export type LocalSqliteLifecyclePort = Readonly<{
     signal: AbortSignal,
     authority?: LocalResourceRetainedDeleteAuthority,
   ): Promise<void>;
-  claimRecoveryIntent(signal: AbortSignal): Promise<
+  claimRecoveryIntent(context: LocalResourceLifecycleRecoveryContext): Promise<
     Readonly<{
       canonicalBytes: string;
       fence: LocalSqliteExclusiveFenceAuthority;
@@ -761,7 +761,7 @@ const recoverWithPort = async (
        same branded recovery signal before entering this handler. */
     if (signalAborted(context.signal))
       throw new LocalSqliteLifecycleError("unavailable");
-    const claimed = await port.claimRecoveryIntent(context.signal);
+    const claimed = await port.claimRecoveryIntent(context);
     requireActive(context.signal);
     const intent = decodeLocalSqliteLifecycleIntent(claimed.canonicalBytes);
     if (!intent || !recoveryIntentMatches(capability, context, intent))

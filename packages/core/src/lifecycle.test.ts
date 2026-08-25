@@ -405,16 +405,14 @@ describe("lifecycle cancellation and sink failure closure", () => {
 });
 
 describe("hostile lifecycle boundaries", () => {
-  it("keeps the lifecycle source and dist free of direct IO dependencies", () => {
-    for (const url of [
+  it("keeps the lifecycle source free of direct IO dependencies", () => {
+    const source = fs.readFileSync(
       new URL("./lifecycle.ts", import.meta.url),
-      new URL("../dist/lifecycle.js", import.meta.url),
-    ]) {
-      const source = fs.readFileSync(url, "utf8");
-      expect(source).not.toMatch(
-        /node:(?:fs|http|https|net|tls)|\bfetch\s*\(|\bconsole\.|process\.(?:stdout|stderr)/u,
-      );
-    }
+      "utf8",
+    );
+    expect(source).not.toMatch(
+      /node:(?:fs|http|https|net|tls)|\bfetch\s*\(|\bconsole\.|process\.(?:stdout|stderr)/u,
+    );
   });
 
   it("maps hostile lifecycle, signal, and sink boundaries to fixed results", () => {

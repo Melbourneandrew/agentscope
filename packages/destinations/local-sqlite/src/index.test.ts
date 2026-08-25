@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bindLocalResourceHomeAuthorityForTesting } from "@agentscope/destinations-core/testing";
 
 import * as root from "./index.js";
 import * as reporter from "./reporter/index.js";
@@ -14,6 +15,7 @@ describe("Local SQLite package boundaries", () => {
         "LOCAL_SQLITE_DESTINATION_TYPE",
         "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
         "createLocalSqliteLifecycleHandler",
+        "initializeLocalSqliteProductionComposition",
         "localSqliteDestinationDescriptor",
         "localSqliteDestinationPackageId",
         "localSqliteLifecycleDeclaration",
@@ -39,11 +41,40 @@ describe("Local SQLite package boundaries", () => {
       expect.arrayContaining([
         "configure-database-candidate",
         "restore-database-candidate",
+        "namespace-removal-claim",
       ]),
     );
     expect(root.LOCAL_SQLITE_DESTINATION_TYPE).toBe(
       "@agentscope/destination-local-sqlite",
     );
+  });
+
+  it("binds one branded home without exposing raw runtime authority", () => {
+    const home = bindLocalResourceHomeAuthorityForTesting({
+      root: "/owned/agentscope-home",
+      platform: process.platform,
+    });
+    const composition = root.initializeLocalSqliteProductionComposition(home);
+    expect(Object.keys(composition).sort()).toEqual([
+      "createLifecycleHandler",
+      "destinationDescriptor",
+    ]);
+    expect(composition.destinationDescriptor).toBe(
+      root.localSqliteDestinationDescriptor,
+    );
+    expect(root.initializeLocalSqliteProductionComposition(home)).toBe(
+      composition,
+    );
+    expect(() =>
+      root.initializeLocalSqliteProductionComposition(
+        bindLocalResourceHomeAuthorityForTesting({
+          root: "/different/agentscope-home",
+          platform: process.platform,
+        }),
+      ),
+    ).toThrow("destination.local-sqlite.native-unavailable");
+    expect(Object.keys(composition)).not.toContain("opener");
+    expect(Object.keys(composition)).not.toContain("withSharedDatabase");
   });
 });
 
@@ -72,13 +103,14 @@ describe("Local SQLite lifecycle artifact grammar", () => {
       maximumPublishedBackups: 8,
       maximumPublishedSnapshotBytes:
         "checked-multiply(maximumPublishedBackups,supportManifest.maximumSnapshotBytes)",
+      maximumNamespaceRemovalClaims: 1,
       maximumRecoveryFenceRecordBytes: 32_768,
       maximumSharedLeaseCleanupClaims: 64,
       maximumSharedLeases: 64,
       maximumTransientDatabaseCandidates: 1,
       maximumTransientRollbackPreimages: 1,
       namespaceByteCeiling:
-        "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes)",
+        "checked-add(publishedSnapshotBytes,metadataAggregateBytes,transientCandidateBytes,transientPreimageBytes,namespaceRemovalClaimBytes)",
       sizeArithmetic: "exact-nonnegative-filesystem-integer-checked",
       sparseOrHugeEvidence: "reconciliation-required",
     });
@@ -117,6 +149,12 @@ describe("Local SQLite lifecycle artifact grammar", () => {
         maximumBytesPerArtifact: "supportManifest.maximumSnapshotBytes",
         maximumCountAcrossKinds: 1,
         name: "rollback-preimage",
+      },
+      {
+        kinds: ["namespace-removal-claim"],
+        maximumBytesPerArtifact: "mapped-public-artifact-maximum",
+        maximumCountAcrossKinds: 1,
+        name: "namespace-removal-claim",
       },
     ]);
   });

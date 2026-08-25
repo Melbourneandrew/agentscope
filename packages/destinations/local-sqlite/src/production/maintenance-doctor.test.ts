@@ -28,6 +28,11 @@ import {
 } from "../migrations.js";
 import { ensurePrivateDirectory } from "./filesystem-port.js";
 import { createLocalSqliteProductionMaintenancePort } from "./maintenance-port.js";
+import {
+  openOwnedDirectory,
+  retireOwnedFile,
+  statOwnedFile,
+} from "./owned-filesystem.js";
 
 const connectionId = `destination-connection-v1-${"2".repeat(64)}`;
 const settings = Object.freeze({
@@ -38,6 +43,63 @@ const settings = Object.freeze({
 
 /* eslint-disable max-lines-per-function -- the Doctor matrix preserves one exact bounded namespace and all hostile inventory states. */
 describe("production Local SQLite Doctor", () => {
+  it("classifies a canonical interrupted namespace-removal claim without mutation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentscope-local-doctor-claim-"));
+    chmodSync(root, 0o700);
+    try {
+      const namespace = planLocalSqliteNamespace({
+        agentscopeHome: root,
+        connectionId,
+        platform: process.platform === "win32" ? "win32" : "posix",
+      });
+      for (const directory of [
+        namespace.destinationsDirectory,
+        namespace.destinationTypeDirectory,
+        namespace.connectionNamespace,
+        namespace.lifecycleDirectory,
+        namespace.backupsDirectory,
+      ])
+        ensurePrivateDirectory(directory, {
+          allowPathFallbackForTesting: true,
+        });
+      writeFileSync(namespace.databasePath, "owned", { mode: 0o600 });
+      const owned = openOwnedDirectory(namespace.connectionNamespace, true);
+      try {
+        const physicalIdentity = statOwnedFile(
+          owned,
+          "traces.sqlite",
+        ).physicalIdentity;
+        expect(() =>
+          retireOwnedFile(owned, "traces.sqlite", physicalIdentity, () => {
+            throw new Error("synthetic interruption");
+          }),
+        ).toThrow("synthetic interruption");
+      } finally {
+        owned.close();
+      }
+      const before = readdirSync(namespace.connectionNamespace).sort();
+      const port = createLocalSqliteProductionMaintenancePort({
+        home: { root, platform: process.platform },
+        filesystemProfile: "local-ext4",
+        opener: { open: () => undefined as never },
+        allowPathFallbackForTesting: true,
+      });
+      await expect(
+        port.inspectDoctor({
+          connectionId,
+          settings,
+          signal: new AbortController().signal,
+        } as never),
+      ).resolves.toMatchObject({
+        state: "reconciliation-required",
+        databaseState: "unavailable",
+      });
+      expect(readdirSync(namespace.connectionNamespace).sort()).toEqual(before);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not open SQLite and rejects the bounded backup count plus one", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentscope-local-doctor-"));
     chmodSync(root, 0o700);
@@ -80,6 +142,16 @@ describe("production Local SQLite Doctor", () => {
         backupState: "available",
         publishedBackupCount: 0,
       });
+      const malformedClaim = join(
+        namespace.connectionNamespace,
+        "namespace-claim-v1-zz",
+      );
+      writeFileSync(malformedClaim, "x", { mode: 0o600 });
+      await expect(port.inspectDoctor(context)).resolves.toMatchObject({
+        state: "reconciliation-required",
+        databaseState: "unavailable",
+      });
+      unlinkSync(malformedClaim);
       for (let index = 0; index < 33; index += 1) {
         writeFileSync(
           join(
