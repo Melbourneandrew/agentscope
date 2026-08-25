@@ -350,6 +350,7 @@ const resolve = async (
   contextResolver: Parameters<
     typeof resolveCaptureInvocationSnapshotForTesting
   >[0]["contextResolver"] = () => Promise.resolve(context),
+  entryAuthority = hookAuthorityForFailureTest(hookDeadlineMilliseconds),
 ): Promise<InvocationPreparationResult> =>
   resolveCaptureInvocationSnapshotForTesting({
     configurationStore: store,
@@ -364,9 +365,42 @@ const resolve = async (
     operationIdScope: "session-global",
     workspaceCandidates: [],
     gitExecutable: "/usr/bin/git",
-    hookEntryAuthority: hookAuthorityForFailureTest(hookDeadlineMilliseconds),
+    hookEntryAuthority: entryAuthority,
     contextResolver,
   });
+
+const resolveAfterPreparationElapsed = async (
+  value: Awaited<ReturnType<typeof fixture>>,
+) => {
+  const serializedConfiguration = await readFile(value.home.configFile, "utf8");
+  const immediateStore = createConfigurationStoreForTesting(
+    value.home,
+    value.destinationRegistry,
+    {
+      readForHook: () => Promise.resolve(serializedConfiguration),
+    },
+  );
+  if (performance.now() < 250)
+    await new Promise((resolveDelay) =>
+      setTimeout(resolveDelay, 250 - performance.now()),
+    );
+  const entryAuthority = createHookEntryAuthority({
+    durationMilliseconds: 1_000,
+    startedAt: performance.now() - 250,
+  });
+  let observedRemainingMilliseconds: number | undefined;
+  const result = await resolve(
+    immediateStore,
+    1_000,
+    async ({ remainingMilliseconds }) => {
+      observedRemainingMilliseconds = remainingMilliseconds;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 775));
+      return context;
+    },
+    entryAuthority,
+  );
+  return { observedRemainingMilliseconds, result };
+};
 
 const delayedConfigurationStore = (
   home: Parameters<typeof createConfigurationStoreForTesting>[0],
@@ -748,12 +782,12 @@ describe("configured capture deadline", () => {
     const value = await fixture(
       BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
       true,
-      50,
+      1_000,
     );
-    const result = await resolve(value.store, 50, async () => {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 60));
-      return context;
-    });
+    const { observedRemainingMilliseconds, result } =
+      await resolveAfterPreparationElapsed(value);
+    expect(observedRemainingMilliseconds).toBeGreaterThan(0);
+    expect(observedRemainingMilliseconds).toBeLessThanOrEqual(750);
     expect(result).toMatchObject({
       outcome: "failed-open",
       stage: "context",
