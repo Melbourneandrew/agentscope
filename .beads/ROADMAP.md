@@ -54,7 +54,7 @@ Every mandatory criterion present at this revision has an implementation owner a
 | `AC-INS-001.1`, `AC-INS-001.2`, `AC-INS-001.3`, `AC-INS-001.4`, `AC-INS-002.1`, `AC-INS-002.2`, `AC-INS-002.3`, `AC-INS-003.1`, `AC-INS-003.2` | `vah.2.2`, `vah.2.5`, `vah.8.3`, `vah.9.9`, `vah.12.2`, `vah.12.4` |
 | `AC-CLI-001.1`, `AC-CLI-001.2`, `AC-CLI-001.3`, `AC-CLI-001.4`, `AC-CLI-002.1`, `AC-CLI-002.2`, `AC-CLI-002.3`, `AC-CLI-002.4` | `vah.2.5`, `vah.8.1`, `vah.8.6-.8.7`, `vah.12.2`, `vah.12.4` |
 | `AC-PLAT-001.1`, `AC-PLAT-001.2`, `AC-PLAT-001.3`, `AC-PLAT-002.1`, `AC-PLAT-002.2`, `AC-PLAT-002.3` | `vah.2.7`, `vah.7.4-.7.6`, `vah.9.4`, `vah.11.1-.11.7`, `vah.12.1`, `vah.12.7` |
-| `AC-DOC-001.1`, `AC-DOC-001.2`, `AC-DOC-001.3`, `AC-DOC-001.4`, `AC-DOC-001.5`, `AC-DOC-001.6`, `AC-DOC-001.7`, `AC-DOC-002.1`, `AC-DOC-002.2` | `vah.7.7`, `vah.8.6`, `vah.9.7`, `vah.12.6-.12.7` |
+| `AC-DOC-001.1`, `AC-DOC-001.2`, `AC-DOC-001.3`, `AC-DOC-001.4`, `AC-DOC-001.5`, `AC-DOC-001.6`, `AC-DOC-001.7`, `AC-DOC-002.1`, `AC-DOC-002.2` | `vah.7.7`, `vah.8.6`, `vah.9.7`, `vah.12.7` |
 | `AC-CFG-001.1`, `AC-CFG-001.2`, `AC-CFG-002.1`, `AC-CFG-002.2`, `AC-CFG-002.3` | `vah.7.1-.7.3`, `vah.7.7-.7.8` |
 | `AC-INIT-001.1`, `AC-INIT-001.2`, `AC-INIT-001.3`, `AC-INIT-002.1`, `AC-INIT-002.2`, `AC-INIT-002.3`, `AC-INIT-002.4`, `AC-INIT-002.5`, `AC-INIT-003.1`, `AC-INIT-003.2`, `AC-INIT-003.3` | `vah.8.2-.8.3`, `vah.9.9`, `vah.10.1`, `vah.11.1-.11.7` |
 | `AC-GOV-001.1`, `AC-GOV-001.2`, `AC-GOV-001.3`, `AC-GOV-001.4`, `AC-GOV-001.5`, `AC-GOV-002.1`, `AC-GOV-002.2` | `vah.3.3-.3.4`, `vah.6.1-.6.4`, `vah.13.3` |
@@ -81,10 +81,10 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | `foundations/workspace-architecture` | `ADR-001`–`ADR-004` | `vah.2.1-.2.6`, `vah.13.1` |
 | `destinations/trace-destination` | `ADR-001`–`ADR-006` | `vah.4.1-.4.4`, `vah.6.2`, `vah.7.2-.7.3`, `vah.8.2` |
 | `destinations/reporters/reporter-abstraction` | `ADR-001`–`ADR-007` | `vah.2.1`, `vah.4.1`, `vah.4.3-.4.4`, `vah.6.2` |
-| `destinations/reporters/langfuse-reporter` | `ADR-001`–`ADR-003` | `vah.9.1-.9.2`, `vah.12.6` |
+| `destinations/reporters/langfuse-reporter` | `ADR-001`–`ADR-003` | `vah.9.1-.9.2` |
 | `destinations/retrievers/retriever-abstraction` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.6.4`, `vah.8.5` |
 | `destinations/retrievers/query-and-pagination` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.8.5`, `vah.9.3`, `vah.9.6` |
-| `destinations/retrievers/langfuse-retriever` | `ADR-001`–`ADR-006` | `vah.9.1`, `vah.9.3`, `vah.9.7`, `vah.12.6` |
+| `destinations/retrievers/langfuse-retriever` | `ADR-001`–`ADR-006` | `vah.9.1`, `vah.9.3`, `vah.9.7` |
 | `destinations/local-sqlite-destination` | `ADR-001`–`ADR-006` | `vah.9.4-.9.7` |
 | `operations/agentscope-init` | `ADR-001`, `ADR-002` | `vah.8.2`, `vah.9.9`, `vah.11.1-.11.7` |
 | `operations/api-key-storage` | `ADR-001`–`ADR-004` | `vah.2.7`, `vah.7.3-.7.8`, `vah.12.7`, `vah.12.9` |
@@ -116,4 +116,4 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 - Hooks fail open. Core does not persist trace-content retries. Local SQLite stores traces only when explicitly configured as a destination.
 - Real model protocols use digest-pinned MockServer in disposable containers. No test exposes a developer's active harness, home, worktree, credentials, or `~/.agentscope` to mocked traffic.
 - Credential adapters are implemented and contract-tested before Core; real native backend evidence runs later on trusted supported-platform CI runners.
-- Langfuse reporting uses OTLP only. Automated Langfuse evidence is hermetic and loopback-contained; it does not use a public Langfuse service or live Langfuse credential.
+- Langfuse reporting uses OTLP only. Automated Langfuse evidence is hermetic contract-fixture and request-ledger evidence contained to loopback; it does not use a public Langfuse service or destination credential. Remote provider compatibility and visibility remain unclaimed unless a new earlier standalone Blueprint is explicitly approved.

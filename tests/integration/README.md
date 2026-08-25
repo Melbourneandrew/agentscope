@@ -5,7 +5,7 @@ The default lane compiles the versioned capability manifest, packs and verifies 
 ## Local Docker Desktop workflow
 
 This workflow certifies the fixture substrate only. It is not real-harness,
-CI-matrix, protected-live, or product acceptance evidence.
+CI-matrix, remote-provider-compatibility, or product acceptance evidence.
 
 Start from a clean, non-bare temporary worktree at an exact `main` commit. If a
 shared checkout reports `core.bare=true`, leave it unchanged and create the

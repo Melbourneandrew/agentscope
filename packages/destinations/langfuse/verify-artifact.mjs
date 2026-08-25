@@ -236,7 +236,7 @@ if (
       "reranker.model_name",
     ]) ||
   root.LANGFUSE_COMPATIBILITY_MANIFEST.manifestId !==
-    "sha256:3ef86febf50fa98c3e8c574db77dbafec4f001c6689e1fc249a2332b2fe8f369"
+    "sha256:59e7360c61cf751bccfbf31b2d8879783190290cf0f9bbc77dc0904039037dd0"
 )
   throw new Error("Langfuse built descriptor or manifest identity is invalid.");
 try {

@@ -262,13 +262,16 @@ const stopServer = (server: Server): Promise<void> =>
 describe("Langfuse compatibility contract", () => {
   it("pins one immutable provisional manifest to reviewed official sources", () => {
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.manifestId).toBe(
-      "sha256:3ef86febf50fa98c3e8c574db77dbafec4f001c6689e1fc249a2332b2fe8f369",
+      "sha256:59e7360c61cf751bccfbf31b2d8879783190290cf0f9bbc77dc0904039037dd0",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.status).toBe(
       "provisional-contract-only",
     );
-    expect(LANGFUSE_COMPATIBILITY_MANIFEST.liveValidationTask).toBe(
-      "agentscope-vah.12.6",
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.automatedEvidence).toBe(
+      "hermetic-contract-fixture-request-ledger-only",
+    );
+    expect(LANGFUSE_COMPATIBILITY_MANIFEST.remoteProviderCompatibility).toBe(
+      "not-claimed",
     );
     expect(LANGFUSE_COMPATIBILITY_MANIFEST.authority).toEqual({
       selection: "configuration-commit-only",
@@ -975,9 +978,9 @@ describe("Langfuse compatibility evidence", () => {
     });
   });
 
-  it("keeps empirical claims provisional and bound to the live validation task", () => {
+  it("keeps empirical claims scoped to hermetic contract evidence", () => {
     const empirical = LANGFUSE_COMPATIBILITY_MANIFEST.evidence.filter(
-      ({ disposition }) => disposition === "live-validation-required",
+      ({ disposition }) => disposition === "hermetic-contract-evidence-only",
     );
     expect(empirical.map(({ claimId }) => claimId)).toEqual([
       "otlp-to-observation-projection",
@@ -985,11 +988,7 @@ describe("Langfuse compatibility evidence", () => {
       "filter-round-trip",
       "asynchronous-cleanup-completion",
     ]);
-    expect(
-      empirical.every(
-        (entry) => "task" in entry && entry.task === "agentscope-vah.12.6",
-      ),
-    ).toBe(true);
+    expect(empirical.every((entry) => !("task" in entry))).toBe(true);
     expect(
       LANGFUSE_COMPATIBILITY_MANIFEST.evidence
         .filter(({ disposition }) => disposition === "provisional-official")

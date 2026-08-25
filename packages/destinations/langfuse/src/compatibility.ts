@@ -525,7 +525,8 @@ const filterFixtureDigests = [
 const manifestSource = {
   contractVersion: 1,
   status: "provisional-contract-only",
-  liveValidationTask: "agentscope-vah.12.6",
+  automatedEvidence: "hermetic-contract-fixture-request-ledger-only",
+  remoteProviderCompatibility: "not-claimed",
   authority: {
     selection: "configuration-commit-only",
     configurationIdentityIncludes: ["profile-id", "manifest-id"],
@@ -774,20 +775,17 @@ const manifestSource = {
     },
     {
       claimId: "otlp-to-observation-projection",
-      disposition: "live-validation-required",
-      task: "agentscope-vah.12.6",
+      disposition: "hermetic-contract-evidence-only",
       fixtures: ["otlp-v4-json-root-v1", "observations-v2-root-search-v1"],
     },
     {
       claimId: "visibility-latency",
-      disposition: "live-validation-required",
-      task: "agentscope-vah.12.6",
+      disposition: "hermetic-contract-evidence-only",
       fixtures: ["otlp-v4-json-root-v1"],
     },
     {
       claimId: "filter-round-trip",
-      disposition: "live-validation-required",
-      task: "agentscope-vah.12.6",
+      disposition: "hermetic-contract-evidence-only",
       fixtures: [
         "observations-v2-root-search-v1",
         "observations-v1-events-root-search-v1",
@@ -798,8 +796,7 @@ const manifestSource = {
     },
     {
       claimId: "asynchronous-cleanup-completion",
-      disposition: "live-validation-required",
-      task: "agentscope-vah.12.6",
+      disposition: "hermetic-contract-evidence-only",
       fixtures: ["trace-delete-accepted-v1"],
     },
   ],
