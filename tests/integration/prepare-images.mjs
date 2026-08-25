@@ -1,8 +1,11 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { compileCapabilityManifest } from "./dist/index.js";
+import {
+  preparePinnedDockerImages,
+  publishPreparedImageEvidence,
+} from "./image-preparation.mjs";
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -35,31 +38,29 @@ const images = [
     }),
   ),
 ].sort();
-const prepared = images.map((image) => {
-  execFileSync("docker", ["pull", image], { stdio: "inherit" });
-  const localImageDigest = execFileSync(
-    "docker",
-    ["image", "inspect", "--format", "{{.Id}}", image],
-    { encoding: "utf8" },
-  ).trim();
-  if (!/^sha256:[a-f\d]{64}$/u.test(localImageDigest))
-    throw new Error("integration.images.digest");
-  return { image, localImageDigest: localImageDigest.replace(":", "-") };
-});
-mkdirSync(artifactsRoot, { recursive: true });
-const target = resolve(artifactsRoot, "current-images.json");
-const temporary = `${target}.${process.pid}.tmp`;
-writeFileSync(
-  temporary,
-  `${JSON.stringify(
-    {
-      imageEvidenceVersion: 1,
-      manifestIdentity: manifest.manifestIdentity,
-      images: prepared,
-    },
-    undefined,
-    2,
-  )}\n`,
-);
-renameSync(temporary, target);
-console.log(JSON.stringify(prepared));
+const controller = new AbortController();
+const interrupt = () => controller.abort();
+process.once("SIGINT", interrupt);
+process.once("SIGTERM", interrupt);
+try {
+  const prepared = await preparePinnedDockerImages(images, {
+    signal: controller.signal,
+  });
+  publishPreparedImageEvidence(resolve(artifactsRoot, "current-images.json"), {
+    imageEvidenceVersion: 1,
+    manifestIdentity: manifest.manifestIdentity,
+    images: prepared,
+  });
+  process.stdout.write(`${JSON.stringify(prepared)}\n`);
+} catch (error) {
+  const code =
+    error instanceof Error &&
+    /^integration\.images\.[a-z-]+$/u.test(error.message)
+      ? error.message
+      : "integration.images.command";
+  process.stderr.write(`${code}\n`);
+  process.exitCode = 1;
+} finally {
+  process.removeListener("SIGINT", interrupt);
+  process.removeListener("SIGTERM", interrupt);
+}

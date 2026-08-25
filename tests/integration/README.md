@@ -32,6 +32,18 @@ pnpm --filter @agentscope/integration prepare:images
 pnpm --filter @agentscope/integration prepare:model-routes
 ```
 
+Pinned-image preparation uses one five-minute absolute authority across every
+selected pull and digest inspection. It reserves the final five seconds for
+process-group termination, a genuine leader join, and protected proof that the
+group is absent or contains only dead zombie entries incapable of further work.
+It consumes at most 64 KiB of subprocess output and invokes Docker with a
+private empty client configuration so a developer credential helper or store is
+never consulted. Timeout, interruption, command, output, and digest failures
+emit only stable `integration.images.*` codes and do not publish a new
+`current-images.json`.
+Hosts without an owned POSIX process-group primitive fail with a stable platform
+code before Docker is spawned.
+
 Run the selected scenario. Repeat the same command three times for local
 substrate certification; do not rebuild or replace the prepared candidate
 between those runs:
