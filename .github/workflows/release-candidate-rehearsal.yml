@@ -1,0 +1,89 @@
+name: Release candidate rehearsal
+
+on:
+  workflow_call:
+    inputs:
+      candidate-artifact-name:
+        required: true
+        type: string
+      candidate-manifest-path:
+        required: true
+        type: string
+      candidate-certification-path:
+        required: true
+        type: string
+      candidate-tarball-path:
+        required: true
+        type: string
+      rehearsal-records-path:
+        required: true
+        type: string
+      trusted-candidate-manifest-digest:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-certified-candidate:
+    name: Validate existing certified tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.candidate-artifact-name }}
+          path: artifacts/release-candidate
+      - name: Authenticate checkout, caller, and reusable workflow identity
+        env:
+          EXPECTED_MANIFEST_DIGEST: ${{ inputs.trusted-candidate-manifest-digest }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: >-
+          node scripts/verify-release-workflow-context.mjs
+          --repository "$GITHUB_REPOSITORY"
+          --source-revision "$SOURCE_REVISION"
+          --observed-head "$(git rev-parse HEAD)"
+          --caller-workflow-ref "$CALLER_WORKFLOW_REF"
+          --job-workflow-ref "$JOB_WORKFLOW_REF"
+          --job-workflow-sha "$JOB_WORKFLOW_SHA"
+          --candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST"
+          --protected-tag v0.1.0
+      - name: Validate exact candidate without rebuilding
+        env:
+          CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest-path }}
+          CANDIDATE_CERTIFICATION: ${{ inputs.candidate-certification-path }}
+          CANDIDATE_TARBALL: ${{ inputs.candidate-tarball-path }}
+          EXPECTED_MANIFEST_DIGEST: ${{ inputs.trusted-candidate-manifest-digest }}
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
+        run: >-
+          node scripts/verify-release-candidate.mjs
+          --artifact-root artifacts/release-candidate
+          --manifest-relative "$CANDIDATE_MANIFEST"
+          --certification-relative "$CANDIDATE_CERTIFICATION"
+          --tarball-relative "$CANDIDATE_TARBALL"
+          --manifest-digest "$EXPECTED_MANIFEST_DIGEST"
+          --source-revision "$EXPECTED_SOURCE_REVISION"
+          --protected-tag v0.1.0
+      - name: Validate synthetic records against executing bytes
+        env:
+          REHEARSAL_RECORDS: ${{ inputs.rehearsal-records-path }}
+        run: >-
+          node scripts/verify-release-records.mjs
+          --artifact-root artifacts/release-candidate
+          --record-set-relative "$REHEARSAL_RECORDS"
+          --workspace-root .
+          --workflow-relative .github/workflows/release.yml
+      - run: pnpm verify:release-lane-substrate
