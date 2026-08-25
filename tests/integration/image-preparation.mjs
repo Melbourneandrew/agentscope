@@ -1,6 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import {
+  accessSync,
   chmodSync,
+  constants,
   mkdirSync,
   mkdtempSync,
   renameSync,
@@ -84,26 +86,40 @@ const processExecutable = () =>
       ? "/usr/bin/ps"
       : undefined;
 
-const inspectProcessGroup = (processGroup, deadline) => {
-  const executable = processExecutable();
+const inspectProcessGroup = (
+  processGroup,
+  deadline,
+  executable = processExecutable(),
+  argumentsPrefix = [],
+) => {
   const remaining = Math.floor(deadline - performance.now());
   if (executable === undefined || remaining < 1) return "unavailable";
   try {
-    const output = execFileSync(executable, ["-axo", "pid=,pgid=,state="], {
-      encoding: "utf8",
-      maxBuffer: maximumProcessInspectionBytes,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: Math.min(maximumProcessInspectionMilliseconds, remaining),
-    });
+    const output = execFileSync(
+      executable,
+      [...argumentsPrefix, "-axo", "pid=,pgid=,state="],
+      {
+        encoding: "utf8",
+        maxBuffer: maximumProcessInspectionBytes,
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: remaining,
+      },
+    );
     return classifyProcessGroupState(output, processGroup);
   } catch {
     return "unavailable";
   }
 };
 
-const assertProcessInspectionAvailable = (deadline) => {
-  if (inspectProcessGroup(process.pid, deadline) === "unavailable")
+const assertProcessInspectionAvailable = (executable) => {
+  const inspectionExecutable = executable ?? processExecutable();
+  if (inspectionExecutable === undefined)
     throw fixedError("integration.images.platform");
+  try {
+    accessSync(inspectionExecutable, constants.X_OK);
+  } catch {
+    throw fixedError("integration.images.platform");
+  }
 };
 
 const proveProcessGroupAbsent = async (pid, deadline) => {
@@ -119,7 +135,13 @@ const proveProcessGroupAbsent = async (pid, deadline) => {
 
 const never = () => new Promise(() => {});
 
-const settleTerminatedProcess = async (child, closed, termination) => {
+const settleTerminatedProcess = async (
+  child,
+  closed,
+  termination,
+  processInspectionExecutable,
+  processInspectionArgumentsPrefix,
+) => {
   const proofMilliseconds = Math.min(
     maximumAbsenceProofMilliseconds,
     Math.floor(termination.teardownMilliseconds / 2),
@@ -150,7 +172,12 @@ const settleTerminatedProcess = async (child, closed, termination) => {
   const absent = await proveProcessGroupAbsent(child.pid, absenceDeadline);
   const groupState = absent
     ? "absent"
-    : inspectProcessGroup(child.pid, inspectionDeadline);
+    : inspectProcessGroup(
+        child.pid,
+        inspectionDeadline,
+        processInspectionExecutable,
+        processInspectionArgumentsPrefix,
+      );
   if (closeBeforeProof === undefined)
     closeBeforeProof = await Promise.race([
       closeSettlement,
@@ -173,13 +200,21 @@ const settleTerminatedProcess = async (child, closed, termination) => {
 const runUntilDeadline = async (
   executable,
   arguments_,
-  { closeBarrier, deadline, teardownMilliseconds, environment, signal },
+  {
+    closeBarrier,
+    deadline,
+    teardownMilliseconds,
+    environment,
+    processInspectionArgumentsPrefix,
+    processInspectionExecutable,
+    signal,
+  },
 ) => {
   if (process.platform === "win32")
     throw fixedError("integration.images.platform");
   if (signal?.aborted) throw fixedError("integration.images.interrupted");
   const workDeadline = deadline - teardownMilliseconds;
-  assertProcessInspectionAvailable(workDeadline);
+  assertProcessInspectionAvailable(processInspectionExecutable);
   const remainingWork = workDeadline - performance.now();
   if (remainingWork <= 0) throw fixedError("integration.images.timeout", true);
   let child;
@@ -234,9 +269,13 @@ const runUntilDeadline = async (
       resolveResult({ code, childSignal }),
     );
   });
-  const barrier = Promise.resolve()
-    .then(() => closeBarrier?.())
-    .catch(never);
+  const processGroup = child.pid;
+  const barrier =
+    Number.isSafeInteger(processGroup) && processGroup > 0
+      ? Promise.resolve()
+          .then(() => closeBarrier?.(processGroup))
+          .catch(never)
+      : Promise.resolve();
   const observedClose = Promise.all([closed, barrier]).then(
     ([result]) => result,
   );
@@ -246,12 +285,24 @@ const runUntilDeadline = async (
       termination.then((state) => ({ state })),
     ]);
     if ("state" in first)
-      return await settleTerminatedProcess(child, closed, first.state);
+      return await settleTerminatedProcess(
+        child,
+        closed,
+        first.state,
+        processInspectionExecutable,
+        processInspectionArgumentsPrefix,
+      );
     clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
     if (!processGroupIsAbsent(child.pid)) {
       terminate("integration.images.command");
-      return await settleTerminatedProcess(child, closed, terminationState);
+      return await settleTerminatedProcess(
+        child,
+        closed,
+        terminationState,
+        processInspectionExecutable,
+        processInspectionArgumentsPrefix,
+      );
     }
     const result = first.result;
     if (result.code !== 0 || result.childSignal !== null)
@@ -313,6 +364,9 @@ export const preparePinnedDockerImages = async (images, options = {}) => {
         deadline,
         teardownMilliseconds,
         environment,
+        processInspectionArgumentsPrefix:
+          options.processInspectionArgumentsPrefix,
+        processInspectionExecutable: options.processInspectionExecutable,
         signal: options.signal,
       });
       const localImageDigest = (
@@ -324,6 +378,9 @@ export const preparePinnedDockerImages = async (images, options = {}) => {
             deadline,
             teardownMilliseconds,
             environment,
+            processInspectionArgumentsPrefix:
+              options.processInspectionArgumentsPrefix,
+            processInspectionExecutable: options.processInspectionExecutable,
             signal: options.signal,
           },
         )

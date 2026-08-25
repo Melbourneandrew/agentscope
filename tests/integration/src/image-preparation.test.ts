@@ -57,6 +57,17 @@ const proveDescendantAbsent = (root: string) => {
     expect.objectContaining({ code: "ESRCH" }),
   );
 };
+const proveProcessGroupAbsent = (processGroup: number | undefined) => {
+  if (
+    processGroup === undefined ||
+    !Number.isSafeInteger(processGroup) ||
+    processGroup < 1
+  )
+    throw new Error("integration.images.fixture");
+  expect(() => process.kill(-processGroup, 0)).toThrow(
+    expect.objectContaining({ code: "ESRCH" }),
+  );
+};
 
 afterEach(() => {
   for (const root of roots.splice(0))
@@ -127,10 +138,14 @@ describe("pinned Docker image preparation", () => {
 
   it("bounds a missing close observation with final group-absence proof", async () => {
     const root = createRoot();
+    let processGroup: number | undefined;
     await expect(
       preparePinnedDockerImages([image], {
         ...options(root, "hang"),
-        closeBarrier: () => new Promise<void>(() => {}),
+        closeBarrier: (ownedProcessGroup) => {
+          processGroup = ownedProcessGroup;
+          return new Promise<void>(() => {});
+        },
         maximumPreparationMilliseconds: 800,
         teardownMilliseconds: 400,
       }),
@@ -138,7 +153,7 @@ describe("pinned Docker image preparation", () => {
       code: "ETIMEDOUT",
       message: "integration.images.timeout",
     });
-    proveDescendantAbsent(root);
+    proveProcessGroupAbsent(processGroup);
     const record = JSON.parse(
       readFileSync(resolve(root, "record.json"), "utf8"),
     ) as { dockerConfigPath: string };
@@ -165,6 +180,41 @@ describe("pinned Docker image preparation", () => {
     await expect(
       preparePinnedDockerImages([image], options(root, "oversized")),
     ).rejects.toThrow("integration.images.output");
+  });
+});
+
+describe("image preparation scheduling boundaries", () => {
+  it("does not schedule process inspection before an owned group exists", async () => {
+    const root = createRoot();
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(root, "success"),
+        processInspectionExecutable: process.execPath,
+        processInspectionArgumentsPrefix: [fixture, "inspect-processes"],
+      }),
+    ).resolves.toHaveLength(1);
+    expect(existsSync(resolve(root, "inspection"))).toBe(false);
+  });
+
+  it("proves the owned group absent when fixture readiness is not published", async () => {
+    const root = createRoot();
+    let processGroup: number | undefined;
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(root, "hang-before-ready"),
+        closeBarrier: (ownedProcessGroup) => {
+          processGroup = ownedProcessGroup;
+          return Promise.resolve();
+        },
+        maximumPreparationMilliseconds: 800,
+        teardownMilliseconds: 400,
+      }),
+    ).rejects.toMatchObject({
+      code: "ETIMEDOUT",
+      message: "integration.images.timeout",
+    });
+    expect(existsSync(resolve(root, "ready"))).toBe(false);
+    proveProcessGroupAbsent(processGroup);
   });
 });
 
@@ -196,6 +246,33 @@ describe("image preparation failure boundaries", () => {
     } finally {
       Object.defineProperty(process, "platform", descriptor);
     }
+  });
+
+  it("fails before spawn when process inspection is not executable", async () => {
+    const root = createRoot();
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(root, "success"),
+        processInspectionExecutable: resolve(root, "missing-ps"),
+      }),
+    ).rejects.toThrow("integration.images.platform");
+    expect(existsSync(resolve(root, "record.json"))).toBe(false);
+  });
+
+  it("does not publish process-group authority after spawn fails", async () => {
+    const root = createRoot();
+    let barrierCalled = false;
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(root, "success"),
+        closeBarrier: () => {
+          barrierCalled = true;
+          return Promise.resolve();
+        },
+        dockerExecutable: resolve(root, "missing-docker"),
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(barrierCalled).toBe(false);
   });
 
   it("removes the private Docker config after a setup prefix fails", async () => {

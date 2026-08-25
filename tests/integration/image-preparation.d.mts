@@ -3,9 +3,11 @@ export interface PreparePinnedDockerImagesOptions {
   teardownMilliseconds?: number;
   dockerExecutable?: string;
   dockerArgumentsPrefix?: readonly string[];
+  processInspectionExecutable?: string;
+  processInspectionArgumentsPrefix?: readonly string[];
   environment?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
-  closeBarrier?: () => Promise<void>;
+  closeBarrier?: (processGroup: number) => Promise<void>;
 }
 
 export interface PreparedDockerImage {
