@@ -11,7 +11,7 @@ The Claude Code integration must authenticate an exact binary, exercise document
 
 ### ADR-001: Verify exact platform packages against Anthropic's signed manifest
 
-**Decision:** Trusted preparation fetches an exact public Claude Code platform package without npm authentication, verifies its registry integrity, verifies the contained binary digest against Anthropic's exact-version manifest, and authenticates that manifest with Anthropic's documented release-signing key before building the ephemeral prepared image. A moving bootstrap installer is not artifact authority. Persistent mirroring or redistribution is prohibited unless vendor terms or explicit permission establish that right.
+**Decision:** Trusted preparation fetches an exact public Claude Code platform package without npm authentication, verifies its registry integrity, verifies the contained binary digest against Anthropic's exact-version manifest, and authenticates that manifest with Anthropic's documented release-signing key. A container backend builds the ephemeral prepared image; a native backend installs the same authenticated exact input on its disposable runner and records the installed binary identity without inventing an image. A moving bootstrap installer is not artifact authority. Persistent mirroring or redistribution is prohibited unless vendor terms or explicit permission establish that right.
 
 **Context:** Anthropic documents exact-version manifests, platform checksums, and detached signatures for current releases ([installation and binary integrity](https://code.claude.com/docs/en/installation)). Its legal material does not provide a general redistribution grant ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)).
 
@@ -20,6 +20,8 @@ The Claude Code integration must authenticate an exact binary, exercise document
 ### ADR-002: Treat interactive and print modes as separate interfaces
 
 **Decision:** Interactive evidence drives `claude` through the semantic PTY contract. Headless evidence drives `claude -p` and binds the selected text, JSON, or stream-JSON contract. A support claim names the exact mode and output contract exercised.
+
+The closed canonical pairs are `interactive` with `semantic-pty`, `print` with `text`, `print` with `json`, and `print` with `stream-json`. Each pair is a distinct harness claim identity for the exact Claude Code version and needs its own native evidence.
 
 **Context:** Claude Code documents interactive and programmatic interfaces separately ([CLI reference](https://code.claude.com/docs/en/cli-usage), [headless use](https://code.claude.com/docs/en/headless)).
 
@@ -55,7 +57,7 @@ The Claude Code integration must authenticate an exact binary, exercise document
 
 ### ADR-007: Keep Claude Code unadmitted until lifecycle replay passes
 
-**Decision:** No Claude Code version or mode enters the compatibility catalog or release support manifest until the exact selected binary passes both claimed interfaces under denied public egress, proves exact internal request and fallback behavior, proves the shell-free root launcher contract, and completes packed-Agentscope hook install, capture, fail-open deadline, conflict, concurrent-edit, uninstall, process, filesystem, image, and ledger cleanup evidence. Research observations establish candidate controls and oracles, not support.
+**Decision:** Each exact Claude Code claim identity is admitted independently. It cannot enter the compatibility catalog or release support manifest until the selected binary passes that pair's documented interface under denied public egress, proves its exact internal request and fallback behavior and shell-free root launcher contract, and completes its packed-Agentscope hook install, capture, fail-open deadline, conflict, concurrent-edit, uninstall, process, filesystem, backend-appropriate prepared-input and resource cleanup, and ledger evidence. Passing another mode/output pair neither satisfies nor blocks this claim, except where an explicitly shared version-wide acquisition or suppression invariant itself fails. Research observations establish candidate controls and oracles, not support.
 
 **Context:** Official-source and disposable research established a viable authenticated acquisition and internal routing candidate, but did not complete the governed packed-CLI lifecycle or release admission replay.
 

@@ -17,8 +17,8 @@ Harness adapters implement the [Harness Management](/docs/requirements/harness-m
 
 ### ADR-002: Keep adapter responsibilities narrow
 
-**Decision:** Each adapter descriptor owns detection, the runtime compatibility range and compatibility-state logic, owned configuration generation, native artifact collection, and native-to-`CapturedTrace` mapping.
+**Decision:** Each adapter descriptor owns detection; eligible runtime compatibility ranges; a closed set of canonical execution-mode and output-contract identities; compatibility-state logic; owned configuration generation; native artifact collection; and native-to-`CapturedTrace` mapping. One versioned harness claim identity binds the harness registry identity, exact harness version, one canonical execution-mode identity, and one canonical output-contract identity. Each authoritative harness Blueprint defines the native meaning and allowed pairings of its mode and output identities; scenario tags are never claim authority.
 
 **Context:** Reporter behavior, redaction, delivery deadlines, and configuration persistence must remain common across harnesses.
 
-**Consequences:** The integration capability manifest records pinned tested representatives and evidence rather than a second supported-version range. CI verifies that every matrix representative satisfies its descriptor and that advertised ranges meet the coverage policy. An adapter must supply a real-harness scenario before claiming compatibility.
+**Consequences:** Eligible descriptor ranges are candidate-admission boundaries, not evidence or release claims. One real-harness scenario certifies only its exact claim identity and the exact release support row that consumes it; no boundary or interior representative extrapolates support to another version, mode, output contract, platform, or destination. [CLI Installation ADR-003](/docs/blueprints/operations/cli-installation) solely owns the release support-row schema, while the testing catalog supplies the matching evidence. An adapter must supply the exact real-harness scenario required by that row before claiming compatibility.

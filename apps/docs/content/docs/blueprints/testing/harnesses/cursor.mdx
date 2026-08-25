@@ -21,6 +21,8 @@ The Cursor integration must use an independently authenticated exact binary, rou
 
 **Decision:** Interactive evidence drives `agent` through the semantic PTY contract. Headless evidence drives `agent -p` with an exact documented output format. ACP is a separate stdio JSON-RPC interface and may be claimed only with its own session, permission, cancellation, and cleanup evidence.
 
+The closed canonical pairs currently contain only `interactive` with `semantic-pty` and `acp` with `stdio-json-rpc`. No print-mode claim is admitted until official-source research selects and codifies its exact documented output-contract identity; a generic `print` tag is not claim authority.
+
 **Context:** Cursor documents interactive Agent/Plan/Ask modes, print/headless output, and a distinct ACP server ([CLI overview](https://prod.cursor.com/docs/cli/overview), [headless CLI](https://prod.cursor.com/docs/cli/headless), [ACP](https://prod.cursor.com/docs/cli/acp)).
 
 ### ADR-003: Reject endpoint-shaped evidence until model routing is proven

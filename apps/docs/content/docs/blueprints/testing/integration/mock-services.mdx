@@ -15,7 +15,7 @@ MockServer and loopback telemetry services make real harness execution determini
 
 **Context:** A transcript parser cannot prove endpoint overrides, native tool flow, or hook invocation. A real outbound request would make a test costly, nondeterministic, and unsafe.
 
-**Consequences:** Mock services are reachable only on the scenario's internal Docker network and are never published on host ports. An unexpected egress, provider-authentication attempt, or fallback route fails the scenario. Dummy sentinel values may exercise required local parsing, but they grant no provider authority and cannot resemble a usable credential.
+**Consequences:** A container row reaches controller-owned mocks only on its internal Docker network, with no host port publication. A native row runs mocks and ledgers under the trusted controller principal on the disposable native runner, binds only the protocol endpoint to a scenario-private loopback address, and exposes no listener on an external interface; candidate code can send bounded protocol requests but cannot inspect, signal, or mutate the service process, assertion ledger, or its storage. Native network containment denies public egress independently. An unexpected egress, provider-authentication attempt, externally reachable listener, oracle-control access, or fallback route fails the scenario. Fixed sentinel values may exercise harness-owned local parsing only where the selected mode requires them, but they grant no provider authority and cannot resemble a usable credential.
 
 ### ADR-002: Observe destination delivery independently
 

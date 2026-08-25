@@ -11,7 +11,7 @@ The Codex integration must install an authenticated exact binary, exercise each 
 
 ### ADR-001: Authenticate exact public npm inputs during ephemeral preparation
 
-**Decision:** Trusted preparation fetches exact public `@openai/codex` wrapper and platform packages without npm authentication, verifies registry integrity, npm signatures, and published provenance for the same release identity, then builds the ephemeral prepared image defined by [Matrix Operations](/docs/blueprints/testing/integration/matrix-operations). The compatibility catalog, not a moving installer or research exemplar, selects the supported version. A persistent mirror requires a separate license and artifact-content review; the repository license alone is not a blanket redistribution conclusion for every packaged component.
+**Decision:** Trusted preparation fetches exact public `@openai/codex` wrapper and platform packages without npm authentication and verifies registry integrity, npm signatures, and published provenance for the same release identity. A container backend builds the ephemeral prepared image defined by [Matrix Operations](/docs/blueprints/testing/integration/matrix-operations); a native backend installs the same authenticated exact input on its disposable runner and records the installed binary identity without inventing an image. The compatibility catalog, not a moving installer or research exemplar, selects the supported version. A persistent mirror requires a separate license and artifact-content review; the repository license alone is not a blanket redistribution conclusion for every packaged component.
 
 **Context:** Codex documents npm installation and publishes Apache-2.0 source and release artifacts with registry provenance ([installation](https://developers.openai.com/codex/cli), [open-source repository](https://developers.openai.com/codex/open-source)). Exact package integrity and provenance can be checked before scenario isolation.
 
@@ -20,6 +20,8 @@ The Codex integration must install an authenticated exact binary, exercise each 
 ### ADR-002: Treat TUI and exec as separate documented interfaces
 
 **Decision:** Interactive evidence drives `codex` through the semantic PTY contract; headless evidence drives `codex exec`, with `--json` used as one native observation plane. A release claim names the exact mode exercised and cannot infer parity between them.
+
+The closed canonical pairs are `interactive` with `semantic-pty` and `exec` with `jsonl`. Each pair is a distinct harness claim identity for the exact Codex version; neither may satisfy the other.
 
 **Context:** Codex documents the interactive CLI and a distinct non-interactive `exec` interface with JSON Lines output ([CLI reference](https://developers.openai.com/codex/cli/reference), [non-interactive mode](https://developers.openai.com/codex/non-interactive-mode)).
 
