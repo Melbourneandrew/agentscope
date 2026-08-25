@@ -7,7 +7,13 @@ if (!scenarioId || (mode !== "ingestion" && mode !== "retrieval"))
 
 const entries = [];
 const traces = new Map();
-const maximumRequestBytes = 1024 * 1024;
+const maximumRequestBytesValue = process.env.AGENTSCOPE_MAXIMUM_REQUEST_BYTES;
+if (
+  !/^\d+$/u.test(maximumRequestBytesValue ?? "") ||
+  Number(maximumRequestBytesValue) !== 1024 * 1024
+)
+  throw new Error("integration.destination.environment");
+const maximumRequestBytes = Number(maximumRequestBytesValue);
 const readBody = async (request) => {
   const chunks = [];
   let bytes = 0;

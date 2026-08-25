@@ -38,9 +38,31 @@ between those runs:
 
 ```sh
 AGENTSCOPE_INTEGRATION_CONCURRENCY=1 \
-  AGENTSCOPE_INTEGRATION_TIMEOUT_MS=300000 \
+AGENTSCOPE_INTEGRATION_TIMEOUT_MS=300000 \
   pnpm --filter @agentscope/integration run:scenarios
 ```
+
+Each run writes a strict `evidenceVersion: 2` record beneath its fixed
+`artifacts/integration/runs/<run-id>` directory. The record is self-describing:
+it binds the selected manifest scenarios and selector, effective concurrency and
+scenario timeout, Docker client/engine/default-runtime identity, exact per-
+container memory/process/tmpfs ceilings, the 1 MiB destination-sidecar request
+ceiling, the split cleanup timeout, and the post-cleanup count for every owned
+resource class. The selected scenario set is recomputed from the exact selector
+and manifest before execution, and each record binds its scenario back to that
+set. These fields are compiled
+from executor-owned constants, validated selection input, Docker's projected
+runtime record, and a final label-scoped inventory; scenario or fixture payloads
+cannot supply them. A cleanup proof failure records `verification-failed` with
+unknown counts rather than inventing zero survivors, and fails the run.
+If runtime inspection fails before execution, the record uses the explicit
+`unavailable` runtime-inspection disposition, retains the executor-owned limits
+and selection, records null unbuilt image identities, and still performs and
+records cleanup.
+
+The runtime projection is deliberately non-secret and path-free. It excludes
+Docker root paths, host names, environment variables, credentials, command
+arguments, and raw provider or harness data.
 
 After every run, require the four commands below to print nothing. The scenario
 runner has already destroyed its disposable homes, worktree, ledger, containers,

@@ -9,6 +9,11 @@ const digest = z.string().regex(/^sha256-[a-f\d]{64}$/u);
 const imageReference = z
   .string()
   .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u);
+const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
+const version = z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/u);
+const productName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .()_-]{0,95}$/u);
+const runtimeName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u);
+const boundedCount = z.number().int().min(0).max(256);
 
 export const SCENARIO_TMPFS_MOUNTS = deepFreeze([
   "/home/agentscope",
@@ -18,6 +23,202 @@ export const SCENARIO_TMPFS_MOUNTS = deepFreeze([
   "/ledger",
   "/tmp",
 ] as const);
+
+const mebibytes = (value: number): number => value * 1024 * 1024;
+
+export const ISOLATION_EXECUTOR_LIMITS = deepFreeze({
+  containers: {
+    scenario: {
+      memoryBytes: mebibytes(512),
+      pidsLimit: 128,
+      tmpfs: SCENARIO_TMPFS_MOUNTS.map((path) => ({
+        path,
+        bytes: mebibytes(16),
+      })),
+    },
+    collector: {
+      memoryBytes: mebibytes(512),
+      pidsLimit: 128,
+      tmpfs: [{ path: "/tmp", bytes: mebibytes(16) }],
+    },
+    retrieval: {
+      memoryBytes: mebibytes(512),
+      pidsLimit: 128,
+      tmpfs: [{ path: "/tmp", bytes: mebibytes(16) }],
+    },
+    mockServer: {
+      memoryBytes: mebibytes(512),
+      pidsLimit: 128,
+      tmpfs: [{ path: "/tmp", bytes: mebibytes(64) }],
+    },
+  },
+  cleanup: {
+    totalMilliseconds: 60_000,
+    removalMilliseconds: 50_000,
+    proofMilliseconds: 10_000,
+  },
+  requests: {
+    destinationServerMaximumBytes: mebibytes(1),
+  },
+} as const);
+
+const tmpfsLimitSchema = z.strictObject({
+  path: z.enum(SCENARIO_TMPFS_MOUNTS),
+  bytes: z.number().int().min(mebibytes(1)).max(mebibytes(64)),
+});
+const containerLimitSchema = z.strictObject({
+  memoryBytes: z.number().int().min(mebibytes(64)).max(mebibytes(1024)),
+  pidsLimit: z.number().int().min(16).max(512),
+  tmpfs: z.array(tmpfsLimitSchema).min(1).max(SCENARIO_TMPFS_MOUNTS.length),
+});
+const runtimeIdentitySchema = z.strictObject({
+  executor: z.literal("docker"),
+  clientVersion: version,
+  engine: z.strictObject({
+    kind: z.enum(["docker-desktop", "docker-engine"]),
+    product: productName,
+    version,
+    apiVersion: version,
+    operatingSystem: productName,
+    osType: runtimeName,
+    architecture: runtimeName,
+  }),
+  containerRuntime: z.strictObject({
+    name: runtimeName,
+    version,
+  }),
+  containerdVersion: version,
+});
+const runtimeInspectionSchema = z.discriminatedUnion("outcome", [
+  z.strictObject({
+    outcome: z.literal("complete"),
+    identity: runtimeIdentitySchema,
+  }),
+  z.strictObject({
+    outcome: z.literal("unavailable"),
+    identity: z.null(),
+  }),
+]);
+const selectionFields = {
+  selectionVersion: z.literal(2),
+  manifestIdentity: digest,
+  scenarioIds: z.array(id).min(1).max(256),
+} as const;
+const selectionPolicySchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    ...selectionFields,
+    mode: z.literal("scenario"),
+    selector: z.strictObject({ scenarioId: id }),
+  }),
+  z.strictObject({
+    ...selectionFields,
+    mode: z.literal("harness"),
+    selector: z.strictObject({ harnessId: id }),
+  }),
+  z.strictObject({
+    ...selectionFields,
+    mode: z.literal("tag"),
+    selector: z.strictObject({ tag: id }),
+  }),
+  z.strictObject({
+    ...selectionFields,
+    mode: z.literal("shard"),
+    selector: z.strictObject({
+      shard: z
+        .strictObject({
+          index: z.number().int().min(0).max(255),
+          total: z.number().int().min(1).max(256),
+        })
+        .refine(({ index, total }) => index < total),
+    }),
+  }),
+  z.strictObject({
+    ...selectionFields,
+    mode: z.literal("full"),
+    selector: z.strictObject({}),
+  }),
+]);
+const executionPolicySchema = z
+  .strictObject({
+    policyVersion: z.literal(1),
+    runtimeInspection: runtimeInspectionSchema,
+    selection: selectionPolicySchema,
+    maximumParallelScenarios: z.number().int().min(1).max(16),
+    scenarioTimeoutMilliseconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(30 * 60 * 1000),
+    cleanupTimeouts: z.strictObject({
+      totalMilliseconds: z.number().int().min(1).max(120_000),
+      removalMilliseconds: z.number().int().min(1).max(120_000),
+      proofMilliseconds: z.number().int().min(1).max(120_000),
+    }),
+    containers: z.strictObject({
+      scenario: containerLimitSchema,
+      collector: containerLimitSchema,
+      retrieval: containerLimitSchema,
+      mockServer: containerLimitSchema,
+    }),
+    requests: z.strictObject({
+      destinationServerMaximumBytes: z
+        .number()
+        .int()
+        .min(1024)
+        .max(16 * 1024 * 1024),
+    }),
+  })
+  .superRefine((value, context) => {
+    if (
+      JSON.stringify(value.containers) !==
+        JSON.stringify(ISOLATION_EXECUTOR_LIMITS.containers) ||
+      JSON.stringify(value.cleanupTimeouts) !==
+        JSON.stringify(ISOLATION_EXECUTOR_LIMITS.cleanup) ||
+      JSON.stringify(value.requests) !==
+        JSON.stringify(ISOLATION_EXECUTOR_LIMITS.requests) ||
+      value.cleanupTimeouts.removalMilliseconds +
+        value.cleanupTimeouts.proofMilliseconds !==
+        value.cleanupTimeouts.totalMilliseconds ||
+      (value.selection.mode === "scenario" &&
+        (value.selection.scenarioIds.length !== 1 ||
+          value.selection.scenarioIds[0] !==
+            value.selection.selector.scenarioId))
+    )
+      context.addIssue({ code: "custom", message: "executor policy drift" });
+  });
+
+const cleanupInventorySchema = z.strictObject({
+  containers: boundedCount,
+  networks: boundedCount,
+  images: boundedCount,
+  volumes: boundedCount,
+  buildContexts: boundedCount,
+  activeRunMarkers: boundedCount,
+});
+const cleanupEvidenceSchema = z
+  .strictObject({
+    outcome: z.enum(["complete", "failed", "verification-failed"]),
+    removalFailureCount: z.number().int().min(0).max(8),
+    remaining: cleanupInventorySchema.nullable(),
+  })
+  .superRefine((value, context) => {
+    const remainingTotal =
+      value.remaining === null
+        ? undefined
+        : Object.values(value.remaining).reduce(
+            (total, count) => total + count,
+            0,
+          );
+    if (
+      (value.outcome === "complete" &&
+        (value.removalFailureCount !== 0 || remainingTotal !== 0)) ||
+      (value.outcome === "failed" &&
+        (value.remaining === null ||
+          (value.removalFailureCount === 0 && remainingTotal === 0))) ||
+      (value.outcome === "verification-failed" && value.remaining !== null)
+    )
+      context.addIssue({ code: "custom", message: "cleanup evidence drift" });
+  });
 
 export interface IsolationPlan {
   readonly runId: string;
@@ -35,27 +236,67 @@ export interface IsolationPlan {
   readonly mockServerName: string;
   readonly scenarioName: string;
   readonly tmpfsMounts: readonly string[];
+  readonly selection: IsolationExecutionPolicy["selection"];
+  readonly maximumParallelScenarios: number;
+  readonly scenarioTimeoutMilliseconds: number;
 }
 
-export interface IsolationEvidence {
-  readonly evidenceVersion: 1;
-  readonly runId: string;
-  readonly scenarioId: string;
-  readonly manifestIdentity: string;
-  readonly candidateBundleIdentity: string;
-  readonly candidateRevision: string;
-  readonly baseImage: string;
-  readonly mockServerImage: string;
-  readonly builtImageDigest: string;
-  readonly builtMockServerImageDigest: string;
-  readonly networkMode: "internal-only";
-  readonly hostMountCount: 0;
-  readonly readOnlyRootFilesystem: true;
-  readonly tmpfsMounts: readonly string[];
-  readonly outcome: "passed" | "failed" | "interrupted";
-}
+export type IsolationExecutionPolicy = z.infer<typeof executionPolicySchema>;
+export type IsolationCleanupInventory = z.infer<typeof cleanupInventorySchema>;
+
+const isolationEvidenceSchema = z
+  .strictObject({
+    evidenceVersion: z.literal(2),
+    runId: runToken,
+    scenarioId: id,
+    manifestIdentity: digest,
+    candidateBundleIdentity: digest,
+    candidateRevision: z.string().regex(/^[a-f\d]{40}$/u),
+    baseImage: imageReference,
+    mockServerImage: imageReference,
+    builtImageDigest: digest.nullable(),
+    builtMockServerImageDigest: digest.nullable(),
+    networkMode: z.literal("internal-only"),
+    hostMountCount: z.literal(0),
+    readOnlyRootFilesystem: z.literal(true),
+    tmpfsMounts: z
+      .array(z.enum(SCENARIO_TMPFS_MOUNTS))
+      .length(SCENARIO_TMPFS_MOUNTS.length)
+      .refine(
+        (value) =>
+          JSON.stringify(value) === JSON.stringify(SCENARIO_TMPFS_MOUNTS),
+      ),
+    executionPolicy: executionPolicySchema,
+    cleanup: cleanupEvidenceSchema,
+    outcome: z.enum(["passed", "failed", "interrupted"]),
+  })
+  .superRefine((value, context) => {
+    const runtimeInspectionUnavailable =
+      value.executionPolicy.runtimeInspection.outcome === "unavailable";
+    if (
+      value.executionPolicy.selection.manifestIdentity !==
+        value.manifestIdentity ||
+      !value.executionPolicy.selection.scenarioIds.includes(value.scenarioId) ||
+      (runtimeInspectionUnavailable &&
+        (value.outcome === "passed" ||
+          value.builtImageDigest !== null ||
+          value.builtMockServerImageDigest !== null)) ||
+      (value.builtMockServerImageDigest !== null &&
+        value.builtImageDigest === null) ||
+      (value.outcome === "passed" &&
+        (value.builtImageDigest === null ||
+          value.builtMockServerImageDigest === null))
+    )
+      context.addIssue({ code: "custom", message: "evidence binding drift" });
+  });
+
+export type IsolationEvidence = z.infer<typeof isolationEvidenceSchema>;
 
 export interface IsolationDriver {
+  inspectExecutionPolicy(
+    plan: IsolationPlan,
+    signal: AbortSignal,
+  ): Promise<unknown>;
   buildImage(plan: IsolationPlan, signal: AbortSignal): Promise<string>;
   buildMockServerImage(
     plan: IsolationPlan,
@@ -71,20 +312,50 @@ export interface IsolationDriver {
   removeNetwork(name: string): Promise<void>;
   removeImage(tag: string): Promise<void>;
   removeContext(runId: string): Promise<void>;
+  inspectCleanup(plan: IsolationPlan): Promise<unknown>;
 }
+
+export const compileIsolationExecutionPolicy = (
+  input: unknown,
+): Readonly<IsolationExecutionPolicy> => {
+  const parsed = executionPolicySchema.safeParse(input);
+  if (!parsed.success) throw new Error("integration.isolation.runtime-policy");
+  return deepFreeze(structuredClone(parsed.data));
+};
+
+export const compileIsolationEvidence = (
+  input: unknown,
+): Readonly<IsolationEvidence> => {
+  const parsed = isolationEvidenceSchema.safeParse(input);
+  if (!parsed.success) throw new Error("integration.isolation.evidence");
+  return deepFreeze(structuredClone(parsed.data));
+};
 
 export const createIsolationPlan = (input: {
   readonly scenario: CapabilityScenario;
   readonly manifestIdentity: string;
   readonly candidate: CandidateEvidence;
   readonly runToken: string;
+  readonly selection: unknown;
+  readonly maximumParallelScenarios: number;
+  readonly scenarioTimeoutMilliseconds: number;
 }): Readonly<IsolationPlan> => {
   const parsedToken = runToken.safeParse(input.runToken);
+  const parsedSelection = selectionPolicySchema.safeParse(input.selection);
   if (
     !parsedToken.success ||
+    !parsedSelection.success ||
     !digest.safeParse(input.manifestIdentity).success ||
     !imageReference.safeParse(input.scenario.image).success ||
-    !imageReference.safeParse(input.scenario.mockServerImage).success
+    !imageReference.safeParse(input.scenario.mockServerImage).success ||
+    parsedSelection.data.manifestIdentity !== input.manifestIdentity ||
+    !parsedSelection.data.scenarioIds.includes(input.scenario.scenarioId) ||
+    !Number.isSafeInteger(input.maximumParallelScenarios) ||
+    input.maximumParallelScenarios < 1 ||
+    input.maximumParallelScenarios > 16 ||
+    !Number.isSafeInteger(input.scenarioTimeoutMilliseconds) ||
+    input.scenarioTimeoutMilliseconds < 1 ||
+    input.scenarioTimeoutMilliseconds > 30 * 60 * 1000
   )
     throw new Error("integration.isolation.plan");
   const prefix = `agentscope-int-${parsedToken.data}`;
@@ -104,13 +375,30 @@ export const createIsolationPlan = (input: {
     mockServerName: `${prefix}-mockserver`,
     scenarioName: `${prefix}-scenario`,
     tmpfsMounts: SCENARIO_TMPFS_MOUNTS,
+    selection: parsedSelection.data,
+    maximumParallelScenarios: input.maximumParallelScenarios,
+    scenarioTimeoutMilliseconds: input.scenarioTimeoutMilliseconds,
   });
 };
+
+const unavailableExecutionPolicyFor = (
+  plan: IsolationPlan,
+): Readonly<IsolationExecutionPolicy> =>
+  compileIsolationExecutionPolicy({
+    policyVersion: 1,
+    runtimeInspection: { outcome: "unavailable", identity: null },
+    selection: plan.selection,
+    maximumParallelScenarios: plan.maximumParallelScenarios,
+    scenarioTimeoutMilliseconds: plan.scenarioTimeoutMilliseconds,
+    cleanupTimeouts: ISOLATION_EXECUTOR_LIMITS.cleanup,
+    containers: ISOLATION_EXECUTOR_LIMITS.containers,
+    requests: ISOLATION_EXECUTOR_LIMITS.requests,
+  });
 
 const cleanup = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
-): Promise<void> => {
+): Promise<number> => {
   const operations = [
     () => driver.removeContainer(plan.scenarioName),
     () => driver.removeContainer(plan.collectorName),
@@ -121,23 +409,15 @@ const cleanup = async (
     () => driver.removeImage(plan.mockServerImageTag),
     () => driver.removeContext(plan.runId),
   ];
-  const failures: unknown[] = [];
+  let failureCount = 0;
   for (const operation of operations) {
     try {
       await operation();
-    } catch (error) {
-      failures.push(error);
+    } catch {
+      failureCount += 1;
     }
   }
-  if (failures.length > 0) throw new Error("integration.isolation.cleanup");
-};
-
-const outcomeFor = (
-  signal: AbortSignal,
-  error: unknown,
-): IsolationEvidence["outcome"] => {
-  if (signal.aborted) return "interrupted";
-  return error === undefined ? "passed" : "failed";
+  return failureCount;
 };
 
 export const executeIsolationPlan = async (
@@ -145,28 +425,64 @@ export const executeIsolationPlan = async (
   driver: IsolationDriver,
   signal: AbortSignal,
 ): Promise<Readonly<IsolationEvidence>> => {
+  let executionPolicy = unavailableExecutionPolicyFor(plan);
   let imageDigest: string | undefined;
   let mockServerImageDigest: string | undefined;
   let failure: unknown;
+  let workOutcome: IsolationEvidence["outcome"];
   try {
+    executionPolicy = compileIsolationExecutionPolicy(
+      await driver.inspectExecutionPolicy(plan, signal),
+    );
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
-    imageDigest = await driver.buildImage(plan, signal);
-    if (!digest.safeParse(imageDigest).success)
+    const builtImageDigest = await driver.buildImage(plan, signal);
+    if (!digest.safeParse(builtImageDigest).success)
       throw new Error("integration.isolation.image-digest");
-    mockServerImageDigest = await driver.buildMockServerImage(plan, signal);
-    if (!digest.safeParse(mockServerImageDigest).success)
+    imageDigest = builtImageDigest;
+    const builtMockServerImageDigest = await driver.buildMockServerImage(
+      plan,
+      signal,
+    );
+    if (!digest.safeParse(builtMockServerImageDigest).success)
       throw new Error("integration.isolation.image-digest");
+    mockServerImageDigest = builtMockServerImageDigest;
     if (signal.aborted) throw new Error("integration.isolation.interrupted");
     await driver.createNetwork(plan, signal);
     await driver.startCollector(plan, signal);
     await driver.startRetrieval(plan, signal);
     await driver.startMockServer(plan, signal);
     await driver.runScenario(plan, signal);
+    workOutcome = "passed";
   } catch (error) {
     failure = error;
+    workOutcome = signal.aborted ? "interrupted" : "failed";
   }
-  const evidence = deepFreeze({
-    evidenceVersion: 1 as const,
+  const removalFailureCount = await cleanup(plan, driver);
+  let cleanupInventory: IsolationCleanupInventory | null = null;
+  let cleanupInspectionFailed = false;
+  try {
+    const parsed = cleanupInventorySchema.safeParse(
+      await driver.inspectCleanup(plan),
+    );
+    if (!parsed.success) throw new Error("integration.isolation.cleanup");
+    cleanupInventory = parsed.data;
+  } catch {
+    cleanupInspectionFailed = true;
+  }
+  const remainingCount =
+    cleanupInventory === null
+      ? undefined
+      : Object.values(cleanupInventory).reduce(
+          (total, count) => total + count,
+          0,
+        );
+  const cleanupOutcome = cleanupInspectionFailed
+    ? ("verification-failed" as const)
+    : removalFailureCount === 0 && remainingCount === 0
+      ? ("complete" as const)
+      : ("failed" as const);
+  const evidence = compileIsolationEvidence({
+    evidenceVersion: 2,
     runId: plan.runId,
     scenarioId: plan.scenarioId,
     manifestIdentity: plan.manifestIdentity,
@@ -174,27 +490,27 @@ export const executeIsolationPlan = async (
     candidateRevision: plan.candidateRevision,
     baseImage: plan.baseImage,
     mockServerImage: plan.mockServerImage,
-    builtImageDigest: imageDigest ?? `sha256-${"0".repeat(64)}`,
-    builtMockServerImageDigest:
-      mockServerImageDigest ?? `sha256-${"0".repeat(64)}`,
+    builtImageDigest: imageDigest ?? null,
+    builtMockServerImageDigest: mockServerImageDigest ?? null,
     networkMode: "internal-only" as const,
     hostMountCount: 0 as const,
     readOnlyRootFilesystem: true as const,
     tmpfsMounts: plan.tmpfsMounts,
-    outcome: outcomeFor(signal, failure),
+    executionPolicy,
+    cleanup: {
+      outcome: cleanupOutcome,
+      removalFailureCount,
+      remaining: cleanupInventory,
+    },
+    outcome: workOutcome,
   });
-  let cleanupFailure: unknown;
-  try {
-    await cleanup(plan, driver);
-  } catch (error) {
-    cleanupFailure = error;
-  }
   await driver.recordEvidence(evidence);
-  if (cleanupFailure !== undefined) {
-    if (cleanupFailure instanceof Error) throw cleanupFailure;
+  if (cleanupOutcome !== "complete") {
     throw new Error("integration.isolation.cleanup");
   }
   if (failure !== undefined) {
+    if (workOutcome === "interrupted")
+      throw new Error("integration.isolation.interrupted");
     if (failure instanceof Error) throw failure;
     throw new Error("integration.isolation.failed");
   }

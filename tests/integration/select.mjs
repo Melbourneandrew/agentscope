@@ -20,9 +20,10 @@ verifyManifestEvidence(manifest, integrationRoot);
 const { mode: selectionMode, selector } = compileLocalSelection(process.env);
 const scenarios = selectCapabilityScenarios(manifest, selector);
 const selection = {
-  selectionVersion: 1,
+  selectionVersion: 2,
   manifestIdentity: manifest.manifestIdentity,
   selectionMode,
+  selector,
   scenarioIds: scenarios.map(({ scenarioId }) => scenarioId),
 };
 const integrationArtifacts = resolve(workspaceRoot, "artifacts/integration");
