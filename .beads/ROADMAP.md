@@ -38,11 +38,13 @@ The first public milestone is an exact installable version `0.1.0` of the select
 | Harness execution testing research | `agentscope-t4p` | Research and a standalone user-approved Blueprint before shared runner or PTY implementation |
 | Safe remote development fleet | `agentscope-0fc` | Optional Crabbox acceleration outside the hermetic Docker boundary; GitHub CI remains release authority |
 | Common installed-CLI and harness verification | `agentscope-c1k` | Bounded supervisor, installed-CLI contracts, independent ledgers, and later PTY lanes |
-| Three-harness 0.1.0 implementation | `agentscope-wth` | Codex, Claude Code, and Cursor split-pushed in isolated branches, then an unconditional pinned PR matrix |
+| Three-harness 0.1.0 coordination and admission | `agentscope-wth` | Coordinate the three Phase 10 implementation owners, admit their evidence, then enforce an unconditional pinned PR matrix |
 
-Version `0.1.0` must not wait for the remaining roster harnesses, complete historical SQLite migration and maintenance certification, broad native-platform claims, or the full interactive-mode matrix. It must retain the original planned real-harness, exact packed-artifact, fail-open, redaction, isolation, and destination evidence gates. Cursor implementation and dependency regraphing cannot begin until the requirements change and its subsequent standalone Blueprint are approved and merged.
+Version `0.1.0` must not wait for the remaining roster harnesses, complete historical SQLite migration and maintenance certification, broad native-platform claims, or the full interactive-mode matrix. It must retain the original planned real-harness, exact packed-artifact, fail-open, redaction, isolation, and destination evidence gates. Cursor is now part of the approved supported roster, but all implementation governed by the harness-execution testing architecture remains blocked by `agentscope-t4p.7` until its standalone Blueprint PR is approved and merged.
 
-The Phase 4 platform is proven with a purpose-built process fixture. It does not claim that the later CLI, destinations, or harnesses exist. The first exact packed-CLI lifecycle is `agentscope-vah.9.9`, after both first-party destinations exist. The original seven actual harness binaries remain assigned to `agentscope-vah.11.1` through `.11.7`; the authority-gated Cursor 0.1.0 lane is assigned to `agentscope-wth.4`. Dependency reconciliation remains `agentscope-rk8.3` work after the requirements and Blueprint gates merge.
+The Phase 4 platform is proven with a purpose-built process fixture. It does not claim that the later CLI, destinations, or harnesses exist. The first exact packed-CLI lifecycle is `agentscope-vah.9.9`, after both first-party destinations exist. `agentscope-c1k.1-.6` owns the common bounded headless supervisor, installed-CLI contract, runner, and evidence substrate. `agentscope-vah.11.1`, `.11.2`, and `.11.13` are the sole native component implementation owners for Codex, Claude Code, and Cursor; `agentscope-wth.2-.4` own their shared-runner actual-binary scenarios and admit the completed components into the 0.1.0 profile. `agentscope-wth.5` and `.wth.6` own the alpha-trio parity matrix and unconditional pinned PR shards. `agentscope-vah.11.12` aggregates the first admitted actual-harness cross-destination proof; `agentscope-rk8.5` certifies only the experimental SQLite alpha allowlist; `agentscope-rk8.6` rehearses the nonpublishing release lane; `agentscope-rk8.4` provisions and verifies the trusted publisher; and `agentscope-wth.8` is the sole owner authorized to publish `agentscope-cli@0.1.0`.
+
+After 0.1.0, `agentscope-vah.11.3-.11.7` implement the remaining five harnesses, while `.11.9-.11.11` extend the already-admitted trio to the complete eight-harness matrix. `agentscope-c1k.8` owns comprehensive hostile non-PTY process certification, and `agentscope-wth.7` owns applicable interactive PTY certification; neither is an implicit 0.1.0 gate. `agentscope-vah.12.1` expands the preserved trio PR gates; `.12.4` owns a later stable artifact/docs publication; `.12.10` retains full SQLite migration, maintenance, recovery, and native-tuple admission; and `agentscope-vah.13` retains final maturity obligations.
 
 ## Requirement acceptance-criterion ownership
 
@@ -50,18 +52,18 @@ Every mandatory criterion present at this revision has an implementation owner a
 
 | Acceptance criteria | Primary delivery owners |
 | --- | --- |
-| `AC-OVR-001.1`, `AC-OVR-002.1` | `vah.3.2-.3.4`, `vah.6.1-.6.4`, `vah.10.2-.10.4`, `vah.11.1-.11.9` |
+| `AC-OVR-001.1`, `AC-OVR-002.1` | `vah.3.2-.3.4`, `vah.6.1-.6.4`, `vah.10.2-.10.4`, `vah.11.1-.11.9`, `vah.11.13` |
 | `AC-INS-001.1`, `AC-INS-001.2`, `AC-INS-001.3`, `AC-INS-001.4`, `AC-INS-002.1`, `AC-INS-002.2`, `AC-INS-002.3`, `AC-INS-003.1`, `AC-INS-003.2` | `vah.2.2`, `vah.2.5`, `vah.8.3`, `vah.9.9`, `vah.12.2`, `vah.12.4` |
 | `AC-CLI-001.1`, `AC-CLI-001.2`, `AC-CLI-001.3`, `AC-CLI-001.4`, `AC-CLI-002.1`, `AC-CLI-002.2`, `AC-CLI-002.3`, `AC-CLI-002.4` | `vah.2.5`, `vah.8.1`, `vah.8.6-.8.7`, `vah.12.2`, `vah.12.4` |
-| `AC-PLAT-001.1`, `AC-PLAT-001.2`, `AC-PLAT-001.3`, `AC-PLAT-002.1`, `AC-PLAT-002.2`, `AC-PLAT-002.3` | `vah.2.7`, `vah.7.4-.7.6`, `vah.9.4`, `vah.11.1-.11.7`, `vah.12.1`, `vah.12.7` |
+| `AC-PLAT-001.1`, `AC-PLAT-001.2`, `AC-PLAT-001.3`, `AC-PLAT-002.1`, `AC-PLAT-002.2`, `AC-PLAT-002.3` | `vah.2.7`, `vah.7.4-.7.6`, `vah.9.4`, `vah.11.1-.11.7`, `vah.11.13`, `wth.2-.6`, `vah.12.1`, `vah.12.7` |
 | `AC-DOC-001.1`, `AC-DOC-001.2`, `AC-DOC-001.3`, `AC-DOC-001.4`, `AC-DOC-001.5`, `AC-DOC-001.6`, `AC-DOC-001.7`, `AC-DOC-002.1`, `AC-DOC-002.2` | `vah.7.7`, `vah.8.6`, `vah.9.7`, `vah.12.7` |
 | `AC-CFG-001.1`, `AC-CFG-001.2`, `AC-CFG-002.1`, `AC-CFG-002.2`, `AC-CFG-002.3` | `vah.7.1-.7.3`, `vah.7.7-.7.8` |
-| `AC-INIT-001.1`, `AC-INIT-001.2`, `AC-INIT-001.3`, `AC-INIT-002.1`, `AC-INIT-002.2`, `AC-INIT-002.3`, `AC-INIT-002.4`, `AC-INIT-002.5`, `AC-INIT-003.1`, `AC-INIT-003.2`, `AC-INIT-003.3` | `vah.8.2-.8.3`, `vah.9.9`, `vah.10.1`, `vah.11.1-.11.7` |
+| `AC-INIT-001.1`, `AC-INIT-001.2`, `AC-INIT-001.3`, `AC-INIT-002.1`, `AC-INIT-002.2`, `AC-INIT-002.3`, `AC-INIT-002.4`, `AC-INIT-002.5`, `AC-INIT-003.1`, `AC-INIT-003.2`, `AC-INIT-003.3` | `vah.8.2-.8.3`, `vah.9.9`, `vah.10.1`, `vah.11.1-.11.7`, `vah.11.13`, `wth.2-.5` |
 | `AC-GOV-001.1`, `AC-GOV-001.2`, `AC-GOV-001.3`, `AC-GOV-001.4`, `AC-GOV-001.5`, `AC-GOV-002.1`, `AC-GOV-002.2` | `vah.3.3-.3.4`, `vah.6.1-.6.4`, `vah.13.3` |
-| `AC-HAR-001.1`, `AC-HAR-001.2`, `AC-HAR-002.1`, `AC-HAR-003.1`, `AC-HAR-003.2`, `AC-HAR-003.3` | `vah.10.1-.10.4`, `vah.8.3-.8.4`, `vah.11.1-.11.11`, `agentscope-rk8.3`, `agentscope-wth.2-.wth.6` |
-| `AC-SQL-001.1-.001.4`, `AC-SQL-002.1-.002.6`, `AC-SQL-003.1-.003.3` | `vah.9.4-.9.7`, `vah.12.10` |
+| `AC-HAR-001.1`, `AC-HAR-001.2`, `AC-HAR-002.1`, `AC-HAR-003.1`, `AC-HAR-003.2`, `AC-HAR-003.3` | `vah.10.1-.10.4`, `vah.8.3-.8.4`, `vah.11.1-.11.13`, `wth.2-.6` |
+| `AC-SQL-001.1-.001.4`, `AC-SQL-002.1-.002.6`, `AC-SQL-003.1-.003.3` | `vah.9.4-.9.7`, `rk8.5`, `vah.12.10` |
 | `AC-REP-001.1-.001.3`, `AC-REP-002.1`, `AC-REP-003.1-.003.4`, `AC-REP-004.1-.004.2` | `vah.4.1`, `vah.4.3`, `vah.6.2`, `vah.9.2`, `vah.9.5`, `agentscope-vah.12.11`, `agentscope-wth.8` |
-| `AC-CAP-001.1`, `AC-CAP-001.2`, `AC-CAP-001.3`, `AC-CAP-002.1`, `AC-CAP-002.2`, `AC-CAP-002.3`, `AC-CAP-002.4`, `AC-CAP-002.5`, `AC-CAP-002.6`, `AC-CAP-002.7` | `vah.6.1-.6.3`, `vah.8.4`, `vah.10.2-.10.4`, `vah.11.1-.11.9` |
+| `AC-CAP-001.1`, `AC-CAP-001.2`, `AC-CAP-001.3`, `AC-CAP-002.1`, `AC-CAP-002.2`, `AC-CAP-002.3`, `AC-CAP-002.4`, `AC-CAP-002.5`, `AC-CAP-002.6`, `AC-CAP-002.7` | `vah.6.1-.6.3`, `vah.8.4`, `vah.10.2-.10.4`, `vah.11.1-.11.9`, `vah.11.13` |
 | `AC-CONN-001.1`, `AC-CONN-001.2`, `AC-CONN-002.1`, `AC-CONN-002.2`, `AC-CONN-002.3` | `vah.7.2-.7.3`, `vah.8.2`, `vah.9.2`, `vah.9.5` |
 | `AC-RET-001.1`, `AC-RET-001.2`, `AC-RET-001.3`, `AC-RET-002.1`, `AC-RET-002.2`, `AC-RET-002.3`, `AC-RET-003.1`, `AC-RET-003.2`, `AC-RET-003.3`, `AC-RET-003.4` | `vah.4.2-.4.3`, `vah.6.4`, `vah.8.5`, `vah.9.3`, `vah.9.6` |
 
@@ -74,8 +76,8 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | Blueprint | ADRs | Delivery owners |
 | --- | --- | --- |
 | `foundations/canonical-trace-format` | `ADR-001`–`ADR-006` | `vah.3.2-.3.4`, `vah.6.1`, `vah.13.5` |
-| `foundations/harness-abstraction` | `ADR-001`, `ADR-002` | `vah.10.1-.10.4`, `vah.11.1-.11.11` |
-| `foundations/native-trace-mapping` | `ADR-001`–`ADR-003` | `vah.3.3`, `vah.10.2`, `vah.11.1-.11.9` |
+| `foundations/harness-abstraction` | `ADR-001`, `ADR-002` | `vah.10.1-.10.4`, `vah.11.1-.11.13` |
+| `foundations/native-trace-mapping` | `ADR-001`–`ADR-003` | `vah.3.3`, `vah.10.2`, `vah.11.1-.11.9`, `vah.11.13` |
 | `foundations/observability-interoperability` | `ADR-001`, `ADR-002` | `vah.3.1-.3.4`, `vah.9.2-.9.3` |
 | `foundations/protocol-package` | `ADR-001`, `ADR-002` | `vah.2.2-.2.4`, `vah.3.1-.3.5` |
 | `foundations/workspace-architecture` | `ADR-001`–`ADR-004` | `vah.2.1-.2.6`, `vah.13.1` |
@@ -85,27 +87,27 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | `destinations/retrievers/retriever-abstraction` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.6.4`, `vah.8.5` |
 | `destinations/retrievers/query-and-pagination` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.8.5`, `vah.9.3`, `vah.9.6` |
 | `destinations/retrievers/langfuse-retriever` | `ADR-001`–`ADR-006` | `vah.9.1`, `vah.9.3`, `vah.9.7`, `vah.12.11` |
-| `destinations/local-sqlite-destination` | `ADR-001`–`ADR-010` | `vah.9.4-.9.7`, `vah.9.15`, `vah.9.20-.9.28` |
-| `operations/agentscope-init` | `ADR-001`, `ADR-002` | `vah.8.2`, `vah.9.9`, `vah.11.1-.11.7` |
+| `destinations/local-sqlite-destination` | `ADR-001`–`ADR-010` | `vah.9.4-.9.7`, `vah.9.15`, `vah.9.20-.9.28`, `rk8.5`, `vah.12.10` |
+| `operations/agentscope-init` | `ADR-001`, `ADR-002` | `vah.8.2`, `vah.9.9`, `vah.11.1-.11.7`, `vah.11.13` |
 | `operations/api-key-storage` | `ADR-001`–`ADR-004` | `vah.2.7`, `vah.7.3-.7.8`, `vah.12.7`, `vah.12.9` |
 | `operations/cli-architecture` | `ADR-001`–`ADR-006` | `vah.2.5`, `vah.8.1-.8.7`, `vah.9.9`, `vah.9.16-.9.17`, `vah.9.19`, `vah.9.22` |
-| `operations/cli-installation` | `ADR-001`–`ADR-003` | `vah.2.2`, `vah.2.5`, `vah.9.9`, `vah.12.4` |
+| `operations/cli-installation` | `ADR-001`–`ADR-003` | `vah.2.2`, `vah.2.5`, `vah.9.9`, `c1k.4`, `wth.8`, `vah.12.4` |
 | `operations/code-quality-and-ci` | `ADR-001`–`ADR-004` | `vah.2.2-.2.6`, `vah.12.1-.12.5`, `vah.13.1` |
 | `operations/config-management` | `ADR-001`–`ADR-003` | `vah.7.1-.7.3`, `vah.7.8` |
 | `operations/configuration-extensibility` | `ADR-001`–`ADR-003` | `vah.4.1-.4.2`, `vah.7.1-.7.3`, `vah.8.2` |
-| `operations/continuous-integration` | `ADR-001`–`ADR-004` | `vah.2.5`, `vah.2.7`, `vah.5.5`, `vah.12.1-.12.9` |
+| `operations/continuous-integration` | `ADR-001`–`ADR-004` | `vah.2.5`, `vah.2.7`, `vah.5.5`, `wth.6`, `vah.12.1-.12.9` |
 | `operations/documentation-site` | `ADR-001`–`ADR-003` | `vah.8.6`, `vah.12.4-.12.5` |
-| `operations/harness-discovery` | `ADR-001`, `ADR-002` | `vah.10.1`, `vah.8.2-.8.3`, `vah.11.1-.11.7` |
-| `operations/hook-installation` | `ADR-001`–`ADR-004` | `vah.10.3-.10.5`, `vah.8.3-.8.4`, `vah.9.9`, `vah.11.1-.11.9` |
-| `operations/npm-publishing` | `ADR-001`–`ADR-005` | `rk8.6-.rk8.8`, `wth.8`, `vah.2.2`, `vah.2.5`, `vah.2.7`, `vah.12.4-.12.5`, `vah.12.8` |
+| `operations/harness-discovery` | `ADR-001`, `ADR-002` | `vah.10.1`, `vah.8.2-.8.3`, `vah.11.1-.11.7`, `vah.11.13` |
+| `operations/hook-installation` | `ADR-001`–`ADR-004` | `vah.10.3-.10.5`, `vah.8.3-.8.4`, `vah.9.9`, `vah.11.1-.11.9`, `vah.11.13` |
+| `operations/npm-publishing` | `ADR-001`–`ADR-005` | `rk8.4`, `rk8.6-.8`, `wth.8`, `vah.2.2`, `vah.2.5`, `vah.2.7`, `vah.12.4-.12.5`, `vah.12.8` |
 | `operations/operational-state` | `ADR-001`–`ADR-003` | `vah.6.3`, `vah.7.2`, `vah.7.7`, `vah.8.6` |
-| `testing/test-strategy` | `ADR-001`–`ADR-003` | `vah.2.3-.2.5`, `vah.4.3`, `vah.5.1-.5.6`, `vah.11.1-.11.11` |
+| `testing/test-strategy` | `ADR-001`–`ADR-003` | `vah.2.3-.2.5`, `vah.4.3`, `vah.5.1-.5.6`, `c1k.1-.8`, `vah.11.1-.11.13`, `wth.2-.7` |
 | `testing/unit-testing` | `ADR-001`–`ADR-004` | `vah.2.4`, `vah.3.4`, `vah.4.3`, `vah.10.4`, `vah.11.8`, `vah.11.11` |
-| `testing/real-harness-integration` | `ADR-001` | `vah.5.1-.5.6`, `vah.9.9`, `vah.11.1-.11.10` |
-| `testing/integration/ci-execution` | `ADR-001`, `ADR-002` | `vah.5.1`, `vah.5.5`, `vah.12.1-.12.2` |
-| `testing/integration/container-isolation` | `ADR-001`, `ADR-002` | `vah.5.2`, `vah.5.5-.5.6`, `vah.9.9`, `vah.11.1-.11.9` |
-| `testing/integration/matrix-operations` | `ADR-001`–`ADR-004` | `vah.5.1`, `vah.5.5`, `vah.11.8-.11.11`, `vah.12.1` |
-| `testing/integration/mock-services` | `ADR-001`–`ADR-003` | `vah.5.3-.5.6`, `vah.9.7`, `vah.11.1-.11.9` |
+| `testing/real-harness-integration` | `ADR-001` | `vah.5.1-.5.6`, `vah.9.9`, `vah.11.1-.11.10`, `vah.11.13` |
+| `testing/integration/ci-execution` | `ADR-001`, `ADR-002` | `vah.5.1`, `vah.5.5`, `wth.6`, `vah.12.1-.12.2` |
+| `testing/integration/container-isolation` | `ADR-001`, `ADR-002` | `vah.5.2`, `vah.5.5-.5.6`, `vah.9.9`, `vah.11.1-.11.9`, `vah.11.13` |
+| `testing/integration/matrix-operations` | `ADR-001`–`ADR-004` | `vah.5.1`, `vah.5.5`, `vah.11.8-.11.13`, `vah.12.1` |
+| `testing/integration/mock-services` | `ADR-001`–`ADR-003` | `vah.5.3-.5.6`, `vah.9.7`, `vah.11.1-.11.9`, `vah.11.13` |
 
 ## Certified scope decisions
 
