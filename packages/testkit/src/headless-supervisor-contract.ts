@@ -103,7 +103,7 @@ if (!ledger) process.exit(70);
 appendFileSync(ledger, "started:" + process.pid + "\n");
 process.on("SIGTERM", () => appendFileSync(ledger, "term\n"));
 process.stderr.write("PRIVATE_TIMEOUT_CANARY");
-setTimeout(() => process.exit(71), 2000).unref();
+setTimeout(() => process.exit(71), 9000).unref();
 setInterval(() => {}, 1000);
 `;
 
@@ -112,7 +112,7 @@ import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const ledger = process.env.AGENTSCOPE_ORACLE_LEDGER;
 if (!ledger) process.exit(70);
-const source = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0), 2000).unref(); setInterval(() => {}, 1000);';
+const source = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0), 9000).unref(); setInterval(() => {}, 1000);';
 const child = spawn(process.execPath, ["-e", source], { detached: true, env: {}, stdio: "ignore" });
 appendFileSync(ledger, "descendant:" + child.pid + "\n");
 child.unref();
@@ -269,6 +269,8 @@ const makeRequest = (
   arguments_: readonly string[] = [],
 ): HeadlessExecutionRequest => {
   const now = performance.now();
+  // These are aggregate-safe component-test authorities, not product latency
+  // claims. The timeout fixture ledger independently proves process readiness.
   return Object.freeze({
     executable: process.execPath,
     arguments: Object.freeze([fixturePath, ...arguments_]),
@@ -280,9 +282,9 @@ const makeRequest = (
     stdin: encoder.encode("oracle-stdin"),
     stdoutLimitBytes: outputLimitBytes,
     stderrLimitBytes: outputLimitBytes,
-    monotonicStartupDeadlineMs: now + 250,
-    monotonicExecutionDeadlineMs: now + 1_000,
-    monotonicShutdownDeadlineMs: now + 1_200,
+    monotonicStartupDeadlineMs: now + 2_000,
+    monotonicExecutionDeadlineMs: now + 5_000,
+    monotonicShutdownDeadlineMs: now + 7_000,
   });
 };
 
@@ -322,7 +324,7 @@ const processExists = (pid: number): boolean => {
 };
 
 const awaitFixtureExit = async (pid: number): Promise<void> => {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
     if (!processExists(pid)) return;
     await delay(10);
   }

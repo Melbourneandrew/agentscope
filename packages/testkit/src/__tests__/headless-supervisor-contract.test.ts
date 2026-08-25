@@ -252,7 +252,7 @@ describe("bounded headless supervisor adversarial seeds", () => {
         process.execPath,
         [
           "-e",
-          "process.on('SIGTERM',()=>{});setTimeout(()=>process.exit(0),2000).unref();setInterval(()=>{},1000)",
+          "process.on('SIGTERM',()=>{});setTimeout(()=>process.exit(0),500).unref();setInterval(()=>{},1000)",
         ],
         { detached: true, env: {}, stdio: "ignore" },
       );
