@@ -1,24 +1,6 @@
 {
   "schemaVersion": 1,
   "ownership": [
-    {
-      "prefix": "ALPHA",
-      "owners": [
-        "agentscope-rk8.3",
-        "agentscope-rk8.4",
-        "agentscope-rk8.5",
-        "agentscope-rk8.6",
-        "agentscope-c1k.4",
-        "agentscope-c1k.5",
-        "agentscope-c1k.6",
-        "agentscope-wth.2",
-        "agentscope-wth.3",
-        "agentscope-wth.4",
-        "agentscope-wth.5",
-        "agentscope-wth.6",
-        "agentscope-wth.8"
-      ]
-    },
     { "prefix": "OVR", "owners": ["agentscope-vah.3.2"] },
     {
       "prefix": "INS",
