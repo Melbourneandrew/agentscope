@@ -199,6 +199,36 @@ try {
     process.platform === "win32" ? "agentscope.cmd" : "agentscope",
   );
   if (process.platform !== "win32") chmodSync(executable, 0o755);
+  const installedContract = run(process.execPath, [
+    "--import",
+    "tsx",
+    resolve(packageRoot, "scripts/verify-installed-contract.ts"),
+    "--executable",
+    executable,
+    "--tarball",
+    tarball,
+    "--installed-package-root",
+    join(installRoot, "node_modules/agentscope-cli"),
+    "--expected-version",
+    installedManifest.version,
+  ]);
+  const installedContractEvidence = JSON.parse(installedContract.stdout);
+  assert.equal(
+    installedContractEvidence.schema,
+    "agentscope.cli.installed-contract-evidence.v1",
+  );
+  assert.equal(installedContractEvidence.package, "agentscope-cli");
+  assert.equal(installedContractEvidence.version, installedManifest.version);
+  assert.match(
+    installedContractEvidence.candidateDigest,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.match(
+    installedContractEvidence.inventoryDigest,
+    /^sha256:[0-9a-f]{64}$/u,
+  );
+  assert.ok(installedContractEvidence.caseCount > 80);
+  assert.equal(installedContract.stderr, "");
   const executableOptions = {
     cwd: installRoot,
     shell: process.platform === "win32",
