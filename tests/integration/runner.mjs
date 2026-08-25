@@ -68,8 +68,10 @@ const knownScenarios = new Set(
   manifest.scenarios.map(({ scenarioId }) => scenarioId),
 );
 if (
-  selection.selectionVersion !== 1 ||
+  selection.selectionVersion !== 2 ||
   selection.manifestIdentity !== manifest.manifestIdentity ||
+  typeof selection.selector !== "object" ||
+  selection.selector === null ||
   !Array.isArray(selection.scenarioIds) ||
   selection.scenarioIds.length < 1 ||
   selection.scenarioIds.some(

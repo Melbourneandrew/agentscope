@@ -16,8 +16,10 @@ const selection = JSON.parse(
   readFileSync(resolve(artifactsRoot, "current-selection.json"), "utf8"),
 );
 if (
-  selection.selectionVersion !== 1 ||
+  selection.selectionVersion !== 2 ||
   selection.manifestIdentity !== manifest.manifestIdentity ||
+  typeof selection.selector !== "object" ||
+  selection.selector === null ||
   !Array.isArray(selection.scenarioIds)
 )
   throw new Error("integration.images.selection");

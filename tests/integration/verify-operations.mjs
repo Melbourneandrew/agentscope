@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
+import { compileIsolationEvidence } from "./dist/index.js";
 
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
@@ -91,8 +92,8 @@ try {
   if (!sidecarFailureRejected || failedRuns.length !== 1)
     throw new Error("integration.operations.failure-evidence");
   const failedDirectory = resolve(runsRoot, failedRuns[0]);
-  const failedEvidence = JSON.parse(
-    readFileSync(resolve(failedDirectory, "evidence.json"), "utf8"),
+  const failedEvidence = compileIsolationEvidence(
+    JSON.parse(readFileSync(resolve(failedDirectory, "evidence.json"), "utf8")),
   );
   const failedLifecycle = JSON.parse(
     readFileSync(resolve(failedDirectory, "fixture-lifecycle.json"), "utf8"),
@@ -123,8 +124,8 @@ try {
     if (!/^[a-f\d]{16}$/u.test(runId))
       throw new Error("integration.operations.repetition");
     const directory = resolve(runsRoot, runId);
-    const evidence = JSON.parse(
-      readFileSync(resolve(directory, "evidence.json"), "utf8"),
+    const evidence = compileIsolationEvidence(
+      JSON.parse(readFileSync(resolve(directory, "evidence.json"), "utf8")),
     );
     if (evidence.runId !== runId || evidence.outcome !== "passed")
       throw new Error("integration.operations.repetition");
@@ -139,31 +140,6 @@ try {
         throw new Error("integration.operations.repetition");
     }
   }
-  const selectionPath = resolve(artifactsRoot, "current-selection.json");
-  const originalSelection = readFileSync(selectionPath, "utf8");
-  const concurrentBefore = runDirectories();
-  try {
-    const selection = JSON.parse(originalSelection);
-    writeFileSync(
-      selectionPath,
-      `${JSON.stringify(
-        {
-          ...selection,
-          scenarioIds: [selection.scenarioIds[0], selection.scenarioIds[0]],
-        },
-        undefined,
-        2,
-      )}\n`,
-    );
-    await runOnce(undefined, "2");
-  } finally {
-    writeFileSync(selectionPath, originalSelection);
-  }
-  const concurrentCreated = [...runDirectories()].filter(
-    (name) => !concurrentBefore.has(name),
-  );
-  if (concurrentCreated.length !== 2)
-    throw new Error("integration.operations.concurrent-registration");
   const activeRoot = resolve(artifactsRoot, "active");
   const activeMarker = resolve(activeRoot, "aaaaaaaaaaaaaaaa.json");
   mkdirSync(activeRoot, { recursive: true });

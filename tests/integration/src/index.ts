@@ -17,13 +17,18 @@ export type {
   PrepareCandidateInput,
 } from "./artifacts.js";
 export {
+  compileIsolationEvidence,
+  compileIsolationExecutionPolicy,
   createIsolationPlan,
   executeIsolationPlan,
+  ISOLATION_EXECUTOR_LIMITS,
   SCENARIO_TMPFS_MOUNTS,
 } from "./isolation.js";
 export type {
+  IsolationCleanupInventory,
   IsolationDriver,
   IsolationEvidence,
+  IsolationExecutionPolicy,
   IsolationPlan,
 } from "./isolation.js";
 export {

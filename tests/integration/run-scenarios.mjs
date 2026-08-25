@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  existsSync,
   cpSync,
   lstatSync,
   mkdirSync,
@@ -12,11 +13,14 @@ import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import {
+  compileIsolationEvidence,
   compileCapabilityManifest,
   createIsolationPlan,
   executeIsolationPlan,
+  ISOLATION_EXECUTOR_LIMITS,
   mapWithConcurrency,
   sanitizeFixtureResult,
+  selectCapabilityScenarios,
   verifyManifestEvidence,
   verifyPreparedCandidate,
 } from "./dist/index.js";
@@ -65,8 +69,13 @@ if (
 )
   throw new Error("integration.isolation.test-mode");
 if (
-  selection.selectionVersion !== 1 ||
+  selection.selectionVersion !== 2 ||
   selection.manifestIdentity !== manifest.manifestIdentity ||
+  !["scenario", "harness", "tag", "shard", "full"].includes(
+    selection.selectionMode,
+  ) ||
+  typeof selection.selector !== "object" ||
+  selection.selector === null ||
   !Array.isArray(selection.scenarioIds) ||
   imageEvidence.imageEvidenceVersion !== 1 ||
   imageEvidence.manifestIdentity !== manifest.manifestIdentity ||
@@ -77,6 +86,26 @@ if (
   !Array.isArray(modelRoutes.mockServerInitialization)
 )
   throw new Error("integration.isolation.inputs");
+let selectedScenarios;
+try {
+  selectedScenarios = selectCapabilityScenarios(manifest, selection.selector);
+} catch {
+  throw new Error("integration.isolation.inputs");
+}
+const selectedScenarioIds = selectedScenarios.map(
+  ({ scenarioId }) => scenarioId,
+);
+if (
+  JSON.stringify(selection.scenarioIds) !== JSON.stringify(selectedScenarioIds)
+)
+  throw new Error("integration.isolation.inputs");
+const executorSelection = {
+  selectionVersion: 2,
+  manifestIdentity: manifest.manifestIdentity,
+  mode: selection.selectionMode,
+  selector: selection.selector,
+  scenarioIds: selectedScenarioIds,
+};
 const candidateDirectory = resolve(
   artifactsRoot,
   "candidates",
@@ -114,10 +143,10 @@ const labelArguments = (plan) => [
   "--label",
   `com.agentscope.integration.run=${plan.runId}`,
 ];
-const tmpfsArguments = (plan) =>
-  plan.tmpfsMounts.flatMap((mount) => [
+const tmpfsArguments = (limits, ownership = true) =>
+  limits.tmpfs.flatMap(({ path, bytes }) => [
     "--tmpfs",
-    `${mount}:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000`,
+    `${path}:rw,noexec,nosuid,nodev,size=${bytes}${ownership ? ",uid=1000,gid=1000" : ""}`,
   ]);
 const confinementArguments = (plan) => [
   "--network",
@@ -128,14 +157,19 @@ const confinementArguments = (plan) => [
   "--security-opt",
   "no-new-privileges",
   "--pids-limit",
-  "128",
+  String(ISOLATION_EXECUTOR_LIMITS.containers.scenario.pidsLimit),
   "--memory",
-  "512m",
+  String(ISOLATION_EXECUTOR_LIMITS.containers.scenario.memoryBytes),
   "--user",
   "1000:1000",
-  ...tmpfsArguments(plan),
+  ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.scenario),
 ];
-const sidecarResourceArguments = ["--pids-limit", "128", "--memory", "512m"];
+const sidecarResourceArguments = (limits) => [
+  "--pids-limit",
+  String(limits.pidsLimit),
+  "--memory",
+  String(limits.memoryBytes),
+];
 
 const stageBuildContext = (plan) => {
   const context = resolve(artifactsRoot, "contexts", plan.runId);
@@ -220,19 +254,49 @@ const stageBuildContext = (plan) => {
   return context;
 };
 
-const assertContainer = async (plan, signal) => {
+const assertContainer = async (
+  plan,
+  name,
+  limits,
+  signal,
+  expectedRequestBytes,
+) => {
   const { stdout } = await dockerWithSignal(
-    ["container", "inspect", plan.scenarioName],
+    ["container", "inspect", name],
     signal,
   );
   const [container] = JSON.parse(stdout);
-  const tmpfs = Object.keys(container?.HostConfig?.Tmpfs ?? {}).sort();
+  const tmpfs = container?.HostConfig?.Tmpfs ?? {};
+  const tmpfsPaths = Object.keys(tmpfs).sort();
+  const expectedPaths = limits.tmpfs.map(({ path }) => path).sort();
+  const tmpfsMatches = limits.tmpfs.every(({ path, bytes }) => {
+    const options = new Set(String(tmpfs[path] ?? "").split(","));
+    return (
+      options.has("rw") &&
+      options.has("noexec") &&
+      options.has("nosuid") &&
+      options.has("nodev") &&
+      options.has(`size=${bytes}`)
+    );
+  });
+  const environment = Array.isArray(container?.Config?.Env)
+    ? container.Config.Env
+    : [];
+  const requestLimitMatches =
+    expectedRequestBytes === undefined ||
+    environment.includes(
+      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${expectedRequestBytes}`,
+    );
   if (
     container?.HostConfig?.ReadonlyRootfs !== true ||
     container?.HostConfig?.NetworkMode !== plan.networkName ||
+    container?.HostConfig?.Memory !== limits.memoryBytes ||
+    container?.HostConfig?.PidsLimit !== limits.pidsLimit ||
     !Array.isArray(container?.Mounts) ||
     container.Mounts.length !== 0 ||
-    JSON.stringify(tmpfs) !== JSON.stringify([...plan.tmpfsMounts].sort())
+    JSON.stringify(tmpfsPaths) !== JSON.stringify(expectedPaths) ||
+    !tmpfsMatches ||
+    !requestLimitMatches
   )
     throw new Error("integration.isolation.container");
 };
@@ -304,6 +368,50 @@ const inspectImage = async (tag, signal) => {
   );
   return stdout.trim().replace(":", "-");
 };
+const inspectDockerRuntimeIdentity = async (signal) => {
+  const [{ stdout: versionOutput }, { stdout: infoOutput }] = await Promise.all(
+    [
+      dockerWithSignal(["version", "--format", "{{json .}}"], signal),
+      dockerWithSignal(["info", "--format", "{{json .}}"], signal),
+    ],
+  );
+  const versionRecord = JSON.parse(versionOutput);
+  const infoRecord = JSON.parse(infoOutput);
+  const defaultRuntime = infoRecord.DefaultRuntime;
+  const components = Array.isArray(versionRecord?.Server?.Components)
+    ? versionRecord.Server.Components
+    : [];
+  const runtimeComponent = components.find(
+    (component) => component?.Name === defaultRuntime,
+  );
+  const containerdComponent = components.find(
+    (component) => component?.Name === "containerd",
+  );
+  const product = versionRecord?.Server?.Platform?.Name || "Docker Engine";
+  const operatingSystem = infoRecord.OperatingSystem;
+  return {
+    executor: "docker",
+    clientVersion: versionRecord?.Client?.Version,
+    engine: {
+      kind: `${product} ${operatingSystem}`
+        .toLowerCase()
+        .includes("docker desktop")
+        ? "docker-desktop"
+        : "docker-engine",
+      product,
+      version: versionRecord?.Server?.Version,
+      apiVersion: versionRecord?.Server?.ApiVersion,
+      operatingSystem,
+      osType: infoRecord.OSType,
+      architecture: infoRecord.Architecture,
+    },
+    containerRuntime: {
+      name: defaultRuntime,
+      version: runtimeComponent?.Version,
+    },
+    containerdVersion: containerdComponent?.Version,
+  };
+};
 const buildImage = async (plan, signal) => {
   await preparedImageFor(plan.baseImage, signal);
   const context = stageBuildContext(plan);
@@ -374,19 +482,29 @@ const startCollector = async (plan, signal) => {
       "ALL",
       "--security-opt",
       "no-new-privileges",
-      ...sidecarResourceArguments,
+      ...sidecarResourceArguments(
+        ISOLATION_EXECUTOR_LIMITS.containers.collector,
+      ),
       "--user",
       "1000:1000",
-      "--tmpfs",
-      "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
+      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.collector),
       "--env",
       `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      "--env",
+      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
       plan.imageTag,
       "node",
       "/opt/agentscope/destination-server.mjs",
       "ingestion",
     ],
     signal,
+  );
+  await assertContainer(
+    plan,
+    plan.collectorName,
+    ISOLATION_EXECUTOR_LIMITS.containers.collector,
+    signal,
+    ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
   await dockerWithSignal(["start", plan.collectorName], signal);
 };
@@ -406,19 +524,29 @@ const startRetrieval = async (plan, signal) => {
       "ALL",
       "--security-opt",
       "no-new-privileges",
-      ...sidecarResourceArguments,
+      ...sidecarResourceArguments(
+        ISOLATION_EXECUTOR_LIMITS.containers.retrieval,
+      ),
       "--user",
       "1000:1000",
-      "--tmpfs",
-      "/tmp:rw,noexec,nosuid,nodev,size=16m,uid=1000,gid=1000",
+      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.retrieval),
       "--env",
       `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      "--env",
+      `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes}`,
       plan.imageTag,
       "node",
       "/opt/agentscope/destination-server.mjs",
       "retrieval",
     ],
     signal,
+  );
+  await assertContainer(
+    plan,
+    plan.retrievalName,
+    ISOLATION_EXECUTOR_LIMITS.containers.retrieval,
+    signal,
+    ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
   await dockerWithSignal(["start", plan.retrievalName], signal);
 };
@@ -438,15 +566,22 @@ const startMockServer = async (plan, signal) => {
       "ALL",
       "--security-opt",
       "no-new-privileges",
-      ...sidecarResourceArguments,
-      "--tmpfs",
-      "/tmp:rw,nosuid,nodev,size=64m",
+      ...sidecarResourceArguments(
+        ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
+      ),
+      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.mockServer, false),
       "--env",
       "MOCKSERVER_INITIALIZATION_JSON_PATH=/config/expectations.json",
       "--env",
       "MOCKSERVER_LOG_LEVEL=WARN",
       plan.mockServerImageTag,
     ],
+    signal,
+  );
+  await assertContainer(
+    plan,
+    plan.mockServerName,
+    ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
     signal,
   );
   await dockerWithSignal(["start", plan.mockServerName], signal);
@@ -492,7 +627,12 @@ const runScenario = async (plan, signal) => {
     ],
     signal,
   );
-  await assertContainer(plan, signal);
+  await assertContainer(
+    plan,
+    plan.scenarioName,
+    ISOLATION_EXECUTOR_LIMITS.containers.scenario,
+    signal,
+  );
   if (testMode === "sidecar-failure")
     await dockerWithSignal(["stop", plan.collectorName], signal);
   try {
@@ -508,15 +648,16 @@ const runScenario = async (plan, signal) => {
   }
 };
 const recordEvidence = async (evidence) => {
-  const directory = resolve(artifactsRoot, "runs", evidence.runId);
+  const verifiedEvidence = compileIsolationEvidence(evidence);
+  const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     resolve(directory, "evidence.json"),
-    `${JSON.stringify(evidence, undefined, 2)}\n`,
+    `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
   );
-  const result = fixtureResults.get(evidence.runId);
+  const result = fixtureResults.get(verifiedEvidence.runId);
   if (
-    evidence.outcome === "passed" &&
+    verifiedEvidence.outcome === "passed" &&
     (result === undefined || result.resultStatus !== "complete")
   )
     throw new Error("integration.isolation.fixture-result");
@@ -544,16 +685,52 @@ const recordEvidence = async (evidence) => {
         2,
       )}\n`,
     );
-    fixtureResults.delete(evidence.runId);
+    fixtureResults.delete(verifiedEvidence.runId);
   }
 };
+const countDockerResources = async (kind, plan, signal) => {
+  const { stdout } = await dockerWithSignal(
+    [
+      kind,
+      "ls",
+      "--quiet",
+      "--filter",
+      "label=com.agentscope.integration=true",
+      "--filter",
+      `label=com.agentscope.integration.run=${plan.runId}`,
+      ...(kind === "container" ? ["--all"] : []),
+    ],
+    signal,
+    { timeout: ISOLATION_EXECUTOR_LIMITS.cleanup.proofMilliseconds },
+  );
+  return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
+};
 const createDriver = () => {
-  let cleanupSignal;
-  const boundedCleanupSignal = () => {
-    cleanupSignal ??= AbortSignal.timeout(60_000);
-    return cleanupSignal;
+  let removalSignal;
+  let runtimeIdentity;
+  const boundedRemovalSignal = () => {
+    removalSignal ??= AbortSignal.timeout(
+      ISOLATION_EXECUTOR_LIMITS.cleanup.removalMilliseconds,
+    );
+    return removalSignal;
   };
   return {
+    inspectExecutionPolicy: async (_plan, signal) => {
+      runtimeIdentity ??= inspectDockerRuntimeIdentity(signal);
+      return {
+        policyVersion: 1,
+        runtimeInspection: {
+          outcome: "complete",
+          identity: await runtimeIdentity,
+        },
+        selection: executorSelection,
+        maximumParallelScenarios: scenarioConcurrency,
+        scenarioTimeoutMilliseconds,
+        cleanupTimeouts: ISOLATION_EXECUTOR_LIMITS.cleanup,
+        containers: ISOLATION_EXECUTOR_LIMITS.containers,
+        requests: ISOLATION_EXECUTOR_LIMITS.requests,
+      };
+    },
     buildImage,
     buildMockServerImage,
     createNetwork,
@@ -563,11 +740,11 @@ const createDriver = () => {
     runScenario,
     recordEvidence,
     removeContainer: (name) =>
-      ignoreMissing(["rm", "--force", name], boundedCleanupSignal()),
+      ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
     removeNetwork: (name) =>
-      ignoreMissing(["network", "rm", name], boundedCleanupSignal()),
+      ignoreMissing(["network", "rm", name], boundedRemovalSignal()),
     removeImage: (tag) =>
-      ignoreMissing(["image", "rm", "--force", tag], boundedCleanupSignal()),
+      ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),
     removeContext: async (runId) => {
       if (!/^[a-f\d]{16}$/u.test(runId))
         throw new Error("integration.isolation.context");
@@ -577,14 +754,33 @@ const createDriver = () => {
       });
       rmSync(activeMarkerFor(runId), { force: true });
     },
+    inspectCleanup: async (plan) => {
+      const signal = AbortSignal.timeout(
+        ISOLATION_EXECUTOR_LIMITS.cleanup.proofMilliseconds,
+      );
+      const [containers, networks, images, volumes] = await Promise.all([
+        countDockerResources("container", plan, signal),
+        countDockerResources("network", plan, signal),
+        countDockerResources("image", plan, signal),
+        countDockerResources("volume", plan, signal),
+      ]);
+      return {
+        containers,
+        networks,
+        images,
+        volumes,
+        buildContexts: existsSync(
+          resolve(artifactsRoot, "contexts", plan.runId),
+        )
+          ? 1
+          : 0,
+        activeRunMarkers: existsSync(activeMarkerFor(plan.runId)) ? 1 : 0,
+      };
+    },
   };
 };
 
-const scenarios = selection.scenarioIds.map((scenarioId) => {
-  const scenario = manifest.scenarios.find(
-    (entry) => entry.scenarioId === scenarioId,
-  );
-  if (!scenario) throw new Error("integration.isolation.inputs");
+const scenarios = selectedScenarios.map((scenario) => {
   if (
     scenario.modelRoutes.some(
       (routeId) => !modelRoutes.routeIds.includes(routeId),
@@ -599,6 +795,9 @@ const plans = scenarios.map((scenario) =>
     manifestIdentity: manifest.manifestIdentity,
     candidate,
     runToken: randomBytes(8).toString("hex"),
+    selection: executorSelection,
+    maximumParallelScenarios: scenarioConcurrency,
+    scenarioTimeoutMilliseconds,
   }),
 );
 const controller = new AbortController();
@@ -622,6 +821,8 @@ try {
   );
   console.log(JSON.stringify(evidence));
 } finally {
+  for (const plan of plans)
+    rmSync(activeMarkerFor(plan.runId), { force: true });
   process.removeListener("SIGINT", abort);
   process.removeListener("SIGTERM", abort);
 }
