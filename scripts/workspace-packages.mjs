@@ -1,5 +1,5 @@
 export const expectedWorkspacePackages = new Map([
-  ["apps/cli", "@agentscope/cli"],
+  ["apps/cli", "agentscope-cli"],
   ["apps/docs", "@agentscope/docs"],
   ["packages/core", "@agentscope/core"],
   ["packages/protocol", "@agentscope/protocol"],

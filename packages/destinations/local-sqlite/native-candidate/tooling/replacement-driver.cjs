@@ -2,9 +2,9 @@
 
 const { copyFileSync, renameSync } = require("node:fs");
 
-const root = "/work/node_modules/@agentscope/cli/dist/internal/local-sqlite";
+const root = "/work/node_modules/agentscope-cli/dist/internal/local-sqlite";
 const loaded =
-  require("/work/node_modules/@agentscope/cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(
+  require("/work/node_modules/agentscope-cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(
     Object.freeze({
       manifestDigest: process.env.AGENTSCOPE_NATIVE_MANIFEST_DIGEST,
       nativeTupleId: "node127-linux-x64-glibc",

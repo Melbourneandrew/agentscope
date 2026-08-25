@@ -116,7 +116,7 @@ const executePackedReporterChild = async (loader) => {
   const worker = spawn(
     process.execPath,
     [
-      "/work/node_modules/@agentscope/cli/dist/internal/local-sqlite-runtime/reporter-child.js",
+      "/work/node_modules/agentscope-cli/dist/internal/local-sqlite-runtime/reporter-child.js",
     ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -251,7 +251,7 @@ LIMIT :maximumRows`;
   const worker = spawn(
     process.execPath,
     [
-      "/work/node_modules/@agentscope/cli/dist/internal/local-sqlite-runtime/retriever-child.js",
+      "/work/node_modules/agentscope-cli/dist/internal/local-sqlite-runtime/retriever-child.js",
     ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -297,7 +297,7 @@ void (async () => {
   if (!/^sha256:[0-9a-f]{64}$/u.test(manifestDigest))
     throw new Error("destination.local-sqlite.native-execution.invalid");
   const loader =
-    require("/work/node_modules/@agentscope/cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(
+    require("/work/node_modules/agentscope-cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(
       Object.freeze({
         manifestDigest,
         nativeTupleId: "node127-linux-x64-glibc",
@@ -446,7 +446,7 @@ void (async () => {
       "-e",
       `
         const { constants, openSync } = require("node:fs");
-        const loader = require("/work/node_modules/@agentscope/cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(Object.freeze({
+        const loader = require("/work/node_modules/agentscope-cli/dist/internal/local-sqlite/loader/owned-loader.cjs").load(Object.freeze({
           manifestDigest: process.argv[1],
           nativeTupleId: "node127-linux-x64-glibc",
           platformTupleId: "linux-x64-node22-ci-ext4-proposed",

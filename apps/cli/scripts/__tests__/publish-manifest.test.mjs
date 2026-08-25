@@ -8,12 +8,12 @@ test("preserves public native runtime dependencies", () => {
     createPublishManifest({
       dependencies: { "better-sqlite3": "12.4.1" },
       devDependencies: { esbuild: "0.28.2" },
-      name: "@agentscope/cli",
+      name: "agentscope-cli",
       version: "0.1.0",
     }),
     {
       dependencies: { "better-sqlite3": "12.4.1" },
-      name: "@agentscope/cli",
+      name: "agentscope-cli",
       version: "0.1.0",
     },
   );

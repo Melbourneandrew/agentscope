@@ -65,7 +65,7 @@ const assertNoCoreOnlyImports = (source, file, packageName) => {
         throw new Error(
           `${specifier} is Core-only; forbidden import in ${file}`,
         );
-  if (packageName !== "@agentscope/cli")
+  if (packageName !== "agentscope-cli")
     for (const specifier of cliOnlySpecifiers)
       if (source.includes(specifier))
         throw new Error(
@@ -96,10 +96,7 @@ const assertLiteralSpecifierAllowed = (specifier, file, packageName) => {
         throw new Error(
           `${restricted} is Core-only; forbidden import in ${file}`,
         );
-  if (
-    packageName !== "@agentscope/cli" &&
-    cliOnlySpecifiers.includes(specifier)
-  )
+  if (packageName !== "agentscope-cli" && cliOnlySpecifiers.includes(specifier))
     throw new Error(`${specifier} is CLI-only; forbidden import in ${file}`);
   if (
     packageName === "@agentscope/testkit" ||

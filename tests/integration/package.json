@@ -11,7 +11,7 @@
     "test": "vitest run --config ../../vitest.config.ts",
     "coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "clean": "node ../../scripts/clean-workspace.mjs",
-    "prepare:candidate": "pnpm --filter @agentscope/cli verify:artifact && node prepare-cli.mjs",
+    "prepare:candidate": "pnpm --filter agentscope-cli verify:artifact && node prepare-cli.mjs",
     "prepare:images": "node prepare-images.mjs",
     "prepare:model-routes": "pnpm --filter @agentscope/testkit build && node prepare-model-routes.mjs",
     "select": "node select.mjs",
