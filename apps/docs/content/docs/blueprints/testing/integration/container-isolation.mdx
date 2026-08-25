@@ -19,7 +19,7 @@ Every default real-harness scenario proves that AgentScope can install and captu
 
 ### ADR-002: Prove the installation artifact, not the checkout
 
-**Decision:** Every scenario receives the packed candidate `@agentscope/cli` artifact as a checksum-bound immutable input. A real-harness acceptance scenario must install that artifact and execute `agentscope init` plus `agentscope install <harness>` before invoking the harness. The pre-harness destination checkpoint executes only the ordinary bin's initialization, destination configuration, Doctor, and Local lifecycle commands and cannot supply captured or branded trace input. That checkpoint counts only as release-artifact and destination-composition evidence. A platform-certification fixture may exercise only an explicitly identified test lifecycle adapter and does not count as real-harness or product acceptance evidence.
+**Decision:** Every scenario receives the packed candidate `agentscope-cli` artifact as a checksum-bound immutable input. A real-harness acceptance scenario must install that artifact and execute `agentscope init` plus `agentscope install <harness>` before invoking the harness. The pre-harness destination checkpoint executes only the ordinary bin's initialization, destination configuration, Doctor, and Local lifecycle commands and cannot supply captured or branded trace input. That checkpoint counts only as release-artifact and destination-composition evidence. A platform-certification fixture may exercise only an explicitly identified test lifecycle adapter and does not count as real-harness or product acceptance evidence.
 
 **Context:** Mounting the source checkout or relying on a global CLI can hide missing package files, bin metadata, and install-time assumptions.
 
