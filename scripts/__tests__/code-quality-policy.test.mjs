@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHook } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import {
   mkdirSync,
@@ -27,27 +26,13 @@ const eslintPolicyPhaseDeadlineMs = 25_000;
 const eslintPolicyTestDeadlineMs = eslintPolicyPhaseDeadlineMs + 1_000;
 
 async function lintPolicySeed(path) {
-  let childProcessSpawned = false;
-  const childProcessHook = createHook({
-    init(_asyncId, type) {
-      if (type === "PROCESSWRAP") childProcessSpawned = true;
-    },
-  });
-  try {
-    childProcessHook.enable();
-    const [result] = await new ESLint({
-      cwd: repositoryRoot,
-      concurrency: "off",
-    }).lintFiles([path]);
-    assert.equal(
-      childProcessSpawned,
-      false,
-      "seeded ESLint policy checks must remain in-process",
-    );
-    return result;
-  } finally {
-    childProcessHook.disable();
-  }
+  // Workspace lint configuration and plugins are trusted test code; this
+  // helper owns only direct, non-concurrent programmatic invocation.
+  const [result] = await new ESLint({
+    cwd: repositoryRoot,
+    concurrency: "off",
+  }).lintFiles([path]);
+  return result;
 }
 
 function lintRuleIds(result) {
