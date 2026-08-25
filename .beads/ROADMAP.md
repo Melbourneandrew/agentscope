@@ -101,13 +101,17 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | `operations/hook-installation` | `ADR-001`–`ADR-004` | `vah.10.3-.10.5`, `vah.8.3-.8.4`, `vah.9.9`, `vah.11.1-.11.9`, `vah.11.13` |
 | `operations/npm-publishing` | `ADR-001`–`ADR-005` | `rk8.4`, `rk8.6-.8`, `wth.8`, `vah.2.2`, `vah.2.5`, `vah.2.7`, `vah.12.4-.12.5`, `vah.12.8` |
 | `operations/operational-state` | `ADR-001`–`ADR-003` | `vah.6.3`, `vah.7.2`, `vah.7.7`, `vah.8.6` |
-| `testing/test-strategy` | `ADR-001`–`ADR-003` | `vah.2.3-.2.5`, `vah.4.3`, `vah.5.1-.5.6`, `c1k.1-.8`, `vah.11.1-.11.13`, `wth.2-.7` |
+| `testing/test-strategy` | `ADR-001`–`ADR-003` | `vah.2.3-.2.5`, `vah.4.3`, `vah.5.1-.5.6`, `t4p.7`, `c1k.1-.8`, `vah.11.1-.11.13`, `wth.2-.7` |
 | `testing/unit-testing` | `ADR-001`–`ADR-004` | `vah.2.4`, `vah.3.4`, `vah.4.3`, `vah.10.4`, `vah.11.8`, `vah.11.11` |
-| `testing/real-harness-integration` | `ADR-001` | `vah.5.1-.5.6`, `vah.9.9`, `vah.11.1-.11.10`, `vah.11.13` |
-| `testing/integration/ci-execution` | `ADR-001`, `ADR-002` | `vah.5.1`, `vah.5.5`, `wth.6`, `vah.12.1-.12.2` |
-| `testing/integration/container-isolation` | `ADR-001`, `ADR-002` | `vah.5.2`, `vah.5.5-.5.6`, `vah.9.9`, `vah.11.1-.11.9`, `vah.11.13` |
-| `testing/integration/matrix-operations` | `ADR-001`–`ADR-004` | `vah.5.1`, `vah.5.5`, `vah.11.8-.11.13`, `vah.12.1` |
-| `testing/integration/mock-services` | `ADR-001`–`ADR-003` | `vah.5.3-.5.6`, `vah.9.7`, `vah.11.1-.11.9`, `vah.11.13` |
+| `testing/harness-execution` | `ADR-001`–`ADR-006` | `t4p.5`, `t4p.7`, `c1k.1-.8`, `vah.11.1-.11.2`, `vah.11.8`, `vah.11.13`, `wth.2-.7` |
+| `testing/harnesses/codex` | `ADR-001`–`ADR-005` | `wth.9`, `t4p.8`, `vah.11.1`, `wth.2`, `wth.5-.6` |
+| `testing/harnesses/claude-code` | `ADR-001`–`ADR-007` | `wth.10`, `t4p.9`, `vah.11.2`, `wth.3`, `wth.5-.6` |
+| `testing/harnesses/cursor` | `ADR-001`–`ADR-005` | `wth.11`, `rk8.2`, `vah.11.13`, `wth.4-.6` |
+| `testing/real-harness-integration` | `ADR-001`–`ADR-003` | `vah.5.1-.5.6`, `vah.9.9`, `t4p.7`, `c1k.4-.6`, `vah.11.1-.11.13`, `wth.2-.7` |
+| `testing/integration/ci-execution` | `ADR-001`, `ADR-002` | `vah.5.1`, `vah.5.5`, `t4p.7`, `c1k.5-.6`, `wth.6`, `vah.12.1-.12.2` |
+| `testing/integration/container-isolation` | `ADR-001`, `ADR-002` | `vah.5.2`, `vah.5.5-.5.6`, `vah.9.9`, `t4p.7`, `c1k.1-.2`, `c1k.5-.6`, `vah.11.1-.11.9`, `vah.11.13`, `wth.2-.4` |
+| `testing/integration/matrix-operations` | `ADR-001`–`ADR-005` | `vah.5.1`, `vah.5.5`, `t4p.6-.7`, `c1k.5-.6`, `vah.11.8-.11.13`, `wth.2-.6`, `vah.12.1-.12.2` |
+| `testing/integration/mock-services` | `ADR-001`–`ADR-003` | `vah.5.3-.5.6`, `vah.9.7`, `t4p.7`, `c1k.5-.6`, `vah.11.1-.11.9`, `vah.11.12-.11.13`, `wth.2-.4` |
 
 ## Certified scope decisions
 
