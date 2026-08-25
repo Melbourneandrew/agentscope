@@ -5,21 +5,21 @@ description: ADRs for protocol-aware harness and destination mocks.
 
 ## Capability Summary
 
-MockServer and mock telemetry services make real harness execution deterministic while exposing every relevant protocol request to test assertions.
+MockServer and loopback telemetry services make real harness execution deterministic while exposing every relevant protocol request to test assertions. Model-provider credentials never enter these tests.
 
 ## Architecture Decision Records
 
 ### ADR-001: Treat MockServer as the model-protocol authority
 
-**Decision:** Testkit configures protocol-aware MockServer routes for the OpenAI/Responses, Anthropic, Gemini, and other APIs required by a scenario. It returns deterministic model and tool responses and records a namespaced, sanitized request ledger.
+**Decision:** Testkit configures protocol-aware MockServer routes for the OpenAI/Responses, Anthropic, Gemini, and other APIs required by a scenario. It returns deterministic model and tool responses and records a namespaced, sanitized request ledger. Every harness is configured to use only those internal routes; public egress is denied and probed, and no model-provider credential is present in preparation, scenario configuration, environment, homes, fixtures, or evidence.
 
 **Context:** A transcript parser cannot prove endpoint overrides, native tool flow, or hook invocation. A real outbound request would make a test costly, nondeterministic, and unsafe.
 
-**Consequences:** Mock services are reachable only on the scenario's internal Docker network and are never published on host ports. An unexpected egress attempt fails the scenario rather than falling back to a real provider.
+**Consequences:** A container row reaches controller-owned mocks only on its internal Docker network, with no host port publication. A native row runs mocks and ledgers under the trusted controller principal on the disposable native runner, binds only the protocol endpoint to a scenario-private loopback address, and exposes no listener on an external interface; candidate code can send bounded protocol requests but cannot inspect, signal, or mutate the service process, assertion ledger, or its storage. Native network containment denies public egress independently. An unexpected egress, provider-authentication attempt, externally reachable listener, oracle-control access, or fallback route fails the scenario. Fixed sentinel values may exercise harness-owned local parsing only where the selected mode requires them, but they grant no provider authority and cannot resemble a usable credential.
 
 ### ADR-002: Observe destination delivery independently
 
-**Decision:** A destination test adapter owns a mock OTLP/Langfuse or destination-native endpoint and normalizes its request ledger into common assertions.
+**Decision:** A destination test adapter owns a loopback OTLP receiver or other destination-native mock and normalizes its request ledger into common assertions. Langfuse reporting is verified exclusively as OTLP delivered to the loopback receiver; tests never contact Langfuse or hold an authority-bearing Langfuse credential. A fixed synthetic credential canary may exercise the local reference lifecycle but cannot authenticate to any external service.
 
 **Context:** Model traffic and trace export are distinct evidence. An additional Trace Destination must not require a harness test rewrite.
 

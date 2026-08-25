@@ -15,7 +15,7 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 **Context:** Transcript fixtures cannot prove executable flags, hook invocation, or configuration mutation.
 
-**Consequences:** `apps/**` and `packages/**` retain their own fast unit and contract suites. `tests/integration/` owns hermetic cross-package scenarios. Automated tests do not contact third-party destination services or require destination credentials.
+**Consequences:** `apps/**` and `packages/**` retain their own fast unit and contract suites. `tests/integration/` owns hermetic cross-package scenarios. Automated tests never receive an authority-bearing model-provider or Langfuse credential, never contact a model provider or Langfuse, and verify Langfuse reporting only as OTLP delivered to a loopback ledger. Fixed synthetic credential canaries may exercise local reference lifecycle but grant no external authority.
 
 ### ADR-002: Treat capability claims as test-backed
 
@@ -23,8 +23,8 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 ### ADR-003: Make test cleanup owned and inspectable
 
-**Decision:** The test system gives every Docker resource an exact AgentScope-prefixed name and label, keeps scenario homes and worktrees in container-local tmpfs, and writes retained evidence only beneath the fixed repository artifact root. Cleanup reports sizes and accepts only the closed resource-name and artifact-child grammars. It does not use an AgentScope runtime cache to retain traces.
+**Decision:** The test system gives every owned resource an exact backend-appropriate AgentScope identity. A container row gives every Docker resource an exact prefixed name and label and keeps scenario homes and worktrees in container-local tmpfs. A native row keeps candidate-visible state beneath one exact candidate-principal disposable root on the native host and binds that root, principal, and runner identity into cleanup evidence; it never uses a user's home or project. Candidate code cannot access retained-evidence storage. In both variants, only the trusted controller sanitizes terminal evidence and copies it beneath the fixed repository artifact root. Cleanup reports sizes and accepts only the closed backend resource-name and artifact-child grammars. It does not use an AgentScope runtime cache to retain traces.
 
 **Context:** Repeated package installs can consume material disk space; cleanup must never risk a user's project, home, or active AgentScope state.
 
-**Consequences:** `pnpm test:integration:clean` reports and removes only validated integration containers, networks, images, prepared candidates, build contexts, and run evidence. It rejects symlinked or unexpected artifact paths and never touches a user's home, local harness configuration, project worktree, or production `~/.agentscope` directory.
+**Consequences:** `pnpm test:integration:clean` reports and removes only validated local integration containers, networks, images, prepared candidates, build contexts, and run evidence. Native execution cleanup removes only the exact disposable-runner root and backend resources bound to its run, and the retained record cannot pass before terminal runner reconciliation. Both variants reject symlinked or unexpected artifact paths and never touch a user's home, local harness configuration, project worktree, or production `~/.agentscope` directory.

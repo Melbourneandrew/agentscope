@@ -1,0 +1,6 @@
+{
+  "title": "Harness Integrations",
+  "collapsible": true,
+  "defaultOpen": false,
+  "pages": ["codex", "claude-code", "cursor"]
+}

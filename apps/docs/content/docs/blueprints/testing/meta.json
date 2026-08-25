@@ -6,6 +6,8 @@
     "test-strategy",
     "unit-testing",
     "real-harness-integration",
+    "harness-execution",
+    "harnesses",
     "integration"
   ]
 }
