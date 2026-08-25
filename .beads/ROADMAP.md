@@ -1,6 +1,6 @@
 # Agentscope implementation roadmap certification
 
-This is an immutable Git-side index for the executable Beads program. The issue bodies, dependencies, status transitions, and audit history remain authoritative in the Dolt store.
+This is the Git-side index for the executable Beads program. The original certified plan remains the stable-product baseline; approved milestone overlays may add a narrower release path without deleting its obligations. Issue bodies, dependencies, status transitions, and audit history remain authoritative in the Dolt store.
 
 - Beads root: `agentscope-vah`
 - Certified Dolt branch/revision: `main` / `mejtm8ht98e4f7uuii81krdg5676cl9v`
@@ -28,7 +28,21 @@ Implementers must run `bd dolt pull`, select ready leaf work rather than a ready
 | 11. CI, release, and docs | `agentscope-vah.12` | `codex/andrew/11-delivery-automation` |
 | 12. Maturity certification | `agentscope-vah.13` | `codex/andrew/12-maturity-certification` |
 
-The Phase 4 platform is proven with a purpose-built process fixture. It does not claim that the later CLI, destinations, or harnesses exist. The first exact packed-CLI lifecycle is `agentscope-vah.9.9`, after both first-party destinations exist; actual supported harness binaries are each proven by `agentscope-vah.11.1` through `.11.7`.
+## Version 0.1.0 alpha milestone overlay
+
+The first public milestone is an exact installable `@agentscope/cli@0.1.0` alpha. It is a bounded release profile, not completion of the stable-product sequence above.
+
+| Track | Epic | Authority and delivery boundary |
+| --- | --- | --- |
+| Alpha requirements and release governance | `agentscope-rk8` | Requirements first, then a separate user-approved Blueprint and exact-artifact publication lane |
+| Harness execution testing research | `agentscope-t4p` | Research and a standalone user-approved Blueprint before shared runner or PTY implementation |
+| Safe remote development fleet | `agentscope-0fc` | Optional Crabbox acceleration outside the hermetic Docker boundary; GitHub CI remains release authority |
+| Common installed-CLI and harness verification | `agentscope-c1k` | Bounded supervisor, installed-CLI contracts, independent ledgers, and later PTY lanes |
+| Three-harness alpha implementation | `agentscope-wth` | Codex, Claude Code, and Cursor split-pushed in isolated branches, then an unconditional pinned PR matrix |
+
+The alpha must not wait for the remaining stable-roster harnesses, complete historical SQLite migration and maintenance certification, broad native-platform claims, or the full interactive-mode matrix. It must retain the original planned real-harness, exact packed-artifact, fail-open, redaction, isolation, and destination evidence gates. Cursor implementation and dependency regraphing cannot begin until the requirements change and its subsequent standalone Blueprint are approved and merged.
+
+The Phase 4 platform is proven with a purpose-built process fixture. It does not claim that the later CLI, destinations, or harnesses exist. The first exact packed-CLI lifecycle is `agentscope-vah.9.9`, after both first-party destinations exist. The original seven actual harness binaries remain assigned to `agentscope-vah.11.1` through `.11.7`; the authority-gated Cursor alpha lane is assigned to `agentscope-wth.4`. Dependency reconciliation remains `agentscope-rk8.3` work after the requirements and Blueprint gates merge.
 
 ## Requirement acceptance-criterion ownership
 
@@ -36,6 +50,7 @@ Every mandatory criterion present at this revision has an implementation owner a
 
 | Acceptance criteria | Primary delivery owners |
 | --- | --- |
+| `AC-ALPHA-001.1` through `AC-ALPHA-005.2` | `agentscope-rk8.3`, `agentscope-rk8.4`, `agentscope-rk8.5`, `agentscope-rk8.6`, `agentscope-c1k.4`, `agentscope-c1k.5`, `agentscope-c1k.6`, `agentscope-wth.2`, `agentscope-wth.3`, `agentscope-wth.4`, `agentscope-wth.5`, `agentscope-wth.6`, `agentscope-wth.8` |
 | `AC-OVR-001.1`, `AC-OVR-002.1` | `vah.3.2-.3.4`, `vah.6.1-.6.4`, `vah.10.2-.10.4`, `vah.11.1-.11.9` |
 | `AC-INS-001.1`, `AC-INS-001.2`, `AC-INS-001.3`, `AC-INS-001.4`, `AC-INS-002.1`, `AC-INS-002.2`, `AC-INS-002.3`, `AC-INS-003.1`, `AC-INS-003.2` | `vah.2.2`, `vah.2.5`, `vah.8.3`, `vah.9.9`, `vah.12.2`, `vah.12.4` |
 | `AC-CLI-001.1`, `AC-CLI-001.2`, `AC-CLI-001.3`, `AC-CLI-001.4`, `AC-CLI-002.1`, `AC-CLI-002.2`, `AC-CLI-002.3`, `AC-CLI-002.4` | `vah.2.5`, `vah.8.1`, `vah.8.6-.8.7`, `vah.12.2`, `vah.12.4` |
@@ -44,9 +59,9 @@ Every mandatory criterion present at this revision has an implementation owner a
 | `AC-CFG-001.1`, `AC-CFG-001.2`, `AC-CFG-002.1`, `AC-CFG-002.2`, `AC-CFG-002.3` | `vah.7.1-.7.3`, `vah.7.7-.7.8` |
 | `AC-INIT-001.1`, `AC-INIT-001.2`, `AC-INIT-001.3`, `AC-INIT-002.1`, `AC-INIT-002.2`, `AC-INIT-002.3`, `AC-INIT-002.4`, `AC-INIT-002.5`, `AC-INIT-003.1`, `AC-INIT-003.2`, `AC-INIT-003.3` | `vah.8.2-.8.3`, `vah.9.9`, `vah.10.1`, `vah.11.1-.11.7` |
 | `AC-GOV-001.1`, `AC-GOV-001.2`, `AC-GOV-001.3`, `AC-GOV-001.4`, `AC-GOV-001.5`, `AC-GOV-002.1`, `AC-GOV-002.2` | `vah.3.3-.3.4`, `vah.6.1-.6.4`, `vah.13.3` |
-| `AC-HAR-001.1`, `AC-HAR-001.2`, `AC-HAR-002.1`, `AC-HAR-003.1`, `AC-HAR-003.2` | `vah.10.1-.10.4`, `vah.8.3-.8.4`, `vah.11.1-.11.11` |
-| `AC-SQL-001.1`, `AC-SQL-001.2`, `AC-SQL-001.3`, `AC-SQL-002.1`, `AC-SQL-002.2`, `AC-SQL-002.3`, `AC-SQL-002.4`, `AC-SQL-003.1`, `AC-SQL-003.2`, `AC-SQL-003.3` | `vah.9.4-.9.7` |
-| `AC-REP-001.1`, `AC-REP-001.2`, `AC-REP-001.3`, `AC-REP-002.1`, `AC-REP-003.1`, `AC-REP-003.2`, `AC-REP-003.3` | `vah.4.1`, `vah.4.3`, `vah.6.2`, `vah.9.2`, `vah.9.5` |
+| `AC-HAR-001.1`, `AC-HAR-001.2`, `AC-HAR-002.1`, `AC-HAR-003.1`, `AC-HAR-003.2`, `AC-HAR-003.3` | `vah.10.1-.10.4`, `vah.8.3-.8.4`, `vah.11.1-.11.11`, `agentscope-rk8.3`, `agentscope-wth.2-.wth.6` |
+| `AC-SQL-001.1-.001.4`, `AC-SQL-002.1-.002.6`, `AC-SQL-003.1-.003.3` | `vah.9.4-.9.7`, `vah.12.10` |
+| `AC-REP-001.1-.001.3`, `AC-REP-002.1`, `AC-REP-003.1-.003.4`, `AC-REP-004.1-.004.2` | `vah.4.1`, `vah.4.3`, `vah.6.2`, `vah.9.2`, `vah.9.5`, `agentscope-vah.12.11`, `agentscope-wth.8` |
 | `AC-CAP-001.1`, `AC-CAP-001.2`, `AC-CAP-001.3`, `AC-CAP-002.1`, `AC-CAP-002.2`, `AC-CAP-002.3`, `AC-CAP-002.4`, `AC-CAP-002.5`, `AC-CAP-002.6`, `AC-CAP-002.7` | `vah.6.1-.6.3`, `vah.8.4`, `vah.10.2-.10.4`, `vah.11.1-.11.9` |
 | `AC-CONN-001.1`, `AC-CONN-001.2`, `AC-CONN-002.1`, `AC-CONN-002.2`, `AC-CONN-002.3` | `vah.7.2-.7.3`, `vah.8.2`, `vah.9.2`, `vah.9.5` |
 | `AC-RET-001.1`, `AC-RET-001.2`, `AC-RET-001.3`, `AC-RET-002.1`, `AC-RET-002.2`, `AC-RET-002.3`, `AC-RET-003.1`, `AC-RET-003.2`, `AC-RET-003.3`, `AC-RET-003.4` | `vah.4.2-.4.3`, `vah.6.4`, `vah.8.5`, `vah.9.3`, `vah.9.6` |
@@ -98,8 +113,8 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 - The implementation is standards-first and may replace all disposable SF-derived code; it has no compatibility obligation to that code.
 - OpenTelemetry/OpenInference plus namespaced `agentscope.*` extensions form the protocol model; private Protocol/Core packages are not a published SDK.
 - Only the bundled CLI artifact is public. The workspace uses `@agentscope/cli`; `vah.12.8` must prove ownership or reconcile the final owned public package identity before release because the unscoped `agentscope` name is already owned elsewhere. The executable remains `agentscope`. First-party harness and destination packages are private implementation modules, not a runtime plugin system.
-- Supported harness work is Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes. Cursor and console scaffolds are removed.
+- The stable target harness roster is Codex, Claude Code, Cursor, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes. The `0.1.0` alpha claims only Codex, Claude Code, and Cursor at evidenced versions and execution modes; the remaining stable target integrations stay open after alpha publication.
 - Hooks fail open. Core does not persist trace-content retries. Local SQLite stores traces only when explicitly configured as a destination.
 - Real model protocols use digest-pinned MockServer in disposable containers. No test exposes a developer's active harness, home, worktree, credentials, or `~/.agentscope` to mocked traffic.
 - Credential adapters are implemented and contract-tested before Core; real native backend evidence runs later on trusted supported-platform CI runners.
-- Protected Langfuse evidence runs only after trusted-main workflow/ref and artifact binding exist.
+- Langfuse reporting uses OTLP only. Automated Langfuse evidence is hermetic and loopback-contained; it does not use a public Langfuse service or live Langfuse credential.

@@ -12,6 +12,7 @@ Agentscope interacts with npm, native credential stores, filesystems, harness co
 - **Platform combination:** an operating system, architecture, Node.js runtime, credential backend, filesystem behavior, and required native dependency set.
 - **Support manifest:** the machine-readable set of platform combinations and capabilities that a release claims to support.
 - **Native evidence:** results produced on the operating system and architecture whose behavior is being claimed.
+- **Alpha platform combination:** a platform combination whose exact alpha installation and advertised capability lifecycle is recorded in the alpha release support manifest.
 
 ## Requirements
 
@@ -30,3 +31,5 @@ As a user on an unsupported or incomplete platform combination, I want an action
 - **AC-PLAT-002.1:** When the current platform combination is unsupported, the system shall report a stable diagnostic identifying the unsupported capability before applying configuration or hook mutations.
 - **AC-PLAT-002.2:** When the current platform cannot load a required native dependency, the system shall report the affected feature and shall not claim the platform combination as supported.
 - **AC-PLAT-002.3:** When only an optional capability is unavailable, the system shall identify that capability without misrepresenting unrelated verified capabilities as unavailable.
+
+The first alpha's bounded platform-claim rules are defined by `REQ-ALPHA-005`; it makes no broader native-platform claim than its release evidence supports.

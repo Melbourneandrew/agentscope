@@ -5,13 +5,14 @@ description: User requirements for installing and updating the public Agentscope
 
 ## Overview
 
-Agentscope is distributed as one npm CLI package that installs the stable `agentscope` command. Installation and upgrades must be verifiable without exposing internal workspace packages as public products.
+Agentscope is distributed as one npm CLI package that installs the `agentscope` command. Alpha and stable release channels must remain attributable to the exact tested package without exposing internal workspace packages as public products.
 
 ## Terminology
 
 - **CLI artifact:** the packed `@agentscope/cli` npm artifact offered for installation.
 - **Owned launcher:** the stable executable or shim written by Agentscope for harness hooks.
 - **Clean installation:** installation in an environment with no Agentscope source checkout or separately installed Agentscope packages.
+- **Release channel:** the npm distribution tag used to select a release; it does not replace the package's semantic version.
 
 ## Requirements
 
@@ -38,3 +39,5 @@ As an operator, I want an installed CLI to be attributable to its tested release
 
 - **AC-INS-003.1:** When a CLI release is published, the system shall associate the artifact with its source revision, package version, and integrity digest.
 - **AC-INS-003.2:** When release verification runs, the system shall exercise the same artifact that is eligible for publication rather than an independently assembled substitute.
+
+The exact identity and clean-install behavior of the first alpha are defined by `REQ-ALPHA-001`.

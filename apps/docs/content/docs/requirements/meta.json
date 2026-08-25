@@ -4,6 +4,7 @@
   "defaultOpen": true,
   "pages": [
     "product-description",
+    "alpha-release",
     "cli-installation-and-upgrades",
     "cli-help-and-automation",
     "supported-platforms",

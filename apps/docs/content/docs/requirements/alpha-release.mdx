@@ -1,0 +1,77 @@
+---
+title: Version 0.1.0 Alpha Release
+description: User requirements for the first installable Agentscope alpha and its bounded support claims.
+---
+
+## Overview
+
+Agentscope version `0.1.0` is the first installable alpha release. It gives users a real npm CLI to try with Codex, Claude Code, and Cursor while keeping experimental Local SQLite behavior and verified platform claims narrower than the later stable product contract.
+
+The alpha is a release profile, not a replacement for the stable requirements. Capabilities deferred from the alpha remain required before Agentscope advertises the corresponding stable support claim.
+
+## Terminology
+
+- **Alpha release:** the public prerelease whose exact npm package version is `@agentscope/cli@0.1.0` and whose executable is `agentscope`.
+- **Alpha supported harness:** Codex, Claude Code, or Cursor at a version and execution mode listed in the alpha release support manifest.
+- **Experimental capability:** a capability included for evaluation with an explicitly narrower support contract than the stable product requirement.
+- **Stable release:** a later release that advertises only capabilities which satisfy their complete non-alpha requirements.
+- **Release support manifest:** the machine-readable record of the exact harness versions and modes, platform combinations, destination capabilities, artifact digest, and source revision verified for one release.
+
+## Requirements
+
+### REQ-ALPHA-001: Installable release identity
+
+As an early Agentscope user, I want the alpha to be a conventional npm package, so that I can try the real CLI without a source checkout.
+
+- **AC-ALPHA-001.1:** When the alpha is published, the system shall publish the exact package version `@agentscope/cli@0.1.0`.
+- **AC-ALPHA-001.2:** When the alpha package is installed, the system shall expose the unhyphenated `agentscope` executable.
+- **AC-ALPHA-001.3:** When I run `npm install -g @agentscope/cli@0.1.0` in a clean environment, the system shall install the same checksum-addressed artifact that passed alpha release verification.
+- **AC-ALPHA-001.4:** When an npm prerelease distribution tag is used, the system shall use the `alpha` tag without changing the installed package version from `0.1.0`.
+
+### REQ-ALPHA-002: Bounded harness support
+
+As an early Agentscope user, I want exact alpha harness claims, so that I can distinguish verified integrations from planned integrations.
+
+- **AC-ALPHA-002.1:** When the `0.1.0` alpha advertises harness support, the system shall list Codex, Claude Code, and Cursor only at the versions and execution modes verified in its release support manifest.
+- **AC-ALPHA-002.2:** When an advertised alpha harness is installed, the system shall provide the same owned-installation, fail-open, redaction, diagnostic, Doctor, and uninstall guarantees required for supported harnesses.
+- **AC-ALPHA-002.3:** When a harness, version, or execution mode lacks the required alpha release evidence, the system shall omit that claim even if its implementation or scaffold exists in the artifact.
+- **AC-ALPHA-002.4:** When the alpha claims a harness version and execution mode, the system shall clean-install the exact packed CLI candidate named by the release support manifest during release verification.
+- **AC-ALPHA-002.5:** When the alpha claims a harness version and execution mode, the system shall invoke that harness's actual executable rather than a substitute process fixture during release verification.
+- **AC-ALPHA-002.6:** When the actual harness executable is verified, the system shall complete initialization, detection, owned installation, one captured session, destination reporting, Doctor inspection, and uninstall in an isolated disposable environment.
+- **AC-ALPHA-002.7:** When alpha harness verification completes, the system shall bind the result to the CLI artifact digest, source revision, harness identity, harness version, and execution mode in the release support manifest.
+
+### REQ-ALPHA-003: Experimental Local SQLite profile
+
+As an early Agentscope user, I want an explicitly bounded local destination, so that I can try durable local traces without mistaking the alpha for the complete stable storage lifecycle.
+
+- **AC-ALPHA-003.1:** When no Local SQLite connection has been confirmed, the system shall not create a trace database.
+- **AC-ALPHA-003.2:** When I propose a Local SQLite connection, the system shall disclose that redacted trace content persists on disk and identify the resolved database path before requesting confirmation.
+- **AC-ALPHA-003.3:** When an alpha Local SQLite report succeeds, the system shall durably store the redacted Protocol trace.
+- **AC-ALPHA-003.4:** When I use basic search or get against an admitted alpha trace, the system shall return that trace subject to the retrieval and redaction requirements.
+- **AC-ALPHA-003.5:** When I unconfigure an alpha Local SQLite connection, the system shall preserve the database and report its location.
+- **AC-ALPHA-003.6:** When concurrent alpha hooks report the same delivery identity, the system shall admit at most one logical delivery.
+- **AC-ALPHA-003.7:** When the alpha opens a Local SQLite database, the system shall recognize one current public schema version without claiming compatibility with a historical public alpha schema.
+- **AC-ALPHA-003.8:** When alpha hooks write concurrently, the system shall use SQLite write-ahead logging.
+- **AC-ALPHA-003.9:** When an alpha hook encounters a busy database, the system shall stop waiting at a bounded timeout.
+- **AC-ALPHA-003.10:** When the alpha database is busy, full, or corrupt, the system shall fail open with a distinct sanitized result.
+- **AC-ALPHA-003.11:** When Doctor inspects an alpha Local SQLite connection, the system shall report its readability, writability, and schema compatibility without exposing trace content.
+- **AC-ALPHA-003.12:** When alpha Local SQLite documentation is produced, the system shall identify general historical migration, backup and restore commands, automated retention, confirmed destructive deletion, corruption recovery, hostile filesystem replacement hardening, and broad native-platform certification as unclaimed until their complete stable requirements are verified.
+
+### REQ-ALPHA-004: Hermetic automated verification
+
+As an early Agentscope user, I want alpha compatibility evidence that cannot spend my model tokens or expose service credentials, so that release testing is safe and reproducible.
+
+- **AC-ALPHA-004.1:** When automated alpha verification requires a model response, the system shall use a synthetic response without invoking a paid or upstream model.
+- **AC-ALPHA-004.2:** When automated alpha harness verification runs, the system shall not receive or use a real model-provider credential.
+- **AC-ALPHA-004.3:** When an automated alpha scenario runs, the system shall deny public network egress from that scenario.
+- **AC-ALPHA-004.4:** When automated alpha Langfuse reporting verification runs, the system shall send the trace through OTLP.
+- **AC-ALPHA-004.5:** When automated alpha Langfuse reporting verification runs, the system shall produce deterministic local evidence of OTLP receipt.
+- **AC-ALPHA-004.6:** When automated alpha Langfuse reporting verification runs, the system shall not contact a public Langfuse service.
+- **AC-ALPHA-004.7:** When automated alpha Langfuse reporting verification runs, the system shall not receive or use a Langfuse credential.
+
+### REQ-ALPHA-005: Truthful platform claims
+
+As an early Agentscope user, I want the alpha to name only verified platform combinations, so that alpha availability is not mistaken for broad native support.
+
+- **AC-ALPHA-005.1:** When alpha platform documentation is produced, the system shall derive every operating-system, architecture, runtime, credential-backend, and native-dependency claim from the alpha release support manifest.
+- **AC-ALPHA-005.2:** When a platform combination has not completed the alpha lifecycle evidence required for its advertised capabilities, the system shall identify it as unverified rather than infer support from Linux container evidence.

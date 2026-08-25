@@ -10,7 +10,8 @@ Agentscope manages harness integrations as explicit, reversible installations. A
 ## Terminology
 
 - **Owned integration:** a configuration block installed and identifiable as Agentscope-managed.
-- **Supported harness roster:** Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes.
+- **Stable target harness roster:** Codex, Claude Code, Cursor, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes.
+- **Release-supported harness:** a harness, version, and execution mode backed by the release support manifest for the release making the claim.
 
 ## Requirements
 
@@ -31,5 +32,8 @@ As a user, I want duplicate observability hooks detected, so that I do not accid
 
 As a coding-agent user, I want consistent setup behavior across supported harnesses, so that choosing a harness does not weaken Agentscope's safety guarantees.
 
-- **AC-HAR-003.1:** When Agentscope advertises its supported harness roster, the system shall include first-party integrations for Codex, Claude Code, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes.
-- **AC-HAR-003.2:** When any supported harness is installed, inspected, upgraded, or removed, the system shall apply the same ownership, fail-open, redaction, and diagnostic guarantees while preserving harness-specific semantics.
+- **AC-HAR-003.1:** When Agentscope advertises its stable target harness roster, the system shall include first-party integrations for Codex, Claude Code, Cursor, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes.
+- **AC-HAR-003.2:** When any release-supported harness is installed, inspected, upgraded, or removed, the system shall apply the same ownership, fail-open, redaction, and diagnostic guarantees while preserving harness-specific semantics.
+- **AC-HAR-003.3:** When any release advertises a harness as supported, the system shall limit the claim to the harness versions and execution modes backed by that release's support manifest.
+
+The `0.1.0` alpha support subset and evidence boundary are defined by `REQ-ALPHA-002`; the remaining stable target integrations are not alpha blockers.
