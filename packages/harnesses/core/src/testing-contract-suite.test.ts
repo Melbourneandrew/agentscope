@@ -57,7 +57,43 @@ const hookRunner = async (
 const referenceFixture = {
   fixtureVersion: 1,
   fixtureId: "reference-session-v1",
+  harnessId: "reference",
   harnessVersion: "1.2.3",
+  governance: {
+    provenance: {
+      captureKind: "synthetic",
+      sourceReference: "urn:agentscope:synthetic:reference-session-v1",
+      sourceArtifactDigest: `sha256-${"a".repeat(64)}`,
+      captureRecipe: "reference-recipe-v1",
+    },
+    license: {
+      spdxExpression: "MIT",
+      redistribution: "reviewed-for-repository",
+      sourceReference: "https://example.invalid/reference-license",
+    },
+    redaction: {
+      profileVersion: 1,
+      classification: "sanitized-native-fixture",
+      rawContentRetained: false,
+      removedCategories: [
+        "credentials",
+        "raw-transcript",
+        "terminal-output",
+        "user-content",
+        "user-paths",
+      ],
+    },
+    review: {
+      status: "approved",
+      reviewedAt: "2026-08-25",
+      references: ["review:reference-one", "review:reference-two"],
+    },
+    representative: {
+      scenarioId: "reference-v1",
+      representativeVersion: "1.2.3",
+      evidenceSlot: "reference-v1",
+    },
+  },
   nativeIdentityKind: "session",
   nativeIdentity: "reference-session-1",
   sourceGeneration: 1,
@@ -70,7 +106,7 @@ const referenceFixture = {
   sanitizedPayload: {
     model: "reference-model",
     operation: "summarize",
-    tokenCount: 7,
+    token_count: 7,
   },
 } as const;
 
@@ -317,6 +353,60 @@ describe("harness contract suite adversarial seeds", () => {
 });
 
 describe("harness contract evidence and discovery seeds", () => {
+  it("rejects representative scenario and evidence-slot drift", async () => {
+    const scenarioDrift = referenceAdapter();
+    await expect(
+      runCase(
+        {
+          ...scenarioDrift,
+          fixture: {
+            ...scenarioDrift.fixture,
+            governance: {
+              ...scenarioDrift.fixture.governance,
+              representative: {
+                ...scenarioDrift.fixture.governance.representative,
+                scenarioId: "other-scenario",
+              },
+            },
+          },
+        },
+        "harness:scenario-adapter",
+      ),
+    ).rejects.toThrow("harness.contract.scenario");
+
+    const evidenceDrift = referenceAdapter();
+    const fixtureWithDrift = {
+      ...evidenceDrift.fixture,
+      governance: {
+        ...evidenceDrift.fixture.governance,
+        representative: {
+          ...evidenceDrift.fixture.governance.representative,
+          evidenceSlot: "other-slot",
+        },
+      },
+    } as const;
+    const digests = deriveHarnessContractEvidenceDigests(
+      fixtureWithDrift,
+      evidenceDrift.scenario,
+    );
+    await expect(
+      runCase(
+        {
+          ...evidenceDrift,
+          fixture: fixtureWithDrift,
+          supportEvidence: {
+            ...evidenceDrift.supportEvidence,
+            entries: evidenceDrift.supportEvidence.entries.map((entry) => ({
+              ...entry,
+              ...digests,
+            })),
+          },
+        },
+        "harness:compatibility-evidence",
+      ),
+    ).rejects.toThrow("harness.contract.compatibility");
+  });
+
   it("rejects stale compatibility and malformed discovery evidence", async () => {
     const compatibilityViolation = referenceAdapter();
     await expect(

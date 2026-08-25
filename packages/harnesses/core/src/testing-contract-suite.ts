@@ -20,6 +20,10 @@ import type {
   NativeFieldProvenance,
   NativeUnavailableField,
 } from "./native-mapping.js";
+import {
+  parseHarnessSanitizedFixture,
+  type HarnessSanitizedFixture,
+} from "./native-fixture-governance.js";
 import type {
   HarnessDescriptor,
   HarnessSupportEvidenceManifest,
@@ -45,22 +49,6 @@ export type HarnessFixtureMapping = Readonly<{
   boundary: NativeCaptureBoundary;
   provenance: readonly NativeFieldProvenance[];
   unavailable: readonly NativeUnavailableField[];
-}>;
-
-export type HarnessSanitizedFixture = Readonly<{
-  fixtureVersion: 1;
-  fixtureId: string;
-  harnessVersion: string;
-  nativeIdentityKind: "run" | "session" | "thread";
-  nativeIdentity: string;
-  sourceGeneration: number;
-  positionKind: "byte-offset" | "event-index" | "line" | "sequence";
-  availableStartPosition: number;
-  boundaryKind: "hook-invocation" | "session" | "transcript-range" | "turn";
-  boundaryId: string;
-  exclusiveEndPosition: number;
-  expectedFields: readonly string[];
-  sanitizedPayload: Readonly<Record<string, string | number | boolean>>;
 }>;
 
 export type HarnessScenarioAdapter = Readonly<{
@@ -98,8 +86,6 @@ export type HarnessContractAdapter = Readonly<{
 const digestPattern = /^sha256-[a-f0-9]{64}$/u;
 const idPattern = /^[a-z][a-z0-9-]{0,63}$/u;
 const packagePattern = /^@agentscope\/harness-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const forbiddenFixtureText =
-  /(?:bearer\s|api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|\/Users\/|\/home\/|[A-Za-z]:\\)/iu;
 const shellSyntax = /(?:[;&|`$<>\n\r]|\$\(|\{\{)/u;
 const contractCaseNames = Object.freeze([
   "harness:compatibility-evidence",
@@ -143,14 +129,8 @@ export const deriveHarnessContractEvidenceDigests = (
 
 const fixtureIsSanitized = (fixture: HarnessSanitizedFixture): boolean => {
   try {
-    const serialized = JSON.stringify(fixture);
-    return (
-      fixture.fixtureVersion === 1 &&
-      idPattern.test(fixture.fixtureId) &&
-      fixture.expectedFields.length > 0 &&
-      new Set(fixture.expectedFields).size === fixture.expectedFields.length &&
-      !forbiddenFixtureText.test(serialized)
-    );
+    parseHarnessSanitizedFixture(fixture);
+    return true;
   } catch {
     return false;
   }
@@ -168,6 +148,8 @@ const evidenceIsBound = (adapter: HarnessContractAdapter): boolean => {
     adapter.scenario,
   );
   return (
+    entry.evidenceSlot ===
+      adapter.fixture.governance.representative.evidenceSlot &&
     digestPattern.test(entry.contractSuiteDigest) &&
     digestPattern.test(entry.realScenarioDigest) &&
     entry.contractSuiteDigest === expected.contractSuiteDigest &&
@@ -403,6 +385,11 @@ const runScenarioContract = (adapter: HarnessContractAdapter): void => {
       packagePattern.test(scenario.harnessPackage) &&
       scenario.representativeVersion === adapter.compatibleVersion &&
       scenario.fixtureId === adapter.fixture.fixtureId &&
+      adapter.fixture.harnessId === scenario.harnessId &&
+      adapter.fixture.governance.representative.scenarioId ===
+        scenario.scenarioId &&
+      adapter.fixture.governance.representative.representativeVersion ===
+        scenario.representativeVersion &&
       scenario.tags.length > 0 &&
       scenario.commandArguments.every(
         (argument) => argument.length > 0 && !shellSyntax.test(argument),
