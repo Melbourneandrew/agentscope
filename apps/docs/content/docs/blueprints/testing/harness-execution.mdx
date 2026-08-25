@@ -1,0 +1,138 @@
+---
+title: Harness Execution Verification
+description: ADRs for supervising, driving, and certifying installed CLI behavior against agent harnesses.
+---
+
+## Capability Summary
+
+Agentscope needs deterministic proof that its packed CLI installs cleanly, drives each claimed harness mode without paid model traffic, captures the resulting lifecycle, and leaves no process or owned inner-scenario state behind. The same scenario contract must work in local Docker, GitHub CI, and disposable Crabbox workers. Outer fleet leases have a separate reconciliation contract and are never described as automatically deleted by scenario TTL.
+
+## Architecture Decision Records
+
+### ADR-001: Put one bounded execution kernel beneath pipe and PTY transports
+
+**Decision:** `packages/testkit` owns a TypeScript execution kernel used by both a non-interactive pipe transport and a PTY transport. Callers provide an executable, exact arguments, working directory, explicit environment allowlist, stdin or terminal input, output ceilings, and absolute monotonic startup, execution, and shutdown deadlines.
+
+On Linux, the disposable scenario's PID namespace and cgroup are the containment authority. The kernel uses process groups for signal delivery inside that boundary, tracks process identity through `/proc` start identity and cgroup membership, drains bounded output concurrently, propagates cancellation, sends `SIGTERM`, waits a bounded grace period, escalates to `SIGKILL`, joins the process plus stdin, pipe, and PTY handles, and verifies that no process remains in the scenario cgroup before returning one deterministic sanitized result. An output overflow, incomplete drain, uncertain cleanup, or exit-versus-deadline race is an explicit result category rather than a successful truncation.
+
+Native execution requires an approved platform-specific containment backend with equivalent identity, enumeration, termination, and join guarantees. A process group alone is insufficient because a child may create a new session or race process-identifier reuse. A platform without such a backend fails closed and cannot contribute the cleanup evidence for a support claim.
+
+**Context:** The current process helper inherits ambient environment, accumulates unbounded strings, sends one `SIGTERM`, rejects before process/output settlement, and has no process-group or PTY contract. CodexBar commit `b6a4ce968c168fb5465f840c466f7e6a9b0ff9db` demonstrates useful process and terminal invariants, but its Swift implementation and product-specific scraping are not Agentscope architecture.
+
+**Alternatives considered:** Separate adapter-owned runners would duplicate lifecycle bugs. A pipe-only runner cannot exercise documented interactive modes. Porting CodexBar would import Swift, macOS, and CodexBar product assumptions.
+
+**Consequences:** The shared non-PTY kernel must merge before headless real-scenario wiring converges. Adapters select a transport and describe native observations; they cannot weaken deadlines, containment, cleanup, or output policy. Raw output retained as evidence is bounded and sanitized. Destroying the outer container is a final safety action, not a substitute for the pre-destruction cgroup-empty assertion.
+
+### ADR-002: Drive documented interactive modes through a semantic PTY contract
+
+**Decision:** The PTY transport controls terminal geometry, resize, input, EOF, interrupt bytes, and signals, and derives readiness and terminal completion from a bounded terminal emulator. Tests assert semantic states and lifecycle facts, not byte-for-byte ANSI snapshots.
+
+Every harness eventually receives headless and interactive scenarios for each applicable documented mode. Research records an explicit `N/A` only with a versioned official-interface citation. Headless and interactive outcomes are compared through model, hook, capture, destination, exit, and cleanup facts; visual output need not be identical.
+
+**Context:** TTY presence changes behavior for several harnesses. Terminal output is fragmented and may contain alternate-screen, cursor-query, progress, and malformed control sequences.
+
+**Consequences:** Host login or credential prompts are hard failures. PTY coverage does not replace an independently passing headless lane. An execution mode blocks a release only when the release support manifest claims that mode. The complete interactive matrix does not newly block the first alpha; if a harness has no truthful claimed lifecycle without a TTY, its minimal PTY scenario becomes that harness claim's admission test. The generic PTY component and later per-harness interactive rows do not block unrelated headless claims.
+
+### ADR-003: Keep acceptance oracles outside scenario adapters
+
+**Decision:** Test families own fixed stimuli, correlation rules, pass criteria, and deliberately nonconforming fixtures. Scenario adapters may perform a pure translation of native paths and event shapes, but may not supply expected success values or discard contradictory native records.
+
+Real-harness acceptance independently observes:
+
+- the actual harness binary, version, arguments, terminal/process result, and descendant cleanup;
+- the internal model-proxy request ledger;
+- hook invocations and native transcript or rollout artifacts;
+- OTLP destination delivery and optional Local SQLite state;
+- installed configuration, filesystem mutations, and owned-state cleanup.
+
+The family oracle binds those planes with an opaque scenario identity, fixed model response and tool canary, native session and turn identities, hook transcript path, captured trace context, delivery identity, and canary-file digest. It retains the bounded raw native records used by the translation. Deliberate-negative cases feed a translator missing, duplicated, reordered, or cross-session native records and must fail even when its normalized output looks plausible.
+
+**Context:** The current synthetic process adapter creates representative data and much of its own expected outcome. That proves substrate plumbing, not product compatibility.
+
+**Consequences:** Fake executables certify the execution component only. No synthetic fixture can satisfy a real-harness acceptance criterion or support claim. A scenario fails when any required observation plane or correlation binding is missing, contradictory, unbounded, or cannot be cleaned up.
+
+### ADR-004: Test every public CLI contract from the exact packed artifact
+
+**Decision:** A clean-installed contract suite packs the exact release candidate, installs it into an ordinary isolated user prefix, and invokes the resulting `agentscope` executable. It covers every public command and command level in both human and structured modes.
+
+The suite verifies help and version, stdout/stderr separation, stable exit and diagnostic categories, valid and hostile argument combinations, confirmations and non-TTY EOF, idempotency and conflicting state, Unicode and spaces, narrow terminals and broken pipes, signals and deadlines, and absence of mutation on help, validation failure, rejected plans, and read-only commands.
+
+**Context:** Workspace unit tests and a small root-command smoke suite cannot prove the behavior users install from npm.
+
+**Consequences:** The packed tarball is the sole product composition root. Repository-source shortcuts, global developer installs, and fabricated installation markers are not acceptance evidence.
+
+### ADR-005: Prepare immutable harness inputs before denying public egress
+
+**Decision:** A trusted controller resolves only version metadata and creates a disposable credential-free acquisition guest. That guest has no repository checkout, GitHub job identity, provider credential, host socket, reusable cache, or developer state. It downloads the allowlisted explicit artifact and, when unavoidable, executes a vendor installer there. The controller accepts only a bounded file set, source and license record, available signature or registry integrity, and computed digest from the guest. The isolated scenario begins only after its CLI candidate, harness binary, runtime image, and model fixture are immutable.
+
+Inside the scenario, every harness receives dummy credentials and an explicit internal model endpoint. Public model, authentication, updater, telemetry, and destination egress is denied and probed. Langfuse verification observes OTLP sent to the loopback ledger only; no live Langfuse API or credential is used.
+
+Open-source harness artifacts may enter private digest-pinned images with their required notices. Proprietary harness artifacts are cached or redistributed only when their vendor terms permit it; otherwise each trusted acquisition guest prepares an ephemeral unpublished layer. Vendor-controlled installers never execute on the controller.
+
+**Context:** A real binary can spend tokens or silently update even when a nominal proxy is configured. Cursor's `--endpoint` is documented for its backend/authentication contract, not as proof of an arbitrary local model-provider override. Current enterprise documentation describes `UpdateMode=none` or `update.mode`, but the pinned standalone CLI must prove that it honors the applicable control.
+
+**Consequences:** Each version must prove a version-specific actual-binary routing seam, dummy-auth acceptance, updater suppression or harmless failure, and absence of public fallback before it is admitted. The presence of an endpoint flag is not sufficient evidence. If Cursor cannot complete the synthetic turn with public egress denied, its alpha claim is blocked and the requirement must be reconsidered rather than spending a real token. A moving `latest` artifact never executes inside isolation.
+
+### ADR-006: Bind support to a tiered scenario catalog
+
+**Decision:** The durable scenario catalog assigns every case to one of five evidence tiers:
+
+1. component checks for hostile fake processes, the supervisor, PTY, and installed CLI on every pull request;
+2. pinned real-binary product shards for every currently claimed harness on every pull request;
+3. release certification for the registry artifact and each claimed platform;
+4. interactive compatibility and upstream drift lanes;
+5. eventual maturity coverage for additional harnesses, native platforms, storage lifecycle, and long-duration faults.
+
+**Context:** A single happy-path real run cannot characterize missing, duplicate, late, or killed hooks; output overflow; provider fallback; concurrent sessions; destination faults; or cleanup races.
+
+**Consequences:** The catalog includes deliberate failures and independently named oracles for process, terminal, hook, transcript, network, destination, storage, mutation, and cleanup behavior. Deferred rows remain visible and cannot support broader claims.
+
+### ADR-007: Require pinned claimed-harness shards on every pull request
+
+**Decision:** Every pull request runs an unconditional, separately sharded scenario for each harness in the current alpha support roster. Each shard clean-installs the same packed CLI candidate, invokes the pinned actual binary, uses the internal model proxy and OTLP ledger, denies public egress, and proves cleanup. No path- or relevance-based classifier may omit a roster member.
+
+**Context:** Deterministic pins make pre-merge failures attributable and parallel shards keep aggregate time practical.
+
+**Consequences:** GitHub CI remains merge and release authority. Full workspace validation, native jobs, and Docker scenarios are separate jobs rather than one timing-sensitive aggregate process.
+
+### ADR-008: Detect upstream drift without making moving releases authoritative
+
+**Decision:** A non-blocking latest-candidate canary runs for each claimed harness on pull requests, and a scheduled lane repeats it when the repository has no new pull request. Both resolve and digest the candidate during trusted preparation, then execute the ordinary isolated manifest.
+
+On success, automation opens a compatibility-adoption pull request that changes the capability-manifest representative pin, native fixtures, and expected evidence together. The harness descriptor changes only when the intended compatibility range changes. That pull request runs the required pinned gates before merge. A latest-candidate failure creates visible compatibility work but cannot replace the accepted pin or deadlock unrelated changes.
+
+**Context:** Scheduled-only testing discovers drift after upstream publication, while making a moving vendor version a merge gate lets an unrelated upstream change block all repository work.
+
+**Consequences:** Authority remains separated: the harness descriptor solely owns the runtime compatibility range; the integration capability manifest owns pinned tested representatives; and the release support manifest publishes only the exact versions, modes, platforms, and artifact digest admitted for one release. Canary automation cannot write the release support manifest. Scheduled checks are drift sensors, not retroactive evidence that main was accepted against an unpinned binary.
+
+### ADR-009: Use one evidence contract across local, GitHub, and Crabbox execution
+
+**Decision:** Local Docker, GitHub CI, and Crabbox run the same scenario manifest and candidate. Evidence binds executor kind, exact commit or dirty patch, candidate digest, manifest and image digests, harness version and digest, Docker/runtime versions, resource and time ceilings, observation-plane results, and cleanup reconciliation. Remote evidence additionally binds the exact Crabbox binary version, nonsecret policy/configuration digest, lease identity, returned provider type and region, and cleanup authority.
+
+Crabbox supplies only the disposable outer Linux host. Agentscope still creates the inner isolated Docker network, model proxy, OTLP ledger, homes, worktree, and no-egress boundary. Provider credentials remain in the local Crabbox control plane and never enter the worker command or scenario.
+
+**Context:** Remote capacity is valuable for parallel adapter development, but a remote shell is neither hermetic nor release authority.
+
+**Consequences:** Crabbox accelerates development and burst validation; GitHub CI remains authoritative. Remote evidence with an unknown patch, candidate, inner Docker cleanup, or provider lease state is rejected.
+
+### ADR-010: Limit direct Crabbox mode to attended work until an independent reaper exists
+
+**Decision:** Initial direct Hetzner operation pins Crabbox `0.46.0`, explicitly requests class `small` and architecture `amd64`, permits at most four concurrent leases through an external semaphore, sets TTL no greater than 90 minutes and idle timeout no greater than 20 minutes, uses one-shot `stop=always`, and never keeps a lease. Generated `beast`, `ccx63`, or moving runner defaults are prohibited.
+
+Crabbox's pinned catalog maps `small` to a primary `ccx23` and may select documented fallbacks; the direct CLI does not expose an exact Hetzner type or location selector. Policy therefore validates the returned type and region against an approved allowlist and maximum hourly price before workload execution, using a sanitized provider-inventory and pricing oracle outside the scenario. `doctor` must attest per-lease SSH-key behavior. Every wave records local claims and observed provider inventory before and after execution, reconciles nested Docker resources, verifies deletion, and records the pricing source and observed hourly estimate. Unknown cleanup fails the wave and requires operator reconciliation.
+
+**Context:** Crabbox 0.46.0 direct Hetzner mode has no independent coordinator alarm or reaper. TTL and idle values label expiry but cannot guarantee deletion if the controlling process or Mac disappears; usage and spend accounting are coordinator-only.
+
+**Alternatives considered:** A self-hosted Crabbox coordinator or broker can own alarms, reaping, and usage centrally, but adds an always-on service and trust boundary before the fleet is proven useful. A local periodic cleanup job improves direct mode while the Mac is available but is not independent deletion authority.
+
+**Consequences:** Direct mode is allowed only for attended development while the controlling Mac remains available. A periodic local reconciliation job is required as defense in depth, but TTL and idle labels are never described as automatic deletion. Unattended delegated fleet operation requires a separately approved and deployed coordinator, broker, or provider-side reaper with an alarm, hard lease deadline, usage ledger, and independently tested deletion authority.
+
+### ADR-011: Merge common verification substrate before parallel real-scenario wiring
+
+**Decision:** Research and adapter-native unit work may proceed in parallel, but the non-PTY execution kernel, hostile fixtures, installed-CLI suite, evidence schema, and deliberate-negative executor certification merge before claimed-harness branches wire headless real scenarios into the central manifest. The generic PTY component builds after the kernel and per-harness interactive lanes integrate separately; they do not block headless convergence unless an interactive mode is itself claimed for that release.
+
+Each adapter task owns an isolated worktree and branch, publishes exact candidate and manifest digests, and does not edit another adapter package. Integration rebases each branch onto the common substrate and keeps one owner for shared manifests.
+
+**Context:** Split-pushing three adapters against an unstable central runner would duplicate supervision decisions and create manifest conflicts.
+
+**Consequences:** Crabbox may host three long-lived short-TTL adapter leases plus one integration lease under the initial quota. Scenario entries are bin-packed within a lease rather than allocating one hour-rounded VM per test case.
