@@ -395,8 +395,6 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
-  tests/integration-live: {}
-
 packages:
   "@alloc/quick-lru@5.2.0":
     resolution:

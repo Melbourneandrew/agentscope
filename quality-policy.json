@@ -139,11 +139,6 @@
       "unitTests": "marker-only",
       "maxSourceFiles": 1,
       "maxSourceLines": 1
-    },
-    "tests/integration-live": {
-      "role": "protected-live-test",
-      "unitTests": "not-applicable",
-      "reason": "This workspace is a credential-gated live smoke runner, not a TypeScript unit-test surface."
     }
   }
 }

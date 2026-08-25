@@ -19,5 +19,4 @@ export const expectedWorkspacePackages = new Map([
   ["packages/harnesses/openclaw", "@agentscope/harness-openclaw"],
   ["packages/harnesses/pi", "@agentscope/harness-pi"],
   ["tests/integration", "@agentscope/integration"],
-  ["tests/integration-live", "@agentscope/integration-live"],
 ]);
