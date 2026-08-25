@@ -1,5 +1,5 @@
 {
-  "name": "@agentscope/cli",
+  "name": "agentscope-cli",
   "version": "0.1.0",
   "description": "Agentscope command-line installer and configuration tool.",
   "license": "MIT",

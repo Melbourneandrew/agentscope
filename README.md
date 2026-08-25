@@ -34,7 +34,7 @@ Agentscope is in its foundation phase. The monorepo, public documentation, CI st
 
 ```bash
 # Planned public CLI, not yet published
-npx @agentscope/cli init
+npx agentscope-cli init
 agentscope destination configure langfuse
 agentscope install codex
 agentscope doctor
@@ -60,7 +60,7 @@ Harness adapters own native configuration and extraction. Protocol owns the Open
 | --------------------------- | -------------------------------------------------------- |
 | `@agentscope/protocol`      | Private OpenTelemetry/OpenInference contract             |
 | `@agentscope/core`          | Private configuration, redaction, and delivery services  |
-| `@agentscope/cli`           | The `agentscope` installation and configuration command  |
+| `agentscope-cli`            | The `agentscope` installation and configuration command  |
 | `@agentscope/harness-*`     | Harness-specific installation and trace extraction       |
 | `@agentscope/destination-*` | First-party trace destinations, starting with Langfuse   |
 | `@agentscope/testkit`       | Hermetic test servers, harness scenarios, and assertions |

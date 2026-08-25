@@ -2,7 +2,7 @@
 
 const { readdirSync } = require("node:fs");
 
-const loader = require("/work/node_modules/@agentscope/cli/dist/internal/local-sqlite/loader/owned-loader.cjs");
+const loader = require("/work/node_modules/agentscope-cli/dist/internal/local-sqlite/loader/owned-loader.cjs");
 const countDescriptors = () => readdirSync("/proc/self/fd").length;
 const before = countDescriptors();
 for (let attempt = 0; attempt < 100; attempt += 1) {

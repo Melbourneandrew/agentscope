@@ -175,7 +175,7 @@ try {
 
   const installedPackage = join(
     installRoot,
-    "node_modules/@agentscope/cli/package.json",
+    "node_modules/agentscope-cli/package.json",
   );
   const installedManifest = JSON.parse(readFileSync(installedPackage, "utf8"));
   for (const field of [
@@ -205,7 +205,7 @@ try {
   };
   const installedInternal = join(
     installRoot,
-    "node_modules/@agentscope/cli/dist/internal",
+    "node_modules/agentscope-cli/dist/internal",
   );
   const machineEntryPath = join(
     installedInternal,
@@ -786,16 +786,17 @@ setTimeout(() => process.exit(3), 10_000).unref();
   assert.equal(unsafe.stderr, "error [cli.input.invalid]\n");
 
   const bundle = readFileSync(
-    join(installRoot, "node_modules/@agentscope/cli/dist/bin/agentscope.js"),
+    join(installRoot, "node_modules/agentscope-cli/dist/bin/agentscope.js"),
     "utf8",
   );
   assert.doesNotMatch(bundle, /["']workspace:(?!\/\/)/u);
   assert.doesNotMatch(bundle, /from\s+["']@agentscope\//u);
   assert.doesNotMatch(bundle, /require\(["']@agentscope\//u);
-  assert.deepEqual(readdirSync(join(installRoot, "node_modules/@agentscope")), [
-    "cli",
-  ]);
-  const installedRoot = join(installRoot, "node_modules/@agentscope/cli");
+  assert.equal(
+    existsSync(join(installRoot, "node_modules/@agentscope")),
+    false,
+  );
+  const installedRoot = join(installRoot, "node_modules/agentscope-cli");
   const installedFiles = regularFiles(installedRoot);
   const candidateRoot = join(installedRoot, "dist/internal/local-sqlite");
   assert.deepEqual(regularFiles(join(installedRoot, "dist/bin/migrations")), [

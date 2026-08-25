@@ -10,7 +10,7 @@ const expectedPackages = expectedWorkspacePackages;
 
 const expectedInternalDependencies = new Map([
   [
-    "@agentscope/cli",
+    "agentscope-cli",
     [
       "@agentscope/core",
       "@agentscope/destination-langfuse",
@@ -125,20 +125,20 @@ const publishable = [...manifests.entries()]
   .filter(([, { manifest }]) => manifest.private !== true)
   .map(([name]) => name);
 
-if (publishable.length !== 1 || publishable[0] !== "@agentscope/cli") {
+if (publishable.length !== 1 || publishable[0] !== "agentscope-cli") {
   throw new Error(
-    `Only @agentscope/cli may be publishable; found ${publishable.join(", ")}`,
+    `Only agentscope-cli may be publishable; found ${publishable.join(", ")}`,
   );
 }
 
-const cli = manifests.get("@agentscope/cli")?.manifest;
+const cli = manifests.get("agentscope-cli")?.manifest;
 if (cli?.bin?.agentscope !== "./dist/bin/agentscope.js") {
   throw new Error(
-    "@agentscope/cli must expose agentscope at ./dist/bin/agentscope.js",
+    "agentscope-cli must expose agentscope at ./dist/bin/agentscope.js",
   );
 }
 if (cli?.publishConfig?.access !== "public") {
-  throw new Error("@agentscope/cli must explicitly use public npm access");
+  throw new Error("agentscope-cli must explicitly use public npm access");
 }
 const publicRuntimeDependencies = Object.keys({
   ...cli?.dependencies,
@@ -147,7 +147,7 @@ const publicRuntimeDependencies = Object.keys({
 }).filter((dependency) => dependency.startsWith("@agentscope/"));
 if (publicRuntimeDependencies.length > 0) {
   throw new Error(
-    `@agentscope/cli may not publish private workspace dependencies: ${publicRuntimeDependencies.join(", ")}`,
+    `agentscope-cli may not publish private workspace dependencies: ${publicRuntimeDependencies.join(", ")}`,
   );
 }
 
@@ -168,7 +168,7 @@ if (
 const graph = new Map();
 for (const [name, { manifest }] of manifests) {
   if (
-    name !== "@agentscope/cli" &&
+    name !== "agentscope-cli" &&
     !manifest.scripts?.prepack?.endsWith("scripts/refuse-private-package.mjs")
   ) {
     throw new Error(`${name} must refuse private package packing`);
@@ -227,5 +227,5 @@ for (const name of graph.keys()) visit(name);
 auditCoreFinalizationImports(workspaceRoot, expectedPackages);
 
 process.stdout.write(
-  `Verified ${manifests.size} workspace packages; @agentscope/cli is the sole publishable package.\n`,
+  `Verified ${manifests.size} workspace packages; agentscope-cli is the sole publishable package.\n`,
 );

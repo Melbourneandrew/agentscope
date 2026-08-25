@@ -10,7 +10,7 @@ import { auditCoreFinalizationImports } from "../restricted-import-policy.mjs";
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-import-policy-"));
   const packages = new Map([
-    ["apps/cli", "@agentscope/cli"],
+    ["apps/cli", "agentscope-cli"],
     ["packages/core", "@agentscope/core"],
     ["packages/destination", "@agentscope/destination"],
   ]);
