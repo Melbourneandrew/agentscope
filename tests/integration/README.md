@@ -96,7 +96,9 @@ pnpm test:integration:clean
 ## Troubleshooting
 
 - `integration.operations.active` means another live operation owns the
-  workspace-derived loopback lease. Wait for it; do not delete a pathname lock.
+  workspace-derived loopback lease. Acquisition waits for kernel release under
+  one 60-second absolute deadline and then fails with `ETIMEDOUT`; do not delete
+  a pathname lock or retry a timed-out command as passing evidence.
 - An image-digest error requires `prepare:images` against the unchanged manifest.
   Do not retag or replace an image to make the check pass.
 - A candidate-input error requires `prepare:candidate` from the exact worktree.

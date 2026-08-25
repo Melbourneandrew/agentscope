@@ -19,6 +19,8 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import { compileIsolationEvidence } from "./dist/index.js";
 
 const execute = promisify(execFile);
+const wait = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
@@ -164,16 +166,47 @@ try {
     workspaceRoot,
     "integration.operations.active-run",
   );
-  let registrationRejected = false;
-  try {
-    await runOnce();
-  } catch {
-    registrationRejected = true;
-  } finally {
-    await releaseOperationLock();
-  }
-  if (!registrationRejected || !existsSync(resolve(runsRoot, created[0])))
+  const waitingAcquisition = acquireIntegrationOperationLock(
+    workspaceRoot,
+    "integration.operations.active-run",
+  );
+  const earlyAcquisition = await Promise.race([
+    waitingAcquisition.then(
+      (release) => ({ state: "acquired", release }),
+      (error) => ({ state: "rejected", error }),
+    ),
+    wait(50).then(() => ({ state: "waiting" })),
+  ]);
+  if (earlyAcquisition.state === "acquired") {
+    await earlyAcquisition.release();
     throw new Error("integration.operations.active-run");
+  }
+  if (earlyAcquisition.state === "rejected")
+    throw new Error("integration.operations.active-run");
+  await releaseOperationLock();
+  const releaseWaitingAcquisition = await waitingAcquisition;
+  await releaseWaitingAcquisition();
+  const releaseTimeoutLock = await acquireIntegrationOperationLock(
+    workspaceRoot,
+    "integration.operations.lock-timeout",
+  );
+  let timeoutError;
+  try {
+    await acquireIntegrationOperationLock(
+      workspaceRoot,
+      "integration.operations.lock-timeout",
+      { maximumWaitMilliseconds: 50 },
+    );
+  } catch (error) {
+    timeoutError = error;
+  } finally {
+    await releaseTimeoutLock();
+  }
+  if (
+    timeoutError?.message !== "integration.operations.lock-timeout" ||
+    timeoutError?.code !== "ETIMEDOUT"
+  )
+    throw new Error("integration.operations.lock-timeout");
   const lockModule = pathToFileURL(
     resolve(integrationRoot, "operation-lock.mjs"),
   ).href;

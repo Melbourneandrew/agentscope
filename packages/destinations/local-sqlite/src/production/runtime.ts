@@ -141,6 +141,8 @@ type LocalSqliteRuntimeTestingHooks = Readonly<{
   childIdentity?: ((pid: number) => string | undefined) | undefined;
   reporterPrograms?: LocalSqliteReporterChildPrograms | undefined;
   retrieverPrograms?: LocalSqliteRetrieverChildPrograms | undefined;
+  executeReporterChild?: typeof executeLocalSqliteReporterChild | undefined;
+  executeRetrieverChild?: typeof executeLocalSqliteRetrieverChild | undefined;
 }>;
 
 let productionRuntime: LocalSqliteProductionRuntime | undefined;
@@ -327,6 +329,7 @@ const reportPreparedWithChild = async (
     childIdentity?: ((pid: number) => string | undefined) | undefined;
     afterSharedLeaseAcquired?:
       ((lifecycleDirectory: string) => void) | undefined;
+    executeChild?: typeof executeLocalSqliteReporterChild | undefined;
     attempt: Parameters<LocalSqliteProductionRuntime["reportPrepared"]>[0];
   }>,
 ): Promise<ReporterReceipt> => {
@@ -403,7 +406,7 @@ const reportPreparedWithChild = async (
   }
   /* v8 ignore next -- the exact built/native verifier executes this child,
      validates its real database result, and proves watchdog teardown. */
-  return executeLocalSqliteReporterChild({
+  return (input.executeChild ?? executeLocalSqliteReporterChild)({
     programs,
     gate,
     lease: acquired.value,
@@ -432,6 +435,7 @@ const retrieveWithChild = async (
     childIdentity?: ((pid: number) => string | undefined) | undefined;
     afterSharedLeaseAcquired?:
       ((lifecycleDirectory: string) => void) | undefined;
+    executeChild?: typeof executeLocalSqliteRetrieverChild | undefined;
     operation: "search" | "get";
     attempt: Readonly<{
       connectionId: string;
@@ -523,7 +527,7 @@ const retrieveWithChild = async (
   } finally {
     connection.close();
   }
-  return executeLocalSqliteRetrieverChild({
+  return (input.executeChild ?? executeLocalSqliteRetrieverChild)({
     programs,
     gate,
     lease: acquired.value,
@@ -542,6 +546,7 @@ const retrieveWithChild = async (
   });
 };
 
+/* eslint-disable max-lines-per-function -- closed runtime composition includes restricted deterministic test executors. */
 const createRuntime = (
   home: LocalResourceHome,
   opener: OwnedSqliteOpener,
@@ -616,6 +621,7 @@ const createRuntime = (
         allowPathFallbackForTesting,
         childIdentity: testingHooks?.childIdentity,
         afterSharedLeaseAcquired: testingHooks?.afterSharedLeaseAcquired,
+        executeChild: testingHooks?.executeReporterChild,
         attempt,
       }),
     search: async (attempt) =>
@@ -626,6 +632,7 @@ const createRuntime = (
         allowPathFallbackForTesting,
         childIdentity: testingHooks?.childIdentity,
         afterSharedLeaseAcquired: testingHooks?.afterSharedLeaseAcquired,
+        executeChild: testingHooks?.executeRetrieverChild,
         operation: "search",
         attempt,
       })) as LocalSqliteSearchEvidence,
@@ -637,6 +644,7 @@ const createRuntime = (
         allowPathFallbackForTesting,
         childIdentity: testingHooks?.childIdentity,
         afterSharedLeaseAcquired: testingHooks?.afterSharedLeaseAcquired,
+        executeChild: testingHooks?.executeRetrieverChild,
         operation: "get",
         attempt,
       })) as LocalSqliteGetEvidence,
@@ -662,6 +670,7 @@ const createRuntime = (
   });
   return runtime;
 };
+/* eslint-enable max-lines-per-function */
 
 /* v8 ignore start -- this loader/bootstrap path is executed causally from the
    exact clean-installed Linux candidate; source tests use the restricted

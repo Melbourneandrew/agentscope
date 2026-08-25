@@ -46,7 +46,10 @@ import {
   inspectOperationalState,
 } from "../configuration/operational-state.js";
 import { redactCapturedTrace } from "../redaction/pipeline.js";
-import { runResolvedTraceLifecycle } from "./lifecycle.js";
+import {
+  runResolvedTraceLifecycle,
+  runResolvedTraceLifecycleForTesting,
+} from "./lifecycle.js";
 import {
   createHookEntryAuthority,
   readHookEntryAuthorityForCore,
@@ -1076,9 +1079,12 @@ describe("resolved configured trace lifecycle", () => {
     expect(value.deliveries).toHaveLength(0);
   });
 
-  it("runs the prepared lifecycle through the production Git projection", async () => {
-    const value = await fixture(BUILTIN_REDACTION_POLICY_REFERENCES.baseline);
-    const result = await runResolvedTraceLifecycle({
+  it("runs the prepared lifecycle through a deterministic Git projection", async () => {
+    const value = await fixture(
+      BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+      true,
+    );
+    const result = await runResolvedTraceLifecycleForTesting({
       configurationStore: value.store,
       operationalStateStore: value.operationalStateStore,
       credentialBackendRegistry: value.credentialBackendRegistry,
@@ -1091,6 +1097,7 @@ describe("resolved configured trace lifecycle", () => {
       workspaceCandidates: [{ path: process.cwd(), source: "process" }],
       gitExecutable: "/usr/bin/git",
       hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
+      contextResolver: () => Promise.resolve(context),
       capture: (factory, _signal, resolver) => {
         if (resolver === undefined) throw new Error("missing resolver");
         const value = candidate();
@@ -1123,7 +1130,7 @@ describe("resolved configured trace lifecycle", () => {
     expect(delivered).not.toContain(process.cwd());
     expect(delivered).not.toContain("CANARY_SECRET");
     await expect(
-      runResolvedTraceLifecycle({
+      runResolvedTraceLifecycleForTesting({
         configurationStore: value.store,
         operationalStateStore: value.operationalStateStore,
         credentialBackendRegistry: value.credentialBackendRegistry,
@@ -1140,6 +1147,7 @@ describe("resolved configured trace lifecycle", () => {
         workspaceCandidates: [{ path: process.cwd(), source: "process" }],
         gitExecutable: "/usr/bin/git",
         hookEntryAuthority: hookAuthority(value.hookDeadlineMilliseconds),
+        contextResolver: () => Promise.resolve(context),
         signal: new AbortController().signal,
         capture: captureCandidate,
       }),

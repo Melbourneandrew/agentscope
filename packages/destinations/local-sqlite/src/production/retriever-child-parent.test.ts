@@ -245,17 +245,18 @@ const run = async (state: WorkerState, options: AttemptOptions = {}) => {
           message: error instanceof Error ? error.message : "hostile",
         }),
       );
+      const completedDescendant =
+        state === "accepted-descendant" && settled.state === "resolved";
       let descendantStopped: boolean | undefined;
-      if (state === "accepted-descendant")
+      if (completedDescendant)
         descendantStopped = await proveDescendantStopped(heartbeatPath);
       return Object.freeze({
         settled,
         elapsed: performance.now() - startedAt,
         lifecycleEntries: readdirSync(lifecycle),
-        descendantPid:
-          state === "accepted-descendant"
-            ? Number(readFileSync(descendantPath, "utf8"))
-            : undefined,
+        descendantPid: completedDescendant
+          ? Number(readFileSync(descendantPath, "utf8"))
+          : undefined,
         descendantStopped,
       });
     } finally {
@@ -289,10 +290,24 @@ describe("Local SQLite Retriever child parent", () => {
   });
 
   it("reaps the complete group after a successful leader exits", async () => {
-    const result = await run("accepted-descendant");
+    // This real-process success smoke must first reach the post-permission
+    // descendant state. Deadline/forced-settlement behavior is covered by the
+    // dedicated hostile cases, so allow aggregate startup scheduling here.
+    const result = await run("accepted-descendant", {
+      maximumWorkMilliseconds: 2_000,
+    });
     expect(result.settled).toMatchObject({ state: "resolved" });
     expect(result.descendantPid).toBeTypeOf("number");
     expect(result.descendantStopped).toBe(true);
+  });
+
+  it("preserves pre-publication rejection without reading descendant markers", async () => {
+    const result = await run("accepted-descendant", { missingWorker: true });
+    expect(result).toMatchObject({
+      settled: { state: "rejected" },
+      descendantPid: undefined,
+      descendantStopped: undefined,
+    });
   });
 
   it.each([

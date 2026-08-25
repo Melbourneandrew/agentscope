@@ -21,6 +21,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { planLocalSqliteNamespace } from "../lifecycle/namespace.js";
+import { releaseLocalSqliteSharedLease } from "../lifecycle/fence.js";
 import type { LocalSqlitePreparedTrace } from "../reporter/transaction.js";
 import type {
   LocalSqliteGetPlan,
@@ -269,7 +270,7 @@ describe("Local SQLite production runtime budgets", () => {
     }
   });
 
-  it("routes search and get through the owned child and rejects pre-child authority failures", async () => {
+  it("routes search, get, and report through deterministic child seams and rejects pre-child authority failures", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentscope-local-runtime-"));
     chmodSync(root, 0o700);
     try {
@@ -280,6 +281,7 @@ describe("Local SQLite production runtime budgets", () => {
       writeFileSync(workerPath, retrieverWorkerProgram, { mode: 0o600 });
       writeFileSync(reporterPath, reporterWorkerProgram, { mode: 0o600 });
       writeFileSync(watchdogPath, watchdogProgram, { mode: 0o600 });
+      const observedOperations: string[] = [];
       const runtime = bindLocalSqliteProductionRuntimeForTesting(
         bindLocalResourceHomeAuthorityForTesting({
           root,
@@ -294,6 +296,34 @@ describe("Local SQLite production runtime budgets", () => {
           childIdentity: () => childIdentity,
           reporterPrograms: { workerPath: reporterPath, watchdogPath },
           retrieverPrograms: { workerPath, watchdogPath },
+          executeReporterChild: async (attempt) => {
+            observedOperations.push("report");
+            const released = await releaseLocalSqliteSharedLease(
+              attempt.gate,
+              attempt.lease,
+            );
+            if (!released.ok) throw new Error("fixture lease release");
+            return Object.freeze({ outcome: "accepted" as const });
+          },
+          executeRetrieverChild: async (attempt) => {
+            observedOperations.push(attempt.operation);
+            const released = await releaseLocalSqliteSharedLease(
+              attempt.gate,
+              attempt.lease,
+            );
+            if (!released.ok) throw new Error("fixture lease release");
+            return attempt.operation === "search"
+              ? Object.freeze({
+                  rows: Object.freeze([]),
+                  responseByteLimitReached: false,
+                  retentionCutoffSortKey: "0".repeat(20),
+                  snapshotToken: "3".repeat(64),
+                })
+              : Object.freeze({
+                  row: undefined,
+                  retentionCutoffSortKey: "0".repeat(20),
+                });
+          },
         },
       );
       const base = () =>
@@ -306,10 +336,7 @@ describe("Local SQLite production runtime budgets", () => {
             maximumTraceCount: 1,
           },
           signal: new AbortController().signal,
-          // The plan retains its exact one-second native query budget. The
-          // outer fixture grants enough time for child spawn/IPC under the
-          // concurrently loaded Linux workspace test matrix.
-          deadline: createReporterDeadline(5_000),
+          deadline: createReporterDeadline(1_000),
         });
       await expect(
         runtime.search({ ...base(), plan: searchPlan }),
@@ -320,11 +347,13 @@ describe("Local SQLite production runtime budgets", () => {
         snapshotToken: "3".repeat(64),
       });
       await expect(runtime.get({ ...base(), plan: getPlan })).resolves.toEqual({
+        row: undefined,
         retentionCutoffSortKey: "0".repeat(20),
       });
       await expect(report(runtime, () => 1_000)).resolves.toEqual({
         outcome: "accepted",
       });
+      expect(observedOperations).toEqual(["search", "get", "report"]);
       const noIdentityRuntime = bindLocalSqliteProductionRuntimeForTesting(
         bindLocalResourceHomeAuthorityForTesting({
           root,
