@@ -2,6 +2,7 @@ import type {
   NativeState,
   NativeIdentityKind,
   OpenInferenceSpanKindValue,
+  FeedbackTransport,
   ProvenanceSource,
   TimingBasis,
 } from "@agentscope/protocol";
@@ -121,7 +122,7 @@ export type OperationCandidate = {
   readonly parentLogicalKey?: string;
   readonly kind: OpenInferenceOperationKind;
   /** Core-owned construction intent for an operation carrying feedback fields. */
-  readonly feedbackTransport?: "inline" | "post-hoc";
+  readonly feedbackTransport?: FeedbackTransport;
   readonly name: string;
   readonly nameProvenance: FieldProvenanceCandidate;
   readonly timing?: TimingCandidate;

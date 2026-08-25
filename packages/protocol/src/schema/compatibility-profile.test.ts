@@ -2,20 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import { isRedactedCanonicalTrace } from "./redacted-envelope.js";
 import {
+  PROTOCOL_COMPATIBILITY_FINGERPRINT,
+  PROTOCOL_COMPATIBILITY_PROFILE,
+  SUPPORTED_PROTOCOL_GENERATIONS,
+} from "./compatibility-profile.js";
+import {
   CompatibilityProfileError,
   compileCompatibilityProfileForTesting,
   computeCompatibilitySourceFingerprintsForTesting,
   CURRENT_SOURCE_ARTIFACTS_FOR_TESTING,
   migrateSyntheticEnvelopeForTesting,
-  PROTOCOL_COMPATIBILITY_FINGERPRINT,
-  PROTOCOL_COMPATIBILITY_PROFILE,
   selectCurrentGenerationForTesting,
   SYNTHETIC_SOURCE_SCHEMA_DESCRIPTOR_FOR_TESTING,
-  SUPPORTED_PROTOCOL_GENERATIONS,
   validateProductionReaderWindowForTesting,
   type CompatibilityExtensionSnapshotInput,
   type CompatibilityProfileInput,
-} from "./compatibility-profile.js";
+} from "./compatibility-profile-test-support.js";
 import { fingerprintCanonicalMaterial } from "./extensions.js";
 import { standardsManifest } from "../standards/manifest.js";
 

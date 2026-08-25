@@ -18,6 +18,47 @@ import {
   standardsManifest,
 } from "./dist/index.js";
 import { createSanitizedCanonicalTraceFixture } from "./dist/testing.js";
+import * as protocolRoot from "./dist/index.js";
+import * as protocolTesting from "./dist/testing.js";
+
+if (
+  typeof protocolRoot.createFeedbackCarrierAttributes !== "function" ||
+  typeof protocolRoot.feedbackTransportIsPostHoc !== "function" ||
+  protocolRoot.FEEDBACK_TRANSPORT_ATTRIBUTE_KEY !==
+    "agentscope.feedback.transport" ||
+  typeof protocolTesting.compileCompatibilityProfileForTesting !== "function" ||
+  typeof protocolTesting.validateFeedbackProfileForTesting !== "function" ||
+  "compileCompatibilityProfileForTesting" in protocolRoot ||
+  "validateFeedbackProfileForTesting" in protocolRoot
+)
+  throw new Error("Protocol root/testing export boundary drifted.");
+
+const builtFeedbackAttributes = [
+  {
+    key: "annotations.0.annotation.name",
+    value: { stringValue: "correctness" },
+  },
+  {
+    key: "annotations.0.annotation.score",
+    value: { doubleValue: 1 },
+  },
+];
+const builtFeedbackCarrier = protocolRoot.createFeedbackCarrierAttributes(
+  builtFeedbackAttributes,
+  "post-hoc",
+  1,
+);
+if (
+  builtFeedbackCarrier?.length !== 3 ||
+  builtFeedbackCarrier[2]?.key !==
+    protocolRoot.FEEDBACK_TRANSPORT_ATTRIBUTE_KEY ||
+  protocolRoot.createFeedbackCarrierAttributes(
+    builtFeedbackCarrier,
+    "inline",
+    1,
+  ) !== undefined
+)
+  throw new Error("Protocol built feedback carrier boundary drifted.");
 
 const fixture = JSON.parse(
   readFileSync(

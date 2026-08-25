@@ -2,14 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   FEEDBACK_PROFILE,
-  feedbackAttribute,
+  FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
   feedbackAttributesAreValid,
-  validateFeedbackProfileForTesting,
+  createFeedbackCarrierAttributes,
   isFeedbackAttributeKey,
 } from "./feedback-profile.js";
+import { validateFeedbackProfileForTesting } from "./feedback-profile-test-support.js";
 import { getAcceptedSemanticAttributeDescriptor } from "./semantic-profile.js";
 import type { OtlpKeyValue, OtlpSpan } from "./otlp.js";
 import { fingerprintCanonicalMaterial } from "./extensions.js";
+
+const feedbackAttribute = (
+  key: string,
+  value: OtlpKeyValue["value"],
+): OtlpKeyValue => ({ key, value });
 
 const span = (attributes: OtlpKeyValue[], links: OtlpSpan["links"] = []) =>
   ({
@@ -29,6 +35,10 @@ const score = (key: string, value = 1) =>
 const external = { traceId: "03".repeat(16), spanId: "04".repeat(8) };
 
 describe("feedback profile", () => {
+  it("accepts an empty non-feedback span projection", () => {
+    expect(feedbackAttributesAreValid({})).toBe(true);
+  });
+
   it("binds its exact machine-readable descriptor", () => {
     expect(isFeedbackAttributeKey("annotations.0.annotation.name")).toBe(true);
     expect(isFeedbackAttributeKey("annotations.00.annotation.name")).toBe(
@@ -174,6 +184,52 @@ describe("feedback alias semantics", () => {
       intValue: "1",
     });
     expect(feedbackAttributesAreValid(span(reversed))).toBe(true);
+  });
+});
+
+describe("feedback correlation", () => {
+  it("constructs candidate carriers from link counts without OTLP identities", () => {
+    const attributes = [
+      string("annotations.0.annotation.name", "correctness"),
+      score("annotations.0.annotation.score"),
+    ];
+    expect(createFeedbackCarrierAttributes(attributes, "post-hoc", 1)).toEqual([
+      ...attributes,
+      string("agentscope.feedback.transport", "post-hoc"),
+    ]);
+    expect(
+      createFeedbackCarrierAttributes(attributes, "post-hoc", 0),
+    ).toBeUndefined();
+    expect(
+      createFeedbackCarrierAttributes(attributes, "post-hoc", -1),
+    ).toBeUndefined();
+  });
+
+  it("rejects preexisting and duplicate carrier authority", () => {
+    const attributes = [
+      string("annotations.0.annotation.name", "correctness"),
+      score("annotations.0.annotation.score"),
+    ];
+    for (const existing of ["inline", "post-hoc"] as const) {
+      const contradictory = [
+        ...attributes,
+        string(FEEDBACK_TRANSPORT_ATTRIBUTE_KEY, existing),
+      ];
+      expect(
+        createFeedbackCarrierAttributes(contradictory, "post-hoc", 1),
+      ).toBeUndefined();
+      expect(feedbackAttributesAreValid(span(contradictory))).toBe(
+        existing === "inline",
+      );
+      expect(
+        feedbackAttributesAreValid(
+          span([
+            ...contradictory,
+            string(FEEDBACK_TRANSPORT_ATTRIBUTE_KEY, "post-hoc"),
+          ]),
+        ),
+      ).toBe(false);
+    }
   });
 });
 

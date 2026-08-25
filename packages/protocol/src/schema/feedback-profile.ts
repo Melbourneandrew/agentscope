@@ -7,6 +7,15 @@ import { standardsManifest } from "../standards/manifest.js";
 
 type FeedbackScope = "span" | "trace" | "session";
 type FeedbackNoun = "annotation" | "evaluation";
+export type FeedbackTransport =
+  (typeof descriptorJson.postHoc.transportValues)[number];
+export const isFeedbackTransport = (
+  value: unknown,
+): value is FeedbackTransport =>
+  typeof value === "string" &&
+  FEEDBACK_PROFILE.postHoc.transportValues.some(
+    (candidate) => candidate === value,
+  );
 type FeedbackField =
   | "name"
   | "score"
@@ -207,7 +216,7 @@ const withoutFingerprint = (input: typeof descriptorJson) => {
   return material;
 };
 
-export const validateFeedbackProfileForTesting = (input: unknown) => {
+export const validateFeedbackProfile = (input: unknown) => {
   const parsed = descriptorSchema.safeParse(input);
   if (
     !parsed.success ||
@@ -232,11 +241,15 @@ export const validateFeedbackProfileForTesting = (input: unknown) => {
   return deepFreeze(parsed.data);
 };
 
-export const FEEDBACK_PROFILE = validateFeedbackProfileForTesting(
+export const FEEDBACK_PROFILE = validateFeedbackProfile(
   descriptorJson,
 ) as Readonly<typeof descriptorJson>;
 export const FEEDBACK_PROFILE_FINGERPRINT =
   descriptorJson.descriptorFingerprint;
+export const FEEDBACK_TRANSPORT_ATTRIBUTE_KEY =
+  FEEDBACK_PROFILE.postHoc.transportKey;
+export const feedbackTransportIsPostHoc = (value: FeedbackTransport): boolean =>
+  value === FEEDBACK_PROFILE.postHoc.transportValues[1];
 
 type FeedbackObject = {
   scope: FeedbackScope;
@@ -304,9 +317,9 @@ const stringField = (object: FeedbackObject, field: FeedbackField) => {
     : undefined;
 };
 
-const parseFeedbackObjects = (span: Pick<OtlpSpan, "attributes" | "links">) => {
+const parseFeedbackObjects = (attributes: readonly OtlpKeyValue[]) => {
   const objects = new Map<string, FeedbackObject>();
-  for (const attribute of span.attributes ?? []) {
+  for (const attribute of attributes) {
     const match = parseFeedbackKey(attribute.key);
     if (match === undefined) continue;
     const { scope, noun, index, field } = match;
@@ -388,23 +401,24 @@ const aliasesAreValid = (objects: ReadonlyMap<string, FeedbackObject>) =>
   });
 
 /** Validates the compound invariants that cannot be expressed per attribute. */
-export const feedbackAttributesAreValid = (
-  span: Pick<OtlpSpan, "attributes" | "links">,
+const feedbackAttributesAndLinkCountAreValid = (
+  attributes: readonly OtlpKeyValue[],
+  linkCount: number,
   transportRequired = true,
 ): boolean => {
-  const carrierValue = span.attributes?.find(
-    ({ key }) => key === FEEDBACK_PROFILE.postHoc.transportKey,
-  )?.value;
-  const objects = parseFeedbackObjects(span);
+  const carrierValues = attributes.filter(
+    ({ key }) => key === FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
+  );
+  if (carrierValues.length > 1) return false;
+  const carrierValue = carrierValues[0]?.value;
+  const objects = parseFeedbackObjects(attributes);
   if (objects === undefined) return false;
   if (objects.size === 0) return carrierValue === undefined;
   const scopes = new Set<FeedbackScope>();
   for (const object of objects.values()) scopes.add(object.scope);
   if (!feedbackObjectsAreComplete(objects) || !aliasesAreValid(objects))
     return false;
-  const sessionId = span.attributes?.find(
-    ({ key }) => key === "session.id",
-  )?.value;
+  const sessionId = attributes.find(({ key }) => key === "session.id")?.value;
   if (
     scopes.has("session") &&
     (sessionId === undefined ||
@@ -422,11 +436,45 @@ export const feedbackAttributesAreValid = (
   if (carrierValue.stringValue === "inline") return true;
   if (scopes.size !== 1) return false;
   const scope = [...scopes][0]!;
-  const linkCount = span.links?.length ?? 0;
   return scope === "session" || linkCount === 1;
 };
 
-export const feedbackAttribute = (
-  key: string,
-  value: OtlpAnyValue,
-): OtlpKeyValue => ({ key, value });
+/** Validates the compound invariants that cannot be expressed per attribute. */
+export const feedbackAttributesAreValid = (
+  span: Pick<OtlpSpan, "attributes" | "links">,
+  transportRequired = true,
+): boolean =>
+  feedbackAttributesAndLinkCountAreValid(
+    span.attributes ?? [],
+    span.links?.length ?? 0,
+    transportRequired,
+  );
+
+/**
+ * Constructs and validates the Protocol-owned feedback carrier projection.
+ * Core supplies already validated semantic attributes and only the physical
+ * link count; candidate validation never fabricates OTLP identities.
+ */
+export const createFeedbackCarrierAttributes = (
+  attributes: readonly OtlpKeyValue[],
+  transport: FeedbackTransport,
+  linkCount: number,
+): readonly OtlpKeyValue[] | undefined => {
+  if (
+    !isFeedbackTransport(transport) ||
+    !Number.isSafeInteger(linkCount) ||
+    linkCount < 0 ||
+    attributes.some(({ key }) => key === FEEDBACK_TRANSPORT_ATTRIBUTE_KEY)
+  )
+    return undefined;
+  const carrier = [
+    ...attributes,
+    {
+      key: FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
+      value: { stringValue: transport },
+    },
+  ];
+  return feedbackAttributesAndLinkCountAreValid(carrier, linkCount)
+    ? carrier
+    : undefined;
+};
