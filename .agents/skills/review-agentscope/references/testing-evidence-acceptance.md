@@ -8,6 +8,19 @@
 - Bind scenario matrices to exact connection, destination type, configuration identity, query fingerprint, locator, and fixture authority.
 - Keep fixtures sanitized and out of private cross-package source paths.
 
+## Plan-bound mutation evidence
+
+- For every plan-first command, require a distinct versioned plan envelope bound to the exact operation, target, and one-use mutation authority, plus every identity required by the governing requirement or Blueprint, such as configuration generation, capability fingerprint, or inventory or intent identity.
+- Prove the complete plan envelope is emitted and fully flushed on every promised output channel before apply consumes the authority; call ordering or a buffered write is not completion evidence.
+- Require apply to consume only the one-use authority bound to the fully displayed plan projection and revalidate every bound identity immediately before mutation. Substitution, replay, missing intent, output failure, and partial output must fail without mutation.
+
+## Production composition and acceptance scope
+
+- Inventory the real production registry, persisted configuration store, runtime dispatch, and packed composition. Require one canonical destination identity and every descriptor, configuration, or capability identity defined by the governing contract, including a fingerprint only where that contract defines one; reject parallel registries or test-only composition as acceptance authority.
+- Do not promote an `AC-*` from component evidence while the ordinary production entry point is empty, uninitialized, unreachable, or wired to a different adapter. Require causal built or packed evidence through that entry point for the claimed user layer.
+- For every advertised provider profile and portable predicate, require exact positive and miss wire fixtures, reject nonconforming selector or query shapes, and derive projected responses from documented wire attributes rather than sequential canned responses.
+- Bind projection grammar, collision behavior, row and byte ceilings, and advertised predicates into the governed manifest fingerprint. Keep evidence DTOs behind a restricted testing boundary.
+
 ## Negative and adversarial matrix
 
 - Test valid edges as well as missing, duplicate, extra, malformed, sparse, oversized, noncanonical, stale, forged, and cross-boundary values.
