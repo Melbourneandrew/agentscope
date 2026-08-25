@@ -4,12 +4,15 @@ import { inspect } from "node:util";
 import {
   buildSpanEvidenceLedger,
   deriveIdentityBundle,
+  FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
   NATIVE_IDENTITY_KINDS,
   getAcceptedSemanticAttributeDescriptor,
   getProvenanceTargets,
   getTimingCompatibilityRule,
-  feedbackAttributesAreValid,
+  createFeedbackCarrierAttributes,
   isFeedbackAttributeKey,
+  isFeedbackTransport,
+  feedbackTransportIsPostHoc,
   createSemanticOtlpValue,
   isSemanticCandidateUpstreamConstraintValid,
   isSemanticCandidateValueValid,
@@ -91,7 +94,7 @@ const forbiddenCanonicalFields = new Set([
   "agentscope.harness.version",
   "agentscope.protocol.manifest_id",
   "agentscope.redaction.policy_id",
-  "agentscope.feedback.transport",
+  FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
   "openinference.span.kind",
   "service.name",
   "service.version",
@@ -428,8 +431,7 @@ const validateOperation = (value: CapturedValueCandidate) => {
       : boundedString(record.feedbackTransport);
   if (
     (feedbackTransport !== undefined &&
-      feedbackTransport !== "inline" &&
-      feedbackTransport !== "post-hoc") ||
+      !isFeedbackTransport(feedbackTransport)) ||
     fields.some(({ field }) => isFeedbackAttributeKey(field)) !==
       (feedbackTransport !== undefined)
   )
@@ -492,19 +494,12 @@ const validateFeedbackOperation = (
         };
       },
     );
-    feedbackAttributes.push({
-      key: "agentscope.feedback.transport",
-      value: { stringValue: operation.feedbackTransport },
-    });
     if (
-      !feedbackAttributesAreValid({
-        attributes: feedbackAttributes,
-        links: operation.links.map(() => ({
-          traceId: "1".repeat(32),
-          spanId: "1".repeat(16),
-          attributes: [],
-        })),
-      })
+      createFeedbackCarrierAttributes(
+        feedbackAttributes,
+        operation.feedbackTransport,
+        operation.links.length,
+      ) === undefined
     )
       throw new CapturedTraceError();
   }
@@ -529,7 +524,9 @@ const validateOperationGraph = (operations: readonly ValidatedOperation[]) => {
     ({ parentLogicalKey }) => parentLogicalKey === undefined,
   );
   const standalonePostHocFeedbackRoot =
-    operations.length === 1 && roots[0]?.feedbackTransport === "post-hoc";
+    operations.length === 1 &&
+    roots[0]?.feedbackTransport !== undefined &&
+    feedbackTransportIsPostHoc(roots[0].feedbackTransport);
   if (
     roots.length !== 1 ||
     (roots[0]!.kind !== "AGENT" && !standalonePostHocFeedbackRoot)
@@ -920,7 +917,7 @@ const validateCandidate = (
     [...contextFields, ...contextUnavailable].some(
       ({ field }) =>
         isFeedbackAttributeKey(field) ||
-        field === "agentscope.feedback.transport",
+        field === FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
     )
   )
     throw new CapturedTraceError();

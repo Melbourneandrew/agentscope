@@ -3,6 +3,8 @@ import {
   buildSpanEvidenceLedger,
   createSemanticOtlpValue,
   createTimingProvenanceValue,
+  FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
+  feedbackTransportIsPostHoc,
   getAcceptedSemanticAttributeDescriptor,
   getStructuralSemanticDescriptor,
   standardsManifest,
@@ -188,93 +190,116 @@ const buildTiming = (
   };
 };
 
-// Span construction is one fail-closed transaction over attributes and evidence.
-/* eslint-disable max-lines-per-function, complexity */
-const createSpan = (
-  operation: ReturnType<typeof readCapturedTraceForCore>["operations"][number],
-  options: {
-    isRoot: boolean;
-    standaloneFeedbackRoot: boolean;
-    policy: ResolvedRedactionPolicy;
-    hookObservedUnixNano: string;
-    rootBounds?: { start: string; end: string };
-    rootContextFields: readonly Readonly<{
-      field: string;
-      value: unknown;
-      provenance: Readonly<{ field: string; source: ProvenanceSource }>;
-    }>[];
-    rootContextUnavailable: readonly UnavailableClaim[];
-    harness: ReturnType<
-      typeof readCapturedTraceForCore
-    >["invocation"]["harnessIdentity"];
-    policyIdentity: string;
-    hasTool: boolean;
-    errorActivity: "present" | "redacted" | "empty";
-  },
-): OtlpSpan & { logicalOperationKey: string } => {
-  const attributes: OtlpKeyValue[] = [];
-  const present: string[] = [];
-  const claims: EvidenceClaim[] = [];
-  const unavailable: UnavailableClaim[] = [];
-  const addAttribute = (attribute: OtlpKeyValue, claim: EvidenceClaim) => {
-    attributes.push(attribute);
-    present.push(attribute.key);
-    claims.push(claim);
-  };
-  addAttribute(stringValue("openinference.span.kind", operation.kind), {
-    field: "openinference.span.kind",
-    source: "derived",
-  });
-  if (operation.feedbackTransport !== undefined)
-    addAttribute(
-      stringValue("agentscope.feedback.transport", operation.feedbackTransport),
-      { field: "agentscope.feedback.transport", source: "derived" },
+type CapturedOperation = ReturnType<
+  typeof readCapturedTraceForCore
+>["operations"][number];
+type SpanRootMode =
+  | Readonly<{ kind: "child" }>
+  | Readonly<{ kind: "trace-root" }>
+  | Readonly<{ kind: "standalone-feedback-root" }>;
+type SpanEvidence = {
+  present: string[];
+  claims: EvidenceClaim[];
+  unavailable: UnavailableClaim[];
+};
+type SpanConstructionOptions = {
+  rootMode: SpanRootMode;
+  policy: ResolvedRedactionPolicy;
+  hookObservedUnixNano: string;
+  rootBounds?: { start: string; end: string };
+  rootContextFields: readonly Readonly<{
+    field: string;
+    value: unknown;
+    provenance: Readonly<{ field: string; source: ProvenanceSource }>;
+  }>[];
+  rootContextUnavailable: readonly UnavailableClaim[];
+  harness: ReturnType<
+    typeof readCapturedTraceForCore
+  >["invocation"]["harnessIdentity"];
+  policyIdentity: string;
+  hasTool: boolean;
+  errorActivity: "present" | "redacted" | "empty";
+};
+
+const isRootMode = (mode: SpanRootMode) => mode.kind !== "child";
+const isOrdinaryRootMode = (mode: SpanRootMode) => mode.kind === "trace-root";
+const addEvidenceAttribute = (
+  attributes: OtlpKeyValue[],
+  evidence: SpanEvidence,
+  attribute: OtlpKeyValue,
+  claim: EvidenceClaim,
+) => {
+  attributes.push(attribute);
+  evidence.present.push(attribute.key);
+  evidence.claims.push(claim);
+};
+
+const addRootHarnessEvidence = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+  attributes: OtlpKeyValue[],
+  evidence: SpanEvidence,
+) => {
+  if (!isOrdinaryRootMode(options.rootMode)) return;
+  const harnessName = redactField(
+    {
+      field: "agentscope.harness.name",
+      value: options.harness.name,
+      provenance: { source: options.harness.nameSource },
+    },
+    options.policy,
+    operation.kind,
+  );
+  if (harnessName.attribute !== undefined && harnessName.claim !== undefined)
+    addEvidenceAttribute(
+      attributes,
+      evidence,
+      harnessName.attribute,
+      harnessName.claim,
     );
-  if (options.isRoot && !options.standaloneFeedbackRoot) {
-    const harnessName = redactField(
-      {
-        field: "agentscope.harness.name",
-        value: options.harness.name,
-        provenance: { source: options.harness.nameSource },
-      },
-      options.policy,
-      operation.kind,
-    );
-    if (harnessName.attribute !== undefined && harnessName.claim !== undefined)
-      addAttribute(harnessName.attribute, harnessName.claim);
-    else unavailable.push(harnessName.unavailable);
-    const version = options.harness.version;
-    if (version.state === "observed") {
-      const harnessVersion = redactField(
-        {
-          field: "agentscope.harness.version",
-          value: version.value,
-          provenance: { source: version.source },
-        },
-        options.policy,
-        operation.kind,
-      );
-      if (
-        harnessVersion.attribute !== undefined &&
-        harnessVersion.claim !== undefined
-      )
-        addAttribute(harnessVersion.attribute, harnessVersion.claim);
-      else unavailable.push(harnessVersion.unavailable);
-    } else
-      unavailable.push({
-        field: "agentscope.harness.version",
-        source: version.source,
-        state: "unavailable",
-        reason: version.reason,
-      });
+  else evidence.unavailable.push(harnessName.unavailable);
+  const version = options.harness.version;
+  if (version.state !== "observed") {
+    evidence.unavailable.push({
+      field: "agentscope.harness.version",
+      source: version.source,
+      state: "unavailable",
+      reason: version.reason,
+    });
+    return;
   }
-  if (options.isRoot)
-    attributes.push(
-      stringValue("agentscope.redaction.policy_id", options.policyIdentity),
+  const harnessVersion = redactField(
+    {
+      field: "agentscope.harness.version",
+      value: version.value,
+      provenance: { source: version.source },
+    },
+    options.policy,
+    operation.kind,
+  );
+  if (
+    harnessVersion.attribute !== undefined &&
+    harnessVersion.claim !== undefined
+  )
+    addEvidenceAttribute(
+      attributes,
+      evidence,
+      harnessVersion.attribute,
+      harnessVersion.claim,
     );
+  else evidence.unavailable.push(harnessVersion.unavailable);
+};
+
+const addSemanticEvidence = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+  attributes: OtlpKeyValue[],
+  evidence: SpanEvidence,
+) => {
+  const ordinaryRoot = isOrdinaryRootMode(options.rootMode);
   const semanticFields = [
     ...operation.fields,
-    ...(options.isRoot && !options.standaloneFeedbackRoot
+    ...(ordinaryRoot
       ? options.rootContextFields.filter(
           ({ field }) =>
             !getAcceptedSemanticAttributeDescriptor(field)?.locations.includes(
@@ -286,48 +311,62 @@ const createSpan = (
   for (const field of semanticFields) {
     const redacted = redactField(field, options.policy, operation.kind);
     if (redacted.attribute !== undefined && redacted.claim !== undefined)
-      addAttribute(redacted.attribute, redacted.claim);
+      addEvidenceAttribute(
+        attributes,
+        evidence,
+        redacted.attribute,
+        redacted.claim,
+      );
     if (redacted.unavailable !== undefined)
-      unavailable.push(redacted.unavailable);
+      evidence.unavailable.push(redacted.unavailable);
   }
-  unavailable.push(
+  evidence.unavailable.push(
     ...operation.unavailable,
-    ...(options.isRoot && !options.standaloneFeedbackRoot
-      ? options.rootContextUnavailable
-      : []),
+    ...(ordinaryRoot ? options.rootContextUnavailable : []),
   );
-  if (options.isRoot) {
-    for (const field of options.rootContextFields.filter(({ field }) =>
-      getAcceptedSemanticAttributeDescriptor(field)?.locations.includes(
-        "resource",
-      ),
-    )) {
-      const redacted = redactField(field, options.policy, operation.kind);
-      if (redacted.attribute !== undefined && redacted.claim !== undefined) {
-        present.push(field.field);
-        claims.push(redacted.claim);
-      }
-      if (redacted.unavailable !== undefined)
-        unavailable.push(redacted.unavailable);
+  if (!isRootMode(options.rootMode)) return;
+  for (const field of options.rootContextFields.filter(({ field }) =>
+    getAcceptedSemanticAttributeDescriptor(field)?.locations.includes(
+      "resource",
+    ),
+  )) {
+    const redacted = redactField(field, options.policy, operation.kind);
+    if (redacted.attribute !== undefined && redacted.claim !== undefined) {
+      evidence.present.push(field.field);
+      evidence.claims.push(redacted.claim);
     }
+    if (redacted.unavailable !== undefined)
+      evidence.unavailable.push(redacted.unavailable);
   }
+};
 
-  if (options.isRoot && !options.standaloneFeedbackRoot) {
+const addFamilyEvidence = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+  evidence: SpanEvidence,
+) => {
+  if (isOrdinaryRootMode(options.rootMode)) {
     if (options.hasTool) {
-      claims.push({ field: "family.tool.activity", source: "derived" });
-      present.push("family.tool.activity");
+      evidence.claims.push({
+        field: "family.tool.activity",
+        source: "derived",
+      });
+      evidence.present.push("family.tool.activity");
     } else
-      unavailable.push({
+      evidence.unavailable.push({
         field: "family.tool.activity",
         source: "derived",
         state: "observed-empty",
         reason: "empty-native-value",
       });
     if (options.errorActivity === "present") {
-      claims.push({ field: "family.error.activity", source: "derived" });
-      present.push("family.error.activity");
+      evidence.claims.push({
+        field: "family.error.activity",
+        source: "derived",
+      });
+      evidence.present.push("family.error.activity");
     } else
-      unavailable.push({
+      evidence.unavailable.push({
         field: "family.error.activity",
         source: "derived",
         state:
@@ -338,162 +377,209 @@ const createSpan = (
             : "empty-native-value",
       });
   }
-  if (operation.kind === "LLM") {
-    const accounted = new Set([
-      ...present,
-      ...unavailable.map(({ field }) => field),
-    ]);
-    if (
-      operation.fields.some(({ field }) => field.startsWith("llm.token_count."))
-    ) {
-      present.push("family.llm.usage");
-      claims.push({ field: "family.llm.usage", source: "derived" });
-      accounted.add("family.llm.usage");
-    }
-    for (const field of [
-      "llm.system",
-      "llm.model_name",
-      "llm.provider",
-      "llm.invocation_parameters",
-      "family.llm.usage",
-    ])
-      if (!accounted.has(field))
-        unavailable.push({
-          field,
-          source: "derived",
-          state: "unavailable",
-          reason: "not-emitted",
-        });
+  if (operation.kind !== "LLM") return;
+  const accounted = new Set([
+    ...evidence.present,
+    ...evidence.unavailable.map(({ field }) => field),
+  ]);
+  if (
+    operation.fields.some(({ field }) => field.startsWith("llm.token_count."))
+  ) {
+    evidence.present.push("family.llm.usage");
+    evidence.claims.push({ field: "family.llm.usage", source: "derived" });
+    accounted.add("family.llm.usage");
   }
+  for (const field of [
+    "llm.system",
+    "llm.model_name",
+    "llm.provider",
+    "llm.invocation_parameters",
+    "family.llm.usage",
+  ])
+    if (!accounted.has(field))
+      evidence.unavailable.push({
+        field,
+        source: "derived",
+        state: "unavailable",
+        reason: "not-emitted",
+      });
+};
 
-  const nameDescriptor = getStructuralSemanticDescriptor("span.name");
+const buildSpanAttributesAndEvidence = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+) => {
+  const attributes: OtlpKeyValue[] = [];
+  const evidence: SpanEvidence = { present: [], claims: [], unavailable: [] };
+  addEvidenceAttribute(
+    attributes,
+    evidence,
+    stringValue("openinference.span.kind", operation.kind),
+    { field: "openinference.span.kind", source: "derived" },
+  );
+  if (operation.feedbackTransport !== undefined)
+    addEvidenceAttribute(
+      attributes,
+      evidence,
+      stringValue(
+        FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
+        operation.feedbackTransport,
+      ),
+      { field: FEEDBACK_TRANSPORT_ATTRIBUTE_KEY, source: "derived" },
+    );
+  addRootHarnessEvidence(operation, options, attributes, evidence);
+  if (isRootMode(options.rootMode))
+    attributes.push(
+      stringValue("agentscope.redaction.policy_id", options.policyIdentity),
+    );
+  addSemanticEvidence(operation, options, attributes, evidence);
+  addFamilyEvidence(operation, options, evidence);
+  return { attributes, evidence };
+};
+
+const buildSpanNameAndTiming = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+  evidence: SpanEvidence,
+) => {
+  const descriptor = getStructuralSemanticDescriptor("span.name");
   /* v8 ignore next -- startup validates the required structural descriptor. */
-  if (nameDescriptor === undefined) throw new CoreRedactionError();
-  const nameResult = applyDescriptorRedaction(
-    nameDescriptor,
+  if (descriptor === undefined) throw new CoreRedactionError();
+  const name = applyDescriptorRedaction(
+    descriptor,
     operation.name,
     options.policy,
     undefined,
     { semanticKey: "span.name", spanKind: operation.kind },
   );
-  /* v8 ignore next 6 -- the fingerprinted span-name descriptor permits only string retention or replacement. */
+  /* v8 ignore next 5 -- the fingerprinted span-name descriptor permits only string retention or replacement. */
   if (
-    (nameResult.outcome !== "retain" &&
-      nameResult.outcome !== "replace-non-content") ||
-    typeof nameResult.value !== "string"
+    (name.outcome !== "retain" && name.outcome !== "replace-non-content") ||
+    typeof name.value !== "string"
   )
     throw new CoreRedactionError();
+  const root = isRootMode(options.rootMode);
   const timing = buildTiming(
     operation,
     options.hookObservedUnixNano,
     options.rootBounds,
-    options.isRoot,
+    root,
   );
   for (const field of ["span.trace_id", "span.span_id", "span.kind"]) {
-    present.push(field);
-    claims.push({ field, source: "derived" });
+    evidence.present.push(field);
+    evidence.claims.push({ field, source: "derived" });
   }
-  if (!options.isRoot) {
-    present.push("span.parent_span_id");
-    claims.push({ field: "span.parent_span_id", source: "derived" });
+  if (!root) {
+    evidence.present.push("span.parent_span_id");
+    evidence.claims.push({ field: "span.parent_span_id", source: "derived" });
   }
-  present.push(
+  evidence.present.push(
     "span.name",
     "span.start_time_unix_nano",
     "span.end_time_unix_nano",
   );
-  claims.push(
+  evidence.claims.push(
     {
       field: "span.name",
-      source: nameResult.transformed
-        ? "derived"
-        : operation.nameProvenance.source,
+      source: name.transformed ? "derived" : operation.nameProvenance.source,
     },
     { field: "span.start_time_unix_nano", ...timing.provenance },
     { field: "span.end_time_unix_nano", ...timing.provenance },
   );
+  return { name: name.value, timing };
+};
 
-  const events = operation.events
-    .map((event, eventIndex) => {
-      const descriptor = getStructuralSemanticDescriptor("span.event.name");
-      /* v8 ignore next -- startup validates the required structural descriptor. */
-      if (descriptor === undefined) throw new CoreRedactionError();
-      const result = applyDescriptorRedaction(
-        descriptor,
-        event.name,
-        options.policy,
-        undefined,
-        { semanticKey: "span.event.name", spanKind: operation.kind },
-      );
-      if (result.outcome === "omit-event") {
-        unavailable.push({
-          field: `span.events.${eventIndex}.event`,
-          source: event.nameProvenance.source,
-          state: "redacted",
-          reason: "policy-redacted",
-        });
-        return undefined;
-      }
-      /* v8 ignore next -- event-name routes return retain or omit-event. */
-      if (result.outcome !== "retain" || typeof result.value !== "string")
-        throw new CoreRedactionError();
-      present.push(
-        `span.events.${eventIndex}.event`,
-        `span.events.${eventIndex}.name`,
-        `span.events.${eventIndex}.time_unix_nano`,
-      );
-      claims.push(
-        { field: `span.events.${eventIndex}.event`, source: "derived" },
-        {
-          field: `span.events.${eventIndex}.name`,
-          source:
-            /* v8 ignore next -- transformed event names are omitted atomically. */
-            result.transformed ? "derived" : event.nameProvenance.source,
-        },
-        {
-          field: `span.events.${eventIndex}.time_unix_nano`,
-          source: event.timeProvenance.source,
-        },
-      );
-      const eventAttributes = event.fields.flatMap((field) => {
-        const redacted = redactField(field, options.policy, operation.kind);
-        const evidenceField = `span.events.${eventIndex}.attributes.${field.field}`;
-        if (redacted.unavailable !== undefined) {
-          unavailable.push({ ...redacted.unavailable, field: evidenceField });
-          return [];
-        }
-        /* v8 ignore next -- redactField returns an atomic attribute/claim pair. */
-        if (redacted.attribute === undefined || redacted.claim === undefined)
-          throw new CoreRedactionError();
-        present.push(evidenceField);
-        claims.push({ ...redacted.claim, field: evidenceField });
-        return [redacted.attribute];
+const buildSpanEvents = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+  evidence: SpanEvidence,
+) => {
+  const events = operation.events.flatMap((event, eventIndex) => {
+    const descriptor = getStructuralSemanticDescriptor("span.event.name");
+    /* v8 ignore next -- startup validates the required structural descriptor. */
+    if (descriptor === undefined) throw new CoreRedactionError();
+    const result = applyDescriptorRedaction(
+      descriptor,
+      event.name,
+      options.policy,
+      undefined,
+      { semanticKey: "span.event.name", spanKind: operation.kind },
+    );
+    if (result.outcome === "omit-event") {
+      evidence.unavailable.push({
+        field: `span.events.${eventIndex}.event`,
+        source: event.nameProvenance.source,
+        state: "redacted",
+        reason: "policy-redacted",
       });
-      eventAttributes.sort(compareKey);
-      return {
-        name: result.value,
-        timeUnixNano: event.timeUnixNano,
-        attributes: eventAttributes,
-      };
-    })
-    .filter((event): event is NonNullable<typeof event> => event !== undefined);
+      return [];
+    }
+    /* v8 ignore next -- event-name routes return retain or omit-event. */
+    if (result.outcome !== "retain" || typeof result.value !== "string")
+      throw new CoreRedactionError();
+    evidence.present.push(
+      `span.events.${eventIndex}.event`,
+      `span.events.${eventIndex}.name`,
+      `span.events.${eventIndex}.time_unix_nano`,
+    );
+    evidence.claims.push(
+      { field: `span.events.${eventIndex}.event`, source: "derived" },
+      {
+        field: `span.events.${eventIndex}.name`,
+        source: result.transformed ? "derived" : event.nameProvenance.source,
+      },
+      {
+        field: `span.events.${eventIndex}.time_unix_nano`,
+        source: event.timeProvenance.source,
+      },
+    );
+    const attributes = event.fields.flatMap((field) => {
+      const redacted = redactField(field, options.policy, operation.kind);
+      const evidenceField = `span.events.${eventIndex}.attributes.${field.field}`;
+      if (redacted.unavailable !== undefined) {
+        evidence.unavailable.push({
+          ...redacted.unavailable,
+          field: evidenceField,
+        });
+        return [];
+      }
+      /* v8 ignore next -- redactField returns an atomic attribute/claim pair. */
+      if (redacted.attribute === undefined || redacted.claim === undefined)
+        throw new CoreRedactionError();
+      evidence.present.push(evidenceField);
+      evidence.claims.push({ ...redacted.claim, field: evidenceField });
+      return [redacted.attribute];
+    });
+    attributes.sort(compareKey);
+    return [
+      { name: result.value, timeUnixNano: event.timeUnixNano, attributes },
+    ];
+  });
   if (events.length > 0) {
-    present.push("span.events");
-    claims.push({ field: "span.events", source: "derived" });
+    evidence.present.push("span.events");
+    evidence.claims.push({ field: "span.events", source: "derived" });
   } else if (operation.events.length > 0)
-    unavailable.push({
+    evidence.unavailable.push({
       field: "span.events",
       source: "derived",
       state: "redacted",
       reason: "policy-redacted",
     });
+  return events;
+};
+
+const buildSpanLinks = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+  evidence: SpanEvidence,
+) => {
   const links = operation.links.map((link, linkIndex) => {
-    present.push(
+    evidence.present.push(
       `span.links.${linkIndex}.link`,
       `span.links.${linkIndex}.target_ids`,
       `span.links.${linkIndex}.relationship`,
     );
-    claims.push(
+    evidence.claims.push(
       { field: `span.links.${linkIndex}.link`, source: "derived" },
       {
         field: `span.links.${linkIndex}.target_ids`,
@@ -508,22 +594,24 @@ const createSpan = (
       },
     );
     /* v8 ignore start -- current pinned profile has no link attributes. */
-    const linkAttributes = link.fields.flatMap((field) => {
+    const attributes = link.fields.flatMap((field) => {
       const redacted = redactField(field, options.policy, operation.kind);
       const evidenceField = `span.links.${linkIndex}.attributes.${field.field}`;
       if (redacted.unavailable !== undefined) {
-        unavailable.push({ ...redacted.unavailable, field: evidenceField });
+        evidence.unavailable.push({
+          ...redacted.unavailable,
+          field: evidenceField,
+        });
         return [];
       }
-      /* v8 ignore next -- redactField returns an atomic attribute/claim pair. */
       if (redacted.attribute === undefined || redacted.claim === undefined)
         throw new CoreRedactionError();
-      present.push(evidenceField);
-      claims.push({ ...redacted.claim, field: evidenceField });
+      evidence.present.push(evidenceField);
+      evidence.claims.push({ ...redacted.claim, field: evidenceField });
       return [redacted.attribute];
     });
     /* v8 ignore stop */
-    linkAttributes.sort(compareKey);
+    attributes.sort(compareKey);
     return {
       ...(link.target.kind === "internal"
         ? {
@@ -532,21 +620,35 @@ const createSpan = (
             spanId: "1".repeat(16),
           }
         : { traceId: link.target.traceId, spanId: link.target.spanId }),
-      attributes: linkAttributes,
+      attributes,
     };
   });
   if (links.length > 0) {
-    present.push("span.links", "span.links.target_ids");
-    claims.push(
+    evidence.present.push("span.links", "span.links.target_ids");
+    evidence.claims.push(
       { field: "span.links", source: "derived" },
       { field: "span.links.target_ids", source: "derived" },
     );
   }
+  return links;
+};
+
+const createSpan = (
+  operation: CapturedOperation,
+  options: SpanConstructionOptions,
+): OtlpSpan & { logicalOperationKey: string } => {
+  const { attributes, evidence } = buildSpanAttributesAndEvidence(
+    operation,
+    options,
+  );
+  const { name, timing } = buildSpanNameAndTiming(operation, options, evidence);
+  const events = buildSpanEvents(operation, options, evidence);
+  const links = buildSpanLinks(operation, options, evidence);
   const ledger = buildSpanEvidenceLedger({
     spanKind: operation.kind,
-    presentFields: present,
-    provenanceClaims: claims,
-    unavailableClaims: unavailable,
+    presentFields: evidence.present,
+    provenanceClaims: evidence.claims,
+    unavailableClaims: evidence.unavailable,
   });
   attributes.push(
     stringValue(
@@ -566,8 +668,8 @@ const createSpan = (
     logicalOperationKey: operation.logicalKey,
     traceId: "1".repeat(32),
     spanId: "1".repeat(16),
-    ...(options.isRoot ? {} : { parentSpanId: "1".repeat(16) }),
-    name: nameResult.value,
+    ...(isRootMode(options.rootMode) ? {} : { parentSpanId: "1".repeat(16) }),
+    name,
     kind: CANONICAL_COMPOUND_RULES.constructedSpanKind,
     startTimeUnixNano: timing.start,
     endTimeUnixNano: timing.end,
@@ -576,7 +678,6 @@ const createSpan = (
     ...(links.length === 0 ? {} : { links }),
   };
 };
-/* eslint-enable max-lines-per-function, complexity */
 
 // Trace construction remains one catch-to-fixed-error transaction.
 /* eslint-disable max-lines-per-function */
@@ -676,10 +777,14 @@ export const redactCapturedTrace = (
           : ("empty" as const);
     const spans = capture.operations.map((operation) =>
       createSpan(operation, {
-        isRoot: operation.logicalKey === root.logicalKey,
-        standaloneFeedbackRoot:
-          capture.operations.length === 1 &&
-          operation.feedbackTransport === "post-hoc",
+        rootMode:
+          operation.logicalKey !== root.logicalKey
+            ? { kind: "child" }
+            : capture.operations.length === 1 &&
+                operation.feedbackTransport !== undefined &&
+                feedbackTransportIsPostHoc(operation.feedbackTransport)
+              ? { kind: "standalone-feedback-root" }
+              : { kind: "trace-root" },
         policy,
         hookObservedUnixNano: capture.invocation.hookObservedUnixNano,
         ...(operation.logicalKey === root.logicalKey && rootBounds !== undefined

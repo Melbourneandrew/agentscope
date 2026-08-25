@@ -104,6 +104,25 @@ const parseDuration = (path: string): number => {
   return duration;
 };
 
+export const createHookVerifierOutputCollector = (onOverflow: () => void) => {
+  const output: Buffer[] = [];
+  let outputSize = 0;
+  return Object.freeze({
+    accept: (chunk: Buffer): void => {
+      const remaining = MAXIMUM_VERIFIER_RESPONSE_BYTES + 1 - outputSize;
+      const retainedLength = Math.min(chunk.byteLength, Math.max(0, remaining));
+      if (retainedLength > 0) output.push(chunk.subarray(0, retainedLength));
+      outputSize += retainedLength;
+      if (
+        chunk.byteLength > remaining ||
+        outputSize > MAXIMUM_VERIFIER_RESPONSE_BYTES
+      )
+        onOverflow();
+    },
+    read: (): Buffer => Buffer.concat(output),
+  });
+};
+
 const runVerifier = (
   authority: BootstrapAuthority,
   input: HookMachineTestingInput,
@@ -126,8 +145,6 @@ const runVerifier = (
       stdio: ["pipe", "pipe", "ignore"],
       windowsHide: true,
     });
-    const output: Buffer[] = [];
-    let outputSize = 0;
     let failed = false;
     let settled = false;
     const stop = (): void => {
@@ -135,6 +152,7 @@ const runVerifier = (
       child.kill("SIGKILL");
     };
     const timer = setTimeout(stop, timeoutMilliseconds);
+    const output = createHookVerifierOutputCollector(stop);
     const finish = (): void => {
       if (settled) return;
       settled = true;
@@ -144,9 +162,7 @@ const runVerifier = (
         return;
       }
       try {
-        const parsed: unknown = JSON.parse(
-          Buffer.concat(output).toString("utf8"),
-        );
+        const parsed: unknown = JSON.parse(output.read().toString("utf8"));
         if (
           typeof parsed !== "object" ||
           parsed === null ||
@@ -182,17 +198,7 @@ const runVerifier = (
         reject(new Error("cli.hook.invalid"));
       }
     };
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const remaining = MAXIMUM_VERIFIER_RESPONSE_BYTES + 1 - outputSize;
-      const retainedLength = Math.min(chunk.byteLength, Math.max(0, remaining));
-      if (retainedLength > 0) output.push(chunk.subarray(0, retainedLength));
-      outputSize += retainedLength;
-      if (
-        chunk.byteLength > remaining ||
-        outputSize > MAXIMUM_VERIFIER_RESPONSE_BYTES
-      )
-        stop();
-    });
+    child.stdout?.on("data", output.accept);
     child.once("error", stop);
     child.once("close", (code) => {
       if (code !== 0) failed = true;
@@ -208,7 +214,7 @@ const runVerifier = (
     );
   });
 
-const readEvidence = (
+export const readHookEvidence = (
   stream: Readable,
   timeoutMilliseconds: number,
 ): Promise<Uint8Array> =>
@@ -272,7 +278,7 @@ const run = async (
     const launcher = await runVerifier(authority, input, verificationBudget);
     const evidenceBudget = remaining();
     if (evidenceBudget <= 0) throw new Error("cli.hook.invalid");
-    const evidence = await readEvidence(input.stdin, evidenceBudget);
+    const evidence = await readHookEvidence(input.stdin, evidenceBudget);
     if (remaining() <= 0) throw new Error("cli.hook.invalid");
     await input.onEvidence(
       Object.freeze({ evidence, hookEntryAuthority, launcher }),

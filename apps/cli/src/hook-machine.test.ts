@@ -12,10 +12,14 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOwnedHookLauncherArtifacts } from "./hook-launcher.js";
-import { runOwnedHookBootstrapForTesting } from "./hook-machine.js";
+import {
+  createHookVerifierOutputCollector,
+  readHookEvidence,
+  runOwnedHookBootstrapForTesting,
+} from "./hook-machine.js";
 import { parseHookLauncherDuration } from "./hook-verifier-contract.js";
 
 const roots: string[] = [];
@@ -151,6 +155,28 @@ describe("owned machine hook bootstrap", () => {
 });
 
 describe("owned machine hook failure boundaries", () => {
+  it("causally bounds verifier output and an evidence stream without EOF", async () => {
+    let overflowCount = 0;
+    const collector = createHookVerifierOutputCollector(() => {
+      overflowCount += 1;
+    });
+    collector.accept(Buffer.alloc(4_097));
+    expect(overflowCount).toBe(1);
+    expect(collector.read()).toHaveLength(4_097);
+
+    vi.useFakeTimers();
+    try {
+      const stream = new Readable({ read: () => undefined });
+      const pending = readHookEvidence(stream, 50);
+      const rejection = expect(pending).rejects.toThrow("cli.hook.invalid");
+      await vi.advanceTimersByTimeAsync(50);
+      await rejection;
+      expect(stream.destroyed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds overflow and a stream that never reaches EOF", async () => {
     const oversized = fixture();
     await expect(

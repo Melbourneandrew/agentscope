@@ -88,8 +88,13 @@ export { standardsManifest } from "./standards/manifest.js";
 export {
   FEEDBACK_PROFILE,
   FEEDBACK_PROFILE_FINGERPRINT,
+  FEEDBACK_TRANSPORT_ATTRIBUTE_KEY,
+  createFeedbackCarrierAttributes,
   feedbackAttributesAreValid,
+  feedbackTransportIsPostHoc,
   isFeedbackAttributeKey,
+  isFeedbackTransport,
+  type FeedbackTransport,
 } from "./schema/feedback-profile.js";
 export {
   SUPPORTED_PROTOCOL_GENERATIONS,

@@ -183,3 +183,17 @@ export const createSanitizedRedactedCanonicalTraceFixture = (
   });
 };
 /* eslint-enable max-lines-per-function */
+
+export {
+  CompatibilityProfileError,
+  compileCompatibilityProfileForTesting,
+  computeCompatibilitySourceFingerprintsForTesting,
+  CURRENT_SOURCE_ARTIFACTS_FOR_TESTING,
+  migrateSyntheticEnvelopeForTesting,
+  selectCurrentGenerationForTesting,
+  SYNTHETIC_SOURCE_SCHEMA_DESCRIPTOR_FOR_TESTING,
+  validateProductionReaderWindowForTesting,
+  type CompatibilityExtensionSnapshotInput,
+  type CompatibilityProfileInput,
+} from "./schema/compatibility-profile-test-support.js";
+export { validateFeedbackProfileForTesting } from "./schema/feedback-profile-test-support.js";
