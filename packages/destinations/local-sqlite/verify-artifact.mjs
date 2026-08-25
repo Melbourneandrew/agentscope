@@ -37,6 +37,14 @@ import {
   statOwnedFile,
 } from "./dist/production/owned-filesystem.js";
 
+// LSA-002-first-admitted-schema-only
+// LSA-003-wal-and-bounded-busy-timeout
+// LSA-004-concurrent-hook-writes-and-delivery-deduplication
+// LSA-005-durable-redacted-protocol-payload
+// LSA-008-busy-full-corrupt-fail-open-sanitized-results
+// LSA-009-bounded-read-only-doctor-evidence
+// LSA-010-existing-upgrade-and-recovery-findings
+
 const packageRoot = new URL(".", import.meta.url);
 const sourceRoot = new URL("./src/", packageRoot);
 const distRoot = new URL("./dist/", packageRoot);
@@ -1697,6 +1705,51 @@ if (
 )
   throw new Error("Local SQLite built Reporter transaction drifted.");
 
+const builtDuplicateResult = executePreparedLocalSqliteTransaction(
+  reporterDatabase,
+  {
+    maximumAgeNanoseconds: "2592000000000000",
+    maximumTraceCount: 100000,
+    maximumPayloadBytes: 1073741824,
+  },
+  Object.freeze([preparedTrace]),
+  "1000000",
+  () => false,
+);
+if (
+  builtDuplicateResult.outcome !== "accepted" ||
+  reporterState.rows.length !== 1
+)
+  throw new Error("Local SQLite built delivery deduplication drifted.");
+
+let concurrentRead = 0;
+const concurrentWinnerDatabase = Object.freeze({
+  ...reporterDatabase,
+  readExisting() {
+    concurrentRead += 1;
+    return concurrentRead === 1 ? [] : [reporterState.rows[0]];
+  },
+  insertTrace() {
+    return "uniqueness-conflict";
+  },
+});
+reporterState.transaction = false;
+const concurrentWinnerResult = executePreparedLocalSqliteTransaction(
+  concurrentWinnerDatabase,
+  {
+    maximumAgeNanoseconds: "2592000000000000",
+    maximumTraceCount: 100000,
+    maximumPayloadBytes: 1073741824,
+  },
+  Object.freeze([preparedTrace]),
+  "1000000",
+  () => false,
+);
+if (concurrentWinnerResult.outcome !== "accepted" || concurrentRead !== 3)
+  throw new Error(
+    "Local SQLite built concurrent winner classification drifted.",
+  );
+
 const builtRetriever = testing.createLocalSqliteRetriever(
   Object.freeze({
     search: () => Promise.reject(new Error("artifact-static-only")),
@@ -1807,6 +1860,30 @@ if (
   failedBeginRollbackCalls !== 0
 )
   throw new Error("Local SQLite built failed-BEGIN proof drifted.");
+
+for (const reason of ["destination-full", "destination-corrupt"]) {
+  const classified = executePreparedLocalSqliteTransaction(
+    Object.freeze({
+      ...reporterDatabase,
+      beginImmediate() {
+        throw testing.createLocalSqliteDatabaseFailureForTesting(reason);
+      },
+      inTransaction() {
+        return false;
+      },
+    }),
+    {
+      maximumAgeNanoseconds: "2592000000000000",
+      maximumTraceCount: 100000,
+      maximumPayloadBytes: 1073741824,
+    },
+    Object.freeze([preparedTrace]),
+    "1000000",
+    () => false,
+  );
+  if (classified.outcome !== "unavailable" || classified.reason !== reason)
+    throw new Error(`Local SQLite built ${reason} classification drifted.`);
+}
 
 reporterState.rows = [];
 reporterState.transaction = false;

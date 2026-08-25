@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "profileId": "agentscope.local-sqlite.alpha-0.1.0.v1",
+  "release": {
+    "package": "agentscope-cli",
+    "version": "0.1.0",
+    "channel": "alpha",
+    "claim": "experimental-opt-in-not-full-local-sqlite-support"
+  },
+  "authority": {
+    "bead": "agentscope-rk8.5",
+    "kind": "milestone-release-claim-narrowing",
+    "requirementsDisposition": "preserved-unchanged-not-promoted",
+    "blueprintDisposition": "preserved-unchanged"
+  },
+  "nativeAdmission": {
+    "disposition": "proposed-unpublished-execution-eligible",
+    "platformId": "linux-x64-node22-ci-ext4-proposed",
+    "claim": "one-synthetic-evidence-tuple-not-broad-platform-support"
+  },
+  "doctorBoundary": {
+    "sqliteOpen": false,
+    "claim": "bounded-read-only-lifecycle-file-header-and-database-presence-evidence",
+    "databaseStates": ["present", "missing", "unavailable"],
+    "deepSchemaCompatibility": "deferred",
+    "integrity": "deferred",
+    "capacity": "deferred",
+    "effectiveWritability": "deferred"
+  },
+  "admission": {
+    "state": "blocked-pending-consumed-actual-harness-evidence",
+    "blockingBeads": ["agentscope-wth.5", "agentscope-vah.11.12"],
+    "consumedEvidence": []
+  },
+  "allowedBehaviors": [
+    "LSA-001-explicit-opt-in-and-persistence-disclosure",
+    "LSA-002-first-admitted-schema-only",
+    "LSA-003-wal-and-bounded-busy-timeout",
+    "LSA-004-concurrent-hook-writes-and-delivery-deduplication",
+    "LSA-005-durable-redacted-protocol-payload",
+    "LSA-006-basic-search-and-get",
+    "LSA-007-unconfigure-preserves-database",
+    "LSA-008-busy-full-corrupt-fail-open-sanitized-results",
+    "LSA-009-bounded-read-only-doctor-evidence",
+    "LSA-010-existing-upgrade-and-recovery-findings",
+    "LSA-011-actual-harness-capture-report-search-get-admission"
+  ],
+  "deferredStableObligations": [
+    "broad-native-platform-certification",
+    "deep-schema-compatibility-admission",
+    "database-integrity-admission",
+    "database-capacity-admission",
+    "effective-writability-admission",
+    "historical-migration-certification",
+    "backup-and-restore-command-certification",
+    "automated-retention-certification",
+    "confirmed-destructive-deletion-certification",
+    "corruption-recovery-certification",
+    "hostile-replacement-hardening-certification",
+    "full-local-sqlite-support-claim"
+  ],
+  "stableCriteriaPreserved": [
+    "AC-SQL-001.1",
+    "AC-SQL-001.2",
+    "AC-SQL-001.3",
+    "AC-SQL-001.4",
+    "AC-SQL-002.1",
+    "AC-SQL-002.2",
+    "AC-SQL-002.3",
+    "AC-SQL-002.4",
+    "AC-SQL-002.5",
+    "AC-SQL-002.6",
+    "AC-SQL-003.1",
+    "AC-SQL-003.2",
+    "AC-SQL-003.3"
+  ],
+  "evidence": [
+    {
+      "path": "apps/cli/verify-artifact.mjs",
+      "claims": [
+        "LSA-001-explicit-opt-in-and-persistence-disclosure",
+        "LSA-007-unconfigure-preserves-database"
+      ],
+      "positiveAndNegative": true,
+      "layer": "exact-packed-cli"
+    },
+    {
+      "path": "packages/destinations/local-sqlite/verify-artifact.mjs",
+      "claims": [
+        "LSA-002-first-admitted-schema-only",
+        "LSA-003-wal-and-bounded-busy-timeout",
+        "LSA-004-concurrent-hook-writes-and-delivery-deduplication",
+        "LSA-005-durable-redacted-protocol-payload",
+        "LSA-008-busy-full-corrupt-fail-open-sanitized-results",
+        "LSA-009-bounded-read-only-doctor-evidence",
+        "LSA-010-existing-upgrade-and-recovery-findings"
+      ],
+      "positiveAndNegative": true,
+      "layer": "built-destination-artifact"
+    },
+    {
+      "path": "packages/destinations/local-sqlite/verify-production-composition.test.mjs",
+      "claims": ["LSA-006-basic-search-and-get"],
+      "positiveAndNegative": true,
+      "layer": "built-native-production-composition"
+    }
+  ],
+  "consumedEvidenceClaim": "LSA-011-actual-harness-capture-report-search-get-admission",
+  "claimBoundaryDocumentation": [
+    "apps/docs/content/docs/cli/destination/index.mdx",
+    "apps/docs/content/docs/cli/destination/configure.mdx"
+  ]
+}

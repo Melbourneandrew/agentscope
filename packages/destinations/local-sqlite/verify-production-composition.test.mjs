@@ -7,19 +7,31 @@ import {
   compileDestinationRegistry,
   compileLocalResourceLifecycleHandlerRegistry,
   completeLocalResourceLifecycle,
+  createTraceLocator,
   inspectLocalResourceLifecyclePlan,
 } from "@agentscope/destinations-core";
 import {
   bindLocalResourceConfigurationAuthorityForTesting,
   bindLocalResourceHomeAuthorityForTesting,
   bindLocalResourceLifecycleContextForTesting,
+  createReporterDeadline,
+  createRetrievalContext,
+  createTraceGetRequest,
+  createTraceSearchRequest,
   createLocalResourceLifecycleDeadlineForTesting,
   invokeDestinationReporterForTesting,
+  invokeRetrieverGet,
+  invokeRetrieverSearch,
+  normalizeTraceSearchQuery,
+  prepareDestinationRetriever,
   prepareDestinationReporterForTesting,
+  resolveDestinationConnection,
 } from "@agentscope/destinations-core/testing";
 import { createSanitizedRedactedCanonicalTraceFixture } from "@agentscope/protocol/testing";
 
 import * as root from "./dist/index.js";
+
+// LSA-006-basic-search-and-get
 
 const compositionRoot = mkdtempSync(
   join(tmpdir(), "agentscope-local-sqlite-composition-"),
@@ -122,8 +134,9 @@ try {
       },
       settings: lifecycleContext.settings,
     });
+    const trace = createSanitizedRedactedCanonicalTraceFixture();
     const receipt = await invokeDestinationReporterForTesting(productReporter, {
-      traces: [createSanitizedRedactedCanonicalTraceFixture()],
+      traces: [trace],
       admissionTimeUnixNano: "200",
       timeoutMilliseconds: 5_000,
     });
@@ -131,6 +144,82 @@ try {
       throw new Error(
         `Local SQLite built production descriptor did not execute: ${receipt.outcome}.`,
       );
+    const preparedConnection = resolveDestinationConnection(
+      composition.destinationDescriptor,
+      {
+        connectionId: lifecycleContext.connectionId,
+        settings: lifecycleContext.settings,
+      },
+    );
+    const productRetriever = prepareDestinationRetriever(preparedConnection, {
+      credentials: {},
+      transport: null,
+    });
+    const retrievalContext = () =>
+      createRetrievalContext({
+        deadline: createReporterDeadline(5_000),
+        maximumProviderRequests: 1,
+        maximumResponseBytes: 1_000_000,
+        signal: new AbortController().signal,
+      });
+    const query = normalizeTraceSearchQuery(
+      { limit: 10 },
+      {
+        commandStartedAt: "2099-01-01T00:00:00.000Z",
+        knownHarnessIds: ["fixture-harness"],
+        ordering: "start-time-desc-trace-id-asc",
+      },
+    );
+    const search = await invokeRetrieverSearch(
+      productRetriever,
+      createTraceSearchRequest(query, {
+        connectionId: lifecycleContext.connectionId,
+        destinationType: composition.destinationDescriptor.destinationType,
+      }),
+      retrievalContext(),
+    );
+    if (!search.ok || search.value.summaries.length !== 1)
+      throw new Error("Local SQLite built production search did not match.");
+    const locator = search.value.summaries[0]?.locator;
+    if (!locator)
+      throw new Error(
+        "Local SQLite built production search omitted its locator.",
+      );
+    const get = await invokeRetrieverGet(
+      productRetriever,
+      createTraceGetRequest(
+        createTraceLocator({
+          connectionId: lifecycleContext.connectionId,
+          destinationType: composition.destinationDescriptor.destinationType,
+          traceId: locator.traceId,
+        }),
+        {
+          connectionId: lifecycleContext.connectionId,
+          destinationType: composition.destinationDescriptor.destinationType,
+        },
+      ),
+      retrievalContext(),
+    );
+    if (!get.ok || get.value.representation.kind !== "persisted-envelope")
+      throw new Error("Local SQLite built production get did not match.");
+
+    const missing = await invokeRetrieverGet(
+      productRetriever,
+      createTraceGetRequest(
+        createTraceLocator({
+          connectionId: lifecycleContext.connectionId,
+          destinationType: composition.destinationDescriptor.destinationType,
+          traceId: "f".repeat(32),
+        }),
+        {
+          connectionId: lifecycleContext.connectionId,
+          destinationType: composition.destinationDescriptor.destinationType,
+        },
+      ),
+      retrievalContext(),
+    );
+    if (missing.ok || missing.code !== "not-found")
+      throw new Error("Local SQLite built production get failure drifted.");
   }
 } finally {
   rmSync(compositionRoot, { recursive: true, force: true });

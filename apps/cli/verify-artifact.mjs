@@ -22,6 +22,8 @@ import { build } from "esbuild";
 
 import { createPublishManifest } from "./scripts/publish-manifest.mjs";
 
+// LSA-001-explicit-opt-in-and-persistence-disclosure
+// LSA-007-unconfigure-preserves-database
 // AC-INS-001.1 AC-INS-001.2 AC-INS-001.3 AC-INS-001.4 AC-CLI-001.1 AC-CLI-001.2 AC-CLI-001.4 AC-CLI-002.2 AC-DOC-001.7 AC-DOC-002.1 AC-DOC-002.2
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
 const repositoryRoot = resolve(packageRoot, "../..");
