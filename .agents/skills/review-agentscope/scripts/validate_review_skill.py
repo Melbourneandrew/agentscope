@@ -89,6 +89,15 @@ EXPECTED_EVOLUTION_BLOCK = """8. Evolve this skill.
    - Commit the skill update through its own reviewable PR or a clearly scoped follow-up; never leave durable review knowledge only in a PR comment.
    - Run this skill's repository validator and the installed skill-creator `quick_validate.py` after every authored change."""
 
+EXPECTED_PLAN_AUTHORITY = """- For every plan-first command, require a distinct versioned plan envelope bound to the exact operation, target, and one-use mutation authority, plus every identity required by the governing requirement or Blueprint, such as configuration generation, capability fingerprint, or inventory or intent identity.
+- Prove the complete plan envelope is emitted and fully flushed on every promised output channel before apply consumes the authority; call ordering or a buffered write is not completion evidence.
+- Require apply to consume only the one-use authority bound to the fully displayed plan projection and revalidate every bound identity immediately before mutation. Substitution, replay, missing intent, output failure, and partial output must fail without mutation."""
+
+EXPECTED_PRODUCTION_ACCEPTANCE_SCOPE = """- Inventory the real production registry, persisted configuration store, runtime dispatch, and packed composition. Require one canonical destination identity and every descriptor, configuration, or capability identity defined by the governing contract, including a fingerprint only where that contract defines one; reject parallel registries or test-only composition as acceptance authority.
+- Do not promote an `AC-*` from component evidence while the ordinary production entry point is empty, uninitialized, unreachable, or wired to a different adapter. Require causal built or packed evidence through that entry point for the claimed user layer.
+- For every advertised provider profile and portable predicate, require exact positive and miss wire fixtures, reject nonconforming selector or query shapes, and derive projected responses from documented wire attributes rather than sequential canned responses.
+- Bind projection grammar, collision behavior, row and byte ceilings, and advertised predicates into the governed manifest fingerprint. Keep evidence DTOs behind a restricted testing boundary."""
+
 EXPECTED_AGENTS_REVIEW_POLICY = """Use the project-local `review-agentscope` skill for independent code, pull-request, architecture, trust-boundary, evidence, and release reviews. Approved Blueprint decisions are binding on implementation reviews. A compelling architectural exception must be approved and merged through an earlier standalone Blueprint-only PR; never revise architecture inside an implementation PR merely to justify divergence."""
 
 EXPECTED_REVIEW_LANGUAGE_SHA256 = (
@@ -192,6 +201,20 @@ def main() -> int:
         hashlib.sha256(review_language).hexdigest()
         == EXPECTED_REVIEW_LANGUAGE_SHA256,
         "defensive review-language boundary changed without validator update",
+    )
+
+    testing_evidence = (references / "testing-evidence-acceptance.md").read_text(
+        encoding="utf-8"
+    )
+    require(
+        extract_section(testing_evidence, "Plan-bound mutation evidence")
+        == EXPECTED_PLAN_AUTHORITY,
+        "plan-bound mutation evidence authority changed or was weakened",
+    )
+    require(
+        extract_section(testing_evidence, "Production composition and acceptance scope")
+        == EXPECTED_PRODUCTION_ACCEPTANCE_SCOPE,
+        "production composition or acceptance-scope authority changed or was weakened",
     )
 
     agents = (repository_root / "AGENTS.md").read_text(encoding="utf-8")

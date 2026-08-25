@@ -165,3 +165,135 @@ test("rejects reversal of the defensive review boundary", () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /defensive review-language boundary changed/);
 });
+
+test("rejects consuming plan authority before output completion", () => {
+  const fixture = createFixture();
+  const evidencePath = join(
+    fixture.skillRoot,
+    "references/testing-evidence-acceptance.md",
+  );
+  writeFileSync(
+    evidencePath,
+    readFileSync(evidencePath, "utf8").replace(
+      "is emitted and fully flushed on every promised output channel before apply consumes the authority",
+      "may remain buffered while apply consumes the authority",
+    ),
+  );
+
+  const result = validate(fixture);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /plan-bound mutation evidence authority changed or was weakened/,
+  );
+});
+
+test("rejects inventing plan identities outside governing authority", () => {
+  const fixture = createFixture();
+  const evidencePath = join(
+    fixture.skillRoot,
+    "references/testing-evidence-acceptance.md",
+  );
+  writeFileSync(
+    evidencePath,
+    readFileSync(evidencePath, "utf8").replace(
+      "plus every identity required by the governing requirement or Blueprint",
+      "plus every listed identity whether or not the governing requirement or Blueprint requires it",
+    ),
+  );
+
+  const result = validate(fixture);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /plan-bound mutation evidence authority changed or was weakened/,
+  );
+});
+
+test("rejects treating the displayed plan projection as mutation authority", () => {
+  const fixture = createFixture();
+  const evidencePath = join(
+    fixture.skillRoot,
+    "references/testing-evidence-acceptance.md",
+  );
+  writeFileSync(
+    evidencePath,
+    readFileSync(evidencePath, "utf8").replace(
+      "the one-use authority bound to the fully displayed plan projection",
+      "the serialized plan projection as the mutation authority",
+    ),
+  );
+
+  const result = validate(fixture);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /plan-bound mutation evidence authority changed or was weakened/,
+  );
+});
+
+test("rejects component evidence promoted over empty production composition", () => {
+  const fixture = createFixture();
+  const evidencePath = join(
+    fixture.skillRoot,
+    "references/testing-evidence-acceptance.md",
+  );
+  writeFileSync(
+    evidencePath,
+    readFileSync(evidencePath, "utf8").replace(
+      "Do not promote an `AC-*` from component evidence while the ordinary production entry point is empty, uninitialized, unreachable, or wired to a different adapter.",
+      "Promote an `AC-*` from component evidence even while the ordinary production entry point is empty, uninitialized, unreachable, or wired to a different adapter.",
+    ),
+  );
+
+  const result = validate(fixture);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /production composition or acceptance-scope authority changed or was weakened/,
+  );
+});
+
+test("rejects parallel registry and runtime destination identities", () => {
+  const fixture = createFixture();
+  const evidencePath = join(
+    fixture.skillRoot,
+    "references/testing-evidence-acceptance.md",
+  );
+  writeFileSync(
+    evidencePath,
+    readFileSync(evidencePath, "utf8").replace(
+      "Require one canonical destination identity and every descriptor, configuration, or capability identity defined by the governing contract, including a fingerprint only where that contract defines one; reject parallel registries or test-only composition as acceptance authority.",
+      "Allow each registry, store, and runtime boundary to select an independent destination identity or descriptor fingerprint.",
+    ),
+  );
+
+  const result = validate(fixture);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /production composition or acceptance-scope authority changed or was weakened/,
+  );
+});
+
+test("rejects order-based provider fixtures as compatibility authority", () => {
+  const fixture = createFixture();
+  const evidencePath = join(
+    fixture.skillRoot,
+    "references/testing-evidence-acceptance.md",
+  );
+  writeFileSync(
+    evidencePath,
+    readFileSync(evidencePath, "utf8").replace(
+      "derive projected responses from documented wire attributes rather than sequential canned responses",
+      "accept sequential canned responses without deriving them from documented wire attributes",
+    ),
+  );
+
+  const result = validate(fixture);
+  assert.equal(result.status, 1);
+  assert.match(
+    result.stderr,
+    /production composition or acceptance-scope authority changed or was weakened/,
+  );
+});
