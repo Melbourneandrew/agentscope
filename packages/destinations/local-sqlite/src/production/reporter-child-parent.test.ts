@@ -351,7 +351,7 @@ describe("bounded Local SQLite Reporter child", () => {
     expect(result.entries).toEqual([]);
   });
 
-  it("rejects an oversized child frame at the bounded reader", async () => {
+  it("rejects oversized and wrong-nonce frames at the bounded reader", async () => {
     const stdout = new EventEmitter();
     const child = Object.assign(new EventEmitter(), { stdout });
     const messages = readLocalSqliteReporterChildMessages(
@@ -361,6 +361,28 @@ describe("bounded Local SQLite Reporter child", () => {
     stdout.emit("data", Buffer.alloc(4_097, "x"));
     await expect(messages.ready).resolves.toBeUndefined();
     await expect(messages.result).resolves.toBeUndefined();
+
+    const wrongNonceStdout = new EventEmitter();
+    const wrongNonceChild = Object.assign(new EventEmitter(), {
+      stdout: wrongNonceStdout,
+    });
+    const wrongNonceMessages = readLocalSqliteReporterChildMessages(
+      wrongNonceChild as never,
+      "3".repeat(32),
+    );
+    wrongNonceStdout.emit(
+      "data",
+      Buffer.from(
+        `${JSON.stringify({
+          type: "ready",
+          nonce: "4".repeat(32),
+          pid: 1,
+          startIdentity: childIdentity,
+        })}\n`,
+      ),
+    );
+    await expect(wrongNonceMessages.ready).resolves.toBeUndefined();
+    await expect(wrongNonceMessages.result).resolves.toBeUndefined();
   });
 
   it("refuses wire encoding before spawn when the useful budget expires", async () => {
