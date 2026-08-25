@@ -1,0 +1,48 @@
+---
+title: Codex Harness Integration
+description: ADRs for authenticating, driving, and observing the Codex CLI without provider authority.
+---
+
+## Capability Summary
+
+The Codex integration must install an authenticated exact binary, exercise each claimed documented interface against internal model mocks, own a reversible root hook, and produce independent evidence without a model-provider credential or public model traffic.
+
+## Architecture Decision Records
+
+### ADR-001: Authenticate exact public npm inputs during ephemeral preparation
+
+**Decision:** Trusted preparation fetches exact public `@openai/codex` wrapper and platform packages without npm authentication, verifies registry integrity, npm signatures, and published provenance for the same release identity, then builds the ephemeral prepared image defined by [Matrix Operations](/docs/blueprints/testing/integration/matrix-operations). The compatibility catalog, not a moving installer or research exemplar, selects the supported version. A persistent mirror requires a separate license and artifact-content review; the repository license alone is not a blanket redistribution conclusion for every packaged component.
+
+**Context:** Codex documents npm installation and publishes Apache-2.0 source and release artifacts with registry provenance ([installation](https://developers.openai.com/codex/cli), [open-source repository](https://developers.openai.com/codex/open-source)). Exact package integrity and provenance can be checked before scenario isolation.
+
+**Consequences:** No npm credential, GHCR image, vendor installer execution on the host, or moving `latest` input is required. Cache hits remain non-authoritative until reverified.
+
+### ADR-002: Treat TUI and exec as separate documented interfaces
+
+**Decision:** Interactive evidence drives `codex` through the semantic PTY contract; headless evidence drives `codex exec`, with `--json` used as one native observation plane. A release claim names the exact mode exercised and cannot infer parity between them.
+
+**Context:** Codex documents the interactive CLI and a distinct non-interactive `exec` interface with JSON Lines output ([CLI reference](https://developers.openai.com/codex/cli/reference), [non-interactive mode](https://developers.openai.com/codex/non-interactive-mode)).
+
+### ADR-003: Route Responses traffic to one unauthenticated internal provider
+
+**Decision:** The scenario uses an isolated `CODEX_HOME` and a version-bound custom model-provider configuration whose `base_url` is the internal MockServer, `wire_api` is `responses`, and `requires_openai_auth` is false. Provider retries and alternate transports are disabled. No OpenAI or other model-provider credential, synthetic token, stored login, MCP server, or ambient provider configuration is present. Public egress denial and the MockServer ledger are the authority that no fallback occurred.
+
+**Context:** Codex supports custom model providers and an unauthenticated Responses configuration ([advanced configuration](https://developers.openai.com/codex/config-advanced), [configuration reference](https://developers.openai.com/codex/config-reference)). A disposable exact-binary research probe completed through `/v1/responses` without an authorization header; its details remain in the Codex research Bead rather than becoming a support pin.
+
+**Consequences:** Update checks, web search, analytics, feedback, apps, plugins, memories, multi-agent features, MCP discovery, and every non-loopback telemetry route are disabled where the selected version documents a control and are still denied at the network boundary. A CLI-reported cost field cannot prove spend; credential absence, denied egress, and the internal ledger do.
+
+### ADR-004: Block admission until the root hook contract is proven
+
+**Decision:** Agentscope installs one owned reversible user-root Codex hook only after the selected binary proves the official hook lifecycle for every claimed mode. Installation preserves foreign configuration, rejects conflicting concurrent edits, captures within the hook deadline, fails open to Codex, and uninstall removes only owned state. The integration cannot be admitted while an official hook requires an unreconciled shell command string or a required lifecycle event does not execute.
+
+**Context:** Codex documents user hooks and event payloads ([hooks](https://developers.openai.com/codex/hooks)). Research found that a `Stop` hook did not fire under the tested `exec` configuration, and the documented shell-string form may conflict with Agentscope's no-shell hook decision. Neither gap may be papered over with transcript polling.
+
+**Consequences:** Codex remains unverified until disposable exact-version tests prove hook discovery, lifecycle coverage, no-shell-compatible invocation, failure semantics, and owned install/uninstall for each claimed mode.
+
+### ADR-005: Correlate independent native and Agentscope observations
+
+**Decision:** The Codex oracle correlates process/PTY completion, the exact internal Responses ledger, hook invocations, documented `exec --json` events, bounded version-specific rollout observations when needed, loopback OTLP receipt, installed configuration ownership, filesystem mutation, and cleanup. Rollout files are never the sole oracle or a stable cross-version schema.
+
+**Context:** Codex exposes documented JSONL output while rollout persistence is an implementation detail whose path and record shapes can change.
+
+**Consequences:** Raw rollout, terminal, prompt, and response content remains scenario-local. Unknown native records, missing hooks, public requests, or correlation gaps fail admission.

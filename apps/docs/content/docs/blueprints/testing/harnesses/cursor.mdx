@@ -1,0 +1,46 @@
+---
+title: Cursor Harness Integration
+description: ADRs and admission blockers for authenticating, driving, and observing Cursor CLI without provider authority.
+---
+
+## Capability Summary
+
+The Cursor integration must use an independently authenticated exact binary, route a documented interface entirely through internal mocks, own a reversible root hook, and prove that update, login, telemetry, cloud, and provider fallbacks cannot spend tokens or escape the scenario. Current official-source research leaves artifact authentication and internal model routing unresolved, so no Cursor support is admitted by this Blueprint.
+
+## Architecture Decision Records
+
+### ADR-001: Fail artifact admission without independent version-bound integrity
+
+**Decision:** Trusted preparation may use Cursor's documented versioned download only after official signature, checksum, transparency, registry integrity, or equivalent independently obtained metadata binds the bytes to the selected version. A locally computed digest, installer-embedded URL, or TLS download alone is insufficient. Cursor artifacts are not persistently mirrored or redistributed without an explicit vendor permission establishing that right.
+
+**Context:** Cursor documents a network installer and version check ([installation](https://prod.cursor.com/docs/cli/installation)). Research of the official installer found versioned download paths but no published checksum or signature. Cursor's Terms grant a limited use right and reserve ungranted rights; third-party open-source notices are not a product redistribution license ([Terms](https://cursor.com/en-US/terms-of-service), [open-source notices](https://cursor.com/licenses)).
+
+**Consequences:** Cursor remains blocked from the compatibility catalog until independent artifact authority exists. The architecture does not infer a licensing conclusion or introduce a persistent GHCR workaround.
+
+### ADR-002: Keep interactive, print, and ACP claims distinct
+
+**Decision:** Interactive evidence drives `agent` through the semantic PTY contract. Headless evidence drives `agent -p` with an exact documented output format. ACP is a separate stdio JSON-RPC interface and may be claimed only with its own session, permission, cancellation, and cleanup evidence.
+
+**Context:** Cursor documents interactive Agent/Plan/Ask modes, print/headless output, and a distinct ACP server ([CLI overview](https://prod.cursor.com/docs/cli/overview), [headless CLI](https://prod.cursor.com/docs/cli/headless), [ACP](https://prod.cursor.com/docs/cli/acp)).
+
+### ADR-003: Reject endpoint-shaped evidence until model routing is proven
+
+**Decision:** A Cursor mode is admissible only when the exact selected binary completes a deterministic synthetic turn using a fixed non-authoritative auth sentinel, sends every model request to the internal MockServer, makes no Cursor-service or model-provider request, and succeeds with public egress denied. An `--endpoint` flag, current-endpoint display, or ACP backend option is not by itself proof of arbitrary local model routing. Browser login, stored Cursor authentication, real Cursor API keys, cloud-provider credentials, and model-provider credentials are forbidden.
+
+**Context:** Cursor documents browser or API-key authentication and endpoint options, while its deployment documentation says the CLI ordinarily requires Cursor services and sends code to LLMs ([authentication](https://prod.cursor.com/docs/cli/reference/authentication), [deployment patterns](https://prod.cursor.com/docs/enterprise/deployment-patterns)). No reviewed official source establishes a complete local model-provider override for print mode.
+
+**Consequences:** Cursor remains unverified until a disposable credential-free, no-egress probe establishes the exact protocol and fallback behavior. Failure triggers requirement reconsideration, not a real credential or paid request.
+
+### ADR-004: Prove suppression on the standalone CLI
+
+**Decision:** The selected standalone CLI must prove that version-bound controls disable automatic updates, telemetry, OAuth/browser fallback, cloud-agent handoff, marketplace and MCP discovery, external web access, and every alternate authentication or provider path. Enterprise `UpdateMode=none` or `update.mode` documentation is evidence of a candidate control, not proof that the standalone CLI honors it. Public egress denial remains authoritative.
+
+**Context:** Cursor documents default auto-update behavior and enterprise update policy separately ([installation](https://prod.cursor.com/docs/cli/installation), [deployment patterns](https://prod.cursor.com/docs/enterprise/deployment-patterns)).
+
+### ADR-005: Own and observe the user-root hook lifecycle
+
+**Decision:** Agentscope installs one owned reversible command-hook integration in the isolated user-root Cursor configuration only if the selected Cursor version proves that the handler invokes the exact absolute Agentscope launcher with zero arguments, stdin payload only, no `PATH` lookup, and no intervening shell. It preserves foreign project and user hooks, proves idempotence, conflict and concurrent-edit handling, captures documented session/turn/tool/stop events within the hook deadline, fails open to Cursor, and removes only owned state. Prompt-based hooks, cloud-only behavior, or undocumented transcript fields cannot satisfy the local CLI claim.
+
+**Context:** Cursor documents JSON-stdio command hooks in user and project `hooks.json` files with session, prompt, tool, and stop events, while availability varies by execution environment ([hooks](https://prod.cursor.com/docs/hooks)).
+
+**Consequences:** Official-source research has not yet proven shell-free hook invocation, so that seam is an admission blocker. The Cursor oracle correlates process/PTY or ACP completion, internal model ledger, denied-egress probe, hook ledger, documented native session fields, loopback OTLP receipt, installed ownership, mutations, and cleanup. Unknown event coverage or transcript semantics block admission rather than being inferred.

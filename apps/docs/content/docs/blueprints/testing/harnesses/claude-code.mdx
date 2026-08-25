@@ -1,0 +1,62 @@
+---
+title: Claude Code Harness Integration
+description: ADRs for authenticating, driving, and observing Claude Code without provider authority.
+---
+
+## Capability Summary
+
+The Claude Code integration must authenticate an exact binary, exercise documented interactive and print interfaces through an internal Anthropic mock, own a reversible root hook, and prevent overlap with direct-to-Langfuse plugins.
+
+## Architecture Decision Records
+
+### ADR-001: Verify exact platform packages against Anthropic's signed manifest
+
+**Decision:** Trusted preparation fetches an exact public Claude Code platform package without npm authentication, verifies its registry integrity, verifies the contained binary digest against Anthropic's exact-version manifest, and authenticates that manifest with Anthropic's documented release-signing key before building the ephemeral prepared image. A moving bootstrap installer is not artifact authority. Persistent mirroring or redistribution is prohibited unless vendor terms or explicit permission establish that right.
+
+**Context:** Anthropic documents exact-version manifests, platform checksums, and detached signatures for current releases ([installation and binary integrity](https://code.claude.com/docs/en/installation)). Its legal material does not provide a general redistribution grant ([legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)).
+
+**Consequences:** The default path needs no npm credential, new GitHub secret, or GHCR image. The catalog selects the supported version; observed research artifacts do not silently become pins.
+
+### ADR-002: Treat interactive and print modes as separate interfaces
+
+**Decision:** Interactive evidence drives `claude` through the semantic PTY contract. Headless evidence drives `claude -p` and binds the selected text, JSON, or stream-JSON contract. A support claim names the exact mode and output contract exercised.
+
+**Context:** Claude Code documents interactive and programmatic interfaces separately ([CLI reference](https://code.claude.com/docs/en/cli-usage), [headless use](https://code.claude.com/docs/en/headless)).
+
+### ADR-003: Route Anthropic traffic through one internal endpoint with synthetic auth
+
+**Decision:** The scenario uses an isolated Claude home and an explicit environment allowlist. `ANTHROPIC_BASE_URL` names only the internal MockServer and `ANTHROPIC_AUTH_TOKEN` contains a fixed non-authoritative sentinel accepted only by that mock. All API keys, stored OAuth state, cloud-provider selectors and credentials, host-managed provider settings, browser login, and alternate provider routes are absent. The mock implements the exact version-bound Anthropic Messages streaming profile observed from the selected binary; public egress denial and the request ledger prove no fallback.
+
+**Context:** Anthropic documents base-URL and authentication precedence ([authentication](https://code.claude.com/docs/en/authentication), [environment variables](https://code.claude.com/docs/en/env-vars)). Print and interactive modes do not necessarily accept the same credential source or emit the same auxiliary requests.
+
+**Consequences:** Tests assert exact request counts and routes, including auxiliary title or summary traffic. CLI-reported nominal cost is not spend evidence. No authority-bearing Anthropic, cloud-provider, or model-provider credential enters preparation or execution.
+
+### ADR-004: Suppress optional network authorities and rely on denied egress
+
+**Decision:** The selected version's documented controls disable updates, nonessential traffic, telemetry, error reporting, feedback, marketplace registration, login/logout, Claude.ai connectors, terminal-title requests, browser integration, slash-command discovery, MCP sources, and unneeded tools. The scenario still denies public egress and fails on every attempted external route because configuration suppression is not an isolation boundary.
+
+**Context:** Claude Code documents individual and aggregate network controls, with explicit exceptions ([environment variables](https://code.claude.com/docs/en/env-vars), [data usage](https://code.claude.com/docs/en/data-usage)).
+
+### ADR-005: Own one root hook and require explicit Langfuse-plugin migration
+
+**Decision:** Agentscope installs one owned reversible handler block in the isolated user-root Claude settings only if the selected Claude Code version proves that the handler invokes the exact absolute Agentscope launcher with zero arguments, stdin payload only, no `PATH` lookup, and no intervening shell. It preserves unrelated settings and hooks, proves idempotence and concurrent-edit rejection, captures the required session/turn/tool lifecycle within the hook deadline, fails open to Claude, and removes only owned state. If the official Langfuse Claude plugin or another trace exporter owns overlapping events, installation reports the conflict and requires explicit migration to one capture owner; hook ordering is never used to coordinate duplicate exporters.
+
+**Context:** Claude supports user, project, policy, plugin, skill, and subagent hooks, and matching handlers may coexist without an ordering authority ([hooks](https://code.claude.com/docs/en/hooks)). The Langfuse plugin registers overlapping hooks, reads transcripts, persists state, may acquire dependencies, and reports directly with Langfuse credentials ([Langfuse plugin](https://github.com/langfuse/claude-observability-plugin/tree/d06829810cce8a8a4f486e0afebd155e95ab9517)).
+
+**Consequences:** Official-source research has not yet proven shell-free hook invocation, so that seam is an admission blocker. The hermetic suite never installs, enables, or live-tests the Langfuse plugin. Agentscope reporting evidence is only OTLP to the loopback ledger.
+
+### ADR-006: Treat local transcripts as version-specific observations
+
+**Decision:** The Claude Code oracle correlates process/PTY completion, exact model-mock ledger, denied-egress probe, hook ledger, documented stream events, loopback OTLP receipt, settings ownership, filesystem mutation, and cleanup. Local transcript JSONL may supplement that oracle only through strict exact-version parsing and sanitized fixtures; it is never a stable cross-version contract or sole source of truth.
+
+**Context:** Hook payloads expose a transcript path, but Anthropic does not publish a stable schema for the local transcript file.
+
+**Consequences:** Unknown records, missing hooks, duplicate ownership, or correlation gaps fail admission. Raw transcripts never leave the disposable scenario.
+
+### ADR-007: Keep Claude Code unadmitted until lifecycle replay passes
+
+**Decision:** No Claude Code version or mode enters the compatibility catalog or release support manifest until the exact selected binary passes both claimed interfaces under denied public egress, proves exact internal request and fallback behavior, proves the shell-free root launcher contract, and completes packed-Agentscope hook install, capture, fail-open deadline, conflict, concurrent-edit, uninstall, process, filesystem, image, and ledger cleanup evidence. Research observations establish candidate controls and oracles, not support.
+
+**Context:** Official-source and disposable research established a viable authenticated acquisition and internal routing candidate, but did not complete the governed packed-CLI lifecycle or release admission replay.
+
+**Consequences:** A catalog proposal that lacks any of these version-bound proofs remains explicitly unverified and cannot be substituted with a fake executable, transcript fixture, CLI cost field, or live service test.

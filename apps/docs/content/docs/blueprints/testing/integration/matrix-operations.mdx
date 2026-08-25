@@ -5,13 +5,13 @@ description: ADRs for repeatable local and CI harness compatibility execution.
 
 ## Capability Summary
 
-The integration matrix needs reproducible harness images, a declared compatibility surface, safe local selection, and scalable CI execution as supported harnesses grow.
+The integration matrix needs authenticated immutable harness inputs, a declared compatibility surface, safe local selection, and scalable CI execution as supported harnesses grow.
 
 ## Architecture Decision Records
 
 ### ADR-001: Declare compatibility as data
 
-**Decision:** `tests/integration` owns a versioned capability manifest listing pinned tested harness representatives, OCI image digests, required model protocol routes, scenario tags, destination combinations, checksum-bound scenario adapters, and evidence identity. The harness descriptor remains the sole owner of the runtime compatibility range.
+**Decision:** `tests/integration` owns the authoritative versioned catalog of tested harness representatives. Each entry binds the harness and version, official distribution reference, independently authenticated package or binary integrity, target platform, checksum-bound preparation recipe, required model protocol routes, scenario tags, destination combinations, checksum-bound scenario adapter, and evidence identity. Each preparation materializes an immutable per-run input record with one canonical prepared-image identity: the normalized OCI platform tuple plus the digest of the selected OCI image-manifest descriptor. If preparation produces an index, it resolves and records the one matching platform manifest. If Docker runs a locally loaded image, preparation also records the manifest's config descriptor and verifies that the created container uses that exact config digest; an image ID, tag, index digest, or bare layer digest cannot substitute. The harness descriptor remains the sole owner of the runtime compatibility range, and the release support manifest remains the sole owner of a release's published support claim.
 
 **Context:** A prose list of harnesses cannot drive CI selection, image pinning, failure reports, or deliberate retirement.
 
@@ -19,11 +19,13 @@ The integration matrix needs reproducible harness images, a declared compatibili
 
 ### ADR-002: Build immutable test inputs before isolating scenarios
 
-**Decision:** A preparation step packs the self-contained candidate CLI tarball and checksum-verifies its declared public runtime dependency artifacts. Harness acquisition and admission follow [Harness Execution Verification](/docs/blueprints/testing/harness-execution): each scenario receives either a digest-pinned image containing the admitted documented harness binary or an immutable, authenticated, unpublished harness layer prepared before scenario isolation. Once a scenario begins, it may not download a package or contact a public registry.
+**Decision:** Before scenario isolation, each trusted executor packs the self-contained candidate CLI tarball and prepares the harness from the exact documented vendor package or installer selected by its approved harness Blueprint. Preparation authenticates the input against independently obtained registry integrity, signature, transparency, or equivalent version-bound metadata, then builds or installs it into an ephemeral local Docker image or OCI image layout and records the canonical prepared-image identity from ADR-001. The scenario starts only the locally loaded image whose config digest is bound to that identity, with `--pull=false` and denied public egress.
+
+No persistent registry mirror is required by default. If an executor must transfer an image without publishing it, it uses a self-contained authenticated, unpublished OCI image-layout archive rather than a bare layer. Ordinary package-manager, Docker/BuildKit, and GitHub Actions caches are non-authoritative optimizations: every reuse is revalidated against the catalog identity and digest. A persistent GHCR mirror requires a later approved decision justified by availability, licensing, or measured performance. Public vendor packages use anonymous acquisition when their official distribution permits it; the default path introduces no npm credential or new GitHub secret.
 
 **Context:** This is test-installation infrastructure, not an AgentScope delivery queue. Hermetic scenarios need a reproducible fresh install while still denying runtime public-network access.
 
-**Consequences:** Local developers may build or fetch the declared inputs before invoking an isolated scenario. CI prepares one checksum-bound candidate artifact, then every shard and replay job downloads that exact input; caches keyed by lockfile, candidate revision, platform, and image digest are optimization only, never a source of unverified inputs.
+**Consequences:** Local, GitHub, and Crabbox preparation consume the same catalog entry but may independently produce the ephemeral image. Per-harness official-source research decides the actual package or installer, authentication authority, licensing and cache permissions; it must not assume every harness uses npm. Repository-owned image references and authenticated OCI archives are retained only for their bounded run or CI artifact-retention window, then removed by exact owned identity after repository live-run leases prove no consumer remains. Shared Docker and BuildKit content is never deleted by Agentscope; daemon-owned garbage collection reclaims unreferenced content. A future private GHCR optimization uses the built-in GitHub Actions `GITHUB_TOKEN` with minimal package permissions rather than a separately provisioned credential.
 
 ### ADR-003: Use shared bases and isolated sharded scenarios
 
@@ -35,8 +37,24 @@ The integration matrix needs reproducible harness images, a declared compatibili
 
 ### ADR-004: Retain only sanitized failure evidence
 
-**Decision:** Failed scenarios upload bounded, sanitized lifecycle evidence and any model or destination ledgers produced before failure, plus the manifest/image identity record. Later real-harness adapters may add bounded sanitized harness logs and AgentScope diagnostics. Successful scenarios retain only the reviewed compatibility evidence required by the local certification workflow.
+**Decision:** Failed scenarios upload bounded, sanitized lifecycle evidence and any model or destination ledgers produced before failure, plus the manifest/image identity record. Harness adapters may add bounded sanitized harness logs and AgentScope diagnostics. Successful scenarios retain only the reviewed compatibility evidence required by the local certification workflow.
 
 **Context:** The artifacts are needed to investigate harness drift but can contain prompts, paths, or request metadata.
 
 **Consequences:** The fixture emits bounded sanitized checkpoints as model and destination work completes, so an authentic sidecar or harness failure retains the latest partial ledgers rather than only a terminal status. Artifact redaction runs before upload, has an explicit retention period, and is covered by unit tests. Raw transcripts, credentials, and complete production trace payloads are never CI artifacts.
+
+### ADR-005: Separate deterministic pins from bounded drift sensing and adoption
+
+**Decision:** Required compatibility uses only catalog-pinned authenticated inputs. A non-blocking drift sensor may resolve a newer official candidate during trusted preparation, authenticate and digest it, and run the ordinary isolated scenario without changing accepted pins.
+
+One repository-owned GitHub Actions workflow from the protected default branch is the drift-state writer. Scheduled and manual entries share one global Actions concurrency group so only one writer runs and excess pending events coalesce. A fixed trusted controller uses the built-in `GITHUB_TOKEN` with minimal issue, pull-request, and adoption-branch permissions; the token never enters checkout-controlled code, acquisition builders, scenario inputs, commands, environment, caches, or evidence. No external state service or new secret is introduced.
+
+A locked content-free control issue is the durable authority for the current per-harness candidate, stable failure fingerprint, supersession, bounded-retention cursor, and global notification-window reservations. Every visible side effect receives a deterministic operation identity and a durable `reserved`, `observed`, or `terminal` state. Stable hidden markers carry that identity in at most one incident or adoption pull request per harness.
+
+The writer reserves budget and the operation identity before a side effect. After success, failure, timeout, or an unknown GitHub response, recovery searches the exact marker and reconciles the result before completing or retrying the same operation. If commit remains unprovable, the reservation quarantines that harness until an operator either binds the discovered work item or records terminal `abandoned-unknown`; that terminal consumes the budget and is never retried, accepting one dropped side effect to preserve at-most-once notification. Adoption refs use a deterministic name and compare-and-swap against the recorded expected base; an unexpected or externally changed ref fails closed for review rather than being overwritten. Excess runs coalesce, and excess or alternating outcomes update the control record without another message. For one candidate, only its first terminal result and a later recovery may notify.
+
+A passing new candidate already inside the harness descriptor's approved compatibility range may open an adoption pull request that atomically changes the catalog representative, authenticated input identity, preparation recipe when necessary, and version-bound sanitized fixture identity. Its verification records the canonical prepared-image identity as run evidence. A candidate outside that range creates or updates the single deduplicated research/decision incident and cannot open an adoption pull request. Automation cannot learn or rewrite semantic expected values from candidate output, cannot modify the harness descriptor or release support manifest, and cannot merge the adoption.
+
+**Context:** A moving version as a required check makes unrelated pull requests depend on upstream publication. An unbounded schedule that repeats the same failure recreates noise without improving compatibility evidence.
+
+**Consequences:** Drift sensing is advisory and cannot replace or invalidate the accepted pin. Schedule cadence, notification destination, and whether sensors are enabled are operator choices recorded outside the Blueprint; the bounded state-transition and deduplication rules apply whenever a sensor runs.

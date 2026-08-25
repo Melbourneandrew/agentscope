@@ -11,7 +11,9 @@ Every default real-harness scenario proves that AgentScope can install and captu
 
 ### ADR-001: Use one disposable scenario container per harness/version
 
-**Decision:** Each harness/version scenario receives a fresh container, empty user home, harness-specific home, `AGENTSCOPE_HOME`, Git worktree, dummy credentials, network namespace, and telemetry ledger.
+**Decision:** Each harness/version scenario receives a fresh container, empty user home, harness-specific home, `AGENTSCOPE_HOME`, Git worktree, non-authoritative dummy auth sent only to internal mocks, network namespace, and telemetry ledger.
+
+On Linux, the kernel supervisor is PID 1 in the private scenario PID namespace, uses non-reusable kernel handles or PID plus authenticated `/proc` start identity for launched work, and enumerates that namespace to classify residual descendants. The candidate cannot access a Docker socket or container-runtime credential. After the kernel emits its bounded sanitized result, the trusted outer controller records any residual process classification, stops or kills the exact container, waits for the runtime to report it exited, and only then reconciles container resources. A leak or uncertain inner classification remains a failed scenario even when outer destruction succeeds. Native execution needs an approved outer containment backend with equivalent complete-process termination and join evidence or cannot support a cleanup claim.
 
 **Context:** Sharing homes, hooks, request records, or worktrees produces order-dependent tests and risks serving mock responses to a developer's real harness.
 
