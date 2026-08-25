@@ -15,11 +15,11 @@ The integration matrix needs reproducible harness images, a declared compatibili
 
 **Context:** A prose list of harnesses cannot drive CI selection, image pinning, failure reports, or deliberate retirement.
 
-**Consequences:** CI verifies every matrix representative satisfies its descriptor and every advertised range meets the coverage policy. Generic orchestration loads the selected manifest adapter rather than branching on harness or destination identity. Adding or updating a harness changes the descriptor, manifest, sanitized native fixtures, adapter unit contracts, and real-harness scenario together. Missing evidence yields an explicit unverified state rather than a second compatibility policy.
+**Consequences:** CI verifies every matrix representative satisfies its descriptor and every advertised range meets the coverage policy. Generic orchestration loads the selected manifest adapter rather than branching on harness or destination identity. Introducing a harness or changing its intended runtime compatibility range changes the descriptor, manifest, sanitized native fixtures, adapter unit contracts, and real-harness scenario together. Adopting a new tested representative already inside an unchanged compatibility range changes the manifest, authenticated artifact identity, sanitized native fixtures, adapter unit contracts, and real-harness scenario but does not rewrite the descriptor. Missing evidence yields an explicit unverified state rather than a second compatibility policy.
 
 ### ADR-002: Build immutable test inputs before isolating scenarios
 
-**Decision:** A preparation step packs the self-contained candidate CLI tarball and checksum-verifies its declared public runtime dependency artifacts; each harness image is pinned by OCI digest and already contains its documented harness binary. Once a scenario begins, it may not download a package or contact a public registry.
+**Decision:** A preparation step packs the self-contained candidate CLI tarball and checksum-verifies its declared public runtime dependency artifacts. Harness acquisition and admission follow [Harness Execution Verification](/docs/blueprints/testing/harness-execution): each scenario receives either a digest-pinned image containing the admitted documented harness binary or an immutable, authenticated, unpublished harness layer prepared before scenario isolation. Once a scenario begins, it may not download a package or contact a public registry.
 
 **Context:** This is test-installation infrastructure, not an AgentScope delivery queue. Hermetic scenarios need a reproducible fresh install while still denying runtime public-network access.
 
