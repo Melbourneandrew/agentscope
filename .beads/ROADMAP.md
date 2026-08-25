@@ -30,7 +30,7 @@ Implementers must run `bd dolt pull`, select ready leaf work rather than a ready
 
 ## Version 0.1.0 delivery milestone overlay
 
-The first public milestone is an exact installable version `0.1.0` of the owned Agentscope CLI package. `agentscope-vah.12.8` must prove ownership of the currently intended `@agentscope/cli` identity or reconcile the public package name before release. This is a bounded delivery profile, not completion of the stable-product sequence above.
+The first public milestone is an exact installable version `0.1.0` of the selected `agentscope-cli` package under the npm `alpha` dist-tag, with the executable `agentscope`. `agentscope-rk8.8` governs the one-time ownership bootstrap and protected release controls; `agentscope-rk8.7` performs the later authenticated claim. This is a bounded delivery profile, not completion of the stable-product sequence above.
 
 | Track | Epic | Authority and delivery boundary |
 | --- | --- | --- |
@@ -97,7 +97,7 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | `operations/documentation-site` | `ADR-001`–`ADR-003` | `vah.8.6`, `vah.12.4-.12.5` |
 | `operations/harness-discovery` | `ADR-001`, `ADR-002` | `vah.10.1`, `vah.8.2-.8.3`, `vah.11.1-.11.7` |
 | `operations/hook-installation` | `ADR-001`–`ADR-004` | `vah.10.3-.10.5`, `vah.8.3-.8.4`, `vah.9.9`, `vah.11.1-.11.9` |
-| `operations/npm-publishing` | `ADR-001`, `ADR-002` | `vah.2.2`, `vah.2.5`, `vah.2.7`, `vah.12.4-.12.5`, `vah.12.8` |
+| `operations/npm-publishing` | `ADR-001`–`ADR-005` | `rk8.6-.rk8.8`, `wth.8`, `vah.2.2`, `vah.2.5`, `vah.2.7`, `vah.12.4-.12.5`, `vah.12.8` |
 | `operations/operational-state` | `ADR-001`–`ADR-003` | `vah.6.3`, `vah.7.2`, `vah.7.7`, `vah.8.6` |
 | `testing/test-strategy` | `ADR-001`–`ADR-003` | `vah.2.3-.2.5`, `vah.4.3`, `vah.5.1-.5.6`, `vah.11.1-.11.11` |
 | `testing/unit-testing` | `ADR-001`–`ADR-004` | `vah.2.4`, `vah.3.4`, `vah.4.3`, `vah.10.4`, `vah.11.8`, `vah.11.11` |
@@ -111,7 +111,7 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 
 - The implementation is standards-first and may replace all disposable SF-derived code; it has no compatibility obligation to that code.
 - OpenTelemetry/OpenInference plus namespaced `agentscope.*` extensions form the protocol model; private Protocol/Core packages are not a published SDK.
-- Only the bundled CLI artifact is public. The workspace uses `@agentscope/cli`; `vah.12.8` must prove ownership or reconcile the final owned public package identity before release because the unscoped `agentscope` name is already owned elsewhere. The executable remains `agentscope`. First-party harness and destination packages are private implementation modules, not a runtime plugin system.
+- Only the bundled CLI artifact is public. Its selected npm identity is `agentscope-cli`, and its executable remains `agentscope`; the identity is not owned until the separately approved authenticated bootstrap completes. First-party harness and destination packages are private implementation modules, not a runtime plugin system.
 - The supported harness roster is Codex, Claude Code, Cursor, Gemini CLI, OpenCode, Pi, OpenClaw, and Hermes. Version `0.1.0` claims only Codex, Claude Code, and Cursor at evidenced versions and execution modes; the remaining integrations stay open after that milestone.
 - Hooks fail open. Core does not persist trace-content retries. Local SQLite stores traces only when explicitly configured as a destination.
 - Real model protocols use digest-pinned MockServer in disposable containers. No test exposes a developer's active harness, home, worktree, credentials, or `~/.agentscope` to mocked traffic.

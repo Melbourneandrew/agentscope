@@ -11,7 +11,7 @@ The workspace separates the user-facing CLI application from shared runtime serv
 
 ### ADR-001: Treat the CLI as an application
 
-**Decision:** `apps/cli` is the `@agentscope/cli` publishable application and owns command parsing, user interaction, exit codes, and release-facing executable packaging. It depends on `packages/core` and first-party integrations but contains no reusable domain implementation.
+**Decision:** `apps/cli` is the `agentscope-cli` publishable application and owns command parsing, user interaction, exit codes, and release-facing executable packaging. It depends on `packages/core` and first-party integrations but contains no reusable domain implementation.
 
 **Context:** The CLI is the product entry point, while trace collection, configuration, delivery, and integration logic must also be executable from hooks and test infrastructure.
 
