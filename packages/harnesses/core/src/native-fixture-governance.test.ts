@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   auditNativeFixtureInventory,
+  assertNativeFixtureAdmissionProvenance,
   NativeFixtureGovernanceError,
   parseHarnessSanitizedFixture,
   serializeHarnessSanitizedFixture,
@@ -29,7 +30,10 @@ const fixture = (): HarnessSanitizedFixture => ({
     provenance: {
       captureKind: "synthetic",
       sourceReference: "urn:agentscope:synthetic:codex-session-v1",
-      sourceArtifactDigest: `sha256-${"a".repeat(64)}`,
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
       captureRecipe: "codex-session-recipe-v1",
     },
     license: {
@@ -273,6 +277,10 @@ describe("native fixture governance metadata", () => {
           ...base.governance.provenance,
           captureKind: "disposable-hermetic",
           sourceReference: "https://example.invalid/vendor/artifact",
+          artifactAuthority: {
+            status: "authenticated",
+            digest: `sha256-${"b".repeat(64)}`,
+          },
         }),
       ).governance.provenance.captureKind,
     ).toBe("disposable-hermetic");
@@ -287,11 +295,19 @@ describe("native fixture governance metadata", () => {
         ...base.governance.provenance,
         captureKind: "disposable-hermetic",
         sourceReference: "not-a-url",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"b".repeat(64)}`,
+        },
       }),
       withProvenance({
         ...base.governance.provenance,
         captureKind: "disposable-hermetic",
         sourceReference: "http://example.invalid/artifact",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"b".repeat(64)}`,
+        },
       }),
     ]) {
       expect(() => parseHarnessSanitizedFixture(input)).toThrow(
@@ -326,6 +342,124 @@ describe("native fixture governance metadata", () => {
   });
 });
 
+describe("native fixture admission provenance", () => {
+  it("keeps unresolved synthetic fixtures out of admission", () => {
+    const synthetic = fixture();
+    expectCode(
+      () => assertNativeFixtureAdmissionProvenance(synthetic),
+      "harness.fixture.provenance.admission-unresolved",
+    );
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...synthetic,
+          governance: {
+            ...synthetic.governance,
+            provenance: {
+              ...synthetic.governance.provenance,
+              artifactAuthority: {
+                status: "authenticated",
+                digest: `sha256-${"c".repeat(64)}`,
+              },
+            },
+          },
+        }),
+      "harness.fixture.provenance.artifact-authority",
+    );
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...synthetic,
+          governance: {
+            ...synthetic.governance,
+            provenance: {
+              ...synthetic.governance.provenance,
+              captureKind: "disposable-hermetic",
+              sourceReference: "https://example.invalid/vendor/artifact",
+              artifactAuthority: {
+                status: "unknown",
+                digest: `sha256-${"c".repeat(64)}`,
+              },
+            },
+          },
+        }),
+      "harness.fixture.provenance.artifact-authority",
+    );
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...synthetic,
+          governance: {
+            ...synthetic.governance,
+            provenance: {
+              ...synthetic.governance.provenance,
+              artifactAuthority: {
+                status: "unresolved",
+                reason: "placeholder-hash",
+              },
+            },
+          },
+        }),
+      "harness.fixture.provenance.artifact-authority",
+    );
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...synthetic,
+          governance: {
+            ...synthetic.governance,
+            provenance: {
+              ...synthetic.governance.provenance,
+              captureKind: "disposable-hermetic",
+              sourceReference: "https://example.invalid/vendor/artifact",
+            },
+          },
+        }),
+      "harness.fixture.provenance.artifact-authority",
+    );
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...synthetic,
+          governance: {
+            ...synthetic.governance,
+            provenance: {
+              ...synthetic.governance.provenance,
+              captureKind: "disposable-hermetic",
+              sourceReference: "https://example.invalid/vendor/artifact",
+              artifactAuthority: {
+                status: "authenticated",
+                digest: "locally-computed",
+              },
+            },
+          },
+        }),
+      "harness.fixture.provenance.artifact-digest",
+    );
+
+    const authenticated = parseHarnessSanitizedFixture({
+      ...synthetic,
+      governance: {
+        ...synthetic.governance,
+        provenance: {
+          ...synthetic.governance.provenance,
+          captureKind: "disposable-hermetic",
+          sourceReference: "https://example.invalid/vendor/artifact",
+          artifactAuthority: {
+            status: "authenticated",
+            digest: `sha256-${"d".repeat(64)}`,
+          },
+        },
+      },
+    });
+    expect(assertNativeFixtureAdmissionProvenance(authenticated)).toEqual({
+      captureKind: "disposable-hermetic",
+      sourceReference: "https://example.invalid/vendor/artifact",
+      sourceArtifactDigest: `sha256-${"d".repeat(64)}`,
+    });
+  });
+});
+
 describe("native fixture inventory scanner", () => {
   it("accepts canonical path-linked fixture files", async () => {
     const root = await writeInventoryFixture();
@@ -336,6 +470,7 @@ describe("native fixture inventory scanner", () => {
       fixtureId: "codex-session-v1",
       harnessVersion: "1.2.3",
       relativePath: "codex/fixtures/native/codex-session-v1.json",
+      artifactAuthority: "unresolved",
     });
     expect(inventory[0]?.sha256).toMatch(/^sha256-[a-f0-9]{64}$/u);
   });

@@ -63,7 +63,10 @@ const referenceFixture = {
     provenance: {
       captureKind: "synthetic",
       sourceReference: "urn:agentscope:synthetic:reference-session-v1",
-      sourceArtifactDigest: `sha256-${"a".repeat(64)}`,
+      artifactAuthority: {
+        status: "unresolved",
+        reason: "independent-integrity-unavailable",
+      },
       captureRecipe: "reference-recipe-v1",
     },
     license: {

@@ -2,13 +2,35 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 
+type AuthenticatedArtifactAuthority = Readonly<{
+  status: "authenticated";
+  digest: string;
+}>;
+
+type UnresolvedArtifactAuthority = Readonly<{
+  status: "unresolved";
+  reason: "independent-integrity-unavailable";
+}>;
+
+type ArtifactAuthority =
+  AuthenticatedArtifactAuthority | UnresolvedArtifactAuthority;
+
+export type HarnessNativeFixtureProvenance =
+  | Readonly<{
+      captureKind: "disposable-hermetic";
+      sourceReference: string;
+      artifactAuthority: AuthenticatedArtifactAuthority;
+      captureRecipe: string;
+    }>
+  | Readonly<{
+      captureKind: "synthetic";
+      sourceReference: string;
+      artifactAuthority: UnresolvedArtifactAuthority;
+      captureRecipe: string;
+    }>;
+
 export type HarnessNativeFixtureGovernance = Readonly<{
-  provenance: Readonly<{
-    captureKind: "disposable-hermetic" | "synthetic";
-    sourceReference: string;
-    sourceArtifactDigest: string;
-    captureRecipe: string;
-  }>;
+  provenance: HarnessNativeFixtureProvenance;
   license: Readonly<{
     spdxExpression: string;
     redistribution: "reviewed-for-repository";
@@ -61,7 +83,14 @@ export type NativeFixtureInventoryEntry = Readonly<{
   fixtureId: string;
   harnessVersion: string;
   relativePath: string;
+  artifactAuthority: "authenticated" | "unresolved";
   sha256: string;
+}>;
+
+export type NativeFixtureAdmissionProvenance = Readonly<{
+  captureKind: "disposable-hermetic";
+  sourceReference: string;
+  sourceArtifactDigest: string;
 }>;
 
 export class NativeFixtureGovernanceError extends Error {
@@ -222,12 +251,7 @@ const governanceRecords = (value: unknown): GovernanceRecords => {
   return Object.freeze({
     provenance: record(
       root.provenance,
-      [
-        "captureKind",
-        "sourceReference",
-        "sourceArtifactDigest",
-        "captureRecipe",
-      ],
+      ["captureKind", "sourceReference", "artifactAuthority", "captureRecipe"],
       "harness.fixture.provenance.shape",
     ),
     license: record(
@@ -258,14 +282,100 @@ const governanceRecords = (value: unknown): GovernanceRecords => {
   });
 };
 
-const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
-  const { provenance, license, redaction, review, representative } =
-    governanceRecords(value);
+function parseArtifactAuthority(
+  value: unknown,
+  captureKind: "disposable-hermetic",
+): AuthenticatedArtifactAuthority;
+function parseArtifactAuthority(
+  value: unknown,
+  captureKind: "synthetic",
+): UnresolvedArtifactAuthority;
+function parseArtifactAuthority(
+  value: unknown,
+  captureKind: "disposable-hermetic" | "synthetic",
+): ArtifactAuthority {
+  if (captureKind === "disposable-hermetic") {
+    const authenticated = record(
+      value,
+      ["status", "digest"],
+      "harness.fixture.provenance.artifact-authority",
+    );
+    if (authenticated.status !== "authenticated")
+      fail("harness.fixture.provenance.artifact-authority");
+    return Object.freeze({
+      status: "authenticated" as const,
+      digest: string(
+        authenticated.digest,
+        digestPattern,
+        "harness.fixture.provenance.artifact-digest",
+      ),
+    });
+  }
+  const unresolved = record(
+    value,
+    ["status", "reason"],
+    "harness.fixture.provenance.artifact-authority",
+  );
+  if (
+    unresolved.status !== "unresolved" ||
+    unresolved.reason !== "independent-integrity-unavailable"
+  )
+    fail("harness.fixture.provenance.artifact-authority");
+  return Object.freeze({
+    status: "unresolved" as const,
+    reason: "independent-integrity-unavailable" as const,
+  });
+}
+
+const admissionArtifactAuthority = (
+  provenance: HarnessNativeFixtureProvenance,
+): AuthenticatedArtifactAuthority => {
+  if (
+    provenance.captureKind !== "disposable-hermetic" ||
+    provenance.artifactAuthority.status !== "authenticated"
+  )
+    fail("harness.fixture.provenance.admission-unresolved");
+  return provenance.artifactAuthority as AuthenticatedArtifactAuthority;
+};
+
+const parseProvenance = (
+  provenance: Readonly<Record<string, unknown>>,
+): HarnessNativeFixtureProvenance => {
   const captureKind = oneOf(
     provenance.captureKind,
     ["disposable-hermetic", "synthetic"] as const,
     "harness.fixture.provenance.capture-kind",
   );
+  const shared = {
+    sourceReference: sourceReference(provenance.sourceReference, captureKind),
+    captureRecipe: string(
+      provenance.captureRecipe,
+      idPattern,
+      "harness.fixture.provenance.capture-recipe",
+    ),
+  };
+  return captureKind === "disposable-hermetic"
+    ? Object.freeze({
+        captureKind,
+        ...shared,
+        artifactAuthority: parseArtifactAuthority(
+          provenance.artifactAuthority,
+          captureKind,
+        ),
+      })
+    : Object.freeze({
+        captureKind,
+        ...shared,
+        artifactAuthority: parseArtifactAuthority(
+          provenance.artifactAuthority,
+          captureKind,
+        ),
+      });
+};
+
+const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
+  const { provenance, license, redaction, review, representative } =
+    governanceRecords(value);
   if (
     license.redistribution !== "reviewed-for-repository" ||
     redaction.profileVersion !== 1 ||
@@ -296,20 +406,7 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
     fail("harness.fixture.review.references");
   const reviewedReferences = references as [string, string, ...string[]];
   return Object.freeze({
-    provenance: Object.freeze({
-      captureKind,
-      sourceReference: sourceReference(provenance.sourceReference, captureKind),
-      sourceArtifactDigest: string(
-        provenance.sourceArtifactDigest,
-        digestPattern,
-        "harness.fixture.provenance.artifact-digest",
-      ),
-      captureRecipe: string(
-        provenance.captureRecipe,
-        idPattern,
-        "harness.fixture.provenance.capture-recipe",
-      ),
-    }),
+    provenance: parseProvenance(provenance),
     license: Object.freeze({
       spdxExpression: string(
         license.spdxExpression,
@@ -505,6 +602,19 @@ export const serializeHarnessSanitizedFixture = (
   fixture: HarnessSanitizedFixture,
 ): string => `${JSON.stringify(canonicalValue(fixture), null, 2)}\n`;
 
+export const assertNativeFixtureAdmissionProvenance = (
+  value: unknown,
+): NativeFixtureAdmissionProvenance => {
+  const fixture = parseHarnessSanitizedFixture(value);
+  const { provenance } = fixture.governance;
+  const artifactAuthority = admissionArtifactAuthority(provenance);
+  return Object.freeze({
+    captureKind: "disposable-hermetic" as const,
+    sourceReference: provenance.sourceReference,
+    sourceArtifactDigest: artifactAuthority.digest,
+  });
+};
+
 export const auditNativeFixtureInventory = async (
   harnessPackagesRoot: string,
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
@@ -560,6 +670,8 @@ export const auditNativeFixtureInventory = async (
           fixtureId: fixture.fixtureId,
           harnessVersion: fixture.harnessVersion,
           relativePath,
+          artifactAuthority:
+            fixture.governance.provenance.artifactAuthority.status,
           sha256: `sha256-${createHash("sha256").update(bytes).digest("hex")}`,
         }),
       );

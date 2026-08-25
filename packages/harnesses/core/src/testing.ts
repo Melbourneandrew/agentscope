@@ -10,10 +10,13 @@ export {
 } from "./testing-contract-suite.js";
 export {
   auditNativeFixtureInventory,
+  assertNativeFixtureAdmissionProvenance,
   NativeFixtureGovernanceError,
   parseHarnessSanitizedFixture,
   serializeHarnessSanitizedFixture,
   type HarnessNativeFixtureGovernance,
+  type HarnessNativeFixtureProvenance,
   type HarnessSanitizedFixture,
+  type NativeFixtureAdmissionProvenance,
   type NativeFixtureInventoryEntry,
 } from "./native-fixture-governance.js";

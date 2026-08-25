@@ -19,9 +19,13 @@ Every file uses `fixtureVersion: 1`, canonical JSON from
   disposable hermetic scenario with dummy credentials, internal model mocks,
   denied public egress, and no paid model request. Never capture on a developer
   host.
-- `sourceArtifactDigest` identifies the independently authenticated harness
-  artifact. It is never a digest of a prompt, transcript, terminal stream, or
-  other private native content.
+- A synthetic component fixture records `artifactAuthority.status: unresolved`
+  with the closed reason `independent-integrity-unavailable`. Never insert a
+  placeholder or locally computed artifact hash.
+- A disposable-hermetic fixture requires authenticated `artifactAuthority`
+  and a digest from independently obtained, version-bound
+  integrity metadata. That digest identifies the harness artifact; it is never a
+  digest of a prompt, transcript, terminal stream, or private native content.
 - Record the exact fixture-producing recipe and the reviewed vendor license
   source. A fixture is admitted only when redistribution is reviewed for the
   repository.
@@ -56,3 +60,10 @@ content, user paths, raw transcript or terminal fields, and prose-shaped payload
 values. Harness Core's unit suite runs this inventory audit on every repository
 validation. The post-adapter inventory certification remains responsible for
 proving that every implemented native mapping is represented.
+
+Synthetic unresolved fixtures are component-only and cannot establish
+actual-binary, compatibility-catalog, or release admission. Every admission
+consumer must call `assertNativeFixtureAdmissionProvenance`; it fails closed
+unless the fixture came from disposable-hermetic capture and carries
+authenticated artifact authority. `deriveHarnessContractEvidenceDigests` binds
+component evidence only and does not confer release or actual-binary authority.
