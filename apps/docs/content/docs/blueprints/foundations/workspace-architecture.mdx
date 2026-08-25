@@ -60,14 +60,13 @@ packages/
   testkit/
 tests/
   integration/
-  integration-live/
 ```
 
 The shared family packages are not public runtime plugin SDKs. The existing Cursor harness and console destination directories are disposable scaffolds and are removed rather than carried into the target structure. Adding a harness or destination remains a reviewed first-party pull request; the contracts exist to prevent copy/paste and preserve consistent behavior. The CLI is the composition root and may import first-party package public exports to assemble the supported registry; application Core may import only the destination-family ports, never a concrete destination implementation.
 
 ### ADR-004: Keep test layers in their natural ownership location
 
-**Decision:** Unit and contract tests are colocated with the application or package that owns the behavior. Root `tests/integration/` owns hermetic multi-package executable scenarios, and `tests/integration-live/` owns protected external smoke scenarios.
+**Decision:** Unit and contract tests are colocated with the application or package that owns the behavior. Root `tests/integration/` owns hermetic multi-package executable scenarios. The workspace contains no credential-gated external-service test package.
 
 **Context:** Colocation keeps fast feedback and coverage with the code being changed. A root scenario suite is the appropriate owner for Docker topology, candidate CLI packaging, real harnesses, and cross-package assertions.
 

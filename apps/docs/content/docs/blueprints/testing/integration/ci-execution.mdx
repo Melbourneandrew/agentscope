@@ -19,8 +19,8 @@ The same manifest drives a small selected local scenario and the complete hermet
 
 ### ADR-002: Gate pull requests with the defined hermetic matrix
 
-**Decision:** Pull requests run the manifest's required hermetic compatibility set in CI shards. Scheduled/manual CI may run broader supported-version coverage; protected live tests remain a separate non-PR lane.
+**Decision:** Pull requests run the manifest's required hermetic compatibility set in CI shards. Scheduled/manual CI may run broader supported-version coverage, but every automated scenario remains hermetic and loopback-contained; no lane receives third-party destination credentials or contacts a public destination service.
 
-**Context:** The fast required matrix detects cross-harness regressions without making every PR wait for every historical version or paid external service.
+**Context:** The fast required matrix detects cross-harness regressions without making every PR wait for every historical version. Hermetic execution keeps evidence deterministic and avoids exposing provider credentials or test data to an external service.
 
 **Consequences:** A prerequisite job prepares the candidate once; shard and replay jobs consume that exact checksum-bound artifact. Manual dispatch can select one exact manifest scenario without rebuilding the candidate. The CI summary reports each harness/version/destination result, image digest, and scenario identity. A matrix change that lowers coverage requires an explicit review explanation.

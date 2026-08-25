@@ -35,11 +35,11 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 ### ADR-004: Split CI by feedback horizon and trust boundary
 
-**Decision:** CI has named, independently observable lanes: `quality` (format, lint, type check), `unit`, `docs`, hermetic `integration`, and protected `integration-live`. Dependency installation is lockfile-frozen and cache keys include the lockfile and Node version.
+**Decision:** CI has named, independently observable lanes: `quality` (format, lint, type check), `unit`, `docs`, and hermetic `integration`. Dependency installation is lockfile-frozen and cache keys include the lockfile and Node version. No CI lane receives third-party destination credentials or contacts a public destination service.
 
 **Context:** The integration matrix is materially slower and has different Docker/artifact requirements than code quality. Separating lanes gives actionable failures and allows safe parallelism.
 
-**Consequences:** Pull requests run quality, unit, docs, and the defined hermetic compatibility matrix; integration work is sharded by scenario without sharing scenario containers. Scheduled/manual protected workflows run the wider version matrix and live smoke tests. Documentation deployment remains a separate post-merge workflow and never grants publishing or external-service credentials to pull-request jobs.
+**Consequences:** Pull requests run quality, unit, docs, and the defined hermetic compatibility matrix; integration work is sharded by scenario without sharing scenario containers. Scheduled/manual workflows may run a wider hermetic version matrix. Documentation deployment remains a separate post-merge workflow and never grants publishing credentials to pull-request jobs.
 
 ### ADR-005: Enforce complexity and test posture through reviewed policy
 
