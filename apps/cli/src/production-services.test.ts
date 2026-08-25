@@ -148,9 +148,98 @@ const presentPlan = (): Promise<void> => Promise.resolve();
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
   );
+});
+
+describe("installed CLI home authority", () => {
+  it("uses the explicit portable home without mutating the HOME default", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentscope-cli-home-override-"));
+    roots.push(root);
+    const fallback = join(root, "fallback");
+    const override = join(root, "override");
+    vi.stubEnv("HOME", fallback);
+    vi.stubEnv("AGENTSCOPE_HOME", override);
+    const captured = createCapturedOutput();
+
+    await expect(
+      runCli(["init", "--yes", "--output", "json"], {
+        createServices: () =>
+          createProductionCliServicesForTesting({
+            environmentOverrideAuthority: "portable",
+            registry,
+          }),
+        output: captured.output,
+        version: "1.2.3",
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      access(join(override, "config.json")),
+    ).resolves.toBeUndefined();
+    await expect(
+      access(join(fallback, ".agentscope", "config.json")),
+    ).rejects.toBeDefined();
+  });
+
+  it.each(["relative-home", "/", "\0unsafe-home"])(
+    "rejects invalid portable home %j without fallback mutation",
+    async (override) => {
+      const root = await mkdtemp(
+        join(tmpdir(), "agentscope-cli-home-invalid-"),
+      );
+      roots.push(root);
+      const fallback = join(root, "fallback");
+      vi.stubEnv("HOME", fallback);
+      const captured = createCapturedOutput();
+
+      await expect(
+        runCli(["init", "--yes", "--output", "json"], {
+          createServices: () =>
+            createProductionCliServicesForTesting({
+              environment: { AGENTSCOPE_HOME: override },
+              environmentOverrideAuthority: "portable",
+              registry,
+            }),
+          output: captured.output,
+          version: "1.2.3",
+        }),
+      ).resolves.toBe(70);
+      expect(captured.stdout).toEqual([]);
+      expect(captured.stderr).toEqual([
+        '{"category":"internal-error","code":"cli.internal","command":"agentscope init","schema":"agentscope.cli.diagnostic.v1"}\n',
+      ]);
+      expect(captured.stderr.join("")).not.toContain(override);
+      await expect(
+        access(join(fallback, ".agentscope", "config.json")),
+      ).rejects.toBeDefined();
+    },
+  );
+
+  it("preserves the HOME default when no portable override is present", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agentscope-cli-home-default-"));
+    roots.push(root);
+    const fallback = join(root, "fallback");
+    vi.stubEnv("HOME", fallback);
+    const captured = createCapturedOutput();
+
+    await expect(
+      runCli(["init", "--yes", "--output", "json"], {
+        createServices: () =>
+          createProductionCliServicesForTesting({
+            environment: {},
+            environmentOverrideAuthority: "portable",
+            registry,
+          }),
+        output: captured.output,
+        version: "1.2.3",
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      access(join(fallback, ".agentscope", "config.json")),
+    ).resolves.toBeUndefined();
+  });
 });
 
 const productionFixture = async (

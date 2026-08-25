@@ -194,6 +194,7 @@ export const requireExactProductDestinationRegistryForTesting = (
 
 export type CreateProductionCliServicesInput = Readonly<{
   environment?: object;
+  environmentOverrideAuthority?: "portable";
   harnesses?: CreateHarnessCliServicesInput;
   homeResolver?: AgentscopeHomeResolver;
   credentialBackendRegistry?: CredentialBackendRegistry;
@@ -212,7 +213,18 @@ const createState = (
     registry: DestinationRegistry,
   ) => LocalResourceLifecycleHandlerRegistry,
 ): ProductionState => {
-  const home = (input.homeResolver ?? createAgentscopeHomeResolver())();
+  const environment = input.environment ?? process.env;
+  const home = (
+    input.homeResolver ??
+    createAgentscopeHomeResolver({
+      environment: environment as Readonly<Record<string, string | undefined>>,
+      ...(input.environmentOverrideAuthority === undefined
+        ? {}
+        : {
+            environmentOverrideAuthority: input.environmentOverrideAuthority,
+          }),
+    })
+  )();
   const store = createConfigurationStore(home, registry);
   const lifecycleHandlers = createLifecycleHandlers(home, registry);
   const owner = createConfigurationProcessIdentity(
@@ -223,9 +235,9 @@ const createState = (
     credentialBackendRegistry:
       input.credentialBackendRegistry ??
       compileCredentialBackendRegistry([
-        createCiEnvironmentCredentialAdapter(input.environment ?? process.env),
+        createCiEnvironmentCredentialAdapter(environment),
       ]),
-    environment: input.environment ?? process.env,
+    environment,
     home,
     management: createConfigurationManagementRuntime(
       registry,
