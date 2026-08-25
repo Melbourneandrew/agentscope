@@ -31,7 +31,7 @@ Every harness eventually receives headless and interactive scenarios for each ap
 
 **Context:** TTY presence changes behavior for several harnesses. Terminal output is fragmented and may contain alternate-screen, cursor-query, progress, and malformed control sequences.
 
-**Consequences:** Host login or credential prompts are hard failures. PTY coverage does not replace an independently passing headless lane. An execution mode blocks a release only when the release support manifest claims that mode. The complete interactive matrix does not newly block the first alpha; if a harness has no truthful claimed lifecycle without a TTY, its minimal PTY scenario becomes that harness claim's admission test. The generic PTY component and later per-harness interactive rows do not block unrelated headless claims.
+**Consequences:** Host login or credential prompts are hard failures. PTY coverage does not replace an independently passing headless lane. An execution mode blocks a release only when the release support manifest claims that mode. Version `0.1.0` requires independently passing headless lanes for pinned Codex, Claude Code, and Cursor. If any of those harnesses cannot complete the required lifecycle headlessly, the milestone is blocked and its requirements must be reconsidered rather than substituting an interactive claim. The generic PTY component, complete interactive matrix, and remaining-roster rows do not block `0.1.0`; they become admission gates only for a later release that claims those modes or harnesses.
 
 ### ADR-003: Keep acceptance oracles outside scenario adapters
 
@@ -77,8 +77,8 @@ Open-source harness artifacts may enter private digest-pinned images with their 
 
 **Decision:** The durable scenario catalog assigns every case to one of five evidence tiers:
 
-1. component checks for hostile fake processes, the supervisor, PTY, and installed CLI on every pull request;
-2. pinned real-binary product shards for every currently claimed harness on every pull request;
+1. component checks for hostile fake processes, the supervisor, and installed CLI on every pull request, plus PTY component checks once that post-`0.1.0` substrate is introduced;
+2. pinned headless real-binary product shards for Codex, Claude Code, and Cursor on every pull request before `0.1.0`, expanding only when a later release support manifest claims more harnesses or modes;
 3. release certification for the registry artifact and each claimed platform;
 4. interactive compatibility and upstream drift lanes;
 5. eventual maturity coverage for additional harnesses, native platforms, storage lifecycle, and long-duration faults.
@@ -89,7 +89,7 @@ Open-source harness artifacts may enter private digest-pinned images with their 
 
 ### ADR-007: Require pinned claimed-harness shards on every pull request
 
-**Decision:** Every pull request runs an unconditional, separately sharded scenario for each harness in the current alpha support roster. Each shard clean-installs the same packed CLI candidate, invokes the pinned actual binary, uses the internal model proxy and OTLP ledger, denies public egress, and proves cleanup. No path- or relevance-based classifier may omit a roster member.
+**Decision:** Before version `0.1.0`, every pull request runs unconditional, separately sharded headless scenarios for pinned Codex, Claude Code, and Cursor. Each shard clean-installs the same packed CLI candidate, invokes the pinned actual binary, uses the internal model proxy and OTLP ledger, denies public egress, and proves cleanup. No path- or relevance-based classifier may omit any of those three. After `0.1.0`, the required matrix expands only through an approved release support manifest; the stable eight-harness product roster does not by itself turn every eventual harness or interactive mode into a gate for the first milestone.
 
 **Context:** Deterministic pins make pre-merge failures attributable and parallel shards keep aggregate time practical.
 
