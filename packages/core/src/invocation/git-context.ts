@@ -438,18 +438,9 @@ const exactDoctorGitInput = (
   });
 };
 
-export const inspectGitContextForDoctor = async (
-  input: DoctorGitInspectionInput,
-): Promise<DoctorGitInspection> => {
-  const exact = exactDoctorGitInput(input);
-  if (!exact) return unavailableDoctorGitInspection();
-  const result = await resolveGitContextForCore({
-    candidates: Object.freeze([
-      Object.freeze({ path: exact.workspace, source: "process" as const }),
-    ]),
-    gitExecutable: exact.gitExecutable,
-    remainingMilliseconds: exact.timeoutMilliseconds,
-  });
+export const projectGitContextForDoctor = (
+  result: GitContextSnapshot,
+): DoctorGitInspection => {
   const fields = new Set(result.fields.map((entry) => entry.field));
   const workspace = fields.has("agentscope.workspace.directory")
     ? "available"
@@ -468,6 +459,22 @@ export const inspectGitContextForDoctor = async (
       ? "detached"
       : "unavailable";
   return Object.freeze({ head, repository, workspace });
+};
+
+export const inspectGitContextForDoctor = async (
+  input: DoctorGitInspectionInput,
+): Promise<DoctorGitInspection> => {
+  const exact = exactDoctorGitInput(input);
+  if (!exact) return unavailableDoctorGitInspection();
+  return projectGitContextForDoctor(
+    await resolveGitContextForCore({
+      candidates: Object.freeze([
+        Object.freeze({ path: exact.workspace, source: "process" as const }),
+      ]),
+      gitExecutable: exact.gitExecutable,
+      remainingMilliseconds: exact.timeoutMilliseconds,
+    }),
+  );
 };
 
 export const resolveGitContextForTesting = (
