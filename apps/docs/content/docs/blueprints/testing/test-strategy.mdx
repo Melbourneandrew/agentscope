@@ -15,7 +15,7 @@ Agentscope needs independent proof of deterministic semantics and real CLI/hook 
 
 **Context:** Transcript fixtures cannot prove executable flags, hook invocation, or configuration mutation.
 
-**Consequences:** `apps/**` and `packages/**` retain their own fast unit and contract suites. `tests/integration/` owns hermetic cross-package scenarios, while `tests/integration-live/` owns protected external smoke coverage and is never a pull-request dependency.
+**Consequences:** `apps/**` and `packages/**` retain their own fast unit and contract suites. `tests/integration/` owns hermetic cross-package scenarios. Automated tests do not contact third-party destination services or require destination credentials.
 
 ### ADR-002: Treat capability claims as test-backed
 

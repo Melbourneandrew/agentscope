@@ -19,7 +19,7 @@ CI protects the repository from quality, package, documentation, and harness-com
 
 ### ADR-002: Separate untrusted PR work from privileged main work
 
-**Decision:** PR workflows receive no production destination credentials, npm publishing identity, or GitHub Pages deployment authority. Main-only workflows deploy docs; protected scheduled/manual workflows may run live integration checks with protected secrets.
+**Decision:** No workflow receives third-party destination credentials or contacts a public destination service. PR workflows also receive no npm publishing identity or GitHub Pages deployment authority. Main-only workflows deploy docs.
 
 **Context:** A pull request can change test code and must not be able to exfiltrate a privileged token through logs or network traffic.
 
@@ -27,11 +27,11 @@ CI protects the repository from quality, package, documentation, and harness-com
 
 ### ADR-003: Bind every privileged job to a trusted source and environment
 
-**Decision:** Every secret-bearing or publishing job uses a named GitHub environment restricted to protected `main` or protected release tags. Manual live checks execute both workflow code and checkout from an explicitly selected trusted `main` commit; candidate-branch checks use no production secret.
+**Decision:** Every publishing job uses a named GitHub environment restricted to protected `main` or protected release tags. Candidate-branch checks use no production secret.
 
 **Context:** Safe trigger names and approvals do not establish which workflow revision runs or which source bytes receive authority.
 
-**Consequences:** Environment/ref policy is a documented repository prerequisite. Live and release records identify the trusted source commit; publishing additionally binds the tested package digest as defined by NPM Publishing.
+**Consequences:** Environment/ref policy is a documented repository prerequisite. Release records identify the trusted source commit and bind the tested package digest as defined by NPM Publishing.
 
 ### ADR-004: Gate mandatory requirements by evidence
 
