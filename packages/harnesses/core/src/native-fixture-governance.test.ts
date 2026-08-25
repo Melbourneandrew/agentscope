@@ -7,6 +7,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -14,7 +15,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   auditNativeFixtureInventory,
-  assertNativeFixtureAdmissionProvenance,
   NativeFixtureGovernanceError,
   parseHarnessSanitizedFixture,
   serializeHarnessSanitizedFixture,
@@ -22,6 +22,7 @@ import {
 } from "./native-fixture-governance.js";
 
 const roots: string[] = [];
+const physicalTemporaryRoot = realpathSync(tmpdir());
 
 afterEach(async () => {
   await Promise.all(
@@ -45,7 +46,7 @@ const fixture = (): HarnessSanitizedFixture => ({
       captureRecipe: "codex-session-recipe-v1",
     },
     license: {
-      spdxExpression: "Apache-2.0",
+      reviewedLicenseId: "Apache-2.0",
       redistribution: "reviewed-for-repository",
       sourceReference: "https://example.invalid/codex/license",
     },
@@ -99,12 +100,54 @@ const expectCode = (operation: () => unknown, code: string): void => {
   throw new Error(`Expected ${code}`);
 };
 
+const retainedStringCandidates = (): readonly [unknown, string][] => {
+  const token = `github_pat_${"a".repeat(30)}`;
+  const base = fixture();
+  return [
+    [{ ...base, nativeIdentity: token }, "harness.fixture.native-identity"],
+    [{ ...base, boundaryId: token }, "harness.fixture.boundary-id"],
+    [{ ...base, expectedFields: [token] }, "harness.fixture.expected-fields"],
+    [
+      { ...base, sanitizedPayload: { [token]: true } },
+      "harness.fixture.payload.key",
+    ],
+    [
+      {
+        ...base,
+        governance: {
+          ...base.governance,
+          provenance: {
+            ...base.governance.provenance,
+            sourceReference: `urn:agentscope:synthetic:${token}`,
+          },
+        },
+      },
+      "harness.fixture.provenance.source-reference",
+    ],
+    [
+      {
+        ...base,
+        governance: {
+          ...base.governance,
+          review: {
+            ...base.governance.review,
+            references: [token, "review:two"],
+          },
+        },
+      },
+      "harness.fixture.review.references",
+    ],
+  ];
+};
+
 const writeInventoryFixture = async (
   value: unknown = fixture(),
   harnessId = "codex",
   fileName = "codex-session-v1.json",
 ): Promise<string> => {
-  const root = await mkdtemp(join(tmpdir(), "agentscope-native-fixtures-"));
+  const root = await mkdtemp(
+    join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
+  );
   roots.push(root);
   const directory = join(root, harnessId, "fixtures", "native");
   await mkdir(directory, { recursive: true });
@@ -115,35 +158,6 @@ const writeInventoryFixture = async (
       : serializeHarnessSanitizedFixture(value as HarnessSanitizedFixture),
   );
   return root;
-};
-
-const admissionAuthority = () => ({
-  authorityVersion: 1 as const,
-  harnessId: "codex",
-  harnessVersion: "1.2.3",
-  fixtureId: "codex-session-v1",
-  scenarioId: "codex-headless-v1",
-  sourceReference: "https://example.invalid/vendor/artifact",
-  sourceArtifactDigest: `sha256-${"d".repeat(64)}`,
-});
-
-const authenticatedFixture = (): HarnessSanitizedFixture => {
-  const synthetic = fixture();
-  return parseHarnessSanitizedFixture({
-    ...synthetic,
-    governance: {
-      ...synthetic.governance,
-      provenance: {
-        ...synthetic.governance.provenance,
-        captureKind: "disposable-hermetic",
-        sourceReference: "https://example.invalid/vendor/artifact",
-        artifactAuthority: {
-          status: "authenticated",
-          digest: `sha256-${"d".repeat(64)}`,
-        },
-      },
-    },
-  });
 };
 
 describe("native fixture schema", () => {
@@ -248,6 +262,11 @@ describe("native fixture privacy and array boundaries", () => {
         }),
       "harness.fixture.payload.value",
     );
+  });
+
+  it("scans every retained free-string category with the baseline", () => {
+    for (const [candidate, code] of retainedStringCandidates())
+      expectCode(() => parseHarnessSanitizedFixture(candidate), code);
   });
 
   it("rejects sparse, accessor, symbol, and custom-prototype arrays", () => {
@@ -542,35 +561,32 @@ describe("native fixture governance metadata", () => {
   });
 });
 
-describe("native fixture SPDX governance", () => {
-  it("accepts bounded compound SPDX expressions and rejects malformed syntax", () => {
+describe("native fixture reviewed license governance", () => {
+  it("accepts one reviewed identifier and rejects compound expressions", () => {
     const base = fixture();
-    for (const expression of [
-      "MIT OR Apache-2.0",
-      "(MIT OR Apache-2.0) AND BSD-3-Clause",
-      "GPL-2.0-only WITH Classpath-exception-2.0",
-      "MIT AND GPL-2.0-only WITH Classpath-exception-2.0",
+    for (const reviewedLicenseId of [
+      "MIT",
+      "Apache-2.0",
+      "LicenseRef-Agentscope-Synthetic",
     ]) {
       expect(
         parseHarnessSanitizedFixture({
           ...base,
           governance: {
             ...base.governance,
-            license: { ...base.governance.license, spdxExpression: expression },
+            license: { ...base.governance.license, reviewedLicenseId },
           },
-        }).governance.license.spdxExpression,
-      ).toBe(expression);
+        }).governance.license.reviewedLicenseId,
+      ).toBe(reviewedLicenseId);
     }
-    for (const expression of [
+    for (const reviewedLicenseId of [
+      "MIT OR Apache-2.0",
+      "MIT AND Apache-2.0",
+      "GPL-2.0-only WITH Classpath-exception-2.0",
       "MIT OR",
       "(MIT",
-      "MIT WITH",
-      "MIT && Apache-2.0",
-      "MIT Apache-2.0",
-      "(".repeat(17) + "MIT" + ")".repeat(17),
-      Array.from({ length: 33 }, () => "MIT").join(" OR "),
       "",
-      "x".repeat(257),
+      "x".repeat(65),
     ]) {
       expectCode(
         () =>
@@ -580,25 +596,19 @@ describe("native fixture SPDX governance", () => {
               ...base.governance,
               license: {
                 ...base.governance.license,
-                spdxExpression: expression,
+                reviewedLicenseId,
               },
             },
           }),
-        "harness.fixture.license.spdx",
+        "harness.fixture.license.reviewed-id",
       );
     }
   });
 });
 
-describe("native fixture admission provenance", () => {
-  it("keeps unresolved synthetic fixtures out of admission", () => {
+describe("native fixture provenance separation", () => {
+  it("keeps synthetic authority unresolved and capture-kind bound", () => {
     const synthetic = fixture();
-    const expectedAuthority = admissionAuthority();
-    expectCode(
-      () =>
-        assertNativeFixtureAdmissionProvenance(synthetic, expectedAuthority),
-      "harness.fixture.provenance.admission-unresolved",
-    );
     expectCode(
       () =>
         parseHarnessSanitizedFixture({
@@ -689,52 +699,6 @@ describe("native fixture admission provenance", () => {
   });
 });
 
-describe("native fixture admission authority binding", () => {
-  it("requires every trusted authority discriminator to match", () => {
-    const expectedAuthority = admissionAuthority();
-    const authenticated = authenticatedFixture();
-    expect(
-      assertNativeFixtureAdmissionProvenance(authenticated, expectedAuthority),
-    ).toEqual({
-      authorityVersion: 1,
-      captureKind: "disposable-hermetic",
-      harnessId: "codex",
-      harnessVersion: "1.2.3",
-      fixtureId: "codex-session-v1",
-      scenarioId: "codex-headless-v1",
-      sourceReference: "https://example.invalid/vendor/artifact",
-      sourceArtifactDigest: `sha256-${"d".repeat(64)}`,
-    });
-
-    for (const [field, value] of [
-      ["authorityVersion", 2],
-      ["harnessId", "claude-code"],
-      ["harnessVersion", "1.2.4"],
-      ["fixtureId", "other-fixture"],
-      ["scenarioId", "other-scenario"],
-      ["sourceReference", "https://example.invalid/vendor/other"],
-      ["sourceArtifactDigest", `sha256-${"e".repeat(64)}`],
-    ] as const) {
-      expectCode(
-        () =>
-          assertNativeFixtureAdmissionProvenance(authenticated, {
-            ...expectedAuthority,
-            [field]: value,
-          }),
-        "harness.fixture.provenance.admission-mismatch",
-      );
-    }
-    expectCode(
-      () =>
-        assertNativeFixtureAdmissionProvenance(authenticated, {
-          ...expectedAuthority,
-          unexpected: true,
-        }),
-      "harness.fixture.provenance.admission-authority",
-    );
-  });
-});
-
 describe("native fixture inventory scanner", () => {
   it("accepts canonical path-linked fixture files", async () => {
     const root = await writeInventoryFixture();
@@ -804,7 +768,7 @@ describe("native fixture inventory scanner", () => {
     );
 
     const unexpectedRoot = await mkdtemp(
-      join(tmpdir(), "agentscope-native-fixtures-"),
+      join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
     );
     roots.push(unexpectedRoot);
     const nativeRoot = join(unexpectedRoot, "codex", "fixtures", "native");
@@ -815,7 +779,7 @@ describe("native fixture inventory scanner", () => {
     );
 
     const oversizedRoot = await mkdtemp(
-      join(tmpdir(), "agentscope-native-fixtures-"),
+      join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
     );
     roots.push(oversizedRoot);
     const oversizedNative = join(oversizedRoot, "codex", "fixtures", "native");
@@ -830,7 +794,9 @@ describe("native fixture inventory scanner", () => {
   });
 
   it("surfaces non-absence inventory filesystem failures", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agentscope-native-fixtures-"));
+    const root = await mkdtemp(
+      join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
+    );
     roots.push(root);
     await mkdir(join(root, "codex"));
     await writeFile(join(root, "codex", "fixtures"), "synthetic");
@@ -854,7 +820,7 @@ describe("native fixture inventory identity and ordering", () => {
     );
 
     const packageRoot = await mkdtemp(
-      join(tmpdir(), "agentscope-native-fixtures-"),
+      join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
     );
     roots.push(packageRoot);
     await symlink(join(target, "codex"), join(packageRoot, "codex"), "dir");
@@ -863,7 +829,9 @@ describe("native fixture inventory identity and ordering", () => {
     );
 
     for (const ancestor of ["fixtures", "native"] as const) {
-      const root = await mkdtemp(join(tmpdir(), "agentscope-native-fixtures-"));
+      const root = await mkdtemp(
+        join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
+      );
       roots.push(root);
       const packageDirectory = join(root, "codex");
       await mkdir(packageDirectory);
@@ -888,7 +856,7 @@ describe("native fixture inventory identity and ordering", () => {
     }
 
     const fileRoot = await mkdtemp(
-      join(tmpdir(), "agentscope-native-fixtures-"),
+      join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
     );
     roots.push(fileRoot);
     const nativeRoot = join(fileRoot, "codex", "fixtures", "native");
@@ -902,9 +870,93 @@ describe("native fixture inventory identity and ordering", () => {
       "harness.fixture.inventory.entry-kind",
     );
   });
+
+  it("rejects a symlink above an otherwise real inventory root", async () => {
+    const realParent = await mkdtemp(
+      join(physicalTemporaryRoot, "agentscope-native-parent-"),
+    );
+    const linkParent = await mkdtemp(
+      join(physicalTemporaryRoot, "agentscope-native-link-"),
+    );
+    roots.push(realParent, linkParent);
+    const packagesRoot = join(realParent, "packages");
+    const nativeRoot = join(packagesRoot, "codex", "fixtures", "native");
+    await mkdir(nativeRoot, { recursive: true });
+    await writeFile(
+      join(nativeRoot, "codex-session-v1.json"),
+      serializeHarnessSanitizedFixture(fixture()),
+    );
+    const linked = join(linkParent, "linked");
+    await symlink(realParent, linked, "dir");
+    await expect(
+      auditNativeFixtureInventory(join(linked, "packages")),
+    ).rejects.toThrow("harness.fixture.inventory.ancestor");
+  });
 });
 
 describe("native fixture inventory replacement races", () => {
+  it.each([
+    ["remove", "harness.fixture.inventory.ancestor"],
+    ["symlink", "harness.fixture.inventory.ancestor"],
+  ] as const)(
+    "rejects physical-root %s after resolution",
+    async (kind, code) => {
+      const root = await writeInventoryFixture();
+      const target = await mkdtemp(
+        join(physicalTemporaryRoot, "agentscope-race-target-"),
+      );
+      roots.push(target);
+      let changed = false;
+      await expect(
+        auditNativeFixtureInventory(root, async (event, path) => {
+          if (changed || event !== "ancestry-after-resolution") return;
+          changed = true;
+          await rm(path, { recursive: true });
+          if (kind === "symlink") await symlink(target, path, "dir");
+        }),
+      ).rejects.toThrow(code);
+    },
+  );
+
+  it.each(["remove", "symlink"] as const)(
+    "rejects physical-root %s before ancestry recheck",
+    async (kind) => {
+      const root = await writeInventoryFixture();
+      const target = await mkdtemp(
+        join(physicalTemporaryRoot, "agentscope-race-target-"),
+      );
+      roots.push(target);
+      let changed = false;
+      await expect(
+        auditNativeFixtureInventory(root, async (event, path) => {
+          if (changed || event !== "ancestry-before-recheck") return;
+          changed = true;
+          await rm(path, { recursive: true });
+          if (kind === "symlink") await symlink(target, path, "dir");
+        }),
+      ).rejects.toThrow("harness.fixture.inventory.ancestor-identity");
+    },
+  );
+
+  it("surfaces a nonoptional directory authentication race", async () => {
+    const root = await writeInventoryFixture();
+    let changed = false;
+    await expect(
+      auditNativeFixtureInventory(root, async (event, path) => {
+        if (
+          changed ||
+          event !== "directory-before-authentication" ||
+          !path.endsWith("/codex")
+        )
+          return;
+        changed = true;
+        await rm(path, { recursive: true });
+      }),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("native fixture nested replacement races", () => {
   it.each([
     ["remove", "harness.fixture.inventory.ancestor-identity"],
     ["replace", "harness.fixture.inventory.ancestor-identity"],

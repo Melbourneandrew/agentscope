@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { defineHarnessDescriptor } from "./descriptor.js";
+import {
+  compileHarnessRegistry,
+  defineHarnessDescriptor,
+  HarnessDescriptorError,
+} from "./descriptor.js";
 import {
   completeNativeCaptureBoundary,
   createNativeFieldProvenance,
@@ -9,8 +13,8 @@ import {
 } from "./native-mapping.js";
 import {
   createHarnessContractSuite,
-  deriveHarnessContractEvidenceDigests,
-  type HarnessContractAdapter,
+  deriveHarnessComponentEvidenceDigest,
+  type HarnessComponentContractAdapter,
   type HarnessHookTestBehavior,
 } from "./testing-contract-suite.js";
 
@@ -75,7 +79,7 @@ const referenceFixture = {
       captureRecipe: "reference-recipe-v1",
     },
     license: {
-      spdxExpression: "MIT",
+      reviewedLicenseId: "MIT",
       redistribution: "reviewed-for-repository",
       sourceReference: "https://example.invalid/reference-license",
     },
@@ -129,29 +133,25 @@ const referenceScenario = {
   commandArguments: ["run", "fixture-session"],
 } as const;
 
-const referenceEvidence = deriveHarnessContractEvidenceDigests(
+const referenceEvidence = deriveHarnessComponentEvidenceDigest(
   referenceFixture,
   referenceScenario,
   descriptor,
   referenceContextEvidence,
 );
 
-const referenceAdapter = (): HarnessContractAdapter => ({
+const referenceAdapter = (): HarnessComponentContractAdapter => ({
   descriptor,
-  supportEvidence: {
-    manifestVersion: 1,
-    entries: [
-      {
-        harnessType: descriptor.harnessType,
-        evidenceSlot: "reference-v1",
-        testedVersion: "1.2.3",
-        contractSuiteDigest: referenceEvidence.contractSuiteDigest,
-        realScenarioDigest: referenceEvidence.realScenarioDigest,
-      },
-    ],
+  componentEvidence: {
+    evidenceVersion: 1,
+    harnessType: descriptor.harnessType,
+    testedVersion: "1.2.3",
+    fixtureId: referenceFixture.fixtureId,
+    scenarioId: referenceScenario.scenarioId,
+    evidenceSlot: "reference-v1",
+    componentDigest: referenceEvidence,
   },
   compatibleVersion: "1.2.3",
-  unsupportedVersion: "2.0.0",
   fixture: referenceFixture,
   scenario: referenceScenario,
   contextEvidence: referenceContextEvidence,
@@ -210,7 +210,7 @@ const referenceAdapter = (): HarnessContractAdapter => ({
 });
 
 const runCase = async (
-  adapter: HarnessContractAdapter,
+  adapter: HarnessComponentContractAdapter,
   name: string,
 ): Promise<void> => {
   const contract = createHarnessContractSuite(adapter).find(
@@ -225,8 +225,7 @@ describe("harness contract suite", () => {
     const cases = createHarnessContractSuite(referenceAdapter());
     expect(Object.isFrozen(cases)).toBe(true);
     expect(cases.map(({ name }) => name)).toEqual([
-      "harness:compatibility-evidence",
-      "harness:discovery",
+      "harness:component-evidence",
       "harness:sanitized-native-mapping",
       "harness:launcher-and-installation",
       "harness:fail-open-deadline",
@@ -427,9 +426,9 @@ describe("harness mapping correlation adversarial seeds", () => {
   );
 });
 
-describe("harness contract evidence and discovery seeds", () => {
+describe("harness component evidence", () => {
   it("versions evidence across descriptor, context, and mapping artifact drift", () => {
-    const baseline = deriveHarnessContractEvidenceDigests(
+    const baseline = deriveHarnessComponentEvidenceDigest(
       referenceFixture,
       referenceScenario,
       descriptor,
@@ -446,13 +445,13 @@ describe("harness contract evidence and discovery seeds", () => {
       compatibility: descriptor.compatibility,
       nativeSource: descriptor.nativeSource,
     });
-    const descriptorDigest = deriveHarnessContractEvidenceDigests(
+    const descriptorDigest = deriveHarnessComponentEvidenceDigest(
       referenceFixture,
       referenceScenario,
       executableDrift,
       referenceContextEvidence,
     );
-    const contextDigest = deriveHarnessContractEvidenceDigests(
+    const contextDigest = deriveHarnessComponentEvidenceDigest(
       referenceFixture,
       referenceScenario,
       descriptor,
@@ -461,7 +460,7 @@ describe("harness contract evidence and discovery seeds", () => {
         contextDigest: `sha256-${"c".repeat(64)}`,
       },
     );
-    const mappingDigest = deriveHarnessContractEvidenceDigests(
+    const mappingDigest = deriveHarnessComponentEvidenceDigest(
       referenceFixture,
       referenceScenario,
       descriptor,
@@ -471,12 +470,8 @@ describe("harness contract evidence and discovery seeds", () => {
       },
     );
     expect(descriptorDigest).not.toEqual(baseline);
-    expect(contextDigest.realScenarioDigest).not.toBe(
-      baseline.realScenarioDigest,
-    );
-    expect(mappingDigest.realScenarioDigest).not.toBe(
-      baseline.realScenarioDigest,
-    );
+    expect(contextDigest).not.toBe(baseline);
+    expect(mappingDigest).not.toBe(baseline);
   });
 
   it("rejects missing, malformed, accessor, and extra context evidence", () => {
@@ -486,7 +481,7 @@ describe("harness contract evidence and discovery seeds", () => {
       { ...referenceContextEvidence, unexpected: true },
     ]) {
       expect(() =>
-        deriveHarnessContractEvidenceDigests(
+        deriveHarnessComponentEvidenceDigest(
           referenceFixture,
           referenceScenario,
           descriptor,
@@ -502,7 +497,7 @@ describe("harness contract evidence and discovery seeds", () => {
       },
     });
     expect(() =>
-      deriveHarnessContractEvidenceDigests(
+      deriveHarnessComponentEvidenceDigest(
         referenceFixture,
         referenceScenario,
         descriptor,
@@ -515,7 +510,7 @@ describe("harness contract evidence and discovery seeds", () => {
       },
     });
     expect(() =>
-      deriveHarnessContractEvidenceDigests(
+      deriveHarnessComponentEvidenceDigest(
         referenceFixture,
         referenceScenario,
         descriptor,
@@ -523,9 +518,29 @@ describe("harness contract evidence and discovery seeds", () => {
       ),
     ).toThrow("harness.contract.context-evidence");
   });
+  it("cannot populate production support evidence", () => {
+    expect(referenceEvidence).toMatch(/^component-sha256-[a-f0-9]{64}$/u);
+    expect(() =>
+      compileHarnessRegistry([descriptor], {
+        manifestVersion: 1,
+        entries: [
+          {
+            harnessType: descriptor.harnessType,
+            evidenceSlot: "reference-v1",
+            testedVersion: "1.2.3",
+            contractSuiteDigest: referenceEvidence,
+            realScenarioDigest: referenceEvidence,
+          },
+        ],
+      }),
+    ).toThrow(HarnessDescriptorError);
+    expect(referenceAdapter().componentEvidence).not.toHaveProperty(
+      "realScenarioDigest",
+    );
+  });
 });
 
-describe("harness contract representative and discovery seeds", () => {
+describe("harness contract representative and component evidence", () => {
   it("rejects representative scenario and evidence-slot drift", async () => {
     const scenarioDrift = referenceAdapter();
     await expect(
@@ -558,77 +573,49 @@ describe("harness contract representative and discovery seeds", () => {
         },
       },
     } as const;
-    const digests = deriveHarnessContractEvidenceDigests(
-      fixtureWithDrift,
-      evidenceDrift.scenario,
-      evidenceDrift.descriptor,
-      evidenceDrift.contextEvidence,
-    );
     await expect(
       runCase(
         {
           ...evidenceDrift,
           fixture: fixtureWithDrift,
-          supportEvidence: {
-            ...evidenceDrift.supportEvidence,
-            entries: evidenceDrift.supportEvidence.entries.map((entry) => ({
-              ...entry,
-              ...digests,
-            })),
-          },
         },
-        "harness:compatibility-evidence",
+        "harness:component-evidence",
       ),
-    ).rejects.toThrow("harness.contract.compatibility");
+    ).rejects.toThrow("harness.contract.component-evidence");
   });
 
-  it("rejects stale compatibility and malformed discovery evidence", async () => {
-    const compatibilityViolation = referenceAdapter();
-    await expect(
-      runCase(
-        {
-          ...compatibilityViolation,
-          supportEvidence: {
-            ...compatibilityViolation.supportEvidence,
-            entries: compatibilityViolation.supportEvidence.entries.map(
-              (entry) => ({
-                ...entry,
-                contractSuiteDigest: "not-a-digest",
-              }),
-            ),
-          },
-        },
-        "harness:compatibility-evidence",
-      ),
-    ).rejects.toThrow("harness.descriptor.invalid");
-
+  it("rejects stale or unbound component evidence", async () => {
     for (const field of [
-      "contractSuiteDigest",
-      "realScenarioDigest",
+      "componentDigest",
+      "harnessType",
+      "testedVersion",
+      "fixtureId",
+      "scenarioId",
+      "evidenceSlot",
     ] as const) {
       const unbound = referenceAdapter();
       await expect(
         runCase(
           {
             ...unbound,
-            supportEvidence: {
-              ...unbound.supportEvidence,
-              entries: unbound.supportEvidence.entries.map((entry) => ({
-                ...entry,
-                [field]: `sha256-${"b".repeat(64)}`,
-              })),
+            componentEvidence: {
+              ...unbound.componentEvidence,
+              [field]:
+                field === "componentDigest"
+                  ? `component-sha256-${"b".repeat(64)}`
+                  : "other",
             },
           },
-          "harness:compatibility-evidence",
+          "harness:component-evidence",
         ),
-      ).rejects.toThrow("harness.contract.compatibility");
+      ).rejects.toThrow("harness.contract.component-evidence");
     }
     await expect(
       runCase(
         { ...referenceAdapter(), compatibleVersion: "1.4.0" },
-        "harness:compatibility-evidence",
+        "harness:component-evidence",
       ),
-    ).rejects.toThrow("harness.contract.compatibility");
+    ).rejects.toThrow("harness.contract.component-evidence");
     const scenarioDrift = referenceAdapter();
     await expect(
       runCase(
@@ -636,16 +623,8 @@ describe("harness contract representative and discovery seeds", () => {
           ...scenarioDrift,
           scenario: { ...scenarioDrift.scenario, tags: ["changed"] },
         },
-        "harness:compatibility-evidence",
+        "harness:component-evidence",
       ),
-    ).rejects.toThrow("harness.contract.compatibility");
-
-    const discoveryViolation = referenceAdapter();
-    await expect(
-      runCase(
-        { ...discoveryViolation, unsupportedVersion: "1.2.3" },
-        "harness:discovery",
-      ),
-    ).rejects.toThrow("harness.contract.discovery");
+    ).rejects.toThrow("harness.contract.component-evidence");
   });
 });
