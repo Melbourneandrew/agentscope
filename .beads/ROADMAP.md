@@ -81,14 +81,14 @@ Each row assigns every listed ADR in that Blueprint to implementation and verifi
 | `foundations/workspace-architecture` | `ADR-001`–`ADR-004` | `vah.2.1-.2.6`, `vah.13.1` |
 | `destinations/trace-destination` | `ADR-001`–`ADR-006` | `vah.4.1-.4.4`, `vah.6.2`, `vah.7.2-.7.3`, `vah.8.2` |
 | `destinations/reporters/reporter-abstraction` | `ADR-001`–`ADR-007` | `vah.2.1`, `vah.4.1`, `vah.4.3-.4.4`, `vah.6.2` |
-| `destinations/reporters/langfuse-reporter` | `ADR-001`–`ADR-003` | `vah.9.1-.9.2` |
+| `destinations/reporters/langfuse-reporter` | `ADR-001`–`ADR-004` | `vah.9.1-.9.3`, `vah.9.14`, `vah.9.19`, `vah.12.11` |
 | `destinations/retrievers/retriever-abstraction` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.6.4`, `vah.8.5` |
 | `destinations/retrievers/query-and-pagination` | `ADR-001`–`ADR-006` | `vah.4.2-.4.4`, `vah.8.5`, `vah.9.3`, `vah.9.6` |
-| `destinations/retrievers/langfuse-retriever` | `ADR-001`–`ADR-006` | `vah.9.1`, `vah.9.3`, `vah.9.7` |
-| `destinations/local-sqlite-destination` | `ADR-001`–`ADR-006` | `vah.9.4-.9.7` |
+| `destinations/retrievers/langfuse-retriever` | `ADR-001`–`ADR-006` | `vah.9.1`, `vah.9.3`, `vah.9.7`, `vah.12.11` |
+| `destinations/local-sqlite-destination` | `ADR-001`–`ADR-010` | `vah.9.4-.9.7`, `vah.9.15`, `vah.9.20-.9.28` |
 | `operations/agentscope-init` | `ADR-001`, `ADR-002` | `vah.8.2`, `vah.9.9`, `vah.11.1-.11.7` |
 | `operations/api-key-storage` | `ADR-001`–`ADR-004` | `vah.2.7`, `vah.7.3-.7.8`, `vah.12.7`, `vah.12.9` |
-| `operations/cli-architecture` | `ADR-001`–`ADR-003` | `vah.2.5`, `vah.8.1-.8.7`, `vah.9.9` |
+| `operations/cli-architecture` | `ADR-001`–`ADR-006` | `vah.2.5`, `vah.8.1-.8.7`, `vah.9.9`, `vah.9.16-.9.17`, `vah.9.19`, `vah.9.22` |
 | `operations/cli-installation` | `ADR-001`–`ADR-003` | `vah.2.2`, `vah.2.5`, `vah.9.9`, `vah.12.4` |
 | `operations/code-quality-and-ci` | `ADR-001`–`ADR-004` | `vah.2.2-.2.6`, `vah.12.1-.12.5`, `vah.13.1` |
 | `operations/config-management` | `ADR-001`–`ADR-003` | `vah.7.1-.7.3`, `vah.7.8` |
