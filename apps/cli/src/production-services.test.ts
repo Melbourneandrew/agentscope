@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-management";
 import {
+  commitLocalResourceConfiguration,
+  compileLocalResourceLifecycleHandlerRegistry,
   createDestinationRetriever,
   createDestinationReporter,
   defineDestinationReachabilityProbe,
@@ -13,6 +15,9 @@ import {
   createRetrieverSuccess,
   createTraceLocator,
   createTraceSummary,
+  defineLocalResourceLifecycleDeclaration,
+  defineLocalResourceLifecycleHandler,
+  type LocalResourceLifecyclePlanEvidence,
 } from "@agentscope/destinations-core";
 import {
   compileDestinationRegistry,
@@ -108,6 +113,36 @@ const secretDescriptor = defineDestinationDescriptor({
   },
 });
 const registry = compileDestinationRegistry([descriptor, secretDescriptor]);
+const localLifecycleDeclaration = defineLocalResourceLifecycleDeclaration({
+  artifactGrammarFingerprint: `sha256-${"1".repeat(64)}`,
+  artifactGrammarVersion: 1,
+  artifactKinds: ["active-database", "lifecycle-intent", "ownership-receipt"],
+  capabilityVersion: 1,
+  destinationType: "@agentscope/destination-cli-local",
+  operations: ["configure", "delete", "doctor", "recover", "unconfigure"],
+  receiptReasons: ["destination-busy"],
+  recoveryHandlerId: "@agentscope/destination-cli-local/lifecycle-v1",
+  settingKeys: ["project"],
+  settingsVersion: 1,
+});
+const localDescriptor = defineDestinationDescriptor({
+  commandName: "cli-local",
+  createReporter: () =>
+    createDestinationReporter({
+      report: () => Promise.resolve(createReporterReceipt("accepted")),
+    }),
+  credentialSlots: [],
+  defaultSettings: { project: "default" },
+  deliveryIdentitySupport: "duplicates-possible",
+  descriptorVersion: 1,
+  destinationType: "@agentscope/destination-cli-local",
+  documentationPath: "/docs/destinations/cli-local",
+  localResourceLifecycle: localLifecycleDeclaration,
+  settingsSchema,
+  settingsVersion: 1,
+  transport: { kind: "local" },
+});
+const localRegistry = compileDestinationRegistry([localDescriptor]);
 const roots: string[] = [];
 const presentPlan = (): Promise<void> => Promise.resolve();
 
@@ -138,6 +173,180 @@ const productionFixture = async (
       registry,
       ...overrides,
     }),
+  };
+};
+
+// eslint-disable-next-line max-lines-per-function -- one fixture binds a complete versioned lifecycle handler and its retained authority.
+const localLifecycleFixture = async (prefix: string) => {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  roots.push(root);
+  const homeResolver = createAgentscopeHomeResolver({
+    environment: { AGENTSCOPE_HOME: root },
+    environmentOverrideAuthority: "test",
+    platform: process.platform,
+  });
+  const events: string[] = [];
+  let failAfterCommit = false;
+  let failBusy = false;
+  let failReconciliation = false;
+  let retained:
+    | Readonly<{
+        connectionId: string;
+        connectionName: string;
+        destinationType: string;
+        planEvidence: LocalResourceLifecyclePlanEvidence;
+        retainedAuthority: Readonly<{
+          databaseFamilyPhysicalIdentity: string;
+          receiptDigest: string;
+        }>;
+      }>
+    | undefined;
+  const capability = localRegistry.descriptors[0]!.localResourceLifecycle!;
+  const planEvidence = Object.freeze({
+    displayPath: "/owned/local/traces.sqlite",
+    namespaceFingerprint: `sha256-${"2".repeat(64)}`,
+    persistentDataNotice: true as const,
+    physicalEvidenceFingerprint: `sha256-${"3".repeat(64)}`,
+    retentionPolicy: Object.freeze({
+      maximumAgeNanoseconds: "2592000000000000",
+      maximumPayloadBytes: 1_073_741_824,
+      maximumTraceCount: 100_000,
+      physicalCleanupTrigger: "next-authorized-mutation" as const,
+    }),
+  });
+  const createHandler = () =>
+    defineLocalResourceLifecycleHandler({
+      apply: async (context) => {
+        events.push(`apply:${context.operation}`);
+        if (failBusy) {
+          failBusy = false;
+          return Object.freeze({
+            code: "busy" as const,
+            ok: false as const,
+            state: "unchanged" as const,
+          });
+        }
+        if (failReconciliation) {
+          failReconciliation = false;
+          return Object.freeze({
+            code: "reconciliation-required" as const,
+            ok: false as const,
+            state: "unchanged" as const,
+          });
+        }
+        await commitLocalResourceConfiguration(context.configurationAuthority, {
+          connectionId: context.connectionId,
+          destinationType: context.destinationType,
+          lifecycleFingerprint: capability.fingerprint,
+          operationId: context.operationId,
+          recoveryHandlerId: capability.recoveryHandlerId,
+        });
+        if (failAfterCommit) {
+          failAfterCommit = false;
+          throw new Error("simulated post-commit interruption");
+        }
+        if (context.operation === "unconfigure") {
+          retained = Object.freeze({
+            connectionId: context.connectionId,
+            connectionName: context.connectionName,
+            destinationType: context.destinationType,
+            planEvidence: context.planEvidence,
+            retainedAuthority: Object.freeze({
+              databaseFamilyPhysicalIdentity: "dev:1:ino:2",
+              receiptDigest: `sha256-${"4".repeat(64)}`,
+            }),
+          });
+          return Object.freeze({
+            ok: true as const,
+            retainedAuthority: retained.retainedAuthority,
+            state: "retained" as const,
+          });
+        }
+        if (context.operation === "delete") retained = undefined;
+        return Object.freeze({
+          ok: true as const,
+          state:
+            context.operation === "delete"
+              ? ("deleted" as const)
+              : ("configured" as const),
+        });
+      },
+      capability,
+      complete: () => Promise.resolve(),
+      inspectDoctor: () =>
+        Promise.resolve(
+          Object.freeze({
+            backupState: "available" as const,
+            databaseDerivedRetention: Object.freeze({
+              clockContinuity: "unavailable" as const,
+              cutoff: "unavailable" as const,
+              payloadBytes: "unavailable" as const,
+              rowCount: "unavailable" as const,
+            }),
+            databaseState: "present" as const,
+            lifecycleState: "clean" as const,
+            publishedBackupCount: 0,
+            retentionPolicy: planEvidence.retentionPolicy,
+            sharedLeaseCount: 0,
+            state: "available" as const,
+          }),
+        ),
+      inspectPlan: (context) => {
+        events.push(`inspect:${context.operation}`);
+        return Promise.resolve(planEvidence);
+      },
+      inspectRetainedDelete: (connectionId) =>
+        Promise.resolve(
+          retained?.connectionId === connectionId
+            ? Object.freeze({ ...retained, connectionName: "retained" })
+            : null,
+        ),
+      recover: async (context) => {
+        events.push(`recover:${context.operation}`);
+        if (context.configurationAuthority)
+          await commitLocalResourceConfiguration(
+            context.configurationAuthority,
+            {
+              connectionId: context.connectionId,
+              destinationType: context.destinationType,
+              lifecycleFingerprint: capability.fingerprint,
+              operationId: context.operationId,
+              recoveryHandlerId: capability.recoveryHandlerId,
+            },
+          );
+        return Object.freeze({
+          ok: true as const,
+          state:
+            context.operation === "delete"
+              ? ("deleted" as const)
+              : ("configured" as const),
+        });
+      },
+    });
+  const createServices = () =>
+    createProductionCliServicesForTesting({
+      homeResolver,
+      lifecycleHandlers: compileLocalResourceLifecycleHandlerRegistry(
+        localRegistry,
+        [createHandler()],
+      ),
+      ownerState: () => "dead",
+      registry: localRegistry,
+      workspace: root,
+    });
+  return {
+    createServices,
+    events,
+    failNextApplyAfterCommit: () => {
+      failAfterCommit = true;
+    },
+    failNextApplyBusy: () => {
+      failBusy = true;
+    },
+    failNextApplyReconciliation: () => {
+      failReconciliation = true;
+    },
+    root,
   };
 };
 
@@ -926,6 +1135,252 @@ describe("production configuration mutation diagnostics", () => {
       services.unconfigureDestination({ name: "missing" }),
     ).resolves.toMatchObject({
       diagnostic: { code: "destination.connection-missing" },
+    });
+  });
+});
+
+// eslint-disable-next-line max-lines-per-function -- this group owns the complete lifecycle CLI composition matrix.
+describe("Local lifecycle CLI composition", () => {
+  // eslint-disable-next-line max-lines-per-function -- one causal sequence proves plan/apply, Doctor, retention, fresh-process inspection, and deletion.
+  it("plans before mutation, reports Doctor evidence, and deletes a retained database from a fresh service", async () => {
+    const fixture = await localLifecycleFixture("agentscope-cli-local-flow-");
+    const services = fixture.createServices();
+    await services.init({ apply: true, presentPlan });
+    const configureInput = {
+      credentialEnvironment: [],
+      name: "local-history",
+      settingsJson: '{"project":"agentscope"}',
+      type: "cli-local",
+    };
+    await expect(
+      services.configureDestination(configureInput),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: { applied: false, connection: null, state: "planned" },
+    });
+    await expect(services.listDestinations()).resolves.toMatchObject({
+      status: "success",
+      value: { connections: [] },
+    });
+    await expect(
+      services.configureDestination({ ...configureInput, apply: true }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "cli.input.invalid" },
+    });
+    const presented: unknown[] = [];
+    await expect(
+      services.configureDestination({
+        ...configureInput,
+        apply: true,
+        presentPlan: (value) => {
+          presented.push(value);
+          return Promise.resolve();
+        },
+      }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: {
+        applied: true,
+        connection: { name: "local-history", transport: "local" },
+        state: "configured",
+      },
+    });
+    expect(presented).toHaveLength(1);
+    const doctor = await services.doctor({ fix: false, presentPlan });
+    expect(doctor.status).toBe("success");
+    if (doctor.status !== "success") throw new Error("test.invalid");
+    const localFinding = doctor.value.findings.find(
+      ({ code }) => code === "doctor.destination.local-resource.available",
+    );
+    expect(localFinding?.evidence.localResource).toEqual({
+      backupState: "available",
+      databaseDerivedRetention: {
+        clockContinuity: "unavailable",
+        cutoff: "unavailable",
+        payloadBytes: "unavailable",
+        rowCount: "unavailable",
+      },
+      databaseState: "present",
+      lifecycleState: "clean",
+      publishedBackupCount: 0,
+      retentionPolicy: {
+        maximumAgeNanoseconds: "2592000000000000",
+        maximumPayloadBytes: 1_073_741_824,
+        maximumTraceCount: 100_000,
+        physicalCleanupTrigger: "next-authorized-mutation",
+      },
+      sharedLeaseCount: 0,
+    });
+    await expect(
+      services.unconfigureDestination({ name: "local-history" }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: { applied: false, state: "planned" },
+    });
+    await expect(
+      services.unconfigureDestination({
+        apply: true,
+        name: "local-history",
+      }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "cli.input.invalid" },
+    });
+    const unconfigured = await services.unconfigureDestination({
+      apply: true,
+      name: "local-history",
+      presentPlan,
+    });
+    expect(unconfigured).toMatchObject({
+      status: "success",
+      value: { applied: true, state: "retained" },
+    });
+    if (unconfigured.status !== "success") throw new Error("test.invalid");
+    const selector = unconfigured.value.retainedDeleteSelector;
+    if (selector === null) throw new Error("test.invalid");
+    const fresh = fixture.createServices();
+    await expect(
+      fresh.deleteDestination({ confirm: false, name: selector }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: { applied: false, deleted: false, state: "planned" },
+    });
+    await expect(
+      fresh.deleteDestination({ confirm: true, name: selector }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "cli.input.invalid" },
+    });
+    await expect(
+      fresh.deleteDestination({
+        confirm: true,
+        name: selector,
+        presentPlan,
+      }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: { applied: true, deleted: true, state: "deleted" },
+    });
+    expect(fixture.events).toEqual([
+      "inspect:configure",
+      "inspect:configure",
+      "inspect:configure",
+      "apply:configure",
+      "inspect:unconfigure",
+      "inspect:unconfigure",
+      "inspect:unconfigure",
+      "apply:unconfigure",
+      "apply:delete",
+    ]);
+  });
+
+  it("requires explicit recovery after an outcome-unknown lifecycle apply", async () => {
+    const fixture = await localLifecycleFixture(
+      "agentscope-cli-local-recover-",
+    );
+    const services = fixture.createServices();
+    await services.init({ apply: true, presentPlan });
+    await expect(
+      services.recoverDestinationLifecycle({ apply: false, presentPlan }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "configuration.missing" },
+      status: "failure",
+    });
+    fixture.failNextApplyAfterCommit();
+    await expect(
+      services.configureDestination({
+        apply: true,
+        credentialEnvironment: [],
+        name: "local-history",
+        presentPlan,
+        settingsJson: '{"project":"agentscope"}',
+        type: "cli-local",
+      }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "destination.lifecycle-outcome-unknown" },
+    });
+    const fresh = fixture.createServices();
+    await expect(
+      fresh.recoverDestinationLifecycle({ apply: false, presentPlan }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: {
+        applied: false,
+        plan: {
+          destinationType: "@agentscope/destination-cli-local",
+          expectedGeneration: 0,
+          pendingOperation: "configure",
+          recoveryStage: "intent",
+        },
+        state: "planned",
+      },
+    });
+    let presentedValue: unknown;
+    const presented = (value: unknown): Promise<void> => {
+      presentedValue = value;
+      return Promise.resolve();
+    };
+    await expect(
+      fresh.recoverDestinationLifecycle({
+        apply: true,
+        presentPlan: presented,
+      }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: {
+        applied: true,
+        plan: {
+          destinationType: "@agentscope/destination-cli-local",
+          expectedGeneration: 0,
+          pendingOperation: "configure",
+          recoveryStage: "intent",
+        },
+        state: "configured",
+      },
+    });
+    expect(presentedValue).toMatchObject({
+      applied: false,
+      plan: { pendingOperation: "configure" },
+      state: "planned",
+    });
+    expect(fixture.events).toContain("recover:configure");
+  });
+
+  it("maps a package-owned busy refusal without configuration commit", async () => {
+    const fixture = await localLifecycleFixture("agentscope-cli-local-busy-");
+    const services = fixture.createServices();
+    await services.init({ apply: true, presentPlan });
+    fixture.failNextApplyBusy();
+    await expect(
+      services.configureDestination({
+        apply: true,
+        credentialEnvironment: [],
+        name: "local-history",
+        presentPlan,
+        settingsJson: '{"project":"agentscope"}',
+        type: "cli-local",
+      }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "destination.lifecycle-busy" },
+    });
+  });
+
+  it("maps a package-owned reconciliation refusal without configuration commit", async () => {
+    const fixture = await localLifecycleFixture(
+      "agentscope-cli-local-reconciliation-",
+    );
+    const services = fixture.createServices();
+    await services.init({ apply: true, presentPlan });
+    fixture.failNextApplyReconciliation();
+    await expect(
+      services.configureDestination({
+        apply: true,
+        credentialEnvironment: [],
+        name: "local-history",
+        presentPlan,
+        settingsJson: '{"project":"agentscope"}',
+        type: "cli-local",
+      }),
+    ).resolves.toMatchObject({
+      diagnostic: { code: "destination.lifecycle-reconciliation-required" },
     });
   });
 });

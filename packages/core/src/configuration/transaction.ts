@@ -1582,9 +1582,43 @@ export const inspectLocalResourceMutation = async (
   }
 };
 
+export const inspectRecoverableLocalResourceMutationIntent = async (
+  store: ConfigurationStore,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+): Promise<
+  Readonly<{
+    record: LocalResourceMutationRecord;
+    recoveryStage: "completion" | "intent";
+  }>
+> => {
+  const state = stored(store);
+  const completion = await readBoundedFile(
+    state.fileSystem,
+    localResourceCompletionPath(state),
+  );
+  if (completion !== undefined)
+    return Object.freeze({
+      record: parseLocalResourceIntent(completion),
+      recoveryStage: "completion" as const,
+    });
+  const claim = await readBoundedFile(
+    state.fileSystem,
+    localResourceRecoveryClaimPath(state),
+  );
+  if (claim !== undefined) return invalid("core.configuration.conflict");
+  const record = await readLocalResourceIntent(state);
+  const disposition = ownerDisposition(ownerState, record);
+  if (disposition === "live")
+    return invalid("core.configuration.recovery-owner-live");
+  if (disposition !== "dead")
+    return invalid("core.configuration.recovery-owner-unknown");
+  return Object.freeze({ record, recoveryStage: "intent" as const });
+};
+
 export const readRecoverableLocalResourceMutationIntent = async (
   store: ConfigurationStore,
   ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+  expected?: LocalResourceMutationRecord,
 ): Promise<LocalResourceMutationRecord> => {
   const state = stored(store);
   const completion = await readBoundedFile(
@@ -1593,11 +1627,21 @@ export const readRecoverableLocalResourceMutationIntent = async (
   );
   if (completion !== undefined) {
     const record = parseLocalResourceIntent(completion);
+    if (
+      expected !== undefined &&
+      JSON.stringify(record) !== JSON.stringify(expected)
+    )
+      return invalid("core.configuration.conflict");
     completedLocalResourceIntents.add(record);
     localResourceMutationIntentRegistry.add(record);
     return record;
   }
   const record = await readLocalResourceIntent(state);
+  if (
+    expected !== undefined &&
+    JSON.stringify(record) !== JSON.stringify(expected)
+  )
+    return invalid("core.configuration.conflict");
   const disposition = ownerDisposition(ownerState, record);
   if (disposition === "live")
     return invalid("core.configuration.recovery-owner-live");
