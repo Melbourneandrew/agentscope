@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   inspectGitContextForDoctor,
+  projectGitContextForDoctor,
   probeGitForTesting,
   resolveGitContextForCore,
   resolveGitContextForTesting,
@@ -118,6 +119,11 @@ describe("snapshot-bound Git context observations", () => {
         result.unavailable.some(({ field }) => field === "vcs.ref.type"),
       ).toBe(head === null);
       expect(Object.isFrozen(result)).toBe(true);
+      expect(projectGitContextForDoctor(result)).toEqual({
+        head: head === null ? "detached" : "branch",
+        repository: "available",
+        workspace: "available",
+      });
     }
   });
 });
@@ -474,48 +480,6 @@ describe("snapshot-bound Git command timeout closure", () => {
 });
 
 describe("Doctor Git projection", () => {
-  it("reports only closed availability state for a repository", async () => {
-    const { repository } = await fixture();
-    await runFixtureGit(repository, ["init", "-q"]);
-    await runFixtureGit(repository, [
-      "config",
-      "user.email",
-      "fixture@example.invalid",
-    ]);
-    await runFixtureGit(repository, ["config", "user.name", "Fixture"]);
-    await runFixtureGit(repository, [
-      "commit",
-      "--allow-empty",
-      "-qm",
-      "fixture",
-    ]);
-
-    await expect(
-      inspectGitContextForDoctor({
-        gitExecutable: "/usr/bin/git",
-        timeoutMilliseconds: 1_000,
-        workspace: repository,
-      }),
-    ).resolves.toEqual({
-      head: "branch",
-      repository: "available",
-      workspace: "available",
-    });
-
-    await runFixtureGit(repository, ["checkout", "--detach", "-q"]);
-    await expect(
-      inspectGitContextForDoctor({
-        gitExecutable: "/usr/bin/git",
-        timeoutMilliseconds: 1_000,
-        workspace: repository,
-      }),
-    ).resolves.toEqual({
-      head: "detached",
-      repository: "available",
-      workspace: "available",
-    });
-  });
-
   it("collapses an unavailable workspace without exposing its path", async () => {
     await expect(
       inspectGitContextForDoctor({
