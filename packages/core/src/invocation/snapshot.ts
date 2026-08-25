@@ -112,7 +112,7 @@ export type CaptureInvocationPreparationInput = Readonly<{
   signal?: AbortSignal;
 }>;
 
-type ContextResolver = (
+export type ContextResolver = (
   input: Readonly<{
     candidates: readonly WorkspaceCandidate[];
     gitExecutable: string;

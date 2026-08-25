@@ -35,7 +35,9 @@ import {
 } from "../routing/delivery.js";
 import {
   resolveCaptureInvocationSnapshot,
+  resolveCaptureInvocationSnapshotForTesting,
   type CaptureInvocationPreparationInput,
+  type ContextResolver,
   type InvocationPreparationFailure,
 } from "./snapshot.js";
 import {
@@ -742,8 +744,11 @@ const executePreparedLifecycle = async (
   return withEvidence(resolvedRoutingResult(preparation, routing), evidence);
 };
 
-export const runResolvedTraceLifecycle = async (
+const runResolvedTraceLifecycleWithResolver = async (
   input: ResolvedTraceLifecycleInput,
+  resolvePreparation: (
+    input: ResolvedTraceLifecycleInput,
+  ) => ReturnType<typeof resolveCaptureInvocationSnapshot>,
 ): Promise<ResolvedTraceLifecycleResult> => {
   let completedPreparation: Preparation | undefined;
   try {
@@ -757,7 +762,7 @@ export const runResolvedTraceLifecycle = async (
       const failed = configurationFailure();
       return withEvidence(failed, preparationEvidence(failed));
     }
-    const preparation = await resolveCaptureInvocationSnapshot(input);
+    const preparation = await resolvePreparation(input);
     if (!preparation.ok)
       return withEvidence(preparation, preparationEvidence(preparation));
     completedPreparation = preparation;
@@ -785,3 +790,22 @@ export const runResolvedTraceLifecycle = async (
     return withEvidence(failed, preparationEvidence(failed));
   }
 };
+
+export const runResolvedTraceLifecycle = async (
+  input: ResolvedTraceLifecycleInput,
+): Promise<ResolvedTraceLifecycleResult> =>
+  runResolvedTraceLifecycleWithResolver(
+    input,
+    resolveCaptureInvocationSnapshot,
+  );
+
+export const runResolvedTraceLifecycleForTesting = async (
+  input: ResolvedTraceLifecycleInput &
+    Readonly<{ contextResolver: ContextResolver }>,
+): Promise<ResolvedTraceLifecycleResult> =>
+  runResolvedTraceLifecycleWithResolver(input, (value) =>
+    resolveCaptureInvocationSnapshotForTesting({
+      ...value,
+      contextResolver: input.contextResolver,
+    }),
+  );
