@@ -23,6 +23,12 @@ import {
   createConfigurationManagementRuntime,
   createConfigurationProcessIdentity,
   createConfigurationStore,
+  inspectDestinationConfigureLifecyclePlan,
+  inspectDestinationLifecyclePlan,
+  inspectDestinationLifecycleRecoveryPlan,
+  inspectDestinationLocalResourceDoctor,
+  applyDestinationLifecyclePlan,
+  applyDestinationLifecycleRecoveryPlan,
   inspectAgentscopeConfigurationInitialization,
   listDestinationConnections,
   readConfigurationSnapshot,
@@ -32,7 +38,9 @@ import {
   type AgentscopeHome,
   type AgentscopeHomeResolver,
   type ConfigurationStore,
+  type DestinationLifecyclePlan,
 } from "@agentscope/core/configuration-management";
+import { createLocalResourceHomeAuthority } from "@agentscope/core/home-authority";
 import {
   getConfiguredTrace,
   prepareConfiguredDestinationReachability,
@@ -51,6 +59,10 @@ import {
   langfuseDestinationDescriptor,
   type LangfuseDestinationSettings,
 } from "@agentscope/destination-langfuse";
+import {
+  initializeLocalSqliteProductionComposition,
+  localSqliteDestinationDescriptor,
+} from "@agentscope/destination-local-sqlite";
 
 import type { CliDiagnostic, CliOperationResult } from "./cli-contract.js";
 import type {
@@ -64,7 +76,11 @@ import {
 } from "./harness-services.js";
 import type { CliDoctorServices } from "./doctor-commands.js";
 import { createDoctorCliServices } from "./doctor-services.js";
-import type { DestinationReachabilityProbe } from "@agentscope/destinations-core";
+import {
+  compileLocalResourceLifecycleHandlerRegistry,
+  type DestinationReachabilityProbe,
+  type LocalResourceLifecycleHandlerRegistry,
+} from "@agentscope/destinations-core";
 import type { CliTraceServices } from "./trace-commands.js";
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
 
@@ -111,6 +127,19 @@ const mapError = (error: unknown): CliDiagnostic => {
       return diagnostic("unavailable", "destination.credential-unavailable");
     case "core.destination.credential-removal-required":
       return diagnostic("conflict", "destination.credential-removal-required");
+    case "core.destination.lifecycle-busy":
+      return diagnostic("conflict", "destination.lifecycle-busy");
+    case "core.destination.lifecycle-capacity":
+      return diagnostic("unavailable", "destination.lifecycle-capacity");
+    case "core.destination.lifecycle-outcome-unknown":
+      return diagnostic("unavailable", "destination.lifecycle-outcome-unknown");
+    case "core.destination.lifecycle-reconciliation-required":
+      return diagnostic(
+        "conflict",
+        "destination.lifecycle-reconciliation-required",
+      );
+    case "core.destination.lifecycle-unavailable":
+      return diagnostic("unavailable", "destination.lifecycle-unavailable");
     case "core.destination.type-missing":
       return diagnostic("not-found", "destination.type-missing");
     default:
@@ -132,6 +161,7 @@ type ProductionState = Readonly<{
 
 const PRODUCT_DESTINATION_REGISTRY = compileDestinationRegistry([
   langfuseDestinationDescriptor,
+  localSqliteDestinationDescriptor,
 ]);
 
 const requireExactProductDestinationRegistry = (
@@ -143,8 +173,13 @@ const requireExactProductDestinationRegistry = (
         registry,
         langfuseDestinationDescriptor.destinationType,
       ) === langfuseDestinationDescriptor &&
-      registry.descriptors.length === 1 &&
-      registry.descriptors[0] === langfuseDestinationDescriptor
+      getDestinationDescriptor(
+        registry,
+        localSqliteDestinationDescriptor.destinationType,
+      ) === localSqliteDestinationDescriptor &&
+      registry.descriptors.length === 2 &&
+      registry.descriptors[0] === langfuseDestinationDescriptor &&
+      registry.descriptors[1] === localSqliteDestinationDescriptor
     )
       return registry;
   } catch {
@@ -172,9 +207,14 @@ export type CreateProductionCliServicesInput = Readonly<{
 const createState = (
   input: CreateProductionCliServicesInput,
   registry: DestinationRegistry,
+  createLifecycleHandlers: (
+    home: AgentscopeHome,
+    registry: DestinationRegistry,
+  ) => LocalResourceLifecycleHandlerRegistry,
 ): ProductionState => {
   const home = (input.homeResolver ?? createAgentscopeHomeResolver())();
   const store = createConfigurationStore(home, registry);
+  const lifecycleHandlers = createLifecycleHandlers(home, registry);
   const owner = createConfigurationProcessIdentity(
     process.pid,
     `process-start-v1-${randomBytes(32).toString("hex")}`,
@@ -187,7 +227,12 @@ const createState = (
       ]),
     environment: input.environment ?? process.env,
     home,
-    management: createConfigurationManagementRuntime(registry, store, owner),
+    management: createConfigurationManagementRuntime(
+      registry,
+      store,
+      owner,
+      lifecycleHandlers,
+    ),
     owner,
     policyRegistry: input.policyRegistry ?? DEFAULT_REDACTION_POLICY_REGISTRY,
     registry,
@@ -195,6 +240,27 @@ const createState = (
     transportExecutor:
       input.transportExecutor ?? productionDestinationTransportExecutor,
   });
+};
+
+const createProductLifecycleHandlers = (
+  home: AgentscopeHome,
+  registry: DestinationRegistry,
+): LocalResourceLifecycleHandlerRegistry => {
+  const composition = initializeLocalSqliteProductionComposition(
+    createLocalResourceHomeAuthority(home),
+  );
+  const capability = getDestinationDescriptor(
+    registry,
+    localSqliteDestinationDescriptor.destinationType,
+  )?.localResourceLifecycle;
+  if (
+    composition.destinationDescriptor !== localSqliteDestinationDescriptor ||
+    !capability
+  )
+    throw new Error("cli.product-destination-registry.invalid");
+  return compileLocalResourceLifecycleHandlerRegistry(registry, [
+    composition.createLifecycleHandler(capability),
+  ]);
 };
 
 const productionOwnerState =
@@ -316,24 +382,75 @@ const createInitService =
     }
   };
 
+const lifecyclePlanValue = (plan: DestinationLifecyclePlan) =>
+  Object.freeze({
+    destinationType: plan.destinationType,
+    displayPath: plan.displayPath,
+    operation: plan.operation,
+    persistentDataNotice: plan.persistentDataNotice,
+    retentionPolicy: plan.retentionPolicy,
+  });
+
 const createDeleteService =
   (
+    state: ProductionState,
     list: CliConfigurationServices["listDestinations"],
   ): CliConfigurationServices["deleteDestination"] =>
-  async ({ confirm, name }) => {
-    if (!confirm)
-      return failure(
-        diagnostic("conflict", "destination.confirmation-required"),
-      );
+  async ({ confirm, name, presentPlan }) => {
     const listed = await list();
     if (listed.status !== "success") return failure(listed.diagnostic);
+    const connection = listed.value.connections.find(
+      (candidate) => candidate.name === name,
+    );
     if (
-      !listed.value.connections.some((connection) => connection.name === name)
+      connection === undefined &&
+      !/^destination-connection-v1-[0-9a-f]{64}$/u.test(name)
     )
       return failure(diagnostic("not-found", "destination.connection-missing"));
-    return failure(
-      diagnostic("unavailable", "destination.data-delete-unsupported"),
-    );
+    if (connection !== undefined) {
+      const descriptor = getDestinationDescriptor(
+        state.registry,
+        connection.destinationType,
+      );
+      if (!descriptor?.localResourceLifecycle) {
+        if (!confirm)
+          return failure(
+            diagnostic("conflict", "destination.confirmation-required"),
+          );
+        return failure(
+          diagnostic("unavailable", "destination.data-delete-unsupported"),
+        );
+      }
+    }
+    try {
+      const plan = await inspectDestinationLifecyclePlan(
+        state.management,
+        "delete",
+        name,
+        new AbortController().signal,
+      );
+      const planned = {
+        applied: false,
+        deleted: false,
+        plan: lifecyclePlanValue(plan),
+        selector: name,
+        state: "planned" as const,
+      };
+      if (!confirm) return success(planned);
+      if (!presentPlan)
+        return failure(diagnostic("usage", "cli.input.invalid"));
+      await presentPlan(planned);
+      await applyDestinationLifecyclePlan(plan);
+      return success({
+        applied: true,
+        deleted: true,
+        plan: lifecyclePlanValue(plan),
+        selector: name,
+        state: "deleted" as const,
+      });
+    } catch (error) {
+      return failure(mapError(error));
+    }
   };
 
 const createRotateService =
@@ -542,8 +659,13 @@ const createProductionDoctorServices = (
   state: ProductionState,
   input: CreateProductionCliServicesInput,
   harnessServices: CliHarnessServices,
-): CliDoctorServices =>
-  createDoctorCliServices({
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+): CliDoctorServices => {
+  const localResourceDestinationType = state.registry.descriptors.find(
+    (descriptor) =>
+      descriptor.localResourceLifecycle?.operations.includes("doctor") === true,
+  )?.destinationType;
+  return createDoctorCliServices({
     configurationStore: state.store,
     credentialRegistry: state.credentialBackendRegistry,
     credentialResolutionContext: createCredentialResolutionContext(
@@ -561,8 +683,22 @@ const createProductionDoctorServices = (
         workspace: input.workspace ?? process.cwd(),
       }),
     harnessServices,
+    ...(localResourceDestinationType === undefined
+      ? {}
+      : { localResourceDestinationType }),
+    localResourceInspector: async (connectionId, signal) => {
+      const connection = (
+        await listDestinationConnections(state.management)
+      ).find((value) => value.connectionId === connectionId);
+      if (!connection) throw new Error("core.destination.connection-missing");
+      return inspectDestinationLocalResourceDoctor(
+        state.management,
+        connection.name,
+        signal,
+      );
+    },
     operationalStateStore: createOperationalStateStore(state.home, state.owner),
-    ownerState: productionOwnerState(state.owner),
+    ownerState,
     reachabilityProbes: (
       input.reachabilityProbes ?? defaultProductionReachabilityProbes(state)
     ).map((probe) => {
@@ -571,6 +707,7 @@ const createProductionDoctorServices = (
       return probe;
     }),
   });
+};
 
 const createListService =
   (state: ProductionState): CliConfigurationServices["listDestinations"] =>
@@ -584,46 +721,219 @@ const createListService =
     }
   };
 
+const createConfigureService =
+  (state: ProductionState): CliConfigurationServices["configureDestination"] =>
+  async (input) => {
+    try {
+      const signal = new AbortController().signal;
+      const candidate = {
+        commandName: input.type,
+        credentialReferences: parseCredentialEnvironment(
+          input.credentialEnvironment,
+        ),
+        name: input.name,
+        settings: parseSettings(input.settingsJson),
+      };
+      const preflight = createCiEnvironmentCredentialPreflight(
+        state.environment,
+        signal,
+      );
+      const descriptor = state.registry.descriptors.find(
+        (value) => value.commandName === input.type,
+      );
+      if (!descriptor?.localResourceLifecycle) {
+        const configured = await configureDestinationConnection(
+          state.management,
+          candidate,
+          preflight,
+        );
+        return success({
+          applied: true,
+          connection: configured.connection,
+          generation: configured.generation,
+          plan: null,
+          state: "configured",
+        });
+      }
+      const plan = await inspectDestinationConfigureLifecyclePlan(
+        state.management,
+        candidate,
+        signal,
+        preflight,
+      );
+      const planned = {
+        applied: false,
+        connection: null,
+        generation: null,
+        plan: lifecyclePlanValue(plan),
+        state: "planned" as const,
+      };
+      if (input.apply !== true) return success(planned);
+      if (!input.presentPlan)
+        return failure(diagnostic("usage", "cli.input.invalid"));
+      await input.presentPlan(planned);
+      const applied = await applyDestinationLifecyclePlan(plan);
+      const connection = (
+        await listDestinationConnections(state.management)
+      ).find((value) => value.name === applied.name);
+      if (!connection)
+        return failure(
+          diagnostic("unavailable", "destination.lifecycle-outcome-unknown"),
+        );
+      return success({
+        applied: true,
+        connection,
+        generation: applied.generation,
+        plan: lifecyclePlanValue(plan),
+        state: "configured",
+      });
+    } catch (error) {
+      if (
+        error instanceof SyntaxError ||
+        (error instanceof Error && error.message === "cli.input.invalid")
+      )
+        return failure(diagnostic("usage", "cli.input.invalid"));
+      return failure(mapError(error));
+    }
+  };
+
+const createRecoveryService =
+  (
+    state: ProductionState,
+    ownerState: (
+      owner: ConfigurationProcessIdentity,
+    ) => ConfigurationOwnerState,
+  ): CliConfigurationServices["recoverDestinationLifecycle"] =>
+  async ({ apply, presentPlan }) => {
+    try {
+      const plan = await inspectDestinationLifecycleRecoveryPlan(
+        state.management,
+        ownerState,
+        new AbortController().signal,
+      );
+      const planValue = Object.freeze({
+        authorizedGenerations: [...plan.authorizedGenerations],
+        connectionId: plan.connectionId,
+        destinationType: plan.destinationType,
+        expectedGeneration: plan.expectedGeneration,
+        lifecycleFingerprint: plan.lifecycleFingerprint,
+        operationId: plan.operationId,
+        pendingOperation: plan.pendingOperation,
+        recoveryStage: plan.recoveryStage,
+      });
+      const planned = {
+        applied: false,
+        backupSelector: null,
+        generation: null,
+        operation: "recover" as const,
+        plan: planValue,
+        retainedDeleteSelector: null,
+        state: "planned" as const,
+      };
+      if (!apply) return success(planned);
+      await presentPlan(planned);
+      const result = await applyDestinationLifecycleRecoveryPlan(plan);
+      return success({
+        applied: true,
+        backupSelector: result.backupSelector ?? null,
+        generation: result.generation,
+        operation: "recover",
+        plan: planValue,
+        retainedDeleteSelector: result.retainedDeleteSelector ?? null,
+        state: result.state,
+      });
+    } catch (error) {
+      return failure(mapError(error));
+    }
+  };
+
+const createUnconfigureService =
+  (
+    state: ProductionState,
+  ): CliConfigurationServices["unconfigureDestination"] =>
+  async ({ apply, name, presentPlan }) => {
+    try {
+      const connection = (
+        await listDestinationConnections(state.management)
+      ).find((value) => value.name === name);
+      if (!connection)
+        return failure(
+          diagnostic("not-found", "destination.connection-missing"),
+        );
+      const descriptor = getDestinationDescriptor(
+        state.registry,
+        connection.destinationType,
+      );
+      if (!descriptor?.localResourceLifecycle) {
+        const result = await unconfigureDestinationConnection(
+          state.management,
+          name,
+        );
+        return success({
+          applied: true,
+          dataPreserved: true,
+          generation: result.generation,
+          name: result.name,
+          plan: null,
+          retainedDeleteSelector: null,
+          state: "unconfigured",
+        });
+      }
+      const plan = await inspectDestinationLifecyclePlan(
+        state.management,
+        "unconfigure",
+        name,
+        new AbortController().signal,
+      );
+      const planned = {
+        applied: false,
+        dataPreserved: true as const,
+        generation: null,
+        name,
+        plan: lifecyclePlanValue(plan),
+        retainedDeleteSelector: null,
+        state: "planned" as const,
+      };
+      if (apply !== true) return success(planned);
+      if (!presentPlan)
+        return failure(diagnostic("usage", "cli.input.invalid"));
+      await presentPlan(planned);
+      const result = await applyDestinationLifecyclePlan(plan);
+      return success({
+        applied: true,
+        dataPreserved: true,
+        generation: result.generation,
+        name: result.name,
+        plan: lifecyclePlanValue(plan),
+        retainedDeleteSelector: result.retainedDeleteSelector ?? null,
+        state: "retained",
+      });
+    } catch (error) {
+      return failure(mapError(error));
+    }
+  };
+
 const createCliServices = (
   input: CreateProductionCliServicesInput,
   registry: DestinationRegistry,
+  createLifecycleHandlers: (
+    home: AgentscopeHome,
+    registry: DestinationRegistry,
+  ) => LocalResourceLifecycleHandlerRegistry,
+  resolveOwnerState: (
+    state: ProductionState,
+  ) => (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
 ): CliConfigurationServices &
   CliDoctorServices &
   CliHarnessServices &
   CliTraceServices => {
-  const state = createState(input, registry);
+  const state = createState(input, registry, createLifecycleHandlers);
+  const ownerState = resolveOwnerState(state);
   const harnessServices = createHarnessCliServices(input.harnesses);
   const list = createListService(state);
   const services: CliConfigurationServices = {
-    configureDestination: async (input) => {
-      try {
-        return success(
-          await configureDestinationConnection(
-            state.management,
-            {
-              commandName: input.type,
-              credentialReferences: parseCredentialEnvironment(
-                input.credentialEnvironment,
-              ),
-              name: input.name,
-              settings: parseSettings(input.settingsJson),
-            },
-            createCiEnvironmentCredentialPreflight(
-              state.environment,
-              new AbortController().signal,
-            ),
-          ),
-        );
-      } catch (error) {
-        if (
-          error instanceof SyntaxError ||
-          (error instanceof Error && error.message === "cli.input.invalid")
-        )
-          return failure(diagnostic("usage", "cli.input.invalid"));
-        return failure(mapError(error));
-      }
-    },
-    deleteDestination: createDeleteService(list),
+    configureDestination: createConfigureService(state),
+    deleteDestination: createDeleteService(state, list),
     init: createInitService(state),
     inspectDestination: async ({ name }) => {
       const listed = await list();
@@ -681,21 +991,17 @@ const createCliServices = (
         );
       }
     },
-    unconfigureDestination: async ({ name }) => {
-      try {
-        const result = await unconfigureDestinationConnection(
-          state.management,
-          name,
-        );
-        return success({ ...result, dataPreserved: true as const });
-      } catch (error) {
-        return failure(mapError(error));
-      }
-    },
+    recoverDestinationLifecycle: createRecoveryService(state, ownerState),
+    unconfigureDestination: createUnconfigureService(state),
   };
   return Object.freeze({
     ...services,
-    ...createProductionDoctorServices(state, input, harnessServices),
+    ...createProductionDoctorServices(
+      state,
+      input,
+      harnessServices,
+      ownerState,
+    ),
     ...harnessServices,
     ...createTraceServices(state),
   });
@@ -710,12 +1016,28 @@ export const createProductionCliServices = (
   createCliServices(
     input,
     requireExactProductDestinationRegistry(PRODUCT_DESTINATION_REGISTRY),
+    createProductLifecycleHandlers,
+    (state) => productionOwnerState(state.owner),
   );
 
 export const createProductionCliServicesForTesting = (
   input: CreateProductionCliServicesInput &
-    Readonly<{ registry: DestinationRegistry }>,
+    Readonly<{
+      registry: DestinationRegistry;
+      lifecycleHandlers?: LocalResourceLifecycleHandlerRegistry;
+      ownerState?: (
+        owner: ConfigurationProcessIdentity,
+      ) => ConfigurationOwnerState;
+    }>,
 ): CliConfigurationServices &
   CliDoctorServices &
   CliHarnessServices &
-  CliTraceServices => createCliServices(input, input.registry);
+  CliTraceServices =>
+  createCliServices(
+    input,
+    input.registry,
+    (_home, registry) =>
+      input.lifecycleHandlers ??
+      compileLocalResourceLifecycleHandlerRegistry(registry, []),
+    (state) => input.ownerState ?? productionOwnerState(state.owner),
+  );

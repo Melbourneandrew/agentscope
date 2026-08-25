@@ -18,18 +18,26 @@ const settingKeySchema = z
   .max(64)
   .regex(/^[a-z][A-Za-z0-9]*$/u);
 const typeSchema = nameSchema;
+const retainedDeleteSelectorSchema = z
+  .string()
+  .regex(/^destination-connection-v1-[0-9a-f]{64}$/u);
+const deleteSelectorSchema = z.union([
+  nameSchema,
+  retainedDeleteSelectorSchema,
+]);
 const slotAssignmentSchema = z
   .string()
   .min(3)
   .max(194)
   .regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*=[A-Z][A-Z0-9_]{0,127}$/u);
 const jsonTextSchema = z.string().min(2).max(65_536);
+const destinationTypeSchema = z
+  .string()
+  .regex(/^@agentscope\/destination-[a-z0-9]+(?:-[a-z0-9]+)*$/u);
 
 const connectionSchema = z.strictObject({
   connectionId: z.string().regex(/^destination-connection-v1-[0-9a-f]{64}$/u),
-  destinationType: z
-    .string()
-    .regex(/^@agentscope\/destination-[a-z0-9]+(?:-[a-z0-9]+)*$/u),
+  destinationType: destinationTypeSchema,
   name: nameSchema,
   routed: z.boolean(),
   settingsVersion: z.number().int().positive(),
@@ -50,9 +58,31 @@ const initializationValueSchema = z.strictObject({
 });
 export type CliInitializationValue = z.infer<typeof initializationValueSchema>;
 
+const retentionPolicySchema = z.strictObject({
+  maximumAgeNanoseconds: z.string().regex(/^[1-9][0-9]{0,19}$/u),
+  maximumPayloadBytes: z
+    .number()
+    .int()
+    .positive()
+    .max(10 * 1024 ** 3),
+  maximumTraceCount: z.number().int().positive().max(1_000_000),
+  physicalCleanupTrigger: z.literal("next-authorized-mutation"),
+});
+const lifecyclePlanSchema = z.strictObject({
+  destinationType: destinationTypeSchema,
+  displayPath: z.string().min(1).max(4_096),
+  operation: z.enum(["configure", "delete", "unconfigure"]),
+  persistentDataNotice: z.literal(true),
+  retentionPolicy: retentionPolicySchema,
+});
+export type CliDestinationLifecyclePlan = z.infer<typeof lifecyclePlanSchema>;
+
 const configureValueSchema = z.strictObject({
-  connection: connectionSchema,
-  generation: z.number().int().nonnegative(),
+  applied: z.boolean(),
+  connection: connectionSchema.nullable(),
+  generation: z.number().int().nonnegative().nullable(),
+  plan: lifecyclePlanSchema.nullable(),
+  state: z.enum(["configured", "planned"]),
 });
 const listValueSchema = z.strictObject({
   connections: z.array(connectionSchema).max(64),
@@ -64,13 +94,56 @@ const inspectValueSchema = z.strictObject({
   settingKeys: z.array(settingKeySchema).max(64),
 });
 const unconfigureValueSchema = z.strictObject({
+  applied: z.boolean(),
   dataPreserved: z.literal(true),
-  generation: z.number().int().nonnegative(),
+  generation: z.number().int().nonnegative().nullable(),
   name: nameSchema,
+  plan: lifecyclePlanSchema.nullable(),
+  retainedDeleteSelector: retainedDeleteSelectorSchema.nullable(),
+  state: z.enum(["planned", "retained", "unconfigured"]),
 });
 const deleteValueSchema = z.strictObject({
-  deleted: z.literal(true),
-  name: nameSchema,
+  applied: z.boolean(),
+  deleted: z.boolean(),
+  plan: lifecyclePlanSchema.nullable(),
+  selector: deleteSelectorSchema,
+  state: z.enum(["deleted", "planned"]),
+});
+const recoveryPlanSchema = z.strictObject({
+  authorizedGenerations: z.array(z.number().int().nonnegative()).min(1).max(3),
+  connectionId: retainedDeleteSelectorSchema,
+  destinationType: destinationTypeSchema,
+  expectedGeneration: z.number().int().nonnegative(),
+  lifecycleFingerprint: z.string().regex(/^sha256-[0-9a-f]{64}$/u),
+  operationId: z.string().regex(/^(?!0{32}$)[0-9a-f]{32}$/u),
+  pendingOperation: z.enum([
+    "backup",
+    "configure",
+    "delete",
+    "restore",
+    "unconfigure",
+  ]),
+  recoveryStage: z.enum(["completion", "intent"]),
+});
+const recoverValueSchema = z.strictObject({
+  applied: z.boolean(),
+  backupSelector: z
+    .string()
+    .regex(/^(?!0{32}$)[0-9a-f]{32}$/u)
+    .nullable(),
+  generation: z.number().int().nonnegative().nullable(),
+  operation: z.literal("recover"),
+  plan: recoveryPlanSchema,
+  retainedDeleteSelector: retainedDeleteSelectorSchema.nullable(),
+  state: z.enum([
+    "backed-up",
+    "configured",
+    "deleted",
+    "planned",
+    "restored",
+    "retained",
+    "rolled-back",
+  ]),
 });
 const rotateValueSchema = z.strictObject({
   generation: z.number().int().nonnegative(),
@@ -87,8 +160,12 @@ type Result<Value> = CliOperationResult<Value>;
 export type CliConfigurationServices = Readonly<{
   configureDestination: (
     input: Readonly<{
+      apply?: boolean;
       credentialEnvironment: readonly string[];
       name: string;
+      presentPlan?: (
+        value: z.infer<typeof configureValueSchema>,
+      ) => Promise<void>;
       settingsJson: string;
       type: string;
     }>,
@@ -99,6 +176,7 @@ export type CliConfigurationServices = Readonly<{
     input: Readonly<{
       confirm: boolean;
       name: string;
+      presentPlan?: (value: z.infer<typeof deleteValueSchema>) => Promise<void>;
     }>,
   ) =>
     | Result<z.infer<typeof deleteValueSchema>>
@@ -135,10 +213,24 @@ export type CliConfigurationServices = Readonly<{
     | Result<z.infer<typeof routingValueSchema>>
     | Promise<Result<z.infer<typeof routingValueSchema>>>;
   unconfigureDestination: (
-    input: Readonly<{ name: string }>,
+    input: Readonly<{
+      apply?: boolean;
+      name: string;
+      presentPlan?: (
+        value: z.infer<typeof unconfigureValueSchema>,
+      ) => Promise<void>;
+    }>,
   ) =>
     | Result<z.infer<typeof unconfigureValueSchema>>
     | Promise<Result<z.infer<typeof unconfigureValueSchema>>>;
+  recoverDestinationLifecycle: (
+    input: Readonly<{
+      apply: boolean;
+      presentPlan: (value: z.infer<typeof recoverValueSchema>) => Promise<void>;
+    }>,
+  ) =>
+    | Result<z.infer<typeof recoverValueSchema>>
+    | Promise<Result<z.infer<typeof recoverValueSchema>>>;
 }>;
 
 const options = (command: Command): Readonly<Record<string, unknown>> => {
@@ -197,28 +289,41 @@ const configureModule = defineCliCommandModule({
     command
       .argument("<type>", "first-party destination type")
       .requiredOption("--name <name>", "connection name")
+      .option("--yes", "apply the displayed local persistence plan")
       .option("--settings <json>", "non-secret settings JSON", "{}")
       .option(
         "--credential-env <slot=variable...>",
         "bind credential slots to CI environment variables",
       );
   },
-  execute: (services: CliConfigurationServices, input) =>
-    services.configureDestination(input),
-  human: (value) => [
-    `Configured ${connectionLine(value.connection)}.`,
-    `Configuration generation: ${value.generation}`,
-  ],
+  execute: (services: CliConfigurationServices, input, context) =>
+    services.configureDestination({
+      ...input,
+      presentPlan: context.presentPlan,
+    }),
+  human: (value) =>
+    value.connection === null
+      ? [
+          `Local persistence plan: ${value.plan?.displayPath ?? "unavailable"}`,
+          "No changes applied; rerun with --yes after reviewing the plan.",
+        ]
+      : [
+          `Configured ${connectionLine(value.connection)}.`,
+          `Configuration generation: ${value.generation}`,
+        ],
   id: "destination.configure",
   inputSchema: z.strictObject({
+    apply: z.boolean(),
     credentialEnvironment: z.array(slotAssignmentSchema).max(16),
     name: nameSchema,
     settingsJson: jsonTextSchema,
     type: typeSchema,
   }),
-  machineRecords: (value) => [value.connection],
+  machineRecords: (value) =>
+    value.connection === null ? [value] : [value.connection],
   outputSchema: configureValueSchema,
   readInput: (command: Command) => ({
+    apply: option(command, "yes") === true,
     credentialEnvironment: option(command, "credentialEnv") ?? [],
     name: option(command, "name"),
     settingsJson: option(command, "settings"),
@@ -247,19 +352,36 @@ const inspectModule = defineCliCommandModule({
 
 const unconfigureModule = defineCliCommandModule({
   configure: (command: Command) => {
-    command.argument("<name>", "connection name");
+    command
+      .argument("<name>", "connection name")
+      .option("--yes", "apply the displayed local data-retention plan");
   },
-  execute: (services: CliConfigurationServices, input) =>
-    services.unconfigureDestination(input),
-  human: (value) => [
-    `Unconfigured ${value.name}.`,
-    "Destination-owned data was preserved.",
-  ],
+  execute: (services: CliConfigurationServices, input, context) =>
+    services.unconfigureDestination({
+      ...input,
+      presentPlan: context.presentPlan,
+    }),
+  human: (value) =>
+    value.applied
+      ? [
+          `Unconfigured ${value.name}.`,
+          "Destination-owned data was preserved.",
+          ...(value.retainedDeleteSelector === null
+            ? []
+            : [`Retained delete selector: ${value.retainedDeleteSelector}`]),
+        ]
+      : [
+          `Local retention plan: ${value.plan?.displayPath ?? "unavailable"}`,
+          "No changes applied; rerun with --yes after reviewing the plan.",
+        ],
   id: "destination.unconfigure",
-  inputSchema: z.strictObject({ name: nameSchema }),
+  inputSchema: z.strictObject({ apply: z.boolean(), name: nameSchema }),
   machineRecords: (value) => [value],
   outputSchema: unconfigureValueSchema,
-  readInput: (command: Command) => ({ name: argument(command, 0) }),
+  readInput: (command: Command) => ({
+    apply: option(command, "yes") === true,
+    name: argument(command, 0),
+  }),
 });
 
 const deleteModule = defineCliCommandModule({
@@ -271,17 +393,47 @@ const deleteModule = defineCliCommandModule({
         "confirm deletion of the exact owned local data file",
       );
   },
-  execute: (services: CliConfigurationServices, input) =>
-    services.deleteDestination(input),
-  human: (value) => [`Deleted the exact owned data file for ${value.name}.`],
+  execute: (services: CliConfigurationServices, input, context) =>
+    services.deleteDestination({ ...input, presentPlan: context.presentPlan }),
+  human: (value) =>
+    value.applied
+      ? [`Deleted the exact owned data for ${value.selector}.`]
+      : [
+          `Local deletion plan: ${value.plan?.displayPath ?? "unavailable"}`,
+          "No data deleted; rerun with --confirm after reviewing the plan.",
+        ],
   id: "destination.delete",
-  inputSchema: z.strictObject({ confirm: z.boolean(), name: nameSchema }),
+  inputSchema: z.strictObject({
+    confirm: z.boolean(),
+    name: deleteSelectorSchema,
+  }),
   machineRecords: (value) => [value],
   outputSchema: deleteValueSchema,
   readInput: (command: Command) => ({
     confirm: option(command, "confirm") === true,
     name: argument(command, 0),
   }),
+});
+
+const recoverModule = defineCliCommandModule({
+  configure: (command: Command) => {
+    command.option("--yes", "recover the exact pending local lifecycle intent");
+  },
+  execute: (services: CliConfigurationServices, input, context) =>
+    services.recoverDestinationLifecycle({
+      ...input,
+      presentPlan: context.presentPlan,
+    }),
+  human: (value) => [
+    value.applied
+      ? `Recovered local lifecycle state: ${value.state}.`
+      : `Local lifecycle recovery plan: ${value.plan.pendingOperation} for ${value.plan.destinationType} generation ${value.plan.expectedGeneration} (no changes applied).`,
+  ],
+  id: "destination.recover",
+  inputSchema: z.strictObject({ apply: z.boolean() }),
+  machineRecords: (value) => [value],
+  outputSchema: recoverValueSchema,
+  readInput: (command: Command) => ({ apply: option(command, "yes") === true }),
 });
 
 const rotateModule = defineCliCommandModule({
@@ -353,6 +505,7 @@ export const configurationCommandModules: readonly RuntimeCliCommandModule[] =
     initModule,
     configureModule,
     deleteModule,
+    recoverModule,
     inspectModule,
     listModule,
     rotateModule,

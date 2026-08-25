@@ -1,0 +1,38 @@
+---
+title: Recover Local SQLite lifecycle state
+description: Inspect or recover one exact pending Local SQLite lifecycle mutation.
+command: agentscope destination recover
+commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
+---
+
+Recovery is a separate, explicit Local SQLite command. Without authority it performs no mutation. `--yes` writes the content-free plan to stderr before Core claims and dispatches the exact durable intent to the package-owned versioned recovery handler. Doctor may recommend this command but never runs it automatically.
+
+## Syntax
+
+```bash
+agentscope destination recover [--yes] [--output human|json|jsonl]
+```
+
+## Output and exits
+
+Without `--yes`, `human`, `json`, and `jsonl` report `operation: recover`, `state: planned`, `applied: false`, and the exact pending operation, destination type, opaque connection and operation identities, lifecycle fingerprint, recovery stage, and authorized configuration generations. Applied output uses `agentscope.cli.destination-recover.v1`, retains that inspected plan, and adds only the terminal state, generation, and any opaque retained-delete or backup selector.
+
+## Automation
+
+Recovery accepts no path, destination callback, native handle, or arbitrary intent identifier. Core read-only inspects one authenticated recoverable intent under the owned configuration transaction and the registered Local lifecycle handler, then mints a one-use plan authority. `--yes` revalidates and consumes that same authority before it claims or dispatches the intent; substitution requires a new inspection and confirmation. A missing, live-owner, mismatched, malformed, or unknown-handler claim fails closed.
+
+## Diagnostics
+
+- `configuration.conflict`, `configuration.missing`, and `configuration.unavailable` describe the Core configuration boundary.
+- `destination.lifecycle-busy` means a live lifecycle owner or lock still holds authority.
+- `destination.lifecycle-capacity` reports a bounded maintenance capacity failure.
+- `destination.lifecycle-outcome-unknown` means recovery may have crossed its durable permission boundary without a provable terminal result.
+- `destination.lifecycle-reconciliation-required` means the exact artifact/claim inventory cannot be advanced automatically.
+- `destination.lifecycle-unavailable` means no admitted handler or stable inspection authority is available.
+
+## Examples
+
+```bash
+agentscope destination recover
+agentscope destination recover --yes
+```

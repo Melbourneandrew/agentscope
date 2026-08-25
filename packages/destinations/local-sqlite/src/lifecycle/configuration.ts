@@ -844,9 +844,12 @@ const recoverWithPort = async (
 
 const createHandler = (
   capability: LocalResourceLifecycleCapability,
-  port: LocalSqliteLifecyclePort | undefined,
-  maintenancePort?: LocalSqliteMaintenancePort,
-  maximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
+  resolvePorts: () => Readonly<{
+    lifecyclePort: LocalSqliteLifecyclePort | undefined;
+    maintenancePort: LocalSqliteMaintenancePort | undefined;
+    maximumSnapshotBytes: number;
+  }>,
+  declaredMaximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
   // eslint-disable-next-line max-lines-per-function -- one handler binds the complete versioned Local SQLite lifecycle family.
 ): LocalResourceLifecycleHandler => {
   if (
@@ -854,13 +857,14 @@ const createHandler = (
     capability.destinationType !== LOCAL_SQLITE_DESTINATION_TYPE ||
     capability.artifactGrammarFingerprint !==
       localSqliteLifecycleArtifactGrammarFingerprintForTesting(
-        maximumSnapshotBytes,
+        declaredMaximumSnapshotBytes,
       )
   )
     throw new LocalSqliteLifecycleError("reconciliation-required");
   return defineLocalResourceLifecycleHandler({
     capability,
     complete: async (operation, operationId, signal) => {
+      const { lifecyclePort: port, maintenancePort } = resolvePorts();
       if (operation === "backup" || operation === "restore") {
         if (!maintenancePort)
           throw new LocalSqliteLifecycleError("unavailable");
@@ -875,6 +879,7 @@ const createHandler = (
       requireActive(signal);
     },
     inspectPlan: async (context) => {
+      const { lifecyclePort: port } = resolvePorts();
       if (!port) throw new LocalSqliteLifecycleError("unavailable");
       const evidence = await port.inspect(context);
       if (!policyEvidenceMatchesContext(context, evidence))
@@ -882,6 +887,7 @@ const createHandler = (
       return evidence;
     },
     inspectRetainedDelete: async (connectionId, signal) => {
+      const { lifecyclePort: port } = resolvePorts();
       if (!port) throw new LocalSqliteLifecycleError("unavailable");
       const result = await port.inspectRetainedDelete(connectionId, signal);
       return result === null
@@ -895,6 +901,7 @@ const createHandler = (
           });
     },
     apply: (context) => {
+      const { lifecyclePort: port } = resolvePorts();
       if (!port)
         return Promise.resolve(
           Object.freeze({
@@ -905,8 +912,9 @@ const createHandler = (
         );
       return applyWithPort(capability, port, context);
     },
-    recover: (context) =>
-      port
+    recover: (context) => {
+      const { lifecyclePort: port } = resolvePorts();
+      return port
         ? recoverWithPort(capability, port, context)
         : Promise.resolve(
             Object.freeze({
@@ -914,16 +922,19 @@ const createHandler = (
               state: "unchanged" as const,
               code: "unavailable" as const,
             }),
-          ),
+          );
+    },
     inspectMaintenancePlan: async (context) => {
+      const { maintenancePort } = resolvePorts();
       if (!maintenancePort) throw new LocalSqliteLifecycleError("unavailable");
       const evidence = await maintenancePort.inspectMaintenance(context);
       if (!policyEvidenceMatchesContext(context, evidence.planEvidence))
         throw new LocalSqliteLifecycleError("reconciliation-required");
       return evidence;
     },
-    applyMaintenance: (context) =>
-      maintenancePort
+    applyMaintenance: (context) => {
+      const { maintenancePort, maximumSnapshotBytes } = resolvePorts();
+      return maintenancePort
         ? applyLocalSqliteMaintenance(
             capability.fingerprint,
             capability.recoveryHandlerId,
@@ -937,9 +948,11 @@ const createHandler = (
               state: "unchanged" as const,
               code: "unavailable" as const,
             }),
-          ),
-    recoverMaintenance: (context) =>
-      maintenancePort
+          );
+    },
+    recoverMaintenance: (context) => {
+      const { maintenancePort, maximumSnapshotBytes } = resolvePorts();
+      return maintenancePort
         ? recoverLocalSqliteMaintenance(
             capability.fingerprint,
             capability.recoveryHandlerId,
@@ -953,8 +966,10 @@ const createHandler = (
               state: "unchanged" as const,
               code: "unavailable" as const,
             }),
-          ),
+          );
+    },
     inspectDoctor: async (context) => {
+      const { maintenancePort } = resolvePorts();
       if (!maintenancePort) throw new LocalSqliteLifecycleError("unavailable");
       const inspection = await inspectLocalSqliteDoctor(
         maintenancePort,
@@ -977,6 +992,13 @@ const createHandler = (
 let productionLifecyclePort: LocalSqliteLifecyclePort | undefined;
 let productionMaintenancePort: LocalSqliteMaintenancePort | undefined;
 let productionMaximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES;
+const resolveProductionPorts = () => {
+  return Object.freeze({
+    lifecyclePort: productionLifecyclePort,
+    maintenancePort: productionMaintenancePort,
+    maximumSnapshotBytes: productionMaximumSnapshotBytes,
+  });
+};
 
 export const bindLocalSqliteProductionLifecyclePorts = (
   port: LocalSqliteLifecyclePort,
@@ -997,12 +1019,18 @@ export const bindLocalSqliteProductionLifecyclePorts = (
 export const createLocalSqliteLifecycleHandler = (
   capability: LocalResourceLifecycleCapability,
 ): LocalResourceLifecycleHandler =>
-  createHandler(
-    capability,
-    productionLifecyclePort,
-    productionMaintenancePort,
-    productionMaximumSnapshotBytes,
-  );
+  createHandler(capability, resolveProductionPorts);
+
+export const createLocalSqliteLifecycleHandlerWithInitializer = (
+  capability: LocalResourceLifecycleCapability,
+  initialize: () => void,
+): LocalResourceLifecycleHandler =>
+  createHandler(capability, () => {
+    if (typeof initialize !== "function")
+      throw new LocalSqliteLifecycleError("unavailable");
+    if (productionLifecyclePort === undefined) initialize();
+    return resolveProductionPorts();
+  });
 
 export const createLocalSqliteLifecycleHandlerForTesting = (
   capability: LocalResourceLifecycleCapability,
@@ -1010,5 +1038,14 @@ export const createLocalSqliteLifecycleHandlerForTesting = (
   maintenancePort?: LocalSqliteMaintenancePort,
   maximumSnapshotBytes = LOCAL_SQLITE_MAXIMUM_SNAPSHOT_BYTES,
 ): LocalResourceLifecycleHandler =>
-  createHandler(capability, port, maintenancePort, maximumSnapshotBytes);
+  createHandler(
+    capability,
+    () =>
+      Object.freeze({
+        lifecyclePort: port,
+        maintenancePort,
+        maximumSnapshotBytes,
+      }),
+    maximumSnapshotBytes,
+  );
 import { createHash } from "node:crypto";

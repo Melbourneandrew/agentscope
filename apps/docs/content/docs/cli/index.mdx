@@ -2,14 +2,14 @@
 title: Agentscope CLI
 description: Root command, output modes, diagnostics, and exit behavior.
 command: agentscope
-commandContract: sha256:b1b1531522c2607eab103adfa7fd6198a1875866064093b40eabf13b0d5195e1
+commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
 ---
 
 The `agentscope` command is the composition root for capture, configuration, installation, destination, retrieval, and diagnostic workflows. The currently shipped configuration surface is plan-first: `init` does not mutate without `--yes`, destination configuration is descriptor-driven, and routing is always explicit.
 
 ## Current availability
 
-This release establishes the generic CLI and Core composition contracts. The packed production registry intentionally contains no concrete destination descriptors or harness adapters yet. Destination commands that require a provider return `destination.type-missing`; harness commands report an empty roster or `harness.adapter-missing`. `doctor` still inspects configuration, recovery, credential, retained health, and Git state, while declaring absent destination and harness integrations rather than inventing evidence. The first-party Langfuse and Local SQLite packages, followed by the seven real harness adapters, are separate delivery phases. Their provider- and harness-specific user-facing acceptance criteria remain planned until those packages are registered and pack-tested end to end.
+The packed production registry contains the reviewed Langfuse and Local SQLite destination descriptors. Local SQLite lifecycle commands remain gated by the exact native/platform candidate manifest and fail closed when that runtime is unavailable; descriptor presence alone is not a support claim. The packed harness registry remains empty until actual executable adapters complete their separate acceptance gates. `doctor` inspects configuration, recovery, credential, retained health, destination state, and Git state without inventing remote-provider or unsupported-platform evidence.
 
 ## Syntax
 

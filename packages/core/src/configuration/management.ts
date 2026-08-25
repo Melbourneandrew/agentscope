@@ -73,12 +73,14 @@ import {
   readRecoverableLocalResourceMutationIntent,
   recoverAbandonedConfigurationTransaction,
   inspectConfigurationTransaction,
+  inspectRecoverableLocalResourceMutationIntent,
   isLocalResourceMutationCompletion,
   finalizeLocalResourceMutationCompletion,
   writeConfigurationSnapshot,
   type ConfigurationProcessIdentity,
   type ConfigurationStore,
   type ConfigurationOwnerState,
+  type LocalResourceMutationRecord,
 } from "./transaction.js";
 import { cloneConfigurationDocument } from "./plain-data.js";
 
@@ -142,6 +144,18 @@ const destinationMaintenancePlans = new WeakMap<
   }>
 >();
 const consumedDestinationMaintenancePlans = new WeakSet<object>();
+const destinationLifecycleRecoveryPlans = new WeakMap<
+  object,
+  Readonly<{
+    runtime: ConfigurationManagementRuntime;
+    ownerState: (
+      owner: ConfigurationProcessIdentity,
+    ) => ConfigurationOwnerState;
+    signal: AbortSignal;
+    intent: LocalResourceMutationRecord;
+  }>
+>();
+const consumedDestinationLifecycleRecoveryPlans = new WeakSet<object>();
 
 export type ConfigurationManagementRuntime = Readonly<{
   readonly configurationManagement: "agentscope-core";
@@ -183,6 +197,19 @@ export type DestinationMaintenanceResult = Readonly<{
   connectionName: string;
   state: "backed-up" | "restored";
   backupSelector: string;
+}>;
+
+export type DestinationLifecycleRecoveryPlan = Readonly<{
+  readonly authorizedGenerations: readonly number[];
+  readonly destinationLifecycleRecoveryPlan: "agentscope-core";
+  readonly connectionId: string;
+  readonly destinationType: string;
+  readonly expectedGeneration: number;
+  readonly lifecycleFingerprint: string;
+  readonly operationId: string;
+  readonly pendingOperation:
+    "backup" | "configure" | "delete" | "restore" | "unconfigure";
+  readonly recoveryStage: "completion" | "intent";
 }>;
 
 export type DestinationDoctorInspection = Readonly<{
@@ -1485,10 +1512,124 @@ export const applyDestinationLifecyclePlan = async (
   });
 };
 
-export const recoverDestinationLifecycleMutation = async (
+const recoveryInspectionError = (error: unknown): never => {
+  if (error instanceof ConfigurationManagementError) throw error;
+  if (!(error instanceof ConfigurationStoreError))
+    return invalid("core.destination.lifecycle-unavailable");
+  if (error.code === "core.configuration.missing")
+    return invalid("core.configuration.missing");
+  if (error.code === "core.configuration.recovery-owner-live")
+    return invalid("core.destination.lifecycle-busy");
+  if (
+    error.code === "core.configuration.conflict" ||
+    error.code === "core.configuration.contention" ||
+    error.code === "core.configuration.invalid"
+  )
+    return invalid("core.destination.lifecycle-reconciliation-required");
+  return invalid("core.destination.lifecycle-unavailable");
+};
+
+export const inspectDestinationLifecycleRecoveryPlan = async (
   runtime: ConfigurationManagementRuntime,
   ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
   signal: AbortSignal,
+): Promise<DestinationLifecycleRecoveryPlan> => {
+  const state = stored(runtime);
+  if (
+    !state.lifecycleHandlers ||
+    !(signal instanceof AbortSignal) ||
+    signalAborted(signal)
+  )
+    return invalid("core.destination.lifecycle-unavailable");
+  let intent: LocalResourceMutationRecord;
+  let recoveryStage: DestinationLifecycleRecoveryPlan["recoveryStage"];
+  try {
+    const inspection = await inspectRecoverableLocalResourceMutationIntent(
+      state.store,
+      ownerState,
+    );
+    intent = inspection.record;
+    recoveryStage = inspection.recoveryStage;
+    const descriptor = getDestinationDescriptor(
+      state.registry,
+      intent.destinationType,
+    );
+    const declared = descriptor?.localResourceLifecycle;
+    const registered = getLocalResourceLifecycleHandlerCapability(
+      state.lifecycleHandlers,
+      intent.destinationType,
+    );
+    if (
+      !declared ||
+      !registered ||
+      declared.fingerprint !== registered.fingerprint ||
+      declared.recoveryHandlerId !== registered.recoveryHandlerId ||
+      !declared.operations.includes("recover") ||
+      !registered.operations.includes("recover") ||
+      intent.lifecycleFingerprint !== registered.fingerprint ||
+      intent.recoveryHandlerId !== registered.recoveryHandlerId
+    )
+      return invalid("core.destination.lifecycle-reconciliation-required");
+    const transaction = await inspectConfigurationTransaction(
+      state.store,
+      ownerState,
+    );
+    if (
+      transaction.state !== "clean" &&
+      !(transaction.state === "recoverable" && intent.recordVersion === 1)
+    )
+      return invalid("core.destination.lifecycle-reconciliation-required");
+    const current = await readConfigurationSnapshot(state.store);
+    const currentIdentity = Object.freeze({
+      digest: snapshotDigest(current),
+      generation: current.generation,
+    });
+    const authorizedIdentities = [
+      Object.freeze({
+        digest: intent.expectedDigest,
+        generation: intent.expectedGeneration,
+      }),
+      ...intent.authorizedCandidates,
+    ];
+    if (
+      !authorizedIdentities.some(
+        ({ digest, generation }) =>
+          digest === currentIdentity.digest &&
+          generation === currentIdentity.generation,
+      )
+    )
+      return invalid("core.destination.lifecycle-reconciliation-required");
+  } catch (error) {
+    return recoveryInspectionError(error);
+  }
+  const plan = Object.freeze({
+    authorizedGenerations: Object.freeze([
+      intent.expectedGeneration,
+      ...intent.authorizedCandidates.map(({ generation }) => generation),
+    ]),
+    connectionId: intent.connectionId,
+    destinationLifecycleRecoveryPlan: "agentscope-core" as const,
+    destinationType: intent.destinationType,
+    expectedGeneration: intent.expectedGeneration,
+    lifecycleFingerprint: intent.lifecycleFingerprint,
+    operationId: intent.operationId,
+    pendingOperation: intent.operation,
+    recoveryStage,
+  });
+  destinationLifecycleRecoveryPlans.set(plan, {
+    intent,
+    ownerState,
+    runtime,
+    signal,
+  });
+  return plan;
+};
+
+const recoverDestinationLifecycleMutationInternal = async (
+  runtime: ConfigurationManagementRuntime,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+  signal: AbortSignal,
+  expectedIntent?: LocalResourceMutationRecord,
 ): Promise<
   Readonly<{
     generation: number;
@@ -1516,6 +1657,7 @@ export const recoverDestinationLifecycleMutation = async (
     intent = await readRecoverableLocalResourceMutationIntent(
       state.store,
       ownerState,
+      expectedIntent,
     );
     const transaction = await inspectConfigurationTransaction(
       state.store,
@@ -1722,6 +1864,28 @@ export const recoverDestinationLifecycleMutation = async (
       : {}),
   });
 };
+
+export const applyDestinationLifecycleRecoveryPlan = async (
+  plan: DestinationLifecycleRecoveryPlan,
+): ReturnType<typeof recoverDestinationLifecycleMutationInternal> => {
+  const authority = destinationLifecycleRecoveryPlans.get(plan);
+  if (!authority || consumedDestinationLifecycleRecoveryPlans.has(plan))
+    return invalid();
+  consumedDestinationLifecycleRecoveryPlans.add(plan);
+  return recoverDestinationLifecycleMutationInternal(
+    authority.runtime,
+    authority.ownerState,
+    authority.signal,
+    authority.intent,
+  );
+};
+
+export const recoverDestinationLifecycleMutation = async (
+  runtime: ConfigurationManagementRuntime,
+  ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+  signal: AbortSignal,
+): ReturnType<typeof recoverDestinationLifecycleMutationInternal> =>
+  recoverDestinationLifecycleMutationInternal(runtime, ownerState, signal);
 
 export const unconfigureDestinationConnection = async (
   runtime: ConfigurationManagementRuntime,

@@ -74,6 +74,10 @@ export const CLI_DOCTOR_FINDING_CODES = Object.freeze([
   "doctor.destination.available",
   "doctor.destination.unavailable",
   "doctor.destination.probe-unsupported",
+  "doctor.destination.local-resource.available",
+  "doctor.destination.local-resource.reconciliation-required",
+  "doctor.destination.local-resource.recovery-required",
+  "doctor.destination.local-resource.unavailable",
   "doctor.git.available",
   "doctor.git.detached",
   "doctor.git.workspace-unavailable",
@@ -130,7 +134,37 @@ export const doctorActionSchema = z.enum([
   "reconcile-recovery-claim",
   "inspect-configuration-conflict",
   "inspect-destination",
+  "recover-local-resource",
 ]);
+const localResourceDoctorEvidenceSchema = z.strictObject({
+  backupState: z.enum(["available", "reconciliation-required", "unavailable"]),
+  databaseDerivedRetention: z.strictObject({
+    clockContinuity: z.literal("unavailable"),
+    cutoff: z.literal("unavailable"),
+    payloadBytes: z.literal("unavailable"),
+    rowCount: z.literal("unavailable"),
+  }),
+  databaseState: z.enum(["present", "missing", "unavailable"]),
+  lifecycleState: z.enum([
+    "clean",
+    "busy",
+    "reconciliation-required",
+    "recovery-required",
+    "unavailable",
+  ]),
+  publishedBackupCount: z.number().int().nonnegative().max(8).nullable(),
+  retentionPolicy: z.strictObject({
+    maximumAgeNanoseconds: z.string().regex(/^[1-9][0-9]{0,19}$/u),
+    maximumPayloadBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(10 * 1024 ** 3),
+    maximumTraceCount: z.number().int().positive().max(1_000_000),
+    physicalCleanupTrigger: z.literal("next-authorized-mutation"),
+  }),
+  sharedLeaseCount: z.number().int().nonnegative().max(64).nullable(),
+});
 export const doctorEvidenceSchema = z.strictObject({
   count: z.number().int().nonnegative().max(4_096).nullable(),
   freshness: z.enum(["current", "retained", "unavailable"]),
@@ -140,6 +174,7 @@ export const doctorEvidenceSchema = z.strictObject({
     .nonnegative()
     .max(Number.MAX_SAFE_INTEGER)
     .nullable(),
+  localResource: localResourceDoctorEvidenceSchema.optional(),
   scope: z.enum([
     "configuration",
     "transaction",

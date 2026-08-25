@@ -14,6 +14,7 @@ import {
   type DoctorReport,
   type OperationalStateStore,
 } from "@agentscope/core";
+import type { DestinationDoctorInspection } from "@agentscope/core/configuration-management";
 import {
   isDestinationReachabilityProbe,
   type DestinationReachabilityProbe,
@@ -44,6 +45,11 @@ export type CreateDoctorCliServicesInput = Readonly<{
   harnessServices: CliHarnessServices;
   operationalStateStore: OperationalStateStore;
   ownerState: (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState;
+  localResourceInspector?: (
+    connectionId: string,
+    signal: AbortSignal,
+  ) => Promise<DestinationDoctorInspection>;
+  localResourceDestinationType?: string;
   reachabilityProbes?: readonly DestinationReachabilityProbe[];
 }>;
 
@@ -346,9 +352,67 @@ const inspectOneDestination = async (
   );
 };
 
+const inspectOneLocalResource = async (
+  connection: DoctorReport["connections"][number],
+  inspect: NonNullable<CreateDoctorCliServicesInput["localResourceInspector"]>,
+): Promise<CliDoctorFinding> => {
+  let inspection: DestinationDoctorInspection["inspection"] | undefined;
+  try {
+    const result = await inspect(
+      connection.connectionId,
+      new AbortController().signal,
+    );
+    if (result.destinationType === connection.destinationType)
+      inspection = result.inspection;
+  } catch {
+    inspection = undefined;
+  }
+  const state = inspection?.state ?? "unavailable";
+  const localResource =
+    inspection === undefined
+      ? undefined
+      : Object.freeze({
+          backupState: inspection.backupState,
+          databaseDerivedRetention: inspection.databaseDerivedRetention,
+          databaseState: inspection.databaseState,
+          lifecycleState: inspection.lifecycleState,
+          publishedBackupCount: inspection.publishedBackupCount,
+          retentionPolicy: inspection.retentionPolicy,
+          sharedLeaseCount: inspection.sharedLeaseCount,
+        });
+  const action =
+    state === "recovery-required"
+      ? "recover-local-resource"
+      : state === "reconciliation-required"
+        ? "reconcile-recovery-claim"
+        : state === "available"
+          ? "none"
+          : "inspect-destination";
+  return finding(
+    `doctor.destination.local-resource.${state}`,
+    state === "available"
+      ? "info"
+      : state === "unavailable"
+        ? "warning"
+        : "error",
+    action,
+    evidence({
+      count: null,
+      freshness: inspection === undefined ? "unavailable" : "current",
+      lossCount: null,
+      ...(localResource === undefined ? {} : { localResource }),
+      scope: "destination",
+      state,
+      subject: connection.connectionId,
+      version: null,
+    }),
+  );
+};
+
 const inspectDestinations = (
   report: DoctorReport,
   probes: ReadonlyMap<string, DestinationReachabilityProbe["inspect"]>,
+  input: CreateDoctorCliServicesInput,
 ): Promise<readonly CliDoctorFinding[]> => {
   if (report.connections.length === 0)
     return Promise.resolve(
@@ -370,8 +434,16 @@ const inspectDestinations = (
       ]),
     );
   return Promise.all(
-    report.connections.map((connection) =>
-      inspectOneDestination(
+    report.connections.map((connection) => {
+      if (
+        input.localResourceInspector &&
+        connection.destinationType === input.localResourceDestinationType
+      )
+        return inspectOneLocalResource(
+          connection,
+          input.localResourceInspector,
+        );
+      return inspectOneDestination(
         connection,
         report.configuration.state === "valid"
           ? report.configuration.generation
@@ -380,8 +452,8 @@ const inspectDestinations = (
           ? report.configuration.identity
           : "unavailable",
         probes.get(connection.destinationType),
-      ),
-    ),
+      );
+    }),
   );
 };
 
@@ -477,7 +549,7 @@ const inspectAll = async (
   });
   const [harnesses, destinations, git] = await Promise.all([
     inspectHarnesses(input.harnessServices),
-    inspectDestinations(core, probes),
+    inspectDestinations(core, probes, input),
     input.gitInspector().catch(() =>
       Object.freeze({
         head: "unavailable" as const,

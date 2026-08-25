@@ -77,15 +77,16 @@ import { runOperationalCoordinatorForTesting } from "./dist/invocation/operation
 import { isRedactedCanonicalTrace } from "../protocol/dist/index.js";
 import {
   applyAgentscopeConfigurationInitialization,
+  applyDestinationLifecycleRecoveryPlan,
   applyDestinationLifecyclePlan,
   applyDestinationMaintenancePlan,
   createConfigurationManagementRuntime,
   inspectAgentscopeConfigurationInitialization,
   inspectDestinationConfigureLifecyclePlan,
   inspectDestinationLifecyclePlan,
+  inspectDestinationLifecycleRecoveryPlan,
   inspectDestinationLocalResourceDoctor,
   inspectDestinationMaintenancePlan,
-  recoverDestinationLifecycleMutation,
 } from "./dist/configuration/management-index.js";
 
 // Artifact verification runs inside the aggregate Nx graph, where process
@@ -1310,10 +1311,12 @@ try {
 }
 failLifecycleCompletion = true;
 try {
-  await recoverDestinationLifecycleMutation(
-    lifecycleArtifactRuntime,
-    () => "dead",
-    new AbortController().signal,
+  await applyDestinationLifecycleRecoveryPlan(
+    await inspectDestinationLifecycleRecoveryPlan(
+      lifecycleArtifactRuntime,
+      () => "dead",
+      new AbortController().signal,
+    ),
   );
   throw new Error("Built Core rolled-back completion crash was not surfaced.");
 } catch (error) {
@@ -1322,21 +1325,30 @@ try {
 const builtCompletionBytes = readFileSync(lifecycleCompletionPath, "utf8");
 substituteTerminalOnCompletion = true;
 try {
-  await recoverDestinationLifecycleMutation(
-    lifecycleArtifactRuntime,
-    () => "unknown",
-    new AbortController().signal,
+  await applyDestinationLifecycleRecoveryPlan(
+    await inspectDestinationLifecycleRecoveryPlan(
+      lifecycleArtifactRuntime,
+      () => "unknown",
+      new AbortController().signal,
+    ),
   );
   throw new Error("Built Core terminal-state substitution was accepted.");
 } catch (error) {
   if (error?.code !== "core.destination.lifecycle-outcome-unknown") throw error;
 }
 writeFileSync(lifecycleCompletionPath, builtCompletionBytes);
-const recoveredRollback = await recoverDestinationLifecycleMutation(
+const rollbackRecoveryPlan = await inspectDestinationLifecycleRecoveryPlan(
   lifecycleArtifactRuntime,
   () => "unknown",
   new AbortController().signal,
 );
+if (
+  rollbackRecoveryPlan.pendingOperation !== "backup" ||
+  rollbackRecoveryPlan.recoveryStage !== "completion"
+)
+  throw new Error("Built Core recovery plan authority drifted.");
+const recoveredRollback =
+  await applyDestinationLifecycleRecoveryPlan(rollbackRecoveryPlan);
 if (
   recoveredRollback.state !== "rolled-back" ||
   "backupSelector" in recoveredRollback ||
@@ -1357,11 +1369,18 @@ try {
 } catch (error) {
   if (error?.code !== "core.destination.lifecycle-outcome-unknown") throw error;
 }
-const recoveredRetained = await recoverDestinationLifecycleMutation(
+const retainedRecoveryPlan = await inspectDestinationLifecycleRecoveryPlan(
   lifecycleArtifactRuntime,
   () => "unknown",
   new AbortController().signal,
 );
+if (
+  retainedRecoveryPlan.pendingOperation !== "unconfigure" ||
+  retainedRecoveryPlan.recoveryStage !== "completion"
+)
+  throw new Error("Built Core retained recovery plan authority drifted.");
+const recoveredRetained =
+  await applyDestinationLifecycleRecoveryPlan(retainedRecoveryPlan);
 if (
   recoveredRetained.state !== "retained" ||
   !/^destination-connection-v1-[0-9a-f]{64}$/u.test(

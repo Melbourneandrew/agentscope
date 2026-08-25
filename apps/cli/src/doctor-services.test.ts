@@ -279,6 +279,7 @@ describe("Doctor CLI composition", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one group owns the complete closed destination inspection matrix.
 describe("Doctor destination composition", () => {
   it("runs a bounded declared reachability probe for one configured connection", async () => {
     const probes: unknown[] = [];
@@ -316,6 +317,82 @@ describe("Doctor destination composition", () => {
       "doctor.destination.probe-unsupported",
     );
   });
+
+  it.each([
+    ["recovery-required", "recover-local-resource"],
+    ["reconciliation-required", "reconcile-recovery-claim"],
+    ["unavailable", "inspect-destination"],
+  ] as const)(
+    "maps Local lifecycle %s without opening destination content",
+    async (state, action) => {
+      const value = await fixture({
+        localResourceDestinationType: descriptor.destinationType,
+        localResourceInspector: () =>
+          Promise.resolve({
+            connectionName: "fixture",
+            destinationType: descriptor.destinationType,
+            inspection: {
+              backupState:
+                state === "reconciliation-required"
+                  ? "reconciliation-required"
+                  : state === "unavailable"
+                    ? "unavailable"
+                    : "available",
+              databaseDerivedRetention: {
+                clockContinuity: "unavailable",
+                cutoff: "unavailable",
+                payloadBytes: "unavailable",
+                rowCount: "unavailable",
+              },
+              databaseState:
+                state === "unavailable" ? "unavailable" : "present",
+              lifecycleState: state,
+              publishedBackupCount: state === "unavailable" ? null : 0,
+              retentionPolicy: {
+                maximumAgeNanoseconds: "2592000000000000",
+                maximumPayloadBytes: 1_073_741_824,
+                maximumTraceCount: 100_000,
+                physicalCleanupTrigger: "next-authorized-mutation",
+              },
+              sharedLeaseCount: state === "unavailable" ? null : 0,
+              state,
+            },
+          }),
+      });
+      await configureFixtureConnection(value);
+      const report = await inspect(value);
+      expect(report.findings).toContainEqual(
+        expect.objectContaining({
+          code: `doctor.destination.local-resource.${state}`,
+          suggestedAction: action,
+        }),
+      );
+    },
+  );
+
+  it.each(["mismatch", "throw"] as const)(
+    "contains a Local lifecycle inspector %s",
+    async (mode) => {
+      const value = await fixture({
+        localResourceDestinationType: descriptor.destinationType,
+        localResourceInspector:
+          mode === "throw"
+            ? () => Promise.reject(new Error("CANARY"))
+            : () =>
+                Promise.resolve({
+                  connectionName: "fixture",
+                  destinationType: "@agentscope/destination-other",
+                  inspection: {} as never,
+                }),
+      });
+      await configureFixtureConnection(value);
+      const report = await inspect(value);
+      const local = report.findings.find(
+        ({ code }) => code === "doctor.destination.local-resource.unavailable",
+      );
+      expect(local?.evidence.freshness).toBe("unavailable");
+    },
+  );
 
   it("downgrades same-generation configuration substitution during probing", async () => {
     const value = await fixture();

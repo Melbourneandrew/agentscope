@@ -2,20 +2,20 @@
 title: Unconfigure a destination
 description: Remove a named connection while preserving destination-owned data.
 command: agentscope destination unconfigure
-commandContract: sha256:b1b1531522c2607eab103adfa7fd6198a1875866064093b40eabf13b0d5195e1
+commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
 ---
 
-Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Credential-bearing connections first require the proof-bound credential retirement lifecycle.
+Unconfiguration removes the connection and its routing selection atomically. It never deletes a Local SQLite database or other destination-owned data. Local SQLite first returns a read-only retention plan; `--yes` presents the plan, preserves the database unchanged, and returns the opaque retained-delete selector needed by a later fresh process. Credential-bearing connections first require the proof-bound credential retirement lifecycle.
 
 ## Syntax
 
 ```bash
-agentscope destination unconfigure <name> [--output human|json|jsonl]
+agentscope destination unconfigure <name> [--yes] [--output human|json|jsonl]
 ```
 
 ## Output and exits
 
-`human`, `json`, and `jsonl` report the committed generation and `dataPreserved: true` using `agentscope.cli.destination-unconfigure.v1`.
+Without `--yes`, `human`, `json`, and `jsonl` report the plan with `applied: false`. On apply they report the committed generation, `dataPreserved: true`, and the retained selector using `agentscope.cli.destination-unconfigure.v1`.
 
 ## Automation
 
@@ -26,9 +26,10 @@ This command is safe for local data retention but is not equivalent to data dele
 - `configuration.conflict` and `configuration.unavailable` describe the atomic write.
 - `destination.connection-missing` rejects an unknown name.
 - `destination.credential-removal-required` prevents orphaning a referenced credential.
+- `destination.lifecycle-busy`, `destination.lifecycle-outcome-unknown`, `destination.lifecycle-reconciliation-required`, and `destination.lifecycle-unavailable` are closed Local lifecycle outcomes.
 
 ## Examples
 
 ```bash
-agentscope destination unconfigure local-history
+agentscope destination unconfigure local-history --yes
 ```

@@ -81,6 +81,46 @@ function regularFiles(root) {
   return files.sort();
 }
 
+function snapshotSqliteFamily(root) {
+  const family = regularFiles(root)
+    .filter((path) =>
+      ["traces.sqlite", "traces.sqlite-wal", "traces.sqlite-shm"].includes(
+        basename(path),
+      ),
+    )
+    .map((path) => {
+      const absolutePath = join(root, path);
+      const before = lstatSync(absolutePath);
+      assert.equal(before.isFile(), true);
+      const bytes = readFileSync(absolutePath);
+      const after = lstatSync(absolutePath);
+      assert.deepEqual(
+        {
+          device: after.dev,
+          inode: after.ino,
+          size: after.size,
+        },
+        {
+          device: before.dev,
+          inode: before.ino,
+          size: before.size,
+        },
+      );
+      return {
+        device: after.dev,
+        digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        inode: after.ino,
+        path,
+        size: after.size,
+      };
+    });
+  assert.ok(
+    family.some(({ path }) => basename(path) === "traces.sqlite"),
+    "configured Local SQLite family must contain traces.sqlite",
+  );
+  return family;
+}
+
 function waitForFile(path, child) {
   const deadline = Date.now() + 5_000;
   while (!existsSync(path)) {
@@ -542,6 +582,191 @@ setTimeout(() => process.exit(3), 10_000).unref();
     `${langfuseDoctor.stdout}${langfuseDoctor.stderr}`,
     /packed-(?:public|secret)-canary|discarded-provider/u,
   );
+  if (
+    process.platform === "linux" &&
+    process.arch === "x64" &&
+    process.versions.modules === "127"
+  ) {
+    const localUserHome = join(installRoot, "local-lifecycle-user-home");
+    const localHome = join(localUserHome, ".agentscope");
+    mkdirSync(localUserHome);
+    const localEnvironment = {
+      HOME: localUserHome,
+      USERPROFILE: localUserHome,
+    };
+    run(executable, ["init", "--yes", "--output", "json"], {
+      ...executableOptions,
+      env: localEnvironment,
+    });
+    const configurationBeforePlan = readFileSync(
+      join(localHome, "config.json"),
+    );
+    const plannedConfigure = run(
+      executable,
+      [
+        "destination",
+        "configure",
+        "local-sqlite",
+        "--name",
+        "packed-local",
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    assert.deepEqual(JSON.parse(plannedConfigure.stdout).records, [
+      {
+        applied: false,
+        connection: null,
+        generation: null,
+        plan: JSON.parse(plannedConfigure.stdout).records[0].plan,
+        state: "planned",
+      },
+    ]);
+    assert.equal(
+      JSON.parse(plannedConfigure.stdout).records[0].plan.operation,
+      "configure",
+    );
+    assert.equal(
+      JSON.parse(plannedConfigure.stdout).records[0].plan.retentionPolicy
+        .physicalCleanupTrigger,
+      "next-authorized-mutation",
+    );
+    assert.deepEqual(
+      readFileSync(join(localHome, "config.json")),
+      configurationBeforePlan,
+    );
+    assert.equal(
+      existsSync(join(localHome, "destinations", "local-sqlite")),
+      false,
+    );
+    const configuredLocal = run(
+      executable,
+      [
+        "destination",
+        "configure",
+        "local-sqlite",
+        "--name",
+        "packed-local",
+        "--yes",
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    const configuredLocalRecords = JSON.parse(configuredLocal.stdout).records;
+    assert.equal(configuredLocalRecords.length, 1);
+    const configuredLocalRecord = configuredLocalRecords[0];
+    assert.match(
+      configuredLocalRecord.connectionId,
+      /^destination-connection-v1-[0-9a-f]{64}$/u,
+    );
+    assert.equal(
+      configuredLocalRecord.destinationType,
+      "@agentscope/destination-local-sqlite",
+    );
+    assert.equal(configuredLocalRecord.name, "packed-local");
+    assert.equal(configuredLocalRecord.routed, false);
+    assert.equal(configuredLocalRecord.settingsVersion, 1);
+    assert.equal(configuredLocalRecord.transport, "local");
+    assert.deepEqual(configuredLocalRecords, [
+      {
+        connectionId: configuredLocalRecord.connectionId,
+        destinationType: "@agentscope/destination-local-sqlite",
+        name: "packed-local",
+        routed: false,
+        settingsVersion: 1,
+        transport: "local",
+      },
+    ]);
+    assert.match(configuredLocal.stderr, /"state":"planned"/u);
+    const localDoctor = run(executable, ["doctor", "--output", "json"], {
+      ...executableOptions,
+      env: localEnvironment,
+    });
+    const localFinding = JSON.parse(
+      localDoctor.stdout,
+    ).records[0].findings.find(
+      ({ code }) => code === "doctor.destination.local-resource.available",
+    );
+    assert.ok(localFinding);
+    assert.deepEqual(
+      localFinding.evidence.localResource.databaseDerivedRetention,
+      {
+        clockContinuity: "unavailable",
+        cutoff: "unavailable",
+        payloadBytes: "unavailable",
+        rowCount: "unavailable",
+      },
+    );
+    const localNamespace = join(localHome, "destinations", "local-sqlite");
+    const configuredDatabaseFamily = snapshotSqliteFamily(localNamespace);
+    const plannedUnconfigure = run(
+      executable,
+      ["destination", "unconfigure", "packed-local", "--output", "json"],
+      { ...executableOptions, env: localEnvironment },
+    );
+    assert.equal(
+      JSON.parse(plannedUnconfigure.stdout).records[0].applied,
+      false,
+    );
+    const unconfiguredLocal = run(
+      executable,
+      [
+        "destination",
+        "unconfigure",
+        "packed-local",
+        "--yes",
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    const retainedSelector = JSON.parse(unconfiguredLocal.stdout).records[0]
+      .retainedDeleteSelector;
+    assert.match(retainedSelector, /^destination-connection-v1-[0-9a-f]{64}$/u);
+    assert.equal(
+      JSON.parse(unconfiguredLocal.stdout).records[0].state,
+      "retained",
+    );
+    assert.deepEqual(
+      snapshotSqliteFamily(localNamespace),
+      configuredDatabaseFamily,
+    );
+    const plannedDelete = run(
+      executable,
+      ["destination", "delete", retainedSelector, "--output", "json"],
+      { ...executableOptions, env: localEnvironment },
+    );
+    assert.deepEqual(JSON.parse(plannedDelete.stdout).records[0], {
+      applied: false,
+      deleted: false,
+      plan: JSON.parse(plannedDelete.stdout).records[0].plan,
+      selector: retainedSelector,
+      state: "planned",
+    });
+    assert.deepEqual(
+      snapshotSqliteFamily(localNamespace),
+      configuredDatabaseFamily,
+    );
+    const deletedLocal = run(
+      executable,
+      [
+        "destination",
+        "delete",
+        retainedSelector,
+        "--confirm",
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    assert.equal(JSON.parse(deletedLocal.stdout).records[0].deleted, true);
+    assert.deepEqual(
+      existsSync(localNamespace) ? regularFiles(localNamespace) : [],
+      [],
+    );
+  }
   const invalid = runRaw(
     executable,
     ["--does-not-exist-CANARY_SECRET"],
@@ -573,6 +798,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
   const installedRoot = join(installRoot, "node_modules/@agentscope/cli");
   const installedFiles = regularFiles(installedRoot);
   const candidateRoot = join(installedRoot, "dist/internal/local-sqlite");
+  assert.deepEqual(regularFiles(join(installedRoot, "dist/bin/migrations")), [
+    "0001-initialize.sql",
+    "0002-retrieval-indexes.sql",
+  ]);
   assert.deepEqual(
     regularFiles(join(installedRoot, "dist/internal/local-sqlite-runtime")),
     [
@@ -626,7 +855,11 @@ setTimeout(() => process.exit(3), 10_000).unref();
     ),
     false,
   );
-  assert.doesNotMatch(bundle, /better-sqlite3|node-gyp|binding\.gyp/u);
+  assert.doesNotMatch(bundle, /node-gyp|binding\.gyp/u);
+  assert.deepEqual(bundle.match(/better-sqlite3[^"'\s]*/gu), [
+    "better-sqlite3.cjs",
+    "better-sqlite3-MIT.txt",
+  ]);
 
   process.stdout.write(
     `Verified clean install of ${basename(tarball)} (${packReport[0].integrity})\n`,

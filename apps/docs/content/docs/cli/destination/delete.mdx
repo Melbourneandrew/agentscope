@@ -2,22 +2,22 @@
 title: Delete destination data
 description: Delete one exact destination-owned local file after explicit confirmation.
 command: agentscope destination delete
-commandContract: sha256:b1b1531522c2607eab103adfa7fd6198a1875866064093b40eabf13b0d5195e1
+commandContract: sha256:d55fd6bb87d06f5deb4f1899cbeb54b782eb742b932db6e9d7d61616f4dd89a6
 ---
 
 Deletion is intentionally separate from unconfiguration. The destination implementation must identify an exact owned local file and Core must validate ownership before removal. Remote destinations and descriptors without a governed deletion capability are unsupported.
 
-The current generic CLI has no registered governed deletion capability, so this command returns `destination.data-delete-unsupported` after validating the named connection and confirmation authority.
+For Local SQLite, `<selector>` may be the configured name or the opaque selector returned by an earlier unconfigure in another process. The first invocation is non-mutating and reports the exact lifecycle plan. `--confirm` presents that same plan before the package-owned handler deletes only the authenticated database family. Remote destinations remain unsupported.
 
 ## Syntax
 
 ```bash
-agentscope destination delete <name> --confirm [--output human|json|jsonl]
+agentscope destination delete <selector> [--confirm] [--output human|json|jsonl]
 ```
 
 ## Output and exits
 
-`human`, `json`, and `jsonl` success uses `agentscope.cli.destination-delete.v1`. No command output contains deleted trace content or a credential.
+Without `--confirm`, `human`, `json`, and `jsonl` report `state: planned` and `deleted: false`. Applied success uses `agentscope.cli.destination-delete.v1`. No command output contains deleted trace content or a credential.
 
 ## Automation
 
@@ -29,9 +29,11 @@ agentscope destination delete <name> --confirm [--output human|json|jsonl]
 - `destination.confirmation-required` means explicit confirmation was absent.
 - `destination.connection-missing` rejects an unknown connection.
 - `destination.data-delete-unsupported` means the descriptor has no governed local deletion capability.
+- `destination.lifecycle-busy`, `destination.lifecycle-outcome-unknown`, `destination.lifecycle-reconciliation-required`, and `destination.lifecycle-unavailable` are closed Local lifecycle outcomes.
 
 ## Examples
 
 ```bash
-agentscope destination delete local-history --confirm
+agentscope destination delete destination-connection-v1-<opaque-selector>
+agentscope destination delete destination-connection-v1-<opaque-selector> --confirm
 ```

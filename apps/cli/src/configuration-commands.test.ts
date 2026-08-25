@@ -13,6 +13,17 @@ const connection = {
   transport: "remote" as const,
 };
 
+const recoveryPlan = {
+  authorizedGenerations: [2],
+  connectionId: `destination-connection-v1-${"b".repeat(64)}`,
+  destinationType: "@agentscope/destination-local-sqlite",
+  expectedGeneration: 2,
+  lifecycleFingerprint: `sha256-${"c".repeat(64)}`,
+  operationId: "d".repeat(32),
+  pendingOperation: "configure" as const,
+  recoveryStage: "intent" as const,
+};
+
 const unavailable = {
   diagnostic: {
     category: "unavailable" as const,
@@ -31,6 +42,7 @@ const services = (
   listDestinations: () => Promise.resolve(unavailable),
   listRouting: () => Promise.resolve(unavailable),
   rotateDestinationCredential: () => Promise.resolve(unavailable),
+  recoverDestinationLifecycle: () => Promise.resolve(unavailable),
   setRouting: () => Promise.resolve(unavailable),
   unconfigureDestination: () => Promise.resolve(unavailable),
   ...overrides,
@@ -81,7 +93,13 @@ describe("plan-first configuration command modules", () => {
       .fn<CliConfigurationServices["configureDestination"]>()
       .mockResolvedValue({
         status: "success",
-        value: { connection, generation: 2 },
+        value: {
+          applied: true,
+          connection,
+          generation: 2,
+          plan: null,
+          state: "configured",
+        },
       });
     const captured = createCapturedOutput();
     await expect(
@@ -106,12 +124,18 @@ describe("plan-first configuration command modules", () => {
         },
       ),
     ).resolves.toBe(0);
-    expect(configureDestination).toHaveBeenCalledWith({
-      credentialEnvironment: ["api-key=EXAMPLE_API_KEY"],
-      name: "primary",
-      settingsJson: '{"project":"agentscope"}',
-      type: "example",
-    });
+    expect(configureDestination).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apply: false,
+        credentialEnvironment: ["api-key=EXAMPLE_API_KEY"],
+        name: "primary",
+        settingsJson: '{"project":"agentscope"}',
+        type: "example",
+      }),
+    );
+    expect(typeof configureDestination.mock.calls[0]?.[0].presentPlan).toBe(
+      "function",
+    );
     expect(JSON.parse(captured.stdout.join(""))).toMatchObject({
       dataSchema: "agentscope.cli.destination-configure.v1",
       records: [connection],
@@ -153,10 +177,9 @@ describe("configuration command safety", () => {
         version: "1.2.3",
       }),
     ).resolves.toBe(5);
-    expect(deleteDestination).toHaveBeenCalledWith({
-      confirm: false,
-      name: "primary",
-    });
+    expect(deleteDestination).toHaveBeenCalledWith(
+      expect.objectContaining({ confirm: false, name: "primary" }),
+    );
     expect(
       await runCli(["destination", "inspect", "INVALID NAME"], {
         output: captured.output,
@@ -167,16 +190,33 @@ describe("configuration command safety", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- one renderer matrix stays grouped for command-contract readability.
 describe("configuration command renderers", () => {
+  // eslint-disable-next-line max-lines-per-function -- one table exercises every command renderer in both supported aggregate modes.
   it("renders every successful configuration command in human and machine modes", async () => {
     const successful = services({
       configureDestination: () =>
         Promise.resolve({
           status: "success",
-          value: { connection, generation: 2 },
+          value: {
+            applied: true,
+            connection,
+            generation: 2,
+            plan: null,
+            state: "configured",
+          },
         }),
       deleteDestination: ({ name }) =>
-        Promise.resolve({ status: "success", value: { deleted: true, name } }),
+        Promise.resolve({
+          status: "success",
+          value: {
+            applied: true,
+            deleted: true,
+            plan: null,
+            selector: name,
+            state: "deleted",
+          },
+        }),
       init: ({ apply }) =>
         Promise.resolve({
           status: "success",
@@ -218,6 +258,19 @@ describe("configuration command renderers", () => {
           status: "success",
           value: { generation: 3, name, slot },
         }),
+      recoverDestinationLifecycle: () =>
+        Promise.resolve({
+          status: "success",
+          value: {
+            applied: true,
+            backupSelector: null,
+            generation: 3,
+            operation: "recover",
+            plan: recoveryPlan,
+            retainedDeleteSelector: null,
+            state: "configured",
+          },
+        }),
       setRouting: ({ names }) =>
         Promise.resolve({
           status: "success",
@@ -226,7 +279,15 @@ describe("configuration command renderers", () => {
       unconfigureDestination: ({ name }) =>
         Promise.resolve({
           status: "success",
-          value: { dataPreserved: true, generation: 3, name },
+          value: {
+            applied: true,
+            dataPreserved: true,
+            generation: 3,
+            name,
+            plan: null,
+            retainedDeleteSelector: `destination-connection-v1-${"b".repeat(64)}`,
+            state: "unconfigured",
+          },
         }),
     });
     const commands: readonly (readonly string[])[] = [
@@ -235,6 +296,7 @@ describe("configuration command renderers", () => {
       ["destination", "delete", "primary", "--confirm"],
       ["destination", "inspect", "primary"],
       ["destination", "list"],
+      ["destination", "recover", "--yes"],
       [
         "destination",
         "rotate",
@@ -262,6 +324,113 @@ describe("configuration command renderers", () => {
         expect(captured.stdout.join("")).not.toBe("");
       }
     }
+  });
+
+  it("renders every non-mutating Local lifecycle plan branch", async () => {
+    const plan = {
+      destinationType: "@agentscope/destination-local-sqlite",
+      displayPath: "/owned/local/traces.sqlite",
+      operation: "configure" as const,
+      persistentDataNotice: true as const,
+      retentionPolicy: {
+        maximumAgeNanoseconds: "2592000000000000",
+        maximumPayloadBytes: 1_073_741_824,
+        maximumTraceCount: 100_000,
+        physicalCleanupTrigger: "next-authorized-mutation" as const,
+      },
+    };
+    const planned = services({
+      configureDestination: () =>
+        Promise.resolve({
+          status: "success",
+          value: {
+            applied: false,
+            connection: null,
+            generation: null,
+            plan,
+            state: "planned",
+          },
+        }),
+      deleteDestination: ({ name }) =>
+        Promise.resolve({
+          status: "success",
+          value: {
+            applied: false,
+            deleted: false,
+            plan: { ...plan, operation: "delete" },
+            selector: name,
+            state: "planned",
+          },
+        }),
+      recoverDestinationLifecycle: () =>
+        Promise.resolve({
+          status: "success",
+          value: {
+            applied: false,
+            backupSelector: null,
+            generation: null,
+            operation: "recover",
+            plan: recoveryPlan,
+            retainedDeleteSelector: null,
+            state: "planned",
+          },
+        }),
+      unconfigureDestination: ({ name }) =>
+        Promise.resolve({
+          status: "success",
+          value: {
+            applied: false,
+            dataPreserved: true,
+            generation: null,
+            name,
+            plan: { ...plan, operation: "unconfigure" },
+            retainedDeleteSelector: null,
+            state: "planned",
+          },
+        }),
+    });
+    for (const command of [
+      ["destination", "configure", "local-sqlite", "--name", "local"],
+      ["destination", "delete", "local"],
+      ["destination", "recover"],
+      ["destination", "unconfigure", "local"],
+    ]) {
+      const captured = createCapturedOutput();
+      await expect(
+        runCli(command, {
+          output: captured.output,
+          services: planned,
+          version: "1.2.3",
+        }),
+      ).resolves.toBe(0);
+      expect(captured.stdout.join("")).toContain("plan");
+    }
+    const remote = createCapturedOutput();
+    await expect(
+      runCli(["destination", "unconfigure", "remote"], {
+        output: remote.output,
+        services: services({
+          unconfigureDestination: ({ name }) =>
+            Promise.resolve({
+              status: "success",
+              value: {
+                applied: true,
+                dataPreserved: true,
+                generation: 4,
+                name,
+                plan: null,
+                retainedDeleteSelector: null,
+                state: "unconfigured",
+              },
+            }),
+        }),
+        version: "1.2.3",
+      }),
+    ).resolves.toBe(0);
+    expect(remote.stdout).toEqual([
+      "Unconfigured remote.\n",
+      "Destination-owned data was preserved.\n",
+    ]);
   });
 
   it("renders empty destination and credential inventories explicitly", async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +20,7 @@ import { z } from "zod";
 import { createAgentscopeHomeFromOwnedRootForCore } from "./home.js";
 import {
   ConfigurationManagementError,
+  applyDestinationLifecycleRecoveryPlan,
   applyDestinationLifecyclePlan,
   applyDestinationMaintenancePlan,
   applyAgentscopeConfigurationInitialization,
@@ -30,6 +31,7 @@ import {
   inspectAgentscopeConfigurationInitialization,
   inspectDestinationConfigureLifecyclePlan,
   inspectDestinationLifecyclePlan,
+  inspectDestinationLifecycleRecoveryPlan,
   inspectDestinationLocalResourceDoctor,
   inspectDestinationMaintenancePlan,
   listDestinationConnections,
@@ -549,6 +551,13 @@ describe("local-resource configuration lifecycle plans", () => {
     const final = await readConfigurationSnapshot(store);
     expect(final.generation).toBe(4);
     expect(final.connections).toHaveLength(0);
+    await expect(
+      inspectDestinationLifecycleRecoveryPlan(
+        runtime,
+        () => "dead",
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "core.configuration.missing" });
 
     const interrupted = await inspectDestinationConfigureLifecyclePlan(
       runtime,
@@ -567,13 +576,76 @@ describe("local-resource configuration lifecycle plans", () => {
       code: "core.destination.lifecycle-outcome-unknown",
     });
     expect((await readConfigurationSnapshot(store)).generation).toBe(5);
+    const intentPath = join(home.mutationDirectory, "local-resource.lock");
+    const intentBytes = await readFile(intentPath, "utf8");
+    for (const substitutedIntentBytes of [
+      intentBytes.replace(
+        /"lifecycleFingerprint":"sha256-[0-9a-f]{64}"/u,
+        `"lifecycleFingerprint":"sha256-${"2".repeat(64)}"`,
+      ),
+      intentBytes.replace(
+        /"recoveryHandlerId":"[^"]+"/u,
+        '"recoveryHandlerId":"@agentscope/destination-planned-local/historical-v1"',
+      ),
+    ]) {
+      expect(substitutedIntentBytes).not.toBe(intentBytes);
+      await writeFile(intentPath, substitutedIntentBytes);
+      await expect(
+        inspectDestinationLifecycleRecoveryPlan(
+          runtime,
+          () => "dead",
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        code: "core.destination.lifecycle-reconciliation-required",
+      });
+      expect(await readdir(home.mutationDirectory)).not.toContain(
+        "local-resource.recovery.lock",
+      );
+    }
+    await writeFile(intentPath, intentBytes);
+    const recoveryPlan = await inspectDestinationLifecycleRecoveryPlan(
+      runtime,
+      () => "dead",
+      new AbortController().signal,
+    );
+    expect(recoveryPlan.connectionId).toMatch(
+      /^destination-connection-v1-[0-9a-f]{64}$/u,
+    );
+    expect(recoveryPlan).toMatchObject({
+      destinationType: "@agentscope/destination-planned-local",
+      expectedGeneration: 4,
+      pendingOperation: "configure",
+      recoveryStage: "intent",
+    });
+    const substitutedIntentBytes = intentBytes.replace(
+      /"operationId":"[0-9a-f]{32}"/u,
+      `"operationId":"${"1".repeat(32)}"`,
+    );
+    expect(substitutedIntentBytes).not.toBe(intentBytes);
+    await writeFile(intentPath, substitutedIntentBytes);
     await expect(
-      recoverDestinationLifecycleMutation(
+      applyDestinationLifecycleRecoveryPlan(recoveryPlan),
+    ).rejects.toMatchObject({ code: "core.configuration.conflict" });
+    expect(await readdir(home.mutationDirectory)).not.toContain(
+      "local-resource.recovery.lock",
+    );
+    await writeFile(intentPath, intentBytes);
+    const replacementRecoveryPlan =
+      await inspectDestinationLifecycleRecoveryPlan(
         runtime,
         () => "dead",
         new AbortController().signal,
-      ),
-    ).resolves.toEqual({ generation: 5, state: "configured" });
+      );
+    await expect(
+      applyDestinationLifecycleRecoveryPlan(replacementRecoveryPlan),
+    ).resolves.toEqual({
+      generation: 5,
+      state: "configured",
+    });
+    await expect(
+      applyDestinationLifecycleRecoveryPlan(replacementRecoveryPlan),
+    ).rejects.toMatchObject({ code: "core.configuration.invalid" });
     expect(events.at(-1)).toBe("recover:committed");
 
     failAfterCommit = false;

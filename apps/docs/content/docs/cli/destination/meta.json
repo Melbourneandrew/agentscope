@@ -5,6 +5,7 @@
     "delete",
     "inspect",
     "list",
+    "recover",
     "rotate",
     "unconfigure"
   ]

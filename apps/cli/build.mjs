@@ -57,6 +57,14 @@ await cp(
   new URL("dist/internal/local-sqlite-runtime/migrations/", import.meta.url),
   { errorOnExist: true, force: false, recursive: true },
 );
+await cp(
+  new URL(
+    "../../packages/destinations/local-sqlite/src/migrations/",
+    import.meta.url,
+  ),
+  new URL("dist/bin/migrations/", import.meta.url),
+  { errorOnExist: true, force: false, recursive: true },
+);
 await build({
   bundle: true,
   entryPoints: [
