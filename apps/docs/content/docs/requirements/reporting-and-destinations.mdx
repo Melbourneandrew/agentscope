@@ -44,5 +44,5 @@ As a user, I want each selected destination attempted independently, so that one
 
 As a Langfuse user, I want Agentscope reporting to use the standard observability transport, so that trace delivery does not depend on a separate proprietary reporting API.
 
-- **AC-REP-004.1:** When a Langfuse reporting connection sends a redacted trace batch, the system shall send it through OTLP and shall not require any separate Langfuse reporting API.
+- **AC-REP-004.1:** When a Langfuse reporting connection sends a redacted trace batch, the system shall send it exclusively through OTLP and shall not invoke any separate Langfuse API for reporting.
 - **AC-REP-004.2:** When Langfuse reporting is unavailable, the system shall apply the same bounded fail-open and per-connection outcome requirements as every other Reporter.
