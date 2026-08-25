@@ -4,6 +4,7 @@ export {
   HarnessContractAssertionError,
   type HarnessContractAdapter,
   type HarnessContractCase,
+  type HarnessContractContextEvidence,
   type HarnessFixtureMapping,
   type HarnessHookTestBehavior,
   type HarnessScenarioAdapter,
@@ -18,5 +19,8 @@ export {
   type HarnessNativeFixtureProvenance,
   type HarnessSanitizedFixture,
   type NativeFixtureAdmissionProvenance,
+  type NativeFixtureAdmissionAuthority,
   type NativeFixtureInventoryEntry,
+  type NativeFixtureAuditEvent,
+  type NativeFixtureAuditObserver,
 } from "./native-fixture-governance.js";

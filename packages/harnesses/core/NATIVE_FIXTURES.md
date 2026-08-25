@@ -48,7 +48,9 @@ replace human privacy and redistribution review.
 The fixture records the exact representative version, scenario ID, and evidence
 slot. Harness Core requires those values to match the contract scenario and
 compatibility evidence. `deriveHarnessContractEvidenceDigests` binds the whole
-fixture and scenario, so changing a representative requires regenerating both
+fixture, scenario, complete harness descriptor/executable contract, and the
+separate bounded mapping-artifact and adapter-context checksums. The evidence
+schema is versioned, so changing any of those inputs requires regenerating both
 unit-contract and real-scenario evidence together. A fixture cannot broaden a
 descriptor compatibility range or create a release support claim.
 
@@ -57,13 +59,18 @@ descriptor compatibility range or create a release support claim.
 `auditNativeFixtureInventory` rejects noncanonical JSON, unexpected file kinds,
 oversized files, path/identity mismatches, malformed governance, secret-shaped
 content, user paths, raw transcript or terminal fields, and prose-shaped payload
-values. Harness Core's unit suite runs this inventory audit on every repository
-validation. The post-adapter inventory certification remains responsible for
-proving that every implemented native mapping is represented.
+values. It authenticates the package, fixture, and native-directory ancestors
+without following symlinks and reads each file through one identity-stable
+no-follow handle. Harness Core's unit suite runs this inventory audit on every
+repository validation. The post-adapter inventory certification remains
+responsible for proving that every implemented native mapping is represented.
 
 Synthetic unresolved fixtures are component-only and cannot establish
 actual-binary, compatibility-catalog, or release admission. Every admission
-consumer must call `assertNativeFixtureAdmissionProvenance`; it fails closed
-unless the fixture came from disposable-hermetic capture and carries
-authenticated artifact authority. `deriveHarnessContractEvidenceDigests` binds
+consumer must call `assertNativeFixtureAdmissionProvenance` with an independently
+authenticated expected authority obtained from trusted preparation and the
+compatibility catalog. The assertion fails closed unless the fixture came from
+disposable-hermetic capture and its harness, version, fixture, scenario, source,
+and artifact digest exactly match that external authority. Its returned record
+retains all those bindings. `deriveHarnessContractEvidenceDigests` binds
 component evidence only and does not confer release or actual-binary authority.

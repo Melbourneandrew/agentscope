@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 type AuthenticatedArtifactAuthority = Readonly<{
@@ -88,7 +89,22 @@ export type NativeFixtureInventoryEntry = Readonly<{
 }>;
 
 export type NativeFixtureAdmissionProvenance = Readonly<{
+  authorityVersion: 1;
   captureKind: "disposable-hermetic";
+  harnessId: string;
+  harnessVersion: string;
+  fixtureId: string;
+  scenarioId: string;
+  sourceReference: string;
+  sourceArtifactDigest: string;
+}>;
+
+export type NativeFixtureAdmissionAuthority = Readonly<{
+  authorityVersion: 1;
+  harnessId: string;
+  harnessVersion: string;
+  fixtureId: string;
+  scenarioId: string;
   sourceReference: string;
   sourceArtifactDigest: string;
 }>;
@@ -161,13 +177,65 @@ const record = (
   return result;
 };
 
+const denseArray = (
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  code: string,
+): readonly unknown[] => {
+  const array = Array.isArray(value) ? value : fail(code);
+  let prototype: object | null = null;
+  let keys: readonly (string | symbol)[] = [];
+  let descriptors: Readonly<
+    Record<string, PropertyDescriptor> & { [key: symbol]: PropertyDescriptor }
+  > = {};
+  try {
+    prototype = Object.getPrototypeOf(array) as object | null;
+    keys = Reflect.ownKeys(array);
+    descriptors = Object.getOwnPropertyDescriptors(
+      array,
+    ) as unknown as Readonly<
+      Record<string, PropertyDescriptor> & {
+        [key: symbol]: PropertyDescriptor;
+      }
+    >;
+  } catch {
+    fail(code);
+  }
+  const lengthValue: unknown = (
+    descriptors.length as PropertyDescriptor & { value: unknown }
+  ).value;
+  if (
+    prototype !== Array.prototype ||
+    typeof lengthValue !== "number" ||
+    !Number.isSafeInteger(lengthValue) ||
+    lengthValue < minimum ||
+    lengthValue > maximum ||
+    keys.length !== lengthValue + 1 ||
+    keys.some((key) => typeof key === "symbol")
+  )
+    fail(code);
+  const length = lengthValue as number;
+  const output: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      descriptor.enumerable !== true
+    )
+      fail(code);
+    output.push((descriptor as PropertyDescriptor & { value: unknown }).value);
+  }
+  return Object.freeze(output);
+};
+
 const idPattern = /^[a-z][a-z0-9-]{0,63}$/u;
 const fieldPattern = /^[a-z][a-z0-9_.-]{0,95}$/u;
 const safeTokenPattern = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 const semverPattern =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const digestPattern = /^sha256-[a-f0-9]{64}$/u;
-const spdxPattern = /^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/u;
 const reviewReferencePattern = /^[a-z][a-z0-9._:/#-]{2,127}$/u;
 const isoDatePattern = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u;
 const syntheticReferencePattern =
@@ -176,6 +244,30 @@ const forbiddenPayloadKey =
   /(?:^|[_.-])(?:api[_-]?key|auth(?:orization)?|cookie|credential|message|password|prompt|raw|secret|stderr|stdout|terminal|transcript)(?:$|[_.-])/iu;
 const forbiddenText =
   /(?:bearer\s|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|private[_-]?key|secret|sk-[a-z0-9]|ghp_[a-z0-9]|AKIA[0-9A-Z]|-----BEGIN|eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.|file:\/\/|(?:^|\s)~[\\/]|(?:^|\s)\/(?:Users|home|private|root|tmp|Volumes)\/|[A-Za-z]:\\)/iu;
+const baselineSecretPatterns = Object.freeze(
+  [
+    "\\b(?:api[_-]?key|authorization|password|secret|token|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key)\\s*[:=]\\s*\\S+",
+    "(?:^|[^A-Za-z\\d_-])(?:[A-Za-z][A-Za-z\\d_-]*)?(?:api[_-]?key|auth[_-]?token|session[_-]?token|github[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|password|token|secret|credential)\\s*[:=]\\s*\\S+",
+    "\\bBearer\\s+\\S+",
+    "\\bAKIA[0-9A-Z]{16}\\b",
+    "\\bsk-[A-Za-z\\d_-]{12,}\\b",
+    "\\beyJ[A-Za-z\\d_-]{8,}\\.[A-Za-z\\d_-]{8,}\\.[A-Za-z\\d_-]{8,}\\b",
+    "-----BEGIN(?: [A-Z]+)* PRIVATE KEY-----",
+    "\\b(?:postgres(?:ql)?|mysql|mongodb(?:\\+srv)?|redis):\\/\\/[^\\s/@:]+:[^\\s/@]+@",
+    "\\b(?:[A-Z][A-Z\\d]*_)*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|ACCESS_KEY|SECRET_ACCESS_KEY)\\s*=\\s*\\S+",
+    "\\bgh[pousr]_[A-Za-z\\d]{20,}\\b",
+    "\\bgithub_pat_[A-Za-z\\d_]{20,}\\b",
+    "\\bglpat-[A-Za-z\\d_-]{20,}\\b",
+    "\\bxox[baprs]-[A-Za-z\\d-]{10,}\\b",
+    "\\bnpm_[A-Za-z\\d]{20,}\\b",
+    "\\bsk_live_[A-Za-z\\d]{16,}\\b",
+    "\\bAIza[A-Za-z\\d_-]{20,}\\b",
+    "\\bhf_[A-Za-z\\d]{20,}\\b",
+  ].map((source) => new RegExp(source, "iu")),
+);
+const contentIsForbidden = (value: string): boolean =>
+  forbiddenText.test(value) ||
+  baselineSecretPatterns.some((pattern) => pattern.test(value));
 const removedCategories = Object.freeze([
   "credentials",
   "raw-transcript",
@@ -186,6 +278,81 @@ const removedCategories = Object.freeze([
 
 const string = (value: unknown, pattern: RegExp, code: string): string => {
   if (typeof value !== "string" || !pattern.test(value)) fail(code);
+  return value as string;
+};
+
+const spdxTokenPattern =
+  /\s*(\(|\)|AND\b|OR\b|WITH\b|[A-Za-z0-9][A-Za-z0-9.+-]{0,63})/gy;
+
+const spdxTokens = (value: unknown): readonly string[] => {
+  const text =
+    typeof value === "string" && value.length > 0 && value.length <= 256
+      ? value
+      : fail("harness.fixture.license.spdx");
+  const tokens: string[] = [];
+  let position = 0;
+  while (position < text.length) {
+    spdxTokenPattern.lastIndex = position;
+    const match = spdxTokenPattern.exec(text);
+    if (!match || match.index !== position)
+      fail("harness.fixture.license.spdx");
+    tokens.push((match as RegExpExecArray)[1]!);
+    if (tokens.length > 64) fail("harness.fixture.license.spdx");
+    position = spdxTokenPattern.lastIndex;
+  }
+  return Object.freeze(tokens);
+};
+
+const spdxExpression = (value: unknown): string => {
+  const tokens = spdxTokens(value);
+  let position = 0;
+  let depth = 0;
+  const primary = (): void => {
+    const token = tokens[position];
+    if (token === "(") {
+      depth += 1;
+      if (depth > 16) fail("harness.fixture.license.spdx");
+      position += 1;
+      disjunction();
+      if (tokens[position] !== ")") fail("harness.fixture.license.spdx");
+      position += 1;
+      depth -= 1;
+      return;
+    }
+    if (
+      token === undefined ||
+      token === ")" ||
+      token === "AND" ||
+      token === "OR" ||
+      token === "WITH"
+    )
+      fail("harness.fixture.license.spdx");
+    position += 1;
+  };
+  const conjunction = (): void => {
+    primary();
+    if (tokens[position] === "WITH") {
+      position += 1;
+      primary();
+    }
+    while (tokens[position] === "AND") {
+      position += 1;
+      primary();
+      if (tokens[position] === "WITH") {
+        position += 1;
+        primary();
+      }
+    }
+  };
+  function disjunction(): void {
+    conjunction();
+    while (tokens[position] === "OR") {
+      position += 1;
+      conjunction();
+    }
+  }
+  disjunction();
+  if (position !== tokens.length) fail("harness.fixture.license.spdx");
   return value as string;
 };
 
@@ -385,17 +552,21 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
   )
     fail("harness.fixture.governance.disposition");
   if (
-    !Array.isArray(redaction.removedCategories) ||
-    redaction.removedCategories.length !== removedCategories.length ||
-    redaction.removedCategories.some(
-      (category, index) => category !== removedCategories[index],
-    )
+    denseArray(
+      redaction.removedCategories,
+      removedCategories.length,
+      removedCategories.length,
+      "harness.fixture.redaction.categories",
+    ).some((category, index) => category !== removedCategories[index])
   )
     fail("harness.fixture.redaction.categories");
-  const references = review.references;
+  const references = denseArray(
+    review.references,
+    2,
+    16,
+    "harness.fixture.review.references",
+  );
   if (
-    !Array.isArray(references) ||
-    references.length < 2 ||
     references.some(
       (reference) =>
         typeof reference !== "string" ||
@@ -408,11 +579,7 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
   return Object.freeze({
     provenance: parseProvenance(provenance),
     license: Object.freeze({
-      spdxExpression: string(
-        license.spdxExpression,
-        spdxPattern,
-        "harness.fixture.license.spdx",
-      ),
+      spdxExpression: spdxExpression(license.spdxExpression),
       redistribution: "reviewed-for-repository" as const,
       sourceReference: sourceReference(
         license.sourceReference,
@@ -470,7 +637,7 @@ const parsePayload = (
     if (!fieldPattern.test(key) || forbiddenPayloadKey.test(key))
       fail("harness.fixture.payload.key");
     if (typeof member === "string") {
-      if (!safeTokenPattern.test(member) || forbiddenText.test(member))
+      if (!safeTokenPattern.test(member) || contentIsForbidden(member))
         fail("harness.fixture.payload.value");
       parsed[key] = member;
       continue;
@@ -513,11 +680,12 @@ export const parseHarnessSanitizedFixture = (
     "harness.fixture.shape",
   );
   if (root.fixtureVersion !== 1) fail("harness.fixture.version");
-  const expectedInput = root.expectedFields;
-  if (!Array.isArray(expectedInput) || expectedInput.length === 0)
-    fail("harness.fixture.expected-fields");
-  const expectedFieldsInput = expectedInput as unknown[];
-  const expectedFields = expectedFieldsInput.map((field: unknown) =>
+  const expectedFields = denseArray(
+    root.expectedFields,
+    1,
+    64,
+    "harness.fixture.expected-fields",
+  ).map((field: unknown) =>
     string(field, fieldPattern, "harness.fixture.expected-fields"),
   );
   if (new Set(expectedFields).size !== expectedFields.length)
@@ -604,78 +772,282 @@ export const serializeHarnessSanitizedFixture = (
 
 export const assertNativeFixtureAdmissionProvenance = (
   value: unknown,
+  expected: unknown,
 ): NativeFixtureAdmissionProvenance => {
   const fixture = parseHarnessSanitizedFixture(value);
   const { provenance } = fixture.governance;
   const artifactAuthority = admissionArtifactAuthority(provenance);
-  return Object.freeze({
-    captureKind: "disposable-hermetic" as const,
-    sourceReference: provenance.sourceReference,
-    sourceArtifactDigest: artifactAuthority.digest,
+  const authority = record(
+    expected,
+    [
+      "authorityVersion",
+      "harnessId",
+      "harnessVersion",
+      "fixtureId",
+      "scenarioId",
+      "sourceReference",
+      "sourceArtifactDigest",
+    ],
+    "harness.fixture.provenance.admission-authority",
+  );
+  const bound = Object.freeze({
+    authorityVersion: 1 as const,
+    harnessId: string(
+      authority.harnessId,
+      idPattern,
+      "harness.fixture.provenance.admission-authority",
+    ),
+    harnessVersion: string(
+      authority.harnessVersion,
+      semverPattern,
+      "harness.fixture.provenance.admission-authority",
+    ),
+    fixtureId: string(
+      authority.fixtureId,
+      idPattern,
+      "harness.fixture.provenance.admission-authority",
+    ),
+    scenarioId: string(
+      authority.scenarioId,
+      idPattern,
+      "harness.fixture.provenance.admission-authority",
+    ),
+    sourceReference: sourceReference(
+      authority.sourceReference,
+      "disposable-hermetic",
+    ),
+    sourceArtifactDigest: string(
+      authority.sourceArtifactDigest,
+      digestPattern,
+      "harness.fixture.provenance.admission-authority",
+    ),
   });
+  if (
+    authority.authorityVersion !== 1 ||
+    bound.harnessId !== fixture.harnessId ||
+    bound.harnessVersion !== fixture.harnessVersion ||
+    bound.fixtureId !== fixture.fixtureId ||
+    bound.scenarioId !== fixture.governance.representative.scenarioId ||
+    bound.sourceReference !== provenance.sourceReference ||
+    bound.sourceArtifactDigest !== artifactAuthority.digest
+  )
+    fail("harness.fixture.provenance.admission-mismatch");
+  return Object.freeze({
+    ...bound,
+    captureKind: "disposable-hermetic" as const,
+  });
+};
+
+type FilesystemIdentity = Readonly<{
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}>;
+
+export type NativeFixtureAuditEvent =
+  | "directory-before-recheck"
+  | "file-after-path-authentication"
+  | "file-after-open-authentication"
+  | "file-before-path-recheck";
+
+export type NativeFixtureAuditObserver = (
+  event: NativeFixtureAuditEvent,
+  path: string,
+) => Promise<void>;
+
+const filesystemIdentity = (value: FilesystemIdentity): FilesystemIdentity =>
+  Object.freeze({
+    dev: value.dev,
+    ino: value.ino,
+    size: value.size,
+    mtimeNs: value.mtimeNs,
+    ctimeNs: value.ctimeNs,
+  });
+
+const sameFilesystemIdentity = (
+  left: FilesystemIdentity,
+  right: FilesystemIdentity,
+): boolean =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.size === right.size &&
+  left.mtimeNs === right.mtimeNs &&
+  left.ctimeNs === right.ctimeNs;
+
+const withStableDirectory = async <Value>(
+  path: string,
+  optional: boolean,
+  operation: () => Promise<Value>,
+  observer?: NativeFixtureAuditObserver,
+): Promise<Value | undefined> => {
+  let before;
+  try {
+    before = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (optional && (error as NodeJS.ErrnoException).code === "ENOENT")
+      return undefined;
+    throw error;
+  }
+  if (!before.isDirectory() || before.isSymbolicLink())
+    fail("harness.fixture.inventory.ancestor");
+  const identity = filesystemIdentity(before);
+  const result = await operation();
+  await observer?.("directory-before-recheck", path);
+  const after = await lstat(path, { bigint: true }).catch(() =>
+    fail("harness.fixture.inventory.ancestor-identity"),
+  );
+  if (
+    !after.isDirectory() ||
+    after.isSymbolicLink() ||
+    !sameFilesystemIdentity(identity, filesystemIdentity(after))
+  )
+    fail("harness.fixture.inventory.ancestor-identity");
+  return result;
+};
+
+const readStableFixtureFile = async (
+  path: string,
+  observer?: NativeFixtureAuditObserver,
+): Promise<Buffer> => {
+  const pathIdentity = await lstat(path, { bigint: true });
+  if (
+    !pathIdentity.isFile() ||
+    pathIdentity.isSymbolicLink() ||
+    pathIdentity.size > 65_536n
+  )
+    fail("harness.fixture.inventory.file");
+  await observer?.("file-after-path-authentication", path);
+  const handle = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  ).catch(() => fail("harness.fixture.inventory.file"));
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (
+      !before.isFile() ||
+      !sameFilesystemIdentity(
+        filesystemIdentity(pathIdentity),
+        filesystemIdentity(before),
+      )
+    )
+      fail("harness.fixture.inventory.file-identity");
+    await observer?.("file-after-open-authentication", path);
+    const buffer = Buffer.alloc(65_537);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 65_536 || BigInt(bytesRead) !== before.size)
+      fail("harness.fixture.inventory.file");
+    const after = await handle.stat({ bigint: true });
+    await observer?.("file-before-path-recheck", path);
+    const finalPath = await lstat(path, { bigint: true });
+    if (
+      !sameFilesystemIdentity(
+        filesystemIdentity(before),
+        filesystemIdentity(after),
+      ) ||
+      !sameFilesystemIdentity(
+        filesystemIdentity(before),
+        filesystemIdentity(finalPath),
+      )
+    )
+      fail("harness.fixture.inventory.file-identity");
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
 };
 
 export const auditNativeFixtureInventory = async (
   harnessPackagesRoot: string,
+  observer?: NativeFixtureAuditObserver,
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
   const entries: NativeFixtureInventoryEntry[] = [];
-  for (const harnessDirectory of await readdir(harnessPackagesRoot, {
-    withFileTypes: true,
-  })) {
-    if (!harnessDirectory.isDirectory() || harnessDirectory.name === "core")
-      continue;
-    const nativeRoot = join(
-      harnessPackagesRoot,
-      harnessDirectory.name,
-      "fixtures",
-      "native",
-    );
-    let files;
-    try {
-      files = await readdir(nativeRoot, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    for (const file of files.sort((left, right) =>
-      left.name.localeCompare(right.name),
-    )) {
-      const relativePath = `${harnessDirectory.name}/fixtures/native/${file.name}`;
-      if (!file.isFile() || !file.name.endsWith(".json"))
-        fail("harness.fixture.inventory.entry-kind");
-      const path = join(nativeRoot, file.name);
-      const identity = await lstat(path);
-      if (identity.size > 65_536) fail("harness.fixture.inventory.file");
-      const bytes = await readFile(path);
-      const text = bytes.toString("utf8");
-      if (text.includes("\uFFFD") || forbiddenText.test(text))
-        fail("harness.fixture.inventory.content");
-      let input: unknown;
-      try {
-        input = JSON.parse(text);
-      } catch {
-        fail("harness.fixture.inventory.json");
+  await withStableDirectory(
+    harnessPackagesRoot,
+    false,
+    async () => {
+      const harnessDirectories = (
+        await readdir(harnessPackagesRoot, { withFileTypes: true })
+      ).sort((left, right) => left.name.localeCompare(right.name));
+      for (const harnessDirectory of harnessDirectories) {
+        if (harnessDirectory.name === "core") continue;
+        if (!harnessDirectory.isDirectory())
+          fail("harness.fixture.inventory.entry-kind");
+        const packageRoot = join(harnessPackagesRoot, harnessDirectory.name);
+        await withStableDirectory(
+          packageRoot,
+          false,
+          async () => {
+            const fixturesRoot = join(packageRoot, "fixtures");
+            await withStableDirectory(
+              fixturesRoot,
+              true,
+              async () => {
+                const nativeRoot = join(fixturesRoot, "native");
+                await withStableDirectory(
+                  nativeRoot,
+                  true,
+                  async () => {
+                    const files = (
+                      await readdir(nativeRoot, { withFileTypes: true })
+                    ).sort((left, right) =>
+                      left.name.localeCompare(right.name),
+                    );
+                    for (const file of files) {
+                      const relativePath = `${harnessDirectory.name}/fixtures/native/${file.name}`;
+                      if (!file.isFile() || !file.name.endsWith(".json"))
+                        fail("harness.fixture.inventory.entry-kind");
+                      const bytes = await readStableFixtureFile(
+                        join(nativeRoot, file.name),
+                        observer,
+                      );
+                      const text = bytes.toString("utf8");
+                      if (text.includes("\uFFFD") || contentIsForbidden(text))
+                        fail("harness.fixture.inventory.content");
+                      let input: unknown;
+                      try {
+                        input = JSON.parse(text);
+                      } catch {
+                        fail("harness.fixture.inventory.json");
+                      }
+                      const fixture = parseHarnessSanitizedFixture(input);
+                      if (
+                        fixture.harnessId !== harnessDirectory.name ||
+                        basename(file.name, ".json") !== fixture.fixtureId
+                      )
+                        fail("harness.fixture.inventory.path-link");
+                      if (serializeHarnessSanitizedFixture(fixture) !== text)
+                        fail("harness.fixture.inventory.canonical-json");
+                      entries.push(
+                        Object.freeze({
+                          harnessId: fixture.harnessId,
+                          fixtureId: fixture.fixtureId,
+                          harnessVersion: fixture.harnessVersion,
+                          relativePath,
+                          artifactAuthority:
+                            fixture.governance.provenance.artifactAuthority
+                              .status,
+                          sha256: `sha256-${createHash("sha256").update(bytes).digest("hex")}`,
+                        }),
+                      );
+                    }
+                  },
+                  observer,
+                );
+              },
+              observer,
+            );
+          },
+          observer,
+        );
       }
-      const fixture = parseHarnessSanitizedFixture(input);
-      if (
-        fixture.harnessId !== harnessDirectory.name ||
-        basename(file.name, ".json") !== fixture.fixtureId
-      )
-        fail("harness.fixture.inventory.path-link");
-      if (serializeHarnessSanitizedFixture(fixture) !== text)
-        fail("harness.fixture.inventory.canonical-json");
-      entries.push(
-        Object.freeze({
-          harnessId: fixture.harnessId,
-          fixtureId: fixture.fixtureId,
-          harnessVersion: fixture.harnessVersion,
-          relativePath,
-          artifactAuthority:
-            fixture.governance.provenance.artifactAuthority.status,
-          sha256: `sha256-${createHash("sha256").update(bytes).digest("hex")}`,
-        }),
-      );
-    }
-  }
-  return Object.freeze(entries);
+    },
+    observer,
+  );
+  return Object.freeze(
+    entries.sort((left, right) =>
+      left.relativePath.localeCompare(right.relativePath),
+    ),
+  );
 };

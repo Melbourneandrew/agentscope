@@ -16,6 +16,11 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const referenceContextEvidence = Object.freeze({
+  evidenceVersion: 1 as const,
+  mappingArtifactDigest: `sha256-${"a".repeat(64)}`,
+  contextDigest: `sha256-${"b".repeat(64)}`,
+});
 const descriptor = defineHarnessDescriptor({
   descriptorVersion: 1,
   harnessType: "@agentscope/harness-reference",
@@ -127,6 +132,8 @@ const referenceScenario = {
 const referenceEvidence = deriveHarnessContractEvidenceDigests(
   referenceFixture,
   referenceScenario,
+  descriptor,
+  referenceContextEvidence,
 );
 
 const referenceAdapter = (): HarnessContractAdapter => ({
@@ -147,7 +154,7 @@ const referenceAdapter = (): HarnessContractAdapter => ({
   unsupportedVersion: "2.0.0",
   fixture: referenceFixture,
   scenario: referenceScenario,
-  contextEvidence: encoder.encode("reference-context"),
+  contextEvidence: referenceContextEvidence,
   mapFixture: (resolver) => {
     const fixture = referenceFixture;
     const start = resolveNativeCaptureStart(
@@ -355,7 +362,170 @@ describe("harness contract suite adversarial seeds", () => {
   });
 });
 
+describe("harness mapping correlation adversarial seeds", () => {
+  it.each([
+    ["nativeIdentityKind", "run", "harness.contract.mapping.checkpoint"],
+    ["nativeIdentity", "other-session", "harness.contract.mapping.checkpoint"],
+    ["sourceGeneration", 2, "harness.contract.mapping.checkpoint"],
+    ["positionKind", "line", "harness.contract.mapping.checkpoint"],
+    ["availableStartPosition", 3, "harness.native-mapping.invalid"],
+  ] as const)(
+    "rejects checkpoint correlation drift in %s",
+    async (field, value, code) => {
+      const adapter = referenceAdapter();
+      await expect(
+        runCase(
+          {
+            ...adapter,
+            mapFixture: (resolver) =>
+              adapter.mapFixture((request) =>
+                resolver({ ...request, [field]: value }),
+              ),
+          },
+          "harness:sanitized-native-mapping",
+        ),
+      ).rejects.toThrow(code);
+    },
+  );
+
+  it.each([
+    ["nativeIdentityKind", "run"],
+    ["nativeIdentity", "other-session"],
+    ["generation", 2],
+    ["positionKind", "line"],
+    ["boundaryKind", "session"],
+    ["boundaryId", "other-boundary"],
+    ["startPosition", 5],
+    ["exclusiveEndPosition", 6],
+  ] as const)(
+    "rejects mapped boundary correlation drift in %s",
+    async (field, value) => {
+      const adapter = referenceAdapter();
+      await expect(
+        runCase(
+          {
+            ...adapter,
+            mapFixture: (resolver) => {
+              const mapping = adapter.mapFixture(resolver);
+              const boundary =
+                field === "nativeIdentityKind" || field === "nativeIdentity"
+                  ? {
+                      ...mapping.boundary,
+                      session: { ...mapping.boundary.session, [field]: value },
+                    }
+                  : { ...mapping.boundary, [field]: value };
+              return {
+                ...mapping,
+                boundary,
+              };
+            },
+          },
+          "harness:sanitized-native-mapping",
+        ),
+      ).rejects.toThrow("harness.contract.mapping");
+    },
+  );
+});
+
 describe("harness contract evidence and discovery seeds", () => {
+  it("versions evidence across descriptor, context, and mapping artifact drift", () => {
+    const baseline = deriveHarnessContractEvidenceDigests(
+      referenceFixture,
+      referenceScenario,
+      descriptor,
+      referenceContextEvidence,
+    );
+    const executableDrift = defineHarnessDescriptor({
+      descriptorVersion: 1,
+      harnessType: "@agentscope/harness-reference",
+      executable: {
+        ...descriptor.executable,
+        versionArguments: ["version"],
+      },
+      configuration: descriptor.configuration,
+      compatibility: descriptor.compatibility,
+      nativeSource: descriptor.nativeSource,
+    });
+    const descriptorDigest = deriveHarnessContractEvidenceDigests(
+      referenceFixture,
+      referenceScenario,
+      executableDrift,
+      referenceContextEvidence,
+    );
+    const contextDigest = deriveHarnessContractEvidenceDigests(
+      referenceFixture,
+      referenceScenario,
+      descriptor,
+      {
+        ...referenceContextEvidence,
+        contextDigest: `sha256-${"c".repeat(64)}`,
+      },
+    );
+    const mappingDigest = deriveHarnessContractEvidenceDigests(
+      referenceFixture,
+      referenceScenario,
+      descriptor,
+      {
+        ...referenceContextEvidence,
+        mappingArtifactDigest: `sha256-${"d".repeat(64)}`,
+      },
+    );
+    expect(descriptorDigest).not.toEqual(baseline);
+    expect(contextDigest.realScenarioDigest).not.toBe(
+      baseline.realScenarioDigest,
+    );
+    expect(mappingDigest.realScenarioDigest).not.toBe(
+      baseline.realScenarioDigest,
+    );
+  });
+
+  it("rejects missing, malformed, accessor, and extra context evidence", () => {
+    for (const contextEvidence of [
+      undefined,
+      { ...referenceContextEvidence, contextDigest: "not-a-digest" },
+      { ...referenceContextEvidence, unexpected: true },
+    ]) {
+      expect(() =>
+        deriveHarnessContractEvidenceDigests(
+          referenceFixture,
+          referenceScenario,
+          descriptor,
+          contextEvidence,
+        ),
+      ).toThrow("harness.contract.context-evidence");
+    }
+    const accessor = { ...referenceContextEvidence };
+    Object.defineProperty(accessor, "contextDigest", {
+      enumerable: true,
+      get: () => {
+        throw new Error("must not execute");
+      },
+    });
+    expect(() =>
+      deriveHarnessContractEvidenceDigests(
+        referenceFixture,
+        referenceScenario,
+        descriptor,
+        accessor,
+      ),
+    ).toThrow("harness.contract.context-evidence");
+    const throwing = new Proxy(referenceContextEvidence, {
+      getPrototypeOf: () => {
+        throw new Error("synthetic context proxy failure");
+      },
+    });
+    expect(() =>
+      deriveHarnessContractEvidenceDigests(
+        referenceFixture,
+        referenceScenario,
+        descriptor,
+        throwing,
+      ),
+    ).toThrow("harness.contract.context-evidence");
+  });
+});
+
+describe("harness contract representative and discovery seeds", () => {
   it("rejects representative scenario and evidence-slot drift", async () => {
     const scenarioDrift = referenceAdapter();
     await expect(
@@ -391,6 +561,8 @@ describe("harness contract evidence and discovery seeds", () => {
     const digests = deriveHarnessContractEvidenceDigests(
       fixtureWithDrift,
       evidenceDrift.scenario,
+      evidenceDrift.descriptor,
+      evidenceDrift.contextEvidence,
     );
     await expect(
       runCase(

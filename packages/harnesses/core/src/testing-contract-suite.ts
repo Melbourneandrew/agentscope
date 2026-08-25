@@ -16,6 +16,7 @@ import {
 } from "./launcher.js";
 import type {
   NativeCaptureBoundary,
+  NativeCheckpointRequest,
   NativeCheckpointResolver,
   NativeFieldProvenance,
   NativeUnavailableField,
@@ -64,6 +65,12 @@ export type HarnessScenarioAdapter = Readonly<{
 
 export type HarnessHookTestBehavior = "success" | "failure" | "hang";
 
+export type HarnessContractContextEvidence = Readonly<{
+  evidenceVersion: 1;
+  mappingArtifactDigest: string;
+  contextDigest: string;
+}>;
+
 export type HarnessContractAdapter = Readonly<{
   descriptor: HarnessDescriptor;
   supportEvidence: HarnessSupportEvidenceManifest;
@@ -71,7 +78,7 @@ export type HarnessContractAdapter = Readonly<{
   unsupportedVersion: string;
   fixture: HarnessSanitizedFixture;
   scenario: HarnessScenarioAdapter;
-  contextEvidence: Uint8Array;
+  contextEvidence: HarnessContractContextEvidence;
   mapFixture: (resolver: NativeCheckpointResolver) => HarnessFixtureMapping;
   createInstallationPlanner: (
     operation: "install" | "migrate" | "uninstall",
@@ -115,17 +122,89 @@ const evidenceDigest = (value: unknown): string =>
     .update(JSON.stringify(canonicalEvidenceValue(value)))
     .digest("hex")}`;
 
+const parseContextEvidence = (
+  value: unknown,
+): HarnessContractContextEvidence => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new HarnessContractAssertionError(
+      "harness.contract.context-evidence",
+    );
+  const { prototype, descriptors } = (() => {
+    try {
+      return {
+        prototype: Object.getPrototypeOf(value) as object | null,
+        descriptors: Object.getOwnPropertyDescriptors(value),
+      };
+    } catch {
+      throw new HarnessContractAssertionError(
+        "harness.contract.context-evidence",
+      );
+    }
+  })();
+  const keys = Reflect.ownKeys(descriptors);
+  const expected = [
+    "evidenceVersion",
+    "mappingArtifactDigest",
+    "contextDigest",
+  ];
+  if (
+    prototype !== Object.prototype ||
+    keys.length !== expected.length ||
+    keys.some((key) => typeof key !== "string" || !expected.includes(key))
+  )
+    throw new HarnessContractAssertionError(
+      "harness.contract.context-evidence",
+    );
+  const member = (key: string): unknown => {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor))
+      throw new HarnessContractAssertionError(
+        "harness.contract.context-evidence",
+      );
+    return descriptor.value;
+  };
+  const evidenceVersion = member("evidenceVersion");
+  const mappingArtifactDigest = member("mappingArtifactDigest");
+  const contextDigest = member("contextDigest");
+  if (
+    evidenceVersion !== 1 ||
+    typeof mappingArtifactDigest !== "string" ||
+    !digestPattern.test(mappingArtifactDigest) ||
+    typeof contextDigest !== "string" ||
+    !digestPattern.test(contextDigest)
+  )
+    throw new HarnessContractAssertionError(
+      "harness.contract.context-evidence",
+    );
+  return Object.freeze({
+    evidenceVersion: 1 as const,
+    mappingArtifactDigest,
+    contextDigest,
+  });
+};
+
 export const deriveHarnessContractEvidenceDigests = (
   fixture: HarnessSanitizedFixture,
   scenario: HarnessScenarioAdapter,
-): Readonly<{ contractSuiteDigest: string; realScenarioDigest: string }> =>
-  Object.freeze({
+  descriptor: HarnessDescriptor,
+  contextEvidence: unknown,
+): Readonly<{ contractSuiteDigest: string; realScenarioDigest: string }> => {
+  const boundContextEvidence = parseContextEvidence(contextEvidence);
+  return Object.freeze({
     contractSuiteDigest: evidenceDigest({
-      contractVersion: 1,
+      contractVersion: 2,
       cases: contractCaseNames,
+      descriptor,
     }),
-    realScenarioDigest: evidenceDigest({ fixture, scenario }),
+    realScenarioDigest: evidenceDigest({
+      evidenceVersion: 2,
+      descriptor,
+      fixture,
+      scenario,
+      contextEvidence: boundContextEvidence,
+    }),
   });
+};
 
 const fixtureIsSanitized = (fixture: HarnessSanitizedFixture): boolean => {
   try {
@@ -146,6 +225,8 @@ const evidenceIsBound = (adapter: HarnessContractAdapter): boolean => {
   const expected = deriveHarnessContractEvidenceDigests(
     adapter.fixture,
     adapter.scenario,
+    adapter.descriptor,
+    adapter.contextEvidence,
   );
   return (
     entry.evidenceSlot ===
@@ -343,19 +424,26 @@ const runMappingContract = (adapter: HarnessContractAdapter): void => {
     "harness.contract.fixture.sanitized",
   );
   let resolutions = 0;
+  let checkpointRequest: NativeCheckpointRequest | undefined;
   const mapping = adapter.mapFixture((request) => {
     resolutions += 1;
-    assert(
-      request.nativeIdentity === adapter.fixture.nativeIdentity &&
-        request.availableStartPosition ===
-          adapter.fixture.availableStartPosition,
-      "harness.contract.mapping.checkpoint",
-    );
+    checkpointRequest = request;
     return Object.freeze({
       disposition: "retained" as const,
       startPosition: request.availableStartPosition,
     });
   });
+  assert(
+    checkpointRequest !== undefined &&
+      checkpointRequest.nativeIdentity === adapter.fixture.nativeIdentity &&
+      checkpointRequest.nativeIdentityKind ===
+        adapter.fixture.nativeIdentityKind &&
+      checkpointRequest.sourceGeneration === adapter.fixture.sourceGeneration &&
+      checkpointRequest.positionKind === adapter.fixture.positionKind &&
+      checkpointRequest.availableStartPosition ===
+        adapter.fixture.availableStartPosition,
+    "harness.contract.mapping.checkpoint",
+  );
   const fields = [...mapping.provenance, ...mapping.unavailable].map(
     ({ field }) => field,
   );
@@ -364,6 +452,12 @@ const runMappingContract = (adapter: HarnessContractAdapter): void => {
       mapping.boundary.session.kind === "native-session" &&
       mapping.boundary.session.nativeIdentity ===
         adapter.fixture.nativeIdentity &&
+      mapping.boundary.session.nativeIdentityKind ===
+        adapter.fixture.nativeIdentityKind &&
+      mapping.boundary.generation === adapter.fixture.sourceGeneration &&
+      mapping.boundary.positionKind === adapter.fixture.positionKind &&
+      mapping.boundary.boundaryKind === adapter.fixture.boundaryKind &&
+      mapping.boundary.boundaryId === adapter.fixture.boundaryId &&
       mapping.boundary.startPosition ===
         adapter.fixture.availableStartPosition &&
       mapping.boundary.exclusiveEndPosition ===
