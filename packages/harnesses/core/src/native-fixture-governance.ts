@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { lstat, open, readdir, realpath } from "node:fs/promises";
-import { basename, dirname, join, parse, resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { lstat } from "node:fs/promises";
+import { createInterface } from "node:readline";
+import { basename, dirname, parse, resolve } from "node:path";
 
 type AuthenticatedArtifactAuthority = Readonly<{
   status: "authenticated";
@@ -249,6 +250,28 @@ const contentIsForbidden = (value: string): boolean =>
   baselineSecretPatterns.some((pattern) => pattern.test(value));
 const baselineContentIsForbidden = (value: string): boolean =>
   baselineSecretPatterns.some((pattern) => pattern.test(value));
+const decodedContentFails = (
+  value: string,
+  predicate: (candidate: string) => boolean,
+): boolean => {
+  let current = value;
+  for (let depth = 0; depth <= value.length; depth += 1) {
+    if (predicate(current)) return true;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(current);
+    } catch {
+      return true;
+    }
+    if (decoded === current) return false;
+    current = decoded;
+  }
+  /* v8 ignore next -- each successful percent-decoding pass strictly shortens
+   * current, so it reaches stability or a decoding error within value.length. */
+  return true;
+};
+const decodedContentIsForbidden = (value: string): boolean =>
+  decodedContentFails(value, contentIsForbidden);
 const removedCategories = Object.freeze([
   "credentials",
   "raw-transcript",
@@ -268,7 +291,7 @@ const string = (value: unknown, pattern: RegExp, code: string): string => {
 };
 
 const reviewedLicenseIdPattern =
-  /^(?:[A-Za-z0-9][A-Za-z0-9.+-]{0,63}|LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]{0,63})$/u;
+  /^(?:(?!LicenseRef-)[A-Za-z0-9][A-Za-z0-9.+-]{0,63}|LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]{0,63})$/u;
 
 const positiveSafeInteger = (value: unknown, code: string): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
@@ -296,6 +319,8 @@ const sourceReference = (
   )
     fail("harness.fixture.provenance.source-reference");
   const reference = value as string;
+  if (decodedContentFails(reference, baselineContentIsForbidden))
+    fail("harness.fixture.provenance.source-reference");
   if (captureKind === "synthetic") {
     if (!syntheticReferencePattern.test(reference))
       fail("harness.fixture.provenance.source-reference");
@@ -316,6 +341,16 @@ const sourceReference = (
     parsed.hash !== ""
   )
     fail("harness.fixture.provenance.source-reference");
+  for (const component of [
+    parsed.href,
+    parsed.hostname,
+    parsed.pathname,
+    parsed.port,
+  ])
+    /* v8 ignore next -- the raw reference is recursively decoded and scanned
+     * above; canonical component scanning is retained as normalization defense. */
+    if (decodedContentFails(component, baselineContentIsForbidden))
+      fail("harness.fixture.provenance.source-reference");
   return reference;
 };
 
@@ -686,46 +721,22 @@ export const serializeHarnessSanitizedFixture = (
   fixture: HarnessSanitizedFixture,
 ): string => `${JSON.stringify(canonicalValue(fixture), null, 2)}\n`;
 
-type FilesystemIdentity = Readonly<{
-  dev: bigint;
-  ino: bigint;
-  size: bigint;
-  mtimeNs: bigint;
-  ctimeNs: bigint;
-}>;
-
 export type NativeFixtureAuditEvent =
-  | "ancestry-after-resolution"
-  | "ancestry-before-recheck"
-  | "directory-before-authentication"
-  | "directory-before-recheck"
-  | "file-after-path-authentication"
-  | "file-after-open-authentication"
-  | "file-before-path-recheck";
+  | "lexical-ancestry-before-capability"
+  | "root-capability-acquired"
+  | "root-capability-before-release";
+
+export type NativeFixtureAuditDirective =
+  "oversized-output" | "terminate-child" | "timeout-child" | undefined;
 
 export type NativeFixtureAuditObserver = (
   event: NativeFixtureAuditEvent,
   path: string,
-) => Promise<void>;
-
-const filesystemIdentity = (value: FilesystemIdentity): FilesystemIdentity =>
-  Object.freeze({
-    dev: value.dev,
-    ino: value.ino,
-    size: value.size,
-    mtimeNs: value.mtimeNs,
-    ctimeNs: value.ctimeNs,
-  });
-
-const sameFilesystemIdentity = (
-  left: FilesystemIdentity,
-  right: FilesystemIdentity,
-): boolean =>
-  left.dev === right.dev &&
-  left.ino === right.ino &&
-  left.size === right.size &&
-  left.mtimeNs === right.mtimeNs &&
-  left.ctimeNs === right.ctimeNs;
+  childProcessId?: number,
+) =>
+  | NativeFixtureAuditDirective
+  | void
+  | Promise<NativeFixtureAuditDirective | void>;
 
 type AncestorIdentity = Readonly<{
   path: string;
@@ -733,13 +744,13 @@ type AncestorIdentity = Readonly<{
   ino: bigint;
 }>;
 
-const stableExistingAncestry = async (
+const authenticateLexicalAncestry = async (
   input: string,
 ): Promise<readonly AncestorIdentity[]> => {
-  const physicalRoot = resolve(input);
-  const filesystemRoot = parse(physicalRoot).root;
+  const lexicalRoot = resolve(input);
+  const filesystemRoot = parse(lexicalRoot).root;
   const paths: string[] = [filesystemRoot];
-  let cursor = physicalRoot;
+  let cursor = lexicalRoot;
   const descendants: string[] = [];
   while (cursor !== filesystemRoot) {
     descendants.push(cursor);
@@ -748,9 +759,7 @@ const stableExistingAncestry = async (
   paths.push(...descendants.reverse());
   const identities: AncestorIdentity[] = [];
   for (const path of paths) {
-    const metadata = await lstat(path, { bigint: true }).catch(() =>
-      fail("harness.fixture.inventory.ancestor"),
-    );
+    const metadata = await lstat(path, { bigint: true });
     if (!metadata.isDirectory() || metadata.isSymbolicLink())
       fail("harness.fixture.inventory.ancestor");
     identities.push(
@@ -760,18 +769,7 @@ const stableExistingAncestry = async (
   return Object.freeze(identities);
 };
 
-const rejectNestedSymlinkAncestry = async (input: string): Promise<void> => {
-  const lexicalRoot = resolve(input);
-  const filesystemRoot = parse(lexicalRoot).root;
-  let cursor = lexicalRoot;
-  while (cursor !== filesystemRoot) {
-    const metadata = await lstat(cursor, { bigint: true });
-    if (metadata.isSymbolicLink()) fail("harness.fixture.inventory.ancestor");
-    cursor = dirname(cursor);
-  }
-};
-
-const assertStableExistingAncestry = async (
+const assertStableLexicalAncestry = async (
   identities: readonly AncestorIdentity[],
 ): Promise<void> => {
   for (const identity of identities) {
@@ -788,86 +786,274 @@ const assertStableExistingAncestry = async (
   }
 };
 
-const withStableDirectory = async <Value>(
-  path: string,
-  optional: boolean,
-  operation: () => Promise<Value>,
-  observer?: NativeFixtureAuditObserver,
-): Promise<Value | undefined> => {
-  let before;
-  try {
-    await observer?.("directory-before-authentication", path);
-    before = await lstat(path, { bigint: true });
-  } catch (error) {
-    if (optional && (error as NodeJS.ErrnoException).code === "ENOENT")
-      return undefined;
-    throw error;
+const capabilityWorkerSource = String.raw`
+import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, statSync } from "node:fs";
+const maximumFiles = 256;
+const maximumAggregateBytes = 3 * 1024 * 1024;
+const maximumAggregatePathBytes = 140 * 1024;
+const same = (left, right) => left.dev === right.dev && left.ino === right.ino;
+const compare = (left, right) => {
+  const a = Array.from(left, (member) => member.codePointAt(0));
+  const b = Array.from(right, (member) => member.codePointAt(0));
+  for (let index = 0; index < Math.min(a.length, b.length); index += 1) {
+    const difference = a[index] - b[index];
+    if (difference !== 0) return difference;
   }
-  if (!before.isDirectory() || before.isSymbolicLink())
-    fail("harness.fixture.inventory.ancestor");
-  const identity = filesystemIdentity(before);
-  const result = await operation();
-  await observer?.("directory-before-recheck", path);
-  const after = await lstat(path, { bigint: true }).catch(() =>
-    fail("harness.fixture.inventory.ancestor-identity"),
-  );
-  if (
-    !after.isDirectory() ||
-    after.isSymbolicLink() ||
-    !sameFilesystemIdentity(identity, filesystemIdentity(after))
-  )
-    fail("harness.fixture.inventory.ancestor-identity");
-  return result;
+  return a.length - b.length;
+};
+const root = statSync(".", { bigint: true });
+process.stdout.write(JSON.stringify({ kind: "ready", dev: String(root.dev), ino: String(root.ino) }) + "\n");
+process.stdin.once("data", (command) => {
+  try {
+    if (command.toString("utf8").startsWith("oversized-output")) {
+      process.stdout.write("x".repeat(5 * 1024 * 1024 + 1));
+      return;
+    }
+    const files = [];
+    let aggregateBytes = 0;
+    let aggregatePathBytes = 0;
+    const enter = (name) => {
+      const parent = statSync(".", { bigint: true });
+      const before = lstatSync(name, { bigint: true });
+      if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("entry-kind");
+      process.chdir(name);
+      if (!same(before, statSync(".", { bigint: true }))) throw new Error("directory-identity");
+      return parent;
+    };
+    const leave = (parent) => {
+      process.chdir("..");
+      if (!same(parent, statSync(".", { bigint: true }))) throw new Error("directory-parent");
+    };
+    const optional = (name) => {
+      try { return lstatSync(name, { bigint: true }); }
+      catch (error) { if (error?.code === "ENOENT") return undefined; throw error; }
+    };
+    const harnesses = readdirSync(".", { withFileTypes: true }).sort((left, right) => compare(left.name, right.name));
+    for (const harness of harnesses) {
+      if (harness.name === "core") continue;
+      if (!harness.isDirectory() || harness.isSymbolicLink()) throw new Error("entry-kind");
+      const rootParent = enter(harness.name);
+      const fixtures = optional("fixtures");
+      if (fixtures === undefined) { leave(rootParent); continue; }
+      const harnessParent = enter("fixtures");
+      const native = optional("native");
+      if (native === undefined) { leave(harnessParent); leave(rootParent); continue; }
+      const fixturesParent = enter("native");
+      const entries = readdirSync(".", { withFileTypes: true }).sort((left, right) => compare(left.name, right.name));
+      for (const entry of entries) {
+        const before = lstatSync(entry.name, { bigint: true });
+        if (!before.isFile() || before.isSymbolicLink() || !entry.name.endsWith(".json") || before.size > 65536n) throw new Error("file");
+        const descriptor = openSync(entry.name, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const opened = fstatSync(descriptor, { bigint: true });
+          if (!opened.isFile() || !same(before, opened)) throw new Error("file-identity");
+          const bytes = readFileSync(descriptor);
+          const after = fstatSync(descriptor, { bigint: true });
+          if (bytes.length > 65536 || BigInt(bytes.length) !== opened.size || !same(opened, after)) throw new Error("file");
+          aggregateBytes += bytes.length;
+          const relativePath = [harness.name, "fixtures", "native", entry.name].join("/");
+          aggregatePathBytes += Buffer.byteLength(relativePath, "utf8");
+          if (files.length >= maximumFiles || aggregateBytes > maximumAggregateBytes || aggregatePathBytes > maximumAggregatePathBytes) throw new Error("inventory-bounds");
+          files.push({ relativePath, bytes: bytes.toString("base64") });
+        } finally { closeSync(descriptor); }
+      }
+      leave(fixturesParent);
+      leave(harnessParent);
+      leave(rootParent);
+    }
+    process.stdout.write(JSON.stringify({ kind: "snapshot", files }) + "\n");
+  } catch {
+    process.stdout.write(JSON.stringify({ kind: "error", code: "capability-scan" }) + "\n");
+  }
+});
+`;
+
+type CapabilitySnapshotFile = Readonly<{
+  relativePath: string;
+  bytes: Buffer;
+}>;
+
+const codePointCompare = (left: string, right: string): number => {
+  const leftPoints = Array.from(left, (member) => member.codePointAt(0)!);
+  const rightPoints = Array.from(right, (member) => member.codePointAt(0)!);
+  const limit = Math.min(leftPoints.length, rightPoints.length);
+  for (let index = 0; index < limit; index += 1) {
+    const difference = leftPoints[index]! - rightPoints[index]!;
+    if (difference !== 0) return difference;
+  }
+  /* v8 ignore next -- audited relative paths are unique, so sorting never
+   * compares equal strings or reaches a strict-prefix terminal segment. */
+  return leftPoints.length - rightPoints.length;
 };
 
-const readStableFixtureFile = async (
-  path: string,
+const parseCapabilityLine = (value: unknown): unknown => {
+  if (typeof value === "string") return JSON.parse(value) as unknown;
+  return fail("harness.fixture.inventory.capability");
+};
+
+const decodeCapabilityFiles = (
+  value: unknown,
+): readonly CapabilitySnapshotFile[] => {
+  const files = denseArray(
+    value,
+    0,
+    256,
+    "harness.fixture.inventory.capability",
+  );
+  let aggregateBytes = 0;
+  let aggregatePathBytes = 0;
+  return Object.freeze(
+    files.map((member) => {
+      const file = record(
+        member,
+        ["relativePath", "bytes"],
+        "harness.fixture.inventory.capability",
+      );
+      /* v8 ignore next -- the fixed worker emits string fields; the parent
+       * retains this independent compromised-worker type boundary. */
+      const relativePath =
+        typeof file.relativePath === "string"
+          ? file.relativePath
+          : fail("harness.fixture.inventory.capability");
+      /* v8 ignore next -- the fixed worker emits string fields; the parent
+       * retains this independent compromised-worker type boundary. */
+      const encodedBytes =
+        typeof file.bytes === "string"
+          ? file.bytes
+          : fail("harness.fixture.inventory.capability");
+      /* v8 ignore next -- the fixed worker emits canonical base64; the parent
+       * retains this independent compromised-worker syntax boundary. */
+      if (
+        !/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(
+          encodedBytes,
+        )
+      )
+        fail("harness.fixture.inventory.capability");
+      const bytes = Buffer.from(encodedBytes, "base64");
+      aggregateBytes += bytes.length;
+      aggregatePathBytes += Buffer.byteLength(relativePath, "utf8");
+      /* v8 ignore next -- worker-side bounds make this unreachable in the
+       * fixed protocol; the parent repeats them as a trust boundary. */
+      if (
+        bytes.length > 65_536 ||
+        aggregateBytes > 3 * 1024 * 1024 ||
+        aggregatePathBytes > 140 * 1024 ||
+        bytes.toString("base64") !== encodedBytes
+      )
+        fail("harness.fixture.inventory.capability");
+      return Object.freeze({ relativePath, bytes });
+    }),
+  );
+};
+
+const acquireCapabilitySnapshot = async (
+  root: string,
+  expectedRoot: AncestorIdentity,
   observer?: NativeFixtureAuditObserver,
-): Promise<Buffer> => {
-  const pathIdentity = await lstat(path, { bigint: true });
-  if (
-    !pathIdentity.isFile() ||
-    pathIdentity.isSymbolicLink() ||
-    pathIdentity.size > 65_536n
-  )
-    fail("harness.fixture.inventory.file");
-  await observer?.("file-after-path-authentication", path);
-  const handle = await open(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW,
-  ).catch(() => fail("harness.fixture.inventory.file"));
+): Promise<readonly CapabilitySnapshotFile[]> => {
+  const authorityDeadline = Date.now() + 10_000;
+  const controller = new AbortController();
+  const abortWork = (): void => {
+    controller.abort();
+  };
+  const workTimeout = setTimeout(abortWork, 9_000);
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", capabilityWorkerSource],
+    {
+      cwd: root,
+      env: Object.freeze({}),
+      signal: controller.signal,
+      stdio: ["pipe", "pipe", "ignore"],
+    },
+  );
+  let childError: Error | undefined;
+  const settlement = new Promise<
+    Readonly<{ code: number | null; signal: NodeJS.Signals | null }>
+  >((resolveSettlement) => {
+    child.once("error", (error) => {
+      childError = error;
+    });
+    child.once("close", (code, signal) => {
+      resolveSettlement(Object.freeze({ code, signal }));
+    });
+  });
+  let outputBytes = 0;
+  child.stdout.on("data", (chunk: Buffer) => {
+    outputBytes += chunk.length;
+    if (outputBytes > 5 * 1024 * 1024) {
+      controller.abort();
+    }
+  });
+  const lines = createInterface({ input: child.stdout })[
+    Symbol.asyncIterator
+  ]();
   try {
-    const before = await handle.stat({ bigint: true });
+    const readyLine = await lines.next();
+    const ready = record(
+      parseCapabilityLine(readyLine.value),
+      ["kind", "dev", "ino"],
+      "harness.fixture.inventory.capability",
+    );
+    /* v8 ignore next -- the fixed child's ready record is inode-bound; this
+     * rejects an external runtime/protocol violation independently. */
     if (
-      !before.isFile() ||
-      !sameFilesystemIdentity(
-        filesystemIdentity(pathIdentity),
-        filesystemIdentity(before),
-      )
+      readyLine.done ||
+      ready.kind !== "ready" ||
+      ready.dev !== String(expectedRoot.dev) ||
+      ready.ino !== String(expectedRoot.ino)
     )
-      fail("harness.fixture.inventory.file-identity");
-    await observer?.("file-after-open-authentication", path);
-    const buffer = Buffer.alloc(65_537);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > 65_536 || BigInt(bytesRead) !== before.size)
-      fail("harness.fixture.inventory.file");
-    const after = await handle.stat({ bigint: true });
-    await observer?.("file-before-path-recheck", path);
-    const finalPath = await lstat(path, { bigint: true });
-    if (
-      !sameFilesystemIdentity(
-        filesystemIdentity(before),
-        filesystemIdentity(after),
-      ) ||
-      !sameFilesystemIdentity(
-        filesystemIdentity(before),
-        filesystemIdentity(finalPath),
-      )
-    )
-      fail("harness.fixture.inventory.file-identity");
-    return buffer.subarray(0, bytesRead);
+      fail("harness.fixture.inventory.ancestor-identity");
+    const directive = await observer?.(
+      "root-capability-acquired",
+      root,
+      child.pid,
+    );
+    if (directive === "terminate-child") child.kill("SIGKILL");
+    else if (directive === "timeout-child") abortWork();
+    else if (directive === "oversized-output")
+      child.stdin.end("oversized-output\n");
+    else child.stdin.end("scan\n");
+    const snapshotLine = await lines.next();
+    const parsedSnapshot = parseCapabilityLine(snapshotLine.value);
+    /* v8 ignore next -- the fixed worker emits only object records; the false
+     * arm retains a content-free failure for compromised output. */
+    const snapshotKind: unknown =
+      typeof parsedSnapshot === "object" && parsedSnapshot !== null
+        ? Object.getOwnPropertyDescriptor(parsedSnapshot, "kind")?.value
+        : undefined;
+    const snapshot = record(
+      parsedSnapshot,
+      snapshotKind === "snapshot" ? ["kind", "files"] : ["kind", "code"],
+      "harness.fixture.inventory.capability",
+    );
+    if (snapshotLine.done || snapshot.kind !== "snapshot")
+      fail("harness.fixture.inventory.capability");
+    const decodedFiles = decodeCapabilityFiles(snapshot.files);
+    await observer?.("root-capability-before-release", root);
+    return Object.freeze(decodedFiles);
+  } catch (error) {
+    if (error instanceof NativeFixtureGovernanceError) throw error;
+    return fail("harness.fixture.inventory.capability");
   } finally {
-    await handle.close();
+    clearTimeout(workTimeout);
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+    const remaining = Math.max(0, authorityDeadline - Date.now());
+    let deadlineTimer!: ReturnType<typeof setTimeout>;
+    const outcome = await Promise.race([
+      settlement,
+      new Promise<Error>((resolveDeadline) => {
+        /* v8 ignore next 3 -- SIGKILL plus close normally completes in the
+         * reserved teardown interval; this is the terminal OS/runtime guard. */
+        deadlineTimer = setTimeout(() => {
+          resolveDeadline(new Error("capability-authority-deadline"));
+        }, remaining);
+      }),
+    ]);
+    clearTimeout(deadlineTimer);
+    if (outcome instanceof Error || childError !== undefined)
+      fail("harness.fixture.inventory.capability");
   }
 };
 
@@ -875,98 +1061,71 @@ export const auditNativeFixtureInventory = async (
   harnessPackagesRoot: string,
   observer?: NativeFixtureAuditObserver,
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
-  await rejectNestedSymlinkAncestry(harnessPackagesRoot);
-  const physicalRoot = await realpath(harnessPackagesRoot);
-  await observer?.("ancestry-after-resolution", physicalRoot);
-  const ancestry = await stableExistingAncestry(physicalRoot);
-  const entries: NativeFixtureInventoryEntry[] = [];
-  await withStableDirectory(
-    physicalRoot,
-    false,
-    async () => {
-      const harnessDirectories = (
-        await readdir(physicalRoot, { withFileTypes: true })
-      ).sort((left, right) => left.name.localeCompare(right.name));
-      for (const harnessDirectory of harnessDirectories) {
-        if (harnessDirectory.name === "core") continue;
-        if (!harnessDirectory.isDirectory())
-          fail("harness.fixture.inventory.entry-kind");
-        const packageRoot = join(physicalRoot, harnessDirectory.name);
-        await withStableDirectory(
-          packageRoot,
-          false,
-          async () => {
-            const fixturesRoot = join(packageRoot, "fixtures");
-            await withStableDirectory(
-              fixturesRoot,
-              true,
-              async () => {
-                const nativeRoot = join(fixturesRoot, "native");
-                await withStableDirectory(
-                  nativeRoot,
-                  true,
-                  async () => {
-                    const files = (
-                      await readdir(nativeRoot, { withFileTypes: true })
-                    ).sort((left, right) =>
-                      left.name.localeCompare(right.name),
-                    );
-                    for (const file of files) {
-                      const relativePath = `${harnessDirectory.name}/fixtures/native/${file.name}`;
-                      if (!file.isFile() || !file.name.endsWith(".json"))
-                        fail("harness.fixture.inventory.entry-kind");
-                      const bytes = await readStableFixtureFile(
-                        join(nativeRoot, file.name),
-                        observer,
-                      );
-                      const text = bytes.toString("utf8");
-                      if (text.includes("\uFFFD") || contentIsForbidden(text))
-                        fail("harness.fixture.inventory.content");
-                      let input: unknown;
-                      try {
-                        input = JSON.parse(text);
-                      } catch {
-                        fail("harness.fixture.inventory.json");
-                      }
-                      const fixture = parseHarnessSanitizedFixture(input);
-                      if (
-                        fixture.harnessId !== harnessDirectory.name ||
-                        basename(file.name, ".json") !== fixture.fixtureId
-                      )
-                        fail("harness.fixture.inventory.path-link");
-                      if (serializeHarnessSanitizedFixture(fixture) !== text)
-                        fail("harness.fixture.inventory.canonical-json");
-                      entries.push(
-                        Object.freeze({
-                          harnessId: fixture.harnessId,
-                          fixtureId: fixture.fixtureId,
-                          harnessVersion: fixture.harnessVersion,
-                          relativePath,
-                          artifactAuthority:
-                            fixture.governance.provenance.artifactAuthority
-                              .status,
-                          sha256: `sha256-${createHash("sha256").update(bytes).digest("hex")}`,
-                        }),
-                      );
-                    }
-                  },
-                  observer,
-                );
-              },
-              observer,
-            );
-          },
-          observer,
-        );
-      }
-    },
+  const lexicalRoot = resolve(harnessPackagesRoot);
+  const ancestry = await authenticateLexicalAncestry(lexicalRoot);
+  await observer?.("lexical-ancestry-before-capability", lexicalRoot);
+  await assertStableLexicalAncestry(ancestry);
+  const expectedRoot = ancestry.at(-1)!;
+  const files = await acquireCapabilitySnapshot(
+    lexicalRoot,
+    expectedRoot,
     observer,
   );
-  await observer?.("ancestry-before-recheck", physicalRoot);
-  await assertStableExistingAncestry(ancestry);
+  await assertStableLexicalAncestry(ancestry);
+  const entries: NativeFixtureInventoryEntry[] = [];
+  for (const file of files) {
+    const pathSegments = file.relativePath.split("/");
+    /* v8 ignore next -- the fixed worker constructs this four-segment path;
+     * parent validation remains as a compromised-worker boundary. */
+    if (
+      pathSegments.length !== 4 ||
+      pathSegments[1] !== "fixtures" ||
+      pathSegments[2] !== "native" ||
+      !pathSegments[3]!.endsWith(".json")
+    )
+      fail("harness.fixture.inventory.entry-kind");
+    const [harnessId, , , fileName] = pathSegments as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    const text = file.bytes.toString("utf8");
+    if (
+      text.includes("\uFFFD") ||
+      contentIsForbidden(text) ||
+      decodedContentIsForbidden(text)
+    )
+      fail("harness.fixture.inventory.content");
+    let input: unknown;
+    try {
+      input = JSON.parse(text);
+    } catch {
+      fail("harness.fixture.inventory.json");
+    }
+    const fixture = parseHarnessSanitizedFixture(input);
+    if (
+      fixture.harnessId !== harnessId ||
+      basename(fileName, ".json") !== fixture.fixtureId
+    )
+      fail("harness.fixture.inventory.path-link");
+    if (serializeHarnessSanitizedFixture(fixture) !== text)
+      fail("harness.fixture.inventory.canonical-json");
+    entries.push(
+      Object.freeze({
+        harnessId: fixture.harnessId,
+        fixtureId: fixture.fixtureId,
+        harnessVersion: fixture.harnessVersion,
+        relativePath: file.relativePath,
+        artifactAuthority:
+          fixture.governance.provenance.artifactAuthority.status,
+        sha256: `sha256-${createHash("sha256").update(file.bytes).digest("hex")}`,
+      }),
+    );
+  }
   return Object.freeze(
     entries.sort((left, right) =>
-      left.relativePath.localeCompare(right.relativePath),
+      codePointCompare(left.relativePath, right.relativePath),
     ),
   );
 };

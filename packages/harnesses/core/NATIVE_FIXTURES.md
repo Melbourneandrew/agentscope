@@ -62,11 +62,20 @@ range or create an actual-binary or release support claim.
 `auditNativeFixtureInventory` rejects noncanonical JSON, unexpected file kinds,
 oversized files, path/identity mismatches, malformed governance, secret-shaped
 content, user paths, raw transcript or terminal fields, and prose-shaped payload
-values. It binds traversal to the resolved physical root, rejects symlinked
-existing ancestry, authenticates the package, fixture, and native-directory
-ancestors without following symlinks, and reads each file through one
-identity-stable no-follow handle. Harness Core's unit suite runs this inventory
-audit on every repository validation. The post-adapter inventory certification
+values. It rejects symlinked lexical ancestry, then retains an inode-pinned root
+directory capability for the complete traversal; replacement of the caller's
+path cannot redirect the scan. Package, fixture, and native-directory traversal
+does not follow symlinks, and every file is read through one identity-stable
+no-follow handle. The fixed scanner child accepts at most 256 files, 64 KiB per
+file, and 3 MiB decoded in aggregate. The 3 MiB ceiling base64-encodes to 4 MiB,
+and retained relative paths are capped at 140 KiB in aggregate. Even at JSON's
+worst six-byte escaping expansion, those paths consume at most 840 KiB; the
+fixed 256-record envelope consumes less than 16 KiB. The complete maximum valid
+snapshot is therefore below the parent's 5 MiB output ceiling. One absolute
+10-second authority applies: work is aborted at
+9 seconds so the final second is reserved for forced termination and a
+confirmed direct-child join. Harness Core's unit suite runs this inventory audit
+on every repository validation. The post-adapter inventory certification
 remains responsible for proving that every implemented native mapping is
 represented.
 

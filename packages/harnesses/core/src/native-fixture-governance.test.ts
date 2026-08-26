@@ -1,5 +1,4 @@
 import {
-  appendFile,
   mkdtemp,
   mkdir,
   rename,
@@ -508,6 +507,33 @@ describe("native fixture governance metadata", () => {
       withProvenance({ ...base.governance.provenance, sourceReference: 1 }),
       withProvenance({
         ...base.governance.provenance,
+        captureKind: "disposable-hermetic",
+        sourceReference: `https://example.invalid/%67ithub_pat_${"a".repeat(30)}`,
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"b".repeat(64)}`,
+        },
+      }),
+      withProvenance({
+        ...base.governance.provenance,
+        captureKind: "disposable-hermetic",
+        sourceReference: `https://example.invalid/%2567ithub_pat_${"a".repeat(30)}`,
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"b".repeat(64)}`,
+        },
+      }),
+      withProvenance({
+        ...base.governance.provenance,
+        captureKind: "disposable-hermetic",
+        sourceReference: "https://example.invalid/%zz",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"b".repeat(64)}`,
+        },
+      }),
+      withProvenance({
+        ...base.governance.provenance,
         sourceReference: "host-path",
       }),
       withProvenance({
@@ -583,6 +609,7 @@ describe("native fixture reviewed license governance", () => {
       "MIT OR Apache-2.0",
       "MIT AND Apache-2.0",
       "GPL-2.0-only WITH Classpath-exception-2.0",
+      "LicenseRef-One+Two",
       "MIT OR",
       "(MIT",
       "",
@@ -740,6 +767,18 @@ describe("native fixture inventory scanner", () => {
     );
   });
 
+  it("rejects a governed token hidden by raw percent encoding", async () => {
+    const encodedToken = `%67ithub_pat_${"a".repeat(30)}`;
+    const text = serializeHarnessSanitizedFixture(fixture()).replace(
+      '"synthetic-model"',
+      `"${encodedToken}"`,
+    );
+    const root = await writeInventoryFixture(text);
+    await expect(auditNativeFixtureInventory(root)).rejects.toThrow(
+      "harness.fixture.inventory.content",
+    );
+  });
+
   it("rejects path mismatch and noncanonical duplicate-key JSON", async () => {
     const mismatched = await writeInventoryFixture(
       fixture(),
@@ -775,7 +814,7 @@ describe("native fixture inventory scanner", () => {
     await mkdir(nativeRoot, { recursive: true });
     await writeFile(join(nativeRoot, "unexpected.txt"), "synthetic");
     await expect(auditNativeFixtureInventory(unexpectedRoot)).rejects.toThrow(
-      "harness.fixture.inventory.entry-kind",
+      "harness.fixture.inventory.capability",
     );
 
     const oversizedRoot = await mkdtemp(
@@ -789,7 +828,7 @@ describe("native fixture inventory scanner", () => {
       "x".repeat(65_537),
     );
     await expect(auditNativeFixtureInventory(oversizedRoot)).rejects.toThrow(
-      "harness.fixture.inventory.file",
+      "harness.fixture.inventory.capability",
     );
   });
 
@@ -801,7 +840,7 @@ describe("native fixture inventory scanner", () => {
     await mkdir(join(root, "codex"));
     await writeFile(join(root, "codex", "fixtures"), "synthetic");
     await expect(auditNativeFixtureInventory(root)).rejects.toThrow(
-      "harness.fixture.inventory.ancestor",
+      "harness.fixture.inventory.capability",
     );
     await expect(
       auditNativeFixtureInventory(join(root, "missing-root")),
@@ -825,7 +864,7 @@ describe("native fixture inventory identity and ordering", () => {
     roots.push(packageRoot);
     await symlink(join(target, "codex"), join(packageRoot, "codex"), "dir");
     await expect(auditNativeFixtureInventory(packageRoot)).rejects.toThrow(
-      "harness.fixture.inventory.entry-kind",
+      "harness.fixture.inventory.capability",
     );
 
     for (const ancestor of ["fixtures", "native"] as const) {
@@ -851,7 +890,7 @@ describe("native fixture inventory identity and ordering", () => {
         );
       }
       await expect(auditNativeFixtureInventory(root)).rejects.toThrow(
-        "harness.fixture.inventory.ancestor",
+        "harness.fixture.inventory.capability",
       );
     }
 
@@ -867,7 +906,7 @@ describe("native fixture inventory identity and ordering", () => {
       "file",
     );
     await expect(auditNativeFixtureInventory(fileRoot)).rejects.toThrow(
-      "harness.fixture.inventory.entry-kind",
+      "harness.fixture.inventory.capability",
     );
   });
 
@@ -894,138 +933,135 @@ describe("native fixture inventory identity and ordering", () => {
   });
 });
 
-describe("native fixture inventory replacement races", () => {
-  it.each([
-    ["remove", "harness.fixture.inventory.ancestor"],
-    ["symlink", "harness.fixture.inventory.ancestor"],
-  ] as const)(
-    "rejects physical-root %s after resolution",
-    async (kind, code) => {
+describe("native fixture retained root capability", () => {
+  it.each(["oversized-output", "terminate-child", "timeout-child"] as const)(
+    "fails closed on %s and joins the worker",
+    async (directive) => {
       const root = await writeInventoryFixture();
-      const target = await mkdtemp(
-        join(physicalTemporaryRoot, "agentscope-race-target-"),
-      );
-      roots.push(target);
-      let changed = false;
+      let childProcessId: number | undefined;
       await expect(
-        auditNativeFixtureInventory(root, async (event, path) => {
-          if (changed || event !== "ancestry-after-resolution") return;
-          changed = true;
-          await rm(path, { recursive: true });
-          if (kind === "symlink") await symlink(target, path, "dir");
+        auditNativeFixtureInventory(root, (event, _path, pid) => {
+          if (event !== "root-capability-acquired") return;
+          childProcessId = pid;
+          return directive;
         }),
-      ).rejects.toThrow(code);
+      ).rejects.toThrow("harness.fixture.inventory.capability");
+      expect(childProcessId).toBeTypeOf("number");
+      expect(() => process.kill(childProcessId!, 0)).toThrow();
     },
   );
+});
 
-  it.each(["remove", "symlink"] as const)(
-    "rejects physical-root %s before ancestry recheck",
-    async (kind) => {
-      const root = await writeInventoryFixture();
-      const target = await mkdtemp(
-        join(physicalTemporaryRoot, "agentscope-race-target-"),
-      );
-      roots.push(target);
-      let changed = false;
-      await expect(
-        auditNativeFixtureInventory(root, async (event, path) => {
-          if (changed || event !== "ancestry-before-recheck") return;
-          changed = true;
-          await rm(path, { recursive: true });
-          if (kind === "symlink") await symlink(target, path, "dir");
-        }),
-      ).rejects.toThrow("harness.fixture.inventory.ancestor-identity");
-    },
-  );
-
-  it("surfaces a nonoptional directory authentication race", async () => {
+describe("native fixture retained root capability lifecycle", () => {
+  it("joins a worker that settles before capability release", async () => {
     const root = await writeInventoryFixture();
-    let changed = false;
+    let childProcessId: number | undefined;
     await expect(
-      auditNativeFixtureInventory(root, async (event, path) => {
-        if (
-          changed ||
-          event !== "directory-before-authentication" ||
-          !path.endsWith("/codex")
-        )
+      auditNativeFixtureInventory(root, async (event, _path, pid) => {
+        if (event === "root-capability-acquired") {
+          childProcessId = pid;
           return;
-        changed = true;
-        await rm(path, { recursive: true });
+        }
+        if (event !== "root-capability-before-release") return;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          try {
+            process.kill(childProcessId!, 0);
+          } catch {
+            return;
+          }
+          await new Promise<void>((resolveDelay) => {
+            setTimeout(resolveDelay, 1);
+          });
+        }
+        throw new Error("capability worker did not settle");
       }),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    ).resolves.toHaveLength(1);
+    expect(() => process.kill(childProcessId!, 0)).toThrow();
   });
 });
 
-describe("native fixture nested replacement races", () => {
-  it.each([
-    ["remove", "harness.fixture.inventory.ancestor-identity"],
-    ["replace", "harness.fixture.inventory.ancestor-identity"],
-  ] as const)(
-    "rejects directory %s before identity recheck",
-    async (kind, code) => {
-      const root = await writeInventoryFixture();
-      let changed = false;
-      await expect(
-        auditNativeFixtureInventory(root, async (event, path) => {
-          if (
-            changed ||
-            event !== "directory-before-recheck" ||
-            !path.endsWith(join("fixtures", "native"))
-          )
-            return;
-          changed = true;
-          if (kind === "remove") {
-            await rm(path, { recursive: true });
-            return;
-          }
-          await rename(path, `${path}-previous`);
-          await mkdir(path);
-        }),
-      ).rejects.toThrow(code);
-    },
-  );
-
-  it.each([
-    [
-      "remove-before-open",
-      "file-after-path-authentication",
-      "harness.fixture.inventory.file",
-    ],
-    [
-      "replace-before-open",
-      "file-after-path-authentication",
-      "harness.fixture.inventory.file-identity",
-    ],
-    [
-      "grow-after-open",
-      "file-after-open-authentication",
-      "harness.fixture.inventory.file",
-    ],
-    [
-      "replace-before-recheck",
-      "file-before-path-recheck",
-      "harness.fixture.inventory.file-identity",
-    ],
-  ] as const)("rejects fixture %s", async (kind, selectedEvent, code) => {
+describe("native fixture retained root capability races", () => {
+  it("scans the inode-pinned root during swap and restore", async () => {
     const root = await writeInventoryFixture();
-    let changed = false;
+    const replacementFixture = {
+      ...fixture(),
+      sanitizedPayload: { model: "replacement-model" },
+    } as const;
+    const replacement = await writeInventoryFixture(replacementFixture);
+    const held = `${root}-held`;
+    roots.push(held);
+    const original = await auditNativeFixtureInventory(root);
+    const observed = await auditNativeFixtureInventory(
+      root,
+      async (event, path) => {
+        if (event === "root-capability-acquired") {
+          await rename(path, held);
+          await rename(replacement, path);
+        } else if (event === "root-capability-before-release") {
+          await rename(path, replacement);
+          await rename(held, path);
+        }
+      },
+    );
+    expect(observed).toEqual(original);
+  });
+
+  it("rejects a lexical root swapped before capability acquisition", async () => {
+    const root = await writeInventoryFixture();
+    const replacement = await writeInventoryFixture();
+    const held = `${root}-held`;
+    roots.push(held);
     await expect(
       auditNativeFixtureInventory(root, async (event, path) => {
-        if (changed || event !== selectedEvent) return;
-        changed = true;
-        if (kind === "remove-before-open") {
-          await rm(path);
-          return;
-        }
-        if (kind === "grow-after-open") {
-          await appendFile(path, "x");
-          return;
-        }
-        await rename(path, `${path}-previous`);
-        await writeFile(path, serializeHarnessSanitizedFixture(fixture()));
+        if (event !== "lexical-ancestry-before-capability") return;
+        await rename(path, held);
+        await rename(replacement, path);
       }),
-    ).rejects.toThrow(code);
+    ).rejects.toThrow("harness.fixture.inventory.ancestor-identity");
+    await rename(root, replacement);
+    await rename(held, root);
   });
+
+  it("fails closed when lexical ancestry disappears before acquisition", async () => {
+    const root = await writeInventoryFixture();
+    await expect(
+      auditNativeFixtureInventory(root, async (event, path) => {
+        if (event === "lexical-ancestry-before-capability")
+          await rm(path, { recursive: true });
+      }),
+    ).rejects.toThrow("harness.fixture.inventory.ancestor-identity");
+  });
+
+  it.each([
+    { extraByte: false, expectedCode: "harness.fixture.inventory.json" },
+    {
+      extraByte: true,
+      expectedCode: "harness.fixture.inventory.capability",
+    },
+  ])(
+    "bounds the decoded aggregate before retaining files (extra byte: $extraByte)",
+    async ({ extraByte, expectedCode }) => {
+      const root = await mkdtemp(
+        join(physicalTemporaryRoot, "agentscope-native-fixtures-"),
+      );
+      roots.push(root);
+      const nativeRoot = join(root, "codex", "fixtures", "native");
+      await mkdir(nativeRoot, { recursive: true });
+      await Promise.all(
+        Array.from({ length: 48 }, (_, index) =>
+          writeFile(
+            join(nativeRoot, `hostile-${String(index).padStart(3, "0")}.json`),
+            "x".repeat(65_536),
+          ),
+        ),
+      );
+      if (extraByte)
+        await writeFile(join(nativeRoot, "hostile-extra.json"), "x");
+      await expect(auditNativeFixtureInventory(root)).rejects.toThrow(
+        expectedCode,
+      );
+    },
+  );
 });
 
 describe("native fixture inventory ordering", () => {
