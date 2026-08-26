@@ -79,14 +79,17 @@ process or agent cannot mint, widen, consume, or apply that plan. There is no
 generic Wrangler/dashboard/API mutation mode.
 
 The repo-local `scripts/crabbox-coordinator-plan.mjs` is a non-mutating
-admission verifier only. It verifies detached Ed25519 signatures from the
-external owner and plan-observation authorities, exact profile and permission
-manifest digests, freshness, targets, action allowlists, and opaque secret
-slot/version identities. Its output deliberately says `consumed: false`; it is
-not the human launcher and cannot satisfy atomic one-use consumption. If the
-separately installed launcher cannot consume and journal the same authenticated
-plan before resolving credentials, stop. Never substitute this script or raw
-Wrangler for that missing authority.
+structural preflight only. It uses only the canonical committed admission and
+permission manifest, fully validates the live profile and toolchain identities,
+and checks candidate detached signatures, freshness, kind-specific actions,
+resource targets, and opaque secret slot/version identities. Caller-supplied
+candidate public keys do not establish the external authorities. Its output
+therefore says `authorityAdmitted: false`, `continuouslyEnforced: false`,
+`consumed: false`, and `mutationAuthorized: false`. The separately installed
+launcher must bind the admitted human-controlled key identities, continuously
+enforce plan freshness, atomically consume and journal the same authenticated
+plan, and revalidate before resolving credentials. Never substitute this script
+or raw Wrangler for that missing authority.
 
 The only admitted public binding is the exact script-level workers.dev binding.
 Do not create a zone route, Worker Domain, custom domain, Pages binding, Access
@@ -96,11 +99,14 @@ owner-approved plan and retirement does not disable it.
 
 Before deployment, a separate human-owned read-only billing/product credential
 must produce a signed observation no more than 15 minutes old proving the
-selected account is on Workers Free with no paid or usage-overage path. The
-fleet service may verify the signed record but never receives Cloudflare
-authority. Sampled or delayed Workers, Pages, and Durable Object analytics are
-advisory only; they do not prove billing state or current quota. Missing, stale,
-paid, or ambiguous plan evidence freezes acquisition. The owner accepts that
+selected account is on Workers Free with no paid or usage-overage path and
+recording the current Workers, Durable Object, storage, CPU, and Pages Functions
+quota projections plus their source identities. The fleet service may verify
+the signed record but never receives Cloudflare authority, and must keep a fresh
+continuous observation throughout every active or uncertain operation.
+Sampled or delayed Workers, Pages, and Durable Object analytics are advisory
+only; they do not prove billing state or current quota. Missing, stale, paid,
+ambiguous, or discontinuous plan evidence freezes acquisition. The owner accepts that
 unrelated Workers or Pages Functions can consume the shared Free quota and deny
 the coordinator, and that coordinator traffic can deny those unrelated
 services. Independent Hetzner reconciliation and attended recovery remain
@@ -198,10 +204,14 @@ not delete a zone route, Worker Domain, or the shared account-level workers.dev
 subdomain. Keep plan-observation, inventory, recovery, and deployment authority
 until exact provider and Cloudflare absence is proven.
 
-`scripts/crabbox-coordinator-retirement-profile.mjs` renders that terminal
-profile only from a recent detached-signed provider-zero observation containing
-zero servers, SSH keys, active leases, and pending creates plus a continuous
-ledger. Rendering is not authorization to deploy it. The owner-approved retire
-plan still controls removal of triggers/secrets/bindings, deployment of the
-authenticated no-op entry point, the exact class-deletion migration, and final
-version/script deletion.
+`scripts/crabbox-coordinator-retirement-profile.mjs` structurally renders that
+terminal profile only from a recent candidate-signed provider-zero record bound
+to the exact account, Worker version, Durable Object namespace/migration,
+Hetzner project, acquisition freeze, resolved transitions, launcher revocation,
+tombstone, terminal evidence, zero servers/keys/leases/creates, and a continuous
+ledger. It verifies pinned source/lock/license identity and stages atomically.
+Its caller-selected candidate key does not establish recovery authority, and
+its output explicitly says `authorityAdmitted: false` and
+`mutationAuthorized: false`. The protected launcher must reverify the admitted
+recovery key and owner-approved irreversible sequence before deploying the
+artifact or class-deletion migration.

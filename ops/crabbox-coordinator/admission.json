@@ -13,6 +13,13 @@
     "accountMode": "owner-personal-shared",
     "workersPlan": "free-no-overage",
     "planObservationMaxAgeMinutes": 15,
+    "requiredQuotaProjections": [
+      "workersRequestsDaily",
+      "workersCpuMsDaily",
+      "durableObjectRequestsDaily",
+      "durableObjectStorageGb",
+      "pagesFunctionsRequestsDaily"
+    ],
     "compatibilityDate": "2026-04-30",
     "environmentIdPattern": "^asgcf_[a-f0-9]{32}$",
     "topLevelKeys": [

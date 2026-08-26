@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  parseJsonc,
+  readCanonicalPolicy,
+  sha256,
+  validateLiveProfile,
+  writeOwnedAtomic,
+} from "./lib/crabbox-coordinator-policy.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const policyRoot = resolve(repositoryRoot, "ops/crabbox-coordinator");
-const admissionPath = resolve(policyRoot, "admission.json");
 const templatePath = resolve(policyRoot, "deployment-profile.template.jsonc");
 const placeholder = "__AGENTSCOPE_ENVIRONMENT_ID__";
 
@@ -36,46 +41,6 @@ function parseArguments(argv) {
   return parsed;
 }
 
-function sha256(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function parseTemplate(value) {
-  let normalized = "";
-  let inString = false;
-  let escaped = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index];
-    if (inString) {
-      normalized += character;
-      if (escaped) {
-        escaped = false;
-      } else if (character === "\\") {
-        escaped = true;
-      } else if (character === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      normalized += character;
-      continue;
-    }
-    if (character === ",") {
-      let next = index + 1;
-      while (/\s/u.test(value[next] ?? "")) {
-        next += 1;
-      }
-      if (value[next] === "}" || value[next] === "]") {
-        continue;
-      }
-    }
-    normalized += character;
-  }
-  return JSON.parse(normalized);
-}
-
 function git(source, args) {
   const result = spawnSync("/usr/bin/git", ["-C", source, ...args], {
     encoding: "utf8",
@@ -88,100 +53,6 @@ function git(source, args) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim()}`);
   }
   return result.stdout.trim();
-}
-
-function assertExactSet(label, actual, expected) {
-  const left = [...actual].sort();
-  const right = [...expected].sort();
-  if (JSON.stringify(left) !== JSON.stringify(right)) {
-    throw new Error(
-      `${label} differs: ${JSON.stringify(left)} != ${JSON.stringify(right)}`,
-    );
-  }
-}
-
-function validateProfile(profile, admission, environmentId) {
-  const expected = admission.deployment;
-  assertExactSet(
-    "top-level profile keys",
-    Object.keys(profile),
-    expected.topLevelKeys,
-  );
-  if (profile.name !== expected.workerName || profile.main !== "src/index.ts") {
-    throw new Error("Worker identity or entry point differs from admission");
-  }
-  if (profile.compatibility_date !== expected.compatibilityDate) {
-    throw new Error("compatibility date differs from admission");
-  }
-  if (
-    profile.workers_dev !== true ||
-    profile.preview_urls !== false ||
-    "assets" in profile
-  ) {
-    throw new Error(
-      "workers.dev, preview, or asset policy differs from admission",
-    );
-  }
-  if (
-    JSON.stringify(profile.compatibility_flags) !==
-      JSON.stringify(expected.compatibilityFlags) ||
-    profile.version_metadata?.binding !== expected.versionMetadataBinding
-  ) {
-    throw new Error(
-      "compatibility flags or version metadata binding differs from admission",
-    );
-  }
-  if (JSON.stringify(profile.alias) !== JSON.stringify(expected.aliases)) {
-    throw new Error("Worker module aliases differ from admission");
-  }
-  assertExactSet(
-    "variable allowlist",
-    Object.keys(profile.vars ?? {}),
-    expected.variableNames,
-  );
-  if (profile.vars.AGENTSCOPE_CRABBOX_ENVIRONMENT_ID !== environmentId) {
-    throw new Error("environment identity was not bound exactly");
-  }
-  for (const [name, value] of Object.entries(expected.variableValues)) {
-    if (profile.vars[name] !== value) {
-      throw new Error(`variable ${name} differs from admission`);
-    }
-  }
-  const bindings = profile.durable_objects?.bindings ?? [];
-  if (
-    bindings.length !== 1 ||
-    bindings[0].name !== expected.durableObjectBinding ||
-    bindings[0].class_name !== expected.durableObjectClass
-  ) {
-    throw new Error("Durable Object binding differs from admission");
-  }
-  const migrations = profile.migrations ?? [];
-  if (
-    migrations.length !== 1 ||
-    migrations[0].tag !== expected.migrationTag ||
-    JSON.stringify(migrations[0].new_sqlite_classes) !==
-      JSON.stringify([expected.durableObjectClass])
-  ) {
-    throw new Error("Durable Object migration differs from admission");
-  }
-  if (
-    JSON.stringify(profile.triggers?.crons) !== JSON.stringify([expected.cron])
-  ) {
-    throw new Error("cron trigger differs from admission");
-  }
-  const prohibitedFragments = [
-    "AWS",
-    "AZURE",
-    "GCP",
-    "DAYTONA",
-    "TAILSCALE",
-    "GITHUB",
-  ];
-  for (const key of Object.keys(profile.vars ?? {})) {
-    if (prohibitedFragments.some((fragment) => key.includes(fragment))) {
-      throw new Error(`prohibited provider or integration variable: ${key}`);
-    }
-  }
 }
 
 async function main() {
@@ -199,7 +70,8 @@ async function main() {
     );
   }
 
-  const admission = JSON.parse(await readFile(admissionPath, "utf8"));
+  const { admission, admissionBytes, manifestBytes } =
+    await readCanonicalPolicy();
   const record = JSON.parse(await readFile(recordPath, "utf8"));
   const environmentPattern = new RegExp(
     admission.deployment.environmentIdPattern,
@@ -246,14 +118,18 @@ async function main() {
     );
   }
   const rendered = template.replace(placeholder, record.environmentId);
-  const profile = parseTemplate(rendered);
-  validateProfile(profile, admission, record.environmentId);
-  await writeFile(outputPath, `${JSON.stringify(profile, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  const profile = parseJsonc(rendered);
+  validateLiveProfile(profile, admission, record.environmentId);
+  await writeOwnedAtomic(
+    outputPath,
+    workerRoot,
+    `${JSON.stringify(profile, null, 2)}\n`,
+  );
 
   const evidence = {
     schemaVersion: 1,
+    canonicalAdmissionSha256: sha256(admissionBytes),
+    canonicalPermissionManifestSha256: sha256(manifestBytes),
     sourceCommit: sourceHead,
     workerLockSha256: sha256(lock),
     profileSha256: sha256(Buffer.from(`${JSON.stringify(profile, null, 2)}\n`)),

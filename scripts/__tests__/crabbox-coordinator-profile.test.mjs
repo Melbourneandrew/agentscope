@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { test } from "vitest";
+import { writeOwnedAtomic } from "../lib/crabbox-coordinator-policy.mjs";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -191,4 +192,17 @@ test("the committed admission keeps the initial fleet bounds", () => {
     keep: false,
     checkpoints: false,
   });
+});
+
+test("refuses an admitted output filename when it is a symlink", async () => {
+  const item = await fixture();
+  const canary = resolve(item.root, "canary.json");
+  const output = resolve(item.worker, "wrangler.agentscope.jsonc");
+  await writeFile(canary, "unchanged\n");
+  await symlink(canary, output);
+  await assert.rejects(
+    () => writeOwnedAtomic(output, item.worker, "replacement\n"),
+    /symlink/,
+  );
+  assert.equal(await readFile(canary, "utf8"), "unchanged\n");
 });
