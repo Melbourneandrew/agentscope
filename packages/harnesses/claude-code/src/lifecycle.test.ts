@@ -1342,10 +1342,9 @@ const documentedHookHandlers = {
     args: ["one"],
     async: false,
     asyncRewake: false,
-    cloud: false,
+    cloud: "skip",
     rewakeMessage: "rewake details",
     rewakeSummary: "rewake summary",
-    shell: "bash",
     if: "Bash(git *)",
     once: false,
     timeout: 5,
@@ -1356,7 +1355,7 @@ const documentedHookHandlers = {
     url: "https://example.invalid/hook",
     headers: { "X-Audit": "bounded" },
     allowedEnvVars: ["AUDIT_TOKEN"],
-    cloud: false,
+    cloud: "device",
     timeout: 5,
   },
   mcp_tool: {
@@ -1413,6 +1412,23 @@ describe("Claude Code hook compatibility grammar", () => {
     ).toBe("replace");
   });
 
+  it("preserves both exact cloud enum values for command and HTTP handlers", () => {
+    for (const cloud of ["device", "skip"] as const) {
+      for (const handler of [
+        { ...documentedHookHandlers.command, cloud },
+        { ...documentedHookHandlers.http, cloud },
+      ]) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook("PreToolUse", handler))).kind,
+        ).toBe("replace");
+      }
+    }
+  });
+
   it("preserves documented empty matchers and exec-form arguments", () => {
     const settings = JSON.stringify({
       hooks: {
@@ -1431,6 +1447,38 @@ describe("Claude Code hook compatibility grammar", () => {
     )(target(settings));
     expect(decision.kind).toBe("replace");
     expect(decisionText(decision)).toContain('"matcher": ""');
+  });
+
+  it("preserves exact empty plain strings and rejects nonempty-constrained rewake strings", () => {
+    for (const handler of [
+      { type: "command", command: "printf", statusMessage: "" },
+      { type: "prompt", prompt: "", model: "" },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", handler))).kind,
+      ).toBe("replace");
+    }
+    for (const field of ["rewakeMessage", "rewakeSummary"] as const) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(
+          target(
+            settingsWithHook("PreToolUse", {
+              type: "command",
+              command: "printf",
+              [field]: "",
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+    }
   });
 });
 
@@ -1606,8 +1654,8 @@ describe("Claude Code hook namespace bounds", () => {
       platform: "posix",
     });
     const doubleQuotedBackslash = backslashInvocation.launcherPath.replaceAll(
-      "\\",
-      "\\\\",
+      "/",
+      "\\/",
     );
     expect(
       createClaudeCodeInstallationPlanner(
@@ -1621,8 +1669,8 @@ describe("Claude Code hook namespace bounds", () => {
             command: `"${doubleQuotedBackslash}"`,
           }),
         ),
-      ),
-    ).toEqual({ kind: "conflict" });
+      ).kind,
+    ).toBe("replace");
     const unrelated = createClaudeCodeInstallationPlanner(
       "install",
       invocation,
@@ -1636,6 +1684,55 @@ describe("Claude Code hook namespace bounds", () => {
       ),
     );
     expect(unrelated.kind).toBe("replace");
+  });
+});
+
+describe("Claude Code shell grammar", () => {
+  it("applies exact POSIX double-quote escapes in a simple foreign command", () => {
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(
+        target(
+          settingsWithHook("PreToolUse", {
+            type: "command",
+            command: 'printf "literal\\$value"',
+          }),
+        ),
+      ).kind,
+    ).toBe("replace");
+  });
+
+  it("fails closed on every non-simple or ambiguous form", () => {
+    for (const command of [
+      "true; printf foreign",
+      "true && printf foreign",
+      "true || printf foreign",
+      "true | printf foreign",
+      "true\nprintf foreign",
+      "true\rprintf foreign",
+      `true; ${invocation.launcherPath}`,
+      `true && ${invocation.launcherPath}`,
+      `true | ${invocation.launcherPath}`,
+      `true\n${invocation.launcherPath}`,
+      "(printf foreign)",
+      "if true; then printf foreign; fi",
+      "if true",
+      "printf $(date)",
+      "printf > output",
+      "printf ~",
+      "printf 'line\nbreak'",
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", { type: "command", command }))),
+      ).toEqual({ kind: "conflict" });
+    }
   });
 });
 
@@ -1763,11 +1860,14 @@ describe("Claude Code hook record validation", () => {
     for (const handler of [
       { ...documentedHookHandlers.command, command: undefined },
       { ...documentedHookHandlers.command, shell: "unknown" },
-      { ...documentedHookHandlers.command, cloud: "yes" },
+      { ...documentedHookHandlers.command, shell: "bash" },
+      { ...documentedHookHandlers.command, cloud: false },
+      { ...documentedHookHandlers.command, cloud: "unknown" },
       { ...documentedHookHandlers.command, rewakeMessage: 1 },
       { ...documentedHookHandlers.http, url: undefined },
       { ...documentedHookHandlers.http, url: "not a URL" },
-      { ...documentedHookHandlers.http, cloud: "yes" },
+      { ...documentedHookHandlers.http, cloud: false },
+      { ...documentedHookHandlers.http, cloud: "unknown" },
       { ...documentedHookHandlers.http, headers: null },
       { ...documentedHookHandlers.http, headers: { Audit: 1 } },
       { ...documentedHookHandlers.mcp_tool, server: undefined },
@@ -1820,7 +1920,7 @@ describe("Claude Code hook mutation reconstruction", () => {
       { hooks: [{ type: "command", command: "foreign", args: [1] }] },
       { hooks: [{ type: "command", command: "foreign", async: "yes" }] },
       { hooks: [{ type: "command", command: "foreign", timeout: 0 }] },
-      { hooks: [{ type: "command", command: "foreign", statusMessage: "" }] },
+      { hooks: [{ type: "command", command: "foreign", statusMessage: 1 }] },
       {
         hooks: [{ type: "command", command: "foreign" }],
         matcher: "m".repeat(4_097),

@@ -876,7 +876,7 @@ const commonHookFieldsAreValid = (
 ): boolean =>
   (hook.if === undefined || consumeHookString(hook.if, 4_096, budget)) &&
   (hook.statusMessage === undefined ||
-    consumeHookString(hook.statusMessage, 512, budget)) &&
+    consumeHookString(hook.statusMessage, 512, budget, true)) &&
   (hook.once === undefined || typeof hook.once === "boolean") &&
   (hook.timeout === undefined ||
     (Number.isSafeInteger(hook.timeout) &&
@@ -976,11 +976,12 @@ const isCommandHook = (value: unknown, budget: HookBudget): boolean => {
       stringArrayIsValid(hook.args, 32, 512, budget, true)) &&
     (hook.async === undefined || typeof hook.async === "boolean") &&
     (hook.asyncRewake === undefined || typeof hook.asyncRewake === "boolean") &&
-    (hook.cloud === undefined || typeof hook.cloud === "boolean") &&
+    (hook.cloud === undefined ||
+      ["device", "skip"].includes(hook.cloud as string)) &&
     (hook.rewakeMessage === undefined ||
-      consumeHookString(hook.rewakeMessage, 4_096, budget, true)) &&
+      consumeHookString(hook.rewakeMessage, 4_096, budget)) &&
     (hook.rewakeSummary === undefined ||
-      consumeHookString(hook.rewakeSummary, 4_096, budget, true)) &&
+      consumeHookString(hook.rewakeSummary, 4_096, budget)) &&
     (hook.shell === undefined ||
       ["bash", "powershell"].includes(hook.shell as string))
   );
@@ -1005,7 +1006,8 @@ const isHttpHook = (value: unknown, budget: HookBudget): boolean => {
     !consumeHookString(hook.url, 8_192, budget) ||
     !isHttpHookUrl(hook.url) ||
     !commonHookFieldsAreValid(hook, budget) ||
-    (hook.cloud !== undefined && typeof hook.cloud !== "boolean") ||
+    (hook.cloud !== undefined &&
+      !["device", "skip"].includes(hook.cloud as string)) ||
     (hook.allowedEnvVars !== undefined &&
       !stringArrayIsValid(hook.allowedEnvVars, 64, 128, budget))
   )
@@ -1058,9 +1060,10 @@ const isPromptOrAgentHook = (
   return (
     hook !== undefined &&
     hook.type === type &&
-    consumeHookString(hook.prompt, 16_384, budget) &&
+    consumeHookString(hook.prompt, 16_384, budget, true) &&
     commonHookFieldsAreValid(hook, budget) &&
-    (hook.model === undefined || consumeHookString(hook.model, 512, budget)) &&
+    (hook.model === undefined ||
+      consumeHookString(hook.model, 512, budget, true)) &&
     (hook.continueOnBlock === undefined ||
       typeof hook.continueOnBlock === "boolean")
   );
@@ -1128,63 +1131,90 @@ const ownedMatcherEquals = (
   value.agentscope.harnessType === invocation.harnessType &&
   value.agentscope.ownershipIdentity === invocation.ownershipIdentity;
 
+const posixReservedExecutableWords = new Set([
+  "!",
+  "case",
+  "coproc",
+  "do",
+  "done",
+  "elif",
+  "else",
+  "esac",
+  "fi",
+  "for",
+  "function",
+  "if",
+  "in",
+  "select",
+  "then",
+  "time",
+  "until",
+  "while",
+]);
+
 const parsePosixExecutableWord = (command: string): string | undefined => {
-  let position = 0;
-  const skipWhitespace = (): void => {
-    while (/\s/u.test(command[position] ?? "")) position += 1;
+  const words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: "single" | "double" | undefined;
+  const pushWord = (): void => {
+    if (inWord) words.push(word);
+    word = "";
+    inWord = false;
   };
-  const appendEscapedCharacter = (word: string): string | undefined => {
-    position += 1;
-    if (position >= command.length) return undefined;
-    const result = `${word}${command[position]!}`;
-    position += 1;
-    return result;
-  };
-  for (let assignmentCount = 0; assignmentCount <= 32; assignmentCount += 1) {
-    skipWhitespace();
-    let word = "";
-    let quote: "single" | "double" | undefined;
-    while (position < command.length) {
-      const character = command[position]!;
-      if (quote === "single") {
-        if (character === "'") quote = undefined;
-        else word += character;
-        position += 1;
-        continue;
-      }
-      if (quote === "double") {
-        if (character === '"') {
-          quote = undefined;
-          position += 1;
-          continue;
-        }
-        if (character === "\\") {
-          word = appendEscapedCharacter(word) ?? "";
-          continue;
-        }
-        if (["$", "`"].includes(character)) return undefined;
-        word += character;
-        position += 1;
-        continue;
-      }
-      if (
-        /\s/u.test(character) ||
-        [";", "&", "|", "<", ">"].includes(character)
-      )
-        break;
-      if (character === "'") quote = "single";
-      else if (character === '"') quote = "double";
-      else if (character === "\\") {
-        word = appendEscapedCharacter(word) ?? "";
-        continue;
-      } else if (["$", "`"].includes(character)) return undefined;
+  for (let position = 0; position < command.length; position += 1) {
+    const character = command[position]!;
+    if (["\n", "\r"].includes(character)) return undefined;
+    if (quote === "single") {
+      if (character === "'") quote = undefined;
       else word += character;
-      position += 1;
+      continue;
     }
-    if (quote !== undefined || word.length === 0) return undefined;
-    if (!/^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)) return word;
+    if (quote === "double") {
+      if (character === '"') {
+        quote = undefined;
+        continue;
+      }
+      if (character === "\\") {
+        const next = command[position + 1];
+        if (next === undefined || next === "\n") return undefined;
+        if (["$", "`", '"', "\\"].includes(next)) {
+          word += next;
+          position += 1;
+        } else word += character;
+        continue;
+      }
+      if (["$", "`"].includes(character)) return undefined;
+      word += character;
+      continue;
+    }
+    if ([";", "&", "|", "<", ">", "(", ")", "{", "}"].includes(character))
+      return undefined;
+    if (["$", "`", "#", "*", "?", "[", "]", "~"].includes(character))
+      return undefined;
+    if (character === " " || character === "\t") {
+      pushWord();
+      continue;
+    }
+    inWord = true;
+    if (character === "'") quote = "single";
+    else if (character === '"') quote = "double";
+    else if (character === "\\") {
+      const next = command[position + 1];
+      if (next === undefined || next === "\n") return undefined;
+      word += next;
+      position += 1;
+    } else word += character;
   }
-  return undefined;
+  if (quote !== undefined) return undefined;
+  pushWord();
+  const executable = words.find(
+    (entry) => !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(entry),
+  );
+  return executable !== undefined &&
+    !posixReservedExecutableWords.has(executable)
+    ? executable
+    : undefined;
 };
 
 const commandClaimsExecutable = (
@@ -1197,12 +1227,12 @@ const commandClaimsExecutable = (
     encoder.encode(value.command).byteLength > 4_096
   )
     return value.command.includes(launcherPath);
+  if (Object.hasOwn(value, "shell") && Object.hasOwn(value, "args"))
+    return true;
   if (Object.hasOwn(value, "args")) return value.command === launcherPath;
+  if (value.shell === "powershell") return true;
   const executable = parsePosixExecutableWord(value.command);
-  return (
-    executable === launcherPath ||
-    (executable === undefined && value.command.includes(launcherPath))
-  );
+  return executable === undefined || executable === launcherPath;
 };
 
 const valueClaimsAgentscopeLauncher = (
