@@ -1,11 +1,20 @@
 import { isAbsolute, normalize } from "node:path";
 import { isProxy } from "node:util/types";
 
-import { isOwnedHarnessHookInvocation } from "@agentscope/harnesses-core";
+import {
+  harnessIdentityDigest,
+  isOwnedHarnessHookInvocation,
+} from "@agentscope/harnesses-core";
 import type {
+  HarnessDiscoveryResult,
   HarnessInstallationPlanner,
   OwnedHarnessHookInvocation,
 } from "@agentscope/harnesses-core";
+
+import {
+  CLAUDE_CODE_COMPONENT_VERSION,
+  claudeCodeDescriptor,
+} from "./descriptor.js";
 
 export const CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID =
   "langfuse-observability@claude-plugins-official" as const;
@@ -71,6 +80,14 @@ export type ClaudeCodePluginOverlap =
   | Readonly<{ status: "conflict"; pluginId: string }>
   | Readonly<{ status: "ambiguous" }>;
 
+declare const dialectAuthorityBrand: unique symbol;
+export type ClaudeCodeDialectAuthority = Readonly<{
+  observedVersion: typeof CLAUDE_CODE_COMPONENT_VERSION;
+  platform: "posix";
+  dialect: "single-quoted-shell-word";
+  readonly [dialectAuthorityBrand]: true;
+}>;
+
 const scopeOrder: Readonly<Record<ClaudeCodeSettingsScope, number>> = {
   user: 0,
   project: 1,
@@ -81,12 +98,15 @@ const overlappingEvents = new Set<ClaudeCodeLifecycleEvent>([
   "Stop",
   "SessionEnd",
 ]);
+const governedLifecycleEvents = new Set<string>(CLAUDE_CODE_LIFECYCLE_EVENTS);
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const digestPattern = /^[a-f0-9]{64}$/u;
 const maximumInventoryArrayLength = 1_024;
 const maximumSettingsByteLength = 1_048_576;
 const maximumJsonDepth = 128;
+const claudeCodeHarnessType = claudeCodeDescriptor.harnessType;
+const claudeCodeHarnessDigest = harnessIdentityDigest(claudeCodeHarnessType);
 const encodePosixSingleQuotedShellWord = (value: string): string =>
   `'${value.replaceAll("'", "'\\''")}'`;
 const claudeCodeCommandDialect = Object.freeze({
@@ -99,6 +119,7 @@ const posixLauncherBasenamePattern =
   /^agentscope-hook-v1-[a-f0-9]{64}-d(?:[1-9]\d{1,3}|[1-5]\d{4}|60000)$/u;
 const unpairedSurrogatePattern =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
+const dialectAuthorities = new WeakSet<object>();
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -167,6 +188,61 @@ const exactArrayValues = (value: unknown): readonly unknown[] | undefined => {
     ),
   );
 };
+
+export const createClaudeCodeDialectAuthority = (
+  discovery: HarnessDiscoveryResult,
+  platform: "posix" | "win32",
+): ClaudeCodeDialectAuthority | undefined => {
+  const record = exactRecordValues(discovery, [
+    "configurationLocations",
+    "harnessType",
+    "reason",
+    "state",
+    "version",
+  ]);
+  if (record === undefined) return undefined;
+  const locations = exactArrayValues(record.configurationLocations);
+  if (
+    locations === undefined ||
+    locations.length !==
+      claudeCodeDescriptor.configuration.locationSegments.length
+  )
+    return undefined;
+  const locationIndexes = new Set<number>();
+  for (const location of locations) {
+    const parsed = exactRecordValues(location, ["locationIndex", "present"]);
+    if (
+      parsed === undefined ||
+      !Number.isSafeInteger(parsed.locationIndex) ||
+      (parsed.locationIndex as number) < 0 ||
+      (parsed.locationIndex as number) >= locations.length ||
+      locationIndexes.has(parsed.locationIndex as number) ||
+      typeof parsed.present !== "boolean"
+    )
+      return undefined;
+    locationIndexes.add(parsed.locationIndex as number);
+  }
+  if (
+    record.harnessType !== claudeCodeHarnessType ||
+    record.state !== "installed" ||
+    record.reason !== "compatible" ||
+    record.version !== CLAUDE_CODE_COMPONENT_VERSION ||
+    platform !== "posix"
+  )
+    return undefined;
+  const authority = Object.freeze({
+    observedVersion: CLAUDE_CODE_COMPONENT_VERSION,
+    platform: "posix" as const,
+    dialect: "single-quoted-shell-word" as const,
+  }) as ClaudeCodeDialectAuthority;
+  dialectAuthorities.add(authority);
+  return authority;
+};
+
+const isClaudeCodeDialectAuthority = (
+  value: unknown,
+): value is ClaudeCodeDialectAuthority =>
+  typeof value === "object" && value !== null && dialectAuthorities.has(value);
 
 const parseEnabledPlugins = (
   value: unknown,
@@ -436,10 +512,14 @@ export const inspectClaudeCodePluginOverlap = (
 
 const encodeClaudeCodeHookCommand = (
   invocation: OwnedHarnessHookInvocation,
+  authority: ClaudeCodeDialectAuthority,
 ): string | undefined => {
   const segments = invocation.launcherPath.split("/");
   const basename = segments.at(-1);
   if (
+    authority.observedVersion !== claudeCodeCommandDialect.harnessVersion ||
+    authority.platform !== claudeCodeCommandDialect.platform ||
+    authority.dialect !== "single-quoted-shell-word" ||
     !invocation.launcherPath.startsWith("/") ||
     basename === undefined ||
     !posixLauncherBasenamePattern.test(basename) ||
@@ -659,21 +739,22 @@ const ownedMatcherEquals = (
   value.agentscope.harnessType === invocation.harnessType &&
   value.agentscope.ownershipIdentity === invocation.ownershipIdentity;
 
-const matcherReferencesLauncher = (
+const valueClaimsAgentscopeLauncher = (
   value: unknown,
   invocation: OwnedHarnessHookInvocation,
   command: string,
 ): boolean =>
-  isRecord(value) &&
-  Array.isArray(value.hooks) &&
-  (value.hooks as readonly unknown[]).some(
-    (hook) =>
-      isRecord(hook) &&
-      (hook.command === command || hook.command === invocation.launcherPath),
-  );
-
-const matcherClaimsAgentscopeOwnership = (value: unknown): boolean =>
-  isRecord(value) && value.agentscope !== undefined;
+  Array.isArray(value)
+    ? value.some((member) =>
+        valueClaimsAgentscopeLauncher(member, invocation, command),
+      )
+    : isRecord(value) &&
+      (Object.hasOwn(value, "agentscope") ||
+        value.command === command ||
+        value.command === invocation.launcherPath ||
+        Object.values(value).some((member) =>
+          valueClaimsAgentscopeLauncher(member, invocation, command),
+        ));
 
 const editHooks = (
   settings: Record<string, unknown>,
@@ -684,6 +765,14 @@ const editHooks = (
   const hooks = settings.hooks;
   if (hooks !== undefined && !isRecord(hooks)) return "conflict";
   const target = hooks ?? {};
+  if (
+    Object.entries(target).some(
+      ([event, value]) =>
+        !governedLifecycleEvents.has(event) &&
+        valueClaimsAgentscopeLauncher(value, invocation, command),
+    )
+  )
+    return "conflict";
   let ownedEventCount = 0;
   for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS) {
     const entries = target[event];
@@ -697,9 +786,8 @@ const editHooks = (
       owned.length > 1 ||
       current.some(
         (entry) =>
-          (matcherReferencesLauncher(entry, invocation, command) ||
-            matcherClaimsAgentscopeOwnership(entry)) &&
-          !ownedMatcherEquals(entry, invocation, event, command),
+          !ownedMatcherEquals(entry, invocation, event, command) &&
+          valueClaimsAgentscopeLauncher(entry, invocation, command),
       )
     )
       return "conflict";
@@ -788,10 +876,17 @@ export const createClaudeCodeInstallationPlanner = (
   operation: "install" | "migrate" | "uninstall",
   invocation: OwnedHarnessHookInvocation,
   inventory: ClaudeCodePluginInventory,
+  dialectAuthority: ClaudeCodeDialectAuthority,
 ): HarnessInstallationPlanner => {
-  if (!isOwnedHarnessHookInvocation(invocation))
+  if (
+    !isOwnedHarnessHookInvocation(invocation) ||
+    invocation.harnessType !== claudeCodeHarnessType ||
+    invocation.harnessDigest !== claudeCodeHarnessDigest
+  )
     return () => ({ kind: "conflict" });
-  const command = encodeClaudeCodeHookCommand(invocation);
+  if (!isClaudeCodeDialectAuthority(dialectAuthority))
+    return () => ({ kind: "unsupported" });
+  const command = encodeClaudeCodeHookCommand(invocation, dialectAuthority);
   if (command === undefined) return () => ({ kind: "unsupported" });
   const parsedInventory = parsePluginInventory(inventory);
   if (parsedInventory === undefined) return () => ({ kind: "conflict" });

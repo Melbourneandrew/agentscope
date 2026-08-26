@@ -32,6 +32,7 @@ assertExactKeys("production root", rootModule, [
   "CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID",
   "claudeCodeDescriptor",
   "claudeCodeHarnessPackageId",
+  "createClaudeCodeDialectAuthority",
   "createClaudeCodeExecutionEnvironment",
   "createClaudeCodeInstallationPlanner",
   "inspectClaudeCodePluginOverlap",

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createOwnedHarnessHookInvocation,
+  type HarnessDiscoveryResult,
   type HarnessInstallationPlanner,
   type HarnessTargetDecision,
   type HarnessTargetInspection,
@@ -12,12 +13,14 @@ import {
   CLAUDE_CODE_LANGFUSE_HOOKS_DIGEST,
   CLAUDE_CODE_LANGFUSE_PLUGIN_MANIFEST_DIGEST,
   CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
-  createClaudeCodeInstallationPlanner,
+  createClaudeCodeDialectAuthority,
+  createClaudeCodeInstallationPlanner as createProductionInstallationPlanner,
   inspectClaudeCodePluginOverlap,
   type ClaudeCodeInstalledPlugin,
   type ClaudeCodePluginInventory,
 } from "./lifecycle.js";
 import { runClaudeCodeHook } from "./testing.js";
+import { claudeCodeDescriptor } from "./descriptor.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -35,6 +38,31 @@ const invocation = createOwnedHarnessHookInvocation({
   hookDeadlineMilliseconds: 2_000,
   platform: "posix",
 });
+const dialectAuthority = createClaudeCodeDialectAuthority(
+  Object.freeze({
+    harnessType: claudeCodeDescriptor.harnessType,
+    state: "installed",
+    reason: "compatible",
+    version: "2.1.245",
+    configurationLocations: Object.freeze([
+      Object.freeze({ locationIndex: 0, present: true }),
+    ]),
+  }),
+  "posix",
+);
+if (dialectAuthority === undefined)
+  throw new Error("expected Claude dialect authority");
+const createClaudeCodeInstallationPlanner = (
+  operation: Parameters<typeof createProductionInstallationPlanner>[0],
+  ownedInvocation: Parameters<typeof createProductionInstallationPlanner>[1],
+  inventory: Parameters<typeof createProductionInstallationPlanner>[2],
+) =>
+  createProductionInstallationPlanner(
+    operation,
+    ownedInvocation,
+    inventory,
+    dialectAuthority,
+  );
 
 const target = (
   text?: string,
@@ -414,6 +442,85 @@ describe("Claude Code owned lifecycle", () => {
         )(target()),
       ).toEqual({ kind: "unsupported" });
     }
+  });
+});
+
+describe("Claude Code dialect authority", () => {
+  it("binds planning to exact observed Claude identity and version", () => {
+    const codexInvocation = createOwnedHarnessHookInvocation({
+      agentscopeHome: "/isolated/codex",
+      harnessType: "@agentscope/harness-codex",
+      hookDeadlineMilliseconds: 2_000,
+      platform: "posix",
+    });
+    expect(
+      createProductionInstallationPlanner(
+        "install",
+        codexInvocation,
+        emptyInventory(false),
+        dialectAuthority,
+      )(target()),
+    ).toEqual({ kind: "conflict" });
+
+    const discovery = Object.freeze({
+      harnessType: claudeCodeDescriptor.harnessType,
+      state: "installed" as const,
+      reason: "compatible" as const,
+      version: "2.1.244",
+      configurationLocations: Object.freeze([
+        Object.freeze({ locationIndex: 0, present: true }),
+      ]),
+    });
+    expect(
+      createClaudeCodeDialectAuthority(discovery, "posix"),
+    ).toBeUndefined();
+    expect(
+      createClaudeCodeDialectAuthority(
+        Object.freeze({ ...discovery, version: "2.1.246" }),
+        "posix",
+      ),
+    ).toBeUndefined();
+    expect(
+      createClaudeCodeDialectAuthority(
+        Object.create(null) as HarnessDiscoveryResult,
+        "posix",
+      ),
+    ).toBeUndefined();
+    for (const configurationLocations of [
+      Object.freeze([]),
+      Object.freeze([Object.freeze({ locationIndex: -1, present: true })]),
+    ]) {
+      expect(
+        createClaudeCodeDialectAuthority(
+          Object.freeze({
+            ...discovery,
+            version: "2.1.245",
+            configurationLocations,
+          }),
+          "posix",
+        ),
+      ).toBeUndefined();
+    }
+    expect(
+      createClaudeCodeDialectAuthority(
+        Object.freeze({ ...discovery, version: "2.1.245" }),
+        "win32",
+      ),
+    ).toBeUndefined();
+
+    type RuntimeFactory = (
+      operation: "install" | "migrate" | "uninstall",
+      ownedInvocation: typeof invocation,
+      inventory: ClaudeCodePluginInventory,
+      authority?: typeof dialectAuthority,
+    ) => HarnessInstallationPlanner;
+    expect(
+      (createProductionInstallationPlanner as RuntimeFactory)(
+        "install",
+        invocation,
+        emptyInventory(false),
+      )(target()),
+    ).toEqual({ kind: "unsupported" });
   });
 });
 
@@ -1027,6 +1134,43 @@ describe("Claude Code numeric settings preservation", () => {
       );
     },
   );
+});
+
+describe("Claude Code hook namespace ownership", () => {
+  it("rejects Agentscope ownership claims under every nongoverned event", () => {
+    const installed = decisionText(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(false),
+      )(target()),
+    );
+    const command = installedHookCommand(installed);
+    const claimedSettings = JSON.stringify({
+      hooks: {
+        Notification: [
+          {
+            agentscope: {
+              contractVersion: invocation.contractVersion,
+              event: "Notification",
+              harnessType: invocation.harnessType,
+              ownershipIdentity: invocation.ownershipIdentity,
+            },
+            hooks: [{ type: "command", command, args: [] }],
+          },
+        ],
+      },
+    });
+    for (const operation of ["install", "uninstall"] as const) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          operation,
+          invocation,
+          emptyInventory(),
+        )(target(claimedSettings)),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
 });
 
 describe("Claude Code hostile hook ownership state", () => {

@@ -20,7 +20,10 @@ import {
   CLAUDE_CODE_SCENARIO_ID,
   claudeCodeFixture,
 } from "./fixture.js";
-import { createClaudeCodeInstallationPlanner } from "./lifecycle.js";
+import {
+  createClaudeCodeDialectAuthority,
+  createClaudeCodeInstallationPlanner,
+} from "./lifecycle.js";
 import { mapClaudeCodeCapture } from "./mapping.js";
 
 export {
@@ -96,6 +99,18 @@ export const runClaudeCodeHook = async (
 
 const sharedContractMarker = "vendor-observability-hook";
 const markerDecoder = new TextDecoder();
+const testingDialectAuthority = createClaudeCodeDialectAuthority(
+  Object.freeze({
+    harnessType: claudeCodeDescriptor.harnessType,
+    state: "installed",
+    reason: "compatible",
+    version: CLAUDE_CODE_COMPONENT_VERSION,
+    configurationLocations: Object.freeze([
+      Object.freeze({ locationIndex: 0, present: true }),
+    ]),
+  }),
+  "posix",
+)!;
 const testingPluginInventory = (
   target: Readonly<{ targetPath: string; digest: string; exists: boolean }>,
 ) =>
@@ -122,6 +137,7 @@ const createTestingInstallationPlanner: HarnessComponentContractAdapter["createI
         operation,
         invocation,
         inventory,
+        testingDialectAuthority,
       );
       if (!isSharedContractMarker(target.bytes))
         return productionPlanner(target);
@@ -132,6 +148,7 @@ const createTestingInstallationPlanner: HarnessComponentContractAdapter["createI
         "install",
         invocation,
         testingPluginInventory(absentTarget),
+        testingDialectAuthority,
       )(absentTarget);
     };
   };
