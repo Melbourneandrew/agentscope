@@ -85,6 +85,8 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const digestPattern = /^[a-f0-9]{64}$/u;
 const maximumInventoryArrayLength = 1_024;
+const maximumSettingsByteLength = 1_048_576;
+const maximumJsonDepth = 128;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -216,7 +218,8 @@ const parsePluginInventory = (
       typeof layer.targetDigest !== "string" ||
       !digestPattern.test(layer.targetDigest) ||
       typeof layer.targetExists !== "boolean" ||
-      enabledPlugins === undefined
+      enabledPlugins === undefined ||
+      (!layer.targetExists && Object.keys(enabledPlugins).length > 0)
     )
       return undefined;
     settingsLayers.push(
@@ -290,6 +293,11 @@ const parsePluginInventory = (
       }),
     );
   }
+  if (
+    settingsLayers.some((layer) => !layer.targetExists) &&
+    installedPlugins.length > 0
+  )
+    return undefined;
   return Object.freeze({
     settingsLayers: Object.freeze(settingsLayers),
     installedPlugins: Object.freeze(installedPlugins),
@@ -308,6 +316,7 @@ const effectiveEnabledPlugins = (
     if (seen.has(layer.scope) || !isRecord(layer.enabledPlugins))
       return undefined;
     seen.add(layer.scope);
+    if (!layer.targetExists) continue;
     for (const [pluginId, state] of Object.entries(layer.enabledPlugins)) {
       if (pluginId.length === 0 || typeof state !== "boolean") return undefined;
       enabled.set(
@@ -470,17 +479,111 @@ const decode = (bytes: Uint8Array): string | undefined => {
   }
 };
 
+const hasUniqueJsonObjectKeys = (text: string): boolean => {
+  let position = 0;
+
+  const skipWhitespace = (): void => {
+    while ([" ", "\t", "\n", "\r"].includes(text[position] ?? ""))
+      position += 1;
+  };
+
+  const parseString = (): string | undefined => {
+    if (text[position] !== '"') return undefined;
+    const start = position;
+    position += 1;
+    while (position < text.length) {
+      const character = text[position]!;
+      if (character === '"') {
+        position += 1;
+        try {
+          const decoded: unknown = JSON.parse(text.slice(start, position));
+          return typeof decoded === "string" ? decoded : undefined;
+        } catch {
+          return undefined;
+        }
+      }
+      if (character === "\\") {
+        position += 2;
+      } else {
+        position += 1;
+      }
+    }
+    return undefined;
+  };
+
+  const parseValue = (depth: number): boolean => {
+    if (depth > maximumJsonDepth) return false;
+    skipWhitespace();
+    if (text[position] === "{") {
+      position += 1;
+      skipWhitespace();
+      const keys = new Set<string>();
+      if (text[position] === "}") {
+        position += 1;
+        return true;
+      }
+      while (position < text.length) {
+        const key = parseString();
+        if (key === undefined || keys.has(key)) return false;
+        keys.add(key);
+        skipWhitespace();
+        if (text[position] !== ":") return false;
+        position += 1;
+        if (!parseValue(depth + 1)) return false;
+        skipWhitespace();
+        if (text[position] === "}") {
+          position += 1;
+          return true;
+        }
+        if (text[position] !== ",") return false;
+        position += 1;
+        skipWhitespace();
+      }
+      return false;
+    }
+    if (text[position] === "[") {
+      position += 1;
+      skipWhitespace();
+      if (text[position] === "]") {
+        position += 1;
+        return true;
+      }
+      while (position < text.length) {
+        if (!parseValue(depth + 1)) return false;
+        skipWhitespace();
+        if (text[position] === "]") {
+          position += 1;
+          return true;
+        }
+        if (text[position] !== ",") return false;
+        position += 1;
+      }
+      return false;
+    }
+    if (text[position] === '"') return parseString() !== undefined;
+    const remainder = text.slice(position);
+    const scalar =
+      /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/u.exec(
+        remainder,
+      )?.[0];
+    if (scalar === undefined) return false;
+    position += scalar.length;
+    return true;
+  };
+
+  if (!parseValue(0)) return false;
+  skipWhitespace();
+  return position === text.length;
+};
+
 const parseSettings = (
   bytes: Uint8Array,
 ): Record<string, unknown> | undefined => {
+  if (bytes.byteLength > maximumSettingsByteLength) return undefined;
   const text = decode(bytes);
-  if (text === undefined) return undefined;
-  try {
-    const value: unknown = JSON.parse(text);
-    return isRecord(value) ? value : undefined;
-  } catch {
-    return undefined;
-  }
+  if (text === undefined || !hasUniqueJsonObjectKeys(text)) return undefined;
+  const value: unknown = JSON.parse(text);
+  return isRecord(value) ? value : undefined;
 };
 
 const hookArrayEquals = (
@@ -630,6 +733,7 @@ const targetLayerAgrees = (
       layer.targetExists === target.exists,
   );
   return (
+    inventory.settingsLayers.length === 1 &&
     boundLayers.length === 1 &&
     enabledPluginsEqual(boundLayers[0]!.enabledPlugins, visibleEnabledPlugins)
   );

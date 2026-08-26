@@ -415,6 +415,69 @@ describe("Claude Code target-bound absence evidence", () => {
       )(target()),
     ).toMatchObject({ kind: "replace" });
   });
+
+  it("rejects every detached precedence layer with one target inspection", () => {
+    const enabledOfficialSettings = JSON.stringify({
+      enabledPlugins: {
+        [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
+      },
+    });
+    const authenticatedUser = officialInventory().settingsLayers[0]!;
+    for (const detachedLayer of [
+      {
+        scope: "project" as const,
+        targetPath: targetPathByScope.project,
+        targetDigest,
+        targetExists: true,
+        enabledPlugins: {
+          [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: false,
+        },
+      },
+      {
+        scope: "managed" as const,
+        targetPath: targetPathByScope.managed,
+        targetDigest,
+        targetExists: false,
+        enabledPlugins: {},
+      },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner("install", invocation, {
+          settingsLayers: [authenticatedUser, detachedLayer],
+          installedPlugins: [officialPlugin()],
+        })(target(enabledOfficialSettings)),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("rejects state claims attached to a nonexistent target", () => {
+    const absentLayer = emptyInventory(false).settingsLayers[0]!;
+    for (const inventory of [
+      {
+        settingsLayers: [
+          {
+            ...absentLayer,
+            enabledPlugins: {
+              [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: false,
+            },
+          },
+        ],
+        installedPlugins: [],
+      },
+      {
+        settingsLayers: [absentLayer],
+        installedPlugins: [officialPlugin()],
+      },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          inventory,
+        )(target()),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
 });
 
 describe("Claude Code migration authority", () => {
@@ -781,6 +844,19 @@ describe("Claude Code hostile settings state", () => {
         emptyInventory(),
       )(target("{")),
     ).toEqual({ kind: "unsupported" });
+    for (const malformed of [
+      '{"bad\\q":true}',
+      '{"unterminated',
+      '{"nested":[1,',
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(malformed)),
+      ).toEqual({ kind: "unsupported" });
+    }
     expect(
       createClaudeCodeInstallationPlanner(
         "install",
@@ -816,6 +892,34 @@ describe("Claude Code hostile settings state", () => {
         emptyInventory(),
       )(target('{"hooks":[]}')),
     ).toEqual({ kind: "conflict" });
+  });
+
+  it.each([
+    '{"enabledPlugins":{},"enabledPlugins":{"langfuse-observability@claude-plugins-official":true}}',
+    '{"enabledPlugins":{},"enabled\\u0050lugins":{"langfuse-observability@claude-plugins-official":true}}',
+    '{"hooks":{"Stop":[],"Stop":[]}}',
+  ])("rejects duplicate decoded JSON object keys", (settings) => {
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(settings)),
+    ).toEqual({ kind: "unsupported" });
+  });
+
+  it("bounds settings size and structural depth before mutation", () => {
+    const oversized = `{"value":"${"x".repeat(1_048_576)}"}`;
+    const tooDeep = `${'{"nested":'.repeat(130)}null${"}".repeat(130)}`;
+    for (const settings of [oversized, tooDeep]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settings)),
+      ).toEqual({ kind: "unsupported" });
+    }
   });
 });
 
