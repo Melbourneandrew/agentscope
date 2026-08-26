@@ -741,6 +741,7 @@ describe("native fixture reviewed authority separation", () => {
     for (const sourceReference of [
       "not-a-url",
       "https://github.com/Melbourneandrew/agentscope/blob/a/%zz",
+      `https://vendor.example/${"a".repeat(257)}/packages/harnesses/core/NATIVE_FIXTURES.md`,
     ]) {
       expectCode(
         () =>

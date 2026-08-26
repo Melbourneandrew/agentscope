@@ -345,6 +345,8 @@ const normalizedDecodedUrlPath = (value: string): string => {
     try {
       decoded = decodeURIComponent(current);
     } catch {
+      /* v8 ignore next -- boundedSourceReference rejects undecodable input
+       * before this defense-in-depth alias classifier is called. */
       return current;
     }
     if (decoded === current) break;
@@ -390,10 +392,7 @@ const oneOf = <const Values extends readonly string[]>(
   return value as Values[number];
 };
 
-const sourceReference = (
-  value: unknown,
-  captureKind: "disposable-hermetic" | "synthetic",
-): string => {
+const boundedSourceReference = (value: unknown): string => {
   if (
     typeof value !== "string" ||
     value.length > 256 ||
@@ -403,6 +402,13 @@ const sourceReference = (
   const reference = value as string;
   if (decodedContentFails(reference, baselineContentIsForbidden))
     fail("harness.fixture.provenance.source-reference");
+  return reference;
+};
+
+const sourceReferenceFromBounded = (
+  reference: string,
+  captureKind: "disposable-hermetic" | "synthetic",
+): string => {
   if (captureKind === "synthetic") {
     if (!syntheticReferencePattern.test(reference))
       fail("harness.fixture.provenance.source-reference");
@@ -435,6 +441,12 @@ const sourceReference = (
       fail("harness.fixture.provenance.source-reference");
   return reference;
 };
+
+const sourceReference = (
+  value: unknown,
+  captureKind: "disposable-hermetic" | "synthetic",
+): string =>
+  sourceReferenceFromBounded(boundedSourceReference(value), captureKind);
 
 type GovernanceRecords = Readonly<{
   provenance: Readonly<Record<string, unknown>>;
@@ -621,14 +633,13 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
       fail("harness.fixture.license.synthetic-authority");
     licenseSourceReference = candidate;
   } else {
-    if (
-      reviewedLicenseId === agentscopeSyntheticLicenseId ||
-      (typeof license.sourceReference === "string" &&
-        isAgentscopeGovernanceDocumentReference(license.sourceReference))
-    )
+    if (reviewedLicenseId === agentscopeSyntheticLicenseId)
       fail("harness.fixture.license.vendor-authority");
-    licenseSourceReference = sourceReference(
-      license.sourceReference,
+    const candidate = boundedSourceReference(license.sourceReference);
+    if (isAgentscopeGovernanceDocumentReference(candidate))
+      fail("harness.fixture.license.vendor-authority");
+    licenseSourceReference = sourceReferenceFromBounded(
+      candidate,
       "disposable-hermetic",
     );
   }
