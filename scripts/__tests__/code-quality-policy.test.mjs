@@ -218,9 +218,9 @@ const coverageWorkerSource = String.raw`
           coverage: {
             enabled: true,
             provider: "v8",
-            reporter: ["text"],
+            reporter: [["text", { skipFull: false }]],
             reportsDirectory: workerData.reportRoot,
-            include: ["src/**/*.{ts,tsx}"],
+            include: workerData.coverageIncludes,
             exclude: [
               "src/bin/**",
               "src/**/*.{test,spec}.{ts,tsx}",
@@ -364,6 +364,7 @@ async function runCoveragePolicyWorker({
   reportRoot,
   thresholds,
   testFilters = [],
+  coverageIncludes = ["src/**/*.{ts,tsx}"],
   phaseDeadlineMs = coveragePolicyPhaseDeadlineMs,
   mode = "coverage",
   maximumOutputBytes = coveragePolicyOutputBytes,
@@ -387,6 +388,7 @@ async function runCoveragePolicyWorker({
     reportRoot,
     thresholds,
     testFilters,
+    coverageIncludes,
     vitestModuleUrl,
     maximumOutputBytes,
     readinessPath,
@@ -664,6 +666,68 @@ function createCoverageHangFixture() {
   }
 }
 
+function createCoverageProbeFixture() {
+  let fixtureRoot;
+  let markerRoot;
+  try {
+    fixtureRoot = mkdtempSync(
+      join(repositoryRoot, "packages/testkit/src/coverage-policy-probe-"),
+    );
+    markerRoot = mkdtempSync(
+      join(tmpdir(), "agentscope-coverage-policy-unrelated-"),
+    );
+    const markerPath = join(markerRoot, "started");
+    const probePath = join(fixtureRoot, "probe.test.ts");
+    writeFileSync(
+      join(fixtureRoot, "probe.ts"),
+      "export const coveredCoverageProbe = () => true;\n",
+    );
+    writeFileSync(
+      probePath,
+      [
+        'import { expect, test } from "vitest";',
+        'import { coveredCoverageProbe } from "./probe";',
+        'test("controlled coverage probe", () =>',
+        "  expect(coveredCoverageProbe()).toBe(true),",
+        ");",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(fixtureRoot, "unrelated.test.ts"),
+      [
+        'import { writeFileSync } from "node:fs";',
+        'import { test } from "vitest";',
+        'test("unrelated package test", () => {',
+        `  writeFileSync(${JSON.stringify(markerPath)}, "started");`,
+        "});",
+        "",
+      ].join("\n"),
+    );
+    return {
+      fixtureRoot,
+      markerPath,
+      probePath,
+      cleanup() {
+        try {
+          rmSync(fixtureRoot, { recursive: true, force: true });
+        } finally {
+          rmSync(markerRoot, { recursive: true, force: true });
+        }
+      },
+    };
+  } catch (error) {
+    try {
+      if (fixtureRoot !== undefined)
+        rmSync(fixtureRoot, { recursive: true, force: true });
+    } finally {
+      if (markerRoot !== undefined)
+        rmSync(markerRoot, { recursive: true, force: true });
+    }
+    throw error;
+  }
+}
+
 async function assertHeartbeatStopped(heartbeatPath) {
   assert.equal(existsSync(heartbeatPath), true);
   const heartbeatBytesAtReturn = statSync(heartbeatPath).size;
@@ -672,7 +736,7 @@ async function assertHeartbeatStopped(heartbeatPath) {
   assert.equal(statSync(heartbeatPath).size, heartbeatBytesAtReturn);
 }
 
-function cleanupCoverageSeed({ seedRoot, reportRoot, exclusionFixture }) {
+function cleanupCoverageSeed({ seedRoot, reportRoot, probeFixture }) {
   let cleanupError;
   const cleanups = [
     () => {
@@ -683,7 +747,7 @@ function cleanupCoverageSeed({ seedRoot, reportRoot, exclusionFixture }) {
       if (reportRoot !== undefined)
         rmSync(reportRoot, { recursive: true, force: true });
     },
-    () => exclusionFixture?.cleanup(),
+    () => probeFixture?.cleanup(),
   ];
   for (const cleanup of cleanups) {
     try {
@@ -716,6 +780,23 @@ function coverageTableFileMatchesSeed(fileColumn, seedDirectoryName) {
   );
 }
 
+function coverageTableFileMatchesProbe(fileColumn, probeDirectoryName) {
+  if (fileColumn === probeDirectoryName) return true;
+  const visibleSuffix = fileColumn.startsWith("...")
+    ? fileColumn.slice(3)
+    : fileColumn.startsWith("…")
+      ? fileColumn.slice(1)
+      : "";
+  const probeIdentityIndex = probeDirectoryName.lastIndexOf("probe-");
+  if (probeIdentityIndex === -1) return false;
+  const probeIdentity = probeDirectoryName.slice(probeIdentityIndex);
+  return (
+    visibleSuffix.length >= probeIdentity.length &&
+    visibleSuffix.endsWith(probeIdentity) &&
+    probeDirectoryName.endsWith(visibleSuffix)
+  );
+}
+
 function coverageMetricValue(value) {
   if (!/^\d+(?:\.\d+)?$/.test(value)) return undefined;
   const percentage = Number(value);
@@ -728,7 +809,12 @@ function coverageMetricEquals(value, expected) {
   return coverageMetricValue(value) === expected;
 }
 
-function assertSeededCoverageGateFailure(result, seedRoot, thresholds) {
+function assertSeededCoverageGateFailure(
+  result,
+  seedRoot,
+  thresholds,
+  probeRoot,
+) {
   assert.notEqual(result.status, 0);
   assert.equal(result.testFilesPassed, true);
   assert.equal(result.unhandledErrorCount, 0);
@@ -799,6 +885,33 @@ function assertSeededCoverageGateFailure(result, seedRoot, thresholds) {
   assert.equal(coverageMetricEquals(functions, 0), true);
   assert.equal(coverageMetricEquals(lines, 0), true);
   assert.equal(uncovered, "1-120");
+  if (probeRoot === undefined) return;
+  const probeDirectoryName = basename(probeRoot);
+  const probeRowIndex = outputLines.findIndex((line, index) => {
+    if (index <= allFilesRowIndex) return false;
+    const columns = coverageTableColumns(line);
+    return (
+      columns.length === 6 &&
+      coverageTableFileMatchesProbe(columns[0], probeDirectoryName) &&
+      columns
+        .slice(1, 5)
+        .every((metric) => coverageMetricEquals(metric, 100)) &&
+      columns[5] === ""
+    );
+  });
+  assert.notEqual(probeRowIndex, -1);
+  const nestedProbeColumns = coverageTableColumns(
+    outputLines[probeRowIndex + 1] ?? "",
+  );
+  assert.equal(nestedProbeColumns.length, 6);
+  assert.equal(nestedProbeColumns[0], "probe.ts");
+  assert.equal(
+    nestedProbeColumns
+      .slice(1, 5)
+      .every((metric) => coverageMetricEquals(metric, 100)),
+    true,
+  );
+  assert.equal(nestedProbeColumns[5], "");
 }
 
 function createPackage(root, path, name, dependencies = {}) {
@@ -1137,7 +1250,7 @@ test(
   async () => {
     let seedRoot;
     let reportRoot;
-    let exclusionFixture;
+    let probeFixture;
     let cleanupAllowed = true;
     try {
       seedRoot = mkdtempSync(
@@ -1146,7 +1259,7 @@ test(
       reportRoot = mkdtempSync(
         join(tmpdir(), "agentscope-coverage-policy-report-"),
       );
-      exclusionFixture = createCoverageHangFixture();
+      probeFixture = createCoverageProbeFixture();
       const path = join(seedRoot, "index.ts");
       writeFileSync(
         path,
@@ -1161,19 +1274,25 @@ test(
       const result = await runCoveragePolicyWorker({
         reportRoot,
         thresholds: qualityPolicy.packages["packages/testkit"].coverage,
+        testFilters: [probeFixture.probePath],
+        coverageIncludes: [
+          `src/${basename(probeFixture.fixtureRoot)}/probe.ts`,
+          `src/${basename(seedRoot)}/index.ts`,
+        ],
       });
       assertSeededCoverageGateFailure(
         result,
         seedRoot,
         qualityPolicy.packages["packages/testkit"].coverage,
+        probeFixture.fixtureRoot,
       );
-      assert.equal(existsSync(exclusionFixture.heartbeatPath), false);
+      assert.equal(existsSync(probeFixture.markerPath), false);
     } catch (error) {
       cleanupAllowed = error?.workerJoined !== false;
       throw error;
     } finally {
       if (cleanupAllowed)
-        cleanupCoverageSeed({ seedRoot, reportRoot, exclusionFixture });
+        cleanupCoverageSeed({ seedRoot, reportRoot, probeFixture });
     }
   },
   coveragePolicyTestDeadlineMs,
