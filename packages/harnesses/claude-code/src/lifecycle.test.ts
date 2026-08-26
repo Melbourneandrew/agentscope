@@ -418,6 +418,12 @@ describe("Claude Code owned lifecycle", () => {
         hookDeadlineMilliseconds: 2_000,
         platform: "posix",
       }),
+      createOwnedHarnessHookInvocation({
+        agentscopeHome: "/isolated/vertical\vtab",
+        harnessType: "@agentscope/harness-claude-code",
+        hookDeadlineMilliseconds: 2_000,
+        platform: "posix",
+      }),
     ]) {
       expect(
         createClaudeCodeInstallationPlanner(
@@ -1699,6 +1705,61 @@ describe("Claude Code shell grammar", () => {
           settingsWithHook("PreToolUse", {
             type: "command",
             command: 'printf "literal\\$value"',
+          }),
+        ),
+      ).kind,
+    ).toBe("replace");
+  });
+
+  it("rejects command delegation without recursively interpreting it", () => {
+    for (const command of [
+      `exec ${invocation.launcherPath}`,
+      `command ${invocation.launcherPath}`,
+      `eval ${invocation.launcherPath}`,
+      `env ${invocation.launcherPath}`,
+      `nohup ${invocation.launcherPath}`,
+      `sh -c '${invocation.launcherPath}'`,
+      `bash -c '${invocation.launcherPath}'`,
+      `/usr/bin/env ${invocation.launcherPath}`,
+      `/bin/sh -c '${invocation.launcherPath}'`,
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", { type: "command", command }))),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("rejects disallowed executable controls and preserves a simple executable", () => {
+    for (const handler of [
+      { type: "command", command: "printf\0foreign" },
+      { type: "command", command: "printf\vforeign" },
+      { type: "command", command: "printf\fforeign" },
+      { type: "command", command: "printf\u007fforeign" },
+      { type: "command", command: "printf", args: ["foreign\0argument"] },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", handler))),
+      ).toEqual({ kind: "conflict" });
+    }
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(
+        target(
+          settingsWithHook("PreToolUse", {
+            type: "command",
+            command: "/usr/bin/printf",
+            args: ["foreign"],
           }),
         ),
       ).kind,

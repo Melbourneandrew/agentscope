@@ -583,8 +583,7 @@ const encodeClaudeCodeHookCommand = (
     !invocation.launcherPath.startsWith("/") ||
     basename === undefined ||
     !posixLauncherBasenamePattern.test(basename) ||
-    invocation.launcherPath.includes("\0") ||
-    unpairedSurrogatePattern.test(invocation.launcherPath)
+    !posixExecutableStringIsRepresentable(invocation.launcherPath)
   )
     return undefined;
   return invocation.launcherPath;
@@ -961,6 +960,35 @@ const commandRequiredKeys = new Set(["command", "type"]);
 const httpRequiredKeys = new Set(["type", "url"]);
 const mcpToolRequiredKeys = new Set(["server", "tool", "type"]);
 const promptRequiredKeys = new Set(["prompt", "type"]);
+const posixExecutableStringIsRepresentable = (value: string): boolean => {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (
+      codePoint <= 8 ||
+      (codePoint >= 11 && codePoint <= 12) ||
+      (codePoint >= 14 && codePoint <= 31) ||
+      codePoint === 127
+    )
+      return false;
+  }
+  return !unpairedSurrogatePattern.test(value);
+};
+
+const commandArgumentArrayIsValid = (
+  value: unknown,
+  budget: HookBudget,
+): boolean => {
+  const entries = exactArrayValues(value);
+  return (
+    entries !== undefined &&
+    entries.length <= 32 &&
+    entries.every(
+      (entry) =>
+        consumeHookString(entry, 512, budget, true) &&
+        posixExecutableStringIsRepresentable(entry),
+    )
+  );
+};
 
 const isCommandHook = (value: unknown, budget: HookBudget): boolean => {
   const hook = hookRecord(value, commandHookKeys, commandRequiredKeys, budget);
@@ -968,12 +996,13 @@ const isCommandHook = (value: unknown, budget: HookBudget): boolean => {
     hook === undefined ||
     hook.type !== "command" ||
     !consumeHookString(hook.command, 4_096, budget) ||
+    !posixExecutableStringIsRepresentable(hook.command) ||
     !commonHookFieldsAreValid(hook, budget)
   )
     return false;
   return (
     (hook.args === undefined ||
-      stringArrayIsValid(hook.args, 32, 512, budget, true)) &&
+      commandArgumentArrayIsValid(hook.args, budget)) &&
     (hook.async === undefined || typeof hook.async === "boolean") &&
     (hook.asyncRewake === undefined || typeof hook.asyncRewake === "boolean") &&
     (hook.cloud === undefined ||
@@ -1151,6 +1180,26 @@ const posixReservedExecutableWords = new Set([
   "until",
   "while",
 ]);
+const posixDelegatingExecutableBasenames = new Set([
+  "ash",
+  "bash",
+  "busybox",
+  "command",
+  "dash",
+  "doas",
+  "env",
+  "eval",
+  "exec",
+  "ksh",
+  "nice",
+  "nohup",
+  "setsid",
+  "sh",
+  "stdbuf",
+  "sudo",
+  "timeout",
+  "zsh",
+]);
 
 const parsePosixExecutableWord = (command: string): string | undefined => {
   const words: string[] = [];
@@ -1211,8 +1260,11 @@ const parsePosixExecutableWord = (command: string): string | undefined => {
   const executable = words.find(
     (entry) => !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(entry),
   );
+  const executableBasename = executable?.split("/").at(-1);
   return executable !== undefined &&
-    !posixReservedExecutableWords.has(executable)
+    executableBasename !== undefined &&
+    !posixReservedExecutableWords.has(executable) &&
+    !posixDelegatingExecutableBasenames.has(executableBasename)
     ? executable
     : undefined;
 };
@@ -1222,6 +1274,7 @@ const commandClaimsExecutable = (
   launcherPath: string,
 ): boolean => {
   if (typeof value.command !== "string") return false;
+  if (!posixExecutableStringIsRepresentable(value.command)) return true;
   if (
     value.command.length > 4_096 ||
     encoder.encode(value.command).byteLength > 4_096
