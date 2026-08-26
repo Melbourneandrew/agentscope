@@ -15,6 +15,9 @@ import { createInterface } from "node:readline";
 import { basename, dirname, parse, resolve } from "node:path";
 import { types } from "node:util";
 
+const intrinsicReflectApply = Reflect.apply;
+const intrinsicIsProxy = types.isProxy;
+
 type AuthenticatedArtifactAuthority = Readonly<{
   status: "authenticated";
   digest: string;
@@ -144,7 +147,12 @@ const record = (
   expected: readonly string[] | undefined,
   code: string,
 ): Readonly<Record<string, unknown>> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    intrinsicReflectApply(intrinsicIsProxy, undefined, [value]) ||
+    Array.isArray(value)
+  )
     fail(code);
   const target = value as object;
   let prototype: object | null = null;
@@ -188,6 +196,12 @@ const denseArray = (
   maximum: number,
   code: string,
 ): readonly unknown[] => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    intrinsicReflectApply(intrinsicIsProxy, undefined, [value])
+  )
+    fail(code);
   const array = Array.isArray(value) ? value : fail(code);
   let prototype: object | null = null;
   let keys: readonly (string | symbol)[] = [];
@@ -1004,8 +1018,6 @@ const activeAuditWorkerPids = new Set<number>();
 /* eslint-disable-next-line @typescript-eslint/unbound-method -- captured before
  * any hostile test input can mutate the public intrinsic. */
 const intrinsicPromiseThen = Promise.prototype.then;
-const intrinsicReflectApply = Reflect.apply;
-const intrinsicIsProxy = types.isProxy;
 const intrinsicIsPromise = types.isPromise;
 const discardPromiseRejection = (): undefined => undefined;
 

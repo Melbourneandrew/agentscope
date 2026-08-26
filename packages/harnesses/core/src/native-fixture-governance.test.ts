@@ -420,6 +420,69 @@ describe("native fixture privacy and array boundaries", () => {
   });
 });
 
+describe("native fixture transparent proxy boundaries", () => {
+  it("rejects transparent proxies without executing their traps", () => {
+    const base = fixture();
+    let proxyTrapExecuted = false;
+    const transparentRecords = new Proxy(
+      [structuralPrivacyReview, structuralRedistributionReview],
+      {
+        getPrototypeOf: () => {
+          proxyTrapExecuted = true;
+          return Reflect.getPrototypeOf([]);
+        },
+        ownKeys: () => {
+          proxyTrapExecuted = true;
+          return Reflect.ownKeys([]);
+        },
+      },
+    );
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...base,
+          governance: {
+            ...base.governance,
+            review: {
+              ...base.governance.review,
+              records: transparentRecords,
+            },
+          },
+        }),
+      "harness.fixture.review.records",
+    );
+    expect(proxyTrapExecuted).toBe(false);
+    const transparentPrivacyReview = new Proxy(structuralPrivacyReview, {
+      getPrototypeOf: () => {
+        proxyTrapExecuted = true;
+        return Reflect.getPrototypeOf(structuralPrivacyReview);
+      },
+      ownKeys: () => {
+        proxyTrapExecuted = true;
+        return Reflect.ownKeys(structuralPrivacyReview);
+      },
+    });
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...base,
+          governance: {
+            ...base.governance,
+            review: {
+              ...base.governance.review,
+              records: [
+                transparentPrivacyReview,
+                structuralRedistributionReview,
+              ],
+            },
+          },
+        }),
+      "harness.fixture.review.records",
+    );
+    expect(proxyTrapExecuted).toBe(false);
+  });
+});
+
 describe("native fixture governance array boundaries", () => {
   it("applies the dense-array boundary to review and redaction metadata", () => {
     const base = fixture();
@@ -628,6 +691,22 @@ describe("native fixture schema adversarial inputs", () => {
       () => parseHarnessSanitizedFixture(throwing),
       "harness.fixture.shape",
     );
+    let transparentProxyTrapExecuted = false;
+    const transparent = new Proxy(fixture(), {
+      getPrototypeOf: () => {
+        transparentProxyTrapExecuted = true;
+        return Reflect.getPrototypeOf({});
+      },
+      ownKeys: () => {
+        transparentProxyTrapExecuted = true;
+        return Reflect.ownKeys(fixture());
+      },
+    });
+    expectCode(
+      () => parseHarnessSanitizedFixture(transparent),
+      "harness.fixture.shape",
+    );
+    expect(transparentProxyTrapExecuted).toBe(false);
     const symbol = { ...fixture(), [Symbol("synthetic")]: true };
     expectCode(
       () => parseHarnessSanitizedFixture(symbol),
