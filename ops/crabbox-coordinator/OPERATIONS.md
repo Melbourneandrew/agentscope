@@ -1,0 +1,217 @@
+# Crabbox coordinator operations
+
+This runbook implements the approved development-environment Blueprint. It is
+for the human-owned deployment path and the protected fleet-control service. A
+repository agent may validate non-secret inputs but cannot receive deployment,
+provider, inventory, recovery, admin, or shared-token authority.
+
+## Immutable admission
+
+The sole initial coordinator is `openclaw/crabbox` `v0.46.0`, commit
+`8ba71f913bbe57285ae29af45ef0d8ec6712477d`. The admitted local deployment
+toolchains and digests are in `admission.json`. Use an exact detached checkout;
+do not use the upstream default Wrangler profile.
+
+Keep deployment inputs outside the repository under
+`~/.local/share/agentscope-crabbox/` with owner-only permissions. The external
+record binds the Cloudflare account, Workers Free plan, Worker name, immutable
+environment identifier, Durable Object namespace/deployment identities, and
+the dedicated fleet-only Hetzner project. Never commit that record as reusable
+authority.
+
+## Stage and validate without cloud mutation
+
+Create an external JSON record with:
+
+```json
+{
+  "environmentId": "asgcf_<32 lowercase hex characters>",
+  "workerName": "agentscope-crabbox-development",
+  "cloudflarePlan": "free",
+  "accountMode": "owner-personal-shared"
+}
+```
+
+Then render the profile beside the exact upstream Worker source:
+
+```sh
+<owned-node>/bin/node scripts/crabbox-coordinator-profile.mjs \
+  --source <exact-crabbox-checkout> \
+  --record <external-record.json> \
+  --output <exact-crabbox-checkout>/worker/wrangler.agentscope.jsonc
+```
+
+Recreate `worker/node_modules` with the admitted Node/npm and `npm ci`. Use
+separate empty user/global npmrc files, a private npm cache, a `PATH` containing
+only the admitted Node distribution and audited `/usr/bin:/bin`, and no ambient
+`NODE_OPTIONS`, npm prefix, global packages, or moving `npx`.
+
+Run the locked dry build with the same closed environment:
+
+```sh
+<owned-node>/bin/npm exec --prefix <exact-crabbox-checkout>/worker -- wrangler \
+  deploy --config <exact-crabbox-checkout>/worker/wrangler.agentscope.jsonc \
+  --dry-run --outdir <owned-empty-output>
+```
+
+Before login or deployment, inspect the rendered Wrangler output and reject any
+extra/missing Worker identity, route, preview, asset, binding, migration, cron,
+variable, secret name, or provider integration. The profile must contain only
+the one `FLEET` SQLite Durable Object, migration `v1`, the 15-minute trigger,
+workers.dev, preview URLs disabled, and the exact allowlists in `admission.json`.
+
+## Authenticate and admit the shared account
+
+Use the project-local Wrangler under the admitted Node runtime and a dedicated
+external Wrangler configuration directory. `wrangler whoami` must identify
+Andrew's explicitly approved personal Cloudflare account. If authentication is absent, stop for
+interactive `wrangler login`; do not use a temporary preview account or a
+repository/GitHub token.
+
+The account is intentionally shared and may contain unrelated zones, Pages
+projects, Workers, and other products. Before resolving deployment authority,
+the human operator must acquire the account mutation fence and inventory the
+complete observable projection of the admitted Workers Scripts Write mutation
+surface. The immutable one-use plan records the exact coordinator target,
+permission-manifest identity, observable prestate, closed ordered operations,
+rollback actions, expiry, nonce, and intended terminal state. A repository
+process or agent cannot mint, widen, consume, or apply that plan. There is no
+generic Wrangler/dashboard/API mutation mode.
+
+The repo-local `scripts/crabbox-coordinator-plan.mjs` is a non-mutating
+structural preflight only. It uses only the canonical committed admission and
+permission manifest, fully validates the live profile and toolchain identities,
+and checks candidate detached signatures, freshness, kind-specific actions,
+resource targets, and opaque secret slot/version identities. Caller-supplied
+candidate public keys do not establish the external authorities. Its output
+therefore says `authorityAdmitted: false`, `continuouslyEnforced: false`,
+`consumed: false`, and `mutationAuthorized: false`. The separately installed
+launcher must bind the admitted human-controlled key identities, continuously
+enforce plan freshness, atomically consume and journal the same authenticated
+plan, and revalidate before resolving credentials. Never substitute this script
+or raw Wrangler for that missing authority.
+
+The only admitted public binding is the exact script-level workers.dev binding.
+Do not create a zone route, Worker Domain, custom domain, Pages binding, Access
+application, shared storage, or unrelated account resource. The account-level
+workers.dev subdomain is shared state: if it must be enabled, that is a separate
+owner-approved plan and retirement does not disable it.
+
+Before deployment, a separate human-owned read-only billing/product credential
+must produce a signed observation no more than 15 minutes old proving the
+selected account is on Workers Free with no paid or usage-overage path and
+recording the current Workers, Durable Object, storage, CPU, and Pages Functions
+quota projections plus their source identities. The fleet service may verify
+the signed record but never receives Cloudflare authority, and must keep a fresh
+continuous observation throughout every active or uncertain operation.
+Sampled or delayed Workers, Pages, and Durable Object analytics are advisory
+only; they do not prove billing state or current quota. Missing, stale, paid,
+ambiguous, or discontinuous plan evidence freezes acquisition. The owner accepts that
+unrelated Workers or Pages Functions can consume the shared Free quota and deny
+the coordinator, and that coordinator traffic can deny those unrelated
+services. Independent Hetzner reconciliation and attended recovery remain
+available when Cloudflare runtime quota is exhausted.
+
+## Create secrets and deploy
+
+The only Worker secrets are `HETZNER_TOKEN`, `CRABBOX_SHARED_TOKEN`, and
+`CRABBOX_ADMIN_TOKEN`. Each approved secret operation binds the exact name to an
+opaque operator-store slot and immutable version in the one-use plan. The
+human-owned launcher consumes the value directly into the exact Cloudflare
+request; never place a value in argv, variables, a file, the repository,
+terminal output, plan, or evidence. Before any value reaches Cloudflare, the
+protected store must confidentially prove that all three underlying values are
+pairwise distinct. Equality or an indeterminate comparison fails before
+mutation and emits no value, reusable digest, or comparison artifact. The
+Hetzner token must belong to the dedicated fleet-only project.
+
+After applying the three secrets, exercise only bounded non-mutating forward
+checks: the shared token must authenticate its ordinary route and be rejected
+by an admin-only route; the admin token must succeed there; the provider token
+must work only through the admitted provider-read path. Ambiguous role behavior
+is unadmitted and requires newly versioned pairwise-distinct values. The pinned
+Crabbox implementation checks the admin token before the shared token, so value
+aliasing would otherwise elevate the automation bearer.
+
+Separately provision:
+
+- one project-scoped read-only Hetzner inventory token for the protected
+  fleet-control principal; and
+- one human-held project-wide read/write recovery token in a different secret
+  store.
+
+Deploy only the validated `wrangler.agentscope.jsonc` through the human-owned
+one-use plan launcher. Immediately before every mutation, revalidate the exact
+account, target, toolchain, permission manifest, profile, observable prestate,
+and secret slot/version identities. Output failure, replay, substitution,
+expiry, drift, an unclassified API action, or a ledger gap refuses the next
+mutation and keeps acquisition frozen. Record source/toolchain, profile,
+account, environment, Worker version, Durable Object migration, script-level
+workers.dev binding, cron, variable-name, secret-name, and deployment
+identifiers. Never record secret values or claim that inventories prove the
+absence of transient or write-only actions.
+
+## Admission proof
+
+Keep acquisition disabled until the protected fleet-control service and
+out-of-band authorization tool are installed and independently reviewed. Prove
+negative replay/substitution/unauthorized requests first.
+
+One owner-approved proof may then create exactly one `cx33` in `fsn1` using
+Ubuntu 24.04 amd64, a unique per-lease key, `keep=false`, TTL at most 90 minutes,
+idle timeout at most 20 minutes, and the smallest manifest-selected hermetic
+fixture. Use no harness/provider credentials or public model traffic. Bind the
+exact candidate/manifest/image identities and record the modeled reservation.
+
+Deliberately exercise:
+
+- fixed-ID retry after a simulated lost client response;
+- client loss while the cloud coordinator remains authoritative;
+- idle expiry and hard-TTL cleanup;
+- cleanup failure/retry observation without broad deletion; and
+- nested Docker cleanup before the outer host is released.
+
+Do not create a second billable worker until the first operation has one
+continuous ledger and coordinator plus independent provider inventory both show
+the exact server and per-lease key absent. Record provider-observed billed cost
+when available and state that this is development acceleration, not release
+authority or harness support evidence.
+
+## Incident and rollback
+
+On auth failure, quota pressure, stale reconciliation, ledger discontinuity,
+provider disagreement, or cleanup uncertainty:
+
+1. Freeze new acquisition while preserving list/release/reaper authority.
+2. Revoke the affected non-admin credential and rotate only the affected Worker
+   or inventory secret.
+3. Compare coordinator state with independent provider inventory.
+4. Use the human recovery credential only for identity-bound inventory/deletion
+   in the dedicated project.
+5. Retain a sanitized incident record until resolved; never erase a claim to
+   manufacture success.
+
+Roll back Worker code only to a version compatible with the live Durable Object
+schema. Never rewind or recreate the namespace. Retirement freezes acquisition,
+reconciles zero provider resources, revokes the launcher bearer, and writes the
+authenticated environment tombstone before Cloudflare teardown. An
+owner-authorized plan then removes the trigger, script-level workers.dev
+binding, and coordinator secrets; deploys the separately reviewed no-op
+terminal Worker profile with no runtime authority or `FLEET` reference; applies
+the one append-only `FleetDurableObject` class-deletion migration; and only
+after Cloudflare confirms it removes remaining versions and the script. It does
+not delete a zone route, Worker Domain, or the shared account-level workers.dev
+subdomain. Keep plan-observation, inventory, recovery, and deployment authority
+until exact provider and Cloudflare absence is proven.
+
+`scripts/crabbox-coordinator-retirement-profile.mjs` structurally renders that
+terminal profile only from a recent candidate-signed provider-zero record bound
+to the exact account, Worker version, Durable Object namespace/migration,
+Hetzner project, acquisition freeze, resolved transitions, launcher revocation,
+tombstone, terminal evidence, zero servers/keys/leases/creates, and a continuous
+ledger. It verifies pinned source/lock/license identity and stages atomically.
+Its caller-selected candidate key does not establish recovery authority, and
+its output explicitly says `authorityAdmitted: false` and
+`mutationAuthorized: false`. The protected launcher must reverify the admitted
+recovery key and owner-approved irreversible sequence before deploying the
+artifact or class-deletion migration.

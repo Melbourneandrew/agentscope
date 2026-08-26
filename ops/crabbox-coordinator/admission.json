@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "coordinator": {
+    "repository": "https://github.com/openclaw/crabbox.git",
+    "version": "0.46.0",
+    "commit": "8ba71f913bbe57285ae29af45ef0d8ec6712477d",
+    "licenseSha256": "6ae2daf92d73e912aef033d56ce374df997ae0ad1d88ca9ef76f0c11123aae27",
+    "workerLockSha256": "6bf8940bd1b514ab3541485605e24b516242359e3050cfa5645966e398b030fd",
+    "wranglerVersion": "4.114.0"
+  },
+  "deployment": {
+    "workerName": "agentscope-crabbox-development",
+    "accountMode": "owner-personal-shared",
+    "workersPlan": "free-no-overage",
+    "planObservationMaxAgeMinutes": 15,
+    "requiredQuotaProjections": [
+      "workersRequestsDaily",
+      "workersCpuMsDaily",
+      "durableObjectRequestsDaily",
+      "durableObjectStorageGb",
+      "pagesFunctionsRequestsDaily"
+    ],
+    "compatibilityDate": "2026-04-30",
+    "environmentIdPattern": "^asgcf_[a-f0-9]{32}$",
+    "topLevelKeys": [
+      "$schema",
+      "alias",
+      "compatibility_date",
+      "compatibility_flags",
+      "durable_objects",
+      "main",
+      "migrations",
+      "name",
+      "preview_urls",
+      "triggers",
+      "vars",
+      "version_metadata",
+      "workers_dev"
+    ],
+    "compatibilityFlags": ["nodejs_compat"],
+    "versionMetadataBinding": "CF_VERSION_METADATA",
+    "aliases": {
+      "cpu-features": "./src/cpu-features.cjs",
+      "./agent.js": "./src/ssh2-agent.cjs",
+      "./crypto/build/Release/sshcrypto.node": "./src/ssh2-native.cjs",
+      "./crypto/poly1305.js": "./src/ssh2-poly1305.cjs"
+    },
+    "secretNames": [
+      "CRABBOX_ADMIN_TOKEN",
+      "CRABBOX_SHARED_TOKEN",
+      "HETZNER_TOKEN"
+    ],
+    "secretPolicy": {
+      "pairwiseDistinctValues": true,
+      "retainValueDigest": false,
+      "sharedTokenDeniedOnAdminRoute": true,
+      "providerTokenMayAuthenticateCoordinator": false
+    },
+    "publicBindingPolicy": {
+      "scriptWorkersDevOnly": true,
+      "previewUrls": false,
+      "zoneRoutes": false,
+      "workerDomains": false,
+      "customDomains": false,
+      "pagesBindings": false,
+      "accessApplications": false,
+      "accountSharedStorage": false
+    },
+    "variableNames": [
+      "AGENTSCOPE_CRABBOX_ENVIRONMENT_ID",
+      "CRABBOX_DEFAULT_ORG",
+      "CRABBOX_MAX_ACTIVE_LEASES",
+      "CRABBOX_MAX_ACTIVE_LEASES_PER_ORG",
+      "CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER",
+      "CRABBOX_MAX_MONTHLY_USD",
+      "CRABBOX_MAX_MONTHLY_USD_PER_ORG",
+      "CRABBOX_MAX_MONTHLY_USD_PER_OWNER",
+      "CRABBOX_RUN_RETENTION_DAYS",
+      "CRABBOX_SHARED_OWNER"
+    ],
+    "variableValues": {
+      "CRABBOX_DEFAULT_ORG": "agentscope-development",
+      "CRABBOX_SHARED_OWNER": "agentscope-fleet-control",
+      "CRABBOX_MAX_ACTIVE_LEASES": "4",
+      "CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER": "4",
+      "CRABBOX_MAX_ACTIVE_LEASES_PER_ORG": "4",
+      "CRABBOX_MAX_MONTHLY_USD": "25",
+      "CRABBOX_MAX_MONTHLY_USD_PER_OWNER": "25",
+      "CRABBOX_MAX_MONTHLY_USD_PER_ORG": "25",
+      "CRABBOX_RUN_RETENTION_DAYS": "30"
+    },
+    "durableObjectBinding": "FLEET",
+    "durableObjectClass": "FleetDurableObject",
+    "migrationTag": "v1",
+    "terminalProfile": {
+      "configName": "wrangler.agentscope-terminal.jsonc",
+      "entryPointName": "terminal-worker.agentscope.mjs",
+      "entryPointSha256": "449b7b4f5ee8c639fff349db2c70bfd2ad2fa749e07e53c026f0d22b46f9813e",
+      "migrationTag": "v2-retire-fleet-durable-object",
+      "deletedClass": "FleetDurableObject",
+      "workersDev": false,
+      "previewUrls": false
+    },
+    "cron": "*/15 * * * *",
+    "workersDev": true,
+    "previewUrls": false
+  },
+  "toolchains": {
+    "node": {
+      "version": "24.19.0",
+      "platform": "darwin-arm64",
+      "archiveSha256": "3f1cf157479c1480352083105e13faf9d008ede98e7e157746b6df940d197b94"
+    },
+    "go": {
+      "version": "1.26.5",
+      "platform": "darwin-arm64",
+      "archiveSha256": "efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a"
+    }
+  },
+  "fleet": {
+    "provider": "hetzner",
+    "serverType": "cx33",
+    "location": "fsn1",
+    "image": "ubuntu-24.04",
+    "architecture": "amd64",
+    "maxWorkers": 4,
+    "maxTtlMinutes": 90,
+    "maxIdleMinutes": 20,
+    "maxMonthlyReservationUsd": 25,
+    "keep": false,
+    "checkpoints": false
+  }
+}

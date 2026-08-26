@@ -1,0 +1,47 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agentscope-crabbox-development",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "alias": {
+    "cpu-features": "./src/cpu-features.cjs",
+    "./agent.js": "./src/ssh2-agent.cjs",
+    "./crypto/build/Release/sshcrypto.node": "./src/ssh2-native.cjs",
+    "./crypto/poly1305.js": "./src/ssh2-poly1305.cjs",
+  },
+  "workers_dev": true,
+  "preview_urls": false,
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA",
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"],
+  },
+  "vars": {
+    "AGENTSCOPE_CRABBOX_ENVIRONMENT_ID": "__AGENTSCOPE_ENVIRONMENT_ID__",
+    "CRABBOX_DEFAULT_ORG": "agentscope-development",
+    "CRABBOX_SHARED_OWNER": "agentscope-fleet-control",
+    "CRABBOX_MAX_ACTIVE_LEASES": "4",
+    "CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER": "4",
+    "CRABBOX_MAX_ACTIVE_LEASES_PER_ORG": "4",
+    "CRABBOX_MAX_MONTHLY_USD": "25",
+    "CRABBOX_MAX_MONTHLY_USD_PER_OWNER": "25",
+    "CRABBOX_MAX_MONTHLY_USD_PER_ORG": "25",
+    "CRABBOX_RUN_RETENTION_DAYS": "30",
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "FLEET",
+        "class_name": "FleetDurableObject",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["FleetDurableObject"],
+    },
+  ],
+}

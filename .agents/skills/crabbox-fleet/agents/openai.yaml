@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crabbox Fleet"
+  short_description: "Use bounded remote Agentscope test capacity"
+  default_prompt: "Use $crabbox-fleet to prepare or operate a bounded remote Agentscope test run without exposing provider credentials."
