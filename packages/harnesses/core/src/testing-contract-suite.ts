@@ -23,6 +23,7 @@ import {
   parseHarnessSanitizedFixture,
   type HarnessSanitizedFixture,
 } from "./native-fixture-governance.js";
+import { parseStableSemver, stableSemverIsInRange } from "./semver.js";
 import type { HarnessDescriptor } from "./types.js";
 
 export type HarnessContractCase = Readonly<{
@@ -222,7 +223,22 @@ const componentEvidenceIsBound = (
     adapter.descriptor,
     adapter.contextEvidence,
   );
+  const compatibleVersion = parseStableSemver(adapter.compatibleVersion);
+  const owningRange =
+    compatibleVersion === undefined
+      ? undefined
+      : adapter.descriptor.compatibility.find((range) => {
+          const minimum = parseStableSemver(range.minimumInclusive);
+          const maximum = parseStableSemver(range.maximumExclusive);
+          return (
+            minimum !== undefined &&
+            maximum !== undefined &&
+            stableSemverIsInRange(compatibleVersion, minimum, maximum)
+          );
+        });
   return (
+    owningRange !== undefined &&
+    owningRange.evidenceSlot === evidence.evidenceSlot &&
     evidence.evidenceVersion === 1 &&
     evidence.harnessType === adapter.descriptor.harnessType &&
     evidence.testedVersion === adapter.compatibleVersion &&

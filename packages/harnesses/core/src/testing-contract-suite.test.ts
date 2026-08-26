@@ -541,6 +541,84 @@ describe("harness component evidence", () => {
 });
 
 describe("harness contract representative and component evidence", () => {
+  it("requires the descriptor row containing the version to own the evidence slot", async () => {
+    const base = referenceAdapter();
+    await expect(
+      runCase(
+        { ...base, compatibleVersion: "not-semver" },
+        "harness:component-evidence",
+      ),
+    ).rejects.toThrow("harness.contract.component-evidence");
+    const outOfRangeFixture = {
+      ...base.fixture,
+      harnessVersion: "2.1.0",
+      governance: {
+        ...base.fixture.governance,
+        representative: {
+          ...base.fixture.governance.representative,
+          representativeVersion: "2.1.0",
+        },
+      },
+    } as const;
+    const outOfRangeScenario = {
+      ...base.scenario,
+      representativeVersion: "2.1.0",
+    } as const;
+    await expect(
+      runCase(
+        {
+          ...base,
+          compatibleVersion: "2.1.0",
+          fixture: outOfRangeFixture,
+          scenario: outOfRangeScenario,
+          componentEvidence: {
+            ...base.componentEvidence,
+            testedVersion: "2.1.0",
+            componentDigest: deriveHarnessComponentEvidenceDigest(
+              outOfRangeFixture,
+              outOfRangeScenario,
+              base.descriptor,
+              base.contextEvidence,
+            ),
+          },
+        },
+        "harness:component-evidence",
+      ),
+    ).rejects.toThrow("harness.contract.component-evidence");
+
+    const wrongSlotFixture = {
+      ...base.fixture,
+      governance: {
+        ...base.fixture.governance,
+        representative: {
+          ...base.fixture.governance.representative,
+          evidenceSlot: "other-slot",
+        },
+      },
+    } as const;
+    await expect(
+      runCase(
+        {
+          ...base,
+          fixture: wrongSlotFixture,
+          componentEvidence: {
+            ...base.componentEvidence,
+            evidenceSlot: "other-slot",
+            componentDigest: deriveHarnessComponentEvidenceDigest(
+              wrongSlotFixture,
+              base.scenario,
+              base.descriptor,
+              base.contextEvidence,
+            ),
+          },
+        },
+        "harness:component-evidence",
+      ),
+    ).rejects.toThrow("harness.contract.component-evidence");
+  });
+});
+
+describe("harness contract representative evidence drift", () => {
   it("rejects representative scenario and evidence-slot drift", async () => {
     const scenarioDrift = referenceAdapter();
     await expect(

@@ -55,7 +55,10 @@ schema is versioned and uses the structurally separate
 `component-sha256-*` namespace. It does not contain `realScenarioDigest`, cannot
 populate `HarnessSupportEvidenceManifest`, and cannot compile a production
 compatibility-registry row. A fixture cannot broaden a descriptor compatibility
-range or create an actual-binary or release support claim.
+range or create an actual-binary or release support claim. The component suite
+still requires the representative version to fall inside one descriptor
+compatibility row, and that exact row must own the fixture's component evidence
+slot.
 
 ## Automated enforcement
 
@@ -67,17 +70,25 @@ directory capability for the complete traversal; replacement of the caller's
 path cannot redirect the scan. Package, fixture, and native-directory traversal
 does not follow symlinks, and every file is read through one identity-stable
 no-follow handle. The fixed scanner child accepts at most 256 files, 64 KiB per
-file, and 3 MiB decoded in aggregate. The 3 MiB ceiling base64-encodes to 4 MiB,
-and retained relative paths are capped at 140 KiB in aggregate. Even at JSON's
-worst six-byte escaping expansion, those paths consume at most 840 KiB; the
-fixed 256-record envelope consumes less than 16 KiB. The complete maximum valid
-snapshot is therefore below the parent's 5 MiB output ceiling. One absolute
-10-second authority applies: work is aborted at
-9 seconds so the final second is reserved for forced termination and a
-confirmed direct-child join. Harness Core's unit suite runs this inventory audit
-on every repository validation. The post-adapter inventory certification
-remains responsible for proving that every implemented native mapping is
-represented.
+file, and 3 MiB decoded in aggregate. Root and native-directory entries are read
+through a buffer-one directory stream and rejected on the 257th entry before
+sorting or materialization can grow further. The 3 MiB ceiling base64-encodes to
+4 MiB, and retained relative paths are capped at 140 KiB in aggregate. Even at
+JSON's worst six-byte escaping expansion, those paths consume at most 840 KiB;
+the fixed 256-record envelope consumes less than 16 KiB. The complete maximum
+valid snapshot is therefore below the parent's 5 MiB output ceiling.
+
+One monotonic 10-second work/termination authority applies: work is aborted at 9
+seconds so the final second initiates forced termination and join. The worker
+must emit the complete terminal frame and then close with code zero and no
+signal. No success or failure returns before direct-child close is confirmed;
+if the runtime delays close after forced termination, the join invariant—not a
+wall-clock shortcut—governs return. The optional audit observer is a synchronous
+test-only causal hook; Promise-returning or foreign results fail immediately and
+cannot extend the authority asynchronously. Harness Core's unit suite runs this
+inventory audit on every repository validation. The post-adapter inventory
+certification remains responsible for proving that every implemented native
+mapping is represented.
 
 All fixtures governed here are component-only, including fixtures whose capture
 metadata records a disposable-hermetic source. Actual-binary, compatibility

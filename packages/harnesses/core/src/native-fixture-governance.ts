@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { lstat } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { basename, dirname, parse, resolve } from "node:path";
 
@@ -727,16 +728,44 @@ export type NativeFixtureAuditEvent =
   | "root-capability-before-release";
 
 export type NativeFixtureAuditDirective =
-  "oversized-output" | "terminate-child" | "timeout-child" | undefined;
+  | "authority-expiry"
+  | "malformed-terminal"
+  | "missing-terminal"
+  | "nonzero-exit"
+  | "oversized-output"
+  | "terminate-child"
+  | "timeout-child"
+  | undefined;
 
 export type NativeFixtureAuditObserver = (
   event: NativeFixtureAuditEvent,
   path: string,
   childProcessId?: number,
-) =>
-  | NativeFixtureAuditDirective
-  | void
-  | Promise<NativeFixtureAuditDirective | void>;
+) => NativeFixtureAuditDirective | void;
+
+const notifyAuditObserver = (
+  observer: NativeFixtureAuditObserver | undefined,
+  event: NativeFixtureAuditEvent,
+  path: string,
+  childProcessId?: number,
+): NativeFixtureAuditDirective | undefined => {
+  const directive = observer?.(event, path, childProcessId);
+  if (directive === undefined) return undefined;
+  if (event !== "root-capability-acquired")
+    fail("harness.fixture.inventory.observer");
+  switch (directive) {
+    case "authority-expiry":
+    case "malformed-terminal":
+    case "missing-terminal":
+    case "nonzero-exit":
+    case "oversized-output":
+    case "terminate-child":
+    case "timeout-child":
+      return directive;
+    default:
+      return fail("harness.fixture.inventory.observer");
+  }
+};
 
 type AncestorIdentity = Readonly<{
   path: string;
@@ -787,8 +816,9 @@ const assertStableLexicalAncestry = async (
 };
 
 const capabilityWorkerSource = String.raw`
-import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readFileSync, statSync } from "node:fs";
 const maximumFiles = 256;
+const maximumDirectoryEntries = 256;
 const maximumAggregateBytes = 3 * 1024 * 1024;
 const maximumAggregatePathBytes = 140 * 1024;
 const same = (left, right) => left.dev === right.dev && left.ino === right.ino;
@@ -801,11 +831,25 @@ const compare = (left, right) => {
   }
   return a.length - b.length;
 };
+const boundedEntries = () => {
+  const directory = opendirSync(".", { bufferSize: 1 });
+  const entries = [];
+  try {
+    for (;;) {
+      const entry = directory.readSync();
+      if (entry === null) break;
+      if (entries.length >= maximumDirectoryEntries) throw new Error("directory-bounds");
+      entries.push(entry);
+    }
+  } finally { directory.closeSync(); }
+  return entries.sort((left, right) => compare(left.name, right.name));
+};
 const root = statSync(".", { bigint: true });
 process.stdout.write(JSON.stringify({ kind: "ready", dev: String(root.dev), ino: String(root.ino) }) + "\n");
 process.stdin.once("data", (command) => {
   try {
-    if (command.toString("utf8").startsWith("oversized-output")) {
+    const mode = command.toString("utf8").trim();
+    if (mode === "oversized-output") {
       process.stdout.write("x".repeat(5 * 1024 * 1024 + 1));
       return;
     }
@@ -828,7 +872,7 @@ process.stdin.once("data", (command) => {
       try { return lstatSync(name, { bigint: true }); }
       catch (error) { if (error?.code === "ENOENT") return undefined; throw error; }
     };
-    const harnesses = readdirSync(".", { withFileTypes: true }).sort((left, right) => compare(left.name, right.name));
+    const harnesses = boundedEntries();
     for (const harness of harnesses) {
       if (harness.name === "core") continue;
       if (!harness.isDirectory() || harness.isSymbolicLink()) throw new Error("entry-kind");
@@ -839,7 +883,7 @@ process.stdin.once("data", (command) => {
       const native = optional("native");
       if (native === undefined) { leave(harnessParent); leave(rootParent); continue; }
       const fixturesParent = enter("native");
-      const entries = readdirSync(".", { withFileTypes: true }).sort((left, right) => compare(left.name, right.name));
+      const entries = boundedEntries();
       for (const entry of entries) {
         const before = lstatSync(entry.name, { bigint: true });
         if (!before.isFile() || before.isSymbolicLink() || !entry.name.endsWith(".json") || before.size > 65536n) throw new Error("file");
@@ -862,6 +906,13 @@ process.stdin.once("data", (command) => {
       leave(rootParent);
     }
     process.stdout.write(JSON.stringify({ kind: "snapshot", files }) + "\n");
+    process.stdin.once("data", () => {
+      if (mode !== "missing-terminal") {
+        const status = mode === "malformed-terminal" ? "incomplete" : "complete";
+        process.stdout.write(JSON.stringify({ kind: "terminal", status }) + "\n");
+      }
+      if (mode === "nonzero-exit") process.exitCode = 2;
+    });
   } catch {
     process.stdout.write(JSON.stringify({ kind: "error", code: "capability-scan" }) + "\n");
   }
@@ -946,31 +997,95 @@ const decodeCapabilityFiles = (
   );
 };
 
-const acquireCapabilitySnapshot = async (
-  root: string,
-  expectedRoot: AncestorIdentity,
-  observer?: NativeFixtureAuditObserver,
-): Promise<readonly CapabilitySnapshotFile[]> => {
-  const authorityDeadline = Date.now() + 10_000;
-  const controller = new AbortController();
-  const abortWork = (): void => {
-    controller.abort();
+type CapabilitySettlement = Readonly<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}>;
+
+const dispatchCapabilityDirective = (
+  directive: NativeFixtureAuditDirective,
+  write: (command: string) => void,
+  terminate: () => void,
+  abort: () => void,
+): boolean => {
+  switch (directive) {
+    case "terminate-child":
+      terminate();
+      return false;
+    case "timeout-child":
+      abort();
+      return false;
+    case "authority-expiry":
+      write("scan\n");
+      return true;
+    case "malformed-terminal":
+    case "missing-terminal":
+    case "nonzero-exit":
+    case "oversized-output":
+      write(`${directive}\n`);
+      return false;
+    default:
+      write("scan\n");
+      return false;
+  }
+};
+
+const settleCapabilityWorker = async (
+  settlement: Promise<CapabilitySettlement>,
+  authorityDeadline: number,
+  forceAuthorityExpiry: boolean,
+  terminate: () => void,
+  childError: () => Error | undefined,
+): Promise<CapabilitySettlement> => {
+  const remaining = Math.max(0, authorityDeadline - performance.now());
+  const authorityFailure = new Error("capability-authority-deadline");
+  let resolveDeadline!: (error: Error) => void;
+  const deadline = new Promise<Error>((resolve) => {
+    resolveDeadline = resolve;
+  });
+  const expireAuthority = (): void => {
+    resolveDeadline(authorityFailure);
   };
-  const workTimeout = setTimeout(abortWork, 9_000);
-  const child = spawn(
+  const deadlineTimer = setTimeout(expireAuthority, remaining);
+  if (forceAuthorityExpiry) expireAuthority();
+  const first = await Promise.race([settlement, deadline]);
+  clearTimeout(deadlineTimer);
+  if (first instanceof Error) {
+    terminate();
+    await settlement;
+    return fail("harness.fixture.inventory.capability");
+  }
+  if (childError() !== undefined || first.code !== 0 || first.signal !== null)
+    fail("harness.fixture.inventory.capability");
+  return first;
+};
+
+const spawnCapabilityWorker = (root: string, signal: AbortSignal) =>
+  spawn(
     process.execPath,
     ["--input-type=module", "--eval", capabilityWorkerSource],
     {
       cwd: root,
       env: Object.freeze({}),
-      signal: controller.signal,
+      signal,
       stdio: ["pipe", "pipe", "ignore"],
     },
   );
+
+const acquireCapabilitySnapshot = async (
+  root: string,
+  expectedRoot: AncestorIdentity,
+  observer?: NativeFixtureAuditObserver,
+): Promise<readonly CapabilitySnapshotFile[]> => {
+  const authorityDeadline = performance.now() + 10_000;
+  const controller = new AbortController();
+  const abortWork = (): void => {
+    controller.abort();
+  };
+  const workTimeout = setTimeout(abortWork, 9_000);
+  const child = spawnCapabilityWorker(root, controller.signal);
   let childError: Error | undefined;
-  const settlement = new Promise<
-    Readonly<{ code: number | null; signal: NodeJS.Signals | null }>
-  >((resolveSettlement) => {
+  const settlement = new Promise<CapabilitySettlement>((resolveSettlement) => {
     child.once("error", (error) => {
       childError = error;
     });
@@ -988,6 +1103,7 @@ const acquireCapabilitySnapshot = async (
   const lines = createInterface({ input: child.stdout })[
     Symbol.asyncIterator
   ]();
+  let settled: CapabilitySettlement | undefined;
   try {
     const readyLine = await lines.next();
     const ready = record(
@@ -1004,16 +1120,22 @@ const acquireCapabilitySnapshot = async (
       ready.ino !== String(expectedRoot.ino)
     )
       fail("harness.fixture.inventory.ancestor-identity");
-    const directive = await observer?.(
+    const directive = notifyAuditObserver(
+      observer,
       "root-capability-acquired",
       root,
       child.pid,
     );
-    if (directive === "terminate-child") child.kill("SIGKILL");
-    else if (directive === "timeout-child") abortWork();
-    else if (directive === "oversized-output")
-      child.stdin.end("oversized-output\n");
-    else child.stdin.end("scan\n");
+    const forceAuthorityExpiry = dispatchCapabilityDirective(
+      directive,
+      (command) => {
+        child.stdin.write(command);
+      },
+      () => {
+        child.kill("SIGKILL");
+      },
+      abortWork,
+    );
     const snapshotLine = await lines.next();
     const parsedSnapshot = parseCapabilityLine(snapshotLine.value);
     /* v8 ignore next -- the fixed worker emits only object records; the false
@@ -1030,30 +1152,40 @@ const acquireCapabilitySnapshot = async (
     if (snapshotLine.done || snapshot.kind !== "snapshot")
       fail("harness.fixture.inventory.capability");
     const decodedFiles = decodeCapabilityFiles(snapshot.files);
-    await observer?.("root-capability-before-release", root);
+    notifyAuditObserver(observer, "root-capability-before-release", root);
+    child.stdin.end("release\n");
+    const terminalLine = await lines.next();
+    const terminal = record(
+      parseCapabilityLine(terminalLine.value),
+      ["kind", "status"],
+      "harness.fixture.inventory.capability",
+    );
+    if (
+      terminalLine.done ||
+      terminal.kind !== "terminal" ||
+      terminal.status !== "complete"
+    )
+      fail("harness.fixture.inventory.capability");
+    settled = await settleCapabilityWorker(
+      settlement,
+      authorityDeadline,
+      forceAuthorityExpiry,
+      () => {
+        child.kill("SIGKILL");
+      },
+      () => childError,
+    );
     return Object.freeze(decodedFiles);
   } catch (error) {
     if (error instanceof NativeFixtureGovernanceError) throw error;
     return fail("harness.fixture.inventory.capability");
   } finally {
     clearTimeout(workTimeout);
-    if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-    const remaining = Math.max(0, authorityDeadline - Date.now());
-    let deadlineTimer!: ReturnType<typeof setTimeout>;
-    const outcome = await Promise.race([
-      settlement,
-      new Promise<Error>((resolveDeadline) => {
-        /* v8 ignore next 3 -- SIGKILL plus close normally completes in the
-         * reserved teardown interval; this is the terminal OS/runtime guard. */
-        deadlineTimer = setTimeout(() => {
-          resolveDeadline(new Error("capability-authority-deadline"));
-        }, remaining);
-      }),
-    ]);
-    clearTimeout(deadlineTimer);
-    if (outcome instanceof Error || childError !== undefined)
-      fail("harness.fixture.inventory.capability");
+    if (settled === undefined) {
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGKILL");
+      await settlement;
+    }
   }
 };
 
@@ -1063,7 +1195,11 @@ export const auditNativeFixtureInventory = async (
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
   const lexicalRoot = resolve(harnessPackagesRoot);
   const ancestry = await authenticateLexicalAncestry(lexicalRoot);
-  await observer?.("lexical-ancestry-before-capability", lexicalRoot);
+  notifyAuditObserver(
+    observer,
+    "lexical-ancestry-before-capability",
+    lexicalRoot,
+  );
   await assertStableLexicalAncestry(ancestry);
   const expectedRoot = ancestry.at(-1)!;
   const files = await acquireCapabilitySnapshot(
