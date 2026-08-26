@@ -30,6 +30,31 @@ const leaseAuthorityEnvironmentKeys = [
   "AGENTSCOPE_VALIDATION_LEASE_TOKEN",
   "AGENTSCOPE_VALIDATION_LEASE_REPOSITORY",
 ];
+const pythonIdentityPublisher = [
+  "import json,os,pathlib,subprocess,sys,time",
+  "def publish_identity(name,barrier=None):",
+  "    pid=os.getpid()",
+  "    if sys.platform.startswith('linux'):",
+  "        value=pathlib.Path(f'/proc/{pid}/stat').read_text(encoding='utf-8')",
+  "        start=value[value.rfind(')')+2:].split()[19]",
+  "    else:",
+  "        result=subprocess.run(['ps','-o','lstart=','-p',str(pid)],capture_output=True,text=True,timeout=2)",
+  "        if result.returncode != 0 or not result.stdout.strip(): raise SystemExit(75)",
+  "        start=' '.join(result.stdout.split())",
+  "    if not start or len(start)>128: raise SystemExit(75)",
+  "    target=pathlib.Path(name)",
+  "    temporary=target.with_name(f'.{target.name}.{pid}.tmp')",
+  "    payload=json.dumps({'pid':pid,'start':start},sort_keys=True,separators=(',',':'))",
+  "    if len(payload.encode('utf-8'))>256: raise SystemExit(75)",
+  "    temporary.write_text(payload,encoding='utf-8')",
+  "    if barrier is not None:",
+  "        ready=pathlib.Path(f'{barrier}.ready'); release=pathlib.Path(f'{barrier}.release')",
+  "        ready.write_text('ready',encoding='utf-8')",
+  "        deadline=time.monotonic()+2",
+  "        while not release.exists() and time.monotonic()<deadline: time.sleep(.01)",
+  "        if not release.exists(): raise SystemExit(75)",
+  "    os.replace(temporary,target)",
+];
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0))
@@ -115,6 +140,39 @@ async function waitForFile(path, milliseconds = 3_000) {
   throw new Error("validation lease fixture did not become ready");
 }
 
+async function waitForPositivePid(path, milliseconds = 3_000) {
+  const deadline = Date.now() + milliseconds;
+  while (Date.now() < deadline) {
+    try {
+      const value = readFileSync(path, "utf8");
+      const pid = positivePid(value);
+      if (pid !== null) return pid;
+    } catch {
+      // The producer may not have published the final file yet.
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error("validation lease fixture did not publish a positive PID");
+}
+
+function positivePid(value) {
+  if (!/^[1-9]\d*$/u.test(value)) return null;
+  const pid = Number(value);
+  return Number.isSafeInteger(pid) && String(pid) === value ? pid : null;
+}
+
+async function waitForPublishedIdentity(path) {
+  await waitForFile(path);
+  const metadata = statSync(path);
+  assert.ok(metadata.size > 0 && metadata.size <= 256);
+  const payload = JSON.parse(readFileSync(path, "utf8"));
+  assert.deepEqual(Object.keys(payload).sort(), ["pid", "start"]);
+  assert.equal(Number.isSafeInteger(payload.pid) && payload.pid > 0, true);
+  assert.equal(typeof payload.start, "string");
+  assert.ok(payload.start.length > 0 && payload.start.length <= 128);
+  return payload;
+}
+
 function processObservation(pid) {
   if (process.platform === "linux") {
     try {
@@ -193,11 +251,40 @@ function killExactProcessGroup(groupPid, expectedStart) {
   process.kill(-groupPid, "SIGKILL");
 }
 
+function assertPublishedIdentityIsLive(identity) {
+  assert.equal(
+    publishedIdentityIsLive(identity, processObservation(identity.pid)),
+    true,
+  );
+}
+
+function publishedIdentityIsLive(identity, observation) {
+  return (
+    observation !== null &&
+    !observation.state.startsWith("Z") &&
+    observation.start === identity.start
+  );
+}
+
 function helper(root, name, source) {
   const path = join(root, name);
   writeFileSync(path, source);
   chmodSync(path, 0o700);
   return path;
+}
+
+function identitySleeper(root, name, beforePublication = []) {
+  return helper(
+    root,
+    name,
+    [
+      ...pythonIdentityPublisher,
+      ...beforePublication,
+      "publish_identity(sys.argv[1])",
+      "time.sleep(30)",
+      "",
+    ].join("\n"),
+  );
 }
 
 function ownerPath(lockRoot) {
@@ -268,8 +355,74 @@ test("exact process absence distinguishes live, zombie, and reused PIDs", () => 
     true,
   );
   assert.equal(exactProcessIsAbsent("original", null), true);
+  const identity = { pid: 41, start: "original" };
+  assert.equal(
+    publishedIdentityIsLive(identity, { state: "S", start: "original" }),
+    true,
+  );
+  assert.equal(
+    publishedIdentityIsLive(identity, { state: "Z", start: "original" }),
+    false,
+  );
+  assert.equal(
+    publishedIdentityIsLive(identity, { state: "S", start: "replacement" }),
+    false,
+  );
+  assert.equal(publishedIdentityIsLive(identity, null), false);
   assert.equal(processGroupHasExecutableMember(41, "41 S\n42 S\n"), true);
   assert.equal(processGroupHasExecutableMember(41, "41 Z\n42 S\n"), false);
+});
+
+test("fixture identity publication is complete before the final name exists", async () => {
+  const root = mkdtempSync(join(tmpdir(), "validation-lease-publication-"));
+  temporaryRoots.push(root);
+  const finalPath = join(root, "identity.json");
+  const barrier = join(root, "publication");
+  const publisher = helper(
+    root,
+    "publish.py",
+    [
+      ...pythonIdentityPublisher,
+      "publish_identity(sys.argv[1],sys.argv[2])",
+      "time.sleep(30)",
+      "",
+    ].join("\n"),
+  );
+  const child = spawn("python3", [publisher, finalPath, barrier], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let identity;
+  try {
+    await waitForFile(`${barrier}.ready`);
+    assert.throws(() => readFileSync(finalPath), /ENOENT/u);
+    const staged = readdirSync(root).filter((name) =>
+      name.startsWith(".identity.json."),
+    );
+    assert.equal(staged.length, 1);
+    const stagedPayload = JSON.parse(
+      readFileSync(join(root, staged[0]), "utf8"),
+    );
+    assert.deepEqual(Object.keys(stagedPayload).sort(), ["pid", "start"]);
+    writeFileSync(`${barrier}.release`, "release");
+    identity = await waitForPublishedIdentity(finalPath);
+    assertPublishedIdentityIsLive(identity);
+    assert.equal(identity.pid, child.pid);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+    await result(child);
+  }
+  assert.ok(identity);
+  assert.equal(
+    exactProcessIsAbsent(identity.start, processObservation(identity.pid)),
+    true,
+  );
+});
+
+test("numeric child PID publication accepts only canonical positive integers", () => {
+  assert.equal(positivePid("17"), 17);
+  for (const value of ["", "0", "-1", "+1", "01", "1\n", "9007199254740992"])
+    assert.equal(positivePid(value), null);
 });
 
 test("two worktrees race for one lease and the loser starts no child", async () => {
@@ -380,11 +533,7 @@ test("a forged nesting environment without the inherited descriptor fails closed
 test("owner crash cannot release authority while an inherited child is live", async () => {
   const value = fixture();
   const pidFile = join(value.root, "child-pid");
-  const sleeper = helper(
-    value.root,
-    "sleeper.py",
-    "import os,pathlib,sys,time\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep(30)\n",
-  );
+  const sleeper = identitySleeper(value.root, "sleeper.py");
   const owner = runLease(value.repository, value.environment, [
     "test-run",
     "crash",
@@ -393,10 +542,9 @@ test("owner crash cannot release authority while an inherited child is live", as
     sleeper,
     pidFile,
   ]);
-  const childPid = Number(await waitForFile(pidFile));
-  const childIdentity = processObservation(childPid);
-  assert.ok(childIdentity);
-  assert.equal(childIdentity.state.startsWith("Z"), false);
+  const childIdentity = await waitForPublishedIdentity(pidFile);
+  assertPublishedIdentityIsLive(childIdentity);
+  const childPid = childIdentity.pid;
   process.kill(owner.pid, "SIGKILL");
   await result(owner);
   const loser = await result(
@@ -451,8 +599,9 @@ test("a nested descendant keeps the lease after the outer owner crashes", async 
     value.root,
     "nested-crash.py",
     [
-      "import os,pathlib,subprocess,sys",
-      "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))",
+      ...pythonIdentityPublisher,
+      "import subprocess",
+      "publish_identity(sys.argv[1])",
       "fd=int(os.environ['AGENTSCOPE_VALIDATION_LEASE_FD'])",
       "raise SystemExit(subprocess.run(['python3',sys.argv[2],'test-run','nested-crash','--','python3',sys.argv[3],sys.argv[4]],pass_fds=(fd,)).returncode)",
       "",
@@ -469,11 +618,10 @@ test("a nested descendant keeps the lease after the outer owner crashes", async 
     descendant,
     ready,
   ]);
-  const groupPid = Number(await waitForFile(groupFile));
+  const groupIdentity = await waitForPublishedIdentity(groupFile);
+  assertPublishedIdentityIsLive(groupIdentity);
+  const groupPid = groupIdentity.pid;
   await waitForFile(ready);
-  const groupIdentity = processObservation(groupPid);
-  assert.ok(groupIdentity);
-  assert.equal(groupIdentity.state.startsWith("Z"), false);
   process.kill(owner.pid, "SIGKILL");
   await result(owner);
   const loser = await result(
@@ -509,11 +657,7 @@ test("a nested descendant keeps the lease after the outer owner crashes", async 
 test("captured normal terminal fails closed without hanging on an escaped holder", async () => {
   const value = fixture();
   const pidFile = join(value.root, "escaped-normal-pid");
-  const escaped = helper(
-    value.root,
-    "escaped-normal.py",
-    "import os,pathlib,sys,time\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep(30)\n",
-  );
+  const escaped = identitySleeper(value.root, "escaped-normal.py");
   const parent = helper(
     value.root,
     "escape-normal-parent.py",
@@ -539,10 +683,9 @@ test("captured normal terminal fails closed without hanging on an escaped holder
         pidFile,
       ]),
     );
-    escapedPid = Number(await waitForFile(pidFile));
-    escapedIdentity = processObservation(escapedPid);
-    assert.ok(escapedIdentity);
-    assert.equal(escapedIdentity.state.startsWith("Z"), false);
+    escapedIdentity = await waitForPublishedIdentity(pidFile);
+    assertPublishedIdentityIsLive(escapedIdentity);
+    escapedPid = escapedIdentity.pid;
     assert.equal(outcome.code, 74);
     assert.match(
       outcome.stderr,
@@ -579,11 +722,7 @@ test("captured normal terminal fails closed without hanging on an escaped holder
 test("captured signal terminal fails closed on an escaped holder", async () => {
   const value = fixture();
   const pidFile = join(value.root, "escaped-signal-pid");
-  const escaped = helper(
-    value.root,
-    "escaped-signal.py",
-    "import os,pathlib,sys,time\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep(30)\n",
-  );
+  const escaped = identitySleeper(value.root, "escaped-signal.py");
   const parent = helper(
     value.root,
     "escape-signal-parent.py",
@@ -607,10 +746,9 @@ test("captured signal terminal fails closed on an escaped holder", async () => {
       escaped,
       pidFile,
     ]);
-    escapedPid = Number(await waitForFile(pidFile));
-    escapedIdentity = processObservation(escapedPid);
-    assert.ok(escapedIdentity);
-    assert.equal(escapedIdentity.state.startsWith("Z"), false);
+    escapedIdentity = await waitForPublishedIdentity(pidFile);
+    assertPublishedIdentityIsLive(escapedIdentity);
+    escapedPid = escapedIdentity.pid;
     const started = Date.now();
     process.kill(owner.pid, "SIGTERM");
     const outcome = await result(owner);
@@ -649,11 +787,7 @@ test("captured signal terminal fails closed on an escaped holder", async () => {
 test("nested normal return reaps a same-group descendant before lease release", async () => {
   const value = fixture();
   const pidFile = join(value.root, "normal-descendant-pid");
-  const descendant = helper(
-    value.root,
-    "normal-descendant.py",
-    "import os,pathlib,sys,time\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\ntime.sleep(30)\n",
-  );
+  const descendant = identitySleeper(value.root, "normal-descendant.py");
   const spawnAndClose = helper(
     value.root,
     "spawn-and-close.py",
@@ -689,10 +823,9 @@ test("nested normal return reaps a same-group descendant before lease release", 
     descendant,
     pidFile,
   ]);
-  const descendantPid = Number(await waitForFile(pidFile));
-  const descendantIdentity = processObservation(descendantPid);
-  assert.ok(descendantIdentity);
-  assert.equal(descendantIdentity.state.startsWith("Z"), false);
+  const descendantIdentity = await waitForPublishedIdentity(pidFile);
+  assertPublishedIdentityIsLive(descendantIdentity);
+  const descendantPid = descendantIdentity.pid;
   const record = JSON.parse(readFileSync(ownerPath(value.lockRoot), "utf8"));
   assert.equal(typeof record.groupPid, "number");
   const outcome = await result(owner);
@@ -744,17 +877,10 @@ test("SIGTERM cleans the owned group and releases only its record", async () => 
 test("signal cleanup escalates after direct close until descendants are absent", async () => {
   const value = fixture();
   const pidFile = join(value.root, "signal-descendant-pid");
-  const descendant = helper(
-    value.root,
-    "signal-descendant.py",
-    [
-      "import os,pathlib,signal,sys,time",
-      "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
-      "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))",
-      "time.sleep(30)",
-      "",
-    ].join("\n"),
-  );
+  const descendant = identitySleeper(value.root, "signal-descendant.py", [
+    "import signal",
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
+  ]);
   const parent = helper(
     value.root,
     "signal-parent.py",
@@ -775,10 +901,9 @@ test("signal cleanup escalates after direct close until descendants are absent",
     descendant,
     pidFile,
   ]);
-  const descendantPid = Number(await waitForFile(pidFile));
-  const descendantIdentity = processObservation(descendantPid);
-  assert.ok(descendantIdentity);
-  assert.equal(descendantIdentity.state.startsWith("Z"), false);
+  const descendantIdentity = await waitForPublishedIdentity(pidFile);
+  assertPublishedIdentityIsLive(descendantIdentity);
+  const descendantPid = descendantIdentity.pid;
   const record = JSON.parse(readFileSync(ownerPath(value.lockRoot), "utf8"));
   assert.equal(typeof record.groupPid, "number");
   process.kill(owner.pid, "SIGTERM");
@@ -900,7 +1025,7 @@ test("every injected post-spawn failure contains and joins the child", async () 
         ["test-run", `failure-${phase}`, "--", "python3", helperPath],
       ),
     );
-    const childPid = Number(await waitForFile(pidFile));
+    const childPid = await waitForPositivePid(pidFile);
     assert.equal(outcome.code, 74, outcome.stderr);
     assert.match(outcome.stderr, /validation-lease: injected-step-failure/u);
     assert.ok(Date.now() - started < 3_000);
