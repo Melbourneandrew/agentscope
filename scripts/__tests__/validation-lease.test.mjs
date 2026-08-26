@@ -115,18 +115,82 @@ async function waitForFile(path, milliseconds = 3_000) {
   throw new Error("validation lease fixture did not become ready");
 }
 
-async function waitForPidAbsence(pid, milliseconds = 3_000) {
+function processObservation(pid) {
+  if (process.platform === "linux") {
+    try {
+      const value = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fields = value.slice(value.lastIndexOf(")") + 2).split(/\s+/u);
+      return { state: fields[0], start: fields[19] };
+    } catch {
+      return null;
+    }
+  }
+  const outcome = spawnSync(
+    "ps",
+    ["-o", "state=", "-o", "lstart=", "-p", String(pid)],
+    { encoding: "utf8" },
+  );
+  const fields = outcome.stdout.trim().split(/\s+/u);
+  if (outcome.status !== 0 || fields.length < 2) return null;
+  return { state: fields[0], start: fields.slice(1).join(" ") };
+}
+
+function exactProcessIsAbsent(expectedStart, observation) {
+  return (
+    observation === null ||
+    observation.start !== expectedStart ||
+    observation.state.startsWith("Z")
+  );
+}
+
+function processGroupHasExecutableMember(groupPid, output) {
+  return output.split("\n").some((line) => {
+    const [observedGroup, state] = line.trim().split(/\s+/u);
+    return Number(observedGroup) === groupPid && !state?.startsWith("Z");
+  });
+}
+
+function processGroupIsAbsent(groupPid) {
+  const outcome = spawnSync("ps", ["-axo", "pgid=,state="], {
+    encoding: "utf8",
+  });
+  assert.equal(outcome.status, 0, outcome.stderr);
+  return !processGroupHasExecutableMember(groupPid, outcome.stdout);
+}
+
+async function waitForProcessGroupAbsence(groupPid, milliseconds = 3_000) {
   const deadline = Date.now() + milliseconds;
   while (Date.now() < deadline) {
-    try {
-      process.kill(pid, 0);
-    } catch (error) {
-      if (error?.code === "ESRCH") return;
-      throw error;
-    }
+    if (processGroupIsAbsent(groupPid)) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 10));
   }
-  throw new Error("validation lease descendant survived cleanup");
+  throw new Error(
+    "validation lease executable descendant group survived cleanup",
+  );
+}
+
+async function waitForProcessAndGroupAbsence(
+  groupPid,
+  pid,
+  expectedStart,
+  milliseconds = 3_000,
+) {
+  const deadline = Date.now() + milliseconds;
+  while (Date.now() < deadline) {
+    const groupAbsent = processGroupIsAbsent(groupPid);
+    const processAbsent = exactProcessIsAbsent(
+      expectedStart,
+      processObservation(pid),
+    );
+    if (groupAbsent && processAbsent) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  throw new Error("validation lease exact process group survived cleanup");
+}
+
+function killExactProcessGroup(groupPid, expectedStart) {
+  if (exactProcessIsAbsent(expectedStart, processObservation(groupPid))) return;
+  process.kill(-groupPid, "SIGKILL");
 }
 
 function helper(root, name, source) {
@@ -188,6 +252,24 @@ test("independent fixtures scrub only ambient lease authority", () => {
     explicit.AGENTSCOPE_VALIDATION_LEASE_REPOSITORY,
     "explicit-repository",
   );
+});
+
+test("exact process absence distinguishes live, zombie, and reused PIDs", () => {
+  assert.equal(
+    exactProcessIsAbsent("original", { state: "S", start: "original" }),
+    false,
+  );
+  assert.equal(
+    exactProcessIsAbsent("original", { state: "Z", start: "original" }),
+    true,
+  );
+  assert.equal(
+    exactProcessIsAbsent("original", { state: "S", start: "replacement" }),
+    true,
+  );
+  assert.equal(exactProcessIsAbsent("original", null), true);
+  assert.equal(processGroupHasExecutableMember(41, "41 S\n42 S\n"), true);
+  assert.equal(processGroupHasExecutableMember(41, "41 Z\n42 S\n"), false);
 });
 
 test("two worktrees race for one lease and the loser starts no child", async () => {
@@ -312,6 +394,9 @@ test("owner crash cannot release authority while an inherited child is live", as
     pidFile,
   ]);
   const childPid = Number(await waitForFile(pidFile));
+  const childIdentity = processObservation(childPid);
+  assert.ok(childIdentity);
+  assert.equal(childIdentity.state.startsWith("Z"), false);
   process.kill(owner.pid, "SIGKILL");
   await result(owner);
   const loser = await result(
@@ -325,7 +410,16 @@ test("owner crash cannot release authority while an inherited child is live", as
     ]),
   );
   assert.equal(loser.code, 73, loser.stderr);
-  process.kill(-childPid, "SIGKILL");
+  const busy = command(
+    "python3",
+    [leaseScript, "status"],
+    value.repository,
+    value.environment,
+  );
+  assert.equal(busy.status, 2, busy.stderr);
+  assert.match(busy.stdout, /validation-lease: busy/u);
+  killExactProcessGroup(childPid, childIdentity.start);
+  await waitForProcessAndGroupAbsence(childPid, childPid, childIdentity.start);
   const status = command(
     "python3",
     [leaseScript, "status"],
@@ -377,6 +471,9 @@ test("a nested descendant keeps the lease after the outer owner crashes", async 
   ]);
   const groupPid = Number(await waitForFile(groupFile));
   await waitForFile(ready);
+  const groupIdentity = processObservation(groupPid);
+  assert.ok(groupIdentity);
+  assert.equal(groupIdentity.state.startsWith("Z"), false);
   process.kill(owner.pid, "SIGKILL");
   await result(owner);
   const loser = await result(
@@ -390,7 +487,16 @@ test("a nested descendant keeps the lease after the outer owner crashes", async 
     ]),
   );
   assert.equal(loser.code, 73, loser.stderr);
-  process.kill(-groupPid, "SIGKILL");
+  const busy = command(
+    "python3",
+    [leaseScript, "status"],
+    value.repository,
+    value.environment,
+  );
+  assert.equal(busy.status, 2, busy.stderr);
+  assert.match(busy.stdout, /validation-lease: busy/u);
+  killExactProcessGroup(groupPid, groupIdentity.start);
+  await waitForProcessAndGroupAbsence(groupPid, groupPid, groupIdentity.start);
   const reconcile = command(
     "python3",
     [leaseScript, "reconcile"],
@@ -419,6 +525,7 @@ test("captured normal terminal fails closed without hanging on an escaped holder
     ].join("\n"),
   );
   let escapedPid;
+  let escapedIdentity;
   try {
     const started = Date.now();
     const outcome = await result(
@@ -433,6 +540,9 @@ test("captured normal terminal fails closed without hanging on an escaped holder
       ]),
     );
     escapedPid = Number(await waitForFile(pidFile));
+    escapedIdentity = processObservation(escapedPid);
+    assert.ok(escapedIdentity);
+    assert.equal(escapedIdentity.state.startsWith("Z"), false);
     assert.equal(outcome.code, 74);
     assert.match(
       outcome.stderr,
@@ -448,9 +558,14 @@ test("captured normal terminal fails closed without hanging on an escaped holder
     assert.equal(status.status, 2);
     assert.match(status.stdout, /validation-lease: busy/u);
   } finally {
-    if (escapedPid) process.kill(-escapedPid, "SIGKILL");
+    if (escapedPid && escapedIdentity)
+      killExactProcessGroup(escapedPid, escapedIdentity.start);
   }
-  await waitForPidAbsence(escapedPid);
+  await waitForProcessAndGroupAbsence(
+    escapedPid,
+    escapedPid,
+    escapedIdentity.start,
+  );
   const reconcile = command(
     "python3",
     [leaseScript, "reconcile"],
@@ -481,6 +596,7 @@ test("captured signal terminal fails closed on an escaped holder", async () => {
     ].join("\n"),
   );
   let escapedPid;
+  let escapedIdentity;
   try {
     const owner = runLease(value.repository, value.environment, [
       "test-run",
@@ -492,6 +608,9 @@ test("captured signal terminal fails closed on an escaped holder", async () => {
       pidFile,
     ]);
     escapedPid = Number(await waitForFile(pidFile));
+    escapedIdentity = processObservation(escapedPid);
+    assert.ok(escapedIdentity);
+    assert.equal(escapedIdentity.state.startsWith("Z"), false);
     const started = Date.now();
     process.kill(owner.pid, "SIGTERM");
     const outcome = await result(owner);
@@ -501,10 +620,23 @@ test("captured signal terminal fails closed on an escaped holder", async () => {
       /validation-lease: inherited-lock-cleanup-uncertain/u,
     );
     assert.ok(Date.now() - started < 3_000);
+    const status = command(
+      "python3",
+      [leaseScript, "status"],
+      value.repository,
+      value.environment,
+    );
+    assert.equal(status.status, 2);
+    assert.match(status.stdout, /validation-lease: busy/u);
   } finally {
-    if (escapedPid) process.kill(-escapedPid, "SIGKILL");
+    if (escapedPid && escapedIdentity)
+      killExactProcessGroup(escapedPid, escapedIdentity.start);
   }
-  await waitForPidAbsence(escapedPid);
+  await waitForProcessAndGroupAbsence(
+    escapedPid,
+    escapedPid,
+    escapedIdentity.start,
+  );
   const reconcile = command(
     "python3",
     [leaseScript, "reconcile"],
@@ -546,22 +678,30 @@ test("nested normal return reaps a same-group descendant before lease release", 
       "",
     ].join("\n"),
   );
-  const outcome = await result(
-    runLease(value.repository, value.environment, [
-      "test-run",
-      "outer-normal",
-      "--",
-      "python3",
-      nesting,
-      leaseScript,
-      spawnAndClose,
-      descendant,
-      pidFile,
-    ]),
-  );
-  assert.equal(outcome.code, 0, outcome.stderr);
+  const owner = runLease(value.repository, value.environment, [
+    "test-run",
+    "outer-normal",
+    "--",
+    "python3",
+    nesting,
+    leaseScript,
+    spawnAndClose,
+    descendant,
+    pidFile,
+  ]);
   const descendantPid = Number(await waitForFile(pidFile));
-  await waitForPidAbsence(descendantPid);
+  const descendantIdentity = processObservation(descendantPid);
+  assert.ok(descendantIdentity);
+  assert.equal(descendantIdentity.state.startsWith("Z"), false);
+  const record = JSON.parse(readFileSync(ownerPath(value.lockRoot), "utf8"));
+  assert.equal(typeof record.groupPid, "number");
+  const outcome = await result(owner);
+  assert.equal(outcome.code, 0, outcome.stderr);
+  await waitForProcessAndGroupAbsence(
+    record.groupPid,
+    descendantPid,
+    descendantIdentity.start,
+  );
   const status = command(
     "python3",
     [leaseScript, "status"],
@@ -636,10 +776,19 @@ test("signal cleanup escalates after direct close until descendants are absent",
     pidFile,
   ]);
   const descendantPid = Number(await waitForFile(pidFile));
+  const descendantIdentity = processObservation(descendantPid);
+  assert.ok(descendantIdentity);
+  assert.equal(descendantIdentity.state.startsWith("Z"), false);
+  const record = JSON.parse(readFileSync(ownerPath(value.lockRoot), "utf8"));
+  assert.equal(typeof record.groupPid, "number");
   process.kill(owner.pid, "SIGTERM");
   const outcome = await result(owner);
   assert.equal(outcome.code, 143, outcome.stderr);
-  await waitForPidAbsence(descendantPid);
+  await waitForProcessAndGroupAbsence(
+    record.groupPid,
+    descendantPid,
+    descendantIdentity.start,
+  );
   const status = command(
     "python3",
     [leaseScript, "status"],
@@ -681,13 +830,22 @@ test("an interruption between mapped steps cannot launch the next step", async (
     detached: true,
     stdio: "ignore",
   });
+  const unrelatedIdentity = processObservation(unrelated.pid);
+  assert.ok(unrelatedIdentity);
+  assert.equal(unrelatedIdentity.state.startsWith("Z"), false);
   process.kill(owner.pid, "SIGTERM");
   writeFileSync(`${barrier}.release`, "release");
   const outcome = await result(owner);
   assert.equal(outcome.code, 143, outcome.stderr);
   assert.throws(() => readFileSync(forbidden), /ENOENT/);
   assert.doesNotThrow(() => process.kill(unrelated.pid, 0));
-  process.kill(-unrelated.pid, "SIGKILL");
+  killExactProcessGroup(unrelated.pid, unrelatedIdentity.start);
+  await result(unrelated);
+  await waitForProcessAndGroupAbsence(
+    unrelated.pid,
+    unrelated.pid,
+    unrelatedIdentity.start,
+  );
 });
 
 test("a signal in the spawn-publication gap is forwarded after authentication", async () => {
@@ -746,7 +904,7 @@ test("every injected post-spawn failure contains and joins the child", async () 
     assert.equal(outcome.code, 74, outcome.stderr);
     assert.match(outcome.stderr, /validation-lease: injected-step-failure/u);
     assert.ok(Date.now() - started < 3_000);
-    await waitForPidAbsence(childPid);
+    await waitForProcessGroupAbsence(childPid);
     const status = command(
       "python3",
       [leaseScript, "status"],
