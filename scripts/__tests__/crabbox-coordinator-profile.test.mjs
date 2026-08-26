@@ -5,7 +5,11 @@ import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
-import { writeOwnedAtomic } from "../lib/crabbox-coordinator-policy.mjs";
+import {
+  expectedLiveProfile,
+  validateLiveProfile,
+  writeOwnedAtomic,
+} from "../lib/crabbox-coordinator-policy.mjs";
 
 const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -21,6 +25,7 @@ const admission = JSON.parse(
     "utf8",
   ),
 );
+const environmentId = "asgcf_0123456789abcdef0123456789abcdef";
 
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), "agentscope-crabbox-profile-"));
@@ -205,4 +210,26 @@ test("refuses an admitted output filename when it is a symlink", async () => {
     /symlink/,
   );
   assert.equal(await readFile(canary, "utf8"), "unchanged\n");
+});
+
+test("refuses a cross-Worker Durable Object binding", () => {
+  const profile = structuredClone(
+    expectedLiveProfile(admission, environmentId),
+  );
+  profile.durable_objects.bindings[0].script_name = "unrelated-worker";
+  assert.throws(
+    () => validateLiveProfile(profile, admission, environmentId),
+    /differs from canonical admission/,
+  );
+});
+
+test("refuses added or altered migration authority", () => {
+  const profile = structuredClone(
+    expectedLiveProfile(admission, environmentId),
+  );
+  profile.migrations[0].deleted_classes = ["UnrelatedClass"];
+  assert.throws(
+    () => validateLiveProfile(profile, admission, environmentId),
+    /differs from canonical admission/,
+  );
 });

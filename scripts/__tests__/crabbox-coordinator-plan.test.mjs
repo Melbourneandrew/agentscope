@@ -241,7 +241,10 @@ test("rejects an incomplete deployment profile", async () => {
   );
   const result = run(item.args);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /top-level profile keys/);
+  assert.match(
+    result.stderr,
+    /live Worker profile differs from canonical admission/,
+  );
 });
 
 test("rejects stale signed quota evidence", async () => {

@@ -73,88 +73,93 @@ export function assertExactSet(label, actual, expected) {
   }
 }
 
-export function validateLiveProfile(profile, admission, environmentId) {
+function canonicalize(value) {
+  if (Array.isArray(value)) {
+    return value.map(canonicalize);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalize(nested)]),
+    );
+  }
+  return value;
+}
+
+export function assertExactJson(label, actual, expected) {
+  if (
+    JSON.stringify(canonicalize(actual)) !==
+    JSON.stringify(canonicalize(expected))
+  ) {
+    throw new Error(`${label} differs from canonical admission`);
+  }
+}
+
+export function expectedLiveProfile(admission, environmentId) {
   const expected = admission.deployment;
-  assertExactSet(
-    "top-level profile keys",
-    Object.keys(profile),
-    expected.topLevelKeys,
+  return {
+    $schema: "./node_modules/wrangler/config-schema.json",
+    name: expected.workerName,
+    main: "src/index.ts",
+    compatibility_date: expected.compatibilityDate,
+    compatibility_flags: expected.compatibilityFlags,
+    alias: expected.aliases,
+    workers_dev: expected.workersDev,
+    preview_urls: expected.previewUrls,
+    version_metadata: { binding: expected.versionMetadataBinding },
+    triggers: { crons: [expected.cron] },
+    vars: {
+      AGENTSCOPE_CRABBOX_ENVIRONMENT_ID: environmentId,
+      ...expected.variableValues,
+    },
+    durable_objects: {
+      bindings: [
+        {
+          name: expected.durableObjectBinding,
+          class_name: expected.durableObjectClass,
+        },
+      ],
+    },
+    migrations: [
+      {
+        tag: expected.migrationTag,
+        new_sqlite_classes: [expected.durableObjectClass],
+      },
+    ],
+  };
+}
+
+export function expectedTerminalProfile(admission) {
+  const expected = admission.deployment;
+  const terminal = expected.terminalProfile;
+  return {
+    $schema: "./node_modules/wrangler/config-schema.json",
+    name: expected.workerName,
+    main: terminal.entryPointName,
+    compatibility_date: expected.compatibilityDate,
+    compatibility_flags: expected.compatibilityFlags,
+    workers_dev: terminal.workersDev,
+    preview_urls: terminal.previewUrls,
+    migrations: [
+      {
+        tag: expected.migrationTag,
+        new_sqlite_classes: [expected.durableObjectClass],
+      },
+      {
+        tag: terminal.migrationTag,
+        deleted_classes: [terminal.deletedClass],
+      },
+    ],
+  };
+}
+
+export function validateLiveProfile(profile, admission, environmentId) {
+  assertExactJson(
+    "live Worker profile",
+    profile,
+    expectedLiveProfile(admission, environmentId),
   );
-  if (profile.name !== expected.workerName || profile.main !== "src/index.ts") {
-    throw new Error("Worker identity or entry point differs from admission");
-  }
-  if (profile.compatibility_date !== expected.compatibilityDate) {
-    throw new Error("compatibility date differs from admission");
-  }
-  if (
-    profile.workers_dev !== true ||
-    profile.preview_urls !== false ||
-    "assets" in profile
-  ) {
-    throw new Error(
-      "workers.dev, preview, or asset policy differs from admission",
-    );
-  }
-  if (
-    JSON.stringify(profile.compatibility_flags) !==
-      JSON.stringify(expected.compatibilityFlags) ||
-    profile.version_metadata?.binding !== expected.versionMetadataBinding
-  ) {
-    throw new Error(
-      "compatibility flags or version metadata binding differs from admission",
-    );
-  }
-  if (JSON.stringify(profile.alias) !== JSON.stringify(expected.aliases)) {
-    throw new Error("Worker module aliases differ from admission");
-  }
-  assertExactSet(
-    "variable allowlist",
-    Object.keys(profile.vars ?? {}),
-    expected.variableNames,
-  );
-  if (profile.vars.AGENTSCOPE_CRABBOX_ENVIRONMENT_ID !== environmentId) {
-    throw new Error("environment identity was not bound exactly");
-  }
-  for (const [name, value] of Object.entries(expected.variableValues)) {
-    if (profile.vars[name] !== value) {
-      throw new Error(`variable ${name} differs from admission`);
-    }
-  }
-  const bindings = profile.durable_objects?.bindings ?? [];
-  if (
-    bindings.length !== 1 ||
-    bindings[0].name !== expected.durableObjectBinding ||
-    bindings[0].class_name !== expected.durableObjectClass
-  ) {
-    throw new Error("Durable Object binding differs from admission");
-  }
-  const migrations = profile.migrations ?? [];
-  if (
-    migrations.length !== 1 ||
-    migrations[0].tag !== expected.migrationTag ||
-    JSON.stringify(migrations[0].new_sqlite_classes) !==
-      JSON.stringify([expected.durableObjectClass])
-  ) {
-    throw new Error("Durable Object migration differs from admission");
-  }
-  if (
-    JSON.stringify(profile.triggers?.crons) !== JSON.stringify([expected.cron])
-  ) {
-    throw new Error("cron trigger differs from admission");
-  }
-  const prohibitedFragments = [
-    "AWS",
-    "AZURE",
-    "GCP",
-    "DAYTONA",
-    "TAILSCALE",
-    "GITHUB",
-  ];
-  for (const key of Object.keys(profile.vars ?? {})) {
-    if (prohibitedFragments.some((fragment) => key.includes(fragment))) {
-      throw new Error(`prohibited provider or integration variable: ${key}`);
-    }
-  }
 }
 
 export async function assertOwnedPhysicalParent(outputPath, expectedParent) {

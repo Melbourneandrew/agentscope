@@ -77,6 +77,22 @@ test("validates the exact terminal profile and fully bound provider-zero candida
   validateTerminalProfile(terminalProfile, admission);
 });
 
+test("refuses altered terminal compatibility or prior migration history", () => {
+  const incompatible = structuredClone(terminalProfile);
+  incompatible.compatibility_date = "2026-05-01";
+  assert.throws(
+    () => validateTerminalProfile(incompatible, admission),
+    /differs from canonical admission/,
+  );
+
+  const alteredHistory = structuredClone(terminalProfile);
+  alteredHistory.migrations[0].new_classes = ["OtherClass"];
+  assert.throws(
+    () => validateTerminalProfile(alteredHistory, admission),
+    /differs from canonical admission/,
+  );
+});
+
 test("refuses retirement while a provider server survives", () => {
   const item = terminalFixture({ servers: 1 });
   assert.throws(

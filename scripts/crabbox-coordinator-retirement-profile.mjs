@@ -6,7 +6,9 @@ import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
+  assertExactJson,
   assertExactSet,
+  expectedTerminalProfile,
   parseJsonc,
   policyRoot,
   readCanonicalPolicy,
@@ -183,32 +185,11 @@ export function validateProviderZero(providerZero, record, admission, now) {
 }
 
 export function validateTerminalProfile(profile, admission) {
-  const terminal = admission.deployment.terminalProfile;
-  const expectedKeys = [
-    "$schema",
-    "compatibility_date",
-    "compatibility_flags",
-    "main",
-    "migrations",
-    "name",
-    "preview_urls",
-    "workers_dev",
-  ].sort();
-  if (
-    JSON.stringify(Object.keys(profile).sort()) !==
-      JSON.stringify(expectedKeys) ||
-    profile.name !== admission.deployment.workerName ||
-    profile.main !== terminal.entryPointName ||
-    profile.workers_dev !== false ||
-    profile.preview_urls !== false ||
-    profile.migrations.at(-1)?.tag !== terminal.migrationTag ||
-    JSON.stringify(profile.migrations.at(-1)?.deleted_classes) !==
-      JSON.stringify([terminal.deletedClass])
-  ) {
-    throw new Error(
-      "terminal profile differs from the admitted no-authority shape",
-    );
-  }
+  assertExactJson(
+    "terminal Worker profile",
+    profile,
+    expectedTerminalProfile(admission),
+  );
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
