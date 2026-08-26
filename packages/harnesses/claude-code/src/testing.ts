@@ -96,6 +96,10 @@ export const runClaudeCodeHook = async (
 
 const sharedContractMarker = "vendor-observability-hook";
 const markerDecoder = new TextDecoder();
+const testingPluginInventory = Object.freeze({
+  settingsLayers: Object.freeze([]),
+  installedPlugins: Object.freeze([]),
+});
 const isSharedContractMarker = (bytes: Uint8Array | null): boolean =>
   bytes !== null && markerDecoder.decode(bytes) === sharedContractMarker;
 
@@ -104,10 +108,12 @@ const createTestingInstallationPlanner: HarnessComponentContractAdapter["createI
     const productionPlanner = createClaudeCodeInstallationPlanner(
       operation,
       invocation,
+      testingPluginInventory,
     );
     const installPlanner = createClaudeCodeInstallationPlanner(
       "install",
       invocation,
+      testingPluginInventory,
     );
     return (target) => {
       if (!isSharedContractMarker(target.bytes))

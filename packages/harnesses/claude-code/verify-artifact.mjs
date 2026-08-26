@@ -241,6 +241,7 @@ assertGraph("testing declarations", testingDeclarations, [
 assertExternal("production runtime", productionRuntime, [
   "@agentscope/harnesses-core",
   "node:path",
+  "node:util/types",
 ]);
 assertExternal("production declarations", productionDeclarations, [
   "@agentscope/harnesses-core",
@@ -251,6 +252,7 @@ assertExternal("testing runtime", testingRuntime, [
   harnessCoreTestingSpecifier,
   "node:crypto",
   "node:path",
+  "node:util/types",
 ]);
 assertExternal("testing declarations", testingDeclarations, [
   harnessCoreTestingSpecifier,

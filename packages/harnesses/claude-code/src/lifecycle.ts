@@ -1,4 +1,5 @@
 import { isAbsolute, normalize } from "node:path";
+import { isProxy } from "node:util/types";
 
 import { isOwnedHarnessHookInvocation } from "@agentscope/harnesses-core";
 import type {
@@ -82,6 +83,7 @@ const overlappingEvents = new Set<ClaudeCodeLifecycleEvent>([
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const digestPattern = /^[a-f0-9]{64}$/u;
+const maximumInventoryArrayLength = 1_024;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -90,86 +92,95 @@ const exactRecordValues = (
   value: unknown,
   keys: readonly string[],
 ): Readonly<Record<string, unknown>> | undefined => {
-  try {
-    if (!isRecord(value) || Object.getPrototypeOf(value) !== Object.prototype)
-      return undefined;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-      Object.keys(descriptors).sort().join("\0") !==
-        [...keys].sort().join("\0") ||
-      Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-    )
-      return undefined;
-    return Object.freeze(
-      Object.fromEntries(
-        keys.map((key) => [key, descriptors[key]!.value as unknown]),
-      ),
-    );
-  } catch {
+  if (
+    isProxy(value) ||
+    !isRecord(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
     return undefined;
-  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    Object.keys(descriptors).sort().join("\0") !==
+      [...keys].sort().join("\0") ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+  )
+    return undefined;
+  return Object.freeze(
+    Object.fromEntries(
+      keys.map((key) => [key, descriptors[key]!.value as unknown]),
+    ),
+  );
 };
 
 const exactArrayValues = (value: unknown): readonly unknown[] | undefined => {
-  try {
-    if (
-      !Array.isArray(value) ||
-      Object.getPrototypeOf(value) !== Array.prototype
-    )
-      return undefined;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    const expected = [
-      ...Array.from({ length: value.length }, (_, index) => String(index)),
-      "length",
-    ].sort();
-    if (
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-      Object.keys(descriptors).sort().join("\0") !== expected.join("\0") ||
-      Object.entries(descriptors).some(
-        ([key, descriptor]) => key !== "length" && !("value" in descriptor),
-      )
-    )
-      return undefined;
-    return Object.freeze(
-      Array.from(
-        { length: value.length },
-        (_, index) => descriptors[String(index)]!.value as unknown,
-      ),
-    );
-  } catch {
+  if (
+    isProxy(value) ||
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype
+  )
     return undefined;
-  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const lengthDescriptor = descriptors["length"] as
+    PropertyDescriptor | undefined;
+  const lengthValue = lengthDescriptor?.value as unknown;
+  if (
+    lengthDescriptor === undefined ||
+    !("value" in lengthDescriptor) ||
+    !Number.isSafeInteger(lengthValue) ||
+    (lengthValue as number) < 0 ||
+    (lengthValue as number) > maximumInventoryArrayLength
+  )
+    return undefined;
+  const length = lengthValue as number;
+  const expected = [
+    ...Array.from({ length }, (_, index) => String(index)),
+    "length",
+  ].sort();
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    Object.keys(descriptors).sort().join("\0") !== expected.join("\0") ||
+    Object.entries(descriptors).some(
+      ([key, descriptor]) => key !== "length" && !("value" in descriptor),
+    )
+  )
+    return undefined;
+  return Object.freeze(
+    Array.from(
+      { length },
+      (_, index) => descriptors[String(index)]!.value as unknown,
+    ),
+  );
 };
 
 const parseEnabledPlugins = (
   value: unknown,
 ): Readonly<Record<string, boolean>> | undefined => {
-  try {
-    if (!isRecord(value) || Object.getPrototypeOf(value) !== Object.prototype)
-      return undefined;
-    const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-      Object.entries(descriptors).some(
-        ([key, descriptor]) =>
-          key.length === 0 ||
-          !("value" in descriptor) ||
-          typeof descriptor.value !== "boolean",
-      )
-    )
-      return undefined;
-    return Object.freeze(
-      Object.fromEntries(
-        Object.entries(descriptors).map(([key, descriptor]) => [
-          key,
-          descriptor.value as boolean,
-        ]),
-      ),
-    );
-  } catch {
+  if (
+    isProxy(value) ||
+    !isRecord(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
     return undefined;
-  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    Object.entries(descriptors).some(
+      ([key, descriptor]) =>
+        key.length === 0 ||
+        !("value" in descriptor) ||
+        typeof descriptor.value !== "boolean",
+    )
+  )
+    return undefined;
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(descriptors).map(([key, descriptor]) => [
+        key,
+        descriptor.value as boolean,
+      ]),
+    ),
+  );
 };
 
 const parsePluginInventory = (
@@ -215,6 +226,7 @@ const parsePluginInventory = (
     );
   }
   const installedPlugins: ClaudeCodeInstalledPlugin[] = [];
+  const installedIdentities = new Set<string>();
   for (const rawPlugin of rawPlugins) {
     const plugin = exactRecordValues(rawPlugin, [
       "cachePluginId",
@@ -246,6 +258,20 @@ const parsePluginInventory = (
       typeof plugin.directTraceExporter !== "boolean"
     )
       return undefined;
+    const normalizedIdentities = new Set(
+      [plugin.pluginId, plugin.installedRegistryId, plugin.cachePluginId].map(
+        (identity) =>
+          (identity as string).normalize("NFKC").trim().toLowerCase(),
+      ),
+    );
+    if (
+      [...normalizedIdentities].some((identity) =>
+        installedIdentities.has(identity),
+      )
+    )
+      return undefined;
+    for (const identity of normalizedIdentities)
+      installedIdentities.add(identity);
     installedPlugins.push(
       Object.freeze({
         pluginId: plugin.pluginId as string,
@@ -375,11 +401,6 @@ export const inspectClaudeCodePluginOverlap = (
     ? Object.freeze({ status: "conflict", pluginId: overlap.pluginId })
     : overlap;
 };
-
-const emptyInventory = Object.freeze({
-  settingsLayers: Object.freeze([]),
-  installedPlugins: Object.freeze([]),
-}) satisfies ClaudeCodePluginInventory;
 
 const ownedHook = (invocation: OwnedHarnessHookInvocation) =>
   Object.freeze({
@@ -569,12 +590,13 @@ const disableMigratedPlugin = (
 export const createClaudeCodeInstallationPlanner = (
   operation: "install" | "migrate" | "uninstall",
   invocation: OwnedHarnessHookInvocation,
-  inventory: ClaudeCodePluginInventory = emptyInventory,
+  inventory: ClaudeCodePluginInventory,
 ): HarnessInstallationPlanner => {
   if (!isOwnedHarnessHookInvocation(invocation))
     return () => ({ kind: "conflict" });
   const overlap = inspectPluginOverlap(inventory);
   return ({ exists, bytes, digest, targetPath }) => {
+    if (overlap.status === "ambiguous") return { kind: "conflict" };
     const current = bytes === null ? "" : decode(bytes);
     if (current === undefined) return { kind: "unsupported" };
     if (current === "unsupported-native-format") return { kind: "unsupported" };
