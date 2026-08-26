@@ -26,10 +26,30 @@ Every file uses `fixtureVersion: 1`, canonical JSON from
   and a digest from independently obtained, version-bound
   integrity metadata. That digest identifies the harness artifact; it is never a
   digest of a prompt, transcript, terminal stream, or private native content.
-- Record the exact fixture-producing recipe, one reviewed license identifier or
-  `LicenseRef-*`, and the reviewed vendor license source. Compound SPDX
-  expressions are deliberately outside this component schema. A fixture is
-  retained only when redistribution is reviewed for the repository.
+- Record the exact fixture-producing recipe and one reviewed license authority.
+  Compound SPDX expressions are deliberately outside this component schema. A
+  fixture is retained only when redistribution is reviewed for the repository.
+
+### LicenseRef-Agentscope-Synthetic
+
+`LicenseRef-Agentscope-Synthetic` applies only to a wholly project-authored,
+sanitized fixture containing no copied vendor artifact, transcript, terminal
+output, prompt, response, or other vendor content. It records the human-reviewed
+decision to retain that concrete synthetic test material in this repository. It
+does not claim vendor redistribution permission and is not a license grant for
+the repository's source code or any other file.
+
+The license `sourceReference` for such a fixture has the structural form of the
+immutable GitHub blob URL for this section at the exact merged commit that
+introduced or last changed the definition. A branch, tag, `main`, pull-request,
+fixture-local, synthetic-URN, missing-document, or vendor-license URL does not
+have that structural role.
+
+A `disposable-hermetic` fixture is vendor-derived even after sanitization. It
+retains its actual reviewed vendor license identifier or `LicenseRef-*` and an
+external vendor license source. It cannot use this repository's governance
+document, including an alternate fragment, encoded path, raw-content URL, or
+other equivalent spelling, as permission.
 
 ## Sanitization and review
 
@@ -39,10 +59,20 @@ checked-in payload contains only bounded categorical identifiers, booleans, and
 safe integers needed by the mapping oracle. Do not replace removed content with
 realistic user prose.
 
-The redaction metadata attests all mandatory removed categories. Two distinct
-review references and an approval date are required. Reviewers inspect both the
-canonical file and its provenance/license record; scanner success does not
-replace human privacy and redistribution review.
+The redaction metadata attests all mandatory removed categories. Exactly two
+distinct, structurally valid GitHub pull-request review references and an
+approval date are required, in privacy-review then redistribution-review order.
+Each human review inspects the concrete canonical fixture and its cited
+provenance/license sources; a generic policy, schema, pull request, issue, or
+governance-document citation does not substitute for either concrete-fixture
+review.
+
+Parser and scanner success establish bounded canonical structure only. They do
+not authenticate that a Git commit, URL, pull request, review, reviewer identity,
+or legal permission exists; they do not prove reviewer independence or approve
+redistribution. The two exact-PR human reviewers and final merge certification
+establish those external facts. A fabricated but structurally valid URL remains
+invalid governance even though the local parser cannot distinguish it.
 
 ## Component representative linkage
 

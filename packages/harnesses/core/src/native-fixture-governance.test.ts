@@ -28,6 +28,13 @@ import {
 
 const roots: string[] = [];
 const physicalTemporaryRoot = realpathSync(tmpdir());
+const structurallyValidSyntheticLicenseSource =
+  `https://github.com/Melbourneandrew/agentscope/blob/${"a".repeat(40)}` +
+  "/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic";
+const structuralPrivacyReview =
+  "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001";
+const structuralRedistributionReview =
+  "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1002";
 const auditPlan = (value: unknown): NativeFixtureAuditTestPlan =>
   JSON.stringify(value) as NativeFixtureAuditTestPlan;
 const auditPlanNamespaces = async (): Promise<readonly string[]> =>
@@ -57,9 +64,9 @@ const fixture = (): HarnessSanitizedFixture => ({
       captureRecipe: "codex-session-recipe-v1",
     },
     license: {
-      reviewedLicenseId: "Apache-2.0",
+      reviewedLicenseId: "LicenseRef-Agentscope-Synthetic",
       redistribution: "reviewed-for-repository",
-      sourceReference: "https://example.invalid/codex/license",
+      sourceReference: structurallyValidSyntheticLicenseSource,
     },
     redaction: {
       profileVersion: 1,
@@ -76,7 +83,7 @@ const fixture = (): HarnessSanitizedFixture => ({
     review: {
       status: "approved",
       reviewedAt: "2026-08-25",
-      references: ["github-pr:agentscope#101", "github-pr:agentscope#102"],
+      references: [structuralPrivacyReview, structuralRedistributionReview],
     },
     representative: {
       scenarioId: "codex-headless-v1",
@@ -99,6 +106,30 @@ const fixture = (): HarnessSanitizedFixture => ({
     tool_count: 1,
   },
 });
+
+const vendorFixture = (): HarnessSanitizedFixture => {
+  const base = fixture();
+  return {
+    ...base,
+    governance: {
+      ...base.governance,
+      provenance: {
+        captureKind: "disposable-hermetic",
+        sourceReference: "https://vendor.example/artifact/1.2.3",
+        artifactAuthority: {
+          status: "authenticated",
+          digest: `sha256-${"b".repeat(64)}`,
+        },
+        captureRecipe: base.governance.provenance.captureRecipe,
+      },
+      license: {
+        reviewedLicenseId: "Apache-2.0",
+        redistribution: "reviewed-for-repository",
+        sourceReference: "https://vendor.example/license/1.2.3",
+      },
+    },
+  };
+};
 
 const expectCode = (operation: () => unknown, code: string): void => {
   try {
@@ -142,7 +173,7 @@ const retainedStringCandidates = (): readonly [unknown, string][] => {
           ...base.governance,
           review: {
             ...base.governance.review,
-            references: [token, "review:two"],
+            references: [token, structuralRedistributionReview],
           },
         },
       },
@@ -191,7 +222,10 @@ describe("native fixture schema", () => {
           ...input,
           governance: {
             ...input.governance,
-            review: { ...input.governance.review, references: ["review:one"] },
+            review: {
+              ...input.governance.review,
+              references: [structuralPrivacyReview],
+            },
           },
         }),
       "harness.fixture.review.references",
@@ -355,7 +389,7 @@ describe("native fixture governance array boundaries", () => {
   it("applies the dense-array boundary to review and redaction metadata", () => {
     const base = fixture();
     const sparseReferences = Array(2) as string[];
-    sparseReferences[1] = "review:two";
+    sparseReferences[1] = structuralRedistributionReview;
     expectCode(
       () =>
         parseHarnessSanitizedFixture({
@@ -409,8 +443,16 @@ describe("native fixture governance array boundaries", () => {
       "harness.fixture.redaction.categories",
     );
     for (const references of [
-      ["review:one", "review:one"],
-      ["review:one", 2],
+      [structuralPrivacyReview, structuralPrivacyReview],
+      [structuralPrivacyReview, 2],
+      [
+        "https://github.com/Melbourneandrew/agentscope/pull/101",
+        structuralRedistributionReview,
+      ],
+      [
+        "https://github.com/Melbourneandrew/agentscope/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/harnesses/core/NATIVE_FIXTURES.md",
+        structuralRedistributionReview,
+      ],
     ]) {
       expectCode(
         () =>
@@ -502,17 +544,8 @@ describe("native fixture governance metadata", () => {
       governance: { ...base.governance, provenance },
     });
     expect(
-      parseHarnessSanitizedFixture(
-        withProvenance({
-          ...base.governance.provenance,
-          captureKind: "disposable-hermetic",
-          sourceReference: "https://example.invalid/vendor/artifact",
-          artifactAuthority: {
-            status: "authenticated",
-            digest: `sha256-${"b".repeat(64)}`,
-          },
-        }),
-      ).governance.provenance.captureKind,
+      parseHarnessSanitizedFixture(vendorFixture()).governance.provenance
+        .captureKind,
     ).toBe("disposable-hermetic");
     for (const input of [
       withProvenance({ ...base.governance.provenance, captureKind: "host" }),
@@ -600,23 +633,121 @@ describe("native fixture governance metadata", () => {
 });
 
 describe("native fixture reviewed license governance", () => {
-  it("accepts one reviewed identifier and rejects compound expressions", () => {
+  it("binds project-authored synthetic fixtures to the narrow structural LicenseRef", () => {
     const base = fixture();
-    for (const reviewedLicenseId of [
-      "MIT",
-      "Apache-2.0",
-      "LicenseRef-Agentscope-Synthetic",
-    ]) {
-      expect(
-        parseHarnessSanitizedFixture({
-          ...base,
-          governance: {
-            ...base.governance,
-            license: { ...base.governance.license, reviewedLicenseId },
-          },
-        }).governance.license.reviewedLicenseId,
-      ).toBe(reviewedLicenseId);
+    expect(
+      parseHarnessSanitizedFixture(base).governance.license.reviewedLicenseId,
+    ).toBe("LicenseRef-Agentscope-Synthetic");
+    for (const reviewedLicenseId of ["MIT", "Apache-2.0"]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture({
+            ...base,
+            governance: {
+              ...base.governance,
+              license: { ...base.governance.license, reviewedLicenseId },
+            },
+          }),
+        "harness.fixture.license.synthetic-authority",
+      );
     }
+    for (const sourceReference of [
+      1,
+      base.governance.provenance.sourceReference,
+      "https://example.invalid/license",
+      "https://github.com/Melbourneandrew/agentscope/blob/main/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic",
+      "https://github.com/Melbourneandrew/agentscope/blob/0000000000000000000000000000000000000000/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic",
+      "https://github.com/Melbourneandrew/agentscope/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/harnesses/core/NATIVE_FIXTURES.md",
+      "https://github.com/Melbourneandrew/agentscope/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/harnesses/claude-code/fixtures/native/fixture.json",
+    ]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture({
+            ...base,
+            governance: {
+              ...base.governance,
+              license: { ...base.governance.license, sourceReference },
+            },
+          }),
+        "harness.fixture.license.synthetic-authority",
+      );
+    }
+  });
+});
+
+describe("native fixture reviewed authority separation", () => {
+  it("keeps vendor-derived fixtures off every structural governance-document alias", () => {
+    const vendor = vendorFixture();
+    expect(
+      parseHarnessSanitizedFixture(vendor).governance.license.reviewedLicenseId,
+    ).toBe("Apache-2.0");
+    for (const license of [
+      {
+        ...vendor.governance.license,
+        reviewedLicenseId: "LicenseRef-Agentscope-Synthetic",
+      },
+      ...[
+        structurallyValidSyntheticLicenseSource,
+        structurallyValidSyntheticLicenseSource.split("#")[0]!,
+        structurallyValidSyntheticLicenseSource.replace(
+          "#license-ref-agentscope-synthetic",
+          "#another-fragment",
+        ),
+        structurallyValidSyntheticLicenseSource.replace(
+          "NATIVE_FIXTURES.md",
+          "%4eATIVE_FIXTURES.md",
+        ),
+        structurallyValidSyntheticLicenseSource
+          .replace(
+            "github.com/Melbourneandrew/agentscope/blob",
+            "raw.githubusercontent.com/Melbourneandrew/agentscope",
+          )
+          .replace("#license-ref-agentscope-synthetic", ""),
+      ].map((sourceReference) => ({
+        ...vendor.governance.license,
+        sourceReference,
+      })),
+    ]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture({
+            ...vendor,
+            governance: { ...vendor.governance, license },
+          }),
+        "harness.fixture.license.vendor-authority",
+      );
+    }
+    for (const sourceReference of [
+      "not-a-url",
+      "https://github.com/Melbourneandrew/agentscope/blob/a/%zz",
+    ]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture({
+            ...vendor,
+            governance: {
+              ...vendor.governance,
+              license: { ...vendor.governance.license, sourceReference },
+            },
+          }),
+        "harness.fixture.provenance.source-reference",
+      );
+    }
+  });
+
+  it("treats URL and review checks as structural rather than authentication", () => {
+    const parsed = parseHarnessSanitizedFixture(fixture());
+    expect(parsed.governance.license.sourceReference).toBe(
+      structurallyValidSyntheticLicenseSource,
+    );
+    expect(parsed.governance.review.references).toEqual([
+      structuralPrivacyReview,
+      structuralRedistributionReview,
+    ]);
+  });
+
+  it("rejects compound license expressions", () => {
+    const base = fixture();
     for (const reviewedLicenseId of [
       "MIT OR Apache-2.0",
       "MIT AND Apache-2.0",
