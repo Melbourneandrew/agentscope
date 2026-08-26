@@ -10,6 +10,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -1034,6 +1035,10 @@ describe("native fixture closed audit test protocol", () => {
         42 as unknown as NativeFixtureAuditTestPlan,
       ),
     ).rejects.toThrow("harness.fixture.inventory.test-plan");
+  });
+
+  it("drains a rejected local native Promise without a second channel", async () => {
+    const root = await writeInventoryFixture();
     let rejectedPromiseLeaked = false;
     const rejectionListener = (): void => {
       rejectedPromiseLeaked = true;
@@ -1055,6 +1060,78 @@ describe("native fixture closed audit test protocol", () => {
     } finally {
       process.off("unhandledRejection", rejectionListener);
     }
+  });
+});
+
+describe("native fixture cross-realm Promise plan rejection", () => {
+  it("uses the captured Promise intrinsic after caller mutation", async () => {
+    const root = await writeInventoryFixture();
+    const rejectedUnderMutation = Promise.reject(
+      new Error("synthetic-mutated-intrinsic-canary"),
+    );
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- deliberate pre-mutation capture for restoration.
+    const originalThen = Promise.prototype.then;
+    let callerThenExecuted = false;
+    const callerThen = function (
+      this: Promise<unknown>,
+      onFulfilled?: ((value: unknown) => unknown) | null,
+      onRejected?: ((reason: unknown) => unknown) | null,
+    ): Promise<unknown> {
+      callerThenExecuted = true;
+      return Reflect.apply(originalThen, this, [onFulfilled, onRejected]);
+    };
+    let mutationResult: Promise<readonly unknown[]>;
+    void Object.defineProperty(Promise.prototype, "then", {
+      configurable: true,
+      value: callerThen,
+      writable: true,
+    });
+    try {
+      mutationResult = auditNativeFixtureInventory(
+        root,
+        rejectedUnderMutation as unknown as NativeFixtureAuditTestPlan,
+      );
+    } finally {
+      void Object.defineProperty(Promise.prototype, "then", {
+        configurable: true,
+        value: originalThen,
+        writable: true,
+      });
+    }
+    await expect(mutationResult).rejects.toThrow(
+      "harness.fixture.inventory.test-plan",
+    );
+    expect(callerThenExecuted).toBe(false);
+  });
+
+  it("drains a rejected native Promise from a separate realm", async () => {
+    const root = await writeInventoryFixture();
+    let foreignPromiseLeaked = false;
+    const foreignRejectionListener = (): void => {
+      foreignPromiseLeaked = true;
+    };
+    process.once("unhandledRejection", foreignRejectionListener);
+    try {
+      const foreignRejectedPromise = runInNewContext(
+        'Promise.reject(new Error("synthetic-foreign-plan-canary"))',
+      ) as Promise<unknown>;
+      await expect(
+        auditNativeFixtureInventory(
+          root,
+          foreignRejectedPromise as unknown as NativeFixtureAuditTestPlan,
+        ),
+      ).rejects.toThrow("harness.fixture.inventory.test-plan");
+      await new Promise<void>((resolveTurn) => {
+        setImmediate(resolveTurn);
+      });
+      expect(foreignPromiseLeaked).toBe(false);
+    } finally {
+      process.off("unhandledRejection", foreignRejectionListener);
+    }
+  });
+
+  it("rejects malformed and foreign serialized plans", async () => {
+    const root = await writeInventoryFixture();
     for (const encodedPlan of [
       "{" as NativeFixtureAuditTestPlan,
       "x".repeat(8_193) as NativeFixtureAuditTestPlan,

@@ -781,25 +781,21 @@ export type NativeFixtureAuditTestPlan = string & {
 
 const physicalTemporaryRoot = realpathSync(tmpdir());
 const activeAuditWorkerPids = new Set<number>();
-const nativePromisePrototype = Promise.prototype;
+/* eslint-disable-next-line @typescript-eslint/unbound-method -- captured before
+ * any hostile test input can mutate the public intrinsic. */
+const intrinsicPromiseThen = Promise.prototype.then;
+const intrinsicReflectApply = Reflect.apply;
 const discardPromiseRejection = (): undefined => undefined;
 
 export const activeNativeFixtureAuditWorkerCountForTest = (): number =>
   activeAuditWorkerPids.size;
 
 const drainRejectedNativePromise = (value: object): void => {
-  if (
-    types.isProxy(value) ||
-    !types.isPromise(value) ||
-    Object.getPrototypeOf(value) !== nativePromisePrototype ||
-    Object.getOwnPropertyDescriptor(value, "constructor") !== undefined
-  )
-    return;
-  void nativePromisePrototype.then.call(
-    value,
+  if (types.isProxy(value) || !types.isPromise(value)) return;
+  void intrinsicReflectApply(intrinsicPromiseThen, value, [
     undefined,
     discardPromiseRejection,
-  );
+  ]);
 };
 
 const authenticateOwnedTestRoot = (value: string): void => {
