@@ -1,11 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { test } from "vitest";
 
 import { auditCoreFinalizationImports } from "../restricted-import-policy.mjs";
+
+const packageTestingSpecifier = (relativeManifestPath, expectedPackageName) => {
+  const manifest = JSON.parse(
+    readFileSync(new URL(relativeManifestPath, import.meta.url), "utf8"),
+  );
+  assert.equal(manifest.name, expectedPackageName);
+  return `${expectedPackageName}/testing`;
+};
+const codexTestingSpecifier = packageTestingSpecifier(
+  "../../packages/harnesses/codex/package.json",
+  "@agentscope/harness-codex",
+);
+const claudeTestingSpecifier = packageTestingSpecifier(
+  "../../packages/harnesses/claude-code/package.json",
+  "@agentscope/harness-claude-code",
+);
 
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-import-policy-"));
@@ -172,6 +194,62 @@ test("permits the Protocol testing entrypoint only in tests and testkit", () => 
   }
 });
 
+test("permits concrete harness testing entrypoints only in test authorities", () => {
+  const value = fixture();
+  try {
+    for (const [name, specifier] of [
+      ["codex", codexTestingSpecifier],
+      ["claude-code", claudeTestingSpecifier],
+    ]) {
+      const testFile = join(
+        value.root,
+        `packages/destination/${name}-adapter.test.ts`,
+      );
+      writeFileSync(testFile, `import ${JSON.stringify(specifier)};\n`);
+      auditCoreFinalizationImports(value.root, value.packages);
+      rmSync(testFile);
+
+      const testingEntrypoint = join(
+        value.root,
+        "packages/destination/src/testing.ts",
+      );
+      mkdirSync(join(value.root, "packages/destination/src"), {
+        recursive: true,
+      });
+      writeFileSync(
+        testingEntrypoint,
+        `export * from ${JSON.stringify(specifier)};\n`,
+      );
+      auditCoreFinalizationImports(value.root, value.packages);
+      rmSync(testingEntrypoint);
+    }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("rejects concrete harness testing entrypoints in every literal production load form", () => {
+  const value = fixture();
+  try {
+    const production = join(value.root, "packages/destination/harness.ts");
+    for (const specifier of [codexTestingSpecifier, claudeTestingSpecifier])
+      for (const source of [
+        `import ${JSON.stringify(specifier)};`,
+        `void import(${JSON.stringify(specifier)});`,
+        `void require(${JSON.stringify(specifier)});`,
+        `import testing = require(${JSON.stringify(specifier)});`,
+      ]) {
+        writeFileSync(production, `${source}\n`);
+        assert.throws(
+          () => auditCoreFinalizationImports(value.root, value.packages),
+          new RegExp(`${specifier.replaceAll("/", "\\/")} is test-only`, "u"),
+        );
+      }
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("rejects testing entrypoints from Core production sources", () => {
   const value = fixture();
   try {
@@ -179,6 +257,8 @@ test("rejects testing entrypoints from Core production sources", () => {
       ["langfuse-testing", "@agentscope/destination-langfuse/testing"],
       ["local-sqlite-testing", "@agentscope/destination-local-sqlite/testing"],
       ["destination-testing", "@agentscope/destinations-core/testing"],
+      ["codex-testing", codexTestingSpecifier],
+      ["claude-testing", claudeTestingSpecifier],
       ["harness-testing", "@agentscope/harnesses-core/testing"],
       ["protocol-testing", "@agentscope/protocol/testing"],
     ]) {
@@ -319,6 +399,8 @@ test("rejects escaped test-only module specifiers", () => {
       'import fixture = require("@agentscope/protocol/test\\u0069ng");\n',
       'void import("@agentscope/protocol/test\\u0069ng");\n',
       'void require("@agentscope/destinations-core/test\\u0069ng");\n',
+      'void import("@agentscope/harness-codex/test\\u0069ng");\n',
+      'void require("@agentscope/harness-claude-code/test\\u0069ng");\n',
     ]) {
       writeFileSync(production, source);
       assert.throws(
