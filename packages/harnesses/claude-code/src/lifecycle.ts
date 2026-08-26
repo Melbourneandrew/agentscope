@@ -1181,9 +1181,12 @@ const posixReservedExecutableWords = new Set([
   "while",
 ]);
 const posixDelegatingExecutableBasenames = new Set([
+  ".",
   "ash",
   "bash",
+  "builtin",
   "busybox",
+  "chroot",
   "command",
   "dash",
   "doas",
@@ -1191,17 +1194,43 @@ const posixDelegatingExecutableBasenames = new Set([
   "eval",
   "exec",
   "ksh",
+  "ionice",
   "nice",
   "nohup",
+  "runuser",
   "setsid",
   "sh",
+  "source",
   "stdbuf",
+  "su",
   "sudo",
+  "taskset",
   "timeout",
+  "trap",
+  "watch",
+  "xargs",
   "zsh",
 ]);
+const safeSimpleCommandExecutables = new Set(["/usr/bin/printf", "printf"]);
 
-const parsePosixExecutableWord = (command: string): string | undefined => {
+const executableBasename = (executable: string): string | undefined =>
+  executable.split("/").at(-1);
+
+const executableDelegates = (executable: string): boolean => {
+  const basename = executableBasename(executable);
+  return (
+    basename === undefined || posixDelegatingExecutableBasenames.has(basename)
+  );
+};
+
+type ParsedPosixSimpleCommand = Readonly<{
+  executable: string;
+  words: readonly string[];
+}>;
+
+const parsePosixSimpleCommand = (
+  command: string,
+): ParsedPosixSimpleCommand | undefined => {
   const words: string[] = [];
   let word = "";
   let inWord = false;
@@ -1260,12 +1289,13 @@ const parsePosixExecutableWord = (command: string): string | undefined => {
   const executable = words.find(
     (entry) => !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(entry),
   );
-  const executableBasename = executable?.split("/").at(-1);
   return executable !== undefined &&
-    executableBasename !== undefined &&
     !posixReservedExecutableWords.has(executable) &&
-    !posixDelegatingExecutableBasenames.has(executableBasename)
-    ? executable
+    !executableDelegates(executable)
+    ? Object.freeze({
+        executable,
+        words: Object.freeze([...words]),
+      })
     : undefined;
 };
 
@@ -1282,10 +1312,24 @@ const commandClaimsExecutable = (
     return value.command.includes(launcherPath);
   if (Object.hasOwn(value, "shell") && Object.hasOwn(value, "args"))
     return true;
-  if (Object.hasOwn(value, "args")) return value.command === launcherPath;
+  if (Object.hasOwn(value, "args")) {
+    const args = exactArrayValues(value.args);
+    if (
+      args === undefined ||
+      value.command === launcherPath ||
+      executableDelegates(value.command)
+    )
+      return true;
+    return args.length > 0 && !safeSimpleCommandExecutables.has(value.command);
+  }
   if (value.shell === "powershell") return true;
-  const executable = parsePosixExecutableWord(value.command);
-  return executable === undefined || executable === launcherPath;
+  const parsed = parsePosixSimpleCommand(value.command);
+  if (parsed === undefined || parsed.executable === launcherPath) return true;
+  if (parsed.words.length === 1) return false;
+  return (
+    parsed.words[0] !== parsed.executable ||
+    !safeSimpleCommandExecutables.has(parsed.executable)
+  );
 };
 
 const valueClaimsAgentscopeLauncher = (

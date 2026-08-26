@@ -1344,7 +1344,7 @@ describe("Claude Code hook namespace ownership", () => {
 const documentedHookHandlers = {
   command: {
     type: "command",
-    command: "printf foreign",
+    command: "printf",
     args: ["one"],
     async: false,
     asyncRewake: false,
@@ -1732,7 +1732,81 @@ describe("Claude Code shell grammar", () => {
       ).toEqual({ kind: "conflict" });
     }
   });
+});
 
+describe("Claude Code closed executable classifier", () => {
+  it("classifies direct arguments before preserving any executable", () => {
+    for (const command of [
+      "env",
+      "/usr/bin/env",
+      "nohup",
+      "exec",
+      "command",
+      "sh",
+      "bash",
+      "sudo",
+      "timeout",
+      "busybox",
+      "builtin",
+      "xargs",
+      "/usr/bin/xargs",
+      "chroot",
+      "runuser",
+      "su",
+      "source",
+      "ionice",
+      "taskset",
+      "trap",
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(
+          target(
+            settingsWithHook("PreToolUse", {
+              type: "command",
+              command,
+              args: ["foreign"],
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("preserves only closed safe arguments or an opaque zero-argument executable", () => {
+    for (const handler of [
+      { type: "command", command: "printf", args: ["foreign"] },
+      { type: "command", command: "/usr/bin/printf", args: ["foreign"] },
+      { type: "command", command: "/foreign/opaque", args: [] },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", handler))).kind,
+      ).toBe("replace");
+    }
+    for (const handler of [
+      { type: "command", command: "/foreign/unknown", args: ["argument"] },
+      { type: "command", command: "/foreign/unknown argument" },
+      { type: "command", command: "AUDIT=1 printf foreign" },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", handler))),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+});
+
+describe("Claude Code executable safety", () => {
   it("rejects disallowed executable controls and preserves a simple executable", () => {
     for (const handler of [
       { type: "command", command: "printf\0foreign" },
