@@ -1,11 +1,19 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { realpathSync, renameSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { lstat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { basename, dirname, parse, resolve } from "node:path";
+import { types } from "node:util";
 
 type AuthenticatedArtifactAuthority = Readonly<{
   status: "authenticated";
@@ -745,15 +753,26 @@ type NativeFixtureAuditTestPlanDescriptor =
       directive: Exclude<NativeFixtureAuditDirective, undefined>;
     }>
   | Readonly<{
-      kind: "swap-root-before-capability" | "swap-root-during-scan";
-      replacementRoot: string;
-      heldRoot: string;
-    }>
-  | Readonly<{
-      kind: "hold-root-before-capability";
-      heldRoot: string;
+      kind:
+        | "hold-root-before-capability"
+        | "namespace-operation-failure"
+        | "root-operation-failure-after-hold"
+        | "restore-operation-failure"
+        | "swap-root-before-capability"
+        | "swap-root-during-scan";
     }>
   | Readonly<{ kind: "signal-before-release" }>;
+
+type NativeFixtureAuditTestPlanRuntime = Readonly<{
+  descriptor: NativeFixtureAuditTestPlanDescriptor;
+  namespaceRoot?: string;
+  heldRoot?: string;
+  replacementRoot?: string;
+  state: {
+    rootHeld: boolean;
+    replacementAtRoot: boolean;
+  };
+}>;
 
 declare const nativeFixtureAuditTestPlanBrand: unique symbol;
 export type NativeFixtureAuditTestPlan = string & {
@@ -762,28 +781,59 @@ export type NativeFixtureAuditTestPlan = string & {
 
 const physicalTemporaryRoot = realpathSync(tmpdir());
 const activeAuditWorkerPids = new Set<number>();
+const nativePromisePrototype = Promise.prototype;
+const discardPromiseRejection = (): undefined => undefined;
 
 export const activeNativeFixtureAuditWorkerCountForTest = (): number =>
   activeAuditWorkerPids.size;
 
-const testPath = (value: unknown): string => {
+const drainRejectedNativePromise = (value: object): void => {
   if (
-    typeof value === "string" &&
-    value.length <= 1_024 &&
-    resolve(value) === value &&
-    value.startsWith(`${physicalTemporaryRoot}/agentscope-native-fixtures-`)
+    types.isProxy(value) ||
+    !types.isPromise(value) ||
+    Object.getPrototypeOf(value) !== nativePromisePrototype ||
+    Object.getOwnPropertyDescriptor(value, "constructor") !== undefined
   )
-    return value;
-  return fail("harness.fixture.inventory.test-plan");
+    return;
+  void nativePromisePrototype.then.call(
+    value,
+    undefined,
+    discardPromiseRejection,
+  );
+};
+
+const authenticateOwnedTestRoot = (value: string): void => {
+  const identity = (() => {
+    try {
+      return lstatSync(value);
+    } catch {
+      /* v8 ignore next -- lexical ancestry was authenticated immediately before
+       * this synchronous check; the guard retains content-free OS-race failure. */
+      return fail("harness.fixture.inventory.test-plan");
+    }
+  })();
+  if (
+    value.length > 1_024 ||
+    resolve(value) !== value ||
+    dirname(value) !== physicalTemporaryRoot ||
+    !basename(value).startsWith("agentscope-native-fixtures-") ||
+    realpathSync(value) !== value ||
+    !identity.isDirectory() ||
+    identity.isSymbolicLink()
+  )
+    fail("harness.fixture.inventory.test-plan");
 };
 
 const parseAuditTestPlan = (
   value: unknown,
-  auditRoot: string,
 ): NativeFixtureAuditTestPlanDescriptor | undefined => {
   if (value === undefined) return undefined;
-  testPath(auditRoot);
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8_192)
+  if (typeof value !== "string") {
+    if (typeof value === "object" && value !== null)
+      drainRejectedNativePromise(value);
+    return fail("harness.fixture.inventory.test-plan");
+  }
+  if (Buffer.byteLength(value, "utf8") > 8_192)
     return fail("harness.fixture.inventory.test-plan");
   let decoded: unknown;
   try {
@@ -818,31 +868,16 @@ const parseAuditTestPlan = (
         return fail("harness.fixture.inventory.test-plan");
     }
   }
-  if (snapshot.kind === "hold-root-before-capability") {
-    exactKeys(
-      snapshot,
-      ["kind", "heldRoot"],
-      "harness.fixture.inventory.test-plan",
-    );
-    return Object.freeze({
-      kind: "hold-root-before-capability" as const,
-      heldRoot: testPath(snapshot.heldRoot),
-    });
-  }
   if (
+    snapshot.kind === "hold-root-before-capability" ||
+    snapshot.kind === "namespace-operation-failure" ||
+    snapshot.kind === "root-operation-failure-after-hold" ||
+    snapshot.kind === "restore-operation-failure" ||
     snapshot.kind === "swap-root-before-capability" ||
     snapshot.kind === "swap-root-during-scan"
   ) {
-    exactKeys(
-      snapshot,
-      ["kind", "replacementRoot", "heldRoot"],
-      "harness.fixture.inventory.test-plan",
-    );
-    return Object.freeze({
-      kind: snapshot.kind,
-      replacementRoot: testPath(snapshot.replacementRoot),
-      heldRoot: testPath(snapshot.heldRoot),
-    });
+    exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
+    return Object.freeze({ kind: snapshot.kind });
   }
   if (snapshot.kind === "signal-before-release") {
     exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
@@ -851,42 +886,119 @@ const parseAuditTestPlan = (
   return fail("harness.fixture.inventory.test-plan");
 };
 
+const prepareAuditTestPlan = (
+  descriptor: NativeFixtureAuditTestPlanDescriptor | undefined,
+  root: string,
+): NativeFixtureAuditTestPlanRuntime | undefined => {
+  if (descriptor === undefined) return undefined;
+  if (
+    descriptor.kind !== "hold-root-before-capability" &&
+    descriptor.kind !== "namespace-operation-failure" &&
+    descriptor.kind !== "root-operation-failure-after-hold" &&
+    descriptor.kind !== "restore-operation-failure" &&
+    descriptor.kind !== "swap-root-before-capability" &&
+    descriptor.kind !== "swap-root-during-scan"
+  )
+    return Object.freeze({
+      descriptor,
+      state: { rootHeld: false, replacementAtRoot: false },
+    });
+  authenticateOwnedTestRoot(root);
+  try {
+    if (descriptor.kind === "namespace-operation-failure")
+      throw new Error("synthetic namespace failure");
+    const namespaceRoot = mkdtempSync(
+      `${physicalTemporaryRoot}/agentscope-native-fixture-plan-`,
+    );
+    const identity = lstatSync(namespaceRoot, { bigint: true });
+    /* v8 ignore next 8 -- mkdtempSync with this physical direct-child template
+     * guarantees these closed namespace invariants; they remain fail-closed. */
+    if (
+      dirname(namespaceRoot) !== physicalTemporaryRoot ||
+      realpathSync(namespaceRoot) !== namespaceRoot ||
+      !identity.isDirectory() ||
+      identity.isSymbolicLink() ||
+      (Number(identity.mode) & 0o077) !== 0
+    )
+      fail("harness.fixture.inventory.test-plan");
+    return Object.freeze({
+      descriptor,
+      namespaceRoot,
+      heldRoot: `${namespaceRoot}/held`,
+      replacementRoot: `${namespaceRoot}/replacement`,
+      state: { rootHeld: false, replacementAtRoot: false },
+    });
+  } catch {
+    return fail("harness.fixture.inventory.test-plan");
+  }
+};
+
+const restoreAuditTestPlan = (
+  runtime: NativeFixtureAuditTestPlanRuntime | undefined,
+  root: string,
+): void => {
+  if (runtime?.namespaceRoot === undefined) return;
+  try {
+    if (runtime.state.rootHeld) {
+      if (runtime.state.replacementAtRoot) {
+        renameSync(root, runtime.replacementRoot!);
+        runtime.state.replacementAtRoot = false;
+      }
+      renameSync(runtime.heldRoot!, root);
+      runtime.state.rootHeld = false;
+    }
+    rmSync(runtime.namespaceRoot, { recursive: true });
+    if (runtime.descriptor.kind === "restore-operation-failure")
+      throw new Error("synthetic restore failure");
+  } catch {
+    fail("harness.fixture.inventory.test-plan");
+  }
+};
+
 const applyAuditTestPlan = (
-  plan: NativeFixtureAuditTestPlanDescriptor | undefined,
+  runtime: NativeFixtureAuditTestPlanRuntime | undefined,
   event: NativeFixtureAuditEvent,
   root: string,
   authorityDeadline: number,
   childProcessId?: number,
 ): void => {
-  if (plan === undefined) return;
+  if (runtime === undefined) return;
+  const plan = runtime.descriptor;
   if (performance.now() >= authorityDeadline)
     fail("harness.fixture.inventory.test-plan");
   try {
     if (
-      plan?.kind === "hold-root-before-capability" &&
+      (plan.kind === "hold-root-before-capability" ||
+        plan.kind === "root-operation-failure-after-hold" ||
+        plan.kind === "swap-root-before-capability") &&
       event === "lexical-ancestry-before-capability"
     ) {
-      renameSync(root, plan.heldRoot);
+      renameSync(root, runtime.heldRoot!);
+      runtime.state.rootHeld = true;
+      if (plan.kind === "root-operation-failure-after-hold")
+        fail("harness.fixture.inventory.test-plan");
+      if (plan.kind === "swap-root-before-capability") {
+        mkdirSync(root, { mode: 0o700 });
+        runtime.state.replacementAtRoot = true;
+      }
     } else if (
-      plan?.kind === "swap-root-before-capability" &&
-      event === "lexical-ancestry-before-capability"
-    ) {
-      renameSync(root, plan.heldRoot);
-      renameSync(plan.replacementRoot, root);
-    } else if (
-      plan?.kind === "swap-root-during-scan" &&
+      plan.kind === "swap-root-during-scan" &&
       event === "root-capability-acquired"
     ) {
-      renameSync(root, plan.heldRoot);
-      renameSync(plan.replacementRoot, root);
+      renameSync(root, runtime.heldRoot!);
+      runtime.state.rootHeld = true;
+      mkdirSync(root, { mode: 0o700 });
+      runtime.state.replacementAtRoot = true;
     } else if (
-      plan?.kind === "swap-root-during-scan" &&
+      plan.kind === "swap-root-during-scan" &&
       event === "root-capability-before-release"
     ) {
-      renameSync(root, plan.replacementRoot);
-      renameSync(plan.heldRoot, root);
+      renameSync(root, runtime.replacementRoot!);
+      runtime.state.replacementAtRoot = false;
+      renameSync(runtime.heldRoot!, root);
+      runtime.state.rootHeld = false;
     } else if (
-      plan?.kind === "signal-before-release" &&
+      plan.kind === "signal-before-release" &&
       event === "root-capability-before-release" &&
       childProcessId !== undefined
     ) {
@@ -1208,8 +1320,10 @@ const acquireCapabilitySnapshot = async (
   root: string,
   expectedRoot: AncestorIdentity,
   authorityDeadline: number,
-  testPlan?: NativeFixtureAuditTestPlanDescriptor,
+  testPlan?: NativeFixtureAuditTestPlanRuntime,
 ): Promise<readonly CapabilitySnapshotFile[]> => {
+  if (performance.now() >= authorityDeadline)
+    fail("harness.fixture.inventory.capability");
   const controller = new AbortController();
   const abortWork = (): void => {
     controller.abort();
@@ -1236,9 +1350,7 @@ const acquireCapabilitySnapshot = async (
   let outputBytes = 0;
   child.stdout.on("data", (chunk: Buffer) => {
     outputBytes += chunk.length;
-    if (outputBytes > 5 * 1024 * 1024) {
-      controller.abort();
-    }
+    if (outputBytes > 5 * 1024 * 1024) controller.abort();
   });
   const lines = createInterface({ input: child.stdout })[
     Symbol.asyncIterator
@@ -1262,7 +1374,9 @@ const acquireCapabilitySnapshot = async (
       fail("harness.fixture.inventory.ancestor-identity");
     applyPlan("root-capability-acquired");
     const directive =
-      testPlan?.kind === "worker-directive" ? testPlan.directive : undefined;
+      testPlan?.descriptor.kind === "worker-directive"
+        ? testPlan.descriptor.directive
+        : undefined;
     const forceAuthorityExpiry = dispatchCapabilityDirective(
       directive,
       (command) => {
@@ -1334,23 +1448,29 @@ export const auditNativeFixtureInventory = async (
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
   const lexicalRoot = resolve(harnessPackagesRoot);
   const authorityDeadline = performance.now() + 10_000;
-  const testPlan = parseAuditTestPlan(testPlanInput, lexicalRoot);
+  const testPlanDescriptor = parseAuditTestPlan(testPlanInput);
   const ancestry = await authenticateLexicalAncestry(lexicalRoot);
-  applyAuditTestPlan(
-    testPlan,
-    "lexical-ancestry-before-capability",
-    lexicalRoot,
-    authorityDeadline,
-  );
-  await assertStableLexicalAncestry(ancestry);
-  const expectedRoot = ancestry.at(-1)!;
-  const files = await acquireCapabilitySnapshot(
-    lexicalRoot,
-    expectedRoot,
-    authorityDeadline,
-    testPlan,
-  );
-  await assertStableLexicalAncestry(ancestry);
+  const testPlan = prepareAuditTestPlan(testPlanDescriptor, lexicalRoot);
+  let files: readonly CapabilitySnapshotFile[];
+  try {
+    applyAuditTestPlan(
+      testPlan,
+      "lexical-ancestry-before-capability",
+      lexicalRoot,
+      authorityDeadline,
+    );
+    await assertStableLexicalAncestry(ancestry);
+    const expectedRoot = ancestry.at(-1)!;
+    files = await acquireCapabilitySnapshot(
+      lexicalRoot,
+      expectedRoot,
+      authorityDeadline,
+      testPlan,
+    );
+    await assertStableLexicalAncestry(ancestry);
+  } finally {
+    restoreAuditTestPlan(testPlan, lexicalRoot);
+  }
   const entries: NativeFixtureInventoryEntry[] = [];
   for (const file of files) {
     const pathSegments = file.relativePath.split("/");

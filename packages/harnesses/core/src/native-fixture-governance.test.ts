@@ -1028,6 +1028,33 @@ describe("native fixture closed audit test protocol", () => {
         new Promise(() => {}) as unknown as NativeFixtureAuditTestPlan,
       ),
     ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    await expect(
+      auditNativeFixtureInventory(
+        root,
+        42 as unknown as NativeFixtureAuditTestPlan,
+      ),
+    ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    let rejectedPromiseLeaked = false;
+    const rejectionListener = (): void => {
+      rejectedPromiseLeaked = true;
+    };
+    process.once("unhandledRejection", rejectionListener);
+    try {
+      await expect(
+        auditNativeFixtureInventory(
+          root,
+          Promise.reject(
+            new Error("synthetic-plan-canary"),
+          ) as unknown as NativeFixtureAuditTestPlan,
+        ),
+      ).rejects.toThrow("harness.fixture.inventory.test-plan");
+      await new Promise<void>((resolveTurn) => {
+        setImmediate(resolveTurn);
+      });
+      expect(rejectedPromiseLeaked).toBe(false);
+    } finally {
+      process.off("unhandledRejection", rejectionListener);
+    }
     for (const encodedPlan of [
       "{" as NativeFixtureAuditTestPlan,
       "x".repeat(8_193) as NativeFixtureAuditTestPlan,
@@ -1048,19 +1075,64 @@ describe("native fixture closed audit test protocol", () => {
         auditNativeFixtureInventory(root, auditPlan(testPlan)),
       ).rejects.toThrow("harness.fixture.inventory.test-plan");
   });
+});
 
-  it("collapses a fixed test-plan filesystem failure without leaking details", async () => {
+describe("native fixture fixed audit test operations", () => {
+  it.each([
+    "namespace-operation-failure",
+    "restore-operation-failure",
+  ] as const)("collapses and recovers from %s", async (kind) => {
     const root = await writeInventoryFixture();
-    const occupiedHeldRoot = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
+    await expect(
+      auditNativeFixtureInventory(root, auditPlan({ kind })),
+    ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
+  });
+
+  it("rejects a valid but non-owned nested root for mutation plans", async () => {
+    const root = await writeInventoryFixture();
+    const parent = await mkdtemp(
+      join(physicalTemporaryRoot, "agentscope-native-fixture-parent-"),
+    );
+    roots.push(parent);
+    const nestedRoot = join(parent, "agentscope-native-fixtures-nested");
+    await rename(root, nestedRoot);
+    await expect(
+      auditNativeFixtureInventory(
+        nestedRoot,
+        auditPlan({ kind: "hold-root-before-capability" }),
+      ),
+    ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    await expect(auditNativeFixtureInventory(nestedRoot)).resolves.toHaveLength(
+      1,
+    );
+  });
+
+  it("recovers the owned root after a fixed operation fails", async () => {
+    const root = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
     await expect(
       auditNativeFixtureInventory(
         root,
-        auditPlan({
-          kind: "hold-root-before-capability",
-          heldRoot: occupiedHeldRoot,
-        }),
+        auditPlan({ kind: "root-operation-failure-after-hold" }),
       ),
     ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
+  });
+
+  it("does not spawn when ordinary-audit authority is already expired", async () => {
+    const root = await writeInventoryFixture();
+    const clock = vi.spyOn(performance, "now");
+    clock.mockReturnValueOnce(0).mockReturnValue(20_000);
+    try {
+      await expect(auditNativeFixtureInventory(root)).rejects.toThrow(
+        "harness.fixture.inventory.capability",
+      );
+      expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it.each(["before", "after"] as const)(
@@ -1099,58 +1171,37 @@ describe("native fixture closed audit test protocol", () => {
 describe("native fixture retained root capability races", () => {
   it("scans the inode-pinned root during swap and restore", async () => {
     const root = await writeInventoryFixture();
-    const replacementFixture = {
-      ...fixture(),
-      sanitizedPayload: { model: "replacement-model" },
-    } as const;
-    const replacement = await writeInventoryFixture(replacementFixture);
-    const held = `${root}-held`;
-    roots.push(held);
     const original = await auditNativeFixtureInventory(root);
     const observed = await auditNativeFixtureInventory(
       root,
-      auditPlan({
-        kind: "swap-root-during-scan",
-        replacementRoot: replacement,
-        heldRoot: held,
-      }),
+      auditPlan({ kind: "swap-root-during-scan" }),
     );
     expect(observed).toEqual(original);
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
 
   it("rejects a lexical root swapped before capability acquisition", async () => {
     const root = await writeInventoryFixture();
-    const replacement = await writeInventoryFixture();
-    const held = `${root}-held`;
-    roots.push(held);
+    const original = await auditNativeFixtureInventory(root);
     await expect(
       auditNativeFixtureInventory(
         root,
-        auditPlan({
-          kind: "swap-root-before-capability",
-          replacementRoot: replacement,
-          heldRoot: held,
-        }),
+        auditPlan({ kind: "swap-root-before-capability" }),
       ),
     ).rejects.toThrow("harness.fixture.inventory.ancestor-identity");
-    await rename(root, replacement);
-    await rename(held, root);
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
 
   it("rejects lexical ancestry removed by the closed test plan", async () => {
     const root = await writeInventoryFixture();
-    const held = `${root}-held`;
-    roots.push(held);
+    const original = await auditNativeFixtureInventory(root);
     await expect(
       auditNativeFixtureInventory(
         root,
-        auditPlan({
-          kind: "hold-root-before-capability",
-          heldRoot: held,
-        }),
+        auditPlan({ kind: "hold-root-before-capability" }),
       ),
     ).rejects.toThrow("harness.fixture.inventory.ancestor-identity");
-    await rename(held, root);
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
 
   it.each([
