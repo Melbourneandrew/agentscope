@@ -87,6 +87,18 @@ const digestPattern = /^[a-f0-9]{64}$/u;
 const maximumInventoryArrayLength = 1_024;
 const maximumSettingsByteLength = 1_048_576;
 const maximumJsonDepth = 128;
+const encodePosixSingleQuotedShellWord = (value: string): string =>
+  `'${value.replaceAll("'", "'\\''")}'`;
+const claudeCodeCommandDialect = Object.freeze({
+  harnessVersion: "2.1.245" as const,
+  platform: "posix" as const,
+  representation: "single-quoted-shell-word" as const,
+  encode: encodePosixSingleQuotedShellWord,
+});
+const posixLauncherBasenamePattern =
+  /^agentscope-hook-v1-[a-f0-9]{64}-d(?:[1-9]\d{1,3}|[1-5]\d{4}|60000)$/u;
+const unpairedSurrogatePattern =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -422,10 +434,26 @@ export const inspectClaudeCodePluginOverlap = (
     : overlap;
 };
 
-const ownedHook = (invocation: OwnedHarnessHookInvocation) =>
+const encodeClaudeCodeHookCommand = (
+  invocation: OwnedHarnessHookInvocation,
+): string | undefined => {
+  const segments = invocation.launcherPath.split("/");
+  const basename = segments.at(-1);
+  if (
+    !invocation.launcherPath.startsWith("/") ||
+    basename === undefined ||
+    !posixLauncherBasenamePattern.test(basename) ||
+    invocation.launcherPath.includes("\0") ||
+    unpairedSurrogatePattern.test(invocation.launcherPath)
+  )
+    return undefined;
+  return claudeCodeCommandDialect.encode(invocation.launcherPath);
+};
+
+const ownedHook = (command: string) =>
   Object.freeze({
     type: "command" as const,
-    command: invocation.launcherPath,
+    command,
     args: Object.freeze([]),
   });
 
@@ -443,17 +471,21 @@ const ownedMetadata = (
 const ownedMatcher = (
   invocation: OwnedHarnessHookInvocation,
   event: ClaudeCodeLifecycleEvent,
+  command: string,
 ) =>
   Object.freeze({
     agentscope: ownedMetadata(invocation, event),
-    hooks: Object.freeze([ownedHook(invocation)]),
+    hooks: Object.freeze([ownedHook(command)]),
   });
 
-const ownedSettings = (invocation: OwnedHarnessHookInvocation) => ({
+const ownedSettings = (
+  invocation: OwnedHarnessHookInvocation,
+  command: string,
+) => ({
   hooks: Object.fromEntries(
     CLAUDE_CODE_LIFECYCLE_EVENTS.map((event) => [
       event,
-      [ownedMatcher(invocation, event)],
+      [ownedMatcher(invocation, event, command)],
     ]),
   ),
 });
@@ -567,6 +599,17 @@ const hasUniqueJsonObjectKeys = (text: string): boolean => {
         remainder,
       )?.[0];
     if (scalar === undefined) return false;
+    if (scalar !== "true" && scalar !== "false" && scalar !== "null") {
+      const numericValue = Number(scalar);
+      if (
+        !Number.isFinite(numericValue) ||
+        Object.is(numericValue, -0) ||
+        (Number.isInteger(numericValue) &&
+          !Number.isSafeInteger(numericValue)) ||
+        JSON.stringify(numericValue) !== scalar
+      )
+        return false;
+    }
     position += scalar.length;
     return true;
   };
@@ -586,16 +629,13 @@ const parseSettings = (
   return isRecord(value) ? value : undefined;
 };
 
-const hookArrayEquals = (
-  value: unknown,
-  invocation: OwnedHarnessHookInvocation,
-): boolean => {
+const hookArrayEquals = (value: unknown, command: string): boolean => {
   if (!Array.isArray(value) || value.length !== 1) return false;
   const hook: unknown = (value as readonly unknown[])[0];
   return (
     isRecord(hook) &&
     hook.type === "command" &&
-    hook.command === invocation.launcherPath &&
+    hook.command === command &&
     Array.isArray(hook.args) &&
     hook.args.length === 0 &&
     Object.keys(hook).length === 3
@@ -606,10 +646,11 @@ const ownedMatcherEquals = (
   value: unknown,
   invocation: OwnedHarnessHookInvocation,
   event: ClaudeCodeLifecycleEvent,
+  command: string,
 ): boolean =>
   isRecord(value) &&
   Object.keys(value).sort().join("\0") === "agentscope\0hooks" &&
-  hookArrayEquals(value.hooks, invocation) &&
+  hookArrayEquals(value.hooks, command) &&
   isRecord(value.agentscope) &&
   Object.keys(value.agentscope).sort().join("\0") ===
     "contractVersion\0event\0harnessType\0ownershipIdentity" &&
@@ -621,11 +662,14 @@ const ownedMatcherEquals = (
 const matcherReferencesLauncher = (
   value: unknown,
   invocation: OwnedHarnessHookInvocation,
+  command: string,
 ): boolean =>
   isRecord(value) &&
   Array.isArray(value.hooks) &&
   (value.hooks as readonly unknown[]).some(
-    (hook) => isRecord(hook) && hook.command === invocation.launcherPath,
+    (hook) =>
+      isRecord(hook) &&
+      (hook.command === command || hook.command === invocation.launcherPath),
   );
 
 const matcherClaimsAgentscopeOwnership = (value: unknown): boolean =>
@@ -634,6 +678,7 @@ const matcherClaimsAgentscopeOwnership = (value: unknown): boolean =>
 const editHooks = (
   settings: Record<string, unknown>,
   invocation: OwnedHarnessHookInvocation,
+  command: string,
   operation: "install" | "migrate" | "uninstall",
 ): "changed" | "unchanged" | "conflict" => {
   const hooks = settings.hooks;
@@ -646,15 +691,15 @@ const editHooks = (
     const current: readonly unknown[] =
       entries === undefined ? [] : (entries as readonly unknown[]);
     const owned = current.filter((entry) =>
-      ownedMatcherEquals(entry, invocation, event),
+      ownedMatcherEquals(entry, invocation, event, command),
     );
     if (
       owned.length > 1 ||
       current.some(
         (entry) =>
-          (matcherReferencesLauncher(entry, invocation) ||
+          (matcherReferencesLauncher(entry, invocation, command) ||
             matcherClaimsAgentscopeOwnership(entry)) &&
-          !ownedMatcherEquals(entry, invocation, event),
+          !ownedMatcherEquals(entry, invocation, event, command),
       )
     )
       return "conflict";
@@ -672,17 +717,17 @@ const editHooks = (
     const current: readonly unknown[] =
       entries === undefined ? [] : (entries as readonly unknown[]);
     const owned = current.filter((entry) =>
-      ownedMatcherEquals(entry, invocation, event),
+      ownedMatcherEquals(entry, invocation, event, command),
     );
     if (operation === "uninstall") {
       if (owned.length === 1) {
         target[event] = current.filter(
-          (entry) => !ownedMatcherEquals(entry, invocation, event),
+          (entry) => !ownedMatcherEquals(entry, invocation, event, command),
         );
         changed = true;
       }
     } else if (owned.length === 0) {
-      target[event] = [...current, ownedMatcher(invocation, event)];
+      target[event] = [...current, ownedMatcher(invocation, event, command)];
       changed = true;
     }
   }
@@ -746,6 +791,8 @@ export const createClaudeCodeInstallationPlanner = (
 ): HarnessInstallationPlanner => {
   if (!isOwnedHarnessHookInvocation(invocation))
     return () => ({ kind: "conflict" });
+  const command = encodeClaudeCodeHookCommand(invocation);
+  if (command === undefined) return () => ({ kind: "unsupported" });
   const parsedInventory = parsePluginInventory(inventory);
   if (parsedInventory === undefined) return () => ({ kind: "conflict" });
   const overlap = inspectParsedPluginOverlap(parsedInventory);
@@ -767,7 +814,10 @@ export const createClaudeCodeInstallationPlanner = (
       return { kind: "conflict" };
     if (operation === "uninstall") {
       if (!exists || bytes === null) return { kind: "unchanged" };
-      if (current === decoder.decode(encodeSettings(ownedSettings(invocation))))
+      if (
+        current ===
+        decoder.decode(encodeSettings(ownedSettings(invocation, command)))
+      )
         return { kind: "remove" };
     }
     if (operation === "install" && overlap.status !== "absent")
@@ -783,7 +833,7 @@ export const createClaudeCodeInstallationPlanner = (
       return { kind: "conflict" };
     if (operation === "migrate" && overlap.status === "conflict")
       disableMigratedPlugin(settings, overlap.pluginId);
-    const result = editHooks(settings, invocation, operation);
+    const result = editHooks(settings, invocation, command, operation);
     if (result === "conflict") return { kind: "conflict" };
     if (result === "unchanged") return { kind: "unchanged" };
     return {

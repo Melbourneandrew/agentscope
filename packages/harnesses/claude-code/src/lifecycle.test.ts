@@ -69,6 +69,29 @@ const parseRecord = (text: string): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 
+const installedHookCommand = (text: string): string => {
+  const settings = parseRecord(text);
+  const hooks = parseRecord(JSON.stringify(settings.hooks));
+  const sessionStart = hooks.SessionStart;
+  if (!Array.isArray(sessionStart) || sessionStart.length !== 1)
+    throw new Error("expected one SessionStart matcher");
+  const matcher = parseRecord(JSON.stringify(sessionStart[0]));
+  if (!Array.isArray(matcher.hooks) || matcher.hooks.length !== 1)
+    throw new Error("expected one owned hook");
+  const hook = parseRecord(JSON.stringify(matcher.hooks[0]));
+  if (typeof hook.command !== "string") throw new Error("expected command");
+  return hook.command;
+};
+
+const decodeSingleQuotedShellWord = (command: string): string => {
+  if (!command.startsWith("'") || !command.endsWith("'"))
+    throw new Error("expected one single-quoted shell word");
+  const segments = command.slice(1, -1).split("'\\''");
+  if (segments.some((segment) => segment.includes("'")))
+    throw new Error("unexpected shell syntax");
+  return segments.join("'");
+};
+
 const officialPlugin = (
   overrides: Partial<ClaudeCodeInstalledPlugin> = {},
 ): ClaudeCodeInstalledPlugin => ({
@@ -338,6 +361,59 @@ describe("Claude Code owned lifecycle", () => {
     }
     expect(text).toContain('"args": []');
     expect(text).not.toMatch(/[;&|`$<>]/u);
+  });
+
+  it.each([
+    "/isolated/space home",
+    "/isolated/semi;$(synthetic-canary)",
+    "/isolated/line\nbreak",
+    "/isolated/single'quote",
+    "/isolated/back\\slash",
+  ])("encodes a hostile launcher path as one POSIX shell word", (home) => {
+    const hostileInvocation = createOwnedHarnessHookInvocation({
+      agentscopeHome: home,
+      harnessType: "@agentscope/harness-claude-code",
+      hookDeadlineMilliseconds: 2_000,
+      platform: "posix",
+    });
+    const installed = createClaudeCodeInstallationPlanner(
+      "install",
+      hostileInvocation,
+      emptyInventory(false),
+    )(target());
+    const command = installedHookCommand(decisionText(installed));
+    expect(decodeSingleQuotedShellWord(command)).toBe(
+      hostileInvocation.launcherPath,
+    );
+    if (home.includes("single")) {
+      const basename = hostileInvocation.launcherPath.split("/").at(-1)!;
+      expect(command).toBe(`'/isolated/single'\\''quote/bin/${basename}'`);
+    }
+  });
+
+  it("rejects unbound or unrepresentable launcher dialects before mutation", () => {
+    for (const unsupportedInvocation of [
+      createOwnedHarnessHookInvocation({
+        agentscopeHome: "/isolated/windows-dialect",
+        harnessType: "@agentscope/harness-claude-code",
+        hookDeadlineMilliseconds: 2_000,
+        platform: "win32",
+      }),
+      createOwnedHarnessHookInvocation({
+        agentscopeHome: "/isolated/nul\0path",
+        harnessType: "@agentscope/harness-claude-code",
+        hookDeadlineMilliseconds: 2_000,
+        platform: "posix",
+      }),
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          unsupportedInvocation,
+          emptyInventory(false),
+        )(target()),
+      ).toEqual({ kind: "unsupported" });
+    }
   });
 });
 
@@ -921,6 +997,36 @@ describe("Claude Code hostile settings state", () => {
       ).toEqual({ kind: "unsupported" });
     }
   });
+});
+
+describe("Claude Code numeric settings preservation", () => {
+  it.each(["9007199254740993", "1e400", "-0", "1.0", "1e0", "1E+0", "1e+21"])(
+    "rejects an unstable unrelated numeric token %s",
+    (numericToken) => {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(`{"foreign":${numericToken}}`)),
+      ).toEqual({ kind: "unsupported" });
+    },
+  );
+
+  it.each(["0", "-1", "1.5", "1e-7"])(
+    "preserves a canonical finite numeric token %s",
+    (numericToken) => {
+      const decision = createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(`{"foreign":${numericToken}}`));
+      expect(decision.kind).toBe("replace");
+      expect(parseRecord(decisionText(decision)).foreign).toBe(
+        JSON.parse(numericToken),
+      );
+    },
+  );
 });
 
 describe("Claude Code hostile hook ownership state", () => {
