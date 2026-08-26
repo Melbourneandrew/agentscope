@@ -117,7 +117,10 @@ const coverageWorkerSource = String.raw`
       publish({ status: 0, stdout: "", stderr: "" });
       return;
     }
-    if (workerData.mode === "success-with-descendant") {
+    if (
+      workerData.mode === "success-with-descendant" ||
+      workerData.mode === "combined-output-overflow"
+    ) {
       const descendant = spawn(
         process.execPath,
         [
@@ -133,6 +136,32 @@ const coverageWorkerSource = String.raw`
       descendant.unref();
       while (!existsSync(workerData.readinessPath))
         await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+      if (workerData.mode === "combined-output-overflow") {
+        const sourceBytes = Math.floor(workerData.maximumOutputBytes * 0.55);
+        const streamOutput =
+          "SENSITIVE_COMBINED_STREAM_OUTPUT".padEnd(sourceBytes, "S");
+        const messageResult = {
+          status: 0,
+          stdout: "SENSITIVE_COMBINED_MESSAGE_OUTPUT".padEnd(sourceBytes, "M"),
+          stderr: "",
+        };
+        const streamBytes = Buffer.byteLength(streamOutput, "utf8");
+        const messageBytes = Buffer.byteLength(
+          JSON.stringify(messageResult),
+          "utf8",
+        );
+        if (
+          streamBytes >= workerData.maximumOutputBytes ||
+          messageBytes >= workerData.maximumOutputBytes ||
+          streamBytes + messageBytes <= workerData.maximumOutputBytes
+        )
+          throw new Error(
+            "combined output fixture does not cross only the aggregate ceiling",
+          );
+        process.stdout.write(streamOutput);
+        publish(messageResult);
+        await new Promise(() => {});
+      }
       publish({ status: 0, stdout: "", stderr: "" });
       return;
     }
@@ -276,26 +305,43 @@ const coverageWorkerSource = String.raw`
   });
 `;
 
-function observeCoverageWorkerOutput(worker, maximumOutputBytes) {
-  let streamBytes = 0;
+function createCoverageOutputBudget(maximumOutputBytes, overflow) {
+  let retainedBytes = 0;
+  let overflowed = false;
+  const markOverflowed = () => {
+    if (overflowed) return;
+    retainedBytes = 0;
+    overflowed = true;
+    overflow();
+  };
+  return {
+    retain(byteLength) {
+      if (overflowed) return false;
+      if (retainedBytes + byteLength <= maximumOutputBytes) {
+        retainedBytes += byteLength;
+        return true;
+      }
+      markOverflowed();
+      return false;
+    },
+    overflow: markOverflowed,
+    overflowed: () => overflowed,
+  };
+}
+
+function observeCoverageWorkerOutput(worker, outputBudget) {
   let workerStdout = "";
   let workerStderr = "";
-  let streamOverflowed = false;
-  let resolveStreamOverflow;
-  const streamOverflow = new Promise((resolveOverflow) => {
-    resolveStreamOverflow = resolveOverflow;
-  });
   const observe = (stream) => (chunk) => {
     const value = Buffer.isBuffer(chunk)
       ? chunk.toString("utf8")
       : String(chunk);
-    streamBytes += Buffer.byteLength(value, "utf8");
-    if (streamBytes <= maximumOutputBytes) {
+    const byteLength = Buffer.isBuffer(chunk)
+      ? chunk.byteLength
+      : Buffer.byteLength(value, "utf8");
+    if (outputBudget.retain(byteLength)) {
       if (stream === "stdout") workerStdout += value;
       else workerStderr += value;
-    } else if (!streamOverflowed) {
-      streamOverflowed = true;
-      resolveStreamOverflow({ kind: "stream-overflow" });
     }
   };
   worker.stdout.on("data", observe("stdout"));
@@ -305,8 +351,11 @@ function observeCoverageWorkerOutput(worker, maximumOutputBytes) {
     new Promise((resolveEnd) => worker.stderr.once("end", resolveEnd)),
   ]);
   return {
-    streamOverflow,
     streamsDrained,
+    discard() {
+      workerStdout = "";
+      workerStderr = "";
+    },
     read: () => ({ workerStdout, workerStderr }),
   };
 }
@@ -390,18 +439,32 @@ async function settleCoveragePolicyWorker({
 }) {
   let message;
   let workerFailure = false;
-  let resolveMessageOverflow;
-  const messageOverflow = new Promise((resolveOverflow) => {
-    resolveMessageOverflow = resolveOverflow;
+  let output;
+  let resolveOutputOverflow;
+  const outputOverflow = new Promise((resolveOverflow) => {
+    resolveOutputOverflow = resolveOverflow;
   });
-  const output = observeCoverageWorkerOutput(worker, maximumOutputBytes);
+  const outputBudget = createCoverageOutputBudget(maximumOutputBytes, () => {
+    message = undefined;
+    output?.discard();
+    resolveOutputOverflow({ kind: "output-overflow" });
+  });
+  output = observeCoverageWorkerOutput(worker, outputBudget);
   const closed = new Promise((resolveClose) => {
     worker.once("close", (code, signal) => resolveClose({ code, signal }));
   });
   worker.on("message", (value) => {
-    message = value;
-    if (value?.kind === "output-overflow")
-      resolveMessageOverflow({ kind: "message-overflow" });
+    if (value?.kind === "output-overflow") {
+      outputBudget.overflow();
+      return;
+    }
+    if (
+      value?.kind === "result" &&
+      outputBudget.retain(
+        Buffer.byteLength(JSON.stringify(value.value), "utf8"),
+      )
+    )
+      message = value;
   });
   worker.once("error", () => {
     workerFailure = true;
@@ -417,10 +480,9 @@ async function settleCoveragePolicyWorker({
     const first = await Promise.race([
       closed.then((value) => ({ kind: "close", value })),
       deadline,
-      output.streamOverflow,
-      messageOverflow,
+      outputOverflow,
     ]);
-    if (first.kind === "stream-overflow" || first.kind === "message-overflow") {
+    if (first.kind === "output-overflow") {
       await terminateCoverageChild({
         child: worker,
         closed,
@@ -459,17 +521,17 @@ async function settleCoveragePolicyWorker({
       });
       throw coverageWorkerError("Vitest coverage policy worker failed");
     }
+    if (outputBudget.overflowed()) {
+      throw coverageWorkerError(
+        "Vitest coverage policy output exceeded its byte ceiling; worker joined",
+      );
+    }
     if (
       workerFailure ||
       first.value.code !== 0 ||
       (message?.kind !== "result" && message?.kind !== "output-overflow")
     ) {
       throw coverageWorkerError("Vitest coverage policy worker failed");
-    }
-    if (message.kind === "output-overflow") {
-      throw coverageWorkerError(
-        "Vitest coverage policy output exceeded its byte ceiling; worker joined",
-      );
     }
     const { workerStdout, workerStderr } = output.read();
     return {
@@ -940,6 +1002,37 @@ test("coverage worker message overflow is content-free and joined", async () => 
     "Vitest coverage policy output exceeded its byte ceiling; worker joined",
   );
   assert.doesNotMatch(failure.message, /SENSITIVE_COVERAGE_MESSAGE_OUTPUT/);
+});
+
+test("coverage worker enforces one output budget across IPC and streams", async () => {
+  const fixture = createCoverageHangFixture();
+  let cleanupAllowed = true;
+  try {
+    const failure = await runCoveragePolicyWorker({
+      mode: "combined-output-overflow",
+      phaseDeadlineMs: 2_000,
+      maximumOutputBytes: 1_024,
+      readinessPath: fixture.heartbeatPath,
+    }).then(
+      () => assert.fail("combined coverage output unexpectedly succeeded"),
+      (error) => error,
+    );
+    assert.equal(failure.workerJoined, true);
+    assert.equal(
+      failure.message,
+      "Vitest coverage policy output exceeded its byte ceiling; worker joined",
+    );
+    assert.doesNotMatch(
+      failure.message,
+      /SENSITIVE_COMBINED_(?:MESSAGE|STREAM)/,
+    );
+    await assertHeartbeatStopped(fixture.heartbeatPath);
+  } catch (error) {
+    cleanupAllowed = error?.workerJoined !== false;
+    throw error;
+  } finally {
+    if (cleanupAllowed) fixture.cleanup();
+  }
 });
 
 test("coverage worker failure is content-free and joined", async () => {
