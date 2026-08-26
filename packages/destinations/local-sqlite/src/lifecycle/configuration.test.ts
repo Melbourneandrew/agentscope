@@ -19,7 +19,15 @@ import {
   bindLocalResourceLifecycleRecoveryContextForTesting,
   createLocalResourceLifecycleDeadlineForTesting,
 } from "@agentscope/destinations-core/testing";
-import { describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { z } from "zod";
 
 import {
@@ -38,6 +46,24 @@ import {
   type LocalSqliteLifecycleIntent,
   type LocalSqliteOwnershipReceipt,
 } from "./configuration.js";
+
+const controlledMonotonicClock = vi.hoisted(() => {
+  let milliseconds = 0;
+  const now = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => milliseconds);
+  return {
+    advance: (elapsedMilliseconds: number) => {
+      milliseconds += elapsedMilliseconds;
+    },
+    reset: () => {
+      milliseconds = 0;
+    },
+    restore: () => {
+      now.mockRestore();
+    },
+  };
+});
 
 const settingsSchema = z.strictObject({
   maximumAgeNanoseconds: z.string(),
@@ -225,6 +251,16 @@ const apply = async (
   };
 };
 
+beforeEach(() => {
+  controlledMonotonicClock.reset();
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+afterAll(() => {
+  controlledMonotonicClock.restore();
+});
+
 // eslint-disable-next-line max-lines-per-function -- one engine fixture shares exact phase and durable-record authority.
 describe("Local SQLite configuration lifecycle phase engine", () => {
   it.each([
@@ -321,12 +357,62 @@ describe("Local SQLite configuration lifecycle phase engine", () => {
     expect(hostile.result).toMatchObject({ ok: true, state: "configured" });
   });
 
-  it("aborts a blocked phase at the deadline before any later mutation", async () => {
+  it("does not confuse a pre-expired authority with in-stage cancellation", async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    let releaseInspection!: () => void;
+    let enterInspection!: () => void;
+    let stageSignal: AbortSignal | undefined;
+    const inspectionBlocked = new Promise<void>((resolve) => {
+      releaseInspection = resolve;
+    });
+    const inspectionEntered = new Promise<void>((resolve) => {
+      enterInspection = resolve;
+    });
+    const value = port(events);
+    const execution = apply(
+      "configure",
+      {
+        ...value,
+        inspect: async () => {
+          events.push("inspect-blocked");
+          enterInspection();
+          await inspectionBlocked;
+          return evidence;
+        },
+        stageConfigure: (_intent, _fence, signal) => {
+          stageSignal = signal;
+          return Promise.resolve();
+        },
+      },
+      undefined,
+      undefined,
+      undefined,
+      20,
+    );
+    await inspectionEntered;
+    const rejection = expect(execution).rejects.toMatchObject({
+      code: "destination.local-resource-handler.invalid",
+    });
+    controlledMonotonicClock.advance(20);
+    await vi.advanceTimersByTimeAsync(20);
+    await rejection;
+    expect(stageSignal).toBeUndefined();
+    expect(events).toEqual(["inspect-blocked"]);
+    releaseInspection();
+  });
+
+  it("aborts an entered phase at the deadline before any later mutation", async () => {
+    vi.useFakeTimers();
     const events: string[] = [];
     let releaseStage!: () => void;
+    let enterStage!: () => void;
     let stageSignal: AbortSignal | undefined;
     const blocked = new Promise<void>((resolve) => {
       releaseStage = resolve;
+    });
+    const stageEntered = new Promise<void>((resolve) => {
+      enterStage = resolve;
     });
     const value = port(events);
     const execution = apply(
@@ -336,6 +422,7 @@ describe("Local SQLite configuration lifecycle phase engine", () => {
         stageConfigure: (_intent, _fence, signal) => {
           events.push("stage-blocked");
           stageSignal = signal;
+          enterStage();
           return blocked;
         },
       },
@@ -353,7 +440,10 @@ describe("Local SQLite configuration lifecycle phase engine", () => {
         settled = true;
       },
     );
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await stageEntered;
+    expect(stageSignal?.aborted).toBe(false);
+    controlledMonotonicClock.advance(20);
+    await vi.advanceTimersByTimeAsync(20);
     expect(stageSignal?.aborted).toBe(true);
     expect(settled).toBe(false);
     releaseStage();
