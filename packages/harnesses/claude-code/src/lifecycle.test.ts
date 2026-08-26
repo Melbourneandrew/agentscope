@@ -336,9 +336,7 @@ describe("Claude Code owned lifecycle", () => {
       hooks: {
         Stop: [
           {
-            hooks: [
-              { type: "command", command: "/foreign/exporter", args: [] },
-            ],
+            hooks: [{ type: "command", command: "/usr/bin/printf", args: [] }],
           },
         ],
       },
@@ -352,7 +350,7 @@ describe("Claude Code owned lifecycle", () => {
     const installedText = decisionText(installed);
     const installedSettings = parseRecord(installedText);
     expect(installedSettings.theme).toBe("dark");
-    expect(installedText).toContain("/foreign/exporter");
+    expect(installedText).toContain("/usr/bin/printf");
     expect(installedText).toContain(invocation.launcherPath);
     expect(installedText).toContain(invocation.ownershipIdentity);
     expect(install(target(installedText))).toEqual({ kind: "unchanged" });
@@ -363,7 +361,7 @@ describe("Claude Code owned lifecycle", () => {
       emptyInventory(),
     );
     const uninstalledText = decisionText(uninstall(target(installedText)));
-    expect(uninstalledText).toContain("/foreign/exporter");
+    expect(uninstalledText).toContain("/usr/bin/printf");
     expect(uninstalledText).not.toContain(invocation.launcherPath);
     expect(parseRecord(uninstalledText).theme).toBe("dark");
   });
@@ -1676,7 +1674,7 @@ describe("Claude Code hook namespace bounds", () => {
           }),
         ),
       ).kind,
-    ).toBe("replace");
+    ).toBe("conflict");
     const unrelated = createClaudeCodeInstallationPlanner(
       "install",
       invocation,
@@ -1757,6 +1755,13 @@ describe("Claude Code closed executable classifier", () => {
       "ionice",
       "taskset",
       "trap",
+      "node",
+      "/usr/bin/node",
+      "python",
+      "python3",
+      "/usr/bin/python3",
+      "perl",
+      "ruby",
     ]) {
       expect(
         createClaudeCodeInstallationPlanner(
@@ -1776,12 +1781,11 @@ describe("Claude Code closed executable classifier", () => {
     }
   });
 
-  it("preserves only closed safe arguments or an opaque zero-argument executable", () => {
+  it("preserves only closed safe command forms", () => {
     for (const handler of [
       { type: "command", command: "printf", args: ["foreign"] },
       { type: "command", command: "/usr/bin/printf", args: ["foreign"] },
       { type: "command", command: "printf", shell: "bash" },
-      { type: "command", command: "/foreign/opaque", args: [] },
     ]) {
       expect(
         createClaudeCodeInstallationPlanner(
@@ -1793,6 +1797,8 @@ describe("Claude Code closed executable classifier", () => {
     }
     for (const handler of [
       { type: "command", command: "/foreign/unknown", args: ["argument"] },
+      { type: "command", command: "/foreign/opaque", args: [] },
+      { type: "command", command: "/foreign/opaque" },
       { type: "command", command: "/foreign/unknown argument" },
       { type: "command", command: "/foreign/opaque", shell: "bash" },
       { type: "command", command: "true", shell: "bash" },
@@ -1804,6 +1810,30 @@ describe("Claude Code closed executable classifier", () => {
           invocation,
           emptyInventory(),
         )(target(settingsWithHook("PreToolUse", handler))),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("rejects lexical aliases and same-basename launcher ambiguity", () => {
+    const basename = invocation.launcherPath.split("/").at(-1)!;
+    for (const command of [
+      invocation.launcherPath.replace("/bin/", "/bin/../bin/"),
+      `/foreign/${basename}`,
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(
+          target(
+            settingsWithHook("PreToolUse", {
+              type: "command",
+              command,
+              args: [],
+            }),
+          ),
+        ),
       ).toEqual({ kind: "conflict" });
     }
   });
@@ -2059,6 +2089,7 @@ describe("Claude Code hook mutation reconstruction", () => {
       { hooks: [{ type: "command", command: "foreign", async: "yes" }] },
       { hooks: [{ type: "command", command: "foreign", timeout: 0 }] },
       { hooks: [{ type: "command", command: "foreign", statusMessage: 1 }] },
+      { hooks: [{ type: "command", command: "printf" }], matcher: 1 },
       {
         hooks: [{ type: "command", command: "foreign" }],
         matcher: "m".repeat(4_097),

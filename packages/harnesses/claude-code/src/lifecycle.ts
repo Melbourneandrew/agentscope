@@ -583,6 +583,8 @@ const encodeClaudeCodeHookCommand = (
     !invocation.launcherPath.startsWith("/") ||
     basename === undefined ||
     !posixLauncherBasenamePattern.test(basename) ||
+    normalizePosixAbsolutePath(invocation.launcherPath) !==
+      invocation.launcherPath ||
     !posixExecutableStringIsRepresentable(invocation.launcherPath)
   )
     return undefined;
@@ -1186,9 +1188,11 @@ const posixDelegatingExecutableBasenames = new Set([
   "bash",
   "builtin",
   "busybox",
+  "bun",
   "chroot",
   "command",
   "dash",
+  "deno",
   "doas",
   "env",
   "eval",
@@ -1197,7 +1201,23 @@ const posixDelegatingExecutableBasenames = new Set([
   "ionice",
   "nice",
   "nohup",
+  "node",
+  "nodejs",
+  "osascript",
+  "perl",
+  "php",
+  "powershell",
+  "pwsh",
+  "pypy",
+  "pypy3",
+  "python",
+  "python2",
+  "python3",
+  "qjs",
+  "R",
+  "Rscript",
   "runuser",
+  "ruby",
   "setsid",
   "sh",
   "source",
@@ -1205,9 +1225,11 @@ const posixDelegatingExecutableBasenames = new Set([
   "su",
   "sudo",
   "taskset",
+  "tclsh",
   "timeout",
   "trap",
   "watch",
+  "wish",
   "xargs",
   "zsh",
 ]);
@@ -1215,6 +1237,26 @@ const safeSimpleCommandExecutables = new Set(["/usr/bin/printf", "printf"]);
 
 const executableBasename = (executable: string): string | undefined =>
   executable.split("/").at(-1);
+
+const normalizePosixAbsolutePath = (value: string): string | undefined => {
+  if (!value.startsWith("/")) return undefined;
+  const normalized: string[] = [];
+  for (const segment of value.split("/")) {
+    if (segment.length === 0 || segment === ".") continue;
+    if (segment === "..") normalized.pop();
+    else normalized.push(segment);
+  }
+  return `/${normalized.join("/")}`;
+};
+
+const executableClaimsLauncher = (
+  executable: string,
+  launcherPath: string,
+): boolean =>
+  executable === launcherPath ||
+  executableBasename(executable) === executableBasename(launcherPath) ||
+  normalizePosixAbsolutePath(executable) ===
+    normalizePosixAbsolutePath(launcherPath);
 
 const executableDelegates = (executable: string): boolean => {
   const basename = executableBasename(executable);
@@ -1316,16 +1358,19 @@ const commandClaimsExecutable = (
     const args = exactArrayValues(value.args);
     if (
       args === undefined ||
-      value.command === launcherPath ||
+      executableClaimsLauncher(value.command, launcherPath) ||
       executableDelegates(value.command)
     )
       return true;
-    return args.length > 0 && !safeSimpleCommandExecutables.has(value.command);
+    return !safeSimpleCommandExecutables.has(value.command);
   }
   if (value.shell === "powershell") return true;
   const parsed = parsePosixSimpleCommand(value.command);
-  if (parsed === undefined || parsed.executable === launcherPath) return true;
-  if (parsed.words.length === 1 && !Object.hasOwn(value, "shell")) return false;
+  if (
+    parsed === undefined ||
+    executableClaimsLauncher(parsed.executable, launcherPath)
+  )
+    return true;
   return (
     parsed.words[0] !== parsed.executable ||
     !safeSimpleCommandExecutables.has(parsed.executable)
