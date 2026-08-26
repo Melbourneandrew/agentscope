@@ -1,11 +1,24 @@
 export {
   createHarnessContractSuite,
-  deriveHarnessContractEvidenceDigests,
+  deriveHarnessComponentEvidenceDigest,
   HarnessContractAssertionError,
-  type HarnessContractAdapter,
+  type HarnessComponentContractAdapter,
   type HarnessContractCase,
+  type HarnessComponentEvidence,
+  type HarnessContractContextEvidence,
   type HarnessFixtureMapping,
   type HarnessHookTestBehavior,
-  type HarnessSanitizedFixture,
   type HarnessScenarioAdapter,
 } from "./testing-contract-suite.js";
+export {
+  activeNativeFixtureAuditWorkerCountForTest,
+  auditNativeFixtureInventory,
+  NativeFixtureGovernanceError,
+  parseHarnessSanitizedFixture,
+  serializeHarnessSanitizedFixture,
+  type HarnessNativeFixtureGovernance,
+  type HarnessNativeFixtureProvenance,
+  type HarnessSanitizedFixture,
+  type NativeFixtureInventoryEntry,
+  type NativeFixtureAuditTestPlan,
+} from "./native-fixture-governance.js";

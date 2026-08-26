@@ -3,8 +3,6 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { compileHarnessRegistry } from "./descriptor.js";
-import { discoverHarness } from "./discovery.js";
 import {
   applyHarnessInstallation,
   inspectHarnessInstallation,
@@ -16,14 +14,17 @@ import {
 } from "./launcher.js";
 import type {
   NativeCaptureBoundary,
+  NativeCheckpointRequest,
   NativeCheckpointResolver,
   NativeFieldProvenance,
   NativeUnavailableField,
 } from "./native-mapping.js";
-import type {
-  HarnessDescriptor,
-  HarnessSupportEvidenceManifest,
-} from "./types.js";
+import {
+  parseHarnessSanitizedFixture,
+  type HarnessSanitizedFixture,
+} from "./native-fixture-governance.js";
+import { parseStableSemver, stableSemverIsInRange } from "./semver.js";
+import type { HarnessDescriptor } from "./types.js";
 
 export type HarnessContractCase = Readonly<{
   name: string;
@@ -47,22 +48,6 @@ export type HarnessFixtureMapping = Readonly<{
   unavailable: readonly NativeUnavailableField[];
 }>;
 
-export type HarnessSanitizedFixture = Readonly<{
-  fixtureVersion: 1;
-  fixtureId: string;
-  harnessVersion: string;
-  nativeIdentityKind: "run" | "session" | "thread";
-  nativeIdentity: string;
-  sourceGeneration: number;
-  positionKind: "byte-offset" | "event-index" | "line" | "sequence";
-  availableStartPosition: number;
-  boundaryKind: "hook-invocation" | "session" | "transcript-range" | "turn";
-  boundaryId: string;
-  exclusiveEndPosition: number;
-  expectedFields: readonly string[];
-  sanitizedPayload: Readonly<Record<string, string | number | boolean>>;
-}>;
-
 export type HarnessScenarioAdapter = Readonly<{
   scenarioVersion: 1;
   scenarioId: string;
@@ -76,14 +61,29 @@ export type HarnessScenarioAdapter = Readonly<{
 
 export type HarnessHookTestBehavior = "success" | "failure" | "hang";
 
-export type HarnessContractAdapter = Readonly<{
+export type HarnessContractContextEvidence = Readonly<{
+  evidenceVersion: 1;
+  mappingArtifactDigest: string;
+  contextDigest: string;
+}>;
+
+export type HarnessComponentEvidence = Readonly<{
+  evidenceVersion: 1;
+  harnessType: string;
+  testedVersion: string;
+  fixtureId: string;
+  scenarioId: string;
+  evidenceSlot: string;
+  componentDigest: `component-sha256-${string}`;
+}>;
+
+export type HarnessComponentContractAdapter = Readonly<{
   descriptor: HarnessDescriptor;
-  supportEvidence: HarnessSupportEvidenceManifest;
+  componentEvidence: HarnessComponentEvidence;
   compatibleVersion: string;
-  unsupportedVersion: string;
   fixture: HarnessSanitizedFixture;
   scenario: HarnessScenarioAdapter;
-  contextEvidence: Uint8Array;
+  contextEvidence: HarnessContractContextEvidence;
   mapFixture: (resolver: NativeCheckpointResolver) => HarnessFixtureMapping;
   createInstallationPlanner: (
     operation: "install" | "migrate" | "uninstall",
@@ -98,12 +98,9 @@ export type HarnessContractAdapter = Readonly<{
 const digestPattern = /^sha256-[a-f0-9]{64}$/u;
 const idPattern = /^[a-z][a-z0-9-]{0,63}$/u;
 const packagePattern = /^@agentscope\/harness-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const forbiddenFixtureText =
-  /(?:bearer\s|api[_-]?key|access[_-]?token|auth[_-]?token|secret|password|\/Users\/|\/home\/|[A-Za-z]:\\)/iu;
 const shellSyntax = /(?:[;&|`$<>\n\r]|\$\(|\{\{)/u;
 const contractCaseNames = Object.freeze([
-  "harness:compatibility-evidence",
-  "harness:discovery",
+  "harness:component-evidence",
   "harness:sanitized-native-mapping",
   "harness:launcher-and-installation",
   "harness:fail-open-deadline",
@@ -129,73 +126,129 @@ const evidenceDigest = (value: unknown): string =>
     .update(JSON.stringify(canonicalEvidenceValue(value)))
     .digest("hex")}`;
 
-export const deriveHarnessContractEvidenceDigests = (
+const parseContextEvidence = (
+  value: unknown,
+): HarnessContractContextEvidence => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new HarnessContractAssertionError(
+      "harness.contract.context-evidence",
+    );
+  const { prototype, descriptors } = (() => {
+    try {
+      return {
+        prototype: Object.getPrototypeOf(value) as object | null,
+        descriptors: Object.getOwnPropertyDescriptors(value),
+      };
+    } catch {
+      throw new HarnessContractAssertionError(
+        "harness.contract.context-evidence",
+      );
+    }
+  })();
+  const keys = Reflect.ownKeys(descriptors);
+  const expected = [
+    "evidenceVersion",
+    "mappingArtifactDigest",
+    "contextDigest",
+  ];
+  if (
+    prototype !== Object.prototype ||
+    keys.length !== expected.length ||
+    keys.some((key) => typeof key !== "string" || !expected.includes(key))
+  )
+    throw new HarnessContractAssertionError(
+      "harness.contract.context-evidence",
+    );
+  const member = (key: string): unknown => {
+    const descriptor = descriptors[key];
+    if (descriptor === undefined || !("value" in descriptor))
+      throw new HarnessContractAssertionError(
+        "harness.contract.context-evidence",
+      );
+    return descriptor.value;
+  };
+  const evidenceVersion = member("evidenceVersion");
+  const mappingArtifactDigest = member("mappingArtifactDigest");
+  const contextDigest = member("contextDigest");
+  if (
+    evidenceVersion !== 1 ||
+    typeof mappingArtifactDigest !== "string" ||
+    !digestPattern.test(mappingArtifactDigest) ||
+    typeof contextDigest !== "string" ||
+    !digestPattern.test(contextDigest)
+  )
+    throw new HarnessContractAssertionError(
+      "harness.contract.context-evidence",
+    );
+  return Object.freeze({
+    evidenceVersion: 1 as const,
+    mappingArtifactDigest,
+    contextDigest,
+  });
+};
+
+export const deriveHarnessComponentEvidenceDigest = (
   fixture: HarnessSanitizedFixture,
   scenario: HarnessScenarioAdapter,
-): Readonly<{ contractSuiteDigest: string; realScenarioDigest: string }> =>
-  Object.freeze({
-    contractSuiteDigest: evidenceDigest({
-      contractVersion: 1,
-      cases: contractCaseNames,
-    }),
-    realScenarioDigest: evidenceDigest({ fixture, scenario }),
-  });
+  descriptor: HarnessDescriptor,
+  contextEvidence: unknown,
+): `component-sha256-${string}` => {
+  const boundContextEvidence = parseContextEvidence(contextEvidence);
+  return `component-${evidenceDigest({
+    evidenceVersion: 1,
+    cases: contractCaseNames,
+    descriptor,
+    fixture,
+    scenario,
+    contextEvidence: boundContextEvidence,
+  })}` as `component-sha256-${string}`;
+};
 
 const fixtureIsSanitized = (fixture: HarnessSanitizedFixture): boolean => {
   try {
-    const serialized = JSON.stringify(fixture);
-    return (
-      fixture.fixtureVersion === 1 &&
-      idPattern.test(fixture.fixtureId) &&
-      fixture.expectedFields.length > 0 &&
-      new Set(fixture.expectedFields).size === fixture.expectedFields.length &&
-      !forbiddenFixtureText.test(serialized)
-    );
+    parseHarnessSanitizedFixture(fixture);
+    return true;
   } catch {
     return false;
   }
 };
 
-const evidenceIsBound = (adapter: HarnessContractAdapter): boolean => {
-  const entry = adapter.supportEvidence.entries.find(
-    (candidate) =>
-      candidate.harnessType === adapter.descriptor.harnessType &&
-      candidate.testedVersion === adapter.compatibleVersion,
-  );
-  if (!entry) return false;
-  const expected = deriveHarnessContractEvidenceDigests(
+const componentEvidenceIsBound = (
+  adapter: HarnessComponentContractAdapter,
+): boolean => {
+  const evidence = adapter.componentEvidence;
+  const expected = deriveHarnessComponentEvidenceDigest(
     adapter.fixture,
     adapter.scenario,
+    adapter.descriptor,
+    adapter.contextEvidence,
   );
+  const compatibleVersion = parseStableSemver(adapter.compatibleVersion);
+  const owningRange =
+    compatibleVersion === undefined
+      ? undefined
+      : adapter.descriptor.compatibility.find((range) => {
+          const minimum = parseStableSemver(range.minimumInclusive);
+          const maximum = parseStableSemver(range.maximumExclusive);
+          return (
+            minimum !== undefined &&
+            maximum !== undefined &&
+            stableSemverIsInRange(compatibleVersion, minimum, maximum)
+          );
+        });
   return (
-    digestPattern.test(entry.contractSuiteDigest) &&
-    digestPattern.test(entry.realScenarioDigest) &&
-    entry.contractSuiteDigest === expected.contractSuiteDigest &&
-    entry.realScenarioDigest === expected.realScenarioDigest
+    owningRange !== undefined &&
+    owningRange.evidenceSlot === evidence.evidenceSlot &&
+    evidence.evidenceVersion === 1 &&
+    evidence.harnessType === adapter.descriptor.harnessType &&
+    evidence.testedVersion === adapter.compatibleVersion &&
+    evidence.fixtureId === adapter.fixture.fixtureId &&
+    evidence.scenarioId === adapter.scenario.scenarioId &&
+    evidence.evidenceSlot ===
+      adapter.fixture.governance.representative.evidenceSlot &&
+    evidence.componentDigest === expected
   );
 };
-
-const discoveryProbe = (adapter: HarnessContractAdapter, version: string) => ({
-  locateExecutable: () =>
-    Promise.resolve({
-      kind: "found" as const,
-      candidates: [{ path: "/opt/agentscope-contract/harness" }],
-    }),
-  readVersion: () =>
-    Promise.resolve({
-      kind: "observed" as const,
-      output: `${adapter.descriptor.executable.versionPrefix}${version}${adapter.descriptor.executable.versionSuffix}`,
-    }),
-  inspectConfiguration: () =>
-    Promise.resolve(
-      adapter.descriptor.configuration.locationSegments.map(
-        (_, locationIndex) => ({
-          locationIndex,
-          present: locationIndex === 0,
-        }),
-      ),
-    ),
-});
 
 const installationInput = (
   root: string,
@@ -209,7 +262,7 @@ const installationInput = (
 });
 
 const runInstallationContract = async (
-  adapter: HarnessContractAdapter,
+  adapter: HarnessComponentContractAdapter,
   invocation: OwnedHarnessHookInvocation,
 ): Promise<void> => {
   const root = await mkdtemp(join(tmpdir(), "agentscope-harness-contract-"));
@@ -316,7 +369,7 @@ const runInstallationContract = async (
 };
 
 const runDeadlineContract = async (
-  adapter: HarnessContractAdapter,
+  adapter: HarnessComponentContractAdapter,
 ): Promise<void> => {
   assert(
     (await adapter.runHook("success", new AbortController().signal)) ===
@@ -354,26 +407,33 @@ const resolvedAssertion = (operation: () => void): Promise<void> => {
   return Promise.resolve();
 };
 
-const runMappingContract = (adapter: HarnessContractAdapter): void => {
+const runMappingContract = (adapter: HarnessComponentContractAdapter): void => {
   assert(
     fixtureIsSanitized(adapter.fixture) &&
       adapter.fixture.harnessVersion === adapter.compatibleVersion,
     "harness.contract.fixture.sanitized",
   );
   let resolutions = 0;
+  let checkpointRequest: NativeCheckpointRequest | undefined;
   const mapping = adapter.mapFixture((request) => {
     resolutions += 1;
-    assert(
-      request.nativeIdentity === adapter.fixture.nativeIdentity &&
-        request.availableStartPosition ===
-          adapter.fixture.availableStartPosition,
-      "harness.contract.mapping.checkpoint",
-    );
+    checkpointRequest = request;
     return Object.freeze({
       disposition: "retained" as const,
       startPosition: request.availableStartPosition,
     });
   });
+  assert(
+    checkpointRequest !== undefined &&
+      checkpointRequest.nativeIdentity === adapter.fixture.nativeIdentity &&
+      checkpointRequest.nativeIdentityKind ===
+        adapter.fixture.nativeIdentityKind &&
+      checkpointRequest.sourceGeneration === adapter.fixture.sourceGeneration &&
+      checkpointRequest.positionKind === adapter.fixture.positionKind &&
+      checkpointRequest.availableStartPosition ===
+        adapter.fixture.availableStartPosition,
+    "harness.contract.mapping.checkpoint",
+  );
   const fields = [...mapping.provenance, ...mapping.unavailable].map(
     ({ field }) => field,
   );
@@ -382,6 +442,12 @@ const runMappingContract = (adapter: HarnessContractAdapter): void => {
       mapping.boundary.session.kind === "native-session" &&
       mapping.boundary.session.nativeIdentity ===
         adapter.fixture.nativeIdentity &&
+      mapping.boundary.session.nativeIdentityKind ===
+        adapter.fixture.nativeIdentityKind &&
+      mapping.boundary.generation === adapter.fixture.sourceGeneration &&
+      mapping.boundary.positionKind === adapter.fixture.positionKind &&
+      mapping.boundary.boundaryKind === adapter.fixture.boundaryKind &&
+      mapping.boundary.boundaryId === adapter.fixture.boundaryId &&
       mapping.boundary.startPosition ===
         adapter.fixture.availableStartPosition &&
       mapping.boundary.exclusiveEndPosition ===
@@ -392,7 +458,9 @@ const runMappingContract = (adapter: HarnessContractAdapter): void => {
   );
 };
 
-const runScenarioContract = (adapter: HarnessContractAdapter): void => {
+const runScenarioContract = (
+  adapter: HarnessComponentContractAdapter,
+): void => {
   const scenario = adapter.scenario;
   assert(
     scenario.scenarioVersion === 1 &&
@@ -403,6 +471,11 @@ const runScenarioContract = (adapter: HarnessContractAdapter): void => {
       packagePattern.test(scenario.harnessPackage) &&
       scenario.representativeVersion === adapter.compatibleVersion &&
       scenario.fixtureId === adapter.fixture.fixtureId &&
+      adapter.fixture.harnessId === scenario.harnessId &&
+      adapter.fixture.governance.representative.scenarioId ===
+        scenario.scenarioId &&
+      adapter.fixture.governance.representative.representativeVersion ===
+        scenario.representativeVersion &&
       scenario.tags.length > 0 &&
       scenario.commandArguments.every(
         (argument) => argument.length > 0 && !shellSyntax.test(argument),
@@ -412,41 +485,18 @@ const runScenarioContract = (adapter: HarnessContractAdapter): void => {
 };
 
 export const createHarnessContractSuite = (
-  adapter: HarnessContractAdapter,
+  adapter: HarnessComponentContractAdapter,
 ): readonly HarnessContractCase[] => {
-  const registry = compileHarnessRegistry(
-    [adapter.descriptor],
-    adapter.supportEvidence,
-  );
   return Object.freeze([
     Object.freeze({
-      name: "harness:compatibility-evidence",
+      name: "harness:component-evidence",
       run: () =>
         resolvedAssertion(() => {
-          assert(evidenceIsBound(adapter), "harness.contract.compatibility");
+          assert(
+            componentEvidenceIsBound(adapter),
+            "harness.contract.component-evidence",
+          );
         }),
-    }),
-    Object.freeze({
-      name: "harness:discovery",
-      run: async () => {
-        const compatible = await discoverHarness(
-          registry,
-          adapter.descriptor.harnessType,
-          discoveryProbe(adapter, adapter.compatibleVersion),
-        );
-        const unsupported = await discoverHarness(
-          registry,
-          adapter.descriptor.harnessType,
-          discoveryProbe(adapter, adapter.unsupportedVersion),
-        );
-        assert(
-          compatible.state === "installed" &&
-            compatible.reason === "compatible" &&
-            unsupported.state === "unsupported" &&
-            unsupported.reason === "version-unsupported",
-          "harness.contract.discovery",
-        );
-      },
     }),
     Object.freeze({
       name: "harness:sanitized-native-mapping",
