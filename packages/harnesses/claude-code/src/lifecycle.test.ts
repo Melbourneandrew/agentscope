@@ -1000,6 +1000,128 @@ describe("Claude Code malformed plugin fields", () => {
   });
 });
 
+describe("Claude Code bounded plugin inventory", () => {
+  it("admits every exact inventory boundary", () => {
+    const boundaryIdentity = "x".repeat(512);
+    expect(
+      inspectClaudeCodePluginOverlap({
+        settingsLayers: [
+          {
+            scope: "user",
+            targetPath: `/${"p".repeat(4_095)}`,
+            targetDigest,
+            targetExists: true,
+            enabledPlugins: Object.fromEntries(
+              Array.from({ length: 256 }, (_, index) => [
+                `plugin-${String(index).padStart(3, "0")}`,
+                false,
+              ]),
+            ),
+          },
+        ],
+        installedPlugins: [
+          orphanPlugin(boundaryIdentity, {
+            manifestName: "bounded",
+            hookEvents: ["e".repeat(128)],
+          }),
+        ],
+      }),
+    ).toEqual({ status: "absent" });
+    expect(
+      inspectClaudeCodePluginOverlap({
+        settingsLayers: [],
+        installedPlugins: Array.from({ length: 128 }, (_, index) =>
+          orphanPlugin(`bounded-${index}`),
+        ),
+      }),
+    ).toEqual({ status: "absent" });
+  });
+
+  it("rejects every inventory count and per-string overflow", () => {
+    const baseLayer = emptyInventory().settingsLayers[0]!;
+    const basePlugin = orphanPlugin("bounded");
+    const oversizedInventories: ClaudeCodePluginInventory[] = [
+      {
+        settingsLayers: [{ ...baseLayer, targetPath: `/${"p".repeat(4_096)}` }],
+        installedPlugins: [],
+      },
+      {
+        settingsLayers: [
+          { ...baseLayer, enabledPlugins: { ["k".repeat(513)]: false } },
+        ],
+        installedPlugins: [],
+      },
+      {
+        settingsLayers: [baseLayer],
+        installedPlugins: [orphanPlugin("i".repeat(513))],
+      },
+      {
+        settingsLayers: [baseLayer],
+        installedPlugins: [{ ...basePlugin, hookEvents: ["e".repeat(129)] }],
+      },
+      {
+        settingsLayers: [baseLayer],
+        installedPlugins: [
+          {
+            ...basePlugin,
+            hookEvents: Array.from({ length: 65 }, (_, index) => `e${index}`),
+          },
+        ],
+      },
+      {
+        settingsLayers: [
+          {
+            ...baseLayer,
+            enabledPlugins: Object.fromEntries(
+              Array.from({ length: 257 }, (_, index) => [`p${index}`, false]),
+            ),
+          },
+        ],
+        installedPlugins: [],
+      },
+      {
+        settingsLayers: [baseLayer],
+        installedPlugins: Array.from({ length: 129 }, (_, index) =>
+          orphanPlugin(`orphan-${index}`),
+        ),
+      },
+    ];
+    for (const inventory of oversizedInventories) {
+      expect(inspectClaudeCodePluginOverlap(inventory)).toEqual({
+        status: "ambiguous",
+      });
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          inventory,
+        )(target("{}")),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("rejects aggregate inventory budget overflow", () => {
+    const installedPlugins = Array.from({ length: 128 }, (_, index) => {
+      const identity = `${String(index).padStart(3, "0")}-${"x".repeat(120)}`;
+      return orphanPlugin(identity, { manifestName: "m".repeat(512) });
+    });
+    const inventory = {
+      settingsLayers: emptyInventory().settingsLayers,
+      installedPlugins,
+    };
+    expect(inspectClaudeCodePluginOverlap(inventory)).toEqual({
+      status: "ambiguous",
+    });
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        inventory,
+      )(target("{}")),
+    ).toEqual({ kind: "conflict" });
+  });
+});
+
 describe("Claude Code hostile settings state", () => {
   it("rejects ambiguous and malformed settings", () => {
     const ambiguous = {
@@ -1031,6 +1153,11 @@ describe("Claude Code hostile settings state", () => {
       '{"bad\\q":true}',
       '{"unterminated',
       '{"nested":[1,',
+      "{true:1}",
+      '{"a" 1}',
+      '{"a":1 "b":2}',
+      '{"a":[?]}',
+      '{"a":[1 2]}',
     ]) {
       expect(
         createClaudeCodeInstallationPlanner(
@@ -1170,6 +1297,112 @@ describe("Claude Code hook namespace ownership", () => {
         )(target(claimedSettings)),
       ).toEqual({ kind: "conflict" });
     }
+  });
+
+  it("rejects launcher and ownership strings at every nested leaf", () => {
+    const installed = decisionText(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(false),
+      )(target()),
+    );
+    const command = installedHookCommand(installed);
+    for (const claimedValue of [
+      invocation.launcherPath,
+      command,
+      invocation.ownershipIdentity,
+    ]) {
+      for (const operation of ["install", "uninstall"] as const) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            operation,
+            invocation,
+            emptyInventory(),
+          )(
+            target(JSON.stringify({ hooks: { Notification: [claimedValue] } })),
+          ),
+        ).toEqual({ kind: "conflict" });
+      }
+    }
+  });
+});
+
+describe("Claude Code hook grammar reconstruction", () => {
+  it("rejects malformed hook entries before every mutation", () => {
+    const ownedMetadata = {
+      contractVersion: invocation.contractVersion,
+      event: "Stop",
+      harnessType: invocation.harnessType,
+      ownershipIdentity: invocation.ownershipIdentity,
+    };
+    for (const malformed of [
+      null,
+      1,
+      "x",
+      { foo: "bar" },
+      { hooks: [null] },
+      { hooks: {}, agentscope: ownedMetadata },
+      { hooks: [{ type: "other", command: "foreign" }] },
+      { hooks: [{ type: "command", command: "" }] },
+      { hooks: [{ type: "command", command: "foreign", extra: true }] },
+      { hooks: [{ type: "command", command: "foreign", args: [1] }] },
+      { hooks: [{ type: "command", command: "foreign", async: "yes" }] },
+      { hooks: [{ type: "command", command: "foreign", timeout: 0 }] },
+      { hooks: [{ type: "command", command: "foreign", statusMessage: "" }] },
+      { hooks: [{ type: "command", command: "foreign" }], matcher: "" },
+    ]) {
+      for (const event of ["Stop", "Notification"] as const) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(JSON.stringify({ hooks: { [event]: [malformed] } }))),
+        ).toEqual({ kind: "conflict" });
+      }
+    }
+  });
+
+  it("rejects inconsistent target existence snapshots", () => {
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )({ ...target("{}"), exists: false }),
+    ).toEqual({ kind: "conflict" });
+  });
+
+  it("preserves a classified foreign shell-command matcher", () => {
+    const settings = JSON.stringify({
+      hooks: {
+        Notification: [
+          {
+            matcher: "foreign",
+            hooks: [
+              {
+                type: "command",
+                command: "printf foreign",
+                async: false,
+                once: true,
+                timeout: 5,
+                statusMessage: "foreign hook",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const installed = decisionText(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(settings)),
+    );
+    expect(installed).toContain("printf foreign");
+    expect(installed).toContain("foreign hook");
   });
 });
 

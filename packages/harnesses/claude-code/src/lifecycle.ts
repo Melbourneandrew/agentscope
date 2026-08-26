@@ -103,6 +103,14 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const digestPattern = /^[a-f0-9]{64}$/u;
 const maximumInventoryArrayLength = 1_024;
+const maximumSettingsLayerCount = 4;
+const maximumInstalledPluginCount = 128;
+const maximumEnabledPluginCount = 256;
+const maximumHookEventCount = 64;
+const maximumTargetPathBytes = 4_096;
+const maximumPluginFieldBytes = 512;
+const maximumHookEventBytes = 128;
+const maximumInventoryUtf8Bytes = 96 * 1_024;
 const maximumSettingsByteLength = 1_048_576;
 const maximumJsonDepth = 128;
 const claudeCodeHarnessType = claudeCodeDescriptor.harnessType;
@@ -120,6 +128,7 @@ const posixLauncherBasenamePattern =
 const unpairedSurrogatePattern =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 const dialectAuthorities = new WeakSet<object>();
+type InventoryBudget = { remainingBytes: number };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -244,8 +253,23 @@ const isClaudeCodeDialectAuthority = (
 ): value is ClaudeCodeDialectAuthority =>
   typeof value === "object" && value !== null && dialectAuthorities.has(value);
 
+const consumeInventoryString = (
+  value: unknown,
+  maximumBytes: number,
+  budget: InventoryBudget,
+): value is string => {
+  if (typeof value !== "string" || value.length === 0) return false;
+  if (value.length > maximumBytes) return false;
+  const byteLength = encoder.encode(value).byteLength;
+  if (byteLength > maximumBytes || byteLength > budget.remainingBytes)
+    return false;
+  budget.remainingBytes -= byteLength;
+  return true;
+};
+
 const parseEnabledPlugins = (
   value: unknown,
+  budget: InventoryBudget,
 ): Readonly<Record<string, boolean>> | undefined => {
   if (
     isProxy(value) ||
@@ -255,10 +279,11 @@ const parseEnabledPlugins = (
     return undefined;
   const descriptors = Object.getOwnPropertyDescriptors(value);
   if (
+    Object.keys(descriptors).length > maximumEnabledPluginCount ||
     Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
     Object.entries(descriptors).some(
       ([key, descriptor]) =>
-        key.length === 0 ||
+        !consumeInventoryString(key, maximumPluginFieldBytes, budget) ||
         !("value" in descriptor) ||
         typeof descriptor.value !== "boolean",
     )
@@ -274,6 +299,117 @@ const parseEnabledPlugins = (
   );
 };
 
+const parsePluginSettingsLayer = (
+  value: unknown,
+  budget: InventoryBudget,
+): ClaudeCodePluginSettingsLayer | undefined => {
+  const layer = exactRecordValues(value, [
+    "enabledPlugins",
+    "scope",
+    "targetDigest",
+    "targetExists",
+    "targetPath",
+  ]);
+  if (layer === undefined) return undefined;
+  const enabledPlugins = parseEnabledPlugins(layer.enabledPlugins, budget);
+  if (
+    !["user", "project", "local", "managed"].includes(layer.scope as string) ||
+    !consumeInventoryString(layer.scope, 16, budget) ||
+    !consumeInventoryString(layer.targetPath, maximumTargetPathBytes, budget) ||
+    !isAbsolute(layer.targetPath) ||
+    normalize(layer.targetPath) !== layer.targetPath ||
+    !consumeInventoryString(layer.targetDigest, 64, budget) ||
+    !digestPattern.test(layer.targetDigest) ||
+    typeof layer.targetExists !== "boolean" ||
+    enabledPlugins === undefined ||
+    (!layer.targetExists && Object.keys(enabledPlugins).length > 0)
+  )
+    return undefined;
+  return Object.freeze({
+    scope: layer.scope as ClaudeCodeSettingsScope,
+    targetPath: layer.targetPath,
+    targetDigest: layer.targetDigest,
+    targetExists: layer.targetExists,
+    enabledPlugins,
+  });
+};
+
+const parseInstalledPlugin = (
+  value: unknown,
+  budget: InventoryBudget,
+  installedIdentities: Set<string>,
+): ClaudeCodeInstalledPlugin | undefined => {
+  const plugin = exactRecordValues(value, [
+    "cachePluginId",
+    "directTraceExporter",
+    "hookEvents",
+    "hooksDigest",
+    "installedRegistryId",
+    "manifestDigest",
+    "manifestName",
+    "manifestVersion",
+    "pluginId",
+  ]);
+  if (plugin === undefined) return undefined;
+  const hookEvents = exactArrayValues(plugin.hookEvents);
+  if (
+    hookEvents === undefined ||
+    hookEvents.length > maximumHookEventCount ||
+    hookEvents.some(
+      (event) => !consumeInventoryString(event, maximumHookEventBytes, budget),
+    ) ||
+    [
+      plugin.pluginId,
+      plugin.installedRegistryId,
+      plugin.cachePluginId,
+      plugin.manifestName,
+      plugin.manifestVersion,
+    ].some(
+      (entry) =>
+        !consumeInventoryString(entry, maximumPluginFieldBytes, budget),
+    ) ||
+    !consumeInventoryString(plugin.manifestDigest, 71, budget) ||
+    !/^sha256-[a-f0-9]{64}$/u.test(plugin.manifestDigest) ||
+    !consumeInventoryString(plugin.hooksDigest, 71, budget) ||
+    !/^sha256-[a-f0-9]{64}$/u.test(plugin.hooksDigest) ||
+    typeof plugin.directTraceExporter !== "boolean"
+  )
+    return undefined;
+  const normalizedIdentities = new Set<string>();
+  for (const identity of [
+    plugin.pluginId,
+    plugin.installedRegistryId,
+    plugin.cachePluginId,
+  ]) {
+    const normalized = (identity as string)
+      .normalize("NFKC")
+      .trim()
+      .toLowerCase();
+    if (!consumeInventoryString(normalized, maximumPluginFieldBytes, budget))
+      return undefined;
+    normalizedIdentities.add(normalized);
+  }
+  if (
+    [...normalizedIdentities].some((identity) =>
+      installedIdentities.has(identity),
+    )
+  )
+    return undefined;
+  for (const identity of normalizedIdentities)
+    installedIdentities.add(identity);
+  return Object.freeze({
+    pluginId: plugin.pluginId as string,
+    installedRegistryId: plugin.installedRegistryId as string,
+    cachePluginId: plugin.cachePluginId as string,
+    manifestName: plugin.manifestName as string,
+    manifestVersion: plugin.manifestVersion as string,
+    manifestDigest: plugin.manifestDigest,
+    hooksDigest: plugin.hooksDigest,
+    hookEvents: Object.freeze(hookEvents as string[]),
+    directTraceExporter: plugin.directTraceExporter,
+  });
+};
+
 const parsePluginInventory = (
   value: unknown,
 ): ClaudeCodePluginInventory | undefined => {
@@ -284,102 +420,26 @@ const parsePluginInventory = (
   if (record === undefined) return undefined;
   const rawLayers = exactArrayValues(record.settingsLayers);
   const rawPlugins = exactArrayValues(record.installedPlugins);
-  if (rawLayers === undefined || rawPlugins === undefined) return undefined;
+  if (
+    rawLayers === undefined ||
+    rawPlugins === undefined ||
+    rawLayers.length > maximumSettingsLayerCount ||
+    rawPlugins.length > maximumInstalledPluginCount
+  )
+    return undefined;
+  const budget: InventoryBudget = { remainingBytes: maximumInventoryUtf8Bytes };
   const settingsLayers: ClaudeCodePluginSettingsLayer[] = [];
   for (const rawLayer of rawLayers) {
-    const layer = exactRecordValues(rawLayer, [
-      "enabledPlugins",
-      "scope",
-      "targetDigest",
-      "targetExists",
-      "targetPath",
-    ]);
+    const layer = parsePluginSettingsLayer(rawLayer, budget);
     if (layer === undefined) return undefined;
-    const enabledPlugins = parseEnabledPlugins(layer.enabledPlugins);
-    if (
-      !["user", "project", "local", "managed"].includes(
-        layer.scope as string,
-      ) ||
-      typeof layer.targetPath !== "string" ||
-      !isAbsolute(layer.targetPath) ||
-      normalize(layer.targetPath) !== layer.targetPath ||
-      typeof layer.targetDigest !== "string" ||
-      !digestPattern.test(layer.targetDigest) ||
-      typeof layer.targetExists !== "boolean" ||
-      enabledPlugins === undefined ||
-      (!layer.targetExists && Object.keys(enabledPlugins).length > 0)
-    )
-      return undefined;
-    settingsLayers.push(
-      Object.freeze({
-        scope: layer.scope as ClaudeCodeSettingsScope,
-        targetPath: layer.targetPath,
-        targetDigest: layer.targetDigest,
-        targetExists: layer.targetExists,
-        enabledPlugins,
-      }),
-    );
+    settingsLayers.push(layer);
   }
   const installedPlugins: ClaudeCodeInstalledPlugin[] = [];
   const installedIdentities = new Set<string>();
   for (const rawPlugin of rawPlugins) {
-    const plugin = exactRecordValues(rawPlugin, [
-      "cachePluginId",
-      "directTraceExporter",
-      "hookEvents",
-      "hooksDigest",
-      "installedRegistryId",
-      "manifestDigest",
-      "manifestName",
-      "manifestVersion",
-      "pluginId",
-    ]);
+    const plugin = parseInstalledPlugin(rawPlugin, budget, installedIdentities);
     if (plugin === undefined) return undefined;
-    const hookEvents = exactArrayValues(plugin.hookEvents);
-    if (
-      hookEvents === undefined ||
-      hookEvents.some((event) => typeof event !== "string") ||
-      [
-        plugin.pluginId,
-        plugin.installedRegistryId,
-        plugin.cachePluginId,
-        plugin.manifestName,
-        plugin.manifestVersion,
-      ].some((entry) => typeof entry !== "string" || entry.length === 0) ||
-      typeof plugin.manifestDigest !== "string" ||
-      !/^sha256-[a-f0-9]{64}$/u.test(plugin.manifestDigest) ||
-      typeof plugin.hooksDigest !== "string" ||
-      !/^sha256-[a-f0-9]{64}$/u.test(plugin.hooksDigest) ||
-      typeof plugin.directTraceExporter !== "boolean"
-    )
-      return undefined;
-    const normalizedIdentities = new Set(
-      [plugin.pluginId, plugin.installedRegistryId, plugin.cachePluginId].map(
-        (identity) =>
-          (identity as string).normalize("NFKC").trim().toLowerCase(),
-      ),
-    );
-    if (
-      [...normalizedIdentities].some((identity) =>
-        installedIdentities.has(identity),
-      )
-    )
-      return undefined;
-    for (const identity of normalizedIdentities)
-      installedIdentities.add(identity);
-    installedPlugins.push(
-      Object.freeze({
-        pluginId: plugin.pluginId as string,
-        installedRegistryId: plugin.installedRegistryId as string,
-        cachePluginId: plugin.cachePluginId as string,
-        manifestName: plugin.manifestName as string,
-        manifestVersion: plugin.manifestVersion as string,
-        manifestDigest: plugin.manifestDigest,
-        hooksDigest: plugin.hooksDigest,
-        hookEvents: Object.freeze(hookEvents as string[]),
-        directTraceExporter: plugin.directTraceExporter,
-      }),
-    );
+    installedPlugins.push(plugin);
   }
   if (
     settingsLayers.some((layer) => !layer.targetExists) &&
@@ -406,7 +466,6 @@ const effectiveEnabledPlugins = (
     seen.add(layer.scope);
     if (!layer.targetExists) continue;
     for (const [pluginId, state] of Object.entries(layer.enabledPlugins)) {
-      if (pluginId.length === 0 || typeof state !== "boolean") return undefined;
       enabled.set(
         pluginId,
         Object.freeze({
@@ -722,6 +781,89 @@ const hookArrayEquals = (value: unknown, command: string): boolean => {
   );
 };
 
+const boundedHookString = (value: unknown, maximumBytes: number): boolean =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= maximumBytes &&
+  encoder.encode(value).byteLength <= maximumBytes;
+
+const isAdmittedForeignHook = (value: unknown): boolean => {
+  if (
+    isProxy(value) ||
+    !isRecord(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  )
+    return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  const allowedKeys = new Set([
+    "args",
+    "async",
+    "command",
+    "once",
+    "statusMessage",
+    "timeout",
+    "type",
+  ]);
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
+    !keys.includes("command") ||
+    !keys.includes("type") ||
+    keys.some((key) => !allowedKeys.has(key))
+  )
+    return false;
+  const field = (key: string): unknown => descriptors[key]?.value as unknown;
+  if (
+    field("type") !== "command" ||
+    !boundedHookString(field("command"), 4_096)
+  )
+    return false;
+  if (keys.includes("args")) {
+    const arguments_ = exactArrayValues(field("args"));
+    if (
+      arguments_ === undefined ||
+      arguments_.length > 32 ||
+      arguments_.some(
+        (argument) =>
+          typeof argument !== "string" ||
+          argument.length > 512 ||
+          encoder.encode(argument).byteLength > 512,
+      )
+    )
+      return false;
+  }
+  if (
+    (["async", "once"] as const).some(
+      (key) => keys.includes(key) && typeof field(key) !== "boolean",
+    ) ||
+    (keys.includes("timeout") &&
+      (!Number.isSafeInteger(field("timeout")) ||
+        (field("timeout") as number) <= 0 ||
+        (field("timeout") as number) > 600)) ||
+    (keys.includes("statusMessage") &&
+      !boundedHookString(field("statusMessage"), 512))
+  )
+    return false;
+  return true;
+};
+
+const isAdmittedForeignMatcher = (value: unknown): boolean => {
+  const matcher =
+    exactRecordValues(value, ["hooks"]) ??
+    exactRecordValues(value, ["hooks", "matcher"]);
+  if (matcher === undefined) return false;
+  if (matcher.matcher !== undefined && !boundedHookString(matcher.matcher, 512))
+    return false;
+  const hooks = exactArrayValues(matcher.hooks);
+  return (
+    hooks !== undefined &&
+    hooks.length > 0 &&
+    hooks.length <= 64 &&
+    hooks.every((hook) => isAdmittedForeignHook(hook))
+  );
+};
+
 const ownedMatcherEquals = (
   value: unknown,
   invocation: OwnedHarnessHookInvocation,
@@ -744,17 +886,21 @@ const valueClaimsAgentscopeLauncher = (
   invocation: OwnedHarnessHookInvocation,
   command: string,
 ): boolean =>
-  Array.isArray(value)
-    ? value.some((member) =>
-        valueClaimsAgentscopeLauncher(member, invocation, command),
-      )
-    : isRecord(value) &&
-      (Object.hasOwn(value, "agentscope") ||
-        value.command === command ||
-        value.command === invocation.launcherPath ||
-        Object.values(value).some((member) =>
+  typeof value === "string"
+    ? value === invocation.launcherPath ||
+      value === command ||
+      value === invocation.ownershipIdentity
+    : Array.isArray(value)
+      ? value.some((member) =>
           valueClaimsAgentscopeLauncher(member, invocation, command),
-        ));
+        )
+      : isRecord(value) &&
+        (Object.hasOwn(value, "agentscope") ||
+          value.command === command ||
+          value.command === invocation.launcherPath ||
+          Object.values(value).some((member) =>
+            valueClaimsAgentscopeLauncher(member, invocation, command),
+          ));
 
 const editHooks = (
   settings: Record<string, unknown>,
@@ -765,18 +911,28 @@ const editHooks = (
   const hooks = settings.hooks;
   if (hooks !== undefined && !isRecord(hooks)) return "conflict";
   const target = hooks ?? {};
-  if (
-    Object.entries(target).some(
-      ([event, value]) =>
-        !governedLifecycleEvents.has(event) &&
-        valueClaimsAgentscopeLauncher(value, invocation, command),
-    )
-  )
-    return "conflict";
+  for (const [event, entries] of Object.entries(target)) {
+    if (!Array.isArray(entries)) return "conflict";
+    for (const entry of entries) {
+      const owned =
+        governedLifecycleEvents.has(event) &&
+        ownedMatcherEquals(
+          entry,
+          invocation,
+          event as ClaudeCodeLifecycleEvent,
+          command,
+        );
+      if (
+        !owned &&
+        (valueClaimsAgentscopeLauncher(entry, invocation, command) ||
+          !isAdmittedForeignMatcher(entry))
+      )
+        return "conflict";
+    }
+  }
   let ownedEventCount = 0;
   for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS) {
     const entries = target[event];
-    if (entries !== undefined && !Array.isArray(entries)) return "conflict";
     const current: readonly unknown[] =
       entries === undefined ? [] : (entries as readonly unknown[]);
     const owned = current.filter((entry) =>
@@ -856,7 +1012,9 @@ const targetLayerAgrees = (
   const visibleEnabledPlugins =
     settings.enabledPlugins === undefined
       ? Object.freeze({})
-      : parseEnabledPlugins(settings.enabledPlugins);
+      : parseEnabledPlugins(settings.enabledPlugins, {
+          remainingBytes: maximumInventoryUtf8Bytes,
+        });
   if (visibleEnabledPlugins === undefined) return false;
   const boundLayers = inventory.settingsLayers.filter(
     (layer) =>
