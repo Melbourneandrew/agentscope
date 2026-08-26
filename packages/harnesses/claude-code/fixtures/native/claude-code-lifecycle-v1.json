@@ -1,0 +1,69 @@
+{
+  "availableStartPosition": 0,
+  "boundaryId": "claude-session-v1",
+  "boundaryKind": "session",
+  "exclusiveEndPosition": 5,
+  "expectedFields": [
+    "error.type",
+    "llm.model_name",
+    "llm.provider",
+    "llm.system",
+    "tool.id",
+    "tool.name"
+  ],
+  "fixtureId": "claude-code-lifecycle-v1",
+  "fixtureVersion": 1,
+  "governance": {
+    "license": {
+      "redistribution": "reviewed-for-repository",
+      "reviewedLicenseId": "Apache-2.0",
+      "sourceReference": "https://github.com/Melbourneandrew/agentscope/blob/main/LICENSE"
+    },
+    "provenance": {
+      "artifactAuthority": {
+        "reason": "independent-integrity-unavailable",
+        "status": "unresolved"
+      },
+      "captureKind": "synthetic",
+      "captureRecipe": "claude-code-lifecycle-v1",
+      "sourceReference": "urn:agentscope:synthetic:claude-code-lifecycle-v1"
+    },
+    "redaction": {
+      "classification": "sanitized-native-fixture",
+      "profileVersion": 1,
+      "rawContentRetained": false,
+      "removedCategories": [
+        "credentials",
+        "raw-transcript",
+        "terminal-output",
+        "user-content",
+        "user-paths"
+      ]
+    },
+    "representative": {
+      "evidenceSlot": "claude-code-2-1-245-component",
+      "representativeVersion": "2.1.245",
+      "scenarioId": "claude-code-print-v1"
+    },
+    "review": {
+      "references": [
+        "bead:agentscope-vah.11.2.1",
+        "blueprint:claude-code-adr-006"
+      ],
+      "reviewedAt": "2026-08-26",
+      "status": "approved"
+    }
+  },
+  "harnessId": "claude-code",
+  "harnessVersion": "2.1.245",
+  "nativeIdentity": "claude-session-v1",
+  "nativeIdentityKind": "session",
+  "positionKind": "sequence",
+  "sanitizedPayload": {
+    "hook_event_count": 5,
+    "interface": "print-stream-json",
+    "lifecycle": "session-turn-tool",
+    "model_provider": "anthropic"
+  },
+  "sourceGeneration": 1
+}
