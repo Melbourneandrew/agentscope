@@ -1297,7 +1297,8 @@ const parsePosixSimpleCommand = (
       }
       if (character === "\\") {
         const next = command[position + 1];
-        if (next === undefined || next === "\n") return undefined;
+        if (next === undefined || next === "\n" || next === "\r")
+          return undefined;
         if (["$", "`", '"', "\\"].includes(next)) {
           word += next;
           position += 1;
@@ -1321,7 +1322,8 @@ const parsePosixSimpleCommand = (
     else if (character === '"') quote = "double";
     else if (character === "\\") {
       const next = command[position + 1];
-      if (next === undefined || next === "\n") return undefined;
+      if (next === undefined || next === "\n" || next === "\r")
+        return undefined;
       word += next;
       position += 1;
     } else word += character;

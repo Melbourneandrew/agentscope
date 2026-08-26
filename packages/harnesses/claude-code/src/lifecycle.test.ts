@@ -1901,6 +1901,8 @@ describe("Claude Code executable safety", () => {
       "true | printf foreign",
       "true\nprintf foreign",
       "true\rprintf foreign",
+      "printf foo\\\rbar",
+      'printf "foo\\\rbar"',
       `true; ${invocation.launcherPath}`,
       `true && ${invocation.launcherPath}`,
       `true | ${invocation.launcherPath}`,
