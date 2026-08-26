@@ -269,8 +269,16 @@ test(
 );
 
 test("Vitest coverage rejects a seeded untested production module", () => {
-  const path = join(repositoryRoot, "packages/testkit/src/coverage-seed.ts");
+  let seedRoot;
+  let reportRoot;
   try {
+    seedRoot = mkdtempSync(
+      join(repositoryRoot, "packages/testkit/src/coverage-policy-seed-"),
+    );
+    reportRoot = mkdtempSync(
+      join(tmpdir(), "agentscope-coverage-policy-report-"),
+    );
+    const path = join(seedRoot, "index.ts");
     writeFileSync(
       path,
       Array.from(
@@ -280,12 +288,28 @@ test("Vitest coverage rejects a seeded untested production module", () => {
     );
     const result = spawnSync(
       "pnpm",
-      ["--filter", "@agentscope/testkit", "coverage"],
+      [
+        "--filter",
+        "@agentscope/testkit",
+        "exec",
+        "vitest",
+        "run",
+        "--config",
+        "../../vitest.config.ts",
+        "--coverage",
+        `--coverage.reportsDirectory=${reportRoot}`,
+      ],
       { cwd: repositoryRoot, encoding: "utf8" },
     );
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}${result.stderr}`, /ERROR: Coverage for/);
   } finally {
-    rmSync(path, { force: true });
+    try {
+      if (seedRoot !== undefined)
+        rmSync(seedRoot, { recursive: true, force: true });
+    } finally {
+      if (reportRoot !== undefined)
+        rmSync(reportRoot, { recursive: true, force: true });
+    }
   }
 });
