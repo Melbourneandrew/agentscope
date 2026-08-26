@@ -34,8 +34,8 @@ Every file uses `fixtureVersion: 1`, canonical JSON from
 
 `LicenseRef-Agentscope-Synthetic` applies only to a wholly project-authored,
 sanitized fixture containing no copied vendor artifact, transcript, terminal
-output, prompt, response, or other vendor content. It records the human-reviewed
-decision to retain that concrete synthetic test material in this repository. It
+output, prompt, response, or other vendor content. It records the independently
+reviewed decision to retain that concrete synthetic test material in this repository. It
 does not claim vendor redistribution permission and is not a license grant for
 the repository's source code or any other file.
 
@@ -51,7 +51,7 @@ external vendor license source. It cannot use this repository's governance
 document as permission. Structural validation rejects any direct URL whose
 recursively decoded path names this governance document, regardless of host,
 fragment, query, or raw-content spelling. Redirect targets and other external
-resolution remain facts for the exact-PR human reviews rather than the parser.
+resolution remain facts for the exact-PR agent reviews rather than the parser.
 
 ## Sanitization and review
 
@@ -62,19 +62,33 @@ safe integers needed by the mapping oracle. Do not replace removed content with
 realistic user prose.
 
 The redaction metadata attests all mandatory removed categories. Exactly two
-distinct, structurally valid GitHub pull-request review references and an
-approval date are required, in privacy-review then redistribution-review order.
-Each human review inspects the concrete canonical fixture and its cited
+independent agent review records are required, in privacy then redistribution
+order. Each record names one role, one review task identity, one review execution
+identity, its submitted timestamp and GitHub review or comment reference, and
+the exact reviewed PR head SHA and fixture Git-blob SHA. Both records must pin
+the same immutable reviewed snapshot; their roles, task identities, execution
+identities, timestamps, and references must remain distinct, with the privacy
+review submitted first. The authenticated GitHub actor transports the record
+but is never the reviewer identity.
+
+The reviewed snapshot precedes the metadata-only commit that embeds these
+records. The embedded fields are therefore named `reviewedHeadSha` and
+`reviewedFixtureBlobSha`: they do not describe the follow-up commit or its new
+fixture blob. That metadata-only follow-up becomes authoritative only after
+focused policy replay, two fresh whole-range reviews, exact-head CI, and merge.
+Each agent review inspects the concrete reviewed fixture snapshot and its cited
 provenance/license sources; a generic policy, schema, pull request, issue, or
 governance-document citation does not substitute for either concrete-fixture
 review.
 
-Parser and scanner success establish bounded canonical structure only. They do
-not authenticate that a Git commit, URL, pull request, review, reviewer identity,
-or legal permission exists; they do not prove reviewer independence or approve
-redistribution. The two exact-PR human reviewers and final merge certification
-establish those external facts. A fabricated but structurally valid URL remains
-invalid governance even though the local parser cannot distinguish it.
+Parser and scanner success establish bounded canonical structure and tuple
+consistency only. They do not authenticate that a Git head, blob, URL, pull
+request, review, task execution, reviewer identity, timestamp, or legal
+permission exists; they do not prove reviewer independence or approve
+redistribution. The two exact-PR agent review executions and final review/merge
+authority establish those external facts. A fabricated but structurally valid
+record remains invalid governance even though the local parser cannot
+distinguish it.
 
 ## Component representative linkage
 

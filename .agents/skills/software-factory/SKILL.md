@@ -7,6 +7,17 @@ description: Use when creating or revising Software Factory requirements, bluepr
 
 Software Factory keeps product intent, technical intent, and delivery work connected.
 
+## Agentscope storage boundary
+
+Create and revise every Agentscope Software Factory record locally as a file in
+this repository. Never call or write through a remote Software Factory MCP or
+external Software Factory document store for this project. An external record
+is non-authoritative even if it uses the expected schema or identifiers.
+
+Keep delivery sequencing, milestone composition, task ownership, dependencies,
+and blockers in Beads. Do not encode release sequencing or temporary milestone
+scope as product requirements or Blueprints.
+
 ## Records
 
 - **Product Overview Documents** describe product-wide why and what: business problem, current state, personas, product description, success metrics, and technical requirements.
@@ -19,11 +30,11 @@ Requirements state what must be true for users. Blueprints record durable techni
 
 - **Requirements own external product truth.** Put user-visible behavior, supported capabilities, compatibility promises, and the rules that bound release support claims in Product Overview Documents or FRDs.
 - **Blueprints own durable internal architecture.** Record the technical decisions that implementations must preserve to satisfy the requirements, independent of a particular delivery sequence.
-- **ROADMAP and Beads own delivery sequencing.** Put release milestones, alpha or version admission subsets, implementation and merge order, rollout stages, dependencies, and project sequencing there.
+- **Beads owns delivery coordination.** Put release milestones, alpha or version admission subsets, implementation and merge order, rollout stages, ownership, dependencies, blockers, and project sequencing there.
 
-A ROADMAP entry or Bead may sequence a narrower milestone, but it cannot replace or weaken a requirement or justify divergence from a Blueprint. If user-facing product truth or durable architecture must change, revise the owning record through its separate approval process before implementation.
+A Bead may sequence a narrower milestone, but it cannot replace or weaken a requirement or justify divergence from a Blueprint. If user-facing product truth or durable architecture must change, revise the owning record through its separate approval process before implementation.
 
-For example, “a release may advertise only harness versions and execution modes backed by its release support manifest” is requirement-owned product truth. “For version 0.1.0, certify Codex, Claude Code, and Cursor first while the remaining harnesses stay open for a later milestone” is ROADMAP/Beads delivery sequencing.
+For example, “a release may advertise only harness versions and execution modes backed by its release support manifest” is requirement-owned product truth. The exact harnesses scheduled for a milestone, their owners, merge order, and blockers are Beads-only delivery state.
 
 Before revising a requirement or Blueprint, read the relevant guide in this directory.
 
