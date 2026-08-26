@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { realpathSync, renameSync } from "node:fs";
 import { lstat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { createInterface } from "node:readline";
 import { basename, dirname, parse, resolve } from "node:path";
@@ -722,12 +724,12 @@ export const serializeHarnessSanitizedFixture = (
   fixture: HarnessSanitizedFixture,
 ): string => `${JSON.stringify(canonicalValue(fixture), null, 2)}\n`;
 
-export type NativeFixtureAuditEvent =
+type NativeFixtureAuditEvent =
   | "lexical-ancestry-before-capability"
   | "root-capability-acquired"
   | "root-capability-before-release";
 
-export type NativeFixtureAuditDirective =
+type NativeFixtureAuditDirective =
   | "authority-expiry"
   | "malformed-terminal"
   | "missing-terminal"
@@ -737,34 +739,164 @@ export type NativeFixtureAuditDirective =
   | "timeout-child"
   | undefined;
 
-export type NativeFixtureAuditObserver = (
-  event: NativeFixtureAuditEvent,
-  path: string,
-  childProcessId?: number,
-) => NativeFixtureAuditDirective | void;
+type NativeFixtureAuditTestPlanDescriptor =
+  | Readonly<{
+      kind: "worker-directive";
+      directive: Exclude<NativeFixtureAuditDirective, undefined>;
+    }>
+  | Readonly<{
+      kind: "swap-root-before-capability" | "swap-root-during-scan";
+      replacementRoot: string;
+      heldRoot: string;
+    }>
+  | Readonly<{
+      kind: "hold-root-before-capability";
+      heldRoot: string;
+    }>
+  | Readonly<{ kind: "signal-before-release" }>;
 
-const notifyAuditObserver = (
-  observer: NativeFixtureAuditObserver | undefined,
-  event: NativeFixtureAuditEvent,
-  path: string,
-  childProcessId?: number,
-): NativeFixtureAuditDirective | undefined => {
-  const directive = observer?.(event, path, childProcessId);
-  if (directive === undefined) return undefined;
-  if (event !== "root-capability-acquired")
-    fail("harness.fixture.inventory.observer");
-  switch (directive) {
-    case "authority-expiry":
-    case "malformed-terminal":
-    case "missing-terminal":
-    case "nonzero-exit":
-    case "oversized-output":
-    case "terminate-child":
-    case "timeout-child":
-      return directive;
-    default:
-      return fail("harness.fixture.inventory.observer");
+declare const nativeFixtureAuditTestPlanBrand: unique symbol;
+export type NativeFixtureAuditTestPlan = string & {
+  readonly [nativeFixtureAuditTestPlanBrand]: true;
+};
+
+const physicalTemporaryRoot = realpathSync(tmpdir());
+const activeAuditWorkerPids = new Set<number>();
+
+export const activeNativeFixtureAuditWorkerCountForTest = (): number =>
+  activeAuditWorkerPids.size;
+
+const testPath = (value: unknown): string => {
+  if (
+    typeof value === "string" &&
+    value.length <= 1_024 &&
+    resolve(value) === value &&
+    value.startsWith(`${physicalTemporaryRoot}/agentscope-native-fixtures-`)
+  )
+    return value;
+  return fail("harness.fixture.inventory.test-plan");
+};
+
+const parseAuditTestPlan = (
+  value: unknown,
+  auditRoot: string,
+): NativeFixtureAuditTestPlanDescriptor | undefined => {
+  if (value === undefined) return undefined;
+  testPath(auditRoot);
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8_192)
+    return fail("harness.fixture.inventory.test-plan");
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(value) as unknown;
+  } catch {
+    return fail("harness.fixture.inventory.test-plan");
   }
+  const snapshot = record(
+    decoded,
+    undefined,
+    "harness.fixture.inventory.test-plan",
+  );
+  if (snapshot.kind === "worker-directive") {
+    exactKeys(
+      snapshot,
+      ["kind", "directive"],
+      "harness.fixture.inventory.test-plan",
+    );
+    switch (snapshot.directive) {
+      case "authority-expiry":
+      case "malformed-terminal":
+      case "missing-terminal":
+      case "nonzero-exit":
+      case "oversized-output":
+      case "terminate-child":
+      case "timeout-child":
+        return Object.freeze({
+          kind: "worker-directive" as const,
+          directive: snapshot.directive,
+        });
+      default:
+        return fail("harness.fixture.inventory.test-plan");
+    }
+  }
+  if (snapshot.kind === "hold-root-before-capability") {
+    exactKeys(
+      snapshot,
+      ["kind", "heldRoot"],
+      "harness.fixture.inventory.test-plan",
+    );
+    return Object.freeze({
+      kind: "hold-root-before-capability" as const,
+      heldRoot: testPath(snapshot.heldRoot),
+    });
+  }
+  if (
+    snapshot.kind === "swap-root-before-capability" ||
+    snapshot.kind === "swap-root-during-scan"
+  ) {
+    exactKeys(
+      snapshot,
+      ["kind", "replacementRoot", "heldRoot"],
+      "harness.fixture.inventory.test-plan",
+    );
+    return Object.freeze({
+      kind: snapshot.kind,
+      replacementRoot: testPath(snapshot.replacementRoot),
+      heldRoot: testPath(snapshot.heldRoot),
+    });
+  }
+  if (snapshot.kind === "signal-before-release") {
+    exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
+    return Object.freeze({ kind: "signal-before-release" as const });
+  }
+  return fail("harness.fixture.inventory.test-plan");
+};
+
+const applyAuditTestPlan = (
+  plan: NativeFixtureAuditTestPlanDescriptor | undefined,
+  event: NativeFixtureAuditEvent,
+  root: string,
+  authorityDeadline: number,
+  childProcessId?: number,
+): void => {
+  if (plan === undefined) return;
+  if (performance.now() >= authorityDeadline)
+    fail("harness.fixture.inventory.test-plan");
+  try {
+    if (
+      plan?.kind === "hold-root-before-capability" &&
+      event === "lexical-ancestry-before-capability"
+    ) {
+      renameSync(root, plan.heldRoot);
+    } else if (
+      plan?.kind === "swap-root-before-capability" &&
+      event === "lexical-ancestry-before-capability"
+    ) {
+      renameSync(root, plan.heldRoot);
+      renameSync(plan.replacementRoot, root);
+    } else if (
+      plan?.kind === "swap-root-during-scan" &&
+      event === "root-capability-acquired"
+    ) {
+      renameSync(root, plan.heldRoot);
+      renameSync(plan.replacementRoot, root);
+    } else if (
+      plan?.kind === "swap-root-during-scan" &&
+      event === "root-capability-before-release"
+    ) {
+      renameSync(root, plan.replacementRoot);
+      renameSync(plan.heldRoot, root);
+    } else if (
+      plan?.kind === "signal-before-release" &&
+      event === "root-capability-before-release" &&
+      childProcessId !== undefined
+    ) {
+      process.kill(childProcessId, "SIGKILL");
+    }
+  } catch {
+    fail("harness.fixture.inventory.test-plan");
+  }
+  if (performance.now() >= authorityDeadline)
+    fail("harness.fixture.inventory.test-plan");
 };
 
 type AncestorIdentity = Readonly<{
@@ -1075,15 +1207,23 @@ const spawnCapabilityWorker = (root: string, signal: AbortSignal) =>
 const acquireCapabilitySnapshot = async (
   root: string,
   expectedRoot: AncestorIdentity,
-  observer?: NativeFixtureAuditObserver,
+  authorityDeadline: number,
+  testPlan?: NativeFixtureAuditTestPlanDescriptor,
 ): Promise<readonly CapabilitySnapshotFile[]> => {
-  const authorityDeadline = performance.now() + 10_000;
   const controller = new AbortController();
   const abortWork = (): void => {
     controller.abort();
   };
-  const workTimeout = setTimeout(abortWork, 9_000);
+  const workTimeout = setTimeout(
+    abortWork,
+    Math.max(0, authorityDeadline - performance.now() - 1_000),
+  );
   const child = spawnCapabilityWorker(root, controller.signal);
+  const applyPlan = (event: NativeFixtureAuditEvent): void => {
+    applyAuditTestPlan(testPlan, event, root, authorityDeadline, child.pid);
+  };
+  /* v8 ignore next -- a successfully spawned Node child always exposes pid. */
+  if (child.pid !== undefined) activeAuditWorkerPids.add(child.pid);
   let childError: Error | undefined;
   const settlement = new Promise<CapabilitySettlement>((resolveSettlement) => {
     child.once("error", (error) => {
@@ -1120,12 +1260,9 @@ const acquireCapabilitySnapshot = async (
       ready.ino !== String(expectedRoot.ino)
     )
       fail("harness.fixture.inventory.ancestor-identity");
-    const directive = notifyAuditObserver(
-      observer,
-      "root-capability-acquired",
-      root,
-      child.pid,
-    );
+    applyPlan("root-capability-acquired");
+    const directive =
+      testPlan?.kind === "worker-directive" ? testPlan.directive : undefined;
     const forceAuthorityExpiry = dispatchCapabilityDirective(
       directive,
       (command) => {
@@ -1152,7 +1289,7 @@ const acquireCapabilitySnapshot = async (
     if (snapshotLine.done || snapshot.kind !== "snapshot")
       fail("harness.fixture.inventory.capability");
     const decodedFiles = decodeCapabilityFiles(snapshot.files);
-    notifyAuditObserver(observer, "root-capability-before-release", root);
+    applyPlan("root-capability-before-release");
     child.stdin.end("release\n");
     const terminalLine = await lines.next();
     const terminal = record(
@@ -1186,26 +1323,32 @@ const acquireCapabilitySnapshot = async (
         child.kill("SIGKILL");
       await settlement;
     }
+    /* v8 ignore next -- the same successfully spawned child retains its pid. */
+    if (child.pid !== undefined) activeAuditWorkerPids.delete(child.pid);
   }
 };
 
 export const auditNativeFixtureInventory = async (
   harnessPackagesRoot: string,
-  observer?: NativeFixtureAuditObserver,
+  testPlanInput?: NativeFixtureAuditTestPlan,
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
   const lexicalRoot = resolve(harnessPackagesRoot);
+  const authorityDeadline = performance.now() + 10_000;
+  const testPlan = parseAuditTestPlan(testPlanInput, lexicalRoot);
   const ancestry = await authenticateLexicalAncestry(lexicalRoot);
-  notifyAuditObserver(
-    observer,
+  applyAuditTestPlan(
+    testPlan,
     "lexical-ancestry-before-capability",
     lexicalRoot,
+    authorityDeadline,
   );
   await assertStableLexicalAncestry(ancestry);
   const expectedRoot = ancestry.at(-1)!;
   const files = await acquireCapabilitySnapshot(
     lexicalRoot,
     expectedRoot,
-    observer,
+    authorityDeadline,
+    testPlan,
   );
   await assertStableLexicalAncestry(ancestry);
   const entries: NativeFixtureInventoryEntry[] = [];

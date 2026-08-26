@@ -11,6 +11,7 @@ export {
   type HarnessScenarioAdapter,
 } from "./testing-contract-suite.js";
 export {
+  activeNativeFixtureAuditWorkerCountForTest,
   auditNativeFixtureInventory,
   NativeFixtureGovernanceError,
   parseHarnessSanitizedFixture,
@@ -19,6 +20,5 @@ export {
   type HarnessNativeFixtureProvenance,
   type HarnessSanitizedFixture,
   type NativeFixtureInventoryEntry,
-  type NativeFixtureAuditEvent,
-  type NativeFixtureAuditObserver,
+  type NativeFixtureAuditTestPlan,
 } from "./native-fixture-governance.js";
