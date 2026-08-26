@@ -7,11 +7,6 @@ export {
   claudeCodeDescriptor,
 } from "./descriptor.js";
 export {
-  CLAUDE_CODE_FIXTURE_ID,
-  CLAUDE_CODE_SCENARIO_ID,
-  claudeCodeFixture,
-} from "./fixture.js";
-export {
   CLAUDE_CODE_DOCUMENTED_INTERFACES,
   CLAUDE_CODE_INTERNAL_AUTH_SENTINEL,
   createClaudeCodeExecutionEnvironment,
@@ -25,10 +20,10 @@ export {
   createClaudeCodeInstallationPlanner,
   inspectClaudeCodePluginOverlap,
   runClaudeCodeHook,
+  type ClaudeCodeHookBehavior,
   type ClaudeCodeInstalledPlugin,
   type ClaudeCodePluginInventory,
   type ClaudeCodePluginOverlap,
   type ClaudeCodePluginSettingsLayer,
 } from "./lifecycle.js";
 export { claudeCodeContextEvidence, mapClaudeCodeFixture } from "./mapping.js";
-export { claudeCodeComponentAdapter, claudeCodeScenario } from "./component.js";

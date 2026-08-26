@@ -1,6 +1,10 @@
 import {
   deriveHarnessComponentEvidenceDigest,
   type HarnessComponentContractAdapter,
+  type HarnessContractContextEvidence,
+  type HarnessFixtureMapping,
+  type HarnessHookTestBehavior,
+  type HarnessSanitizedFixture,
   type HarnessScenarioAdapter,
 } from "@agentscope/harnesses-core/testing";
 
@@ -17,8 +21,34 @@ import {
 import {
   createClaudeCodeInstallationPlanner,
   runClaudeCodeHook,
+  type ClaudeCodeHookBehavior,
 } from "./lifecycle.js";
 import { claudeCodeContextEvidence, mapClaudeCodeFixture } from "./mapping.js";
+
+export {
+  CLAUDE_CODE_FIXTURE_ID,
+  CLAUDE_CODE_SCENARIO_ID,
+  claudeCodeFixture,
+} from "./fixture.js";
+export { claudeCodeContextEvidence } from "./mapping.js";
+
+type ExactType<Left, Right> = [Left] extends [Right]
+  ? [Right] extends [Left]
+    ? true
+    : false
+  : false;
+
+export type ClaudeCodeHookBehaviorContract =
+  ExactType<ClaudeCodeHookBehavior, HarnessHookTestBehavior> extends true
+    ? ClaudeCodeHookBehavior
+    : never;
+
+const governedFixture: HarnessSanitizedFixture = claudeCodeFixture;
+const governedContextEvidence: HarnessContractContextEvidence =
+  claudeCodeContextEvidence;
+const governedFixtureMapping: (
+  resolver: Parameters<typeof mapClaudeCodeFixture>[0],
+) => HarnessFixtureMapping = mapClaudeCodeFixture;
 
 export const claudeCodeScenario = Object.freeze({
   scenarioVersion: 1,
@@ -58,10 +88,10 @@ export const claudeCodeComponentAdapter: HarnessComponentContractAdapter =
       componentDigest,
     }),
     compatibleVersion: CLAUDE_CODE_COMPONENT_VERSION,
-    fixture: claudeCodeFixture,
+    fixture: governedFixture,
     scenario: claudeCodeScenario,
-    contextEvidence: claudeCodeContextEvidence,
-    mapFixture: mapClaudeCodeFixture,
+    contextEvidence: governedContextEvidence,
+    mapFixture: governedFixtureMapping,
     createInstallationPlanner: createClaudeCodeInstallationPlanner,
     runHook: runClaudeCodeHook,
   });

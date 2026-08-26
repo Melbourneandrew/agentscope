@@ -20,10 +20,13 @@ import {
   CLAUDE_CODE_INTERNAL_AUTH_SENTINEL,
   createClaudeCodeExecutionEnvironment,
 } from "./execution.js";
-import { claudeCodeFixture } from "./fixture.js";
-import { claudeCodeComponentAdapter, claudeCodeScenario } from "./component.js";
 import { claudeCodeHarnessPackageId } from "./index.js";
-import { claudeCodeContextEvidence } from "./mapping.js";
+import {
+  claudeCodeComponentAdapter,
+  claudeCodeContextEvidence,
+  claudeCodeFixture,
+  claudeCodeScenario,
+} from "./testing.js";
 
 const fixturePath = resolve(
   import.meta.dirname,

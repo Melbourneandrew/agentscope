@@ -7,10 +7,6 @@ import {
   resolveNativeCaptureStart,
   type NativeCheckpointResolver,
 } from "@agentscope/harnesses-core";
-import type {
-  HarnessContractContextEvidence,
-  HarnessFixtureMapping,
-} from "@agentscope/harnesses-core/testing";
 
 import { claudeCodeFixture } from "./fixture.js";
 
@@ -38,11 +34,9 @@ export const claudeCodeContextEvidence = Object.freeze({
   evidenceVersion: 1 as const,
   mappingArtifactDigest: sha256(mappingArtifact),
   contextDigest: sha256(adapterContext),
-}) satisfies HarnessContractContextEvidence;
+});
 
-export const mapClaudeCodeFixture = (
-  resolver: NativeCheckpointResolver,
-): HarnessFixtureMapping => {
+export const mapClaudeCodeFixture = (resolver: NativeCheckpointResolver) => {
   const fixture = claudeCodeFixture;
   const start = resolveNativeCaptureStart(
     {

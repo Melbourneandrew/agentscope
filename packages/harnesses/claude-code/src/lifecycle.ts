@@ -2,7 +2,6 @@ import type {
   HarnessInstallationPlanner,
   OwnedHarnessHookInvocation,
 } from "@agentscope/harnesses-core";
-import type { HarnessHookTestBehavior } from "@agentscope/harnesses-core/testing";
 
 export const CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID =
   "langfuse-observability@claude-plugins-official" as const;
@@ -18,6 +17,8 @@ export const CLAUDE_CODE_LIFECYCLE_EVENTS = Object.freeze([
   "Stop",
   "SessionEnd",
 ] as const);
+
+export type ClaudeCodeHookBehavior = "success" | "failure" | "hang";
 
 type ClaudeCodeLifecycleEvent = (typeof CLAUDE_CODE_LIFECYCLE_EVENTS)[number];
 type ClaudeCodeSettingsScope = "user" | "project" | "local" | "managed";
@@ -358,7 +359,7 @@ export const createClaudeCodeInstallationPlanner = (
 };
 
 export const runClaudeCodeHook = async (
-  behavior: HarnessHookTestBehavior,
+  behavior: ClaudeCodeHookBehavior,
   signal: AbortSignal,
 ): Promise<"completed" | "failed-open"> => {
   if (behavior === "success") return "completed";

@@ -1,5 +1,3 @@
-import type { HarnessSanitizedFixture } from "@agentscope/harnesses-core/testing";
-
 import {
   CLAUDE_CODE_COMPONENT_VERSION,
   CLAUDE_CODE_EVIDENCE_SLOT,
@@ -77,4 +75,4 @@ export const claudeCodeFixture = {
     lifecycle: "session-turn-tool",
     model_provider: "anthropic",
   },
-} as const satisfies HarnessSanitizedFixture;
+} as const;
