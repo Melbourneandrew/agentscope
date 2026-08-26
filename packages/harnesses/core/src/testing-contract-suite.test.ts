@@ -20,6 +20,9 @@ import {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const structurallyValidSyntheticLicenseSource =
+  `https://github.com/Melbourneandrew/agentscope/blob/${"a".repeat(40)}` +
+  "/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic";
 const referenceContextEvidence = Object.freeze({
   evidenceVersion: 1 as const,
   mappingArtifactDigest: `sha256-${"a".repeat(64)}`,
@@ -79,9 +82,9 @@ const referenceFixture = {
       captureRecipe: "reference-recipe-v1",
     },
     license: {
-      reviewedLicenseId: "MIT",
+      reviewedLicenseId: "LicenseRef-Agentscope-Synthetic",
       redistribution: "reviewed-for-repository",
-      sourceReference: "https://example.invalid/reference-license",
+      sourceReference: structurallyValidSyntheticLicenseSource,
     },
     redaction: {
       profileVersion: 1,
@@ -98,7 +101,10 @@ const referenceFixture = {
     review: {
       status: "approved",
       reviewedAt: "2026-08-25",
-      references: ["review:reference-one", "review:reference-two"],
+      references: [
+        "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001",
+        "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1002",
+      ],
     },
     representative: {
       scenarioId: "reference-v1",

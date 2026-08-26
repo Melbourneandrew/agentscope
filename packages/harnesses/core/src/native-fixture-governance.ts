@@ -64,7 +64,7 @@ export type HarnessNativeFixtureGovernance = Readonly<{
   review: Readonly<{
     status: "approved";
     reviewedAt: string;
-    references: readonly [string, string, ...string[]];
+    references: readonly [privacyReview: string, redistributionReview: string];
   }>;
   representative: Readonly<{
     scenarioId: string;
@@ -227,7 +227,6 @@ const safeTokenPattern = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 const semverPattern =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const digestPattern = /^sha256-[a-f0-9]{64}$/u;
-const reviewReferencePattern = /^[a-z][a-z0-9._:/#-]{2,127}$/u;
 const isoDatePattern = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u;
 const syntheticReferencePattern =
   /^urn:agentscope:synthetic:[a-z0-9][a-z0-9._:-]{0,127}$/u;
@@ -303,6 +302,80 @@ const string = (value: unknown, pattern: RegExp, code: string): string => {
 
 const reviewedLicenseIdPattern =
   /^(?:(?!LicenseRef-)[A-Za-z0-9][A-Za-z0-9.+-]{0,63}|LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]{0,63})$/u;
+const agentscopeSyntheticLicenseId = "LicenseRef-Agentscope-Synthetic";
+const agentscopeSyntheticLicenseSourcePattern =
+  /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/blob\/(?!0{40}\/)[a-f0-9]{40}\/packages\/harnesses\/core\/NATIVE_FIXTURES\.md#licenseref-agentscope-synthetic$/u;
+const concreteFixtureReviewPattern =
+  /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/pull\/[1-9]\d{0,9}#pullrequestreview-[1-9]\d{0,19}$/u;
+
+const calendarDate = (value: unknown): string => {
+  const candidate = string(
+    value,
+    isoDatePattern,
+    "harness.fixture.review.date",
+  );
+  const [yearText, monthText, dayText] = candidate.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ][month - 1];
+  if (year < 1 || daysInMonth === undefined || day > daysInMonth)
+    fail("harness.fixture.review.date");
+  return candidate;
+};
+
+const normalizedDecodedUrlPath = (value: string): string => {
+  let current = value;
+  for (let depth = 0; depth <= value.length; depth += 1) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(current);
+    } catch {
+      /* v8 ignore next -- boundedSourceReference rejects undecodable input
+       * before this defense-in-depth alias classifier is called. */
+      return current;
+    }
+    if (decoded === current) break;
+    current = decoded;
+  }
+  const segments: string[] = [];
+  for (const segment of current.toLowerCase().split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return `/${segments.join("/")}`;
+};
+
+const isAgentscopeGovernanceDocumentReference = (value: string): boolean => {
+  const parsed = (() => {
+    try {
+      return new URL(value);
+    } catch {
+      return undefined;
+    }
+  })();
+  if (parsed === undefined) return false;
+  const path = normalizedDecodedUrlPath(parsed.pathname);
+  return path.endsWith("/packages/harnesses/core/native_fixtures.md");
+};
 
 const positiveSafeInteger = (value: unknown, code: string): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
@@ -319,10 +392,7 @@ const oneOf = <const Values extends readonly string[]>(
   return value as Values[number];
 };
 
-const sourceReference = (
-  value: unknown,
-  captureKind: "disposable-hermetic" | "synthetic",
-): string => {
+const boundedSourceReference = (value: unknown): string => {
   if (
     typeof value !== "string" ||
     value.length > 256 ||
@@ -332,6 +402,13 @@ const sourceReference = (
   const reference = value as string;
   if (decodedContentFails(reference, baselineContentIsForbidden))
     fail("harness.fixture.provenance.source-reference");
+  return reference;
+};
+
+const sourceReferenceFromBounded = (
+  reference: string,
+  captureKind: "disposable-hermetic" | "synthetic",
+): string => {
   if (captureKind === "synthetic") {
     if (!syntheticReferencePattern.test(reference))
       fail("harness.fixture.provenance.source-reference");
@@ -364,6 +441,12 @@ const sourceReference = (
       fail("harness.fixture.provenance.source-reference");
   return reference;
 };
+
+const sourceReference = (
+  value: unknown,
+  captureKind: "disposable-hermetic" | "synthetic",
+): string =>
+  sourceReferenceFromBounded(boundedSourceReference(value), captureKind);
 
 type GovernanceRecords = Readonly<{
   provenance: Readonly<Record<string, unknown>>;
@@ -516,33 +599,56 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
   const references = denseArray(
     review.references,
     2,
-    16,
+    2,
     "harness.fixture.review.references",
   );
   if (
     references.some(
       (reference) =>
         typeof reference !== "string" ||
-        !reviewReferencePattern.test(reference) ||
+        !concreteFixtureReviewPattern.test(reference) ||
         baselineContentIsForbidden(reference),
     ) ||
     new Set(references).size !== references.length
   )
     fail("harness.fixture.review.references");
-  const reviewedReferences = references as [string, string, ...string[]];
+  const reviewedReferences = references as [string, string];
+  const parsedProvenance = parseProvenance(provenance);
+  const reviewedLicenseId = string(
+    license.reviewedLicenseId,
+    reviewedLicenseIdPattern,
+    "harness.fixture.license.reviewed-id",
+  );
+  let licenseSourceReference: string;
+  if (parsedProvenance.captureKind === "synthetic") {
+    const candidate =
+      typeof license.sourceReference === "string"
+        ? license.sourceReference
+        : fail("harness.fixture.license.synthetic-authority");
+    if (
+      reviewedLicenseId !== agentscopeSyntheticLicenseId ||
+      !agentscopeSyntheticLicenseSourcePattern.test(candidate) ||
+      baselineContentIsForbidden(candidate)
+    )
+      fail("harness.fixture.license.synthetic-authority");
+    licenseSourceReference = candidate;
+  } else {
+    if (reviewedLicenseId === agentscopeSyntheticLicenseId)
+      fail("harness.fixture.license.vendor-authority");
+    const candidate = boundedSourceReference(license.sourceReference);
+    if (isAgentscopeGovernanceDocumentReference(candidate))
+      fail("harness.fixture.license.vendor-authority");
+    licenseSourceReference = sourceReferenceFromBounded(
+      candidate,
+      "disposable-hermetic",
+    );
+  }
   return Object.freeze({
-    provenance: parseProvenance(provenance),
+    provenance: parsedProvenance,
     license: Object.freeze({
-      reviewedLicenseId: string(
-        license.reviewedLicenseId,
-        reviewedLicenseIdPattern,
-        "harness.fixture.license.reviewed-id",
-      ),
+      reviewedLicenseId,
       redistribution: "reviewed-for-repository" as const,
-      sourceReference: sourceReference(
-        license.sourceReference,
-        "disposable-hermetic",
-      ),
+      sourceReference: licenseSourceReference,
     }),
     redaction: Object.freeze({
       profileVersion: 1 as const,
@@ -552,16 +658,8 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
     }),
     review: Object.freeze({
       status: "approved" as const,
-      reviewedAt: string(
-        review.reviewedAt,
-        isoDatePattern,
-        "harness.fixture.review.date",
-      ),
-      references: Object.freeze([...reviewedReferences] as [
-        string,
-        string,
-        ...string[],
-      ]),
+      reviewedAt: calendarDate(review.reviewedAt),
+      references: Object.freeze([...reviewedReferences] as [string, string]),
     }),
     representative: Object.freeze({
       scenarioId: string(
