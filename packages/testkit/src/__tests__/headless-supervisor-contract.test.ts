@@ -1,19 +1,36 @@
-import { performance } from "node:perf_hooks";
-import { setTimeout as delay } from "node:timers/promises";
-
 import { describe, expect, it } from "vitest";
 
 import {
   createBoundedHeadlessSupervisorContractSuite,
   type HeadlessExecutionResult,
-  type HeadlessObserverPlan,
+  type HeadlessExecutionTrace,
   type HeadlessProcessSetObservation,
-  type HeadlessProcessSetObserverBackend,
-  type HeadlessSupervisorContractAdapter,
+  type HeadlessSupervisorContractRun,
 } from "../headless-supervisor-contract.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const root = Object.freeze({
+  pid: 41_001,
+  startIdentity: "root-start-identity",
+  role: "root" as const,
+});
+const descendant = Object.freeze({
+  pid: 41_002,
+  startIdentity: "descendant-start-identity",
+  role: "descendant" as const,
+});
+
+const cases = createBoundedHeadlessSupervisorContractSuite();
+
+const contractRun = (name: string): HeadlessSupervisorContractRun => {
+  const selected = cases.find((candidate) => candidate.name === name);
+  if (selected === undefined) throw new Error("seed.contract.case");
+  return selected.instantiate({
+    root: "/synthetic/root",
+    fixturePath: "/synthetic/root/fixture.mjs",
+  });
+};
 
 const result = (
   overrides: Partial<HeadlessExecutionResult> = {},
@@ -34,28 +51,70 @@ const result = (
   ...overrides,
 });
 
-const root = Object.freeze({
-  pid: 41_001,
-  startIdentity: "root-start-identity",
-  role: "root" as const,
-});
-const descendant = Object.freeze({
-  pid: 41_002,
-  startIdentity: "descendant-start-identity",
-  role: "descendant" as const,
-});
+const correctResult = (
+  request: HeadlessSupervisorContractRun["request"],
+): HeadlessExecutionResult =>
+  result({
+    stdout: encoder.encode(
+      JSON.stringify({
+        arguments: request.arguments.slice(1),
+        cwd: request.cwd,
+        environment: request.environment,
+        input: decoder.decode(request.stdin),
+      }),
+    ),
+    stderr: encoder.encode("fixture-stderr"),
+  });
 
-const baselineObservation = (
-  plan: HeadlessObserverPlan,
-): HeadlessProcessSetObservation => {
-  const spawnedAtMs = performance.now();
-  const processes =
-    plan.scenario === "descendant" ? [root, descendant] : [root];
+const validTrace = (
+  name: string,
+  run: HeadlessSupervisorContractRun,
+): HeadlessExecutionTrace => {
+  const { request } = run;
+  const readyAtMs = request.monotonicStartupDeadlineMs - 1_000;
+  let processes: HeadlessProcessSetObservation["processes"] = [root];
   let signals: HeadlessProcessSetObservation["signals"] = [];
-  let settledAtMs = spawnedAtMs;
-  if (plan.scenario === "timeout") {
-    const termAt = plan.monotonicExecutionDeadlineMs;
-    const killAt = termAt + plan.terminationGraceMs;
+  let settledAtMs = readyAtMs;
+  let executionResult: HeadlessExecutionResult;
+  if (name === "headless:correct-invocation")
+    executionResult = correctResult(request);
+  else if (name === "headless:stdout-limit") {
+    signals = [
+      {
+        signal: "SIGTERM",
+        targetStartIdentity: root.startIdentity,
+        monotonicAtMs: readyAtMs,
+      },
+    ];
+    executionResult = result({
+      outcome: "output-limit",
+      exitCode: null,
+      signal: "SIGTERM",
+      stdout: new Uint8Array(request.stdoutLimitBytes).fill(79),
+      stdoutTruncated: true,
+      termRequested: true,
+      diagnosticCode: "testkit.headless.output-limit",
+    });
+  } else if (name === "headless:stderr-limit") {
+    signals = [
+      {
+        signal: "SIGTERM",
+        targetStartIdentity: root.startIdentity,
+        monotonicAtMs: readyAtMs,
+      },
+    ];
+    executionResult = result({
+      outcome: "output-limit",
+      exitCode: null,
+      signal: "SIGTERM",
+      stderr: new Uint8Array(request.stderrLimitBytes).fill(69),
+      stderrTruncated: true,
+      termRequested: true,
+      diagnosticCode: "testkit.headless.output-limit",
+    });
+  } else if (name === "headless:timeout-escalation") {
+    const termAt = request.monotonicExecutionDeadlineMs;
+    const killAt = termAt + request.terminationGraceMs;
     signals = [
       {
         signal: "SIGTERM",
@@ -69,144 +128,67 @@ const baselineObservation = (
       },
     ];
     settledAtMs = killAt;
-  } else if (
-    plan.scenario === "stdout-limit" ||
-    plan.scenario === "stderr-limit"
-  ) {
-    signals = [
-      {
-        signal: "SIGTERM",
-        targetStartIdentity: root.startIdentity,
-        monotonicAtMs: spawnedAtMs,
-      },
-    ];
-  } else if (plan.scenario === "descendant") {
+    executionResult = result({
+      outcome: "timed-out",
+      exitCode: null,
+      signal: "SIGKILL",
+      termRequested: true,
+      killRequested: true,
+      diagnosticCode: "testkit.headless.timeout",
+    });
+  } else {
+    processes = [root, descendant];
+    const killAt = readyAtMs + request.terminationGraceMs;
     signals = [
       {
         signal: "SIGTERM",
         targetStartIdentity: descendant.startIdentity,
-        monotonicAtMs: spawnedAtMs,
+        monotonicAtMs: readyAtMs,
       },
       {
         signal: "SIGKILL",
         targetStartIdentity: descendant.startIdentity,
-        monotonicAtMs: spawnedAtMs + plan.terminationGraceMs,
+        monotonicAtMs: killAt,
       },
     ];
-    settledAtMs = spawnedAtMs + plan.terminationGraceMs;
+    settledAtMs = killAt;
+    executionResult = result({ termRequested: true, killRequested: true });
   }
   return {
-    observationVersion: 1,
-    runId: plan.runId,
-    requestFingerprint: plan.requestFingerprint,
-    processes,
-    signals,
-    spawnedAtMs,
-    readyAtMs: spawnedAtMs,
-    settledAtMs,
-    processJoined: true,
-    stdinJoined: true,
-    stdoutJoined: true,
-    stderrJoined: true,
-    cleanup: "clean",
-    residualStartIdentities: [],
+    traceVersion: 1,
+    runId: request.runId,
+    requestFingerprint: request.requestFingerprint,
+    returnedAtMs: settledAtMs,
+    result: executionResult,
+    observation: {
+      observationVersion: 1,
+      runId: request.runId,
+      requestFingerprint: request.requestFingerprint,
+      processes,
+      signals,
+      spawnedAtMs: readyAtMs,
+      readyAtMs,
+      settledAtMs,
+      processJoined: true,
+      stdinJoined: true,
+      stdoutJoined: true,
+      stderrJoined: true,
+      cleanup: "clean",
+      residualStartIdentities: [],
+    },
   };
 };
 
-type ObservationMutation = (
-  observation: HeadlessProcessSetObservation,
-  plan: HeadlessObserverPlan,
-) => unknown;
-
-const backend = (
-  mutation: ObservationMutation = (observation) => observation,
-  waitForSettlement = true,
-): HeadlessProcessSetObserverBackend => ({
-  open: (plan) => ({
-    observeTerminal: async () => {
-      const observation = baselineObservation(plan);
-      const value = mutation(observation, plan);
-      if (waitForSettlement && value === observation)
-        await delay(
-          Math.ceil(Math.max(0, observation.settledAtMs - performance.now())),
-        );
-      return value;
-    },
-  }),
+const mutateObservation = (
+  trace: HeadlessExecutionTrace,
+  mutation: Partial<HeadlessProcessSetObservation>,
+): HeadlessExecutionTrace => ({
+  ...trace,
+  observation: { ...trace.observation, ...mutation },
 });
 
-const baselineAdapter: HeadlessSupervisorContractAdapter = {
-  run: async (request) => {
-    await request.processSetObserver.observeTerminal();
-    const source = request.arguments[0] ?? "";
-    const fixture = await import("node:fs/promises").then(({ readFile }) =>
-      readFile(source, "utf8"),
-    );
-    if (request.arguments.length > 1) {
-      return result({
-        stdout: encoder.encode(
-          JSON.stringify({
-            arguments: request.arguments.slice(1),
-            cwd: request.cwd,
-            environment: request.environment,
-            input: decoder.decode(request.stdin),
-          }),
-        ),
-        stderr: encoder.encode("fixture-stderr"),
-      });
-    }
-    if (fixture.includes('"O".repeat(4096)'))
-      return result({
-        outcome: "output-limit",
-        exitCode: null,
-        signal: "SIGTERM",
-        stdout: new Uint8Array(request.stdoutLimitBytes).fill(79),
-        stdoutTruncated: true,
-        termRequested: true,
-        diagnosticCode: "testkit.headless.output-limit",
-      });
-    if (fixture.includes('"E".repeat(4096)'))
-      return result({
-        outcome: "output-limit",
-        exitCode: null,
-        signal: "SIGTERM",
-        stderr: new Uint8Array(request.stderrLimitBytes).fill(69),
-        stderrTruncated: true,
-        termRequested: true,
-        diagnosticCode: "testkit.headless.output-limit",
-      });
-    if (fixture.includes("PRIVATE_TIMEOUT_CANARY"))
-      return result({
-        outcome: "timed-out",
-        exitCode: null,
-        signal: "SIGKILL",
-        termRequested: true,
-        killRequested: true,
-        diagnosticCode: "testkit.headless.timeout",
-      });
-    return result({ termRequested: true, killRequested: true });
-  },
-};
-
-const contractCase = (
-  name: string,
-  adapter: HeadlessSupervisorContractAdapter = baselineAdapter,
-  observerBackend: HeadlessProcessSetObserverBackend = backend(),
-) => {
-  const selected = createBoundedHeadlessSupervisorContractSuite(
-    adapter,
-    observerBackend,
-  ).find((candidate) => candidate.name === name);
-  if (selected === undefined) throw new Error("seed.contract.case");
-  return selected;
-};
-
-describe("bounded headless supervisor contract", () => {
-  it("owns a frozen bounded alpha-critical case inventory", async () => {
-    const cases = createBoundedHeadlessSupervisorContractSuite(
-      baselineAdapter,
-      backend(),
-    );
+describe("bounded headless supervisor trace protocol", () => {
+  it("owns a frozen alpha-critical case inventory and fixture stimuli", () => {
     expect(Object.isFrozen(cases)).toBe(true);
     expect(cases.every((candidate) => Object.isFrozen(candidate))).toBe(true);
     expect(cases.map(({ name }) => name)).toEqual([
@@ -216,8 +198,22 @@ describe("bounded headless supervisor contract", () => {
       "headless:timeout-escalation",
       "headless:descendant-cleanup",
     ]);
-    for (const candidate of cases) await candidate.run();
-  }, 15_000);
+    expect(cases.every(({ fixtureSource }) => fixtureSource.length > 20)).toBe(
+      true,
+    );
+  });
+
+  it("accepts the five closed synthetic protocol traces", () => {
+    for (const candidate of cases) {
+      const run = candidate.instantiate({
+        root: "/synthetic/root",
+        fixturePath: "/synthetic/root/fixture.mjs",
+      });
+      expect(run.verify(validTrace(candidate.name, run)).runId).toBe(
+        run.request.runId,
+      );
+    }
+  });
 
   it.each([
     ["arguments", "testkit.headless.invocation.arguments", { arguments: [] }],
@@ -227,308 +223,222 @@ describe("bounded headless supervisor contract", () => {
       "testkit.headless.invocation.environment",
       { environment: { AMBIENT_SECRET: "PRIVATE_CANARY" } },
     ],
-  ])("rejects a supervisor that loses exact %s", async (_, code, mutation) => {
-    const adapter: HeadlessSupervisorContractAdapter = {
-      run: async (request) => {
-        await request.processSetObserver.observeTerminal();
-        const invocation = {
-          arguments: request.arguments.slice(1),
-          cwd: request.cwd,
-          environment: request.environment,
-          input: decoder.decode(request.stdin),
-          ...mutation,
-        };
-        return result({
-          stdout: encoder.encode(JSON.stringify(invocation)),
-          stderr: encoder.encode("fixture-stderr"),
-        });
-      },
+  ])("rejects synthetic output that loses exact %s", (_, code, mutation) => {
+    const run = contractRun("headless:correct-invocation");
+    const trace = validTrace("headless:correct-invocation", run);
+    const invocation = {
+      arguments: run.request.arguments.slice(1),
+      cwd: run.request.cwd,
+      environment: run.request.environment,
+      input: decoder.decode(run.request.stdin),
+      ...mutation,
     };
-    await expect(
-      contractCase("headless:correct-invocation", adapter).run(),
-    ).rejects.toThrow(code);
+    expect(() =>
+      run.verify({
+        ...trace,
+        result: {
+          ...trace.result,
+          stdout: encoder.encode(JSON.stringify(invocation)),
+        },
+      }),
+    ).toThrow(code);
   });
 });
 
-describe("bounded headless supervisor adversarial seeds", () => {
-  it("rejects fabricated success without execution or observer consumption", async () => {
-    const noExecution: HeadlessSupervisorContractAdapter = {
-      run: (request) =>
-        Promise.resolve(
-          result({
-            stdout: encoder.encode(
-              JSON.stringify({
-                arguments: request.arguments.slice(1),
-                cwd: request.cwd,
-                environment: request.environment,
-                input: decoder.decode(request.stdin),
-              }),
-            ),
-            stderr: encoder.encode("fixture-stderr"),
-          }),
-        ),
-    };
-    await expect(
-      contractCase("headless:correct-invocation", noExecution).run(),
-    ).rejects.toThrow("testkit.headless.observer.not-consumed");
-  });
-
+describe("bounded trace binding and identity negatives", () => {
   it.each([
     [
-      "wrong run",
-      "testkit.headless.observer.binding",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        runId: "wrong-run",
-      }),
+      "wrong trace run",
+      "testkit.headless.trace.binding",
+      (value: HeadlessExecutionTrace) => ({ ...value, runId: "wrong-run" }),
     ],
     [
-      "wrong request",
+      "wrong observation request",
       "testkit.headless.observer.binding",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        requestFingerprint: "0".repeat(64),
-      }),
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, { requestFingerprint: "0".repeat(64) }),
     ],
     [
       "PID reuse",
       "testkit.headless.observer.process",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        processes: [
-          ...value.processes,
-          { pid: root.pid, startIdentity: "reused-start", role: "descendant" },
-        ],
-      }),
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, {
+          processes: [
+            ...value.observation.processes,
+            {
+              pid: root.pid,
+              startIdentity: "reused-start",
+              role: "descendant",
+            },
+          ],
+        }),
     ],
     [
-      "omitted process",
+      "omitted root",
       "testkit.headless.observer.process-set",
-      (value: HeadlessProcessSetObservation) => ({ ...value, processes: [] }),
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, { processes: [] }),
     ],
+  ])("rejects %s", (_, code, mutation) => {
+    const run = contractRun("headless:timeout-escalation");
+    expect(() =>
+      run.verify(mutation(validTrace("headless:timeout-escalation", run))),
+    ).toThrow(code);
+  });
+});
+
+describe("bounded trace signal negatives", () => {
+  it.each([
     [
-      "duplicate event",
+      "duplicate signal",
       "testkit.headless.observer.signal",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        signals: [...value.signals, ...value.signals],
-      }),
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, {
+          signals: [...value.observation.signals, ...value.observation.signals],
+        }),
     ],
     [
-      "omitted event",
+      "omitted signal",
       "testkit.headless.observer.signal-sequence",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        signals: value.signals.slice(0, 1),
-      }),
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, {
+          signals: value.observation.signals.slice(0, 1),
+        }),
     ],
     [
-      "misordered events",
+      "misordered signals",
       "testkit.headless.observer.signal-order",
-      (value: HeadlessProcessSetObservation) => ({
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, {
+          signals: [...value.observation.signals].reverse(),
+        }),
+    ],
+    [
+      "signals after settlement",
+      "testkit.headless.observer.signal-window",
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, {
+          signals: value.observation.signals.map((event, index) => ({
+            ...event,
+            monotonicAtMs: value.observation.settledAtMs + 100 + index * 1_000,
+          })),
+        }),
+    ],
+    [
+      "unobserved KILL self-report",
+      "testkit.headless.observer.signal-correlation",
+      (value: HeadlessExecutionTrace) => ({
         ...value,
-        signals: [...value.signals].reverse(),
+        result: { ...value.result, killRequested: true },
       }),
     ],
-  ])("rejects %s observer evidence", async (_, code, mutation) => {
-    await expect(
-      contractCase(
-        "headless:timeout-escalation",
-        baselineAdapter,
-        backend(mutation, false),
-      ).run(),
-    ).rejects.toThrow(code);
+  ])("rejects %s", (_, code, mutation) => {
+    const name =
+      code === "testkit.headless.observer.signal-correlation"
+        ? "headless:stdout-limit"
+        : "headless:timeout-escalation";
+    const run = contractRun(name);
+    expect(() => run.verify(mutation(validTrace(name, run)))).toThrow(code);
   });
 });
 
-describe("bounded headless supervisor cleanup and timing seeds", () => {
+describe("bounded trace timing and closure negatives", () => {
   it.each([
     [
-      "missing handle settlement",
-      "testkit.headless.observer.handles",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        settledAtMs: performance.now(),
-        stdoutJoined: false,
-      }),
+      "startup after deadline",
+      "testkit.headless.observer.startup",
+      (value: HeadlessExecutionTrace, run: HeadlessSupervisorContractRun) =>
+        mutateObservation(value, {
+          readyAtMs: run.request.monotonicStartupDeadlineMs + 1,
+          settledAtMs: run.request.monotonicStartupDeadlineMs + 1,
+        }),
     ],
-    [
-      "residual descendant despite clean self-report",
-      "testkit.headless.cleanup.complete",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        settledAtMs: performance.now(),
-        cleanup: "residual",
-        residualStartIdentities: [descendant.startIdentity],
-      }),
-    ],
-  ])("rejects %s", async (_, code, mutation) => {
-    await expect(
-      contractCase(
-        "headless:descendant-cleanup",
-        baselineAdapter,
-        backend(mutation, false),
-      ).run(),
-    ).rejects.toThrow(code);
-  });
-});
-
-describe("bounded headless supervisor settlement and result seeds", () => {
-  it.each([
     [
       "TERM before execution deadline",
       "testkit.headless.timeout.early-term",
-      (value: HeadlessProcessSetObservation, plan: HeadlessObserverPlan) => ({
-        ...value,
-        settledAtMs: performance.now(),
-        signals: value.signals.map((event) =>
-          event.signal === "SIGTERM"
-            ? { ...event, monotonicAtMs: plan.monotonicExecutionDeadlineMs - 1 }
-            : event,
-        ),
-      }),
+      (value: HeadlessExecutionTrace, run: HeadlessSupervisorContractRun) =>
+        mutateObservation(value, {
+          signals: value.observation.signals.map((event) =>
+            event.signal === "SIGTERM"
+              ? {
+                  ...event,
+                  monotonicAtMs: run.request.monotonicExecutionDeadlineMs - 1,
+                }
+              : event,
+          ),
+        }),
     ],
     [
-      "KILL before grace equality boundary",
+      "KILL before grace",
       "testkit.headless.timeout.short-grace",
-      (value: HeadlessProcessSetObservation) => ({
-        ...value,
-        settledAtMs: performance.now(),
-        signals: value.signals.map((event) =>
-          event.signal === "SIGKILL"
-            ? { ...event, monotonicAtMs: value.signals[0]!.monotonicAtMs + 999 }
-            : event,
-        ),
-      }),
+      (value: HeadlessExecutionTrace) =>
+        mutateObservation(value, {
+          signals: value.observation.signals.map((event) =>
+            event.signal === "SIGKILL"
+              ? {
+                  ...event,
+                  monotonicAtMs:
+                    value.observation.signals[0]!.monotonicAtMs + 999,
+                }
+              : event,
+          ),
+        }),
     ],
     [
-      "late 7100ms settlement",
+      "return after shutdown",
       "testkit.headless.observer.settlement",
-      (value: HeadlessProcessSetObservation, plan: HeadlessObserverPlan) => ({
+      (value: HeadlessExecutionTrace, run: HeadlessSupervisorContractRun) => ({
         ...value,
-        settledAtMs: plan.monotonicShutdownDeadlineMs + 100,
+        returnedAtMs: run.request.monotonicShutdownDeadlineMs + 100,
       }),
     ],
-  ])("rejects %s", async (_, code, mutation) => {
-    await expect(
-      contractCase(
-        "headless:timeout-escalation",
-        baselineAdapter,
-        backend(mutation, false),
-      ).run(),
-    ).rejects.toThrow(code);
+  ])("rejects %s", (_, code, mutation) => {
+    const run = contractRun("headless:timeout-escalation");
+    expect(() =>
+      run.verify(mutation(validTrace("headless:timeout-escalation", run), run)),
+    ).toThrow(code);
   });
 
-  it("rejects startup after the startup deadline", async () => {
-    await expect(
-      contractCase(
-        "headless:correct-invocation",
-        baselineAdapter,
-        backend(
-          (value, plan) => ({
-            ...value,
-            readyAtMs: plan.monotonicStartupDeadlineMs + 1,
-            settledAtMs: plan.monotonicStartupDeadlineMs + 1,
-          }),
-          false,
-        ),
-      ).run(),
-    ).rejects.toThrow("testkit.headless.observer.startup");
+  it("rejects missing handle closure and residual descendants", () => {
+    const run = contractRun("headless:descendant-cleanup");
+    const trace = validTrace("headless:descendant-cleanup", run);
+    expect(() =>
+      run.verify(mutateObservation(trace, { stdoutJoined: false })),
+    ).toThrow("testkit.headless.observer.handles");
+    expect(() =>
+      run.verify(
+        mutateObservation(trace, {
+          cleanup: "residual",
+          residualStartIdentities: [descendant.startIdentity],
+        }),
+      ),
+    ).toThrow("testkit.headless.cleanup.complete");
   });
 });
 
-describe("bounded headless supervisor callback and result seeds", () => {
-  it("rejects observer rejection without leaking its content", async () => {
-    const rejecting: HeadlessProcessSetObserverBackend = {
-      open: () => ({
-        observeTerminal: () => Promise.reject(new Error("PRIVATE_CANARY")),
+describe("bounded trace result negatives", () => {
+  it("rejects output above the declared ceiling", () => {
+    const run = contractRun("headless:stdout-limit");
+    const trace = validTrace("headless:stdout-limit", run);
+    expect(() =>
+      run.verify({
+        ...trace,
+        result: {
+          ...trace.result,
+          stdout: new Uint8Array(run.request.stdoutLimitBytes + 1),
+        },
       }),
-    };
-    await expect(
-      contractCase(
-        "headless:correct-invocation",
-        baselineAdapter,
-        rejecting,
-      ).run(),
-    ).rejects.toThrow("testkit.headless.adapter.deadline.failure");
+    ).toThrow("testkit.headless.stdout.bound");
   });
 
-  it("bounds an adapter waiting on an observer that never settles", async () => {
-    const neverSettles: HeadlessProcessSetObserverBackend = {
-      open: () => ({ observeTerminal: () => new Promise(() => undefined) }),
-    };
-    await expect(
-      contractCase(
-        "headless:correct-invocation",
-        baselineAdapter,
-        neverSettles,
-      ).run(),
-    ).rejects.toThrow("testkit.headless.adapter.deadline");
-  }, 10_000);
-
-  it("bounds the independently awaited terminal observation", async () => {
-    const neverSettles: HeadlessProcessSetObserverBackend = {
-      open: () => ({ observeTerminal: () => new Promise(() => undefined) }),
-    };
-    const returnsWhileObserverRuns: HeadlessSupervisorContractAdapter = {
-      run: (request) => {
-        void request.processSetObserver.observeTerminal();
-        return Promise.resolve(
-          result({
-            stdout: encoder.encode(
-              JSON.stringify({
-                arguments: request.arguments.slice(1),
-                cwd: request.cwd,
-                environment: request.environment,
-                input: decoder.decode(request.stdin),
-              }),
-            ),
-            stderr: encoder.encode("fixture-stderr"),
-          }),
-        );
-      },
-    };
-    await expect(
-      contractCase(
-        "headless:correct-invocation",
-        returnsWhileObserverRuns,
-        neverSettles,
-      ).run(),
-    ).rejects.toThrow("testkit.headless.observer.deadline");
-  }, 10_000);
-
-  it("rejects output ceiling violations", async () => {
-    const overflow: HeadlessSupervisorContractAdapter = {
-      run: async (request) => {
-        await request.processSetObserver.observeTerminal();
-        return result({
-          outcome: "output-limit",
-          exitCode: null,
-          signal: "SIGTERM",
-          stdout: new Uint8Array(request.stdoutLimitBytes + 1),
-          stdoutTruncated: true,
-          termRequested: true,
-          diagnosticCode: "testkit.headless.output-limit",
-        });
-      },
-    };
-    await expect(
-      contractCase("headless:stdout-limit", overflow).run(),
-    ).rejects.toThrow("testkit.headless.stdout.bound");
-  });
-
-  it("rejects unsanitized result fields with a content-free code", async () => {
-    const unsanitized: HeadlessSupervisorContractAdapter = {
-      run: async (request) => {
-        await request.processSetObserver.observeTerminal();
-        return {
-          ...((await baselineAdapter.run(request)) as HeadlessExecutionResult),
-          message: "PRIVATE_CANARY",
-        };
-      },
-    };
-    await expect(
-      contractCase("headless:correct-invocation", unsanitized).run(),
-    ).rejects.toThrow("testkit.headless.result.shape");
+  it("rejects unsanitized extra result fields", () => {
+    const run = contractRun("headless:correct-invocation");
+    const trace = validTrace("headless:correct-invocation", run);
+    expect(() =>
+      run.verify({
+        ...trace,
+        result: { ...trace.result, message: "PRIVATE_CANARY" },
+      }),
+    ).toThrow("testkit.headless.result.shape");
   });
 });

@@ -1,14 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { setTimeout as delay } from "node:timers/promises";
-
-export type HeadlessSupervisorContractCase = Readonly<{
-  name: string;
-  run: () => Promise<void>;
-}>;
 
 export class HeadlessSupervisorContractAssertionError extends Error {
   public constructor(public readonly code: string) {
@@ -17,13 +8,8 @@ export class HeadlessSupervisorContractAssertionError extends Error {
   }
 }
 
-const observerBrand: unique symbol = Symbol("headless-observer-authority");
-
-export type HeadlessProcessSetObserver = Readonly<{
-  runId: string;
-  observeTerminal: () => Promise<HeadlessProcessSetObservation>;
-  readonly [observerBrand]: true;
-}>;
+export type HeadlessObserverScenario =
+  "correct" | "stdout-limit" | "stderr-limit" | "timeout" | "descendant";
 
 export type HeadlessExecutionRequest = Readonly<{
   runId: string;
@@ -39,7 +25,6 @@ export type HeadlessExecutionRequest = Readonly<{
   monotonicExecutionDeadlineMs: number;
   monotonicShutdownDeadlineMs: number;
   terminationGraceMs: number;
-  processSetObserver: HeadlessProcessSetObserver;
 }>;
 
 export type HeadlessExecutionOutcome =
@@ -95,40 +80,37 @@ export type HeadlessProcessSetObservation = Readonly<{
   residualStartIdentities: readonly string[];
 }>;
 
-export type HeadlessObserverScenario =
-  "correct" | "stdout-limit" | "stderr-limit" | "timeout" | "descendant";
-
-export type HeadlessObserverPlan = Readonly<{
+export type HeadlessExecutionTrace = Readonly<{
+  traceVersion: 1;
   runId: string;
   requestFingerprint: string;
-  scenario: HeadlessObserverScenario;
-  expectedRoles: readonly ("root" | "descendant")[];
-  monotonicStartupDeadlineMs: number;
-  monotonicExecutionDeadlineMs: number;
-  monotonicShutdownDeadlineMs: number;
-  terminationGraceMs: number;
+  returnedAtMs: number;
+  result: HeadlessExecutionResult;
+  observation: HeadlessProcessSetObservation;
 }>;
 
-export type HeadlessProcessSetObserverSource = Readonly<{
-  observeTerminal: () => Promise<unknown>;
+export type HeadlessSupervisorContractRun = Readonly<{
+  request: HeadlessExecutionRequest;
+  verify: (trace: unknown) => HeadlessExecutionTrace;
 }>;
 
-/** A trusted isolation backend supplies this separately from the adapter. */
-export type HeadlessProcessSetObserverBackend = Readonly<{
-  open: (plan: HeadlessObserverPlan) => HeadlessProcessSetObserverSource;
-}>;
-
-export type HeadlessSupervisorContractAdapter = Readonly<{
-  run: (request: HeadlessExecutionRequest) => Promise<unknown>;
+export type HeadlessSupervisorContractCase = Readonly<{
+  name: string;
+  fixtureSource: string;
+  instantiate: (
+    input: Readonly<{
+      root: string;
+      fixturePath: string;
+    }>,
+  ) => HeadlessSupervisorContractRun;
 }>;
 
 type StrictRecord = Record<string, unknown>;
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const outputLimitBytes = 1_024;
 const terminationGraceMs = 1_000;
-const authorities = new WeakSet<object>();
-const observerStates = new WeakMap<object, { active: boolean }>();
 const resultKeys = [
   "cleanup",
   "diagnosticCode",
@@ -146,6 +128,7 @@ const resultKeys = [
 ] as const;
 const observationKeys = [
   "cleanup",
+  "observationVersion",
   "processJoined",
   "processes",
   "readyAtMs",
@@ -158,35 +141,46 @@ const observationKeys = [
   "stderrJoined",
   "stdinJoined",
   "stdoutJoined",
-  "observationVersion",
+] as const;
+const traceKeys = [
+  "observation",
+  "requestFingerprint",
+  "result",
+  "returnedAtMs",
+  "runId",
+  "traceVersion",
 ] as const;
 
-const correctFixture = String.raw`
+const fixtures: Readonly<Record<HeadlessObserverScenario, string>> =
+  Object.freeze({
+    correct: String.raw`
 import { readFileSync } from "node:fs";
 const input = readFileSync(0, "utf8");
 const environment = Object.fromEntries(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right)));
 process.stdout.write(JSON.stringify({ arguments: process.argv.slice(2), cwd: process.cwd(), environment, input }));
 process.stderr.write("fixture-stderr");
-`;
-const stdoutLimitFixture =
-  'process.stdout.write("O".repeat(4096)); setInterval(() => {}, 1000);';
-const stderrLimitFixture =
-  'process.stderr.write("E".repeat(4096)); setInterval(() => {}, 1000);';
-const timeoutFixture = String.raw`
+`,
+    "stdout-limit":
+      'process.stdout.write("O".repeat(4096)); setInterval(() => {}, 1000);',
+    "stderr-limit":
+      'process.stderr.write("E".repeat(4096)); setInterval(() => {}, 1000);',
+    timeout: String.raw`
 process.stderr.write("PRIVATE_TIMEOUT_CANARY");
 setTimeout(() => process.exit(71), 9000).unref();
 setInterval(() => {}, 1000);
-`;
-const descendantFixture = String.raw`
+`,
+    descendant: String.raw`
 import { spawn } from "node:child_process";
 const source = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0), 9000).unref(); setInterval(() => {}, 1000);';
 const child = spawn(process.execPath, ["-e", source], { detached: true, env: {}, stdio: "ignore" });
 child.unref();
-`;
+`,
+  });
 
 const fail = (code: string): never => {
   throw new HeadlessSupervisorContractAssertionError(code);
 };
+
 const assert = (condition: boolean, code: string): void => {
   if (!condition) fail(code);
 };
@@ -238,14 +232,14 @@ const strictArray = (value: unknown, code: string): readonly unknown[] => {
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const expected = [...value.keys()].map(String);
   expected.push("length");
+  const actual = Object.keys(descriptors).sort();
   assert(
     Reflect.ownKeys(value).every((key) => typeof key === "string") &&
-      Object.keys(descriptors).length === expected.length &&
-      Object.keys(descriptors)
-        .sort()
-        .every((key, index) => key === expected.sort()[index]) &&
+      actual.length === expected.length &&
+      actual.every((key, index) => key === expected.sort()[index]) &&
       Object.values(descriptors).every(
-        ({ get, set }) => get === undefined && set === undefined,
+        (descriptor) =>
+          descriptor.get === undefined && descriptor.set === undefined,
       ),
     code,
   );
@@ -396,24 +390,23 @@ const readProcesses = (
 };
 
 const expectedSignalKeys = (
-  plan: HeadlessObserverPlan,
+  scenario: HeadlessObserverScenario,
   processes: readonly HeadlessProcessIdentity[],
 ): readonly string[] => {
   const root = processes.find(({ role }) => role === "root")!.startIdentity;
   const descendant = processes.find(
     ({ role }) => role === "descendant",
   )?.startIdentity;
-  if (plan.scenario === "correct") return [];
-  if (plan.scenario === "stdout-limit" || plan.scenario === "stderr-limit")
+  if (scenario === "correct") return [];
+  if (scenario === "stdout-limit" || scenario === "stderr-limit")
     return [`SIGTERM:${root}`];
-  if (plan.scenario === "timeout")
-    return [`SIGTERM:${root}`, `SIGKILL:${root}`];
+  if (scenario === "timeout") return [`SIGTERM:${root}`, `SIGKILL:${root}`];
   return [`SIGTERM:${descendant!}`, `SIGKILL:${descendant!}`];
 };
 
 const readSignals = (
   value: unknown,
-  plan: HeadlessObserverPlan,
+  scenario: HeadlessObserverScenario,
   processes: readonly HeadlessProcessIdentity[],
 ): readonly HeadlessObservedSignal[] => {
   const identities = processes.map(({ startIdentity }) => startIdentity);
@@ -461,13 +454,13 @@ const readSignals = (
   );
   assert(
     JSON.stringify(keys) ===
-      JSON.stringify(expectedSignalKeys(plan, processes)),
+      JSON.stringify(expectedSignalKeys(scenario, processes)),
     "testkit.headless.observer.signal-sequence",
   );
   return signals;
 };
 
-const readResidualIdentities = (
+const readResiduals = (
   value: unknown,
   processes: readonly HeadlessProcessIdentity[],
 ): readonly string[] => {
@@ -491,22 +484,24 @@ const readResidualIdentities = (
 
 const readObservation = (
   value: unknown,
-  plan: HeadlessObserverPlan,
+  scenario: HeadlessObserverScenario,
+  request: HeadlessExecutionRequest,
 ): HeadlessProcessSetObservation => {
   const record = strictRecord(value, "testkit.headless.observer.shape");
   exactKeys(record, observationKeys, "testkit.headless.observer.shape");
   assert(record.observationVersion === 1, "testkit.headless.observer.version");
   assert(
-    record.runId === plan.runId &&
-      record.requestFingerprint === plan.requestFingerprint,
+    record.runId === request.runId &&
+      record.requestFingerprint === request.requestFingerprint,
     "testkit.headless.observer.binding",
   );
-  const processes = readProcesses(record.processes, plan.expectedRoles);
-  const signals = readSignals(record.signals, plan, processes);
-  const residualStartIdentities = readResidualIdentities(
-    record.residualStartIdentities,
-    processes,
-  );
+  const roles =
+    scenario === "descendant"
+      ? (["root", "descendant"] as const)
+      : (["root"] as const);
+  const processes = readProcesses(record.processes, roles);
+  const signals = readSignals(record.signals, scenario, processes);
+  const residuals = readResiduals(record.residualStartIdentities, processes);
   assert(
     record.cleanup === "clean" ||
       record.cleanup === "residual" ||
@@ -514,8 +509,8 @@ const readObservation = (
     "testkit.headless.observer.cleanup",
   );
   assert(
-    (record.cleanup === "clean" && residualStartIdentities.length === 0) ||
-      (record.cleanup === "residual" && residualStartIdentities.length > 0) ||
+    (record.cleanup === "clean" && residuals.length === 0) ||
+      (record.cleanup === "residual" && residuals.length > 0) ||
       record.cleanup === "uncertain",
     "testkit.headless.observer.cleanup",
   );
@@ -531,8 +526,8 @@ const readObservation = (
     );
   return Object.freeze({
     observationVersion: 1,
-    runId: plan.runId,
-    requestFingerprint: plan.requestFingerprint,
+    runId: request.runId,
+    requestFingerprint: request.requestFingerprint,
     processes: Object.freeze(processes),
     signals: Object.freeze(signals),
     spawnedAtMs: finiteTime(
@@ -549,176 +544,15 @@ const readObservation = (
     stdoutJoined: record.stdoutJoined as boolean,
     stderrJoined: record.stderrJoined as boolean,
     cleanup: record.cleanup as "clean" | "residual" | "uncertain",
-    residualStartIdentities: Object.freeze(residualStartIdentities),
+    residualStartIdentities: Object.freeze(residuals),
   });
 };
 
-const mintObserver = (
-  source: HeadlessProcessSetObserverSource,
-  plan: HeadlessObserverPlan,
-  consumed: { value: boolean },
-): HeadlessProcessSetObserver => {
-  const state = { active: false };
-  let snapshot: Promise<HeadlessProcessSetObservation> | undefined;
-  const authority = Object.freeze({
-    runId: plan.runId,
-    observeTerminal: () => {
-      if (state.active) consumed.value = true;
-      snapshot ??= Promise.resolve()
-        .then(() => source.observeTerminal())
-        .then((value) => readObservation(value, plan));
-      return snapshot;
-    },
-    [observerBrand]: true as const,
-  });
-  authorities.add(authority);
-  observerStates.set(authority, state);
-  return authority;
-};
-
-const assertAuthority = (observer: HeadlessProcessSetObserver): void => {
-  assert(
-    authorities.has(observer) && observer[observerBrand] === true,
-    "testkit.headless.observer.authority",
-  );
-};
-
-const setAdapterActive = (
-  observer: HeadlessProcessSetObserver,
-  active: boolean,
-): void => {
-  const state = observerStates.get(observer);
-  assert(state !== undefined, "testkit.headless.observer.authority");
-  state!.active = active;
-};
-
-const fingerprint = (value: Readonly<Record<string, unknown>>): string =>
-  createHash("sha256").update(JSON.stringify(value)).digest("hex");
-
-const makeRequest = (
-  root: string,
-  fixturePath: string,
-  scenario: HeadlessObserverScenario,
-  backend: HeadlessProcessSetObserverBackend,
-): { request: HeadlessExecutionRequest; consumed: { value: boolean } } => {
-  const now = performance.now();
-  const runId = randomUUID();
-  const expectedRoles = Object.freeze(
-    scenario === "descendant"
-      ? (["root", "descendant"] as const)
-      : (["root"] as const),
-  );
-  const common = Object.freeze({
-    runId,
-    executable: process.execPath,
-    arguments: Object.freeze(
-      scenario === "correct"
-        ? [fixturePath, "argument one", "--literal=$VALUE"]
-        : [fixturePath],
-    ),
-    cwd: root,
-    environment: Object.freeze({ AGENTSCOPE_ORACLE_VISIBLE: "visible-canary" }),
-    stdin: encoder.encode("oracle-stdin"),
-    stdoutLimitBytes: outputLimitBytes,
-    stderrLimitBytes: outputLimitBytes,
-    monotonicStartupDeadlineMs: now + 2_000,
-    monotonicExecutionDeadlineMs: now + 5_000,
-    monotonicShutdownDeadlineMs: now + 7_000,
-    terminationGraceMs,
-  });
-  const requestFingerprint = fingerprint({
-    ...common,
-    stdin: Array.from(common.stdin),
-  });
-  const plan = Object.freeze({
-    runId,
-    requestFingerprint,
-    scenario,
-    expectedRoles,
-    monotonicStartupDeadlineMs: common.monotonicStartupDeadlineMs,
-    monotonicExecutionDeadlineMs: common.monotonicExecutionDeadlineMs,
-    monotonicShutdownDeadlineMs: common.monotonicShutdownDeadlineMs,
-    terminationGraceMs,
-  });
-  const consumed = { value: false };
-  let source: HeadlessProcessSetObserverSource;
-  try {
-    source = backend.open(plan);
-  } catch {
-    return fail("testkit.headless.observer.open");
-  }
-  const observer = mintObserver(source, plan, consumed);
-  return {
-    request: Object.freeze({
-      ...common,
-      requestFingerprint,
-      processSetObserver: observer,
-    }),
-    consumed,
-  };
-};
-
-const withinDeadline = async <T>(
-  promise: Promise<T>,
-  deadlineMs: number,
-  code: string,
-): Promise<T> => {
-  const controller = new AbortController();
-  const remaining = Math.max(0, deadlineMs - performance.now());
-  try {
-    return await Promise.race([
-      promise,
-      delay(remaining, undefined, { signal: controller.signal }).then(() =>
-        fail(code),
-      ),
-    ]);
-  } catch (error) {
-    if (error instanceof HeadlessSupervisorContractAssertionError) throw error;
-    return fail(`${code}.failure`);
-  } finally {
-    controller.abort();
-  }
-};
-
-const runObserved = async (
-  adapter: HeadlessSupervisorContractAdapter,
+const assertTerminalProtocol = (
+  trace: HeadlessExecutionTrace,
   request: HeadlessExecutionRequest,
-  consumed: { value: boolean },
-): Promise<{
-  result: HeadlessExecutionResult;
-  observation: HeadlessProcessSetObservation;
-  returnedAtMs: number;
-}> => {
-  assertAuthority(request.processSetObserver);
-  const observer = request.processSetObserver;
-  setAdapterActive(observer, true);
-  let raw: unknown;
-  try {
-    raw = await withinDeadline(
-      Promise.resolve().then(() => adapter.run(request)),
-      request.monotonicShutdownDeadlineMs,
-      "testkit.headless.adapter.deadline",
-    );
-  } finally {
-    setAdapterActive(observer, false);
-  }
-  const returnedAtMs = performance.now();
-  const result = readResult(raw);
-  const observation = await withinDeadline(
-    request.processSetObserver.observeTerminal(),
-    request.monotonicShutdownDeadlineMs,
-    "testkit.headless.observer.deadline",
-  );
-  assert(consumed.value, "testkit.headless.observer.not-consumed");
-  return { result, observation, returnedAtMs };
-};
-
-const assertTerminal = (
-  result: HeadlessExecutionResult,
-  observation: HeadlessProcessSetObservation,
-  request: HeadlessExecutionRequest,
-  returnedAtMs: number,
 ): void => {
+  const { observation, result, returnedAtMs } = trace;
   assert(
     observation.spawnedAtMs <= observation.readyAtMs &&
       observation.readyAtMs <= request.monotonicStartupDeadlineMs,
@@ -729,6 +563,25 @@ const assertTerminal = (
       observation.settledAtMs <= returnedAtMs &&
       returnedAtMs <= request.monotonicShutdownDeadlineMs,
     "testkit.headless.observer.settlement",
+  );
+  assert(
+    observation.signals.every(
+      ({ monotonicAtMs }) =>
+        monotonicAtMs >= observation.readyAtMs &&
+        monotonicAtMs <= observation.settledAtMs,
+    ),
+    "testkit.headless.observer.signal-window",
+  );
+  const termObserved = observation.signals.some(
+    ({ signal }) => signal === "SIGTERM",
+  );
+  const killObserved = observation.signals.some(
+    ({ signal }) => signal === "SIGKILL",
+  );
+  assert(
+    result.termRequested === termObserved &&
+      result.killRequested === killObserved,
+    "testkit.headless.observer.signal-correlation",
   );
   assert(
     observation.processJoined &&
@@ -754,269 +607,205 @@ const assertTerminal = (
   );
 };
 
-const withFixture = async (
-  fixture: string,
-  scenario: HeadlessObserverScenario,
-  backend: HeadlessProcessSetObserverBackend,
-  operation: (
-    request: HeadlessExecutionRequest,
-    consumed: { value: boolean },
-  ) => Promise<void>,
-): Promise<void> => {
-  const root = await mkdtemp(join(tmpdir(), "agentscope-headless-oracle-"));
-  const fixturePath = join(root, "fixture.mjs");
-  await writeFile(fixturePath, fixture, { mode: 0o600 });
+const assertCorrect = (
+  result: HeadlessExecutionResult,
+  request: HeadlessExecutionRequest,
+): void => {
+  assert(
+    result.outcome === "exited" &&
+      result.exitCode === 0 &&
+      result.signal === null &&
+      result.diagnosticCode === null &&
+      !result.stdoutTruncated &&
+      !result.stderrTruncated,
+    "testkit.headless.completion",
+  );
+  let invocation: StrictRecord;
   try {
-    const { request, consumed } = makeRequest(
-      root,
-      fixturePath,
-      scenario,
-      backend,
-    );
-    await operation(request, consumed);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-};
-
-const assertCorrectCompletion = async (
-  adapter: HeadlessSupervisorContractAdapter,
-  backend: HeadlessProcessSetObserverBackend,
-): Promise<void> =>
-  withFixture(correctFixture, "correct", backend, async (base, consumed) => {
-    const request = base;
-    const observed = await runObserved(adapter, request, consumed);
-    assertTerminal(
-      observed.result,
-      observed.observation,
-      request,
-      observed.returnedAtMs,
-    );
-    const { result } = observed;
-    assert(
-      result.outcome === "exited" &&
-        result.exitCode === 0 &&
-        result.signal === null &&
-        result.diagnosticCode === null &&
-        !result.stdoutTruncated &&
-        !result.stderrTruncated &&
-        !result.termRequested &&
-        !result.killRequested,
-      "testkit.headless.completion",
-    );
-    let invocation: StrictRecord;
-    try {
-      invocation = strictRecord(
-        JSON.parse(decoder.decode(result.stdout)) as unknown,
-        "testkit.headless.invocation.record",
-      );
-    } catch (error) {
-      if (error instanceof HeadlessSupervisorContractAssertionError)
-        throw error;
-      return fail("testkit.headless.invocation.record");
-    }
-    exactKeys(
-      invocation,
-      ["arguments", "cwd", "environment", "input"],
+    invocation = strictRecord(
+      JSON.parse(decoder.decode(result.stdout)) as unknown,
       "testkit.headless.invocation.record",
     );
-    assert(
-      JSON.stringify(invocation.arguments) ===
-        JSON.stringify(["argument one", "--literal=$VALUE"]),
-      "testkit.headless.invocation.arguments",
-    );
-    assert(invocation.cwd === request.cwd, "testkit.headless.invocation.cwd");
-    assert(
-      JSON.stringify(invocation.environment) ===
-        JSON.stringify(request.environment),
-      "testkit.headless.invocation.environment",
-    );
-    assert(
-      invocation.input === "oracle-stdin",
-      "testkit.headless.invocation.stdin",
-    );
-    assert(
-      decoder.decode(result.stderr) === "fixture-stderr",
-      "testkit.headless.invocation.stderr",
-    );
-  });
+  } catch (error) {
+    if (error instanceof HeadlessSupervisorContractAssertionError) throw error;
+    return fail("testkit.headless.invocation.record");
+  }
+  exactKeys(
+    invocation,
+    ["arguments", "cwd", "environment", "input"],
+    "testkit.headless.invocation.record",
+  );
+  assert(
+    JSON.stringify(invocation.arguments) ===
+      JSON.stringify(["argument one", "--literal=$VALUE"]),
+    "testkit.headless.invocation.arguments",
+  );
+  assert(invocation.cwd === request.cwd, "testkit.headless.invocation.cwd");
+  assert(
+    JSON.stringify(invocation.environment) ===
+      JSON.stringify(request.environment),
+    "testkit.headless.invocation.environment",
+  );
+  assert(
+    invocation.input === "oracle-stdin",
+    "testkit.headless.invocation.stdin",
+  );
+  assert(
+    decoder.decode(result.stderr) === "fixture-stderr",
+    "testkit.headless.invocation.stderr",
+  );
+};
 
-const assertOutputLimit = async (
-  adapter: HeadlessSupervisorContractAdapter,
-  backend: HeadlessProcessSetObserverBackend,
+const assertOutputLimit = (
+  result: HeadlessExecutionResult,
+  request: HeadlessExecutionRequest,
   stream: "stdout" | "stderr",
-): Promise<void> =>
-  withFixture(
-    stream === "stdout" ? stdoutLimitFixture : stderrLimitFixture,
-    `${stream}-limit`,
-    backend,
-    async (request, consumed) => {
-      const observed = await runObserved(adapter, request, consumed);
-      assertTerminal(
-        observed.result,
-        observed.observation,
-        request,
-        observed.returnedAtMs,
-      );
-      const { result } = observed;
-      assert(
-        result.outcome === "output-limit" &&
-          result.exitCode === null &&
-          result.signal === "SIGTERM" &&
-          result.diagnosticCode === "testkit.headless.output-limit" &&
-          result.termRequested,
-        `testkit.headless.${stream}.limit`,
-      );
-      assert(
-        stream === "stdout"
-          ? result.stdoutTruncated &&
-              result.stdout.byteLength === request.stdoutLimitBytes
-          : result.stderrTruncated &&
-              result.stderr.byteLength === request.stderrLimitBytes,
-        `testkit.headless.${stream}.limit`,
-      );
-      const identity = observed.observation.processes.find(
-        ({ role }) => role === "root",
-      )!.startIdentity;
-      assert(
-        observed.observation.signals.some(
-          (event) =>
-            event.signal === "SIGTERM" &&
-            event.targetStartIdentity === identity,
-        ),
-        "testkit.headless.observer.signal-sequence",
-      );
-    },
+): void => {
+  assert(
+    result.outcome === "output-limit" &&
+      result.exitCode === null &&
+      result.signal === "SIGTERM" &&
+      result.diagnosticCode === "testkit.headless.output-limit",
+    `testkit.headless.${stream}.limit`,
   );
-
-const rootIdentity = (observation: HeadlessProcessSetObservation): string => {
-  const root = observation.processes.find(({ role }) => role === "root");
-  assert(root !== undefined, "testkit.headless.observer.process-set");
-  return root!.startIdentity;
+  assert(
+    stream === "stdout"
+      ? result.stdoutTruncated &&
+          result.stdout.byteLength === request.stdoutLimitBytes
+      : result.stderrTruncated &&
+          result.stderr.byteLength === request.stderrLimitBytes,
+    `testkit.headless.${stream}.limit`,
+  );
 };
 
-const requiredSignal = (
-  observation: HeadlessProcessSetObservation,
-  signal: "SIGTERM" | "SIGKILL",
-  targetStartIdentity: string,
-): HeadlessObservedSignal => {
-  const event = observation.signals.find(
-    (candidate) =>
-      candidate.signal === signal &&
-      candidate.targetStartIdentity === targetStartIdentity,
+const assertTimeout = (
+  trace: HeadlessExecutionTrace,
+  request: HeadlessExecutionRequest,
+): void => {
+  const { observation, result } = trace;
+  assert(
+    result.outcome === "timed-out" &&
+      result.exitCode === null &&
+      result.signal === "SIGKILL" &&
+      result.diagnosticCode === "testkit.headless.timeout",
+    "testkit.headless.timeout.classification",
   );
-  assert(event !== undefined, "testkit.headless.observer.signal-sequence");
-  return event!;
+  const root = observation.processes.find(({ role }) => role === "root")!;
+  const [term, kill] = observation.signals;
+  assert(
+    term!.targetStartIdentity === root.startIdentity &&
+      term!.monotonicAtMs >= request.monotonicExecutionDeadlineMs &&
+      term!.monotonicAtMs >= observation.readyAtMs,
+    "testkit.headless.timeout.early-term",
+  );
+  assert(
+    kill!.targetStartIdentity === root.startIdentity &&
+      kill!.monotonicAtMs >= term!.monotonicAtMs + request.terminationGraceMs,
+    "testkit.headless.timeout.short-grace",
+  );
 };
 
-const assertTimeout = async (
-  adapter: HeadlessSupervisorContractAdapter,
-  backend: HeadlessProcessSetObserverBackend,
-): Promise<void> =>
-  withFixture(timeoutFixture, "timeout", backend, async (request, consumed) => {
-    const observed = await runObserved(adapter, request, consumed);
-    assertTerminal(
-      observed.result,
-      observed.observation,
-      request,
-      observed.returnedAtMs,
-    );
-    const { result, observation } = observed;
-    assert(
-      result.outcome === "timed-out" &&
-        result.exitCode === null &&
-        result.signal === "SIGKILL" &&
-        result.diagnosticCode === "testkit.headless.timeout",
-      "testkit.headless.timeout.classification",
-    );
-    assert(
-      result.termRequested && result.killRequested,
-      "testkit.headless.timeout.escalation",
-    );
-    const identity = rootIdentity(observation);
-    const term = requiredSignal(observation, "SIGTERM", identity);
-    const kill = requiredSignal(observation, "SIGKILL", identity);
-    assert(
-      term.monotonicAtMs >= request.monotonicExecutionDeadlineMs &&
-        term.monotonicAtMs >= observation.readyAtMs,
-      "testkit.headless.timeout.early-term",
-    );
-    assert(
-      kill.monotonicAtMs >= term.monotonicAtMs + request.terminationGraceMs,
-      "testkit.headless.timeout.short-grace",
-    );
-    assert(
-      kill.monotonicAtMs <= request.monotonicShutdownDeadlineMs &&
-        observation.settledAtMs >= kill.monotonicAtMs,
-      "testkit.headless.timeout.settlement",
-    );
+const readTrace = (
+  value: unknown,
+  scenario: HeadlessObserverScenario,
+  request: HeadlessExecutionRequest,
+): HeadlessExecutionTrace => {
+  const record = strictRecord(value, "testkit.headless.trace.shape");
+  exactKeys(record, traceKeys, "testkit.headless.trace.shape");
+  assert(record.traceVersion === 1, "testkit.headless.trace.version");
+  assert(
+    record.runId === request.runId &&
+      record.requestFingerprint === request.requestFingerprint,
+    "testkit.headless.trace.binding",
+  );
+  const trace = Object.freeze({
+    traceVersion: 1 as const,
+    runId: request.runId,
+    requestFingerprint: request.requestFingerprint,
+    returnedAtMs: finiteTime(
+      record.returnedAtMs,
+      "testkit.headless.trace.timing",
+    ),
+    result: readResult(record.result),
+    observation: readObservation(record.observation, scenario, request),
   });
+  assertTerminalProtocol(trace, request);
+  if (scenario === "correct") assertCorrect(trace.result, request);
+  else if (scenario === "stdout-limit" || scenario === "stderr-limit")
+    assertOutputLimit(
+      trace.result,
+      request,
+      scenario.slice(0, -6) as "stdout" | "stderr",
+    );
+  else if (scenario === "timeout") assertTimeout(trace, request);
+  else
+    assert(
+      trace.result.outcome === "exited" && trace.result.exitCode === 0,
+      "testkit.headless.descendant.classification",
+    );
+  return trace;
+};
 
-const assertDescendant = async (
-  adapter: HeadlessSupervisorContractAdapter,
-  backend: HeadlessProcessSetObserverBackend,
-): Promise<void> =>
-  withFixture(
-    descendantFixture,
-    "descendant",
-    backend,
-    async (request, consumed) => {
-      const observed = await runObserved(adapter, request, consumed);
-      assertTerminal(
-        observed.result,
-        observed.observation,
-        request,
-        observed.returnedAtMs,
-      );
-      assert(
-        observed.result.outcome === "exited" && observed.result.exitCode === 0,
-        "testkit.headless.descendant.classification",
-      );
-      assert(
-        observed.result.termRequested && observed.result.killRequested,
-        "testkit.headless.descendant.escalation",
-      );
-      const identity = observed.observation.processes.find(
-        ({ role }) => role === "descendant",
-      )!.startIdentity;
-      const term = requiredSignal(observed.observation, "SIGTERM", identity);
-      const kill = requiredSignal(observed.observation, "SIGKILL", identity);
-      assert(
-        kill.monotonicAtMs >= term.monotonicAtMs + request.terminationGraceMs,
-        "testkit.headless.descendant.short-grace",
-      );
-    },
-  );
+const fingerprint = (value: Readonly<Record<string, unknown>>): string =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+const instantiate = (
+  scenario: HeadlessObserverScenario,
+  input: Readonly<{ root: string; fixturePath: string }>,
+): HeadlessSupervisorContractRun => {
+  const now = performance.now();
+  const common = Object.freeze({
+    runId: randomUUID(),
+    executable: process.execPath,
+    arguments: Object.freeze(
+      scenario === "correct"
+        ? [input.fixturePath, "argument one", "--literal=$VALUE"]
+        : [input.fixturePath],
+    ),
+    cwd: input.root,
+    environment: Object.freeze({ AGENTSCOPE_ORACLE_VISIBLE: "visible-canary" }),
+    stdin: encoder.encode("oracle-stdin"),
+    stdoutLimitBytes: outputLimitBytes,
+    stderrLimitBytes: outputLimitBytes,
+    monotonicStartupDeadlineMs: now + 2_000,
+    monotonicExecutionDeadlineMs: now + 5_000,
+    monotonicShutdownDeadlineMs: now + 7_000,
+    terminationGraceMs,
+  });
+  const requestFingerprint = fingerprint({
+    ...common,
+    stdin: Array.from(common.stdin),
+  });
+  const request = Object.freeze({ ...common, requestFingerprint });
+  return Object.freeze({
+    request,
+    verify: (trace: unknown) => readTrace(trace, scenario, request),
+  });
+};
 
 /**
- * Creates the bounded non-PTY component oracle. The family owns stimuli,
- * deadlines, run binding, and pass criteria. The separately supplied trusted
- * backend mints raw observations; adapters can consume but cannot mint or
- * replace the runtime-authenticated observer authority.
+ * Returns the synchronous, family-owned protocol cases. These cases verify only
+ * closed plain-data traces. They do not execute a process, mint backend
+ * authority, or establish execution, cancellation, cleanup, or join evidence.
  */
-export const createBoundedHeadlessSupervisorContractSuite = (
-  adapter: HeadlessSupervisorContractAdapter,
-  backend: HeadlessProcessSetObserverBackend,
-): readonly HeadlessSupervisorContractCase[] =>
-  Object.freeze([
-    Object.freeze({
-      name: "headless:correct-invocation",
-      run: () => assertCorrectCompletion(adapter, backend),
-    }),
-    Object.freeze({
-      name: "headless:stdout-limit",
-      run: () => assertOutputLimit(adapter, backend, "stdout"),
-    }),
-    Object.freeze({
-      name: "headless:stderr-limit",
-      run: () => assertOutputLimit(adapter, backend, "stderr"),
-    }),
-    Object.freeze({
-      name: "headless:timeout-escalation",
-      run: () => assertTimeout(adapter, backend),
-    }),
-    Object.freeze({
-      name: "headless:descendant-cleanup",
-      run: () => assertDescendant(adapter, backend),
-    }),
-  ]);
+export const createBoundedHeadlessSupervisorContractSuite =
+  (): readonly HeadlessSupervisorContractCase[] =>
+    Object.freeze(
+      (
+        [
+          ["headless:correct-invocation", "correct"],
+          ["headless:stdout-limit", "stdout-limit"],
+          ["headless:stderr-limit", "stderr-limit"],
+          ["headless:timeout-escalation", "timeout"],
+          ["headless:descendant-cleanup", "descendant"],
+        ] as const
+      ).map(([name, scenario]) =>
+        Object.freeze({
+          name,
+          fixtureSource: fixtures[scenario],
+          instantiate: (
+            input: Readonly<{ root: string; fixturePath: string }>,
+          ) => instantiate(scenario, input),
+        }),
+      ),
+    );
