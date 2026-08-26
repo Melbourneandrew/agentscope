@@ -26,6 +26,7 @@ import {
   type HarnessSanitizedFixture,
   type NativeFixtureAuditTestPlan,
 } from "./native-fixture-governance.js";
+import type { HarnessNativeFixtureReviewRecord } from "./testing.js";
 
 const roots: string[] = [];
 const physicalTemporaryRoot = realpathSync(tmpdir());
@@ -43,7 +44,7 @@ const structuralPrivacyReview = Object.freeze({
   submittedAt: "2026-08-25T10:00:00.000Z",
   reference:
     "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001",
-});
+} satisfies HarnessNativeFixtureReviewRecord<"privacy">);
 const structuralRedistributionReview = Object.freeze({
   role: "redistribution" as const,
   reviewTaskIdentity: "/root/native_fixture_redistribution_review",
@@ -53,7 +54,7 @@ const structuralRedistributionReview = Object.freeze({
   submittedAt: "2026-08-25T10:01:00.000Z",
   reference:
     "https://github.com/Melbourneandrew/agentscope/pull/101#issuecomment-1002",
-});
+} satisfies HarnessNativeFixtureReviewRecord<"redistribution">);
 const auditPlan = (value: unknown): NativeFixtureAuditTestPlan =>
   JSON.stringify(value) as NativeFixtureAuditTestPlan;
 const auditPlanNamespaces = async (): Promise<readonly string[]> =>

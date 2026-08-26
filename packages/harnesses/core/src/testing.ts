@@ -18,6 +18,7 @@ export {
   serializeHarnessSanitizedFixture,
   type HarnessNativeFixtureGovernance,
   type HarnessNativeFixtureProvenance,
+  type HarnessNativeFixtureReviewRecord,
   type HarnessSanitizedFixture,
   type NativeFixtureInventoryEntry,
   type NativeFixtureAuditTestPlan,
