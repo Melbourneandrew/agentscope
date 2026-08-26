@@ -4,6 +4,7 @@ import {
   CodexMappingError,
   decodeCodexRootHookInput,
   mapCodexSanitizedNativeObservation,
+  type CodexMappedNativeObservation,
   type CodexSanitizedNativeObservation,
 } from "./mapping.js";
 
@@ -42,6 +43,25 @@ const checkpoint = ({
   disposition: "retained" as const,
   startPosition: availableStartPosition,
 });
+
+// Core generically governs capture persistence for operation-unavailable data in
+// packages/core/src/capture/runtime.test.ts. This package owns only the concrete
+// Codex mapping fixture and proves its candidate/contract structural parity.
+const expectUnavailableParity = (
+  mapped: CodexMappedNativeObservation,
+): void => {
+  const key = (value: (typeof mapped.contract.unavailable)[number]): string =>
+    JSON.stringify(value);
+  const candidateUnavailable = [
+    ...mapped.candidate.rootContext.unavailable,
+    ...mapped.candidate.operations.flatMap(({ unavailable }) => unavailable),
+  ];
+  const candidateKeys = candidateUnavailable.map(key);
+  const contractKeys = mapped.contract.unavailable.map(key);
+  expect(new Set(candidateKeys).size).toBe(candidateKeys.length);
+  expect(new Set(contractKeys).size).toBe(contractKeys.length);
+  expect(candidateKeys.sort()).toEqual(contractKeys.sort());
+};
 
 describe("Codex root hook input", () => {
   it.each([
@@ -208,6 +228,7 @@ describe("Codex native OpenInference mapping", () => {
       fields: [],
       unavailable: [],
     });
+    expectUnavailableParity(mapped);
   });
 });
 
@@ -326,6 +347,8 @@ describe("Codex unavailable native metadata", () => {
         source: "hook-payload",
       }),
     );
+    expectUnavailableParity(mapped);
+    expectUnavailableParity(correlatedUnavailable);
   });
 
   it("maps a categorical native error without inventing a message", () => {
@@ -346,6 +369,7 @@ describe("Codex unavailable native metadata", () => {
       mapped.candidate.operations.find(({ kind }) => kind === "LLM")
         ?.unavailable,
     ).toEqual(mapped.contract.unavailable);
+    expectUnavailableParity(mapped);
   });
 
   it("records an unavailable tool family without inventing a tool operation", () => {
@@ -378,6 +402,7 @@ describe("Codex unavailable native metadata", () => {
       "error.type",
       "exception.message",
     ]);
+    expectUnavailableParity(mapped);
   });
 });
 
