@@ -204,8 +204,20 @@ describe("Codex owned hook migration and removal", () => {
       kind: "unsupported",
     });
     expect(
-      decide("install", ownedInvocation, "vendor-observability-hook").kind,
-    ).toBe("replace-overlap");
+      decide("install", ownedInvocation, "vendor-observability-hook"),
+    ).toEqual({
+      kind: "unsupported",
+    });
+    expect(
+      decide("migrate", ownedInvocation, "vendor-observability-hook"),
+    ).toEqual({
+      kind: "unsupported",
+    });
+    expect(
+      decide("uninstall", ownedInvocation, "vendor-observability-hook"),
+    ).toEqual({
+      kind: "unchanged",
+    });
     expect(() =>
       createCodexInstallationPlanner("invalid" as never, ownedInvocation),
     ).toThrow(CodexInstallationError);

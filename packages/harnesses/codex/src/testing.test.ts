@@ -2,17 +2,33 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
+  createOwnedHarnessHookInvocation,
+  type HarnessTargetInspection,
+} from "@agentscope/harnesses-core";
+import {
   auditNativeFixtureInventory,
   createHarnessContractSuite,
   serializeHarnessSanitizedFixture,
 } from "@agentscope/harnesses-core/testing";
 import { describe, expect, it } from "vitest";
 
+import * as productionRoot from "./index.js";
 import {
   codexComponentContractAdapter,
   codexComponentEvidence,
   codexSanitizedFixture,
 } from "./testing.js";
+import { createCodexInstallationPlanner } from "./installation.js";
+
+const encoder = new TextEncoder();
+
+const genuineTarget = (text: string): HarnessTargetInspection => ({
+  targetPath: "/isolated/.codex/hooks.json",
+  exists: true,
+  bytes: encoder.encode(text),
+  digest: "0".repeat(64),
+  mode: 0o600,
+});
 
 describe("Codex governed component fixture", () => {
   it("is serialized canonically from the governed fixture value", async () => {
@@ -56,9 +72,34 @@ describe("Codex governed component fixture", () => {
       captureRecipe: "codex-synthetic-stop-v1",
     });
   });
+
+  it("keeps the test adapter and scenario out of the production root", () => {
+    expect(productionRoot).not.toHaveProperty("codexComponentContractAdapter");
+    expect(productionRoot).not.toHaveProperty("codexComponentScenario");
+    expect(productionRoot).not.toHaveProperty("codexSanitizedFixture");
+  });
 });
 
 describe("Codex shared component contract", () => {
+  it("delegates genuine Codex targets unchanged to the production planner", () => {
+    const invocation = createOwnedHarnessHookInvocation({
+      agentscopeHome: "/opt/agentscope",
+      harnessType: codexComponentContractAdapter.descriptor.harnessType,
+      hookDeadlineMilliseconds: 2_000,
+      platform: "posix",
+    });
+    const target = genuineTarget('{"hooks":{}}');
+
+    for (const operation of ["install", "migrate", "uninstall"] as const) {
+      expect(
+        codexComponentContractAdapter.createInstallationPlanner(
+          operation,
+          invocation,
+        )(target),
+      ).toEqual(createCodexInstallationPlanner(operation, invocation)(target));
+    }
+  });
+
   for (const contractCase of createHarnessContractSuite(
     codexComponentContractAdapter,
   )) {

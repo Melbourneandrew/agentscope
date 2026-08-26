@@ -254,22 +254,6 @@ const plan = (
       bytes: installOwnedGroups({}, command, invocation, false),
     };
   }
-  const text = (() => {
-    try {
-      return utf8.decode(target.bytes);
-    } catch {
-      return undefined;
-    }
-  })();
-  if (text === "vendor-observability-hook") {
-    if (operation === "uninstall") return { kind: "unchanged" };
-    if (operation === "install")
-      return { kind: "replace-overlap", bytes: new Uint8Array() };
-    return {
-      kind: "replace-overlap",
-      bytes: installOwnedGroups({}, command, invocation, true),
-    };
-  }
   const root = parseConfiguration(target.bytes);
   if (root === undefined)
     return operation === "uninstall"

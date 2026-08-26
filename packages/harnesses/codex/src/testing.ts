@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 
+import type {
+  HarnessInstallationPlanner,
+  HarnessTargetInspection,
+} from "@agentscope/harnesses-core";
 import {
   deriveHarnessComponentEvidenceDigest,
   parseHarnessSanitizedFixture,
@@ -21,6 +25,39 @@ import { mapCodexSanitizedNativeObservation } from "./mapping.js";
 
 const componentSha256 = (value: unknown): `sha256-${string}` =>
   `sha256-${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+
+const contractOverlapSentinel = "vendor-observability-hook";
+const contractDecoder = new TextDecoder("utf-8", { fatal: true });
+
+const isContractOverlapSentinel = (
+  target: HarnessTargetInspection,
+): boolean => {
+  if (!target.exists || target.bytes === null) return false;
+  try {
+    return contractDecoder.decode(target.bytes) === contractOverlapSentinel;
+  } catch {
+    return false;
+  }
+};
+
+const createContractInstallationPlanner: HarnessComponentContractAdapter["createInstallationPlanner"] =
+  (operation, invocation): HarnessInstallationPlanner => {
+    const productionPlanner = createCodexInstallationPlanner(
+      operation,
+      invocation,
+    );
+    return (target) => {
+      if (!isContractOverlapSentinel(target)) return productionPlanner(target);
+      if (operation === "uninstall") return { kind: "unchanged" };
+      if (operation === "install") return { kind: "conflict" };
+      return productionPlanner({
+        ...target,
+        exists: false,
+        bytes: null,
+        mode: null,
+      });
+    };
+  };
 
 export const codexSanitizedFixture: HarnessSanitizedFixture =
   parseHarnessSanitizedFixture({
@@ -214,6 +251,6 @@ export const codexComponentContractAdapter: HarnessComponentContractAdapter =
         },
         resolver,
       ).contract,
-    createInstallationPlanner: createCodexInstallationPlanner,
+    createInstallationPlanner: createContractInstallationPlanner,
     runHook: runSyntheticHook,
   });
