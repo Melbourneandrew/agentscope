@@ -754,6 +754,7 @@ type NativeFixtureAuditTestPlanDescriptor =
     }>
   | Readonly<{
       kind:
+        | "expire-after-capability"
         | "hold-root-before-capability"
         | "namespace-operation-failure"
         | "root-operation-failure-after-hold"
@@ -788,6 +789,14 @@ const intrinsicReflectApply = Reflect.apply;
 const intrinsicIsProxy = types.isProxy;
 const intrinsicIsPromise = types.isPromise;
 const discardPromiseRejection = (): undefined => undefined;
+
+const assertAuditAuthority = (
+  authorityDeadline: number,
+  forceExpired = false,
+): void => {
+  if (forceExpired || performance.now() >= authorityDeadline)
+    fail("harness.fixture.inventory.capability");
+};
 
 export const activeNativeFixtureAuditWorkerCountForTest = (): number =>
   activeAuditWorkerPids.size;
@@ -871,6 +880,7 @@ const parseAuditTestPlan = (
     }
   }
   if (
+    snapshot.kind === "expire-after-capability" ||
     snapshot.kind === "hold-root-before-capability" ||
     snapshot.kind === "namespace-operation-failure" ||
     snapshot.kind === "root-operation-failure-after-hold" ||
@@ -961,13 +971,10 @@ const applyAuditTestPlan = (
   runtime: NativeFixtureAuditTestPlanRuntime | undefined,
   event: NativeFixtureAuditEvent,
   root: string,
-  authorityDeadline: number,
   childProcessId?: number,
 ): void => {
   if (runtime === undefined) return;
   const plan = runtime.descriptor;
-  if (performance.now() >= authorityDeadline)
-    fail("harness.fixture.inventory.test-plan");
   try {
     if (
       (plan.kind === "hold-root-before-capability" ||
@@ -1009,8 +1016,6 @@ const applyAuditTestPlan = (
   } catch {
     fail("harness.fixture.inventory.test-plan");
   }
-  if (performance.now() >= authorityDeadline)
-    fail("harness.fixture.inventory.test-plan");
 };
 
 type AncestorIdentity = Readonly<{
@@ -1324,8 +1329,7 @@ const acquireCapabilitySnapshot = async (
   authorityDeadline: number,
   testPlan?: NativeFixtureAuditTestPlanRuntime,
 ): Promise<readonly CapabilitySnapshotFile[]> => {
-  if (performance.now() >= authorityDeadline)
-    fail("harness.fixture.inventory.capability");
+  assertAuditAuthority(authorityDeadline);
   const controller = new AbortController();
   const abortWork = (): void => {
     controller.abort();
@@ -1336,7 +1340,7 @@ const acquireCapabilitySnapshot = async (
   );
   const child = spawnCapabilityWorker(root, controller.signal);
   const applyPlan = (event: NativeFixtureAuditEvent): void => {
-    applyAuditTestPlan(testPlan, event, root, authorityDeadline, child.pid);
+    applyAuditTestPlan(testPlan, event, root, child.pid);
   };
   /* v8 ignore next -- a successfully spawned Node child always exposes pid. */
   if (child.pid !== undefined) activeAuditWorkerPids.add(child.pid);
@@ -1448,33 +1452,53 @@ export const auditNativeFixtureInventory = async (
   harnessPackagesRoot: string,
   testPlanInput?: NativeFixtureAuditTestPlan,
 ): Promise<readonly NativeFixtureInventoryEntry[]> => {
-  const lexicalRoot = resolve(harnessPackagesRoot);
   const authorityDeadline = performance.now() + 10_000;
+  assertAuditAuthority(authorityDeadline);
+  const lexicalRoot = resolve(harnessPackagesRoot);
+  assertAuditAuthority(authorityDeadline);
+  assertAuditAuthority(authorityDeadline);
   const testPlanDescriptor = parseAuditTestPlan(testPlanInput);
+  assertAuditAuthority(authorityDeadline);
+  assertAuditAuthority(authorityDeadline);
   const ancestry = await authenticateLexicalAncestry(lexicalRoot);
+  assertAuditAuthority(authorityDeadline);
+  assertAuditAuthority(authorityDeadline);
   const testPlan = prepareAuditTestPlan(testPlanDescriptor, lexicalRoot);
+  assertAuditAuthority(authorityDeadline);
   let files: readonly CapabilitySnapshotFile[];
   try {
+    assertAuditAuthority(authorityDeadline);
     applyAuditTestPlan(
       testPlan,
       "lexical-ancestry-before-capability",
       lexicalRoot,
-      authorityDeadline,
     );
+    assertAuditAuthority(authorityDeadline);
+    assertAuditAuthority(authorityDeadline);
     await assertStableLexicalAncestry(ancestry);
+    assertAuditAuthority(authorityDeadline);
     const expectedRoot = ancestry.at(-1)!;
+    assertAuditAuthority(authorityDeadline);
     files = await acquireCapabilitySnapshot(
       lexicalRoot,
       expectedRoot,
       authorityDeadline,
       testPlan,
     );
+    assertAuditAuthority(authorityDeadline);
+    assertAuditAuthority(authorityDeadline);
     await assertStableLexicalAncestry(ancestry);
+    assertAuditAuthority(authorityDeadline);
   } finally {
     restoreAuditTestPlan(testPlan, lexicalRoot);
   }
+  assertAuditAuthority(
+    authorityDeadline,
+    testPlanDescriptor?.kind === "expire-after-capability",
+  );
   const entries: NativeFixtureInventoryEntry[] = [];
   for (const file of files) {
+    assertAuditAuthority(authorityDeadline);
     const pathSegments = file.relativePath.split("/");
     /* v8 ignore next -- the fixed worker constructs this four-segment path;
      * parent validation remains as a compromised-worker boundary. */
@@ -1491,27 +1515,38 @@ export const auditNativeFixtureInventory = async (
       string,
       string,
     ];
+    assertAuditAuthority(authorityDeadline);
     const text = file.bytes.toString("utf8");
+    assertAuditAuthority(authorityDeadline);
     if (
       text.includes("\uFFFD") ||
       contentIsForbidden(text) ||
       decodedContentIsForbidden(text)
     )
       fail("harness.fixture.inventory.content");
+    assertAuditAuthority(authorityDeadline);
     let input: unknown;
     try {
       input = JSON.parse(text);
     } catch {
       fail("harness.fixture.inventory.json");
     }
+    assertAuditAuthority(authorityDeadline);
     const fixture = parseHarnessSanitizedFixture(input);
+    assertAuditAuthority(authorityDeadline);
     if (
       fixture.harnessId !== harnessId ||
       basename(fileName, ".json") !== fixture.fixtureId
     )
       fail("harness.fixture.inventory.path-link");
-    if (serializeHarnessSanitizedFixture(fixture) !== text)
+    assertAuditAuthority(authorityDeadline);
+    const canonicalFixture = serializeHarnessSanitizedFixture(fixture);
+    assertAuditAuthority(authorityDeadline);
+    if (canonicalFixture !== text)
       fail("harness.fixture.inventory.canonical-json");
+    assertAuditAuthority(authorityDeadline);
+    const fixtureDigest = `sha256-${createHash("sha256").update(file.bytes).digest("hex")}`;
+    assertAuditAuthority(authorityDeadline);
     entries.push(
       Object.freeze({
         harnessId: fixture.harnessId,
@@ -1520,13 +1555,17 @@ export const auditNativeFixtureInventory = async (
         relativePath: file.relativePath,
         artifactAuthority:
           fixture.governance.provenance.artifactAuthority.status,
-        sha256: `sha256-${createHash("sha256").update(file.bytes).digest("hex")}`,
+        sha256: fixtureDigest,
       }),
     );
+    assertAuditAuthority(authorityDeadline);
   }
-  return Object.freeze(
-    entries.sort((left, right) =>
-      codePointCompare(left.relativePath, right.relativePath),
-    ),
+  assertAuditAuthority(authorityDeadline);
+  entries.sort((left, right) =>
+    codePointCompare(left.relativePath, right.relativePath),
   );
+  assertAuditAuthority(authorityDeadline);
+  const inventory = Object.freeze(entries);
+  assertAuditAuthority(authorityDeadline);
+  return inventory;
 };

@@ -78,13 +78,19 @@ JSON's worst six-byte escaping expansion, those paths consume at most 840 KiB;
 the fixed 256-record envelope consumes less than 16 KiB. The complete maximum
 valid snapshot is therefore below the parent's 5 MiB output ceiling.
 
-One monotonic 10-second work/termination authority applies: work is aborted at 9
-seconds so the final second initiates forced termination and join. The worker
-must emit the complete terminal frame and then close with code zero and no
-signal. No success or failure returns before direct-child close is confirmed;
+One monotonic 10-second work authority begins as the audit API's first action.
+It covers path resolution, test-plan parsing, ancestry authentication, worker
+execution, and every bounded parent-side path, decoding, secret-scan, JSON,
+fixture, canonicalization, digest, and sorting phase through the final success
+return. Authority is checked before and after every awaited or bounded phase;
+expiry stops ordinary work with a content-free failure. Worker work is aborted
+at 9 seconds so the final second initiates forced termination and join. The
+worker must emit the complete terminal frame and then close with code zero and
+no signal. No success or failure returns before direct-child close is confirmed;
 if the runtime delays close after forced termination, the join invariant—not a
-wall-clock shortcut—governs return. Expiry is checked again immediately before
-spawn, so an expired audit starts no child work. The optional audit test plan is
+wall-clock shortcut—governs return. Root restoration and worker cleanup remain
+mandatory and may outlast the work authority. Expiry is checked again
+immediately before spawn, so an expired audit starts no child work. The optional audit test plan is
 a bounded, serialized JSON primitive decoded into closed plain data. Passing an
 object, proxy, callback, thenable, oversized value, or malformed JSON cannot
 execute caller properties or callbacks inside the authority. A genuine native

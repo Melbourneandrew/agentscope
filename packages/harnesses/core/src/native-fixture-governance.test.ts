@@ -1189,6 +1189,19 @@ describe("native fixture cross-realm Promise plan rejection", () => {
 });
 
 describe("native fixture fixed audit test operations", () => {
+  it("expires after worker join before parent processing", async () => {
+    const root = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
+    await expect(
+      auditNativeFixtureInventory(
+        root,
+        auditPlan({ kind: "expire-after-capability" }),
+      ),
+    ).rejects.toThrow("harness.fixture.inventory.capability");
+    expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
+  });
+
   it.each([
     "namespace-operation-failure",
     "restore-operation-failure",
@@ -1232,7 +1245,7 @@ describe("native fixture fixed audit test operations", () => {
     await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
 
-  it("does not spawn when ordinary-audit authority is already expired", async () => {
+  it("expires during entry/path setup without spawning a worker", async () => {
     const root = await writeInventoryFixture();
     const clock = vi.spyOn(performance, "now");
     clock.mockReturnValueOnce(0).mockReturnValue(20_000);
@@ -1247,7 +1260,7 @@ describe("native fixture fixed audit test operations", () => {
   });
 
   it.each(["before", "after"] as const)(
-    "enforces the monotonic authority %s each fixed test step",
+    "enforces the central authority %s entry path resolution",
     async (position) => {
       const root = await writeInventoryFixture();
       const clock = vi.spyOn(performance, "now");
@@ -1260,7 +1273,7 @@ describe("native fixture fixed audit test operations", () => {
             root,
             auditPlan({ kind: "signal-before-release" }),
           ),
-        ).rejects.toThrow("harness.fixture.inventory.test-plan");
+        ).rejects.toThrow("harness.fixture.inventory.capability");
       } finally {
         clock.mockRestore();
       }
