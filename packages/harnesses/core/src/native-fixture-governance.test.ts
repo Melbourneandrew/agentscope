@@ -1,6 +1,7 @@
 import {
   mkdtemp,
   mkdir,
+  readFile,
   readdir,
   rename,
   rm,
@@ -30,7 +31,7 @@ const roots: string[] = [];
 const physicalTemporaryRoot = realpathSync(tmpdir());
 const structurallyValidSyntheticLicenseSource =
   `https://github.com/Melbourneandrew/agentscope/blob/${"a".repeat(40)}` +
-  "/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic";
+  "/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic";
 const structuralPrivacyReview =
   "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001";
 const structuralRedistributionReview =
@@ -655,8 +656,8 @@ describe("native fixture reviewed license governance", () => {
       1,
       base.governance.provenance.sourceReference,
       "https://example.invalid/license",
-      "https://github.com/Melbourneandrew/agentscope/blob/main/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic",
-      "https://github.com/Melbourneandrew/agentscope/blob/0000000000000000000000000000000000000000/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic",
+      "https://github.com/Melbourneandrew/agentscope/blob/main/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic",
+      "https://github.com/Melbourneandrew/agentscope/blob/0000000000000000000000000000000000000000/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic",
       "https://github.com/Melbourneandrew/agentscope/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/harnesses/core/NATIVE_FIXTURES.md",
       "https://github.com/Melbourneandrew/agentscope/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/harnesses/claude-code/fixtures/native/fixture.json",
     ]) {
@@ -690,7 +691,7 @@ describe("native fixture reviewed authority separation", () => {
         structurallyValidSyntheticLicenseSource,
         structurallyValidSyntheticLicenseSource.split("#")[0]!,
         structurallyValidSyntheticLicenseSource.replace(
-          "#license-ref-agentscope-synthetic",
+          "#licenseref-agentscope-synthetic",
           "#another-fragment",
         ),
         structurallyValidSyntheticLicenseSource.replace(
@@ -702,19 +703,27 @@ describe("native fixture reviewed authority separation", () => {
             "github.com/Melbourneandrew/agentscope/blob",
             "raw.githubusercontent.com/Melbourneandrew/agentscope",
           )
-          .replace("#license-ref-agentscope-synthetic", ""),
+          .replace("#licenseref-agentscope-synthetic", ""),
         structurallyValidSyntheticLicenseSource
           .replace(
             "github.com/Melbourneandrew/agentscope/blob",
             "raw.github.com/Melbourneandrew/agentscope",
           )
-          .replace("#license-ref-agentscope-synthetic", ""),
+          .replace("#licenseref-agentscope-synthetic", ""),
         structurallyValidSyntheticLicenseSource.replace(
           "github.com/",
           "github.com./",
         ),
         `https://api.github.com/repos/Melbourneandrew/agentscope/contents/packages/harnesses/core/NATIVE_FIXTURES.md?ref=${"a".repeat(40)}`,
         `https://vendor.example/license/packages/harnesses/core/NATIVE_FIXTURES.md?redirect=external#vendor`,
+        structurallyValidSyntheticLicenseSource.replace(
+          "/packages/harnesses/core/",
+          "//packages//harnesses//core//",
+        ),
+        structurallyValidSyntheticLicenseSource.replace(
+          "/packages/harnesses/core/",
+          "/packages/other/%252e%252e/harnesses//core/",
+        ),
       ].map((sourceReference) => ({
         ...vendor.governance.license,
         sourceReference,
@@ -760,13 +769,33 @@ describe("native fixture reviewed authority separation", () => {
 });
 
 describe("native fixture reviewed authority values", () => {
+  it("binds the structural URL fragment to the generated heading anchor", async () => {
+    const documentation = await readFile(
+      new URL("../NATIVE_FIXTURES.md", import.meta.url),
+      "utf8",
+    );
+    const heading = documentation.match(
+      /^### (?<heading>LicenseRef-Agentscope-Synthetic)$/mu,
+    )?.groups?.heading;
+    expect(heading).toBe("LicenseRef-Agentscope-Synthetic");
+    const generatedAnchor = heading
+      ?.toLowerCase()
+      .replace(/[^a-z0-9\s-]/gu, "")
+      .replace(/\s+/gu, "-");
+    expect(
+      structurallyValidSyntheticLicenseSource.endsWith(`#${generatedAnchor}`),
+    ).toBe(true);
+  });
+
   it("requires an exact Gregorian approval date", () => {
     const base = fixture();
     for (const reviewedAt of [
       "2024-02-29",
       "2000-02-29",
+      "0001-01-01",
       "2026-04-30",
       "2026-12-31",
+      "9999-12-31",
     ]) {
       expect(
         parseHarnessSanitizedFixture({
@@ -781,6 +810,7 @@ describe("native fixture reviewed authority values", () => {
     for (const reviewedAt of [
       "2026-02-29",
       "2026-02-31",
+      "0000-02-29",
       "1900-02-29",
       "2026-04-31",
       "2026-11-31",

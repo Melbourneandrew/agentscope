@@ -304,7 +304,7 @@ const reviewedLicenseIdPattern =
   /^(?:(?!LicenseRef-)[A-Za-z0-9][A-Za-z0-9.+-]{0,63}|LicenseRef-[A-Za-z0-9][A-Za-z0-9.-]{0,63})$/u;
 const agentscopeSyntheticLicenseId = "LicenseRef-Agentscope-Synthetic";
 const agentscopeSyntheticLicenseSourcePattern =
-  /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/blob\/(?!0{40}\/)[a-f0-9]{40}\/packages\/harnesses\/core\/NATIVE_FIXTURES\.md#license-ref-agentscope-synthetic$/u;
+  /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/blob\/(?!0{40}\/)[a-f0-9]{40}\/packages\/harnesses\/core\/NATIVE_FIXTURES\.md#licenseref-agentscope-synthetic$/u;
 const concreteFixtureReviewPattern =
   /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/pull\/[1-9]\d{0,9}#pullrequestreview-[1-9]\d{0,19}$/u;
 
@@ -333,12 +333,12 @@ const calendarDate = (value: unknown): string => {
     30,
     31,
   ][month - 1];
-  if (daysInMonth === undefined || day > daysInMonth)
+  if (year < 1 || daysInMonth === undefined || day > daysInMonth)
     fail("harness.fixture.review.date");
   return candidate;
 };
 
-const decodedUrlPath = (value: string): string => {
+const normalizedDecodedUrlPath = (value: string): string => {
   let current = value;
   for (let depth = 0; depth <= value.length; depth += 1) {
     let decoded: string;
@@ -347,12 +347,19 @@ const decodedUrlPath = (value: string): string => {
     } catch {
       return current;
     }
-    if (decoded === current) return current.toLowerCase();
+    if (decoded === current) break;
     current = decoded;
   }
-  /* v8 ignore next -- each successful decoding pass strictly shortens the
-   * string, so stability or an error is reached within value.length. */
-  return current.toLowerCase();
+  const segments: string[] = [];
+  for (const segment of current.toLowerCase().split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return `/${segments.join("/")}`;
 };
 
 const isAgentscopeGovernanceDocumentReference = (value: string): boolean => {
@@ -364,7 +371,7 @@ const isAgentscopeGovernanceDocumentReference = (value: string): boolean => {
     }
   })();
   if (parsed === undefined) return false;
-  const path = decodedUrlPath(parsed.pathname).replace(/\/+$/u, "");
+  const path = normalizedDecodedUrlPath(parsed.pathname);
   return path.endsWith("/packages/harnesses/core/native_fixtures.md");
 };
 

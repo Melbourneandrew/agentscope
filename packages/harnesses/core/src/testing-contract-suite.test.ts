@@ -22,7 +22,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const structurallyValidSyntheticLicenseSource =
   `https://github.com/Melbourneandrew/agentscope/blob/${"a".repeat(40)}` +
-  "/packages/harnesses/core/NATIVE_FIXTURES.md#license-ref-agentscope-synthetic";
+  "/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic";
 const referenceContextEvidence = Object.freeze({
   evidenceVersion: 1 as const,
   mappingArtifactDigest: `sha256-${"a".repeat(64)}`,
