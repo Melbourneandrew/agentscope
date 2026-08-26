@@ -15,6 +15,51 @@ const digestPattern = /^[a-f0-9]{64}$/u;
 const environmentPattern = /^asgcf_[a-f0-9]{32}$/u;
 const identifierPattern = /^[A-Za-z0-9._:-]{1,200}$/u;
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalJson(value[key])]),
+    );
+  }
+  return value;
+}
+
+function terminalContractSha256(plan, admission) {
+  const contract = {
+    accountId: plan.accountId,
+    environmentId: plan.environmentId,
+    kind: plan.kind,
+    permissionManifestSha256: plan.permissionManifestSha256,
+    profileSha256: plan.profileSha256,
+    workerName: plan.workerName,
+  };
+  if (plan.kind === "retire") {
+    Object.assign(contract, {
+      cron: "absent",
+      durableObjectClass: "deleted:FleetDurableObject",
+      providerZeroSha256: plan.providerZeroSha256,
+      retirementTombstoneSha256: plan.retirementTombstoneSha256,
+      secretNames: [],
+      scriptWorkersDev: false,
+      worker: "absent",
+    });
+  } else {
+    Object.assign(contract, {
+      cron: admission.deployment.cron,
+      durableObjectBinding: admission.deployment.durableObjectBinding,
+      durableObjectClass: admission.deployment.durableObjectClass,
+      migrationTag: plan.currentMigrationTag,
+      secretNames: admission.deployment.secretNames,
+      scriptWorkersDev: true,
+      worker: "present",
+    });
+  }
+  return sha256(JSON.stringify(canonicalJson(contract)));
+}
+
 function fail(message) {
   process.stderr.write(`crabbox coordinator plan: ${message}\n`);
   process.exitCode = 1;
@@ -197,6 +242,8 @@ function operationSchema(action) {
       "slotId",
       "slotVersion",
     ],
+    "worker.schedule.delete": ["action", "target", "requestId"],
+    "worker.scriptWorkersDev.disable": ["action", "target", "requestId"],
     "account.workersDev.enable": ["action", "target", "requestId", "accountId"],
     "worker.terminalArtifact.deploy": [
       "action",
@@ -219,6 +266,8 @@ function allowedActions(kind) {
     rollback: new Set(["worker.rollback"]),
     "account-workers-dev-enable": new Set(["account.workersDev.enable"]),
     retire: new Set([
+      "worker.schedule.delete",
+      "worker.scriptWorkersDev.disable",
       "worker.secret.delete",
       "worker.terminalArtifact.deploy",
       "worker.version.delete",
@@ -229,9 +278,15 @@ function allowedActions(kind) {
 
 function validateOperationAdmission(operation, plan, admission, manifest) {
   const schema = operationSchema(operation.action);
+  const manifestActions = new Set([
+    ...manifest.ordinaryMutationActions,
+    ...manifest.separateOwnerPlanActions,
+    ...manifest.retirementOnlyActions,
+  ]);
   if (
     !schema ||
     !allowedActions(plan.kind)?.has(operation.action) ||
+    !manifestActions.has(operation.action) ||
     manifest.forbiddenActions.includes(operation.action)
   ) {
     throw new Error(
@@ -348,7 +403,12 @@ function validateKindSequence(plan, admission) {
     const secretDeletes = admission.deployment.secretNames.map(
       () => "worker.secret.delete",
     );
-    const requiredPrefix = [...secretDeletes, "worker.terminalArtifact.deploy"];
+    const requiredPrefix = [
+      "worker.schedule.delete",
+      "worker.scriptWorkersDev.disable",
+      ...secretDeletes,
+      "worker.terminalArtifact.deploy",
+    ];
     if (
       JSON.stringify(actions.slice(0, requiredPrefix.length)) !==
         JSON.stringify(requiredPrefix) ||
@@ -363,7 +423,7 @@ function validateKindSequence(plan, admission) {
       );
     }
     const secretNames = plan.operations
-      .slice(0, secretDeletes.length)
+      .slice(2, 2 + secretDeletes.length)
       .map(({ secretName }) => secretName);
     if (
       JSON.stringify(secretNames) !==
@@ -425,6 +485,13 @@ function validatePlanIdentity(plan, context) {
   ) {
     throw new Error(
       "plan differs from canonical policy or supplied profile identity",
+    );
+  }
+  if (
+    plan.intendedTerminalStateSha256 !== terminalContractSha256(plan, admission)
+  ) {
+    throw new Error(
+      "intended terminal state differs from the canonical contract",
     );
   }
   validateToolchain(plan.toolchainIdentity, admission);

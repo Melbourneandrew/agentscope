@@ -1,12 +1,14 @@
 package control
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 )
 
-var canonicalSecrets = []string{"HETZNER_TOKEN", "CRABBOX_SHARED_TOKEN", "CRABBOX_ADMIN_TOKEN"}
+var canonicalSecrets = []string{"CRABBOX_ADMIN_TOKEN", "CRABBOX_SHARED_TOKEN", "HETZNER_TOKEN"}
 
 func ValidatePlan(data []byte, authorizationData []byte, installation Installation, credentialSetSHA256 string, now time.Time) (Plan, error) {
 	var plan Plan
@@ -47,6 +49,29 @@ func ValidatePlan(data []byte, authorizationData []byte, installation Installati
 	return plan, nil
 }
 
+func ValidateRetirementEvidence(data []byte, plan Plan, installation Installation, now time.Time) (RetirementEvidence, error) {
+	var evidence RetirementEvidence
+	if err := strictJSON(data, &evidence); err != nil {
+		return evidence, err
+	}
+	signature := evidence.Signature
+	evidence.Signature = ""
+	payload, _ := signaturePayload(evidence)
+	if signature == "" || verifyDetached(installation.Roots[RecoveryRole], RecoveryRole, signature, payload) != nil {
+		return evidence, errors.New("E_RETIREMENT_EVIDENCE_SIGNATURE")
+	}
+	if _, err := base64.StdEncoding.Strict().DecodeString(signature); err != nil {
+		return evidence, errors.New("E_RETIREMENT_EVIDENCE_SIGNATURE")
+	}
+	if evidence.SchemaVersion != SchemaVersion || evidence.Domain != RetirementEvidenceDomain || evidence.InstallationID != installation.InstallationID || evidence.EnvironmentID != installation.EnvironmentID || evidence.AccountID != installation.AccountID || evidence.HetznerProjectID != installation.HetznerProjectID || evidence.WorkerName != WorkerName || evidence.WorkerVersionID != plan.CurrentWorkerVersionID || evidence.DurableObjectNamespaceID != plan.DurableObjectNamespaceID || evidence.MigrationTag != plan.CurrentMigrationTag || plan.AcquisitionFreezeID == nil || evidence.AcquisitionFreezeID != *plan.AcquisitionFreezeID || plan.LauncherCredentialRevocationID == nil || evidence.LauncherCredentialRevocationID != *plan.LauncherCredentialRevocationID || plan.ProviderZeroSHA256 == nil || evidence.ProviderObservationSHA256 != *plan.ProviderZeroSHA256 || plan.RetirementTombstoneSHA256 == nil || evidence.RetirementTombstoneSHA256 != *plan.RetirementTombstoneSHA256 {
+		return evidence, errors.New("E_RETIREMENT_EVIDENCE_BINDING")
+	}
+	if evidence.ProviderServers != 0 || evidence.ProviderKeys != 0 || evidence.CoordinatorLeases != 0 || evidence.UnresolvedCreates != 0 || !digestPattern.MatchString(evidence.ProviderObservationSHA256) || !digestPattern.MatchString(evidence.CoordinatorObservationSHA256) || !digestPattern.MatchString(evidence.RetirementTombstoneSHA256) || evidence.ObservedAt.After(now) || evidence.ExpiresAt.Before(now) || evidence.ExpiresAt.Sub(evidence.ObservedAt) > 15*time.Minute {
+		return evidence, errors.New("E_RETIREMENT_EVIDENCE_STATE")
+	}
+	return evidence, nil
+}
+
 func ValidatePlanCandidate(plan Plan, installation Installation, now time.Time) error {
 	if err := validatePlanIdentity(plan, installation, now); err != nil {
 		return err
@@ -79,6 +104,9 @@ func validatePlanIdentity(plan Plan, installation Installation, now time.Time) e
 			return errors.New("E_PLAN_DIGEST")
 		}
 	}
+	if plan.IntendedTerminalStateSHA256 != terminalContractSHA256(plan) {
+		return errors.New("E_TERMINAL_CONTRACT")
+	}
 	if plan.Kind == "retire" {
 		if plan.ProviderZeroSHA256 == nil || plan.RetirementTombstoneSHA256 == nil || plan.AcquisitionFreezeID == nil || plan.LauncherCredentialRevocationID == nil {
 			return errors.New("E_RETIREMENT_AUTHORITY")
@@ -90,6 +118,36 @@ func validatePlanIdentity(plan Plan, installation Installation, now time.Time) e
 		return errors.New("E_RETIREMENT_SCOPE")
 	}
 	return nil
+}
+
+func terminalContractSHA256(plan Plan) string {
+	contract := map[string]any{
+		"accountId":                plan.AccountID,
+		"environmentId":            plan.EnvironmentID,
+		"kind":                     plan.Kind,
+		"permissionManifestSha256": plan.PermissionManifestSHA256,
+		"profileSha256":            plan.ProfileSHA256,
+		"workerName":               plan.WorkerName,
+	}
+	if plan.Kind == "retire" {
+		contract["cron"] = "absent"
+		contract["durableObjectClass"] = "deleted:FleetDurableObject"
+		contract["providerZeroSha256"] = plan.ProviderZeroSHA256
+		contract["retirementTombstoneSha256"] = plan.RetirementTombstoneSHA256
+		contract["secretNames"] = []string{}
+		contract["scriptWorkersDev"] = false
+		contract["worker"] = "absent"
+	} else {
+		contract["cron"] = "*/15 * * * *"
+		contract["durableObjectBinding"] = "FLEET"
+		contract["durableObjectClass"] = "FleetDurableObject"
+		contract["migrationTag"] = plan.CurrentMigrationTag
+		contract["secretNames"] = canonicalSecrets
+		contract["scriptWorkersDev"] = true
+		contract["worker"] = "present"
+	}
+	data, _ := json.Marshal(contract)
+	return SHA256(data)
 }
 
 func validateSequence(plan Plan, installation Installation) error {
@@ -186,19 +244,22 @@ func hasUnexpectedFields(operation Operation, shape string) bool {
 }
 
 func validateRetirementSequence(plan Plan, installation Installation) error {
-	if len(plan.Operations) < 5 || len(plan.RollbackActions) != 0 {
+	if len(plan.Operations) < 7 || len(plan.RollbackActions) != 0 {
 		return errors.New("E_RETIREMENT_SEQUENCE")
 	}
+	if plan.Operations[0].Action != "worker.schedule.delete" || plan.Operations[0].Target != WorkerName || hasUnexpectedFields(plan.Operations[0], "none") || plan.Operations[1].Action != "worker.scriptWorkersDev.disable" || plan.Operations[1].Target != WorkerName || hasUnexpectedFields(plan.Operations[1], "none") {
+		return errors.New("E_RETIREMENT_DRAIN_SEQUENCE")
+	}
 	for index, secret := range canonicalSecrets {
-		if err := validateSecretOperation(plan.Operations[index], "worker.secret.delete", secret, plan); err != nil {
+		if err := validateSecretOperation(plan.Operations[index+2], "worker.secret.delete", secret, plan); err != nil {
 			return err
 		}
 	}
-	terminal := plan.Operations[3]
+	terminal := plan.Operations[5]
 	if terminal.Action != "worker.terminalArtifact.deploy" || terminal.Target != WorkerName || terminal.ProfileSHA256 == nil || *terminal.ProfileSHA256 != plan.ProfileSHA256 || terminal.EntryPointSHA256 == nil || *terminal.EntryPointSHA256 != installation.TerminalEntryPointSHA256 || terminal.ProviderZeroSHA256 == nil || plan.ProviderZeroSHA256 == nil || *terminal.ProviderZeroSHA256 != *plan.ProviderZeroSHA256 || terminal.RetirementTombstoneSHA256 == nil || plan.RetirementTombstoneSHA256 == nil || *terminal.RetirementTombstoneSHA256 != *plan.RetirementTombstoneSHA256 || hasUnexpectedFields(terminal, "terminal") {
 		return errors.New("E_TERMINAL_DEPLOYMENT")
 	}
-	for _, operation := range plan.Operations[4 : len(plan.Operations)-1] {
+	for _, operation := range plan.Operations[6 : len(plan.Operations)-1] {
 		if operation.Action != "worker.version.delete" || operation.Target != WorkerName || operation.VersionID == nil || hasUnexpectedFields(operation, "version") {
 			return errors.New("E_VERSION_DELETE")
 		}

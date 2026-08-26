@@ -100,10 +100,14 @@ root is `/Library/Application Support/Agentscope/CrabboxControl`. The installer
 requires root, builds with the admitted Go 1.26.5 distribution in a closed
 environment, installs an immutable executable plus five pairwise-distinct role
 roots, seals owner/recovery/billing signing keys under an attended operator passphrase,
-and binds the exact admission, permission manifest, profiles, npm
-executable, Crabbox source, and toolchain identity. It performs no login,
-cloud/provider credential receipt, network request, Wrangler command, or cloud/provider
-mutation.
+and binds the exact admission, permission manifest, profiles, official Node
+archive, pinned Crabbox commit, lock-installed Wrangler dependency closure, and
+toolchain identity. The attended installer copies that complete closure into the
+root-owned control directory before it can receive cloud authority; the launcher
+never executes repository or user-writable Node code. Runtime preparation may
+fetch only lockfile-integrity-pinned npm artifacts; it performs no login,
+cloud/provider credential receipt, Cloudflare/Hetzner request, Wrangler command,
+or cloud/provider mutation.
 
 Do not run the installer from an unattended agent session. The attended human
 invocation is:
@@ -111,17 +115,25 @@ invocation is:
 ```sh
 ops/crabbox-coordinator/install-protected-launcher.sh \
   <installation-id> <environment-id> <cloudflare-account-id> \
-  <hetzner-project-id> <exact-crabbox-source> <admitted-absolute-npm> \
+  <hetzner-project-id> <exact-crabbox-source> <official-node-archive> \
   <toolchain-identity.json> <exact-live-profile> <exact-terminal-profile> \
   <exact-terminal-entry-point>
 ```
 
-After installation, use only the root-owned installed binary. It exposes the
-closed commands `status`, `credential-enroll`, `observation-admit`, `authorize`,
+The installer prints the exact launcher and runtime-closure digests before the
+attended root copy and verifies the root-owned bootstrap copy before executing
+it. After installation, use only the root-owned installed binary. It exposes the
+closed commands `status`, `state-observe`, `credential-enroll`,
+`observation-admit`, `retirement-evidence-admit`, `authorize`,
 `apply`, `freeze`, `recover-quarantine`, `recover-resolve`, and `retire`. `apply` accepts no
 caller-selected executable, source, profile, endpoint, method, body, or target.
-It verifies installed roots and immutable inputs, durably consumes the plan,
-then resolves exact credential versions. A crash or failed process after an
+It verifies installed roots and the entire protected runtime tree, durably
+consumes the plan, independently observes the fixed Cloudflare permission
+surface with the read-only credential, and only then resolves and invokes exact
+credential versions. Every mutation is bracketed by before/after observations;
+success requires a Cloudflare success envelope, recorded response and
+resource-identity digests, no intervening drift, and a semantic terminal
+projection. A crash or failed process after an
 invocation starts leaves the global mutation fence held and records an
 outcome-uncertain event. `recover-quarantine` records an independently evidenced
 human recovery decision and never retries the request. Only a second signed

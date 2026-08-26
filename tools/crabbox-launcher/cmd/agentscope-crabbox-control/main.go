@@ -88,8 +88,8 @@ func install(args []string) {
 	liveProfile := flags.String("live-profile", "", "canonical live profile")
 	terminalProfile := flags.String("terminal-profile", "", "canonical terminal profile")
 	terminalEntryPoint := flags.String("terminal-entry-point", "", "canonical terminal Worker entry point")
-	npmPath := flags.String("npm", "", "admitted absolute npm executable")
-	crabboxSource := flags.String("crabbox-source", "", "exact pinned Crabbox source")
+	runtimeClosurePath := flags.String("runtime-closure", "", "exact attended runtime closure archive")
+	runtimeClosureSHA256 := flags.String("runtime-closure-sha256", "", "human-reviewed runtime closure digest")
 	toolchainIdentityPath := flags.String("toolchain-identity", "", "canonical toolchain identity")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		fail("E_ARGUMENTS")
@@ -125,16 +125,20 @@ func install(args []string) {
 	if err != nil {
 		fail(errorCode(err))
 	}
-	npmData, err := readBounded(*npmPath)
-	if err != nil || !filepath.IsAbs(*npmPath) || !filepath.IsAbs(*crabboxSource) {
-		fail("E_TOOLCHAIN_PATH")
+	runtimeInfo, statErr := os.Lstat(*runtimeClosurePath)
+	if statErr != nil || !runtimeInfo.Mode().IsRegular() || runtimeInfo.Mode()&os.ModeSymlink != 0 || runtimeInfo.Size() <= 0 || runtimeInfo.Size() > 768<<20 {
+		fail("E_RUNTIME_ARCHIVE")
+	}
+	runtimeClosure, err := os.ReadFile(*runtimeClosurePath)
+	if err != nil || control.SHA256(runtimeClosure) != *runtimeClosureSHA256 {
+		fail("E_RUNTIME_ARCHIVE")
 	}
 	passphrase, err := confirmedSecret("Create operator authorization passphrase: ", "Re-enter operator authorization passphrase: ")
 	if err != nil {
 		fail(errorCode(err))
 	}
 	defer zero(passphrase)
-	installed, err := control.Install(control.InstallInput{Root: stateRoot(), InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], LiveProfilePath: *liveProfile, TerminalProfilePath: *terminalProfile, TerminalEntryPointPath: *terminalEntryPoint, NPMPath: *npmPath, NPMPathSHA256: control.SHA256(npmData), CrabboxSource: *crabboxSource, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
+	installed, err := control.Install(control.InstallInput{Root: stateRoot(), InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: *runtimeClosureSHA256, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
 	if err != nil {
 		fail(errorCode(err))
 	}
@@ -231,6 +235,44 @@ func signObservation(args []string) {
 	emit(map[string]any{"schemaVersion": 1, "observationAdmitted": true, "observationId": observation.ObservationID, "secretValuesPresent": false})
 }
 
+func admitRetirementEvidence(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("retirement-evidence-admit", flag.ContinueOnError)
+	evidencePath := flags.String("evidence", "", "exact independently produced zero-state evidence")
+	output := flags.String("output", "", "new signed evidence output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *evidencePath == "" || *output == "" {
+		fail("E_ARGUMENTS")
+	}
+	data, err := readBounded(*evidencePath)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	evidence, err := control.ParseRetirementEvidenceCandidate(data)
+	if err != nil {
+		fail("E_RETIREMENT_EVIDENCE_SCHEMA")
+	}
+	emit(map[string]any{"schemaVersion": 1, "retirementEvidencePreview": true, "accountId": evidence.AccountID, "environmentId": evidence.EnvironmentID, "workerName": evidence.WorkerName, "providerServers": evidence.ProviderServers, "providerKeys": evidence.ProviderKeys, "coordinatorLeases": evidence.CoordinatorLeases, "unresolvedCreates": evidence.UnresolvedCreates, "providerObservationSha256": evidence.ProviderObservationSHA256, "coordinatorObservationSha256": evidence.CoordinatorObservationSHA256, "retirementTombstoneSha256": evidence.RetirementTombstoneSHA256, "expiresAt": evidence.ExpiresAt})
+	confirmation, err := control.ReadSecretFromTTY("Admit these exact retirement prerequisites? Type RETIRE: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "RETIRE" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Recovery authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	signed, err := control.NewStore(stateRoot()).SignRetirementEvidence(evidence, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	writeNew(*output, signed)
+	emit(map[string]any{"schemaVersion": 1, "retirementEvidenceAdmitted": true, "secretValuesPresent": false})
+}
+
 func enrollSecret(args []string) {
 	requireRoot()
 	flags := flag.NewFlagSet("secret-enroll", flag.ContinueOnError)
@@ -263,6 +305,7 @@ func applyPlan(args []string, retirement bool) {
 	authorizationPath := flags.String("authorization", "", "installed-root authorization")
 	observationPath := flags.String("observation", "", "billing observation")
 	attestationPath := flags.String("observation-attestation", "", "billing attestation")
+	retirementEvidencePath := flags.String("retirement-evidence", "", "signed independent retirement prerequisites")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		fail("E_ARGUMENTS")
 	}
@@ -275,6 +318,19 @@ func applyPlan(args []string, retirement bool) {
 		}
 		values[index] = value
 	}
+	var retirementEvidence []byte
+	if retirement {
+		if *retirementEvidencePath == "" {
+			fail("E_RETIREMENT_EVIDENCE_REQUIRED")
+		}
+		var readErr error
+		retirementEvidence, readErr = readBounded(*retirementEvidencePath)
+		if readErr != nil {
+			fail(errorCode(readErr))
+		}
+	} else if *retirementEvidencePath != "" {
+		fail("E_RETIREMENT_SCOPE")
+	}
 	plan, err := control.ParsePlanCandidate(values[0])
 	if err != nil {
 		fail(errorCode(err))
@@ -286,9 +342,10 @@ func applyPlan(args []string, retirement bool) {
 	if err != nil {
 		fail(errorCode(err))
 	}
-	executor := control.CommandExecutor{AccountID: installation.AccountID, NPMPath: installation.NPMPath, NPMPathSHA256: installation.NPMPathSHA256, WorkerRoot: installation.CrabboxSource, CoordinatorCommit: installation.CoordinatorCommit, WorkerLockSHA256: installation.ToolchainIdentity.WorkerLockSHA256, ProfilePath: installation.LiveProfilePath, ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: installation.TerminalProfilePath, TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: installation.TerminalEntryPointPath, TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
-	input := control.ApplyInput{PlanData: values[0], AuthorizationData: values[1], ObservationData: values[2], AttestationData: values[3], Now: time.Now().UTC()}
-	if err := control.NewStore(stateRoot()).Apply(context.Background(), input, executor); err != nil {
+	executor := control.CommandExecutor{AccountID: installation.AccountID, ProtectedRoot: filepath.Join(stateRoot(), "toolchain"), Installation: installation, ProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.live.jsonc"), ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.terminal.jsonc"), TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: filepath.Join(stateRoot(), "policy", "terminal-worker.agentscope.mjs"), TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
+	input := control.ApplyInput{PlanData: values[0], AuthorizationData: values[1], ObservationData: values[2], AttestationData: values[3], RetirementEvidenceData: retirementEvidence, Now: time.Now().UTC()}
+	observer := control.CloudflareObserver{AccountID: installation.AccountID}
+	if err := control.NewStore(stateRoot()).Apply(context.Background(), input, executor, observer); err != nil {
 		fail(errorCode(err))
 	}
 	emit(map[string]any{"schemaVersion": 1, "applied": true, "planSha256": control.SHA256(values[0]), "secretValuesPresent": false})
@@ -304,6 +361,36 @@ func status() {
 	entries, _ := os.ReadDir(filepath.Join(stateRoot(), "slots"))
 	_, credentialsErr := store.CredentialSetSHA256()
 	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanSteps": []string{"authenticate the approved personal Cloudflare account through the installed launcher", "enroll the closed credential slots", "confirm and admit an independent Free/no-overage observation", "review and authorize the exact deployment plan"}})
+}
+
+func observeState(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("state-observe", flag.ContinueOnError)
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	store := control.NewStore(stateRoot())
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	credential, err := store.ResolveCredential("cloudflare-plan-read")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(credential)
+	now := time.Now().UTC()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	observation, err := (control.CloudflareObserver{AccountID: installation.AccountID}).Observe(ctx, credential, now)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	stateDigest, identityDigest, err := observation.Digests()
+	if err != nil {
+		fail("E_OBSERVER_OUTPUT")
+	}
+	emit(map[string]any{"schemaVersion": 1, "stateObservation": observation, "stateSha256": stateDigest, "identitySha256": identityDigest, "secretValuesPresent": false})
 }
 
 func freeze(args []string) {
@@ -455,10 +542,14 @@ func main() {
 		install(os.Args[2:])
 	case "status":
 		status()
+	case "state-observe":
+		observeState(os.Args[2:])
 	case "authorize":
 		authorize(os.Args[2:])
 	case "observation-admit":
 		signObservation(os.Args[2:])
+	case "retirement-evidence-admit":
+		admitRetirementEvidence(os.Args[2:])
 	case "credential-enroll":
 		enrollSecret(os.Args[2:])
 	case "apply":

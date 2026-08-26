@@ -32,6 +32,9 @@ type Event struct {
 	PreviousSHA256 string    `json:"previousSha256"`
 	RecordedAt     time.Time `json:"recordedAt"`
 	DetailCode     string    `json:"detailCode"`
+	StateSHA256    string    `json:"stateSha256,omitempty"`
+	IdentitySHA256 string    `json:"identitySha256,omitempty"`
+	ReceiptSHA256  string    `json:"receiptSha256,omitempty"`
 	KeyID          string    `json:"keyId"`
 	Signature      string    `json:"signature"`
 }
@@ -178,12 +181,8 @@ type InstallInput struct {
 	LiveProfile              []byte
 	TerminalProfile          []byte
 	TerminalEntryPoint       []byte
-	LiveProfilePath          string
-	TerminalProfilePath      string
-	TerminalEntryPointPath   string
-	NPMPath                  string
-	NPMPathSHA256            string
-	CrabboxSource            string
+	RuntimeClosure           []byte
+	RuntimeClosureSHA256     string
 	ToolchainIdentity        ToolchainIdentity
 	OperatorPassphrase       []byte
 }
@@ -197,7 +196,7 @@ func Install(input InstallInput) (Installation, error) {
 	if len(input.Launcher) == 0 || len(input.Launcher) > 64<<20 {
 		return Installation{}, errors.New("E_LAUNCHER_ARTIFACT")
 	}
-	if input.AdmissionSHA256 != SHA256(input.Admission) || input.PermissionManifestSHA256 != SHA256(input.PermissionManifest) || input.LiveProfileSHA256 != SHA256(input.LiveProfile) || input.TerminalProfileSHA256 != SHA256(input.TerminalProfile) || !filepath.IsAbs(input.NPMPath) || !filepath.IsAbs(input.CrabboxSource) || !filepath.IsAbs(input.LiveProfilePath) || !filepath.IsAbs(input.TerminalProfilePath) || !filepath.IsAbs(input.TerminalEntryPointPath) {
+	if input.AdmissionSHA256 != SHA256(input.Admission) || input.PermissionManifestSHA256 != SHA256(input.PermissionManifest) || input.LiveProfileSHA256 != SHA256(input.LiveProfile) || input.TerminalProfileSHA256 != SHA256(input.TerminalProfile) || input.RuntimeClosureSHA256 != SHA256(input.RuntimeClosure) {
 		return Installation{}, errors.New("E_INSTALL_INPUT_BINDING")
 	}
 	commit, err := CoordinatorCommitFromAdmission(input.Admission)
@@ -212,7 +211,7 @@ func Install(input InstallInput) (Installation, error) {
 	defer os.RemoveAll(stagingRoot)
 	oldUmask := setPrivateUmask()
 	defer restoreUmask(oldUmask)
-	for _, directory := range []string{stagingRoot, filepath.Join(stagingRoot, "bin"), filepath.Join(stagingRoot, "policy"), filepath.Join(stagingRoot, "keys"), filepath.Join(stagingRoot, "slots"), filepath.Join(stagingRoot, "journal"), filepath.Join(stagingRoot, "evidence"), filepath.Join(stagingRoot, "runtime")} {
+	for _, directory := range []string{stagingRoot, filepath.Join(stagingRoot, "bin"), filepath.Join(stagingRoot, "policy"), filepath.Join(stagingRoot, "keys"), filepath.Join(stagingRoot, "slots"), filepath.Join(stagingRoot, "journal"), filepath.Join(stagingRoot, "evidence"), filepath.Join(stagingRoot, "runtime"), filepath.Join(stagingRoot, "toolchain")} {
 		if err := os.Mkdir(directory, 0o700); err != nil {
 			return Installation{}, err
 		}
@@ -251,7 +250,11 @@ func Install(input InstallInput) (Installation, error) {
 		return Installation{}, err
 	}
 	zeroBytes(credentialKey)
-	installation := Installation{SchemaVersion: SchemaVersion, InstallationID: input.InstallationID, EnvironmentID: input.EnvironmentID, AccountID: input.AccountID, WorkerName: WorkerName, HetznerProjectID: input.HetznerProjectID, CoordinatorCommit: input.CoordinatorCommit, AdmissionSHA256: input.AdmissionSHA256, PermissionManifestSHA256: input.PermissionManifestSHA256, LiveProfileSHA256: input.LiveProfileSHA256, TerminalProfileSHA256: input.TerminalProfileSHA256, TerminalEntryPointSHA256: SHA256(input.TerminalEntryPoint), LiveProfilePath: input.LiveProfilePath, TerminalProfilePath: input.TerminalProfilePath, TerminalEntryPointPath: input.TerminalEntryPointPath, LauncherSHA256: SHA256(input.Launcher), NPMPath: input.NPMPath, NPMPathSHA256: input.NPMPathSHA256, CrabboxSource: input.CrabboxSource, ToolchainIdentity: input.ToolchainIdentity, Roots: roots}
+	runtimeIdentity, err := extractRuntimeClosure(input.RuntimeClosure, filepath.Join(stagingRoot, "toolchain"), input.ToolchainIdentity.WorkerLockSHA256)
+	if err != nil {
+		return Installation{}, err
+	}
+	installation := Installation{SchemaVersion: SchemaVersion, InstallationID: input.InstallationID, EnvironmentID: input.EnvironmentID, AccountID: input.AccountID, WorkerName: WorkerName, HetznerProjectID: input.HetznerProjectID, CoordinatorCommit: input.CoordinatorCommit, AdmissionSHA256: input.AdmissionSHA256, PermissionManifestSHA256: input.PermissionManifestSHA256, LiveProfileSHA256: input.LiveProfileSHA256, TerminalProfileSHA256: input.TerminalProfileSHA256, TerminalEntryPointSHA256: SHA256(input.TerminalEntryPoint), LauncherSHA256: SHA256(input.Launcher), RuntimeClosureSHA256: input.RuntimeClosureSHA256, RuntimeTreeSHA256: runtimeIdentity.TreeSHA256, NodeSHA256: runtimeIdentity.NodeSHA256, NPMCLISHA256: runtimeIdentity.NPMCLISHA256, WranglerCLISHA256: runtimeIdentity.WranglerCLISHA256, ToolchainIdentity: input.ToolchainIdentity, Roots: roots}
 	if err := ValidateInstallation(installation); err != nil {
 		return Installation{}, err
 	}
@@ -352,6 +355,25 @@ func (store Store) SignObservation(data []byte, observation Observation, now tim
 	return attestation, nil
 }
 
+func (store Store) SignRetirementEvidence(evidence RetirementEvidence, now time.Time, passphrase []byte) (RetirementEvidence, error) {
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return evidence, err
+	}
+	if evidence.Signature != "" || evidence.SchemaVersion != SchemaVersion || evidence.Domain != RetirementEvidenceDomain || evidence.InstallationID != installation.InstallationID || evidence.EnvironmentID != installation.EnvironmentID || evidence.AccountID != installation.AccountID || evidence.HetznerProjectID != installation.HetznerProjectID || evidence.WorkerName != WorkerName || evidence.ProviderServers != 0 || evidence.ProviderKeys != 0 || evidence.CoordinatorLeases != 0 || evidence.UnresolvedCreates != 0 || !digestPattern.MatchString(evidence.ProviderObservationSHA256) || !digestPattern.MatchString(evidence.CoordinatorObservationSHA256) || !digestPattern.MatchString(evidence.RetirementTombstoneSHA256) || evidence.ObservedAt.After(now) || evidence.ExpiresAt.Before(now) || evidence.ExpiresAt.Sub(evidence.ObservedAt) > 15*time.Minute {
+		return evidence, errors.New("E_RETIREMENT_EVIDENCE_STATE")
+	}
+	evidence.KeyID = installation.Roots[RecoveryRole].KeyID
+	payload, _ := signaturePayload(evidence)
+	privateKey, err := store.privateKey(RecoveryRole, passphrase)
+	if err != nil {
+		return evidence, err
+	}
+	defer zeroBytes(privateKey)
+	evidence.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
+	return evidence, nil
+}
+
 func (store Store) signControlRecord(record SignedControlRecord, role string, passphrase []byte) (SignedControlRecord, error) {
 	installation, err := store.LoadInstallation()
 	if err != nil {
@@ -389,12 +411,38 @@ func (store Store) IsFrozen() bool {
 	return err == nil
 }
 
+func (store Store) VerifyFreeze(expectedID string) error {
+	data, err := readPrivate(store.path("journal", "acquisition.freeze"))
+	if err != nil {
+		return errors.New("E_FREEZE_REQUIRED")
+	}
+	var record SignedControlRecord
+	if err := strictJSON(data, &record); err != nil {
+		return err
+	}
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return err
+	}
+	signature := record.Signature
+	record.Signature = ""
+	payload, _ := signaturePayload(record)
+	if record.Domain != FreezeDomain || record.InstallationID != installation.InstallationID || record.EnvironmentID != installation.EnvironmentID || record.RequestID != expectedID || record.Disposition != "frozen" || record.KeyID != installation.Roots[RecoveryRole].KeyID || verifyDetached(installation.Roots[RecoveryRole], RecoveryRole, signature, payload) != nil {
+		return errors.New("E_FREEZE_EVIDENCE")
+	}
+	return nil
+}
+
 func (store Store) RecoverQuarantine(planSHA256, requestID, evidenceSHA256 string, now time.Time, passphrase []byte) (SignedControlRecord, error) {
 	if !digestPattern.MatchString(planSHA256) || !identifierPattern.MatchString(requestID) || !digestPattern.MatchString(evidenceSHA256) {
 		return SignedControlRecord{}, errors.New("E_RECOVERY_INPUT")
 	}
 	if err := store.VerifyJournal(planSHA256); err != nil {
 		return SignedControlRecord{}, err
+	}
+	last, err := store.lastEvent(planSHA256)
+	if err != nil || last.RequestID != requestID || (last.State != "invoking-uncertain" && !(last.State == "consumed" && requestID == "plan")) {
+		return SignedControlRecord{}, errors.New("E_RECOVERY_PREFIX")
 	}
 	record, err := store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, PlanSHA256: planSHA256, RequestID: requestID, Disposition: "quarantine", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
 	if err != nil {
@@ -414,11 +462,29 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 	if err := store.VerifyJournal(planSHA256); err != nil {
 		return SignedControlRecord{}, err
 	}
-	if _, err := readPrivate(store.path("journal", planSHA256, "recovery-quarantine.json")); err != nil {
+	quarantineData, err := readPrivate(store.path("journal", planSHA256, "recovery-quarantine.json"))
+	if err != nil {
 		return SignedControlRecord{}, errors.New("E_RECOVERY_NOT_QUARANTINED")
 	}
-	fenceData, err := readPrivate(store.path("journal", "mutation.lock"))
-	if err != nil || strings.TrimSpace(string(fenceData)) != planSHA256 {
+	var quarantine SignedControlRecord
+	if err := strictJSON(quarantineData, &quarantine); err != nil {
+		return SignedControlRecord{}, err
+	}
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return SignedControlRecord{}, err
+	}
+	signature := quarantine.Signature
+	quarantine.Signature = ""
+	payload, _ := signaturePayload(quarantine)
+	if quarantine.Domain != RecoveryDomain || quarantine.PlanSHA256 != planSHA256 || quarantine.RequestID != requestID || !digestPattern.MatchString(quarantine.EvidenceSHA256) || quarantine.Disposition != "quarantine" || quarantine.KeyID != installation.Roots[RecoveryRole].KeyID || verifyDetached(installation.Roots[RecoveryRole], RecoveryRole, signature, payload) != nil {
+		return SignedControlRecord{}, errors.New("E_RECOVERY_BINDING")
+	}
+	fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
+	hasFence := fenceErr == nil && strings.TrimSpace(string(fenceData)) == planSHA256
+	last, lastErr := store.lastEvent(planSHA256)
+	definiteNoncommit := lastErr == nil && last.State == "consumed" && requestID == "plan"
+	if !hasFence && !definiteNoncommit {
 		return SignedControlRecord{}, errors.New("E_MUTATION_FENCE")
 	}
 	if !store.IsFrozen() {
@@ -434,13 +500,56 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 	if err := writeExclusive(store.path("journal", planSHA256, "recovery-resolved.json"), append(data, '\n'), 0o600); err != nil {
 		return record, err
 	}
-	if err := os.Remove(store.path("journal", "mutation.lock")); err != nil {
-		return record, err
+	if definiteNoncommit {
+		sequence, previous, sequenceErr := store.nextSequence(planSHA256)
+		if sequenceErr != nil {
+			return record, sequenceErr
+		}
+		if _, eventErr := store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planSHA256, RequestID: "plan", State: "abandoned-definite-noncommit", PreviousSHA256: previous, RecordedAt: now, DetailCode: "RECOVERED"}); eventErr != nil {
+			return record, eventErr
+		}
+	} else {
+		sequence, previous, sequenceErr := store.nextSequence(planSHA256)
+		if sequenceErr != nil {
+			return record, sequenceErr
+		}
+		if _, eventErr := store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planSHA256, RequestID: requestID, State: "reconciled-terminal", PreviousSHA256: previous, RecordedAt: now, DetailCode: "ABANDONED", ReceiptSHA256: evidenceSHA256}); eventErr != nil {
+			return record, eventErr
+		}
+		if err := os.Remove(store.path("journal", "mutation.lock")); err != nil {
+			return record, err
+		}
 	}
 	if err := syncDirectory(store.path("journal")); err != nil {
 		return record, err
 	}
 	return record, nil
+}
+
+func (store Store) lastEvent(planDigest string) (Event, error) {
+	var event Event
+	entries, err := os.ReadDir(store.path("journal", planDigest))
+	if err != nil {
+		return event, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if journalEventNamePattern.MatchString(entry.Name()) {
+			names = append(names, entry.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return event, errors.New("E_JOURNAL_EMPTY")
+	}
+	data, err := readPrivate(store.path("journal", planDigest, names[len(names)-1]))
+	if err != nil {
+		return event, err
+	}
+	if err := strictJSON(data, &event); err != nil {
+		return event, err
+	}
+	return event, nil
 }
 
 func (store Store) recordRetirement(planDigest, tombstoneDigest string, now time.Time) error {
@@ -481,6 +590,11 @@ func (store Store) VerifyJournal(planDigest string) error {
 		signature := event.Signature
 		event.Signature = ""
 		payload, _ := signaturePayload(event)
+		for _, digest := range []string{event.StateSHA256, event.IdentitySHA256, event.ReceiptSHA256} {
+			if digest != "" && !digestPattern.MatchString(digest) {
+				return errors.New("E_JOURNAL_EVIDENCE")
+			}
+		}
 		if name != fmt.Sprintf("%06d-%s.json", event.Sequence, event.State) || event.Sequence != index || event.PlanSHA256 != planDigest || event.PreviousSHA256 != previous || event.KeyID != installation.Roots[JournalRole].KeyID || verifyDetached(installation.Roots[JournalRole], JournalRole, signature, payload) != nil {
 			return errors.New("E_JOURNAL_CHAIN")
 		}
@@ -562,7 +676,7 @@ func (store Store) ResolveSecrets(plan Plan) (map[string][]byte, error) {
 		}
 		roleForSecret := map[string]string{"CRABBOX_ADMIN_TOKEN": "crabbox-admin", "CRABBOX_SHARED_TOKEN": "crabbox-shared", "HETZNER_TOKEN": "hetzner-worker"}
 		for index, secretName := range canonicalSecrets {
-			operation, item := plan.Operations[index], metadata[roleForSecret[secretName]]
+			operation, item := plan.Operations[index+2], metadata[roleForSecret[secretName]]
 			if operation.SlotID == nil || operation.SlotVersion == nil || item.SlotID != *operation.SlotID || item.SlotVersion != *operation.SlotVersion {
 				return nil, errors.New("E_SLOT_BINDING")
 			}
@@ -769,6 +883,49 @@ func (store Store) acquireFence(planDigest string) (*os.File, error) {
 	return file, nil
 }
 
+func (store Store) acquireAdmissionGuard() (*os.File, error) {
+	path := store.path("journal", "admission.guard")
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0o600); err != nil || lockFile(file) != nil {
+		file.Close()
+		return nil, errors.New("E_ADMISSION_GUARD")
+	}
+	return file, nil
+}
+
+func releaseAdmissionGuard(file *os.File) {
+	_ = unlockFile(file)
+	_ = file.Close()
+}
+
+func (store Store) ensureNoActiveMutation() error {
+	if _, err := os.Lstat(store.path("journal", "mutation.lock")); err == nil {
+		return errors.New("E_MUTATION_FENCE")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	entries, err := os.ReadDir(store.path("journal"))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !digestPattern.MatchString(entry.Name()) {
+			continue
+		}
+		last, err := store.lastEvent(entry.Name())
+		if err != nil {
+			return errors.New("E_JOURNAL_UNCLASSIFIED")
+		}
+		if last.State != "reconciled-terminal" && last.State != "abandoned-definite-noncommit" {
+			return errors.New("E_JOURNAL_UNCLASSIFIED")
+		}
+	}
+	return nil
+}
+
 func (store Store) releaseFence(file *os.File) error {
 	if err := file.Close(); err != nil {
 		return err
@@ -781,41 +938,67 @@ func (store Store) releaseFence(file *os.File) error {
 
 func (store Store) consumePlan(planDigest string, now time.Time) (string, error) {
 	directory := store.path("journal", planDigest)
-	if err := os.Mkdir(directory, 0o700); err != nil {
+	event := Event{SchemaVersion: SchemaVersion, Sequence: 0, PlanSHA256: planDigest, RequestID: "plan", State: "consumed", PreviousSHA256: strings.Repeat("0", 64), RecordedAt: now, DetailCode: "OK"}
+	data, err := store.signedEventBytes(event)
+	if err != nil {
+		return "", err
+	}
+	staging := store.path("journal", ".consume-"+planDigest)
+	if err := os.Mkdir(staging, 0o700); err != nil {
 		if os.IsExist(err) {
 			return "", errors.New("E_PLAN_REPLAY")
 		}
 		return "", err
 	}
-	if err := os.Chmod(directory, 0o700); err != nil {
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	if err := writeExclusive(filepath.Join(staging, "000000-consumed.json"), data, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(staging, directory); err != nil {
+		if os.IsExist(err) {
+			return "", errors.New("E_PLAN_REPLAY")
+		}
 		return "", err
 	}
 	if err := syncDirectory(store.path("journal")); err != nil {
 		return "", err
 	}
-	event := Event{SchemaVersion: SchemaVersion, Sequence: 0, PlanSHA256: planDigest, RequestID: "plan", State: "consumed", PreviousSHA256: strings.Repeat("0", 64), RecordedAt: now, DetailCode: "OK"}
-	return store.appendEvent(event)
+	committed = true
+	return SHA256(data), nil
 }
 
 func (store Store) appendEvent(event Event) (string, error) {
-	installation, err := store.LoadInstallation()
+	data, err := store.signedEventBytes(event)
 	if err != nil {
 		return "", err
+	}
+	path := store.path("journal", event.PlanSHA256, fmt.Sprintf("%06d-%s.json", event.Sequence, event.State))
+	if err := writeExclusive(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return SHA256(data), nil
+}
+
+func (store Store) signedEventBytes(event Event) ([]byte, error) {
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return nil, err
 	}
 	event.KeyID = installation.Roots[JournalRole].KeyID
 	payload, _ := signaturePayload(event)
 	privateKey, err := store.privateKey(JournalRole, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer zeroBytes(privateKey)
 	event.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
 	data, _ := json.MarshalIndent(event, "", "  ")
-	path := store.path("journal", event.PlanSHA256, fmt.Sprintf("%06d-%s.json", event.Sequence, event.State))
-	if err := writeExclusive(path, append(data, '\n'), 0o600); err != nil {
-		return "", err
-	}
-	return SHA256(append(data, '\n')), nil
+	return append(data, '\n'), nil
 }
 
 func (store Store) nextSequence(planDigest string) (int, string, error) {
@@ -846,7 +1029,6 @@ func CopyBounded(destination io.Writer, source io.Reader, limit int64) error {
 		return err
 	}
 	if written > limit {
-		_, _ = io.Copy(io.Discard, source)
 		return errors.New("E_OUTPUT_LIMIT")
 	}
 	return nil

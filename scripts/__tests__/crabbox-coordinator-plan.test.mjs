@@ -30,6 +30,37 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function terminalContractSha256(plan, admission) {
+  const contract = {
+    accountId: plan.accountId,
+    environmentId: plan.environmentId,
+    kind: plan.kind,
+    permissionManifestSha256: plan.permissionManifestSha256,
+    profileSha256: plan.profileSha256,
+    workerName: plan.workerName,
+    ...(plan.kind === "retire"
+      ? {
+          cron: "absent",
+          durableObjectClass: "deleted:FleetDurableObject",
+          providerZeroSha256: plan.providerZeroSha256,
+          retirementTombstoneSha256: plan.retirementTombstoneSha256,
+          secretNames: [],
+          scriptWorkersDev: false,
+          worker: "absent",
+        }
+      : {
+          cron: admission.deployment.cron,
+          durableObjectBinding: admission.deployment.durableObjectBinding,
+          durableObjectClass: admission.deployment.durableObjectClass,
+          migrationTag: plan.currentMigrationTag,
+          secretNames: admission.deployment.secretNames,
+          scriptWorkersDev: true,
+          worker: "present",
+        }),
+  };
+  return sha256(JSON.stringify(contract, Object.keys(contract).sort()));
+}
+
 function buildObservation(now) {
   const quota = () => ({
     limit: 100_000,
@@ -65,7 +96,7 @@ function buildPlan({
   observation,
   now,
 }) {
-  return {
+  const plan = {
     schemaVersion: 1,
     kind: "deploy",
     accountId: observation.accountId,
@@ -98,9 +129,9 @@ function buildPlan({
       {
         action: "worker.secret.put",
         target: admission.deployment.workerName,
-        requestId: "put-provider-secret",
-        secretName: "HETZNER_TOKEN",
-        slotId: "hetzner-worker",
+        requestId: "put-admin-secret",
+        secretName: "CRABBOX_ADMIN_TOKEN",
+        slotId: "crabbox-admin",
         slotVersion: "v1",
       },
       {
@@ -114,9 +145,9 @@ function buildPlan({
       {
         action: "worker.secret.put",
         target: admission.deployment.workerName,
-        requestId: "put-admin-secret",
-        secretName: "CRABBOX_ADMIN_TOKEN",
-        slotId: "crabbox-admin",
+        requestId: "put-provider-secret",
+        secretName: "HETZNER_TOKEN",
+        slotId: "hetzner-worker",
         slotVersion: "v1",
       },
       {
@@ -139,8 +170,10 @@ function buildPlan({
     issuedAt: new Date(now - 30_000).toISOString(),
     expiresAt: new Date(now + 10 * 60_000).toISOString(),
     nonce: "owner-approved-plan-1",
-    intendedTerminalStateSha256: "2".repeat(64),
+    intendedTerminalStateSha256: "",
   };
+  plan.intendedTerminalStateSha256 = terminalContractSha256(plan, admission);
+  return plan;
 }
 
 async function fixture() {
@@ -194,6 +227,12 @@ async function fixture() {
     now,
   });
   async function writePlan(value = plan, signer = owner.privateKey) {
+    if (value.intendedTerminalStateSha256 === "__canonical__") {
+      value = {
+        ...value,
+        intendedTerminalStateSha256: terminalContractSha256(value, admission),
+      };
+    }
     const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
     await writeFile(planPath, bytes);
     await writeFile(
@@ -289,11 +328,23 @@ test("rejects a secret value or digest embedded in an operation", async () => {
   assert.match(result.stderr, /operation fields differ/);
 });
 
+test("rejects a digest-shaped noncanonical terminal contract", async () => {
+  const item = await fixture();
+  await item.writePlan({
+    ...item.plan,
+    intendedTerminalStateSha256: "f".repeat(64),
+  });
+  const result = run(item.args);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /canonical contract/);
+});
+
 test("rejects cross-kind operations", async () => {
   const item = await fixture();
   await item.writePlan({
     ...item.plan,
     kind: "account-workers-dev-enable",
+    intendedTerminalStateSha256: "__canonical__",
     operations: [
       {
         action: "account.workersDev.enable",
@@ -334,6 +385,7 @@ test("rejects deletion-first retirement even with bound resource identities", as
     retirementTombstoneSha256: "5".repeat(64),
     acquisitionFreezeId: "freeze-1",
     launcherCredentialRevocationId: "launcher-revocation-1",
+    intendedTerminalStateSha256: "__canonical__",
     operations: [
       {
         action: "worker.durableObjectClass.delete",
@@ -351,4 +403,78 @@ test("rejects deletion-first retirement even with bound resource identities", as
   const result = run(item.args);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /not admitted for plan kind retire/);
+});
+
+test("admits only the drain-first retirement sequence", async () => {
+  const item = await fixture();
+  const admission = JSON.parse(await readFile(admissionPath, "utf8"));
+  const terminalProfile = parseJsonc(
+    await readFile(
+      resolve(
+        repositoryRoot,
+        "ops/crabbox-coordinator/terminal-profile.template.jsonc",
+      ),
+      "utf8",
+    ),
+  );
+  const terminalBytes = Buffer.from(
+    `${JSON.stringify(terminalProfile, null, 2)}\n`,
+  );
+  const profilePath = item.args[item.args.indexOf("--profile") + 1];
+  await writeFile(profilePath, terminalBytes);
+  const providerZero = "4".repeat(64);
+  const tombstone = "5".repeat(64);
+  await item.writePlan({
+    ...item.plan,
+    kind: "retire",
+    profileSha256: sha256(terminalBytes),
+    providerZeroSha256: providerZero,
+    retirementTombstoneSha256: tombstone,
+    acquisitionFreezeId: "freeze-1",
+    launcherCredentialRevocationId: "launcher-revocation-1",
+    intendedTerminalStateSha256: "__canonical__",
+    operations: [
+      {
+        action: "worker.schedule.delete",
+        target: item.plan.workerName,
+        requestId: "delete-schedule",
+      },
+      {
+        action: "worker.scriptWorkersDev.disable",
+        target: item.plan.workerName,
+        requestId: "disable-workers-dev",
+      },
+      ...admission.deployment.secretNames.map((secretName, index) => ({
+        action: "worker.secret.delete",
+        target: item.plan.workerName,
+        requestId: `delete-secret-${index}`,
+        secretName,
+        slotId: ["crabbox-admin", "crabbox-shared", "hetzner-worker"][index],
+        slotVersion: "v1",
+      })),
+      {
+        action: "worker.terminalArtifact.deploy",
+        target: item.plan.workerName,
+        requestId: "deploy-terminal",
+        profileSha256: sha256(terminalBytes),
+        entryPointSha256: admission.deployment.terminalProfile.entryPointSha256,
+        providerZeroSha256: providerZero,
+        retirementTombstoneSha256: tombstone,
+      },
+      {
+        action: "worker.version.delete",
+        target: item.plan.workerName,
+        requestId: "delete-version",
+        versionId: "version-old",
+      },
+      {
+        action: "worker.delete",
+        target: item.plan.workerName,
+        requestId: "delete-worker",
+      },
+    ],
+    rollbackActions: [],
+  });
+  const result = run(item.args);
+  assert.equal(result.status, 0, result.stderr);
 });

@@ -10,6 +10,8 @@
   ],
   "separateOwnerPlanActions": ["account.workersDev.enable"],
   "retirementOnlyActions": [
+    "worker.schedule.delete",
+    "worker.scriptWorkersDev.disable",
     "worker.terminalArtifact.deploy",
     "worker.version.delete",
     "worker.delete"

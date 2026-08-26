@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,6 +30,7 @@ const (
 	FreezeDomain                  = "agentscope-crabbox-acquisition-freeze-v1"
 	RecoveryDomain                = "agentscope-crabbox-recovery-decision-v1"
 	RetirementDomain              = "agentscope-crabbox-retirement-complete-v1"
+	RetirementEvidenceDomain      = "agentscope-crabbox-retirement-evidence-v1"
 )
 
 var (
@@ -61,13 +61,12 @@ type Installation struct {
 	LiveProfileSHA256        string            `json:"liveProfileSha256"`
 	TerminalProfileSHA256    string            `json:"terminalProfileSha256"`
 	TerminalEntryPointSHA256 string            `json:"terminalEntryPointSha256"`
-	LiveProfilePath          string            `json:"liveProfilePath"`
-	TerminalProfilePath      string            `json:"terminalProfilePath"`
-	TerminalEntryPointPath   string            `json:"terminalEntryPointPath"`
 	LauncherSHA256           string            `json:"launcherSha256"`
-	NPMPath                  string            `json:"npmPath"`
-	NPMPathSHA256            string            `json:"npmPathSha256"`
-	CrabboxSource            string            `json:"crabboxSource"`
+	RuntimeClosureSHA256     string            `json:"runtimeClosureSha256"`
+	RuntimeTreeSHA256        string            `json:"runtimeTreeSha256"`
+	NodeSHA256               string            `json:"nodeSha256"`
+	NPMCLISHA256             string            `json:"npmCliSha256"`
+	WranglerCLISHA256        string            `json:"wranglerCliSha256"`
 	ToolchainIdentity        ToolchainIdentity `json:"toolchainIdentity"`
 	Roots                    map[string]Root   `json:"roots"`
 }
@@ -187,6 +186,35 @@ type SignedControlRecord struct {
 	Signature      string    `json:"signature"`
 }
 
+// RetirementEvidence is a human/recovery-authorized statement over the exact
+// independently observed retirement prerequisites. A digest-shaped plan field
+// is never sufficient on its own.
+type RetirementEvidence struct {
+	SchemaVersion                  int       `json:"schemaVersion"`
+	Domain                         string    `json:"domain"`
+	InstallationID                 string    `json:"installationId"`
+	EnvironmentID                  string    `json:"environmentId"`
+	AccountID                      string    `json:"accountId"`
+	HetznerProjectID               string    `json:"hetznerProjectId"`
+	WorkerName                     string    `json:"workerName"`
+	WorkerVersionID                string    `json:"workerVersionId"`
+	DurableObjectNamespaceID       string    `json:"durableObjectNamespaceId"`
+	MigrationTag                   string    `json:"migrationTag"`
+	AcquisitionFreezeID            string    `json:"acquisitionFreezeId"`
+	LauncherCredentialRevocationID string    `json:"launcherCredentialRevocationId"`
+	ProviderServers                int       `json:"providerServers"`
+	ProviderKeys                   int       `json:"providerKeys"`
+	CoordinatorLeases              int       `json:"coordinatorLeases"`
+	UnresolvedCreates              int       `json:"unresolvedCreates"`
+	ProviderObservationSHA256      string    `json:"providerObservationSha256"`
+	CoordinatorObservationSHA256   string    `json:"coordinatorObservationSha256"`
+	RetirementTombstoneSHA256      string    `json:"retirementTombstoneSha256"`
+	ObservedAt                     time.Time `json:"observedAt"`
+	ExpiresAt                      time.Time `json:"expiresAt"`
+	KeyID                          string    `json:"keyId"`
+	Signature                      string    `json:"signature"`
+}
+
 func SHA256(value []byte) string {
 	digest := sha256.Sum256(value)
 	return hex.EncodeToString(digest[:])
@@ -225,6 +253,14 @@ func ParseObservationCandidate(data []byte) (Observation, error) {
 		return observation, err
 	}
 	return observation, nil
+}
+
+func ParseRetirementEvidenceCandidate(data []byte) (RetirementEvidence, error) {
+	var evidence RetirementEvidence
+	if err := strictJSON(data, &evidence); err != nil {
+		return evidence, err
+	}
+	return evidence, nil
 }
 
 func ParseToolchainIdentity(data []byte) (ToolchainIdentity, error) {
@@ -338,12 +374,12 @@ func ValidateInstallation(installation Installation) error {
 	if installation.SchemaVersion != SchemaVersion || !identifierPattern.MatchString(installation.InstallationID) || !environmentPattern.MatchString(installation.EnvironmentID) || !identifierPattern.MatchString(installation.AccountID) || installation.WorkerName != WorkerName || !identifierPattern.MatchString(installation.HetznerProjectID) || len(installation.CoordinatorCommit) != 40 || strings.Trim(installation.CoordinatorCommit, "0123456789abcdef") != "" {
 		return errors.New("E_INSTALLATION_IDENTITY")
 	}
-	for _, digest := range []string{installation.AdmissionSHA256, installation.PermissionManifestSHA256, installation.LiveProfileSHA256, installation.TerminalProfileSHA256, installation.TerminalEntryPointSHA256, installation.LauncherSHA256, installation.NPMPathSHA256} {
+	for _, digest := range []string{installation.AdmissionSHA256, installation.PermissionManifestSHA256, installation.LiveProfileSHA256, installation.TerminalProfileSHA256, installation.TerminalEntryPointSHA256, installation.LauncherSHA256, installation.RuntimeClosureSHA256, installation.RuntimeTreeSHA256, installation.NodeSHA256, installation.NPMCLISHA256, installation.WranglerCLISHA256} {
 		if !digestPattern.MatchString(digest) {
 			return errors.New("E_INSTALLATION_DIGEST")
 		}
 	}
-	if !filepath.IsAbs(installation.NPMPath) || !filepath.IsAbs(installation.CrabboxSource) || !filepath.IsAbs(installation.LiveProfilePath) || !filepath.IsAbs(installation.TerminalProfilePath) || !filepath.IsAbs(installation.TerminalEntryPointPath) || validateToolchainIdentity(installation.ToolchainIdentity) != nil {
+	if validateToolchainIdentity(installation.ToolchainIdentity) != nil {
 		return errors.New("E_INSTALLATION_TOOLCHAIN")
 	}
 	roles := []string{OwnerRole, BillingRole, SlotEvidenceRole, RecoveryRole, JournalRole}
