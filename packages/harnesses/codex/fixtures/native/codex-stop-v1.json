@@ -23,8 +23,8 @@
   "governance": {
     "license": {
       "redistribution": "reviewed-for-repository",
-      "reviewedLicenseId": "Apache-2.0",
-      "sourceReference": "https://github.com/openai/codex/blob/ff29a44391deccde0aba0f8390337d7f3c319ea4/LICENSE"
+      "reviewedLicenseId": "LicenseRef-Agentscope-Synthetic",
+      "sourceReference": "https://github.com/Melbourneandrew/agentscope/blob/46080a0ecf1030dff425030b893e8d29d8c49a22/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic"
     },
     "provenance": {
       "artifactAuthority": {
@@ -54,8 +54,8 @@
     },
     "review": {
       "references": [
-        "bead:agentscope-vah.11.1",
-        "source:openai-codex-v0.149.1"
+        "pending:privacy-review",
+        "pending:redistribution-review"
       ],
       "reviewedAt": "2026-08-26",
       "status": "approved"

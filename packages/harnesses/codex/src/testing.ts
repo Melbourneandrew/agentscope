@@ -115,10 +115,10 @@ export const codexSanitizedFixture: HarnessSanitizedFixture =
         captureRecipe: "codex-synthetic-stop-v1",
       },
       license: {
-        reviewedLicenseId: "Apache-2.0",
+        reviewedLicenseId: "LicenseRef-Agentscope-Synthetic",
         redistribution: "reviewed-for-repository",
         sourceReference:
-          "https://github.com/openai/codex/blob/ff29a44391deccde0aba0f8390337d7f3c319ea4/LICENSE",
+          "https://github.com/Melbourneandrew/agentscope/blob/46080a0ecf1030dff425030b893e8d29d8c49a22/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic",
       },
       redaction: {
         profileVersion: 1,
@@ -136,8 +136,8 @@ export const codexSanitizedFixture: HarnessSanitizedFixture =
         status: "approved",
         reviewedAt: "2026-08-26",
         references: [
-          "bead:agentscope-vah.11.1",
-          "source:openai-codex-v0.149.1",
+          "pending:privacy-review",
+          "pending:redistribution-review",
         ],
       },
       representative: {
