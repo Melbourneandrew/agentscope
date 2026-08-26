@@ -334,15 +334,8 @@ const isAgentscopeGovernanceDocumentReference = (value: string): boolean => {
     }
   })();
   if (parsed === undefined) return false;
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname !== "github.com" && hostname !== "raw.githubusercontent.com")
-    return false;
   const path = decodedUrlPath(parsed.pathname).replace(/\/+$/u, "");
-  const repositoryPrefix = "/melbourneandrew/agentscope/";
-  return (
-    path.startsWith(repositoryPrefix) &&
-    path.endsWith("/packages/harnesses/core/native_fixtures.md")
-  );
+  return path.endsWith("/packages/harnesses/core/native_fixtures.md");
 };
 
 const positiveSafeInteger = (value: unknown, code: string): number => {

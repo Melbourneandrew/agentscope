@@ -48,8 +48,10 @@ have that structural role.
 A `disposable-hermetic` fixture is vendor-derived even after sanitization. It
 retains its actual reviewed vendor license identifier or `LicenseRef-*` and an
 external vendor license source. It cannot use this repository's governance
-document, including an alternate fragment, encoded path, raw-content URL, or
-other equivalent spelling, as permission.
+document as permission. Structural validation rejects any direct URL whose
+recursively decoded path names this governance document, regardless of host,
+fragment, query, or raw-content spelling. Redirect targets and other external
+resolution remain facts for the exact-PR human reviews rather than the parser.
 
 ## Sanitization and review
 

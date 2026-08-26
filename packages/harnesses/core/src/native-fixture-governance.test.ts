@@ -703,6 +703,18 @@ describe("native fixture reviewed authority separation", () => {
             "raw.githubusercontent.com/Melbourneandrew/agentscope",
           )
           .replace("#license-ref-agentscope-synthetic", ""),
+        structurallyValidSyntheticLicenseSource
+          .replace(
+            "github.com/Melbourneandrew/agentscope/blob",
+            "raw.github.com/Melbourneandrew/agentscope",
+          )
+          .replace("#license-ref-agentscope-synthetic", ""),
+        structurallyValidSyntheticLicenseSource.replace(
+          "github.com/",
+          "github.com./",
+        ),
+        `https://api.github.com/repos/Melbourneandrew/agentscope/contents/packages/harnesses/core/NATIVE_FIXTURES.md?ref=${"a".repeat(40)}`,
+        `https://vendor.example/license/packages/harnesses/core/NATIVE_FIXTURES.md?redirect=external#vendor`,
       ].map((sourceReference) => ({
         ...vendor.governance.license,
         sourceReference,
