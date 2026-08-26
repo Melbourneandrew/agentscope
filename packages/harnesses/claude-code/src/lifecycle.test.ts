@@ -13,10 +13,10 @@ import {
   CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
   createClaudeCodeInstallationPlanner,
   inspectClaudeCodePluginOverlap,
-  runClaudeCodeHook,
   type ClaudeCodeInstalledPlugin,
   type ClaudeCodePluginInventory,
 } from "./lifecycle.js";
+import { runClaudeCodeHook } from "./testing.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -76,6 +76,20 @@ const officialInventory = (): ClaudeCodePluginInventory => ({
   settingsLayers: [
     {
       scope: "user",
+      enabledPlugins: {
+        [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
+      },
+    },
+  ],
+  installedPlugins: [officialPlugin()],
+});
+
+const officialInventoryAt = (
+  scope: "user" | "project" | "local" | "managed",
+): ClaudeCodePluginInventory => ({
+  settingsLayers: [
+    {
+      scope,
       enabledPlugins: {
         [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
       },
@@ -272,6 +286,37 @@ describe("Claude Code migration and failure behavior", () => {
     );
     expect(migratedText).toContain(invocation.launcherPath);
   });
+
+  it.each(["project", "local", "managed"] as const)(
+    "refuses migration when %s owns the effective exporter",
+    (scope) => {
+      const text = JSON.stringify({
+        enabledPlugins: {
+          [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
+        },
+      });
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "migrate",
+          invocation,
+          officialInventoryAt(scope),
+        )(target(text)),
+      ).toEqual({ kind: "conflict" });
+    },
+  );
+
+  it("requires the owned user target to match effective plugin authority", () => {
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "migrate",
+        invocation,
+        officialInventory(),
+      )(target("{}")),
+    ).toEqual({ kind: "conflict" });
+    expect(
+      createClaudeCodeInstallationPlanner("migrate", invocation)(target("{}")),
+    ).toEqual({ kind: "conflict" });
+  });
 });
 
 describe("Claude Code hostile lifecycle state", () => {
@@ -293,6 +338,18 @@ describe("Claude Code hostile lifecycle state", () => {
     expect(
       createClaudeCodeInstallationPlanner("install", invocation)(target("{")),
     ).toEqual({ kind: "unsupported" });
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+      )(target("vendor-observability-hook")),
+    ).toEqual({ kind: "unsupported" });
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "migrate",
+        invocation,
+      )(target("vendor-observability-hook")),
+    ).toEqual({ kind: "conflict" });
     expect(
       createClaudeCodeInstallationPlanner(
         "install",

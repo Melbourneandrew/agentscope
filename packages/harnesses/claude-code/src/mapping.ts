@@ -1,58 +1,44 @@
-import { createHash } from "node:crypto";
-
 import {
   completeNativeCaptureBoundary,
   createNativeFieldProvenance,
   createNativeUnavailableField,
   resolveNativeCaptureStart,
+  type NativeBoundaryKind,
   type NativeCheckpointResolver,
+  type NativePositionKind,
 } from "@agentscope/harnesses-core";
+import type { NativeIdentityKind } from "@agentscope/protocol";
 
-import { claudeCodeFixture } from "./fixture.js";
+export type ClaudeCodeNativeCapture = Readonly<{
+  nativeIdentityKind: NativeIdentityKind;
+  nativeIdentity: string;
+  sourceGeneration: number;
+  positionKind: NativePositionKind;
+  availableStartPosition: number;
+  boundaryKind: NativeBoundaryKind;
+  boundaryId: string;
+  exclusiveEndPosition: number;
+}>;
 
-const sha256 = (value: string): `sha256-${string}` =>
-  `sha256-${createHash("sha256").update(value).digest("hex")}`;
-
-const mappingArtifact = [
-  "error.type:hook-payload:unavailable:not-applicable",
-  "llm.model_name:native-artifact:unavailable:not-emitted",
-  "llm.provider:hook-payload",
-  "llm.system:hook-payload",
-  "tool.id:hook-payload:unavailable:not-emitted",
-  "tool.name:hook-payload",
-].join("\n");
-
-const adapterContext = [
-  "claude-code:2.1.245",
-  "hooks:SessionStart,PreToolUse,PostToolUse,Stop,SessionEnd",
-  "interface:print:stream-json",
-  "routing:internal-anthropic-base-url:synthetic-auth:nonessential-traffic-disabled",
-  "transcript:supplementary-version-specific",
-].join("\n");
-
-export const claudeCodeContextEvidence = Object.freeze({
-  evidenceVersion: 1 as const,
-  mappingArtifactDigest: sha256(mappingArtifact),
-  contextDigest: sha256(adapterContext),
-});
-
-export const mapClaudeCodeFixture = (resolver: NativeCheckpointResolver) => {
-  const fixture = claudeCodeFixture;
+export const mapClaudeCodeCapture = (
+  capture: ClaudeCodeNativeCapture,
+  resolver: NativeCheckpointResolver,
+) => {
   const start = resolveNativeCaptureStart(
     {
-      nativeIdentityKind: fixture.nativeIdentityKind,
-      nativeIdentity: fixture.nativeIdentity,
-      sourceGeneration: fixture.sourceGeneration,
-      positionKind: fixture.positionKind,
-      availableStartPosition: fixture.availableStartPosition,
+      nativeIdentityKind: capture.nativeIdentityKind,
+      nativeIdentity: capture.nativeIdentity,
+      sourceGeneration: capture.sourceGeneration,
+      positionKind: capture.positionKind,
+      availableStartPosition: capture.availableStartPosition,
     },
     resolver,
   );
   return Object.freeze({
     boundary: completeNativeCaptureBoundary(start, {
-      boundaryKind: fixture.boundaryKind,
-      boundaryId: fixture.boundaryId,
-      exclusiveEndPosition: fixture.exclusiveEndPosition,
+      boundaryKind: capture.boundaryKind,
+      boundaryId: capture.boundaryId,
+      exclusiveEndPosition: capture.exclusiveEndPosition,
     }),
     provenance: Object.freeze([
       createNativeFieldProvenance("llm.provider", "hook-payload"),

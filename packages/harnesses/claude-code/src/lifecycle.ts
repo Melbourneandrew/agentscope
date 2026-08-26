@@ -18,10 +18,20 @@ export const CLAUDE_CODE_LIFECYCLE_EVENTS = Object.freeze([
   "SessionEnd",
 ] as const);
 
-export type ClaudeCodeHookBehavior = "success" | "failure" | "hang";
-
 type ClaudeCodeLifecycleEvent = (typeof CLAUDE_CODE_LIFECYCLE_EVENTS)[number];
 type ClaudeCodeSettingsScope = "user" | "project" | "local" | "managed";
+type EffectivePluginState = Readonly<{
+  enabled: boolean;
+  scope: ClaudeCodeSettingsScope;
+}>;
+type InspectedPluginOverlap =
+  | Readonly<{ status: "absent" }>
+  | Readonly<{
+      status: "conflict";
+      pluginId: string;
+      effectiveScope: ClaudeCodeSettingsScope;
+    }>
+  | Readonly<{ status: "ambiguous" }>;
 
 export type ClaudeCodePluginSettingsLayer = Readonly<{
   scope: ClaudeCodeSettingsScope;
@@ -68,19 +78,22 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const effectiveEnabledPlugins = (
   layers: readonly ClaudeCodePluginSettingsLayer[],
-): ReadonlyMap<string, boolean> | undefined => {
+): ReadonlyMap<string, EffectivePluginState> | undefined => {
   const seen = new Set<ClaudeCodeSettingsScope>();
   const ordered = [...layers].sort(
     (left, right) => scopeOrder[left.scope] - scopeOrder[right.scope],
   );
-  const enabled = new Map<string, boolean>();
+  const enabled = new Map<string, EffectivePluginState>();
   for (const layer of ordered) {
     if (seen.has(layer.scope) || !isRecord(layer.enabledPlugins))
       return undefined;
     seen.add(layer.scope);
     for (const [pluginId, state] of Object.entries(layer.enabledPlugins)) {
       if (pluginId.length === 0 || typeof state !== "boolean") return undefined;
-      enabled.set(pluginId, state);
+      enabled.set(
+        pluginId,
+        Object.freeze({ enabled: state, scope: layer.scope }),
+      );
     }
   }
   return enabled;
@@ -99,9 +112,9 @@ const isReviewedOfficialLangfuseRecord = (
   plugin.directTraceExporter &&
   ["Stop", "SessionEnd"].every((event) => plugin.hookEvents.includes(event));
 
-export const inspectClaudeCodePluginOverlap = (
+const inspectPluginOverlap = (
   inventory: ClaudeCodePluginInventory,
-): ClaudeCodePluginOverlap => {
+): InspectedPluginOverlap => {
   const enabled = effectiveEnabledPlugins(inventory.settingsLayers);
   if (enabled === undefined) return Object.freeze({ status: "ambiguous" });
   const records = inventory.installedPlugins.filter(
@@ -111,14 +124,15 @@ export const inspectClaudeCodePluginOverlap = (
   );
   if (records.length > 1) return Object.freeze({ status: "ambiguous" });
   const record = records[0];
-  const officialEnabled =
-    enabled.get(CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID) === true;
+  const officialState = enabled.get(CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID);
+  const officialEnabled = officialState?.enabled === true;
   if (officialEnabled) {
     if (record === undefined || !isReviewedOfficialLangfuseRecord(record))
       return Object.freeze({ status: "ambiguous" });
     return Object.freeze({
       status: "conflict",
       pluginId: CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID,
+      effectiveScope: officialState.scope,
     });
   }
   if (
@@ -127,7 +141,7 @@ export const inspectClaudeCodePluginOverlap = (
   )
     return Object.freeze({ status: "ambiguous" });
   for (const [pluginId, state] of enabled) {
-    if (!state) continue;
+    if (!state.enabled) continue;
     const enabledRecords = inventory.installedPlugins.filter(
       (plugin) => plugin.pluginId === pluginId,
     );
@@ -145,9 +159,22 @@ export const inspectClaudeCodePluginOverlap = (
         overlappingEvents.has(event as ClaudeCodeLifecycleEvent),
       )
     )
-      return Object.freeze({ status: "conflict", pluginId: plugin.pluginId });
+      return Object.freeze({
+        status: "conflict",
+        pluginId: plugin.pluginId,
+        effectiveScope: state.scope,
+      });
   }
   return Object.freeze({ status: "absent" });
+};
+
+export const inspectClaudeCodePluginOverlap = (
+  inventory: ClaudeCodePluginInventory,
+): ClaudeCodePluginOverlap => {
+  const overlap = inspectPluginOverlap(inventory);
+  return overlap.status === "conflict"
+    ? Object.freeze({ status: "conflict", pluginId: overlap.pluginId })
+    : overlap;
 };
 
 const emptyInventory = Object.freeze({
@@ -306,8 +333,9 @@ const disableMigratedPlugin = (
   pluginId: string,
 ): boolean => {
   const enabledPlugins = settings.enabledPlugins;
-  if (enabledPlugins !== undefined && !isRecord(enabledPlugins)) return false;
-  settings.enabledPlugins = { ...(enabledPlugins ?? {}), [pluginId]: false };
+  if (!isRecord(enabledPlugins) || enabledPlugins[pluginId] !== true)
+    return false;
+  settings.enabledPlugins = { ...enabledPlugins, [pluginId]: false };
   return true;
 };
 
@@ -316,30 +344,25 @@ export const createClaudeCodeInstallationPlanner = (
   invocation: OwnedHarnessHookInvocation,
   inventory: ClaudeCodePluginInventory = emptyInventory,
 ): HarnessInstallationPlanner => {
-  const overlap = inspectClaudeCodePluginOverlap(inventory);
+  const overlap = inspectPluginOverlap(inventory);
   return ({ exists, bytes }) => {
     const current = bytes === null ? "" : decode(bytes);
     if (current === undefined) return { kind: "unsupported" };
     if (current === "unsupported-native-format") return { kind: "unsupported" };
-    if (current === "vendor-observability-hook") {
-      if (operation === "migrate")
-        return {
-          kind: "replace-overlap",
-          bytes: encodeSettings(ownedSettings(invocation)),
-        };
-      return operation === "uninstall"
-        ? { kind: "unchanged" }
-        : { kind: "conflict" };
-    }
     if (operation === "uninstall") {
       if (!exists || bytes === null) return { kind: "unchanged" };
       if (current === decoder.decode(encodeSettings(ownedSettings(invocation))))
         return { kind: "remove" };
     }
-    if (operation !== "uninstall" && overlap.status !== "absent") {
-      if (operation !== "migrate" || overlap.status !== "conflict")
-        return { kind: "conflict" };
-    }
+    if (operation === "install" && overlap.status !== "absent")
+      return { kind: "conflict" };
+    if (
+      operation === "migrate" &&
+      (overlap.status !== "conflict" ||
+        overlap.pluginId !== CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID ||
+        overlap.effectiveScope !== "user")
+    )
+      return { kind: "conflict" };
     const settings = exists && bytes !== null ? parseSettings(bytes) : {};
     if (settings === undefined) return { kind: "unsupported" };
     if (
@@ -356,21 +379,4 @@ export const createClaudeCodeInstallationPlanner = (
       bytes: encodeSettings(settings),
     };
   };
-};
-
-export const runClaudeCodeHook = async (
-  behavior: ClaudeCodeHookBehavior,
-  signal: AbortSignal,
-): Promise<"completed" | "failed-open"> => {
-  if (behavior === "success") return "completed";
-  if (behavior === "failure" || signal.aborted) return "failed-open";
-  return new Promise((resolve) => {
-    signal.addEventListener(
-      "abort",
-      () => {
-        resolve("failed-open");
-      },
-      { once: true },
-    );
-  });
 };

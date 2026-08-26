@@ -79,7 +79,10 @@ describe("Claude Code component contract", () => {
     const text = await readFile(fixturePath, "utf8");
     expect(text).toBe(serializeHarnessSanitizedFixture(claudeCodeFixture));
     const inventory = await auditNativeFixtureInventory(harnessPackagesRoot);
-    expect(inventory).toEqual([
+    const claudeInventory = inventory.filter(
+      (entry) => entry.harnessId === "claude-code",
+    );
+    expect(claudeInventory).toEqual([
       expect.objectContaining({
         harnessId: "claude-code",
         fixtureId: "claude-code-lifecycle-v1",

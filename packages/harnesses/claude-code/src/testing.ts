@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   deriveHarnessComponentEvidenceDigest,
   type HarnessComponentContractAdapter,
@@ -18,19 +20,16 @@ import {
   CLAUDE_CODE_SCENARIO_ID,
   claudeCodeFixture,
 } from "./fixture.js";
-import {
-  createClaudeCodeInstallationPlanner,
-  runClaudeCodeHook,
-  type ClaudeCodeHookBehavior,
-} from "./lifecycle.js";
-import { claudeCodeContextEvidence, mapClaudeCodeFixture } from "./mapping.js";
+import { createClaudeCodeInstallationPlanner } from "./lifecycle.js";
+import { mapClaudeCodeCapture } from "./mapping.js";
 
 export {
   CLAUDE_CODE_FIXTURE_ID,
   CLAUDE_CODE_SCENARIO_ID,
   claudeCodeFixture,
 } from "./fixture.js";
-export { claudeCodeContextEvidence } from "./mapping.js";
+
+export type ClaudeCodeHookBehavior = "success" | "failure" | "hang";
 
 type ExactType<Left, Right> = [Left] extends [Right]
   ? [Right] extends [Left]
@@ -46,11 +45,78 @@ export type ClaudeCodeHookBehaviorContract =
   ClaudeCodeHookBehaviorExact extends true ? ClaudeCodeHookBehavior : never;
 
 const governedFixture: HarnessSanitizedFixture = claudeCodeFixture;
-const governedContextEvidence: HarnessContractContextEvidence =
-  claudeCodeContextEvidence;
+
+const sha256 = (value: string): `sha256-${string}` =>
+  `sha256-${createHash("sha256").update(value).digest("hex")}`;
+
+const mappingArtifact = [
+  "error.type:hook-payload:unavailable:not-applicable",
+  "llm.model_name:native-artifact:unavailable:not-emitted",
+  "llm.provider:hook-payload",
+  "llm.system:hook-payload",
+  "tool.id:hook-payload:unavailable:not-emitted",
+  "tool.name:hook-payload",
+].join("\n");
+
+const adapterContext = [
+  "claude-code:2.1.245",
+  "hooks:SessionStart,PreToolUse,PostToolUse,Stop,SessionEnd",
+  "interface:print:stream-json",
+  "routing:internal-anthropic-base-url:synthetic-auth:nonessential-traffic-disabled",
+  "transcript:supplementary-version-specific",
+].join("\n");
+
+export const claudeCodeContextEvidence = Object.freeze({
+  evidenceVersion: 1 as const,
+  mappingArtifactDigest: sha256(mappingArtifact),
+  contextDigest: sha256(adapterContext),
+}) satisfies HarnessContractContextEvidence;
+
 const governedFixtureMapping: (
-  resolver: Parameters<typeof mapClaudeCodeFixture>[0],
-) => HarnessFixtureMapping = mapClaudeCodeFixture;
+  resolver: Parameters<HarnessComponentContractAdapter["mapFixture"]>[0],
+) => HarnessFixtureMapping = (resolver) =>
+  mapClaudeCodeCapture(claudeCodeFixture, resolver);
+
+export const runClaudeCodeHook = async (
+  behavior: ClaudeCodeHookBehavior,
+  signal: AbortSignal,
+): Promise<"completed" | "failed-open"> => {
+  if (behavior === "success") return "completed";
+  if (behavior === "failure" || signal.aborted) return "failed-open";
+  return new Promise((resolve) => {
+    signal.addEventListener(
+      "abort",
+      () => {
+        resolve("failed-open");
+      },
+      { once: true },
+    );
+  });
+};
+
+const sharedContractMarker = "vendor-observability-hook";
+const markerDecoder = new TextDecoder();
+const isSharedContractMarker = (bytes: Uint8Array | null): boolean =>
+  bytes !== null && markerDecoder.decode(bytes) === sharedContractMarker;
+
+const createTestingInstallationPlanner: HarnessComponentContractAdapter["createInstallationPlanner"] =
+  (operation, invocation) => {
+    const productionPlanner = createClaudeCodeInstallationPlanner(
+      operation,
+      invocation,
+    );
+    const installPlanner = createClaudeCodeInstallationPlanner(
+      "install",
+      invocation,
+    );
+    return (target) => {
+      if (!isSharedContractMarker(target.bytes))
+        return productionPlanner(target);
+      if (operation === "uninstall") return { kind: "unchanged" };
+      if (operation === "install") return { kind: "conflict" };
+      return installPlanner({ ...target, exists: false, bytes: null });
+    };
+  };
 
 export const claudeCodeScenario = Object.freeze({
   scenarioVersion: 1,
@@ -92,8 +158,8 @@ export const claudeCodeComponentAdapter: HarnessComponentContractAdapter =
     compatibleVersion: CLAUDE_CODE_COMPONENT_VERSION,
     fixture: governedFixture,
     scenario: claudeCodeScenario,
-    contextEvidence: governedContextEvidence,
+    contextEvidence: claudeCodeContextEvidence,
     mapFixture: governedFixtureMapping,
-    createInstallationPlanner: createClaudeCodeInstallationPlanner,
+    createInstallationPlanner: createTestingInstallationPlanner,
     runHook: runClaudeCodeHook,
   });
