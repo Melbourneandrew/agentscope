@@ -338,8 +338,8 @@ describe("Codex unavailable native metadata", () => {
       }),
       checkpoint,
     );
-    const root = mapped.candidate.operations[0];
-    expect(root?.fields).not.toEqual(
+    const llm = mapped.candidate.operations.find(({ kind }) => kind === "LLM");
+    expect(llm?.fields).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ field: "llm.model_name" }),
         expect.objectContaining({ field: "llm.token_count.total" }),
@@ -381,6 +381,27 @@ describe("Codex unavailable native metadata", () => {
         source: "hook-payload",
       }),
     );
+  });
+
+  it("passes unavailable model and usage evidence through Core", async () => {
+    const mapped = mapCodexSanitizedNativeObservation(
+      observation({
+        modelSystem: null,
+        modelProvider: null,
+        modelName: null,
+        reasoningLevel: null,
+        promptTokens: null,
+        completionTokens: null,
+        reasoningTokens: null,
+        totalTokens: null,
+      }),
+      checkpoint,
+    );
+    const captured = await withCaptureInvocation(
+      captureInvocation(),
+      (factory) => factory.capture(mapped.candidate),
+    );
+    expect(isCapturedTrace(captured)).toBe(true);
   });
 
   it("maps a categorical native error without inventing a message", () => {
