@@ -1,10 +1,126 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { isProxy } from "node:util/types";
+
+const SafeArray = Array;
+const safeArrayIsArray = Array.isArray;
+const safeArrayPrototype = Array.prototype;
+const SafeUint8Array = Uint8Array;
+const safeUint8ArrayPrototype = Uint8Array.prototype;
+const safeTypedArrayPrototype = Object.getPrototypeOf(
+  Uint8Array.prototype,
+) as object;
+const safeArrayBufferPrototype = ArrayBuffer.prototype;
+const safeObjectPrototype = Object.prototype;
+const safeObjectCreate = Object.create;
+const safeObjectDefineProperty = Object.defineProperty;
+const safeObjectFreeze = Object.freeze;
+const safeObjectSetPrototypeOf = Object.setPrototypeOf;
+const safeGetPrototypeOf = Object.getPrototypeOf;
+const safeGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const safeGetOwnPropertyDescriptors = Object.getOwnPropertyDescriptors;
+const safeObjectHasOwn = Object.hasOwn;
+const safeObjectKeys = Object.keys;
+const safeReflectApply = Reflect.apply;
+const safeReflectOwnKeys = Reflect.ownKeys;
+const safeIsProxy = isProxy;
+const safeJsonParse = JSON.parse;
+const safeJsonStringify = JSON.stringify;
+const safeNumberIsFinite = Number.isFinite;
+const safeNumberIsSafeInteger = Number.isSafeInteger;
+const safeExecPath = process.execPath;
+const safeTypedArraySetDescriptor = Object.getOwnPropertyDescriptor(
+  safeTypedArrayPrototype,
+  "set",
+)!;
+const safeTypedArrayBufferDescriptor = Object.getOwnPropertyDescriptor(
+  safeTypedArrayPrototype,
+  "buffer",
+)!;
+const safeTypedArrayByteLengthDescriptor = Object.getOwnPropertyDescriptor(
+  safeTypedArrayPrototype,
+  "byteLength",
+)!;
+const safeTypedArrayByteOffsetDescriptor = Object.getOwnPropertyDescriptor(
+  safeTypedArrayPrototype,
+  "byteOffset",
+)!;
+const safeArrayBufferResizableDescriptor = Object.getOwnPropertyDescriptor(
+  safeArrayBufferPrototype,
+  "resizable",
+);
+const safeTextEncoderEncodeDescriptor = Object.getOwnPropertyDescriptor(
+  TextEncoder.prototype,
+  "encode",
+)!;
+const safeTextDecoderDecodeDescriptor = Object.getOwnPropertyDescriptor(
+  TextDecoder.prototype,
+  "decode",
+)!;
+const safePerformanceNowDescriptor = Object.getOwnPropertyDescriptor(
+  safeGetPrototypeOf(performance) as object,
+  "now",
+)!;
+const hashPrototype = safeGetPrototypeOf(createHash("sha256")) as object;
+const safeHashUpdateDescriptor = Object.getOwnPropertyDescriptor(
+  hashPrototype,
+  "update",
+)!;
+const safeHashDigestDescriptor = Object.getOwnPropertyDescriptor(
+  hashPrototype,
+  "digest",
+)!;
+const callDescriptorGetter = (
+  descriptor: PropertyDescriptor,
+  receiver: object,
+): unknown => {
+  // The captured getter is deliberately invoked with its receiver by Reflect.apply.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  return safeReflectApply(descriptor.get!, receiver, []);
+};
+const callDescriptorMethod = (
+  descriptor: PropertyDescriptor,
+  receiver: object,
+  arguments_: readonly unknown[],
+): unknown =>
+  safeReflectApply(
+    descriptor.value as (...values: unknown[]) => unknown,
+    receiver,
+    arguments_,
+  );
+const safeFreeze = <T extends object>(value: T): Readonly<T> =>
+  safeReflectApply(safeObjectFreeze, Object, [value]) as Readonly<T>;
+const wireArray = <T>(length: number): T[] => {
+  const value = new SafeArray<T>(length);
+  safeReflectApply(safeObjectSetPrototypeOf, Object, [value, null]);
+  return value;
+};
+const wireRecord = (
+  entries: readonly (readonly [string, unknown])[],
+): StrictRecord => {
+  const value = safeObjectCreate(null) as StrictRecord;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    value[entry[0]] = entry[1];
+  }
+  return value;
+};
 
 export class HeadlessSupervisorContractAssertionError extends Error {
-  public constructor(public readonly code: string) {
+  public readonly code!: string;
+
+  public constructor(code: string) {
     super(code);
-    this.name = "HeadlessSupervisorContractAssertionError";
+    safeReflectApply(safeObjectDefineProperty, Object, [
+      this,
+      "code",
+      {
+        configurable: false,
+        enumerable: true,
+        value: code,
+        writable: false,
+      },
+    ]);
   }
 }
 
@@ -89,9 +205,12 @@ export type HeadlessExecutionTrace = Readonly<{
   observation: HeadlessProcessSetObservation;
 }>;
 
+export type HeadlessCanonicalTraceEnvelope = Uint8Array;
+
 export type HeadlessSupervisorContractRun = Readonly<{
   request: HeadlessExecutionRequest;
-  verify: (trace: unknown) => HeadlessExecutionTrace;
+  encode: (trace: unknown) => HeadlessCanonicalTraceEnvelope;
+  verify: (encodedTrace: unknown) => HeadlessExecutionTrace;
 }>;
 
 export type HeadlessSupervisorContractCase = Readonly<{
@@ -109,7 +228,18 @@ type StrictRecord = Record<string, unknown>;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const encodeText = (value: string): Uint8Array =>
+  callDescriptorMethod(safeTextEncoderEncodeDescriptor, encoder, [
+    value,
+  ]) as Uint8Array;
+const decodeText = (value: Uint8Array): string =>
+  callDescriptorMethod(safeTextDecoderDecodeDescriptor, decoder, [
+    value,
+  ]) as string;
 const outputLimitBytes = 1_024;
+// Two 1 KiB streams require at most 8 KiB as comma-delimited decimal bytes;
+// the remaining fixed two-process/two-signal schema is bounded below 8 KiB.
+export const headlessTraceEnvelopeLimitBytes = 16_384;
 const terminationGraceMs = 1_000;
 const resultKeys = [
   "cleanup",
@@ -151,8 +281,8 @@ const traceKeys = [
   "traceVersion",
 ] as const;
 
-const fixtures: Readonly<Record<HeadlessObserverScenario, string>> =
-  Object.freeze({
+const fixtures: Readonly<Record<HeadlessObserverScenario, string>> = safeFreeze(
+  {
     correct: String.raw`
 import { readFileSync } from "node:fs";
 const input = readFileSync(0, "utf8");
@@ -175,7 +305,8 @@ const source = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0
 const child = spawn(process.execPath, ["-e", source], { detached: true, env: {}, stdio: "ignore" });
 child.unref();
 `,
-  });
+  },
+);
 
 const fail = (code: string): never => {
   throw new HeadlessSupervisorContractAssertionError(code);
@@ -186,31 +317,37 @@ const assert = (condition: boolean, code: string): void => {
 };
 
 const strictRecord = (value: unknown, code: string): StrictRecord => {
-  if (typeof value !== "object" || value === null) return fail(code);
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    safeIsProxy(value) ||
+    (safeGetPrototypeOf(value) !== safeObjectPrototype &&
+      safeGetPrototypeOf(value) !== null)
+  )
+    return fail(code);
   let keys: PropertyKey[];
   let descriptors: PropertyDescriptorMap;
   try {
-    keys = Reflect.ownKeys(value);
-    descriptors = Object.getOwnPropertyDescriptors(value);
+    keys = safeReflectOwnKeys(value);
+    descriptors = safeGetOwnPropertyDescriptors(value);
   } catch {
     return fail(code);
   }
-  assert(
-    keys.every((key) => typeof key === "string"),
-    code,
-  );
-  assert(
-    Object.values(descriptors).every(
-      (descriptor) =>
-        descriptor.get === undefined &&
+  const record = safeObjectCreate(null) as StrictRecord;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string") return fail(code);
+    const descriptor: PropertyDescriptor | undefined = descriptors[key];
+    if (descriptor === undefined) return fail(code);
+    assert(
+      descriptor.get === undefined &&
         descriptor.set === undefined &&
-        Object.hasOwn(descriptor, "value"),
-    ),
-    code,
-  );
-  return Object.fromEntries(
-    keys.map((key) => [key as string, descriptors[key as string]!.value]),
-  );
+        safeObjectHasOwn(descriptor, "value"),
+      code,
+    );
+    record[key] = descriptor.value as unknown;
+  }
+  return record;
 };
 
 const exactKeys = (
@@ -218,55 +355,390 @@ const exactKeys = (
   expected: readonly string[],
   code: string,
 ): void => {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  assert(
-    actual.length === wanted.length &&
-      actual.every((key, index) => key === wanted[index]),
-    code,
-  );
+  const actual = safeObjectKeys(value);
+  assert(actual.length === expected.length, code);
+  for (let index = 0; index < expected.length; index += 1)
+    assert(safeObjectHasOwn(value, expected[index]!), code);
 };
 
-const strictArray = (value: unknown, code: string): readonly unknown[] => {
-  if (!Array.isArray(value)) return fail(code);
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const expected = [...value.keys()].map(String);
-  expected.push("length");
-  const actual = Object.keys(descriptors).sort();
+const projectRecord = (
+  value: unknown,
+  required: readonly string[],
+  code: string,
+): StrictRecord => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    safeIsProxy(value) ||
+    (safeGetPrototypeOf(value) !== safeObjectPrototype &&
+      safeGetPrototypeOf(value) !== null)
+  )
+    return fail(code);
+  const record = safeObjectCreate(null) as StrictRecord;
+  for (let index = 0; index < required.length; index += 1) {
+    const key = required[index]!;
+    const descriptor = safeGetOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined) return fail(code);
+    assert(
+      descriptor.get === undefined &&
+        descriptor.set === undefined &&
+        safeObjectHasOwn(descriptor, "value"),
+      code,
+    );
+    record[key] = descriptor.value as unknown;
+  }
+  return record;
+};
+
+const readRecord = (
+  value: unknown,
+  required: readonly string[],
+  code: string,
+  source: "dto" | "wire",
+): StrictRecord => {
+  if (source === "dto") return projectRecord(value, required, code);
+  const record = strictRecord(value, code);
+  exactKeys(record, required, code);
+  return record;
+};
+
+const strictArray = (
+  value: unknown,
+  expectedLength: number,
+  code: string,
+): readonly unknown[] => {
+  if (
+    safeIsProxy(value) ||
+    !safeArrayIsArray(value) ||
+    safeGetPrototypeOf(value) !== safeArrayPrototype ||
+    value.length !== expectedLength
+  )
+    return fail(code);
+  const descriptors = safeGetOwnPropertyDescriptors(value);
+  const keys = safeReflectOwnKeys(value);
+  assert(keys.length === expectedLength + 1, code);
+  const result = new SafeArray<unknown>(expectedLength);
+  for (let index = 0; index < expectedLength; index += 1) {
+    const descriptor: PropertyDescriptor | undefined =
+      descriptors[String(index)];
+    if (descriptor === undefined) return fail(code);
+    assert(
+      descriptor.get === undefined &&
+        descriptor.set === undefined &&
+        safeObjectHasOwn(descriptor, "value"),
+      code,
+    );
+    result[index] = descriptor.value as unknown;
+  }
+  const lengthDescriptor = (
+    descriptors as Record<string, PropertyDescriptor | undefined>
+  )["length"];
+  if (lengthDescriptor === undefined) return fail(code);
   assert(
-    Reflect.ownKeys(value).every((key) => typeof key === "string") &&
-      actual.length === expected.length &&
-      actual.every((key, index) => key === expected.sort()[index]) &&
-      Object.values(descriptors).every(
-        (descriptor) =>
-          descriptor.get === undefined && descriptor.set === undefined,
-      ),
+    lengthDescriptor.get === undefined &&
+      lengthDescriptor.set === undefined &&
+      lengthDescriptor.value === expectedLength,
     code,
   );
-  return value.slice();
+  return result;
+};
+
+const projectArray = (
+  value: unknown,
+  expectedLength: number,
+  code: string,
+): readonly unknown[] => {
+  if (
+    safeIsProxy(value) ||
+    !safeArrayIsArray(value) ||
+    safeGetPrototypeOf(value) !== safeArrayPrototype ||
+    value.length !== expectedLength
+  )
+    return fail(code);
+  const result = new SafeArray<unknown>(expectedLength);
+  for (let index = 0; index < expectedLength; index += 1) {
+    const descriptor = safeGetOwnPropertyDescriptor(value, String(index));
+    if (descriptor === undefined) return fail(code);
+    assert(
+      descriptor.get === undefined &&
+        descriptor.set === undefined &&
+        safeObjectHasOwn(descriptor, "value"),
+      code,
+    );
+    result[index] = descriptor.value as unknown;
+  }
+  return result;
+};
+
+const readArray = (
+  value: unknown,
+  expectedLength: number,
+  code: string,
+  source: "dto" | "wire",
+): readonly unknown[] =>
+  source === "dto"
+    ? projectArray(value, expectedLength, code)
+    : strictArray(value, expectedLength, code);
+
+const readEnvelopeBytes = (
+  value: unknown,
+  limit: number,
+  boundCode: string,
+  shapeCode: string,
+): Uint8Array => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    safeIsProxy(value) ||
+    safeGetPrototypeOf(value) !== safeUint8ArrayPrototype
+  )
+    return fail(shapeCode);
+  const bytes = value as Uint8Array;
+  let backing: ArrayBufferLike;
+  let byteLength: number;
+  let byteOffset: number;
+  try {
+    backing = callDescriptorGetter(
+      safeTypedArrayBufferDescriptor,
+      bytes,
+    ) as ArrayBufferLike;
+    byteLength = callDescriptorGetter(
+      safeTypedArrayByteLengthDescriptor,
+      bytes,
+    ) as number;
+    byteOffset = callDescriptorGetter(
+      safeTypedArrayByteOffsetDescriptor,
+      bytes,
+    ) as number;
+  } catch {
+    return fail(shapeCode);
+  }
+  assert(
+    safeGetPrototypeOf(backing) === safeArrayBufferPrototype &&
+      (safeArrayBufferResizableDescriptor?.get === undefined ||
+        callDescriptorGetter(safeArrayBufferResizableDescriptor, backing) ===
+          false),
+    shapeCode,
+  );
+  assert(byteLength <= limit, boundCode);
+  try {
+    const copy = new SafeUint8Array(byteLength);
+    safeReflectApply(
+      safeTypedArraySetDescriptor.value as (
+        ...arguments_: unknown[]
+      ) => unknown,
+      copy,
+      [bytes],
+    );
+    assert(
+      callDescriptorGetter(safeTypedArrayBufferDescriptor, bytes) === backing &&
+        callDescriptorGetter(safeTypedArrayByteLengthDescriptor, bytes) ===
+          byteLength &&
+        callDescriptorGetter(safeTypedArrayByteOffsetDescriptor, bytes) ===
+          byteOffset,
+      shapeCode,
+    );
+    return copy;
+  } catch {
+    return fail(shapeCode);
+  }
+};
+
+const readWireBytes = (
+  value: unknown,
+  limit: number,
+  boundCode: string,
+): Uint8Array => {
+  if (
+    safeIsProxy(value) ||
+    !safeArrayIsArray(value) ||
+    safeGetPrototypeOf(value) !== safeArrayPrototype
+  )
+    return fail("testkit.headless.result.output");
+  assert(value.length <= limit, boundCode);
+  const values = strictArray(
+    value,
+    value.length,
+    "testkit.headless.result.output",
+  );
+  const bytes = new SafeUint8Array(values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    const byte = values[index];
+    assert(
+      safeNumberIsSafeInteger(byte) &&
+        (byte as number) >= 0 &&
+        (byte as number) <= 255,
+      "testkit.headless.result.output",
+    );
+    bytes[index] = byte as number;
+  }
+  assert(values.length <= limit, boundCode);
+  return bytes;
+};
+
+const trustedByteLength = (value: Uint8Array): number =>
+  callDescriptorGetter(safeTypedArrayByteLengthDescriptor, value) as number;
+
+const byteValues = (value: Uint8Array): readonly number[] => {
+  const values = wireArray<number>(trustedByteLength(value));
+  for (let index = 0; index < values.length; index += 1)
+    values[index] = value[index]!;
+  return values;
+};
+
+const canonicalTraceJson = (trace: HeadlessExecutionTrace): string => {
+  const processes = wireArray<StrictRecord>(trace.observation.processes.length);
+  for (let index = 0; index < processes.length; index += 1) {
+    const process = trace.observation.processes[index]!;
+    processes[index] = wireRecord([
+      ["pid", process.pid],
+      ["startIdentity", process.startIdentity],
+      ["role", process.role],
+    ]);
+  }
+  const signals = wireArray<StrictRecord>(trace.observation.signals.length);
+  for (let index = 0; index < signals.length; index += 1) {
+    const signal = trace.observation.signals[index]!;
+    signals[index] = wireRecord([
+      ["signal", signal.signal],
+      ["targetStartIdentity", signal.targetStartIdentity],
+      ["monotonicAtMs", signal.monotonicAtMs],
+    ]);
+  }
+  const residuals = wireArray<string>(
+    trace.observation.residualStartIdentities.length,
+  );
+  for (let index = 0; index < residuals.length; index += 1)
+    residuals[index] = trace.observation.residualStartIdentities[index]!;
+  const result = wireRecord([
+    ["resultVersion", trace.result.resultVersion],
+    ["outcome", trace.result.outcome],
+    ["exitCode", trace.result.exitCode],
+    ["signal", trace.result.signal],
+    ["stdout", byteValues(trace.result.stdout)],
+    ["stderr", byteValues(trace.result.stderr)],
+    ["stdoutTruncated", trace.result.stdoutTruncated],
+    ["stderrTruncated", trace.result.stderrTruncated],
+    ["termRequested", trace.result.termRequested],
+    ["killRequested", trace.result.killRequested],
+    ["cleanup", trace.result.cleanup],
+    ["residualProcessCount", trace.result.residualProcessCount],
+    ["diagnosticCode", trace.result.diagnosticCode],
+  ]);
+  const observation = wireRecord([
+    ["observationVersion", trace.observation.observationVersion],
+    ["runId", trace.observation.runId],
+    ["requestFingerprint", trace.observation.requestFingerprint],
+    ["processes", processes],
+    ["signals", signals],
+    ["spawnedAtMs", trace.observation.spawnedAtMs],
+    ["readyAtMs", trace.observation.readyAtMs],
+    ["settledAtMs", trace.observation.settledAtMs],
+    ["processJoined", trace.observation.processJoined],
+    ["stdinJoined", trace.observation.stdinJoined],
+    ["stdoutJoined", trace.observation.stdoutJoined],
+    ["stderrJoined", trace.observation.stderrJoined],
+    ["cleanup", trace.observation.cleanup],
+    ["residualStartIdentities", residuals],
+  ]);
+  const serialized = safeJsonStringify(
+    wireRecord([
+      ["traceVersion", trace.traceVersion],
+      ["runId", trace.runId],
+      ["requestFingerprint", trace.requestFingerprint],
+      ["returnedAtMs", trace.returnedAtMs],
+      ["result", result],
+      ["observation", observation],
+    ]),
+  );
+  assert(serialized !== undefined, "testkit.headless.envelope.canonical");
+  return serialized;
+};
+
+/**
+ * Projects the required fields of a closed protocol DTO into the family-owned
+ * canonical envelope. Surplus DTO fields are ignored without access; exact
+ * shape authority belongs to verify(). This serializer does not mint
+ * observation authority or prove that the DTO came from an executing backend.
+ */
+export const encodeCanonicalHeadlessExecutionTrace = (
+  trace: unknown,
+  scenario: HeadlessObserverScenario,
+  request: HeadlessExecutionRequest,
+): HeadlessCanonicalTraceEnvelope => {
+  const validated = readTrace(trace, scenario, request, "dto");
+  const encoded = encodeText(canonicalTraceJson(validated));
+  assert(
+    trustedByteLength(encoded) <= headlessTraceEnvelopeLimitBytes,
+    "testkit.headless.envelope.bound",
+  );
+  return encoded;
 };
 
 const finiteTime = (value: unknown, code: string): number => {
   assert(
-    typeof value === "number" && Number.isFinite(value) && value >= 0,
+    typeof value === "number" && safeNumberIsFinite(value) && value >= 0,
     code,
   );
   return value as number;
 };
 
-const readResult = (value: unknown): HeadlessExecutionResult => {
-  const record = strictRecord(value, "testkit.headless.result.shape");
-  exactKeys(record, resultKeys, "testkit.headless.result.shape");
+const readResultOutputs = (
+  record: StrictRecord,
+  request: HeadlessExecutionRequest,
+  source: "dto" | "wire",
+): Readonly<{ stderr: Uint8Array; stdout: Uint8Array }> => {
+  const stdout =
+    source === "wire"
+      ? readWireBytes(
+          record.stdout,
+          request.stdoutLimitBytes,
+          "testkit.headless.stdout.bound",
+        )
+      : readEnvelopeBytes(
+          record.stdout,
+          request.stdoutLimitBytes,
+          "testkit.headless.stdout.bound",
+          "testkit.headless.result.output",
+        );
+  const stderr =
+    source === "wire"
+      ? readWireBytes(
+          record.stderr,
+          request.stderrLimitBytes,
+          "testkit.headless.stderr.bound",
+        )
+      : readEnvelopeBytes(
+          record.stderr,
+          request.stderrLimitBytes,
+          "testkit.headless.stderr.bound",
+          "testkit.headless.result.output",
+        );
+  return { stderr, stdout };
+};
+
+const readResult = (
+  value: unknown,
+  request: HeadlessExecutionRequest,
+  source: "dto" | "wire",
+): HeadlessExecutionResult => {
+  const record = readRecord(
+    value,
+    resultKeys,
+    "testkit.headless.result.shape",
+    source,
+  );
   assert(record.resultVersion === 1, "testkit.headless.result.version");
   assert(
-    ["exited", "output-limit", "timed-out", "cleanup-failed"].includes(
-      record.outcome as string,
-    ),
+    record.outcome === "exited" ||
+      record.outcome === "output-limit" ||
+      record.outcome === "timed-out" ||
+      record.outcome === "cleanup-failed",
     "testkit.headless.result.outcome",
   );
   assert(
     record.exitCode === null ||
-      (Number.isSafeInteger(record.exitCode) &&
+      (safeNumberIsSafeInteger(record.exitCode) &&
         (record.exitCode as number) >= 0 &&
         (record.exitCode as number) <= 255),
     "testkit.headless.result.exit",
@@ -277,10 +749,7 @@ const readResult = (value: unknown): HeadlessExecutionResult => {
       record.signal === "SIGKILL",
     "testkit.headless.result.signal",
   );
-  assert(
-    record.stdout instanceof Uint8Array && record.stderr instanceof Uint8Array,
-    "testkit.headless.result.output",
-  );
+  const { stderr, stdout } = readResultOutputs(record, request, source);
   assert(
     typeof record.stdoutTruncated === "boolean" &&
       typeof record.stderrTruncated === "boolean" &&
@@ -295,7 +764,7 @@ const readResult = (value: unknown): HeadlessExecutionResult => {
     "testkit.headless.result.cleanup",
   );
   assert(
-    Number.isSafeInteger(record.residualProcessCount) &&
+    safeNumberIsSafeInteger(record.residualProcessCount) &&
       (record.residualProcessCount as number) >= 0,
     "testkit.headless.result.cleanup",
   );
@@ -328,13 +797,13 @@ const readResult = (value: unknown): HeadlessExecutionResult => {
     record.diagnosticCode === diagnostic,
     "testkit.headless.result.diagnostic",
   );
-  return Object.freeze({
+  return safeFreeze({
     resultVersion: 1,
     outcome: record.outcome as HeadlessExecutionOutcome,
     exitCode: record.exitCode as number | null,
     signal: record.signal as "SIGTERM" | "SIGKILL" | null,
-    stdout: Uint8Array.from(record.stdout as Uint8Array),
-    stderr: Uint8Array.from(record.stderr as Uint8Array),
+    stdout,
+    stderr,
     stdoutTruncated: record.stdoutTruncated as boolean,
     stderrTruncated: record.stderrTruncated as boolean,
     termRequested: record.termRequested as boolean,
@@ -349,22 +818,24 @@ const readResult = (value: unknown): HeadlessExecutionResult => {
 const readProcesses = (
   value: unknown,
   expectedRoles: readonly ("root" | "descendant")[],
+  source: "dto" | "wire",
 ): readonly HeadlessProcessIdentity[] => {
-  const processes = strictArray(
+  const candidates = readArray(
     value,
+    expectedRoles.length,
     "testkit.headless.observer.processes",
-  ).map((candidate) => {
-    const process = strictRecord(
-      candidate,
-      "testkit.headless.observer.process",
-    );
-    exactKeys(
-      process,
+    source,
+  );
+  const processes = new SafeArray<HeadlessProcessIdentity>(candidates.length);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const process = readRecord(
+      candidates[index],
       ["pid", "role", "startIdentity"],
       "testkit.headless.observer.process",
+      source,
     );
     assert(
-      Number.isSafeInteger(process.pid) &&
+      safeNumberIsSafeInteger(process.pid) &&
         (process.pid as number) > 1 &&
         typeof process.startIdentity === "string" &&
         process.startIdentity.length > 0 &&
@@ -372,20 +843,20 @@ const readProcesses = (
         (process.role === "root" || process.role === "descendant"),
       "testkit.headless.observer.process",
     );
-    return Object.freeze({ ...process }) as HeadlessProcessIdentity;
-  });
-  const identities = processes.map(({ startIdentity }) => startIdentity);
-  const pids = processes.map(({ pid }) => pid);
-  assert(
-    new Set(identities).size === identities.length &&
-      new Set(pids).size === pids.length,
-    "testkit.headless.observer.process",
-  );
-  assert(
-    JSON.stringify(processes.map(({ role }) => role).sort()) ===
-      JSON.stringify([...expectedRoles].sort()),
-    "testkit.headless.observer.process-set",
-  );
+    processes[index] = safeFreeze({ ...process }) as HeadlessProcessIdentity;
+  }
+  for (let index = 0; index < processes.length; index += 1) {
+    assert(
+      processes[index]!.role === expectedRoles[index],
+      "testkit.headless.observer.process-set",
+    );
+    for (let prior = 0; prior < index; prior += 1)
+      assert(
+        processes[index]!.startIdentity !== processes[prior]!.startIdentity &&
+          processes[index]!.pid !== processes[prior]!.pid,
+        "testkit.headless.observer.process",
+      );
+  }
   return processes;
 };
 
@@ -393,14 +864,19 @@ const expectedSignalKeys = (
   scenario: HeadlessObserverScenario,
   processes: readonly HeadlessProcessIdentity[],
 ): readonly string[] => {
-  const root = processes.find(({ role }) => role === "root")!.startIdentity;
-  const descendant = processes.find(
-    ({ role }) => role === "descendant",
-  )?.startIdentity;
+  let root: string | undefined;
+  let descendant: string | undefined;
+  for (let index = 0; index < processes.length; index += 1) {
+    const process = processes[index]!;
+    if (process.role === "root") root = process.startIdentity;
+    else descendant = process.startIdentity;
+  }
+  assert(root !== undefined, "testkit.headless.observer.process-set");
   if (scenario === "correct") return [];
   if (scenario === "stdout-limit" || scenario === "stderr-limit")
     return [`SIGTERM:${root}`];
   if (scenario === "timeout") return [`SIGTERM:${root}`, `SIGKILL:${root}`];
+  assert(descendant !== undefined, "testkit.headless.observer.process-set");
   return [`SIGTERM:${descendant!}`, `SIGKILL:${descendant!}`];
 };
 
@@ -408,77 +884,90 @@ const readSignals = (
   value: unknown,
   scenario: HeadlessObserverScenario,
   processes: readonly HeadlessProcessIdentity[],
+  source: "dto" | "wire",
 ): readonly HeadlessObservedSignal[] => {
-  const identities = processes.map(({ startIdentity }) => startIdentity);
-  const signals = strictArray(value, "testkit.headless.observer.signals").map(
-    (candidate) => {
-      const signal = strictRecord(
-        candidate,
+  const identities = new SafeArray<string>(processes.length);
+  for (let index = 0; index < processes.length; index += 1)
+    identities[index] = processes[index]!.startIdentity;
+  const expectedKeys = expectedSignalKeys(scenario, processes);
+  const candidates = readArray(
+    value,
+    expectedKeys.length,
+    "testkit.headless.observer.signals",
+    source,
+  );
+  const signals = new SafeArray<HeadlessObservedSignal>(candidates.length);
+  const signalKeys = new SafeArray<string>(candidates.length);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const signal = readRecord(
+      candidates[index],
+      ["monotonicAtMs", "signal", "targetStartIdentity"],
+      "testkit.headless.observer.signal",
+      source,
+    );
+    assert(
+      ((signal.signal === "SIGTERM" || signal.signal === "SIGKILL") &&
+        typeof signal.targetStartIdentity === "string" &&
+        identities[0] === signal.targetStartIdentity) ||
+        identities[1] === signal.targetStartIdentity,
+      "testkit.headless.observer.signal",
+    );
+    signals[index] = safeFreeze({
+      signal: signal.signal,
+      targetStartIdentity: signal.targetStartIdentity,
+      monotonicAtMs: finiteTime(
+        signal.monotonicAtMs,
         "testkit.headless.observer.signal",
-      );
-      exactKeys(
-        signal,
-        ["monotonicAtMs", "signal", "targetStartIdentity"],
-        "testkit.headless.observer.signal",
-      );
+      ),
+    }) as HeadlessObservedSignal;
+    if (index > 0)
       assert(
-        (signal.signal === "SIGTERM" || signal.signal === "SIGKILL") &&
-          typeof signal.targetStartIdentity === "string" &&
-          identities.includes(signal.targetStartIdentity),
-        "testkit.headless.observer.signal",
+        signals[index - 1]!.monotonicAtMs <= signals[index]!.monotonicAtMs,
+        "testkit.headless.observer.signal-order",
       );
-      return Object.freeze({
-        signal: signal.signal,
-        targetStartIdentity: signal.targetStartIdentity,
-        monotonicAtMs: finiteTime(
-          signal.monotonicAtMs,
-          "testkit.headless.observer.signal",
-        ),
-      }) as HeadlessObservedSignal;
-    },
-  );
-  const keys = signals.map(
-    ({ signal, targetStartIdentity }) => `${signal}:${targetStartIdentity}`,
-  );
-  assert(
-    new Set(keys).size === keys.length,
-    "testkit.headless.observer.signal",
-  );
-  assert(
-    signals.every(
-      (signal, index) =>
-        index === 0 ||
-        signals[index - 1]!.monotonicAtMs <= signal.monotonicAtMs,
-    ),
-    "testkit.headless.observer.signal-order",
-  );
-  assert(
-    JSON.stringify(keys) ===
-      JSON.stringify(expectedSignalKeys(scenario, processes)),
-    "testkit.headless.observer.signal-sequence",
-  );
+    signalKeys[index] =
+      `${signals[index]!.signal}:${signals[index]!.targetStartIdentity}`;
+  }
+  for (let index = 0; index < signalKeys.length; index += 1)
+    assert(
+      signalKeys[index] === expectedKeys[index],
+      "testkit.headless.observer.signal-sequence",
+    );
   return signals;
 };
 
 const readResiduals = (
   value: unknown,
   processes: readonly HeadlessProcessIdentity[],
+  source: "dto" | "wire",
 ): readonly string[] => {
-  const identities = processes.map(({ startIdentity }) => startIdentity);
-  const residuals = strictArray(
+  const candidates = readArray(
     value,
+    0,
     "testkit.headless.observer.residual",
-  ).map((identity) => {
+    source,
+  );
+  const residuals = new SafeArray<string>(candidates.length);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const identity = candidates[index];
+    let known = false;
+    for (
+      let processIndex = 0;
+      processIndex < processes.length;
+      processIndex += 1
+    )
+      if (processes[processIndex]!.startIdentity === identity) known = true;
     assert(
-      typeof identity === "string" && identities.includes(identity),
+      typeof identity === "string" && known,
       "testkit.headless.observer.residual",
     );
-    return identity as string;
-  });
-  assert(
-    new Set(residuals).size === residuals.length,
-    "testkit.headless.observer.residual",
-  );
+    residuals[index] = identity as string;
+    for (let prior = 0; prior < index; prior += 1)
+      assert(
+        residuals[prior] !== identity,
+        "testkit.headless.observer.residual",
+      );
+  }
   return residuals;
 };
 
@@ -486,9 +975,14 @@ const readObservation = (
   value: unknown,
   scenario: HeadlessObserverScenario,
   request: HeadlessExecutionRequest,
+  source: "dto" | "wire",
 ): HeadlessProcessSetObservation => {
-  const record = strictRecord(value, "testkit.headless.observer.shape");
-  exactKeys(record, observationKeys, "testkit.headless.observer.shape");
+  const record = readRecord(
+    value,
+    observationKeys,
+    "testkit.headless.observer.shape",
+    source,
+  );
   assert(record.observationVersion === 1, "testkit.headless.observer.version");
   assert(
     record.runId === request.runId &&
@@ -499,9 +993,13 @@ const readObservation = (
     scenario === "descendant"
       ? (["root", "descendant"] as const)
       : (["root"] as const);
-  const processes = readProcesses(record.processes, roles);
-  const signals = readSignals(record.signals, scenario, processes);
-  const residuals = readResiduals(record.residualStartIdentities, processes);
+  const processes = readProcesses(record.processes, roles, source);
+  const signals = readSignals(record.signals, scenario, processes, source);
+  const residuals = readResiduals(
+    record.residualStartIdentities,
+    processes,
+    source,
+  );
   assert(
     record.cleanup === "clean" ||
       record.cleanup === "residual" ||
@@ -514,22 +1012,25 @@ const readObservation = (
       record.cleanup === "uncertain",
     "testkit.headless.observer.cleanup",
   );
-  for (const key of [
+  const handleKeys = [
     "processJoined",
     "stdinJoined",
     "stdoutJoined",
     "stderrJoined",
-  ] as const)
+  ] as const;
+  for (let index = 0; index < handleKeys.length; index += 1) {
+    const key = handleKeys[index]!;
     assert(
       typeof record[key] === "boolean",
       "testkit.headless.observer.handles",
     );
-  return Object.freeze({
+  }
+  return safeFreeze({
     observationVersion: 1,
     runId: request.runId,
     requestFingerprint: request.requestFingerprint,
-    processes: Object.freeze(processes),
-    signals: Object.freeze(signals),
+    processes: safeFreeze(processes),
+    signals: safeFreeze(signals),
     spawnedAtMs: finiteTime(
       record.spawnedAtMs,
       "testkit.headless.observer.timing",
@@ -544,7 +1045,7 @@ const readObservation = (
     stdoutJoined: record.stdoutJoined as boolean,
     stderrJoined: record.stderrJoined as boolean,
     cleanup: record.cleanup as "clean" | "residual" | "uncertain",
-    residualStartIdentities: Object.freeze(residuals),
+    residualStartIdentities: safeFreeze(residuals),
   });
 };
 
@@ -564,20 +1065,18 @@ const assertTerminalProtocol = (
       returnedAtMs <= request.monotonicShutdownDeadlineMs,
     "testkit.headless.observer.settlement",
   );
-  assert(
-    observation.signals.every(
-      ({ monotonicAtMs }) =>
-        monotonicAtMs >= observation.readyAtMs &&
-        monotonicAtMs <= observation.settledAtMs,
-    ),
-    "testkit.headless.observer.signal-window",
-  );
-  const termObserved = observation.signals.some(
-    ({ signal }) => signal === "SIGTERM",
-  );
-  const killObserved = observation.signals.some(
-    ({ signal }) => signal === "SIGKILL",
-  );
+  let termObserved = false;
+  let killObserved = false;
+  for (let index = 0; index < observation.signals.length; index += 1) {
+    const signal = observation.signals[index]!;
+    assert(
+      signal.monotonicAtMs >= observation.readyAtMs &&
+        signal.monotonicAtMs <= observation.settledAtMs,
+      "testkit.headless.observer.signal-window",
+    );
+    if (signal.signal === "SIGTERM") termObserved = true;
+    else killObserved = true;
+  }
   assert(
     result.termRequested === termObserved &&
       result.killRequested === killObserved,
@@ -598,11 +1097,11 @@ const assertTerminalProtocol = (
     "testkit.headless.cleanup.complete",
   );
   assert(
-    result.stdout.byteLength <= request.stdoutLimitBytes,
+    trustedByteLength(result.stdout) <= request.stdoutLimitBytes,
     "testkit.headless.stdout.bound",
   );
   assert(
-    result.stderr.byteLength <= request.stderrLimitBytes,
+    trustedByteLength(result.stderr) <= request.stderrLimitBytes,
     "testkit.headless.stderr.bound",
   );
 };
@@ -623,11 +1122,10 @@ const assertCorrect = (
   let invocation: StrictRecord;
   try {
     invocation = strictRecord(
-      JSON.parse(decoder.decode(result.stdout)) as unknown,
+      safeJsonParse(decodeText(result.stdout)) as unknown,
       "testkit.headless.invocation.record",
     );
-  } catch (error) {
-    if (error instanceof HeadlessSupervisorContractAssertionError) throw error;
+  } catch {
     return fail("testkit.headless.invocation.record");
   }
   exactKeys(
@@ -635,15 +1133,28 @@ const assertCorrect = (
     ["arguments", "cwd", "environment", "input"],
     "testkit.headless.invocation.record",
   );
+  const arguments_ = strictArray(
+    invocation.arguments,
+    2,
+    "testkit.headless.invocation.arguments",
+  );
   assert(
-    JSON.stringify(invocation.arguments) ===
-      JSON.stringify(["argument one", "--literal=$VALUE"]),
+    arguments_[0] === "argument one" && arguments_[1] === "--literal=$VALUE",
     "testkit.headless.invocation.arguments",
   );
   assert(invocation.cwd === request.cwd, "testkit.headless.invocation.cwd");
+  const environment = strictRecord(
+    invocation.environment,
+    "testkit.headless.invocation.environment",
+  );
+  exactKeys(
+    environment,
+    ["AGENTSCOPE_ORACLE_VISIBLE"],
+    "testkit.headless.invocation.environment",
+  );
   assert(
-    JSON.stringify(invocation.environment) ===
-      JSON.stringify(request.environment),
+    environment.AGENTSCOPE_ORACLE_VISIBLE ===
+      request.environment.AGENTSCOPE_ORACLE_VISIBLE,
     "testkit.headless.invocation.environment",
   );
   assert(
@@ -651,7 +1162,7 @@ const assertCorrect = (
     "testkit.headless.invocation.stdin",
   );
   assert(
-    decoder.decode(result.stderr) === "fixture-stderr",
+    decodeText(result.stderr) === "fixture-stderr",
     "testkit.headless.invocation.stderr",
   );
 };
@@ -671,9 +1182,9 @@ const assertOutputLimit = (
   assert(
     stream === "stdout"
       ? result.stdoutTruncated &&
-          result.stdout.byteLength === request.stdoutLimitBytes
+          trustedByteLength(result.stdout) === request.stdoutLimitBytes
       : result.stderrTruncated &&
-          result.stderr.byteLength === request.stderrLimitBytes,
+          trustedByteLength(result.stderr) === request.stderrLimitBytes,
     `testkit.headless.${stream}.limit`,
   );
 };
@@ -690,16 +1201,21 @@ const assertTimeout = (
       result.diagnosticCode === "testkit.headless.timeout",
     "testkit.headless.timeout.classification",
   );
-  const root = observation.processes.find(({ role }) => role === "root")!;
-  const [term, kill] = observation.signals;
+  let root: HeadlessProcessIdentity | undefined;
+  for (let index = 0; index < observation.processes.length; index += 1)
+    if (observation.processes[index]!.role === "root")
+      root = observation.processes[index];
+  assert(root !== undefined, "testkit.headless.observer.process-set");
+  const term = observation.signals[0];
+  const kill = observation.signals[1];
   assert(
-    term!.targetStartIdentity === root.startIdentity &&
+    term!.targetStartIdentity === root!.startIdentity &&
       term!.monotonicAtMs >= request.monotonicExecutionDeadlineMs &&
       term!.monotonicAtMs >= observation.readyAtMs,
     "testkit.headless.timeout.early-term",
   );
   assert(
-    kill!.targetStartIdentity === root.startIdentity &&
+    kill!.targetStartIdentity === root!.startIdentity &&
       kill!.monotonicAtMs >= term!.monotonicAtMs + request.terminationGraceMs,
     "testkit.headless.timeout.short-grace",
   );
@@ -709,16 +1225,21 @@ const readTrace = (
   value: unknown,
   scenario: HeadlessObserverScenario,
   request: HeadlessExecutionRequest,
+  source: "dto" | "wire",
 ): HeadlessExecutionTrace => {
-  const record = strictRecord(value, "testkit.headless.trace.shape");
-  exactKeys(record, traceKeys, "testkit.headless.trace.shape");
+  const record = readRecord(
+    value,
+    traceKeys,
+    "testkit.headless.trace.shape",
+    source,
+  );
   assert(record.traceVersion === 1, "testkit.headless.trace.version");
   assert(
     record.runId === request.runId &&
       record.requestFingerprint === request.requestFingerprint,
     "testkit.headless.trace.binding",
   );
-  const trace = Object.freeze({
+  const trace = safeFreeze({
     traceVersion: 1 as const,
     runId: request.runId,
     requestFingerprint: request.requestFingerprint,
@@ -726,8 +1247,8 @@ const readTrace = (
       record.returnedAtMs,
       "testkit.headless.trace.timing",
     ),
-    result: readResult(record.result),
-    observation: readObservation(record.observation, scenario, request),
+    result: readResult(record.result, request, source),
+    observation: readObservation(record.observation, scenario, request, source),
   });
   assertTerminalProtocol(trace, request);
   if (scenario === "correct") assertCorrect(trace.result, request);
@@ -735,7 +1256,7 @@ const readTrace = (
     assertOutputLimit(
       trace.result,
       request,
-      scenario.slice(0, -6) as "stdout" | "stderr",
+      scenario === "stdout-limit" ? "stdout" : "stderr",
     );
   else if (scenario === "timeout") assertTimeout(trace, request);
   else
@@ -746,25 +1267,63 @@ const readTrace = (
   return trace;
 };
 
-const fingerprint = (value: Readonly<Record<string, unknown>>): string =>
-  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const verifyEncodedTrace = (
+  value: unknown,
+  scenario: HeadlessObserverScenario,
+  request: HeadlessExecutionRequest,
+): HeadlessExecutionTrace => {
+  const bytes = readEnvelopeBytes(
+    value,
+    headlessTraceEnvelopeLimitBytes,
+    "testkit.headless.envelope.bound",
+    "testkit.headless.envelope.shape",
+  );
+  let source: string;
+  let parsed: unknown;
+  try {
+    source = decodeText(bytes);
+    parsed = safeJsonParse(source) as unknown;
+  } catch {
+    return fail("testkit.headless.envelope.encoding");
+  }
+  const trace = readTrace(parsed, scenario, request, "wire");
+  assert(
+    canonicalTraceJson(trace) === source,
+    "testkit.headless.envelope.canonical",
+  );
+  return trace;
+};
+
+const fingerprint = (value: Readonly<Record<string, unknown>>): string => {
+  const serialized = safeJsonStringify(value);
+  assert(serialized !== undefined, "testkit.headless.request.fingerprint");
+  const hash = createHash("sha256");
+  callDescriptorMethod(safeHashUpdateDescriptor, hash, [serialized]);
+  return callDescriptorMethod(safeHashDigestDescriptor, hash, [
+    "hex",
+  ]) as string;
+};
 
 const instantiate = (
   scenario: HeadlessObserverScenario,
   input: Readonly<{ root: string; fixturePath: string }>,
 ): HeadlessSupervisorContractRun => {
-  const now = performance.now();
-  const common = Object.freeze({
+  const now = callDescriptorMethod(
+    safePerformanceNowDescriptor,
+    performance,
+    [],
+  ) as number;
+  const common = safeFreeze({
     runId: randomUUID(),
-    executable: process.execPath,
-    arguments: Object.freeze(
+    executable: safeExecPath,
+    arguments: safeFreeze(
       scenario === "correct"
         ? [input.fixturePath, "argument one", "--literal=$VALUE"]
         : [input.fixturePath],
     ),
     cwd: input.root,
-    environment: Object.freeze({ AGENTSCOPE_ORACLE_VISIBLE: "visible-canary" }),
-    stdin: encoder.encode("oracle-stdin"),
+    environment: safeFreeze({ AGENTSCOPE_ORACLE_VISIBLE: "visible-canary" }),
+    stdin: encodeText("oracle-stdin"),
     stdoutLimitBytes: outputLimitBytes,
     stderrLimitBytes: outputLimitBytes,
     monotonicStartupDeadlineMs: now + 2_000,
@@ -772,40 +1331,74 @@ const instantiate = (
     monotonicShutdownDeadlineMs: now + 7_000,
     terminationGraceMs,
   });
-  const requestFingerprint = fingerprint({
-    ...common,
-    stdin: Array.from(common.stdin),
-  });
-  const request = Object.freeze({ ...common, requestFingerprint });
-  return Object.freeze({
+  const stdin = wireArray<number>(trustedByteLength(common.stdin));
+  for (let index = 0; index < stdin.length; index += 1)
+    stdin[index] = common.stdin[index]!;
+  const arguments_ = wireArray<string>(common.arguments.length);
+  for (let index = 0; index < arguments_.length; index += 1)
+    arguments_[index] = common.arguments[index]!;
+  const requestFingerprint = fingerprint(
+    wireRecord([
+      ["runId", common.runId],
+      ["executable", common.executable],
+      ["arguments", arguments_],
+      ["cwd", common.cwd],
+      [
+        "environment",
+        wireRecord([
+          [
+            "AGENTSCOPE_ORACLE_VISIBLE",
+            common.environment.AGENTSCOPE_ORACLE_VISIBLE,
+          ],
+        ]),
+      ],
+      ["stdin", stdin],
+      ["stdoutLimitBytes", common.stdoutLimitBytes],
+      ["stderrLimitBytes", common.stderrLimitBytes],
+      ["monotonicStartupDeadlineMs", common.monotonicStartupDeadlineMs],
+      ["monotonicExecutionDeadlineMs", common.monotonicExecutionDeadlineMs],
+      ["monotonicShutdownDeadlineMs", common.monotonicShutdownDeadlineMs],
+      ["terminationGraceMs", common.terminationGraceMs],
+    ]),
+  );
+  const request = safeFreeze({ ...common, requestFingerprint });
+  return safeFreeze({
     request,
-    verify: (trace: unknown) => readTrace(trace, scenario, request),
+    encode: (trace: unknown) =>
+      encodeCanonicalHeadlessExecutionTrace(trace, scenario, request),
+    verify: (encodedTrace: unknown) =>
+      verifyEncodedTrace(encodedTrace, scenario, request),
   });
 };
 
 /**
  * Returns the synchronous, family-owned protocol cases. These cases verify only
- * closed plain-data traces. They do not execute a process, mint backend
- * authority, or establish execution, cancellation, cleanup, or join evidence.
+ * bounded canonical trace envelopes. They do not execute a process, mint
+ * backend authority, or establish execution, cancellation, cleanup, or join
+ * evidence.
  */
 export const createBoundedHeadlessSupervisorContractSuite =
-  (): readonly HeadlessSupervisorContractCase[] =>
-    Object.freeze(
-      (
-        [
-          ["headless:correct-invocation", "correct"],
-          ["headless:stdout-limit", "stdout-limit"],
-          ["headless:stderr-limit", "stderr-limit"],
-          ["headless:timeout-escalation", "timeout"],
-          ["headless:descendant-cleanup", "descendant"],
-        ] as const
-      ).map(([name, scenario]) =>
-        Object.freeze({
-          name,
-          fixtureSource: fixtures[scenario],
-          instantiate: (
-            input: Readonly<{ root: string; fixturePath: string }>,
-          ) => instantiate(scenario, input),
-        }),
-      ),
+  (): readonly HeadlessSupervisorContractCase[] => {
+    const definitions = [
+      ["headless:correct-invocation", "correct"],
+      ["headless:stdout-limit", "stdout-limit"],
+      ["headless:stderr-limit", "stderr-limit"],
+      ["headless:timeout-escalation", "timeout"],
+      ["headless:descendant-cleanup", "descendant"],
+    ] as const;
+    const cases = new SafeArray<HeadlessSupervisorContractCase>(
+      definitions.length,
     );
+    for (let index = 0; index < definitions.length; index += 1) {
+      const definition = definitions[index]!;
+      const name = definition[0];
+      const scenario = definition[1];
+      cases[index] = safeFreeze({
+        name,
+        fixtureSource: fixtures[scenario],
+        instantiate: (input: Readonly<{ root: string; fixturePath: string }>) =>
+          instantiate(scenario, input),
+      });
+    }
+    return safeFreeze(cases);
+  };
