@@ -21,7 +21,7 @@ type OperationCandidate = Readonly<{
   logicalKey: string;
   parentLogicalKey?: string;
   locator: Readonly<{ kind: "native-operation"; nativeId: string }>;
-  kind: "LLM" | "TOOL";
+  kind: "AGENT" | "LLM" | "TOOL";
   name: string;
   nameProvenance: FieldProvenanceCandidate;
   fields: readonly SemanticFieldCandidate[];
@@ -41,6 +41,7 @@ export type CodexCapturedTraceCandidate = Readonly<{
 
 const safeTokenPattern = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 const rootHookEvents = new Set(["SessionStart", "Stop", "SessionEnd"]);
+const decodedRootHooks = new WeakSet<object>();
 
 export class CodexMappingError extends Error {
   public readonly code = "codex.mapping.invalid";
@@ -69,14 +70,14 @@ export type CodexSanitizedNativeObservation = Readonly<{
   availableStartPosition: number;
   boundaryId: string;
   exclusiveEndPosition: number;
-  modelSystem: string;
-  modelProvider: string;
-  modelName: string;
-  reasoningLevel: string;
-  promptTokens: number;
-  completionTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
+  modelSystem: string | null;
+  modelProvider: string | null;
+  modelName: string | null;
+  reasoningLevel: string | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  reasoningTokens: number | null;
+  totalTokens: number | null;
   toolName: string | null;
   toolId: string | null;
   errorType: string | null;
@@ -155,13 +156,15 @@ export const decodeCodexRootHookInput = (
       return invalid();
     if (eventName === "SessionEnd" && record.reason !== "other")
       return invalid();
-    return Object.freeze({
+    const result = Object.freeze({
       eventName: eventName as CodexRootHookInput["eventName"],
       sessionId,
       turnId,
       model,
       transcriptAvailable: typeof transcript === "string",
     });
+    decodedRootHooks.add(result);
+    return result;
   } catch (error) {
     if (error instanceof CodexMappingError) throw error;
     return invalid();
@@ -192,33 +195,57 @@ const parseObservation = (
   ];
   if (Object.keys(record).sort().join("\0") !== expected.join("\0"))
     return invalid();
-  const promptTokens = nonnegativeInteger(record.promptTokens);
-  const completionTokens = nonnegativeInteger(record.completionTokens);
-  const reasoningTokens = nonnegativeInteger(record.reasoningTokens);
-  const totalTokens = nonnegativeInteger(record.totalTokens);
+  const optionalToken = (value: unknown): number | null =>
+    value === null ? null : nonnegativeInteger(value);
+  const promptTokens = optionalToken(record.promptTokens);
+  const completionTokens = optionalToken(record.completionTokens);
+  const reasoningTokens = optionalToken(record.reasoningTokens);
+  const totalTokens = optionalToken(record.totalTokens);
   const availableStartPosition = nonnegativeInteger(
     record.availableStartPosition,
   );
   const exclusiveEndPosition = nonnegativeInteger(record.exclusiveEndPosition);
+  const usage = [promptTokens, completionTokens, reasoningTokens, totalTokens];
   if (
-    reasoningTokens > completionTokens ||
-    totalTokens !== promptTokens + completionTokens ||
-    exclusiveEndPosition <= availableStartPosition
+    usage.some((value) => value === null) &&
+    usage.some((value) => value !== null)
   )
     return invalid();
+  if (
+    promptTokens !== null &&
+    completionTokens !== null &&
+    reasoningTokens !== null &&
+    totalTokens !== null &&
+    (reasoningTokens > completionTokens ||
+      totalTokens !== promptTokens + completionTokens)
+  )
+    return invalid();
+  if (exclusiveEndPosition <= availableStartPosition) return invalid();
   const toolName = record.toolName === null ? null : safeToken(record.toolName);
   const toolId = record.toolId === null ? null : safeToken(record.toolId);
   if ((toolName === null) !== (toolId === null)) return invalid();
+  const optionalTokenString = (value: unknown): string | null =>
+    value === null ? null : safeToken(value);
+  const modelSystem = optionalTokenString(record.modelSystem);
+  const modelProvider = optionalTokenString(record.modelProvider);
+  const modelName = optionalTokenString(record.modelName);
+  const reasoningLevel = optionalTokenString(record.reasoningLevel);
+  const model = [modelSystem, modelProvider, modelName, reasoningLevel];
+  if (
+    model.some((value) => value === null) &&
+    model.some((value) => value !== null)
+  )
+    return invalid();
   return Object.freeze({
     nativeIdentity: safeToken(record.nativeIdentity),
     sourceGeneration: nonnegativeInteger(record.sourceGeneration),
     availableStartPosition,
     boundaryId: safeToken(record.boundaryId),
     exclusiveEndPosition,
-    modelSystem: safeToken(record.modelSystem),
-    modelProvider: safeToken(record.modelProvider),
-    modelName: safeToken(record.modelName),
-    reasoningLevel: safeToken(record.reasoningLevel),
+    modelSystem,
+    modelProvider,
+    modelName,
+    reasoningLevel,
     promptTokens,
     completionTokens,
     reasoningTokens,
@@ -259,6 +286,37 @@ type MappedFields = Readonly<{
   unavailable: readonly FieldUnavailableCandidate[];
   provenance: readonly FieldProvenanceCandidate[];
 }>;
+
+const unavailableFields = (
+  fields: readonly string[],
+): readonly FieldUnavailableCandidate[] =>
+  Object.freeze(
+    fields.map((field) =>
+      createNativeUnavailableField({
+        field,
+        source: "native-artifact",
+        state: "unavailable",
+        reason: "not-emitted",
+      }),
+    ),
+  );
+
+const correlateRootHook = (
+  value: CodexSanitizedNativeObservation,
+  hook: CodexRootHookInput | undefined,
+): "hook-payload" | "native-artifact" => {
+  if (hook === undefined) return "native-artifact";
+  if (
+    !decodedRootHooks.has(hook) ||
+    hook.eventName !== "Stop" ||
+    hook.sessionId !== value.nativeIdentity ||
+    hook.turnId !== value.boundaryId
+  )
+    return invalid();
+  if (hook.model === null || value.modelName === null) return "native-artifact";
+  if (hook.model !== value.modelName) return invalid();
+  return "hook-payload";
+};
 
 const createToolMapping = (
   value: CodexSanitizedNativeObservation,
@@ -301,53 +359,87 @@ const createToolMapping = (
   });
 };
 
+const createModelFields = (
+  value: CodexSanitizedNativeObservation,
+  modelNameSource: "hook-payload" | "native-artifact",
+): readonly SemanticFieldCandidate[] =>
+  value.modelSystem === null ||
+  value.modelProvider === null ||
+  value.modelName === null ||
+  value.reasoningLevel === null
+    ? Object.freeze([])
+    : Object.freeze([
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelSystem,
+          value.modelSystem,
+          "native-artifact",
+        ),
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelProvider,
+          value.modelProvider,
+          "native-artifact",
+        ),
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelName,
+          value.modelName,
+          modelNameSource,
+        ),
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelInvocationParameters,
+          JSON.stringify({ reasoning_effort: value.reasoningLevel }),
+          "native-artifact",
+        ),
+      ]);
+
+const createTokenFields = (
+  value: CodexSanitizedNativeObservation,
+): readonly SemanticFieldCandidate[] =>
+  value.promptTokens === null ||
+  value.completionTokens === null ||
+  value.reasoningTokens === null ||
+  value.totalTokens === null
+    ? Object.freeze([])
+    : Object.freeze([
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelPromptTokenCount,
+          value.promptTokens,
+          "native-artifact",
+        ),
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelCompletionTokenCount,
+          value.completionTokens,
+          "native-artifact",
+        ),
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelReasoningTokenCount,
+          value.reasoningTokens,
+          "native-artifact",
+        ),
+        semanticField(
+          COMMON_NATIVE_SEMANTIC_FIELDS.modelTotalTokenCount,
+          value.totalTokens,
+          "native-artifact",
+        ),
+      ]);
+
 const createMappedFields = (
   value: CodexSanitizedNativeObservation,
+  modelNameSource: "hook-payload" | "native-artifact",
 ): MappedFields => {
-  const modelFields = Object.freeze([
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelSystem,
-      value.modelSystem,
-      "native-artifact",
-    ),
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelProvider,
-      value.modelProvider,
-      "native-artifact",
-    ),
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelName,
-      value.modelName,
-      "hook-payload",
-    ),
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelInvocationParameters,
-      JSON.stringify({ reasoning_effort: value.reasoningLevel }),
-      "native-artifact",
-    ),
-  ]);
-  const tokenFields = Object.freeze([
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelPromptTokenCount,
-      value.promptTokens,
-      "native-artifact",
-    ),
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelCompletionTokenCount,
-      value.completionTokens,
-      "native-artifact",
-    ),
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelReasoningTokenCount,
-      value.reasoningTokens,
-      "native-artifact",
-    ),
-    semanticField(
-      COMMON_NATIVE_SEMANTIC_FIELDS.modelTotalTokenCount,
-      value.totalTokens,
-      "native-artifact",
-    ),
-  ]);
+  const modelFieldNames = [
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelSystem,
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelProvider,
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelName,
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelInvocationParameters,
+  ];
+  const modelFields = createModelFields(value, modelNameSource);
+  const tokenFieldNames = [
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelPromptTokenCount,
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelCompletionTokenCount,
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelReasoningTokenCount,
+    COMMON_NATIVE_SEMANTIC_FIELDS.modelTotalTokenCount,
+  ];
+  const tokenFields = createTokenFields(value);
   const errorFields =
     value.errorType === null
       ? Object.freeze([])
@@ -359,6 +451,10 @@ const createMappedFields = (
           ),
         ]);
   const operationUnavailable = Object.freeze([
+    ...(modelFields.length === 0 ? unavailableFields(modelFieldNames) : []),
+    ...(tokenFields.length === 0 ? unavailableFields(tokenFieldNames) : []),
+  ]);
+  const errorUnavailable = Object.freeze([
     ...(value.errorType === null
       ? [
           createNativeUnavailableField({
@@ -390,7 +486,11 @@ const createMappedFields = (
     errorFields,
     toolFields,
     operationUnavailable,
-    unavailable: Object.freeze([...operationUnavailable, ...tool.unavailable]),
+    unavailable: Object.freeze([
+      ...operationUnavailable,
+      ...errorUnavailable,
+      ...tool.unavailable,
+    ]),
     provenance: Object.freeze([
       provenance("span.name", "native-artifact"),
       ...fields.map((field) => field.provenance),
@@ -408,8 +508,23 @@ const createOperations = (
       kind: "native-operation" as const,
       nativeId: value.boundaryId,
     }),
-    kind: "LLM" as const,
+    kind: "AGENT" as const,
     name: "codex.turn",
+    nameProvenance: provenance("span.name", "native-artifact"),
+    fields: Object.freeze([]),
+    unavailable: Object.freeze([]),
+    events: Object.freeze([]),
+    links: Object.freeze([]),
+  });
+  const llm: OperationCandidate = Object.freeze({
+    logicalKey: "codex-llm",
+    parentLogicalKey: "codex-turn",
+    locator: Object.freeze({
+      kind: "native-operation" as const,
+      nativeId: `${value.boundaryId}:llm`,
+    }),
+    kind: "LLM" as const,
+    name: "codex.response",
     nameProvenance: provenance("span.name", "native-artifact"),
     fields: Object.freeze([
       ...fields.modelFields,
@@ -421,7 +536,7 @@ const createOperations = (
     links: Object.freeze([]),
   });
   if (value.toolName === null || value.toolId === null)
-    return Object.freeze([root]);
+    return Object.freeze([root, llm]);
   const tool: OperationCandidate = Object.freeze({
     logicalKey: "codex-tool",
     parentLogicalKey: "codex-turn",
@@ -431,23 +546,22 @@ const createOperations = (
     }),
     kind: "TOOL" as const,
     name: value.toolName,
-    nameProvenance: provenance(
-      COMMON_NATIVE_SEMANTIC_FIELDS.toolName,
-      "native-artifact",
-    ),
+    nameProvenance: provenance("span.name", "native-artifact"),
     fields: fields.toolFields,
     unavailable: Object.freeze([]),
     events: Object.freeze([]),
     links: Object.freeze([]),
   });
-  return Object.freeze([root, tool]);
+  return Object.freeze([root, llm, tool]);
 };
 
 export const mapCodexSanitizedNativeObservation = (
   input: CodexSanitizedNativeObservation,
   resolver: NativeCheckpointResolver,
+  hook?: CodexRootHookInput,
 ): CodexMappedNativeObservation => {
   const value = parseObservation(input);
+  const modelNameSource = correlateRootHook(value, hook);
   const start = resolveNativeCaptureStart(
     {
       nativeIdentityKind: "session",
@@ -463,12 +577,12 @@ export const mapCodexSanitizedNativeObservation = (
     boundaryId: value.boundaryId,
     exclusiveEndPosition: value.exclusiveEndPosition,
   });
-  const fields = createMappedFields(value);
+  const fields = createMappedFields(value, modelNameSource);
   return Object.freeze({
     candidate: Object.freeze({
       captureBoundary: boundary,
       rootContext: Object.freeze({
-        fields: fields.modelFields,
+        fields: Object.freeze([]),
         unavailable: Object.freeze([]),
       }),
       operations: createOperations(value, fields),

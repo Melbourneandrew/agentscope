@@ -17,7 +17,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node verify-artifact.mjs",
+    "build": "node ../../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings=0",
     "test": "vitest run --config ../../../vitest.config.ts",

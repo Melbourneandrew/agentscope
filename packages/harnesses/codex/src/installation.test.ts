@@ -232,3 +232,25 @@ describe("Codex owned hook migration and removal", () => {
     );
   });
 });
+
+describe("Codex duplicate-aware configuration boundary", () => {
+  it.each([
+    '{"hooks":{},"hooks":{"Stop":[]}}',
+    '{"hooks":{"Stop":[],"Stop":[{"hooks":[]}]}}',
+    '{"hooks":{"Stop":[],"\\u0053top":[{"hooks":[]}]}}',
+    '{"foreign":{"key":1,"key":2}}',
+    `${"[".repeat(66)}null${"]".repeat(66)}`,
+    JSON.stringify({ oversized: "x".repeat(262_145) }),
+  ])("rejects duplicate, ambiguous, or unbounded JSON %#", (text) => {
+    const ownedInvocation = invocation();
+    expect(decide("install", ownedInvocation, text)).toEqual({
+      kind: "unsupported",
+    });
+    expect(decide("migrate", ownedInvocation, text)).toEqual({
+      kind: "unsupported",
+    });
+    expect(decide("uninstall", ownedInvocation, text)).toEqual({
+      kind: "unchanged",
+    });
+  });
+});

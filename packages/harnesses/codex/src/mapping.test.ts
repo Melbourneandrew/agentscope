@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isCapturedTrace,
+  withCaptureInvocation,
+} from "../../../core/dist/capture/runtime.js";
+import {
+  BUILTIN_REDACTION_POLICY_REFERENCES,
+  DEFAULT_REDACTION_POLICY_REGISTRY,
+  resolveRedactionPolicy,
+} from "../../../core/dist/redaction/policy.js";
+import {
   CodexMappingError,
   decodeCodexRootHookInput,
   mapCodexSanitizedNativeObservation,
@@ -33,6 +42,60 @@ const observation = (
   errorType: null,
   ...overrides,
 });
+
+const checkpoint = ({
+  availableStartPosition,
+}: {
+  availableStartPosition: number;
+}) => ({
+  disposition: "retained" as const,
+  startPosition: availableStartPosition,
+});
+
+const captureInvocation = () => {
+  const redactionPolicy = resolveRedactionPolicy(
+    DEFAULT_REDACTION_POLICY_REGISTRY,
+    BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
+  );
+  return {
+    harnessRegistryId: "codex" as const,
+    harnessVersion: {
+      state: "observed" as const,
+      value: "0.149.1",
+      source: "process" as const,
+    },
+    snapshot: {
+      configurationIdentity: "codex.component",
+      policyIdentity: redactionPolicy.identity,
+      redactionPolicy,
+    },
+    hookObservedUnixNano: "100",
+    operationIdScope: "session-global" as const,
+    context: {
+      fields: [],
+      unavailable: [
+        {
+          field: "agentscope.workspace.directory",
+          source: "process" as const,
+          state: "unavailable" as const,
+          reason: "resolution-failed" as const,
+        },
+        ...[
+          "agentscope.git.worktree",
+          "agentscope.git.repository_root",
+          "vcs.ref.head.name",
+          "vcs.ref.head.revision",
+          "vcs.ref.type",
+        ].map((field) => ({
+          field,
+          source: "git" as const,
+          state: "unavailable" as const,
+          reason: "resolution-failed" as const,
+        })),
+      ],
+    },
+  };
+};
 
 describe("Codex root hook input", () => {
   it.each([
@@ -106,6 +169,12 @@ describe("Codex root hook input", () => {
       session_id: "Session With Spaces",
       turn_id: "turn-1",
     },
+    {
+      hook_event_name: "Stop",
+      session_id: "session-1",
+      turn_id: "turn-1",
+      transcript_path: 42,
+    },
   ])("rejects invalid lifecycle payload %#", (input) => {
     expect(() => decodeCodexRootHookInput(hookInput(input))).toThrow(
       CodexMappingError,
@@ -157,6 +226,7 @@ describe("Codex native OpenInference mapping", () => {
       exclusiveEndPosition: 11,
     });
     expect(mapped.candidate.operations.map(({ kind }) => kind)).toEqual([
+      "AGENT",
       "LLM",
       "TOOL",
     ]);
@@ -176,6 +246,140 @@ describe("Codex native OpenInference mapping", () => {
     ]);
     expect(mapped.contract.provenance.map(({ field }) => field)).toContain(
       "llm.token_count.completion_details.reasoning",
+    );
+    expect(mapped.candidate.rootContext).toEqual({
+      fields: [],
+      unavailable: [],
+    });
+  });
+});
+
+describe("Codex Core runtime and hook correlation", () => {
+  it("passes the real Core capture runtime validator", async () => {
+    const mapped = mapCodexSanitizedNativeObservation(
+      observation(),
+      checkpoint,
+    );
+    const captured = await withCaptureInvocation(
+      captureInvocation(),
+      (factory) => factory.capture(mapped.candidate),
+    );
+    expect(isCapturedTrace(captured)).toBe(true);
+  });
+
+  it("claims hook model provenance only after exact native correlation", () => {
+    const hook = decodeCodexRootHookInput(
+      hookInput({
+        hook_event_name: "Stop",
+        session_id: "session-component-0001",
+        turn_id: "turn-0008",
+        model: "gpt-5.2-codex",
+      }),
+    );
+    const mapped = mapCodexSanitizedNativeObservation(
+      observation(),
+      checkpoint,
+      hook,
+    );
+    expect(
+      mapped.contract.provenance.find(({ field }) => field === "llm.model_name")
+        ?.source,
+    ).toBe("hook-payload");
+
+    for (const mismatch of [
+      {
+        hook_event_name: "Stop",
+        session_id: "session-other",
+        turn_id: "turn-0008",
+        model: "gpt-5.2-codex",
+      },
+      {
+        hook_event_name: "Stop",
+        session_id: "session-component-0001",
+        turn_id: "turn-other",
+        model: "gpt-5.2-codex",
+      },
+      {
+        hook_event_name: "Stop",
+        session_id: "session-component-0001",
+        turn_id: "turn-0008",
+        model: "model-other",
+      },
+    ]) {
+      const candidate = decodeCodexRootHookInput(hookInput(mismatch));
+      expect(() =>
+        mapCodexSanitizedNativeObservation(
+          observation(),
+          checkpoint,
+          candidate,
+        ),
+      ).toThrow(CodexMappingError);
+    }
+    expect(() =>
+      mapCodexSanitizedNativeObservation(observation(), checkpoint, {
+        ...hook,
+      }),
+    ).toThrow(CodexMappingError);
+  });
+});
+
+describe("Codex unavailable native metadata", () => {
+  it("preserves unavailable model and usage families without fabrication", () => {
+    const mapped = mapCodexSanitizedNativeObservation(
+      observation({
+        modelSystem: null,
+        modelProvider: null,
+        modelName: null,
+        reasoningLevel: null,
+        promptTokens: null,
+        completionTokens: null,
+        reasoningTokens: null,
+        totalTokens: null,
+      }),
+      checkpoint,
+    );
+    const root = mapped.candidate.operations[0];
+    expect(root?.fields).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: "llm.model_name" }),
+        expect.objectContaining({ field: "llm.token_count.total" }),
+      ]),
+    );
+    expect(mapped.contract.unavailable.map(({ field }) => field)).toEqual(
+      expect.arrayContaining([
+        "llm.system",
+        "llm.provider",
+        "llm.model_name",
+        "llm.invocation_parameters",
+        "llm.token_count.prompt",
+        "llm.token_count.completion",
+        "llm.token_count.completion_details.reasoning",
+        "llm.token_count.total",
+      ]),
+    );
+    const hook = decodeCodexRootHookInput(
+      hookInput({
+        hook_event_name: "Stop",
+        session_id: "session-component-0001",
+        turn_id: "turn-0008",
+        model: "gpt-5.2-codex",
+      }),
+    );
+    const correlatedUnavailable = mapCodexSanitizedNativeObservation(
+      observation({
+        modelSystem: null,
+        modelProvider: null,
+        modelName: null,
+        reasoningLevel: null,
+      }),
+      checkpoint,
+      hook,
+    );
+    expect(correlatedUnavailable.contract.provenance).not.toContainEqual(
+      expect.objectContaining({
+        field: "llm.model_name",
+        source: "hook-payload",
+      }),
     );
   });
 
@@ -204,6 +408,7 @@ describe("Codex native OpenInference mapping", () => {
       }),
     );
     expect(mapped.candidate.operations.map(({ kind }) => kind)).toEqual([
+      "AGENT",
       "LLM",
     ]);
     expect(mapped.contract.unavailable.map(({ field }) => field)).toEqual([
@@ -222,6 +427,8 @@ describe("Codex native mapping hostile boundaries", () => {
     observation({ exclusiveEndPosition: 7 }),
     observation({ promptTokens: -1 }),
     observation({ toolName: null }),
+    observation({ modelName: null }),
+    observation({ totalTokens: null }),
     { ...observation(), unexpected: true },
   ])("rejects an inconsistent or expanded native observation", (input) => {
     expect(() =>

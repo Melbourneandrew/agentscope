@@ -1,6 +1,44 @@
 const providerId = "agentscope_internal";
 const safeModelPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
-const safeInternalHostPattern = /^[a-z][a-z0-9-]{0,62}$/u;
+const trustedInternalHosts = new Set([
+  "127.0.0.1",
+  "[::1]",
+  "localhost",
+  "mockserver",
+]);
+const disabledFeatures = Object.freeze([
+  "apps",
+  "collab",
+  "connectors",
+  "enable_fanout",
+  "enable_mcp_apps",
+  "executor_capability_discovery",
+  "external_agent_memory_import",
+  "memories",
+  "memory_tool",
+  "multi_agent",
+  "multi_agent_mode",
+  "multi_agent_v2",
+  "mcp_2026_07_28",
+  "non_prefixed_mcp_tool_names",
+  "plugin_hooks",
+  "plugin_sharing",
+  "plugins",
+  "recommended_plugins",
+  "remote_plugin",
+  "responses_websockets",
+  "responses_websockets_v2",
+  "search_tool",
+  "send_async_message",
+  "standalone_web_search",
+  "tool_call_mcp_elicitation",
+  "tool_registry",
+  "tool_search",
+  "tool_search_always_defer_mcp_tools",
+  "web_search",
+  "web_search_cached",
+  "web_search_request",
+] as const);
 
 export class CodexConfigurationError extends Error {
   public readonly code = "codex.configuration.invalid";
@@ -43,20 +81,16 @@ const exactInput = (
       return invalid();
     const parsed = new URL(baseUrl);
     const hostname = parsed.hostname.toLowerCase();
-    const allowedHost =
-      hostname === "127.0.0.1" ||
-      hostname === "[::1]" ||
-      hostname === "localhost" ||
-      safeInternalHostPattern.test(hostname);
     if (
       parsed.protocol !== "http:" ||
-      !allowedHost ||
+      !trustedInternalHosts.has(hostname) ||
       parsed.username !== "" ||
       parsed.password !== "" ||
       parsed.port === "" ||
       parsed.pathname !== "/v1" ||
       parsed.search !== "" ||
-      parsed.hash !== ""
+      parsed.hash !== "" ||
+      parsed.href !== baseUrl
     )
       return invalid();
     const port = Number(parsed.port);
@@ -77,6 +111,10 @@ export const createCodexInternalProviderConfiguration = (
     `model = ${JSON.stringify(parsed.model)}`,
     `model_provider = ${JSON.stringify(providerId)}`,
     "check_for_update_on_startup = false",
+    'web_search = "disabled"',
+    "",
+    "[agents]",
+    "enabled = false",
     "",
     "[analytics]",
     "enabled = false",
@@ -88,6 +126,16 @@ export const createCodexInternalProviderConfiguration = (
     "log_user_prompt = false",
     'trace_exporter = "none"',
     'metrics_exporter = "none"',
+    "",
+    "[apps._default]",
+    "enabled = false",
+    "destructive_enabled = false",
+    "open_world_enabled = false",
+    "",
+    "[features]",
+    ...disabledFeatures.map((feature) => `${feature} = false`),
+    "",
+    "[mcp_servers]",
     "",
     `[model_providers.${providerId}]`,
     'name = "Agentscope internal model"',

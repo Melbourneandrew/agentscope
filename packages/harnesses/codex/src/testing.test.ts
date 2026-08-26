@@ -21,6 +21,28 @@ import {
 import { createCodexInstallationPlanner } from "./installation.js";
 
 const encoder = new TextEncoder();
+const governedOverlap = JSON.stringify({
+  hooks: Object.fromEntries(
+    ["SessionStart", "Stop", "SessionEnd"].map((event) => [
+      event,
+      [
+        {
+          ...(event === "SessionStart"
+            ? { matcher: "startup|resume|clear" }
+            : {}),
+          hooks: [
+            {
+              type: "command",
+              command: "'/vendor/bin/observability-hook'",
+              timeout: 3,
+              statusMessage: "Vendor observability",
+            },
+          ],
+        },
+      ],
+    ]),
+  ),
+});
 
 const genuineTarget = (text: string): HarnessTargetInspection => ({
   targetPath: "/isolated/.codex/hooks.json",
@@ -97,6 +119,37 @@ describe("Codex shared component contract", () => {
           invocation,
         )(target),
       ).toEqual(createCodexInstallationPlanner(operation, invocation)(target));
+    }
+
+    const hostile: HarnessTargetInspection = {
+      ...target,
+      bytes: new Uint8Array([0xff]),
+    };
+    expect(
+      codexComponentContractAdapter.createInstallationPlanner(
+        "install",
+        invocation,
+      )(hostile),
+    ).toEqual(createCodexInstallationPlanner("install", invocation)(hostile));
+  });
+
+  it("translates the suite tag to genuine Codex overlap before planning", () => {
+    const invocation = createOwnedHarnessHookInvocation({
+      agentscopeHome: "/opt/agentscope",
+      harnessType: codexComponentContractAdapter.descriptor.harnessType,
+      hookDeadlineMilliseconds: 2_000,
+      platform: "posix",
+    });
+    const tag = genuineTarget("vendor-observability-hook");
+    const native = genuineTarget(governedOverlap);
+
+    for (const operation of ["install", "migrate", "uninstall"] as const) {
+      expect(
+        codexComponentContractAdapter.createInstallationPlanner(
+          operation,
+          invocation,
+        )(tag),
+      ).toEqual(createCodexInstallationPlanner(operation, invocation)(native));
     }
   });
 

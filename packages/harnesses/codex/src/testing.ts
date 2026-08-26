@@ -28,6 +28,50 @@ const componentSha256 = (value: unknown): `sha256-${string}` =>
 
 const contractOverlapSentinel = "vendor-observability-hook";
 const contractDecoder = new TextDecoder("utf-8", { fatal: true });
+const contractEncoder = new TextEncoder();
+const governedContractOverlap = contractEncoder.encode(
+  JSON.stringify({
+    hooks: {
+      SessionStart: [
+        {
+          matcher: "startup|resume|clear",
+          hooks: [
+            {
+              type: "command",
+              command: "'/vendor/bin/observability-hook'",
+              timeout: 3,
+              statusMessage: "Vendor observability",
+            },
+          ],
+        },
+      ],
+      Stop: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "'/vendor/bin/observability-hook'",
+              timeout: 3,
+              statusMessage: "Vendor observability",
+            },
+          ],
+        },
+      ],
+      SessionEnd: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: "'/vendor/bin/observability-hook'",
+              timeout: 3,
+              statusMessage: "Vendor observability",
+            },
+          ],
+        },
+      ],
+    },
+  }),
+);
 
 const isContractOverlapSentinel = (
   target: HarnessTargetInspection,
@@ -46,17 +90,12 @@ const createContractInstallationPlanner: HarnessComponentContractAdapter["create
       operation,
       invocation,
     );
-    return (target) => {
-      if (!isContractOverlapSentinel(target)) return productionPlanner(target);
-      if (operation === "uninstall") return { kind: "unchanged" };
-      if (operation === "install") return { kind: "conflict" };
-      return productionPlanner({
-        ...target,
-        exists: false,
-        bytes: null,
-        mode: null,
-      });
-    };
+    return (target) =>
+      productionPlanner(
+        isContractOverlapSentinel(target)
+          ? { ...target, bytes: governedContractOverlap }
+          : target,
+      );
   };
 
 export const codexSanitizedFixture: HarnessSanitizedFixture =
