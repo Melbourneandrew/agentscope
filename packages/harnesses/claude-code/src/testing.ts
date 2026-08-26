@@ -37,11 +37,13 @@ type ExactType<Left, Right> = [Left] extends [Right]
     ? true
     : false
   : false;
+type AssertTrue<Value extends true> = Value;
+type ClaudeCodeHookBehaviorExact = AssertTrue<
+  ExactType<ClaudeCodeHookBehavior, HarnessHookTestBehavior>
+>;
 
 export type ClaudeCodeHookBehaviorContract =
-  ExactType<ClaudeCodeHookBehavior, HarnessHookTestBehavior> extends true
-    ? ClaudeCodeHookBehavior
-    : never;
+  ClaudeCodeHookBehaviorExact extends true ? ClaudeCodeHookBehavior : never;
 
 const governedFixture: HarnessSanitizedFixture = claudeCodeFixture;
 const governedContextEvidence: HarnessContractContextEvidence =
