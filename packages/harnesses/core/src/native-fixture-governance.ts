@@ -785,13 +785,19 @@ const activeAuditWorkerPids = new Set<number>();
  * any hostile test input can mutate the public intrinsic. */
 const intrinsicPromiseThen = Promise.prototype.then;
 const intrinsicReflectApply = Reflect.apply;
+const intrinsicIsProxy = types.isProxy;
+const intrinsicIsPromise = types.isPromise;
 const discardPromiseRejection = (): undefined => undefined;
 
 export const activeNativeFixtureAuditWorkerCountForTest = (): number =>
   activeAuditWorkerPids.size;
 
 const drainRejectedNativePromise = (value: object): void => {
-  if (types.isProxy(value) || !types.isPromise(value)) return;
+  if (
+    intrinsicReflectApply(intrinsicIsProxy, undefined, [value]) ||
+    !intrinsicReflectApply(intrinsicIsPromise, undefined, [value])
+  )
+    return;
   void intrinsicReflectApply(intrinsicPromiseThen, value, [
     undefined,
     discardPromiseRejection,

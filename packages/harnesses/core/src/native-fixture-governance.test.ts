@@ -10,6 +10,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { types } from "node:util";
 import { runInNewContext } from "node:vm";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1064,6 +1065,39 @@ describe("native fixture closed audit test protocol", () => {
 });
 
 describe("native fixture cross-realm Promise plan rejection", () => {
+  it.each(["isProxy", "isPromise"] as const)(
+    "uses the captured util.types.%s predicate",
+    async (predicate) => {
+      const root = await writeInventoryFixture();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(
+        types,
+        predicate,
+      )!;
+      let callerPredicateExecuted = false;
+      Object.defineProperty(types, predicate, {
+        configurable: true,
+        value: () => {
+          callerPredicateExecuted = true;
+          throw new Error("synthetic-predicate-canary");
+        },
+        writable: true,
+      });
+      let result: Promise<readonly unknown[]>;
+      try {
+        result = auditNativeFixtureInventory(
+          root,
+          {} as NativeFixtureAuditTestPlan,
+        );
+      } finally {
+        Object.defineProperty(types, predicate, originalDescriptor);
+      }
+      await expect(result).rejects.toThrow(
+        "harness.fixture.inventory.test-plan",
+      );
+      expect(callerPredicateExecuted).toBe(false);
+    },
+  );
+
   it("uses the captured Promise intrinsic after caller mutation", async () => {
     const root = await writeInventoryFixture();
     const rejectedUnderMutation = Promise.reject(
