@@ -1353,6 +1353,48 @@ describe("native fixture worker admission authority", () => {
     }
     await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
+
+  it("shortens the worker timer after startup consumes authority", async () => {
+    const root = await writeInventoryFixture();
+    const clock = vi.spyOn(performance, "now");
+    let calls = 0;
+    clock.mockImplementation(() => {
+      calls += 1;
+      return calls <= 11 ? 0 : 1_500;
+    });
+    const timers = vi.spyOn(globalThis, "setTimeout");
+    try {
+      await expect(auditNativeFixtureInventory(root)).resolves.toHaveLength(1);
+      expect(timers.mock.calls.some(([, delay]) => delay === 7_500)).toBe(true);
+      expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    } finally {
+      timers.mockRestore();
+      clock.mockRestore();
+    }
+  });
+
+  it("aborts immediately when startup consumes the worker reserve", async () => {
+    const root = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
+    const namespaces = await auditPlanNamespaces();
+    const clock = vi.spyOn(performance, "now");
+    let calls = 0;
+    clock.mockImplementation(() => {
+      calls += 1;
+      return calls <= 11 ? 0 : 20_000;
+    });
+    try {
+      await expect(auditNativeFixtureInventory(root)).rejects.toMatchObject({
+        code: "harness.fixture.inventory.capability",
+        message: "harness.fixture.inventory.capability",
+      });
+      expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+      expect(await auditPlanNamespaces()).toEqual(namespaces);
+    } finally {
+      clock.mockRestore();
+    }
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
+  });
 });
 
 describe("native fixture capability protocol authority", () => {

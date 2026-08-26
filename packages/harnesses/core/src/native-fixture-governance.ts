@@ -1508,7 +1508,9 @@ const acquireCapabilitySnapshot = async (
         resolveSettlement(Object.freeze({ code, signal }));
       });
     });
-    workTimeout = setTimeout(abortWork, remainingWork);
+    const absoluteRemainingWork = authorityDeadline - performance.now() - 1_000;
+    if (absoluteRemainingWork <= 0) abortWork();
+    else workTimeout = setTimeout(abortWork, absoluteRemainingWork);
     return await acquireSpawnedCapabilitySnapshot(
       Object.freeze({
         child: spawnedChild,
