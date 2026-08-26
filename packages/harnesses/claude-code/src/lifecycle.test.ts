@@ -1675,7 +1675,7 @@ describe("Claude Code hook namespace bounds", () => {
         ),
       ).kind,
     ).toBe("conflict");
-    const unrelated = createClaudeCodeInstallationPlanner(
+    const claimedArgument = createClaudeCodeInstallationPlanner(
       "install",
       invocation,
       emptyInventory(),
@@ -1687,7 +1687,7 @@ describe("Claude Code hook namespace bounds", () => {
         }),
       ),
     );
-    expect(unrelated.kind).toBe("replace");
+    expect(claimedArgument).toEqual({ kind: "conflict" });
   });
 });
 
@@ -1780,7 +1780,9 @@ describe("Claude Code closed executable classifier", () => {
       ).toEqual({ kind: "conflict" });
     }
   });
+});
 
+describe("Claude Code safe executable allowlist", () => {
   it("preserves only closed safe command forms", () => {
     for (const handler of [
       { type: "command", command: "printf", args: ["foreign"] },
@@ -1835,6 +1837,24 @@ describe("Claude Code closed executable classifier", () => {
           ),
         ),
       ).toEqual({ kind: "conflict" });
+    }
+    for (const argument of [
+      invocation.launcherPath,
+      invocation.launcherPath.replace("/bin/", "/bin/../bin/"),
+      `/foreign/${basename}`,
+    ]) {
+      for (const handler of [
+        { type: "command", command: "printf", args: ["%s", argument] },
+        { type: "command", command: `printf '%s' '${argument}'` },
+      ]) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook("PreToolUse", handler))),
+        ).toEqual({ kind: "conflict" });
+      }
     }
   });
 });

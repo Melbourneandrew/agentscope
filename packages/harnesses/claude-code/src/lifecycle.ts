@@ -1359,7 +1359,12 @@ const commandClaimsExecutable = (
     if (
       args === undefined ||
       executableClaimsLauncher(value.command, launcherPath) ||
-      executableDelegates(value.command)
+      executableDelegates(value.command) ||
+      args.some(
+        (argument) =>
+          typeof argument !== "string" ||
+          executableClaimsLauncher(argument, launcherPath),
+      )
     )
       return true;
     return !safeSimpleCommandExecutables.has(value.command);
@@ -1368,7 +1373,7 @@ const commandClaimsExecutable = (
   const parsed = parsePosixSimpleCommand(value.command);
   if (
     parsed === undefined ||
-    executableClaimsLauncher(parsed.executable, launcherPath)
+    parsed.words.some((word) => executableClaimsLauncher(word, launcherPath))
   )
     return true;
   return (
