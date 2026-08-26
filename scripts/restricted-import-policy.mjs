@@ -17,6 +17,8 @@ const testingSpecifiers = [
   "@agentscope/destination-langfuse/testing",
   "@agentscope/destination-local-sqlite/testing",
   "@agentscope/destinations-core/testing",
+  "@agentscope/harness-codex/testing",
+  "@agentscope/harness-claude-code/testing",
   "@agentscope/harnesses-core/testing",
   "@agentscope/protocol/testing",
 ];
