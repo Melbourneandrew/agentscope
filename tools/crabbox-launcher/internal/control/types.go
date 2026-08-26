@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -31,6 +32,17 @@ const (
 	RecoveryDomain                = "agentscope-crabbox-recovery-decision-v1"
 	RetirementDomain              = "agentscope-crabbox-retirement-complete-v1"
 	RetirementEvidenceDomain      = "agentscope-crabbox-retirement-evidence-v1"
+	CanonicalAdmissionSHA256      = "947f1c128ca030d89c3e6100ce96a159fc4b045afb36b1cf1ef02276e16e2357"
+	CanonicalPermissionSHA256     = "b8d01f9fe098abc9a67eeba6ee5f8bd18e0b273bbf5bb7766a72e9acc9d2922f"
+	CanonicalTerminalEntrySHA256  = "449b7b4f5ee8c639fff349db2c70bfd2ad2fa749e07e53c026f0d22b46f9813e"
+	CanonicalCoordinatorCommit    = "8ba71f913bbe57285ae29af45ef0d8ec6712477d"
+	CanonicalNodeVersion          = "24.19.0"
+	CanonicalNodeArchiveSHA256    = "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d"
+	CanonicalWranglerVersion      = "4.114.0"
+	CanonicalWorkerLockSHA256     = "6bf8940bd1b514ab3541485605e24b516242359e3050cfa5645966e398b030fd"
+	CanonicalGoVersion            = "1.26.5"
+	CanonicalGoArchiveSHA256      = "efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a"
+	CanonicalCrabboxClientSHA256  = "52b2da6ffb141c19d35fe777e4b6e7d827ed5c05b3a2101e43f83ad848a9655c"
 )
 
 var (
@@ -50,6 +62,8 @@ type Root struct {
 
 type Installation struct {
 	SchemaVersion            int               `json:"schemaVersion"`
+	CanonicalPolicy          bool              `json:"canonicalPolicy"`
+	ExecutorUID              int               `json:"executorUid"`
 	InstallationID           string            `json:"installationId"`
 	EnvironmentID            string            `json:"environmentId"`
 	AccountID                string            `json:"accountId"`
@@ -95,6 +109,7 @@ type Operation struct {
 	EntryPointSHA256          *string `json:"entryPointSha256,omitempty"`
 	ProviderZeroSHA256        *string `json:"providerZeroSha256,omitempty"`
 	RetirementTombstoneSHA256 *string `json:"retirementTombstoneSha256,omitempty"`
+	Subdomain                 *string `json:"subdomain,omitempty"`
 }
 
 type Plan struct {
@@ -263,6 +278,25 @@ func ParseRetirementEvidenceCandidate(data []byte) (RetirementEvidence, error) {
 	return evidence, nil
 }
 
+func ParseStateObservationCandidate(data []byte) (StateObservation, error) {
+	var observation StateObservation
+	if err := strictJSON(data, &observation); err != nil {
+		return observation, err
+	}
+	if observation.SchemaVersion != SchemaVersion || !identifierPattern.MatchString(observation.AccountID) || observation.WorkerName != WorkerName || observation.ObservedAt.IsZero() || len(observation.Surfaces) == 0 {
+		return observation, errors.New("E_STATE_OBSERVATION_SCHEMA")
+	}
+	return observation, nil
+}
+
+func ParseSlotReferences(data []byte) (map[string]SlotReference, error) {
+	var references map[string]SlotReference
+	if err := strictJSON(data, &references); err != nil {
+		return nil, err
+	}
+	return references, nil
+}
+
 func ParseToolchainIdentity(data []byte) (ToolchainIdentity, error) {
 	var identity ToolchainIdentity
 	if err := strictJSON(data, &identity); err != nil {
@@ -286,8 +320,68 @@ func CoordinatorCommitFromAdmission(data []byte) (string, error) {
 	return admission.Coordinator.Commit, nil
 }
 
+func ValidateCanonicalInstallInputs(admission, permissionManifest, liveProfile, terminalProfile, terminalEntryPoint []byte, environmentID string, identity ToolchainIdentity) error {
+	if SHA256(admission) != CanonicalAdmissionSHA256 || SHA256(permissionManifest) != CanonicalPermissionSHA256 || SHA256(terminalEntryPoint) != CanonicalTerminalEntrySHA256 {
+		return errors.New("E_CANONICAL_POLICY_DIGEST")
+	}
+	commit, err := CoordinatorCommitFromAdmission(admission)
+	if err != nil || commit != CanonicalCoordinatorCommit {
+		return errors.New("E_CANONICAL_ADMISSION")
+	}
+	if err := validateToolchainIdentity(identity); err != nil {
+		return err
+	}
+	if err := validateCanonicalProfile(liveProfile, expectedLiveProfile(environmentID)); err != nil {
+		return errors.New("E_LIVE_PROFILE_CANONICAL")
+	}
+	if err := validateCanonicalProfile(terminalProfile, expectedTerminalProfile()); err != nil {
+		return errors.New("E_TERMINAL_PROFILE_CANONICAL")
+	}
+	return nil
+}
+
+func validateCanonicalProfile(data []byte, expected any) error {
+	var actual any
+	if err := strictJSON(data, &actual); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		return errors.New("E_PROFILE_PROJECTION")
+	}
+	return nil
+}
+
+func expectedLiveProfile(environmentID string) map[string]any {
+	return map[string]any{
+		"$schema": "./node_modules/wrangler/config-schema.json", "name": WorkerName, "main": "src/index.ts",
+		"compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"},
+		"alias":       map[string]any{"cpu-features": "./src/cpu-features.cjs", "./agent.js": "./src/ssh2-agent.cjs", "./crypto/build/Release/sshcrypto.node": "./src/ssh2-native.cjs", "./crypto/poly1305.js": "./src/ssh2-poly1305.cjs"},
+		"workers_dev": true, "preview_urls": false,
+		"version_metadata": map[string]any{"binding": "CF_VERSION_METADATA"},
+		"triggers":         map[string]any{"crons": []any{"*/15 * * * *"}},
+		"vars": map[string]any{
+			"AGENTSCOPE_CRABBOX_ENVIRONMENT_ID": environmentID, "CRABBOX_DEFAULT_ORG": "agentscope-development", "CRABBOX_SHARED_OWNER": "agentscope-fleet-control",
+			"CRABBOX_MAX_ACTIVE_LEASES": "4", "CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER": "4", "CRABBOX_MAX_ACTIVE_LEASES_PER_ORG": "4",
+			"CRABBOX_MAX_MONTHLY_USD": "25", "CRABBOX_MAX_MONTHLY_USD_PER_OWNER": "25", "CRABBOX_MAX_MONTHLY_USD_PER_ORG": "25", "CRABBOX_RUN_RETENTION_DAYS": "30",
+		},
+		"durable_objects": map[string]any{"bindings": []any{map[string]any{"name": "FLEET", "class_name": "FleetDurableObject"}}},
+		"migrations":      []any{map[string]any{"tag": "v1", "new_sqlite_classes": []any{"FleetDurableObject"}}},
+	}
+}
+
+func expectedTerminalProfile() map[string]any {
+	return map[string]any{
+		"$schema": "./node_modules/wrangler/config-schema.json", "name": WorkerName, "main": "terminal-worker.agentscope.mjs",
+		"compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"}, "workers_dev": false, "preview_urls": false,
+		"migrations": []any{
+			map[string]any{"tag": "v1", "new_sqlite_classes": []any{"FleetDurableObject"}},
+			map[string]any{"tag": "v2-retire-fleet-durable-object", "deleted_classes": []any{"FleetDurableObject"}},
+		},
+	}
+}
+
 func validateToolchainIdentity(identity ToolchainIdentity) error {
-	if identity.NodeVersion == "" || identity.WranglerVersion == "" || identity.GoVersion != "1.26.5" {
+	if identity.NodeVersion != CanonicalNodeVersion || identity.WranglerVersion != CanonicalWranglerVersion || identity.GoVersion != CanonicalGoVersion || identity.NodeArchiveSHA256 != CanonicalNodeArchiveSHA256 || identity.WorkerLockSHA256 != CanonicalWorkerLockSHA256 || identity.GoArchiveSHA256 != CanonicalGoArchiveSHA256 || identity.CrabboxClientSHA256 != CanonicalCrabboxClientSHA256 {
 		return errors.New("E_TOOLCHAIN_VERSION")
 	}
 	for _, digest := range []string{identity.NodeArchiveSHA256, identity.WorkerLockSHA256, identity.GoArchiveSHA256, identity.CrabboxClientSHA256} {
@@ -374,13 +468,23 @@ func ValidateInstallation(installation Installation) error {
 	if installation.SchemaVersion != SchemaVersion || !identifierPattern.MatchString(installation.InstallationID) || !environmentPattern.MatchString(installation.EnvironmentID) || !identifierPattern.MatchString(installation.AccountID) || installation.WorkerName != WorkerName || !identifierPattern.MatchString(installation.HetznerProjectID) || len(installation.CoordinatorCommit) != 40 || strings.Trim(installation.CoordinatorCommit, "0123456789abcdef") != "" {
 		return errors.New("E_INSTALLATION_IDENTITY")
 	}
+	if installation.CanonicalPolicy && installation.ExecutorUID <= 0 {
+		return errors.New("E_EXECUTOR_IDENTITY")
+	}
 	for _, digest := range []string{installation.AdmissionSHA256, installation.PermissionManifestSHA256, installation.LiveProfileSHA256, installation.TerminalProfileSHA256, installation.TerminalEntryPointSHA256, installation.LauncherSHA256, installation.RuntimeClosureSHA256, installation.RuntimeTreeSHA256, installation.NodeSHA256, installation.NPMCLISHA256, installation.WranglerCLISHA256} {
 		if !digestPattern.MatchString(digest) {
 			return errors.New("E_INSTALLATION_DIGEST")
 		}
 	}
-	if validateToolchainIdentity(installation.ToolchainIdentity) != nil {
+	if installation.CanonicalPolicy && validateToolchainIdentity(installation.ToolchainIdentity) != nil {
 		return errors.New("E_INSTALLATION_TOOLCHAIN")
+	}
+	if !installation.CanonicalPolicy {
+		for _, digest := range []string{installation.ToolchainIdentity.NodeArchiveSHA256, installation.ToolchainIdentity.WorkerLockSHA256, installation.ToolchainIdentity.GoArchiveSHA256, installation.ToolchainIdentity.CrabboxClientSHA256} {
+			if !digestPattern.MatchString(digest) {
+				return errors.New("E_INSTALLATION_TOOLCHAIN")
+			}
+		}
 	}
 	roles := []string{OwnerRole, BillingRole, SlotEvidenceRole, RecoveryRole, JournalRole}
 	seenKeys := map[string]struct{}{}

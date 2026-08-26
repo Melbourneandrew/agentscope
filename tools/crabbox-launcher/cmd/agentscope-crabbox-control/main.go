@@ -39,6 +39,9 @@ func verifyInstalledExecutable() {
 	if err != nil {
 		fail(errorCode(err))
 	}
+	if stateRoot() == productionRoot && !installation.CanonicalPolicy {
+		fail("E_CANONICAL_POLICY_REQUIRED")
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		fail("E_EXECUTABLE")
@@ -83,6 +86,7 @@ func install(args []string) {
 	environmentID := flags.String("environment-id", "", "immutable coordinator environment identity")
 	accountID := flags.String("account-id", "", "approved Cloudflare account identity")
 	projectID := flags.String("hetzner-project-id", "", "dedicated Hetzner project identity")
+	executorUID := flags.Int("executor-uid", 0, "dedicated no-login execution principal uid")
 	admission := flags.String("admission", "", "canonical admission file")
 	manifest := flags.String("permission-manifest", "", "canonical permission manifest")
 	liveProfile := flags.String("live-profile", "", "canonical live profile")
@@ -138,7 +142,7 @@ func install(args []string) {
 		fail(errorCode(err))
 	}
 	defer zero(passphrase)
-	installed, err := control.Install(control.InstallInput{Root: stateRoot(), InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: *runtimeClosureSHA256, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
+	installed, err := control.Install(control.InstallInput{Root: stateRoot(), ExecutorUID: *executorUID, InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: *runtimeClosureSHA256, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
 	if err != nil {
 		fail(errorCode(err))
 	}
@@ -188,6 +192,54 @@ func authorize(args []string) {
 	}
 	writeNew(*output, authorization)
 	emit(map[string]any{"schemaVersion": 1, "authorized": true, "planSha256": control.SHA256(planData), "kind": plan.Kind, "secretValuesPresent": false})
+}
+
+func buildPlan(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("plan-build", flag.ContinueOnError)
+	kind := flags.String("kind", "", "closed plan kind")
+	statePath := flags.String("state", "", "exact state observation")
+	observationID := flags.String("observation-id", "", "billing observation identity")
+	slotsPath := flags.String("slots", "", "nonsecret slot/version map")
+	accountSubdomain := flags.String("account-subdomain", "", "one-time account workers.dev subdomain")
+	rollbackVersion := flags.String("rollback-version", "", "exact rollback version")
+	providerZero := flags.String("provider-zero-sha256", "", "signed provider-zero evidence digest")
+	tombstone := flags.String("retirement-tombstone-sha256", "", "retirement tombstone digest")
+	freezeID := flags.String("acquisition-freeze-id", "", "signed acquisition freeze identity")
+	revocationID := flags.String("launcher-revocation-id", "", "launcher credential revocation identity")
+	output := flags.String("output", "", "new plan output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *kind == "" || *statePath == "" || *observationID == "" || *output == "" {
+		fail("E_ARGUMENTS")
+	}
+	stateData, err := readBounded(*statePath)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	state, err := control.ParseStateObservationCandidate(stateData)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	slots := map[string]control.SlotReference{}
+	if *slotsPath != "" {
+		data, readErr := readBounded(*slotsPath)
+		var parseErr error
+		slots, parseErr = control.ParseSlotReferences(data)
+		if readErr != nil || parseErr != nil {
+			fail("E_PLAN_BUILD_SLOT")
+		}
+	}
+	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	plan, err := control.BuildPlan(installation, control.PlanBuildInput{Kind: *kind, State: state, ObservationID: *observationID, Slots: slots, AccountSubdomain: *accountSubdomain, RollbackVersionID: *rollbackVersion, ProviderZeroSHA256: *providerZero, RetirementTombstoneSHA256: *tombstone, AcquisitionFreezeID: *freezeID, LauncherCredentialRevocationID: *revocationID, Now: time.Now().UTC()})
+	if err != nil {
+		fail(errorCode(err))
+	}
+	writeNew(*output, plan)
+	data, _ := json.MarshalIndent(plan, "", "  ")
+	data = append(data, '\n')
+	emit(map[string]any{"schemaVersion": 1, "planBuilt": true, "kind": plan.Kind, "planSha256": control.SHA256(data), "operations": plan.Operations, "expiresAt": plan.ExpiresAt, "cloudMutation": false})
 }
 
 func signObservation(args []string) {
@@ -342,7 +394,7 @@ func applyPlan(args []string, retirement bool) {
 	if err != nil {
 		fail(errorCode(err))
 	}
-	executor := control.CommandExecutor{AccountID: installation.AccountID, ProtectedRoot: filepath.Join(stateRoot(), "toolchain"), Installation: installation, ProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.live.jsonc"), ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.terminal.jsonc"), TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: filepath.Join(stateRoot(), "policy", "terminal-worker.agentscope.mjs"), TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
+	executor := control.CommandExecutor{AccountID: installation.AccountID, ExecutorUID: installation.ExecutorUID, ProtectedRoot: filepath.Join(stateRoot(), "toolchain"), Installation: installation, ProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.live.jsonc"), ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.terminal.jsonc"), TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: filepath.Join(stateRoot(), "policy", "terminal-worker.agentscope.mjs"), TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
 	input := control.ApplyInput{PlanData: values[0], AuthorizationData: values[1], ObservationData: values[2], AttestationData: values[3], RetirementEvidenceData: retirementEvidence, Now: time.Now().UTC()}
 	observer := control.CloudflareObserver{AccountID: installation.AccountID}
 	if err := control.NewStore(stateRoot()).Apply(context.Background(), input, executor, observer); err != nil {
@@ -366,6 +418,7 @@ func status() {
 func observeState(args []string) {
 	requireRoot()
 	flags := flag.NewFlagSet("state-observe", flag.ContinueOnError)
+	output := flags.String("output", "", "optional new raw state observation file")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		fail("E_ARGUMENTS")
 	}
@@ -385,6 +438,9 @@ func observeState(args []string) {
 	observation, err := (control.CloudflareObserver{AccountID: installation.AccountID}).Observe(ctx, credential, now)
 	if err != nil {
 		fail(errorCode(err))
+	}
+	if *output != "" {
+		writeNew(*output, observation)
 	}
 	stateDigest, identityDigest, err := observation.Digests()
 	if err != nil {
@@ -544,6 +600,8 @@ func main() {
 		status()
 	case "state-observe":
 		observeState(os.Args[2:])
+	case "plan-build":
+		buildPlan(os.Args[2:])
 	case "authorize":
 		authorize(os.Args[2:])
 	case "observation-admit":

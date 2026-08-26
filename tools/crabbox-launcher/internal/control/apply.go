@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -24,13 +25,15 @@ type Invocation struct {
 	DeploymentCredential      []byte
 	VersionID                 string
 	ExpectedPreviousVersionID string
+	Subdomain                 string
 	Terminal                  bool
 }
 
 type MutationReceipt struct {
-	RequestID      string `json:"requestId"`
-	Action         string `json:"action"`
-	ResponseSHA256 string `json:"responseSha256"`
+	RequestID                  string   `json:"requestId"`
+	Action                     string   `json:"action"`
+	ResponseSHA256             string   `json:"responseSha256"`
+	ObservedResourceIdentities []string `json:"observedResourceIdentities"`
 }
 
 type Executor interface {
@@ -183,6 +186,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		if operation.ExpectedPreviousVersionID != nil {
 			invocation.ExpectedPreviousVersionID = *operation.ExpectedPreviousVersionID
 		}
+		if operation.Subdomain != nil {
+			invocation.Subdomain = *operation.Subdomain
+		}
 		receipt, err := executor.Invoke(operationContext, invocation)
 		if err != nil {
 			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
@@ -191,17 +197,18 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		if postTime.After(authorityDeadline) {
 			return errors.New("E_AUTHORITY_EXPIRED_DURING_APPLY")
 		}
-		_, postDigest, postIdentityDigest, err := observeChangedState(operationContext, observer, readCredential, currentDigest, clock)
+		postState, postDigest, postIdentityDigest, err := observeChangedState(operationContext, observer, readCredential, plan, operation, currentState, clock)
 		if err != nil {
 			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
 		}
+		receipt.ObservedResourceIdentities = append([]string{}, postState.IdentitySet...)
 		receiptData, _ := json.Marshal(receipt)
 		completed := Event{SchemaVersion: SchemaVersion, Sequence: sequence + 1, PlanSHA256: planDigest, RequestID: operation.RequestID, State: "observed-committed", PreviousSHA256: previous, RecordedAt: postTime, DetailCode: "OK", StateSHA256: postDigest, IdentitySHA256: postIdentityDigest, ReceiptSHA256: SHA256(receiptData)}
 		previous, err = store.appendEvent(completed)
 		if err != nil {
 			return err
 		}
-		currentDigest, currentIdentityDigest = postDigest, postIdentityDigest
+		currentState, currentDigest, currentIdentityDigest = postState, postDigest, postIdentityDigest
 	}
 	terminalState, err := observer.Observe(operationContext, readCredential, clock())
 	if err != nil {
@@ -234,7 +241,7 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	return nil
 }
 
-func observeChangedState(ctx context.Context, observer StateObserver, credential []byte, previousDigest string, clock func() time.Time) (StateObservation, string, string, error) {
+func observeChangedState(ctx context.Context, observer StateObserver, credential []byte, plan Plan, operation Operation, previous StateObservation, clock func() time.Time) (StateObservation, string, string, error) {
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -248,7 +255,14 @@ func observeChangedState(ctx context.Context, observer StateObserver, credential
 		if err != nil {
 			return StateObservation{}, "", "", err
 		}
+		previousDigest, _, digestErr := previous.Digests()
+		if digestErr != nil {
+			return StateObservation{}, "", "", digestErr
+		}
 		if digest != previousDigest {
+			if err := ValidateActionTransition(plan, operation, previous, state); err != nil {
+				return StateObservation{}, "", "", err
+			}
 			return state, digest, identityDigest, nil
 		}
 		select {
@@ -272,6 +286,7 @@ func stateContainsIdentity(state StateObservation, expected string) bool {
 
 type CommandExecutor struct {
 	AccountID                      string
+	ExecutorUID                    int
 	ProtectedRoot                  string
 	Installation                   Installation
 	ProfilePath                    string
@@ -290,7 +305,7 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 	if err := executor.verifyImmutableInputs(invocation.Action, invocation.Terminal); err != nil {
 		return MutationReceipt{}, err
 	}
-	if invocation.Action == "worker.schedule.delete" || invocation.Action == "worker.scriptWorkersDev.disable" || invocation.Action == "worker.secret.delete" || invocation.Action == "worker.version.delete" || invocation.Action == "worker.delete" {
+	if invocation.Action == "worker.schedule.delete" || invocation.Action == "worker.scriptWorkersDev.disable" || invocation.Action == "worker.secret.delete" || invocation.Action == "worker.version.delete" || invocation.Action == "worker.delete" || invocation.Action == "account.workersDev.enable" {
 		return executor.invokeCloudflare(ctx, invocation)
 	}
 	args, stdin, err := executor.command(invocation)
@@ -306,6 +321,12 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 	paths := runtimePaths(executor.ProtectedRoot)
 	command := exec.Command(paths.node, append([]string{paths.wranglerCLI}, args...)...)
 	configureProcessGroup(command)
+	if !executor.skipRuntimeVerificationForTest {
+		if executor.ExecutorUID <= 0 || uidProcessesPresent(executor.ExecutorUID) {
+			return MutationReceipt{}, errors.New("E_EXECUTOR_IDENTITY_BUSY")
+		}
+		configureExecutionCredential(command, executor.ExecutorUID)
+	}
 	command.Dir = paths.workerRoot
 	command.Env = []string{
 		"CI=1",
@@ -359,7 +380,14 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 			pids = append(pids, pid)
 		}
 		trackedMu.Unlock()
-		killDescendants(pids)
+		expectedUID := executor.ExecutorUID
+		if executor.skipRuntimeVerificationForTest {
+			expectedUID = -1
+		}
+		killDescendants(pids, expectedUID)
+		if !executor.skipRuntimeVerificationForTest {
+			_ = terminateUIDProcessSet(executor.ExecutorUID, 2*time.Second)
+		}
 	}()
 	outputDone := make(chan error, 2)
 	go func() {
@@ -421,6 +449,11 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 	if waitErr != nil {
 		return MutationReceipt{}, errors.New("E_EXECUTOR_FAILURE")
 	}
+	if !executor.skipRuntimeVerificationForTest {
+		if err := terminateUIDProcessSet(executor.ExecutorUID, 2*time.Second); err != nil {
+			return MutationReceipt{}, err
+		}
+	}
 	return MutationReceipt{RequestID: invocation.RequestID, Action: invocation.Action, ResponseSHA256: SHA256([]byte("process-exit-success:" + invocation.RequestID))}, nil
 }
 
@@ -439,6 +472,13 @@ func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation
 		path += "/subdomain"
 		method = http.MethodPost
 		bodyBytes = []byte(`{"enabled":false,"previews_enabled":false}`)
+	} else if invocation.Action == "account.workersDev.enable" {
+		if !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(invocation.Subdomain) {
+			return MutationReceipt{}, errors.New("E_ACCOUNT_SUBDOMAIN")
+		}
+		path = "/client/v4/accounts/" + executor.AccountID + "/workers/subdomain"
+		method = http.MethodPut
+		bodyBytes, _ = json.Marshal(map[string]string{"subdomain": invocation.Subdomain})
 	} else if invocation.Action == "worker.secret.delete" {
 		allowed := false
 		for _, secret := range canonicalSecrets {
@@ -475,11 +515,16 @@ func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation
 	if client == nil {
 		client = &http.Client{Timeout: deadline}
 	}
-	response, err := client.Do(request)
+	safeClient := *client
+	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("E_CLOUDFLARE_REDIRECT") }
+	response, err := safeClient.Do(request)
 	if err != nil {
 		return MutationReceipt{}, errors.New("E_CLOUDFLARE_OUTCOME_UNKNOWN")
 	}
 	defer response.Body.Close()
+	if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != "api.cloudflare.com") {
+		return MutationReceipt{}, errors.New("E_CLOUDFLARE_ORIGIN")
+	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, (64<<10)+1))
 	if err != nil || len(body) > 64<<10 {
 		return MutationReceipt{}, errors.New("E_CLOUDFLARE_OUTPUT")
@@ -495,7 +540,7 @@ func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation
 }
 
 func verifiedFileDigest(path, expected string) error {
-	if err := validateOwnedPath(path, false); err != nil {
+	if err := validateProtectedReadablePath(path, false); err != nil {
 		return errors.New("E_TOOLCHAIN_FILE")
 	}
 	info, err := os.Lstat(path)

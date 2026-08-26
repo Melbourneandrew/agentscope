@@ -69,11 +69,15 @@ func extractRuntimeClosure(archive []byte, destination string, workerLockSHA256 
 			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 				return RuntimeIdentity{}, err
 			}
-			file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+			file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o444)
 			if err != nil {
 				return RuntimeIdentity{}, err
 			}
 			if _, err := io.CopyN(file, reader, header.Size); err != nil {
+				file.Close()
+				return RuntimeIdentity{}, err
+			}
+			if err := file.Chmod(0o444); err != nil {
 				file.Close()
 				return RuntimeIdentity{}, err
 			}
@@ -88,9 +92,20 @@ func extractRuntimeClosure(archive []byte, destination string, workerLockSHA256 
 			return RuntimeIdentity{}, errors.New("E_RUNTIME_ARCHIVE_SPECIAL_FILE")
 		}
 	}
+	if err := filepath.Walk(destination, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0o555)
+		}
+		return os.Chmod(path, 0o444)
+	}); err != nil {
+		return RuntimeIdentity{}, err
+	}
 	paths := runtimePaths(destination)
 	for _, path := range []string{paths.node, paths.npmCLI, paths.wranglerCLI} {
-		if err := os.Chmod(path, 0o500); err != nil {
+		if err := os.Chmod(path, 0o555); err != nil {
 			return RuntimeIdentity{}, errors.New("E_RUNTIME_EXECUTABLE")
 		}
 	}
@@ -140,7 +155,7 @@ func runtimeTreeDigest(root string) (string, error) {
 		if path == root {
 			return nil
 		}
-		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) || info.Mode().Perm()&0o077 != 0 {
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) || info.Mode().Perm()&0o022 != 0 {
 			return errors.New("E_RUNTIME_TREE_ENTRY")
 		}
 		if err := validatePlatformFile(info, info.IsDir()); err != nil {
@@ -169,7 +184,7 @@ func runtimeTreeDigest(root string) (string, error) {
 }
 
 func verifyRuntimeClosure(root string, installation Installation) (protectedRuntimePaths, error) {
-	if err := validateOwnedPath(root, true); err != nil {
+	if err := validateProtectedReadablePath(root, true); err != nil {
 		return protectedRuntimePaths{}, err
 	}
 	paths := runtimePaths(root)

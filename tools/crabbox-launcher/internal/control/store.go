@@ -78,6 +78,17 @@ func validateOwnedPath(path string, wantDir bool) error {
 	return nil
 }
 
+func validateProtectedReadablePath(path string, wantDir bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 || (wantDir && !info.IsDir()) || (!wantDir && !info.Mode().IsRegular()) {
+		return errors.New("E_PROTECTED_PATH")
+	}
+	return validatePlatformFile(info, wantDir)
+}
+
 func writeExclusive(path string, value []byte, mode os.FileMode) error {
 	parent := filepath.Dir(path)
 	if err := validateOwnedPath(parent, true); err != nil {
@@ -134,6 +145,13 @@ func readPrivate(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+func readProtected(path string) ([]byte, error) {
+	if err := validateProtectedReadablePath(path, false); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
+}
+
 func (store Store) LoadInstallation() (Installation, error) {
 	var installation Installation
 	data, err := readPrivate(store.path("policy", "installation.json"))
@@ -147,7 +165,7 @@ func (store Store) LoadInstallation() (Installation, error) {
 		return installation, err
 	}
 	for name, digest := range map[string]string{"admission.json": installation.AdmissionSHA256, "permission-manifest.json": installation.PermissionManifestSHA256, "wrangler.live.jsonc": installation.LiveProfileSHA256, "wrangler.terminal.jsonc": installation.TerminalProfileSHA256, "terminal-worker.agentscope.mjs": installation.TerminalEntryPointSHA256} {
-		value, err := readPrivate(store.path("policy", name))
+		value, err := readProtected(store.path("policy", name))
 		if err != nil || SHA256(value) != digest {
 			return installation, errors.New("E_POLICY_CHANGED")
 		}
@@ -165,26 +183,28 @@ func generateRoot(role string) (Root, ed25519.PrivateKey, error) {
 }
 
 type InstallInput struct {
-	Root                     string
-	InstallationID           string
-	EnvironmentID            string
-	AccountID                string
-	HetznerProjectID         string
-	CoordinatorCommit        string
-	AdmissionSHA256          string
-	PermissionManifestSHA256 string
-	LiveProfileSHA256        string
-	TerminalProfileSHA256    string
-	Launcher                 []byte
-	Admission                []byte
-	PermissionManifest       []byte
-	LiveProfile              []byte
-	TerminalProfile          []byte
-	TerminalEntryPoint       []byte
-	RuntimeClosure           []byte
-	RuntimeClosureSHA256     string
-	ToolchainIdentity        ToolchainIdentity
-	OperatorPassphrase       []byte
+	Root                                 string
+	InstallationID                       string
+	EnvironmentID                        string
+	AccountID                            string
+	HetznerProjectID                     string
+	CoordinatorCommit                    string
+	AdmissionSHA256                      string
+	PermissionManifestSHA256             string
+	LiveProfileSHA256                    string
+	TerminalProfileSHA256                string
+	Launcher                             []byte
+	Admission                            []byte
+	PermissionManifest                   []byte
+	LiveProfile                          []byte
+	TerminalProfile                      []byte
+	TerminalEntryPoint                   []byte
+	RuntimeClosure                       []byte
+	RuntimeClosureSHA256                 string
+	ToolchainIdentity                    ToolchainIdentity
+	OperatorPassphrase                   []byte
+	ExecutorUID                          int
+	skipCanonicalPolicyValidationForTest bool
 }
 
 func Install(input InstallInput) (Installation, error) {
@@ -198,6 +218,11 @@ func Install(input InstallInput) (Installation, error) {
 	}
 	if input.AdmissionSHA256 != SHA256(input.Admission) || input.PermissionManifestSHA256 != SHA256(input.PermissionManifest) || input.LiveProfileSHA256 != SHA256(input.LiveProfile) || input.TerminalProfileSHA256 != SHA256(input.TerminalProfile) || input.RuntimeClosureSHA256 != SHA256(input.RuntimeClosure) {
 		return Installation{}, errors.New("E_INSTALL_INPUT_BINDING")
+	}
+	if !input.skipCanonicalPolicyValidationForTest {
+		if err := ValidateCanonicalInstallInputs(input.Admission, input.PermissionManifest, input.LiveProfile, input.TerminalProfile, input.TerminalEntryPoint, input.EnvironmentID, input.ToolchainIdentity); err != nil {
+			return Installation{}, err
+		}
 	}
 	commit, err := CoordinatorCommitFromAdmission(input.Admission)
 	if err != nil || commit != input.CoordinatorCommit {
@@ -254,7 +279,13 @@ func Install(input InstallInput) (Installation, error) {
 	if err != nil {
 		return Installation{}, err
 	}
-	installation := Installation{SchemaVersion: SchemaVersion, InstallationID: input.InstallationID, EnvironmentID: input.EnvironmentID, AccountID: input.AccountID, WorkerName: WorkerName, HetznerProjectID: input.HetznerProjectID, CoordinatorCommit: input.CoordinatorCommit, AdmissionSHA256: input.AdmissionSHA256, PermissionManifestSHA256: input.PermissionManifestSHA256, LiveProfileSHA256: input.LiveProfileSHA256, TerminalProfileSHA256: input.TerminalProfileSHA256, TerminalEntryPointSHA256: SHA256(input.TerminalEntryPoint), LauncherSHA256: SHA256(input.Launcher), RuntimeClosureSHA256: input.RuntimeClosureSHA256, RuntimeTreeSHA256: runtimeIdentity.TreeSHA256, NodeSHA256: runtimeIdentity.NodeSHA256, NPMCLISHA256: runtimeIdentity.NPMCLISHA256, WranglerCLISHA256: runtimeIdentity.WranglerCLISHA256, ToolchainIdentity: input.ToolchainIdentity, Roots: roots}
+	if !input.skipCanonicalPolicyValidationForTest {
+		if input.ExecutorUID <= 0 || os.Chown(filepath.Join(stagingRoot, "runtime"), input.ExecutorUID, -1) != nil || os.Chmod(filepath.Join(stagingRoot, "runtime"), 0o700) != nil || os.Chmod(stagingRoot, 0o711) != nil || os.Chmod(filepath.Join(stagingRoot, "toolchain"), 0o555) != nil {
+			return Installation{}, errors.New("E_EXECUTOR_IDENTITY")
+		}
+	}
+	installation := Installation{SchemaVersion: SchemaVersion, CanonicalPolicy: !input.skipCanonicalPolicyValidationForTest, InstallationID: input.InstallationID, EnvironmentID: input.EnvironmentID, AccountID: input.AccountID, WorkerName: WorkerName, HetznerProjectID: input.HetznerProjectID, CoordinatorCommit: input.CoordinatorCommit, AdmissionSHA256: input.AdmissionSHA256, PermissionManifestSHA256: input.PermissionManifestSHA256, LiveProfileSHA256: input.LiveProfileSHA256, TerminalProfileSHA256: input.TerminalProfileSHA256, TerminalEntryPointSHA256: SHA256(input.TerminalEntryPoint), LauncherSHA256: SHA256(input.Launcher), RuntimeClosureSHA256: input.RuntimeClosureSHA256, RuntimeTreeSHA256: runtimeIdentity.TreeSHA256, NodeSHA256: runtimeIdentity.NodeSHA256, NPMCLISHA256: runtimeIdentity.NPMCLISHA256, WranglerCLISHA256: runtimeIdentity.WranglerCLISHA256, ToolchainIdentity: input.ToolchainIdentity, Roots: roots}
+	installation.ExecutorUID = input.ExecutorUID
 	if err := ValidateInstallation(installation); err != nil {
 		return Installation{}, err
 	}
@@ -271,6 +302,16 @@ func Install(input InstallInput) (Installation, error) {
 		}
 		if err := writeExclusive(filepath.Join(stagingRoot, "policy", name), value, 0o600); err != nil {
 			return Installation{}, err
+		}
+		if !input.skipCanonicalPolicyValidationForTest {
+			if err := os.Chmod(filepath.Join(stagingRoot, "policy", name), 0o444); err != nil {
+				return Installation{}, errors.New("E_POLICY_MODE")
+			}
+		}
+	}
+	if !input.skipCanonicalPolicyValidationForTest {
+		if err := os.Chmod(filepath.Join(stagingRoot, "policy"), 0o555); err != nil {
+			return Installation{}, errors.New("E_POLICY_MODE")
 		}
 	}
 	if err := os.Rename(stagingRoot, input.Root); err != nil {
@@ -516,6 +557,8 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 		if _, eventErr := store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planSHA256, RequestID: requestID, State: "reconciled-terminal", PreviousSHA256: previous, RecordedAt: now, DetailCode: "ABANDONED", ReceiptSHA256: evidenceSHA256}); eventErr != nil {
 			return record, eventErr
 		}
+	}
+	if hasFence {
 		if err := os.Remove(store.path("journal", "mutation.lock")); err != nil {
 			return record, err
 		}

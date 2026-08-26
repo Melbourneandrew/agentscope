@@ -66,6 +66,9 @@ jobs:
         working-directory: tools/crabbox-launcher
       - run: go vet ./...
         working-directory: tools/crabbox-launcher
+      - run: sudo "$(command -v go)" test ./internal/control -run '^TestUIDProcessSetContainsImmediateDetachedChild$' -count=1
+        working-directory: tools/crabbox-launcher
       - run: go build -trimpath -buildvcs=true ./cmd/agentscope-crabbox-control
         working-directory: tools/crabbox-launcher
       - run: sh -n ops/crabbox-coordinator/install-protected-launcher.sh
+      - run: sh scripts/verify-crabbox-launcher-installer.sh

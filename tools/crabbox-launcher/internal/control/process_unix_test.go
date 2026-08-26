@@ -5,6 +5,7 @@ package control
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -12,6 +13,44 @@ import (
 	"testing"
 	"time"
 )
+
+func TestUIDProcessSetContainsImmediateDetachedChild(t *testing.T) {
+	if os.Getenv("AGENTSCOPE_UID_DETACH_HELPER") == "1" {
+		child := exec.Command("/bin/sleep", "60")
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := child.Start(); err != nil {
+			os.Exit(91)
+		}
+		os.Exit(0)
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("requires root to exercise an otherwise unused uid")
+	}
+	uid := 60001
+	if uidProcessesPresent(uid) {
+		t.Fatal("test uid already active")
+	}
+	helper := exec.Command(os.Args[0], "-test.run=TestUIDProcessSetContainsImmediateDetachedChild")
+	helper.Env = append(os.Environ(), "AGENTSCOPE_UID_DETACH_HELPER=1")
+	configureProcessGroup(helper)
+	configureExecutionCredential(helper, uid)
+	if err := helper.Run(); err != nil {
+		t.Fatalf("detaching helper: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !uidProcessesPresent(uid) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !uidProcessesPresent(uid) {
+		t.Fatal("detached child was not contained by uid identity")
+	}
+	if err := terminateUIDProcessSet(uid, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if uidProcessesPresent(uid) {
+		t.Fatal("detached child survived uid process-set cleanup")
+	}
+}
 
 func TestExecutorTimeoutKillsDescendantProcessGroup(t *testing.T) {
 	root := t.TempDir()

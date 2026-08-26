@@ -6,7 +6,12 @@
     "commit": "8ba71f913bbe57285ae29af45ef0d8ec6712477d",
     "licenseSha256": "6ae2daf92d73e912aef033d56ce374df997ae0ad1d88ca9ef76f0c11123aae27",
     "workerLockSha256": "6bf8940bd1b514ab3541485605e24b516242359e3050cfa5645966e398b030fd",
-    "wranglerVersion": "4.114.0"
+    "wranglerVersion": "4.114.0",
+    "client": {
+      "platform": "darwin-arm64",
+      "sha256": "52b2da6ffb141c19d35fe777e4b6e7d827ed5c05b3a2101e43f83ad848a9655c",
+      "buildFlags": "-trimpath -ldflags=-s -w -X github.com/openclaw/crabbox/internal/cli.version=0.46.0"
+    }
   },
   "deployment": {
     "workerName": "agentscope-crabbox-development",
@@ -109,7 +114,7 @@
     "node": {
       "version": "24.19.0",
       "platform": "darwin-arm64",
-      "archiveSha256": "3f1cf157479c1480352083105e13faf9d008ede98e7e157746b6df940d197b94"
+      "archiveSha256": "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d"
     },
     "go": {
       "version": "1.26.5",

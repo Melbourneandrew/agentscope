@@ -109,13 +109,21 @@ fetch only lockfile-integrity-pinned npm artifacts; it performs no login,
 cloud/provider credential receipt, Cloudflare/Hetzner request, Wrangler command,
 or cloud/provider mutation.
 
+The installer creates or reuses exactly one hidden no-login
+`_agentscope_crabbox` identity. Credentialed Node/Wrangler runs only under that
+UID. Admission fails if any process is already using it, and completion kills
+and joins the complete UID process set, including an immediately detached
+session descendant, before reporting success. No other service or workload may
+use that identity.
+
 Do not run the installer from an unattended agent session. The attended human
 invocation is:
 
 ```sh
 ops/crabbox-coordinator/install-protected-launcher.sh \
   <installation-id> <environment-id> <cloudflare-account-id> \
-  <hetzner-project-id> <exact-crabbox-source> <official-node-archive> \
+  <hetzner-project-id> <exact-crabbox-source> <official-go-archive> \
+  <official-node-archive> \
   <toolchain-identity.json> <exact-live-profile> <exact-terminal-profile> \
   <exact-terminal-entry-point>
 ```
@@ -124,7 +132,7 @@ The installer prints the exact launcher and runtime-closure digests before the
 attended root copy and verifies the root-owned bootstrap copy before executing
 it. After installation, use only the root-owned installed binary. It exposes the
 closed commands `status`, `state-observe`, `credential-enroll`,
-`observation-admit`, `retirement-evidence-admit`, `authorize`,
+`plan-build`, `observation-admit`, `retirement-evidence-admit`, `authorize`,
 `apply`, `freeze`, `recover-quarantine`, `recover-resolve`, and `retire`. `apply` accepts no
 caller-selected executable, source, profile, endpoint, method, body, or target.
 It verifies installed roots and the entire protected runtime tree, durably
@@ -140,6 +148,15 @@ human recovery decision and never retries the request. Only a second signed
 `recover-resolve` decision with terminal reconciliation evidence may release the
 local mutation fence; acquisition remains frozen so a new recovery or
 retirement plan is required.
+
+`state-observe --output <new-file>` writes the exact read-only Cloudflare
+projection. `plan-build` is the only supported plan-construction path: it
+derives resource identities and the prestate digest from that file and emits
+one closed deploy, rollback, retirement, or account-workers.dev plan. The
+caller may supply only opaque slot/version references and the kind-specific
+identities displayed by the command; it cannot supply an action, URL, method,
+executable, or target. `authorize` separately displays and signs those exact
+bytes after attended confirmation.
 
 `status` is the handoff to the small attended ceremony owned by the deployment
 task. Until that later task, `cloudAuthenticated`, `billingObservationReady`,

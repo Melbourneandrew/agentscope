@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -137,6 +138,13 @@ func terminalContractSHA256(plan Plan) string {
 		contract["secretNames"] = []string{}
 		contract["scriptWorkersDev"] = false
 		contract["worker"] = "absent"
+	} else if plan.Kind == "account-workers-dev-enable" {
+		subdomain := "invalid"
+		if len(plan.Operations) == 1 && plan.Operations[0].Subdomain != nil {
+			subdomain = *plan.Operations[0].Subdomain
+		}
+		contract["accountWorkersDev"] = "enabled:" + subdomain
+		contract["worker"] = "unchanged"
 	} else {
 		contract["cron"] = "*/15 * * * *"
 		contract["durableObjectBinding"] = "FLEET"
@@ -153,7 +161,11 @@ func terminalContractSHA256(plan Plan) string {
 func validateSequence(plan Plan, installation Installation) error {
 	switch plan.Kind {
 	case "deploy":
-		if len(plan.Operations) != 4 || len(plan.RollbackActions) != 1 {
+		expectedRollbacks := 1
+		if plan.CurrentWorkerVersionID == "absent" {
+			expectedRollbacks = 0
+		}
+		if len(plan.Operations) != 4 || len(plan.RollbackActions) != expectedRollbacks {
 			return errors.New("E_DEPLOY_SEQUENCE")
 		}
 		for index, secret := range canonicalSecrets {
@@ -165,16 +177,20 @@ func validateSequence(plan Plan, installation Installation) error {
 		if deploy.Action != "worker.deploy" || deploy.Target != WorkerName || deploy.ProfileSHA256 == nil || *deploy.ProfileSHA256 != plan.ProfileSHA256 || deploy.ExpectedPreviousVersionID == nil || *deploy.ExpectedPreviousVersionID != plan.CurrentWorkerVersionID || deploy.RequestID == "" || hasUnexpectedFields(deploy, "profile") {
 			return errors.New("E_DEPLOY_OPERATION")
 		}
-		rollback := plan.RollbackActions[0]
-		if rollback.Action != "worker.rollback" || rollback.Target != WorkerName || rollback.VersionID == nil || rollback.CompatibleMigrationTag == nil || *rollback.CompatibleMigrationTag != plan.CurrentMigrationTag || hasUnexpectedFields(rollback, "rollback") {
-			return errors.New("E_ROLLBACK_OPERATION")
+		if expectedRollbacks == 1 {
+			rollback := plan.RollbackActions[0]
+			if rollback.Action != "worker.rollback" || rollback.Target != WorkerName || rollback.VersionID == nil || rollback.CompatibleMigrationTag == nil || *rollback.CompatibleMigrationTag != plan.CurrentMigrationTag || hasUnexpectedFields(rollback, "rollback") {
+				return errors.New("E_ROLLBACK_OPERATION")
+			}
 		}
 	case "rollback":
 		if len(plan.Operations) != 1 || len(plan.RollbackActions) != 0 || plan.Operations[0].Action != "worker.rollback" || plan.Operations[0].VersionID == nil || plan.Operations[0].CompatibleMigrationTag == nil || *plan.Operations[0].CompatibleMigrationTag != plan.CurrentMigrationTag || hasUnexpectedFields(plan.Operations[0], "rollback") {
 			return errors.New("E_ROLLBACK_SEQUENCE")
 		}
 	case "account-workers-dev-enable":
-		return errors.New("E_ACCOUNT_SHARED_MUTATION_SEPARATE")
+		if len(plan.Operations) != 1 || len(plan.RollbackActions) != 0 || plan.Operations[0].Action != "account.workersDev.enable" || plan.Operations[0].Target != installation.AccountID || plan.Operations[0].Subdomain == nil || !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(*plan.Operations[0].Subdomain) || hasUnexpectedFields(plan.Operations[0], "account-subdomain") {
+			return errors.New("E_ACCOUNT_WORKERS_DEV_SEQUENCE")
+		}
 	case "retire":
 		if err := validateRetirementSequence(plan, installation); err != nil {
 			return err
@@ -225,6 +241,8 @@ func hasUnexpectedFields(operation Operation, shape string) bool {
 	case "version":
 		allowed["versionId"] = true
 	case "none":
+	case "account-subdomain":
+		allowed["subdomain"] = true
 	default:
 		return true
 	}
@@ -234,6 +252,7 @@ func hasUnexpectedFields(operation Operation, shape string) bool {
 		"versionId": operation.VersionID != nil, "compatibleMigrationTag": operation.CompatibleMigrationTag != nil,
 		"entryPointSha256": operation.EntryPointSHA256 != nil, "providerZeroSha256": operation.ProviderZeroSHA256 != nil,
 		"retirementTombstoneSha256": operation.RetirementTombstoneSHA256 != nil,
+		"subdomain":                 operation.Subdomain != nil,
 	}
 	for field, exists := range present {
 		if exists && !allowed[field] {

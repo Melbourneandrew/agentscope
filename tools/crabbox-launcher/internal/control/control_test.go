@@ -47,10 +47,21 @@ func newFixture(t *testing.T) fixture {
 		"coordinator/worker/src/index.ts":                          []byte("export default {}"),
 	})
 	root := filepath.Join(parent, "installed")
-	installation, err := Install(InstallInput{Root: root, InstallationID: "install-1", EnvironmentID: "asgcf_0123456789abcdef0123456789abcdef", AccountID: "account-1", HetznerProjectID: "project-1", CoordinatorCommit: strings.Repeat("a", 40), AdmissionSHA256: SHA256(admission), PermissionManifestSHA256: SHA256(manifest), LiveProfileSHA256: SHA256(live), TerminalProfileSHA256: SHA256(terminal), Launcher: launcher, Admission: admission, PermissionManifest: manifest, LiveProfile: live, TerminalProfile: terminal, TerminalEntryPoint: terminalEntry, RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: SHA256(runtimeClosure), ToolchainIdentity: toolchain, OperatorPassphrase: syntheticOperatorPassphrase})
+	installation, err := Install(InstallInput{skipCanonicalPolicyValidationForTest: true, Root: root, InstallationID: "install-1", EnvironmentID: "asgcf_0123456789abcdef0123456789abcdef", AccountID: "account-1", HetznerProjectID: "project-1", CoordinatorCommit: strings.Repeat("a", 40), AdmissionSHA256: SHA256(admission), PermissionManifestSHA256: SHA256(manifest), LiveProfileSHA256: SHA256(live), TerminalProfileSHA256: SHA256(terminal), Launcher: launcher, Admission: admission, PermissionManifest: manifest, LiveProfile: live, TerminalProfile: terminal, TerminalEntryPoint: terminalEntry, RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: SHA256(runtimeClosure), ToolchainIdentity: toolchain, OperatorPassphrase: syntheticOperatorPassphrase})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if info.IsDir() {
+				return os.Chmod(path, 0o700)
+			}
+			return os.Chmod(path, 0o600)
+		})
+	})
 	store := NewStore(root)
 	now := time.Date(2026, 8, 26, 19, 0, 0, 0, time.UTC)
 	roles := []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}
@@ -93,19 +104,80 @@ func runtimeArchive(t *testing.T, files map[string][]byte) []byte {
 
 func pointer(value string) *string { return &value }
 
-func syntheticState(account string, step int, now time.Time) StateObservation {
-	vars := map[string]any{"AGENTSCOPE_CRABBOX_ENVIRONMENT_ID": "asgcf_0123456789abcdef0123456789abcdef", "CRABBOX_DEFAULT_ORG": "agentscope-development", "CRABBOX_MAX_ACTIVE_LEASES": "4", "CRABBOX_MAX_ACTIVE_LEASES_PER_ORG": "4", "CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER": "4", "CRABBOX_MAX_MONTHLY_USD": "25", "CRABBOX_MAX_MONTHLY_USD_PER_ORG": "25", "CRABBOX_MAX_MONTHLY_USD_PER_OWNER": "25", "CRABBOX_RUN_RETENTION_DAYS": "30", "CRABBOX_SHARED_OWNER": "agentscope-fleet-control"}
-	surfaces := map[string]any{"step": step, "scriptSettings": map[string]any{"binding": "FLEET", "class": "FleetDurableObject", "namespace": "namespace-1", "vars": vars}, "scriptDeployments": map[string]any{"id": fmt.Sprintf("version-%d", step)}, "scriptVersions": []any{map[string]any{"id": fmt.Sprintf("version-%d", step)}}, "scriptSchedules": []any{map[string]any{"cron": "*/15 * * * *"}}, "scriptSecrets": []any{map[string]any{"name": "HETZNER_TOKEN"}, map[string]any{"name": "CRABBOX_SHARED_TOKEN"}, map[string]any{"name": "CRABBOX_ADMIN_TOKEN"}}, "scriptWorkersDev": map[string]any{"enabled": true}, "scriptDomains": []any{}, "scriptTails": []any{}}
-	if step >= 6 {
-		for _, name := range []string{"scriptSettings", "scriptDeployments", "scriptVersions", "scriptSchedules", "scriptSecrets", "scriptTails", "scriptWorkersDev"} {
-			surfaces[name] = map[string]any{"absent": true}
+func syntheticState(account string, step int, kind string, now time.Time) StateObservation {
+	bindings := []any{map[string]any{"name": "FLEET", "class_name": "FleetDurableObject", "namespace_id": "namespace-1"}}
+	for _, variable := range [][2]string{{"AGENTSCOPE_CRABBOX_ENVIRONMENT_ID", "asgcf_0123456789abcdef0123456789abcdef"}, {"CRABBOX_DEFAULT_ORG", "agentscope-development"}, {"CRABBOX_MAX_ACTIVE_LEASES", "4"}, {"CRABBOX_MAX_ACTIVE_LEASES_PER_ORG", "4"}, {"CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER", "4"}, {"CRABBOX_MAX_MONTHLY_USD", "25"}, {"CRABBOX_MAX_MONTHLY_USD_PER_ORG", "25"}, {"CRABBOX_MAX_MONTHLY_USD_PER_OWNER", "25"}, {"CRABBOX_RUN_RETENTION_DAYS", "30"}, {"CRABBOX_SHARED_OWNER", "agentscope-fleet-control"}} {
+		bindings = append(bindings, map[string]any{"name": variable[0], "text": variable[1]})
+	}
+	surfaces := map[string]any{
+		"accountWorkers": []any{map[string]any{"id": WorkerName, "modified_on": fmt.Sprintf("step-%d", step)}}, "accountWorkersDev": map[string]any{"enabled": true},
+		"durableObjects": []any{map[string]any{"id": "namespace-1", "script": WorkerName, "class": "FleetDurableObject"}}, "scriptDomains": []any{},
+		"scriptSettings": map[string]any{"logpush": false, "observability": map[string]any{"enabled": false}, "tail_consumers": []any{}}, "workerSettings": map[string]any{"bindings": bindings},
+		"scriptDeployments": map[string]any{"id": fmt.Sprintf("version-%d", step)}, "scriptVersions": []any{map[string]any{"id": "version-current"}, map[string]any{"id": "version-old"}},
+		"scriptSchedules": []any{map[string]any{"cron": "*/15 * * * *"}}, "scriptSecrets": []any{}, "scriptWorkersDev": map[string]any{"enabled": true}, "scriptTails": []any{},
+	}
+	if kind == "deploy" {
+		for index, secret := range canonicalSecrets {
+			if step > index {
+				surfaces["scriptSecrets"] = append(surfaces["scriptSecrets"].([]any), map[string]any{"name": secret})
+			}
+		}
+		if step >= 4 {
+			surfaces["scriptVersions"] = append(surfaces["scriptVersions"].([]any), map[string]any{"id": "version-4"})
+		}
+	} else if kind == "account" {
+		surfaces["scriptDeployments"] = map[string]any{"id": "version-current"}
+		if step == 0 {
+			surfaces["accountWorkersDev"] = map[string]any{"absent": true}
+		} else {
+			surfaces["accountWorkersDev"] = map[string]any{"subdomain": "agentscope-dev"}
+		}
+		surfaces["scriptSecrets"] = []any{map[string]any{"name": "CRABBOX_ADMIN_TOKEN"}, map[string]any{"name": "CRABBOX_SHARED_TOKEN"}, map[string]any{"name": "HETZNER_TOKEN"}}
+	} else {
+		secrets := append([]string{}, canonicalSecrets...)
+		if step >= 3 {
+			secrets = secrets[1:]
+		}
+		if step >= 4 {
+			secrets = secrets[1:]
+		}
+		if step >= 5 {
+			secrets = secrets[1:]
+		}
+		items := []any{}
+		for _, secret := range secrets {
+			items = append(items, map[string]any{"name": secret})
+		}
+		surfaces["scriptSecrets"] = items
+		if step >= 1 {
+			surfaces["scriptSchedules"] = []any{}
+		}
+		if step >= 2 {
+			surfaces["scriptWorkersDev"] = map[string]any{"enabled": false}
+		}
+		if step >= 6 {
+			surfaces["durableObjects"] = []any{}
+			surfaces["workerSettings"] = map[string]any{"bindings": []any{}}
+		}
+		if step >= 7 {
+			surfaces["scriptVersions"] = []any{map[string]any{"id": "terminal-version"}}
+		}
+		if step >= 8 {
+			surfaces["accountWorkers"], surfaces["durableObjects"] = []any{}, []any{}
+			for _, name := range []string{"scriptSettings", "workerSettings", "scriptDeployments", "scriptVersions", "scriptSchedules", "scriptSecrets", "scriptTails", "scriptWorkersDev"} {
+				surfaces[name] = map[string]any{"absent": true}
+			}
 		}
 	}
-	return StateObservation{SchemaVersion: SchemaVersion, AccountID: account, WorkerName: WorkerName, ObservedAt: now, Surfaces: surfaces, IdentitySet: []string{fmt.Sprintf("step=%d", step), "workerVersion=version-current", "namespaceId=namespace-1", "migrationTag=v1"}}
+	identities := []string{"workerVersion=version-current", "namespaceId=namespace-1", "migrationTag=v1"}
+	if kind == "retire" && step >= 8 {
+		identities = []string{"migrationTag=v2-retire-fleet-durable-object"}
+	}
+	return StateObservation{SchemaVersion: SchemaVersion, AccountID: account, WorkerName: WorkerName, ObservedAt: now, Surfaces: surfaces, IdentitySet: identities}
 }
 
 func (item fixture) plan() (Plan, []byte) {
-	pre, _, _ := syntheticState(item.installation.AccountID, 0, item.now).Digests()
+	pre, _, _ := syntheticState(item.installation.AccountID, 0, "deploy", item.now).Digests()
 	plan := Plan{SchemaVersion: SchemaVersion, Kind: "deploy", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.profileDigest, ObservablePrestateSHA256: pre, ObservationID: "observation-1", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", HetznerProjectID: item.installation.HetznerProjectID, Operations: []Operation{
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-admin", SecretName: pointer("CRABBOX_ADMIN_TOKEN"), SlotID: pointer("slot-crabbox-admin"), SlotVersion: pointer("version-1")},
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-shared", SecretName: pointer("CRABBOX_SHARED_TOKEN"), SlotID: pointer("slot-crabbox-shared"), SlotVersion: pointer("version-1")},
@@ -142,7 +214,7 @@ func (item fixture) authority(plan Plan, planData []byte) ([]byte, []byte, []byt
 
 func (item fixture) retirementPlan() (Plan, []byte) {
 	providerZero, tombstone := strings.Repeat("6", 64), strings.Repeat("7", 64)
-	pre, _, _ := syntheticState(item.installation.AccountID, 0, item.now).Digests()
+	pre, _, _ := syntheticState(item.installation.AccountID, 0, "retire", item.now).Digests()
 	plan := Plan{SchemaVersion: SchemaVersion, Kind: "retire", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.installation.TerminalProfileSHA256, ObservablePrestateSHA256: pre, ObservationID: "observation-retire", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", HetznerProjectID: item.installation.HetznerProjectID, ProviderZeroSHA256: &providerZero, RetirementTombstoneSHA256: &tombstone, AcquisitionFreezeID: pointer("freeze-1"), LauncherCredentialRevocationID: pointer("revocation-1"), Operations: []Operation{
 		{Action: "worker.schedule.delete", Target: WorkerName, RequestID: "delete-schedule"},
 		{Action: "worker.scriptWorkersDev.disable", Target: WorkerName, RequestID: "disable-workers-dev"},
@@ -203,6 +275,7 @@ type advancingObserver struct {
 	account string
 	now     time.Time
 	calls   int
+	kind    string
 }
 
 func (observer *advancingObserver) Observe(_ context.Context, _ []byte, now time.Time) (StateObservation, error) {
@@ -213,11 +286,148 @@ func (observer *advancingObserver) Observe(_ context.Context, _ []byte, now time
 		step = 0
 	}
 	observer.calls++
-	return syntheticState(observer.account, step, now), nil
+	return syntheticState(observer.account, step, observer.kind, now), nil
 }
 
 func (item fixture) observer() StateObserver {
-	return &advancingObserver{account: item.installation.AccountID, now: item.now}
+	return &advancingObserver{account: item.installation.AccountID, now: item.now, kind: "deploy"}
+}
+
+func TestSyntheticStateDigestIsDeterministic(t *testing.T) {
+	now := time.Date(2026, 8, 26, 19, 0, 0, 0, time.UTC)
+	left, _, _ := syntheticState("account-1", 0, "deploy", now).Digests()
+	right, _, _ := syntheticState("account-1", 0, "deploy", now).Digests()
+	if left != right {
+		t.Fatalf("synthetic state drift: %s != %s", left, right)
+	}
+}
+
+func TestCanonicalInstallInputsRejectEverySubstitutedAuthority(t *testing.T) {
+	policyRoot := filepath.Join("..", "..", "..", "..", "ops", "crabbox-coordinator")
+	admission, err := os.ReadFile(filepath.Join(policyRoot, "admission.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(policyRoot, "permission-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := os.ReadFile(filepath.Join(policyRoot, "terminal-worker.agentscope.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := "asgcf_0123456789abcdef0123456789abcdef"
+	live, _ := json.Marshal(expectedLiveProfile(environment))
+	terminal, _ := json.Marshal(expectedTerminalProfile())
+	identity := ToolchainIdentity{NodeVersion: CanonicalNodeVersion, NodeArchiveSHA256: CanonicalNodeArchiveSHA256, WranglerVersion: CanonicalWranglerVersion, WorkerLockSHA256: CanonicalWorkerLockSHA256, GoVersion: CanonicalGoVersion, GoArchiveSHA256: CanonicalGoArchiveSHA256, CrabboxClientSHA256: CanonicalCrabboxClientSHA256}
+	if err := ValidateCanonicalInstallInputs(admission, manifest, live, terminal, entry, environment, identity); err != nil {
+		t.Fatalf("canonical inputs rejected: %v", err)
+	}
+	mutated := identity
+	mutated.NodeArchiveSHA256 = strings.Repeat("b", 64)
+	if ValidateCanonicalInstallInputs(admission, manifest, live, terminal, entry, environment, mutated) == nil {
+		t.Fatal("substituted Node authority accepted")
+	}
+	changed := append([]byte{}, entry...)
+	changed = append(changed, '\n')
+	if ValidateCanonicalInstallInputs(admission, manifest, live, terminal, changed, environment, identity) == nil {
+		t.Fatal("substituted terminal artifact accepted")
+	}
+	var profile map[string]any
+	_ = json.Unmarshal(live, &profile)
+	profile["workers_dev"] = false
+	changedLive, _ := json.Marshal(profile)
+	if ValidateCanonicalInstallInputs(admission, manifest, changedLive, terminal, entry, environment, identity) == nil {
+		t.Fatal("substituted deployment profile accepted")
+	}
+}
+
+func TestPlanBuilderOwnsClosedDeployAndAccountSequences(t *testing.T) {
+	item := newFixture(t)
+	state := syntheticState(item.installation.AccountID, 0, "deploy", item.now)
+	slots := map[string]SlotReference{}
+	for _, secret := range canonicalSecrets {
+		slots[secret] = SlotReference{SlotID: "slot-" + strings.ToLower(secret), SlotVersion: "version-1"}
+	}
+	plan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: state, ObservationID: "observation-builder", Slots: slots, Now: item.now})
+	if err != nil || len(plan.Operations) != 4 || plan.Operations[3].Action != "worker.deploy" {
+		t.Fatalf("deploy plan: %v %#v", err, plan.Operations)
+	}
+	accountState := syntheticState(item.installation.AccountID, 0, "deploy", item.now)
+	accountState.Surfaces["accountWorkersDev"] = map[string]any{"absent": true}
+	accountPlan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "account-workers-dev-enable", State: accountState, ObservationID: "observation-builder", AccountSubdomain: "agentscope-dev", Now: item.now})
+	if err != nil || len(accountPlan.Operations) != 1 || accountPlan.Operations[0].Subdomain == nil || *accountPlan.Operations[0].Subdomain != "agentscope-dev" {
+		t.Fatalf("account plan: %v %#v", err, accountPlan.Operations)
+	}
+}
+
+func TestAccountWorkersDevPlanAppliesThroughClosedAction(t *testing.T) {
+	item := newFixture(t)
+	state := syntheticState(item.installation.AccountID, 0, "account", item.now)
+	plan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "account-workers-dev-enable", State: state, ObservationID: "observation-account", AccountSubdomain: "agentscope-dev", Now: item.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(plan)
+	authorization, observation, attestation := item.authority(plan, data)
+	executor := &recordingExecutor{}
+	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: data, AuthorizationData: authorization, ObservationData: observation, AttestationData: attestation, Now: item.now, Clock: func() time.Time { return item.now }}, executor, item.accountObserver()); err != nil {
+		t.Fatal(err)
+	}
+	if executor.count() != 1 || executor.calls[0].Action != "account.workersDev.enable" || executor.calls[0].Subdomain != "agentscope-dev" {
+		t.Fatalf("unexpected account action %#v", executor.calls)
+	}
+}
+
+func TestActionTransitionRejectsUnrelatedDriftAndWriteOnlyRotation(t *testing.T) {
+	item := newFixture(t)
+	plan, _ := item.plan()
+	before := syntheticState(item.installation.AccountID, 0, "deploy", item.now)
+	after := syntheticState(item.installation.AccountID, 1, "deploy", item.now)
+	if err := ValidateActionTransition(plan, plan.Operations[0], before, after); err != nil {
+		t.Fatalf("initial secret transition: %v", err)
+	}
+	drifted := syntheticState(item.installation.AccountID, 1, "deploy", item.now)
+	drifted.Surfaces["accountWorkersDev"] = map[string]any{"enabled": false}
+	if err := ValidateActionTransition(plan, plan.Operations[0], before, drifted); err == nil {
+		t.Fatal("unrelated account drift accepted")
+	}
+	if err := ValidateActionTransition(plan, plan.Operations[0], after, after); err == nil || !strings.Contains(err.Error(), "E_WRITE_ONLY_ROTATION_UNCERTAIN") {
+		t.Fatalf("write-only rotation accepted: %v", err)
+	}
+}
+
+func TestTerminalObservationCannotBorrowUnrelatedResourceFields(t *testing.T) {
+	item := newFixture(t)
+	plan, _ := item.plan()
+	state := syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+	if err := ValidateTerminalObservation(plan, state); err != nil {
+		t.Fatalf("valid terminal state: %v", err)
+	}
+	settings := state.Surfaces["workerSettings"].(map[string]any)
+	bindings := settings["bindings"].([]any)
+	settings["bindings"] = bindings[1:]
+	state.Surfaces["unrelatedWorker"] = map[string]any{"name": "FLEET", "class_name": "FleetDurableObject", "namespace_id": "namespace-1"}
+	if ValidateTerminalObservation(plan, state) == nil {
+		t.Fatal("unrelated binding satisfied target terminal oracle")
+	}
+	retirement, _ := item.retirementPlan()
+	retired := syntheticState(item.installation.AccountID, 8, "retire", item.now)
+	if err := ValidateTerminalObservation(retirement, retired); err != nil {
+		t.Fatalf("valid retirement terminal state: %v", err)
+	}
+	retired.Surfaces["accountWorkers"] = []any{map[string]any{"id": WorkerName}}
+	if ValidateTerminalObservation(retirement, retired) == nil {
+		t.Fatal("retirement accepted target in account inventory")
+	}
+}
+
+func (item fixture) retirementObserver() StateObserver {
+	return &advancingObserver{account: item.installation.AccountID, now: item.now, kind: "retire"}
+}
+
+func (item fixture) accountObserver() StateObserver {
+	return &advancingObserver{account: item.installation.AccountID, now: item.now, kind: "account"}
 }
 
 func TestInstalledRootsAndPrivateState(t *testing.T) {
@@ -416,7 +626,7 @@ func TestApplyRefusesRemotePrestateMismatchBeforeMutation(t *testing.T) {
 	plan, data := item.plan()
 	authorization, observation, attestation := item.authority(plan, data)
 	executor := &recordingExecutor{}
-	wrong := syntheticState(item.installation.AccountID, 99, item.now)
+	wrong := syntheticState(item.installation.AccountID, 99, "deploy", item.now)
 	err := item.store.Apply(context.Background(), ApplyInput{PlanData: data, AuthorizationData: authorization, ObservationData: observation, AttestationData: attestation, Now: item.now, Clock: func() time.Time { return item.now }}, executor, fixedObserver{state: wrong})
 	if err == nil || !strings.Contains(err.Error(), "E_OBSERVABLE_PRESTATE") || executor.count() != 0 {
 		t.Fatalf("remote prestate mismatch was not fail-closed: %v calls=%d", err, executor.count())
@@ -520,7 +730,7 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	}
 	retirement, retirementData := item.retirementPlan()
 	retirementAuth, retirementObservation, retirementAttestation := item.authority(retirement, retirementData)
-	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: retirementData, AuthorizationData: retirementAuth, ObservationData: retirementObservation, AttestationData: retirementAttestation, RetirementEvidenceData: item.signedRetirementEvidence(retirement), Now: item.now, Clock: func() time.Time { return item.now }}, executor, item.observer()); err != nil {
+	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: retirementData, AuthorizationData: retirementAuth, ObservationData: retirementObservation, AttestationData: retirementAttestation, RetirementEvidenceData: item.signedRetirementEvidence(retirement), Now: item.now, Clock: func() time.Time { return item.now }}, executor, item.retirementObserver()); err != nil {
 		t.Fatal(err)
 	}
 	if executor.count() != 8 {
@@ -598,6 +808,9 @@ func TestRecoveryClassifiesCrashAfterConsumeBeforeFenceAsDefiniteNoncommit(t *te
 	if _, err := item.store.consumePlan(digest, item.now); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeExclusive(item.store.path("journal", "mutation.lock"), []byte(digest+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	evidence := strings.Repeat("a", 64)
 	if _, err := item.store.RecoverQuarantine(digest, "plan", evidence, item.now, syntheticOperatorPassphrase); err != nil {
 		t.Fatal(err)
@@ -611,6 +824,9 @@ func TestRecoveryClassifiesCrashAfterConsumeBeforeFenceAsDefiniteNoncommit(t *te
 	}
 	if err := item.store.ensureNoActiveMutation(); err != nil {
 		t.Fatalf("definite noncommit still blocks admission: %v", err)
+	}
+	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); !os.IsNotExist(err) {
+		t.Fatal("definite noncommit retained matching fence")
 	}
 }
 
@@ -747,17 +963,29 @@ func TestCloudflareDeleteUsesFixedResourceAndNoForce(t *testing.T) {
 	if string(body) != "[]" {
 		t.Fatalf("unexpected schedule body %q", body)
 	}
+	if _, err := executor.invokeCloudflare(context.Background(), Invocation{Action: "account.workersDev.enable", Subdomain: "agentscope-dev", DeploymentCredential: []byte("credential-canary")}); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Method != http.MethodPut || observed.URL.Path != "/client/v4/accounts/account-1/workers/subdomain" {
+		t.Fatalf("unexpected account subdomain request: %s %s", observed.Method, observed.URL.Path)
+	}
+	executor.HTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://example.invalid/stolen"}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+	})}
+	if _, err := executor.invokeCloudflare(context.Background(), Invocation{Action: "worker.version.delete", VersionID: "version-123", DeploymentCredential: []byte("credential-canary")}); err == nil {
+		t.Fatal("credentialed mutation followed redirect")
+	}
 }
 
 func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *testing.T) {
 	var requests []*http.Request
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests = append(requests, request.Clone(request.Context()))
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"id":"version-current","namespace_id":"namespace-1","tag":"v1"},"errors":[],"messages":[]}`)), Header: http.Header{}}, nil
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"id":"version-current","namespace_id":"namespace-1","tag":"v1"},"errors":[],"messages":[],"result_info":{"page":1,"per_page":1000,"total_pages":1}}`)), Header: http.Header{}}, nil
 	})}
 	observer := CloudflareObserver{AccountID: "account-1", Client: client}
 	state, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC())
-	if err != nil || len(requests) != 11 || !stateContainsIdentity(state, "version-current") || !stateContainsIdentity(state, "namespace-1") || !stateContainsIdentity(state, "v1") {
+	if err != nil || len(requests) != 12 || !stateContainsIdentity(state, "version-current") || !stateContainsIdentity(state, "namespace-1") || !stateContainsIdentity(state, "v1") {
 		t.Fatalf("observation failed: %v requests=%d identities=%v", err, len(requests), state.IdentitySet)
 	}
 	for _, request := range requests {
@@ -776,6 +1004,18 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 	})}
 	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_PAGINATION") {
 		t.Fatal("incomplete paginated inventory accepted")
+	}
+	observer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://example.invalid/stolen"}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+	})}
+	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil {
+		t.Fatal("credentialed observer followed redirect")
+	}
+	observer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":[],"errors":[],"messages":[]}`)), Header: http.Header{}, Request: request}, nil
+	})}
+	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_PAGINATION") {
+		t.Fatal("missing completeness metadata accepted on paginated inventory")
 	}
 }
 
