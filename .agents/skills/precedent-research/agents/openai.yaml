@@ -1,0 +1,6 @@
+interface:
+  display_name: "Precedent Research"
+  short_description: "Research comparable systems for Agentscope"
+  default_prompt: "Use $precedent-research to add or update an Agentscope precedent record."
+policy:
+  allow_implicit_invocation: false
