@@ -1,6 +1,7 @@
 import {
   mkdtemp,
   mkdir,
+  readdir,
   rename,
   rm,
   symlink,
@@ -29,6 +30,10 @@ const roots: string[] = [];
 const physicalTemporaryRoot = realpathSync(tmpdir());
 const auditPlan = (value: unknown): NativeFixtureAuditTestPlan =>
   JSON.stringify(value) as NativeFixtureAuditTestPlan;
+const auditPlanNamespaces = async (): Promise<readonly string[]> =>
+  (await readdir(physicalTemporaryRoot))
+    .filter((entry) => entry.startsWith("agentscope-native-fixture-plan-"))
+    .sort();
 
 afterEach(async () => {
   await Promise.all(
@@ -1163,9 +1168,12 @@ describe("native fixture cross-realm Promise plan rejection", () => {
       process.off("unhandledRejection", foreignRejectionListener);
     }
   });
+});
 
+describe("native fixture serialized plan validation", () => {
   it("rejects malformed and foreign serialized plans", async () => {
     const root = await writeInventoryFixture();
+    const namespacesBefore = await auditPlanNamespaces();
     for (const encodedPlan of [
       "{" as NativeFixtureAuditTestPlan,
       "x".repeat(8_193) as NativeFixtureAuditTestPlan,
@@ -1175,6 +1183,8 @@ describe("native fixture cross-realm Promise plan rejection", () => {
       ).rejects.toThrow("harness.fixture.inventory.test-plan");
     for (const testPlan of [
       { kind: "worker-directive", directive: "foreign" },
+      { kind: "expire-at-capability-phase", phase: "foreign" },
+      { kind: "expire-at-capability-phase", phase: 42 },
       { kind: "foreign" },
       {
         kind: "swap-root-during-scan",
@@ -1185,10 +1195,27 @@ describe("native fixture cross-realm Promise plan rejection", () => {
       await expect(
         auditNativeFixtureInventory(root, auditPlan(testPlan)),
       ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    expect(await auditPlanNamespaces()).toEqual(namespacesBefore);
   });
 });
 
 describe("native fixture fixed audit test operations", () => {
+  it("cleans its namespace when authority expires after preparation", async () => {
+    const root = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
+    const before = await auditPlanNamespaces();
+    await expect(
+      auditNativeFixtureInventory(
+        root,
+        auditPlan({ kind: "expire-after-prepare" }),
+      ),
+    ).rejects.toThrow("harness.fixture.inventory.capability");
+    expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    expect(await auditPlanNamespaces()).toEqual(before);
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
+  });
+
   it("expires after worker join before parent processing", async () => {
     const root = await writeInventoryFixture();
     const original = await auditNativeFixtureInventory(root);
@@ -1208,9 +1235,11 @@ describe("native fixture fixed audit test operations", () => {
   ] as const)("collapses and recovers from %s", async (kind) => {
     const root = await writeInventoryFixture();
     const original = await auditNativeFixtureInventory(root);
+    const before = await auditPlanNamespaces();
     await expect(
       auditNativeFixtureInventory(root, auditPlan({ kind })),
     ).rejects.toThrow("harness.fixture.inventory.test-plan");
+    expect(await auditPlanNamespaces()).toEqual(before);
     await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
 
@@ -1289,6 +1318,30 @@ describe("native fixture fixed audit test operations", () => {
       ),
     ).rejects.toThrow("harness.fixture.inventory.capability");
     expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+  });
+});
+
+describe("native fixture capability protocol authority", () => {
+  it.each([
+    "before-ready-await",
+    "after-ready-await",
+    "before-snapshot-await",
+    "after-snapshot-await",
+    "before-terminal-await",
+    "after-terminal-await",
+    "before-settlement-await",
+    "after-settlement-await",
+  ] as const)("expires at %s, joins, and stops the protocol", async (phase) => {
+    const root = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
+    await expect(
+      auditNativeFixtureInventory(
+        root,
+        auditPlan({ kind: "expire-at-capability-phase", phase }),
+      ),
+    ).rejects.toThrow("harness.fixture.inventory.capability");
+    expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
   });
 });
 

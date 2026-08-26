@@ -747,14 +747,37 @@ type NativeFixtureAuditDirective =
   | "timeout-child"
   | undefined;
 
+const capabilityAuthorityPhases = Object.freeze([
+  "after-ready-await",
+  "after-settlement-await",
+  "after-snapshot-await",
+  "after-terminal-await",
+  "before-ready-await",
+  "before-settlement-await",
+  "before-snapshot-await",
+  "before-terminal-await",
+] as const);
+type CapabilityAuthorityPhase = (typeof capabilityAuthorityPhases)[number];
+
+const isCapabilityAuthorityPhase = (
+  value: unknown,
+): value is CapabilityAuthorityPhase =>
+  typeof value === "string" &&
+  (capabilityAuthorityPhases as readonly string[]).includes(value);
+
 type NativeFixtureAuditTestPlanDescriptor =
   | Readonly<{
       kind: "worker-directive";
       directive: Exclude<NativeFixtureAuditDirective, undefined>;
     }>
   | Readonly<{
+      kind: "expire-at-capability-phase";
+      phase: CapabilityAuthorityPhase;
+    }>
+  | Readonly<{
       kind:
         | "expire-after-capability"
+        | "expire-after-prepare"
         | "hold-root-before-capability"
         | "namespace-operation-failure"
         | "root-operation-failure-after-hold"
@@ -879,8 +902,22 @@ const parseAuditTestPlan = (
         return fail("harness.fixture.inventory.test-plan");
     }
   }
+  if (snapshot.kind === "expire-at-capability-phase") {
+    exactKeys(
+      snapshot,
+      ["kind", "phase"],
+      "harness.fixture.inventory.test-plan",
+    );
+    if (!isCapabilityAuthorityPhase(snapshot.phase))
+      return fail("harness.fixture.inventory.test-plan");
+    return Object.freeze({
+      kind: "expire-at-capability-phase" as const,
+      phase: snapshot.phase,
+    });
+  }
   if (
     snapshot.kind === "expire-after-capability" ||
+    snapshot.kind === "expire-after-prepare" ||
     snapshot.kind === "hold-root-before-capability" ||
     snapshot.kind === "namespace-operation-failure" ||
     snapshot.kind === "root-operation-failure-after-hold" ||
@@ -904,6 +941,7 @@ const prepareAuditTestPlan = (
 ): NativeFixtureAuditTestPlanRuntime | undefined => {
   if (descriptor === undefined) return undefined;
   if (
+    descriptor.kind !== "expire-after-prepare" &&
     descriptor.kind !== "hold-root-before-capability" &&
     descriptor.kind !== "namespace-operation-failure" &&
     descriptor.kind !== "root-operation-failure-after-hold" &&
@@ -916,12 +954,13 @@ const prepareAuditTestPlan = (
       state: { rootHeld: false, replacementAtRoot: false },
     });
   authenticateOwnedTestRoot(root);
+  let namespaceRoot: string | undefined;
   try {
-    if (descriptor.kind === "namespace-operation-failure")
-      throw new Error("synthetic namespace failure");
-    const namespaceRoot = mkdtempSync(
+    namespaceRoot = mkdtempSync(
       `${physicalTemporaryRoot}/agentscope-native-fixture-plan-`,
     );
+    if (descriptor.kind === "namespace-operation-failure")
+      throw new Error("synthetic namespace failure");
     const identity = lstatSync(namespaceRoot, { bigint: true });
     /* v8 ignore next 8 -- mkdtempSync with this physical direct-child template
      * guarantees these closed namespace invariants; they remain fail-closed. */
@@ -941,6 +980,17 @@ const prepareAuditTestPlan = (
       state: { rootHeld: false, replacementAtRoot: false },
     });
   } catch {
+    /* v8 ignore else -- mkdtempSync failed before any owned path existed, so
+     * the false branch has no cleanup behavior to exercise. */
+    if (namespaceRoot !== undefined) {
+      try {
+        rmSync(namespaceRoot, { force: true, recursive: true });
+      } catch {
+        /* v8 ignore next -- the freshly created empty private namespace has no
+         * independent mutation source; retain a content-free OS-fault guard. */
+        return fail("harness.fixture.inventory.test-plan");
+      }
+    }
     return fail("harness.fixture.inventory.test-plan");
   }
 };
@@ -1323,6 +1373,112 @@ const spawnCapabilityWorker = (root: string, signal: AbortSignal) =>
     },
   );
 
+const assertCapabilityAuthority = (
+  authorityDeadline: number,
+  testPlan: NativeFixtureAuditTestPlanRuntime | undefined,
+  phase?: CapabilityAuthorityPhase,
+): void => {
+  assertAuditAuthority(
+    authorityDeadline,
+    phase !== undefined &&
+      testPlan?.descriptor.kind === "expire-at-capability-phase" &&
+      testPlan.descriptor.phase === phase,
+  );
+};
+
+const readCapabilityReady = async (
+  lines: AsyncIterator<string>,
+  expectedRoot: AncestorIdentity,
+  authorityDeadline: number,
+  testPlan: NativeFixtureAuditTestPlanRuntime | undefined,
+): Promise<void> => {
+  assertCapabilityAuthority(authorityDeadline, testPlan, "before-ready-await");
+  const readyLine = await lines.next();
+  assertCapabilityAuthority(authorityDeadline, testPlan, "after-ready-await");
+  const ready = record(
+    parseCapabilityLine(readyLine.value),
+    ["kind", "dev", "ino"],
+    "harness.fixture.inventory.capability",
+  );
+  assertCapabilityAuthority(authorityDeadline, testPlan);
+  /* v8 ignore next -- the fixed child's ready record is inode-bound; this
+   * rejects an external runtime/protocol violation independently. */
+  if (
+    readyLine.done ||
+    ready.kind !== "ready" ||
+    ready.dev !== String(expectedRoot.dev) ||
+    ready.ino !== String(expectedRoot.ino)
+  )
+    fail("harness.fixture.inventory.ancestor-identity");
+};
+
+const readCapabilitySnapshot = async (
+  lines: AsyncIterator<string>,
+  authorityDeadline: number,
+  testPlan: NativeFixtureAuditTestPlanRuntime | undefined,
+): Promise<readonly CapabilitySnapshotFile[]> => {
+  assertCapabilityAuthority(
+    authorityDeadline,
+    testPlan,
+    "before-snapshot-await",
+  );
+  const snapshotLine = await lines.next();
+  assertCapabilityAuthority(
+    authorityDeadline,
+    testPlan,
+    "after-snapshot-await",
+  );
+  const parsedSnapshot = parseCapabilityLine(snapshotLine.value);
+  assertCapabilityAuthority(authorityDeadline, testPlan);
+  /* v8 ignore next -- the fixed worker emits only object records; the false
+   * arm retains a content-free failure for compromised output. */
+  const snapshotKind: unknown =
+    typeof parsedSnapshot === "object" && parsedSnapshot !== null
+      ? Object.getOwnPropertyDescriptor(parsedSnapshot, "kind")?.value
+      : undefined;
+  const snapshot = record(
+    parsedSnapshot,
+    snapshotKind === "snapshot" ? ["kind", "files"] : ["kind", "code"],
+    "harness.fixture.inventory.capability",
+  );
+  assertCapabilityAuthority(authorityDeadline, testPlan);
+  if (snapshotLine.done || snapshot.kind !== "snapshot")
+    fail("harness.fixture.inventory.capability");
+  const decodedFiles = decodeCapabilityFiles(snapshot.files);
+  assertCapabilityAuthority(authorityDeadline, testPlan);
+  return decodedFiles;
+};
+
+const readCapabilityTerminal = async (
+  lines: AsyncIterator<string>,
+  authorityDeadline: number,
+  testPlan: NativeFixtureAuditTestPlanRuntime | undefined,
+): Promise<void> => {
+  assertCapabilityAuthority(
+    authorityDeadline,
+    testPlan,
+    "before-terminal-await",
+  );
+  const terminalLine = await lines.next();
+  assertCapabilityAuthority(
+    authorityDeadline,
+    testPlan,
+    "after-terminal-await",
+  );
+  const terminal = record(
+    parseCapabilityLine(terminalLine.value),
+    ["kind", "status"],
+    "harness.fixture.inventory.capability",
+  );
+  assertCapabilityAuthority(authorityDeadline, testPlan);
+  if (
+    terminalLine.done ||
+    terminal.kind !== "terminal" ||
+    terminal.status !== "complete"
+  )
+    fail("harness.fixture.inventory.capability");
+};
+
 const acquireCapabilitySnapshot = async (
   root: string,
   expectedRoot: AncestorIdentity,
@@ -1363,26 +1519,15 @@ const acquireCapabilitySnapshot = async (
   ]();
   let settled: CapabilitySettlement | undefined;
   try {
-    const readyLine = await lines.next();
-    const ready = record(
-      parseCapabilityLine(readyLine.value),
-      ["kind", "dev", "ino"],
-      "harness.fixture.inventory.capability",
-    );
-    /* v8 ignore next -- the fixed child's ready record is inode-bound; this
-     * rejects an external runtime/protocol violation independently. */
-    if (
-      readyLine.done ||
-      ready.kind !== "ready" ||
-      ready.dev !== String(expectedRoot.dev) ||
-      ready.ino !== String(expectedRoot.ino)
-    )
-      fail("harness.fixture.inventory.ancestor-identity");
+    await readCapabilityReady(lines, expectedRoot, authorityDeadline, testPlan);
+    assertCapabilityAuthority(authorityDeadline, testPlan);
     applyPlan("root-capability-acquired");
+    assertCapabilityAuthority(authorityDeadline, testPlan);
     const directive =
       testPlan?.descriptor.kind === "worker-directive"
         ? testPlan.descriptor.directive
         : undefined;
+    assertCapabilityAuthority(authorityDeadline, testPlan);
     const forceAuthorityExpiry = dispatchCapabilityDirective(
       directive,
       (command) => {
@@ -1393,36 +1538,23 @@ const acquireCapabilitySnapshot = async (
       },
       abortWork,
     );
-    const snapshotLine = await lines.next();
-    const parsedSnapshot = parseCapabilityLine(snapshotLine.value);
-    /* v8 ignore next -- the fixed worker emits only object records; the false
-     * arm retains a content-free failure for compromised output. */
-    const snapshotKind: unknown =
-      typeof parsedSnapshot === "object" && parsedSnapshot !== null
-        ? Object.getOwnPropertyDescriptor(parsedSnapshot, "kind")?.value
-        : undefined;
-    const snapshot = record(
-      parsedSnapshot,
-      snapshotKind === "snapshot" ? ["kind", "files"] : ["kind", "code"],
-      "harness.fixture.inventory.capability",
+    assertCapabilityAuthority(authorityDeadline, testPlan);
+    const decodedFiles = await readCapabilitySnapshot(
+      lines,
+      authorityDeadline,
+      testPlan,
     );
-    if (snapshotLine.done || snapshot.kind !== "snapshot")
-      fail("harness.fixture.inventory.capability");
-    const decodedFiles = decodeCapabilityFiles(snapshot.files);
+    assertCapabilityAuthority(authorityDeadline, testPlan);
     applyPlan("root-capability-before-release");
+    assertCapabilityAuthority(authorityDeadline, testPlan);
     child.stdin.end("release\n");
-    const terminalLine = await lines.next();
-    const terminal = record(
-      parseCapabilityLine(terminalLine.value),
-      ["kind", "status"],
-      "harness.fixture.inventory.capability",
+    assertCapabilityAuthority(authorityDeadline, testPlan);
+    await readCapabilityTerminal(lines, authorityDeadline, testPlan);
+    assertCapabilityAuthority(
+      authorityDeadline,
+      testPlan,
+      "before-settlement-await",
     );
-    if (
-      terminalLine.done ||
-      terminal.kind !== "terminal" ||
-      terminal.status !== "complete"
-    )
-      fail("harness.fixture.inventory.capability");
     settled = await settleCapabilityWorker(
       settlement,
       authorityDeadline,
@@ -1431,6 +1563,11 @@ const acquireCapabilitySnapshot = async (
         child.kill("SIGKILL");
       },
       () => childError,
+    );
+    assertCapabilityAuthority(
+      authorityDeadline,
+      testPlan,
+      "after-settlement-await",
     );
     return Object.freeze(decodedFiles);
   } catch (error) {
@@ -1456,24 +1593,22 @@ export const auditNativeFixtureInventory = async (
   assertAuditAuthority(authorityDeadline);
   const lexicalRoot = resolve(harnessPackagesRoot);
   assertAuditAuthority(authorityDeadline);
-  assertAuditAuthority(authorityDeadline);
   const testPlanDescriptor = parseAuditTestPlan(testPlanInput);
-  assertAuditAuthority(authorityDeadline);
   assertAuditAuthority(authorityDeadline);
   const ancestry = await authenticateLexicalAncestry(lexicalRoot);
   assertAuditAuthority(authorityDeadline);
-  assertAuditAuthority(authorityDeadline);
   const testPlan = prepareAuditTestPlan(testPlanDescriptor, lexicalRoot);
-  assertAuditAuthority(authorityDeadline);
   let files: readonly CapabilitySnapshotFile[];
   try {
-    assertAuditAuthority(authorityDeadline);
+    assertAuditAuthority(
+      authorityDeadline,
+      testPlanDescriptor?.kind === "expire-after-prepare",
+    );
     applyAuditTestPlan(
       testPlan,
       "lexical-ancestry-before-capability",
       lexicalRoot,
     );
-    assertAuditAuthority(authorityDeadline);
     assertAuditAuthority(authorityDeadline);
     await assertStableLexicalAncestry(ancestry);
     assertAuditAuthority(authorityDeadline);
@@ -1485,7 +1620,6 @@ export const auditNativeFixtureInventory = async (
       authorityDeadline,
       testPlan,
     );
-    assertAuditAuthority(authorityDeadline);
     assertAuditAuthority(authorityDeadline);
     await assertStableLexicalAncestry(ancestry);
     assertAuditAuthority(authorityDeadline);

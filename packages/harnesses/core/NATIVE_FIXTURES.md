@@ -90,8 +90,11 @@ no signal. No success or failure returns before direct-child close is confirmed;
 if the runtime delays close after forced termination, the join invariant—not a
 wall-clock shortcut—governs return. Root restoration and worker cleanup remain
 mandatory and may outlast the work authority. Expiry is checked again
-immediately before spawn, so an expired audit starts no child work. The optional audit test plan is
-a bounded, serialized JSON primitive decoded into closed plain data. Passing an
+immediately before spawn, so an expired audit starts no child work. Ready,
+snapshot, terminal, and settlement awaits plus their intervening protocol
+parsing, mutation, and release actions are each checked on both boundaries. The
+optional audit test plan is a bounded, serialized JSON primitive decoded into
+closed plain data. Passing an
 object, proxy, callback, thenable, oversized value, or malformed JSON cannot
 execute caller properties or callbacks inside the authority. A genuine native
 Promise is rejected as invalid while module-initialization captures of the
@@ -104,10 +107,12 @@ mutation requires a physical direct test root and uses only paths derived inside
 a fresh mode-0700 namespace created atomically beneath the physical temporary
 root. Fixed-operation failure regressions prove that a held root is restored
 before the owned namespace is removed. Malformed plans and internal plan
-failures collapse to one content-free diagnostic. Harness Core's unit suite runs
-this inventory audit on every repository validation. The post-adapter inventory
-certification remains responsible for proving that every implemented native
-mapping is represented.
+failures collapse to one content-free diagnostic. Preparation self-cleans any
+private namespace before propagating failure, and cleanup ownership begins
+before the first post-preparation authority check. Harness Core's unit suite
+runs this inventory audit on every repository validation. The post-adapter
+inventory certification remains responsible for proving that every implemented
+native mapping is represented.
 
 All fixtures governed here are component-only, including fixtures whose capture
 metadata records a disposable-hermetic source. Actual-binary, compatibility
