@@ -43,7 +43,7 @@
     "zod": "4.4.3"
   },
   "scripts": {
-    "build": "node ../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json && node verify-artifact.mjs",
+    "build": "node ../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config ../../vitest.config.ts",
     "lint": "eslint src --max-warnings=0",
