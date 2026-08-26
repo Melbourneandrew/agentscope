@@ -96,31 +96,43 @@ export const runClaudeCodeHook = async (
 
 const sharedContractMarker = "vendor-observability-hook";
 const markerDecoder = new TextDecoder();
-const testingPluginInventory = Object.freeze({
-  settingsLayers: Object.freeze([]),
-  installedPlugins: Object.freeze([]),
-});
+const testingPluginInventory = (
+  target: Readonly<{ targetPath: string; digest: string; exists: boolean }>,
+) =>
+  Object.freeze({
+    settingsLayers: Object.freeze([
+      Object.freeze({
+        scope: "user" as const,
+        targetPath: target.targetPath,
+        targetDigest: target.digest,
+        targetExists: target.exists,
+        enabledPlugins: Object.freeze({}),
+      }),
+    ]),
+    installedPlugins: Object.freeze([]),
+  });
 const isSharedContractMarker = (bytes: Uint8Array | null): boolean =>
   bytes !== null && markerDecoder.decode(bytes) === sharedContractMarker;
 
 const createTestingInstallationPlanner: HarnessComponentContractAdapter["createInstallationPlanner"] =
   (operation, invocation) => {
-    const productionPlanner = createClaudeCodeInstallationPlanner(
-      operation,
-      invocation,
-      testingPluginInventory,
-    );
-    const installPlanner = createClaudeCodeInstallationPlanner(
-      "install",
-      invocation,
-      testingPluginInventory,
-    );
     return (target) => {
+      const inventory = testingPluginInventory(target);
+      const productionPlanner = createClaudeCodeInstallationPlanner(
+        operation,
+        invocation,
+        inventory,
+      );
       if (!isSharedContractMarker(target.bytes))
         return productionPlanner(target);
       if (operation === "uninstall") return { kind: "unchanged" };
       if (operation === "install") return { kind: "conflict" };
-      return installPlanner({ ...target, exists: false, bytes: null });
+      const absentTarget = { ...target, exists: false, bytes: null };
+      return createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        testingPluginInventory(absentTarget),
+      )(absentTarget);
     };
   };
 

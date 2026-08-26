@@ -45,6 +45,7 @@ export type ClaudeCodePluginSettingsLayer = Readonly<{
   scope: ClaudeCodeSettingsScope;
   targetPath: string;
   targetDigest: string;
+  targetExists: boolean;
   enabledPlugins: Readonly<Record<string, boolean>>;
 }>;
 
@@ -200,6 +201,7 @@ const parsePluginInventory = (
       "enabledPlugins",
       "scope",
       "targetDigest",
+      "targetExists",
       "targetPath",
     ]);
     if (layer === undefined) return undefined;
@@ -213,6 +215,7 @@ const parsePluginInventory = (
       normalize(layer.targetPath) !== layer.targetPath ||
       typeof layer.targetDigest !== "string" ||
       !digestPattern.test(layer.targetDigest) ||
+      typeof layer.targetExists !== "boolean" ||
       enabledPlugins === undefined
     )
       return undefined;
@@ -221,6 +224,7 @@ const parsePluginInventory = (
         scope: layer.scope as ClaudeCodeSettingsScope,
         targetPath: layer.targetPath,
         targetDigest: layer.targetDigest,
+        targetExists: layer.targetExists,
         enabledPlugins,
       }),
     );
@@ -333,9 +337,9 @@ const isReviewedOfficialLangfuseRecord = (
   plugin.directTraceExporter &&
   ["Stop", "SessionEnd"].every((event) => plugin.hookEvents.includes(event));
 
-const inspectPluginOverlap = (inventory: unknown): InspectedPluginOverlap => {
-  const parsed = parsePluginInventory(inventory);
-  if (parsed === undefined) return Object.freeze({ status: "ambiguous" });
+const inspectParsedPluginOverlap = (
+  parsed: ClaudeCodePluginInventory,
+): InspectedPluginOverlap => {
   const enabled = effectiveEnabledPlugins(parsed.settingsLayers);
   if (enabled === undefined) return Object.freeze({ status: "ambiguous" });
   const records = parsed.installedPlugins.filter(
@@ -391,6 +395,13 @@ const inspectPluginOverlap = (inventory: unknown): InspectedPluginOverlap => {
       });
   }
   return Object.freeze({ status: "absent" });
+};
+
+const inspectPluginOverlap = (inventory: unknown): InspectedPluginOverlap => {
+  const parsed = parsePluginInventory(inventory);
+  return parsed === undefined
+    ? Object.freeze({ status: "ambiguous" })
+    : inspectParsedPluginOverlap(parsed);
 };
 
 export const inspectClaudeCodePluginOverlap = (
@@ -579,12 +590,49 @@ const editHooks = (
 const disableMigratedPlugin = (
   settings: Record<string, unknown>,
   pluginId: string,
-): boolean => {
-  const enabledPlugins = settings.enabledPlugins;
-  if (!isRecord(enabledPlugins) || enabledPlugins[pluginId] !== true)
-    return false;
+): void => {
+  const enabledPlugins = settings.enabledPlugins as Record<string, unknown>;
   settings.enabledPlugins = { ...enabledPlugins, [pluginId]: false };
-  return true;
+};
+
+const enabledPluginsEqual = (
+  left: Readonly<Record<string, boolean>>,
+  right: Readonly<Record<string, boolean>>,
+): boolean => {
+  const leftEntries = Object.keys(left)
+    .sort()
+    .map((key) => [key, left[key]]);
+  const rightEntries = Object.keys(right)
+    .sort()
+    .map((key) => [key, right[key]]);
+  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
+};
+
+const targetLayerAgrees = (
+  inventory: ClaudeCodePluginInventory,
+  target: Readonly<{
+    exists: boolean;
+    digest: string;
+    targetPath: string;
+  }>,
+  settings: Readonly<Record<string, unknown>>,
+): boolean => {
+  const visibleEnabledPlugins =
+    settings.enabledPlugins === undefined
+      ? Object.freeze({})
+      : parseEnabledPlugins(settings.enabledPlugins);
+  if (visibleEnabledPlugins === undefined) return false;
+  const boundLayers = inventory.settingsLayers.filter(
+    (layer) =>
+      layer.scope === "user" &&
+      layer.targetPath === target.targetPath &&
+      layer.targetDigest === target.digest &&
+      layer.targetExists === target.exists,
+  );
+  return (
+    boundLayers.length === 1 &&
+    enabledPluginsEqual(boundLayers[0]!.enabledPlugins, visibleEnabledPlugins)
+  );
 };
 
 export const createClaudeCodeInstallationPlanner = (
@@ -594,12 +642,25 @@ export const createClaudeCodeInstallationPlanner = (
 ): HarnessInstallationPlanner => {
   if (!isOwnedHarnessHookInvocation(invocation))
     return () => ({ kind: "conflict" });
-  const overlap = inspectPluginOverlap(inventory);
+  const parsedInventory = parsePluginInventory(inventory);
+  if (parsedInventory === undefined) return () => ({ kind: "conflict" });
+  const overlap = inspectParsedPluginOverlap(parsedInventory);
   return ({ exists, bytes, digest, targetPath }) => {
     if (overlap.status === "ambiguous") return { kind: "conflict" };
+    if (exists !== (bytes !== null)) return { kind: "conflict" };
     const current = bytes === null ? "" : decode(bytes);
     if (current === undefined) return { kind: "unsupported" };
     if (current === "unsupported-native-format") return { kind: "unsupported" };
+    const settings = exists && bytes !== null ? parseSettings(bytes) : {};
+    if (settings === undefined) return { kind: "unsupported" };
+    if (
+      !targetLayerAgrees(
+        parsedInventory,
+        { exists, digest, targetPath },
+        settings,
+      )
+    )
+      return { kind: "conflict" };
     if (operation === "uninstall") {
       if (!exists || bytes === null) return { kind: "unchanged" };
       if (current === decoder.decode(encodeSettings(ownedSettings(invocation))))
@@ -616,14 +677,8 @@ export const createClaudeCodeInstallationPlanner = (
         overlap.targetDigest !== digest)
     )
       return { kind: "conflict" };
-    const settings = exists && bytes !== null ? parseSettings(bytes) : {};
-    if (settings === undefined) return { kind: "unsupported" };
-    if (
-      operation === "migrate" &&
-      overlap.status === "conflict" &&
-      !disableMigratedPlugin(settings, overlap.pluginId)
-    )
-      return { kind: "conflict" };
+    if (operation === "migrate" && overlap.status === "conflict")
+      disableMigratedPlugin(settings, overlap.pluginId);
     const result = editHooks(settings, invocation, operation);
     if (result === "conflict") return { kind: "conflict" };
     if (result === "unchanged") return { kind: "unchanged" };

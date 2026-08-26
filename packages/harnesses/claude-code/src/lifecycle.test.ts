@@ -106,6 +106,7 @@ const officialInventory = (): ClaudeCodePluginInventory => ({
       scope: "user",
       targetPath: targetPathByScope.user,
       targetDigest,
+      targetExists: true,
       enabledPlugins: {
         [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
       },
@@ -114,8 +115,16 @@ const officialInventory = (): ClaudeCodePluginInventory => ({
   installedPlugins: [officialPlugin()],
 });
 
-const emptyInventory = (): ClaudeCodePluginInventory => ({
-  settingsLayers: [],
+const emptyInventory = (targetExists = true): ClaudeCodePluginInventory => ({
+  settingsLayers: [
+    {
+      scope: "user",
+      targetPath: targetPathByScope.user,
+      targetDigest,
+      targetExists,
+      enabledPlugins: {},
+    },
+  ],
   installedPlugins: [],
 });
 
@@ -127,6 +136,7 @@ const officialInventoryAt = (
       scope,
       targetPath: targetPathByScope[scope],
       targetDigest,
+      targetExists: true,
       enabledPlugins: {
         [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
       },
@@ -153,6 +163,7 @@ describe("Claude Code plugin overlap", () => {
             scope: "managed",
             targetPath: targetPathByScope.managed,
             targetDigest,
+            targetExists: true,
             enabledPlugins: {
               [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: false,
             },
@@ -210,6 +221,7 @@ describe("Claude Code exporter reconciliation", () => {
         scope: "project" as const,
         targetPath: targetPathByScope.project,
         targetDigest,
+        targetExists: true,
         enabledPlugins: { "other-exporter": true },
       },
     ];
@@ -235,6 +247,7 @@ describe("Claude Code exporter reconciliation", () => {
             scope: "local",
             targetPath: targetPathByScope.local,
             targetDigest,
+            targetExists: true,
             enabledPlugins: { "unknown-plugin": true },
           },
         ],
@@ -248,6 +261,7 @@ describe("Claude Code exporter reconciliation", () => {
             scope: "local",
             targetPath: targetPathByScope.local,
             targetDigest,
+            targetExists: true,
             enabledPlugins: { "langfuse-alias": false },
           },
         ],
@@ -269,7 +283,7 @@ describe("Claude Code owned lifecycle", () => {
       createClaudeCodeInstallationPlanner(
         "uninstall",
         invocation,
-        emptyInventory(),
+        emptyInventory(false),
       )(target()),
     ).toEqual({ kind: "unchanged" });
   });
@@ -316,7 +330,7 @@ describe("Claude Code owned lifecycle", () => {
     const decision = createClaudeCodeInstallationPlanner(
       "install",
       invocation,
-      emptyInventory(),
+      emptyInventory(false),
     )(target());
     const text = decisionText(decision);
     for (const event of CLAUDE_CODE_LIFECYCLE_EVENTS) {
@@ -353,7 +367,57 @@ describe("Claude Code migration and failure behavior", () => {
     );
     expect(migratedText).toContain(invocation.launcherPath);
   });
+});
 
+describe("Claude Code target-bound absence evidence", () => {
+  it("binds explicit absence to the exact inspected settings snapshot", () => {
+    const enabledOfficialSettings = JSON.stringify({
+      enabledPlugins: {
+        [CLAUDE_CODE_OFFICIAL_LANGFUSE_PLUGIN_ID]: true,
+      },
+    });
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(enabledOfficialSettings)),
+    ).toEqual({ kind: "conflict" });
+
+    const boundLayer = emptyInventory().settingsLayers[0]!;
+    for (const layer of [
+      { ...boundLayer, scope: "project" as const },
+      { ...boundLayer, targetPath: targetPathByScope.project },
+      { ...boundLayer, targetPath: "/isolated/../settings.json" },
+      { ...boundLayer, targetDigest: "1".repeat(64) },
+      { ...boundLayer, targetExists: false },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner("install", invocation, {
+          settingsLayers: [layer],
+          installedPlugins: [],
+        })(target("{}")),
+      ).toEqual({ kind: "conflict" });
+    }
+
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target("{}")),
+    ).toMatchObject({ kind: "replace" });
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(false),
+      )(target()),
+    ).toMatchObject({ kind: "replace" });
+  });
+});
+
+describe("Claude Code migration authority", () => {
   it.each(["project", "local", "managed"] as const)(
     "refuses migration when %s owns the effective exporter",
     (scope) => {
@@ -434,7 +498,7 @@ describe("Claude Code hostile lifecycle state", () => {
       createClaudeCodeInstallationPlanner(
         "install",
         invocation,
-        emptyInventory(),
+        emptyInventory(false),
       )(target()),
     );
     expect(runtimeFactory("uninstall", invocation)(target(installed))).toEqual({
@@ -447,7 +511,7 @@ describe("Claude Code hostile lifecycle state", () => {
       createClaudeCodeInstallationPlanner(
         "install",
         invocation,
-        emptyInventory(),
+        emptyInventory(false),
       )(target()),
     );
     const forged = { ...invocation } as typeof invocation;
@@ -600,12 +664,14 @@ describe("Claude Code hostile plugin records", () => {
             scope: "user",
             targetPath: targetPathByScope.user,
             targetDigest,
+            targetExists: true,
             enabledPlugins: { "orphan-exporter": false },
           },
           {
             scope: "project",
             targetPath: targetPathByScope.project,
             targetDigest,
+            targetExists: true,
             enabledPlugins: { "other-exporter": false },
           },
         ],
@@ -728,7 +794,7 @@ describe("Claude Code hostile settings state", () => {
         invocation,
         emptyInventory(),
       )(target("vendor-observability-hook")),
-    ).toEqual({ kind: "conflict" });
+    ).toEqual({ kind: "unsupported" });
     expect(
       createClaudeCodeInstallationPlanner(
         "install",
@@ -817,7 +883,7 @@ describe("Claude Code hostile hook ownership state", () => {
       createClaudeCodeInstallationPlanner(
         "install",
         invocation,
-        emptyInventory(),
+        emptyInventory(false),
       )(target()),
     );
     const duplicatedSettings = parseRecord(installed);
