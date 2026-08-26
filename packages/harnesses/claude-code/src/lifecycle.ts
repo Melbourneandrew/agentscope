@@ -1325,7 +1325,7 @@ const commandClaimsExecutable = (
   if (value.shell === "powershell") return true;
   const parsed = parsePosixSimpleCommand(value.command);
   if (parsed === undefined || parsed.executable === launcherPath) return true;
-  if (parsed.words.length === 1) return false;
+  if (parsed.words.length === 1 && !Object.hasOwn(value, "shell")) return false;
   return (
     parsed.words[0] !== parsed.executable ||
     !safeSimpleCommandExecutables.has(parsed.executable)

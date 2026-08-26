@@ -1780,6 +1780,7 @@ describe("Claude Code closed executable classifier", () => {
     for (const handler of [
       { type: "command", command: "printf", args: ["foreign"] },
       { type: "command", command: "/usr/bin/printf", args: ["foreign"] },
+      { type: "command", command: "printf", shell: "bash" },
       { type: "command", command: "/foreign/opaque", args: [] },
     ]) {
       expect(
@@ -1793,6 +1794,8 @@ describe("Claude Code closed executable classifier", () => {
     for (const handler of [
       { type: "command", command: "/foreign/unknown", args: ["argument"] },
       { type: "command", command: "/foreign/unknown argument" },
+      { type: "command", command: "/foreign/opaque", shell: "bash" },
+      { type: "command", command: "true", shell: "bash" },
       { type: "command", command: "AUDIT=1 printf foreign" },
     ]) {
       expect(
