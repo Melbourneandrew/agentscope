@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ESLint } from "eslint";
 import { test } from "vitest";
@@ -695,6 +695,112 @@ function cleanupCoverageSeed({ seedRoot, reportRoot, exclusionFixture }) {
   if (cleanupError !== undefined) throw cleanupError;
 }
 
+function coverageTableColumns(line) {
+  return line.split("|").map((column) => column.trim());
+}
+
+function coverageTableFileMatchesSeed(fileColumn, seedDirectoryName) {
+  if (fileColumn === seedDirectoryName) return true;
+  const visibleSuffix = fileColumn.startsWith("...")
+    ? fileColumn.slice(3)
+    : fileColumn.startsWith("…")
+      ? fileColumn.slice(1)
+      : "";
+  const seedIdentityIndex = seedDirectoryName.lastIndexOf("seed-");
+  if (seedIdentityIndex === -1) return false;
+  const seedIdentity = seedDirectoryName.slice(seedIdentityIndex);
+  return (
+    visibleSuffix.length >= seedIdentity.length &&
+    visibleSuffix.endsWith(seedIdentity) &&
+    seedDirectoryName.endsWith(visibleSuffix)
+  );
+}
+
+function coverageMetricValue(value) {
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return undefined;
+  const percentage = Number(value);
+  if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100)
+    return undefined;
+  return percentage;
+}
+
+function coverageMetricEquals(value, expected) {
+  return coverageMetricValue(value) === expected;
+}
+
+function assertSeededCoverageGateFailure(result, seedRoot, thresholds) {
+  assert.notEqual(result.status, 0);
+  assert.equal(result.testFilesPassed, true);
+  assert.equal(result.unhandledErrorCount, 0);
+  const metricNames = ["statements", "branches", "functions", "lines"];
+  for (const metric of metricNames) assert.ok(Number(thresholds[metric]) > 0);
+  const outputLines = `${result.stdout}${result.stderr}`
+    .replaceAll("\r\n", "\n")
+    .split("\n");
+  const expectedHeader = [
+    "File",
+    "% Stmts",
+    "% Branch",
+    "% Funcs",
+    "% Lines",
+    "Uncovered Line #s",
+  ];
+  const headerIndex = outputLines.findIndex((line) => {
+    const columns = coverageTableColumns(line);
+    return (
+      columns.length === expectedHeader.length &&
+      columns.every((column, index) => column === expectedHeader[index])
+    );
+  });
+  assert.notEqual(headerIndex, -1);
+  const allFilesRowIndex = outputLines.findIndex(
+    (line, index) =>
+      index > headerIndex && coverageTableColumns(line)[0] === "All files",
+  );
+  assert.notEqual(allFilesRowIndex, -1);
+  const allFilesColumns = coverageTableColumns(outputLines[allFilesRowIndex]);
+  assert.equal(allFilesColumns.length, 6);
+  const allFilesMetrics = allFilesColumns.slice(1, 5).map(coverageMetricValue);
+  assert.equal(
+    allFilesMetrics.every((metric) => metric !== undefined),
+    true,
+  );
+  assert.equal(
+    allFilesMetrics.some(
+      (coverage, index) => coverage < Number(thresholds[metricNames[index]]),
+    ),
+    true,
+  );
+  const seedDirectoryName = basename(seedRoot);
+  const seedRowIndex = outputLines.findIndex((line, index) => {
+    if (index <= allFilesRowIndex) return false;
+    const columns = coverageTableColumns(line);
+    if (columns.length !== 6) return false;
+    const [file, statements, branches, functions, lines, uncovered] = columns;
+    return (
+      coverageTableFileMatchesSeed(file, seedDirectoryName) &&
+      coverageMetricEquals(statements, 0) &&
+      coverageMetricValue(branches) !== undefined &&
+      coverageMetricEquals(functions, 0) &&
+      coverageMetricEquals(lines, 0) &&
+      uncovered === ""
+    );
+  });
+  assert.notEqual(seedRowIndex, -1);
+  const nestedSeedColumns = coverageTableColumns(
+    outputLines[seedRowIndex + 1] ?? "",
+  );
+  assert.equal(nestedSeedColumns.length, 6);
+  const [file, statements, branches, functions, lines, uncovered] =
+    nestedSeedColumns;
+  assert.equal(file, "index.ts");
+  assert.equal(coverageMetricEquals(statements, 0), true);
+  assert.equal(coverageMetricValue(branches) !== undefined, true);
+  assert.equal(coverageMetricEquals(functions, 0), true);
+  assert.equal(coverageMetricEquals(lines, 0), true);
+  assert.equal(uncovered, "1-120");
+}
+
 function createPackage(root, path, name, dependencies = {}) {
   const packageRoot = join(root, path);
   mkdirSync(join(packageRoot, "src/__tests__"), { recursive: true });
@@ -924,6 +1030,108 @@ test(
   eslintPolicyTestDeadlineMs,
 );
 
+test("seeded coverage oracle is semantic across Vitest table variants", () => {
+  const seedRoot = join(tmpdir(), "coverage-policy-seed-Ab12Cd");
+  const thresholds = {
+    statements: 70,
+    branches: 45,
+    functions: 85,
+    lines: 70,
+  };
+  const header =
+    "File | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s";
+  const failingSummaryRow = "All files | 26.27 | 66.12 | 22.15 | 38.86 |";
+  const nestedSeedRow = "index.ts | 0 | 100 | 0 | 0 | 1-120";
+  const nonFiniteMetric = "9".repeat(400);
+  const result = (output, overrides = {}) => ({
+    status: 1,
+    stdout: output,
+    stderr: "",
+    testFilesPassed: true,
+    unhandledErrorCount: 0,
+    ...overrides,
+  });
+  const macosOutput = [
+    "Coverage summary",
+    header,
+    failingSummaryRow,
+    "coverage-policy-seed-Ab12Cd | 0 | 100 | 0 | 0 |",
+    nestedSeedRow,
+  ].join("\n");
+  const linuxOutput = [
+    "Coverage enabled with v8",
+    header,
+    failingSummaryRow,
+    "...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |",
+    nestedSeedRow,
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertSeededCoverageGateFailure(result(macosOutput), seedRoot, thresholds),
+  );
+  assert.doesNotThrow(() =>
+    assertSeededCoverageGateFailure(result(linuxOutput), seedRoot, thresholds),
+  );
+
+  const rejected = [
+    result(`File | Statements | Branches\n${nestedSeedRow}`),
+    result(`${header}\n${failingSummaryRow}\n${nestedSeedRow}`),
+    result(
+      `${header}\n${failingSummaryRow}\n...cy-seed-Wrong1 | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\nindex.ts | 0.1 | 100 | 0 | 0 | 1-120`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n... | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n… | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 | | surplus\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\n${nestedSeedRow} | surplus`,
+    ),
+    result(
+      `${header}\nAll files | 100 | 100 | 100 | 100 |\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\nAll files | | 66.12 | 22.15 | 38.86 |\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow} | surplus\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\nAll files | 26.27 | 101 | 22.15 | 38.86 |\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\nAll files | 26.27 | ${nonFiniteMetric} | 22.15 | 38.86 |\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n...cy-seed-Ab12Cd | 0 | 101 | 0 | 0 |\n${nestedSeedRow}`,
+    ),
+    result(
+      `${header}\n${failingSummaryRow}\n...cy-seed-Ab12Cd | 0 | 100 | 0 | 0 |\nindex.ts | 0 | ${nonFiniteMetric} | 0 | 0 | 1-120`,
+    ),
+    result(linuxOutput, { status: 0 }),
+    result(linuxOutput, { testFilesPassed: false }),
+    result(linuxOutput, { unhandledErrorCount: 1 }),
+  ];
+  for (const rejectedResult of rejected)
+    assert.throws(() =>
+      assertSeededCoverageGateFailure(rejectedResult, seedRoot, thresholds),
+    );
+  assert.throws(() =>
+    assertSeededCoverageGateFailure(result(linuxOutput), seedRoot, {
+      statements: 0,
+      branches: 0,
+      functions: 0,
+      lines: 0,
+    }),
+  );
+});
+
 test(
   "Vitest coverage rejects a seeded untested production module",
   async () => {
@@ -954,10 +1162,11 @@ test(
         reportRoot,
         thresholds: qualityPolicy.packages["packages/testkit"].coverage,
       });
-      assert.notEqual(result.status, 0);
-      assert.equal(result.testFilesPassed, true);
-      assert.equal(result.unhandledErrorCount, 0);
-      assert.match(`${result.stdout}${result.stderr}`, /Coverage summary/);
+      assertSeededCoverageGateFailure(
+        result,
+        seedRoot,
+        qualityPolicy.packages["packages/testkit"].coverage,
+      );
       assert.equal(existsSync(exclusionFixture.heartbeatPath), false);
     } catch (error) {
       cleanupAllowed = error?.workerJoined !== false;
