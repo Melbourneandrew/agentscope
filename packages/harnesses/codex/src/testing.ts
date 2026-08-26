@@ -135,10 +135,7 @@ export const codexSanitizedFixture: HarnessSanitizedFixture =
       review: {
         status: "approved",
         reviewedAt: "2026-08-26",
-        references: [
-          "pending:privacy-review",
-          "pending:redistribution-review",
-        ],
+        references: ["pending:privacy-review", "pending:redistribution-review"],
       },
       representative: {
         scenarioId: "codex-exec-jsonl-v1",

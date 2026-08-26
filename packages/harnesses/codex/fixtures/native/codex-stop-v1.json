@@ -53,10 +53,7 @@
       "scenarioId": "codex-exec-jsonl-v1"
     },
     "review": {
-      "references": [
-        "pending:privacy-review",
-        "pending:redistribution-review"
-      ],
+      "references": ["pending:privacy-review", "pending:redistribution-review"],
       "reviewedAt": "2026-08-26",
       "status": "approved"
     }
