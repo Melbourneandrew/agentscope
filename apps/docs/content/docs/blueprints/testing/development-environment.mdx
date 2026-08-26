@@ -5,7 +5,7 @@ description: ADRs for bounded remote development capacity and the Crabbox coordi
 
 ## Capability Summary
 
-Agentscope development can use disposable remote Linux capacity without making a developer workstation the fleet-control authority. This Blueprint owns the remote-development coordinator, its operator and agent trust boundaries, lifecycle limits, reconciliation, cost controls, and rollout. It composes the scenario, evidence, isolation, and release-authority decisions in [Harness Execution Verification](/docs/blueprints/testing/harness-execution) rather than redefining them.
+Agentscope development can use disposable remote Linux capacity without making a developer workstation the fleet-control authority. This Blueprint owns the remote-development coordinator, its operator and agent trust boundaries, lifecycle limits, reconciliation, and cost controls. It composes the scenario, evidence, isolation, and release-authority decisions in [Harness Execution Verification](/docs/blueprints/testing/harness-execution) rather than redefining them.
 
 ## Architecture Decision Records
 
@@ -19,7 +19,7 @@ Agentscope development can use disposable remote Linux capacity without making a
 
 ### ADR-002: Pin the deployment toolchain through the upstream lock
 
-**Decision:** Deployment and validation run from the immutable Crabbox `worker/` project with Node.js 22.12 or newer and `npm ci`. Wrangler is the project-local package resolved by the upstream lock: version `4.114.0`, tarball `https://registry.npmjs.org/wrangler/-/wrangler-4.114.0.tgz`, integrity `sha512-M65P25t5UHA1TIJfgZXDcj+YzVobgKdRguM2QPz0xnxLFuOcuE3ErgllDht0iaho7MS4o0g/Bb4YK2+GT+bibg==`. Commands use `npm exec --prefix worker -- wrangler`; an absent global `wrangler` is expected, while `npx wrangler` without an installed locked dependency and moving `latest` are prohibited.
+**Decision:** Deployment and validation run from the immutable Crabbox `worker/` project with Node.js 22.12 or newer and `npm ci`. Wrangler is the project-local package resolved by the upstream lock, pinned to version `4.114.0`. Commands use `npm exec --prefix worker -- wrangler`; an absent global `wrangler` is expected, while `npx wrangler` without an installed locked dependency and moving `latest` are prohibited. Deployment evidence records the resolved artifact and integrity from the lock rather than duplicating those coordinates here.
 
 **Context:** Cloudflare recommends a project-local Wrangler so collaborators use the same version and can roll back ([Wrangler installation](https://developers.cloudflare.com/workers/wrangler/install-and-update/)). The pinned Crabbox source declares `wrangler ^4.114.0`, while its lock closes that range to one artifact.
 
@@ -57,7 +57,7 @@ The coordinator's single `FleetDurableObject` is the serialization and replay au
 
 **Decision:** The initial coordinator sets fleet, owner, and organization active-lease limits to four and monthly reserved-spend limits to USD 25. The non-admin automation identity is the only initial owner and organization. Every ordinary job remains one-shot and requests a maximum 90-minute TTL and 20-minute idle timeout; heartbeats may extend idle expiry only within the hard TTL. `keep` is prohibited. The launcher admits at most four operations and applies the exact provider/type/location/image bounds in ADR-004 even when the coordinator has spare capacity.
 
-The proof rollout in the dependent deployment task temporarily narrows admission to one lease and an owner-approved maximum charge. Raising concurrency, monthly spend, server type, lifetime, or identity count requires a reviewed policy change and a verified provider quota; it is not a runtime convenience flag.
+Raising concurrency, monthly spend, server type, lifetime, or identity count requires a reviewed policy change and a verified provider quota; it is not a runtime convenience flag. Any first mutation remains separately owner-approved and more restrictive than these steady-state maxima.
 
 **Context:** Crabbox reserves worst-case lease cost before provisioning and rejects active-count or monthly-budget overflow. A powerful default type or unbounded kept lease would defeat the purpose of elastic development capacity even when cleanup eventually succeeds.
 
@@ -65,7 +65,7 @@ The proof rollout in the dependent deployment task temporarily narrows admission
 
 ### ADR-007: Make cleanup independent and reconciliation terminal
 
-**Decision:** The coordinator owns brokered Hetzner release, expiry, retry, and deletion. Its Durable Object alarm schedules the earliest lease expiry or cleanup retry, and the Worker retains the upstream 15-minute scheduled trigger as an independent wakeup. A launcher interruption cannot cancel or disable those paths. The deployment task proves alarm execution, scheduled wakeup, retry behavior, and deletion after loss of the initiating client before enabling unattended acquisition ([Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)).
+**Decision:** The coordinator owns brokered Hetzner release, expiry, retry, and deletion. Its Durable Object alarm schedules the earliest lease expiry or cleanup retry, and the Worker retains the upstream 15-minute scheduled trigger as an independent wakeup. A launcher interruption cannot cancel or disable those paths. Unattended acquisition remains disabled until bounded evidence proves alarm execution, scheduled wakeup, retry behavior, and deletion after loss of the initiating client ([Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)).
 
 An operation is terminal only when coordinator lease/run state, provider inventory, local claim and per-lease key state, and label-scoped nested-Docker containers, networks, volumes, and images reconcile to absence or an explicitly retained bounded evidence record. Pending release, scheduled cleanup, an expired record with a surviving provider machine, missing inventory authority, or contradictory observations remain an incident. The launcher blocks new acquisition when global reconciliation is stale or unknown.
 
@@ -79,7 +79,7 @@ An operation is terminal only when coordinator lease/run state, provider invento
 
 **Context:** Remote capacity is an accelerator, but its results are not reproducible or auditable without binding the exact control plane and terminal cleanup evidence.
 
-**Consequences:** Evidence can diagnose cost and lifecycle failures without becoming another trace or credential store. Retention follows the existing integration-evidence policy; Crabbox portal logs or artifacts are disabled initially rather than becoming a second authority.
+**Consequences:** Evidence can diagnose cost and lifecycle failures without becoming another trace or credential store. Ordinary operation and cost records are deleted within 90 days. An incident record remains while reconciliation is unresolved and is deleted within 90 days after closure. Crabbox portal logs or artifacts are disabled initially rather than becoming a second authority.
 
 ### ADR-009: Freeze acquisition first during incidents
 
@@ -105,12 +105,12 @@ GitHub-hosted required checks remain merge and release authority. Crabbox result
 
 **Context:** A remote shell is not an isolation boundary, and Cloudflare coordination does not alter what the scenario is allowed to contact or observe.
 
-**Consequences:** The dependent deployment task proves one disposable worker and complete nested/outer cleanup before fan-out. It makes no harness compatibility claim from the synthetic substrate fixture and performs no npm publication.
+**Consequences:** Before unattended fan-out, bounded evidence must prove one disposable worker and complete nested/outer cleanup. A synthetic substrate fixture makes no harness compatibility claim, and remote development performs no npm publication.
 
-### ADR-012: Stage deployment behind an owner checkpoint
+### ADR-012: Require explicit mutation authority and pre-use proof
 
-**Decision:** This Blueprint merges before any Cloudflare login, secret creation, Worker deployment, Durable Object creation, route configuration, or brokered Hetzner lease. The dependent deployment task owns a dry validation of the locked source, an owner-reviewed inventory of account/environment/secrets/limits, the exact mutation and rollback sequence, and one explicitly approved disposable-worker proof. Fan-out remains disabled until that proof has terminal zero-resource reconciliation and reviewed cost evidence.
+**Decision:** Cloudflare login, secret creation, Worker deployment, Durable Object creation, route configuration, and brokered Hetzner leasing each require explicit owner-authorized mutation scope. Before unattended use, the locked source and deployment inputs are dry-validated, the owner reviews the account/environment/secrets/limits inventory and exact mutation/rollback sequence, and one explicitly approved disposable-worker proof reaches terminal zero-resource reconciliation with reviewed cost evidence.
 
 **Context:** Architecture approval does not authorize external mutation or recurring spend.
 
-**Consequences:** A documentation-only review can change these decisions cheaply. Deployment evidence cannot retroactively justify divergence from this Blueprint.
+**Consequences:** Delivery sequencing remains in ROADMAP and Beads. Deployment evidence cannot retroactively justify divergence from this Blueprint.
