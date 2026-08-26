@@ -1,0 +1,222 @@
+import {
+  createOwnedHarnessHookInvocation,
+  type HarnessTargetDecision,
+  type OwnedHarnessHookInvocation,
+} from "@agentscope/harnesses-core";
+import { describe, expect, it } from "vitest";
+
+import { codexHarnessDescriptor } from "./descriptor.js";
+import {
+  CodexInstallationError,
+  createCodexInstallationPlanner,
+  encodeCodexPosixHookCommand,
+} from "./installation.js";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+const invocation = (
+  agentscopeHome = "/opt/agentscope",
+  deadline = 2_000,
+  platform: "posix" | "win32" = "posix",
+): OwnedHarnessHookInvocation =>
+  createOwnedHarnessHookInvocation({
+    agentscopeHome,
+    harnessType: codexHarnessDescriptor.harnessType,
+    hookDeadlineMilliseconds: deadline,
+    platform,
+  });
+
+const decide = (
+  operation: "install" | "migrate" | "uninstall",
+  ownedInvocation: OwnedHarnessHookInvocation,
+  text: string | null,
+): HarnessTargetDecision =>
+  createCodexInstallationPlanner(
+    operation,
+    ownedInvocation,
+  )({
+    targetPath: "/isolated/.codex/hooks.json",
+    exists: text !== null,
+    bytes: text === null ? null : encoder.encode(text),
+    digest: "0".repeat(64),
+    mode: text === null ? null : 0o600,
+  });
+
+const replacementText = (decision: HarnessTargetDecision): string => {
+  expect(decision.kind).toBe("replace");
+  if (decision.kind !== "replace") throw new Error("expected replacement");
+  return decoder.decode(decision.bytes);
+};
+
+describe("Codex vendor-mediated hook command", () => {
+  it("encodes one constant absolute launcher path as one POSIX shell word", () => {
+    const ownedInvocation = invocation("/opt/Agent's Scope;$(canary)");
+    const command = encodeCodexPosixHookCommand(ownedInvocation);
+    expect(command).toBe(
+      `'${ownedInvocation.launcherPath.replaceAll("'", `'"'"'`)}'`,
+    );
+    expect(command).not.toContain(" canary");
+    expect(ownedInvocation.arguments).toEqual([]);
+  });
+
+  it("rejects Windows launchers and deadlines outside the Codex cap", () => {
+    expect(() =>
+      encodeCodexPosixHookCommand(invocation("/opt/scope", 2_000, "win32")),
+    ).toThrow(CodexInstallationError);
+    expect(() =>
+      encodeCodexPosixHookCommand(invocation("/opt/scope", 3_000)),
+    ).toThrow(CodexInstallationError);
+  });
+});
+
+describe("Codex owned hook installation", () => {
+  it("installs the exact root lifecycle and is idempotent", () => {
+    const ownedInvocation = invocation();
+    const installed = replacementText(decide("install", ownedInvocation, null));
+    const installedValue: unknown = JSON.parse(installed);
+    expect(installedValue).toEqual({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "startup|resume|clear",
+            hooks: [
+              {
+                type: "command",
+                command: encodeCodexPosixHookCommand(ownedInvocation),
+                timeout: 3,
+                statusMessage: "Agentscope trace capture",
+              },
+            ],
+          },
+        ],
+        Stop: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: encodeCodexPosixHookCommand(ownedInvocation),
+                timeout: 3,
+                statusMessage: "Agentscope trace capture",
+              },
+            ],
+          },
+        ],
+        SessionEnd: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: encodeCodexPosixHookCommand(ownedInvocation),
+                timeout: 3,
+                statusMessage: "Agentscope trace capture",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(decide("install", ownedInvocation, installed)).toEqual({
+      kind: "unchanged",
+    });
+    expect(decide("uninstall", ownedInvocation, installed)).toEqual({
+      kind: "remove",
+    });
+  });
+});
+
+describe("Codex owned hook migration and removal", () => {
+  it("preserves unrelated configuration and refuses foreign overlap", () => {
+    const ownedInvocation = invocation();
+    const foreign = JSON.stringify({
+      description: "foreign",
+      hooks: {
+        Stop: [
+          {
+            hooks: [{ type: "command", command: "/foreign/hook", timeout: 1 }],
+          },
+        ],
+        PreToolUse: [{ matcher: "Bash", hooks: [] }],
+      },
+    });
+    expect(decide("install", ownedInvocation, foreign).kind).toBe(
+      "replace-overlap",
+    );
+    const migrated = decide("migrate", ownedInvocation, foreign);
+    expect(migrated.kind).toBe("replace-overlap");
+    if (migrated.kind !== "replace-overlap")
+      throw new Error("expected migration");
+    const migratedText = decoder.decode(migrated.bytes);
+    expect(migratedText).toContain('"description": "foreign"');
+    expect(migratedText).toContain('"PreToolUse"');
+    expect(decide("uninstall", ownedInvocation, foreign)).toEqual({
+      kind: "unchanged",
+    });
+  });
+
+  it("uninstalls only exact owned groups and preserves foreign state", () => {
+    const ownedInvocation = invocation();
+    const installed = replacementText(decide("install", ownedInvocation, null));
+    const withForeignState = installed.replace(
+      '{\n  "hooks"',
+      '{\n  "description": "foreign",\n  "hooks"',
+    );
+    const uninstalled = replacementText(
+      decide("uninstall", ownedInvocation, withForeignState),
+    );
+    expect(uninstalled).toBe('{\n  "description": "foreign"\n}\n');
+    expect(decide("uninstall", ownedInvocation, null)).toEqual({
+      kind: "unchanged",
+    });
+  });
+
+  it("migrates stale owned launchers only within the authenticated owned directory", () => {
+    const oldInvocation = invocation("/opt/agentscope", 1_500);
+    const currentInvocation = invocation("/opt/agentscope", 2_000);
+    const stale = replacementText(decide("install", oldInvocation, null));
+    const migrated = replacementText(
+      decide("migrate", currentInvocation, stale),
+    );
+    expect(migrated).toContain(encodeCodexPosixHookCommand(currentInvocation));
+    expect(migrated).not.toContain(encodeCodexPosixHookCommand(oldInvocation));
+
+    const impersonator = stale.replaceAll(
+      "/opt/agentscope/bin/",
+      "/foreign/bin/",
+    );
+    expect(decide("uninstall", currentInvocation, impersonator)).toEqual({
+      kind: "unchanged",
+    });
+    expect(decide("install", currentInvocation, impersonator).kind).toBe(
+      "replace-overlap",
+    );
+  });
+
+  it("fails closed on malformed native formats and validates planner inputs", () => {
+    const ownedInvocation = invocation();
+    expect(decide("install", ownedInvocation, "not-json")).toEqual({
+      kind: "unsupported",
+    });
+    expect(decide("uninstall", ownedInvocation, "not-json")).toEqual({
+      kind: "unchanged",
+    });
+    expect(decide("install", invocation("/opt/scope", 3_000), null)).toEqual({
+      kind: "unsupported",
+    });
+    expect(
+      decide("install", ownedInvocation, "vendor-observability-hook").kind,
+    ).toBe("replace-overlap");
+    expect(() =>
+      createCodexInstallationPlanner("invalid" as never, ownedInvocation),
+    ).toThrow(CodexInstallationError);
+    const other = createOwnedHarnessHookInvocation({
+      agentscopeHome: "/opt/agentscope",
+      harnessType: "@agentscope/harness-other",
+      hookDeadlineMilliseconds: 2_000,
+      platform: "posix",
+    });
+    expect(() => createCodexInstallationPlanner("install", other)).toThrow(
+      CodexInstallationError,
+    );
+  });
+});
