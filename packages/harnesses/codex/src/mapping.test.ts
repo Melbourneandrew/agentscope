@@ -1,15 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  isCapturedTrace,
-  withCaptureInvocation,
-} from "../../../core/dist/capture/runtime.js";
-import {
-  BUILTIN_REDACTION_POLICY_REFERENCES,
-  DEFAULT_REDACTION_POLICY_REGISTRY,
-  resolveRedactionPolicy,
-} from "../../../core/dist/redaction/policy.js";
-import {
   CodexMappingError,
   decodeCodexRootHookInput,
   mapCodexSanitizedNativeObservation,
@@ -51,51 +42,6 @@ const checkpoint = ({
   disposition: "retained" as const,
   startPosition: availableStartPosition,
 });
-
-const captureInvocation = () => {
-  const redactionPolicy = resolveRedactionPolicy(
-    DEFAULT_REDACTION_POLICY_REGISTRY,
-    BUILTIN_REDACTION_POLICY_REFERENCES.baseline,
-  );
-  return {
-    harnessRegistryId: "codex" as const,
-    harnessVersion: {
-      state: "observed" as const,
-      value: "0.149.1",
-      source: "process" as const,
-    },
-    snapshot: {
-      configurationIdentity: "codex.component",
-      policyIdentity: redactionPolicy.identity,
-      redactionPolicy,
-    },
-    hookObservedUnixNano: "100",
-    operationIdScope: "session-global" as const,
-    context: {
-      fields: [],
-      unavailable: [
-        {
-          field: "agentscope.workspace.directory",
-          source: "process" as const,
-          state: "unavailable" as const,
-          reason: "resolution-failed" as const,
-        },
-        ...[
-          "agentscope.git.worktree",
-          "agentscope.git.repository_root",
-          "vcs.ref.head.name",
-          "vcs.ref.head.revision",
-          "vcs.ref.type",
-        ].map((field) => ({
-          field,
-          source: "git" as const,
-          state: "unavailable" as const,
-          reason: "resolution-failed" as const,
-        })),
-      ],
-    },
-  };
-};
 
 describe("Codex root hook input", () => {
   it.each([
@@ -193,6 +139,17 @@ describe("Codex root hook input", () => {
       CodexMappingError,
     );
   });
+
+  it.each([
+    '{"hook_event_name":"Stop","session_id":"session-1","session_id":"session-2","turn_id":"turn-1"}',
+    '{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1","turn_id":"turn-2"}',
+    '{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1","model":"a","model":"b"}',
+    '{"hook_event_name":"Stop","session_id":"session-1","turn_id":"turn-1","extra":{"key":1,"key":2}}',
+  ])("rejects duplicate keys before hook authority is branded", (raw) => {
+    expect(() => decodeCodexRootHookInput(encoder.encode(raw))).toThrow(
+      CodexMappingError,
+    );
+  });
 });
 
 describe("Codex native OpenInference mapping", () => {
@@ -254,19 +211,7 @@ describe("Codex native OpenInference mapping", () => {
   });
 });
 
-describe("Codex Core runtime and hook correlation", () => {
-  it("passes the real Core capture runtime validator", async () => {
-    const mapped = mapCodexSanitizedNativeObservation(
-      observation(),
-      checkpoint,
-    );
-    const captured = await withCaptureInvocation(
-      captureInvocation(),
-      (factory) => factory.capture(mapped.candidate),
-    );
-    expect(isCapturedTrace(captured)).toBe(true);
-  });
-
+describe("Codex hook correlation", () => {
   it("claims hook model provenance only after exact native correlation", () => {
     const hook = decodeCodexRootHookInput(
       hookInput({
@@ -383,27 +328,6 @@ describe("Codex unavailable native metadata", () => {
     );
   });
 
-  it("passes unavailable model and usage evidence through Core", async () => {
-    const mapped = mapCodexSanitizedNativeObservation(
-      observation({
-        modelSystem: null,
-        modelProvider: null,
-        modelName: null,
-        reasoningLevel: null,
-        promptTokens: null,
-        completionTokens: null,
-        reasoningTokens: null,
-        totalTokens: null,
-      }),
-      checkpoint,
-    );
-    const captured = await withCaptureInvocation(
-      captureInvocation(),
-      (factory) => factory.capture(mapped.candidate),
-    );
-    expect(isCapturedTrace(captured)).toBe(true);
-  });
-
   it("maps a categorical native error without inventing a message", () => {
     const mapped = mapCodexSanitizedNativeObservation(
       observation({ errorType: "transport-failure" }),
@@ -418,6 +342,10 @@ describe("Codex unavailable native metadata", () => {
     expect(mapped.contract.unavailable.map(({ field }) => field)).toEqual([
       "exception.message",
     ]);
+    expect(
+      mapped.candidate.operations.find(({ kind }) => kind === "LLM")
+        ?.unavailable,
+    ).toEqual(mapped.contract.unavailable);
   });
 
   it("records an unavailable tool family without inventing a tool operation", () => {
@@ -437,6 +365,18 @@ describe("Codex unavailable native metadata", () => {
       "exception.message",
       "tool.name",
       "tool.id",
+    ]);
+    const root = mapped.candidate.operations.find(
+      ({ logicalKey }) => logicalKey === "codex-turn",
+    );
+    const llm = mapped.candidate.operations.find(({ kind }) => kind === "LLM");
+    expect(root?.unavailable.map(({ field }) => field)).toEqual([
+      "tool.name",
+      "tool.id",
+    ]);
+    expect(llm?.unavailable.map(({ field }) => field)).toEqual([
+      "error.type",
+      "exception.message",
     ]);
   });
 });

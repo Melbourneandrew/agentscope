@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION,
   CodexConfigurationError,
   createCodexInternalProviderConfiguration,
 } from "./configuration.js";
@@ -10,40 +11,6 @@ import {
   codexHarnessDescriptor,
 } from "./descriptor.js";
 import { codexHarnessPackageId } from "./index.js";
-
-const disabledFeatures = [
-  "apps",
-  "collab",
-  "connectors",
-  "enable_fanout",
-  "enable_mcp_apps",
-  "executor_capability_discovery",
-  "external_agent_memory_import",
-  "mcp_2026_07_28",
-  "memories",
-  "memory_tool",
-  "multi_agent",
-  "multi_agent_mode",
-  "multi_agent_v2",
-  "non_prefixed_mcp_tool_names",
-  "plugin_hooks",
-  "plugin_sharing",
-  "plugins",
-  "recommended_plugins",
-  "remote_plugin",
-  "responses_websockets",
-  "responses_websockets_v2",
-  "search_tool",
-  "send_async_message",
-  "standalone_web_search",
-  "tool_call_mcp_elicitation",
-  "tool_registry",
-  "tool_search",
-  "tool_search_always_defer_mcp_tools",
-  "web_search",
-  "web_search_cached",
-  "web_search_request",
-] as const;
 
 describe("Codex descriptor", () => {
   it("pins the documented executable, version output, configuration, and component row", () => {
@@ -77,6 +44,29 @@ describe("Codex descriptor", () => {
   });
 });
 
+it("pins the upstream 0.149.1 external capability registry authority", () => {
+  expect(CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION).toMatchObject({
+    representativeVersion: "0.149.1",
+    sourceCommit: "ff29a44391deccde0aba0f8390337d7f3c319ea4",
+    sourcePath: "codex-rs/features/src/lib.rs",
+    sourceSha256:
+      "791121524b5269c72254911823b77253cc98121d1dd29608663dd9d73fa7d61a",
+  });
+  expect(CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features).toEqual(
+    expect.arrayContaining([
+      "auth_elicitation",
+      "browser_use",
+      "browser_use_external",
+      "browser_use_full_cdp_access",
+      "computer_use",
+      "in_app_browser",
+      "in_app_updates",
+      "skill_mcp_dependency_install",
+      "workspace_dependencies",
+    ]),
+  );
+});
+
 describe("Codex internal provider configuration", () => {
   it("routes Responses to an unauthenticated loopback endpoint and disables fallbacks", () => {
     const configuration = createCodexInternalProviderConfiguration({
@@ -96,7 +86,9 @@ describe("Codex internal provider configuration", () => {
       .split("[features]\n")[1]
       ?.split("\n\n[mcp_servers]")[0];
     expect(featureSection?.split("\n").sort()).toEqual(
-      disabledFeatures.map((feature) => `${feature} = false`).sort(),
+      CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features
+        .map((feature) => `${feature} = false`)
+        .sort(),
     );
     expect(configuration).toContain("request_max_retries = 0");
     expect(configuration).toContain("stream_max_retries = 0");

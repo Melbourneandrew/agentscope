@@ -69,6 +69,12 @@ const moduleSpecifiers = (path) => {
     )
       specifiers.push(node.moduleSpecifier.text);
     if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    )
+      specifiers.push(node.argument.literal.text);
+    if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword
     )
@@ -89,7 +95,7 @@ const graph = (entry, declaration) => {
     visited.add(path);
     const parsed = moduleSpecifiers(path);
     for (const specifier of parsed.specifiers) {
-      if (!specifier.startsWith("./")) {
+      if (!specifier.startsWith(".")) {
         external.add(specifier);
         continue;
       }
@@ -101,6 +107,11 @@ const graph = (entry, declaration) => {
       );
       if (!local.startsWith(`${distRoot}/`))
         throw new Error("codex.artifact.graph-escape");
+      try {
+        readFileSync(local, "utf8");
+      } catch {
+        throw new Error("codex.artifact.unresolved-edge");
+      }
       pending.push(local);
     }
   }
@@ -117,6 +128,9 @@ const graphs = {
   testingRuntime: graph(testingRuntime, false),
   testingDeclaration: graph(testingDeclaration, true),
 };
+const testingCoreSpecifier = ["@agentscope/harnesses-core", "testing"].join(
+  "/",
+);
 const assertGraph = (actual, expected, code) => {
   const relative = [...actual]
     .map((path) => path.slice(distRoot.length + 1))
@@ -128,6 +142,15 @@ const assertGraph = (actual, expected, code) => {
   )
     throw new Error(code);
 };
+const assertExternal = (actual, expected, code) => {
+  const sortedActual = [...actual].sort();
+  const sortedExpected = [...expected].sort();
+  if (
+    sortedActual.length !== sortedExpected.length ||
+    sortedActual.some((specifier, index) => specifier !== sortedExpected[index])
+  )
+    throw new Error(code);
+};
 assertGraph(
   graphs.rootRuntime.visited,
   [
@@ -136,6 +159,7 @@ assertGraph(
     "index.js",
     "installation.js",
     "mapping.js",
+    "strict-json.js",
   ],
   "codex.artifact.root-runtime-graph",
 );
@@ -152,16 +176,44 @@ assertGraph(
 );
 assertGraph(
   graphs.testingRuntime.visited,
-  ["descriptor.js", "installation.js", "mapping.js", "testing.js"],
+  [
+    "descriptor.js",
+    "installation.js",
+    "mapping.js",
+    "strict-json.js",
+    "testing.js",
+  ],
   "codex.artifact.testing-runtime-graph",
+);
+assertExternal(
+  graphs.rootRuntime.external,
+  ["@agentscope/harnesses-core", "node:path"],
+  "codex.artifact.root-runtime-external",
+);
+assertExternal(
+  graphs.rootDeclaration.external,
+  ["@agentscope/harnesses-core"],
+  "codex.artifact.root-declaration-external",
+);
+assertExternal(
+  graphs.testingRuntime.external,
+  [
+    "@agentscope/harnesses-core",
+    testingCoreSpecifier,
+    "node:crypto",
+    "node:path",
+  ],
+  "codex.artifact.testing-runtime-external",
+);
+assertExternal(
+  graphs.testingDeclaration.external,
+  [testingCoreSpecifier],
+  "codex.artifact.testing-declaration-external",
 );
 assertGraph(
   graphs.testingDeclaration.visited,
   ["testing.d.ts"],
   "codex.artifact.testing-declaration-graph",
-);
-const testingCoreSpecifier = ["@agentscope/harnesses-core", "testing"].join(
-  "/",
 );
 for (const production of [graphs.rootRuntime, graphs.rootDeclaration]) {
   if (

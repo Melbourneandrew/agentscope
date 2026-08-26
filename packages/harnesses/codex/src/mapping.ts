@@ -10,6 +10,8 @@ import {
   type NativeUnavailableField,
 } from "@agentscope/harnesses-core";
 
+import { parseCodexBoundedDuplicateAwareJson } from "./strict-json.js";
+
 type FieldProvenanceCandidate = NativeFieldProvenance;
 type FieldUnavailableCandidate = NativeUnavailableField;
 type SemanticFieldCandidate = Readonly<{
@@ -130,9 +132,7 @@ export const decodeCodexRootHookInput = (
       bytes.byteLength > 65_536
     )
       return invalid();
-    const parsed: unknown = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes.slice()),
-    );
+    const parsed = parseCodexBoundedDuplicateAwareJson(bytes.slice(), 65_536);
     const record = ownDataRecord(parsed);
     const eventName = record.hook_event_name;
     if (typeof eventName !== "string" || !rootHookEvents.has(eventName))
@@ -282,7 +282,8 @@ type MappedFields = Readonly<{
   tokenFields: readonly SemanticFieldCandidate[];
   errorFields: readonly SemanticFieldCandidate[];
   toolFields: readonly SemanticFieldCandidate[];
-  operationUnavailable: readonly FieldUnavailableCandidate[];
+  llmUnavailable: readonly FieldUnavailableCandidate[];
+  rootUnavailable: readonly FieldUnavailableCandidate[];
   unavailable: readonly FieldUnavailableCandidate[];
   provenance: readonly FieldProvenanceCandidate[];
 }>;
@@ -450,7 +451,7 @@ const createMappedFields = (
             "native-artifact",
           ),
         ]);
-  const operationUnavailable = Object.freeze([
+  const modelAndTokenUnavailable = Object.freeze([
     ...(modelFields.length === 0 ? unavailableFields(modelFieldNames) : []),
     ...(tokenFields.length === 0 ? unavailableFields(tokenFieldNames) : []),
   ]);
@@ -474,6 +475,11 @@ const createMappedFields = (
   ]);
   const tool = createToolMapping(value);
   const toolFields = tool.fields;
+  const llmUnavailable = Object.freeze([
+    ...modelAndTokenUnavailable,
+    ...errorUnavailable,
+  ]);
+  const rootUnavailable = tool.unavailable;
   const fields = [
     ...modelFields,
     ...tokenFields,
@@ -485,12 +491,9 @@ const createMappedFields = (
     tokenFields,
     errorFields,
     toolFields,
-    operationUnavailable,
-    unavailable: Object.freeze([
-      ...operationUnavailable,
-      ...errorUnavailable,
-      ...tool.unavailable,
-    ]),
+    llmUnavailable,
+    rootUnavailable,
+    unavailable: Object.freeze([...llmUnavailable, ...rootUnavailable]),
     provenance: Object.freeze([
       provenance("span.name", "native-artifact"),
       ...fields.map((field) => field.provenance),
@@ -512,7 +515,7 @@ const createOperations = (
     name: "codex.turn",
     nameProvenance: provenance("span.name", "native-artifact"),
     fields: Object.freeze([]),
-    unavailable: Object.freeze([]),
+    unavailable: fields.rootUnavailable,
     events: Object.freeze([]),
     links: Object.freeze([]),
   });
@@ -531,7 +534,7 @@ const createOperations = (
       ...fields.tokenFields,
       ...fields.errorFields,
     ]),
-    unavailable: fields.operationUnavailable,
+    unavailable: fields.llmUnavailable,
     events: Object.freeze([]),
     links: Object.freeze([]),
   });
