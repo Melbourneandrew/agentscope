@@ -22,10 +22,10 @@ export const claudeCodeFixture = {
       captureRecipe: "claude-code-lifecycle-v1",
     },
     license: {
-      reviewedLicenseId: "Apache-2.0",
+      reviewedLicenseId: "LicenseRef-Agentscope-Synthetic",
       redistribution: "reviewed-for-repository",
       sourceReference:
-        "https://github.com/Melbourneandrew/agentscope/blob/main/LICENSE",
+        "https://github.com/Melbourneandrew/agentscope/blob/46080a0ecf1030dff425030b893e8d29d8c49a22/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic",
     },
     redaction: {
       profileVersion: 1,
@@ -42,10 +42,6 @@ export const claudeCodeFixture = {
     review: {
       status: "approved",
       reviewedAt: "2026-08-26",
-      references: [
-        "bead:agentscope-vah.11.2.1",
-        "blueprint:claude-code-adr-006",
-      ],
     },
     representative: {
       scenarioId: CLAUDE_CODE_SCENARIO_ID,
