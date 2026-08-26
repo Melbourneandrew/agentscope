@@ -111,15 +111,6 @@ const installedHookCommand = (text: string): string => {
   return hook.command;
 };
 
-const decodeSingleQuotedShellWord = (command: string): string => {
-  if (!command.startsWith("'") || !command.endsWith("'"))
-    throw new Error("expected one single-quoted shell word");
-  const segments = command.slice(1, -1).split("'\\''");
-  if (segments.some((segment) => segment.includes("'")))
-    throw new Error("unexpected shell syntax");
-  return segments.join("'");
-};
-
 const officialPlugin = (
   overrides: Partial<ClaudeCodeInstalledPlugin> = {},
 ): ClaudeCodeInstalledPlugin => ({
@@ -388,7 +379,7 @@ describe("Claude Code owned lifecycle", () => {
       expect(text).toContain(`"${event}"`);
     }
     expect(text).toContain('"args": []');
-    expect(text).not.toMatch(/[;&|`$<>]/u);
+    expect(installedHookCommand(text)).toBe(invocation.launcherPath);
   });
 
   it.each([
@@ -397,7 +388,7 @@ describe("Claude Code owned lifecycle", () => {
     "/isolated/line\nbreak",
     "/isolated/single'quote",
     "/isolated/back\\slash",
-  ])("encodes a hostile launcher path as one POSIX shell word", (home) => {
+  ])("preserves a hostile launcher path as one direct executable", (home) => {
     const hostileInvocation = createOwnedHarnessHookInvocation({
       agentscopeHome: home,
       harnessType: "@agentscope/harness-claude-code",
@@ -410,13 +401,7 @@ describe("Claude Code owned lifecycle", () => {
       emptyInventory(false),
     )(target());
     const command = installedHookCommand(decisionText(installed));
-    expect(decodeSingleQuotedShellWord(command)).toBe(
-      hostileInvocation.launcherPath,
-    );
-    if (home.includes("single")) {
-      const basename = hostileInvocation.launcherPath.split("/").at(-1)!;
-      expect(command).toBe(`'/isolated/single'\\''quote/bin/${basename}'`);
-    }
+    expect(command).toBe(hostileInvocation.launcherPath);
   });
 
   it("rejects unbound or unrepresentable launcher dialects before mutation", () => {
@@ -1122,6 +1107,28 @@ describe("Claude Code bounded plugin inventory", () => {
   });
 });
 
+describe("Claude Code ambiguous bounded plugin inventory", () => {
+  it("rejects multiple official-shaped overlap records", () => {
+    expect(
+      inspectClaudeCodePluginOverlap({
+        settingsLayers: [],
+        installedPlugins: [
+          officialPlugin({
+            pluginId: "official-a",
+            installedRegistryId: "official-a",
+            cachePluginId: "official-a",
+          }),
+          officialPlugin({
+            pluginId: "official-b",
+            installedRegistryId: "official-b",
+            cachePluginId: "official-b",
+          }),
+        ],
+      }),
+    ).toEqual({ status: "ambiguous" });
+  });
+});
+
 describe("Claude Code hostile settings state", () => {
   it("rejects ambiguous and malformed settings", () => {
     const ambiguous = {
@@ -1335,6 +1342,9 @@ const documentedHookHandlers = {
     args: ["one"],
     async: false,
     asyncRewake: false,
+    cloud: false,
+    rewakeMessage: "rewake details",
+    rewakeSummary: "rewake summary",
     shell: "bash",
     if: "Bash(git *)",
     once: false,
@@ -1346,6 +1356,7 @@ const documentedHookHandlers = {
     url: "https://example.invalid/hook",
     headers: { "X-Audit": "bounded" },
     allowedEnvVars: ["AUDIT_TOKEN"],
+    cloud: false,
     timeout: 5,
   },
   mcp_tool: {
@@ -1385,6 +1396,45 @@ describe("Claude Code hook compatibility grammar", () => {
     }
   });
 
+  it("preserves an HTTP handler without optional headers", () => {
+    const handler = {
+      type: documentedHookHandlers.http.type,
+      url: documentedHookHandlers.http.url,
+      allowedEnvVars: documentedHookHandlers.http.allowedEnvVars,
+      cloud: documentedHookHandlers.http.cloud,
+      timeout: documentedHookHandlers.http.timeout,
+    };
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(settingsWithHook("PreToolUse", handler))).kind,
+    ).toBe("replace");
+  });
+
+  it("preserves documented empty matchers and exec-form arguments", () => {
+    const settings = JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: "printf", args: [""] }],
+          },
+        ],
+      },
+    });
+    const decision = createClaudeCodeInstallationPlanner(
+      "install",
+      invocation,
+      emptyInventory(),
+    )(target(settings));
+    expect(decision.kind).toBe("replace");
+    expect(decisionText(decision)).toContain('"matcher": ""');
+  });
+});
+
+describe("Claude Code hook event compatibility", () => {
   it("enforces the exact event and handler compatibility inventory", () => {
     const allTypeEvents = [
       "PermissionDenied",
@@ -1527,13 +1577,113 @@ describe("Claude Code hook namespace bounds", () => {
     }
   });
 
+  it("rejects executable launcher use but not a non-executable argument", () => {
+    const quoted = `'${invocation.launcherPath}'`;
+    const escaped = invocation.launcherPath.replaceAll("/", "\\/");
+    for (const command of [
+      `${quoted} && printf extra`,
+      `${invocation.launcherPath} --extra`,
+      `"${invocation.launcherPath}" --extra`,
+      `AUDIT=1 ${quoted}`,
+      `${escaped} --extra`,
+      `"${invocation.launcherPath}$AUDIT"`,
+      `\`${invocation.launcherPath}\``,
+      `${Array.from({ length: 33 }, (_, index) => `A${index}=x`).join(" ")} ${quoted}`,
+      `${invocation.launcherPath}${"x".repeat(4_096)}`,
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", { type: "command", command }))),
+      ).toEqual({ kind: "conflict" });
+    }
+    const backslashInvocation = createOwnedHarnessHookInvocation({
+      agentscopeHome: "/isolated/back\\slash",
+      harnessType: "@agentscope/harness-claude-code",
+      hookDeadlineMilliseconds: 2_000,
+      platform: "posix",
+    });
+    const doubleQuotedBackslash = backslashInvocation.launcherPath.replaceAll(
+      "\\",
+      "\\\\",
+    );
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        backslashInvocation,
+        emptyInventory(),
+      )(
+        target(
+          settingsWithHook("PreToolUse", {
+            type: "command",
+            command: `"${doubleQuotedBackslash}"`,
+          }),
+        ),
+      ),
+    ).toEqual({ kind: "conflict" });
+    const unrelated = createClaudeCodeInstallationPlanner(
+      "install",
+      invocation,
+      emptyInventory(),
+    )(
+      target(
+        settingsWithHook("PreToolUse", {
+          type: "command",
+          command: `printf '%s' '${invocation.launcherPath}'`,
+        }),
+      ),
+    );
+    expect(unrelated.kind).toBe("replace");
+  });
+});
+
+describe("Claude Code hook collection bounds", () => {
   it("rejects unknown events and excess matcher or handler counts", () => {
     const foreignMatcher = {
       matcher: "foreign",
       hooks: [documentedHookHandlers.command],
     };
+    const tooManyEvents: Record<string, unknown> = {};
+    for (const event of [
+      "PermissionDenied",
+      "PermissionRequest",
+      "PostToolBatch",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "PreToolUse",
+      "Stop",
+      "SubagentStop",
+      "TaskCompleted",
+      "TaskCreated",
+      "TeammateIdle",
+      "UserPromptExpansion",
+      "UserPromptSubmit",
+      "ConfigChange",
+      "CwdChanged",
+      "DirectoryAdded",
+      "Elicitation",
+      "ElicitationResult",
+      "FileChanged",
+      "InstructionsLoaded",
+      "MessageDisplay",
+      "Notification",
+      "PostCompact",
+      "PreCompact",
+      "SessionEnd",
+      "StopFailure",
+      "SubagentStart",
+      "WorktreeCreate",
+      "WorktreeRemove",
+      "SessionStart",
+      "Setup",
+      "UnknownEvent",
+    ])
+      tooManyEvents[event] = [foreignMatcher];
     for (const settings of [
       { hooks: { UnknownEvent: [foreignMatcher] } },
+      { hooks: tooManyEvents },
       {
         hooks: {
           PreToolUse: Array.from({ length: 65 }, () => foreignMatcher),
@@ -1613,12 +1763,24 @@ describe("Claude Code hook record validation", () => {
     for (const handler of [
       { ...documentedHookHandlers.command, command: undefined },
       { ...documentedHookHandlers.command, shell: "unknown" },
+      { ...documentedHookHandlers.command, cloud: "yes" },
+      { ...documentedHookHandlers.command, rewakeMessage: 1 },
       { ...documentedHookHandlers.http, url: undefined },
+      { ...documentedHookHandlers.http, url: "not a URL" },
+      { ...documentedHookHandlers.http, cloud: "yes" },
+      { ...documentedHookHandlers.http, headers: null },
       { ...documentedHookHandlers.http, headers: { Audit: 1 } },
       { ...documentedHookHandlers.mcp_tool, server: undefined },
       {
         ...documentedHookHandlers.mcp_tool,
         input: Array.from({ length: 65 }, () => true),
+      },
+      {
+        ...documentedHookHandlers.mcp_tool,
+        input: Array.from({ length: 18 }).reduce<unknown>(
+          (value) => ({ nested: value }),
+          true,
+        ),
       },
       { ...documentedHookHandlers.prompt, prompt: undefined },
       { ...documentedHookHandlers.prompt, continueOnBlock: "yes" },
@@ -1659,7 +1821,10 @@ describe("Claude Code hook mutation reconstruction", () => {
       { hooks: [{ type: "command", command: "foreign", async: "yes" }] },
       { hooks: [{ type: "command", command: "foreign", timeout: 0 }] },
       { hooks: [{ type: "command", command: "foreign", statusMessage: "" }] },
-      { hooks: [{ type: "command", command: "foreign" }], matcher: "" },
+      {
+        hooks: [{ type: "command", command: "foreign" }],
+        matcher: "m".repeat(4_097),
+      },
     ]) {
       for (const event of ["Stop", "Notification"] as const) {
         expect(

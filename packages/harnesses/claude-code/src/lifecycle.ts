@@ -84,7 +84,7 @@ declare const dialectAuthorityBrand: unique symbol;
 export type ClaudeCodeDialectAuthority = Readonly<{
   observedVersion: typeof CLAUDE_CODE_COMPONENT_VERSION;
   platform: "posix";
-  dialect: "single-quoted-shell-word";
+  dialect: "posix-direct-exec";
   readonly [dialectAuthorityBrand]: true;
 }>;
 
@@ -118,13 +118,10 @@ const maximumSettingsByteLength = 1_048_576;
 const maximumJsonDepth = 128;
 const claudeCodeHarnessType = claudeCodeDescriptor.harnessType;
 const claudeCodeHarnessDigest = harnessIdentityDigest(claudeCodeHarnessType);
-const encodePosixSingleQuotedShellWord = (value: string): string =>
-  `'${value.replaceAll("'", "'\\''")}'`;
 const claudeCodeCommandDialect = Object.freeze({
   harnessVersion: "2.1.245" as const,
   platform: "posix" as const,
-  representation: "single-quoted-shell-word" as const,
-  encode: encodePosixSingleQuotedShellWord,
+  representation: "posix-direct-exec" as const,
 });
 const posixLauncherBasenamePattern =
   /^agentscope-hook-v1-[a-f0-9]{64}-d(?:[1-9]\d{1,3}|[1-5]\d{4}|60000)$/u;
@@ -246,7 +243,7 @@ export const createClaudeCodeDialectAuthority = (
   const authority = Object.freeze({
     observedVersion: CLAUDE_CODE_COMPONENT_VERSION,
     platform: "posix" as const,
-    dialect: "single-quoted-shell-word" as const,
+    dialect: "posix-direct-exec" as const,
   }) as ClaudeCodeDialectAuthority;
   dialectAuthorities.add(authority);
   return authority;
@@ -582,7 +579,7 @@ const encodeClaudeCodeHookCommand = (
   if (
     authority.observedVersion !== claudeCodeCommandDialect.harnessVersion ||
     authority.platform !== claudeCodeCommandDialect.platform ||
-    authority.dialect !== "single-quoted-shell-word" ||
+    authority.dialect !== claudeCodeCommandDialect.representation ||
     !invocation.launcherPath.startsWith("/") ||
     basename === undefined ||
     !posixLauncherBasenamePattern.test(basename) ||
@@ -590,7 +587,7 @@ const encodeClaudeCodeHookCommand = (
     unpairedSurrogatePattern.test(invocation.launcherPath)
   )
     return undefined;
-  return claudeCodeCommandDialect.encode(invocation.launcherPath);
+  return invocation.launcherPath;
 };
 
 const ownedHook = (command: string) =>
@@ -785,9 +782,13 @@ const hookArrayEquals = (value: unknown, command: string): boolean => {
   );
 };
 
-const boundedHookString = (value: unknown, maximumBytes: number): boolean =>
+const boundedHookString = (
+  value: unknown,
+  maximumBytes: number,
+  allowEmpty = false,
+): boolean =>
   typeof value === "string" &&
-  value.length > 0 &&
+  (allowEmpty || value.length > 0) &&
   value.length <= maximumBytes &&
   encoder.encode(value).byteLength <= maximumBytes;
 
@@ -835,8 +836,9 @@ const consumeHookString = (
   value: unknown,
   maximumBytes: number,
   budget: HookBudget,
+  allowEmpty = false,
 ): value is string => {
-  if (!boundedHookString(value, maximumBytes)) return false;
+  if (!boundedHookString(value, maximumBytes, allowEmpty)) return false;
   const byteLength = encoder.encode(value as string).byteLength;
   if (byteLength > budget.remainingBytes) return false;
   budget.remainingBytes -= byteLength;
@@ -886,12 +888,15 @@ const stringArrayIsValid = (
   maximumCount: number,
   maximumBytes: number,
   budget: HookBudget,
+  allowEmpty = false,
 ): boolean => {
   const entries = exactArrayValues(value);
   return (
     entries !== undefined &&
     entries.length <= maximumCount &&
-    entries.every((entry) => consumeHookString(entry, maximumBytes, budget))
+    entries.every((entry) =>
+      consumeHookString(entry, maximumBytes, budget, allowEmpty),
+    )
   );
 };
 
@@ -901,7 +906,8 @@ const jsonInputIsValid = (
   depth = 0,
 ): boolean => {
   if (depth > 16) return false;
-  if (typeof value === "string") return consumeHookString(value, 4_096, budget);
+  if (typeof value === "string")
+    return consumeHookString(value, 4_096, budget, true);
   if (
     value === null ||
     typeof value === "boolean" ||
@@ -932,21 +938,32 @@ const jsonInputIsValid = (
 };
 
 const commonHookKeys = ["if", "once", "statusMessage", "timeout", "type"];
+const commandHookKeys = new Set([
+  ...commonHookKeys,
+  "args",
+  "async",
+  "asyncRewake",
+  "cloud",
+  "command",
+  "rewakeMessage",
+  "rewakeSummary",
+  "shell",
+]);
+const httpHookKeys = new Set([
+  ...commonHookKeys,
+  "allowedEnvVars",
+  "cloud",
+  "headers",
+  "url",
+]);
+const mcpToolHookKeys = new Set([...commonHookKeys, "input", "server", "tool"]);
+const commandRequiredKeys = new Set(["command", "type"]);
+const httpRequiredKeys = new Set(["type", "url"]);
+const mcpToolRequiredKeys = new Set(["server", "tool", "type"]);
+const promptRequiredKeys = new Set(["prompt", "type"]);
 
 const isCommandHook = (value: unknown, budget: HookBudget): boolean => {
-  const hook = hookRecord(
-    value,
-    new Set([
-      ...commonHookKeys,
-      "args",
-      "async",
-      "asyncRewake",
-      "command",
-      "shell",
-    ]),
-    new Set(["command", "type"]),
-    budget,
-  );
+  const hook = hookRecord(value, commandHookKeys, commandRequiredKeys, budget);
   if (
     hook === undefined ||
     hook.type !== "command" ||
@@ -956,34 +973,48 @@ const isCommandHook = (value: unknown, budget: HookBudget): boolean => {
     return false;
   return (
     (hook.args === undefined ||
-      stringArrayIsValid(hook.args, 32, 512, budget)) &&
+      stringArrayIsValid(hook.args, 32, 512, budget, true)) &&
     (hook.async === undefined || typeof hook.async === "boolean") &&
     (hook.asyncRewake === undefined || typeof hook.asyncRewake === "boolean") &&
+    (hook.cloud === undefined || typeof hook.cloud === "boolean") &&
+    (hook.rewakeMessage === undefined ||
+      consumeHookString(hook.rewakeMessage, 4_096, budget, true)) &&
+    (hook.rewakeSummary === undefined ||
+      consumeHookString(hook.rewakeSummary, 4_096, budget, true)) &&
     (hook.shell === undefined ||
       ["bash", "powershell"].includes(hook.shell as string))
   );
 };
 
+const isHttpHookUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return (
+      ["http:", "https:"].includes(url.protocol) && url.hostname.length > 0
+    );
+  } catch {
+    return false;
+  }
+};
+
 const isHttpHook = (value: unknown, budget: HookBudget): boolean => {
-  const hook = hookRecord(
-    value,
-    new Set([...commonHookKeys, "allowedEnvVars", "headers", "url"]),
-    new Set(["type", "url"]),
-    budget,
-  );
+  const hook = hookRecord(value, httpHookKeys, httpRequiredKeys, budget);
   if (
     hook === undefined ||
     hook.type !== "http" ||
     !consumeHookString(hook.url, 8_192, budget) ||
+    !isHttpHookUrl(hook.url) ||
     !commonHookFieldsAreValid(hook, budget) ||
+    (hook.cloud !== undefined && typeof hook.cloud !== "boolean") ||
     (hook.allowedEnvVars !== undefined &&
       !stringArrayIsValid(hook.allowedEnvVars, 64, 128, budget))
   )
     return false;
   if (hook.headers === undefined) return true;
+  if (!isRecord(hook.headers)) return false;
   const headers = hookRecord(
     hook.headers,
-    new Set(Object.keys(hook.headers as object)),
+    new Set(Object.keys(hook.headers)),
     new Set(),
     budget,
   );
@@ -991,18 +1022,13 @@ const isHttpHook = (value: unknown, budget: HookBudget): boolean => {
     headers !== undefined &&
     Object.keys(headers).length <= 64 &&
     Object.values(headers).every((entry) =>
-      consumeHookString(entry, 1_024, budget),
+      consumeHookString(entry, 1_024, budget, true),
     )
   );
 };
 
 const isMcpToolHook = (value: unknown, budget: HookBudget): boolean => {
-  const hook = hookRecord(
-    value,
-    new Set([...commonHookKeys, "input", "server", "tool"]),
-    new Set(["server", "tool", "type"]),
-    budget,
-  );
+  const hook = hookRecord(value, mcpToolHookKeys, mcpToolRequiredKeys, budget);
   return (
     hook !== undefined &&
     hook.type === "mcp_tool" &&
@@ -1026,7 +1052,7 @@ const isPromptOrAgentHook = (
       "model",
       "prompt",
     ]),
-    new Set(["prompt", "type"]),
+    promptRequiredKeys,
     budget,
   );
   return (
@@ -1073,7 +1099,7 @@ const isAdmittedForeignMatcher = (
   if (matcher === undefined) return false;
   if (
     matcher.matcher !== undefined &&
-    !consumeHookString(matcher.matcher, 4_096, budget)
+    !consumeHookString(matcher.matcher, 4_096, budget, true)
   )
     return false;
   const hooks = exactArrayValues(matcher.hooks);
@@ -1102,6 +1128,83 @@ const ownedMatcherEquals = (
   value.agentscope.harnessType === invocation.harnessType &&
   value.agentscope.ownershipIdentity === invocation.ownershipIdentity;
 
+const parsePosixExecutableWord = (command: string): string | undefined => {
+  let position = 0;
+  const skipWhitespace = (): void => {
+    while (/\s/u.test(command[position] ?? "")) position += 1;
+  };
+  const appendEscapedCharacter = (word: string): string | undefined => {
+    position += 1;
+    if (position >= command.length) return undefined;
+    const result = `${word}${command[position]!}`;
+    position += 1;
+    return result;
+  };
+  for (let assignmentCount = 0; assignmentCount <= 32; assignmentCount += 1) {
+    skipWhitespace();
+    let word = "";
+    let quote: "single" | "double" | undefined;
+    while (position < command.length) {
+      const character = command[position]!;
+      if (quote === "single") {
+        if (character === "'") quote = undefined;
+        else word += character;
+        position += 1;
+        continue;
+      }
+      if (quote === "double") {
+        if (character === '"') {
+          quote = undefined;
+          position += 1;
+          continue;
+        }
+        if (character === "\\") {
+          word = appendEscapedCharacter(word) ?? "";
+          continue;
+        }
+        if (["$", "`"].includes(character)) return undefined;
+        word += character;
+        position += 1;
+        continue;
+      }
+      if (
+        /\s/u.test(character) ||
+        [";", "&", "|", "<", ">"].includes(character)
+      )
+        break;
+      if (character === "'") quote = "single";
+      else if (character === '"') quote = "double";
+      else if (character === "\\") {
+        word = appendEscapedCharacter(word) ?? "";
+        continue;
+      } else if (["$", "`"].includes(character)) return undefined;
+      else word += character;
+      position += 1;
+    }
+    if (quote !== undefined || word.length === 0) return undefined;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)) return word;
+  }
+  return undefined;
+};
+
+const commandClaimsExecutable = (
+  value: Readonly<Record<string, unknown>>,
+  launcherPath: string,
+): boolean => {
+  if (typeof value.command !== "string") return false;
+  if (
+    value.command.length > 4_096 ||
+    encoder.encode(value.command).byteLength > 4_096
+  )
+    return value.command.includes(launcherPath);
+  if (Object.hasOwn(value, "args")) return value.command === launcherPath;
+  const executable = parsePosixExecutableWord(value.command);
+  return (
+    executable === launcherPath ||
+    (executable === undefined && value.command.includes(launcherPath))
+  );
+};
+
 const valueClaimsAgentscopeLauncher = (
   value: unknown,
   invocation: OwnedHarnessHookInvocation,
@@ -1117,8 +1220,8 @@ const valueClaimsAgentscopeLauncher = (
         )
       : isRecord(value) &&
         (Object.hasOwn(value, "agentscope") ||
+          commandClaimsExecutable(value, invocation.launcherPath) ||
           value.command === command ||
-          value.command === invocation.launcherPath ||
           Object.keys(value).some((key) =>
             valueClaimsAgentscopeLauncher(key, invocation, command),
           ) ||
