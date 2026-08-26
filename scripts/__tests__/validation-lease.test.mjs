@@ -25,17 +25,28 @@ const repositoryRoot = resolve(
 );
 const leaseScript = join(repositoryRoot, "scripts/validation-lease.py");
 const temporaryRoots = [];
+const leaseAuthorityEnvironmentKeys = [
+  "AGENTSCOPE_VALIDATION_LEASE_FD",
+  "AGENTSCOPE_VALIDATION_LEASE_TOKEN",
+  "AGENTSCOPE_VALIDATION_LEASE_REPOSITORY",
+];
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
 
+function independentEnvironment(environment = {}, ambient = process.env) {
+  const isolated = { ...ambient };
+  for (const key of leaseAuthorityEnvironmentKeys) delete isolated[key];
+  return { ...isolated, ...environment };
+}
+
 function command(command, arguments_, cwd, environment = {}) {
   const result = spawnSync(command, arguments_, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, ...environment },
+    env: independentEnvironment(environment),
   });
   assert.equal(result.error, undefined);
   return result;
@@ -71,7 +82,7 @@ function fixture() {
 function runLease(cwd, environment, arguments_, options = {}) {
   return spawn("python3", [leaseScript, ...arguments_], {
     cwd,
-    env: { ...process.env, ...environment },
+    env: independentEnvironment(environment),
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
   });
@@ -148,6 +159,36 @@ function pythonValue(cwd, source) {
   assert.equal(outcome.status, 0, outcome.stderr);
   return outcome.stdout.trim();
 }
+
+test("independent fixtures scrub only ambient lease authority", () => {
+  const ambient = {
+    AGENTSCOPE_VALIDATION_LEASE_FD: "closed-fd",
+    AGENTSCOPE_VALIDATION_LEASE_TOKEN: "outer-token",
+    AGENTSCOPE_VALIDATION_LEASE_REPOSITORY: "outer-repository",
+    AGENTSCOPE_VALIDATION_LEASE_TEST_ROOT: "test-root",
+    AGENTSCOPE_CORE_REPLAY_PRELOAD_BYTES: "123",
+  };
+  const isolated = independentEnvironment({}, ambient);
+  for (const key of leaseAuthorityEnvironmentKeys)
+    assert.equal(Object.hasOwn(isolated, key), false);
+  assert.equal(isolated.AGENTSCOPE_VALIDATION_LEASE_TEST_ROOT, "test-root");
+  assert.equal(isolated.AGENTSCOPE_CORE_REPLAY_PRELOAD_BYTES, "123");
+
+  const explicit = independentEnvironment(
+    {
+      AGENTSCOPE_VALIDATION_LEASE_FD: "explicit-fd",
+      AGENTSCOPE_VALIDATION_LEASE_TOKEN: "explicit-token",
+      AGENTSCOPE_VALIDATION_LEASE_REPOSITORY: "explicit-repository",
+    },
+    ambient,
+  );
+  assert.equal(explicit.AGENTSCOPE_VALIDATION_LEASE_FD, "explicit-fd");
+  assert.equal(explicit.AGENTSCOPE_VALIDATION_LEASE_TOKEN, "explicit-token");
+  assert.equal(
+    explicit.AGENTSCOPE_VALIDATION_LEASE_REPOSITORY,
+    "explicit-repository",
+  );
+});
 
 test("two worktrees race for one lease and the loser starts no child", async () => {
   const value = fixture();
