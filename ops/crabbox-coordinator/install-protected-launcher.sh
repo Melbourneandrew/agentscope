@@ -24,6 +24,18 @@ repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 go_root=/Users/andrewmelbourne/.local/share/agentscope-crabbox/toolchains/go1.26.5-darwin-arm64
 go_binary=$go_root/bin/go
 
+if [ -n "$(git -C "$repository_root" status --porcelain=v1 --untracked-files=all)" ]; then
+  echo "protected launcher: E_DIRTY_REPOSITORY" >&2
+  exit 1
+fi
+launcher_source_commit=$(git -C "$repository_root" rev-parse --verify HEAD)
+case "$launcher_source_commit" in *[!0-9a-f]*) echo "protected launcher: E_SOURCE_COMMIT" >&2; exit 1 ;; esac
+if [ "${#launcher_source_commit}" -ne 40 ]; then
+  echo "protected launcher: E_SOURCE_COMMIT" >&2
+  exit 1
+fi
+echo "Protected launcher source commit: $launcher_source_commit"
+
 if [ ! -x "$go_binary" ] || [ "$($go_binary version)" != "go version go1.26.5 darwin/arm64" ]; then
   echo "protected launcher: E_GO_TOOLCHAIN" >&2
   exit 1
