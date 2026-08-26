@@ -43,13 +43,13 @@ Unattended agents invoke a host-owned launcher that holds one non-admin Crabbox 
 
 **Consequences:** The initial fleet trusts authorized Agentscope development agents but not repository or candidate code with control-plane credentials. A future multi-user or mutually untrusted service requires a new authentication decision rather than sharing this installation.
 
-### ADR-005: Bind retries to one replay-safe lease creation
+### ADR-005: Bind retries to one fixed, single-use lease identity
 
-**Decision:** Each acquisition has one launcher-minted operation identity bound to the authorized task, source commit or dirty-patch digest, candidate digest when present, scenario manifest identity, exact lease policy, and a Crabbox client-generated lease ID and create-attempt ID. Retries reuse that exact tuple. A changed tuple is a new operation and cannot adopt, replace, or release the earlier lease.
+**Decision:** Each acquisition has one launcher-minted canonical `cbx_` lease ID and operation record bound to the authorized task, source commit or dirty-patch digest, candidate digest when present, scenario manifest identity, exact normalized create inputs, and lease policy. The launcher invokes the pinned client's fixed-ID `warmup --lease-id` path. Retries reuse that exact ID and normalized intent. A changed tuple requires a new ID and cannot adopt, replace, or release the earlier lease; a terminal ID is never reused.
 
-The coordinator's single `FleetDurableObject` is the serialization and replay authority. A lost or ambiguous create response is recovered only through Crabbox's matching create-attempt replay/cancel protocol and coordinator inventory; the launcher does not issue a fresh create until the first attempt is terminally reconciled. Conflicting identities, unknown state, or unavailable reconciliation fail closed and prohibit another acquisition.
+The coordinator's single `FleetDurableObject` is the serialization and replay authority. The versioned fixed-ID `PUT` reserves a hash of the immutable normalized intent before provider work; an identical replay joins or returns the same provisioning or active lease, while drift or terminal-ID reuse fails before another provider create. A lost or ambiguous response is recovered only by repeating that exact fixed-ID request and then observing its bound state. The launcher does not issue a fresh create until the first identity is terminally reconciled. Conflicting identities, unknown state, or unavailable reconciliation fail closed.
 
-**Context:** A provider may create a machine before its response is lost. Crabbox `v0.46.0` persists create-attempt tombstones and validates request/lease bindings so cancellation and replay do not turn an ambiguous response into a second machine.
+**Context:** A provider may create a machine before its response is lost. Crabbox `v0.46.0` documents `--lease-id` as its automation idempotency contract. Its ordinary create-attempt token is process-local and therefore cannot be the launcher's durable cross-process identity.
 
 **Consequences:** Local claim files are useful client state but never the sole proof that a provider resource exists or is gone. No agent can convert an unknown acquisition into success by deleting its claim.
 
@@ -67,7 +67,9 @@ Raising concurrency, monthly spend, server type, lifetime, or identity count req
 
 **Decision:** The coordinator owns brokered Hetzner release, expiry, retry, and deletion. Its Durable Object alarm schedules the earliest lease expiry or cleanup retry, and the Worker retains the upstream 15-minute scheduled trigger as an independent wakeup. A launcher interruption cannot cancel or disable those paths. Unattended acquisition remains disabled until bounded evidence proves alarm execution, scheduled wakeup, retry behavior, and deletion after loss of the initiating client ([Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)).
 
-An operation is terminal only when coordinator lease/run state, provider inventory, local claim and per-lease key state, and label-scoped nested-Docker containers, networks, volumes, and images reconcile to absence or an explicitly retained bounded evidence record. Pending release, scheduled cleanup, an expired record with a surviving provider machine, missing inventory authority, or contradictory observations remain an incident. The launcher blocks new acquisition when global reconciliation is stale or unknown.
+An operation is terminal only when coordinator lease/run state, provider inventory, local claim and per-lease key state, and label-scoped nested-Docker containers, networks, volumes, and images reconcile to absence or an explicitly retained bounded evidence record. Pending release, scheduled cleanup, an expired record with a surviving provider machine, missing inventory authority, or contradictory observations remain an incident.
+
+The launcher serializes admission against its durable operation ledger. Any ambiguous create, release, inventory, or cleanup transition writes an acquisition freeze before returning. Only an attended reconciliation performed after that recorded transition may clear the freeze: it must compare coordinator state with an independently authenticated Hetzner inventory, account for every operation ID and owned provider resource, and persist the matching observation before the next admission. Routine admission with no uncertain transition relies on the coordinator's serialized active-count and cost reservations rather than an arbitrarily aged provider snapshot.
 
 **Context:** Automatic cleanup reduces leak duration but is not proof of deletion. An alarm is at-least-once work and can be retried; provider deletion and durable state must therefore be idempotent and observed, not inferred from scheduling.
 
@@ -75,11 +77,11 @@ An operation is terminal only when coordinator lease/run state, provider invento
 
 ### ADR-008: Retain one bounded, non-content fleet evidence record
 
-**Decision:** Every remote operation retains one sanitized record binding the identities in Harness Execution ADR-006 plus launcher operation identity, coordinator source commit, Crabbox client version, Worker version and environment, Durable Object migration tag, Cloudflare request/deployment identifiers where available, lease/create-attempt/provider resource identities, approved policy and reserved-cost quote, start/end times, lifecycle transitions, cleanup attempts, terminal coordinator/provider/claim/key observations, and estimated and actual billed cost when the provider exposes it. Secrets, commands containing user content, repository archives, prompts, harness output, trace payloads, raw terminal output, IP addresses, and SSH private material are excluded.
+**Decision:** Every remote operation retains one sanitized external evidence record binding the identities in Harness Execution ADR-006 plus launcher operation identity, coordinator source commit, Crabbox client version, Worker version and environment, Durable Object migration tag, Cloudflare request/deployment identifiers where available, fixed lease and provider resource identities, approved normalized intent and reserved-cost quote, start/end times, lifecycle transitions, cleanup attempts, terminal coordinator/provider/claim/key observations, and estimated and actual billed cost when the provider exposes it. Secrets, commands containing user content, repository archives, prompts, harness output, trace payloads, raw terminal output, IP addresses, and SSH private material are excluded.
 
 **Context:** Remote capacity is an accelerator, but its results are not reproducible or auditable without binding the exact control plane and terminal cleanup evidence.
 
-**Consequences:** Evidence can diagnose cost and lifecycle failures without becoming another trace or credential store. Ordinary operation and cost records are deleted within 90 days. An incident record remains while reconciliation is unresolved and is deleted within 90 days after closure. Crabbox portal logs or artifacts are disabled initially rather than becoming a second authority.
+**Consequences:** Evidence can diagnose cost and lifecycle failures without becoming another trace or credential store. External ordinary-operation and cost evidence is deleted within 90 days. An external incident record remains while reconciliation is unresolved and is deleted within 90 days after closure. The pinned coordinator's content-free lease, create-binding, and usage control state follows its upstream retention behavior and is not erased to satisfy the external-evidence deadline; any pruning requires a reviewed compatible migration. Crabbox portal logs or artifacts are disabled initially rather than becoming a second authority.
 
 ### ADR-009: Freeze acquisition first during incidents
 
@@ -114,3 +116,13 @@ GitHub-hosted required checks remain merge and release authority. Crabbox result
 **Context:** Architecture approval does not authorize external mutation or recurring spend.
 
 **Consequences:** Delivery sequencing remains in ROADMAP and Beads. Deployment evidence cannot retroactively justify divergence from this Blueprint.
+
+### ADR-013: Drain provider authority before retiring the coordinator
+
+**Decision:** Coordinator retirement first freezes acquisition and records that freeze outside the Worker. The operator then resolves every in-flight create, stops or allows bounded expiry of every lease, runs coordinator/provider reconciliation after the last transition, verifies no owned Hetzner machine or per-lease key remains, revokes the non-admin launcher credential, and retains the terminal evidence. Only then may the Hetzner secret, scheduled trigger, Worker route and versions, and Durable Object namespace be removed, in that order. A teardown failure leaves acquisition frozen and the remaining release/reaper authority available for retry.
+
+If Cloudflare control is unavailable while a provider resource survives, the incident path uses the independently authenticated Hetzner inventory and deletes only resources whose exact ownership identity is bound by retained coordinator and launcher evidence. It does not destroy the unavailable Durable Object namespace merely to make the inventory appear empty.
+
+**Context:** Worker deletion is not lease deletion. Removing the coordinator or its durable state first can discard the authority needed to identify, release, retry, and audit billed provider resources.
+
+**Consequences:** An idle development fleet does not have to remain deployed forever, but decommission is an evidence-producing lifecycle rather than console cleanup. Recreating the environment later uses a new deployment identity and never adopts retired lease IDs.
