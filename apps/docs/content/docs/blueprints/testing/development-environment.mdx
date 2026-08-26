@@ -35,17 +35,29 @@ The privileged Crabbox client is built with `go build -trimpath` from the same e
 
 **Consequences:** Every operation and evidence record names the exact account, Worker environment, version identifier, Durable Object migration tag, coordinator origin, Hetzner project, and actor. Values that are sensitive or installation-specific remain in the operator record rather than documentation or repository configuration.
 
-### ADR-004: Separate deployment, administration, agent, and workload authority
+### ADR-004: Own one complete fail-closed deployment profile
+
+**Decision:** Agentscope owns one reviewed, non-secret Cloudflare deployment profile separate from the immutable Crabbox source. Deployment stages that profile beside the verified upstream `worker/` entry point; it never deploys upstream `worker/wrangler.jsonc` directly. The profile is the sole authority for the Worker name, compatibility date and flags, workers.dev/preview behavior, assets, `FLEET` SQLite Durable Object binding and migration history, 15-minute trigger, allowed non-secret variables, and required secret names.
+
+The allowed variables are limited to the Agentscope development org/owner labels, four fleet/owner/org active-lease caps, USD 25 fleet/owner/org monthly reservation caps, and bounded run retention. The only initial secret names are `HETZNER_TOKEN`, `CRABBOX_SHARED_TOKEN`, and `CRABBOX_ADMIN_TOKEN`. AWS/Azure/GCP/Daytona settings, workspace provider and prewarm, provider orphan-delete switches, GitHub OAuth, Access, portal bridges, artifacts, Tailscale, custom routes, and all upstream OpenClaw names, origins, orgs, capacities, and budgets are absent. Before any mutation, locked Wrangler validation and dry build must project exactly this allowlist; any extra, missing, inherited, dashboard-only, or differently resolved binding, trigger, migration, variable, secret name, route, or Worker identity fails closed.
+
+**Context:** The pinned upstream Wrangler file is a production example for OpenClaw: it selects OpenClaw identities, AWS prewarm, multiple provider sweeps, active caps up to 20, and budgets up to USD 50,000. Source immutability does not make those deployment values safe for Agentscope. Cloudflare environment variables and bindings do not provide a general inheritance mechanism that can be assumed to remove unwanted top-level values.
+
+**Consequences:** The deployment profile may reference pinned upstream source but copies no coordinator implementation. Account IDs, origins, and secret values enter only the external operator record or authenticated deployment input; the reviewed profile still determines which fields may exist.
+
+### ADR-005: Separate deployment, administration, agent, and workload authority
 
 **Decision:** Cloudflare deployment credentials and the Crabbox admin token are available only to the human-owned deployment path. `HETZNER_TOKEN`, `CRABBOX_SHARED_TOKEN`, `CRABBOX_ADMIN_TOKEN`, and any future session secret are Worker secrets, never plain Wrangler variables, repository values, shell arguments, VM inputs, scenario inputs, logs, or artifacts ([Cloudflare Worker secrets](https://developers.cloudflare.com/workers/configuration/secrets/)). The initial non-browser installation omits GitHub OAuth, portal bridges, artifact storage, Tailscale, and their secrets.
 
-Unattended agents invoke a host-owned launcher that holds one non-admin Crabbox automation credential outside the repository process and supplies only the approved coordinator origin. The launcher accepts one reviewed job description and enforces provider `hetzner`, type `cx33`, location `fsn1`, Ubuntu 24.04 amd64, per-lease SSH keys, `keep=false`, stop-always, TTL at most 90 minutes, idle timeout at most 20 minutes, and the current fleet cap before invoking the matching Crabbox client. It does not expose the bearer value, accept arbitrary coordinator origins, or offer admin, deployment, secret, image, pool, or direct-provider operations. Candidate and remote repository code receive none of the coordinator, Cloudflare, or Hetzner credentials.
+Unattended agents invoke one host-owned service under a dedicated fleet-control OS principal. That principal alone holds the non-admin Crabbox automation credential, the authenticated append-only operation ledger, per-lease keys, and one protected explicit Crabbox configuration selected with `CRABBOX_CONFIG`; the privileged client never discovers repository, user, or ambient Crabbox configuration. The service accepts one reviewed job description and enforces provider `hetzner`, type `cx33`, location `fsn1`, Ubuntu 24.04 amd64, per-lease SSH keys, `keep=false`, stop-always, TTL at most 90 minutes, idle timeout at most 20 minutes, and the current fleet cap before invoking the matching Crabbox client. It does not expose the bearer value, accept arbitrary coordinator origins, or offer admin, deployment, secret, image, pool, or direct-provider operations. Candidate and remote repository code receive none of the coordinator, Cloudflare, or Hetzner credentials.
+
+Only that principal may use the automation token, so a second launcher cannot become a concurrent writer. After every transition, the service writes and authenticates its ledger update before acknowledging success and maintains an owner-controlled encrypted backup. Lost, unverifiable, stale, or partially restored ledger continuity freezes acquisition. Host migration requires revoking the old automation token, reconciling coordinator and provider state after the freeze, restoring and authenticating the ledger and retired-ID set, provisioning a new token, and only then admitting work. Mac or launcher loss stops new acquisitions but cannot stop the cloud-side reaper.
 
 **Context:** Crabbox shared-token authentication is non-admin but is a trusted-operator credential, not a hostile-tenant capability. Coordinator-side cost and count limits bound mistakes across callers; the launcher additionally removes expensive or persistent request shapes that the general Crabbox API legitimately supports.
 
 **Consequences:** The initial fleet trusts authorized Agentscope development agents but not repository or candidate code with control-plane credentials. A future multi-user or mutually untrusted service requires a new authentication decision rather than sharing this installation.
 
-### ADR-005: Bind retries to one fixed, single-use lease identity
+### ADR-006: Bind retries to one fixed, single-use lease identity
 
 **Decision:** Each acquisition has one launcher-minted canonical `cbx_` lease ID and operation record bound to the authorized task, source commit or dirty-patch digest, candidate digest when present, scenario manifest identity, exact normalized create inputs, and lease policy. The launcher invokes the pinned client's fixed-ID `warmup --lease-id` path. Retries reuse that exact ID and normalized intent. A changed tuple requires a new ID and cannot adopt, replace, or release the earlier lease; a terminal ID is never reused.
 
@@ -55,17 +67,17 @@ The coordinator's single `FleetDurableObject` is the serialization and replay au
 
 **Consequences:** Local claim files are useful client state but never the sole proof that a provider resource exists or is gone. No agent can convert an unknown acquisition into success by deleting its claim.
 
-### ADR-006: Enforce hard lifetime, capacity, and spend ceilings twice
+### ADR-007: Enforce hard lifetime and capacity limits plus bounded cost reservations
 
-**Decision:** The initial coordinator sets fleet, owner, and organization active-lease limits to four and monthly reserved-spend limits to USD 25. The non-admin automation identity is the only initial owner and organization. Every ordinary job remains one-shot and requests a maximum 90-minute TTL and 20-minute idle timeout; heartbeats may extend idle expiry only within the hard TTL. `keep` is prohibited. The launcher admits at most four operations and applies the exact provider/type/location/image bounds in ADR-004 even when the coordinator has spare capacity.
+**Decision:** The initial coordinator sets fleet, owner, and organization active-lease limits to four and monthly compute-reservation guardrails to USD 25. The non-admin automation identity is the only initial owner and organization. Every ordinary job remains one-shot and requests a maximum 90-minute TTL and 20-minute idle timeout; heartbeats may extend idle expiry only within the hard TTL. `keep` is prohibited. The launcher admits at most four operations and applies the exact provider/type/location/image bounds in ADR-005 even when the coordinator has spare capacity.
 
 Raising concurrency, monthly spend, server type, lifetime, or identity count requires a reviewed policy change and a verified provider quota; it is not a runtime convenience flag. Any first mutation remains separately owner-approved and more restrictive than these steady-state maxima.
 
-**Context:** Crabbox reserves worst-case lease cost before provisioning and rejects active-count or monthly-budget overflow. A powerful default type or unbounded kept lease would defeat the purpose of elastic development capacity even when cleanup eventually succeeds.
+**Context:** Crabbox reserves modeled worst-case compute cost before provisioning and rejects active-count or reservation overflow. Its model is not the provider invoice and excludes some network, address, snapshot, tax, credit, and discount effects. A powerful default type or unbounded kept lease would defeat the purpose of elastic development capacity even when cleanup eventually succeeds.
 
-**Consequences:** Four workers support three harness-development lanes plus one integration lane under current intent. Validation waves should bin-pack scenarios on those workers rather than equate every test case with a separately hour-billed machine.
+**Consequences:** Four workers support three harness-development lanes plus one integration lane under current intent. Validation waves should bin-pack scenarios on those workers rather than equate every test case with a separately hour-billed machine. Cloudflare begins without a paid-plan upgrade; any Cloudflare billable-plan change needs separate owner approval. The external evidence reports modeled reservation and actual provider billing separately and never calls USD 25 an invoice ceiling.
 
-### ADR-007: Make cleanup independent and reconciliation terminal
+### ADR-008: Make cleanup independent and reconciliation terminal
 
 **Decision:** The coordinator owns brokered Hetzner release, expiry, retry, and deletion. Its Durable Object alarm schedules the earliest lease expiry or cleanup retry, and the Worker retains the upstream 15-minute scheduled trigger as an independent wakeup. Cloudflare guarantees alarm execution at least once and retries a thrown handler at most six times; the design therefore relies on the pinned coordinator's idempotent lifecycle, explicit rescheduling, and scheduled wakeup rather than treating one alarm delivery as deletion proof ([Durable Object alarms](https://developers.cloudflare.com/durable-objects/api/alarms/)). A launcher or developer-Mac interruption cannot cancel those cloud-side paths. Unattended acquisition remains disabled until bounded evidence proves alarm execution, scheduled wakeup, exhausted-retry recovery, and deletion after loss of the initiating client.
 
@@ -73,11 +85,13 @@ An operation is terminal only when coordinator lease/run state, provider invento
 
 The launcher serializes admission against its durable operation ledger. Any ambiguous create, release, inventory, or cleanup transition writes an acquisition freeze before returning. Only an attended reconciliation performed after that recorded transition may clear the freeze: it must compare coordinator state with an independently authenticated Hetzner inventory, account for every operation ID and owned provider resource, and persist the matching observation before the next admission. Routine admission with no uncertain transition relies on the coordinator's serialized active-count and cost reservations rather than an arbitrarily aged provider snapshot.
 
+The fleet-control service monitors while any operation is active or uncertain and at least every 15 minutes otherwise. It alerts the owner and freezes acquisition on an unavailable scheduled/reaper observation, an owned resource surviving five minutes beyond expected terminal cleanup, exhausted cleanup retry, any coordinator/provider disagreement, ledger discontinuity, or 80% of a count or reservation cap. Cloudflare Worker exception/cron notifications and provider billing alerts are enabled when the account exposes them, but neither substitutes for identity-bound reconciliation. A high-priority alert is acknowledged within one hour; until then the cloud-side TTL/reaper remains the deletion path and no new lease is admitted. Missing notification capability or an unproved monitoring signal keeps unattended mode disabled.
+
 **Context:** Automatic cleanup reduces leak duration but is not proof of deletion. An alarm is at-least-once work and can be retried; provider deletion and durable state must therefore be idempotent and observed, not inferred from scheduling.
 
 **Consequences:** GitHub CI may accept no Crabbox result whose outer lease is unresolved. Operator reconciliation retains delete authority even while ordinary acquisition is frozen.
 
-### ADR-008: Retain one bounded, non-content fleet evidence record
+### ADR-009: Retain one bounded, non-content fleet evidence record
 
 **Decision:** Every remote operation retains one sanitized external evidence record binding the identities in Harness Execution ADR-006 plus launcher operation identity, coordinator source commit, Crabbox client version, Worker version and environment, Durable Object migration tag, Cloudflare request/deployment identifiers where available, fixed lease and provider resource identities, approved normalized intent and reserved-cost quote, start/end times, lifecycle transitions, cleanup attempts, terminal coordinator/provider/claim/key observations, and estimated and actual billed cost when the provider exposes it. Secrets, commands containing user content, repository archives, prompts, harness output, trace payloads, raw terminal output, IP addresses, and SSH private material are excluded.
 
@@ -85,7 +99,7 @@ The launcher serializes admission against its durable operation ledger. Any ambi
 
 **Consequences:** Evidence can diagnose cost and lifecycle failures without becoming another trace or credential store. External ordinary-operation and cost evidence is deleted within 90 days. An external incident record remains while reconciliation is unresolved and is deleted within 90 days after closure. The pinned coordinator separately retains sensitive operational control state—including owner/org, provider scope and resource identities, network address, SSH endpoint metadata, paths, and cost—inside the access-controlled Durable Object for the life of that coordinator environment because `v0.46.0` has no compatible terminal-lease pruning contract. It is never described as content-free or exported as routine evidence; orderly retirement deletes it only after zero-resource reconciliation. Any earlier compaction or pruning requires a reviewed compatible migration that preserves replay and cleanup authority. Crabbox portal logs or artifacts are disabled initially rather than becoming a second authority.
 
-### ADR-009: Freeze acquisition first during incidents
+### ADR-010: Freeze acquisition first during incidents
 
 **Decision:** Suspected credential exposure, auth bypass, cost-limit failure, stale reconciliation, orphaned provider state, or cleanup disagreement immediately disables new acquisitions without disabling authenticated list, inspect, release, reaper, and provider-reconciliation authority. The operator then revokes the affected non-admin credential, rotates the relevant Worker secret, inventories coordinator and Hetzner state independently, deletes only identity-bound owned resources, verifies zero unknown resources, preserves sanitized incident evidence, and re-enables acquisition only after a reviewed cause and bounded proof.
 
@@ -93,7 +107,7 @@ The launcher serializes admission against its durable operation ledger. Any ambi
 
 **Consequences:** Provider-console deletion is an emergency reconciliation step, not the normal lifecycle. Ambiguous ownership stays quarantined for human resolution rather than broad cleanup.
 
-### ADR-010: Roll back code without rolling back durable ownership state
+### ADR-011: Roll back code without rolling back durable ownership state
 
 **Decision:** Worker deployments retain Cloudflare version identity and the upstream Durable Object migration history. A rollback may move traffic only to a version proven compatible with the current Durable Object schema and outstanding lease records; it never deletes, recreates, copies, or rewinds the namespace. If compatibility is uncertain, acquisition stays frozen while the newest known-compatible coordinator retains reaper and release authority. Durable Object class or storage migrations are forward-reviewed, append-only changes and cannot be undone by a Worker code rollback ([Durable Object migrations](https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/), [Worker rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)).
 
@@ -101,11 +115,11 @@ The launcher serializes admission against its durable operation ledger. Any ambi
 
 **Consequences:** Each deployment records its compatible predecessor and runs no traffic split across coordinator versions unless both are proven against the same active-state schema. Rollback verification includes reaper continuity and provider reconciliation, not only `/v1/health`.
 
-### ADR-011: Keep the remote host outside the hermetic and release boundaries
+### ADR-012: Keep the remote host outside the hermetic and release boundaries
 
 **Decision:** Crabbox provisions only the disposable outer Linux host. Agentscope launches the unchanged hermetic Docker scenario inside it with dummy harness credentials, internal model proxy/mock, loopback OTLP ledger, and denied public egress. Real provider model credentials and live Langfuse credentials are prohibited. The same candidate and manifest remain runnable locally and in GitHub CI.
 
-A Crabbox checkpoint or prepared host is a performance cache, never acquisition, candidate, harness, image, or support authority. Every use binds the checkpoint's exact source lease, prepared-image and tool digests, creator version, and creation time, then re-verifies the candidate, manifest, OCI images, and runtime before starting a clean inner scenario. Missing provenance, mutable drift, a credential-bearing layer, or a digest mismatch discards the checkpoint. A checkpoint cannot carry a local claim, SSH key, coordinator bearer, provider credential, harness credential, or prior scenario state.
+Crabbox checkpoints are disabled for the initial brokered Hetzner environment. The pinned checkpoint record does not authenticate prepared-image/tool digests or prove the absence of credentials and prior scenario state, and brokered Hetzner does not provide a native snapshot authority. Enabling checkpoint reuse requires a later reviewed decision for an authenticated provenance manifest, allowed cache contents, secret scanning, clean-room revalidation, retention, and deletion. A checkpoint can never become acquisition, candidate, harness, image, or support authority.
 
 GitHub-hosted required checks remain merge and release authority. Crabbox results accelerate development and may supply supplemental evidence, but fleet availability, Cloudflare availability, provider quota, or the USD 25 development budget cannot block a product release or turn a failed required GitHub check into a pass.
 
@@ -113,7 +127,7 @@ GitHub-hosted required checks remain merge and release authority. Crabbox result
 
 **Consequences:** Before unattended fan-out, bounded evidence must prove one disposable worker and complete nested/outer cleanup. A synthetic substrate fixture makes no harness compatibility claim, and remote development performs no npm publication.
 
-### ADR-012: Require explicit mutation authority and pre-use proof
+### ADR-013: Require explicit mutation authority and pre-use proof
 
 **Decision:** Cloudflare login, secret creation, Worker deployment, Durable Object creation, route configuration, and brokered Hetzner leasing each require explicit owner-authorized mutation scope. Before unattended use, the locked source and deployment inputs are dry-validated, the owner reviews the account/environment/secrets/limits inventory and exact mutation/rollback sequence, and one explicitly approved disposable-worker proof reaches terminal zero-resource reconciliation with reviewed cost evidence.
 
@@ -121,7 +135,7 @@ GitHub-hosted required checks remain merge and release authority. Crabbox result
 
 **Consequences:** Delivery sequencing remains in ROADMAP and Beads. Deployment evidence cannot retroactively justify divergence from this Blueprint.
 
-### ADR-013: Drain provider authority before retiring the coordinator
+### ADR-014: Drain provider authority before retiring the coordinator
 
 **Decision:** Coordinator retirement first freezes acquisition and records that freeze outside the Worker. The operator then resolves every in-flight create, stops or allows bounded expiry of every lease, runs coordinator/provider reconciliation after the last transition, verifies no owned Hetzner machine or per-lease key remains, revokes the non-admin launcher credential, and retains the terminal evidence. Only then may the Hetzner secret, scheduled trigger, Worker route and versions, and Durable Object namespace be removed, in that order. A teardown failure leaves acquisition frozen and the remaining release/reaper authority available for retry.
 
@@ -131,7 +145,7 @@ If Cloudflare control is unavailable while a provider resource survives, the inc
 
 **Consequences:** An idle development fleet does not have to remain deployed forever, but decommission is an evidence-producing lifecycle rather than console cleanup. Recreating the environment later uses a new deployment identity and never adopts retired lease IDs.
 
-### ADR-014: Borrow process-verification lessons from CodexBar, not fleet authority
+### ADR-015: Borrow process-verification lessons from CodexBar, not fleet authority
 
 **Decision:** CodexBar informs the shared subprocess and PTY verification work already owned by Harness Execution; it is not precedent or an authority for the Crabbox fleet, Cloudflare control plane, hermetic boundary, harness acquisition, or release evidence. Agentscope may independently implement transferable invariants after reviewing their fit, but copies no CodexBar source into this capability.
 
