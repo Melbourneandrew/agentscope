@@ -197,20 +197,6 @@ function operationSchema(action) {
       "slotId",
       "slotVersion",
     ],
-    "worker.schedule.put": ["action", "target", "requestId", "cron"],
-    "worker.schedule.delete": ["action", "target", "requestId", "cron"],
-    "worker.scriptWorkersDev.enable": [
-      "action",
-      "target",
-      "requestId",
-      "hostname",
-    ],
-    "worker.scriptWorkersDev.disable": [
-      "action",
-      "target",
-      "requestId",
-      "hostname",
-    ],
     "account.workersDev.enable": ["action", "target", "requestId", "accountId"],
     "worker.terminalArtifact.deploy": [
       "action",
@@ -221,38 +207,20 @@ function operationSchema(action) {
       "providerZeroSha256",
       "retirementTombstoneSha256",
     ],
-    "worker.durableObjectClass.delete": [
-      "action",
-      "target",
-      "requestId",
-      "namespaceId",
-      "className",
-      "migrationTag",
-      "providerZeroSha256",
-      "retirementTombstoneSha256",
-    ],
     "worker.version.delete": ["action", "target", "requestId", "versionId"],
-    "worker.delete": ["action", "target", "requestId", "workerName"],
+    "worker.delete": ["action", "target", "requestId"],
   };
   return schemas[action];
 }
 
 function allowedActions(kind) {
   return {
-    deploy: new Set([
-      "worker.secret.put",
-      "worker.deploy",
-      "worker.schedule.put",
-      "worker.scriptWorkersDev.enable",
-    ]),
+    deploy: new Set(["worker.secret.put", "worker.deploy"]),
     rollback: new Set(["worker.rollback"]),
     "account-workers-dev-enable": new Set(["account.workersDev.enable"]),
     retire: new Set([
-      "worker.schedule.delete",
-      "worker.scriptWorkersDev.disable",
       "worker.secret.delete",
       "worker.terminalArtifact.deploy",
-      "worker.durableObjectClass.delete",
       "worker.version.delete",
       "worker.delete",
     ]),
@@ -340,24 +308,6 @@ function validateOperationBindings(operation, plan, admission) {
       "terminal artifact operation differs from retirement authority",
     );
   }
-  if (
-    operation.action === "worker.durableObjectClass.delete" &&
-    (operation.namespaceId !== plan.durableObjectNamespaceId ||
-      operation.className !==
-        admission.deployment.terminalProfile.deletedClass ||
-      operation.migrationTag !==
-        admission.deployment.terminalProfile.migrationTag ||
-      operation.providerZeroSha256 !== plan.providerZeroSha256 ||
-      operation.retirementTombstoneSha256 !== plan.retirementTombstoneSha256)
-  ) {
-    throw new Error("class deletion differs from exact retirement resources");
-  }
-  if (
-    operation.action === "worker.delete" &&
-    operation.workerName !== plan.workerName
-  ) {
-    throw new Error("Worker deletion differs from exact retirement target");
-  }
 }
 
 function validateOperation(operation, plan, admission, manifest) {
@@ -367,11 +317,16 @@ function validateOperation(operation, plan, admission, manifest) {
 
 function validateKindSequence(plan, admission) {
   const actions = plan.operations.map(({ action }) => action);
-  if (
-    plan.kind === "deploy" &&
-    actions.filter((action) => action === "worker.deploy").length !== 1
-  ) {
-    throw new Error("deploy plan requires exactly one worker.deploy operation");
+  if (plan.kind === "deploy") {
+    const required = [
+      ...admission.deployment.secretNames.map(() => "worker.secret.put"),
+      "worker.deploy",
+    ];
+    if (JSON.stringify(actions) !== JSON.stringify(required)) {
+      throw new Error(
+        "deploy plan must put the exact secret sequence then perform one compound profile-bound deploy",
+      );
+    }
   }
   if (
     plan.kind === "rollback" &&
@@ -393,13 +348,7 @@ function validateKindSequence(plan, admission) {
     const secretDeletes = admission.deployment.secretNames.map(
       () => "worker.secret.delete",
     );
-    const requiredPrefix = [
-      "worker.schedule.delete",
-      "worker.scriptWorkersDev.disable",
-      ...secretDeletes,
-      "worker.terminalArtifact.deploy",
-      "worker.durableObjectClass.delete",
-    ];
+    const requiredPrefix = [...secretDeletes, "worker.terminalArtifact.deploy"];
     if (
       JSON.stringify(actions.slice(0, requiredPrefix.length)) !==
         JSON.stringify(requiredPrefix) ||
@@ -414,7 +363,7 @@ function validateKindSequence(plan, admission) {
       );
     }
     const secretNames = plan.operations
-      .slice(2, 2 + secretDeletes.length)
+      .slice(0, secretDeletes.length)
       .map(({ secretName }) => secretName);
     if (
       JSON.stringify(secretNames) !==

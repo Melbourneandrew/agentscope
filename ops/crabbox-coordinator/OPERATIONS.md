@@ -91,6 +91,62 @@ enforce plan freshness, atomically consume and journal the same authenticated
 plan, and revalidate before resolving credentials. Never substitute this script
 or raw Wrangler for that missing authority.
 
+## Install the protected one-use launcher
+
+The repository ships a standalone Go control binary and attended installer at
+`tools/crabbox-launcher` and
+`ops/crabbox-coordinator/install-protected-launcher.sh`. The production state
+root is `/Library/Application Support/Agentscope/CrabboxControl`. The installer
+requires root, builds with the admitted Go 1.26.5 distribution in a closed
+environment, installs an immutable executable plus five pairwise-distinct role
+roots, seals owner/recovery/billing signing keys under an attended operator passphrase,
+and binds the exact admission, permission manifest, profiles, npm
+executable, Crabbox source, and toolchain identity. It performs no login,
+cloud/provider credential receipt, network request, Wrangler command, or cloud/provider
+mutation.
+
+Do not run the installer from an unattended agent session. The attended human
+invocation is:
+
+```sh
+ops/crabbox-coordinator/install-protected-launcher.sh \
+  <installation-id> <environment-id> <cloudflare-account-id> \
+  <hetzner-project-id> <exact-crabbox-source> <admitted-absolute-npm> \
+  <toolchain-identity.json> <exact-live-profile> <exact-terminal-profile> \
+  <exact-terminal-entry-point>
+```
+
+After installation, use only the root-owned installed binary. It exposes the
+closed commands `status`, `credential-enroll`, `observation-admit`, `authorize`,
+`apply`, `freeze`, `recover-quarantine`, `recover-resolve`, and `retire`. `apply` accepts no
+caller-selected executable, source, profile, endpoint, method, body, or target.
+It verifies installed roots and immutable inputs, durably consumes the plan,
+then resolves exact credential versions. A crash or failed process after an
+invocation starts leaves the global mutation fence held and records an
+outcome-uncertain event. `recover-quarantine` records an independently evidenced
+human recovery decision and never retries the request. Only a second signed
+`recover-resolve` decision with terminal reconciliation evidence may release the
+local mutation fence; acquisition remains frozen so a new recovery or
+retirement plan is required.
+
+`status` is the handoff to the small attended ceremony owned by the deployment
+task. Until that later task, `cloudAuthenticated`, `billingObservationReady`,
+and `deploymentReady` remain false. That ceremony must authenticate Andrew's
+approved account, enroll the seven closed credential roles through the no-echo
+terminal prompt, establish an independent signed Free/no-overage observation,
+and authorize one exact plan. The launcher verifies such an observation but
+does not claim that Cloudflare exposes the required authoritative quota surface;
+the deployment task must prove that empirical acquisition or stop for an
+approved architecture amendment.
+
+The three Worker-bound values are resolved only after durable consumption and
+confidentially compared for pairwise distinction. They enter the protected
+Wrangler child only through its closed credential environment or secret stdin;
+they never enter argv, plan, journal, evidence, or output. The initial deploy is
+one exact sequence of three secret puts followed by one profile-bound compound
+Wrangler deploy. Schedule and script-level workers.dev are part of that admitted
+profile, not falsely journaled as separate successful requests.
+
 The only admitted public binding is the exact script-level workers.dev binding.
 Do not create a zone route, Worker Domain, custom domain, Pages binding, Access
 application, shared storage, or unrelated account resource. The account-level

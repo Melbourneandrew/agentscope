@@ -1,0 +1,477 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control"
+)
+
+const productionRoot = "/Library/Application Support/Agentscope/CrabboxControl"
+
+func fail(code string) {
+	_, _ = fmt.Fprintf(os.Stderr, "agentscope-crabbox-control: %s\n", code)
+	os.Exit(1)
+}
+
+func requireRoot() {
+	if os.Geteuid() != 0 {
+		fail("E_ROOT_REQUIRED")
+	}
+}
+
+func stateRoot() string {
+	if value := os.Getenv("AGENTSCOPE_CRABBOX_TEST_ROOT"); value != "" {
+		return value
+	}
+	return productionRoot
+}
+
+func verifyInstalledExecutable() {
+	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		fail("E_EXECUTABLE")
+	}
+	physical, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		fail("E_EXECUTABLE")
+	}
+	expected := filepath.Join(stateRoot(), "bin", "agentscope-crabbox-control")
+	if physical != expected {
+		fail("E_LAUNCHER_IDENTITY")
+	}
+	data, err := readBounded(physical)
+	if err != nil || control.SHA256(data) != installation.LauncherSHA256 {
+		fail("E_LAUNCHER_IDENTITY")
+	}
+}
+
+func readBounded(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 64<<20 {
+		return nil, errors.New("E_INPUT_FILE")
+	}
+	return os.ReadFile(path)
+}
+
+func emit(value any) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		fail("E_OUTPUT")
+	}
+	data = append(data, '\n')
+	if _, err := os.Stdout.Write(data); err != nil {
+		fail("E_OUTPUT")
+	}
+}
+
+func install(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("install", flag.ContinueOnError)
+	installationID := flags.String("installation-id", "", "immutable installation identity")
+	environmentID := flags.String("environment-id", "", "immutable coordinator environment identity")
+	accountID := flags.String("account-id", "", "approved Cloudflare account identity")
+	projectID := flags.String("hetzner-project-id", "", "dedicated Hetzner project identity")
+	admission := flags.String("admission", "", "canonical admission file")
+	manifest := flags.String("permission-manifest", "", "canonical permission manifest")
+	liveProfile := flags.String("live-profile", "", "canonical live profile")
+	terminalProfile := flags.String("terminal-profile", "", "canonical terminal profile")
+	terminalEntryPoint := flags.String("terminal-entry-point", "", "canonical terminal Worker entry point")
+	npmPath := flags.String("npm", "", "admitted absolute npm executable")
+	crabboxSource := flags.String("crabbox-source", "", "exact pinned Crabbox source")
+	toolchainIdentityPath := flags.String("toolchain-identity", "", "canonical toolchain identity")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		fail("E_EXECUTABLE")
+	}
+	launcher, err := readBounded(executable)
+	if err != nil {
+		fail(err.Error())
+	}
+	files := []*string{admission, manifest, liveProfile, terminalProfile, terminalEntryPoint}
+	digests := make([]string, len(files))
+	contents := make([][]byte, len(files))
+	for index, path := range files {
+		value, err := readBounded(*path)
+		if err != nil {
+			fail(err.Error())
+		}
+		digests[index] = control.SHA256(value)
+		contents[index] = value
+	}
+	toolchainData, err := readBounded(*toolchainIdentityPath)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	toolchainIdentity, err := control.ParseToolchainIdentity(toolchainData)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	coordinatorCommit, err := control.CoordinatorCommitFromAdmission(contents[0])
+	if err != nil {
+		fail(errorCode(err))
+	}
+	npmData, err := readBounded(*npmPath)
+	if err != nil || !filepath.IsAbs(*npmPath) || !filepath.IsAbs(*crabboxSource) {
+		fail("E_TOOLCHAIN_PATH")
+	}
+	passphrase, err := confirmedSecret("Create operator authorization passphrase: ", "Re-enter operator authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	installed, err := control.Install(control.InstallInput{Root: stateRoot(), InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], LiveProfilePath: *liveProfile, TerminalProfilePath: *terminalProfile, TerminalEntryPointPath: *terminalEntryPoint, NPMPath: *npmPath, NPMPathSHA256: control.SHA256(npmData), CrabboxSource: *crabboxSource, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "installed": true, "installationId": installed.InstallationID, "environmentId": installed.EnvironmentID, "launcherSha256": installed.LauncherSHA256, "cloudMutation": false, "cloudCredentialReceipt": false, "operatorAuthorizationInitialized": true, "next": []string{"enroll the seven closed credential slots through the attended prompt", "record a fresh signed billing observation", "import and authorize one exact deployment plan"}})
+}
+
+func authorize(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("authorize", flag.ContinueOnError)
+	planPath := flags.String("plan", "", "exact plan file")
+	output := flags.String("output", "", "new authorization output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *planPath == "" || *output == "" {
+		fail("E_ARGUMENTS")
+	}
+	planData, err := readBounded(*planPath)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	plan, err := control.ParsePlanCandidate(planData)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	if err := control.ValidatePlanCandidate(plan, installation, time.Now().UTC()); err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "authorizationPreview": true, "planSha256": control.SHA256(planData), "kind": plan.Kind, "accountId": plan.AccountID, "environmentId": plan.EnvironmentID, "workerName": plan.WorkerName, "profileSha256": plan.ProfileSHA256, "observablePrestateSha256": plan.ObservablePrestateSHA256, "observationId": plan.ObservationID, "expiresAt": plan.ExpiresAt, "operations": plan.Operations, "rollbackActions": plan.RollbackActions})
+	confirmation, err := control.ReadSecretFromTTY(fmt.Sprintf("Authorize %s plan %s for %s? Type AUTHORIZE: ", plan.Kind, control.SHA256(planData), plan.WorkerName))
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "AUTHORIZE" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Operator authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	authorization, err := control.NewStore(stateRoot()).SignAuthorization(planData, plan, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	writeNew(*output, authorization)
+	emit(map[string]any{"schemaVersion": 1, "authorized": true, "planSha256": control.SHA256(planData), "kind": plan.Kind, "secretValuesPresent": false})
+}
+
+func signObservation(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("observation-admit", flag.ContinueOnError)
+	observationPath := flags.String("observation", "", "billing/product observation")
+	output := flags.String("output", "", "new attestation output")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *observationPath == "" || *output == "" {
+		fail("E_ARGUMENTS")
+	}
+	data, err := readBounded(*observationPath)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	observation, err := control.ParseObservationCandidate(data)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	if err := control.ValidateObservationCandidate(observation, installation, time.Now().UTC()); err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "observationPreview": true, "observationSha256": control.SHA256(data), "accountId": observation.AccountID, "workersPlan": observation.WorkersPlan, "paidOrOverageEnabled": observation.PaidOrOverageEnabled, "allAccountConsumersIncluded": observation.AllAccountConsumersIncluded, "quotas": observation.Quotas, "observedAt": observation.ObservedAt, "expiresAt": observation.ExpiresAt})
+	confirmation, err := control.ReadSecretFromTTY(fmt.Sprintf("Confirm independent Free/no-overage observation %s for %s? Type OBSERVED: ", observation.ObservationID, observation.AccountID))
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "OBSERVED" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Billing observation authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	attestation, err := control.NewStore(stateRoot()).SignObservation(data, observation, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	writeNew(*output, attestation)
+	emit(map[string]any{"schemaVersion": 1, "observationAdmitted": true, "observationId": observation.ObservationID, "secretValuesPresent": false})
+}
+
+func enrollSecret(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("secret-enroll", flag.ContinueOnError)
+	role := flags.String("role", "", "closed credential role")
+	slot := flags.String("slot", "", "opaque slot identity")
+	version := flags.String("version", "", "immutable slot version")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	first, err := confirmedSecret("Enter secret value: ", "Re-enter secret value: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(first)
+	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	metadata, err := control.NewStore(stateRoot()).EnrollCredential(installation.EnvironmentID, *role, *slot, *version, first, time.Now().UTC())
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "enrolled": true, "role": metadata.Role, "slotId": metadata.SlotID, "slotVersion": metadata.SlotVersion, "secretValuePresent": false})
+}
+
+func applyPlan(args []string, retirement bool) {
+	requireRoot()
+	flags := flag.NewFlagSet("apply", flag.ContinueOnError)
+	planPath := flags.String("plan", "", "exact plan")
+	authorizationPath := flags.String("authorization", "", "installed-root authorization")
+	observationPath := flags.String("observation", "", "billing observation")
+	attestationPath := flags.String("observation-attestation", "", "billing attestation")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	paths := []*string{planPath, authorizationPath, observationPath, attestationPath}
+	values := make([][]byte, len(paths))
+	for index, path := range paths {
+		value, err := readBounded(*path)
+		if err != nil {
+			fail(errorCode(err))
+		}
+		values[index] = value
+	}
+	plan, err := control.ParsePlanCandidate(values[0])
+	if err != nil {
+		fail(errorCode(err))
+	}
+	if retirement != (plan.Kind == "retire") {
+		fail("E_COMMAND_PLAN_KIND")
+	}
+	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	executor := control.CommandExecutor{AccountID: installation.AccountID, NPMPath: installation.NPMPath, NPMPathSHA256: installation.NPMPathSHA256, WorkerRoot: installation.CrabboxSource, CoordinatorCommit: installation.CoordinatorCommit, WorkerLockSHA256: installation.ToolchainIdentity.WorkerLockSHA256, ProfilePath: installation.LiveProfilePath, ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: installation.TerminalProfilePath, TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: installation.TerminalEntryPointPath, TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
+	input := control.ApplyInput{PlanData: values[0], AuthorizationData: values[1], ObservationData: values[2], AttestationData: values[3], Now: time.Now().UTC()}
+	if err := control.NewStore(stateRoot()).Apply(context.Background(), input, executor); err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "applied": true, "planSha256": control.SHA256(values[0]), "secretValuesPresent": false})
+}
+
+func status() {
+	store := control.NewStore(stateRoot())
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	_, fenceErr := os.Lstat(filepath.Join(stateRoot(), "journal", "mutation.lock"))
+	entries, _ := os.ReadDir(filepath.Join(stateRoot(), "slots"))
+	_, credentialsErr := store.CredentialSetSHA256()
+	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanSteps": []string{"authenticate the approved personal Cloudflare account through the installed launcher", "enroll the closed credential slots", "confirm and admit an independent Free/no-overage observation", "review and authorize the exact deployment plan"}})
+}
+
+func freeze(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("freeze", flag.ContinueOnError)
+	reason := flags.String("reason", "", "stable content-free reason code")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 || *reason == "" {
+		fail("E_ARGUMENTS")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Recovery authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	record, err := control.NewStore(stateRoot()).Freeze(*reason, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "frozen": true, "reason": record.RequestID, "secretValuesPresent": false})
+}
+
+func recoverQuarantine(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("recover-quarantine", flag.ContinueOnError)
+	planDigest := flags.String("plan-sha256", "", "consumed plan digest")
+	requestID := flags.String("request-id", "", "uncertain request identity")
+	evidenceDigest := flags.String("evidence-sha256", "", "independent reconciliation evidence digest")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	confirmation, err := control.ReadSecretFromTTY("Quarantine this uncertain mutation without replay? Type QUARANTINE: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "QUARANTINE" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Recovery authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	record, err := control.NewStore(stateRoot()).RecoverQuarantine(*planDigest, *requestID, *evidenceDigest, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "quarantined": true, "planSha256": record.PlanSHA256, "requestId": record.RequestID, "mutationRetried": false})
+}
+
+func recoverResolve(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("recover-resolve", flag.ContinueOnError)
+	planDigest := flags.String("plan-sha256", "", "quarantined plan digest")
+	requestID := flags.String("request-id", "", "uncertain request identity")
+	evidenceDigest := flags.String("evidence-sha256", "", "independent terminal reconciliation evidence digest")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	confirmation, err := control.ReadSecretFromTTY("Resolve this quarantine as abandoned, retain acquisition freeze, and release only the local fence? Type RESOLVED: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "RESOLVED" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Recovery authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	record, err := control.NewStore(stateRoot()).ResolveQuarantine(*planDigest, *requestID, *evidenceDigest, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "resolved": true, "planSha256": record.PlanSHA256, "acquisitionFrozen": true, "mutationRetried": false})
+}
+
+func writeNew(path string, value any) {
+	data, _ := json.MarshalIndent(value, "", "  ")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		fail("E_OUTPUT_FILE")
+	}
+	defer file.Close()
+	if err := file.Chmod(0o600); err != nil {
+		fail("E_OUTPUT_FILE")
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil || file.Sync() != nil {
+		fail("E_OUTPUT_FILE")
+	}
+}
+
+func zero(value []byte) {
+	for index := range value {
+		value[index] = 0
+	}
+}
+func equal(left, right []byte) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	result := byte(0)
+	for index := range left {
+		result |= left[index] ^ right[index]
+	}
+	return result == 0
+}
+
+func confirmedSecret(firstPrompt, secondPrompt string) ([]byte, error) {
+	first, err := control.ReadSecretFromTTY(firstPrompt)
+	if err != nil {
+		return nil, err
+	}
+	second, err := control.ReadSecretFromTTY(secondPrompt)
+	if err != nil {
+		zero(first)
+		return nil, err
+	}
+	defer zero(second)
+	if !equal(first, second) {
+		zero(first)
+		return nil, errors.New("E_SECRET_CONFIRMATION")
+	}
+	return first, nil
+}
+
+func errorCode(err error) string {
+	value := err.Error()
+	if strings.HasPrefix(value, "E_") {
+		if index := strings.IndexAny(value, ": "); index > 0 {
+			return value[:index]
+		}
+		return value
+	}
+	return "E_INTERNAL"
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fail("E_COMMAND")
+	}
+	if os.Args[1] != "install" {
+		verifyInstalledExecutable()
+	}
+	switch os.Args[1] {
+	case "install":
+		install(os.Args[2:])
+	case "status":
+		status()
+	case "authorize":
+		authorize(os.Args[2:])
+	case "observation-admit":
+		signObservation(os.Args[2:])
+	case "credential-enroll":
+		enrollSecret(os.Args[2:])
+	case "apply":
+		applyPlan(os.Args[2:], false)
+	case "retire":
+		applyPlan(os.Args[2:], true)
+	case "freeze":
+		freeze(os.Args[2:])
+	case "recover-quarantine":
+		recoverQuarantine(os.Args[2:])
+	case "recover-resolve":
+		recoverResolve(os.Args[2:])
+	default:
+		fail("E_COMMAND")
+	}
+}

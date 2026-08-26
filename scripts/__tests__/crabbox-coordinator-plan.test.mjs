@@ -98,9 +98,25 @@ function buildPlan({
       {
         action: "worker.secret.put",
         target: admission.deployment.workerName,
+        requestId: "put-provider-secret",
+        secretName: "HETZNER_TOKEN",
+        slotId: "hetzner-worker",
+        slotVersion: "v1",
+      },
+      {
+        action: "worker.secret.put",
+        target: admission.deployment.workerName,
         requestId: "put-shared-secret",
         secretName: "CRABBOX_SHARED_TOKEN",
         slotId: "crabbox-shared",
+        slotVersion: "v1",
+      },
+      {
+        action: "worker.secret.put",
+        target: admission.deployment.workerName,
+        requestId: "put-admin-secret",
+        secretName: "CRABBOX_ADMIN_TOKEN",
+        slotId: "crabbox-admin",
         slotVersion: "v1",
       },
       {
@@ -265,7 +281,7 @@ test("rejects a secret value or digest embedded in an operation", async () => {
     ...item.plan,
     operations: [
       { ...item.plan.operations[0], valueDigest: "3".repeat(64) },
-      item.plan.operations[1],
+      item.plan.operations[3],
     ],
   });
   const result = run(item.args);
@@ -334,5 +350,5 @@ test("rejects deletion-first retirement even with bound resource identities", as
   });
   const result = run(item.args);
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /irreversible admitted order/);
+  assert.match(result.stderr, /not admitted for plan kind retire/);
 });

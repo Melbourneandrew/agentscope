@@ -50,3 +50,22 @@ jobs:
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @agentscope/docs build
+
+  crabbox-launcher:
+    name: Crabbox launcher contract
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          {
+            go-version: 1.26.5,
+            cache-dependency-path: tools/crabbox-launcher/go.mod,
+          }
+      - run: go test -race ./...
+        working-directory: tools/crabbox-launcher
+      - run: go vet ./...
+        working-directory: tools/crabbox-launcher
+      - run: go build -trimpath -buildvcs=true ./cmd/agentscope-crabbox-control
+        working-directory: tools/crabbox-launcher
+      - run: sh -n ops/crabbox-coordinator/install-protected-launcher.sh
