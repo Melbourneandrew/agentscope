@@ -308,6 +308,36 @@ const agentscopeSyntheticLicenseSourcePattern =
 const concreteFixtureReviewPattern =
   /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/pull\/[1-9]\d{0,9}#pullrequestreview-[1-9]\d{0,19}$/u;
 
+const calendarDate = (value: unknown): string => {
+  const candidate = string(
+    value,
+    isoDatePattern,
+    "harness.fixture.review.date",
+  );
+  const [yearText, monthText, dayText] = candidate.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ][month - 1];
+  if (daysInMonth === undefined || day > daysInMonth)
+    fail("harness.fixture.review.date");
+  return candidate;
+};
+
 const decodedUrlPath = (value: string): string => {
   let current = value;
   for (let depth = 0; depth <= value.length; depth += 1) {
@@ -610,11 +640,7 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
     }),
     review: Object.freeze({
       status: "approved" as const,
-      reviewedAt: string(
-        review.reviewedAt,
-        isoDatePattern,
-        "harness.fixture.review.date",
-      ),
+      reviewedAt: calendarDate(review.reviewedAt),
       references: Object.freeze([...reviewedReferences] as [string, string]),
     }),
     representative: Object.freeze({

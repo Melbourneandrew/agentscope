@@ -757,6 +757,47 @@ describe("native fixture reviewed authority separation", () => {
       structuralRedistributionReview,
     ]);
   });
+});
+
+describe("native fixture reviewed authority values", () => {
+  it("requires an exact Gregorian approval date", () => {
+    const base = fixture();
+    for (const reviewedAt of [
+      "2024-02-29",
+      "2000-02-29",
+      "2026-04-30",
+      "2026-12-31",
+    ]) {
+      expect(
+        parseHarnessSanitizedFixture({
+          ...base,
+          governance: {
+            ...base.governance,
+            review: { ...base.governance.review, reviewedAt },
+          },
+        }).governance.review.reviewedAt,
+      ).toBe(reviewedAt);
+    }
+    for (const reviewedAt of [
+      "2026-02-29",
+      "2026-02-31",
+      "1900-02-29",
+      "2026-04-31",
+      "2026-11-31",
+    ]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture({
+            ...base,
+            governance: {
+              ...base.governance,
+              review: { ...base.governance.review, reviewedAt },
+            },
+          }),
+        "harness.fixture.review.date",
+      );
+    }
+  });
 
   it("rejects compound license expressions", () => {
     const base = fixture();
