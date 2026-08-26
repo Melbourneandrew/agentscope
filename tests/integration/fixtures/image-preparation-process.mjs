@@ -12,6 +12,11 @@ import { fileURLToPath } from "node:url";
 const mode = process.env.AGENTSCOPE_IMAGE_FIXTURE_MODE ?? "success";
 const stateRoot = process.env.AGENTSCOPE_IMAGE_FIXTURE_ROOT;
 if (typeof stateRoot !== "string") process.exit(70);
+if (process.argv[2] === "inspect-processes") {
+  writeFileSync(resolve(stateRoot, "inspection"), "invoked");
+  process.stdout.write("1 1 R\n");
+  process.exit(0);
+}
 const heartbeat = resolve(stateRoot, "heartbeat");
 const ready = resolve(stateRoot, "ready");
 const attempt = resolve(stateRoot, "attempt");
@@ -41,6 +46,7 @@ if (descendantMode) {
   const shouldHang =
     command === "pull" &&
     (mode === "hang" ||
+      mode === "hang-before-ready" ||
       (mode === "hang-once" &&
         (() => {
           try {
@@ -52,17 +58,19 @@ if (descendantMode) {
           }
         })()));
   if (shouldHang) {
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(import.meta.url), "descendant"],
-      {
-        env: process.env,
-        stdio: "ignore",
-      },
-    );
-    const temporary = `${ready}.${process.pid}.tmp`;
-    writeFileSync(temporary, String(child.pid));
-    renameSync(temporary, ready);
+    if (mode !== "hang-before-ready") {
+      const child = spawn(
+        process.execPath,
+        [fileURLToPath(import.meta.url), "descendant"],
+        {
+          env: process.env,
+          stdio: "ignore",
+        },
+      );
+      const temporary = `${ready}.${process.pid}.tmp`;
+      writeFileSync(temporary, String(child.pid));
+      renameSync(temporary, ready);
+    }
     process.on("SIGINT", () => {});
     process.on("SIGTERM", () => {});
     setInterval(() => {}, 1_000);
