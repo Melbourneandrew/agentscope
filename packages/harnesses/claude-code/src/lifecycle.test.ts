@@ -1328,7 +1328,316 @@ describe("Claude Code hook namespace ownership", () => {
   });
 });
 
-describe("Claude Code hook grammar reconstruction", () => {
+const documentedHookHandlers = {
+  command: {
+    type: "command",
+    command: "printf foreign",
+    args: ["one"],
+    async: false,
+    asyncRewake: false,
+    shell: "bash",
+    if: "Bash(git *)",
+    once: false,
+    timeout: 5,
+    statusMessage: "foreign command",
+  },
+  http: {
+    type: "http",
+    url: "https://example.invalid/hook",
+    headers: { "X-Audit": "bounded" },
+    allowedEnvVars: ["AUDIT_TOKEN"],
+    timeout: 5,
+  },
+  mcp_tool: {
+    type: "mcp_tool",
+    server: "reviewed-server",
+    tool: "audit",
+    input: { path: "${tool_input.file_path}", nested: [true, 1, null] },
+  },
+  prompt: {
+    type: "prompt",
+    prompt: "Review $ARGUMENTS",
+    model: "reviewed-model",
+    continueOnBlock: true,
+  },
+  agent: {
+    type: "agent",
+    prompt: "Inspect $ARGUMENTS",
+    model: "reviewed-model",
+  },
+} as const;
+
+const settingsWithHook = (event: string, handler: unknown): string =>
+  JSON.stringify({
+    hooks: { [event]: [{ matcher: "foreign", hooks: [handler] }] },
+  });
+
+describe("Claude Code hook compatibility grammar", () => {
+  it("preserves every documented handler family on a compatible event", () => {
+    for (const handler of Object.values(documentedHookHandlers)) {
+      const decision = createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(target(settingsWithHook("PreToolUse", handler)));
+      expect(decision.kind).toBe("replace");
+      expect(decisionText(decision)).toContain(handler.type);
+    }
+  });
+
+  it("enforces the exact event and handler compatibility inventory", () => {
+    const allTypeEvents = [
+      "PermissionDenied",
+      "PermissionRequest",
+      "PostToolBatch",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "PreToolUse",
+      "Stop",
+      "SubagentStop",
+      "TaskCompleted",
+      "TaskCreated",
+      "TeammateIdle",
+      "UserPromptExpansion",
+      "UserPromptSubmit",
+    ];
+    const transportEvents = [
+      "ConfigChange",
+      "CwdChanged",
+      "DirectoryAdded",
+      "Elicitation",
+      "ElicitationResult",
+      "FileChanged",
+      "InstructionsLoaded",
+      "MessageDisplay",
+      "Notification",
+      "PostCompact",
+      "PreCompact",
+      "SessionEnd",
+      "StopFailure",
+      "SubagentStart",
+      "WorktreeCreate",
+      "WorktreeRemove",
+    ];
+    for (const event of allTypeEvents) {
+      for (const handler of Object.values(documentedHookHandlers)) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook(event, handler))).kind,
+        ).toBe("replace");
+      }
+    }
+    for (const event of transportEvents) {
+      for (const handler of [
+        documentedHookHandlers.command,
+        documentedHookHandlers.http,
+        documentedHookHandlers.mcp_tool,
+      ]) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook(event, handler))).kind,
+        ).toBe("replace");
+      }
+      for (const handler of [
+        documentedHookHandlers.prompt,
+        documentedHookHandlers.agent,
+      ]) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook(event, handler))),
+        ).toEqual({ kind: "conflict" });
+      }
+    }
+    for (const event of ["SessionStart", "Setup"]) {
+      for (const handler of [
+        documentedHookHandlers.command,
+        documentedHookHandlers.mcp_tool,
+      ]) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook(event, handler))).kind,
+        ).toBe("replace");
+      }
+      for (const handler of [
+        documentedHookHandlers.http,
+        documentedHookHandlers.prompt,
+        documentedHookHandlers.agent,
+      ]) {
+        expect(
+          createClaudeCodeInstallationPlanner(
+            "install",
+            invocation,
+            emptyInventory(),
+          )(target(settingsWithHook(event, handler))),
+        ).toEqual({ kind: "conflict" });
+      }
+    }
+  });
+});
+
+describe("Claude Code hook namespace bounds", () => {
+  it("rejects ownership references in event and nested property keys", () => {
+    const canonicalCommand = installedHookCommand(
+      decisionText(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(false),
+        )(target()),
+      ),
+    );
+    for (const claimedKey of [
+      invocation.launcherPath,
+      canonicalCommand,
+      invocation.ownershipIdentity,
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook(claimedKey, documentedHookHandlers.command))),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(
+          target(
+            settingsWithHook("PreToolUse", {
+              ...documentedHookHandlers.mcp_tool,
+              input: { [claimedKey]: "foreign" },
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("rejects unknown events and excess matcher or handler counts", () => {
+    const foreignMatcher = {
+      matcher: "foreign",
+      hooks: [documentedHookHandlers.command],
+    };
+    for (const settings of [
+      { hooks: { UnknownEvent: [foreignMatcher] } },
+      {
+        hooks: {
+          PreToolUse: Array.from({ length: 65 }, () => foreignMatcher),
+        },
+      },
+      {
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "foreign",
+              hooks: Array.from(
+                { length: 65 },
+                () => documentedHookHandlers.command,
+              ),
+            },
+          ],
+        },
+      },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(JSON.stringify(settings))),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+
+  it("admits exact field limits and rejects per-string or aggregate overflow", () => {
+    expect(
+      createClaudeCodeInstallationPlanner(
+        "install",
+        invocation,
+        emptyInventory(),
+      )(
+        target(
+          settingsWithHook("PreToolUse", {
+            ...documentedHookHandlers.prompt,
+            prompt: "p".repeat(16_384),
+          }),
+        ),
+      ).kind,
+    ).toBe("replace");
+    for (const settings of [
+      settingsWithHook("PreToolUse", {
+        ...documentedHookHandlers.prompt,
+        prompt: "p".repeat(16_385),
+      }),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "foreign",
+              hooks: Array.from({ length: 5 }, () => ({
+                ...documentedHookHandlers.prompt,
+                prompt: "p".repeat(16_000),
+              })),
+            },
+          ],
+        },
+      }),
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settings)),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+});
+
+describe("Claude Code hook record validation", () => {
+  it("rejects malformed records in every handler family", () => {
+    for (const handler of [
+      { ...documentedHookHandlers.command, command: undefined },
+      { ...documentedHookHandlers.command, shell: "unknown" },
+      { ...documentedHookHandlers.http, url: undefined },
+      { ...documentedHookHandlers.http, headers: { Audit: 1 } },
+      { ...documentedHookHandlers.mcp_tool, server: undefined },
+      {
+        ...documentedHookHandlers.mcp_tool,
+        input: Array.from({ length: 65 }, () => true),
+      },
+      { ...documentedHookHandlers.prompt, prompt: undefined },
+      { ...documentedHookHandlers.prompt, continueOnBlock: "yes" },
+      { ...documentedHookHandlers.agent, prompt: undefined },
+      { ...documentedHookHandlers.agent, continueOnBlock: true },
+      { type: "unknown", command: "foreign" },
+    ]) {
+      expect(
+        createClaudeCodeInstallationPlanner(
+          "install",
+          invocation,
+          emptyInventory(),
+        )(target(settingsWithHook("PreToolUse", handler))),
+      ).toEqual({ kind: "conflict" });
+    }
+  });
+});
+
+describe("Claude Code hook mutation reconstruction", () => {
   it("rejects malformed hook entries before every mutation", () => {
     const ownedMetadata = {
       contractVersion: invocation.contractVersion,

@@ -111,6 +111,9 @@ const maximumTargetPathBytes = 4_096;
 const maximumPluginFieldBytes = 512;
 const maximumHookEventBytes = 128;
 const maximumInventoryUtf8Bytes = 96 * 1_024;
+const maximumHookMatcherCount = 64;
+const maximumHookHandlerCount = 64;
+const maximumHookUtf8Bytes = 64 * 1_024;
 const maximumSettingsByteLength = 1_048_576;
 const maximumJsonDepth = 128;
 const claudeCodeHarnessType = claudeCodeDescriptor.harnessType;
@@ -129,6 +132,7 @@ const unpairedSurrogatePattern =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 const dialectAuthorities = new WeakSet<object>();
 type InventoryBudget = { remainingBytes: number };
+type HookBudget = { remainingBytes: number };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -787,80 +791,297 @@ const boundedHookString = (value: unknown, maximumBytes: number): boolean =>
   value.length <= maximumBytes &&
   encoder.encode(value).byteLength <= maximumBytes;
 
-const isAdmittedForeignHook = (value: unknown): boolean => {
-  if (
-    isProxy(value) ||
-    !isRecord(value) ||
-    Object.getPrototypeOf(value) !== Object.prototype
-  )
-    return false;
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Object.keys(descriptors);
-  const allowedKeys = new Set([
-    "args",
-    "async",
-    "command",
-    "once",
-    "statusMessage",
-    "timeout",
-    "type",
-  ]);
-  if (
-    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-    Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
-    !keys.includes("command") ||
-    !keys.includes("type") ||
-    keys.some((key) => !allowedKeys.has(key))
-  )
-    return false;
-  const field = (key: string): unknown => descriptors[key]?.value as unknown;
-  if (
-    field("type") !== "command" ||
-    !boundedHookString(field("command"), 4_096)
-  )
-    return false;
-  if (keys.includes("args")) {
-    const arguments_ = exactArrayValues(field("args"));
-    if (
-      arguments_ === undefined ||
-      arguments_.length > 32 ||
-      arguments_.some(
-        (argument) =>
-          typeof argument !== "string" ||
-          argument.length > 512 ||
-          encoder.encode(argument).byteLength > 512,
-      )
-    )
-      return false;
-  }
-  if (
-    (["async", "once"] as const).some(
-      (key) => keys.includes(key) && typeof field(key) !== "boolean",
-    ) ||
-    (keys.includes("timeout") &&
-      (!Number.isSafeInteger(field("timeout")) ||
-        (field("timeout") as number) <= 0 ||
-        (field("timeout") as number) > 600)) ||
-    (keys.includes("statusMessage") &&
-      !boundedHookString(field("statusMessage"), 512))
-  )
-    return false;
+const allHookTypeEvents = new Set([
+  "PermissionDenied",
+  "PermissionRequest",
+  "PostToolBatch",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PreToolUse",
+  "Stop",
+  "SubagentStop",
+  "TaskCompleted",
+  "TaskCreated",
+  "TeammateIdle",
+  "UserPromptExpansion",
+  "UserPromptSubmit",
+]);
+const transportHookEvents = new Set([
+  ...allHookTypeEvents,
+  "ConfigChange",
+  "CwdChanged",
+  "DirectoryAdded",
+  "Elicitation",
+  "ElicitationResult",
+  "FileChanged",
+  "InstructionsLoaded",
+  "MessageDisplay",
+  "Notification",
+  "PostCompact",
+  "PreCompact",
+  "SessionEnd",
+  "StopFailure",
+  "SubagentStart",
+  "WorktreeCreate",
+  "WorktreeRemove",
+]);
+const everyHookEvent = new Set([
+  ...transportHookEvents,
+  "SessionStart",
+  "Setup",
+]);
+
+const consumeHookString = (
+  value: unknown,
+  maximumBytes: number,
+  budget: HookBudget,
+): value is string => {
+  if (!boundedHookString(value, maximumBytes)) return false;
+  const byteLength = encoder.encode(value as string).byteLength;
+  if (byteLength > budget.remainingBytes) return false;
+  budget.remainingBytes -= byteLength;
   return true;
 };
 
-const isAdmittedForeignMatcher = (value: unknown): boolean => {
+const hookRecord = (
+  value: unknown,
+  allowedKeys: ReadonlySet<string>,
+  requiredKeys: ReadonlySet<string>,
+  budget: HookBudget,
+): Readonly<Record<string, unknown>> | undefined => {
+  if (!isRecord(value)) return undefined;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  if (
+    Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+    Object.values(descriptors).some((descriptor) => !("value" in descriptor)) ||
+    keys.some(
+      (key) => !allowedKeys.has(key) || !consumeHookString(key, 128, budget),
+    ) ||
+    [...requiredKeys].some((key) => !keys.includes(key))
+  )
+    return undefined;
+  return Object.freeze(
+    Object.fromEntries(
+      keys.map((key) => [key, descriptors[key]!.value as unknown]),
+    ),
+  );
+};
+
+const commonHookFieldsAreValid = (
+  hook: Readonly<Record<string, unknown>>,
+  budget: HookBudget,
+): boolean =>
+  (hook.if === undefined || consumeHookString(hook.if, 4_096, budget)) &&
+  (hook.statusMessage === undefined ||
+    consumeHookString(hook.statusMessage, 512, budget)) &&
+  (hook.once === undefined || typeof hook.once === "boolean") &&
+  (hook.timeout === undefined ||
+    (Number.isSafeInteger(hook.timeout) &&
+      (hook.timeout as number) > 0 &&
+      (hook.timeout as number) <= 86_400));
+
+const stringArrayIsValid = (
+  value: unknown,
+  maximumCount: number,
+  maximumBytes: number,
+  budget: HookBudget,
+): boolean => {
+  const entries = exactArrayValues(value);
+  return (
+    entries !== undefined &&
+    entries.length <= maximumCount &&
+    entries.every((entry) => consumeHookString(entry, maximumBytes, budget))
+  );
+};
+
+const jsonInputIsValid = (
+  value: unknown,
+  budget: HookBudget,
+  depth = 0,
+): boolean => {
+  if (depth > 16) return false;
+  if (typeof value === "string") return consumeHookString(value, 4_096, budget);
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  )
+    return true;
+  const array = exactArrayValues(value);
+  if (array !== undefined)
+    return (
+      array.length <= 64 &&
+      array.every((entry) => jsonInputIsValid(entry, budget, depth + 1))
+    );
+  if (!isRecord(value)) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  return (
+    keys.length <= 64 &&
+    Reflect.ownKeys(descriptors).every((key) => typeof key === "string") &&
+    keys.every((key) => {
+      const descriptor = descriptors[key]!;
+      return (
+        "value" in descriptor &&
+        consumeHookString(key, 512, budget) &&
+        jsonInputIsValid(descriptor.value, budget, depth + 1)
+      );
+    })
+  );
+};
+
+const commonHookKeys = ["if", "once", "statusMessage", "timeout", "type"];
+
+const isCommandHook = (value: unknown, budget: HookBudget): boolean => {
+  const hook = hookRecord(
+    value,
+    new Set([
+      ...commonHookKeys,
+      "args",
+      "async",
+      "asyncRewake",
+      "command",
+      "shell",
+    ]),
+    new Set(["command", "type"]),
+    budget,
+  );
+  if (
+    hook === undefined ||
+    hook.type !== "command" ||
+    !consumeHookString(hook.command, 4_096, budget) ||
+    !commonHookFieldsAreValid(hook, budget)
+  )
+    return false;
+  return (
+    (hook.args === undefined ||
+      stringArrayIsValid(hook.args, 32, 512, budget)) &&
+    (hook.async === undefined || typeof hook.async === "boolean") &&
+    (hook.asyncRewake === undefined || typeof hook.asyncRewake === "boolean") &&
+    (hook.shell === undefined ||
+      ["bash", "powershell"].includes(hook.shell as string))
+  );
+};
+
+const isHttpHook = (value: unknown, budget: HookBudget): boolean => {
+  const hook = hookRecord(
+    value,
+    new Set([...commonHookKeys, "allowedEnvVars", "headers", "url"]),
+    new Set(["type", "url"]),
+    budget,
+  );
+  if (
+    hook === undefined ||
+    hook.type !== "http" ||
+    !consumeHookString(hook.url, 8_192, budget) ||
+    !commonHookFieldsAreValid(hook, budget) ||
+    (hook.allowedEnvVars !== undefined &&
+      !stringArrayIsValid(hook.allowedEnvVars, 64, 128, budget))
+  )
+    return false;
+  if (hook.headers === undefined) return true;
+  const headers = hookRecord(
+    hook.headers,
+    new Set(Object.keys(hook.headers as object)),
+    new Set(),
+    budget,
+  );
+  return (
+    headers !== undefined &&
+    Object.keys(headers).length <= 64 &&
+    Object.values(headers).every((entry) =>
+      consumeHookString(entry, 1_024, budget),
+    )
+  );
+};
+
+const isMcpToolHook = (value: unknown, budget: HookBudget): boolean => {
+  const hook = hookRecord(
+    value,
+    new Set([...commonHookKeys, "input", "server", "tool"]),
+    new Set(["server", "tool", "type"]),
+    budget,
+  );
+  return (
+    hook !== undefined &&
+    hook.type === "mcp_tool" &&
+    consumeHookString(hook.server, 512, budget) &&
+    consumeHookString(hook.tool, 512, budget) &&
+    commonHookFieldsAreValid(hook, budget) &&
+    (hook.input === undefined || jsonInputIsValid(hook.input, budget))
+  );
+};
+
+const isPromptOrAgentHook = (
+  value: unknown,
+  type: "prompt" | "agent",
+  budget: HookBudget,
+): boolean => {
+  const hook = hookRecord(
+    value,
+    new Set([
+      ...commonHookKeys,
+      ...(type === "prompt" ? ["continueOnBlock"] : []),
+      "model",
+      "prompt",
+    ]),
+    new Set(["prompt", "type"]),
+    budget,
+  );
+  return (
+    hook !== undefined &&
+    hook.type === type &&
+    consumeHookString(hook.prompt, 16_384, budget) &&
+    commonHookFieldsAreValid(hook, budget) &&
+    (hook.model === undefined || consumeHookString(hook.model, 512, budget)) &&
+    (hook.continueOnBlock === undefined ||
+      typeof hook.continueOnBlock === "boolean")
+  );
+};
+
+const hookTypeIsCompatible = (event: string, type: string): boolean =>
+  type === "command" ||
+  type === "mcp_tool" ||
+  (type === "http" && transportHookEvents.has(event)) ||
+  (["prompt", "agent"].includes(type) && allHookTypeEvents.has(event));
+
+const isAdmittedForeignHook = (
+  value: unknown,
+  event: string,
+  budget: HookBudget,
+): boolean => {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (!hookTypeIsCompatible(event, value.type)) return false;
+  if (value.type === "command") return isCommandHook(value, budget);
+  if (value.type === "http") return isHttpHook(value, budget);
+  if (value.type === "mcp_tool") return isMcpToolHook(value, budget);
+  return (
+    (value.type === "prompt" || value.type === "agent") &&
+    isPromptOrAgentHook(value, value.type, budget)
+  );
+};
+
+const isAdmittedForeignMatcher = (
+  value: unknown,
+  event: string,
+  budget: HookBudget,
+): boolean => {
   const matcher =
     exactRecordValues(value, ["hooks"]) ??
     exactRecordValues(value, ["hooks", "matcher"]);
   if (matcher === undefined) return false;
-  if (matcher.matcher !== undefined && !boundedHookString(matcher.matcher, 512))
+  if (
+    matcher.matcher !== undefined &&
+    !consumeHookString(matcher.matcher, 4_096, budget)
+  )
     return false;
   const hooks = exactArrayValues(matcher.hooks);
   return (
     hooks !== undefined &&
     hooks.length > 0 &&
-    hooks.length <= 64 &&
-    hooks.every((hook) => isAdmittedForeignHook(hook))
+    hooks.length <= maximumHookHandlerCount &&
+    hooks.every((hook) => isAdmittedForeignHook(hook, event, budget))
   );
 };
 
@@ -898,6 +1119,9 @@ const valueClaimsAgentscopeLauncher = (
         (Object.hasOwn(value, "agentscope") ||
           value.command === command ||
           value.command === invocation.launcherPath ||
+          Object.keys(value).some((key) =>
+            valueClaimsAgentscopeLauncher(key, invocation, command),
+          ) ||
           Object.values(value).some((member) =>
             valueClaimsAgentscopeLauncher(member, invocation, command),
           ));
@@ -911,9 +1135,19 @@ const editHooks = (
   const hooks = settings.hooks;
   if (hooks !== undefined && !isRecord(hooks)) return "conflict";
   const target = hooks ?? {};
+  const budget: HookBudget = { remainingBytes: maximumHookUtf8Bytes };
+  if (Object.keys(target).length > everyHookEvent.size) return "conflict";
   for (const [event, entries] of Object.entries(target)) {
-    if (!Array.isArray(entries)) return "conflict";
-    for (const entry of entries) {
+    if (
+      !everyHookEvent.has(event) ||
+      !consumeHookString(event, maximumHookEventBytes, budget) ||
+      valueClaimsAgentscopeLauncher(event, invocation, command)
+    )
+      return "conflict";
+    const matchers = exactArrayValues(entries);
+    if (matchers === undefined || matchers.length > maximumHookMatcherCount)
+      return "conflict";
+    for (const entry of matchers) {
       const owned =
         governedLifecycleEvents.has(event) &&
         ownedMatcherEquals(
@@ -925,7 +1159,7 @@ const editHooks = (
       if (
         !owned &&
         (valueClaimsAgentscopeLauncher(entry, invocation, command) ||
-          !isAdmittedForeignMatcher(entry))
+          !isAdmittedForeignMatcher(entry, event, budget))
       )
         return "conflict";
     }
