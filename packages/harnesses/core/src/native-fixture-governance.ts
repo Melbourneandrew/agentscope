@@ -1490,34 +1490,95 @@ const acquireCapabilitySnapshot = async (
   const abortWork = (): void => {
     controller.abort();
   };
-  const workTimeout = setTimeout(
+  let workTimeout: ReturnType<typeof setTimeout> | undefined;
+  let child: ReturnType<typeof spawnCapabilityWorker> | undefined;
+  let settlement: Promise<CapabilitySettlement> | undefined;
+  let settled: CapabilitySettlement | undefined;
+  let childError: Error | undefined;
+  try {
+    const remainingWork = authorityDeadline - performance.now() - 1_000;
+    if (remainingWork <= 0) fail("harness.fixture.inventory.capability");
+    const spawnedChild = spawnCapabilityWorker(root, controller.signal);
+    child = spawnedChild;
+    settlement = new Promise<CapabilitySettlement>((resolveSettlement) => {
+      spawnedChild.once("error", (error) => {
+        childError = error;
+      });
+      spawnedChild.once("close", (code, signal) => {
+        resolveSettlement(Object.freeze({ code, signal }));
+      });
+    });
+    workTimeout = setTimeout(abortWork, remainingWork);
+    return await acquireSpawnedCapabilitySnapshot(
+      Object.freeze({
+        child: spawnedChild,
+        root,
+        expectedRoot,
+        authorityDeadline,
+        testPlan,
+        abortWork,
+        settlement,
+        childError: () => childError,
+        recordSettlement: (value: CapabilitySettlement) => {
+          settled = value;
+        },
+      }),
+    );
+  } finally {
+    if (workTimeout !== undefined) clearTimeout(workTimeout);
+    if (child !== undefined && settlement !== undefined) {
+      if (
+        settled === undefined &&
+        child.exitCode === null &&
+        child.signalCode === null
+      )
+        child.kill("SIGKILL");
+      if (settled === undefined) await settlement;
+      /* v8 ignore next -- the same successfully spawned child retains its pid. */
+      if (child.pid !== undefined) activeAuditWorkerPids.delete(child.pid);
+    }
+  }
+};
+
+type SpawnedCapabilityContext = Readonly<{
+  child: ReturnType<typeof spawnCapabilityWorker>;
+  root: string;
+  expectedRoot: AncestorIdentity;
+  authorityDeadline: number;
+  testPlan: NativeFixtureAuditTestPlanRuntime | undefined;
+  abortWork: () => void;
+  settlement: Promise<CapabilitySettlement>;
+  childError: () => Error | undefined;
+  recordSettlement: (settlement: CapabilitySettlement) => void;
+}>;
+
+const acquireSpawnedCapabilitySnapshot = async (
+  context: SpawnedCapabilityContext,
+): Promise<readonly CapabilitySnapshotFile[]> => {
+  const {
+    child,
+    root,
+    expectedRoot,
+    authorityDeadline,
+    testPlan,
     abortWork,
-    Math.max(0, authorityDeadline - performance.now() - 1_000),
-  );
-  const child = spawnCapabilityWorker(root, controller.signal);
+    settlement,
+    childError,
+    recordSettlement,
+  } = context;
   const applyPlan = (event: NativeFixtureAuditEvent): void => {
     applyAuditTestPlan(testPlan, event, root, child.pid);
   };
   /* v8 ignore next -- a successfully spawned Node child always exposes pid. */
   if (child.pid !== undefined) activeAuditWorkerPids.add(child.pid);
-  let childError: Error | undefined;
-  const settlement = new Promise<CapabilitySettlement>((resolveSettlement) => {
-    child.once("error", (error) => {
-      childError = error;
-    });
-    child.once("close", (code, signal) => {
-      resolveSettlement(Object.freeze({ code, signal }));
-    });
-  });
   let outputBytes = 0;
   child.stdout.on("data", (chunk: Buffer) => {
     outputBytes += chunk.length;
-    if (outputBytes > 5 * 1024 * 1024) controller.abort();
+    if (outputBytes > 5 * 1024 * 1024) abortWork();
   });
   const lines = createInterface({ input: child.stdout })[
     Symbol.asyncIterator
   ]();
-  let settled: CapabilitySettlement | undefined;
   try {
     await readCapabilityReady(lines, expectedRoot, authorityDeadline, testPlan);
     assertCapabilityAuthority(authorityDeadline, testPlan);
@@ -1555,33 +1616,25 @@ const acquireCapabilitySnapshot = async (
       testPlan,
       "before-settlement-await",
     );
-    settled = await settleCapabilityWorker(
+    const settled = await settleCapabilityWorker(
       settlement,
       authorityDeadline,
       forceAuthorityExpiry,
       () => {
         child.kill("SIGKILL");
       },
-      () => childError,
+      childError,
     );
     assertCapabilityAuthority(
       authorityDeadline,
       testPlan,
       "after-settlement-await",
     );
+    recordSettlement(settled);
     return Object.freeze(decodedFiles);
   } catch (error) {
     if (error instanceof NativeFixtureGovernanceError) throw error;
     return fail("harness.fixture.inventory.capability");
-  } finally {
-    clearTimeout(workTimeout);
-    if (settled === undefined) {
-      if (child.exitCode === null && child.signalCode === null)
-        child.kill("SIGKILL");
-      await settlement;
-    }
-    /* v8 ignore next -- the same successfully spawned child retains its pid. */
-    if (child.pid !== undefined) activeAuditWorkerPids.delete(child.pid);
   }
 };
 

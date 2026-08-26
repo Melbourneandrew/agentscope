@@ -1321,6 +1321,40 @@ describe("native fixture fixed audit test operations", () => {
   });
 });
 
+describe("native fixture worker admission authority", () => {
+  it("does not spawn when the final authority sample expires", async () => {
+    const root = await writeInventoryFixture();
+    const original = await auditNativeFixtureInventory(root);
+    const namespaces = await auditPlanNamespaces();
+    const clock = vi.spyOn(performance, "now");
+    let calls = 0;
+    clock.mockImplementation(() => {
+      calls += 1;
+      return calls <= 10 ? 0 : 20_000;
+    });
+    let maximumWorkers = 0;
+    const monitor = setInterval(() => {
+      maximumWorkers = Math.max(
+        maximumWorkers,
+        activeNativeFixtureAuditWorkerCountForTest(),
+      );
+    }, 0);
+    try {
+      await expect(auditNativeFixtureInventory(root)).rejects.toMatchObject({
+        code: "harness.fixture.inventory.capability",
+        message: "harness.fixture.inventory.capability",
+      });
+      expect(maximumWorkers).toBe(0);
+      expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+      expect(await auditPlanNamespaces()).toEqual(namespaces);
+    } finally {
+      clearInterval(monitor);
+      clock.mockRestore();
+    }
+    await expect(auditNativeFixtureInventory(root)).resolves.toEqual(original);
+  });
+});
+
 describe("native fixture capability protocol authority", () => {
   it.each([
     "before-ready-await",
