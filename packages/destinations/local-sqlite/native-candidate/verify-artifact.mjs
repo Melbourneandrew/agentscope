@@ -196,6 +196,15 @@ const boundedTimeoutResult = () =>
     stdout: "",
     stderr: "",
   });
+const normalizeCommandResult = (result) =>
+  result.error
+    ? Object.freeze({
+        error: result.error,
+        status: null,
+        stdout: "",
+        stderr: "",
+      })
+    : result;
 const remainingMilliseconds = (deadline, now = () => performance.now()) =>
   Math.max(0, Math.floor(deadline - now()));
 const performBoundedContainer = (context) => {
@@ -216,26 +225,28 @@ const performBoundedContainer = (context) => {
   const createTimeout = remainingMilliseconds(setupDeadline, now);
   if (createTimeout < 1) return boundedTimeoutResult();
   cleanupState.createAttempted = true;
-  const create = dockerCommand(
-    "docker",
-    ["create", "--name", name, ...createArguments],
-    {
+  const create = normalizeCommandResult(
+    dockerCommand("docker", ["create", "--name", name, ...createArguments], {
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
       timeout: createTimeout,
-    },
+    }),
   );
   cleanupState.cleanupRequired =
     create.status === 0 || !Number.isInteger(create.status);
   if (create.error || create.status !== 0) return create;
+  if (now() >= setupDeadline) return boundedTimeoutResult();
   const startTimeout = remainingMilliseconds(setupDeadline, now);
   if (startTimeout < 1) return boundedTimeoutResult();
-  const start = dockerCommand("docker", ["start", name], {
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-    timeout: startTimeout,
-  });
+  const start = normalizeCommandResult(
+    dockerCommand("docker", ["start", name], {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: startTimeout,
+    }),
+  );
   if (start.error || start.status !== 0) return start;
+  if (now() >= setupDeadline) return boundedTimeoutResult();
   const workDeadline = Math.min(
     now() + workTimeout,
     absoluteDeadline - teardownReserve,
@@ -243,28 +254,35 @@ const performBoundedContainer = (context) => {
   for (;;) {
     const inspectTimeout = remainingMilliseconds(workDeadline, now);
     if (inspectTimeout < 1) return boundedTimeoutResult();
-    const inspect = dockerCommand(
-      "docker",
-      ["inspect", "--format", "{{json .State}}", name],
-      {
-        encoding: "utf8",
-        maxBuffer: 64 * 1024,
-        timeout: inspectTimeout,
-      },
+    const inspect = normalizeCommandResult(
+      dockerCommand(
+        "docker",
+        ["inspect", "--format", "{{json .State}}", name],
+        {
+          encoding: "utf8",
+          maxBuffer: 64 * 1024,
+          timeout: inspectTimeout,
+        },
+      ),
     );
     if (inspect.error || inspect.status !== 0) return inspect;
+    if (now() >= workDeadline) return boundedTimeoutResult();
     const state = JSON.parse(inspect.stdout);
     if (state.Running === false) {
       const logsTimeout = remainingMilliseconds(workDeadline, now);
       if (logsTimeout < 1) return boundedTimeoutResult();
-      const logs = dockerCommand("docker", ["logs", name], {
-        encoding: "utf8",
-        maxBuffer: 4 * 1024 * 1024,
-        timeout: logsTimeout,
-      });
+      const logs = normalizeCommandResult(
+        dockerCommand("docker", ["logs", name], {
+          encoding: "utf8",
+          maxBuffer: 4 * 1024 * 1024,
+          timeout: logsTimeout,
+        }),
+      );
+      if (logs.error || logs.status !== 0) return logs;
+      if (now() >= workDeadline) return boundedTimeoutResult();
       return Object.freeze({
-        error: logs.error,
-        status: logs.error ? null : state.ExitCode,
+        error: undefined,
+        status: state.ExitCode,
         stdout: logs.stdout ?? "",
         stderr: logs.stderr ?? "",
       });
@@ -455,6 +473,73 @@ const verifyCreateUncertaintyCleanup = () => {
   );
   assert.equal(timedOutAbsenceChecks, 1);
   assert.equal(observedProofTimeout, 1_000);
+};
+const verifyObservationTimeoutArbitration = () => {
+  const timeout = Object.assign(new Error("synthetic observation timeout"), {
+    code: "ETIMEDOUT",
+  });
+  const calls = [];
+  const result = runBoundedContainer(
+    "synthetic-observation-timeout-exit-race",
+    ["image"],
+    1_000,
+    1_000,
+    {
+      dockerCommand: (_program, arguments_) => {
+        calls.push(arguments_);
+        switch (arguments_[0]) {
+          case "create":
+          case "start":
+          case "rm":
+            return { error: undefined, status: 0, stdout: "", stderr: "" };
+          case "inspect":
+            return {
+              error: timeout,
+              status: 0,
+              stdout: "synthetic partial observation",
+              stderr: "synthetic partial diagnostic",
+            };
+          default:
+            throw new Error("unexpected synthetic Docker command");
+        }
+      },
+      proveAbsent: () => undefined,
+    },
+  );
+  assert.equal(result.error, timeout);
+  assert.equal(result.status, null);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+  assert.deepEqual(
+    calls.map((arguments_) => arguments_[0]),
+    ["create", "start", "inspect", "rm"],
+  );
+
+  let clock = 0;
+  const lateResult = runBoundedContainer(
+    "synthetic-observation-after-deadline",
+    ["image"],
+    1_000,
+    1_000,
+    {
+      now: () => clock,
+      dockerCommand: (_program, arguments_) => {
+        if (arguments_[0] === "inspect") {
+          clock = 1_000;
+          return {
+            error: undefined,
+            status: 0,
+            stdout: '{"Running":false,"ExitCode":0}',
+            stderr: "",
+          };
+        }
+        return { error: undefined, status: 0, stdout: "", stderr: "" };
+      },
+      proveAbsent: () => undefined,
+    },
+  );
+  assert.equal(lateResult.error?.code, "ETIMEDOUT");
+  assert.equal(lateResult.status, null);
 };
 const runContainer = (
   name,
@@ -1744,6 +1829,7 @@ const temporary = mkdtempSync(join(tmpdir(), "agentscope-native-candidate-"));
 try {
   verifySupervisedFailureDiagnostic();
   verifyCreateUncertaintyCleanup();
+  verifyObservationTimeoutArbitration();
   verifyBuildExecutableCanonicalization();
   verifyArchiveCompilerHostileFixtures();
   verifyMaterializerParentSwapFixture();
