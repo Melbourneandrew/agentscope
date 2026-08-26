@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+PATH=/usr/bin:/bin
+export PATH
+umask 077
+unset CDPATH ENV BASH_ENV GIT_DIR GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM NODE_OPTIONS NPM_CONFIG_USERCONFIG TAR_OPTIONS || true
 
 # Builds and installs only the nonsecret protected control plane. It does not
 # log in, read a cloud/provider credential, call a network service, or run
@@ -22,24 +26,35 @@ terminal_profile=${10}
 terminal_entry_point=${11}
 
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
-if [ -n "$(git -C "$repository_root" status --porcelain=v1 --untracked-files=all)" ]; then
+if [ -n "$(/usr/bin/git -C "$repository_root" status --porcelain=v1 --untracked-files=all)" ]; then
   echo "protected launcher: E_DIRTY_REPOSITORY" >&2
   exit 1
 fi
-launcher_source_commit=$(git -C "$repository_root" rev-parse --verify HEAD)
+launcher_source_commit=$(/usr/bin/git -C "$repository_root" rev-parse --verify HEAD)
 case "$launcher_source_commit" in *[!0-9a-f]*) echo "protected launcher: E_SOURCE_COMMIT" >&2; exit 1 ;; esac
 if [ "${#launcher_source_commit}" -ne 40 ]; then
   echo "protected launcher: E_SOURCE_COMMIT" >&2
   exit 1
 fi
 echo "Protected launcher source commit: $launcher_source_commit"
+launcher_source_tree=$(/usr/bin/git -C "$repository_root" rev-parse --verify "$launcher_source_commit^{tree}")
+case "$launcher_source_tree" in *[!0-9a-f]*) echo "protected launcher: E_SOURCE_TREE" >&2; exit 1 ;; esac
+if [ "${#launcher_source_tree}" -ne 40 ]; then echo "protected launcher: E_SOURCE_TREE" >&2; exit 1; fi
+echo "Protected launcher source tree: $launcher_source_tree"
 
-build_root=$(mktemp -d "${TMPDIR:-/tmp}/agentscope-crabbox-launcher.XXXXXX")
-mkdir -m 0700 "$build_root/home"
+build_root=$(sudo /usr/bin/mktemp -d /private/var/tmp/agentscope-crabbox-launcher.XXXXXX)
+sudo /bin/chmod 0700 "$build_root"
+sudo /bin/mkdir -m 0700 "$build_root/home" "$build_root/source"
+/usr/bin/sudo /usr/bin/git -c "safe.directory=$repository_root" -C "$repository_root" archive --format=tar "$launcher_source_commit" | /usr/bin/sudo /usr/bin/tar -xf - -C "$build_root/source"
+source_root=$build_root/source
+if [ "$(/usr/bin/git -C "$repository_root" rev-parse --verify "$launcher_source_commit^{tree}")" != "$launcher_source_tree" ]; then
+  echo "protected launcher: E_SOURCE_TREE_CHANGED" >&2
+  exit 1
+fi
 bootstrap_path="/Library/Application Support/Agentscope/.agentscope-crabbox-control.bootstrap"
 bootstrap_installed=0
 cleanup() {
-  rm -rf -- "$build_root"
+  sudo rm -rf -- "$build_root"
   if [ "$bootstrap_installed" -eq 1 ]; then sudo rm -f -- "$bootstrap_path"; fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -51,56 +66,60 @@ if [ "$actual_go_archive_sha256" != "$expected_go_archive_sha256" ]; then
   echo "protected launcher: E_GO_ARCHIVE_DIGEST" >&2
   exit 1
 fi
-mkdir -m 0700 "$build_root/go-extract"
-tar -xzf "$admitted_go_archive" -C "$build_root/go-extract"
+sudo /bin/mkdir -m 0700 "$build_root/go-extract"
+sudo /usr/bin/install -o root -g wheel -m 0400 "$admitted_go_archive" "$build_root/go-archive.tar.gz"
+if [ "$(sudo /usr/bin/shasum -a 256 "$build_root/go-archive.tar.gz" | /usr/bin/awk '{print $1}')" != "$expected_go_archive_sha256" ]; then
+  echo "protected launcher: E_GO_ARCHIVE_COPY" >&2
+  exit 1
+fi
+sudo /usr/bin/tar -xzf "$build_root/go-archive.tar.gz" -C "$build_root/go-extract"
 go_root=$build_root/go-extract/go
 go_binary=$go_root/bin/go
-if [ ! -x "$go_binary" ] || [ "$($go_binary version)" != "go version go1.26.5 darwin/arm64" ]; then
+if ! sudo /usr/bin/test -x "$go_binary" || [ "$(sudo "$go_binary" version)" != "go version go1.26.5 darwin/arm64" ]; then
   echo "protected launcher: E_GO_TOOLCHAIN" >&2
   exit 1
 fi
 
-if [ "$(shasum -a 256 "$repository_root/ops/crabbox-coordinator/admission.json" | awk '{print $1}')" != "947f1c128ca030d89c3e6100ce96a159fc4b045afb36b1cf1ef02276e16e2357" ] ||
-   [ "$(shasum -a 256 "$repository_root/ops/crabbox-coordinator/permission-manifest.json" | awk '{print $1}')" != "b8d01f9fe098abc9a67eeba6ee5f8bd18e0b273bbf5bb7766a72e9acc9d2922f" ]; then
+if [ "$(sudo /usr/bin/shasum -a 256 "$source_root/ops/crabbox-coordinator/admission.json" | /usr/bin/awk '{print $1}')" != "947f1c128ca030d89c3e6100ce96a159fc4b045afb36b1cf1ef02276e16e2357" ] ||
+   [ "$(sudo /usr/bin/shasum -a 256 "$source_root/ops/crabbox-coordinator/permission-manifest.json" | /usr/bin/awk '{print $1}')" != "b8d01f9fe098abc9a67eeba6ee5f8bd18e0b273bbf5bb7766a72e9acc9d2922f" ]; then
   echo "protected launcher: E_CANONICAL_POLICY_DIGEST" >&2
   exit 1
 fi
 
-(
-  cd "$repository_root/tools/crabbox-launcher"
-  env -i HOME="$build_root/home" PATH="$go_root/bin:/usr/bin:/bin" GOTOOLCHAIN=local CGO_ENABLED=0 \
-    "$go_binary" test ./...
-  env -i HOME="$build_root/home" PATH="$go_root/bin:/usr/bin:/bin" GOTOOLCHAIN=local CGO_ENABLED=0 \
-    "$go_binary" build -trimpath -buildvcs=true -o "$build_root/agentscope-crabbox-control" ./cmd/agentscope-crabbox-control
-)
+sudo /usr/bin/env -i HOME="$build_root/home" PATH="$go_root/bin:/usr/bin:/bin" GOTOOLCHAIN=local CGO_ENABLED=0 \
+  "$go_binary" -C "$source_root/tools/crabbox-launcher" test ./...
+sudo /usr/bin/env -i HOME="$build_root/home" PATH="$go_root/bin:/usr/bin:/bin" GOTOOLCHAIN=local CGO_ENABLED=0 \
+  "$go_binary" -C "$source_root/tools/crabbox-launcher" build -trimpath -ldflags="-X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildSourceCommit=$launcher_source_commit -X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildSourceTree=$launcher_source_tree" -o "$build_root/agentscope-crabbox-control" ./cmd/agentscope-crabbox-control
 
 # Prepare a complete nonsecret runtime closure before privilege is acquired.
 # The root launcher verifies the exact archive digest, extracts only regular
 # files/directories, and never executes this user-writable tree directly.
-mkdir -m 0700 "$build_root/runtime" "$build_root/runtime/node" "$build_root/runtime/coordinator" "$build_root/npm-home" "$build_root/node-extract"
+sudo /bin/mkdir -m 0700 "$build_root/runtime" "$build_root/runtime/node" "$build_root/runtime/coordinator" "$build_root/npm-home" "$build_root/node-extract"
 expected_node_archive_sha256=$(/usr/bin/plutil -extract nodeArchiveSha256 raw -o - "$toolchain_identity")
 actual_node_archive_sha256=$(shasum -a 256 "$admitted_node_archive" | awk '{print $1}')
 if [ "$expected_node_archive_sha256" != "8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d" ] || [ "$actual_node_archive_sha256" != "$expected_node_archive_sha256" ]; then
   echo "protected launcher: E_NODE_ARCHIVE_DIGEST" >&2
   exit 1
 fi
-tar -xzf "$admitted_node_archive" -C "$build_root/node-extract"
-admitted_node_root=$(find "$build_root/node-extract" -mindepth 1 -maxdepth 1 -type d -print)
-if [ -z "$admitted_node_root" ] || [ "$(printf '%s\n' "$admitted_node_root" | wc -l | tr -d ' ')" -ne 1 ] || [ ! -x "$admitted_node_root/bin/node" ] || [ ! -f "$admitted_node_root/lib/node_modules/npm/bin/npm-cli.js" ]; then
+sudo /usr/bin/install -o root -g wheel -m 0400 "$admitted_node_archive" "$build_root/node-archive.tar.gz"
+if [ "$(sudo /usr/bin/shasum -a 256 "$build_root/node-archive.tar.gz" | /usr/bin/awk '{print $1}')" != "$expected_node_archive_sha256" ]; then
+  echo "protected launcher: E_NODE_ARCHIVE_COPY" >&2
+  exit 1
+fi
+sudo /usr/bin/tar -xzf "$build_root/node-archive.tar.gz" -C "$build_root/node-extract"
+admitted_node_root=$(sudo /usr/bin/find "$build_root/node-extract" -mindepth 1 -maxdepth 1 -type d -print)
+if [ -z "$admitted_node_root" ] || [ "$(printf '%s\n' "$admitted_node_root" | wc -l | tr -d ' ')" -ne 1 ] || ! sudo /usr/bin/test -x "$admitted_node_root/bin/node" || ! sudo /usr/bin/test -f "$admitted_node_root/lib/node_modules/npm/bin/npm-cli.js"; then
   echo "protected launcher: E_NODE_TOOLCHAIN" >&2
   exit 1
 fi
-(cd "$admitted_node_root" && COPYFILE_DISABLE=1 tar -chf - .) | (cd "$build_root/runtime/node" && tar -xf -)
-git -C "$crabbox_source" archive --format=tar 8ba71f913bbe57285ae29af45ef0d8ec6712477d | (cd "$build_root/runtime/coordinator" && tar -xf -)
-(
-  cd "$build_root/runtime/coordinator/worker"
-  env -i HOME="$build_root/npm-home" PATH="$build_root/runtime/node/bin:/usr/bin:/bin" \
-    "$build_root/runtime/node/bin/node" "$build_root/runtime/node/lib/node_modules/npm/bin/npm-cli.js" \
-    ci --ignore-scripts --no-audit --no-fund
-)
-(cd "$build_root/runtime" && COPYFILE_DISABLE=1 tar -chzf "$build_root/runtime-closure.tar.gz" node coordinator)
-runtime_closure_sha256=$(shasum -a 256 "$build_root/runtime-closure.tar.gz" | awk '{print $1}')
-launcher_sha256=$(shasum -a 256 "$build_root/agentscope-crabbox-control" | awk '{print $1}')
+sudo /usr/bin/env COPYFILE_DISABLE=1 /usr/bin/tar -C "$admitted_node_root" -chf - . | sudo /usr/bin/tar -xf - -C "$build_root/runtime/node"
+sudo /usr/bin/git -c "safe.directory=$crabbox_source" -C "$crabbox_source" archive --format=tar 8ba71f913bbe57285ae29af45ef0d8ec6712477d | sudo /usr/bin/tar -xf - -C "$build_root/runtime/coordinator"
+sudo /usr/bin/env -i HOME="$build_root/npm-home" PATH="$build_root/runtime/node/bin:/usr/bin:/bin" \
+  "$build_root/runtime/node/bin/node" "$build_root/runtime/node/lib/node_modules/npm/bin/npm-cli.js" \
+  ci --prefix "$build_root/runtime/coordinator/worker" --ignore-scripts --no-audit --no-fund
+sudo /usr/bin/env COPYFILE_DISABLE=1 /usr/bin/tar -C "$build_root/runtime" -chzf "$build_root/runtime-closure.tar.gz" node coordinator
+runtime_closure_sha256=$(sudo /usr/bin/shasum -a 256 "$build_root/runtime-closure.tar.gz" | /usr/bin/awk '{print $1}')
+launcher_sha256=$(sudo /usr/bin/shasum -a 256 "$build_root/agentscope-crabbox-control" | /usr/bin/awk '{print $1}')
 echo "Protected launcher artifact SHA-256: $launcher_sha256"
 echo "Protected runtime closure SHA-256: $runtime_closure_sha256"
 
@@ -158,8 +177,10 @@ sudo "$bootstrap_path" install \
   --account-id "$account_id" \
   --hetzner-project-id "$hetzner_project_id" \
   --executor-uid "$service_uid" \
-  --admission "$repository_root/ops/crabbox-coordinator/admission.json" \
-  --permission-manifest "$repository_root/ops/crabbox-coordinator/permission-manifest.json" \
+  --launcher-source-commit "$launcher_source_commit" \
+  --launcher-source-tree "$launcher_source_tree" \
+  --admission "$source_root/ops/crabbox-coordinator/admission.json" \
+  --permission-manifest "$source_root/ops/crabbox-coordinator/permission-manifest.json" \
   --live-profile "$live_profile" \
   --terminal-profile "$terminal_profile" \
   --terminal-entry-point "$terminal_entry_point" \

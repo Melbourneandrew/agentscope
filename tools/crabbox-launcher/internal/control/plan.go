@@ -49,7 +49,7 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 	}
 	migration := currentMigrationTag(input.State.Surfaces["workerSettings"])
 	if migration == "" {
-		migration = "v1"
+		migration = "absent"
 	}
 	profile := installation.LiveProfileSHA256
 	if input.Kind == "retire" {
@@ -71,22 +71,25 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 	}
 	switch input.Kind {
 	case "deploy":
-		if len(input.Slots) != len(canonicalSecrets) {
-			return Plan{}, errors.New("E_PLAN_BUILD_SLOT")
-		}
-		for _, secret := range canonicalSecrets {
-			ref, ok := input.Slots[secret]
-			if !ok || !identifierPattern.MatchString(ref.SlotID) || !identifierPattern.MatchString(ref.SlotVersion) {
-				return Plan{}, errors.New("E_PLAN_BUILD_SLOT")
-			}
-			secretCopy, slot, version := secret, ref.SlotID, ref.SlotVersion
-			plan.Operations = append(plan.Operations, Operation{Action: "worker.secret.put", Target: WorkerName, RequestID: request("put"), SecretName: &secretCopy, SlotID: &slot, SlotVersion: &version})
-		}
 		profileCopy, previous := profile, currentVersion
 		plan.Operations = append(plan.Operations, Operation{Action: "worker.deploy", Target: WorkerName, RequestID: request("deploy"), ProfileSHA256: &profileCopy, ExpectedPreviousVersionID: &previous})
-		if currentVersion != "absent" {
+		if currentVersion == "absent" {
+			if err := appendSecretOperations(&plan, input.Slots, request); err != nil {
+				return Plan{}, err
+			}
+		} else {
+			if len(input.Slots) != 0 {
+				return Plan{}, errors.New("E_PLAN_BUILD_UNEXPECTED_SLOT")
+			}
 			version, tag := currentVersion, migration
 			plan.RollbackActions = []Operation{{Action: "worker.rollback", Target: WorkerName, RequestID: request("rollback"), VersionID: &version, CompatibleMigrationTag: &tag}}
+		}
+	case "rotate-secrets":
+		if currentVersion == "absent" {
+			return Plan{}, errors.New("E_PLAN_BUILD_WORKER_ABSENT")
+		}
+		if err := appendSecretOperations(&plan, input.Slots, request); err != nil {
+			return Plan{}, err
 		}
 	case "rollback":
 		if !identifierPattern.MatchString(input.RollbackVersionID) || input.RollbackVersionID == "latest" {
@@ -144,6 +147,21 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 		return Plan{}, err
 	}
 	return plan, nil
+}
+
+func appendSecretOperations(plan *Plan, slots map[string]SlotReference, request func(string) string) error {
+	if len(slots) != len(canonicalSecrets) {
+		return errors.New("E_PLAN_BUILD_SLOT")
+	}
+	for _, secret := range canonicalSecrets {
+		ref, ok := slots[secret]
+		if !ok || !identifierPattern.MatchString(ref.SlotID) || !identifierPattern.MatchString(ref.SlotVersion) {
+			return errors.New("E_PLAN_BUILD_SLOT")
+		}
+		secretCopy, slot, version := secret, ref.SlotID, ref.SlotVersion
+		plan.Operations = append(plan.Operations, Operation{Action: "worker.secret.put", Target: WorkerName, RequestID: request("put"), SecretName: &secretCopy, SlotID: &slot, SlotVersion: &version})
+	}
+	return nil
 }
 
 func randomIdentifier(prefix string) (string, error) {

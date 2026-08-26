@@ -40,16 +40,18 @@ type Event struct {
 }
 
 type SlotMetadata struct {
-	SchemaVersion    int       `json:"schemaVersion"`
-	EnvironmentID    string    `json:"environmentId"`
-	Role             string    `json:"role"`
-	SecretName       *string   `json:"secretName"`
-	SlotID           string    `json:"slotId"`
-	SlotVersion      string    `json:"slotVersion"`
-	CiphertextSHA256 string    `json:"ciphertextSha256"`
-	CreatedAt        time.Time `json:"createdAt"`
-	KeyID            string    `json:"keyId"`
-	Signature        string    `json:"signature"`
+	SchemaVersion     int       `json:"schemaVersion"`
+	EnvironmentID     string    `json:"environmentId"`
+	Role              string    `json:"role"`
+	SecretName        *string   `json:"secretName"`
+	SlotID            string    `json:"slotId"`
+	SlotVersion       string    `json:"slotVersion"`
+	SupersedesSlotID  string    `json:"supersedesSlotId,omitempty"`
+	SupersedesVersion string    `json:"supersedesVersion,omitempty"`
+	CiphertextSHA256  string    `json:"ciphertextSha256"`
+	CreatedAt         time.Time `json:"createdAt"`
+	KeyID             string    `json:"keyId"`
+	Signature         string    `json:"signature"`
 }
 
 func NewStore(root string) Store { return Store{Root: root} }
@@ -194,6 +196,8 @@ type InstallInput struct {
 	LiveProfileSHA256                    string
 	TerminalProfileSHA256                string
 	Launcher                             []byte
+	LauncherSourceCommit                 string
+	LauncherSourceTree                   string
 	Admission                            []byte
 	PermissionManifest                   []byte
 	LiveProfile                          []byte
@@ -215,6 +219,9 @@ func Install(input InstallInput) (Installation, error) {
 	}
 	if len(input.Launcher) == 0 || len(input.Launcher) > 64<<20 {
 		return Installation{}, errors.New("E_LAUNCHER_ARTIFACT")
+	}
+	if !input.skipCanonicalPolicyValidationForTest && (BuildSourceCommit != input.LauncherSourceCommit || BuildSourceTree != input.LauncherSourceTree) {
+		return Installation{}, errors.New("E_LAUNCHER_SOURCE_BINDING")
 	}
 	if input.AdmissionSHA256 != SHA256(input.Admission) || input.PermissionManifestSHA256 != SHA256(input.PermissionManifest) || input.LiveProfileSHA256 != SHA256(input.LiveProfile) || input.TerminalProfileSHA256 != SHA256(input.TerminalProfile) || input.RuntimeClosureSHA256 != SHA256(input.RuntimeClosure) {
 		return Installation{}, errors.New("E_INSTALL_INPUT_BINDING")
@@ -284,7 +291,7 @@ func Install(input InstallInput) (Installation, error) {
 			return Installation{}, errors.New("E_EXECUTOR_IDENTITY")
 		}
 	}
-	installation := Installation{SchemaVersion: SchemaVersion, CanonicalPolicy: !input.skipCanonicalPolicyValidationForTest, InstallationID: input.InstallationID, EnvironmentID: input.EnvironmentID, AccountID: input.AccountID, WorkerName: WorkerName, HetznerProjectID: input.HetznerProjectID, CoordinatorCommit: input.CoordinatorCommit, AdmissionSHA256: input.AdmissionSHA256, PermissionManifestSHA256: input.PermissionManifestSHA256, LiveProfileSHA256: input.LiveProfileSHA256, TerminalProfileSHA256: input.TerminalProfileSHA256, TerminalEntryPointSHA256: SHA256(input.TerminalEntryPoint), LauncherSHA256: SHA256(input.Launcher), RuntimeClosureSHA256: input.RuntimeClosureSHA256, RuntimeTreeSHA256: runtimeIdentity.TreeSHA256, NodeSHA256: runtimeIdentity.NodeSHA256, NPMCLISHA256: runtimeIdentity.NPMCLISHA256, WranglerCLISHA256: runtimeIdentity.WranglerCLISHA256, ToolchainIdentity: input.ToolchainIdentity, Roots: roots}
+	installation := Installation{SchemaVersion: SchemaVersion, CanonicalPolicy: !input.skipCanonicalPolicyValidationForTest, InstallationID: input.InstallationID, EnvironmentID: input.EnvironmentID, AccountID: input.AccountID, WorkerName: WorkerName, HetznerProjectID: input.HetznerProjectID, CoordinatorCommit: input.CoordinatorCommit, AdmissionSHA256: input.AdmissionSHA256, PermissionManifestSHA256: input.PermissionManifestSHA256, LiveProfileSHA256: input.LiveProfileSHA256, TerminalProfileSHA256: input.TerminalProfileSHA256, TerminalEntryPointSHA256: SHA256(input.TerminalEntryPoint), LauncherSHA256: SHA256(input.Launcher), LauncherSourceCommit: input.LauncherSourceCommit, LauncherSourceTree: input.LauncherSourceTree, RuntimeClosureSHA256: input.RuntimeClosureSHA256, RuntimeTreeSHA256: runtimeIdentity.TreeSHA256, NodeSHA256: runtimeIdentity.NodeSHA256, NPMCLISHA256: runtimeIdentity.NPMCLISHA256, WranglerCLISHA256: runtimeIdentity.WranglerCLISHA256, ToolchainIdentity: input.ToolchainIdentity, Roots: roots}
 	installation.ExecutorUID = input.ExecutorUID
 	if err := ValidateInstallation(installation); err != nil {
 		return Installation{}, err
@@ -432,6 +439,16 @@ func (store Store) signControlRecord(record SignedControlRecord, role string, pa
 	return record, nil
 }
 
+func verifyControlRecord(record SignedControlRecord, root Root, role string) error {
+	signature := record.Signature
+	record.Signature = ""
+	payload, _ := signaturePayload(record)
+	if record.SchemaVersion != SchemaVersion || record.KeyID != root.KeyID {
+		return errors.New("E_CONTROL_RECORD")
+	}
+	return verifyDetached(root, role, signature, payload)
+}
+
 func (store Store) Freeze(reason string, now time.Time, passphrase []byte) (SignedControlRecord, error) {
 	if !identifierPattern.MatchString(reason) {
 		return SignedControlRecord{}, errors.New("E_FREEZE_REASON")
@@ -525,7 +542,8 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 	hasFence := fenceErr == nil && strings.TrimSpace(string(fenceData)) == planSHA256
 	last, lastErr := store.lastEvent(planSHA256)
 	definiteNoncommit := lastErr == nil && last.State == "consumed" && requestID == "plan"
-	if !hasFence && !definiteNoncommit {
+	alreadyTerminal := lastErr == nil && ((last.State == "abandoned-definite-noncommit" && requestID == "plan") || (last.State == "reconciled-terminal" && last.RequestID == requestID && last.ReceiptSHA256 == evidenceSHA256))
+	if !hasFence && !definiteNoncommit && !alreadyTerminal {
 		return SignedControlRecord{}, errors.New("E_MUTATION_FENCE")
 	}
 	if !store.IsFrozen() {
@@ -533,15 +551,25 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 			return SignedControlRecord{}, err
 		}
 	}
-	record, err := store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, PlanSHA256: planSHA256, RequestID: requestID, Disposition: "reconciled-abandoned", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
-	if err != nil {
-		return record, err
+	resolvedPath := store.path("journal", planSHA256, "recovery-resolved.json")
+	var record SignedControlRecord
+	if existing, readErr := readPrivate(resolvedPath); readErr == nil {
+		if strictJSON(existing, &record) != nil || verifyControlRecord(record, installation.Roots[RecoveryRole], RecoveryRole) != nil || record.Domain != RecoveryDomain || record.PlanSHA256 != planSHA256 || record.RequestID != requestID || record.Disposition != "reconciled-abandoned" || record.EvidenceSHA256 != evidenceSHA256 {
+			return SignedControlRecord{}, errors.New("E_RECOVERY_RESOLUTION_BINDING")
+		}
+	} else if !os.IsNotExist(readErr) {
+		return SignedControlRecord{}, readErr
+	} else {
+		record, err = store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, PlanSHA256: planSHA256, RequestID: requestID, Disposition: "reconciled-abandoned", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
+		if err != nil {
+			return record, err
+		}
+		data, _ := json.MarshalIndent(record, "", "  ")
+		if err := writeExclusive(resolvedPath, append(data, '\n'), 0o600); err != nil {
+			return record, err
+		}
 	}
-	data, _ := json.MarshalIndent(record, "", "  ")
-	if err := writeExclusive(store.path("journal", planSHA256, "recovery-resolved.json"), append(data, '\n'), 0o600); err != nil {
-		return record, err
-	}
-	if definiteNoncommit {
+	if !alreadyTerminal && definiteNoncommit {
 		sequence, previous, sequenceErr := store.nextSequence(planSHA256)
 		if sequenceErr != nil {
 			return record, sequenceErr
@@ -549,7 +577,7 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 		if _, eventErr := store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planSHA256, RequestID: "plan", State: "abandoned-definite-noncommit", PreviousSHA256: previous, RecordedAt: now, DetailCode: "RECOVERED"}); eventErr != nil {
 			return record, eventErr
 		}
-	} else {
+	} else if !alreadyTerminal {
 		sequence, previous, sequenceErr := store.nextSequence(planSHA256)
 		if sequenceErr != nil {
 			return record, sequenceErr
@@ -669,8 +697,13 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 	if !allowed {
 		return SlotMetadata{}, errors.New("E_SLOT_ROLE")
 	}
-	if existing, _ := store.credentialMetadata(); existing[role].Role != "" {
-		return SlotMetadata{}, errors.New("E_SLOT_ROLE_EXISTS")
+	existing, existingErr := store.credentialMetadata()
+	if existingErr != nil && !errors.Is(existingErr, os.ErrNotExist) {
+		return SlotMetadata{}, existingErr
+	}
+	current := existing[role]
+	if current.SlotID == slotID && current.SlotVersion == slotVersion {
+		return SlotMetadata{}, errors.New("E_SLOT_VERSION_EXISTS")
 	}
 	directory := store.path("slots", slotID)
 	if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
@@ -689,6 +722,10 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 		return SlotMetadata{}, err
 	}
 	metadata := SlotMetadata{SchemaVersion: SchemaVersion, EnvironmentID: environmentID, Role: role, SecretName: secretName, SlotID: slotID, SlotVersion: slotVersion, CiphertextSHA256: SHA256(sealedValue), CreatedAt: now}
+	if current.Role != "" {
+		metadata.SupersedesSlotID = current.SlotID
+		metadata.SupersedesVersion = current.SlotVersion
+	}
 	installation, err := store.LoadInstallation()
 	if err != nil {
 		return SlotMetadata{}, err
@@ -726,7 +763,7 @@ func (store Store) ResolveSecrets(plan Plan) (map[string][]byte, error) {
 		}
 		return map[string][]byte{}, nil
 	}
-	if plan.Kind != "deploy" {
+	if plan.Kind != "deploy" && plan.Kind != "rotate-secrets" {
 		return map[string][]byte{}, nil
 	}
 	installation, err := store.LoadInstallation()
@@ -736,8 +773,17 @@ func (store Store) ResolveSecrets(plan Plan) (map[string][]byte, error) {
 	resolved := map[string][]byte{}
 	seenSlots := map[string]struct{}{}
 	roleForSecret := map[string]string{"CRABBOX_ADMIN_TOKEN": "crabbox-admin", "CRABBOX_SHARED_TOKEN": "crabbox-shared", "HETZNER_TOKEN": "hetzner-worker"}
-	for index, secretName := range canonicalSecrets {
-		operation := plan.Operations[index]
+	for _, secretName := range canonicalSecrets {
+		var operation *Operation
+		for index := range plan.Operations {
+			if plan.Operations[index].Action == "worker.secret.put" && plan.Operations[index].SecretName != nil && *plan.Operations[index].SecretName == secretName {
+				operation = &plan.Operations[index]
+				break
+			}
+		}
+		if operation == nil || operation.SlotID == nil || operation.SlotVersion == nil {
+			return nil, errors.New("E_SLOT_BINDING")
+		}
 		key := *operation.SlotID + ":" + *operation.SlotVersion
 		if _, exists := seenSlots[key]; exists {
 			return nil, errors.New("E_SLOT_ALIAS")
@@ -788,7 +834,15 @@ func (store Store) ResolveSecrets(plan Plan) (map[string][]byte, error) {
 }
 
 func (store Store) CredentialSetSHA256() (string, error) {
-	metadata, err := store.credentialMetadata()
+	return store.credentialSetSHA256(true)
+}
+
+func (store Store) credentialBindingSHA256() (string, error) {
+	return store.credentialSetSHA256(false)
+}
+
+func (store Store) credentialSetSHA256(requireValues bool) (string, error) {
+	metadata, err := store.credentialMetadataWithValues(requireValues)
 	if err != nil {
 		return "", err
 	}
@@ -811,11 +865,15 @@ func (store Store) CredentialSetSHA256() (string, error) {
 }
 
 func (store Store) credentialMetadata() (map[string]SlotMetadata, error) {
+	return store.credentialMetadataWithValues(true)
+}
+
+func (store Store) credentialMetadataWithValues(requireValues bool) (map[string]SlotMetadata, error) {
 	installation, err := store.LoadInstallation()
 	if err != nil {
 		return nil, err
 	}
-	result := map[string]SlotMetadata{}
+	byRole := map[string][]SlotMetadata{}
 	entries, err := os.ReadDir(store.path("slots"))
 	if err != nil {
 		return nil, err
@@ -827,6 +885,26 @@ func (store Store) credentialMetadata() (map[string]SlotMetadata, error) {
 		versions, err := os.ReadDir(store.path("slots", entry.Name()))
 		if err != nil {
 			return nil, err
+		}
+		pairs := map[string]map[string]bool{}
+		for _, version := range versions {
+			extension := filepath.Ext(version.Name())
+			if version.IsDir() || (extension != ".json" && extension != ".secret") {
+				return nil, errors.New("E_SLOT_VERSION_FILE")
+			}
+			base := strings.TrimSuffix(version.Name(), extension)
+			if !identifierPattern.MatchString(base) || pairs[base][extension] {
+				return nil, errors.New("E_SLOT_VERSION_FILE")
+			}
+			if pairs[base] == nil {
+				pairs[base] = map[string]bool{}
+			}
+			pairs[base][extension] = true
+		}
+		for _, pair := range pairs {
+			if !pair[".json"] || (requireValues && !pair[".secret"]) {
+				return nil, errors.New("E_SLOT_VERSION_INCOMPLETE")
+			}
 		}
 		for _, version := range versions {
 			if strings.HasSuffix(version.Name(), ".json") {
@@ -848,15 +926,68 @@ func (store Store) credentialMetadata() (map[string]SlotMetadata, error) {
 				if !digestPattern.MatchString(metadata.CiphertextSHA256) {
 					return nil, errors.New("E_SLOT_CIPHERTEXT")
 				}
+				sealedDigestValid := true
+				if requireValues {
+					sealed, err := readPrivate(store.path("slots", entry.Name(), metadata.SlotVersion+".secret"))
+					sealedDigestValid = err == nil && SHA256(sealed) == metadata.CiphertextSHA256
+				}
+				if !sealedDigestValid || metadata.SlotID != entry.Name() || version.Name() != metadata.SlotVersion+".json" {
+					return nil, errors.New("E_SLOT_CIPHERTEXT")
+				}
 				if _, exists := credentialRoles[metadata.Role]; !exists {
 					return nil, errors.New("E_SLOT_ROLE")
 				}
-				if result[metadata.Role].Role != "" {
-					return nil, errors.New("E_SLOT_ROLE_ALIAS")
-				}
-				result[metadata.Role] = metadata
+				byRole[metadata.Role] = append(byRole[metadata.Role], metadata)
 			}
 		}
+	}
+	result := map[string]SlotMetadata{}
+	for role, versions := range byRole {
+		identities := map[string]SlotMetadata{}
+		referenced := map[string]int{}
+		for _, metadata := range versions {
+			identity := metadata.SlotID + ":" + metadata.SlotVersion
+			if _, exists := identities[identity]; exists {
+				return nil, errors.New("E_SLOT_VERSION_ALIAS")
+			}
+			identities[identity] = metadata
+		}
+		for _, metadata := range versions {
+			if metadata.SupersedesSlotID == "" && metadata.SupersedesVersion == "" {
+				continue
+			}
+			if metadata.SupersedesSlotID == "" || metadata.SupersedesVersion == "" {
+				return nil, errors.New("E_SLOT_SUPERSESSION")
+			}
+			previous := metadata.SupersedesSlotID + ":" + metadata.SupersedesVersion
+			if _, exists := identities[previous]; !exists || referenced[previous] != 0 {
+				return nil, errors.New("E_SLOT_SUPERSESSION")
+			}
+			referenced[previous]++
+		}
+		var heads []SlotMetadata
+		for identity, metadata := range identities {
+			if referenced[identity] == 0 {
+				heads = append(heads, metadata)
+			}
+		}
+		if len(heads) != 1 {
+			return nil, errors.New("E_SLOT_SUPERSESSION")
+		}
+		current := heads[0]
+		seen := map[string]struct{}{}
+		for current.SupersedesSlotID != "" {
+			identity := current.SlotID + ":" + current.SlotVersion
+			if _, exists := seen[identity]; exists {
+				return nil, errors.New("E_SLOT_SUPERSESSION")
+			}
+			seen[identity] = struct{}{}
+			current = identities[current.SupersedesSlotID+":"+current.SupersedesVersion]
+		}
+		if len(seen)+1 != len(versions) {
+			return nil, errors.New("E_SLOT_SUPERSESSION")
+		}
+		result[role] = heads[0]
 	}
 	return result, nil
 }

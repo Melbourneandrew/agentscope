@@ -30,7 +30,20 @@ func TestUIDProcessSetContainsImmediateDetachedChild(t *testing.T) {
 	if uidProcessesPresent(uid) {
 		t.Fatal("test uid already active")
 	}
-	helper := exec.Command(os.Args[0], "-test.run=TestUIDProcessSetContainsImmediateDetachedChild")
+	helperRoot, err := os.MkdirTemp("/tmp", "agentscope-uid-helper-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(helperRoot)
+	if err := os.Chmod(helperRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	helperPath := filepath.Join(helperRoot, "control.test")
+	helperData, err := os.ReadFile(os.Args[0])
+	if err != nil || os.WriteFile(helperPath, helperData, 0o755) != nil {
+		t.Fatal("copying detached helper into uid-readable root")
+	}
+	helper := exec.Command(helperPath, "-test.run=TestUIDProcessSetContainsImmediateDetachedChild")
 	helper.Env = append(os.Environ(), "AGENTSCOPE_UID_DETACH_HELPER=1")
 	configureProcessGroup(helper)
 	configureExecutionCredential(helper, uid)

@@ -25,11 +25,14 @@ type StateObservation struct {
 func (observation StateObservation) Digests() (string, string, error) {
 	copy := observation
 	copy.ObservedAt = time.Time{}
+	copy.Surfaces, _ = canonicalizeForComparison(observation.Surfaces).(map[string]any)
+	copy.IdentitySet = append([]string{}, observation.IdentitySet...)
+	sort.Strings(copy.IdentitySet)
 	data, err := json.Marshal(copy)
 	if err != nil {
 		return "", "", err
 	}
-	identities, err := json.Marshal(observation.IdentitySet)
+	identities, err := json.Marshal(copy.IdentitySet)
 	if err != nil {
 		return "", "", err
 	}
@@ -53,17 +56,71 @@ type cloudflareEnvelope struct {
 	ResultInfo json.RawMessage `json:"result_info,omitempty"`
 }
 
+type cloudflareSurfaceRequest struct {
+	path      string
+	paginated bool
+}
+
+func fetchCloudflareSurface(ctx context.Context, client *http.Client, credential []byte, surface cloudflareSurfaceRequest) (any, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.cloudflare.com"+surface.path, nil)
+	if err != nil {
+		return nil, errors.New("E_OBSERVER_REQUEST")
+	}
+	request.Header.Set("Authorization", "Bearer "+string(credential))
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, errors.New("E_OBSERVER_UNAVAILABLE")
+	}
+	if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != "api.cloudflare.com") {
+		response.Body.Close()
+		return nil, errors.New("E_OBSERVER_ORIGIN")
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+	response.Body.Close()
+	if readErr != nil || len(body) > 1<<20 {
+		return nil, errors.New("E_OBSERVER_OUTPUT")
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return map[string]any{"absent": true}, nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, errors.New("E_OBSERVER_FAILURE")
+	}
+	var envelope cloudflareEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil || decoder.Decode(&struct{}{}) != io.EOF || !envelope.Success || len(envelope.Result) == 0 {
+		return nil, errors.New("E_OBSERVER_ENVELOPE")
+	}
+	if surface.paginated && (len(envelope.ResultInfo) == 0 || string(envelope.ResultInfo) == "null") {
+		return nil, errors.New("E_OBSERVER_PAGINATION")
+	}
+	if len(envelope.ResultInfo) > 0 && string(envelope.ResultInfo) != "null" {
+		var page struct {
+			Page       int `json:"page"`
+			TotalPages int `json:"total_pages"`
+		}
+		if err := json.Unmarshal(envelope.ResultInfo, &page); err != nil || (surface.paginated && (page.Page != 1 || page.TotalPages != 1)) || page.TotalPages > 1 {
+			return nil, errors.New("E_OBSERVER_PAGINATION")
+		}
+	}
+	var value any
+	decoder = json.NewDecoder(bytes.NewReader(envelope.Result))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, errors.New("E_OBSERVER_SCHEMA")
+	}
+	return canonicalizeJSON(value), nil
+}
+
 func (observer CloudflareObserver) Observe(ctx context.Context, credential []byte, now time.Time) (StateObservation, error) {
 	if !identifierPattern.MatchString(observer.AccountID) || len(credential) == 0 {
 		return StateObservation{}, errors.New("E_OBSERVER_IDENTITY")
 	}
 	base := "/client/v4/accounts/" + observer.AccountID
 	script := base + "/workers/scripts/" + WorkerName
-	type surfaceRequest struct {
-		path      string
-		paginated bool
-	}
-	paths := map[string]surfaceRequest{
+	paths := map[string]cloudflareSurfaceRequest{
 		"accountWorkers":    {base + "/workers/scripts", false},
 		"accountWorkersDev": {base + "/workers/subdomain", false},
 		"durableObjects":    {base + "/workers/durable_objects/namespaces?page=1&per_page=1000", true},
@@ -85,58 +142,45 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("E_OBSERVER_REDIRECT") }
 	surfaces := make(map[string]any, len(paths))
 	for name, surface := range paths {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.cloudflare.com"+surface.path, nil)
+		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, surface)
 		if err != nil {
-			return StateObservation{}, errors.New("E_OBSERVER_REQUEST")
+			return StateObservation{}, err
 		}
-		request.Header.Set("Authorization", "Bearer "+string(credential))
-		request.Header.Set("Accept", "application/json")
-		response, err := safeClient.Do(request)
-		if err != nil {
-			return StateObservation{}, errors.New("E_OBSERVER_UNAVAILABLE")
+		surfaces[name] = value
+	}
+	unrelated := map[string]any{}
+	for _, worker := range objectSlice(surfaces["accountWorkers"]) {
+		name := fmt.Sprint(worker["id"])
+		if name == "<nil>" || name == "" {
+			name = fmt.Sprint(worker["name"])
 		}
-		if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != "api.cloudflare.com") {
-			response.Body.Close()
-			return StateObservation{}, errors.New("E_OBSERVER_ORIGIN")
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
-		response.Body.Close()
-		if readErr != nil || len(body) > 1<<20 {
-			return StateObservation{}, errors.New("E_OBSERVER_OUTPUT")
-		}
-		if response.StatusCode == http.StatusNotFound {
-			surfaces[name] = map[string]any{"absent": true}
+		if name == WorkerName {
 			continue
 		}
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return StateObservation{}, errors.New("E_OBSERVER_FAILURE")
+		if !identifierPattern.MatchString(name) {
+			return StateObservation{}, errors.New("E_OBSERVER_WORKER_IDENTITY")
 		}
-		var envelope cloudflareEnvelope
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&envelope); err != nil || decoder.Decode(&struct{}{}) != io.EOF || !envelope.Success || len(envelope.Result) == 0 {
-			return StateObservation{}, errors.New("E_OBSERVER_ENVELOPE")
-		}
-		if surface.paginated && (len(envelope.ResultInfo) == 0 || string(envelope.ResultInfo) == "null") {
-			return StateObservation{}, errors.New("E_OBSERVER_PAGINATION")
-		}
-		if len(envelope.ResultInfo) > 0 && string(envelope.ResultInfo) != "null" {
-			var page struct {
-				Page       int `json:"page"`
-				TotalPages int `json:"total_pages"`
+		workerBase := base + "/workers/scripts/" + name
+		workerSurfaces := map[string]any{}
+		for surfaceName, surface := range map[string]cloudflareSurfaceRequest{
+			"deployments": {workerBase + "/deployments", false},
+			"schedules":   {workerBase + "/schedules", false},
+			"secrets":     {workerBase + "/secrets", false},
+			"script":      {workerBase + "/script-settings", false},
+			"settings":    {workerBase + "/settings", false},
+			"tails":       {workerBase + "/tails", false},
+			"workersDev":  {workerBase + "/subdomain", false},
+			"versions":    {base + "/workers/workers/" + name + "/versions?page=1&per_page=1000", true},
+		} {
+			value, err := fetchCloudflareSurface(ctx, &safeClient, credential, surface)
+			if err != nil {
+				return StateObservation{}, err
 			}
-			if err := json.Unmarshal(envelope.ResultInfo, &page); err != nil || (surface.paginated && (page.Page != 1 || page.TotalPages != 1)) || page.TotalPages > 1 {
-				return StateObservation{}, errors.New("E_OBSERVER_PAGINATION")
-			}
+			workerSurfaces[surfaceName] = value
 		}
-		var value any
-		decoder = json.NewDecoder(bytes.NewReader(envelope.Result))
-		decoder.UseNumber()
-		if err := decoder.Decode(&value); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-			return StateObservation{}, errors.New("E_OBSERVER_SCHEMA")
-		}
-		surfaces[name] = canonicalizeJSON(value)
+		unrelated[name] = workerSurfaces
 	}
+	surfaces["unrelatedWorkers"] = unrelated
 	identities := []string{}
 	collectIdentities(surfaces, "", &identities)
 	sort.Strings(identities)
@@ -204,6 +248,10 @@ func ValidateTerminalObservation(plan Plan, state StateObservation) error {
 		}
 		return nil
 	}
+	return validateDeploymentProfile(plan, state, true)
+}
+
+func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets bool) error {
 	if !workerPresent(state.Surfaces["accountWorkers"]) || !ownedDurableObjectPresent(state.Surfaces["durableObjects"], plan) || ownedDomainPresent(state.Surfaces["scriptDomains"]) {
 		return errors.New("E_DEPLOYMENT_ACCOUNT_RESOURCE_STATE")
 	}
@@ -212,18 +260,25 @@ func ValidateTerminalObservation(plan Plan, state StateObservation) error {
 			return errors.New("E_DEPLOYMENT_STATE_ABSENT")
 		}
 	}
-	for _, required := range []string{"HETZNER_TOKEN", "CRABBOX_SHARED_TOKEN", "CRABBOX_ADMIN_TOKEN"} {
-		if !namedObjectPresent(state.Surfaces["scriptSecrets"], "name", required) {
-			return errors.New("E_DEPLOYMENT_SECRET_STATE")
+	secretNames := namedObjectValues(state.Surfaces["scriptSecrets"], "name")
+	if requireSecrets && !sameStringSet(secretNames, canonicalSecrets) {
+		return errors.New("E_DEPLOYMENT_SECRET_STATE")
+	}
+	if !requireSecrets && len(secretNames) != 0 {
+		for _, required := range canonicalSecrets {
+			if !namedObjectPresent(state.Surfaces["scriptSecrets"], "name", required) {
+				return errors.New("E_DEPLOYMENT_SECRET_STATE")
+			}
 		}
 	}
-	if !objectHasKeyValue(state.Surfaces["scriptSchedules"], "cron", "*/15 * * * *") || !bindingPresent(state.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", plan.DurableObjectNamespaceID) || !mapBool(state.Surfaces["scriptWorkersDev"], "enabled") {
+	schedules := objectSlice(state.Surfaces["scriptSchedules"])
+	if len(schedules) != 1 || fmt.Sprint(schedules[0]["cron"]) != "*/15 * * * *" || !bindingPresent(state.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", plan.DurableObjectNamespaceID) || !mapBool(state.Surfaces["scriptWorkersDev"], "enabled") || mapBool(state.Surfaces["scriptWorkersDev"], "previews_enabled") {
 		return errors.New("E_DEPLOYMENT_PROFILE_STATE")
 	}
 	if !collectionEmpty(state.Surfaces["scriptTails"]) || unsafeDiagnosticSettings(state.Surfaces["scriptSettings"]) {
 		return errors.New("E_DEPLOYMENT_DIAGNOSTIC_MUTATION")
 	}
-	for key, expected := range map[string]string{
+	expectedVariables := map[string]string{
 		"AGENTSCOPE_CRABBOX_ENVIRONMENT_ID":   plan.EnvironmentID,
 		"CRABBOX_DEFAULT_ORG":                 "agentscope-development",
 		"CRABBOX_MAX_ACTIVE_LEASES":           "4",
@@ -234,87 +289,194 @@ func ValidateTerminalObservation(plan Plan, state StateObservation) error {
 		"CRABBOX_MAX_MONTHLY_USD_PER_OWNER":   "25",
 		"CRABBOX_RUN_RETENTION_DAYS":          "30",
 		"CRABBOX_SHARED_OWNER":                "agentscope-fleet-control",
-	} {
+	}
+	for key, expected := range expectedVariables {
 		if !plainTextBindingPresent(state.Surfaces["workerSettings"], key, expected) {
 			return errors.New("E_DEPLOYMENT_VARIABLE_STATE")
+		}
+	}
+	allowedBindings := map[string]struct{}{"FLEET": {}, "CF_VERSION_METADATA": {}}
+	for key := range expectedVariables {
+		allowedBindings[key] = struct{}{}
+	}
+	for _, secret := range canonicalSecrets {
+		allowedBindings[secret] = struct{}{}
+	}
+	settings, ok := state.Surfaces["workerSettings"].(map[string]any)
+	if !ok {
+		return errors.New("E_DEPLOYMENT_SETTINGS_SCHEMA")
+	}
+	if fmt.Sprint(settings["compatibility_date"]) != "2026-04-30" || !sameStringSet(stringSlice(settings["compatibility_flags"]), []string{"nodejs_compat"}) || cacheEnabled(settings["cache_options"]) {
+		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
+	}
+	if tag := fmt.Sprint(settings["migration_tag"]); tag != "v1" && tag != "<nil>" {
+		return errors.New("E_DEPLOYMENT_MIGRATION_STATE")
+	}
+	for _, binding := range objectSlice(settings["bindings"]) {
+		name := fmt.Sprint(binding["name"])
+		if _, allowed := allowedBindings[name]; !allowed {
+			return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+		}
+	}
+	scriptSettings, ok := state.Surfaces["scriptSettings"].(map[string]any)
+	if !ok {
+		return errors.New("E_DEPLOYMENT_SCRIPT_SETTINGS")
+	}
+	for key := range scriptSettings {
+		if key != "logpush" && key != "observability" && key != "tags" && key != "tail_consumers" {
+			return errors.New("E_DEPLOYMENT_EXTRA_SCRIPT_SETTING")
 		}
 	}
 	return nil
 }
 
 func ValidateActionTransition(plan Plan, operation Operation, before, after StateObservation) error {
-	beforeUnrelated, err := unrelatedProjectionDigest(before, plan, operation.Action)
-	if err != nil {
-		return err
-	}
-	afterUnrelated, err := unrelatedProjectionDigest(after, plan, operation.Action)
-	if err != nil || beforeUnrelated != afterUnrelated {
-		return errors.New("E_UNRELATED_RESOURCE_DRIFT")
+	_, err := actionTransitionIdentities(plan, operation, before, after)
+	return err
+}
+
+func actionTransitionIdentities(plan Plan, operation Operation, before, after StateObservation) ([]string, error) {
+	allowed := map[string]struct{}{}
+	allow := func(names ...string) {
+		for _, name := range names {
+			allowed[name] = struct{}{}
+		}
 	}
 	switch operation.Action {
 	case "worker.secret.put":
+		allow("scriptSecrets", "scriptDeployments", "scriptVersions")
+	case "worker.secret.delete":
+		allow("scriptSecrets", "scriptDeployments", "scriptVersions")
+	case "worker.deploy":
+		allow("accountWorkers", "durableObjects", "scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions")
+	case "worker.rollback":
+		allow("scriptDeployments")
+	case "worker.schedule.delete":
+		allow("scriptSchedules")
+	case "worker.scriptWorkersDev.disable":
+		allow("scriptWorkersDev")
+	case "worker.terminalArtifact.deploy":
+		allow("accountWorkers", "durableObjects", "scriptDeployments", "scriptSchedules", "scriptSettings", "workerSettings", "scriptWorkersDev", "scriptVersions")
+	case "worker.version.delete":
+		allow("scriptVersions")
+	case "worker.delete":
+		allow("accountWorkers", "durableObjects", "scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions")
+	case "account.workersDev.enable":
+		allow("accountWorkersDev")
+	default:
+		return nil, errors.New("E_ACTION_TRANSITION_UNKNOWN")
+	}
+	if err := requireUnchangedSurfaces(before, after, allowed); err != nil {
+		return nil, err
+	}
+
+	switch operation.Action {
+	case "worker.secret.put":
 		if operation.SecretName == nil || !namedObjectPresent(after.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
-			return errors.New("E_SECRET_WRITE_NOT_OBSERVED")
+			return nil, errors.New("E_SECRET_WRITE_NOT_OBSERVED")
 		}
-		if namedObjectPresent(before.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
-			return errors.New("E_WRITE_ONLY_ROTATION_UNCERTAIN")
+		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
+		if afterDeployment == "" || afterDeployment == beforeDeployment {
+			return nil, errors.New("E_SECRET_DEPLOYMENT_IDENTITY")
 		}
+		return []string{"deployment=" + afterDeployment, "secret=" + *operation.SecretName}, nil
 	case "worker.secret.delete":
 		if operation.SecretName == nil || namedObjectPresent(after.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
-			return errors.New("E_SECRET_DELETE_NOT_OBSERVED")
+			return nil, errors.New("E_SECRET_DELETE_NOT_OBSERVED")
 		}
+		return []string{"secret-absent=" + *operation.SecretName}, nil
 	case "worker.deploy":
-		if !workerPresent(after.Surfaces["accountWorkers"]) || surfaceAbsent(after.Surfaces["scriptDeployments"]) {
-			return errors.New("E_DEPLOY_NOT_OBSERVED")
+		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
+		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || operation.ExpectedPreviousVersionID == nil || (*operation.ExpectedPreviousVersionID != "absent" && *operation.ExpectedPreviousVersionID != beforeDeployment) {
+			return nil, errors.New("E_DEPLOY_NOT_OBSERVED")
 		}
+		if err := validateDeploymentProfile(plan, after, false); err != nil {
+			return nil, err
+		}
+		return []string{"deployment=" + afterDeployment}, nil
 	case "worker.rollback":
-		if operation.VersionID == nil || !containsIdentityOnSurface(after.Surfaces["scriptDeployments"], *operation.VersionID) {
-			return errors.New("E_ROLLBACK_NOT_OBSERVED")
+		if operation.VersionID == nil || !containsIdentityOnSurface(after.Surfaces["scriptDeployments"], *operation.VersionID) || currentDeploymentID(after.Surfaces["scriptDeployments"]) == currentDeploymentID(before.Surfaces["scriptDeployments"]) {
+			return nil, errors.New("E_ROLLBACK_NOT_OBSERVED")
 		}
+		return []string{"rollback-version=" + *operation.VersionID}, nil
 	case "worker.schedule.delete":
 		if !collectionEmpty(after.Surfaces["scriptSchedules"]) {
-			return errors.New("E_SCHEDULE_DELETE_NOT_OBSERVED")
+			return nil, errors.New("E_SCHEDULE_DELETE_NOT_OBSERVED")
 		}
+		return []string{"schedule=absent"}, nil
 	case "worker.scriptWorkersDev.disable":
 		if !surfaceAbsent(after.Surfaces["scriptWorkersDev"]) && mapBool(after.Surfaces["scriptWorkersDev"], "enabled") {
-			return errors.New("E_WORKERS_DEV_DISABLE_NOT_OBSERVED")
+			return nil, errors.New("E_WORKERS_DEV_DISABLE_NOT_OBSERVED")
 		}
+		return []string{"script-workers-dev=disabled"}, nil
 	case "worker.terminalArtifact.deploy":
-		if !workerPresent(after.Surfaces["accountWorkers"]) || bindingPresent(after.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", plan.DurableObjectNamespaceID) {
-			return errors.New("E_TERMINAL_DEPLOY_NOT_OBSERVED")
+		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
+		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || bindingPresent(after.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", plan.DurableObjectNamespaceID) {
+			return nil, errors.New("E_TERMINAL_DEPLOY_NOT_OBSERVED")
 		}
+		return []string{"terminal-deployment=" + afterDeployment}, nil
 	case "worker.version.delete":
 		if operation.VersionID == nil || containsIdentityOnSurface(after.Surfaces["scriptVersions"], *operation.VersionID) {
-			return errors.New("E_VERSION_DELETE_NOT_OBSERVED")
+			return nil, errors.New("E_VERSION_DELETE_NOT_OBSERVED")
 		}
+		return []string{"version-absent=" + *operation.VersionID}, nil
 	case "worker.delete":
 		if workerPresent(after.Surfaces["accountWorkers"]) {
-			return errors.New("E_WORKER_DELETE_NOT_OBSERVED")
+			return nil, errors.New("E_WORKER_DELETE_NOT_OBSERVED")
 		}
+		return []string{"worker-absent=" + WorkerName}, nil
 	case "account.workersDev.enable":
 		if operation.Subdomain == nil || mapString(after.Surfaces["accountWorkersDev"], "subdomain") != *operation.Subdomain {
-			return errors.New("E_ACCOUNT_WORKERS_DEV_NOT_OBSERVED")
+			return nil, errors.New("E_ACCOUNT_WORKERS_DEV_NOT_OBSERVED")
 		}
-	default:
-		return errors.New("E_ACTION_TRANSITION_UNKNOWN")
+		return []string{"account-subdomain=" + *operation.Subdomain}, nil
+	}
+	return nil, errors.New("E_ACTION_TRANSITION_UNKNOWN")
+}
+
+func requireUnchangedSurfaces(before, after StateObservation, allowed map[string]struct{}) error {
+	keys := map[string]struct{}{}
+	for key := range before.Surfaces {
+		keys[key] = struct{}{}
+	}
+	for key := range after.Surfaces {
+		keys[key] = struct{}{}
+	}
+	for key := range keys {
+		if _, mutable := allowed[key]; mutable {
+			continue
+		}
+		beforeData, beforeErr := json.Marshal(canonicalizeForComparison(before.Surfaces[key]))
+		afterData, afterErr := json.Marshal(canonicalizeForComparison(after.Surfaces[key]))
+		if beforeErr != nil || afterErr != nil || !bytes.Equal(beforeData, afterData) {
+			return errors.New("E_UNRELATED_RESOURCE_DRIFT")
+		}
 	}
 	return nil
 }
 
-func unrelatedProjectionDigest(state StateObservation, plan Plan, action string) (string, error) {
-	projection := map[string]any{
-		"accountWorkers": filterObjects(state.Surfaces["accountWorkers"], func(item map[string]any) bool { return objectMatchesWorker(item) }),
-		"durableObjects": filterObjects(state.Surfaces["durableObjects"], func(item map[string]any) bool { return objectMatchesDurableObject(item, plan) }),
-		"scriptDomains":  filterObjects(state.Surfaces["scriptDomains"], objectMatchesWorkerDomain),
+func canonicalizeForComparison(value any) any {
+	switch item := value.(type) {
+	case []any:
+		values := make([]any, len(item))
+		for index := range item {
+			values[index] = canonicalizeForComparison(item[index])
+		}
+		sort.Slice(values, func(left, right int) bool {
+			leftData, _ := json.Marshal(values[left])
+			rightData, _ := json.Marshal(values[right])
+			return bytes.Compare(leftData, rightData) < 0
+		})
+		return values
+	case map[string]any:
+		copy := make(map[string]any, len(item))
+		for key, child := range item {
+			copy[key] = canonicalizeForComparison(child)
+		}
+		return copy
+	default:
+		return value
 	}
-	if action != "account.workersDev.enable" {
-		projection["accountWorkersDev"] = state.Surfaces["accountWorkersDev"]
-	}
-	data, err := json.Marshal(canonicalizeJSON(projection))
-	if err != nil {
-		return "", err
-	}
-	return SHA256(data), nil
 }
 
 func objectSlice(value any) []map[string]any {
@@ -395,6 +557,35 @@ func namedObjectPresent(value any, key, expected string) bool {
 	return false
 }
 
+func namedObjectValues(value any, key string) []string {
+	values := []string{}
+	for _, item := range objectSlice(value) {
+		if name, ok := item[key].(string); ok {
+			values = append(values, name)
+		}
+	}
+	return values
+}
+
+func sameStringSet(actual, expected []string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	counts := map[string]int{}
+	for _, value := range actual {
+		counts[value]++
+	}
+	for _, value := range expected {
+		counts[value]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func objectHasKeyValue(value any, key, expected string) bool {
 	return namedObjectPresent(value, key, expected)
 }
@@ -412,6 +603,31 @@ func mapString(value any, key string) string {
 	}
 	result, _ := item[key].(string)
 	return result
+}
+
+func stringSlice(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil
+		}
+		result = append(result, text)
+	}
+	return result
+}
+
+func cacheEnabled(value any) bool {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, _ := item["enabled"].(bool)
+	return enabled
 }
 
 func bindingPresent(value any, name, className, namespaceID string) bool {

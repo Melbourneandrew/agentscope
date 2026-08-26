@@ -161,26 +161,38 @@ func terminalContractSHA256(plan Plan) string {
 func validateSequence(plan Plan, installation Installation) error {
 	switch plan.Kind {
 	case "deploy":
-		expectedRollbacks := 1
-		if plan.CurrentWorkerVersionID == "absent" {
-			expectedRollbacks = 0
+		initial := plan.CurrentWorkerVersionID == "absent"
+		expectedOperations, expectedRollbacks := 1, 1
+		if initial {
+			expectedOperations, expectedRollbacks = 4, 0
 		}
-		if len(plan.Operations) != 4 || len(plan.RollbackActions) != expectedRollbacks {
+		if len(plan.Operations) != expectedOperations || len(plan.RollbackActions) != expectedRollbacks {
 			return errors.New("E_DEPLOY_SEQUENCE")
 		}
-		for index, secret := range canonicalSecrets {
-			if err := validateSecretOperation(plan.Operations[index], "worker.secret.put", secret, plan); err != nil {
-				return err
-			}
-		}
-		deploy := plan.Operations[3]
+		deploy := plan.Operations[0]
 		if deploy.Action != "worker.deploy" || deploy.Target != WorkerName || deploy.ProfileSHA256 == nil || *deploy.ProfileSHA256 != plan.ProfileSHA256 || deploy.ExpectedPreviousVersionID == nil || *deploy.ExpectedPreviousVersionID != plan.CurrentWorkerVersionID || deploy.RequestID == "" || hasUnexpectedFields(deploy, "profile") {
 			return errors.New("E_DEPLOY_OPERATION")
+		}
+		if initial {
+			for index, secret := range canonicalSecrets {
+				if err := validateSecretOperation(plan.Operations[index+1], "worker.secret.put", secret, plan); err != nil {
+					return err
+				}
+			}
 		}
 		if expectedRollbacks == 1 {
 			rollback := plan.RollbackActions[0]
 			if rollback.Action != "worker.rollback" || rollback.Target != WorkerName || rollback.VersionID == nil || rollback.CompatibleMigrationTag == nil || *rollback.CompatibleMigrationTag != plan.CurrentMigrationTag || hasUnexpectedFields(rollback, "rollback") {
 				return errors.New("E_ROLLBACK_OPERATION")
+			}
+		}
+	case "rotate-secrets":
+		if plan.CurrentWorkerVersionID == "absent" || len(plan.Operations) != len(canonicalSecrets) || len(plan.RollbackActions) != 0 {
+			return errors.New("E_ROTATE_SEQUENCE")
+		}
+		for index, secret := range canonicalSecrets {
+			if err := validateSecretOperation(plan.Operations[index], "worker.secret.put", secret, plan); err != nil {
+				return err
 			}
 		}
 	case "rollback":

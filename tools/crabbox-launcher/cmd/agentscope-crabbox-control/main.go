@@ -87,6 +87,8 @@ func install(args []string) {
 	accountID := flags.String("account-id", "", "approved Cloudflare account identity")
 	projectID := flags.String("hetzner-project-id", "", "dedicated Hetzner project identity")
 	executorUID := flags.Int("executor-uid", 0, "dedicated no-login execution principal uid")
+	launcherSourceCommit := flags.String("launcher-source-commit", "", "authenticated launcher source commit")
+	launcherSourceTree := flags.String("launcher-source-tree", "", "authenticated launcher source tree")
 	admission := flags.String("admission", "", "canonical admission file")
 	manifest := flags.String("permission-manifest", "", "canonical permission manifest")
 	liveProfile := flags.String("live-profile", "", "canonical live profile")
@@ -142,7 +144,7 @@ func install(args []string) {
 		fail(errorCode(err))
 	}
 	defer zero(passphrase)
-	installed, err := control.Install(control.InstallInput{Root: stateRoot(), ExecutorUID: *executorUID, InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: *runtimeClosureSHA256, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
+	installed, err := control.Install(control.InstallInput{Root: stateRoot(), ExecutorUID: *executorUID, InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, LauncherSourceCommit: *launcherSourceCommit, LauncherSourceTree: *launcherSourceTree, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: *runtimeClosureSHA256, ToolchainIdentity: toolchainIdentity, OperatorPassphrase: passphrase})
 	if err != nil {
 		fail(errorCode(err))
 	}
@@ -351,6 +353,9 @@ func enrollSecret(args []string) {
 }
 
 func applyPlan(args []string, retirement bool) {
+	startedAt := time.Now().UTC()
+	commandContext, cancel := context.WithDeadline(context.Background(), startedAt.Add(10*time.Minute))
+	defer cancel()
 	requireRoot()
 	flags := flag.NewFlagSet("apply", flag.ContinueOnError)
 	planPath := flags.String("plan", "", "exact plan")
@@ -397,7 +402,10 @@ func applyPlan(args []string, retirement bool) {
 	executor := control.CommandExecutor{AccountID: installation.AccountID, ExecutorUID: installation.ExecutorUID, ProtectedRoot: filepath.Join(stateRoot(), "toolchain"), Installation: installation, ProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.live.jsonc"), ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.terminal.jsonc"), TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: filepath.Join(stateRoot(), "policy", "terminal-worker.agentscope.mjs"), TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
 	input := control.ApplyInput{PlanData: values[0], AuthorizationData: values[1], ObservationData: values[2], AttestationData: values[3], RetirementEvidenceData: retirementEvidence, Now: time.Now().UTC()}
 	observer := control.CloudflareObserver{AccountID: installation.AccountID}
-	if err := control.NewStore(stateRoot()).Apply(context.Background(), input, executor, observer); err != nil {
+	if err := commandContext.Err(); err != nil {
+		fail("E_COMMAND_DEADLINE")
+	}
+	if err := control.NewStore(stateRoot()).Apply(commandContext, input, executor, observer); err != nil {
 		fail(errorCode(err))
 	}
 	emit(map[string]any{"schemaVersion": 1, "applied": true, "planSha256": control.SHA256(values[0]), "secretValuesPresent": false})

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,10 @@ type Executor interface {
 	Invoke(context.Context, Invocation) (MutationReceipt, error)
 }
 
+type CredentialValidator interface {
+	ValidateCoordinatorCredentials(context.Context, string, map[string][]byte) (MutationReceipt, error)
+}
+
 type ApplyInput struct {
 	PlanData               []byte
 	AuthorizationData      []byte
@@ -51,6 +56,9 @@ type ApplyInput struct {
 }
 
 func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executor, observer StateObserver) error {
+	if err := ctx.Err(); err != nil {
+		return errors.New("E_AUTHORITY_DEADLINE")
+	}
 	clock := input.Clock
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
@@ -59,7 +67,7 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err != nil {
 		return err
 	}
-	credentialSetSHA256, err := store.CredentialSetSHA256()
+	credentialSetSHA256, err := store.credentialBindingSHA256()
 	if err != nil {
 		return err
 	}
@@ -74,6 +82,16 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if observation.ObservationID != plan.ObservationID {
 		return errors.New("E_OBSERVATION_ID")
 	}
+	authorityDeadline := plan.ExpiresAt
+	if observation.ExpiresAt.Before(authorityDeadline) {
+		authorityDeadline = observation.ExpiresAt
+	}
+	authorityLifetime := authorityDeadline.Sub(input.Now)
+	if authorityLifetime <= 0 {
+		return errors.New("E_AUTHORITY_DEADLINE")
+	}
+	operationContext, cancel := context.WithTimeout(ctx, authorityLifetime)
+	defer cancel()
 	if store.IsFrozen() && plan.Kind != "retire" {
 		return errors.New("E_ACQUISITION_FROZEN")
 	}
@@ -100,6 +118,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err := store.ensureNoActiveMutation(); err != nil {
 		return err
 	}
+	if err := operationContext.Err(); err != nil {
+		return errors.New("E_AUTHORITY_DEADLINE")
+	}
 	previous, err := store.consumePlan(planDigest, input.Now)
 	if err != nil {
 		return err
@@ -114,6 +135,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 			_ = fence.Close()
 		}
 	}()
+	if err := operationContext.Err(); err != nil {
+		return errors.New("E_AUTHORITY_DEADLINE")
+	}
 	secrets, err := store.ResolveSecrets(plan)
 	if err != nil {
 		return err
@@ -129,12 +153,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		return err
 	}
 	defer zeroBytes(readCredential)
-	authorityDeadline := plan.ExpiresAt
-	if observation.ExpiresAt.Before(authorityDeadline) {
-		authorityDeadline = observation.ExpiresAt
+	if err := operationContext.Err(); err != nil {
+		return errors.New("E_AUTHORITY_DEADLINE")
 	}
-	operationContext, cancel := context.WithDeadline(ctx, authorityDeadline)
-	defer cancel()
 	currentState, err := observer.Observe(operationContext, readCredential, clock())
 	if err != nil {
 		return err
@@ -197,11 +218,11 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		if postTime.After(authorityDeadline) {
 			return errors.New("E_AUTHORITY_EXPIRED_DURING_APPLY")
 		}
-		postState, postDigest, postIdentityDigest, err := observeChangedState(operationContext, observer, readCredential, plan, operation, currentState, clock)
+		postState, postDigest, postIdentityDigest, observedIdentities, err := observeChangedState(operationContext, observer, readCredential, plan, operation, currentState, clock)
 		if err != nil {
 			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
 		}
-		receipt.ObservedResourceIdentities = append([]string{}, postState.IdentitySet...)
+		receipt.ObservedResourceIdentities = observedIdentities
 		receiptData, _ := json.Marshal(receipt)
 		completed := Event{SchemaVersion: SchemaVersion, Sequence: sequence + 1, PlanSHA256: planDigest, RequestID: operation.RequestID, State: "observed-committed", PreviousSHA256: previous, RecordedAt: postTime, DetailCode: "OK", StateSHA256: postDigest, IdentitySHA256: postIdentityDigest, ReceiptSHA256: SHA256(receiptData)}
 		previous, err = store.appendEvent(completed)
@@ -209,6 +230,34 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 			return err
 		}
 		currentState, currentDigest, currentIdentityDigest = postState, postDigest, postIdentityDigest
+	}
+	if len(secrets) != 0 {
+		validator, ok := executor.(CredentialValidator)
+		subdomain := mapString(currentState.Surfaces["accountWorkersDev"], "subdomain")
+		if !ok || subdomain == "" {
+			return errors.New("E_CREDENTIAL_FORWARD_VALIDATOR")
+		}
+		receipt, err := validator.ValidateCoordinatorCredentials(operationContext, subdomain, secrets)
+		if err != nil {
+			return fmt.Errorf("E_CREDENTIAL_FORWARD_CHECK: %w", err)
+		}
+		stableState, err := observer.Observe(operationContext, readCredential, clock())
+		if err != nil {
+			return err
+		}
+		stableDigest, stableIdentityDigest, err := stableState.Digests()
+		if err != nil || stableDigest != currentDigest || stableIdentityDigest != currentIdentityDigest {
+			return errors.New("E_CREDENTIAL_FORWARD_CHECK_DRIFT")
+		}
+		sequence, chain, err := store.nextSequence(planDigest)
+		if err != nil || chain != previous {
+			return errors.New("E_JOURNAL_CHAIN")
+		}
+		receiptData, _ := json.Marshal(receipt)
+		previous, err = store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planDigest, RequestID: "credential-forward-check", State: "credential-roles-validated", PreviousSHA256: previous, RecordedAt: clock(), DetailCode: "OK", StateSHA256: currentDigest, IdentitySHA256: currentIdentityDigest, ReceiptSHA256: SHA256(receiptData)})
+		if err != nil {
+			return err
+		}
 	}
 	terminalState, err := observer.Observe(operationContext, readCredential, clock())
 	if err != nil {
@@ -241,7 +290,7 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	return nil
 }
 
-func observeChangedState(ctx context.Context, observer StateObserver, credential []byte, plan Plan, operation Operation, previous StateObservation, clock func() time.Time) (StateObservation, string, string, error) {
+func observeChangedState(ctx context.Context, observer StateObserver, credential []byte, plan Plan, operation Operation, previous StateObservation, clock func() time.Time) (StateObservation, string, string, []string, error) {
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -249,27 +298,28 @@ func observeChangedState(ctx context.Context, observer StateObserver, credential
 	for {
 		state, err := observer.Observe(ctx, credential, clock())
 		if err != nil {
-			return StateObservation{}, "", "", err
+			return StateObservation{}, "", "", nil, err
 		}
 		digest, identityDigest, err := state.Digests()
 		if err != nil {
-			return StateObservation{}, "", "", err
+			return StateObservation{}, "", "", nil, err
 		}
 		previousDigest, _, digestErr := previous.Digests()
 		if digestErr != nil {
-			return StateObservation{}, "", "", digestErr
+			return StateObservation{}, "", "", nil, digestErr
 		}
 		if digest != previousDigest {
-			if err := ValidateActionTransition(plan, operation, previous, state); err != nil {
-				return StateObservation{}, "", "", err
+			identities, transitionErr := actionTransitionIdentities(plan, operation, previous, state)
+			if transitionErr != nil {
+				return StateObservation{}, "", "", nil, transitionErr
 			}
-			return state, digest, identityDigest, nil
+			return state, digest, identityDigest, identities, nil
 		}
 		select {
 		case <-ctx.Done():
-			return StateObservation{}, "", "", errors.New("E_STATE_OBSERVATION_DEADLINE")
+			return StateObservation{}, "", "", nil, errors.New("E_STATE_OBSERVATION_DEADLINE")
 		case <-deadline.C:
-			return StateObservation{}, "", "", errors.New("E_STATE_NOT_OBSERVED")
+			return StateObservation{}, "", "", nil, errors.New("E_STATE_NOT_OBSERVED")
 		case <-ticker.C:
 		}
 	}
@@ -301,7 +351,7 @@ type CommandExecutor struct {
 	skipRuntimeVerificationForTest bool
 }
 
-func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocation) (MutationReceipt, error) {
+func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocation) (receipt MutationReceipt, retErr error) {
 	if err := executor.verifyImmutableInputs(invocation.Action, invocation.Terminal); err != nil {
 		return MutationReceipt{}, err
 	}
@@ -332,7 +382,7 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 		"CI=1",
 		"HOME=" + executor.RuntimeHome,
 		"NO_COLOR=1",
-		"PATH=/usr/bin:/bin",
+		"PATH=" + filepath.Join(executor.ProtectedRoot, "node", "bin") + ":/usr/bin:/bin",
 		"XDG_CONFIG_HOME=" + filepath.Join(executor.RuntimeHome, "config"),
 		"CLOUDFLARE_API_TOKEN=" + string(invocation.DeploymentCredential),
 	}
@@ -386,7 +436,10 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 		}
 		killDescendants(pids, expectedUID)
 		if !executor.skipRuntimeVerificationForTest {
-			_ = terminateUIDProcessSet(executor.ExecutorUID, 2*time.Second)
+			if cleanupErr := terminateUIDProcessSet(executor.ExecutorUID, 2*time.Second); cleanupErr != nil {
+				receipt = MutationReceipt{}
+				retErr = errors.New("E_EXECUTOR_CLEANUP_UNCERTAIN")
+			}
 		}
 	}()
 	outputDone := make(chan error, 2)
@@ -456,6 +509,118 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 	}
 	return MutationReceipt{RequestID: invocation.RequestID, Action: invocation.Action, ResponseSHA256: SHA256([]byte("process-exit-success:" + invocation.RequestID))}, nil
 }
+
+func (executor CommandExecutor) ValidateCoordinatorCredentials(ctx context.Context, subdomain string, secrets map[string][]byte) (MutationReceipt, error) {
+	if !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(subdomain) || len(secrets) != len(canonicalSecrets) {
+		return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_INPUT")
+	}
+	origin := "https://" + WorkerName + "." + subdomain + ".workers.dev"
+	client := executor.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 20 * time.Second}
+	}
+	safeClient := *client
+	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("E_CREDENTIAL_FORWARD_REDIRECT") }
+	checks := []struct {
+		secret string
+		admin  *bool
+	}{
+		{secret: "CRABBOX_SHARED_TOKEN", admin: boolPointer(false)},
+		{secret: "CRABBOX_ADMIN_TOKEN", admin: boolPointer(true)},
+		{secret: "HETZNER_TOKEN", admin: nil},
+	}
+	identities := []string{}
+	for _, check := range checks {
+		value := secrets[check.secret]
+		if len(value) == 0 {
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_MISSING")
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/v1/whoami", nil)
+		if err != nil {
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_REQUEST")
+		}
+		request.Header.Set("Authorization", "Bearer "+string(value))
+		request.Header.Set("Accept", "application/json")
+		response, err := safeClient.Do(request)
+		if err != nil {
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_UNKNOWN")
+		}
+		if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != WorkerName+"."+subdomain+".workers.dev") {
+			response.Body.Close()
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_ORIGIN")
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<10)+1))
+		response.Body.Close()
+		if readErr != nil || len(body) > 16<<10 {
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_OUTPUT")
+		}
+		if check.admin == nil {
+			if response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden {
+				return MutationReceipt{}, errors.New("E_PROVIDER_CREDENTIAL_ACCEPTED_BY_COORDINATOR")
+			}
+			identities = append(identities, "hetzner=coordinator-rejected")
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_REJECTED")
+		}
+		var whoami struct {
+			Owner string `json:"owner"`
+			Org   string `json:"org"`
+			Auth  string `json:"auth"`
+			Admin bool   `json:"admin"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		if err := decoder.Decode(&whoami); err != nil || decoder.Decode(&struct{}{}) != io.EOF || whoami.Admin != *check.admin || whoami.Auth == "" || whoami.Owner == "" {
+			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_ROLE")
+		}
+		identities = append(identities, strings.ToLower(strings.TrimSuffix(check.secret, "_TOKEN"))+"-admin="+fmt.Sprint(whoami.Admin))
+	}
+	for _, secretName := range canonicalSecrets {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.hetzner.cloud/v1/servers?page=1&per_page=1", nil)
+		if err != nil {
+			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_REQUEST")
+		}
+		request.Header.Set("Authorization", "Bearer "+string(secrets[secretName]))
+		request.Header.Set("Accept", "application/json")
+		response, err := safeClient.Do(request)
+		if err != nil {
+			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_UNKNOWN")
+		}
+		if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != "api.hetzner.cloud") {
+			response.Body.Close()
+			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_ORIGIN")
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<10)+1))
+		response.Body.Close()
+		if readErr != nil || len(body) > 16<<10 {
+			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_OUTPUT")
+		}
+		if secretName != "HETZNER_TOKEN" {
+			if response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden {
+				return MutationReceipt{}, errors.New("E_COORDINATOR_CREDENTIAL_ACCEPTED_BY_PROVIDER")
+			}
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_REJECTED")
+		}
+		var provider struct {
+			Servers []json.RawMessage `json:"servers"`
+			Meta    json.RawMessage   `json:"meta"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		if err := decoder.Decode(&provider); err != nil || decoder.Decode(&struct{}{}) != io.EOF || provider.Servers == nil || len(provider.Meta) == 0 {
+			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_SCHEMA")
+		}
+		identities = append(identities, "hetzner=provider-read")
+	}
+	sort.Strings(identities)
+	data, _ := json.Marshal(identities)
+	return MutationReceipt{RequestID: "credential-forward-check", Action: "coordinator.credentials.validate", ResponseSHA256: SHA256(data), ObservedResourceIdentities: identities}, nil
+}
+
+func boolPointer(value bool) *bool { return &value }
 
 func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation Invocation) (MutationReceipt, error) {
 	if !identifierPattern.MatchString(executor.AccountID) {

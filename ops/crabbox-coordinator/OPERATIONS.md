@@ -98,7 +98,12 @@ The repository ships a standalone Go control binary and attended installer at
 `ops/crabbox-coordinator/install-protected-launcher.sh`. The production state
 root is `/Library/Application Support/Agentscope/CrabboxControl`. The installer
 requires root, builds with the admitted Go 1.26.5 distribution in a closed
-environment, installs an immutable executable plus five pairwise-distinct role
+environment from a `git archive` of the exact reviewed commit and tree, embeds
+those source identities in the executable, and verifies them again at the root
+installation boundary. Source, compiler, dependency installation, and the
+runtime closure remain in a root-owned private staging directory throughout the
+build so another process under the invoking user's identity cannot replace an
+input between verification and use. It installs an immutable executable plus five pairwise-distinct role
 roots, seals owner/recovery/billing signing keys under an attended operator passphrase,
 and binds the exact admission, permission manifest, profiles, official Node
 archive, pinned Crabbox commit, lock-installed Wrangler dependency closure, and
@@ -171,10 +176,15 @@ approved architecture amendment.
 The three Worker-bound values are resolved only after durable consumption and
 confidentially compared for pairwise distinction. They enter the protected
 Wrangler child only through its closed credential environment or secret stdin;
-they never enter argv, plan, journal, evidence, or output. The initial deploy is
-one exact sequence of three secret puts followed by one profile-bound compound
-Wrangler deploy. Schedule and script-level workers.dev are part of that admitted
-profile, not falsely journaled as separate successful requests.
+they never enter argv, plan, journal, evidence, or output. A fresh-account deploy
+first performs one profile-bound compound Wrangler deploy, then writes the three
+secrets, and finally proves the three roles through bounded non-mutating checks.
+This explicit creation step prevents Wrangler's secret command from silently
+creating an unplanned draft Worker. An ordinary existing-Worker deploy changes
+only the profile-bound deployment. Secret rotation is a separate exact plan that
+binds three newly versioned, predecessor-linked slots, performs the three writes,
+and repeats the role checks. Schedule and script-level workers.dev are part of
+the admitted profile, not falsely journaled as separate successful requests.
 
 The only admitted public binding is the exact script-level workers.dev binding.
 Do not create a zone route, Worker Domain, custom domain, Pages binding, Access
@@ -210,7 +220,7 @@ pairwise distinct. Equality or an indeterminate comparison fails before
 mutation and emits no value, reusable digest, or comparison artifact. The
 Hetzner token must belong to the dedicated fleet-only project.
 
-After applying the three secrets, exercise only bounded non-mutating forward
+After the initial or rotation plan applies the three secrets, exercise only bounded non-mutating forward
 checks: the shared token must authenticate its ordinary route and be rejected
 by an admin-only route; the admin token must succeed there; the provider token
 must work only through the admitted provider-read path. Ambiguous role behavior

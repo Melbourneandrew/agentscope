@@ -51,6 +51,11 @@ var (
 	environmentPattern = regexp.MustCompile(`^asgcf_[a-f0-9]{32}$`)
 )
 
+// BuildSourceCommit and BuildSourceTree are injected by the attended installer
+// while compiling from the immutable git archive it has just authenticated.
+var BuildSourceCommit = "development"
+var BuildSourceTree = "development"
+
 type Root struct {
 	Algorithm  string `json:"algorithm"`
 	Generation int    `json:"generation"`
@@ -76,6 +81,8 @@ type Installation struct {
 	TerminalProfileSHA256    string            `json:"terminalProfileSha256"`
 	TerminalEntryPointSHA256 string            `json:"terminalEntryPointSha256"`
 	LauncherSHA256           string            `json:"launcherSha256"`
+	LauncherSourceCommit     string            `json:"launcherSourceCommit"`
+	LauncherSourceTree       string            `json:"launcherSourceTree"`
 	RuntimeClosureSHA256     string            `json:"runtimeClosureSha256"`
 	RuntimeTreeSHA256        string            `json:"runtimeTreeSha256"`
 	NodeSHA256               string            `json:"nodeSha256"`
@@ -468,7 +475,7 @@ func ValidateInstallation(installation Installation) error {
 	if installation.SchemaVersion != SchemaVersion || !identifierPattern.MatchString(installation.InstallationID) || !environmentPattern.MatchString(installation.EnvironmentID) || !identifierPattern.MatchString(installation.AccountID) || installation.WorkerName != WorkerName || !identifierPattern.MatchString(installation.HetznerProjectID) || len(installation.CoordinatorCommit) != 40 || strings.Trim(installation.CoordinatorCommit, "0123456789abcdef") != "" {
 		return errors.New("E_INSTALLATION_IDENTITY")
 	}
-	if installation.CanonicalPolicy && installation.ExecutorUID <= 0 {
+	if installation.CanonicalPolicy && (installation.ExecutorUID <= 0 || len(installation.LauncherSourceCommit) != 40 || strings.Trim(installation.LauncherSourceCommit, "0123456789abcdef") != "" || len(installation.LauncherSourceTree) != 40 || strings.Trim(installation.LauncherSourceTree, "0123456789abcdef") != "") {
 		return errors.New("E_EXECUTOR_IDENTITY")
 	}
 	for _, digest := range []string{installation.AdmissionSHA256, installation.PermissionManifestSHA256, installation.LiveProfileSHA256, installation.TerminalProfileSHA256, installation.TerminalEntryPointSHA256, installation.LauncherSHA256, installation.RuntimeClosureSHA256, installation.RuntimeTreeSHA256, installation.NodeSHA256, installation.NPMCLISHA256, installation.WranglerCLISHA256} {

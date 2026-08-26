@@ -110,9 +110,9 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		bindings = append(bindings, map[string]any{"name": variable[0], "text": variable[1]})
 	}
 	surfaces := map[string]any{
-		"accountWorkers": []any{map[string]any{"id": WorkerName, "modified_on": fmt.Sprintf("step-%d", step)}}, "accountWorkersDev": map[string]any{"enabled": true},
+		"accountWorkers": []any{map[string]any{"id": WorkerName, "modified_on": "stable"}}, "accountWorkersDev": map[string]any{"enabled": true, "subdomain": "agentscope-dev"},
 		"durableObjects": []any{map[string]any{"id": "namespace-1", "script": WorkerName, "class": "FleetDurableObject"}}, "scriptDomains": []any{},
-		"scriptSettings": map[string]any{"logpush": false, "observability": map[string]any{"enabled": false}, "tail_consumers": []any{}}, "workerSettings": map[string]any{"bindings": bindings},
+		"scriptSettings": map[string]any{"logpush": false, "observability": map[string]any{"enabled": false}, "tail_consumers": []any{}}, "workerSettings": map[string]any{"bindings": bindings, "compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"}, "migration_tag": "v1", "cache_options": map[string]any{"enabled": false}},
 		"scriptDeployments": map[string]any{"id": fmt.Sprintf("version-%d", step)}, "scriptVersions": []any{map[string]any{"id": "version-current"}, map[string]any{"id": "version-old"}},
 		"scriptSchedules": []any{map[string]any{"cron": "*/15 * * * *"}}, "scriptSecrets": []any{}, "scriptWorkersDev": map[string]any{"enabled": true}, "scriptTails": []any{},
 	}
@@ -134,6 +134,7 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		}
 		surfaces["scriptSecrets"] = []any{map[string]any{"name": "CRABBOX_ADMIN_TOKEN"}, map[string]any{"name": "CRABBOX_SHARED_TOKEN"}, map[string]any{"name": "HETZNER_TOKEN"}}
 	} else {
+		surfaces["scriptDeployments"] = map[string]any{"id": "version-current"}
 		secrets := append([]string{}, canonicalSecrets...)
 		if step >= 3 {
 			secrets = secrets[1:]
@@ -158,6 +159,7 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		if step >= 6 {
 			surfaces["durableObjects"] = []any{}
 			surfaces["workerSettings"] = map[string]any{"bindings": []any{}}
+			surfaces["scriptDeployments"] = map[string]any{"id": "terminal-version"}
 		}
 		if step >= 7 {
 			surfaces["scriptVersions"] = []any{map[string]any{"id": "terminal-version"}}
@@ -176,14 +178,42 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 	return StateObservation{SchemaVersion: SchemaVersion, AccountID: account, WorkerName: WorkerName, ObservedAt: now, Surfaces: surfaces, IdentitySet: identities}
 }
 
+func freshWorkerState(account string, now time.Time) StateObservation {
+	state := syntheticState(account, 0, "deploy", now)
+	state.Surfaces["accountWorkers"] = []any{}
+	state.Surfaces["durableObjects"] = []any{}
+	for _, name := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions"} {
+		state.Surfaces[name] = map[string]any{"absent": true}
+	}
+	state.IdentitySet = []string{}
+	return state
+}
+
+type sequenceStateObserver struct {
+	mu     sync.Mutex
+	states []StateObservation
+	next   int
+}
+
+func (observer *sequenceStateObserver) Observe(_ context.Context, _ []byte, now time.Time) (StateObservation, error) {
+	observer.mu.Lock()
+	defer observer.mu.Unlock()
+	if observer.next >= len(observer.states) {
+		return StateObservation{}, errors.New("synthetic observer exhausted")
+	}
+	state := observer.states[observer.next]
+	state.ObservedAt = now
+	observer.next++
+	return state, nil
+}
+
 func (item fixture) plan() (Plan, []byte) {
 	pre, _, _ := syntheticState(item.installation.AccountID, 0, "deploy", item.now).Digests()
-	plan := Plan{SchemaVersion: SchemaVersion, Kind: "deploy", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.profileDigest, ObservablePrestateSHA256: pre, ObservationID: "observation-1", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", HetznerProjectID: item.installation.HetznerProjectID, Operations: []Operation{
+	plan := Plan{SchemaVersion: SchemaVersion, Kind: "rotate-secrets", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.profileDigest, ObservablePrestateSHA256: pre, ObservationID: "observation-1", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", HetznerProjectID: item.installation.HetznerProjectID, Operations: []Operation{
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-admin", SecretName: pointer("CRABBOX_ADMIN_TOKEN"), SlotID: pointer("slot-crabbox-admin"), SlotVersion: pointer("version-1")},
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-shared", SecretName: pointer("CRABBOX_SHARED_TOKEN"), SlotID: pointer("slot-crabbox-shared"), SlotVersion: pointer("version-1")},
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-provider", SecretName: pointer("HETZNER_TOKEN"), SlotID: pointer("slot-hetzner-worker"), SlotVersion: pointer("version-1")},
-		{Action: "worker.deploy", Target: WorkerName, RequestID: "deploy", ProfileSHA256: pointer(item.profileDigest), ExpectedPreviousVersionID: pointer("version-current")},
-	}, RollbackActions: []Operation{{Action: "worker.rollback", Target: WorkerName, RequestID: "rollback", VersionID: pointer("version-current"), CompatibleMigrationTag: pointer("v1")}}, IssuedAt: item.now.Add(-time.Minute), ExpiresAt: item.now.Add(10 * time.Minute), Nonce: "nonce-1"}
+	}, IssuedAt: item.now.Add(-time.Minute), ExpiresAt: item.now.Add(10 * time.Minute), Nonce: "nonce-1"}
 	plan.IntendedTerminalStateSHA256 = terminalContractSHA256(plan)
 	data, err := json.Marshal(plan)
 	if err != nil {
@@ -264,6 +294,12 @@ func (executor *recordingExecutor) Invoke(_ context.Context, invocation Invocati
 	}
 	return MutationReceipt{RequestID: invocation.RequestID, Action: invocation.Action, ResponseSHA256: SHA256([]byte(invocation.RequestID))}, nil
 }
+func (executor *recordingExecutor) ValidateCoordinatorCredentials(_ context.Context, _ string, secrets map[string][]byte) (MutationReceipt, error) {
+	if len(secrets) != len(canonicalSecrets) {
+		return MutationReceipt{}, errors.New("synthetic credential set")
+	}
+	return MutationReceipt{RequestID: "credential-forward-check", Action: "coordinator.credentials.validate", ResponseSHA256: strings.Repeat("c", 64)}, nil
+}
 func (executor *recordingExecutor) count() int {
 	executor.mu.Lock()
 	defer executor.mu.Unlock()
@@ -286,6 +322,9 @@ func (observer *advancingObserver) Observe(_ context.Context, _ []byte, now time
 		step = 0
 	}
 	observer.calls++
+	if observer.kind == "deploy" && step > 3 {
+		step = 3
+	}
 	return syntheticState(observer.account, step, observer.kind, now), nil
 }
 
@@ -349,15 +388,47 @@ func TestPlanBuilderOwnsClosedDeployAndAccountSequences(t *testing.T) {
 	for _, secret := range canonicalSecrets {
 		slots[secret] = SlotReference{SlotID: "slot-" + strings.ToLower(secret), SlotVersion: "version-1"}
 	}
-	plan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: state, ObservationID: "observation-builder", Slots: slots, Now: item.now})
-	if err != nil || len(plan.Operations) != 4 || plan.Operations[3].Action != "worker.deploy" {
+	plan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: state, ObservationID: "observation-builder", Now: item.now})
+	if err != nil || len(plan.Operations) != 1 || plan.Operations[0].Action != "worker.deploy" {
 		t.Fatalf("deploy plan: %v %#v", err, plan.Operations)
+	}
+	rotation, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rotate-secrets", State: state, ObservationID: "observation-builder", Slots: slots, Now: item.now})
+	if err != nil || len(rotation.Operations) != 3 {
+		t.Fatalf("rotation plan: %v %#v", err, rotation.Operations)
 	}
 	accountState := syntheticState(item.installation.AccountID, 0, "deploy", item.now)
 	accountState.Surfaces["accountWorkersDev"] = map[string]any{"absent": true}
 	accountPlan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "account-workers-dev-enable", State: accountState, ObservationID: "observation-builder", AccountSubdomain: "agentscope-dev", Now: item.now})
 	if err != nil || len(accountPlan.Operations) != 1 || accountPlan.Operations[0].Subdomain == nil || *accountPlan.Operations[0].Subdomain != "agentscope-dev" {
 		t.Fatalf("account plan: %v %#v", err, accountPlan.Operations)
+	}
+}
+
+func TestFreshDeployAdmitsWorkerBeforeSecretMutations(t *testing.T) {
+	item := newFixture(t)
+	fresh := freshWorkerState(item.installation.AccountID, item.now)
+	slots := map[string]SlotReference{}
+	for _, secret := range canonicalSecrets {
+		role := map[string]string{"CRABBOX_ADMIN_TOKEN": "crabbox-admin", "CRABBOX_SHARED_TOKEN": "crabbox-shared", "HETZNER_TOKEN": "hetzner-worker"}[secret]
+		slots[secret] = SlotReference{SlotID: "slot-" + role, SlotVersion: "version-1"}
+	}
+	plan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: fresh, ObservationID: "observation-fresh", Slots: slots, Now: item.now})
+	if err != nil || len(plan.Operations) != 4 || plan.Operations[0].Action != "worker.deploy" {
+		t.Fatalf("fresh plan: %v %#v", err, plan.Operations)
+	}
+	data, _ := json.Marshal(plan)
+	authorization, observation, attestation := item.authority(plan, data)
+	deployed0 := syntheticState(item.installation.AccountID, 0, "deploy", item.now)
+	deployed1 := syntheticState(item.installation.AccountID, 1, "deploy", item.now)
+	deployed2 := syntheticState(item.installation.AccountID, 2, "deploy", item.now)
+	deployed3 := syntheticState(item.installation.AccountID, 3, "deploy", item.now)
+	observer := &sequenceStateObserver{states: []StateObservation{fresh, fresh, deployed0, deployed0, deployed1, deployed1, deployed2, deployed2, deployed3, deployed3, deployed3}}
+	executor := &recordingExecutor{}
+	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: data, AuthorizationData: authorization, ObservationData: observation, AttestationData: attestation, Now: item.now, Clock: func() time.Time { return item.now }}, executor, observer); err != nil {
+		t.Fatal(err)
+	}
+	if executor.count() != 4 || executor.calls[0].Action != "worker.deploy" {
+		t.Fatalf("fresh mutation order %#v", executor.calls)
 	}
 }
 
@@ -392,8 +463,8 @@ func TestActionTransitionRejectsUnrelatedDriftAndWriteOnlyRotation(t *testing.T)
 	if err := ValidateActionTransition(plan, plan.Operations[0], before, drifted); err == nil {
 		t.Fatal("unrelated account drift accepted")
 	}
-	if err := ValidateActionTransition(plan, plan.Operations[0], after, after); err == nil || !strings.Contains(err.Error(), "E_WRITE_ONLY_ROTATION_UNCERTAIN") {
-		t.Fatalf("write-only rotation accepted: %v", err)
+	if err := ValidateActionTransition(plan, plan.Operations[0], after, after); err == nil || !strings.Contains(err.Error(), "E_SECRET_DEPLOYMENT_IDENTITY") {
+		t.Fatalf("no-op rotation accepted: %v", err)
 	}
 }
 
@@ -419,6 +490,46 @@ func TestTerminalObservationCannotBorrowUnrelatedResourceFields(t *testing.T) {
 	retired.Surfaces["accountWorkers"] = []any{map[string]any{"id": WorkerName}}
 	if ValidateTerminalObservation(retirement, retired) == nil {
 		t.Fatal("retirement accepted target in account inventory")
+	}
+}
+
+func TestTerminalObservationRejectsExtraProfileAuthority(t *testing.T) {
+	item := newFixture(t)
+	plan, _ := item.plan()
+	state := syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+	settings := state.Surfaces["workerSettings"].(map[string]any)
+	settings["bindings"] = append(settings["bindings"].([]any), map[string]any{"name": "UNPLANNED", "type": "plain_text", "text": "authority"})
+	if err := ValidateTerminalObservation(plan, state); err == nil || !strings.Contains(err.Error(), "E_DEPLOYMENT_EXTRA_BINDING") {
+		t.Fatalf("extra binding accepted: %v", err)
+	}
+	state = syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+	state.Surfaces["scriptSettings"].(map[string]any)["tail_consumers"] = []any{"unplanned-tail"}
+	if err := ValidateTerminalObservation(plan, state); err == nil || !strings.Contains(err.Error(), "E_DEPLOYMENT_DIAGNOSTIC_MUTATION") {
+		t.Fatalf("tail consumer accepted: %v", err)
+	}
+	state = syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+	state.Surfaces["workerSettings"].(map[string]any)["migration_tag"] = "replacement"
+	if err := ValidateTerminalObservation(plan, state); err == nil || !strings.Contains(err.Error(), "E_DEPLOYMENT_MIGRATION_STATE") {
+		t.Fatalf("migration drift accepted: %v", err)
+	}
+}
+
+func TestObservationDigestIgnoresInventoryOrdering(t *testing.T) {
+	item := newFixture(t)
+	first := syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+	first.Surfaces["accountWorkers"] = []any{map[string]any{"id": WorkerName}, map[string]any{"id": "unrelated-worker"}}
+	second := syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+	second.Surfaces["accountWorkers"] = []any{map[string]any{"id": "unrelated-worker"}, map[string]any{"id": WorkerName}}
+	firstDigest, _, err := first.Digests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, _, err := second.Digests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstDigest != secondDigest {
+		t.Fatal("equivalent inventory reorder produced drift")
 	}
 }
 
@@ -503,11 +614,12 @@ func TestCredentialSetSubstitutionInvalidatesAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := metadata["cloudflare-plan-read"]
-	if err := os.Remove(item.store.path("slots", entry.SlotID, entry.SlotVersion+".json")); err != nil {
+	rotated, err := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-plan-read", "slot-plan-new", "version-2", []byte(strings.Repeat("z", 32)), item.now.Add(time.Second))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-plan-read", "slot-plan-new", "version-2", []byte(strings.Repeat("z", 32)), item.now); err != nil {
-		t.Fatal(err)
+	if rotated.SupersedesSlotID != entry.SlotID || rotated.SupersedesVersion != entry.SlotVersion {
+		t.Fatal("credential rotation did not authenticate its predecessor")
 	}
 	digest, err := item.store.CredentialSetSHA256()
 	if err != nil {
@@ -515,6 +627,20 @@ func TestCredentialSetSubstitutionInvalidatesAuthorization(t *testing.T) {
 	}
 	if _, err := ValidatePlan(data, authorizationData, item.installation, digest, item.now); err == nil || !strings.Contains(err.Error(), "E_AUTHORIZATION_BINDING") {
 		t.Fatalf("credential substitution accepted: %v", err)
+	}
+}
+
+func TestCredentialMetadataRejectsIncompleteImmutableVersion(t *testing.T) {
+	item := newFixture(t)
+	directory := item.store.path("slots", "slot-incomplete")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeExclusive(filepath.Join(directory, "version-2.secret"), []byte("sealed-but-uncommitted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.CredentialSetSHA256(); err == nil || !strings.Contains(err.Error(), "E_SLOT_VERSION_INCOMPLETE") {
+		t.Fatalf("incomplete slot version accepted: %v", err)
 	}
 }
 
@@ -582,7 +708,7 @@ func TestConcurrentApplyReachesExecutorOnce(t *testing.T) {
 			successes++
 		}
 	}
-	if successes != 1 || executor.count() != 4 {
+	if successes != 1 || executor.count() != 3 {
 		t.Fatalf("successes=%d calls=%d", successes, executor.count())
 	}
 }
@@ -703,7 +829,7 @@ func TestPlanRejectsExtraFieldsAndDeletionFirstRetirement(t *testing.T) {
 		t.Fatal("digest-shaped noncanonical terminal contract accepted")
 	}
 	plan, _ = item.plan()
-	plan.Operations[3].VersionID = pointer("smuggled")
+	plan.Operations[2].VersionID = pointer("smuggled")
 	altered, _ := json.Marshal(plan)
 	if _, err := item.store.SignAuthorization(altered, plan, item.now, syntheticOperatorPassphrase); err == nil {
 		t.Fatal("action-specific extra field accepted")
@@ -830,6 +956,35 @@ func TestRecoveryClassifiesCrashAfterConsumeBeforeFenceAsDefiniteNoncommit(t *te
 	}
 }
 
+func TestRecoveryResolutionResumesEveryDurablePrefix(t *testing.T) {
+	item := newFixture(t)
+	_, data := item.plan()
+	digest, evidence := SHA256(data), strings.Repeat("b", 64)
+	if _, err := item.store.consumePlan(digest, item.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeExclusive(item.store.path("journal", "mutation.lock"), []byte(digest+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.RecoverQuarantine(digest, "plan", evidence, item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	record, err := item.store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, PlanSHA256: digest, RequestID: "plan", Disposition: "reconciled-abandoned", EvidenceSHA256: evidence, RecordedAt: item.now}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordData, _ := json.MarshalIndent(record, "", "  ")
+	if err := writeExclusive(item.store.path("journal", digest, "recovery-resolved.json"), append(recordData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.ResolveQuarantine(digest, "plan", evidence, item.now.Add(time.Second), syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("resume after resolution write: %v", err)
+	}
+	if _, err := item.store.ResolveQuarantine(digest, "plan", evidence, item.now.Add(2*time.Second), syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("idempotent terminal retry: %v", err)
+	}
+}
+
 func TestPrivateReaderRejectsSymlinkAndHardlink(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target")
@@ -915,6 +1070,7 @@ func TestCommandExecutorUsesClosedArgvEnvAndStdin(t *testing.T) {
 set -eu
 [ "${UNSAFE_AMBIENT-unset}" = unset ]
 [ "$CLOUDFLARE_API_TOKEN" = deployment-canary ]
+[ "$(command -v node)" = "` + paths.node + `" ]
 [ "$1" != "" ]
 [ "$2" = secret ] && [ "$3" = put ] && [ "$4" = CRABBOX_ADMIN_TOKEN ]
 IFS= read -r secret
@@ -977,6 +1133,46 @@ func TestCloudflareDeleteUsesFixedResourceAndNoForce(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCredentialForwardCheckProvesDistinctRoles(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		token := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
+		if request.URL.Host == "api.hetzner.cloud" && request.URL.Path == "/v1/servers" {
+			if request.URL.RawQuery != "page=1&per_page=1" {
+				t.Fatalf("unbounded provider query %s", request.URL.String())
+			}
+			if token == "hetzner-canary-value" {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"servers":[],"meta":{"pagination":{"page":1,"per_page":1}}}`)), Header: http.Header{}, Request: request}, nil
+			}
+			return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":{"code":"unauthorized"}}`)), Header: http.Header{}, Request: request}, nil
+		}
+		if request.URL.Host != WorkerName+".agentscope-dev.workers.dev" || request.URL.Path != "/v1/whoami" {
+			t.Fatalf("unexpected coordinator target %s", request.URL.String())
+		}
+		switch token {
+		case "shared-canary-value":
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"owner":"agentscope-fleet-control","org":"agentscope-development","auth":"shared","admin":false}`)), Header: http.Header{}, Request: request}, nil
+		case "admin-canary-value":
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"owner":"agentscope-admin","org":"agentscope-development","auth":"admin","admin":true}`)), Header: http.Header{}, Request: request}, nil
+		case "hetzner-canary-value":
+			return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`)), Header: http.Header{}, Request: request}, nil
+		default:
+			t.Fatalf("unexpected credential channel")
+			return nil, errors.New("unexpected")
+		}
+	})}
+	executor := CommandExecutor{HTTPClient: client}
+	receipt, err := executor.ValidateCoordinatorCredentials(context.Background(), "agentscope-dev", map[string][]byte{"CRABBOX_SHARED_TOKEN": []byte("shared-canary-value"), "CRABBOX_ADMIN_TOKEN": []byte("admin-canary-value"), "HETZNER_TOKEN": []byte("hetzner-canary-value")})
+	if err != nil || receipt.Action != "coordinator.credentials.validate" || len(receipt.ObservedResourceIdentities) != 4 {
+		t.Fatalf("forward check: %v %#v", err, receipt)
+	}
+	redirecting := CommandExecutor{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://example.invalid/stolen"}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+	})}}
+	if _, err := redirecting.ValidateCoordinatorCredentials(context.Background(), "agentscope-dev", map[string][]byte{"CRABBOX_SHARED_TOKEN": []byte("shared-canary-value"), "CRABBOX_ADMIN_TOKEN": []byte("admin-canary-value"), "HETZNER_TOKEN": []byte("hetzner-canary-value")}); err == nil {
+		t.Fatal("credential forward validation followed redirect")
+	}
+}
+
 func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *testing.T) {
 	var requests []*http.Request
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -1016,6 +1212,44 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 	})}
 	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_PAGINATION") {
 		t.Fatal("missing completeness metadata accepted on paginated inventory")
+	}
+}
+
+func TestCloudflareObserverInventoriesEveryUnrelatedWorkerSurface(t *testing.T) {
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		result := `[]`
+		if request.URL.Path == "/client/v4/accounts/account-1/workers/scripts" {
+			result = `[{"id":"agentscope-crabbox-development"},{"id":"unrelated-worker"}]`
+		}
+		resultInfo := ""
+		if request.URL.RawQuery != "" {
+			resultInfo = `,"result_info":{"page":1,"per_page":1000,"total_pages":1}`
+		}
+		body := `{"success":true,"result":` + result + `,"errors":[],"messages":[]` + resultInfo + `}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
+	})}
+	observer := CloudflareObserver{AccountID: "account-1", Client: client}
+	state, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, ok := state.Surfaces["unrelatedWorkers"].(map[string]any)
+	if !ok || len(unrelated) != 1 || unrelated["unrelated-worker"] == nil {
+		t.Fatalf("unrelated worker projection missing: %#v", state.Surfaces["unrelatedWorkers"])
+	}
+	for _, suffix := range []string{"/deployments", "/schedules", "/secrets", "/script-settings", "/settings", "/tails", "/subdomain", "/versions"} {
+		found := false
+		for _, path := range paths {
+			if strings.Contains(path, "unrelated-worker") && strings.HasSuffix(path, suffix) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("unrelated Worker surface %s was not inventoried: %v", suffix, paths)
+		}
 	}
 }
 
