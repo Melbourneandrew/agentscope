@@ -541,6 +541,7 @@ describe("native fixture governance array boundaries", () => {
       "harness.fixture.redaction.categories",
     );
     for (const records of [
+      {},
       [structuralPrivacyReview, structuralPrivacyReview],
       [structuralPrivacyReview, 2],
       [structuralPrivacyReview],

@@ -17,6 +17,10 @@ import { types } from "node:util";
 
 const intrinsicReflectApply = Reflect.apply;
 const intrinsicIsProxy = types.isProxy;
+const intrinsicObjectGetPrototypeOf = Object.getPrototypeOf;
+const intrinsicReflectOwnKeys = Reflect.ownKeys;
+const intrinsicObjectGetOwnPropertyDescriptors =
+  Object.getOwnPropertyDescriptors;
 
 type AuthenticatedArtifactAuthority = Readonly<{
   status: "authenticated";
@@ -155,18 +159,21 @@ const record = (
   )
     fail(code);
   const target = value as object;
-  let prototype: object | null = null;
-  let keys: readonly (string | symbol)[] = [];
-  let descriptors: Readonly<
+  const prototype = intrinsicReflectApply(
+    intrinsicObjectGetPrototypeOf,
+    Object,
+    [target],
+  ) as object | null;
+  const keys = intrinsicReflectApply(intrinsicReflectOwnKeys, Reflect, [
+    target,
+  ]) as readonly (string | symbol)[];
+  const descriptors = intrinsicReflectApply(
+    intrinsicObjectGetOwnPropertyDescriptors,
+    Object,
+    [target],
+  ) as Readonly<
     Record<string, PropertyDescriptor> & { [key: symbol]: PropertyDescriptor }
-  > = {};
-  try {
-    prototype = Object.getPrototypeOf(target) as object | null;
-    keys = Reflect.ownKeys(target);
-    descriptors = Object.getOwnPropertyDescriptors(target);
-  } catch {
-    fail(code);
-  }
+  >;
   if (
     prototype !== Object.prototype ||
     keys.some((key) => typeof key !== "string")
@@ -203,24 +210,23 @@ const denseArray = (
   )
     fail(code);
   const array = Array.isArray(value) ? value : fail(code);
-  let prototype: object | null = null;
-  let keys: readonly (string | symbol)[] = [];
-  let descriptors: Readonly<
-    Record<string, PropertyDescriptor> & { [key: symbol]: PropertyDescriptor }
-  > = {};
-  try {
-    prototype = Object.getPrototypeOf(array) as object | null;
-    keys = Reflect.ownKeys(array);
-    descriptors = Object.getOwnPropertyDescriptors(
-      array,
-    ) as unknown as Readonly<
-      Record<string, PropertyDescriptor> & {
-        [key: symbol]: PropertyDescriptor;
-      }
-    >;
-  } catch {
-    fail(code);
-  }
+  const prototype = intrinsicReflectApply(
+    intrinsicObjectGetPrototypeOf,
+    Object,
+    [array],
+  ) as object | null;
+  const keys = intrinsicReflectApply(intrinsicReflectOwnKeys, Reflect, [
+    array,
+  ]) as readonly (string | symbol)[];
+  const descriptors = intrinsicReflectApply(
+    intrinsicObjectGetOwnPropertyDescriptors,
+    Object,
+    [array],
+  ) as unknown as Readonly<
+    Record<string, PropertyDescriptor> & {
+      [key: symbol]: PropertyDescriptor;
+    }
+  >;
   const lengthValue: unknown = (
     descriptors.length as PropertyDescriptor & { value: unknown }
   ).value;
