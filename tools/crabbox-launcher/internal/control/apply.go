@@ -471,12 +471,17 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 		configureExecutionCredential(command, executor.ExecutorUID)
 	}
 	command.Dir = paths.workerRoot
+	accountID, err := executor.boundAccountID()
+	if err != nil {
+		return MutationReceipt{}, err
+	}
 	command.Env = []string{
 		"CI=1",
 		"HOME=" + executor.RuntimeHome,
 		"NO_COLOR=1",
 		"PATH=" + filepath.Join(executor.ProtectedRoot, "node", "bin") + ":/usr/bin:/bin",
 		"XDG_CONFIG_HOME=" + filepath.Join(executor.RuntimeHome, "config"),
+		"CLOUDFLARE_ACCOUNT_ID=" + accountID,
 		"CLOUDFLARE_API_TOKEN=" + string(invocation.DeploymentCredential),
 	}
 	if stdin != nil {
@@ -689,10 +694,11 @@ func (executor CommandExecutor) ValidateCoordinatorCredentials(ctx context.Conte
 }
 
 func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation Invocation) (MutationReceipt, error) {
-	if !identifierPattern.MatchString(executor.AccountID) {
-		return MutationReceipt{}, errors.New("E_ACCOUNT_ID")
+	accountID, err := executor.boundAccountID()
+	if err != nil {
+		return MutationReceipt{}, err
 	}
-	path := "/client/v4/accounts/" + executor.AccountID + "/workers/scripts/" + WorkerName
+	path := "/client/v4/accounts/" + accountID + "/workers/scripts/" + WorkerName
 	method := http.MethodDelete
 	var bodyBytes []byte
 	if invocation.Action == "worker.schedule.delete" {
@@ -707,7 +713,7 @@ func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation
 		if !regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`).MatchString(invocation.Subdomain) {
 			return MutationReceipt{}, errors.New("E_ACCOUNT_SUBDOMAIN")
 		}
-		path = "/client/v4/accounts/" + executor.AccountID + "/workers/subdomain"
+		path = "/client/v4/accounts/" + accountID + "/workers/subdomain"
 		method = http.MethodPut
 		bodyBytes, _ = json.Marshal(map[string]string{"subdomain": invocation.Subdomain})
 	} else if invocation.Action == "worker.secret.delete" {
@@ -725,7 +731,7 @@ func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation
 		if !identifierPattern.MatchString(invocation.VersionID) || invocation.VersionID == "latest" {
 			return MutationReceipt{}, errors.New("E_VERSION_ID")
 		}
-		path = "/client/v4/accounts/" + executor.AccountID + "/workers/workers/" + WorkerName + "/versions/" + invocation.VersionID
+		path = "/client/v4/accounts/" + accountID + "/workers/workers/" + WorkerName + "/versions/" + invocation.VersionID
 	}
 	deadline := executor.Timeout
 	if deadline <= 0 || deadline > 5*time.Minute {
@@ -783,6 +789,14 @@ func verifiedFileDigest(path, expected string) error {
 		return errors.New("E_TOOLCHAIN_CHANGED")
 	}
 	return nil
+}
+
+func (executor CommandExecutor) boundAccountID() (string, error) {
+	accountID := executor.Installation.AccountID
+	if !identifierPattern.MatchString(accountID) || executor.AccountID != accountID {
+		return "", errors.New("E_ACCOUNT_ID")
+	}
+	return accountID, nil
 }
 
 func (executor CommandExecutor) verifyImmutableInputs(action string, terminal bool) error {

@@ -1833,6 +1833,8 @@ func TestCommandExecutorUsesClosedArgvEnvAndStdin(t *testing.T) {
 	script := `#!/bin/sh
 set -eu
 [ "${UNSAFE_AMBIENT-unset}" = unset ]
+[ "$CI" = 1 ]
+[ "$CLOUDFLARE_ACCOUNT_ID" = account-canary ]
 [ "$CLOUDFLARE_API_TOKEN" = deployment-canary ]
 [ "$(command -v node)" = "` + paths.node + `" ]
 [ "$1" != "" ]
@@ -1844,7 +1846,8 @@ IFS= read -r secret
 		t.Fatal(err)
 	}
 	t.Setenv("UNSAFE_AMBIENT", "must-not-be-inherited")
-	executor := CommandExecutor{ProtectedRoot: root, ProfilePath: filepath.Join(root, "live.jsonc"), ProfileSHA256: SHA256(profile), TerminalProfilePath: filepath.Join(root, "terminal.jsonc"), TerminalProfileSHA256: SHA256(terminal), RuntimeHome: filepath.Join(root, "home"), Timeout: 3 * time.Second, skipRuntimeVerificationForTest: true}
+	t.Setenv("CLOUDFLARE_ACCOUNT_ID", "ambient-substitute")
+	executor := CommandExecutor{AccountID: "account-canary", Installation: Installation{AccountID: "account-canary"}, ProtectedRoot: root, ProfilePath: filepath.Join(root, "live.jsonc"), ProfileSHA256: SHA256(profile), TerminalProfilePath: filepath.Join(root, "terminal.jsonc"), TerminalProfileSHA256: SHA256(terminal), RuntimeHome: filepath.Join(root, "home"), Timeout: 3 * time.Second, skipRuntimeVerificationForTest: true}
 	_, err := executor.Invoke(context.Background(), Invocation{Action: "worker.secret.put", RequestID: "put", SecretName: "CRABBOX_ADMIN_TOKEN", Secret: []byte("worker-canary\n"), DeploymentCredential: []byte("deployment-canary")})
 	if err != nil {
 		t.Fatal(err)
@@ -1858,13 +1861,63 @@ IFS= read -r secret
 	}
 }
 
+func TestCommandExecutorRejectsMissingOrMismatchedWranglerAccountBinding(t *testing.T) {
+	root := t.TempDir()
+	paths := runtimePaths(root)
+	if err := os.MkdirAll(paths.workerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := []byte("profile")
+	for path, data := range map[string][]byte{filepath.Join(root, "live.jsonc"): profile, filepath.Join(root, "terminal.jsonc"): []byte("terminal")} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.node), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.wranglerCLI), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(root, "started")
+	if err := os.WriteFile(paths.node, []byte("#!/bin/sh\ntouch '"+started+"'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.wranglerCLI, []byte("placeholder"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+
+	base := CommandExecutor{ProtectedRoot: root, ProfilePath: filepath.Join(root, "live.jsonc"), ProfileSHA256: SHA256(profile), TerminalProfilePath: filepath.Join(root, "terminal.jsonc"), TerminalProfileSHA256: SHA256([]byte("terminal")), RuntimeHome: filepath.Join(root, "home"), Timeout: time.Second, skipRuntimeVerificationForTest: true}
+	for _, testCase := range []struct {
+		name                  string
+		executorAccountID     string
+		installationAccountID string
+	}{
+		{name: "missing-installed", executorAccountID: "account-canary"},
+		{name: "missing-executor", installationAccountID: "account-canary"},
+		{name: "mismatch", executorAccountID: "account-canary", installationAccountID: "other-account"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			executor := base
+			executor.AccountID = testCase.executorAccountID
+			executor.Installation.AccountID = testCase.installationAccountID
+			if _, err := executor.Invoke(context.Background(), Invocation{Action: "worker.deploy", SourceCommit: strings.Repeat("a", 40), DeploymentCredential: []byte("synthetic")}); err == nil || err.Error() != "E_ACCOUNT_ID" {
+				t.Fatalf("invalid account binding accepted: %v", err)
+			}
+			if _, err := os.Stat(started); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("child started before account binding rejection: %v", err)
+			}
+		})
+	}
+}
+
 func TestCloudflareDeleteUsesFixedResourceAndNoForce(t *testing.T) {
 	var observed *http.Request
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		observed = request.Clone(request.Context())
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true}`)), Header: http.Header{}}, nil
 	})}
-	executor := CommandExecutor{AccountID: "account-1", HTTPClient: client, Timeout: time.Second}
+	executor := CommandExecutor{AccountID: "account-1", Installation: Installation{AccountID: "account-1"}, HTTPClient: client, Timeout: time.Second}
 	if _, err := executor.invokeCloudflare(context.Background(), Invocation{Action: "worker.version.delete", VersionID: "version-123", DeploymentCredential: []byte("credential-canary")}); err != nil {
 		t.Fatal(err)
 	}
@@ -1898,6 +1951,33 @@ func TestCloudflareDeleteUsesFixedResourceAndNoForce(t *testing.T) {
 	})}
 	if _, err := executor.invokeCloudflare(context.Background(), Invocation{Action: "worker.version.delete", VersionID: "version-123", DeploymentCredential: []byte("credential-canary")}); err == nil {
 		t.Fatal("credentialed mutation followed redirect")
+	}
+}
+
+func TestCloudflareMutationRejectsInvalidAccountBindingBeforeRequest(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"success":true}`)), Header: http.Header{}, Request: request}, nil
+	})}
+	for _, testCase := range []struct {
+		name                  string
+		executorAccountID     string
+		installationAccountID string
+	}{
+		{name: "missing-installed", executorAccountID: "account-canary"},
+		{name: "missing-executor", installationAccountID: "account-canary"},
+		{name: "mismatch", executorAccountID: "account-canary", installationAccountID: "other-account"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			executor := CommandExecutor{AccountID: testCase.executorAccountID, Installation: Installation{AccountID: testCase.installationAccountID}, HTTPClient: client, Timeout: time.Second}
+			if _, err := executor.invokeCloudflare(context.Background(), Invocation{Action: "worker.schedule.delete", DeploymentCredential: []byte("synthetic")}); err == nil || err.Error() != "E_ACCOUNT_ID" {
+				t.Fatalf("invalid direct account binding accepted: %v", err)
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("invalid account binding reached Cloudflare transport: requests=%d", requests)
 	}
 }
 

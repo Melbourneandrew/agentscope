@@ -99,7 +99,7 @@ func TestExecutorTimeoutKillsDescendantProcessGroup(t *testing.T) {
 	if err := os.WriteFile(npm, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	executor := CommandExecutor{ProtectedRoot: root, ProfilePath: filepath.Join(root, "live"), ProfileSHA256: SHA256(profile), TerminalProfilePath: filepath.Join(root, "terminal"), TerminalProfileSHA256: SHA256(terminal), RuntimeHome: filepath.Join(root, "home"), Timeout: 2 * time.Second, skipRuntimeVerificationForTest: true}
+	executor := CommandExecutor{AccountID: "account-canary", Installation: Installation{AccountID: "account-canary"}, ProtectedRoot: root, ProfilePath: filepath.Join(root, "live"), ProfileSHA256: SHA256(profile), TerminalProfilePath: filepath.Join(root, "terminal"), TerminalProfileSHA256: SHA256(terminal), RuntimeHome: filepath.Join(root, "home"), Timeout: 2 * time.Second, skipRuntimeVerificationForTest: true}
 	_, err := executor.Invoke(context.Background(), Invocation{Action: "worker.deploy", DeploymentCredential: []byte("synthetic")})
 	if err == nil || !strings.Contains(err.Error(), "E_EXECUTOR_TIMEOUT") {
 		t.Fatalf("unexpected timeout: %v", err)
@@ -145,7 +145,7 @@ func TestExecutorTimeoutKillsSetsidPipeHolderWithinBound(t *testing.T) {
 	if err := os.WriteFile(paths.node, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	executor := CommandExecutor{ProtectedRoot: root, ProfilePath: filepath.Join(root, "live"), ProfileSHA256: SHA256([]byte("live")), TerminalProfilePath: filepath.Join(root, "terminal"), TerminalProfileSHA256: SHA256([]byte("terminal")), RuntimeHome: filepath.Join(root, "home"), Timeout: 600 * time.Millisecond, skipRuntimeVerificationForTest: true}
+	executor := CommandExecutor{AccountID: "account-canary", Installation: Installation{AccountID: "account-canary"}, ProtectedRoot: root, ProfilePath: filepath.Join(root, "live"), ProfileSHA256: SHA256([]byte("live")), TerminalProfilePath: filepath.Join(root, "terminal"), TerminalProfileSHA256: SHA256([]byte("terminal")), RuntimeHome: filepath.Join(root, "home"), Timeout: 600 * time.Millisecond, skipRuntimeVerificationForTest: true}
 	started := time.Now()
 	_, err := executor.Invoke(context.Background(), Invocation{Action: "worker.deploy", DeploymentCredential: []byte("synthetic")})
 	if err == nil || time.Since(started) > 5*time.Second {
