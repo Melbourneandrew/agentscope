@@ -1,0 +1,300 @@
+:root {
+  color-scheme: light dark;
+  --background: light-dark(#f6f7f9, #111318);
+  --surface: light-dark(#ffffff, #1a1d24);
+  --surface-muted: light-dark(#eef1f5, #252a34);
+  --foreground: light-dark(#18202b, #eef2f7);
+  --muted: light-dark(#5b6675, #a9b2c1);
+  --border: light-dark(#cfd5de, #3a414e);
+  --edge: light-dark(#738094, #7f8ba0);
+  --ready: light-dark(#d9f5e6, #153d2a);
+  --ready-line: light-dark(#168451, #51d490);
+  --blocked: light-dark(#fee2e2, #481d24);
+  --blocked-line: light-dark(#c93645, #ff7480);
+  --progress: light-dark(#dceafe, #18335f);
+  --progress-line: light-dark(#2d6bc4, #6da5f2);
+  --deferred: light-dark(#f5ead2, #42351e);
+  --deferred-line: light-dark(#99701b, #dfb450);
+  --closed: light-dark(#e7e9ed, #292d35);
+  --closed-line: light-dark(#737b87, #8d96a4);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+main {
+  width: min(1500px, 100%);
+  margin: 0 auto;
+  padding: 24px;
+}
+
+header,
+#filters,
+.summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+header {
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 0;
+  font-size: clamp(1.45rem, 3vw, 2.15rem);
+}
+
+h2 {
+  font-size: 1rem;
+}
+
+.eyebrow {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#filters {
+  padding: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+label:first-child {
+  flex: 1 1 260px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  color: var(--foreground);
+  font-size: 0.86rem;
+}
+
+input,
+select,
+button {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font: inherit;
+}
+
+input,
+select {
+  padding: 7px 9px;
+}
+
+button {
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--progress-line);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.summary {
+  min-height: 44px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+#count {
+  margin-right: auto;
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--state-line);
+  content: "";
+}
+
+.ready {
+  --state: var(--ready);
+  --state-line: var(--ready-line);
+}
+
+.blocked {
+  --state: var(--blocked);
+  --state-line: var(--blocked-line);
+}
+
+.in-progress {
+  --state: var(--progress);
+  --state-line: var(--progress-line);
+}
+
+.deferred {
+  --state: var(--deferred);
+  --state-line: var(--deferred-line);
+}
+
+.closed {
+  --state: var(--closed);
+  --state-line: var(--closed-line);
+}
+
+.message {
+  min-height: 1.4em;
+  color: var(--blocked-line);
+  font-size: 0.85rem;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 16px;
+}
+
+.graph-scroll,
+aside {
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.graph-scroll {
+  min-height: 520px;
+  max-height: 72vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+#graph {
+  display: block;
+  min-width: 100%;
+}
+
+.edge {
+  fill: none;
+  stroke: var(--edge);
+  stroke-width: 1.4;
+}
+
+.edge.parent-child {
+  stroke-dasharray: 5 4;
+  opacity: 0.5;
+}
+
+.edge.discovered-from,
+.edge.related,
+.edge.supersedes {
+  stroke-dasharray: 2 4;
+  opacity: 0.42;
+}
+
+.node rect.body {
+  fill: var(--state);
+  stroke: var(--state-line);
+  stroke-width: 1.4;
+}
+
+.node rect.priority {
+  fill: var(--state-line);
+}
+
+.node.selected rect.body {
+  stroke-width: 3;
+}
+
+.node text {
+  fill: var(--foreground);
+  pointer-events: none;
+}
+
+.node .node-id {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.node .node-title {
+  font-size: 12px;
+}
+
+.node .node-meta {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+aside {
+  align-self: start;
+  min-height: 150px;
+  padding: 16px;
+}
+
+aside p,
+aside li {
+  color: var(--muted);
+  font-size: 0.83rem;
+  line-height: 1.45;
+}
+
+aside ul {
+  padding-left: 18px;
+}
+
+aside code {
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px) {
+  main {
+    padding: 14px;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  aside {
+    order: -1;
+  }
+
+  .graph-scroll {
+    max-height: 65vh;
+  }
+}
