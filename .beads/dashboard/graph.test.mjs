@@ -89,7 +89,14 @@ test("derives every visible workflow state without weakening explicit status", (
   assert.equal(deriveDisplayState("closed", 2), "closed");
   assert.equal(deriveDisplayState("deferred", 0), "deferred");
   assert.equal(deriveDisplayState("open", 1, true), "ready");
-  assert.equal(deriveDisplayState("open", 0, false), "ready");
+  assert.equal(deriveDisplayState("open", 0, false), "blocked");
+  assert.equal(
+    normalizeIssues([{ id: "plain", title: "Canonical non-ready", status: "open" }], {
+      readyIds: [],
+      blockedIds: ["plain"],
+    }).nodes[0].displayState,
+    "blocked",
+  );
 });
 
 test("filters by search, status, priority and focused dependency neighborhood", () => {

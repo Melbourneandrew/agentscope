@@ -129,6 +129,7 @@ export function normalizeIssues(input, { readyIds, blockedIds = [], staleIds = [
     const localActiveBlockers = activeBlockersByTarget.get(node.id) ?? [];
     const blockedOnlyByHierarchy = childIds.has(node.id) && localActiveBlockers.length === 0;
     const canonicallyBlocked = canonicalBlockedIds.has(node.id) && !blockedOnlyByHierarchy;
+    const effectiveCanonicalReadiness = blockedOnlyByHierarchy ? undefined : canonicallyReady;
     const stale = node.status === "in_progress" && canonicalStaleIds.has(node.id);
     const activeBlockers = canonicallyReady ? [] : localActiveBlockers;
     node.activeBlockers = activeBlockers;
@@ -139,7 +140,7 @@ export function normalizeIssues(input, { readyIds, blockedIds = [], staleIds = [
     node.displayState = deriveDisplayState(
       node.status,
       activeBlockers.length,
-      canonicallyReady,
+      effectiveCanonicalReadiness,
       canonicallyBlocked,
       stale,
     );
@@ -158,6 +159,7 @@ export function deriveDisplayState(status, activeBlockerCount, canonicallyReady,
   if (status === "blocked") return "blocked";
   if (canonicallyReady === true) return "ready";
   if (activeBlockerCount > 0) return "blocked";
+  if (canonicallyReady === false) return "blocked";
   return "ready";
 }
 
