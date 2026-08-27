@@ -252,7 +252,8 @@ func ValidateTerminalObservation(plan Plan, state StateObservation) error {
 }
 
 func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets bool) error {
-	if !workerPresent(state.Surfaces["accountWorkers"]) || !ownedDurableObjectPresent(state.Surfaces["durableObjects"], plan) || ownedDomainPresent(state.Surfaces["scriptDomains"]) {
+	namespaceID, namespaceCount := ownedDurableObjectIdentity(state.Surfaces["durableObjects"], plan)
+	if !workerPresent(state.Surfaces["accountWorkers"]) || namespaceCount != 1 || namespaceID == "" || (plan.DurableObjectNamespaceID != "absent" && namespaceID != plan.DurableObjectNamespaceID) || ownedDomainPresent(state.Surfaces["scriptDomains"]) {
 		return errors.New("E_DEPLOYMENT_ACCOUNT_RESOURCE_STATE")
 	}
 	for _, surface := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "scriptWorkersDev", "scriptVersions"} {
@@ -261,18 +262,15 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 		}
 	}
 	secretNames := namedObjectValues(state.Surfaces["scriptSecrets"], "name")
-	if requireSecrets && !sameStringSet(secretNames, canonicalSecrets) {
+	secretsPresent := sameStringSet(secretNames, canonicalSecrets)
+	if requireSecrets && !secretsPresent {
 		return errors.New("E_DEPLOYMENT_SECRET_STATE")
 	}
-	if !requireSecrets && len(secretNames) != 0 {
-		for _, required := range canonicalSecrets {
-			if !namedObjectPresent(state.Surfaces["scriptSecrets"], "name", required) {
-				return errors.New("E_DEPLOYMENT_SECRET_STATE")
-			}
-		}
+	if !requireSecrets && len(secretNames) != 0 && !secretsPresent {
+		return errors.New("E_DEPLOYMENT_SECRET_STATE")
 	}
 	schedules := objectSlice(state.Surfaces["scriptSchedules"])
-	if len(schedules) != 1 || fmt.Sprint(schedules[0]["cron"]) != "*/15 * * * *" || !bindingPresent(state.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", plan.DurableObjectNamespaceID) || !mapBool(state.Surfaces["scriptWorkersDev"], "enabled") || mapBool(state.Surfaces["scriptWorkersDev"], "previews_enabled") {
+	if len(schedules) != 1 || fmt.Sprint(schedules[0]["cron"]) != "*/15 * * * *" || !bindingPresent(state.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", namespaceID) || !mapBool(state.Surfaces["scriptWorkersDev"], "enabled") || mapBool(state.Surfaces["scriptWorkersDev"], "previews_enabled") {
 		return errors.New("E_DEPLOYMENT_PROFILE_STATE")
 	}
 	if !collectionEmpty(state.Surfaces["scriptTails"]) || unsafeDiagnosticSettings(state.Surfaces["scriptSettings"]) {
@@ -295,26 +293,71 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 			return errors.New("E_DEPLOYMENT_VARIABLE_STATE")
 		}
 	}
-	allowedBindings := map[string]struct{}{"FLEET": {}, "CF_VERSION_METADATA": {}}
-	for key := range expectedVariables {
-		allowedBindings[key] = struct{}{}
-	}
-	for _, secret := range canonicalSecrets {
-		allowedBindings[secret] = struct{}{}
-	}
 	settings, ok := state.Surfaces["workerSettings"].(map[string]any)
 	if !ok {
 		return errors.New("E_DEPLOYMENT_SETTINGS_SCHEMA")
 	}
+	allowedSettingKeys := map[string]bool{"bindings": true, "compatibility_date": true, "compatibility_flags": true, "cache_options": true, "limits": true, "logpush": true, "migrations": true, "migration_tag": true, "observability": true, "placement": true, "tags": true, "tail_consumers": true, "usage_model": true}
+	for key := range settings {
+		if !allowedSettingKeys[key] {
+			return errors.New("E_DEPLOYMENT_EXTRA_WORKER_SETTING")
+		}
+	}
 	if fmt.Sprint(settings["compatibility_date"]) != "2026-04-30" || !sameStringSet(stringSlice(settings["compatibility_flags"]), []string{"nodejs_compat"}) || cacheEnabled(settings["cache_options"]) {
 		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
 	}
-	if tag := fmt.Sprint(settings["migration_tag"]); tag != "v1" && tag != "<nil>" {
+	if cache, exists := settings["cache_options"].(map[string]any); exists && !exactObjectKeys(cache, "enabled") {
+		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
+	}
+	if !collectionEmpty(settings["limits"]) || mapBool(settings, "logpush") || unsafeDiagnosticSettings(settings) || !collectionEmpty(settings["placement"]) || !collectionEmpty(settings["tags"]) || !collectionEmpty(settings["tail_consumers"]) || (settings["usage_model"] != nil && fmt.Sprint(settings["usage_model"]) != "standard") {
+		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
+	}
+	_, hasMigrationTag := settings["migration_tag"]
+	migrations, hasMigrations := settings["migrations"]
+	if hasMigrationTag == hasMigrations {
 		return errors.New("E_DEPLOYMENT_MIGRATION_STATE")
 	}
-	for _, binding := range objectSlice(settings["bindings"]) {
-		name := fmt.Sprint(binding["name"])
-		if _, allowed := allowedBindings[name]; !allowed {
+	migrationValid := hasMigrationTag && fmt.Sprint(settings["migration_tag"]) == "v1"
+	if hasMigrations {
+		items := objectSlice(migrations)
+		migrationValid = len(items) == 1 && fmt.Sprint(items[0]["tag"]) == "v1" && sameStringSet(stringSlice(items[0]["new_sqlite_classes"]), []string{"FleetDurableObject"}) && exactObjectKeys(items[0], "tag", "new_sqlite_classes")
+	}
+	if !migrationValid {
+		return errors.New("E_DEPLOYMENT_MIGRATION_STATE")
+	}
+	bindings := objectSlice(settings["bindings"])
+	expectedBindingCount := 2 + len(expectedVariables)
+	if requireSecrets || secretsPresent {
+		expectedBindingCount += len(canonicalSecrets)
+	}
+	if len(bindings) != expectedBindingCount {
+		return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+	}
+	seenBindings := map[string]bool{}
+	for _, binding := range bindings {
+		name, kind := fmt.Sprint(binding["name"]), fmt.Sprint(binding["type"])
+		if seenBindings[name] {
+			return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+		}
+		seenBindings[name] = true
+		switch {
+		case name == "FLEET":
+			if kind != "durable_object_namespace" || fmt.Sprint(binding["class_name"]) != "FleetDurableObject" || fmt.Sprint(binding["namespace_id"]) != namespaceID || !exactObjectKeys(binding, "name", "type", "class_name", "namespace_id") {
+				return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+			}
+		case name == "CF_VERSION_METADATA":
+			if kind != "version_metadata" || !exactObjectKeys(binding, "name", "type") {
+				return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+			}
+		case expectedVariables[name] != "":
+			if kind != "plain_text" || fmt.Sprint(binding["text"]) != expectedVariables[name] || !exactObjectKeys(binding, "name", "type", "text") {
+				return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+			}
+		case (requireSecrets || secretsPresent) && stringInSlice(name, canonicalSecrets):
+			if kind != "secret_text" || !exactObjectKeys(binding, "name", "type") {
+				return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
+			}
+		default:
 			return errors.New("E_DEPLOYMENT_EXTRA_BINDING")
 		}
 	}
@@ -322,12 +365,32 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 	if !ok {
 		return errors.New("E_DEPLOYMENT_SCRIPT_SETTINGS")
 	}
-	for key := range scriptSettings {
-		if key != "logpush" && key != "observability" && key != "tags" && key != "tail_consumers" {
-			return errors.New("E_DEPLOYMENT_EXTRA_SCRIPT_SETTING")
-		}
+	observability, observationOK := scriptSettings["observability"].(map[string]any)
+	if !exactObjectKeys(scriptSettings, "logpush", "observability", "tags", "tail_consumers") || !observationOK || !exactObjectKeys(observability, "enabled") || mapBool(scriptSettings, "logpush") || mapBool(observability, "enabled") || !collectionEmpty(scriptSettings["tail_consumers"]) || !collectionEmpty(scriptSettings["tags"]) {
+		return errors.New("E_DEPLOYMENT_SCRIPT_SETTINGS")
 	}
 	return nil
+}
+
+func exactObjectKeys(value map[string]any, expected ...string) bool {
+	if len(value) != len(expected) {
+		return false
+	}
+	for _, key := range expected {
+		if _, exists := value[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func stringInSlice(value string, values []string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func ValidateActionTransition(plan Plan, operation Operation, before, after StateObservation) error {
@@ -344,9 +407,9 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 	}
 	switch operation.Action {
 	case "worker.secret.put":
-		allow("scriptSecrets", "scriptDeployments", "scriptVersions")
+		allow("scriptSecrets", "scriptDeployments", "scriptVersions", "workerSettings")
 	case "worker.secret.delete":
-		allow("scriptSecrets", "scriptDeployments", "scriptVersions")
+		allow("scriptSecrets", "scriptDeployments", "scriptVersions", "workerSettings")
 	case "worker.deploy":
 		allow("accountWorkers", "durableObjects", "scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions")
 	case "worker.rollback":
@@ -369,6 +432,11 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 	if err := requireUnchangedSurfaces(before, after, allowed); err != nil {
 		return nil, err
 	}
+	if operation.Action == "worker.deploy" || operation.Action == "worker.terminalArtifact.deploy" || operation.Action == "worker.delete" {
+		if !filteredObjectsEqual(before.Surfaces["accountWorkers"], after.Surfaces["accountWorkers"], objectMatchesWorker) || !filteredObjectsEqual(before.Surfaces["durableObjects"], after.Surfaces["durableObjects"], func(item map[string]any) bool { return objectMatchesDurableObject(item, plan) }) {
+			return nil, errors.New("E_UNRELATED_RESOURCE_DRIFT")
+		}
+	}
 
 	switch operation.Action {
 	case "worker.secret.put":
@@ -378,6 +446,9 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
 		if afterDeployment == "" || afterDeployment == beforeDeployment {
 			return nil, errors.New("E_SECRET_DEPLOYMENT_IDENTITY")
+		}
+		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || !oneIdentityAdded(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
+			return nil, errors.New("E_SECRET_UNEXPECTED_DELTA")
 		}
 		return []string{"deployment=" + afterDeployment, "secret=" + *operation.SecretName}, nil
 	case "worker.secret.delete":
@@ -393,7 +464,11 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		if err := validateDeploymentProfile(plan, after, false); err != nil {
 			return nil, err
 		}
-		return []string{"deployment=" + afterDeployment}, nil
+		if !sameStringSet(namedObjectValues(before.Surfaces["scriptSecrets"], "name"), namedObjectValues(after.Surfaces["scriptSecrets"], "name")) || !oneIdentityAdded(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
+			return nil, errors.New("E_DEPLOY_UNEXPECTED_DELTA")
+		}
+		namespaceID, _ := ownedDurableObjectIdentity(after.Surfaces["durableObjects"], plan)
+		return []string{"deployment=" + afterDeployment, "durable-object-namespace=" + namespaceID, "migration=v1"}, nil
 	case "worker.rollback":
 		if operation.VersionID == nil || !containsIdentityOnSurface(after.Surfaces["scriptDeployments"], *operation.VersionID) || currentDeploymentID(after.Surfaces["scriptDeployments"]) == currentDeploymentID(before.Surfaces["scriptDeployments"]) {
 			return nil, errors.New("E_ROLLBACK_NOT_OBSERVED")
@@ -453,6 +528,83 @@ func requireUnchangedSurfaces(before, after StateObservation, allowed map[string
 		}
 	}
 	return nil
+}
+
+func filteredObjectsEqual(before, after any, owned func(map[string]any) bool) bool {
+	left, right := filterObjects(before, owned), filterObjects(after, owned)
+	leftData, leftErr := json.Marshal(canonicalizeForComparison(left))
+	rightData, rightErr := json.Marshal(canonicalizeForComparison(right))
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftData, rightData)
+}
+
+func namedObjectsEqualExcept(before, after any, key, except string) bool {
+	filter := func(value any) []any {
+		result := []any{}
+		for _, item := range objectSlice(value) {
+			if fmt.Sprint(item[key]) != except {
+				result = append(result, item)
+			}
+		}
+		return result
+	}
+	left, _ := json.Marshal(canonicalizeForComparison(filter(before)))
+	right, _ := json.Marshal(canonicalizeForComparison(filter(after)))
+	return bytes.Equal(left, right)
+}
+
+func bindingObjectsEqualExcept(before, after any, except string) bool {
+	beforeSettings, beforeOK := before.(map[string]any)
+	afterSettings, afterOK := after.(map[string]any)
+	if !beforeOK || !afterOK {
+		return false
+	}
+	beforeCopy, afterCopy := map[string]any{}, map[string]any{}
+	for key, value := range beforeSettings {
+		beforeCopy[key] = value
+	}
+	for key, value := range afterSettings {
+		afterCopy[key] = value
+	}
+	filter := func(value any) []any {
+		result := []any{}
+		for _, binding := range objectSlice(value) {
+			if fmt.Sprint(binding["name"]) != except {
+				result = append(result, binding)
+			}
+		}
+		return result
+	}
+	beforeCopy["bindings"] = filter(beforeSettings["bindings"])
+	afterCopy["bindings"] = filter(afterSettings["bindings"])
+	left, _ := json.Marshal(canonicalizeForComparison(beforeCopy))
+	right, _ := json.Marshal(canonicalizeForComparison(afterCopy))
+	return bytes.Equal(left, right)
+}
+
+func oneIdentityAdded(before, after any) bool {
+	beforeIDs, afterIDs := map[string]bool{}, map[string]bool{}
+	for _, item := range objectSlice(before) {
+		if id := fmt.Sprint(item["id"]); id != "" && id != "<nil>" {
+			beforeIDs[id] = true
+		}
+	}
+	for _, item := range objectSlice(after) {
+		if id := fmt.Sprint(item["id"]); id != "" && id != "<nil>" {
+			afterIDs[id] = true
+		}
+	}
+	added := 0
+	for id := range beforeIDs {
+		if !afterIDs[id] {
+			return false
+		}
+	}
+	for id := range afterIDs {
+		if !beforeIDs[id] {
+			added++
+		}
+	}
+	return added == 1
 }
 
 func canonicalizeForComparison(value any) any {
@@ -534,6 +686,22 @@ func ownedDurableObjectPresent(value any, plan Plan) bool {
 		}
 	}
 	return false
+}
+
+func ownedDurableObjectIdentity(value any, plan Plan) (string, int) {
+	identity, count := "", 0
+	for _, item := range objectSlice(value) {
+		if !objectMatchesDurableObject(item, plan) {
+			continue
+		}
+		count++
+		candidate := fmt.Sprint(item["id"])
+		if candidate == "<nil>" || candidate == "" {
+			return "", count
+		}
+		identity = candidate
+	}
+	return identity, count
 }
 
 func objectMatchesWorkerDomain(item map[string]any) bool {

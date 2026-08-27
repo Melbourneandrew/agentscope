@@ -98,12 +98,15 @@ The repository ships a standalone Go control binary and attended installer at
 `ops/crabbox-coordinator/install-protected-launcher.sh`. The production state
 root is `/Library/Application Support/Agentscope/CrabboxControl`. The installer
 requires root, builds with the admitted Go 1.26.5 distribution in a closed
-environment from a `git archive` of the exact reviewed commit and tree, embeds
-those source identities in the executable, and verifies them again at the root
-installation boundary. Source, compiler, dependency installation, and the
-runtime closure remain in a root-owned private staging directory throughout the
-build so another process under the invoking user's identity cannot replace an
-input between verification and use. It installs an immutable executable plus five pairwise-distinct role
+environment from root-owned Git bundles of the exact reviewed Agentscope and
+Crabbox commits. Git replacement objects and ambient Git configuration are
+disabled while the bundles are created and again while root reconstructs and
+verifies both trees. The installer embeds those source identities in the
+executable and verifies them again at the root installation boundary. Source,
+compiler, dependency installation, and the runtime closure remain in a
+root-owned private staging directory throughout the build so another process
+under the invoking user's identity cannot replace an input between verification
+and use. It installs an immutable executable plus five pairwise-distinct role
 roots, seals owner/recovery/billing signing keys under an attended operator passphrase,
 and binds the exact admission, permission manifest, profiles, official Node
 archive, pinned Crabbox commit, lock-installed Wrangler dependency closure, and
@@ -138,7 +141,7 @@ attended root copy and verifies the root-owned bootstrap copy before executing
 it. After installation, use only the root-owned installed binary. It exposes the
 closed commands `status`, `state-observe`, `credential-enroll`,
 `plan-build`, `observation-admit`, `retirement-evidence-admit`, `authorize`,
-`apply`, `freeze`, `recover-quarantine`, `recover-resolve`, and `retire`. `apply` accepts no
+`apply`, `freeze`, `recover-quarantine`, `recover-resolve`, `thaw`, and `retire`. `apply` accepts no
 caller-selected executable, source, profile, endpoint, method, body, or target.
 It verifies installed roots and the entire protected runtime tree, durably
 consumes the plan, independently observes the fixed Cloudflare permission
@@ -148,11 +151,18 @@ success requires a Cloudflare success envelope, recorded response and
 resource-identity digests, no intervening drift, and a semantic terminal
 projection. A crash or failed process after an
 invocation starts leaves the global mutation fence held and records an
-outcome-uncertain event. `recover-quarantine` records an independently evidenced
-human recovery decision and never retries the request. Only a second signed
-`recover-resolve` decision with terminal reconciliation evidence may release the
-local mutation fence; acquisition remains frozen so a new recovery or
-retirement plan is required.
+outcome-uncertain event. An exact same-plan invocation may resume only from a
+durable prefix that proves no request is uncertain: `consumed`,
+`observed-committed`, `credential-roles-validated`, or
+`reconciled-terminal`. It re-observes and binds the recorded state before
+continuing and never replays an `invoking-uncertain` request.
+`recover-quarantine` records an independently evidenced human recovery decision
+for any stranded prefix. Only a second signed `recover-resolve` decision with
+terminal reconciliation evidence may release the local mutation fence. A
+subsequent owner-authorized exact rollback or retirement plan is allowed while
+acquisition remains frozen. `thaw` requires a signed resolved recovery, a new
+attended recovery confirmation, no active mutation, and no unclassified
+journal; it cannot erase or reinterpret the original record.
 
 `state-observe --output <new-file>` writes the exact read-only Cloudflare
 projection. `plan-build` is the only supported plan-construction path: it
@@ -173,7 +183,11 @@ does not claim that Cloudflare exposes the required authoritative quota surface;
 the deployment task must prove that empirical acquisition or stop for an
 approved architecture amendment.
 
-The three Worker-bound values are resolved only after durable consumption and
+Credential enrollment is serialized with plan admission. Each immutable slot
+version is signed, predecessor-linked, and has one current head per role. A
+partial value write may be recovered only by reenrolling the same exact version;
+an authorized plan that references a superseded version is rejected before
+credential resolution. The three Worker-bound values are resolved only after durable consumption and
 confidentially compared for pairwise distinction. They enter the protected
 Wrangler child only through its closed credential environment or secret stdin;
 they never enter argv, plan, journal, evidence, or output. A fresh-account deploy

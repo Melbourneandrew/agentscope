@@ -149,7 +149,13 @@ func terminalContractSHA256(plan Plan) string {
 		contract["cron"] = "*/15 * * * *"
 		contract["durableObjectBinding"] = "FLEET"
 		contract["durableObjectClass"] = "FleetDurableObject"
-		contract["migrationTag"] = plan.CurrentMigrationTag
+		if plan.CurrentWorkerVersionID == "absent" {
+			contract["durableObjectNamespace"] = "create-exactly-one-owned-namespace"
+			contract["migrationTag"] = "v1"
+		} else {
+			contract["durableObjectNamespace"] = plan.DurableObjectNamespaceID
+			contract["migrationTag"] = plan.CurrentMigrationTag
+		}
 		contract["secretNames"] = canonicalSecrets
 		contract["scriptWorkersDev"] = true
 		contract["worker"] = "present"

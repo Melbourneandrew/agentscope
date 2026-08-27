@@ -469,6 +469,60 @@ func (store Store) IsFrozen() bool {
 	return err == nil
 }
 
+func (store Store) hasResolvedRecovery() bool {
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return false
+	}
+	entries, err := os.ReadDir(store.path("journal"))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !digestPattern.MatchString(entry.Name()) {
+			continue
+		}
+		data, readErr := readPrivate(store.path("journal", entry.Name(), "recovery-resolved.json"))
+		if readErr != nil {
+			continue
+		}
+		var record SignedControlRecord
+		if strictJSON(data, &record) == nil && record.Domain == RecoveryDomain && record.PlanSHA256 == entry.Name() && record.Disposition == "reconciled-abandoned" && digestPattern.MatchString(record.EvidenceSHA256) && verifyControlRecord(record, installation.Roots[RecoveryRole], RecoveryRole) == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (store Store) Thaw(evidenceSHA256 string, now time.Time, passphrase []byte) (SignedControlRecord, error) {
+	if !digestPattern.MatchString(evidenceSHA256) || !store.IsFrozen() || !store.hasResolvedRecovery() {
+		return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
+	}
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return SignedControlRecord{}, err
+	}
+	defer releaseAdmissionGuard(guard)
+	if err := store.ensureNoActiveMutation(); err != nil {
+		return SignedControlRecord{}, err
+	}
+	record, err := store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, RequestID: "acquisition-thaw", Disposition: "thawed", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
+	if err != nil {
+		return record, err
+	}
+	data, _ := json.MarshalIndent(record, "", "  ")
+	if err := writeExclusive(store.path("journal", "thaw-"+evidenceSHA256+".json"), append(data, '\n'), 0o600); err != nil {
+		return record, err
+	}
+	if err := os.Remove(store.path("journal", "acquisition.freeze")); err != nil {
+		return record, err
+	}
+	if err := syncDirectory(store.path("journal")); err != nil {
+		return record, err
+	}
+	return record, nil
+}
+
 func (store Store) VerifyFreeze(expectedID string) error {
 	data, err := readPrivate(store.path("journal", "acquisition.freeze"))
 	if err != nil {
@@ -499,7 +553,8 @@ func (store Store) RecoverQuarantine(planSHA256, requestID, evidenceSHA256 strin
 		return SignedControlRecord{}, err
 	}
 	last, err := store.lastEvent(planSHA256)
-	if err != nil || last.RequestID != requestID || (last.State != "invoking-uncertain" && !(last.State == "consumed" && requestID == "plan")) {
+	recoverable := map[string]bool{"consumed": true, "invoking-uncertain": true, "observed-committed": true, "credential-roles-validated": true, "reconciled-terminal": true}
+	if err != nil || last.RequestID != requestID || !recoverable[last.State] {
 		return SignedControlRecord{}, errors.New("E_RECOVERY_PREFIX")
 	}
 	record, err := store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, PlanSHA256: planSHA256, RequestID: requestID, Disposition: "quarantine", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
@@ -542,7 +597,7 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 	hasFence := fenceErr == nil && strings.TrimSpace(string(fenceData)) == planSHA256
 	last, lastErr := store.lastEvent(planSHA256)
 	definiteNoncommit := lastErr == nil && last.State == "consumed" && requestID == "plan"
-	alreadyTerminal := lastErr == nil && ((last.State == "abandoned-definite-noncommit" && requestID == "plan") || (last.State == "reconciled-terminal" && last.RequestID == requestID && last.ReceiptSHA256 == evidenceSHA256))
+	alreadyTerminal := lastErr == nil && ((last.State == "abandoned-definite-noncommit" && requestID == "plan") || (last.State == "abandoned-reconciled" && last.RequestID == requestID && last.ReceiptSHA256 == evidenceSHA256) || (last.State == "reconciled-terminal" && requestID == "plan"))
 	if !hasFence && !definiteNoncommit && !alreadyTerminal {
 		return SignedControlRecord{}, errors.New("E_MUTATION_FENCE")
 	}
@@ -582,8 +637,20 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 		if sequenceErr != nil {
 			return record, sequenceErr
 		}
-		if _, eventErr := store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planSHA256, RequestID: requestID, State: "reconciled-terminal", PreviousSHA256: previous, RecordedAt: now, DetailCode: "ABANDONED", ReceiptSHA256: evidenceSHA256}); eventErr != nil {
+		if _, eventErr := store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planSHA256, RequestID: requestID, State: "abandoned-reconciled", PreviousSHA256: previous, RecordedAt: now, DetailCode: "ABANDONED", ReceiptSHA256: evidenceSHA256}); eventErr != nil {
 			return record, eventErr
+		}
+	}
+	if lastErr == nil && last.State == "reconciled-terminal" {
+		planData, readErr := readPrivate(store.path("journal", planSHA256, "plan.json"))
+		var plan Plan
+		if readErr != nil || strictJSON(planData, &plan) != nil || SHA256(planData) != planSHA256 {
+			return record, errors.New("E_RECOVERY_PLAN_BINDING")
+		}
+		if plan.Kind == "retire" && plan.RetirementTombstoneSHA256 != nil {
+			if err := store.recordRetirement(planSHA256, *plan.RetirementTombstoneSHA256, now); err != nil && !os.IsExist(err) {
+				return record, err
+			}
 		}
 	}
 	if hasFence {
@@ -624,12 +691,26 @@ func (store Store) lastEvent(planDigest string) (Event, error) {
 }
 
 func (store Store) recordRetirement(planDigest, tombstoneDigest string, now time.Time) error {
+	path := store.path("evidence", "retirement-complete.json")
+	if existing, readErr := readPrivate(path); readErr == nil {
+		installation, err := store.LoadInstallation()
+		if err != nil {
+			return err
+		}
+		var record SignedControlRecord
+		if strictJSON(existing, &record) != nil || verifyControlRecord(record, installation.Roots[JournalRole], JournalRole) != nil || record.Domain != RetirementDomain || record.PlanSHA256 != planDigest || record.RequestID != "retirement" || record.Disposition != "terminal" || record.EvidenceSHA256 != tombstoneDigest {
+			return errors.New("E_RETIREMENT_RECORD_BINDING")
+		}
+		return nil
+	} else if !os.IsNotExist(readErr) {
+		return readErr
+	}
 	record, err := store.signControlRecord(SignedControlRecord{Domain: RetirementDomain, PlanSHA256: planDigest, RequestID: "retirement", Disposition: "terminal", EvidenceSHA256: tombstoneDigest, RecordedAt: now}, JournalRole, nil)
 	if err != nil {
 		return err
 	}
 	data, _ := json.MarshalIndent(record, "", "  ")
-	return writeExclusive(store.path("evidence", "retirement-complete.json"), append(data, '\n'), 0o600)
+	return writeExclusive(path, append(data, '\n'), 0o600)
 }
 
 func (store Store) VerifyJournal(planDigest string) error {
@@ -697,6 +778,31 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 	if !allowed {
 		return SlotMetadata{}, errors.New("E_SLOT_ROLE")
 	}
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return SlotMetadata{}, err
+	}
+	defer releaseAdmissionGuard(guard)
+	directory := store.path("slots", slotID)
+	if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
+		return SlotMetadata{}, err
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		return SlotMetadata{}, err
+	}
+	secretPath, metadataPath := filepath.Join(directory, slotVersion+".secret"), filepath.Join(directory, slotVersion+".json")
+	_, secretErr := os.Lstat(secretPath)
+	_, metadataErr := os.Lstat(metadataPath)
+	if secretErr == nil && os.IsNotExist(metadataErr) {
+		if err := os.Remove(secretPath); err != nil {
+			return SlotMetadata{}, errors.New("E_SLOT_INCOMPLETE_RECOVERY")
+		}
+		if err := syncDirectory(directory); err != nil {
+			return SlotMetadata{}, errors.New("E_SLOT_INCOMPLETE_RECOVERY")
+		}
+	} else if secretErr == nil || metadataErr == nil || (secretErr != nil && !os.IsNotExist(secretErr)) || (metadataErr != nil && !os.IsNotExist(metadataErr)) {
+		return SlotMetadata{}, errors.New("E_SLOT_VERSION_EXISTS")
+	}
 	existing, existingErr := store.credentialMetadata()
 	if existingErr != nil && !errors.Is(existingErr, os.ErrNotExist) {
 		return SlotMetadata{}, existingErr
@@ -704,13 +810,6 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 	current := existing[role]
 	if current.SlotID == slotID && current.SlotVersion == slotVersion {
 		return SlotMetadata{}, errors.New("E_SLOT_VERSION_EXISTS")
-	}
-	directory := store.path("slots", slotID)
-	if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
-		return SlotMetadata{}, err
-	}
-	if err := os.Chmod(directory, 0o700); err != nil {
-		return SlotMetadata{}, err
 	}
 	credentialKey, err := store.credentialKey()
 	if err != nil {
@@ -738,11 +837,11 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 	}
 	defer zeroBytes(privateKey)
 	metadata.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
-	if err := writeExclusive(filepath.Join(directory, slotVersion+".secret"), sealedValue, 0o600); err != nil {
+	if err := writeExclusive(secretPath, sealedValue, 0o600); err != nil {
 		return SlotMetadata{}, err
 	}
 	data, _ := json.MarshalIndent(metadata, "", "  ")
-	if err := writeExclusive(filepath.Join(directory, slotVersion+".json"), append(data, '\n'), 0o600); err != nil {
+	if err := writeExclusive(metadataPath, append(data, '\n'), 0o600); err != nil {
 		return SlotMetadata{}, err
 	}
 	return metadata, nil
@@ -771,6 +870,10 @@ func (store Store) ResolveSecrets(plan Plan) (map[string][]byte, error) {
 		return nil, err
 	}
 	resolved := map[string][]byte{}
+	currentMetadata, err := store.credentialMetadata()
+	if err != nil {
+		return nil, err
+	}
 	seenSlots := map[string]struct{}{}
 	roleForSecret := map[string]string{"CRABBOX_ADMIN_TOKEN": "crabbox-admin", "CRABBOX_SHARED_TOKEN": "crabbox-shared", "HETZNER_TOKEN": "hetzner-worker"}
 	for _, secretName := range canonicalSecrets {
@@ -783,6 +886,10 @@ func (store Store) ResolveSecrets(plan Plan) (map[string][]byte, error) {
 		}
 		if operation == nil || operation.SlotID == nil || operation.SlotVersion == nil {
 			return nil, errors.New("E_SLOT_BINDING")
+		}
+		current := currentMetadata[roleForSecret[secretName]]
+		if current.SlotID != *operation.SlotID || current.SlotVersion != *operation.SlotVersion {
+			return nil, errors.New("E_SLOT_SUPERSEDED")
 		}
 		key := *operation.SlotID + ":" + *operation.SlotVersion
 		if _, exists := seenSlots[key]; exists {
@@ -1057,6 +1164,22 @@ func (store Store) acquireFence(planDigest string) (*os.File, error) {
 	return file, nil
 }
 
+func (store Store) resumeFence(planDigest string) (*os.File, error) {
+	path := store.path("journal", "mutation.lock")
+	data, err := readPrivate(path)
+	if os.IsNotExist(err) {
+		return nil, errors.New("E_MUTATION_FENCE_ABSENT")
+	}
+	if err != nil || strings.TrimSpace(string(data)) != planDigest {
+		return nil, errors.New("E_MUTATION_FENCE")
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, errors.New("E_MUTATION_FENCE")
+	}
+	return file, nil
+}
+
 func (store Store) acquireAdmissionGuard() (*os.File, error) {
 	path := store.path("journal", "admission.guard")
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
@@ -1093,7 +1216,7 @@ func (store Store) ensureNoActiveMutation() error {
 		if err != nil {
 			return errors.New("E_JOURNAL_UNCLASSIFIED")
 		}
-		if last.State != "reconciled-terminal" && last.State != "abandoned-definite-noncommit" {
+		if last.State != "reconciled-terminal" && last.State != "abandoned-definite-noncommit" && last.State != "abandoned-reconciled" {
 			return errors.New("E_JOURNAL_UNCLASSIFIED")
 		}
 	}
@@ -1110,7 +1233,10 @@ func (store Store) releaseFence(file *os.File) error {
 	return syncDirectory(store.path("journal"))
 }
 
-func (store Store) consumePlan(planDigest string, now time.Time) (string, error) {
+func (store Store) consumePlan(planDigest string, planData []byte, now time.Time) (string, error) {
+	if SHA256(planData) != planDigest {
+		return "", errors.New("E_PLAN_DIGEST")
+	}
 	directory := store.path("journal", planDigest)
 	event := Event{SchemaVersion: SchemaVersion, Sequence: 0, PlanSHA256: planDigest, RequestID: "plan", State: "consumed", PreviousSHA256: strings.Repeat("0", 64), RecordedAt: now, DetailCode: "OK"}
 	data, err := store.signedEventBytes(event)
@@ -1122,6 +1248,9 @@ func (store Store) consumePlan(planDigest string, now time.Time) (string, error)
 		if os.IsExist(err) {
 			return "", errors.New("E_PLAN_REPLAY")
 		}
+		return "", err
+	}
+	if err := writeExclusive(filepath.Join(staging, "plan.json"), planData, 0o600); err != nil {
 		return "", err
 	}
 	committed := false

@@ -174,7 +174,7 @@ func authorize(args []string) {
 	if err := control.ValidatePlanCandidate(plan, installation, time.Now().UTC()); err != nil {
 		fail(errorCode(err))
 	}
-	emit(map[string]any{"schemaVersion": 1, "authorizationPreview": true, "planSha256": control.SHA256(planData), "kind": plan.Kind, "accountId": plan.AccountID, "environmentId": plan.EnvironmentID, "workerName": plan.WorkerName, "profileSha256": plan.ProfileSHA256, "observablePrestateSha256": plan.ObservablePrestateSHA256, "observationId": plan.ObservationID, "expiresAt": plan.ExpiresAt, "operations": plan.Operations, "rollbackActions": plan.RollbackActions})
+	emit(map[string]any{"schemaVersion": 1, "authorizationPreview": true, "planSha256": control.SHA256(planData), "plan": plan})
 	confirmation, err := control.ReadSecretFromTTY(fmt.Sprintf("Authorize %s plan %s for %s? Type AUTHORIZE: ", plan.Kind, control.SHA256(planData), plan.WorkerName))
 	if err != nil {
 		fail(errorCode(err))
@@ -267,7 +267,7 @@ func signObservation(args []string) {
 	if err := control.ValidateObservationCandidate(observation, installation, time.Now().UTC()); err != nil {
 		fail(errorCode(err))
 	}
-	emit(map[string]any{"schemaVersion": 1, "observationPreview": true, "observationSha256": control.SHA256(data), "accountId": observation.AccountID, "workersPlan": observation.WorkersPlan, "paidOrOverageEnabled": observation.PaidOrOverageEnabled, "allAccountConsumersIncluded": observation.AllAccountConsumersIncluded, "quotas": observation.Quotas, "observedAt": observation.ObservedAt, "expiresAt": observation.ExpiresAt})
+	emit(map[string]any{"schemaVersion": 1, "observationPreview": true, "observationSha256": control.SHA256(data), "observation": observation})
 	confirmation, err := control.ReadSecretFromTTY(fmt.Sprintf("Confirm independent Free/no-overage observation %s for %s? Type OBSERVED: ", observation.ObservationID, observation.AccountID))
 	if err != nil {
 		fail(errorCode(err))
@@ -305,7 +305,7 @@ func admitRetirementEvidence(args []string) {
 	if err != nil {
 		fail("E_RETIREMENT_EVIDENCE_SCHEMA")
 	}
-	emit(map[string]any{"schemaVersion": 1, "retirementEvidencePreview": true, "accountId": evidence.AccountID, "environmentId": evidence.EnvironmentID, "workerName": evidence.WorkerName, "providerServers": evidence.ProviderServers, "providerKeys": evidence.ProviderKeys, "coordinatorLeases": evidence.CoordinatorLeases, "unresolvedCreates": evidence.UnresolvedCreates, "providerObservationSha256": evidence.ProviderObservationSHA256, "coordinatorObservationSha256": evidence.CoordinatorObservationSHA256, "retirementTombstoneSha256": evidence.RetirementTombstoneSHA256, "expiresAt": evidence.ExpiresAt})
+	emit(map[string]any{"schemaVersion": 1, "retirementEvidencePreview": true, "retirementEvidenceSha256": control.SHA256(data), "retirementEvidence": evidence})
 	confirmation, err := control.ReadSecretFromTTY("Admit these exact retirement prerequisites? Type RETIRE: ")
 	if err != nil {
 		fail(errorCode(err))
@@ -424,6 +424,8 @@ func status() {
 }
 
 func observeState(args []string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	requireRoot()
 	flags := flag.NewFlagSet("state-observe", flag.ContinueOnError)
 	output := flags.String("output", "", "optional new raw state observation file")
@@ -435,14 +437,18 @@ func observeState(args []string) {
 	if err != nil {
 		fail(errorCode(err))
 	}
+	if err := ctx.Err(); err != nil {
+		fail("E_COMMAND_DEADLINE")
+	}
 	credential, err := store.ResolveCredential("cloudflare-plan-read")
 	if err != nil {
 		fail(errorCode(err))
 	}
 	defer zero(credential)
 	now := time.Now().UTC()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
+	if err := ctx.Err(); err != nil {
+		fail("E_COMMAND_DEADLINE")
+	}
 	observation, err := (control.CloudflareObserver{AccountID: installation.AccountID}).Observe(ctx, credential, now)
 	if err != nil {
 		fail(errorCode(err))
@@ -532,6 +538,33 @@ func recoverResolve(args []string) {
 		fail(errorCode(err))
 	}
 	emit(map[string]any{"schemaVersion": 1, "resolved": true, "planSha256": record.PlanSHA256, "acquisitionFrozen": true, "mutationRetried": false})
+}
+
+func thaw(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("thaw", flag.ContinueOnError)
+	evidenceDigest := flags.String("evidence-sha256", "", "reviewed restoration evidence digest")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	confirmation, err := control.ReadSecretFromTTY("Re-enable acquisition after reviewed terminal recovery? Type THAW: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "THAW" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Recovery authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	record, err := control.NewStore(stateRoot()).Thaw(*evidenceDigest, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "acquisitionFrozen": false, "evidenceSha256": record.EvidenceSHA256, "mutationRetried": false})
 }
 
 func writeNew(path string, value any) {
@@ -628,6 +661,8 @@ func main() {
 		recoverQuarantine(os.Args[2:])
 	case "recover-resolve":
 		recoverResolve(os.Args[2:])
+	case "thaw":
+		thaw(os.Args[2:])
 	default:
 		fail("E_COMMAND")
 	}

@@ -2,7 +2,8 @@
 set -eu
 
 # Networked immutable-input preparation for CI only. This verifies the complete
-# nonsecret installer path and exits before privilege, credentials, or cloud.
+# nonsecret installer path through ephemeral root-owned staging and exits before
+# persistent installation, credentials, or cloud/provider mutation.
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$repository_root"
 verification_root=$(mktemp -d "${TMPDIR:-/tmp}/agentscope-crabbox-installer-verify.XXXXXX")
@@ -36,17 +37,26 @@ client="$verification_root/crabbox-client"
 printf '%s  %s\n' 52b2da6ffb141c19d35fe777e4b6e7d827ed5c05b3a2101e43f83ad848a9655c "$client" | shasum -a 256 -c -
 test "$($client version)" = 0.46.0
 
+launcher_source="$verification_root/agentscope"
+git clone --quiet --no-hardlinks "$repository_root" "$launcher_source"
+reviewed_launcher_commit=$(git -C "$launcher_source" rev-parse HEAD)
+printf '\n// synthetic replace-ref payload that must never enter the staged launcher\n' >> "$launcher_source/tools/crabbox-launcher/internal/control/types.go"
+git -C "$launcher_source" -c user.name='Agentscope CI' -c user.email='agentscope-ci@example.invalid' commit --quiet -am 'synthetic replace-ref payload'
+attacker_commit=$(git -C "$launcher_source" rev-parse HEAD)
+git -C "$launcher_source" checkout --quiet --detach "$reviewed_launcher_commit"
+git -C "$launcher_source" replace "$reviewed_launcher_commit" "$attacker_commit"
+
 record="$verification_root/operator-record.json"
 printf '%s\n' '{"environmentId":"asgcf_0123456789abcdef0123456789abcdef","workerName":"agentscope-crabbox-development","cloudflarePlan":"free","accountMode":"owner-personal-shared"}' > "$record"
 live_profile="$source/worker/wrangler.agentscope.jsonc"
-"$admitted_node" "$repository_root/scripts/crabbox-coordinator-profile.mjs" --source "$source" --record "$record" --output "$live_profile" >/dev/null
+"$admitted_node" "$launcher_source/scripts/crabbox-coordinator-profile.mjs" --source "$source" --record "$record" --output "$live_profile" >/dev/null
 terminal_profile="$source/worker/wrangler.agentscope-terminal.jsonc"
-"$admitted_node" --input-type=module -e 'import {readFile,writeFile} from "node:fs/promises"; import {expectedTerminalProfile} from "./scripts/lib/crabbox-coordinator-policy.mjs"; const admission=JSON.parse(await readFile("./ops/crabbox-coordinator/admission.json","utf8")); await writeFile(process.argv[1], JSON.stringify(expectedTerminalProfile(admission), null, 2)+"\n", {mode:0o600,flag:"wx"});' "$terminal_profile"
+(cd "$launcher_source" && "$admitted_node" --input-type=module -e 'import {readFile,writeFile} from "node:fs/promises"; import {expectedTerminalProfile} from "./scripts/lib/crabbox-coordinator-policy.mjs"; const admission=JSON.parse(await readFile("./ops/crabbox-coordinator/admission.json","utf8")); await writeFile(process.argv[1], JSON.stringify(expectedTerminalProfile(admission), null, 2)+"\n", {mode:0o600,flag:"wx"});' "$terminal_profile")
 
 toolchain="$verification_root/toolchain.json"
 printf '%s\n' '{"nodeVersion":"24.19.0","nodeArchiveSha256":"8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d","wranglerVersion":"4.114.0","workerLockSha256":"6bf8940bd1b514ab3541485605e24b516242359e3050cfa5645966e398b030fd","goVersion":"1.26.5","goArchiveSha256":"efb87ff28af9a188d0536ef5d42e63dd52ba8263cd7344a993cc48dd11dedb6a","crabboxClientSha256":"52b2da6ffb141c19d35fe777e4b6e7d827ed5c05b3a2101e43f83ad848a9655c"}' > "$toolchain"
 
-AGENTSCOPE_CRABBOX_INSTALLER_VERIFY_ONLY=1 "$repository_root/ops/crabbox-coordinator/install-protected-launcher.sh" \
+AGENTSCOPE_CRABBOX_INSTALLER_VERIFY_ONLY=1 "$launcher_source/ops/crabbox-coordinator/install-protected-launcher.sh" \
   install-ci asgcf_0123456789abcdef0123456789abcdef account-ci project-ci "$source" \
   "$go_archive" "$node_archive" "$toolchain" "$live_profile" "$terminal_profile" \
-  "$repository_root/ops/crabbox-coordinator/terminal-worker.agentscope.mjs"
+  "$launcher_source/ops/crabbox-coordinator/terminal-worker.agentscope.mjs"

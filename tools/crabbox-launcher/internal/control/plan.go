@@ -205,6 +205,9 @@ func currentMigrationTag(value any) string {
 	if tag := fmt.Sprint(settings["migration_tag"]); tag != "" && tag != "<nil>" {
 		return tag
 	}
+	if migrations := objectSlice(settings["migrations"]); len(migrations) > 0 {
+		return fmt.Sprint(migrations[len(migrations)-1]["tag"])
+	}
 	return ""
 }
 

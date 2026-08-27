@@ -55,6 +55,24 @@ type ApplyInput struct {
 	Clock                  func() time.Time
 }
 
+func operationIndexByRequest(plan Plan, requestID string) int {
+	for index, operation := range plan.Operations {
+		if operation.RequestID == requestID {
+			return index
+		}
+	}
+	return -1
+}
+
+func secretsForPlan(plan Plan) bool {
+	for _, operation := range plan.Operations {
+		if operation.Action == "worker.secret.put" {
+			return true
+		}
+	}
+	return false
+}
+
 func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executor, observer StateObserver) error {
 	if err := ctx.Err(); err != nil {
 		return errors.New("E_AUTHORITY_DEADLINE")
@@ -93,7 +111,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	operationContext, cancel := context.WithTimeout(ctx, authorityLifetime)
 	defer cancel()
 	if store.IsFrozen() && plan.Kind != "retire" {
-		return errors.New("E_ACQUISITION_FROZEN")
+		if plan.Kind != "rollback" || !store.hasResolvedRecovery() {
+			return errors.New("E_ACQUISITION_FROZEN")
+		}
 	}
 	if plan.Kind == "retire" {
 		if !store.IsFrozen() || plan.AcquisitionFreezeID == nil {
@@ -115,19 +135,59 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		return err
 	}
 	defer releaseAdmissionGuard(guard)
-	if err := store.ensureNoActiveMutation(); err != nil {
-		return err
-	}
 	if err := operationContext.Err(); err != nil {
 		return errors.New("E_AUTHORITY_DEADLINE")
 	}
-	previous, err := store.consumePlan(planDigest, input.Now)
-	if err != nil {
-		return err
-	}
-	fence, err := store.acquireFence(planDigest)
-	if err != nil {
-		return err
+	resumeEvent := Event{}
+	startOperation, forwardValidated, terminalReconciled := 0, false, false
+	fence, resumeErr := store.resumeFence(planDigest)
+	var previous string
+	if resumeErr == nil {
+		if err := store.VerifyJournal(planDigest); err != nil {
+			fence.Close()
+			return err
+		}
+		resumeEvent, err = store.lastEvent(planDigest)
+		if err != nil {
+			fence.Close()
+			return err
+		}
+		switch resumeEvent.State {
+		case "consumed":
+		case "observed-committed":
+			startOperation = operationIndexByRequest(plan, resumeEvent.RequestID) + 1
+			if startOperation == 0 {
+				fence.Close()
+				return errors.New("E_RECOVERY_PREFIX")
+			}
+		case "credential-roles-validated":
+			startOperation, forwardValidated = len(plan.Operations), true
+		case "reconciled-terminal":
+			startOperation, forwardValidated, terminalReconciled = len(plan.Operations), secretsForPlan(plan), true
+		default:
+			fence.Close()
+			return errors.New("E_RECOVERY_REQUIRED")
+		}
+		_, previous, err = store.nextSequence(planDigest)
+		if err != nil {
+			fence.Close()
+			return err
+		}
+	} else {
+		if !strings.Contains(resumeErr.Error(), "E_MUTATION_FENCE_ABSENT") {
+			return resumeErr
+		}
+		if err := store.ensureNoActiveMutation(); err != nil {
+			return err
+		}
+		previous, err = store.consumePlan(planDigest, input.PlanData, input.Now)
+		if err != nil {
+			return err
+		}
+		fence, err = store.acquireFence(planDigest)
+		if err != nil {
+			return err
+		}
 	}
 	released := false
 	defer func() {
@@ -161,18 +221,24 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		return err
 	}
 	currentDigest, currentIdentityDigest, err := currentState.Digests()
-	if err != nil || currentDigest != plan.ObservablePrestateSHA256 {
+	expectedStateDigest := plan.ObservablePrestateSHA256
+	if resumeEvent.State != "" && resumeEvent.State != "consumed" {
+		expectedStateDigest = resumeEvent.StateSHA256
+	}
+	if err != nil || currentDigest != expectedStateDigest {
 		return errors.New("E_OBSERVABLE_PRESTATE")
 	}
-	for _, identity := range []string{plan.CurrentWorkerVersionID, plan.DurableObjectNamespaceID, plan.CurrentMigrationTag} {
-		if identity == "absent" || identity == "none" {
-			continue
-		}
-		if !stateContainsIdentity(currentState, identity) {
-			return errors.New("E_PRESTATE_RESOURCE_IDENTITY")
+	if resumeEvent.State == "" || resumeEvent.State == "consumed" {
+		for _, identity := range []string{plan.CurrentWorkerVersionID, plan.DurableObjectNamespaceID, plan.CurrentMigrationTag} {
+			if identity == "absent" || identity == "none" {
+				continue
+			}
+			if !stateContainsIdentity(currentState, identity) {
+				return errors.New("E_PRESTATE_RESOURCE_IDENTITY")
+			}
 		}
 	}
-	for _, operation := range plan.Operations {
+	for _, operation := range plan.Operations[startOperation:] {
 		now := clock()
 		if now.After(plan.ExpiresAt) || now.After(observation.ExpiresAt) {
 			return errors.New("E_AUTHORITY_EXPIRED_DURING_APPLY")
@@ -231,7 +297,7 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		}
 		currentState, currentDigest, currentIdentityDigest = postState, postDigest, postIdentityDigest
 	}
-	if len(secrets) != 0 {
+	if len(secrets) != 0 && !forwardValidated {
 		validator, ok := executor.(CredentialValidator)
 		subdomain := mapString(currentState.Surfaces["accountWorkersDev"], "subdomain")
 		if !ok || subdomain == "" {
@@ -270,13 +336,15 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err := ValidateTerminalObservation(plan, terminalState); err != nil {
 		return err
 	}
-	sequence, chain, err := store.nextSequence(planDigest)
-	if err != nil || chain != previous {
-		return errors.New("E_JOURNAL_CHAIN")
-	}
-	_, err = store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planDigest, RequestID: "plan", State: "reconciled-terminal", PreviousSHA256: previous, RecordedAt: clock(), DetailCode: "OK", StateSHA256: currentDigest, IdentitySHA256: currentIdentityDigest})
-	if err != nil {
-		return err
+	if !terminalReconciled {
+		sequence, chain, err := store.nextSequence(planDigest)
+		if err != nil || chain != previous {
+			return errors.New("E_JOURNAL_CHAIN")
+		}
+		_, err = store.appendEvent(Event{SchemaVersion: SchemaVersion, Sequence: sequence, PlanSHA256: planDigest, RequestID: "plan", State: "reconciled-terminal", PreviousSHA256: previous, RecordedAt: clock(), DetailCode: "OK", StateSHA256: currentDigest, IdentitySHA256: currentIdentityDigest})
+		if err != nil {
+			return err
+		}
 	}
 	if plan.Kind == "retire" && plan.RetirementTombstoneSHA256 != nil {
 		if err := store.recordRetirement(planDigest, *plan.RetirementTombstoneSHA256, clock()); err != nil {
@@ -521,106 +589,79 @@ func (executor CommandExecutor) ValidateCoordinatorCredentials(ctx context.Conte
 	}
 	safeClient := *client
 	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("E_CREDENTIAL_FORWARD_REDIRECT") }
-	checks := []struct {
-		secret string
-		admin  *bool
-	}{
-		{secret: "CRABBOX_SHARED_TOKEN", admin: boolPointer(false)},
-		{secret: "CRABBOX_ADMIN_TOKEN", admin: boolPointer(true)},
-		{secret: "HETZNER_TOKEN", admin: nil},
+	requestRole := func(target, credential string) (int, []byte, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return 0, nil, errors.New("E_CREDENTIAL_FORWARD_REQUEST")
+		}
+		request.Header.Set("Authorization", "Bearer "+credential)
+		request.Header.Set("Accept", "application/json")
+		response, err := safeClient.Do(request)
+		if err != nil {
+			return 0, nil, errors.New("E_CREDENTIAL_FORWARD_UNKNOWN")
+		}
+		if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != request.URL.Host) {
+			response.Body.Close()
+			return 0, nil, errors.New("E_CREDENTIAL_FORWARD_ORIGIN")
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<10)+1))
+		response.Body.Close()
+		if readErr != nil || len(body) > 16<<10 {
+			return 0, nil, errors.New("E_CREDENTIAL_FORWARD_OUTPUT")
+		}
+		return response.StatusCode, body, nil
 	}
-	identities := []string{}
-	for _, check := range checks {
-		value := secrets[check.secret]
-		if len(value) == 0 {
+	for _, name := range canonicalSecrets {
+		if len(secrets[name]) == 0 {
 			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_MISSING")
 		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/v1/whoami", nil)
-		if err != nil {
-			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_REQUEST")
-		}
-		request.Header.Set("Authorization", "Bearer "+string(value))
-		request.Header.Set("Accept", "application/json")
-		response, err := safeClient.Do(request)
-		if err != nil {
-			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_UNKNOWN")
-		}
-		if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != WorkerName+"."+subdomain+".workers.dev") {
-			response.Body.Close()
-			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_ORIGIN")
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<10)+1))
-		response.Body.Close()
-		if readErr != nil || len(body) > 16<<10 {
-			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_OUTPUT")
-		}
-		if check.admin == nil {
-			if response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden {
-				return MutationReceipt{}, errors.New("E_PROVIDER_CREDENTIAL_ACCEPTED_BY_COORDINATOR")
-			}
-			identities = append(identities, "hetzner=coordinator-rejected")
-			continue
-		}
-		if response.StatusCode != http.StatusOK {
-			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_REJECTED")
-		}
-		var whoami struct {
-			Owner string `json:"owner"`
-			Org   string `json:"org"`
-			Auth  string `json:"auth"`
-			Admin bool   `json:"admin"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		if err := decoder.Decode(&whoami); err != nil || decoder.Decode(&struct{}{}) != io.EOF || whoami.Admin != *check.admin || whoami.Auth == "" || whoami.Owner == "" {
-			return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_ROLE")
-		}
-		identities = append(identities, strings.ToLower(strings.TrimSuffix(check.secret, "_TOKEN"))+"-admin="+fmt.Sprint(whoami.Admin))
 	}
-	for _, secretName := range canonicalSecrets {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.hetzner.cloud/v1/servers?page=1&per_page=1", nil)
-		if err != nil {
-			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_REQUEST")
-		}
-		request.Header.Set("Authorization", "Bearer "+string(secrets[secretName]))
-		request.Header.Set("Accept", "application/json")
-		response, err := safeClient.Do(request)
-		if err != nil {
-			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_UNKNOWN")
-		}
-		if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != "api.hetzner.cloud") {
-			response.Body.Close()
-			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_ORIGIN")
-		}
-		body, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<10)+1))
-		response.Body.Close()
-		if readErr != nil || len(body) > 16<<10 {
-			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_OUTPUT")
-		}
-		if secretName != "HETZNER_TOKEN" {
-			if response.StatusCode != http.StatusUnauthorized && response.StatusCode != http.StatusForbidden {
-				return MutationReceipt{}, errors.New("E_COORDINATOR_CREDENTIAL_ACCEPTED_BY_PROVIDER")
-			}
-			continue
-		}
-		if response.StatusCode != http.StatusOK {
-			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_REJECTED")
-		}
-		var provider struct {
-			Servers []json.RawMessage `json:"servers"`
-			Meta    json.RawMessage   `json:"meta"`
-		}
-		decoder := json.NewDecoder(bytes.NewReader(body))
-		if err := decoder.Decode(&provider); err != nil || decoder.Decode(&struct{}{}) != io.EOF || provider.Servers == nil || len(provider.Meta) == 0 {
-			return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_SCHEMA")
-		}
-		identities = append(identities, "hetzner=provider-read")
+	identities := []string{}
+	status, body, err := requestRole(origin+"/v1/whoami", string(secrets["CRABBOX_SHARED_TOKEN"]))
+	var whoami struct {
+		Owner string `json:"owner"`
+		Org   string `json:"org"`
+		Auth  string `json:"auth"`
+		Admin bool   `json:"admin"`
 	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err != nil || status != http.StatusOK || decoder.Decode(&whoami) != nil || decoder.Decode(&struct{}{}) != io.EOF || whoami.Admin || whoami.Auth == "" || whoami.Owner == "" {
+		return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_ROLE")
+	}
+	identities = append(identities, "crabbox-shared=ordinary")
+	status, _, err = requestRole(origin+"/v1/admin/leases", string(secrets["CRABBOX_SHARED_TOKEN"]))
+	if err != nil || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
+		return MutationReceipt{}, errors.New("E_SHARED_CREDENTIAL_ACCEPTED_BY_ADMIN")
+	}
+	identities = append(identities, "crabbox-shared=admin-rejected")
+	status, body, err = requestRole(origin+"/v1/admin/leases", string(secrets["CRABBOX_ADMIN_TOKEN"]))
+	var adminResult struct {
+		Leases []json.RawMessage `json:"leases"`
+	}
+	decoder = json.NewDecoder(bytes.NewReader(body))
+	if err != nil || status != http.StatusOK || decoder.Decode(&adminResult) != nil || decoder.Decode(&struct{}{}) != io.EOF || adminResult.Leases == nil {
+		return MutationReceipt{}, errors.New("E_ADMIN_CREDENTIAL_REJECTED")
+	}
+	identities = append(identities, "crabbox-admin=admin")
+	status, _, err = requestRole(origin+"/v1/whoami", string(secrets["HETZNER_TOKEN"]))
+	if err != nil || (status != http.StatusUnauthorized && status != http.StatusForbidden) {
+		return MutationReceipt{}, errors.New("E_PROVIDER_CREDENTIAL_ACCEPTED_BY_COORDINATOR")
+	}
+	identities = append(identities, "hetzner=coordinator-rejected")
+	status, body, err = requestRole("https://api.hetzner.cloud/v1/servers?page=1&per_page=1", string(secrets["HETZNER_TOKEN"]))
+	var provider struct {
+		Servers []json.RawMessage `json:"servers"`
+		Meta    json.RawMessage   `json:"meta"`
+	}
+	decoder = json.NewDecoder(bytes.NewReader(body))
+	if err != nil || status != http.StatusOK || decoder.Decode(&provider) != nil || decoder.Decode(&struct{}{}) != io.EOF || provider.Servers == nil || len(provider.Meta) == 0 {
+		return MutationReceipt{}, errors.New("E_PROVIDER_FORWARD_REJECTED")
+	}
+	identities = append(identities, "hetzner=provider-read")
 	sort.Strings(identities)
 	data, _ := json.Marshal(identities)
 	return MutationReceipt{RequestID: "credential-forward-check", Action: "coordinator.credentials.validate", ResponseSHA256: SHA256(data), ObservedResourceIdentities: identities}, nil
 }
-
-func boolPointer(value bool) *bool { return &value }
 
 func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation Invocation) (MutationReceipt, error) {
 	if !identifierPattern.MatchString(executor.AccountID) {
