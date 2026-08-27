@@ -18,7 +18,7 @@ import {
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
 const maximumPreparationMilliseconds = 300_000;
@@ -1219,7 +1219,6 @@ export const publishPreparedImageEvidence = (
       ...prepared,
     };
     validatePreparedImageEvidence(evidence, manifestIdentity);
-    mkdirSync(dirname(target), { recursive: true });
     const descriptor = openSync(
       temporary,
       constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
