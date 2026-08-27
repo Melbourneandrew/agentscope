@@ -165,7 +165,14 @@ function readTarInventory(tarball) {
     assertCanonicalTarPath(path);
     assert(!paths.has(path), `Duplicate tar path: ${path}`);
     paths.add(path);
-    const portablePath = path.normalize("NFC").toLowerCase();
+    assert(
+      /^[\x20-\x7e]+$/u.test(path) &&
+        path
+          .split("/")
+          .every((segment) => segment.length > 0 && !/[. ]$/u.test(segment)),
+      `Candidate tarball path is not portable: ${path}`,
+    );
+    const portablePath = path.toLowerCase();
     assert(
       !portablePaths.has(portablePath),
       `Platform-ambiguous tar path: ${path}`,

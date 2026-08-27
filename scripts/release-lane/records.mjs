@@ -424,7 +424,12 @@ function validateStagePayload(payload, expected, ledger) {
   return payload.stage.id;
 }
 
-function validateReadyPayload(payload, expected, ledger) {
+function validateReadyPayload(
+  payload,
+  expected,
+  ledger,
+  precedingRecordDigest,
+) {
   assertExactKeys(
     payload,
     [
@@ -454,6 +459,10 @@ function validateReadyPayload(payload, expected, ledger) {
     payload.publicationCheckpoint,
     [
       "stageId",
+      "transactionId",
+      "draftReleaseDatabaseId",
+      "candidateManifestDigest",
+      "transactionRecordDigest",
       "ownerIdentity",
       "distTags",
       "distTagsDigest",
@@ -469,6 +478,10 @@ function validateReadyPayload(payload, expected, ledger) {
   const expiresAt = Date.parse(checkpoint.expiresAt);
   assert(
     checkpoint.stageId === ledger.stageId &&
+      checkpoint.transactionId === expected.transactionId &&
+      checkpoint.draftReleaseDatabaseId === ledger.releaseDatabaseId &&
+      checkpoint.candidateManifestDigest === expected.candidateManifestDigest &&
+      checkpoint.transactionRecordDigest === precedingRecordDigest &&
       checkpoint.ownerIdentity === "synthetic-owner" &&
       checkpoint.state === "valid-unconsumed" &&
       Number.isFinite(issuedAt) &&
@@ -494,6 +507,8 @@ function validateReadyPayload(payload, expected, ledger) {
     [
       "checkpointDigest",
       "stageId",
+      "transactionId",
+      "transactionRecordDigest",
       "observedDistTagsDigest",
       "reauthenticationDigest",
       "consumedAt",
@@ -505,6 +520,8 @@ function validateReadyPayload(payload, expected, ledger) {
   assert(
     approval.checkpointDigest === sha256(canonicalJson(checkpoint)) &&
       approval.stageId === ledger.stageId &&
+      approval.transactionId === expected.transactionId &&
+      approval.transactionRecordDigest === precedingRecordDigest &&
       approval.observedDistTagsDigest === checkpoint.distTagsDigest &&
       approval.state === "consumed-for-approved-stage",
     "Publication approval did not consume the exact fresh checkpoint",
@@ -659,7 +676,12 @@ function validateIncidentPayload(payload, expected, ledger) {
     { draft: false, immutable: true },
     ledger,
   );
-  validateStageReconciliation(payload.stageReconciliation);
+  validateStageReconciliation(
+    payload.stageReconciliation,
+    expected,
+    ledger,
+    true,
+  );
   validateNpmQuarantine(payload.npmQuarantine, expected, ledger);
   digest(payload.recoveryPlanDigest, "incident recovery plan");
   digest(payload.incidentManifestDigest, "incident manifest");
@@ -726,23 +748,80 @@ function validateNpmQuarantine(quarantine, expected, ledger) {
   );
 }
 
-function validateStageReconciliation(reconciliation) {
+function validateStageReconciliation(
+  reconciliation,
+  expected,
+  ledger,
+  terminal,
+) {
   assertExactKeys(
     reconciliation,
-    ["classification", "stageId", "terminal", "evidenceDigest"],
+    [
+      "classification",
+      "transactionId",
+      "draftReleaseDatabaseId",
+      "candidateManifestDigest",
+      "ownerIdentity",
+      "stageId",
+      "downloadedStageTarballSha256",
+      "issuedAt",
+      "expiresAt",
+      "consumedAt",
+      "state",
+      "terminal",
+      "evidenceDigest",
+    ],
     "stage reconciliation",
   );
+  assert(
+    reconciliation.transactionId === expected.transactionId &&
+      reconciliation.draftReleaseDatabaseId === ledger.releaseDatabaseId &&
+      reconciliation.candidateManifestDigest ===
+        expected.candidateManifestDigest &&
+      reconciliation.ownerIdentity === "synthetic-owner",
+    "Stage reconciliation is detached from the active transaction",
+  );
+  if (!terminal) {
+    assert(
+      reconciliation.classification === "frozen-unresolved" &&
+        reconciliation.stageId === null &&
+        reconciliation.downloadedStageTarballSha256 === null &&
+        reconciliation.consumedAt === null &&
+        reconciliation.state === "frozen-unresolved" &&
+        reconciliation.terminal === false,
+      "Immediate stage reconciliation is not durably frozen",
+    );
+    const issuedAt = Date.parse(reconciliation.issuedAt);
+    const expiresAt = Date.parse(reconciliation.expiresAt);
+    assert(
+      Number.isFinite(issuedAt) &&
+        Number.isFinite(expiresAt) &&
+        expiresAt > issuedAt &&
+        expiresAt - issuedAt <= 15 * 60 * 1000,
+      "Immediate stage reconciliation window is invalid",
+    );
+    digest(reconciliation.evidenceDigest, "stage reconciliation");
+    return;
+  }
   const absent =
     reconciliation.classification === "absent" &&
-    reconciliation.stageId === null;
+    reconciliation.stageId === null &&
+    reconciliation.downloadedStageTarballSha256 === null &&
+    ledger.stageId === undefined;
   const rejected =
     reconciliation.classification === "rejected" &&
     typeof reconciliation.stageId === "string" &&
-    reconciliation.stageId.startsWith("synthetic-stage-");
+    reconciliation.stageId.startsWith("synthetic-stage-") &&
+    reconciliation.downloadedStageTarballSha256 ===
+      expected.candidateTarballSha256 &&
+    (ledger.stageId === undefined || reconciliation.stageId === ledger.stageId);
   assert(
-    (absent || rejected) && reconciliation.terminal === true,
+    (absent || rejected) &&
+      reconciliation.state === "consumed-for-reconciliation" &&
+      reconciliation.terminal === true,
     "Stage reconciliation is unresolved or nonterminal",
   );
+  validateCheckpointWindow(reconciliation, "Stage reconciliation checkpoint");
   digest(reconciliation.evidenceDigest, "stage reconciliation");
 }
 
@@ -785,7 +864,16 @@ function validateDraftQuarantine(payload, expected, ledger) {
     "quarantine pending-stage checkpoint",
   );
   digest(payload.recoveryPlanDigest, "quarantine recovery plan");
-  validateStageReconciliation(payload.stageReconciliation);
+  const immediateFreeze = [
+    "missing-stage-response",
+    "ambiguous-stage-response",
+  ].includes(payload.failureClass);
+  validateStageReconciliation(
+    payload.stageReconciliation,
+    expected,
+    ledger,
+    !immediateFreeze,
+  );
   if (postpublication) {
     if (ambiguousRegistry)
       digest(payload.registryObservationDigest, "ambiguous registry response");
@@ -880,6 +968,7 @@ function validateTerminalPayload(transition, payload, expected, ledger) {
         "failureClass",
         "recoveryPlanDigest",
         "quarantineEvidenceDigest",
+        "stageReconciliation",
         "finalManifestDigest",
         "githubRelease",
       ],
@@ -890,6 +979,12 @@ function validateTerminalPayload(transition, payload, expected, ledger) {
         payload.recoveryPlanDigest === ledger.quarantineRecoveryPlanDigest &&
         payload.quarantineEvidenceDigest === ledger.quarantineEvidenceDigest,
       "Immutable quarantine does not continue the active recovery",
+    );
+    validateStageReconciliation(
+      payload.stageReconciliation,
+      expected,
+      ledger,
+      true,
     );
     digest(payload.finalManifestDigest, "quarantined final manifest");
     validateGithubRelease(
@@ -948,7 +1043,12 @@ function validateTransactionRecord(record, expected, ledger) {
   else if (record.transition === "stage-recorded")
     ledger.stageId = validateStagePayload(record.payload, expected, ledger);
   else if (record.transition === "ready-to-publish") {
-    validateReadyPayload(record.payload, expected, ledger);
+    validateReadyPayload(
+      record.payload,
+      expected,
+      ledger,
+      record.previousDigest,
+    );
     ledger.readyManifestDigest = record.digest;
   } else if (record.transition === "quarantine-still-draft")
     validateTerminalPayload(
@@ -965,6 +1065,41 @@ function validateTransactionRecord(record, expected, ledger) {
       ledger,
     );
   else throw new Error(`Unknown transaction transition: ${record.transition}`);
+}
+
+function validateActiveTransactionFence(recordSet) {
+  const fence = recordSet.activeTransactionFence;
+  assertExactKeys(
+    fence,
+    [
+      "transactionId",
+      "concurrencyGroup",
+      "ledgerPath",
+      "expectedLatestSequence",
+      "expectedLatestDigest",
+      "observedLatestSequence",
+      "observedLatestDigest",
+      "state",
+      "competingTransaction",
+      "evidenceDigest",
+    ],
+    "active transaction fence",
+  );
+  assert(
+    fence.transactionId === recordSet.transactionId &&
+      fence.concurrencyGroup === "agentscope-release-records" &&
+      fence.ledgerPath === "release-records/releases/" &&
+      Number.isSafeInteger(fence.expectedLatestSequence) &&
+      fence.expectedLatestSequence >= 0 &&
+      fence.observedLatestSequence === fence.expectedLatestSequence &&
+      fence.observedLatestDigest === fence.expectedLatestDigest &&
+      fence.state === "exclusive-active" &&
+      fence.competingTransaction === null,
+    "Release transaction fence is detached or non-exclusive",
+  );
+  digest(fence.expectedLatestDigest, "expected latest transaction");
+  digest(fence.observedLatestDigest, "observed latest transaction");
+  digest(fence.evidenceDigest, "active transaction fence");
 }
 
 function validateRecordSetAuthority(recordSet, observed, trustedCandidate) {
@@ -999,30 +1134,7 @@ function validateRecordSetAuthority(recordSet, observed, trustedCandidate) {
     "synthetic-transaction-",
     "release transaction ID",
   );
-  assertExactKeys(
-    recordSet.activeTransactionFence,
-    [
-      "transactionId",
-      "concurrencyGroup",
-      "state",
-      "competingTransaction",
-      "evidenceDigest",
-    ],
-    "active transaction fence",
-  );
-  assert(
-    recordSet.activeTransactionFence.transactionId ===
-      recordSet.transactionId &&
-      recordSet.activeTransactionFence.concurrencyGroup ===
-        "agentscope-release-records" &&
-      recordSet.activeTransactionFence.state === "exclusive-active" &&
-      recordSet.activeTransactionFence.competingTransaction === null,
-    "Release transaction fence is detached or non-exclusive",
-  );
-  digest(
-    recordSet.activeTransactionFence.evidenceDigest,
-    "active transaction fence",
-  );
+  validateActiveTransactionFence(recordSet);
   assert(
     recordSet.schemaVersion === 1 &&
       recordSet.mode === "synthetic-nonpublishing-rehearsal" &&
@@ -1081,7 +1193,13 @@ export function validateSyntheticReleaseRecords(
     Array.isArray(recordSet.transactions) && recordSet.transactions.length >= 2,
     "Synthetic transaction chain is incomplete",
   );
-  let previousDigest = `sha256:${"0".repeat(64)}`;
+  const fence = recordSet.activeTransactionFence;
+  assert(
+    recordSet.transactions[0].sequence === fence.observedLatestSequence + 1 &&
+      recordSet.transactions[0].previousDigest === fence.observedLatestDigest,
+    "Transaction append did not compare-and-swap the observed ledger head",
+  );
+  let previousDigest = fence.observedLatestDigest;
   let previousTransition;
   const ledger = {};
   for (const [index, record] of recordSet.transactions.entries()) {
@@ -1089,7 +1207,7 @@ export function validateSyntheticReleaseRecords(
       record,
       {
         ...recordSet,
-        sequence: index + 1,
+        sequence: fence.observedLatestSequence + index + 1,
         previousDigest,
       },
       ledger,

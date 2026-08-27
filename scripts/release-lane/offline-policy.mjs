@@ -101,6 +101,7 @@ const forbiddenAmbientIdentifiers = new Set([
   "global",
   "globalThis",
   "Reflect",
+  "EventSource",
   "WebSocket",
   "XMLHttpRequest",
 ]);
@@ -120,7 +121,7 @@ function assertNoAmbientCodeGeneration(path, node) {
     );
 }
 
-function assertNoAmbientNetworkOrLoader(path, node) {
+function assertNoAmbientNetworkOrLoader(path, node, parent) {
   const forbiddenCall =
     ts.isCallExpression(node) &&
     ts.isIdentifier(node.expression) &&
@@ -132,9 +133,20 @@ function assertNoAmbientNetworkOrLoader(path, node) {
       ? node.argumentExpression.text
       : undefined;
   const forbiddenFetch = ts.isIdentifier(node) && node.text === "fetch";
+  const allowedProcessIdentifier =
+    ts.isIdentifier(node) &&
+    node.text === "process" &&
+    ts.isPropertyAccessExpression(parent) &&
+    parent.expression === node &&
+    ["argv", "stdout"].includes(parent.name.text);
+  const forbiddenProcessIdentifier =
+    ts.isIdentifier(node) &&
+    node.text === "process" &&
+    !allowedProcessIdentifier;
   if (
     forbiddenCall ||
     forbiddenFetch ||
+    forbiddenProcessIdentifier ||
     ["getBuiltinModule", "fetch"].includes(property)
   )
     throw new Error(
@@ -163,7 +175,7 @@ function localModuleSpecifiers(path, script) {
     ts.ScriptKind.JS,
   );
   const specifiers = [];
-  const visit = (node) => {
+  const visit = (node, parent) => {
     if (
       (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
       node.moduleSpecifier
@@ -188,9 +200,9 @@ function localModuleSpecifiers(path, script) {
       specifiers.push(node.arguments[0].text);
     } else {
       assertNoAmbientCodeGeneration(path, node);
-      assertNoAmbientNetworkOrLoader(path, node);
+      assertNoAmbientNetworkOrLoader(path, node, parent);
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) => visit(child, node));
   };
   visit(parsed);
   return specifiers.filter((specifier) => specifier.startsWith("."));

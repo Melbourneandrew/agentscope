@@ -421,6 +421,21 @@ test("rejects duplicate and noncanonical tar inventory paths", () => {
     ],
   });
   assert.throws(verify(casefoldCollision), /Platform-ambiguous tar path/);
+
+  for (const extraEntries of [
+    [
+      { path: "package/σ", content: "first\n" },
+      { path: "package/ς", content: "second\n" },
+    ],
+    [
+      { path: "package/readme", content: "first\n" },
+      { path: "package/readme.", content: "second\n" },
+    ],
+  ])
+    assert.throws(
+      verify(createCandidateFixture({ extraEntries })),
+      /path is not portable/,
+    );
 });
 
 test("authenticates exact checkout, caller workflow, and reusable workflow identity", () => {
@@ -554,11 +569,28 @@ const githubRelease = (draft, immutable) => ({
   immutable,
   assetManifestDigest: `sha256:${"f".repeat(64)}`,
 });
-const stageReconciliation = () => ({
-  classification: "absent",
-  stageId: null,
+const stageReconciliation = (classification = "rejected") => ({
+  classification,
+  transactionId: "synthetic-transaction-100",
+  draftReleaseDatabaseId: "synthetic-release-100",
+  candidateManifestDigest,
+  ownerIdentity: "synthetic-owner",
+  stageId: classification === "rejected" ? "synthetic-stage-100" : null,
+  downloadedStageTarballSha256:
+    classification === "rejected" ? candidateTarballSha256 : null,
+  issuedAt: "2026-08-27T17:20:00.000Z",
+  expiresAt: "2026-08-27T17:30:00.000Z",
+  consumedAt: "2026-08-27T17:25:00.000Z",
+  state: "consumed-for-reconciliation",
   terminal: true,
   evidenceDigest: `sha256:${"6".repeat(64)}`,
+});
+const frozenStageReconciliation = () => ({
+  ...stageReconciliation("absent"),
+  classification: "frozen-unresolved",
+  consumedAt: null,
+  state: "frozen-unresolved",
+  terminal: false,
 });
 const npmQuarantine = () => ({
   ownerCeremonyDigest: `sha256:${"b".repeat(64)}`,
@@ -578,7 +610,12 @@ const quarantinePayload = (failureClass = "ambiguous-stage-response") => ({
   failureClass,
   ownerCheckpointDigest: `sha256:${"9".repeat(64)}`,
   pendingStagesCheckpointDigest: `sha256:${"6".repeat(64)}`,
-  stageReconciliation: stageReconciliation(),
+  stageReconciliation: [
+    "missing-stage-response",
+    "ambiguous-stage-response",
+  ].includes(failureClass)
+    ? frozenStageReconciliation()
+    : stageReconciliation(),
   recoveryPlanDigest: `sha256:${"a".repeat(64)}`,
   githubRelease: githubRelease(true, false),
   ...(failureClass.startsWith("postpublication-")
@@ -635,6 +672,10 @@ function payload(transition) {
   if (transition === "ready-to-publish") {
     const publicationCheckpoint = {
       stageId: "synthetic-stage-100",
+      transactionId: "synthetic-transaction-100",
+      draftReleaseDatabaseId: "synthetic-release-100",
+      candidateManifestDigest,
+      transactionRecordDigest: null,
       ownerIdentity: "synthetic-owner",
       distTags: bootstrapTags,
       distTagsDigest: sha256(canonicalJson(bootstrapTags)),
@@ -651,6 +692,8 @@ function payload(transition) {
       approvalConsumption: {
         checkpointDigest: sha256(canonicalJson(publicationCheckpoint)),
         stageId: "synthetic-stage-100",
+        transactionId: "synthetic-transaction-100",
+        transactionRecordDigest: null,
         observedDistTagsDigest: publicationCheckpoint.distTagsDigest,
         reauthenticationDigest: `sha256:${"8".repeat(64)}`,
         consumedAt: "2026-08-27T17:05:00.000Z",
@@ -681,6 +724,7 @@ function payload(transition) {
       failureClass: "ambiguous-stage-response",
       recoveryPlanDigest: `sha256:${"a".repeat(64)}`,
       quarantineEvidenceDigest: sha256(canonicalJson(quarantinePayload())),
+      stageReconciliation: stageReconciliation(),
       finalManifestDigest: `sha256:${"d".repeat(64)}`,
       githubRelease: githubRelease(false, true),
     };
@@ -709,6 +753,20 @@ function recordSet(
   const transactions = [...prefix, terminalTransition].map(
     (transition, index) => {
       const transitionPayload = payload(transition);
+      if (transition === "ready-to-publish") {
+        transitionPayload.publicationCheckpoint.transactionRecordDigest =
+          previousDigest;
+        transitionPayload.approvalConsumption.transactionRecordDigest =
+          previousDigest;
+        transitionPayload.approvalConsumption.checkpointDigest = sha256(
+          canonicalJson(transitionPayload.publicationCheckpoint),
+        );
+      }
+      if (
+        transition === "quarantine-immutable-prerelease" &&
+        !prefix.includes("stage-recorded")
+      )
+        transitionPayload.stageReconciliation = stageReconciliation("absent");
       if (
         [
           "completion-public-registry-verified",
@@ -742,6 +800,11 @@ function recordSet(
     activeTransactionFence: {
       transactionId: "synthetic-transaction-100",
       concurrencyGroup: "agentscope-release-records",
+      ledgerPath: "release-records/releases/",
+      expectedLatestSequence: 0,
+      expectedLatestDigest: `sha256:${"0".repeat(64)}`,
+      observedLatestSequence: 0,
+      observedLatestDigest: `sha256:${"0".repeat(64)}`,
       state: "exclusive-active",
       competingTransaction: null,
       evidenceDigest: `sha256:${"f".repeat(64)}`,
@@ -965,6 +1028,17 @@ test("rejects incomplete, reordered, digest-broken, continued, or authority-bear
     transactionId: "synthetic-transaction-other",
   };
   assert.throws(() => validateRecords(detachedFence), /fence is detached/);
+
+  const staleLedgerHead = recordSet();
+  staleLedgerHead.activeTransactionFence.expectedLatestSequence = 4;
+  staleLedgerHead.activeTransactionFence.observedLatestSequence = 4;
+  staleLedgerHead.activeTransactionFence.expectedLatestDigest = `sha256:${"e".repeat(64)}`;
+  staleLedgerHead.activeTransactionFence.observedLatestDigest =
+    staleLedgerHead.activeTransactionFence.expectedLatestDigest;
+  assert.throws(
+    () => validateRecords(staleLedgerHead),
+    /compare-and-swap the observed ledger head/,
+  );
 });
 
 test("binds probe and record-set digests to actual workflow and finite script bytes", () => {
@@ -1294,23 +1368,63 @@ test("binds a fresh one-use publication checkpoint and preserves every non-alpha
   );
 });
 
-test("rejects unresolved stage and incident recovery evidence", () => {
+test("rejects a publication checkpoint transplanted across transactions", () => {
+  const transplanted = recordSet();
+  const ready = structuredClone(transplanted.transactions[2].payload);
+  ready.publicationCheckpoint.transactionId = "synthetic-transaction-other";
+  ready.approvalConsumption.transactionId = "synthetic-transaction-other";
+  ready.approvalConsumption.checkpointDigest = sha256(
+    canonicalJson(ready.publicationCheckpoint),
+  );
+  replaceReady(transplanted, ready);
+  assert.throws(
+    () => validateRecords(transplanted),
+    /stale, detached, or not one-use/,
+  );
+});
+
+test("preserves unresolved staging until exact terminal reconciliation", () => {
   const unresolvedStage = recordSet("quarantine-immutable-prerelease", [
     "draft-prepared",
     "quarantine-still-draft",
   ]);
   const unresolvedPayload = quarantinePayload("ambiguous-stage-response");
-  unresolvedPayload.stageReconciliation = {
-    classification: "frozen-unresolved",
-    stageId: null,
-    terminal: false,
-    evidenceDigest: `sha256:${"6".repeat(64)}`,
-  };
   replaceQuarantine(unresolvedStage, unresolvedPayload);
+  assert.equal(
+    validateRecords(unresolvedStage).terminalTransition,
+    "quarantine-immutable-prerelease",
+  );
+
+  const unresolvedTerminal = structuredClone(unresolvedStage);
+  unresolvedTerminal.transactions[2] = createSyntheticRecord({
+    ...unresolvedTerminal.transactions[2],
+    payload: {
+      ...unresolvedTerminal.transactions[2].payload,
+      stageReconciliation: frozenStageReconciliation(),
+    },
+  });
   assert.throws(
-    () => validateRecords(unresolvedStage),
+    () => validateRecords(unresolvedTerminal),
     /unresolved or nonterminal/,
   );
+
+  for (const reconciliation of [
+    stageReconciliation("absent"),
+    { ...stageReconciliation(), stageId: "synthetic-stage-unrelated" },
+  ]) {
+    const knownStage = recordSet("quarantine-immutable-prerelease", [
+      "draft-prepared",
+      "stage-recorded",
+      "quarantine-still-draft",
+    ]);
+    const knownStagePayload = quarantinePayload("prepublication-drift");
+    knownStagePayload.stageReconciliation = reconciliation;
+    replaceQuarantine(knownStage, knownStagePayload);
+    assert.throws(
+      () => validateRecords(knownStage),
+      /unresolved or nonterminal/,
+    );
+  }
 
   const incidentWithoutQuarantine = recordSet("incident-immutable-release");
   const incompleteIncident = {
@@ -1837,6 +1951,34 @@ test("rejects indirect and dynamic module-loader authority", () => {
           scriptPaths: [scriptPath],
         }),
       /runtime code-generation authority/,
+    );
+  }
+});
+
+test("rejects aliased process loaders and ambient event streams", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-release-alias-policy-"));
+  fixtures.push(root);
+  mkdirSync(join(root, "scripts"));
+  const workflowPath = "workflow.yml";
+  const scriptPath = "scripts/check.mjs";
+  writeFileSync(
+    join(root, workflowPath),
+    "on:\n  workflow_call:\npermissions:\n  contents: read\n",
+  );
+  for (const source of [
+    'const { getBuiltinModule: load } = process;\nload("node:https");\n',
+    'const p = process;\np["getBuiltin" + "Module"]("node:https");\n',
+    'new EventSource("https" + "://example.invalid");\n',
+  ]) {
+    writeFileSync(join(root, scriptPath), source);
+    assert.throws(
+      () =>
+        validateOfflineReleasePolicy({
+          workspaceRoot: root,
+          workflowPath,
+          scriptPaths: [scriptPath],
+        }),
+      /(?:network\/process|runtime code-generation) authority/,
     );
   }
 });
