@@ -142,6 +142,16 @@ function assertNoAmbientCodeGeneration(path, node) {
     (ts.isIdentifier(bindingProperty) || ts.isStringLiteral(bindingProperty)
       ? forbiddenProperties.includes(bindingProperty.text)
       : ts.isComputedPropertyName(bindingProperty));
+  const assignmentProperty =
+    ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node)
+      ? node.name
+      : undefined;
+  const forbiddenAssignment =
+    assignmentProperty !== undefined &&
+    (ts.isIdentifier(assignmentProperty) ||
+    ts.isStringLiteral(assignmentProperty)
+      ? forbiddenProperties.includes(assignmentProperty.text)
+      : ts.isComputedPropertyName(assignmentProperty));
   const forbiddenDynamicElement =
     ts.isElementAccessExpression(node) &&
     !ts.isStringLiteral(node.argumentExpression) &&
@@ -151,6 +161,7 @@ function assertNoAmbientCodeGeneration(path, node) {
     forbiddenProperty ||
     forbiddenElement ||
     forbiddenBinding ||
+    forbiddenAssignment ||
     forbiddenDynamicElement
   )
     throw new Error(

@@ -1890,7 +1890,6 @@ test("rejects indirect and dynamic module-loader authority", () => {
     "on:\n  workflow_call:\npermissions:\n  contents: read\n",
   );
   writeFileSync(join(root, "scripts/helper.mjs"), 'import "node:https";\n');
-
   writeFileSync(join(root, scriptPath), 'await import("https");\n');
   assert.throws(
     () =>
@@ -1982,7 +1981,20 @@ test("rejects indirect and dynamic module-loader authority", () => {
       }),
     /unbounded dynamic import/,
   );
+});
 
+test("rejects runtime code-generation recovery shapes", () => {
+  const root = mkdtempSync(
+    join(tmpdir(), "agentscope-release-codegen-policy-"),
+  );
+  fixtures.push(root);
+  mkdirSync(join(root, "scripts"));
+  const workflowPath = "workflow.yml";
+  const scriptPath = "scripts/check.mjs";
+  writeFileSync(
+    join(root, workflowPath),
+    "on:\n  workflow_call:\npermissions:\n  contents: read\n",
+  );
   for (const source of [
     "await eval('import(\"node:https\")');\n",
     "Function('return import(\"node:https\")')();\n",
@@ -1993,6 +2005,8 @@ test("rejects indirect and dynamic module-loader authority", () => {
     'const fn = async () => {};\nfn[["con", "structor"].join("")](\'return import("node:https")\')();\n',
     "const { constructor: AsyncCtor } = async () => {};\nAsyncCtor('return import(\"node:https\")')();\n",
     "const { constructor } = async () => {};\nconstructor('return import(\"node:https\")')();\n",
+    "let AsyncCtor;\n({ constructor: AsyncCtor } = async () => {});\nAsyncCtor('return import(\"node:https\")')();\n",
+    "let AsyncCtor;\nconst key = ['con', 'structor'].join('');\n({ [key]: AsyncCtor } = async () => {});\n",
   ]) {
     writeFileSync(join(root, scriptPath), source);
     assert.throws(
