@@ -431,11 +431,19 @@ test("rejects duplicate and noncanonical tar inventory paths", () => {
       { path: "package/readme", content: "first\n" },
       { path: "package/readme.", content: "second\n" },
     ],
+    [{ path: "package/NUL", content: "reserved\n" }],
+    [{ path: "package/con.txt", content: "reserved\n" }],
+    [{ path: "package/file:name", content: "invalid\n" }],
   ])
     assert.throws(
       verify(createCandidateFixture({ extraEntries })),
       /path is not portable/,
     );
+
+  const outsidePackage = createCandidateFixture({
+    extraEntries: [{ path: "other/readme", content: "collision\n" }],
+  });
+  assert.throws(verify(outsidePackage), /outside package/);
 });
 
 test("authenticates exact checkout, caller workflow, and reusable workflow identity", () => {
@@ -575,9 +583,9 @@ const stageReconciliation = (classification = "rejected") => ({
   draftReleaseDatabaseId: "synthetic-release-100",
   candidateManifestDigest,
   ownerIdentity: "synthetic-owner",
-  stageId: classification === "rejected" ? "synthetic-stage-100" : null,
+  stageId: classification === "absent" ? null : "synthetic-stage-100",
   downloadedStageTarballSha256:
-    classification === "rejected" ? candidateTarballSha256 : null,
+    classification === "absent" ? null : candidateTarballSha256,
   issuedAt: "2026-08-27T17:20:00.000Z",
   expiresAt: "2026-08-27T17:30:00.000Z",
   consumedAt: "2026-08-27T17:25:00.000Z",
@@ -610,12 +618,13 @@ const quarantinePayload = (failureClass = "ambiguous-stage-response") => ({
   failureClass,
   ownerCheckpointDigest: `sha256:${"9".repeat(64)}`,
   pendingStagesCheckpointDigest: `sha256:${"6".repeat(64)}`,
-  stageReconciliation: [
-    "missing-stage-response",
-    "ambiguous-stage-response",
-  ].includes(failureClass)
-    ? frozenStageReconciliation()
-    : stageReconciliation(),
+  stageReconciliation: failureClass.startsWith("postpublication-")
+    ? stageReconciliation("approved-consumed")
+    : ["missing-stage-response", "ambiguous-stage-response"].includes(
+          failureClass,
+        )
+      ? frozenStageReconciliation()
+      : stageReconciliation(),
   recoveryPlanDigest: `sha256:${"a".repeat(64)}`,
   githubRelease: githubRelease(true, false),
   ...(failureClass.startsWith("postpublication-")
@@ -739,7 +748,7 @@ function payload(transition) {
     recoveryPlanDigest: `sha256:${"b".repeat(64)}`,
     incidentManifestDigest: `sha256:${"c".repeat(64)}`,
     readyManifestDigest: null,
-    stageReconciliation: stageReconciliation(),
+    stageReconciliation: stageReconciliation("approved-consumed"),
     npmQuarantine: npmQuarantine(),
   };
 }
@@ -839,6 +848,14 @@ const replaceQuarantine = (records, draftPayload) => {
     ({ transition }) => transition === "quarantine-still-draft",
   );
   const finalIndex = draftIndex + 1;
+  const recordedStage = records.transactions
+    .slice(0, draftIndex)
+    .some(({ transition }) => transition === "stage-recorded");
+  const terminalStageReconciliation = draftPayload.failureClass.startsWith(
+    "postpublication-",
+  )
+    ? stageReconciliation("approved-consumed")
+    : stageReconciliation(recordedStage ? "rejected" : "absent");
   records.transactions[draftIndex] = createSyntheticRecord({
     ...records.transactions[draftIndex],
     payload: draftPayload,
@@ -851,6 +868,7 @@ const replaceQuarantine = (records, draftPayload) => {
       failureClass: draftPayload.failureClass,
       recoveryPlanDigest: draftPayload.recoveryPlanDigest,
       quarantineEvidenceDigest: sha256(canonicalJson(draftPayload)),
+      stageReconciliation: terminalStageReconciliation,
     },
   });
   return records;
@@ -1552,6 +1570,22 @@ test("rejects incomplete or misclassified quarantine and incident recovery", () 
   );
 });
 
+test("binds npm quarantine outcome to the complete dist-tag mapping", () => {
+  const records = recordSet("quarantine-immutable-prerelease", [
+    "draft-prepared",
+    "stage-recorded",
+    "ready-to-publish",
+    "quarantine-still-draft",
+  ]);
+  const draft = quarantinePayload("postpublication-exact-verification-failed");
+  draft.npmQuarantine.distTags = publishedAlphaTags;
+  draft.npmQuarantine.distTagsDigest = sha256(
+    canonicalJson(publishedAlphaTags),
+  );
+  replaceQuarantine(records, draft);
+  assert.throws(() => validateRecords(records), /alpha result does not match/);
+});
+
 test("derives all release authority bytes from the executable module closure", () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-release-closure-"));
   fixtures.push(root);
@@ -1941,6 +1975,8 @@ test("rejects indirect and dynamic module-loader authority", () => {
     "Function('return import(\"node:https\")')();\n",
     'const request = Reflect.get(globalThis, "fetch");\nawait request("https://example.invalid");\n',
     "const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;\nAsyncFunction('return import(\"node:https\")')();\n",
+    'Object.getPrototypeOf(async () => {})["con" + "structor"](\'return import("node:https")\')();\n',
+    'Object.getOwnPropertyDescriptor(Object.getPrototypeOf(async () => {}), "constructor").value(\'return import("node:https")\')();\n',
   ]) {
     writeFileSync(join(root, scriptPath), source);
     assert.throws(

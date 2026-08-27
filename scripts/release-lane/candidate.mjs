@@ -163,13 +163,23 @@ function readTarInventory(tarball) {
     const name = parseString(header, 0, 100, "name");
     const path = prefix.length > 0 ? `${prefix}/${name}` : name;
     assertCanonicalTarPath(path);
+    assert(
+      path.startsWith("package/"),
+      `Candidate tarball entry is outside package/: ${path}`,
+    );
     assert(!paths.has(path), `Duplicate tar path: ${path}`);
     paths.add(path);
     assert(
       /^[\x20-\x7e]+$/u.test(path) &&
         path
           .split("/")
-          .every((segment) => segment.length > 0 && !/[. ]$/u.test(segment)),
+          .every(
+            (segment) =>
+              segment.length > 0 &&
+              !/[. ]$/u.test(segment) &&
+              !/[<>:"|?*]/u.test(segment) &&
+              !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(segment),
+          ),
       `Candidate tarball path is not portable: ${path}`,
     );
     const portablePath = path.toLowerCase();

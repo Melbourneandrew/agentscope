@@ -681,6 +681,7 @@ function validateIncidentPayload(payload, expected, ledger) {
     expected,
     ledger,
     true,
+    true,
   );
   validateNpmQuarantine(payload.npmQuarantine, expected, ledger);
   digest(payload.recoveryPlanDigest, "incident recovery plan");
@@ -737,6 +738,14 @@ function validateNpmQuarantine(quarantine, expected, ledger) {
     quarantine.distTagsDigest,
     "npm quarantine tags",
   );
+  assert(
+    (alphaAbsent &&
+      !Object.hasOwn(quarantine.distTags, expected.package.distTag)) ||
+      (alphaSafe &&
+        quarantine.distTags[expected.package.distTag] ===
+          quarantine.alpha.version),
+    "npm quarantine alpha result does not match the complete dist-tag mapping",
+  );
   const preserveOtherTags = (tags) =>
     Object.fromEntries(
       Object.entries(tags).filter(([tag]) => tag !== expected.package.distTag),
@@ -753,6 +762,7 @@ function validateStageReconciliation(
   expected,
   ledger,
   terminal,
+  published = false,
 ) {
   assertExactKeys(
     reconciliation,
@@ -810,13 +820,20 @@ function validateStageReconciliation(
     ledger.stageId === undefined;
   const rejected =
     reconciliation.classification === "rejected" &&
+    !published &&
     typeof reconciliation.stageId === "string" &&
     reconciliation.stageId.startsWith("synthetic-stage-") &&
     reconciliation.downloadedStageTarballSha256 ===
       expected.candidateTarballSha256 &&
     (ledger.stageId === undefined || reconciliation.stageId === ledger.stageId);
+  const approvedConsumed =
+    published &&
+    reconciliation.classification === "approved-consumed" &&
+    reconciliation.stageId === ledger.stageId &&
+    reconciliation.downloadedStageTarballSha256 ===
+      expected.candidateTarballSha256;
   assert(
-    (absent || rejected) &&
+    (absent || rejected || approvedConsumed) &&
       reconciliation.state === "consumed-for-reconciliation" &&
       reconciliation.terminal === true,
     "Stage reconciliation is unresolved or nonterminal",
@@ -873,6 +890,7 @@ function validateDraftQuarantine(payload, expected, ledger) {
     expected,
     ledger,
     !immediateFreeze,
+    postpublication,
   );
   if (postpublication) {
     if (ambiguousRegistry)
@@ -985,6 +1003,7 @@ function validateTerminalPayload(transition, payload, expected, ledger) {
       expected,
       ledger,
       true,
+      ledger.quarantineFailureClass.startsWith("postpublication-"),
     );
     digest(payload.finalManifestDigest, "quarantined final manifest");
     validateGithubRelease(

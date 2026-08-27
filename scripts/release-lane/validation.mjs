@@ -12,7 +12,7 @@ export function assertExactKeys(value, keys, label) {
     value !== null &&
       typeof value === "object" &&
       !Array.isArray(value) &&
-      Object.getPrototypeOf(value) === Object.prototype,
+      Object.prototype.toString.call(value) === "[object Object]",
     `${label} must be a plain object`,
   );
   const actual = Object.keys(value).sort();
