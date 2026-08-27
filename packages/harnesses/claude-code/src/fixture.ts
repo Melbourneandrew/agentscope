@@ -25,7 +25,7 @@ export const claudeCodeFixture = {
       reviewedLicenseId: "LicenseRef-Agentscope-Synthetic",
       redistribution: "reviewed-for-repository",
       sourceReference:
-        "https://github.com/Melbourneandrew/agentscope/blob/46080a0ecf1030dff425030b893e8d29d8c49a22/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic",
+        "https://github.com/Melbourneandrew/agentscope/blob/7a2743b901ae43db1125b1ec8b87343207be16aa/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic",
     },
     redaction: {
       profileVersion: 1,
