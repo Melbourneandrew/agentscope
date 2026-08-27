@@ -647,9 +647,17 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 	}
 	status.CloudAbsenceRecorded = true
 	status.PlanSHA256 = cloud.PlanSHA256
+	completionData, completionErr := readPrivate(store.path("evidence", "retirement-complete.json"))
+	completionAbsent := os.IsNotExist(completionErr)
+	if completionErr != nil && !completionAbsent {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
 
 	finalData, err := readPrivate(store.path("evidence", "retirement-finalized.json"))
 	if os.IsNotExist(err) {
+		if !completionAbsent {
+			return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+		}
 		fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
 		if fenceErr != nil || strings.TrimSpace(string(fenceData)) != cloud.PlanSHA256 {
 			return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
@@ -671,6 +679,9 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 	}
 	status.FinalizationRecorded = true
 	if status.MutationFenceHeld {
+		if !completionAbsent {
+			return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+		}
 		fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
 		if fenceErr != nil || strings.TrimSpace(string(fenceData)) != cloud.PlanSHA256 {
 			return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
@@ -678,13 +689,9 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 		status.FenceReleasePending = true
 		return status, nil
 	}
-	completionData, completionErr := readPrivate(store.path("evidence", "retirement-complete.json"))
-	if os.IsNotExist(completionErr) {
+	if completionAbsent {
 		status.FenceReleasePending = true
 		return status, nil
-	}
-	if completionErr != nil {
-		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
 	}
 	var completion SignedControlRecord
 	if strictJSON(completionData, &completion) != nil || completion.Domain != RetirementCompletionDomain || completion.PlanSHA256 != final.PlanSHA256 || completion.RequestID != "mutation-fence-release" || completion.Disposition != "durably-released" || completion.EvidenceSHA256 != final.EvidenceSHA256 || completion.RecordedAt.Before(final.RecordedAt) || verifyControlRecord(completion, installation.Roots[RecoveryRole], RecoveryRole) != nil {
@@ -1064,6 +1071,10 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 	if err != nil {
 		return SignedControlRecord{}, err
 	}
+	retirementStatus, err := store.retirementStatusLocked()
+	if err != nil || !retirementStatus.CloudAbsenceRecorded || retirementStatus.PlanSHA256 != planDigest {
+		return SignedControlRecord{}, errors.New("E_RETIREMENT_STATE")
+	}
 	retirementData, err := readPrivate(store.path("evidence", "retirement-cloud-absence.json"))
 	if err != nil {
 		return SignedControlRecord{}, errors.New("E_RETIREMENT_NOT_TERMINAL")
@@ -1099,6 +1110,21 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 	if (fenceErr != nil && !os.IsNotExist(fenceErr)) || (fenceErr == nil && !fenceHeld) || (!fenceHeld && !recordExisted) || !store.IsFrozen() {
 		return SignedControlRecord{}, errors.New("E_RETIREMENT_FENCE")
 	}
+	completionPath := store.path("evidence", "retirement-complete.json")
+	existingCompletion, completionErr := readPrivate(completionPath)
+	if completionErr == nil {
+		var completion SignedControlRecord
+		if !recordExisted || fenceHeld || strictJSON(existingCompletion, &completion) != nil || completion.Domain != RetirementCompletionDomain || completion.PlanSHA256 != planDigest || completion.RequestID != "mutation-fence-release" || completion.Disposition != "durably-released" || completion.EvidenceSHA256 != evidenceSHA256 || completion.RecordedAt.Before(record.RecordedAt) || verifyControlRecord(completion, installation.Roots[RecoveryRole], RecoveryRole) != nil {
+			return record, errors.New("E_RETIREMENT_COMPLETION_BINDING")
+		}
+		if !retirementStatus.Finalized {
+			return record, errors.New("E_RETIREMENT_COMPLETION_BINDING")
+		}
+		return record, nil
+	}
+	if !os.IsNotExist(completionErr) {
+		return record, completionErr
+	}
 	if err := store.retireLocalCredentials(); err != nil {
 		return record, err
 	}
@@ -1118,23 +1144,17 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 	if err := store.syncJournalDirectory(); err != nil {
 		return record, err
 	}
-	completionPath := store.path("evidence", "retirement-complete.json")
-	if completionData, readErr := readPrivate(completionPath); readErr == nil {
-		var completion SignedControlRecord
-		if strictJSON(completionData, &completion) != nil || completion.Domain != RetirementCompletionDomain || completion.PlanSHA256 != planDigest || completion.RequestID != "mutation-fence-release" || completion.Disposition != "durably-released" || completion.EvidenceSHA256 != evidenceSHA256 || verifyControlRecord(completion, installation.Roots[RecoveryRole], RecoveryRole) != nil {
-			return record, errors.New("E_RETIREMENT_COMPLETION_BINDING")
-		}
-	} else if !os.IsNotExist(readErr) {
-		return record, readErr
-	} else {
-		completion, signErr := store.signControlRecord(SignedControlRecord{Domain: RetirementCompletionDomain, PlanSHA256: planDigest, RequestID: "mutation-fence-release", Disposition: "durably-released", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
-		if signErr != nil {
-			return record, signErr
-		}
-		completionData, _ := json.MarshalIndent(completion, "", "  ")
-		if err := writeAtomicExclusive(completionPath, append(completionData, '\n'), 0o600); err != nil {
-			return record, err
-		}
+	completionRecordedAt := now
+	if completionRecordedAt.Before(record.RecordedAt) {
+		completionRecordedAt = record.RecordedAt
+	}
+	completion, signErr := store.signControlRecord(SignedControlRecord{Domain: RetirementCompletionDomain, PlanSHA256: planDigest, RequestID: "mutation-fence-release", Disposition: "durably-released", EvidenceSHA256: evidenceSHA256, RecordedAt: completionRecordedAt}, RecoveryRole, passphrase)
+	if signErr != nil {
+		return record, signErr
+	}
+	completionData, _ := json.MarshalIndent(completion, "", "  ")
+	if err := writeAtomicExclusive(completionPath, append(completionData, '\n'), 0o600); err != nil {
+		return record, err
 	}
 	return record, nil
 }

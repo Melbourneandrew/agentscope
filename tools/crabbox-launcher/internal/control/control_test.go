@@ -1275,6 +1275,94 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); err != nil {
 		t.Fatal("generic recovery bypassed retirement finalization")
 	}
+	freezePath := item.store.path("journal", "acquisition.freeze")
+	freezeData, err := readPrivate(freezePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFinalizationBlocked := func(label string) {
+		t.Helper()
+		if _, finalizeErr := item.store.FinalizeRetirement(planDigest, "cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(time.Second), syntheticOperatorPassphrase); finalizeErr == nil || !strings.Contains(finalizeErr.Error(), "E_RETIREMENT_STATE") {
+			t.Fatalf("%s freeze admitted finalization: %v", label, finalizeErr)
+		}
+		if _, statErr := os.Stat(item.store.path("journal", "mutation.lock")); statErr != nil {
+			t.Fatalf("%s freeze released fence: %v", label, statErr)
+		}
+		if _, statErr := os.Stat(item.store.path("evidence", "retirement-finalized.json")); !os.IsNotExist(statErr) {
+			t.Fatalf("%s freeze published finalization: %v", label, statErr)
+		}
+	}
+	if err := os.Remove(freezePath); err != nil {
+		t.Fatal(err)
+	}
+	assertFinalizationBlocked("missing")
+	if err := os.WriteFile(freezePath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertFinalizationBlocked("malformed")
+	var wrongSignedFreeze SignedControlRecord
+	if err := json.Unmarshal(freezeData, &wrongSignedFreeze); err != nil {
+		t.Fatal(err)
+	}
+	wrongSignedFreeze.Signature = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
+	wrongSignedData, _ := json.MarshalIndent(wrongSignedFreeze, "", "  ")
+	if err := os.WriteFile(freezePath, append(wrongSignedData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertFinalizationBlocked("wrong-signed")
+	if err := os.Remove(freezePath); err != nil {
+		t.Fatal(err)
+	}
+	symlinkTarget := item.store.path("journal", "freeze-symlink-target")
+	if err := os.WriteFile(symlinkTarget, freezeData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(symlinkTarget, freezePath); err != nil {
+		t.Fatal(err)
+	}
+	assertFinalizationBlocked("symlinked")
+	if err := os.Remove(freezePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(symlinkTarget); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomicExclusive(freezePath, freezeData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finalizationIdentities := []string{"cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated"}
+	finalizationEvidence, _ := json.Marshal(finalizationIdentities)
+	finalizationDigest := SHA256(finalizationEvidence)
+	prematureCompletion, err := item.store.signControlRecord(SignedControlRecord{Domain: RetirementCompletionDomain, PlanSHA256: planDigest, RequestID: "mutation-fence-release", Disposition: "durably-released", EvidenceSHA256: finalizationDigest, RecordedAt: item.now}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prematureData, _ := json.MarshalIndent(prematureCompletion, "", "  ")
+	completionPath := item.store.path("evidence", "retirement-complete.json")
+	if err := writeAtomicExclusive(completionPath, append(prematureData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.FinalizeRetirement(planDigest, finalizationIdentities[0], finalizationIdentities[1], finalizationIdentities[2], finalizationIdentities[3], finalizationIdentities[4], item.now, syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+		t.Fatalf("completion without finalization was self-healed: %v", err)
+	}
+	finalizationRecord, err := item.store.signControlRecord(SignedControlRecord{Domain: RetirementFinalizationDomain, PlanSHA256: planDigest, RequestID: "credential-revocations", Disposition: "finalized", EvidenceSHA256: finalizationDigest, RecordedAt: item.now}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalizationData, _ := json.MarshalIndent(finalizationRecord, "", "  ")
+	finalizationPath := item.store.path("evidence", "retirement-finalized.json")
+	if err := writeAtomicExclusive(finalizationPath, append(finalizationData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.FinalizeRetirement(planDigest, finalizationIdentities[0], finalizationIdentities[1], finalizationIdentities[2], finalizationIdentities[3], finalizationIdentities[4], item.now, syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+		t.Fatalf("completion coexisting with fence was self-healed: %v", err)
+	}
+	if err := os.Remove(completionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(finalizationPath); err != nil {
+		t.Fatal(err)
+	}
 	record, err := item.store.FinalizeRetirement(planDigest, "cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(time.Second), syntheticOperatorPassphrase)
 	if err != nil || record.Disposition != "finalized" {
 		t.Fatalf("retirement finalization: %v %#v", err, record)
@@ -1350,6 +1438,21 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 	identities := []string{"cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated"}
 	evidenceData, _ := json.Marshal(identities)
 	planDigest := SHA256(data)
+	prematureCompletion, err := item.store.signControlRecord(SignedControlRecord{Domain: RetirementCompletionDomain, PlanSHA256: planDigest, RequestID: "mutation-fence-release", Disposition: "durably-released", EvidenceSHA256: SHA256(evidenceData), RecordedAt: item.now}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prematureData, _ := json.MarshalIndent(prematureCompletion, "", "  ")
+	completionPath := item.store.path("evidence", "retirement-complete.json")
+	if err := writeAtomicExclusive(completionPath, append(prematureData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.retirementStatusLocked(); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+		t.Fatalf("completion without finalization was accepted: %v", err)
+	}
+	if err := os.Remove(completionPath); err != nil {
+		t.Fatal(err)
+	}
 	record, err := item.store.signControlRecord(SignedControlRecord{Domain: RetirementFinalizationDomain, PlanSHA256: planDigest, RequestID: "credential-revocations", Disposition: "finalized", EvidenceSHA256: SHA256(evidenceData), RecordedAt: item.now.Add(time.Second)}, RecoveryRole, syntheticOperatorPassphrase)
 	if err != nil {
 		t.Fatal(err)
@@ -1359,6 +1462,15 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 	}
 	recordData, _ := json.MarshalIndent(record, "", "  ")
 	if err := writeAtomicExclusive(item.store.path("evidence", "retirement-finalized.json"), append(recordData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomicExclusive(completionPath, append(prematureData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.retirementStatusLocked(); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+		t.Fatalf("completion coexisting with fence was accepted: %v", err)
+	}
+	if err := os.Remove(completionPath); err != nil {
 		t.Fatal(err)
 	}
 	prefixStatus, err := item.store.retirementStatusLocked()
@@ -1382,7 +1494,7 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 		t.Fatalf("lock-absent completion-missing prefix misclassified: %v %#v", err, unsyncedStatus)
 	}
 	item.store.syncDirectoryForTest = nil
-	if _, err := item.store.FinalizeRetirement(planDigest, identities[0], identities[1], identities[2], identities[3], identities[4], item.now.Add(3*time.Second), syntheticOperatorPassphrase); err != nil {
+	if _, err := item.store.FinalizeRetirement(planDigest, identities[0], identities[1], identities[2], identities[3], identities[4], item.now.Add(-time.Second), syntheticOperatorPassphrase); err != nil {
 		t.Fatalf("same-evidence finalization retry failed: %v", err)
 	}
 	finalStatus, err := item.store.RetirementStatus()
