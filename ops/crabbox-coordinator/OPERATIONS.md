@@ -370,10 +370,12 @@ agentscope-crabbox-control retirement-finalize \
 
 The attended command signs the exact revocation tuple, retires every local
 credential ciphertext and its sealing key, publishes terminal finalization
-evidence, and only then releases the mutation fence. A crash before final fence
-removal is re-entered with the same identities; different evidence fails
-closed. No other command may report retirement finalized or reopen the account
-mutation surface.
+evidence, and only then releases and directory-syncs the mutation fence before
+publishing a separately signed completion receipt. A crash before durable fence
+release, or after unlink but before that receipt, is re-entered with the same
+identities; different evidence fails closed. Status reports either prefix as a
+retryable fence-release-pending state. No other command may report retirement
+finalized or reopen the account mutation surface.
 
 `scripts/crabbox-coordinator-retirement-profile.mjs` structurally renders that
 terminal profile only from a recent candidate-signed provider-zero record bound

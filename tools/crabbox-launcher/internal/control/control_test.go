@@ -1302,7 +1302,7 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: deployData, Now: item.now.Add(2 * time.Second)}, &recordingExecutor{}, item.observer()); err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
 		t.Fatalf("apply reopened retired environment: %v", err)
 	}
-	if _, err := item.store.FinalizeRetirement(planDigest, "different-deployment-revocation", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_FENCE") {
+	if _, err := item.store.FinalizeRetirement(planDigest, "different-deployment-revocation", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_FINALIZATION_BINDING") {
 		t.Fatalf("finalized retirement accepted changed evidence: %v", err)
 	}
 	if err := os.WriteFile(item.store.path("evidence", "retirement-finalized.json"), []byte("{}\n"), 0o600); err != nil {
@@ -1373,7 +1373,16 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 	if queuedStatus.err != nil || !queuedStatus.status.FenceReleasePending || queuedStatus.status.Finalized || !queuedStatus.status.MutationFenceHeld || queuedStatus.status.EnrolledSlotCount != 0 || queuedStatus.status.CredentialSetComplete {
 		t.Fatalf("queued status crossed retirement with a mixed snapshot: %v %#v", queuedStatus.err, queuedStatus.status)
 	}
-	if _, err := item.store.FinalizeRetirement(planDigest, identities[0], identities[1], identities[2], identities[3], identities[4], item.now.Add(2*time.Second), syntheticOperatorPassphrase); err != nil {
+	item.store.syncDirectoryForTest = func(string) error { return errors.New("synthetic journal sync failure") }
+	if _, err := item.store.FinalizeRetirement(planDigest, identities[0], identities[1], identities[2], identities[3], identities[4], item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "synthetic journal sync failure") {
+		t.Fatalf("unlink-to-sync failure was not surfaced: %v", err)
+	}
+	unsyncedStatus, err := item.store.RetirementStatus()
+	if err != nil || !unsyncedStatus.FenceReleasePending || unsyncedStatus.Finalized || unsyncedStatus.MutationFenceHeld {
+		t.Fatalf("lock-absent completion-missing prefix misclassified: %v %#v", err, unsyncedStatus)
+	}
+	item.store.syncDirectoryForTest = nil
+	if _, err := item.store.FinalizeRetirement(planDigest, identities[0], identities[1], identities[2], identities[3], identities[4], item.now.Add(3*time.Second), syntheticOperatorPassphrase); err != nil {
 		t.Fatalf("same-evidence finalization retry failed: %v", err)
 	}
 	finalStatus, err := item.store.RetirementStatus()

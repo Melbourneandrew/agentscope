@@ -18,7 +18,8 @@ import (
 )
 
 type Store struct {
-	Root string
+	Root                 string
+	syncDirectoryForTest func(string) error
 }
 
 var journalEventNamePattern = regexp.MustCompile(`^[0-9]{6}-[A-Za-z0-9-]+\.json$`)
@@ -55,6 +56,13 @@ type SlotMetadata struct {
 }
 
 func NewStore(root string) Store { return Store{Root: root} }
+
+func (store Store) syncJournalDirectory() error {
+	if store.syncDirectoryForTest != nil {
+		return store.syncDirectoryForTest(store.path("journal"))
+	}
+	return syncDirectory(store.path("journal"))
+}
 
 func (store Store) path(parts ...string) string {
 	return filepath.Join(append([]string{store.Root}, parts...)...)
@@ -670,6 +678,18 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 		status.FenceReleasePending = true
 		return status, nil
 	}
+	completionData, completionErr := readPrivate(store.path("evidence", "retirement-complete.json"))
+	if os.IsNotExist(completionErr) {
+		status.FenceReleasePending = true
+		return status, nil
+	}
+	if completionErr != nil {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
+	var completion SignedControlRecord
+	if strictJSON(completionData, &completion) != nil || completion.Domain != RetirementCompletionDomain || completion.PlanSHA256 != final.PlanSHA256 || completion.RequestID != "mutation-fence-release" || completion.Disposition != "durably-released" || completion.EvidenceSHA256 != final.EvidenceSHA256 || completion.RecordedAt.Before(final.RecordedAt) || verifyControlRecord(completion, installation.Roots[RecoveryRole], RecoveryRole) != nil {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
 	status.Finalized = true
 	return status, nil
 }
@@ -1056,15 +1076,13 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 	if err != nil || last.State != "reconciled-terminal" {
 		return SignedControlRecord{}, errors.New("E_RETIREMENT_NOT_TERMINAL")
 	}
-	fenceData, err := readPrivate(store.path("journal", "mutation.lock"))
-	if err != nil || strings.TrimSpace(string(fenceData)) != planDigest || !store.IsFrozen() {
-		return SignedControlRecord{}, errors.New("E_RETIREMENT_FENCE")
-	}
 	evidenceData, _ := json.Marshal(identities)
 	evidenceSHA256 := SHA256(evidenceData)
 	recordPath := store.path("evidence", "retirement-finalized.json")
 	var record SignedControlRecord
+	recordExisted := false
 	if existing, readErr := readPrivate(recordPath); readErr == nil {
+		recordExisted = true
 		if strictJSON(existing, &record) != nil || record.Domain != RetirementFinalizationDomain || record.PlanSHA256 != planDigest || record.RequestID != "credential-revocations" || record.Disposition != "finalized" || record.EvidenceSHA256 != evidenceSHA256 || verifyControlRecord(record, installation.Roots[RecoveryRole], RecoveryRole) != nil {
 			return SignedControlRecord{}, errors.New("E_RETIREMENT_FINALIZATION_BINDING")
 		}
@@ -1075,6 +1093,11 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 		if err != nil {
 			return record, err
 		}
+	}
+	fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
+	fenceHeld := fenceErr == nil && strings.TrimSpace(string(fenceData)) == planDigest
+	if (fenceErr != nil && !os.IsNotExist(fenceErr)) || (fenceErr == nil && !fenceHeld) || (!fenceHeld && !recordExisted) || !store.IsFrozen() {
+		return SignedControlRecord{}, errors.New("E_RETIREMENT_FENCE")
 	}
 	if err := store.retireLocalCredentials(); err != nil {
 		return record, err
@@ -1087,11 +1110,31 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 	} else if readErr != nil {
 		return record, readErr
 	}
-	if err := os.Remove(store.path("journal", "mutation.lock")); err != nil && !os.IsNotExist(err) {
+	if fenceHeld {
+		if err := os.Remove(store.path("journal", "mutation.lock")); err != nil {
+			return record, err
+		}
+	}
+	if err := store.syncJournalDirectory(); err != nil {
 		return record, err
 	}
-	if err := syncDirectory(store.path("journal")); err != nil {
-		return record, err
+	completionPath := store.path("evidence", "retirement-complete.json")
+	if completionData, readErr := readPrivate(completionPath); readErr == nil {
+		var completion SignedControlRecord
+		if strictJSON(completionData, &completion) != nil || completion.Domain != RetirementCompletionDomain || completion.PlanSHA256 != planDigest || completion.RequestID != "mutation-fence-release" || completion.Disposition != "durably-released" || completion.EvidenceSHA256 != evidenceSHA256 || verifyControlRecord(completion, installation.Roots[RecoveryRole], RecoveryRole) != nil {
+			return record, errors.New("E_RETIREMENT_COMPLETION_BINDING")
+		}
+	} else if !os.IsNotExist(readErr) {
+		return record, readErr
+	} else {
+		completion, signErr := store.signControlRecord(SignedControlRecord{Domain: RetirementCompletionDomain, PlanSHA256: planDigest, RequestID: "mutation-fence-release", Disposition: "durably-released", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
+		if signErr != nil {
+			return record, signErr
+		}
+		completionData, _ := json.MarshalIndent(completion, "", "  ")
+		if err := writeAtomicExclusive(completionPath, append(completionData, '\n'), 0o600); err != nil {
+			return record, err
+		}
 	}
 	return record, nil
 }
