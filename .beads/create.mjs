@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, rmdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -9,19 +10,15 @@ const REPOSITORY_DIRECTORY = path.resolve(path.dirname(fileURLToPath(import.meta
 const PROJECT_PREFIX = "agentscope-";
 const WORKSTREAM_PATTERN = /^[a-z][a-z0-9]{1,19}$/;
 const RESERVED_ARGUMENTS = new Set([
-  "--dry-run",
-  "--file",
-  "-f",
-  "--force",
-  "--graph",
-  "--id",
-  "--json",
-  "--readonly",
-  "--silent",
-  "--title",
+  "--actor", "--db", "--directory", "-C", "--dolt-auto-commit", "--dry-run", "--file", "-f",
+  "--force", "--global", "--graph", "--id", "--ignore-schema-skew", "--json", "--profile",
+  "--quiet", "-q", "--readonly", "--repo", "--sandbox", "--silent", "--title", "--verbose", "-v",
 ]);
 const LIST_ARGUMENTS = ["list", "--all", "--flat", "--limit", "0", "--json", "--readonly"];
 const LOCK_RETRY_LIMIT = 200;
+const LOCK_NAME = "create-allocation.lock";
+const LOCK_OWNER_FILE = "owner.json";
+const LOCK_RELEASED_FILE = "released";
 
 export function canonicalIssueId(reference) {
   if (typeof reference !== "string") return "";
@@ -51,125 +48,180 @@ export function nextIssueNumber(issues, workstream) {
 }
 
 function normalizeDependencies(value) {
-  return value
-    .split(",")
-    .map((entry) => {
-      const separator = entry.indexOf(":");
-      if (separator === -1) return canonicalIssueId(entry);
-      return `${entry.slice(0, separator)}:${canonicalIssueId(entry.slice(separator + 1))}`;
-    })
-    .join(",");
+  return value.split(",").map((entry) => {
+    const separator = entry.indexOf(":");
+    if (separator === -1) return canonicalIssueId(entry);
+    return `${entry.slice(0, separator)}:${canonicalIssueId(entry.slice(separator + 1))}`;
+  }).join(",");
+}
+
+function isReservedArgument(argument) {
+  return [...RESERVED_ARGUMENTS].some((flag) => argument === flag || argument.startsWith(`${flag}=`) ||
+    (flag.startsWith("-") && !flag.startsWith("--") && argument.startsWith(flag)));
 }
 
 function normalizeReferenceArguments(arguments_) {
   const normalized = [];
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
-    if (RESERVED_ARGUMENTS.has(argument) || [...RESERVED_ARGUMENTS].some((flag) => argument.startsWith(`${flag}=`))) {
-      throw new Error(`The creation helper owns ${argument.split("=")[0]}`);
-    }
+    if (isReservedArgument(argument)) throw new Error(`The creation helper owns ${argument.split("=")[0]}`);
     if (argument === "--parent") {
       const parent = arguments_[index + 1];
       if (!parent) throw new Error("--parent requires an issue reference");
       normalized.push(argument, canonicalIssueId(parent));
       index += 1;
-      continue;
-    }
-    if (argument.startsWith("--parent=")) {
+    } else if (argument.startsWith("--parent=")) {
       normalized.push(`--parent=${canonicalIssueId(argument.slice("--parent=".length))}`);
-      continue;
-    }
-    if (argument === "--deps") {
+    } else if (argument === "--deps") {
       const dependencies = arguments_[index + 1];
       if (!dependencies) throw new Error("--deps requires dependency references");
       normalized.push(argument, normalizeDependencies(dependencies));
       index += 1;
-      continue;
-    }
-    if (argument.startsWith("--deps=")) {
+    } else if (argument.startsWith("--deps=")) {
       normalized.push(`--deps=${normalizeDependencies(argument.slice("--deps=".length))}`);
-      continue;
+    } else {
+      normalized.push(argument);
     }
-    normalized.push(argument);
   }
   return normalized;
 }
 
 async function readIssues(run) {
   const { stdout } = await run("bd", LIST_ARGUMENTS, {
-    cwd: REPOSITORY_DIRECTORY,
-    encoding: "utf8",
-    maxBuffer: 8 * 1024 * 1024,
-    timeout: 20_000,
+    cwd: REPOSITORY_DIRECTORY, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, timeout: 20_000,
   });
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    throw new Error("bd list returned malformed JSON");
-  }
+  try { return JSON.parse(stdout); } catch { throw new Error("bd list returned malformed JSON"); }
 }
 
 async function issueExists(run, candidate) {
   try {
     const { stdout } = await run("bd", ["show", candidate, "--json", "--readonly"], {
-      cwd: REPOSITORY_DIRECTORY,
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 10_000,
+      cwd: REPOSITORY_DIRECTORY, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000,
     });
-    const decoded = JSON.parse(stdout);
-    return Array.isArray(decoded) && decoded.some((issue) => issue?.id === candidate);
-  } catch {
-    return false;
+    let decoded;
+    try { decoded = JSON.parse(stdout); } catch { throw new Error("bd show returned malformed JSON"); }
+    if (!Array.isArray(decoded) || decoded.length !== 1 || decoded[0]?.id !== candidate) {
+      throw new Error("bd show returned an unexpected issue document");
+    }
+    return true;
+  } catch (error) {
+    let decoded;
+    try { decoded = JSON.parse(error?.stdout ?? ""); } catch {
+      throw new Error("Unable to prove that the candidate Beads ID is unused");
+    }
+    const keys = decoded && typeof decoded === "object" ? Object.keys(decoded).sort() : [];
+    if (error?.code === 1 && keys.length === 2 && keys[0] === "error" && keys[1] === "schema_version" &&
+      decoded.schema_version === 1 && decoded.error === "no issues found matching the provided IDs") return false;
+    throw new Error("Unable to prove that the candidate Beads ID is unused");
   }
 }
 
 async function beadsDirectory(run) {
   const { stdout } = await run("bd", ["where", "--json", "--readonly"], {
-    cwd: REPOSITORY_DIRECTORY,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
-    timeout: 10_000,
+    cwd: REPOSITORY_DIRECTORY, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10_000,
   });
   let decoded;
-  try {
-    decoded = JSON.parse(stdout);
-  } catch {
-    throw new Error("bd where returned malformed JSON");
-  }
+  try { decoded = JSON.parse(stdout); } catch { throw new Error("bd where returned malformed JSON"); }
   if (typeof decoded?.path !== "string" || !path.isAbsolute(decoded.path)) {
     throw new Error("bd where returned an invalid workspace path");
   }
   return decoded.path;
 }
 
-async function acquireAllocationLock(run, wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))) {
-  const lockPath = path.join(await beadsDirectory(run), "create-allocation.lock");
+async function processStartIdentity(pid) {
+  try {
+    const { stdout } = await executeFile("ps", ["-p", String(pid), "-o", "lstart="], {
+      encoding: "utf8", maxBuffer: 4096, timeout: 5_000,
+    });
+    const identity = stdout.trim();
+    return identity && identity.length <= 128 ? identity : null;
+  } catch { return null; }
+}
+
+async function removeOwnedDirectory(directory) {
+  try { await unlink(path.join(directory, LOCK_RELEASED_FILE)); } catch (error) {
+    if (error?.code !== "ENOENT") return false;
+  }
+  try {
+    await unlink(path.join(directory, LOCK_OWNER_FILE));
+    await rmdir(directory);
+    return true;
+  } catch { return false; }
+}
+
+async function readLockOwner(lockPath) {
+  try {
+    const raw = await readFile(path.join(lockPath, LOCK_OWNER_FILE), { encoding: "utf8", flag: "r" });
+    if (raw.length > 1024) return null;
+    const owner = JSON.parse(raw);
+    if (owner?.version !== 1 || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 ||
+      typeof owner.processStart !== "string" || !/^[0-9a-f-]{36}$/.test(owner.token)) return null;
+    return owner;
+  } catch { return null; }
+}
+
+async function retireLock(lockPath, directory, suffix) {
+  const retired = path.join(directory, `.create-allocation.${randomUUID()}.${suffix}`);
+  try { await rename(lockPath, retired); } catch (error) {
+    if (["ENOENT", "EEXIST", "ENOTEMPTY"].includes(error?.code)) return false;
+    throw error;
+  }
+  await removeOwnedDirectory(retired);
+  return true;
+}
+
+async function recoverStaleLock(lockPath, directory) {
+  const owner = await readLockOwner(lockPath);
+  if (!owner) return false;
+  try {
+    const released = await readFile(path.join(lockPath, LOCK_RELEASED_FILE), { encoding: "utf8", flag: "r" });
+    if (released.trim() !== owner.token) return false;
+    return retireLock(lockPath, directory, "released");
+  } catch (error) { if (error?.code !== "ENOENT") return false; }
+  const observedStart = await processStartIdentity(owner.pid);
+  if (observedStart === null || observedStart !== owner.processStart) return retireLock(lockPath, directory, "stale");
+  return false;
+}
+
+export async function acquireAllocationLock(run, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
+  const directory = await beadsDirectory(run);
+  const lockPath = path.join(directory, LOCK_NAME);
+  const processStart = await processStartIdentity(process.pid);
+  if (!processStart) throw new Error("Unable to establish Beads allocator process identity");
+  const token = randomUUID();
+  const stagingPath = path.join(directory, `.create-allocation.${token}.pending`);
+  await mkdir(stagingPath, { mode: 0o700 });
+  await writeFile(path.join(stagingPath, LOCK_OWNER_FILE),
+    `${JSON.stringify({ version: 1, token, pid: process.pid, processStart })}\n`,
+    { encoding: "utf8", flag: "wx", mode: 0o600 });
   for (let attempt = 0; attempt < LOCK_RETRY_LIMIT; attempt += 1) {
     try {
-      await mkdir(lockPath, { mode: 0o700 });
+      await rename(stagingPath, lockPath);
       return async () => {
         try {
-          await rmdir(lockPath);
+          const owner = await readLockOwner(lockPath);
+          if (owner?.token !== token) throw new Error("ownership changed");
+          await writeFile(path.join(lockPath, LOCK_RELEASED_FILE), `${token}\n`,
+            { encoding: "utf8", flag: "wx", mode: 0o600 });
+          await retireLock(lockPath, directory, "released");
         } catch {
-          process.stderr.write("Beads ID allocation completed, but its empty local lock needs operator cleanup.\n");
+          process.stderr.write("Beads ID allocation completed; the next helper run will reconcile its released lock.\n");
         }
       };
     } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
+      if (!["EEXIST", "ENOTEMPTY"].includes(error?.code)) {
+        await removeOwnedDirectory(stagingPath);
+        throw error;
+      }
+      await recoverStaleLock(lockPath, directory);
       await wait(50);
     }
   }
+  await removeOwnedDirectory(stagingPath);
   throw new Error("Another Beads ID allocation is still active; retry after it finishes");
 }
 
-export async function createSequentialIssue({
-  workstream,
-  title,
-  arguments_ = [],
-  run = executeFile,
-  lock = acquireAllocationLock,
-}) {
+export async function createSequentialIssue({ workstream, title, arguments_ = [], run = executeFile, lock = acquireAllocationLock }) {
   if (typeof title !== "string" || !title.trim()) throw new Error("Title must not be empty");
   const passthrough = normalizeReferenceArguments(arguments_);
   const releaseLock = await lock(run);
@@ -178,24 +230,17 @@ export async function createSequentialIssue({
     for (let attempts = 0; attempts < 100 && sequence <= 999; attempts += 1, sequence += 1) {
       const candidate = `${PROJECT_PREFIX}${workstream}-${String(sequence).padStart(3, "0")}`;
       if (await issueExists(run, candidate)) continue;
-      await run("bd", ["create", title.trim(), "--id", candidate, "--silent", ...passthrough], {
-        cwd: REPOSITORY_DIRECTORY,
-        encoding: "utf8",
-        maxBuffer: 1024 * 1024,
-        timeout: 20_000,
+      await run("bd", ["create", "--title", title.trim(), "--id", candidate, "--silent", ...passthrough], {
+        cwd: REPOSITORY_DIRECTORY, encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20_000,
       });
       return humanIssueId(candidate);
     }
     throw new Error(`Unable to allocate an ID in the ${workstream} workstream`);
-  } finally {
-    await releaseLock();
-  }
+  } finally { await releaseLock(); }
 }
 
 export function parseArguments(arguments_) {
-  if (arguments_.length < 2) {
-    throw new Error('Usage: node .beads/create.mjs <workstream> "<title>" [bd create options]');
-  }
+  if (arguments_.length < 2) throw new Error('Usage: node .beads/create.mjs <workstream> "<title>" [bd create options]');
   return { workstream: arguments_[0], title: arguments_[1], arguments_: arguments_.slice(2) };
 }
 
@@ -204,6 +249,4 @@ async function main() {
   process.stdout.write(`${created}\n`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await main();
-}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
