@@ -104,12 +104,22 @@ function createCandidateFixture(overrides = {}) {
     bin: { agentscope: "./dist/bin/agentscope.js" },
     publishConfig: { access: "public" },
   };
+  const extraEntries = overrides.extraEntries ?? [];
   const entries = [
     {
       path: "package/package.json",
       content: `${JSON.stringify(overrides.packageManifest ?? packageManifest)}\n`,
     },
-    ...(overrides.extraEntries ?? []),
+    ...(!overrides.omitBin &&
+    !extraEntries.some(({ path }) => path === "package/dist/bin/agentscope.js")
+      ? [
+          {
+            path: "package/dist/bin/agentscope.js",
+            content: "#!/usr/bin/env node\n",
+          },
+        ]
+      : []),
+    ...extraEntries,
   ];
   const inventory = entries.map(({ path, content }) => ({
     bytes: Buffer.byteLength(content),
@@ -187,7 +197,7 @@ test("verifies one exact certified agentscope-cli tarball without rebuilding", (
   const fixture = createCandidateFixture();
   assert.deepEqual(verify(fixture)(), {
     bytes: fixture.manifest.tarball.bytes,
-    inventoryEntries: 1,
+    inventoryEntries: 2,
     inventoryDigest: fixture.manifest.tarball.inventoryDigest,
     manifestDigest: fixture.manifestDigest,
     package: "agentscope-cli",
@@ -285,6 +295,9 @@ test("rejects source, protected-tag, digest, filename, and certification mismatc
 });
 
 test("rejects stale private-package, rebuilt-substitution, and packed channel drift", () => {
+  const missingExecutable = createCandidateFixture({ omitBin: true });
+  assert.throws(verify(missingExecutable), /executable is missing/);
+
   const stale = createCandidateFixture({
     packageManifest: {
       name: "@agentscope/core",
@@ -1978,6 +1991,7 @@ test("rejects indirect and dynamic module-loader authority", () => {
     'Object.getPrototypeOf(async () => {})["con" + "structor"](\'return import("node:https")\')();\n',
     'Object.getOwnPropertyDescriptor(Object.getPrototypeOf(async () => {}), "constructor").value(\'return import("node:https")\')();\n',
     'const fn = async () => {};\nfn[["con", "structor"].join("")](\'return import("node:https")\')();\n',
+    "const { constructor: AsyncCtor } = async () => {};\nAsyncCtor('return import(\"node:https\")')();\n",
   ]) {
     writeFileSync(join(root, scriptPath), source);
     assert.throws(

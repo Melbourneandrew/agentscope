@@ -107,6 +107,12 @@ const forbiddenAmbientIdentifiers = new Set([
 ]);
 
 function assertNoAmbientCodeGeneration(path, node) {
+  const forbiddenProperties = [
+    "constructor",
+    "__proto__",
+    "getPrototypeOf",
+    "getOwnPropertyDescriptor",
+  ];
   const constantString = (expression) => {
     if (ts.isStringLiteral(expression)) return expression.text;
     if (
@@ -123,21 +129,19 @@ function assertNoAmbientCodeGeneration(path, node) {
     ts.isIdentifier(node) && forbiddenAmbientIdentifiers.has(node.text);
   const forbiddenProperty =
     ts.isPropertyAccessExpression(node) &&
-    [
-      "constructor",
-      "__proto__",
-      "getPrototypeOf",
-      "getOwnPropertyDescriptor",
-    ].includes(node.name.text);
+    forbiddenProperties.includes(node.name.text);
   const forbiddenElement =
     ts.isElementAccessExpression(node) &&
-    ([
-      "constructor",
-      "__proto__",
-      "getPrototypeOf",
-      "getOwnPropertyDescriptor",
-    ].includes(constantString(node.argumentExpression)) ||
+    (forbiddenProperties.includes(constantString(node.argumentExpression)) ||
       (ts.isIdentifier(node.expression) && node.expression.text === "Object"));
+  const bindingProperty = ts.isBindingElement(node)
+    ? node.propertyName
+    : undefined;
+  const forbiddenBinding =
+    bindingProperty !== undefined &&
+    (ts.isIdentifier(bindingProperty) || ts.isStringLiteral(bindingProperty)
+      ? forbiddenProperties.includes(bindingProperty.text)
+      : ts.isComputedPropertyName(bindingProperty));
   const forbiddenDynamicElement =
     ts.isElementAccessExpression(node) &&
     !ts.isStringLiteral(node.argumentExpression) &&
@@ -146,6 +150,7 @@ function assertNoAmbientCodeGeneration(path, node) {
     forbiddenIdentifier ||
     forbiddenProperty ||
     forbiddenElement ||
+    forbiddenBinding ||
     forbiddenDynamicElement
   )
     throw new Error(

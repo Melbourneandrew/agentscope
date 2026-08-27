@@ -419,6 +419,11 @@ export function verifyCandidateArtifact({
         JSON.stringify(manifest.package.bin),
     "Packed manifest identity mismatch",
   );
+  const executablePath = `package/${manifest.package.bin.agentscope.replace(/^\.\//u, "")}`;
+  assert(
+    inspected.inventory.some(({ path }) => path === executablePath),
+    "Candidate executable is missing from the exact tarball inventory",
+  );
   assertExactKeys(
     packedManifest.publishConfig,
     ["access"],
