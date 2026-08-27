@@ -34,6 +34,61 @@ function digest(value, label) {
   assert(SHA256_PATTERN.test(value), `${label} must be an exact SHA-256`);
 }
 
+function validateDistTags(distTags, distTagsDigest, label) {
+  assert(
+    distTags !== null &&
+      typeof distTags === "object" &&
+      !Array.isArray(distTags) &&
+      Object.keys(distTags).length > 0,
+    `${label} must contain a complete dist-tag mapping`,
+  );
+  const keys = Object.keys(distTags);
+  assert(
+    canonicalJson(distTags) ===
+      canonicalJson(
+        Object.fromEntries([...keys].sort().map((key) => [key, distTags[key]])),
+      ) &&
+      keys.every(
+        (key) =>
+          /^[a-z0-9][a-z0-9._-]*$/u.test(key) &&
+          /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(distTags[key]),
+      ),
+    `${label} contains a noncanonical tag or version`,
+  );
+  digest(distTagsDigest, `${label} digest`);
+  assert(
+    distTagsDigest === sha256(canonicalJson(distTags)),
+    `${label} digest does not bind the complete mapping`,
+  );
+}
+
+function validateReleaseChannels(registry, expected, ledger, allowDrift) {
+  validateDistTags(registry.distTags, registry.distTagsDigest, "registry tags");
+  if (allowDrift) return;
+  assert(
+    registry.distTags[expected.package.distTag] === expected.package.version,
+    `Registry ${expected.package.distTag} channel does not select the candidate`,
+  );
+  assert(
+    ledger.prepublicationDistTags,
+    "Registry completion lacks a durable prepublication tag checkpoint",
+  );
+  const before = Object.fromEntries(
+    Object.entries(ledger.prepublicationDistTags).filter(
+      ([tag]) => tag !== expected.package.distTag,
+    ),
+  );
+  const after = Object.fromEntries(
+    Object.entries(registry.distTags).filter(
+      ([tag]) => tag !== expected.package.distTag,
+    ),
+  );
+  assert(
+    canonicalJson(after) === canonicalJson(before),
+    "Registry mutated a non-authorized dist-tag",
+  );
+}
+
 function syntheticIdentifier(value, prefix, label) {
   assert(
     typeof value === "string" &&
@@ -327,14 +382,17 @@ function validateStagePayload(payload, expected) {
   return payload.stage.id;
 }
 
-function validateReadyPayload(payload, ledger) {
+function validateReadyPayload(payload, expected, ledger) {
   assertExactKeys(
     payload,
     [
       "stageId",
       "draftReleaseDatabaseId",
       "pendingStagesCheckpointDigest",
-      "ownerApprovalCheckpointDigest",
+      "publicationCheckpoint",
+      "approvalConsumption",
+      "releaseLedgerPath",
+      "incidentLedgerPath",
     ],
     "ready payload",
   );
@@ -345,24 +403,95 @@ function validateReadyPayload(payload, ledger) {
     "ready release database ID",
   );
   digest(payload.pendingStagesCheckpointDigest, "pending-stage checkpoint");
-  digest(payload.ownerApprovalCheckpointDigest, "approval checkpoint");
   assert(
     payload.stageId === ledger.stageId &&
       payload.draftReleaseDatabaseId === ledger.releaseDatabaseId,
     "Ready record mixes stage or release identity",
   );
+  assertExactKeys(
+    payload.publicationCheckpoint,
+    [
+      "stageId",
+      "ownerIdentity",
+      "distTags",
+      "distTagsDigest",
+      "issuedAt",
+      "expiresAt",
+      "state",
+      "authenticationDigest",
+    ],
+    "publication checkpoint",
+  );
+  const checkpoint = payload.publicationCheckpoint;
+  const issuedAt = Date.parse(checkpoint.issuedAt);
+  const expiresAt = Date.parse(checkpoint.expiresAt);
+  assert(
+    checkpoint.stageId === ledger.stageId &&
+      checkpoint.ownerIdentity === "synthetic-owner" &&
+      checkpoint.state === "valid-unconsumed" &&
+      Number.isFinite(issuedAt) &&
+      Number.isFinite(expiresAt) &&
+      expiresAt > issuedAt &&
+      expiresAt - issuedAt <= 15 * 60 * 1000,
+    "Publication checkpoint is stale, detached, or not one-use",
+  );
+  validateDistTags(
+    checkpoint.distTags,
+    checkpoint.distTagsDigest,
+    "publication checkpoint tags",
+  );
+  assert(
+    expected.package.releaseClass !== "alpha" ||
+      (checkpoint.distTags.bootstrap === "0.0.0-bootstrap.0" &&
+        checkpoint.distTags.latest === "0.0.0-bootstrap.0"),
+    "Alpha checkpoint does not preserve the exact inert bootstrap channels",
+  );
+  digest(checkpoint.authenticationDigest, "publication authentication");
+  assertExactKeys(
+    payload.approvalConsumption,
+    [
+      "checkpointDigest",
+      "stageId",
+      "observedDistTagsDigest",
+      "reauthenticationDigest",
+      "state",
+    ],
+    "approval consumption",
+  );
+  const approval = payload.approvalConsumption;
+  assert(
+    approval.checkpointDigest === sha256(canonicalJson(checkpoint)) &&
+      approval.stageId === ledger.stageId &&
+      approval.observedDistTagsDigest === checkpoint.distTagsDigest &&
+      approval.state === "consumed-for-approved-stage",
+    "Publication approval did not consume the exact fresh checkpoint",
+  );
+  digest(approval.reauthenticationDigest, "publication reauthentication");
+  assert(
+    payload.releaseLedgerPath === "release-records/releases/" &&
+      payload.incidentLedgerPath === "release-records/incidents/",
+    "Ready record does not declare the protected ledgers",
+  );
+  ledger.prepublicationDistTags = checkpoint.distTags;
+  ledger.prepublicationDistTagsDigest = checkpoint.distTagsDigest;
 }
 
-function validateRegistry(registry, expected, allowMismatch = false) {
+function validateRegistry(
+  registry,
+  expected,
+  ledger,
+  { allowCandidateMismatch = false, allowChannelDrift = false } = {},
+) {
   assertExactKeys(
     registry,
     [
       "package",
       "version",
-      "distTag",
+      "releaseClass",
+      "distTags",
+      "distTagsDigest",
       "integrity",
       "tarballSha256",
-      "latestAbsent",
       "provenanceDigest",
       "bin",
       "downloadedTarballSha256",
@@ -374,12 +503,12 @@ function validateRegistry(registry, expected, allowMismatch = false) {
   assert(
     registry.package === expected.package.name &&
       registry.version === expected.package.version &&
-      registry.distTag === expected.package.distTag &&
+      registry.releaseClass === expected.package.releaseClass &&
       SRI_PATTERN.test(registry.integrity) &&
-      SHA256_PATTERN.test(registry.tarballSha256) &&
-      registry.latestAbsent === true,
+      SHA256_PATTERN.test(registry.tarballSha256),
     "Registry identity drifted",
   );
+  validateReleaseChannels(registry, expected, ledger, allowChannelDrift);
   assert(
     registry.downloadedTarballSha256 === registry.tarballSha256,
     "Downloaded registry tarball identity drifted",
@@ -399,7 +528,7 @@ function validateRegistry(registry, expected, allowMismatch = false) {
   );
   for (const [name, value] of Object.entries(registry.installedSmoke))
     digest(value, `installed ${name} smoke`);
-  if (!allowMismatch)
+  if (!allowCandidateMismatch)
     assert(
       registry.integrity === expected.integrity &&
         registry.tarballSha256 === expected.candidateTarballSha256,
@@ -449,6 +578,7 @@ function validateIncidentPayload(payload, expected, ledger) {
       "githubRelease",
       "recoveryPlanDigest",
       "incidentManifestDigest",
+      "readyManifestDigest",
     ],
     "immutable incident payload",
   );
@@ -458,7 +588,10 @@ function validateIncidentPayload(payload, expected, ledger) {
     ),
     "Immutable incident failure class drifted",
   );
-  validateRegistry(payload.registry, expected, true);
+  validateRegistry(payload.registry, expected, ledger, {
+    allowCandidateMismatch: true,
+    allowChannelDrift: payload.failureClass === "postpublication-control-drift",
+  });
   if (payload.failureClass === "candidate-digest-mismatch")
     assert(
       payload.registry.integrity !== expected.integrity ||
@@ -479,6 +612,67 @@ function validateIncidentPayload(payload, expected, ledger) {
   );
   digest(payload.recoveryPlanDigest, "incident recovery plan");
   digest(payload.incidentManifestDigest, "incident manifest");
+  assert(
+    payload.readyManifestDigest === ledger.readyManifestDigest,
+    "Incident does not bind the ready manifest",
+  );
+}
+
+function validateNpmQuarantine(quarantine, expected, ledger) {
+  assertExactKeys(
+    quarantine,
+    [
+      "ownerCeremonyDigest",
+      "deprecationResultDigest",
+      "versionDeprecated",
+      "alpha",
+      "distTags",
+      "distTagsDigest",
+      "pendingStagesAbsent",
+    ],
+    "npm quarantine evidence",
+  );
+  digest(quarantine.ownerCeremonyDigest, "npm quarantine owner ceremony");
+  digest(
+    quarantine.deprecationResultDigest,
+    "npm quarantine deprecation result",
+  );
+  assertExactKeys(
+    quarantine.alpha,
+    ["state", "version", "authorizationDigest"],
+    "npm quarantine alpha state",
+  );
+  const alphaAbsent = quarantine.alpha.state === "absent";
+  const alphaSafe = quarantine.alpha.state === "safe-mapping";
+  assert(
+    (alphaAbsent &&
+      quarantine.alpha.version === null &&
+      quarantine.alpha.authorizationDigest === null) ||
+      (alphaSafe &&
+        /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(quarantine.alpha.version) &&
+        quarantine.alpha.version !== expected.package.version &&
+        SHA256_PATTERN.test(quarantine.alpha.authorizationDigest)),
+    "npm quarantine alpha channel still selects the quarantined version",
+  );
+  assert(
+    quarantine.versionDeprecated === true &&
+      quarantine.pendingStagesAbsent === true,
+    "npm quarantine terminal state drifted",
+  );
+  validateDistTags(
+    quarantine.distTags,
+    quarantine.distTagsDigest,
+    "npm quarantine tags",
+  );
+  const preserveOtherTags = (tags) =>
+    Object.fromEntries(
+      Object.entries(tags).filter(([tag]) => tag !== expected.package.distTag),
+    );
+  assert(
+    canonicalJson(preserveOtherTags(quarantine.distTags)) ===
+      canonicalJson(preserveOtherTags(ledger.prepublicationDistTags)),
+    "npm quarantine mutated a non-authorized dist-tag",
+  );
 }
 
 function validateDraftQuarantine(payload, expected, ledger) {
@@ -525,7 +719,9 @@ function validateDraftQuarantine(payload, expected, ledger) {
     else {
       const candidateMismatch =
         payload.failureClass === "postpublication-candidate-mismatch";
-      validateRegistry(payload.registry, expected, candidateMismatch);
+      validateRegistry(payload.registry, expected, ledger, {
+        allowCandidateMismatch: candidateMismatch,
+      });
       if (candidateMismatch)
         assert(
           payload.registry.integrity !== expected.integrity ||
@@ -533,51 +729,7 @@ function validateDraftQuarantine(payload, expected, ledger) {
           "Postpublication candidate-mismatch quarantine contains the exact candidate",
         );
     }
-    assertExactKeys(
-      payload.npmQuarantine,
-      [
-        "ownerCeremonyDigest",
-        "deprecationResultDigest",
-        "versionDeprecated",
-        "alpha",
-        "latestAbsent",
-        "pendingStagesAbsent",
-      ],
-      "npm quarantine evidence",
-    );
-    digest(
-      payload.npmQuarantine.ownerCeremonyDigest,
-      "npm quarantine owner ceremony",
-    );
-    digest(
-      payload.npmQuarantine.deprecationResultDigest,
-      "npm quarantine deprecation result",
-    );
-    assertExactKeys(
-      payload.npmQuarantine.alpha,
-      ["state", "version", "authorizationDigest"],
-      "npm quarantine alpha state",
-    );
-    const alphaAbsent = payload.npmQuarantine.alpha.state === "absent";
-    const alphaSafe = payload.npmQuarantine.alpha.state === "safe-mapping";
-    assert(
-      (alphaAbsent &&
-        payload.npmQuarantine.alpha.version === null &&
-        payload.npmQuarantine.alpha.authorizationDigest === null) ||
-        (alphaSafe &&
-          /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(
-            payload.npmQuarantine.alpha.version,
-          ) &&
-          payload.npmQuarantine.alpha.version !== expected.package.version &&
-          SHA256_PATTERN.test(payload.npmQuarantine.alpha.authorizationDigest)),
-      "npm quarantine alpha channel still selects the quarantined version",
-    );
-    assert(
-      payload.npmQuarantine.versionDeprecated === true &&
-        payload.npmQuarantine.latestAbsent === true &&
-        payload.npmQuarantine.pendingStagesAbsent === true,
-      "npm quarantine terminal state drifted",
-    );
+    validateNpmQuarantine(payload.npmQuarantine, expected, ledger);
   }
   validateGithubRelease(
     payload.githubRelease,
@@ -594,14 +746,18 @@ function validateTerminalPayload(transition, payload, expected, ledger) {
   if (transition === "completion-public-registry-verified") {
     assertExactKeys(
       payload,
-      ["classification", "registry", "githubRelease"],
+      ["classification", "registry", "githubRelease", "readyManifestDigest"],
       "completion payload",
     );
     assert(
       payload.classification === "verified-success",
       "Completion classification drifted",
     );
-    validateRegistry(payload.registry, expected);
+    assert(
+      payload.readyManifestDigest === ledger.readyManifestDigest,
+      "Completion does not bind the ready manifest",
+    );
+    validateRegistry(payload.registry, expected, ledger);
     validateGithubRelease(
       payload.githubRelease,
       expected,
@@ -613,14 +769,24 @@ function validateTerminalPayload(transition, payload, expected, ledger) {
   if (transition === "completion-already-immutable") {
     assertExactKeys(
       payload,
-      ["classification", "registry", "githubRelease", "reconciliationDigest"],
+      [
+        "classification",
+        "registry",
+        "githubRelease",
+        "readyManifestDigest",
+        "reconciliationDigest",
+      ],
       "already-immutable payload",
     );
     assert(
       payload.classification === "exact-already-published",
       "Already-published classification drifted",
     );
-    validateRegistry(payload.registry, expected);
+    assert(
+      payload.readyManifestDigest === ledger.readyManifestDigest,
+      "Already-immutable completion does not bind the ready manifest",
+    );
+    validateRegistry(payload.registry, expected, ledger);
     validateGithubRelease(
       payload.githubRelease,
       expected,
@@ -704,9 +870,10 @@ function validateTransactionRecord(record, expected, ledger) {
     Object.assign(ledger, validateDraftPayload(record.payload, expected));
   else if (record.transition === "stage-recorded")
     ledger.stageId = validateStagePayload(record.payload, expected);
-  else if (record.transition === "ready-to-publish")
-    validateReadyPayload(record.payload, ledger);
-  else if (record.transition === "quarantine-still-draft")
+  else if (record.transition === "ready-to-publish") {
+    validateReadyPayload(record.payload, expected, ledger);
+    ledger.readyManifestDigest = record.digest;
+  } else if (record.transition === "quarantine-still-draft")
     validateTerminalPayload(
       record.transition,
       record.payload,
@@ -745,7 +912,7 @@ export function validateSyntheticReleaseRecords(recordSet, observed) {
   );
   assertExactKeys(
     recordSet.package,
-    ["name", "version", "distTag"],
+    ["name", "version", "releaseClass", "distTag"],
     "release package",
   );
   assert(
@@ -753,6 +920,7 @@ export function validateSyntheticReleaseRecords(recordSet, observed) {
       recordSet.mode === "synthetic-nonpublishing-rehearsal" &&
       recordSet.package.name === "agentscope-cli" &&
       recordSet.package.version === "0.1.0" &&
+      recordSet.package.releaseClass === "alpha" &&
       recordSet.package.distTag === "alpha" &&
       SHA256_PATTERN.test(recordSet.candidateManifestDigest) &&
       SHA256_PATTERN.test(recordSet.candidateTarballSha256) &&

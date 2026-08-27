@@ -501,13 +501,22 @@ function probe() {
   };
 }
 
+const bootstrapTags = Object.freeze({
+  bootstrap: "0.0.0-bootstrap.0",
+  latest: "0.0.0-bootstrap.0",
+});
+const publishedAlphaTags = Object.freeze({
+  alpha: "0.1.0",
+  ...bootstrapTags,
+});
 const exactRegistry = () => ({
   package: "agentscope-cli",
   version: "0.1.0",
-  distTag: "alpha",
+  releaseClass: "alpha",
+  distTags: publishedAlphaTags,
+  distTagsDigest: sha256(canonicalJson(publishedAlphaTags)),
   integrity,
   tarballSha256: candidateTarballSha256,
-  latestAbsent: true,
   provenanceDigest: `sha256:${"5".repeat(64)}`,
   bin: { name: "agentscope", path: "./dist/bin/agentscope.js" },
   downloadedTarballSha256: candidateTarballSha256,
@@ -548,7 +557,8 @@ const quarantinePayload = (failureClass = "ambiguous-stage-response") => ({
             version: null,
             authorizationDigest: null,
           },
-          latestAbsent: true,
+          distTags: bootstrapTags,
+          distTagsDigest: sha256(canonicalJson(bootstrapTags)),
           pendingStagesAbsent: true,
         },
       }
@@ -586,24 +596,46 @@ function payload(transition) {
       ownerCheckpointDigest: `sha256:${"4".repeat(64)}`,
       stageResultDigest: `sha256:${"5".repeat(64)}`,
     };
-  if (transition === "ready-to-publish")
+  if (transition === "ready-to-publish") {
+    const publicationCheckpoint = {
+      stageId: "synthetic-stage-100",
+      ownerIdentity: "synthetic-owner",
+      distTags: bootstrapTags,
+      distTagsDigest: sha256(canonicalJson(bootstrapTags)),
+      issuedAt: "2026-08-27T17:00:00.000Z",
+      expiresAt: "2026-08-27T17:10:00.000Z",
+      state: "valid-unconsumed",
+      authenticationDigest: `sha256:${"7".repeat(64)}`,
+    };
     return {
       stageId: "synthetic-stage-100",
       draftReleaseDatabaseId: "synthetic-release-100",
       pendingStagesCheckpointDigest: `sha256:${"6".repeat(64)}`,
-      ownerApprovalCheckpointDigest: `sha256:${"7".repeat(64)}`,
+      publicationCheckpoint,
+      approvalConsumption: {
+        checkpointDigest: sha256(canonicalJson(publicationCheckpoint)),
+        stageId: "synthetic-stage-100",
+        observedDistTagsDigest: publicationCheckpoint.distTagsDigest,
+        reauthenticationDigest: `sha256:${"8".repeat(64)}`,
+        state: "consumed-for-approved-stage",
+      },
+      releaseLedgerPath: "release-records/releases/",
+      incidentLedgerPath: "release-records/incidents/",
     };
+  }
   if (transition === "completion-public-registry-verified")
     return {
       classification: "verified-success",
       registry: exactRegistry(),
       githubRelease: githubRelease(false, true),
+      readyManifestDigest: null,
     };
   if (transition === "completion-already-immutable")
     return {
       classification: "exact-already-published",
       registry: exactRegistry(),
       githubRelease: githubRelease(false, true),
+      readyManifestDigest: null,
       reconciliationDigest: `sha256:${"8".repeat(64)}`,
     };
   if (transition === "quarantine-still-draft") return quarantinePayload();
@@ -625,6 +657,7 @@ function payload(transition) {
     githubRelease: githubRelease(false, true),
     recoveryPlanDigest: `sha256:${"b".repeat(64)}`,
     incidentManifestDigest: `sha256:${"c".repeat(64)}`,
+    readyManifestDigest: null,
   };
 }
 
@@ -636,6 +669,15 @@ function recordSet(
   let previousDigest = `sha256:${"0".repeat(64)}`;
   const transactions = [...prefix, terminalTransition].map(
     (transition, index) => {
+      const transitionPayload = payload(transition);
+      if (
+        [
+          "completion-public-registry-verified",
+          "completion-already-immutable",
+          "incident-immutable-release",
+        ].includes(transition)
+      )
+        transitionPayload.readyManifestDigest = previousDigest;
       const record = createSyntheticRecord({
         schemaVersion: 1,
         authority: syntheticReleaseAuthority,
@@ -646,7 +688,7 @@ function recordSet(
         sourceRevision,
         protectedTag: "v0.1.0",
         simulation: true,
-        payload: payload(transition),
+        payload: transitionPayload,
       });
       previousDigest = record.digest;
       return record;
@@ -655,7 +697,12 @@ function recordSet(
   return {
     schemaVersion: 1,
     mode: "synthetic-nonpublishing-rehearsal",
-    package: { name: "agentscope-cli", version: "0.1.0", distTag: "alpha" },
+    package: {
+      name: "agentscope-cli",
+      version: "0.1.0",
+      releaseClass: "alpha",
+      distTag: "alpha",
+    },
     candidateManifestDigest,
     candidateTarballSha256,
     integrity,
@@ -692,6 +739,25 @@ const replaceQuarantine = (records, draftPayload) => {
       failureClass: draftPayload.failureClass,
       recoveryPlanDigest: draftPayload.recoveryPlanDigest,
       quarantineEvidenceDigest: sha256(canonicalJson(draftPayload)),
+    },
+  });
+  return records;
+};
+const replaceReady = (records, readyPayload) => {
+  const readyIndex = records.transactions.findIndex(
+    ({ transition }) => transition === "ready-to-publish",
+  );
+  const terminalIndex = readyIndex + 1;
+  records.transactions[readyIndex] = createSyntheticRecord({
+    ...records.transactions[readyIndex],
+    payload: readyPayload,
+  });
+  records.transactions[terminalIndex] = createSyntheticRecord({
+    ...records.transactions[terminalIndex],
+    previousDigest: records.transactions[readyIndex].digest,
+    payload: {
+      ...records.transactions[terminalIndex].payload,
+      readyManifestDigest: records.transactions[readyIndex].digest,
     },
   });
   return records;
@@ -1003,6 +1069,105 @@ test("rejects vacuous or mixed completion, quarantine, and incident evidence", (
     },
   });
   assert.throws(() => validateRecords(wrongDraftState), /state drifted/);
+});
+
+test("binds a fresh one-use publication checkpoint and preserves every non-alpha tag", () => {
+  assert.equal(
+    validateRecords(recordSet()).terminalTransition,
+    "completion-public-registry-verified",
+  );
+
+  for (const changedTags of [
+    { ...publishedAlphaTags, latest: "0.1.0" },
+    { alpha: "0.1.0", latest: "0.0.0-bootstrap.0" },
+    { ...publishedAlphaTags, unexpected: "9.9.9" },
+  ]) {
+    const drifted = recordSet();
+    drifted.transactions[3] = createSyntheticRecord({
+      ...drifted.transactions[3],
+      payload: {
+        ...drifted.transactions[3].payload,
+        registry: {
+          ...drifted.transactions[3].payload.registry,
+          distTags: changedTags,
+          distTagsDigest: sha256(canonicalJson(changedTags)),
+        },
+      },
+    });
+    assert.throws(
+      () => validateRecords(drifted),
+      /mutated a non-authorized dist-tag/,
+    );
+  }
+
+  const stale = recordSet();
+  const staleReady = structuredClone(stale.transactions[2].payload);
+  staleReady.publicationCheckpoint.expiresAt = "2026-08-27T17:20:00.000Z";
+  staleReady.approvalConsumption.checkpointDigest = sha256(
+    canonicalJson(staleReady.publicationCheckpoint),
+  );
+  replaceReady(stale, staleReady);
+  assert.throws(
+    () => validateRecords(stale),
+    /stale, detached, or not one-use/,
+  );
+
+  const consumed = recordSet();
+  const consumedReady = structuredClone(consumed.transactions[2].payload);
+  consumedReady.publicationCheckpoint.state = "consumed";
+  consumedReady.approvalConsumption.checkpointDigest = sha256(
+    canonicalJson(consumedReady.publicationCheckpoint),
+  );
+  replaceReady(consumed, consumedReady);
+  assert.throws(
+    () => validateRecords(consumed),
+    /stale, detached, or not one-use/,
+  );
+
+  const detached = recordSet();
+  const detachedReady = structuredClone(detached.transactions[2].payload);
+  detachedReady.approvalConsumption.observedDistTagsDigest = `sha256:${"0".repeat(64)}`;
+  replaceReady(detached, detachedReady);
+  assert.throws(
+    () => validateRecords(detached),
+    /did not consume the exact fresh checkpoint/,
+  );
+
+  const incomplete = recordSet();
+  const incompleteReady = structuredClone(incomplete.transactions[2].payload);
+  delete incompleteReady.publicationCheckpoint.distTags.bootstrap;
+  incompleteReady.publicationCheckpoint.distTagsDigest = sha256(
+    canonicalJson(incompleteReady.publicationCheckpoint.distTags),
+  );
+  incompleteReady.approvalConsumption.checkpointDigest = sha256(
+    canonicalJson(incompleteReady.publicationCheckpoint),
+  );
+  incompleteReady.approvalConsumption.observedDistTagsDigest =
+    incompleteReady.publicationCheckpoint.distTagsDigest;
+  replaceReady(incomplete, incompleteReady);
+  assert.throws(
+    () => validateRecords(incomplete),
+    /does not preserve the exact inert bootstrap channels/,
+  );
+
+  const alphaMovedLatestBeforeApproval = recordSet();
+  const movedReady = structuredClone(
+    alphaMovedLatestBeforeApproval.transactions[2].payload,
+  );
+  movedReady.publicationCheckpoint.distTags.latest = "0.1.0";
+  movedReady.publicationCheckpoint.distTagsDigest = sha256(
+    canonicalJson(movedReady.publicationCheckpoint.distTags),
+  );
+  movedReady.approvalConsumption.checkpointDigest = sha256(
+    canonicalJson(movedReady.publicationCheckpoint),
+  );
+  movedReady.approvalConsumption.observedDistTagsDigest =
+    movedReady.publicationCheckpoint.distTagsDigest;
+  replaceReady(alphaMovedLatestBeforeApproval, movedReady);
+  assert.throws(
+    () => validateRecords(alphaMovedLatestBeforeApproval),
+    /does not preserve the exact inert bootstrap channels/,
+  );
 });
 
 test("rejects incomplete or misclassified quarantine and incident recovery", () => {
@@ -1322,6 +1487,33 @@ test("rejects direct and imported network/process authority", () => {
       }),
     /network\/process authority/,
   );
+
+  writeFileSync(
+    join(root, scriptPath),
+    "const request = globalThis.fetch;\nawait request(process.env.URL);\n",
+  );
+  assert.throws(
+    () =>
+      validateOfflineReleasePolicy({
+        workspaceRoot: root,
+        workflowPath,
+        scriptPaths: [scriptPath],
+      }),
+    /network\/process authority/,
+  );
+
+  for (const specifier of ["http2", "dns/promises"]) {
+    writeFileSync(join(root, scriptPath), `await import("${specifier}");\n`);
+    assert.throws(
+      () =>
+        validateOfflineReleasePolicy({
+          workspaceRoot: root,
+          workflowPath,
+          scriptPaths: [scriptPath],
+        }),
+      /network\/process authority/,
+    );
+  }
 
   writeFileSync(join(root, scriptPath), 'import "./helper.mjs";\n');
   writeFileSync(join(root, "scripts/helper.mjs"), 'import "node:https";\n');

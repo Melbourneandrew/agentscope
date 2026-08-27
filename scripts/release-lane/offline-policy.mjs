@@ -35,29 +35,21 @@ export const releaseAuthorityFiles = Object.freeze([
   "pnpm-lock.yaml",
   "pnpm-workspace.yaml",
 ]);
-const forbiddenScript = [
-  /node:(?:child_process|http|https|net|tls|dns|dgram)/u,
-  /\bfetch\s*\(/u,
-  /https?:\/\//u,
-  /npm\s+(?:publish|stage)/u,
-];
-const forbiddenBuiltins = new Set([
-  "child_process",
-  "dgram",
-  "dns",
-  "http",
-  "https",
-  "module",
-  "net",
-  "tls",
-  "vm",
-  "worker_threads",
+const forbiddenScript = [/https?:\/\//u, /npm\s+(?:publish|stage)/u];
+const allowedExternalModules = new Set([
+  "node:crypto",
+  "node:fs",
+  "node:path",
+  "node:url",
+  "node:zlib",
+  "typescript",
 ]);
 
 function assertAllowedModuleSpecifier(path, specifier) {
+  if (specifier.startsWith(".")) return;
   assert(
-    !forbiddenBuiltins.has(specifier.replace(/^node:/u, "")),
-    `Release script ${path} contains forbidden network/process authority`,
+    allowedExternalModules.has(specifier),
+    `Release script ${path} contains forbidden network/process authority: non-allowlisted external module ${specifier}`,
   );
 }
 
@@ -149,6 +141,16 @@ function localModuleSpecifiers(path, script) {
       (ts.isElementAccessExpression(node) &&
         ts.isStringLiteral(node.argumentExpression) &&
         node.argumentExpression.text === "getBuiltinModule")
+    ) {
+      throw new Error(
+        `Release script ${path} contains forbidden network/process authority`,
+      );
+    } else if (
+      (ts.isIdentifier(node) && node.text === "fetch") ||
+      (ts.isPropertyAccessExpression(node) && node.name.text === "fetch") ||
+      (ts.isElementAccessExpression(node) &&
+        ts.isStringLiteral(node.argumentExpression) &&
+        node.argumentExpression.text === "fetch")
     ) {
       throw new Error(
         `Release script ${path} contains forbidden network/process authority`,
