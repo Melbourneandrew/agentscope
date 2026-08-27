@@ -267,10 +267,20 @@ type Response = {
 };
 const builderInspection = (
   name: string,
-  { mismatched = false, wrongMount = false } = {},
+  {
+    createdAt,
+    mismatched = false,
+    wrongMount = false,
+  }: {
+    createdAt: string;
+    mismatched?: boolean;
+    wrongMount?: boolean;
+  },
 ) => ({
   statusCode: 200,
   body: JSON.stringify({
+    Id: "c".repeat(64),
+    Created: createdAt,
     Name: `/${name}`,
     Image: mismatched ? `sha256:${"f".repeat(64)}` : configDigest,
     Config: {
@@ -299,6 +309,7 @@ const runFixtureBuildx = async (
     calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
     cleanupLeak: boolean;
     createFailureCollision: boolean;
+    createTimeoutAfterResources: boolean;
   },
   arguments_: readonly string[],
   options: { input?: Buffer },
@@ -316,6 +327,12 @@ const runFixtureBuildx = async (
     state.builderVolume = `${state.builderContainer}_state`;
     if (state.createFailureCollision)
       throw new Error("integration.images.command");
+    if (state.createTimeoutAfterResources) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 310));
+      const error = new Error("integration.images.timeout");
+      Object.assign(error, { code: "ETIMEDOUT" });
+      throw error;
+    }
     return builder;
   }
   if (command === "inspect") return "fixture builder\n";
@@ -339,35 +356,44 @@ const engineFixture = ({
   buildTag,
   cleanupLeak = false,
   createFailureCollision = false,
+  createTimeoutAfterResources = false,
   daemonSwitch = false,
   lateTagAfterDelete = false,
   localValue = local,
   localInitiallyPresent = true,
   preexistingVolume = false,
+  preexistingTag = false,
   pullCompletesThenDisconnect = false,
   pullFailure = false,
+  substituteAfterBuild = false,
   wrongMount = false,
   wrongVolume = false,
+  wrongVolumeLabels = false,
 }: {
   builderMismatch?: boolean;
   buildFailure?: boolean;
   buildTag?: string;
   cleanupLeak?: boolean;
   createFailureCollision?: boolean;
+  createTimeoutAfterResources?: boolean;
   daemonSwitch?: boolean;
   lateTagAfterDelete?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
   preexistingVolume?: boolean;
+  preexistingTag?: boolean;
   pullCompletesThenDisconnect?: boolean;
   pullFailure?: boolean;
+  substituteAfterBuild?: boolean;
   wrongMount?: boolean;
   wrongVolume?: boolean;
+  wrongVolumeLabels?: boolean;
   // eslint-disable-next-line max-lines-per-function
 } = {}) => {
   const requests: Request[] = [];
   let infoCount = 0;
   let pulled = localInitiallyPresent;
+  const fixtureCreatedAt = new Date().toISOString();
   const state: {
     buildFailure: boolean;
     builderContainer: string | undefined;
@@ -376,7 +402,9 @@ const engineFixture = ({
     calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
     cleanupLeak: boolean;
     createFailureCollision: boolean;
+    createTimeoutAfterResources: boolean;
     imageDeleted: boolean;
+    tagInspectionCount: number;
   } = {
     buildFailure,
     builderContainer: undefined,
@@ -385,7 +413,9 @@ const engineFixture = ({
     calls: [],
     cleanupLeak,
     createFailureCollision,
+    createTimeoutAfterResources,
     imageDeleted: false,
+    tagInspectionCount: 0,
   };
   // One stateful endpoint matrix intentionally models cross-request races.
   // eslint-disable-next-line complexity
@@ -415,7 +445,8 @@ const engineFixture = ({
         `/v1.50/containers/${encodeURIComponent(state.builderContainer)}/json`
     )
       return builderInspection(state.builderContainer, {
-        mismatched: builderMismatch,
+        createdAt: fixtureCreatedAt,
+        mismatched: builderMismatch || (state.built && substituteAfterBuild),
         wrongMount,
       });
     if (
@@ -431,6 +462,8 @@ const engineFixture = ({
           Driver: "local",
           Scope: "local",
           Labels: null,
+          CreatedAt: fixtureCreatedAt,
+          Mountpoint: `/var/lib/docker/volumes/${state.builderVolume}/_data`,
         }),
       };
     if (
@@ -443,19 +476,26 @@ const engineFixture = ({
           Name: state.builderVolume,
           Driver: wrongVolume ? "shared" : "local",
           Scope: "local",
-          Labels: null,
+          Labels: wrongVolumeLabels ? { foreign: "true" } : null,
+          CreatedAt: fixtureCreatedAt,
+          Mountpoint: `/var/lib/docker/volumes/${state.builderVolume}/_data`,
         }),
       };
     if (
       buildTag !== undefined &&
       entry.path === `/v1.50/images/${encodeURIComponent(buildTag)}/json`
     ) {
-      if (lateTagAfterDelete && state.imageDeleted) state.built = true;
-      return state.built
+      state.tagInspectionCount += 1;
+      if (lateTagAfterDelete && state.tagInspectionCount >= 3)
+        state.built = true;
+      return state.built || preexistingTag
         ? {
             statusCode: 200,
             body: JSON.stringify({
               Id: configDigest,
+              Created: preexistingTag
+                ? "2000-01-01T00:00:00.000Z"
+                : fixtureCreatedAt,
               RepoTags: [buildTag],
               Config: {
                 Labels: { "com.agentscope.integration": "true" },
@@ -1312,6 +1352,13 @@ describe("authenticated buildx consumption", () => {
     },
     {
       buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      wrongVolumeLabels: true,
+    },
+    {
+      buildFailure: false,
       createFailureCollision: true,
       daemonSwitch: false,
       expected: "integration.images.containment",
@@ -1325,9 +1372,38 @@ describe("authenticated buildx consumption", () => {
       noDestructiveCleanup: true,
       preexistingVolume: true,
     },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      substituteAfterBuild: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      preexistingTag: true,
+    },
+    {
+      buildFailure: false,
+      createTimeoutAfterResources: true,
+      daemonSwitch: false,
+      expected: "integration.images.timeout",
+      expectBuilderRemove: true,
+      maximumMilliseconds: 400,
+      noDestructiveCleanup: false,
+    },
   ])(
     "joins its dedicated builder on command failure or daemon substitution %#",
-    async ({ expected, noDestructiveCleanup, ...fixtureOptions }) => {
+    async ({
+      expected,
+      expectBuilderRemove = false,
+      maximumMilliseconds = 4_000,
+      noDestructiveCleanup,
+      ...fixtureOptions
+    }) => {
       const engine = engineFixture({ buildTag, ...fixtureOptions });
       const client = buildClient(engine);
       try {
@@ -1337,7 +1413,7 @@ describe("authenticated buildx consumption", () => {
             context: buildContext(),
             dockerfile: "Dockerfile",
             labels: { "com.agentscope.integration": "true" },
-            maximumMilliseconds: 4_000,
+            maximumMilliseconds,
             tag: buildTag,
           }),
         ).rejects.toThrow(expected);
@@ -1349,6 +1425,10 @@ describe("authenticated buildx consumption", () => {
             engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
           ).toBe(false);
         }
+        if (expectBuilderRemove)
+          expect(
+            engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+          ).toBe(true);
       } finally {
         closePreparedDockerClient(client);
       }
