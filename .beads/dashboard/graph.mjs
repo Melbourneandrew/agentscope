@@ -120,13 +120,15 @@ export function normalizeIssues(input, { readyIds, blockedIssues = [], staleIds 
   const canonicalReadyIds = readyIds === undefined ? null : new Set(readyIds);
   const canonicalBlockedBy = new Map();
   if (Array.isArray(blockedIssues)) {
-    for (const blocked of blockedIssues.slice(0, MAX_ISSUES)) {
+    if (blockedIssues.length > MAX_ISSUES) throw new RangeError("Blocked issue count exceeds the dashboard ceiling");
+    for (const blocked of blockedIssues) {
       if (!blocked || typeof blocked !== "object" || typeof blocked.id !== "string") {
         continue;
       }
       if (
         canonicalBlockedBy.has(blocked.id) ||
         !Array.isArray(blocked.blocked_by) ||
+        blocked.blocked_by.length === 0 ||
         blocked.blocked_by.length > MAX_RELATIONSHIPS_PER_ISSUE ||
         blocked.blocked_by.some((id) => typeof id !== "string" || !id || id.length > 160)
       ) {

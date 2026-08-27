@@ -123,6 +123,7 @@ test("fails closed on conflicting, duplicate, or over-limit canonical blocker ev
     },
   ];
   for (const blockedIssues of [
+    [{ id: "child", blocked_by: [] }],
     [
       { id: "child", blocked_by: ["external:synthetic:capability"] },
       { id: "child", blocked_by: ["parent"] },
@@ -133,6 +134,17 @@ test("fails closed on conflicting, duplicate, or over-limit canonical blocker ev
     assert.equal(child.displayState, "blocked");
     assert.deepEqual(child.activeBlockers, ["unresolved:blocked-evidence"]);
   }
+  assert.throws(
+    () =>
+      normalizeIssues([issue], {
+        readyIds: ["child"],
+        blockedIssues: [
+          ...Array.from({ length: 5_000 }, (_, index) => ({ id: `junk-${index}`, blocked_by: ["external:x:y"] })),
+          { id: "child", blocked_by: ["external:synthetic:capability"] },
+        ],
+      }),
+    /Blocked issue count/,
+  );
 });
 
 test("derives every visible workflow state without weakening explicit status", () => {
