@@ -135,7 +135,7 @@ function assertNoAmbientCodeGeneration(path, node) {
     (forbiddenProperties.includes(constantString(node.argumentExpression)) ||
       (ts.isIdentifier(node.expression) && node.expression.text === "Object"));
   const bindingProperty = ts.isBindingElement(node)
-    ? node.propertyName
+    ? (node.propertyName ?? node.name)
     : undefined;
   const forbiddenBinding =
     bindingProperty !== undefined &&

@@ -1992,6 +1992,7 @@ test("rejects indirect and dynamic module-loader authority", () => {
     'Object.getOwnPropertyDescriptor(Object.getPrototypeOf(async () => {}), "constructor").value(\'return import("node:https")\')();\n',
     'const fn = async () => {};\nfn[["con", "structor"].join("")](\'return import("node:https")\')();\n',
     "const { constructor: AsyncCtor } = async () => {};\nAsyncCtor('return import(\"node:https\")')();\n",
+    "const { constructor } = async () => {};\nconstructor('return import(\"node:https\")')();\n",
   ]) {
     writeFileSync(join(root, scriptPath), source);
     assert.throws(
