@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import {
   createSequentialIssue,
   humanIssueId,
   nextIssueNumber,
+  observeProcessIdentity,
   parseArguments,
 } from "./create.mjs";
 
@@ -152,6 +153,22 @@ test("rejects helper-owned bd flags and malformed CLI input", async () => {
   }
 });
 
+test("classifies process inspection failures as unknown instead of owner death", async () => {
+  assert.deepEqual(await observeProcessIdentity(7, { signal: () => {}, readStart: async () => "start" }), {
+    state: "present",
+    identity: "start",
+  });
+  assert.deepEqual(await observeProcessIdentity(7, { signal: () => {}, readStart: async () => { throw new Error("timeout"); } }), {
+    state: "unknown",
+  });
+  assert.deepEqual(await observeProcessIdentity(7, { signal: () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); } }), {
+    state: "unknown",
+  });
+  assert.deepEqual(await observeProcessIdentity(7, { signal: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); } }), {
+    state: "absent",
+  });
+});
+
 test("fails closed when candidate absence is not exact authoritative JSON", async () => {
   for (const failure of [
     Object.assign(new Error("timeout"), { code: "ETIMEDOUT" }),
@@ -183,6 +200,24 @@ test("passes flag-like titles only as the owned title option value", async () =>
   };
   await createSequentialIssue({ workstream: "beads", title: "--dry-run", run, lock: async () => async () => {} });
   assert.deepEqual(calls.at(-1).slice(0, 4), ["create", "--title", "--dry-run", "--id"]);
+});
+
+test("canonicalizes every supported issue-reference flag but preserves event URIs", async () => {
+  const calls = [];
+  const run = async (_file, arguments_) => {
+    calls.push(arguments_);
+    if (arguments_[0] === "list") return { stdout: "[]" };
+    if (arguments_[0] === "show") throw missingIssueError();
+    return { stdout: "agentscope-beads-001\n" };
+  };
+  await createSequentialIssue({
+    workstream: "beads",
+    title: "References",
+    arguments_: ["--waits-for", "release-001", "--event-target=codex-002"],
+    run,
+    lock: async () => async () => {},
+  });
+  assert.deepEqual(calls.at(-1).slice(-3), ["--waits-for", "agentscope-release-001", "--event-target=agentscope-codex-002"]);
 });
 
 test("reconciles an authenticated released lock without deleting live ownership", async () => {
@@ -241,6 +276,30 @@ test("recovers an exact stale lock after abrupt allocator death", { timeout: 10_
     await release();
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await rm(directory, { recursive: true });
+  }
+});
+
+test("reconciles an authenticated abandoned staging artifact", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "agentscope-beads-pending-"));
+  const token = "11111111-1111-4111-8111-111111111111";
+  const pending = path.join(directory, `.create-allocation.${token}.pending`);
+  await mkdir(pending, { mode: 0o700 });
+  await writeFile(path.join(pending, "owner.json"), `${JSON.stringify({
+    version: 1,
+    token,
+    pid: 999_999,
+    processStart: "old",
+  })}\n`);
+  const run = async (_file, arguments_) => {
+    if (arguments_[0] === "where") return { stdout: JSON.stringify({ path: directory }) };
+    throw new Error("unexpected command");
+  };
+  try {
+    const release = await acquireAllocationLock(run, async () => {});
+    await assert.rejects(() => readFile(path.join(pending, "owner.json")), /ENOENT/);
+    await release();
+  } finally {
     await rm(directory, { recursive: true });
   }
 });

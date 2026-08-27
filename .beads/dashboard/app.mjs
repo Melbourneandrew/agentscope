@@ -115,7 +115,7 @@ function render(restoreTarget = null) {
   const nodes = graph.nodes
     .map((node) => {
       const position = layout.positions.get(node.id);
-      return `<a class="node ${escapeHtml(node.displayState)} ${node.isContainer ? "container-node" : "leaf-node"} ${node.id === focusId ? "selected" : ""}" href="#${encodeURIComponent(node.id)}" data-id="${escapeHtml(node.id)}" transform="translate(${position.x} ${position.y})">
+      return `<a class="node ${escapeHtml(node.displayState)} ${node.isContainer ? "container-node" : "leaf-node"} ${node.id === focusId ? "selected" : ""}" href="#${encodeURIComponent(node.displayId)}" data-id="${escapeHtml(node.id)}" transform="translate(${position.x} ${position.y})">
         <rect class="body" width="244" height="50" rx="7" />
         <rect class="priority" width="6" height="50" rx="3" />
         <text class="node-id" x="15" y="16">${escapeHtml(shorten(node.displayId, 31))}</text>

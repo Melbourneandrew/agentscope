@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -65,13 +65,14 @@ function normalizeReferenceArguments(arguments_) {
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
     if (isReservedArgument(argument)) throw new Error(`The creation helper owns ${argument.split("=")[0]}`);
-    if (argument === "--parent") {
+    if (argument === "--parent" || argument === "--waits-for" || argument === "--event-target") {
       const parent = arguments_[index + 1];
-      if (!parent) throw new Error("--parent requires an issue reference");
+      if (!parent) throw new Error(`${argument} requires an issue reference`);
       normalized.push(argument, canonicalIssueId(parent));
       index += 1;
-    } else if (argument.startsWith("--parent=")) {
-      normalized.push(`--parent=${canonicalIssueId(argument.slice("--parent=".length))}`);
+    } else if (["--parent=", "--waits-for=", "--event-target="].some((prefix) => argument.startsWith(prefix))) {
+      const separator = argument.indexOf("=");
+      normalized.push(`${argument.slice(0, separator + 1)}${canonicalIssueId(argument.slice(separator + 1))}`);
     } else if (argument === "--deps") {
       const dependencies = arguments_[index + 1];
       if (!dependencies) throw new Error("--deps requires dependency references");
@@ -128,17 +129,26 @@ async function beadsDirectory(run) {
   return decoded.path;
 }
 
-async function processStartIdentity(pid) {
-  try {
-    const { stdout } = await executeFile("ps", ["-p", String(pid), "-o", "lstart="], {
-      encoding: "utf8", maxBuffer: 4096, timeout: 5_000,
-    });
-    const identity = stdout.trim();
-    return identity && identity.length <= 128 ? identity : null;
-  } catch { return null; }
+async function readProcessStart(pid) {
+  const { stdout } = await executeFile("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+    encoding: "utf8", maxBuffer: 4096, timeout: 5_000,
+  });
+  const identity = stdout.trim();
+  if (!identity || identity.length > 128) throw new Error("invalid process identity");
+  return identity;
+}
+
+export async function observeProcessIdentity(pid, { signal = process.kill, readStart = readProcessStart } = {}) {
+  try { signal(pid, 0); } catch (error) {
+    return error?.code === "ESRCH" ? { state: "absent" } : { state: "unknown" };
+  }
+  try { return { state: "present", identity: await readStart(pid) }; } catch { return { state: "unknown" }; }
 }
 
 async function removeOwnedDirectory(directory) {
+  let entries;
+  try { entries = (await readdir(directory)).sort(); } catch { return false; }
+  if (entries.some((entry) => entry !== LOCK_OWNER_FILE && entry !== LOCK_RELEASED_FILE)) return false;
   try { await unlink(path.join(directory, LOCK_RELEASED_FILE)); } catch (error) {
     if (error?.code !== "ENOENT") return false;
   }
@@ -166,7 +176,9 @@ async function retireLock(lockPath, directory, suffix) {
     if (["ENOENT", "EEXIST", "ENOTEMPTY"].includes(error?.code)) return false;
     throw error;
   }
-  await removeOwnedDirectory(retired);
+  if (!(await removeOwnedDirectory(retired))) {
+    process.stderr.write("A retired Beads allocation lock retained its authenticated cleanup evidence.\n");
+  }
   return true;
 }
 
@@ -178,22 +190,50 @@ async function recoverStaleLock(lockPath, directory) {
     if (released.trim() !== owner.token) return false;
     return retireLock(lockPath, directory, "released");
   } catch (error) { if (error?.code !== "ENOENT") return false; }
-  const observedStart = await processStartIdentity(owner.pid);
-  if (observedStart === null || observedStart !== owner.processStart) return retireLock(lockPath, directory, "stale");
+  const observation = await observeProcessIdentity(owner.pid);
+  if (observation.state === "absent" || (observation.state === "present" && observation.identity !== owner.processStart)) {
+    return retireLock(lockPath, directory, "stale");
+  }
   return false;
+}
+
+async function reconcileAllocatorArtifacts(directory) {
+  let entries;
+  try { entries = await readdir(directory); } catch { return; }
+  for (const entry of entries
+    .filter((name) => /^\.create-allocation\.[0-9a-f-]{36}\.(pending|released|stale)$/.test(name))
+    .slice(0, 256)) {
+    const artifactPath = path.join(directory, entry);
+    const owner = await readLockOwner(artifactPath);
+    if (!owner) continue;
+    if (entry.endsWith(".released") || entry.endsWith(".stale")) {
+      await removeOwnedDirectory(artifactPath);
+      continue;
+    }
+    const observation = await observeProcessIdentity(owner.pid);
+    if (observation.state === "absent" || (observation.state === "present" && observation.identity !== owner.processStart)) {
+      await removeOwnedDirectory(artifactPath);
+    }
+  }
 }
 
 export async function acquireAllocationLock(run, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))) {
   const directory = await beadsDirectory(run);
+  await reconcileAllocatorArtifacts(directory);
   const lockPath = path.join(directory, LOCK_NAME);
-  const processStart = await processStartIdentity(process.pid);
-  if (!processStart) throw new Error("Unable to establish Beads allocator process identity");
+  const self = await observeProcessIdentity(process.pid);
+  if (self.state !== "present") throw new Error("Unable to establish Beads allocator process identity");
   const token = randomUUID();
   const stagingPath = path.join(directory, `.create-allocation.${token}.pending`);
   await mkdir(stagingPath, { mode: 0o700 });
-  await writeFile(path.join(stagingPath, LOCK_OWNER_FILE),
-    `${JSON.stringify({ version: 1, token, pid: process.pid, processStart })}\n`,
-    { encoding: "utf8", flag: "wx", mode: 0o600 });
+  try {
+    await writeFile(path.join(stagingPath, LOCK_OWNER_FILE),
+      `${JSON.stringify({ version: 1, token, pid: process.pid, processStart: self.identity })}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 });
+  } catch (error) {
+    await removeOwnedDirectory(stagingPath);
+    throw error;
+  }
   for (let attempt = 0; attempt < LOCK_RETRY_LIMIT; attempt += 1) {
     try {
       await rename(stagingPath, lockPath);
