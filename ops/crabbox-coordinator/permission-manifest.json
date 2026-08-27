@@ -6,16 +6,13 @@
     "worker.deploy",
     "worker.rollback",
     "worker.secret.put",
-    "worker.secret.delete",
-    "worker.schedule.put",
-    "worker.schedule.delete",
-    "worker.scriptWorkersDev.enable",
-    "worker.scriptWorkersDev.disable"
+    "worker.secret.delete"
   ],
   "separateOwnerPlanActions": ["account.workersDev.enable"],
   "retirementOnlyActions": [
+    "worker.schedule.delete",
+    "worker.scriptWorkersDev.disable",
     "worker.terminalArtifact.deploy",
-    "worker.durableObjectClass.delete",
     "worker.version.delete",
     "worker.delete"
   ],
