@@ -310,6 +310,7 @@ const runFixtureBuildx = async (
     cleanupLeak: boolean;
     createFailureCollision: boolean;
     createTimeoutAfterResources: boolean;
+    unprovedContainment: boolean;
   },
   arguments_: readonly string[],
   options: { input?: Buffer },
@@ -325,6 +326,11 @@ const runFixtureBuildx = async (
     if (builder === undefined) throw new Error("missing builder name");
     state.builderContainer = `buildx_buildkit_${builder}0`;
     state.builderVolume = `${state.builderContainer}_state`;
+    if (state.unprovedContainment) {
+      const error = new Error("integration.images.containment");
+      Object.assign(error, { code: "ETIMEDOUT", containmentProved: false });
+      throw error;
+    }
     if (state.createFailureCollision)
       throw new Error("integration.images.command");
     if (state.createTimeoutAfterResources) {
@@ -372,6 +378,7 @@ const engineFixture = ({
   pullCompletesThenDisconnect = false,
   pullFailure = false,
   substituteAfterBuild = false,
+  unprovedContainment = false,
   wrongMount = false,
   wrongVolume = false,
   wrongVolumeLabels = false,
@@ -392,6 +399,7 @@ const engineFixture = ({
   pullCompletesThenDisconnect?: boolean;
   pullFailure?: boolean;
   substituteAfterBuild?: boolean;
+  unprovedContainment?: boolean;
   wrongMount?: boolean;
   wrongVolume?: boolean;
   wrongVolumeLabels?: boolean;
@@ -412,6 +420,7 @@ const engineFixture = ({
     createTimeoutAfterResources: boolean;
     imageDeleted: boolean;
     tagInspectionCount: number;
+    unprovedContainment: boolean;
   } = {
     buildFailure,
     builderContainer: undefined,
@@ -423,6 +432,7 @@ const engineFixture = ({
     createTimeoutAfterResources,
     imageDeleted: false,
     tagInspectionCount: 0,
+    unprovedContainment,
   };
   // One stateful endpoint matrix intentionally models cross-request races.
   // eslint-disable-next-line complexity
@@ -1244,11 +1254,15 @@ describe("owned buildx process execution", () => {
 
   it("fails closed when close observation exhausts the teardown reserve", async () => {
     const directory = root();
+    let processGroup: number | undefined;
     const error = await runOwnedImageCommandForTesting(
       process.execPath,
       [fixture],
       {
-        closeBarrierForTesting: () => new Promise(() => {}),
+        closeBarrierForTesting: (ownedProcessGroup) => {
+          processGroup = ownedProcessGroup;
+          return new Promise(() => {});
+        },
         deadline: performance.now() + 500,
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
@@ -1261,6 +1275,10 @@ describe("owned buildx process execution", () => {
       code: "ETIMEDOUT",
       message: "integration.images.containment",
     });
+    expect(processGroup).toEqual(expect.any(Number));
+    expect(() => process.kill(-processGroup!, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
     const descendant = Number(
       readFileSync(resolve(directory, "ready"), "utf8"),
     );
@@ -1511,6 +1529,39 @@ describe("authenticated buildx consumption", () => {
       }
     },
   );
+
+  it("fences the client and private state when process-set absence is unproved", async () => {
+    const engine = engineFixture({ buildTag, unprovedContainment: true });
+    const client = buildClient(engine);
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    await expect(
+      buildPreparedDockerImage(client, {
+        buildArguments: { BASE_IMAGE: image },
+        context: buildContext(),
+        dockerfile: "Dockerfile",
+        labels: { "com.agentscope.integration": "true" },
+        maximumMilliseconds: 4_000,
+        tag: buildTag,
+      }),
+    ).rejects.toMatchObject({
+      code: "ETIMEDOUT",
+      containmentProved: false,
+      message: "integration.images.containment",
+    });
+    expect(engine.requests.filter(({ method }) => method === "DELETE")).toEqual(
+      [],
+    );
+    expect(
+      engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+    ).toBe(false);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    expect(existsSync(privateRoot)).toBe(true);
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
 
   it("expires during context acquisition before any Engine request", async () => {
     const engine = engineFixture({ buildTag });

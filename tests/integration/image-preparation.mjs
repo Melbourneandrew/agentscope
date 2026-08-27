@@ -80,6 +80,7 @@ export const BUILDKIT_IMAGE =
 const preparedSets = new WeakSet();
 const preparedDockerClients = new WeakSet();
 const closingPreparedDockerClients = new WeakSet();
+const uncertainPreparedDockerClients = new WeakSet();
 
 const fixedError = (code, timedOut = false) => {
   const error = new Error(code);
@@ -330,6 +331,21 @@ const waitForProcessGroupAbsence = async (processGroup, deadline) => {
     );
   }
 };
+const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
+  const workDeadline = deadline - teardownMilliseconds;
+  const closeDeadline =
+    workDeadline + Math.max(1, Math.floor(teardownMilliseconds / 2));
+  const inspectionReserve = Math.min(
+    250,
+    Math.max(1, Math.floor(teardownMilliseconds / 4)),
+  );
+  return {
+    absenceDeadline: deadline - inspectionReserve,
+    closeDeadline,
+    teardownDeadline: deadline,
+    workDeadline,
+  };
+};
 const runOwnedCommand = async (
   executable,
   arguments_,
@@ -348,8 +364,8 @@ const runOwnedCommand = async (
   const executableIdentity = executableRecord(executable.path);
   if (!sameExecutable(executable, executableIdentity))
     throw fixedError("integration.images.executable");
-  const teardownDeadline = deadline;
-  const workDeadline = deadline - teardownMilliseconds;
+  const { absenceDeadline, closeDeadline, teardownDeadline, workDeadline } =
+    commandPhaseDeadlines(deadline, teardownMilliseconds);
   if (performance.now() >= workDeadline)
     throw fixedError("integration.images.timeout", true);
   const child = spawn(executableIdentity.path, arguments_, {
@@ -403,13 +419,16 @@ const runOwnedCommand = async (
       new Promise((resolveClose) =>
         setTimeout(
           () => resolveClose(undefined),
-          Math.max(1, teardownDeadline - performance.now()),
+          Math.max(1, closeDeadline - performance.now()),
         ).unref(),
       ),
     ]);
-    if (result === undefined)
-      throw fixedError("integration.images.containment", true);
+    if (result === undefined) {
+      failure = fixedError("integration.images.containment", true);
+      killProcessGroup(processGroup);
+    }
     if (
+      result !== undefined &&
       failure === undefined &&
       (result.code !== 0 || result.childSignal !== null)
     )
@@ -420,18 +439,21 @@ const runOwnedCommand = async (
       failure = fixedError("integration.images.containment", true);
     const absent = await waitForProcessGroupAbsence(
       processGroup,
-      Math.max(performance.now(), teardownDeadline - 250),
+      Math.max(performance.now(), absenceDeadline),
     );
     const state = absent
       ? "absent"
       : processGroupState(processGroup, teardownDeadline);
-    if (state !== "absent")
-      throw fixedError(
+    if (state !== "absent") {
+      const error = fixedError(
         state === "zombie-only"
           ? "integration.images.teardown"
           : "integration.images.containment",
         true,
       );
+      error.containmentProved = false;
+      throw error;
+    }
     if (failure !== undefined) throw failure;
     return Buffer.concat(output).toString("utf8");
   } finally {
@@ -1845,6 +1867,7 @@ export const prepareDockerInvocation = async (client, arguments_, signal) => {
   if (
     !preparedDockerClients.has(client) ||
     closingPreparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client) ||
     !Array.isArray(arguments_) ||
     arguments_.length === 0 ||
     arguments_.length > 256 ||
@@ -2471,6 +2494,7 @@ export const buildPreparedDockerImage = async (
   if (
     !preparedDockerClients.has(client) ||
     closingPreparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client) ||
     typeof context !== "string" ||
     typeof dockerfile !== "string" ||
     !/^(?:[A-Za-z\d][A-Za-z\d._-]{0,127}\.Dockerfile|Dockerfile)$/u.test(
@@ -2506,6 +2530,10 @@ export const buildPreparedDockerImage = async (
   } catch (error) {
     failure = error;
   }
+  if (failure?.containmentProved === false) {
+    uncertainPreparedDockerClients.add(client);
+    throw failure;
+  }
   await settleBuilderBuild(
     authority,
     { labels, tag },
@@ -2525,7 +2553,10 @@ export const buildPreparedDockerImage = async (
 };
 
 export const closePreparedDockerClient = (client) => {
-  if (!preparedDockerClients.has(client))
+  if (
+    !preparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client)
+  )
     throw fixedError("integration.images.docker-client");
   closingPreparedDockerClients.add(client);
   cleanupPrivateClient(
