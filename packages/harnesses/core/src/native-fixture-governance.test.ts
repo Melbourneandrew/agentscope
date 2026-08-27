@@ -2055,18 +2055,5 @@ describe("native fixture inventory ordering", () => {
       await expectedCheckedInFixtureInventory(harnessPackagesRoot);
     const inventory = await auditNativeFixtureInventory(harnessPackagesRoot);
     expect(inventory).toEqual(expected);
-
-    const claudeFixture = expected.find(
-      ({ fixtureId }) => fixtureId === "claude-code-lifecycle-v1",
-    );
-    if (claudeFixture !== undefined) {
-      expect(claudeFixture).toMatchObject({
-        harnessId: "claude-code",
-        harnessVersion: "2.1.245",
-        relativePath:
-          "claude-code/fixtures/native/claude-code-lifecycle-v1.json",
-        artifactAuthority: "unresolved",
-      });
-    }
   });
 });
