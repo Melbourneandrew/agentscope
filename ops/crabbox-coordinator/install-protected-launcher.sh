@@ -26,7 +26,7 @@ terminal_profile=${10}
 terminal_entry_point=${11}
 
 repository_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
-if [ -n "$(/usr/bin/git -C "$repository_root" status --porcelain=v1 --untracked-files=all)" ]; then
+if [ -n "$(/usr/bin/env -i HOME=/var/empty PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 /usr/bin/git -C "$repository_root" status --porcelain=v1 --untracked-files=all)" ]; then
   echo "protected launcher: E_DIRTY_REPOSITORY" >&2
   exit 1
 fi
