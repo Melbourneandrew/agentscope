@@ -25,6 +25,10 @@ import {
   verifyManifestEvidence,
   verifyPreparedCandidate,
 } from "./dist/index.js";
+import {
+  revalidatePreparedImageAdmission,
+  validatePreparedImageEvidence,
+} from "./image-preparation.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   integrationStageSignal,
@@ -70,6 +74,15 @@ const scenarioTimeoutMilliseconds = boundedInteger(
   5 * 60 * 1000,
   30 * 60 * 1000,
 );
+let preparedImageEvidence;
+try {
+  preparedImageEvidence = validatePreparedImageEvidence(
+    imageEvidence,
+    manifest.manifestIdentity,
+  );
+} catch {
+  throw new Error("integration.isolation.inputs");
+}
 if (
   testMode !== undefined &&
   testMode !== "failure" &&
@@ -86,9 +99,6 @@ if (
   typeof selection.selector !== "object" ||
   selection.selector === null ||
   !Array.isArray(selection.scenarioIds) ||
-  imageEvidence.imageEvidenceVersion !== 1 ||
-  imageEvidence.manifestIdentity !== manifest.manifestIdentity ||
-  !Array.isArray(imageEvidence.images) ||
   modelRoutes.routeFixtureVersion !== 1 ||
   !Array.isArray(modelRoutes.routeIds) ||
   !Array.isArray(modelRoutes.routes) ||
@@ -367,13 +377,15 @@ const captureFixtureResult = (output, plan) => {
   return true;
 };
 const preparedImageFor = async (image, signal) => {
-  const prepared = imageEvidence.images.find((entry) => entry.image === image);
-  if (!prepared) throw new Error("integration.isolation.base-image");
-  const { stdout } = await dockerWithSignal(
-    ["image", "inspect", "--format", "{{.Id}}", image],
-    signal,
-  );
-  if (stdout.trim().replace(":", "-") !== prepared.localImageDigest)
+  if (
+    !(await revalidatePreparedImageAdmission(preparedImageEvidence, image, {
+      maximumPreparationMilliseconds: Math.min(
+        scenarioTimeoutMilliseconds,
+        30_000,
+      ),
+      signal,
+    }))
+  )
     throw new Error("integration.isolation.base-image");
 };
 const inspectImage = async (tag, signal) => {

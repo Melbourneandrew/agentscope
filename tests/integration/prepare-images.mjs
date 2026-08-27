@@ -6,6 +6,7 @@ import { compileCapabilityManifest } from "./dist/index.js";
 import {
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
+  retirePreparedImageEvidence,
 } from "./image-preparation.mjs";
 import {
   integrationStageSignal,
@@ -19,6 +20,12 @@ const capability = requireDisposableOuterHostCapability();
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
+const evidenceTarget = resolve(artifactsRoot, "current-images.json");
+// Retire prior authority before any fallible manifest or selection work.
+retirePreparedImageEvidence(evidenceTarget);
+const evidenceTarget = resolve(artifactsRoot, "current-images.json");
+// Retire prior authority before any fallible manifest or selection work.
+retirePreparedImageEvidence(evidenceTarget);
 const manifest = compileCapabilityManifest(
   JSON.parse(
     readFileSync(resolve(integrationRoot, "capability-manifest.json"), "utf8"),
@@ -60,12 +67,12 @@ try {
     signal: AbortSignal.any([controller.signal, integrationStageSignal()]),
   });
   registerIntegrationArtifactFile("current-images.json");
-  publishPreparedImageEvidence(resolve(artifactsRoot, "current-images.json"), {
-    imageEvidenceVersion: 1,
-    manifestIdentity: manifest.manifestIdentity,
-    images: prepared,
-  });
-  process.stdout.write(`${JSON.stringify(prepared)}\n`);
+  publishPreparedImageEvidence(
+    evidenceTarget,
+    manifest.manifestIdentity,
+    prepared,
+  );
+  process.stdout.write(`${JSON.stringify(prepared.images)}\n`);
 } catch (error) {
   const code =
     error instanceof Error &&

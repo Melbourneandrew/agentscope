@@ -1,323 +1,605 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { createServer } from "node:http";
+import type { Socket } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { PreparedDockerImageSet } from "../image-preparation.mjs";
+
 import {
   IMAGE_PREPARATION_LIMITS,
-  classifyProcessGroupState,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
+  revalidatePreparedImageAdmission,
+  retirePreparedImageEvidence,
+  validatePreparedImageEvidence,
 } from "../image-preparation.mjs";
 
-const fixture = resolve(
-  import.meta.dirname,
-  "../fixtures/image-preparation-process.mjs",
+const sha256 = (value: Buffer | string) =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const configBlob = Buffer.from(
+  JSON.stringify({ architecture: "amd64", os: "linux", rootfs: {} }),
 );
-const image = `example.invalid/fixture@sha256:${"b".repeat(64)}`;
+const configDigest = sha256(configBlob);
+const selectedManifest = Buffer.from(
+  JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: {
+      mediaType: "application/vnd.oci.image.config.v1+json",
+      digest: configDigest,
+      size: configBlob.byteLength,
+    },
+    layers: [],
+  }),
+);
+const selectedManifestDigest = sha256(selectedManifest);
+const imageIndex = Buffer.from(
+  JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: [
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: selectedManifestDigest,
+        size: selectedManifest.byteLength,
+        platform: { os: "linux", architecture: "amd64" },
+      },
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: `sha256:${"c".repeat(64)}`,
+        size: 321,
+        platform: { os: "linux", architecture: "arm64", variant: "v8" },
+      },
+    ],
+  }),
+);
+const image = `fixture@${sha256(imageIndex)}`;
+const manifestIdentity = `sha256-${"f".repeat(64)}`;
+const socket = Object.freeze({
+  path: "/var/run/docker.sock",
+  device: "1",
+  inode: "2",
+  mode: "49663",
+  owner: "0",
+});
+const daemon = Object.freeze({
+  endpoint: socket.path,
+  socketDevice: socket.device,
+  socketInode: socket.inode,
+  id: "fixture-daemon",
+  serverVersion: "fixture-server",
+  apiVersion: "1.50",
+  osType: "linux",
+  architecture: "amd64",
+});
+const version = JSON.stringify({
+  Version: daemon.serverVersion,
+  ApiVersion: daemon.apiVersion,
+});
+const info = JSON.stringify({
+  ID: daemon.id,
+  OSType: daemon.osType,
+  Architecture: daemon.architecture,
+});
+const local = JSON.stringify({
+  Id: configDigest,
+  Os: "linux",
+  Architecture: "amd64",
+  Variant: "",
+  RepoDigests: [image],
+});
 const roots: string[] = [];
-const createRoot = () => {
-  const root = mkdtempSync(resolve(tmpdir(), "agentscope-image-preparation-"));
-  roots.push(root);
-  return root;
+const root = () => {
+  const value = mkdtempSync(resolve(tmpdir(), "agentscope-image-test-"));
+  roots.push(value);
+  return value;
 };
-const options = (root: string, mode: string) => ({
-  dockerExecutable: process.execPath,
-  dockerArgumentsPrefix: [fixture],
-  environment: {
-    ...process.env,
-    AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
-    AGENTSCOPE_IMAGE_FIXTURE_ROOT: root,
-    DOCKER_AUTH_CONFIG: "CANARY_AUTHORITY",
-    DOCKER_CONFIG: "/forbidden/developer/docker-config",
-  },
-  maximumPreparationMilliseconds: 2_000,
+
+type Request = {
+  method: string;
+  origin?: URL;
+  path: string;
+  headers: Record<string, string>;
+  maximumBytes: number;
+  signal?: AbortSignal;
+};
+type Response = {
+  statusCode: number;
+  headers?: Record<string, string>;
+  body: Buffer | string;
+};
+
+const engineFixture = ({
+  daemonSwitch = false,
+  localValue = local,
+  localInitiallyPresent = true,
+  pullFailure = false,
+}: {
+  daemonSwitch?: boolean;
+  localValue?: string;
+  localInitiallyPresent?: boolean;
+  pullFailure?: boolean;
+} = {}) => {
+  const requests: Request[] = [];
+  let infoCount = 0;
+  let pulled = localInitiallyPresent;
+  const request = async (entry: Request): Promise<Response> => {
+    await Promise.resolve();
+    requests.push(entry);
+    if (entry.signal?.aborted)
+      throw new Error("integration.images.interrupted");
+    if (entry.path === "/version") return { statusCode: 200, body: version };
+    if (entry.path === "/v1.50/info") {
+      infoCount += 1;
+      return {
+        statusCode: 200,
+        body:
+          daemonSwitch && infoCount > 1
+            ? JSON.stringify({
+                ID: "other-daemon",
+                OSType: "linux",
+                Architecture: "amd64",
+              })
+            : info,
+      };
+    }
+    if (entry.method === "POST") {
+      if (pullFailure) throw new Error("transport disconnected");
+      pulled = true;
+      return { statusCode: 200, body: '{"status":"pulled"}\n' };
+    }
+    if (entry.path.includes("/images/"))
+      return pulled
+        ? { statusCode: 200, body: localValue }
+        : { statusCode: 404, body: "{}" };
+    throw new Error(`unexpected engine path ${entry.path}`);
+  };
+  return { request, requests };
+};
+
+const registryFixture = ({
+  config = configBlob,
+  redirectConfig = false,
+  rootManifest = imageIndex,
+  selected = selectedManifest,
+}: {
+  config?: Buffer;
+  redirectConfig?: boolean;
+  rootManifest?: Buffer;
+  selected?: Buffer;
+} = {}) => {
+  const requests: Request[] = [];
+  const request = async (entry: Request): Promise<Response> => {
+    await Promise.resolve();
+    requests.push(entry);
+    expect(entry.origin?.protocol).toBe("https:");
+    expect(entry.origin?.hostname).toMatch(
+      /^(?:(?:registry-1|auth)\.docker\.io|production\.(?:cloudflare|cloudfront)\.docker\.com)$/u,
+    );
+    if (entry.origin?.hostname === "production.cloudfront.docker.com")
+      return {
+        statusCode: 200,
+        headers: { "content-type": "application/octet-stream" },
+        body: config,
+      };
+    if (entry.origin?.hostname === "auth.docker.io")
+      return { statusCode: 200, body: '{"token":"fixture-token"}' };
+    if (entry.headers.Authorization === undefined)
+      return {
+        statusCode: 401,
+        headers: {
+          "www-authenticate":
+            'Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/fixture:pull"',
+        },
+        body: "",
+      };
+    if (entry.path.endsWith(`/manifests/${image.split("@")[1]}`))
+      return {
+        statusCode: 200,
+        headers: {
+          "content-type": "application/vnd.oci.image.index.v1+json",
+          "docker-content-digest": sha256(rootManifest),
+        },
+        body: rootManifest,
+      };
+    if (entry.path.endsWith(`/manifests/${selectedManifestDigest}`))
+      return {
+        statusCode: 200,
+        headers: {
+          "content-type": "application/vnd.oci.image.manifest.v1+json",
+          "docker-content-digest": sha256(selected),
+        },
+        body: selected,
+      };
+    if (entry.path.endsWith(`/blobs/${configDigest}`))
+      if (redirectConfig)
+        return {
+          statusCode: 307,
+          headers: {
+            location:
+              "https://production.cloudfront.docker.com/registry-v2/docker/registry/v2/blobs/config?sig=fixed",
+          },
+          body: "",
+        };
+      else
+        return {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "docker-content-digest": sha256(config),
+          },
+          body: config,
+        };
+    throw new Error(`unexpected registry path ${entry.path}`);
+  };
+  return { request, requests };
+};
+
+const options = (engine = engineFixture(), registry = registryFixture()) => ({
+  socketIdentityForTesting: socket,
+  engineRequestForTesting: engine.request,
+  registryRequestForTesting: registry.request,
+  maximumPreparationMilliseconds: 4_000,
   teardownMilliseconds: 500,
 });
-const waitForFile = async (path: string) => {
-  const deadline = performance.now() + 1_000;
-  while (!existsSync(path)) {
-    if (performance.now() >= deadline)
-      throw new Error("integration.images.fixture");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
-  }
-};
-const proveDescendantAbsent = (root: string) => {
-  const pid = Number(readFileSync(resolve(root, "ready"), "utf8"));
-  expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
-  expect(() => process.kill(pid, 0)).toThrow(
-    expect.objectContaining({ code: "ESRCH" }),
-  );
-};
-const proveProcessGroupAbsent = (processGroup: number | undefined) => {
-  if (
-    processGroup === undefined ||
-    !Number.isSafeInteger(processGroup) ||
-    processGroup < 1
-  )
-    throw new Error("integration.images.fixture");
-  expect(() => process.kill(-processGroup, 0)).toThrow(
-    expect.objectContaining({ code: "ESRCH" }),
-  );
-};
+const prepared = () => ({
+  imageEvidenceVersion: 2,
+  manifestIdentity,
+  dockerSocket: socket,
+  dockerDaemon: daemon,
+  preparationPolicy: {
+    maximumPreparationMilliseconds: 4_000,
+    teardownMilliseconds: 500,
+    maximumResponseBytes: 1_048_576,
+    maximumManifestBytes: 1_048_576,
+    maximumEvidenceBytes: 8_388_608,
+  },
+  terminalCleanup: {
+    daemon: "stable",
+    handles: "settled",
+    privateState: "absent",
+  },
+  images: [
+    {
+      image,
+      platform: { os: "linux", architecture: "amd64" },
+      manifestDigest: selectedManifestDigest,
+      configDigest,
+      rootManifest: imageIndex.toString("base64"),
+      selectedManifest: selectedManifest.toString("base64"),
+      configBlob: configBlob.toString("base64"),
+    },
+  ],
+});
 
 afterEach(() => {
-  for (const root of roots.splice(0))
-    rmSync(root, { force: true, recursive: true });
+  for (const value of roots.splice(0))
+    rmSync(value, { force: true, recursive: true });
 });
 
-describe("pinned Docker image preparation", () => {
-  it("uses a private credential-free Docker config and returns exact evidence", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], options(root, "success")),
-    ).resolves.toEqual([
-      { image, localImageDigest: `sha256-${"a".repeat(64)}` },
-    ]);
-    const record = JSON.parse(
-      readFileSync(resolve(root, "record.json"), "utf8"),
-    ) as {
-      dockerAuthConfigPresent: boolean;
-      dockerConfigPath: string;
-      dockerConfig: unknown;
-    };
-    expect(record).toMatchObject({
-      commandArguments: ["image", "inspect", "--format", "{{.Id}}", image],
-      dockerAuthConfigPresent: false,
-      dockerConfig: { auths: {} },
-    });
-    expect(existsSync(record.dockerConfigPath)).toBe(false);
-  });
-
-  it("kills and joins a signal-resistant process group before retry", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang-once"),
-        closeBarrier: () => Promise.resolve(),
-        maximumPreparationMilliseconds: 1_500,
-        teardownMilliseconds: 500,
-      }),
-    ).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
-    proveDescendantAbsent(root);
-    await expect(
-      preparePinnedDockerImages([image], options(root, "hang-once")),
-    ).resolves.toHaveLength(1);
-  });
-
-  it("joins the process group when the owning preparation is interrupted", async () => {
-    const root = createRoot();
-    const controller = new AbortController();
-    const preparation = preparePinnedDockerImages([image], {
-      ...options(root, "hang"),
-      signal: controller.signal,
-    });
-    const settlement = preparation.then(
-      () => ({ state: "resolved" as const, error: undefined }),
-      (error: unknown) => ({ state: "rejected" as const, error }),
-    );
-    await waitForFile(resolve(root, "ready"));
-    controller.abort();
-    await expect(settlement).resolves.toMatchObject({
-      state: "rejected",
-      error: { message: "integration.images.interrupted" },
-    });
-    proveDescendantAbsent(root);
-  });
-
-  it("bounds a missing close observation with final group-absence proof", async () => {
-    const root = createRoot();
-    let processGroup: number | undefined;
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang"),
-        closeBarrier: (ownedProcessGroup) => {
-          processGroup = ownedProcessGroup;
-          return new Promise<void>(() => {});
-        },
-        maximumPreparationMilliseconds: 800,
-        teardownMilliseconds: 400,
-      }),
-    ).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
-    proveProcessGroupAbsent(processGroup);
-    const record = JSON.parse(
-      readFileSync(resolve(root, "record.json"), "utf8"),
-    ) as { dockerConfigPath: string };
-    expect(existsSync(record.dockerConfigPath)).toBe(false);
-  });
-
-  it("does not let a throwing observation barrier bypass containment", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang"),
-        closeBarrier: () => {
-          throw new Error("CANARY_OBSERVER");
-        },
-        maximumPreparationMilliseconds: 800,
-        teardownMilliseconds: 400,
-      }),
-    ).rejects.toThrow("integration.images.timeout");
-    proveDescendantAbsent(root);
-  });
-
-  it("fails closed on oversized subprocess diagnostics", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], options(root, "oversized")),
-    ).rejects.toThrow("integration.images.output");
-  });
-});
-
-describe("image preparation scheduling boundaries", () => {
-  it("does not schedule process inspection before an owned group exists", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        processInspectionExecutable: process.execPath,
-        processInspectionArgumentsPrefix: [fixture, "inspect-processes"],
-      }),
-    ).resolves.toHaveLength(1);
-    expect(existsSync(resolve(root, "inspection"))).toBe(false);
-  });
-
-  it("proves the owned group absent when fixture readiness is not published", async () => {
-    const root = createRoot();
-    let processGroup: number | undefined;
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang-before-ready"),
-        closeBarrier: (ownedProcessGroup) => {
-          processGroup = ownedProcessGroup;
-          return Promise.resolve();
-        },
-        maximumPreparationMilliseconds: 800,
-        teardownMilliseconds: 400,
-      }),
-    ).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
-    expect(existsSync(resolve(root, "ready"))).toBe(false);
-    proveProcessGroupAbsent(processGroup);
-  });
-});
-
-describe("image preparation failure boundaries", () => {
-  it("classifies only exact-PGID zombie remnants as quiescent", () => {
-    expect(classifyProcessGroupState(" 11 7 Z\n 12 7 Z+\n", 7)).toBe(
-      "zombie-only",
-    );
-    expect(classifyProcessGroupState(" 11 7 Z\n 12 7 R+\n", 7)).toBe("live");
-    expect(classifyProcessGroupState(" 11 8 R\n", 7)).toBe("absent");
-    expect(classifyProcessGroupState("CANARY_PATH\n", 7)).toBe("unavailable");
-  });
-
-  it("fails before spawn where an owned process group is unavailable", async () => {
-    const root = createRoot();
-    const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
-    if (descriptor === undefined) throw new Error("integration.images.fixture");
-    try {
-      Object.defineProperty(process, "platform", {
-        ...descriptor,
-        value: "win32",
-      });
-      await expect(
-        preparePinnedDockerImages([image], {
-          ...options(root, "success"),
-          dockerExecutable: "/forbidden/docker",
-        }),
-      ).rejects.toThrow("integration.images.platform");
-    } finally {
-      Object.defineProperty(process, "platform", descriptor);
-    }
-  });
-
-  it("fails before spawn when process inspection is not executable", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        processInspectionExecutable: resolve(root, "missing-ps"),
-      }),
-    ).rejects.toThrow("integration.images.platform");
-    expect(existsSync(resolve(root, "record.json"))).toBe(false);
-  });
-
-  it("does not publish process-group authority after spawn fails", async () => {
-    const root = createRoot();
-    let barrierCalled = false;
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        closeBarrier: () => {
-          barrierCalled = true;
-          return Promise.resolve();
-        },
-        dockerExecutable: resolve(root, "missing-docker"),
-      }),
-    ).rejects.toThrow("integration.images.containment");
-    expect(barrierCalled).toBe(false);
-  });
-
-  it("removes the private Docker config after a setup prefix fails", async () => {
-    const root = createRoot();
+describe("subprocess-free pinned image preparation", () => {
+  it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
+    const engine = engineFixture();
+    const registry = registryFixture();
     const before = new Set(
-      readdirSync(tmpdir()).filter((entry) =>
-        entry.startsWith("agentscope-docker-config-"),
+      readdirSync(realpathSync("/tmp")).filter((entry) =>
+        entry.startsWith("agentscope-image-preparation-"),
       ),
     );
-    const environment = new Proxy(process.env, {
-      ownKeys: () => {
-        throw new Error("CANARY_PATH");
-      },
-    });
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        environment,
-      }),
-    ).rejects.toThrow("integration.images.setup");
+    const prior = process.env.HTTPS_PROXY;
+    process.env.HTTPS_PROXY = "http://CANARY.invalid";
+    try {
+      await expect(
+        preparePinnedDockerImages([image], options(engine, registry)),
+      ).resolves.toEqual({
+        dockerSocket: socket,
+        dockerDaemon: daemon,
+        preparationPolicy: prepared().preparationPolicy,
+        terminalCleanup: prepared().terminalCleanup,
+        images: prepared().images,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = prior;
+    }
+    expect(engine.requests.every(({ origin }) => origin === undefined)).toBe(
+      true,
+    );
+    expect(
+      registry.requests.every(
+        ({ origin }) => origin?.hostname !== "CANARY.invalid",
+      ),
+    ).toBe(true);
     expect(
       new Set(
-        readdirSync(tmpdir()).filter((entry) =>
-          entry.startsWith("agentscope-docker-config-"),
+        readdirSync(realpathSync("/tmp")).filter((entry) =>
+          entry.startsWith("agentscope-image-preparation-"),
         ),
       ),
     ).toEqual(before);
   });
 
-  it("removes a failed publication stage and preserves the target", () => {
-    const root = createRoot();
-    const target = resolve(root, "current-images.json");
-    mkdirSync(target);
+  it("reconciles an exact existing digest without issuing a pull", async () => {
+    const engine = engineFixture({ localInitiallyPresent: true });
+    await preparePinnedDockerImages([image], options(engine));
+    expect(engine.requests.some(({ method }) => method === "POST")).toBe(false);
+  });
+
+  it("pulls only after exact inspection proves the digest absent", async () => {
+    const engine = engineFixture({ localInitiallyPresent: false });
+    await preparePinnedDockerImages([image], options(engine));
+    expect(
+      engine.requests.filter(({ method }) => method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("permits one credential-free config redirect to the closed CDN origin", async () => {
+    const registry = registryFixture({ redirectConfig: true });
+    await expect(
+      preparePinnedDockerImages([image], options(engineFixture(), registry)),
+    ).resolves.toMatchObject({ images: [{ configDigest }] });
+    expect(
+      registry.requests.some(
+        ({ origin }) => origin?.hostname === "production.cloudfront.docker.com",
+      ),
+    ).toBe(true);
+  });
+
+  it("fails outcome-unknown after a disconnected pull and never adopts in-run", async () => {
+    const engine = engineFixture({
+      localInitiallyPresent: false,
+      pullFailure: true,
+    });
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).rejects.toThrow("integration.images.daemon-uncertain");
+    expect(
+      engine.requests.filter(
+        ({ method, path }) => method === "GET" && path.includes("/images/"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("rejects daemon replacement before evidence can return", async () => {
+    await expect(
+      preparePinnedDockerImages(
+        [image],
+        options(engineFixture({ daemonSwitch: true })),
+      ),
+    ).rejects.toThrow("integration.images.daemon");
+  });
+});
+
+describe("bounded image preparation request and cleanup handles", () => {
+  it("bounds response bodies before parsing them", async () => {
+    const registry = registryFixture();
+    registry.request = () =>
+      Promise.resolve({
+        statusCode: 200,
+        body: Buffer.alloc(IMAGE_PREPARATION_LIMITS.maximumManifestBytes + 1),
+      });
+    await expect(
+      preparePinnedDockerImages([image], options(engineFixture(), registry)),
+    ).rejects.toThrow("integration.images.output");
+  });
+
+  it("rolls back a deterministic post-mkdtemp setup failure", async () => {
+    let ownedRoot: string | undefined;
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(),
+        afterPrivateRootCreatedForTesting: (value: string) => {
+          ownedRoot = value;
+          throw new Error("injected setup failure");
+        },
+      }),
+    ).rejects.toThrow("integration.images.setup");
+    expect(existsSync(ownedRoot ?? "")).toBe(false);
+  });
+
+  it("settles a nonresponding Engine socket before timeout rejection", async () => {
+    const directory = root();
+    const socketPath = resolve(directory, "engine.sock");
+    const connections = new Set<Socket>();
+    const server = createServer(() => {
+      // Deliberately never send headers or a body.
+    });
+    server.on("connection", (connection) => {
+      connections.add(connection);
+      connection.once("close", () => connections.delete(connection));
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+    try {
+      await expect(
+        preparePinnedDockerImages([image], {
+          dockerSocketForTesting: socketPath,
+          registryRequestForTesting: registryFixture().request,
+          maximumPreparationMilliseconds: 500,
+          teardownMilliseconds: 100,
+        }),
+      ).rejects.toMatchObject({
+        code: "ETIMEDOUT",
+        message: "integration.images.timeout",
+      });
+      expect(connections.size).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => {
+        server.close(() => {
+          resolveClose();
+        });
+      });
+    }
+  });
+
+  it("fails closed and preserves a partial-cleanup root", async () => {
+    let ownedRoot: string | undefined;
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(),
+        beforePrivateCleanupForTesting: (value: string) => {
+          ownedRoot = value;
+          mkdirSync(resolve(value, "unexpected"));
+        },
+      }),
+    ).rejects.toThrow("integration.images.cleanup");
+    expect(existsSync(ownedRoot ?? "")).toBe(true);
+    if (ownedRoot !== undefined)
+      rmSync(ownedRoot, { force: true, recursive: true });
+  });
+});
+
+describe("self-authenticating v2 image evidence", () => {
+  it("accepts the exact pinned root, selected manifest, and config bytes", () => {
+    expect(validatePreparedImageEvidence(prepared(), manifestIdentity)).toEqual(
+      prepared(),
+    );
+  });
+
+  it.each([
+    { imageEvidenceVersion: 1 },
+    { dockerSocket: { ...socket, inode: "3" } },
+    { dockerDaemon: { ...daemon, id: "" } },
+    {
+      images: [
+        {
+          ...prepared().images[0],
+          manifestDigest: `sha256:${"b".repeat(64)}`,
+        },
+      ],
+    },
+    {
+      images: [
+        {
+          ...prepared().images[0],
+          configBlob: Buffer.from("substituted").toString("base64"),
+        },
+      ],
+    },
+    {
+      images: [
+        {
+          ...prepared().images[0],
+          rootManifest: Buffer.from("{}").toString("base64"),
+        },
+      ],
+    },
+  ])("rejects caller-claimed or substituted authority %#", (replacement) => {
+    expect(() =>
+      validatePreparedImageEvidence(
+        { ...prepared(), ...replacement },
+        manifestIdentity,
+      ),
+    ).toThrow("integration.images.evidence");
+  });
+
+  it("refuses to publish an unbranded caller-constructed record", () => {
+    const directory = root();
     expect(() => {
-      publishPreparedImageEvidence(target, { imageEvidenceVersion: 1 });
+      publishPreparedImageEvidence(
+        resolve(directory, "current-images.json"),
+        manifestIdentity,
+        prepared() as unknown as PreparedDockerImageSet,
+      );
     }).toThrow("integration.images.publication");
-    expect(readdirSync(root)).toEqual(["current-images.json"]);
+  });
+});
+
+describe("prepared image runtime admission and publication", () => {
+  it("recomputes proof and daemon/config identity at runtime admission", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const engine = engineFixture();
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture({
+          localValue: JSON.stringify({
+            ...JSON.parse(local),
+            Id: `sha256:${"e".repeat(64)}`,
+          }),
+        }).request,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("fails admission after exact socket or daemon rebinding", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: { ...socket, inode: "999" },
+        engineRequestForTesting: engineFixture().request,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture({ daemonSwitch: true }).request,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("removes failed publication staging and preserves the target", async () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    mkdirSync(target);
+    const trusted = await preparePinnedDockerImages([image], options());
+    expect(() => {
+      publishPreparedImageEvidence(target, manifestIdentity, trusted);
+    }).toThrow("integration.images.publication");
+    expect(readdirSync(directory)).toEqual(["current-images.json"]);
     expect(readdirSync(target)).toEqual([]);
   });
 
-  it("publishes the documented fixed preparation ceilings", () => {
+  it("retires stale authority before later preparation work can fail", async () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    rmSync(target, { force: true });
+    // A missing pointer is already fail-closed and is idempotent.
+    retirePreparedImageEvidence(target);
+    const trusted = await preparePinnedDockerImages([image], options());
+    publishPreparedImageEvidence(target, manifestIdentity, trusted);
+    expect(JSON.parse(readFileSync(target, "utf8"))).toMatchObject({
+      imageEvidenceVersion: 2,
+    });
+    retirePreparedImageEvidence(target);
+    expect(existsSync(target)).toBe(false);
+    retirePreparedImageEvidence(target);
+  });
+
+  it("publishes the fixed request and manifest ceilings", () => {
     expect(IMAGE_PREPARATION_LIMITS).toEqual({
       maximumPreparationMilliseconds: 300_000,
       maximumTeardownMilliseconds: 5_000,
-      maximumCommandOutputBytes: 65_536,
+      maximumResponseBytes: 1_048_576,
+      maximumManifestBytes: 1_048_576,
+      maximumEvidenceBytes: 8_388_608,
     });
   });
 });
