@@ -30,6 +30,23 @@ bd update <issue-id> --status done
 bd dolt push
 ```
 
+## Agentscope issue IDs
+
+New work uses a short workstream plus a three-digit sequence. The database keeps its required project prefix, while people and the dashboard use the shorter reference:
+
+- stored: `agentscope-release-007`
+- conversational: `release-007`
+
+Create the next collision-safe ID in a workstream from the repository root:
+
+```bash
+node .beads/create.mjs release "Rehearse alpha publication" --type task --priority 1
+```
+
+The helper reads existing IDs through supported read-only `bd` JSON, serializes compliant allocators with an ignored local lock in the canonical Beads workspace, rechecks candidate IDs, calls `bd create --id` directly without a shell, and prints the short ID. `--parent release-003` and dependency values such as `--deps blocks:hermetic-012` are expanded to canonical IDs. The helper owns `--id`; always use it for sequential IDs because the current `bd create --id` does not reject an existing explicit ID. Do not use `bd rename-prefix` or mass-rename historical issues.
+
+Suggested workstreams are short and durable: `crabbox`, `hermetic`, `release`, `codex`, `claude`, `sqlite`, and `beads`.
+
 ### Working with Issues
 
 Issues in Beads are:

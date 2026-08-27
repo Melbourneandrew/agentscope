@@ -3,9 +3,24 @@ import { request } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
 
-import { dashboardMessage, deriveDisplayState, filterGraph, layoutGraph, normalizeIssues } from "./graph.mjs";
+import {
+  dashboardMessage,
+  deriveDisplayState,
+  displayIssueId,
+  filterGraph,
+  layoutGraph,
+  normalizeIssues,
+} from "./graph.mjs";
 import { captureIssueFocus, restoreIssueFocus } from "./focus.mjs";
-import { BD_LIST_ARGUMENTS, BD_READY_ARGUMENTS, createDashboardServer, loadGraph, parsePort } from "./server.mjs";
+import {
+  BD_BLOCKED_ARGUMENTS,
+  BD_LIST_ARGUMENTS,
+  BD_READY_ARGUMENTS,
+  BD_STALE_ARGUMENTS,
+  createDashboardServer,
+  loadGraph,
+  parsePort,
+} from "./server.mjs";
 
 const fixtures = [
   { id: "a", title: "Foundation", status: "closed", priority: 1 },
@@ -39,24 +54,35 @@ test("normalizes dependency direction from prerequisite to dependent", () => {
   assert.equal(graph.nodes.find((node) => node.id === "c").displayState, "blocked");
 });
 
-test("treats an open parent-child prerequisite as blocking", () => {
+test("treats parents as containers without making hierarchy a blocker", () => {
   const graph = normalizeIssues([
-    { id: "parent", title: "Parent", status: "open" },
+    { id: "agentscope-release-001", title: "Parent", status: "in_progress" },
     {
-      id: "child",
+      id: "agentscope-release-002",
       title: "Child",
-      status: "open",
-      dependencies: [{ issue_id: "child", depends_on_id: "parent", type: "parent-child" }],
+      status: "in_progress",
+      dependencies: [
+        { issue_id: "agentscope-release-002", depends_on_id: "agentscope-release-001", type: "parent-child" },
+      ],
     },
   ]);
-  assert.equal(graph.nodes.find((node) => node.id === "child").displayState, "blocked");
+  const parent = graph.nodes.find((node) => node.id === "agentscope-release-001");
+  const child = graph.nodes.find((node) => node.id === "agentscope-release-002");
+  assert.equal(parent.isContainer, true);
+  assert.equal(parent.workClass, "container");
+  assert.equal(child.displayState, "active");
+  assert.equal(child.workClass, "active-leaf");
+  assert.equal(child.displayId, "release-002");
+  assert.equal(displayIssueId("agentscope-vah.11.1"), "vah.11.1");
 });
 
 test("derives every visible workflow state without weakening explicit status", () => {
   assert.equal(deriveDisplayState("open", 0), "ready");
   assert.equal(deriveDisplayState("open", 1), "blocked");
   assert.equal(deriveDisplayState("blocked", 0), "blocked");
-  assert.equal(deriveDisplayState("in_progress", 2), "in-progress");
+  assert.equal(deriveDisplayState("in_progress", 2, false, true), "blocked-active");
+  assert.equal(deriveDisplayState("in_progress", 0, false, false, true), "stale-active");
+  assert.equal(deriveDisplayState("in_progress", 0), "active");
   assert.equal(deriveDisplayState("closed", 2), "closed");
   assert.equal(deriveDisplayState("deferred", 0), "deferred");
   assert.equal(deriveDisplayState("open", 1, true), "ready");
@@ -78,6 +104,25 @@ test("filters by search, status, priority and focused dependency neighborhood", 
     ["b", "c"],
   );
   assert.deepEqual(filtered.edges, [{ source: "b", target: "c", type: "blocks" }]);
+});
+
+test("defaults to active unblocked leaves and separates attention and containers", () => {
+  const graph = normalizeIssues(
+    [
+      { id: "agentscope-beads-001", title: "Active", status: "in_progress", priority: 0 },
+      { id: "agentscope-beads-002", title: "Blocked", status: "in_progress", priority: 1 },
+      { id: "agentscope-beads-003", title: "Stale", status: "in_progress", priority: 1 },
+      { id: "agentscope-beads-004", title: "Container", status: "in_progress", issue_type: "epic" },
+    ],
+    { blockedIds: ["agentscope-beads-002"], staleIds: ["agentscope-beads-003"] },
+  );
+  assert.deepEqual(filterGraph(graph).nodes.map((node) => node.displayId), ["beads-001"]);
+  assert.deepEqual(
+    filterGraph(graph, { view: "attention" }).nodes.map((node) => node.displayId),
+    ["beads-002", "beads-003"],
+  );
+  assert.deepEqual(filterGraph(graph, { view: "containers" }).nodes.map((node) => node.displayId), ["beads-004"]);
+  assert.deepEqual(filterGraph(graph, { query: "beads-003" }).nodes.map((node) => node.displayId), ["beads-003"]);
 });
 
 test("lays prerequisites before dependents", () => {
@@ -108,7 +153,7 @@ test("caps visible graph work while retaining an explicit truncation count", () 
   const graph = normalizeIssues(
     Array.from({ length: 700 }, (_, index) => ({ id: `issue-${index}`, title: `Issue ${index}` })),
   );
-  const filtered = filterGraph(graph, { maxNodes: 600 });
+  const filtered = filterGraph(graph, { maxNodes: 600, view: "all" });
   assert.equal(filtered.nodes.length, 600);
   assert.equal(filtered.truncatedCount, 100);
 });
@@ -149,14 +194,22 @@ test("restores keyboard focus to the same issue and interaction surface", () => 
 
 test("reads only through the supported read-only bd list command", async () => {
   assert.deepEqual(BD_LIST_ARGUMENTS, ["list", "--all", "--flat", "--limit", "0", "--json", "--readonly"]);
-  let call;
   const calls = [];
   const graph = await loadGraph(async (...arguments_) => {
     calls.push(arguments_);
-    return { stdout: JSON.stringify(arguments_[1] === BD_READY_ARGUMENTS ? [fixtures[1]] : fixtures) };
+    const command = arguments_[1];
+    if (command === BD_LIST_ARGUMENTS) return { stdout: JSON.stringify(fixtures) };
+    if (command === BD_READY_ARGUMENTS) return { stdout: JSON.stringify([fixtures[1]]) };
+    if (command === BD_BLOCKED_ARGUMENTS) return { stdout: JSON.stringify([fixtures[2]]) };
+    return { stdout: JSON.stringify([]) };
   });
   assert.equal(calls[0][0], "bd");
-  assert.deepEqual(calls.map((entry) => entry[1]), [BD_LIST_ARGUMENTS, BD_READY_ARGUMENTS]);
+  assert.deepEqual(calls.map((entry) => entry[1]), [
+    BD_LIST_ARGUMENTS,
+    BD_READY_ARGUMENTS,
+    BD_BLOCKED_ARGUMENTS,
+    BD_STALE_ARGUMENTS,
+  ]);
   assert.equal(graph.nodes.length, 3);
 });
 

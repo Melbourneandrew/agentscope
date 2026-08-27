@@ -13,6 +13,8 @@
   --blocked-line: light-dark(#c93645, #ff7480);
   --progress: light-dark(#dceafe, #18335f);
   --progress-line: light-dark(#2d6bc4, #6da5f2);
+  --stale: light-dark(#fff0c2, #4d3511);
+  --stale-line: light-dark(#ad6900, #ffbd4a);
   --deferred: light-dark(#f5ead2, #42351e);
   --deferred-line: light-dark(#99701b, #dfb450);
   --closed: light-dark(#e7e9ed, #292d35);
@@ -163,9 +165,24 @@ button:disabled {
   --state-line: var(--blocked-line);
 }
 
-.in-progress {
+.active {
   --state: var(--progress);
   --state-line: var(--progress-line);
+}
+
+.blocked-active {
+  --state: var(--blocked);
+  --state-line: var(--blocked-line);
+}
+
+.stale-active {
+  --state: var(--stale);
+  --state-line: var(--stale-line);
+}
+
+.container {
+  --state: var(--surface-muted);
+  --state-line: var(--muted);
 }
 
 .deferred {
@@ -238,6 +255,15 @@ aside {
 
 .node.selected rect.body {
   stroke-width: 3;
+}
+
+.node.container-node rect.body {
+  stroke-dasharray: 6 3;
+}
+
+.node.blocked-active rect.body,
+.node.stale-active rect.body {
+  stroke-width: 2.5;
 }
 
 .node:focus-visible rect.body {

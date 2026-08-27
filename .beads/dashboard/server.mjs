@@ -20,6 +20,18 @@ const STATIC_FILES = new Map([
 
 export const BD_LIST_ARGUMENTS = ["list", "--all", "--flat", "--limit", "0", "--json", "--readonly"];
 export const BD_READY_ARGUMENTS = ["ready", "--limit", "0", "--json", "--readonly"];
+export const BD_BLOCKED_ARGUMENTS = ["blocked", "--json", "--readonly"];
+export const BD_STALE_ARGUMENTS = [
+  "stale",
+  "--days",
+  "1",
+  "--status",
+  "in_progress",
+  "--limit",
+  "0",
+  "--json",
+  "--readonly",
+];
 
 export async function loadGraph(run = executeFile) {
   const options = {
@@ -30,19 +42,32 @@ export async function loadGraph(run = executeFile) {
   };
   const { stdout: listOutput } = await run("bd", BD_LIST_ARGUMENTS, options);
   const { stdout: readyOutput } = await run("bd", BD_READY_ARGUMENTS, options);
+  const { stdout: blockedOutput } = await run("bd", BD_BLOCKED_ARGUMENTS, options);
+  const { stdout: staleOutput } = await run("bd", BD_STALE_ARGUMENTS, options);
   let decodedList;
   let decodedReady;
+  let decodedBlocked;
+  let decodedStale;
   try {
     decodedList = JSON.parse(listOutput);
     decodedReady = JSON.parse(readyOutput);
+    decodedBlocked = JSON.parse(blockedOutput);
+    decodedStale = JSON.parse(staleOutput);
   } catch {
     throw new Error("bd returned malformed JSON");
   }
-  if (!Array.isArray(decodedReady)) throw new Error("bd ready returned malformed JSON");
-  const readyIds = decodedReady
-    .filter((issue) => issue && typeof issue === "object" && !Array.isArray(issue) && typeof issue.id === "string")
-    .map((issue) => issue.id);
-  return normalizeIssues(decodedList, { readyIds });
+  if (![decodedReady, decodedBlocked, decodedStale].every(Array.isArray)) {
+    throw new Error("bd status query returned malformed JSON");
+  }
+  const ids = (issues) =>
+    issues
+      .filter((issue) => issue && typeof issue === "object" && !Array.isArray(issue) && typeof issue.id === "string")
+      .map((issue) => issue.id);
+  return normalizeIssues(decodedList, {
+    readyIds: ids(decodedReady),
+    blockedIds: ids(decodedBlocked),
+    staleIds: ids(decodedStale),
+  });
 }
 
 function send(response, status, contentType, body) {

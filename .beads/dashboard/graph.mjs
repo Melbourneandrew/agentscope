@@ -1,6 +1,6 @@
 const KNOWN_STATUSES = new Set(["open", "in_progress", "blocked", "deferred", "closed"]);
 const RELATIONSHIP_TYPES = new Set(["blocks", "parent-child", "discovered-from", "related", "supersedes"]);
-const BLOCKING_RELATIONSHIP_TYPES = new Set(["blocks", "parent-child"]);
+const BLOCKING_RELATIONSHIP_TYPES = new Set(["blocks"]);
 const MAX_ISSUES = 5_000;
 const MAX_RELATIONSHIPS = 25_000;
 const MAX_RELATIONSHIPS_PER_ISSUE = 256;
@@ -16,7 +16,11 @@ function integer(value, fallback) {
   return Number.isInteger(value) ? value : fallback;
 }
 
-export function normalizeIssues(input, { readyIds } = {}) {
+export function displayIssueId(id) {
+  return typeof id === "string" && id.startsWith("agentscope-") ? id.slice("agentscope-".length) : id;
+}
+
+export function normalizeIssues(input, { readyIds, blockedIds = [], staleIds = [] } = {}) {
   if (!Array.isArray(input)) {
     return { nodes: [], edges: [], warnings: ["Beads returned a non-array JSON document."] };
   }
@@ -114,24 +118,52 @@ export function normalizeIssues(input, { readyIds } = {}) {
     }
   }
   const canonicalReadyIds = readyIds === undefined ? null : new Set(readyIds);
+  const canonicalBlockedIds = new Set(blockedIds);
+  const canonicalStaleIds = new Set(staleIds);
+  const containerIds = new Set(nodes.filter((node) => node.issueType === "epic").map((node) => node.id));
+  for (const edge of edges) if (edge.type === "parent-child") containerIds.add(edge.source);
   for (const node of nodes) {
     const canonicallyReady = canonicalReadyIds ? canonicalReadyIds.has(node.id) : undefined;
+    const canonicallyBlocked = canonicalBlockedIds.has(node.id);
+    const stale = node.status === "in_progress" && canonicalStaleIds.has(node.id);
     const activeBlockers = canonicallyReady ? [] : (activeBlockersByTarget.get(node.id) ?? []);
     node.activeBlockers = activeBlockers;
-    node.displayState = deriveDisplayState(node.status, activeBlockers.length, canonicallyReady);
+    node.isContainer = containerIds.has(node.id);
+    node.isLeaf = !node.isContainer;
+    node.isStale = stale;
+    node.displayId = displayIssueId(node.id);
+    node.displayState = deriveDisplayState(
+      node.status,
+      activeBlockers.length,
+      canonicallyReady,
+      canonicallyBlocked,
+      stale,
+    );
+    node.workClass = deriveWorkClass(node);
   }
 
   return { nodes, edges, warnings };
 }
 
-export function deriveDisplayState(status, activeBlockerCount, canonicallyReady) {
+export function deriveDisplayState(status, activeBlockerCount, canonicallyReady, canonicallyBlocked = false, stale = false) {
   if (status === "closed") return "closed";
-  if (status === "in_progress") return "in-progress";
+  if (status === "in_progress" && canonicallyBlocked) return "blocked-active";
+  if (status === "in_progress" && stale) return "stale-active";
+  if (status === "in_progress") return "active";
   if (status === "deferred") return "deferred";
   if (status === "blocked") return "blocked";
   if (canonicallyReady !== undefined) return canonicallyReady ? "ready" : "blocked";
   if (activeBlockerCount > 0) return "blocked";
   return "ready";
+}
+
+export function deriveWorkClass(node) {
+  if (node.status === "closed") return "closed";
+  if (node.displayState === "blocked-active" || node.displayState === "stale-active") return "attention";
+  if (node.isContainer) return "container";
+  if (node.displayState === "active") return "active-leaf";
+  if (node.displayState === "ready") return "ready-leaf";
+  return "other-leaf";
 }
 
 export function dashboardMessage({ loadError = "", warnings = [], nodeCount = 0, truncatedCount = 0, focused = false }) {
@@ -151,12 +183,15 @@ export function dashboardMessage({ loadError = "", warnings = [], nodeCount = 0,
 
 export function filterGraph(graph, options = {}) {
   const query = text(options.query).trim().toLocaleLowerCase();
-  const statuses = new Set(options.statuses ?? ["ready", "blocked", "in-progress", "deferred"]);
+  const statuses = new Set(
+    options.statuses ?? ["ready", "blocked", "active", "blocked-active", "stale-active", "deferred"],
+  );
   const priorities = new Set((options.priorities ?? [0, 1, 2, 3, 4]).map(Number));
   const relationshipTypes = new Set(options.relationshipTypes ?? ["blocks"]);
   const focusId = text(options.focusId);
   const focusDepth = Math.max(0, Math.min(6, integer(options.focusDepth, 2)));
   const maxNodes = Math.max(1, Math.min(1_000, integer(options.maxNodes, 600)));
+  const view = text(options.view, "active");
 
   let allowedByFocus = null;
   let focusDistances = null;
@@ -180,9 +215,20 @@ export function filterGraph(graph, options = {}) {
   }
 
   const matchingNodes = graph.nodes.filter((node) => {
-    const matchesQuery = !query || `${node.id} ${node.title} ${node.labels.join(" ")}`.toLocaleLowerCase().includes(query);
+    const matchesQuery =
+      !query || `${node.id} ${node.displayId} ${node.title} ${node.labels.join(" ")}`.toLocaleLowerCase().includes(query);
+    const matchesView =
+      Boolean(focusId) ||
+      Boolean(query) ||
+      view === "all" ||
+      (view === "all-open" && node.status !== "closed") ||
+      (view === "active" && node.workClass === "active-leaf") ||
+      (view === "attention" && node.workClass === "attention") ||
+      (view === "ready" && node.workClass === "ready-leaf") ||
+      (view === "containers" && node.isContainer);
     return (
       matchesQuery &&
+      matchesView &&
       statuses.has(node.displayState) &&
       priorities.has(node.priority) &&
       (!allowedByFocus || allowedByFocus.has(node.id))
@@ -195,6 +241,22 @@ export function filterGraph(graph, options = {}) {
           (focusDistances.get(b.id) ?? Number.POSITIVE_INFINITY) ||
         a.priority - b.priority ||
         a.id.localeCompare(b.id),
+    );
+  }
+  if (!focusDistances) {
+    const workOrder = new Map([
+      ["active-leaf", 0],
+      ["attention", 1],
+      ["ready-leaf", 2],
+      ["other-leaf", 3],
+      ["container", 4],
+      ["closed", 5],
+    ]);
+    matchingNodes.sort(
+      (a, b) =>
+        (workOrder.get(a.workClass) ?? 9) - (workOrder.get(b.workClass) ?? 9) ||
+        a.priority - b.priority ||
+        a.displayId.localeCompare(b.displayId),
     );
   }
   const nodes = matchingNodes.slice(0, maxNodes);
