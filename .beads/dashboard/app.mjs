@@ -91,6 +91,7 @@ function render() {
     warnings: fullGraph.warnings,
     nodeCount: graph.nodes.length,
     truncatedCount: graph.truncatedCount,
+    focused: Boolean(focusId),
   });
   elements.graph.setAttribute("width", String(Math.max(layout.width, elements.graphScroll.clientWidth - 2)));
   elements.graph.setAttribute("height", String(layout.height));

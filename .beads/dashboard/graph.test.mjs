@@ -99,6 +99,7 @@ test("handles empty and malformed data without throwing", () => {
   );
   assert.match(dashboardMessage({ warnings: ["ignored"], nodeCount: 0 }), /1 malformed/);
   assert.match(dashboardMessage({ nodeCount: 600, truncatedCount: 25 }), /25 additional/);
+  assert.match(dashboardMessage({ nodeCount: 600, truncatedCount: 25, focused: true }), /focused neighborhood/);
   assert.equal(dashboardMessage({ warnings: [], nodeCount: 0 }), "No issues match these filters.");
 });
 
@@ -218,11 +219,16 @@ function rawMalformedTargetStatus(port) {
 test("enforces loopback HTTP authority and coalesces concurrent graph loads", async () => {
   let calls = 0;
   let release;
+  let markEntered;
   const pending = new Promise((resolve) => {
     release = resolve;
   });
+  const entered = new Promise((resolve) => {
+    markEntered = resolve;
+  });
   await withServer(async () => {
     calls += 1;
+    markEntered();
     await pending;
     return normalizeIssues(fixtures);
   }, async (port) => {
@@ -232,10 +238,22 @@ test("enforces loopback HTTP authority and coalesces concurrent graph loads", as
       421,
     );
     const requests = Array.from({ length: 12 }, () => fetch(`http://127.0.0.1:${port}/api/issues`));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(calls, 1);
-    release();
-    assert.ok((await Promise.all(requests)).every((response) => response.status === 200));
+    let results;
+    let entryTimeout;
+    try {
+      await Promise.race([
+        entered,
+        new Promise((_, reject) => {
+          entryTimeout = setTimeout(() => reject(new Error("loader entry was not observed")), 2_000);
+        }),
+      ]);
+      assert.equal(calls, 1);
+    } finally {
+      clearTimeout(entryTimeout);
+      release();
+      results = await Promise.allSettled(requests);
+    }
+    assert.ok(results.every((result) => result.status === "fulfilled" && result.value.status === 200));
   });
 });
 

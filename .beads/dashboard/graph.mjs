@@ -134,11 +134,17 @@ export function deriveDisplayState(status, activeBlockerCount, canonicallyReady)
   return "ready";
 }
 
-export function dashboardMessage({ loadError = "", warnings = [], nodeCount = 0, truncatedCount = 0 }) {
+export function dashboardMessage({ loadError = "", warnings = [], nodeCount = 0, truncatedCount = 0, focused = false }) {
   if (loadError) return loadError;
   const messages = [];
   if (warnings.length) messages.push(`${warnings.length} malformed or unresolved record(s) were safely ignored.`);
-  if (truncatedCount) messages.push(`${truncatedCount} additional issue(s) are hidden. Narrow the filters or focus a node.`);
+  if (truncatedCount) {
+    messages.push(
+      focused
+        ? `${truncatedCount} additional issue(s) in this focused neighborhood are hidden. Narrow search or priority.`
+        : `${truncatedCount} additional issue(s) are hidden. Narrow the filters or focus a node.`,
+    );
+  }
   if (!nodeCount && messages.length === 0) messages.push("No issues match these filters.");
   return messages.join(" ");
 }
