@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentscope Beads</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Repository-local · read-only</p>
+          <h1>Beads dependency flow</h1>
+        </div>
+        <button id="refresh" type="button">Refresh</button>
+      </header>
+
+      <form id="filters" aria-label="Graph filters">
+        <label>
+          Search ID, title, or label
+          <input id="query" type="search" autocomplete="off" placeholder="agentscope-c1k or release" />
+        </label>
+        <label>
+          Priority
+          <select id="priority">
+            <option value="all">All priorities</option>
+            <option value="0">P0</option>
+            <option value="1">P1</option>
+            <option value="2">P2</option>
+            <option value="3">P3</option>
+            <option value="4">P4</option>
+          </select>
+        </label>
+        <label class="check"><input id="closed" type="checkbox" /> Include closed</label>
+        <label class="check"><input id="hierarchy" type="checkbox" /> Parent links</label>
+        <label class="check"><input id="related" type="checkbox" /> Context links</label>
+        <button id="clear-focus" type="button" disabled>Clear focus</button>
+      </form>
+
+      <section class="summary" aria-live="polite">
+        <span id="count">Loading…</span>
+        <span class="legend ready">Ready</span>
+        <span class="legend blocked">Blocked</span>
+        <span class="legend in-progress">In progress</span>
+        <span class="legend deferred">Deferred</span>
+        <span class="legend closed">Closed</span>
+      </section>
+
+      <p id="message" class="message" role="status"></p>
+      <section class="workspace">
+        <div id="graph-scroll" class="graph-scroll" aria-label="Dependency graph. Arrows point from prerequisite to dependent.">
+          <svg id="graph" aria-labelledby="graph-title graph-description">
+            <title id="graph-title">Beads dependency graph</title>
+            <desc id="graph-description">Arrows point from prerequisite work toward dependent work.</desc>
+          </svg>
+        </div>
+        <aside id="detail" aria-live="polite">
+          <h2>Selection</h2>
+          <p>Select a node to focus its dependency neighborhood.</p>
+        </aside>
+      </section>
+      <details class="issue-list-panel">
+        <summary>Visible issues as a list</summary>
+        <ul id="issue-list"></ul>
+      </details>
+    </main>
+    <script type="module" src="/app.mjs"></script>
+  </body>
+</html>
