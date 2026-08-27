@@ -236,7 +236,11 @@ func buildPlan(args []string) {
 			fail("E_PLAN_BUILD_SLOT")
 		}
 	}
-	installation, err := control.NewStore(stateRoot()).LoadInstallation()
+	store := control.NewStore(stateRoot())
+	if store.IsRetired() {
+		fail("E_ENVIRONMENT_RETIRED")
+	}
+	installation, err := store.LoadInstallation()
 	if err != nil {
 		fail(errorCode(err))
 	}

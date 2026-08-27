@@ -414,6 +414,9 @@ func (store Store) privateKey(role string, passphrase []byte) (ed25519.PrivateKe
 }
 
 func (store Store) SignAuthorization(planData []byte, plan Plan, now time.Time, passphrase []byte) (Authorization, error) {
+	if store.IsRetired() {
+		return Authorization{}, errors.New("E_ENVIRONMENT_RETIRED")
+	}
 	installation, err := store.LoadInstallation()
 	if err != nil {
 		return Authorization{}, err
@@ -533,20 +536,16 @@ func (store Store) IsFrozen() bool {
 	if err == nil {
 		return true
 	}
-	// The durable global mutation fence is also acquisition-freeze authority
-	// while a request is in the invoking-uncertain state. This makes the
-	// fail-stop prefix itself sufficient even when no recovery passphrase is
-	// available to the applying process.
-	fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
-	if fenceErr != nil {
-		return false
-	}
-	planSHA256 := strings.TrimSpace(string(fenceData))
-	if !digestPattern.MatchString(planSHA256) {
-		return true
-	}
-	last, lastErr := store.lastEvent(planSHA256)
-	return lastErr != nil || last.State == "invoking-uncertain"
+	// The durable global mutation fence is also acquisition-freeze authority.
+	// It blocks admission for the full mutation and remains after every
+	// uncertain return, including failures after an observed operation.
+	_, fenceErr := os.Lstat(store.path("journal", "mutation.lock"))
+	return fenceErr == nil
+}
+
+func (store Store) IsRetired() bool {
+	_, err := os.Lstat(store.path("evidence", "retirement-finalized.json"))
+	return err == nil
 }
 
 func (store Store) currentFreeze() (SignedControlRecord, error) {
@@ -584,6 +583,9 @@ func (store Store) hasResolvedRecovery(freeze SignedControlRecord) bool {
 func (store Store) Thaw(evidenceSHA256 string, now time.Time, passphrase []byte) (SignedControlRecord, error) {
 	if !digestPattern.MatchString(evidenceSHA256) {
 		return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
+	}
+	if store.IsRetired() {
+		return SignedControlRecord{}, errors.New("E_ENVIRONMENT_RETIRED")
 	}
 	guard, err := store.acquireAdmissionGuard()
 	if err != nil {
@@ -1050,6 +1052,9 @@ var credentialRoles = map[string]*string{
 func stringPointer(value string) *string { return &value }
 
 func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion string, value []byte, now time.Time) (SlotMetadata, error) {
+	if store.IsRetired() {
+		return SlotMetadata{}, errors.New("E_ENVIRONMENT_RETIRED")
+	}
 	if len(value) < 16 || len(value) > 8192 || !identifierPattern.MatchString(slotID) || !identifierPattern.MatchString(slotVersion) {
 		return SlotMetadata{}, errors.New("E_SLOT_VALUE")
 	}

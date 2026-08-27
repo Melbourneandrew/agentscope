@@ -1269,6 +1269,19 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	if _, err := item.store.ResolveCredential("cloudflare-deployment"); err == nil {
 		t.Fatal("finalized retirement retained local credential authority")
 	}
+	if _, err := item.store.Thaw(strings.Repeat("6", 64), item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
+		t.Fatalf("generic thaw reopened retired environment: %v", err)
+	}
+	if _, err := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-deployment", "new-slot", "new-version", []byte(strings.Repeat("n", 32)), item.now.Add(2*time.Second)); err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
+		t.Fatalf("credential enrollment reopened retired environment: %v", err)
+	}
+	deployPlan, deployData := item.plan()
+	if _, err := item.store.SignAuthorization(deployData, deployPlan, item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
+		t.Fatalf("authorization reopened retired environment: %v", err)
+	}
+	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: deployData, Now: item.now.Add(2 * time.Second)}, &recordingExecutor{}, item.observer()); err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
+		t.Fatalf("apply reopened retired environment: %v", err)
+	}
 	if _, err := item.store.FinalizeRetirement(planDigest, "different-deployment-revocation", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_FENCE") {
 		t.Fatalf("finalized retirement accepted changed evidence: %v", err)
 	}

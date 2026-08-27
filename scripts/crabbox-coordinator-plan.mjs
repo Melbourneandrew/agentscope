@@ -516,7 +516,10 @@ function validatePlanIdentity(plan, context) {
       plan.environmentId !== profile.vars?.AGENTSCOPE_CRABBOX_ENVIRONMENT_ID) ||
     plan.sourceCommit !== admission.coordinator.commit ||
     plan.observationId !== observation.observationId ||
-    plan.currentMigrationTag !== admission.deployment.migrationTag
+    plan.currentMigrationTag !==
+      (plan.currentWorkerVersionId === "absent"
+        ? "absent"
+        : admission.deployment.migrationTag)
   ) {
     throw new Error(
       "plan identity differs from canonical deployment authority",

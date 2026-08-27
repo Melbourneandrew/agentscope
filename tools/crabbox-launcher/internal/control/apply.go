@@ -94,6 +94,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err != nil {
 		return err
 	}
+	if store.IsRetired() {
+		return errors.New("E_ENVIRONMENT_RETIRED")
+	}
 	credentialSetSHA256, err := store.credentialBindingSHA256()
 	if err != nil {
 		return err
@@ -119,7 +122,10 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	}
 	operationContext, cancel := context.WithTimeout(ctx, authorityLifetime)
 	defer cancel()
-	if store.IsFrozen() && plan.Kind != "retire" {
+	planDigest := SHA256(input.PlanData)
+	fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
+	exactResume := fenceErr == nil && strings.TrimSpace(string(fenceData)) == planDigest
+	if store.IsFrozen() && !exactResume && plan.Kind != "retire" {
 		freeze, freezeErr := store.currentFreeze()
 		if plan.Kind != "rollback" || freezeErr != nil || !store.hasResolvedRecovery(freeze) {
 			return errors.New("E_ACQUISITION_FROZEN")
@@ -139,7 +145,6 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if observer == nil {
 		return errors.New("E_OBSERVER_REQUIRED")
 	}
-	planDigest := SHA256(input.PlanData)
 	if err := operationContext.Err(); err != nil {
 		return errors.New("E_AUTHORITY_DEADLINE")
 	}
@@ -289,8 +294,8 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		}
 		receipt, err := executor.Invoke(operationContext, invocation)
 		if err != nil {
-			// mutation.lock is durable and IsFrozen treats this exact journal
-			// prefix as acquisition-freeze authority until attended recovery.
+			// mutation.lock is durable acquisition-freeze authority until
+			// attended recovery.
 			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
 		}
 		postTime := clock()
