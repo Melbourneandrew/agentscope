@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdtemp,
   mkdir,
@@ -24,6 +25,7 @@ import {
   parseHarnessSanitizedFixture,
   serializeHarnessSanitizedFixture,
   type HarnessSanitizedFixture,
+  type NativeFixtureInventoryEntry,
   type NativeFixtureAuditTestPlan,
 } from "./native-fixture-governance.js";
 import type { HarnessNativeFixtureReviewRecord } from "./testing.js";
@@ -61,6 +63,56 @@ const auditPlanNamespaces = async (): Promise<readonly string[]> =>
   (await readdir(physicalTemporaryRoot))
     .filter((entry) => entry.startsWith("agentscope-native-fixture-plan-"))
     .sort();
+
+const expectedCheckedInFixtureInventory = async (
+  harnessPackagesRoot: string,
+): Promise<readonly NativeFixtureInventoryEntry[]> => {
+  const entries: NativeFixtureInventoryEntry[] = [];
+  const harnessDirectories = (
+    await readdir(harnessPackagesRoot, {
+      withFileTypes: true,
+    })
+  ).filter((entry) => entry.isDirectory());
+  for (const harnessDirectory of harnessDirectories) {
+    const nativeRoot = join(
+      harnessPackagesRoot,
+      harnessDirectory.name,
+      "fixtures",
+      "native",
+    );
+    let nativeEntries;
+    try {
+      nativeEntries = await readdir(nativeRoot, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    for (const nativeEntry of nativeEntries) {
+      if (!nativeEntry.isFile() || !nativeEntry.name.endsWith(".json"))
+        continue;
+      const bytes = await readFile(join(nativeRoot, nativeEntry.name));
+      const fixture = parseHarnessSanitizedFixture(
+        JSON.parse(bytes.toString("utf8")) as unknown,
+      );
+      entries.push({
+        harnessId: fixture.harnessId,
+        fixtureId: fixture.fixtureId,
+        harnessVersion: fixture.harnessVersion,
+        relativePath: `${harnessDirectory.name}/fixtures/native/${nativeEntry.name}`,
+        artifactAuthority:
+          fixture.governance.provenance.artifactAuthority.status,
+        sha256: `sha256-${createHash("sha256").update(bytes).digest("hex")}`,
+      });
+    }
+  }
+  return entries.sort((left, right) =>
+    left.relativePath < right.relativePath
+      ? -1
+      : left.relativePath > right.relativePath
+        ? 1
+        : 0,
+  );
+};
 
 afterEach(async () => {
   await Promise.all(
@@ -1997,10 +2049,11 @@ describe("native fixture inventory ordering", () => {
     ]);
   });
 
-  it("audits the checked-in inventory without requiring future adapters", async () => {
+  it("audits every checked-in fixture without freezing sibling inventory", async () => {
     const harnessPackagesRoot = resolve(import.meta.dirname, "../..");
-    await expect(
-      auditNativeFixtureInventory(harnessPackagesRoot),
-    ).resolves.toEqual([]);
+    const expected =
+      await expectedCheckedInFixtureInventory(harnessPackagesRoot);
+    const inventory = await auditNativeFixtureInventory(harnessPackagesRoot);
+    expect(inventory).toEqual(expected);
   });
 });
