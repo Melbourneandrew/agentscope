@@ -612,7 +612,7 @@ export const validatePreparedImageEvidence = (value, manifestIdentity) => {
   }
   if (
     typeof serialized !== "string" ||
-    Buffer.byteLength(serialized, "utf8") > maximumEvidenceBytes + 65_536
+    Buffer.byteLength(serialized, "utf8") > maximumEvidenceBytes
   )
     throw fixedError("integration.images.evidence");
   if (
@@ -665,7 +665,7 @@ export const readPreparedImageEvidence = (path, manifestIdentity) => {
     if (
       !status.isFile() ||
       status.size < 1 ||
-      status.size > maximumEvidenceBytes + 65_536
+      status.size > maximumEvidenceBytes
     )
       throw fixedError("integration.images.evidence");
     const body = readFileSync(descriptor);
