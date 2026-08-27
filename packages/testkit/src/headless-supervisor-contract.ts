@@ -906,10 +906,10 @@ const readSignals = (
       source,
     );
     assert(
-      ((signal.signal === "SIGTERM" || signal.signal === "SIGKILL") &&
+      (signal.signal === "SIGTERM" || signal.signal === "SIGKILL") &&
         typeof signal.targetStartIdentity === "string" &&
-        identities[0] === signal.targetStartIdentity) ||
-        identities[1] === signal.targetStartIdentity,
+        (identities[0] === signal.targetStartIdentity ||
+          identities[1] === signal.targetStartIdentity),
       "testkit.headless.observer.signal",
     );
     signals[index] = safeFreeze({

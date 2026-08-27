@@ -577,6 +577,27 @@ describe("bounded trace binding and identity negatives", () => {
 });
 
 describe("bounded trace signal negatives", () => {
+  it("rejects hostile descendant signal values without coercion", () => {
+    const run = contractRun("headless:descendant-cleanup");
+    const trace = validTrace("headless:descendant-cleanup", run);
+    let coercions = 0;
+    const hostile = {
+      [Symbol.toPrimitive]() {
+        coercions += 1;
+        return "SIGTERM";
+      },
+    };
+    for (const signal of [hostile, Symbol("SIGTERM")]) {
+      const signals = trace.observation.signals.map((event, index) =>
+        index === 0 ? ({ ...event, signal } as unknown as typeof event) : event,
+      );
+      expect(() =>
+        encodeTrace(run, mutateObservation(trace, { signals })),
+      ).toThrow("testkit.headless.observer.signal");
+    }
+    expect(coercions).toBe(0);
+  });
+
   it.each([
     [
       "duplicate signal",
