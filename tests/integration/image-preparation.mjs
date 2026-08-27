@@ -1981,16 +1981,62 @@ const assertBuilderContainer = (
     container?.Name !== `/${resources.container}` ||
     container.Image !== buildkit.configDigest ||
     container.Config?.Image !== buildkitImage ||
-    container.Config?.Labels?.["com.docker.buildx.builder"] !==
-      resources.container.slice("buildx_buildkit_".length, -1) ||
-    container.State?.Running !== true ||
     container.Platform !== buildkit.platform.os ||
     container.HostConfig?.NetworkMode !== "default" ||
     JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
-      JSON.stringify(["bridge"])
+      JSON.stringify(["bridge"]) ||
+    !Array.isArray(container.Mounts) ||
+    container.Mounts.length !== 1 ||
+    container.Mounts[0]?.Type !== "volume" ||
+    container.Mounts[0]?.Name !== resources.volume ||
+    container.Mounts[0]?.Destination !== "/var/lib/buildkit" ||
+    container.Mounts[0]?.RW !== true
   )
     throw fixedError("integration.images.build");
 };
+const assertBuilderResources = ({
+  buildkit,
+  buildkitImage,
+  container,
+  requireRunning,
+  resources,
+  volume,
+}) => {
+  assertBuilderContainer(container, resources, buildkit, buildkitImage);
+  if (
+    (requireRunning && container.State?.Running !== true) ||
+    typeof container.State?.Running !== "boolean" ||
+    volume?.Name !== resources.volume ||
+    volume.Driver !== "local" ||
+    volume.Scope !== "local" ||
+    !(
+      volume.Labels === null ||
+      (typeof volume.Labels === "object" &&
+        volume.Labels !== null &&
+        Object.keys(volume.Labels).length === 0)
+    )
+  )
+    throw fixedError("integration.images.build");
+};
+const inspectBuilderResources = async (authority, resources, signal) =>
+  Promise.all([
+    inspectEngineObject({
+      daemon: authority.daemon,
+      engine: authority.engine,
+      name: resources.container,
+      policy: authority.policy,
+      signal,
+      type: "containers",
+    }),
+    inspectEngineObject({
+      daemon: authority.daemon,
+      engine: authority.engine,
+      name: resources.volume,
+      policy: authority.policy,
+      signal,
+      type: "volumes",
+    }),
+  ]);
 const inspectBuiltTag = async (
   engine,
   daemon,
@@ -2095,12 +2141,29 @@ const createBuildAuthority = async (client, policy, signal) => {
       ? runOwnedCommand(client.buildxExecutable, arguments_, options)
       : client.buildxRunForTesting(arguments_, options);
   };
-  return { builder, buildkit, client, daemon, engine, policy, run, signal };
+  return {
+    builder,
+    buildkit,
+    client,
+    daemon,
+    engine,
+    ownedResources: false,
+    policy,
+    run,
+    signal,
+  };
 };
 const executeBuilderBuild = async (authority, options, archive) => {
   const { builder, buildkit, client, daemon, engine, policy, run, signal } =
     authority;
   const resources = builderResources(builder);
+  const [priorContainer, priorVolume] = await inspectBuilderResources(
+    authority,
+    resources,
+    signal,
+  );
+  if (priorContainer !== undefined || priorVolume !== undefined)
+    throw fixedError("integration.images.containment");
   await run([
     "create",
     "--name",
@@ -2113,27 +2176,21 @@ const executeBuilderBuild = async (authority, options, archive) => {
     platformText(buildkit.platform),
     `unix://${client.socket.path}`,
   ]);
-  authority.builderCreated = true;
   await run(["inspect", "--builder", builder, "--bootstrap"]);
-  const container = await inspectEngineObject({
-    daemon,
-    engine,
-    name: resources.container,
-    policy,
+  const [container, volume] = await inspectBuilderResources(
+    authority,
+    resources,
     signal,
-    type: "containers",
+  );
+  assertBuilderResources({
+    buildkit,
+    buildkitImage: client.buildkitImage,
+    container,
+    requireRunning: true,
+    resources,
+    volume,
   });
-  assertBuilderContainer(container, resources, buildkit, client.buildkitImage);
-  const volume = await inspectEngineObject({
-    daemon,
-    engine,
-    name: resources.volume,
-    policy,
-    signal,
-    type: "volumes",
-  });
-  if (volume?.Name !== resources.volume)
-    throw fixedError("integration.images.build");
+  authority.ownedResources = true;
   await run(buildArgumentsFor({ ...options, builder }), archive);
   const built = await inspectBuiltTag(engine, daemon, policy, signal, {
     labels: options.labels,
@@ -2153,15 +2210,35 @@ const executeBuilderBuild = async (authority, options, archive) => {
 const settleBuilderBuild = async (authority, options, built, failed) => {
   const { builder, client, daemon, engine, policy, run } = authority;
   try {
-    if (authority.builderCreated)
+    const resources = builderResources(builder);
+    if (!authority.ownedResources) {
+      const [container, volume] = await inspectBuilderResources(
+        authority,
+        resources,
+        undefined,
+      );
+      if (container !== undefined || volume !== undefined) {
+        assertBuilderResources({
+          buildkit: authority.buildkit,
+          buildkitImage: client.buildkitImage,
+          container,
+          requireRunning: false,
+          resources,
+          volume,
+        });
+        authority.ownedResources = true;
+      }
+    }
+    if (authority.ownedResources) {
       await run(["rm", "--force", builder]).catch(() => undefined);
-    await removeBuilderResources({
-      client,
-      daemon,
-      engine,
-      policy: { ...policy, workDeadline: policy.reconciliationDeadline },
-      resources: builderResources(builder),
-    });
+      await removeBuilderResources({
+        client,
+        daemon,
+        engine,
+        policy: { ...policy, workDeadline: policy.reconciliationDeadline },
+        resources,
+      });
+    }
     if (failed) {
       await engineCall(
         {

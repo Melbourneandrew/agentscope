@@ -265,21 +265,29 @@ type Response = {
   headers?: Record<string, string>;
   body: Buffer | string;
 };
-const builderInspection = (name: string, mismatched = false) => ({
+const builderInspection = (
+  name: string,
+  { mismatched = false, wrongMount = false } = {},
+) => ({
   statusCode: 200,
   body: JSON.stringify({
     Name: `/${name}`,
     Image: mismatched ? `sha256:${"f".repeat(64)}` : configDigest,
     Config: {
       Image: image,
-      Labels: {
-        "com.docker.buildx.builder": name.slice("buildx_buildkit_".length, -1),
-      },
     },
     State: { Running: true },
     Platform: "linux",
     HostConfig: { NetworkMode: "default" },
     NetworkSettings: { Networks: { bridge: {} } },
+    Mounts: [
+      {
+        Type: "volume",
+        Name: wrongMount ? "shared-state" : `${name}_state`,
+        Destination: "/var/lib/buildkit",
+        RW: true,
+      },
+    ],
   }),
 });
 const runFixtureBuildx = async (
@@ -290,6 +298,7 @@ const runFixtureBuildx = async (
     built: boolean;
     calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
     cleanupLeak: boolean;
+    createFailureCollision: boolean;
   },
   arguments_: readonly string[],
   options: { input?: Buffer },
@@ -305,6 +314,8 @@ const runFixtureBuildx = async (
     if (builder === undefined) throw new Error("missing builder name");
     state.builderContainer = `buildx_buildkit_${builder}0`;
     state.builderVolume = `${state.builderContainer}_state`;
+    if (state.createFailureCollision)
+      throw new Error("integration.images.command");
     return builder;
   }
   if (command === "inspect") return "fixture builder\n";
@@ -327,23 +338,31 @@ const engineFixture = ({
   buildFailure = false,
   buildTag,
   cleanupLeak = false,
+  createFailureCollision = false,
   daemonSwitch = false,
   lateTagAfterDelete = false,
   localValue = local,
   localInitiallyPresent = true,
+  preexistingVolume = false,
   pullCompletesThenDisconnect = false,
   pullFailure = false,
+  wrongMount = false,
+  wrongVolume = false,
 }: {
   builderMismatch?: boolean;
   buildFailure?: boolean;
   buildTag?: string;
   cleanupLeak?: boolean;
+  createFailureCollision?: boolean;
   daemonSwitch?: boolean;
   lateTagAfterDelete?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
+  preexistingVolume?: boolean;
   pullCompletesThenDisconnect?: boolean;
   pullFailure?: boolean;
+  wrongMount?: boolean;
+  wrongVolume?: boolean;
   // eslint-disable-next-line max-lines-per-function
 } = {}) => {
   const requests: Request[] = [];
@@ -356,6 +375,7 @@ const engineFixture = ({
     built: boolean;
     calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
     cleanupLeak: boolean;
+    createFailureCollision: boolean;
     imageDeleted: boolean;
   } = {
     buildFailure,
@@ -364,8 +384,11 @@ const engineFixture = ({
     built: false,
     calls: [],
     cleanupLeak,
+    createFailureCollision,
     imageDeleted: false,
   };
+  // One stateful endpoint matrix intentionally models cross-request races.
+  // eslint-disable-next-line complexity
   const request = async (entry: Request): Promise<Response> => {
     await Promise.resolve();
     requests.push(entry);
@@ -391,14 +414,37 @@ const engineFixture = ({
       entry.path ===
         `/v1.50/containers/${encodeURIComponent(state.builderContainer)}/json`
     )
-      return builderInspection(state.builderContainer, builderMismatch);
+      return builderInspection(state.builderContainer, {
+        mismatched: builderMismatch,
+        wrongMount,
+      });
+    if (
+      preexistingVolume &&
+      state.builderVolume === undefined &&
+      entry.method === "GET" &&
+      entry.path.includes("/volumes/buildx_buildkit_agentscope-")
+    )
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          Name: decodeURIComponent(entry.path.split("/volumes/")[1]!),
+          Driver: "local",
+          Scope: "local",
+          Labels: null,
+        }),
+      };
     if (
       state.builderVolume !== undefined &&
       entry.path === `/v1.50/volumes/${encodeURIComponent(state.builderVolume)}`
     )
       return {
         statusCode: 200,
-        body: JSON.stringify({ Name: state.builderVolume }),
+        body: JSON.stringify({
+          Name: state.builderVolume,
+          Driver: wrongVolume ? "shared" : "local",
+          Scope: "local",
+          Labels: null,
+        }),
       };
     if (
       buildTag !== undefined &&
@@ -1221,33 +1267,67 @@ describe("authenticated buildx consumption", () => {
       buildFailure: true,
       daemonSwitch: false,
       expected: "integration.images.build",
+      noDestructiveCleanup: false,
     },
     {
       buildFailure: false,
       daemonSwitch: true,
       expected: "integration.images.containment",
+      noDestructiveCleanup: false,
     },
     {
       builderMismatch: true,
       buildFailure: false,
       daemonSwitch: false,
-      expected: "integration.images.build",
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
     },
     {
       buildFailure: false,
       cleanupLeak: true,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      noDestructiveCleanup: false,
     },
     {
       buildFailure: true,
       daemonSwitch: false,
       expected: "integration.images.containment",
       lateTagAfterDelete: true,
+      noDestructiveCleanup: false,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      wrongMount: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      wrongVolume: true,
+    },
+    {
+      buildFailure: false,
+      createFailureCollision: true,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      wrongVolume: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      preexistingVolume: true,
     },
   ])(
     "joins its dedicated builder on command failure or daemon substitution %#",
-    async ({ expected, ...fixtureOptions }) => {
+    async ({ expected, noDestructiveCleanup, ...fixtureOptions }) => {
       const engine = engineFixture({ buildTag, ...fixtureOptions });
       const client = buildClient(engine);
       try {
@@ -1261,6 +1341,14 @@ describe("authenticated buildx consumption", () => {
             tag: buildTag,
           }),
         ).rejects.toThrow(expected);
+        if (noDestructiveCleanup) {
+          expect(
+            engine.requests.filter(({ method }) => method === "DELETE"),
+          ).toEqual([]);
+          expect(
+            engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+          ).toBe(false);
+        }
       } finally {
         closePreparedDockerClient(client);
       }
