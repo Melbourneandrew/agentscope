@@ -1,5 +1,12 @@
 const KNOWN_STATUSES = new Set(["open", "in_progress", "blocked", "deferred", "closed"]);
 const RELATIONSHIP_TYPES = new Set(["blocks", "parent-child", "discovered-from", "related", "supersedes"]);
+const BLOCKING_RELATIONSHIP_TYPES = new Set(["blocks", "parent-child"]);
+const MAX_ISSUES = 5_000;
+const MAX_RELATIONSHIPS = 25_000;
+const MAX_RELATIONSHIPS_PER_ISSUE = 256;
+const MAX_PROJECTION_BYTES = 6 * 1024 * 1024;
+const MAX_WARNINGS = 100;
+const TEXT_ENCODER = new TextEncoder();
 
 function text(value, fallback = "") {
   return typeof value === "string" ? value : fallback;
@@ -9,24 +16,29 @@ function integer(value, fallback) {
   return Number.isInteger(value) ? value : fallback;
 }
 
-export function normalizeIssues(input) {
+export function normalizeIssues(input, { readyIds } = {}) {
   if (!Array.isArray(input)) {
     return { nodes: [], edges: [], warnings: ["Beads returned a non-array JSON document."] };
   }
+  if (input.length > MAX_ISSUES) throw new RangeError("Issue count exceeds the dashboard ceiling");
 
   const warnings = [];
   const nodes = [];
   const seen = new Set();
+  let projectionBytes = 0;
+  const warn = (message) => {
+    if (warnings.length < MAX_WARNINGS) warnings.push(message);
+  };
 
   for (const raw of input) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      warnings.push("Ignored a non-object issue record.");
+      warn("Ignored a non-object issue record.");
       continue;
     }
-    const id = text(raw.id).trim().slice(0, 160);
+    const id = text(raw.id).trim();
     const title = text(raw.title).trim().slice(0, 500);
-    if (!id || !title || seen.has(id)) {
-      warnings.push(`Ignored an issue with ${seen.has(id) ? `duplicate id ${id}` : "missing id/title"}.`);
+    if (!id || id.length > 160 || !title || seen.has(id)) {
+      warn(`Ignored an issue with ${seen.has(id) ? "a duplicate id" : "an invalid id/title"}.`);
       continue;
     }
     seen.add(id);
@@ -36,8 +48,7 @@ export function normalizeIssues(input) {
       title,
       status,
       priority: Math.min(4, Math.max(0, integer(raw.priority, 2))),
-      issueType: text(raw.issue_type, "task"),
-      assignee: text(raw.assignee).slice(0, 160),
+      issueType: text(raw.issue_type, "task").slice(0, 80),
       labels: Array.isArray(raw.labels)
         ? raw.labels
             .filter((label) => typeof label === "string")
@@ -46,26 +57,34 @@ export function normalizeIssues(input) {
         : [],
       dependencies: Array.isArray(raw.dependencies) ? raw.dependencies : [],
     });
+    projectionBytes += TEXT_ENCODER.encode(id).byteLength + TEXT_ENCODER.encode(title).byteLength + 100;
+    projectionBytes += nodes
+      .at(-1)
+      .labels.reduce((total, label) => total + TEXT_ENCODER.encode(label).byteLength, 0);
+    if (projectionBytes > MAX_PROJECTION_BYTES) throw new RangeError("Dashboard projection exceeds the byte ceiling");
   }
 
   const nodeIds = new Set(nodes.map((node) => node.id));
   const edges = [];
   const edgeKeys = new Set();
   for (const node of nodes) {
+    if (node.dependencies.length > MAX_RELATIONSHIPS_PER_ISSUE) {
+      throw new RangeError("Per-issue relationship count exceeds the dashboard ceiling");
+    }
     for (const rawDependency of node.dependencies) {
       if (!rawDependency || typeof rawDependency !== "object") {
-        warnings.push(`Ignored a malformed relationship on ${node.id}.`);
+        warn(`Ignored a malformed relationship on ${node.id}.`);
         continue;
       }
       const dependent = text(rawDependency.issue_id, node.id).trim();
       const prerequisite = text(rawDependency.depends_on_id).trim();
       const type = text(rawDependency.type, "blocks");
       if (dependent !== node.id || !prerequisite || !nodeIds.has(prerequisite)) {
-        warnings.push(`Ignored an unresolved relationship on ${node.id}.`);
+        warn(`Ignored an unresolved relationship on ${node.id}.`);
         continue;
       }
       if (!RELATIONSHIP_TYPES.has(type)) {
-        warnings.push(`Ignored unsupported relationship type ${type} on ${node.id}.`);
+        warn(`Ignored an unsupported relationship type on ${node.id}.`);
         continue;
       }
       const key = `${prerequisite}\u0000${dependent}\u0000${type}`;
@@ -73,31 +92,58 @@ export function normalizeIssues(input) {
         edgeKeys.add(key);
         // Execution flows from prerequisite to dependent.
         edges.push({ source: prerequisite, target: dependent, type });
+        projectionBytes +=
+          TEXT_ENCODER.encode(prerequisite).byteLength +
+          TEXT_ENCODER.encode(dependent).byteLength +
+          TEXT_ENCODER.encode(type).byteLength +
+          40;
+        if (projectionBytes > MAX_PROJECTION_BYTES) {
+          throw new RangeError("Dashboard projection exceeds the byte ceiling");
+        }
+        if (edges.length > MAX_RELATIONSHIPS) throw new RangeError("Relationship count exceeds the dashboard ceiling");
       }
     }
     delete node.dependencies;
   }
 
   const statusById = new Map(nodes.map((node) => [node.id, node.status]));
-  const blockingEdges = edges.filter((edge) => edge.type === "blocks");
+  const activeBlockersByTarget = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of edges) {
+    if (BLOCKING_RELATIONSHIP_TYPES.has(edge.type) && statusById.get(edge.source) !== "closed") {
+      activeBlockersByTarget.get(edge.target)?.push(edge.source);
+    }
+  }
+  const canonicalReadyIds = readyIds === undefined ? null : new Set(readyIds);
   for (const node of nodes) {
-    const activeBlockers = blockingEdges
-      .filter((edge) => edge.target === node.id)
-      .map((edge) => edge.source)
-      .filter((id) => statusById.get(id) !== "closed");
+    const activeBlockers = activeBlockersByTarget.get(node.id) ?? [];
     node.activeBlockers = activeBlockers;
-    node.displayState = deriveDisplayState(node.status, activeBlockers.length);
+    node.displayState = deriveDisplayState(
+      node.status,
+      activeBlockers.length,
+      canonicalReadyIds ? canonicalReadyIds.has(node.id) : undefined,
+    );
   }
 
   return { nodes, edges, warnings };
 }
 
-export function deriveDisplayState(status, activeBlockerCount) {
+export function deriveDisplayState(status, activeBlockerCount, canonicallyReady) {
   if (status === "closed") return "closed";
   if (status === "in_progress") return "in-progress";
   if (status === "deferred") return "deferred";
-  if (status === "blocked" || activeBlockerCount > 0) return "blocked";
+  if (status === "blocked") return "blocked";
+  if (canonicallyReady !== undefined) return canonicallyReady ? "ready" : "blocked";
+  if (activeBlockerCount > 0) return "blocked";
   return "ready";
+}
+
+export function dashboardMessage({ loadError = "", warnings = [], nodeCount = 0, truncatedCount = 0 }) {
+  if (loadError) return loadError;
+  const messages = [];
+  if (warnings.length) messages.push(`${warnings.length} malformed or unresolved record(s) were safely ignored.`);
+  if (truncatedCount) messages.push(`${truncatedCount} additional issue(s) are hidden. Narrow the filters or focus a node.`);
+  if (!nodeCount && messages.length === 0) messages.push("No issues match these filters.");
+  return messages.join(" ");
 }
 
 export function filterGraph(graph, options = {}) {
@@ -107,6 +153,7 @@ export function filterGraph(graph, options = {}) {
   const relationshipTypes = new Set(options.relationshipTypes ?? ["blocks"]);
   const focusId = text(options.focusId);
   const focusDepth = Math.max(0, Math.min(6, integer(options.focusDepth, 2)));
+  const maxNodes = Math.max(1, Math.min(1_000, integer(options.maxNodes, 600)));
 
   let allowedByFocus = null;
   if (focusId && graph.nodes.some((node) => node.id === focusId)) {
@@ -124,7 +171,7 @@ export function filterGraph(graph, options = {}) {
     }
   }
 
-  const nodes = graph.nodes.filter((node) => {
+  const matchingNodes = graph.nodes.filter((node) => {
     const matchesQuery = !query || `${node.id} ${node.title} ${node.labels.join(" ")}`.toLocaleLowerCase().includes(query);
     return (
       matchesQuery &&
@@ -133,11 +180,12 @@ export function filterGraph(graph, options = {}) {
       (!allowedByFocus || allowedByFocus.has(node.id))
     );
   });
+  const nodes = matchingNodes.slice(0, maxNodes);
   const ids = new Set(nodes.map((node) => node.id));
   const edges = graph.edges.filter(
     (edge) => relationshipTypes.has(edge.type) && ids.has(edge.source) && ids.has(edge.target),
   );
-  return { nodes, edges, warnings: graph.warnings };
+  return { nodes, edges, warnings: graph.warnings, truncatedCount: matchingNodes.length - nodes.length };
 }
 
 export function layoutGraph(graph) {

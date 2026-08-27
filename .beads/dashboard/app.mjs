@@ -1,4 +1,4 @@
-import { escapeHtml, filterGraph, layoutGraph } from "./graph.mjs";
+import { dashboardMessage, escapeHtml, filterGraph, layoutGraph } from "./graph.mjs";
 
 const elements = {
   clearFocus: document.querySelector("#clear-focus"),
@@ -8,6 +8,7 @@ const elements = {
   graph: document.querySelector("#graph"),
   graphScroll: document.querySelector("#graph-scroll"),
   hierarchy: document.querySelector("#hierarchy"),
+  issueList: document.querySelector("#issue-list"),
   message: document.querySelector("#message"),
   priority: document.querySelector("#priority"),
   query: document.querySelector("#query"),
@@ -17,6 +18,7 @@ const elements = {
 
 let fullGraph = { nodes: [], edges: [], warnings: [] };
 let focusId = "";
+let loadError = "";
 
 function stateOptions() {
   const statuses = ["ready", "blocked", "in-progress", "deferred"];
@@ -83,11 +85,12 @@ function render() {
   const graph = filterGraph(fullGraph, stateOptions());
   const layout = layoutGraph(graph);
   elements.count.textContent = `${graph.nodes.length} of ${fullGraph.nodes.length} issues · ${graph.edges.length} visible links`;
-  elements.message.textContent = graph.nodes.length
-    ? fullGraph.warnings.length
-      ? `${fullGraph.warnings.length} malformed or unresolved record(s) were safely ignored.`
-      : ""
-    : "No issues match these filters.";
+  elements.message.textContent = dashboardMessage({
+    loadError,
+    warnings: fullGraph.warnings,
+    nodeCount: graph.nodes.length,
+    truncatedCount: graph.truncatedCount,
+  });
   elements.graph.setAttribute("width", String(Math.max(layout.width, elements.graphScroll.clientWidth - 2)));
   elements.graph.setAttribute("height", String(layout.height));
   elements.graph.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
@@ -114,16 +117,26 @@ function render() {
     })
     .join("");
   elements.graph.innerHTML = `<title id="graph-title">Beads dependency graph</title><desc id="graph-description">Arrows point from prerequisite work toward dependent work.</desc><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge)" /></marker></defs>${edges}${nodes}`;
+  elements.issueList.innerHTML = graph.nodes
+    .map(
+      (node) =>
+        `<li><button type="button" data-id="${escapeHtml(node.id)}">${escapeHtml(node.id)} — ${escapeHtml(node.title)} (P${node.priority}, ${escapeHtml(node.displayState)})</button></li>`,
+    )
+    .join("");
   for (const nodeElement of elements.graph.querySelectorAll(".node")) {
     nodeElement.addEventListener("click", (event) => {
       event.preventDefault();
       selectNode(nodeElement.dataset.id);
     });
   }
+  for (const nodeElement of elements.issueList.querySelectorAll("button")) {
+    nodeElement.addEventListener("click", () => selectNode(nodeElement.dataset.id));
+  }
 }
 
 async function refresh() {
   elements.refresh.disabled = true;
+  loadError = "";
   elements.message.textContent = "Reading current Beads data…";
   try {
     const response = await fetch("/api/issues", { cache: "no-store" });
@@ -133,7 +146,7 @@ async function refresh() {
     if (focusId && !fullGraph.nodes.some((node) => node.id === focusId)) focusId = "";
     render();
   } catch (error) {
-    elements.message.textContent = error instanceof Error ? error.message : "Unable to read Beads";
+    loadError = "Unable to read Beads. Check the local terminal and refresh.";
     fullGraph = { nodes: [], edges: [], warnings: [] };
     render();
   } finally {

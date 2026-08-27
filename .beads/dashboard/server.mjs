@@ -18,21 +18,30 @@ const STATIC_FILES = new Map([
 ]);
 
 export const BD_LIST_ARGUMENTS = ["list", "--all", "--flat", "--limit", "0", "--json", "--readonly"];
+export const BD_READY_ARGUMENTS = ["ready", "--limit", "0", "--json", "--readonly"];
 
 export async function loadGraph(run = executeFile) {
-  const { stdout } = await run("bd", BD_LIST_ARGUMENTS, {
+  const options = {
     cwd: REPOSITORY_DIRECTORY,
     encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: 8 * 1024 * 1024,
     timeout: 20_000,
-  });
-  let decoded;
+  };
+  const { stdout: listOutput } = await run("bd", BD_LIST_ARGUMENTS, options);
+  const { stdout: readyOutput } = await run("bd", BD_READY_ARGUMENTS, options);
+  let decodedList;
+  let decodedReady;
   try {
-    decoded = JSON.parse(stdout);
+    decodedList = JSON.parse(listOutput);
+    decodedReady = JSON.parse(readyOutput);
   } catch {
     throw new Error("bd returned malformed JSON");
   }
-  return normalizeIssues(decoded);
+  if (!Array.isArray(decodedReady)) throw new Error("bd ready returned malformed JSON");
+  const readyIds = decodedReady
+    .filter((issue) => issue && typeof issue === "object" && !Array.isArray(issue) && typeof issue.id === "string")
+    .map((issue) => issue.id);
+  return normalizeIssues(decodedList, { readyIds });
 }
 
 function send(response, status, contentType, body) {
@@ -47,18 +56,52 @@ function send(response, status, contentType, body) {
 }
 
 export function createDashboardServer({ graphLoader = loadGraph } = {}) {
-  return createServer(async (request, response) => {
+  let inFlightGraph = null;
+  const coalescedGraphLoader = () => {
+    if (!inFlightGraph) {
+      inFlightGraph = Promise.resolve()
+        .then(graphLoader)
+        .finally(() => {
+          inFlightGraph = null;
+        });
+    }
+    return inFlightGraph;
+  };
+  const server = createServer(async (request, response) => {
+    const address = server.address();
+    const expectedAuthority = address && typeof address === "object" ? `127.0.0.1:${address.port}` : "";
+    const expectedOrigin = `http://${expectedAuthority}`;
+    if (request.headers.host !== expectedAuthority) {
+      send(response, 421, "application/json; charset=utf-8", JSON.stringify({ error: "invalid-authority" }));
+      return;
+    }
+    const origin = request.headers.origin;
+    if ((origin && origin !== expectedOrigin) || request.headers["sec-fetch-site"] === "cross-site") {
+      send(response, 403, "application/json; charset=utf-8", JSON.stringify({ error: "cross-origin-request" }));
+      return;
+    }
     if (request.method !== "GET") {
       send(response, 405, "application/json; charset=utf-8", JSON.stringify({ error: "Method not allowed" }));
       return;
     }
-    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    let parsedTarget;
+    try {
+      parsedTarget = new URL(request.url ?? "/", expectedOrigin);
+    } catch {
+      send(response, 400, "application/json; charset=utf-8", JSON.stringify({ error: "invalid-request-target" }));
+      return;
+    }
+    if (parsedTarget.origin !== expectedOrigin) {
+      send(response, 421, "application/json; charset=utf-8", JSON.stringify({ error: "invalid-authority" }));
+      return;
+    }
+    const pathname = parsedTarget.pathname;
     if (pathname === "/api/issues") {
       try {
-        send(response, 200, "application/json; charset=utf-8", JSON.stringify(await graphLoader()));
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unable to read Beads";
-        send(response, 500, "application/json; charset=utf-8", JSON.stringify({ error: message }));
+        send(response, 200, "application/json; charset=utf-8", JSON.stringify(await coalescedGraphLoader()));
+      } catch {
+        process.stderr.write("Beads dashboard refresh failed.\n");
+        send(response, 500, "application/json; charset=utf-8", JSON.stringify({ error: "beads-read-failed" }));
       }
       return;
     }
@@ -73,6 +116,7 @@ export function createDashboardServer({ graphLoader = loadGraph } = {}) {
       send(response, 500, "text/plain; charset=utf-8", "Dashboard asset unavailable\n");
     }
   });
+  return server;
 }
 
 export function parsePort(arguments_) {

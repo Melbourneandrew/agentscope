@@ -240,6 +240,10 @@ aside {
   stroke-width: 3;
 }
 
+.node:focus-visible rect.body {
+  stroke-width: 4;
+}
+
 .node text {
   fill: var(--foreground);
   pointer-events: none;
@@ -279,6 +283,28 @@ aside ul {
 aside code {
   color: var(--foreground);
   overflow-wrap: anywhere;
+}
+
+.issue-list-panel {
+  margin-top: 14px;
+}
+
+.issue-list-panel summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.issue-list-panel ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 6px;
+  padding: 10px 0;
+  list-style: none;
+}
+
+.issue-list-panel button {
+  width: 100%;
+  text-align: left;
 }
 
 @media (max-width: 800px) {

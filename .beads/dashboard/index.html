@@ -50,7 +50,7 @@
       <p id="message" class="message" role="status"></p>
       <section class="workspace">
         <div id="graph-scroll" class="graph-scroll" aria-label="Dependency graph. Arrows point from prerequisite to dependent.">
-          <svg id="graph" role="img" aria-labelledby="graph-title graph-description">
+          <svg id="graph" aria-labelledby="graph-title graph-description">
             <title id="graph-title">Beads dependency graph</title>
             <desc id="graph-description">Arrows point from prerequisite work toward dependent work.</desc>
           </svg>
@@ -60,6 +60,10 @@
           <p>Select a node to focus its dependency neighborhood.</p>
         </aside>
       </section>
+      <details class="issue-list-panel">
+        <summary>Visible issues as a list</summary>
+        <ul id="issue-list"></ul>
+      </details>
     </main>
     <script type="module" src="/app.mjs"></script>
   </body>
