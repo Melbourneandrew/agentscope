@@ -18,6 +18,7 @@ push-state.json
 
 # Lock files (various runtime locks)
 *.lock
+.create-allocation.*
 
 # Credential key (encryption key for federation peer auth — never commit)
 .beads-credential-key

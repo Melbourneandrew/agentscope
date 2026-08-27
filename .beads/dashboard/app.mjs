@@ -1,9 +1,10 @@
 import { dashboardMessage, escapeHtml, filterGraph, layoutGraph } from "./graph.mjs";
 import { captureIssueFocus, restoreIssueFocus } from "./focus.mjs";
 
+/* global document, window */
+
 const elements = {
   clearFocus: document.querySelector("#clear-focus"),
-  closed: document.querySelector("#closed"),
   count: document.querySelector("#count"),
   detail: document.querySelector("#detail"),
   filters: document.querySelector("#filters"),
@@ -16,6 +17,7 @@ const elements = {
   query: document.querySelector("#query"),
   refresh: document.querySelector("#refresh"),
   related: document.querySelector("#related"),
+  view: document.querySelector("#view"),
 };
 
 let fullGraph = { nodes: [], edges: [], warnings: [] };
@@ -23,8 +25,7 @@ let focusId = "";
 let loadError = "";
 
 function stateOptions() {
-  const statuses = ["ready", "blocked", "in-progress", "deferred"];
-  if (elements.closed.checked) statuses.push("closed");
+  const statuses = ["ready", "blocked", "active", "blocked-active", "stale-active", "deferred", "closed"];
   const relationshipTypes = ["blocks"];
   if (elements.hierarchy.checked) relationshipTypes.push("parent-child");
   if (elements.related.checked) relationshipTypes.push("discovered-from", "related", "supersedes");
@@ -35,6 +36,7 @@ function stateOptions() {
     relationshipTypes,
     focusId,
     focusDepth: 2,
+    view: elements.view.value,
   };
 }
 
@@ -62,13 +64,14 @@ function showDetail(node) {
   }
   const prerequisites = fullGraph.edges.filter((edge) => edge.type === "blocks" && edge.target === node.id);
   const dependents = fullGraph.edges.filter((edge) => edge.type === "blocks" && edge.source === node.id);
+  const displayForId = (id) => fullGraph.nodes.find((item) => item.id === id)?.displayId ?? id;
   const list = (items, field) =>
     items.length
-      ? `<ul>${items.map((item) => `<li><code>${escapeHtml(item[field])}</code></li>`).join("")}</ul>`
+      ? `<ul>${items.map((item) => `<li><code>${escapeHtml(displayForId(item[field]))}</code></li>`).join("")}</ul>`
       : "<p>None</p>";
   elements.detail.innerHTML = `
     <h2>${escapeHtml(node.title)}</h2>
-    <p><code>${escapeHtml(node.id)}</code><br>P${node.priority} · ${escapeHtml(node.displayState)} · ${escapeHtml(node.issueType)}</p>
+    <p><code>${escapeHtml(node.displayId)}</code><br>P${node.priority} · ${escapeHtml(node.displayState)} · ${node.isContainer ? "container" : "executable leaf"} · ${escapeHtml(node.issueType)}</p>
     <h2>Active blockers</h2>${list(node.activeBlockers.map((source) => ({ source })), "source")}
     <h2>Prerequisites</h2>${list(prerequisites, "source")}
     <h2>Dependents</h2>${list(dependents, "target")}
@@ -99,25 +102,26 @@ function render(restoreTarget = null) {
   elements.graph.setAttribute("width", String(Math.max(layout.width, elements.graphScroll.clientWidth - 2)));
   elements.graph.setAttribute("height", String(layout.height));
   elements.graph.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+  const displayById = new Map(fullGraph.nodes.map((node) => [node.id, node.displayId]));
 
   const edges = graph.edges
     .map((edge) => {
       const source = layout.positions.get(edge.source);
       const target = layout.positions.get(edge.target);
       if (!source || !target) return "";
-      return `<path class="edge ${escapeHtml(edge.type)}" d="${edgePath(source, target)}" marker-end="url(#arrow)"><title>${escapeHtml(edge.source)} → ${escapeHtml(edge.target)} (${escapeHtml(edge.type)})</title></path>`;
+      return `<path class="edge ${escapeHtml(edge.type)}" d="${edgePath(source, target)}" marker-end="url(#arrow)"><title>${escapeHtml(displayById.get(edge.source) ?? edge.source)} → ${escapeHtml(displayById.get(edge.target) ?? edge.target)} (${escapeHtml(edge.type)})</title></path>`;
     })
     .join("");
   const nodes = graph.nodes
     .map((node) => {
       const position = layout.positions.get(node.id);
-      return `<a class="node ${escapeHtml(node.displayState)} ${node.id === focusId ? "selected" : ""}" href="#${encodeURIComponent(node.id)}" data-id="${escapeHtml(node.id)}" transform="translate(${position.x} ${position.y})">
+      return `<a class="node ${escapeHtml(node.displayState)} ${node.isContainer ? "container-node" : "leaf-node"} ${node.id === focusId ? "selected" : ""}" href="#${encodeURIComponent(node.displayId)}" data-id="${escapeHtml(node.id)}" transform="translate(${position.x} ${position.y})">
         <rect class="body" width="244" height="50" rx="7" />
         <rect class="priority" width="6" height="50" rx="3" />
-        <text class="node-id" x="15" y="16">${escapeHtml(shorten(node.id, 31))}</text>
+        <text class="node-id" x="15" y="16">${escapeHtml(shorten(node.displayId, 31))}</text>
         <text class="node-title" x="15" y="32">${escapeHtml(shorten(node.title, 34))}</text>
-        <text class="node-meta" x="226" y="16" text-anchor="end">P${node.priority}</text>
-        <title>${escapeHtml(`${node.id}: ${node.title}. P${node.priority}, ${node.displayState}. Select to focus two dependency hops.`)}</title>
+        <text class="node-meta" x="226" y="16" text-anchor="end">P${node.priority}${node.isContainer ? " · group" : ""}</text>
+        <title>${escapeHtml(`${node.displayId}: ${node.title}. P${node.priority}, ${node.displayState}, ${node.isContainer ? "container" : "executable leaf"}. Select to focus two dependency hops.`)}</title>
       </a>`;
     })
     .join("");
@@ -125,7 +129,7 @@ function render(restoreTarget = null) {
   elements.issueList.innerHTML = graph.nodes
     .map(
       (node) =>
-        `<li><button type="button" data-id="${escapeHtml(node.id)}">${escapeHtml(node.id)} — ${escapeHtml(node.title)} (P${node.priority}, ${escapeHtml(node.displayState)})</button></li>`,
+        `<li><button type="button" data-id="${escapeHtml(node.id)}">${escapeHtml(node.displayId)} — ${escapeHtml(node.title)} (P${node.priority}, ${escapeHtml(node.displayState)}${node.isContainer ? ", container" : ""})</button></li>`,
     )
     .join("");
   for (const nodeElement of elements.graph.querySelectorAll(".node")) {
@@ -151,7 +155,7 @@ async function refresh() {
     fullGraph = payload;
     if (focusId && !fullGraph.nodes.some((node) => node.id === focusId)) focusId = "";
     render();
-  } catch (error) {
+  } catch {
     loadError = "Unable to read Beads. Check the local terminal and refresh.";
     fullGraph = { nodes: [], edges: [], warnings: [] };
     render();
@@ -160,7 +164,7 @@ async function refresh() {
   }
 }
 
-for (const element of [elements.query, elements.priority, elements.closed, elements.hierarchy, elements.related]) {
+for (const element of [elements.query, elements.priority, elements.view, elements.hierarchy, elements.related]) {
   element.addEventListener("input", render);
 }
 elements.clearFocus.addEventListener("click", () => {

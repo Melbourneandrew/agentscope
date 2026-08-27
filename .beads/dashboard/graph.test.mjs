@@ -3,9 +3,24 @@ import { request } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
 
-import { dashboardMessage, deriveDisplayState, filterGraph, layoutGraph, normalizeIssues } from "./graph.mjs";
+import {
+  dashboardMessage,
+  deriveDisplayState,
+  displayIssueId,
+  filterGraph,
+  layoutGraph,
+  normalizeIssues,
+} from "./graph.mjs";
 import { captureIssueFocus, restoreIssueFocus } from "./focus.mjs";
-import { BD_LIST_ARGUMENTS, BD_READY_ARGUMENTS, createDashboardServer, loadGraph, parsePort } from "./server.mjs";
+import {
+  BD_BLOCKED_ARGUMENTS,
+  BD_LIST_ARGUMENTS,
+  BD_READY_ARGUMENTS,
+  BD_STALE_ARGUMENTS,
+  createDashboardServer,
+  loadGraph,
+  parsePort,
+} from "./server.mjs";
 
 const fixtures = [
   { id: "a", title: "Foundation", status: "closed", priority: 1 },
@@ -39,28 +54,117 @@ test("normalizes dependency direction from prerequisite to dependent", () => {
   assert.equal(graph.nodes.find((node) => node.id === "c").displayState, "blocked");
 });
 
-test("treats an open parent-child prerequisite as blocking", () => {
-  const graph = normalizeIssues([
+test("treats parents as containers without making hierarchy a blocker", () => {
+  const graph = normalizeIssues(
+    [
+      { id: "agentscope-release-001", title: "Parent", status: "open" },
+      {
+        id: "agentscope-release-002",
+        title: "Child",
+        status: "open",
+        dependencies: [
+          { issue_id: "agentscope-release-002", depends_on_id: "agentscope-release-001", type: "parent-child" },
+        ],
+      },
+    ],
+    {
+      readyIds: [],
+      blockedIssues: [{ id: "agentscope-release-002", blocked_by: ["agentscope-release-001"] }],
+    },
+  );
+  const parent = graph.nodes.find((node) => node.id === "agentscope-release-001");
+  const child = graph.nodes.find((node) => node.id === "agentscope-release-002");
+  assert.equal(parent.isContainer, true);
+  assert.equal(parent.workClass, "container");
+  assert.equal(child.displayState, "ready");
+  assert.equal(child.workClass, "ready-leaf");
+  assert.equal(child.displayId, "release-002");
+  assert.equal(displayIssueId("agentscope-vah.11.1"), "vah.11.1");
+});
+
+test("never hides an external blocker merely because the issue is also a child", () => {
+  const graph = normalizeIssues(
+    [
+      { id: "parent", title: "Parent", status: "open" },
+      {
+        id: "child",
+        title: "Child",
+        status: "open",
+        dependencies: [
+          { issue_id: "child", depends_on_id: "parent", type: "parent-child" },
+          { issue_id: "child", depends_on_id: "external:synthetic:capability", type: "blocks" },
+        ],
+      },
+    ],
+    {
+      readyIds: [],
+      blockedIssues: [{ id: "child", blocked_by: ["parent", "external:synthetic:capability"] }],
+    },
+  );
+  const child = graph.nodes.find((node) => node.id === "child");
+  assert.equal(child.displayState, "blocked");
+  assert.deepEqual(child.activeBlockers, ["external:synthetic:capability"]);
+});
+
+test("fails closed on conflicting, duplicate, or over-limit canonical blocker evidence", () => {
+  const issue = { id: "child", title: "Child", status: "open" };
+  const conflict = normalizeIssues([issue], {
+    readyIds: ["child"],
+    blockedIssues: [{ id: "child", blocked_by: ["external:synthetic:capability"] }],
+  }).nodes[0];
+  assert.equal(conflict.displayState, "blocked");
+  assert.deepEqual(conflict.activeBlockers, ["external:synthetic:capability"]);
+
+  const parented = [
     { id: "parent", title: "Parent", status: "open" },
     {
-      id: "child",
-      title: "Child",
-      status: "open",
+      ...issue,
       dependencies: [{ issue_id: "child", depends_on_id: "parent", type: "parent-child" }],
     },
-  ]);
-  assert.equal(graph.nodes.find((node) => node.id === "child").displayState, "blocked");
+  ];
+  for (const blockedIssues of [
+    [{ id: "child", blocked_by: [] }],
+    [
+      { id: "child", blocked_by: ["external:synthetic:capability"] },
+      { id: "child", blocked_by: ["parent"] },
+    ],
+    [{ id: "child", blocked_by: [...Array(256).fill("parent"), "external:synthetic:capability"] }],
+  ]) {
+    const child = normalizeIssues(parented, { readyIds: [], blockedIssues }).nodes.find((node) => node.id === "child");
+    assert.equal(child.displayState, "blocked");
+    assert.deepEqual(child.activeBlockers, ["unresolved:blocked-evidence"]);
+  }
+  assert.throws(
+    () =>
+      normalizeIssues([issue], {
+        readyIds: ["child"],
+        blockedIssues: [
+          ...Array.from({ length: 5_000 }, (_, index) => ({ id: `junk-${index}`, blocked_by: ["external:x:y"] })),
+          { id: "child", blocked_by: ["external:synthetic:capability"] },
+        ],
+      }),
+    /Blocked issue count/,
+  );
 });
 
 test("derives every visible workflow state without weakening explicit status", () => {
   assert.equal(deriveDisplayState("open", 0), "ready");
   assert.equal(deriveDisplayState("open", 1), "blocked");
   assert.equal(deriveDisplayState("blocked", 0), "blocked");
-  assert.equal(deriveDisplayState("in_progress", 2), "in-progress");
+  assert.equal(deriveDisplayState("in_progress", 2, false, true), "blocked-active");
+  assert.equal(deriveDisplayState("in_progress", 0, false, false, true), "stale-active");
+  assert.equal(deriveDisplayState("in_progress", 0), "active");
   assert.equal(deriveDisplayState("closed", 2), "closed");
   assert.equal(deriveDisplayState("deferred", 0), "deferred");
-  assert.equal(deriveDisplayState("open", 1, true), "ready");
+  assert.equal(deriveDisplayState("open", 1, true), "blocked");
   assert.equal(deriveDisplayState("open", 0, false), "blocked");
+  assert.equal(
+    normalizeIssues([{ id: "plain", title: "Canonical non-ready", status: "open" }], {
+      readyIds: [],
+      blockedIssues: [{ id: "plain", blocked_by: ["external:synthetic:capability"] }],
+    }).nodes[0].displayState,
+    "blocked",
+  );
 });
 
 test("filters by search, status, priority and focused dependency neighborhood", () => {
@@ -78,6 +182,28 @@ test("filters by search, status, priority and focused dependency neighborhood", 
     ["b", "c"],
   );
   assert.deepEqual(filtered.edges, [{ source: "b", target: "c", type: "blocks" }]);
+});
+
+test("defaults to active unblocked leaves and separates attention and containers", () => {
+  const graph = normalizeIssues(
+    [
+      { id: "agentscope-beads-001", title: "Active", status: "in_progress", priority: 0 },
+      { id: "agentscope-beads-002", title: "Blocked", status: "in_progress", priority: 1 },
+      { id: "agentscope-beads-003", title: "Stale", status: "in_progress", priority: 1 },
+      { id: "agentscope-beads-004", title: "Container", status: "in_progress", issue_type: "epic" },
+    ],
+    {
+      blockedIssues: [{ id: "agentscope-beads-002", blocked_by: ["external:synthetic:capability"] }],
+      staleIds: ["agentscope-beads-003"],
+    },
+  );
+  assert.deepEqual(filterGraph(graph).nodes.map((node) => node.displayId), ["beads-001"]);
+  assert.deepEqual(
+    filterGraph(graph, { view: "attention" }).nodes.map((node) => node.displayId),
+    ["beads-002", "beads-003"],
+  );
+  assert.deepEqual(filterGraph(graph, { view: "containers" }).nodes.map((node) => node.displayId), ["beads-004"]);
+  assert.deepEqual(filterGraph(graph, { query: "beads-003" }).nodes.map((node) => node.displayId), ["beads-003"]);
 });
 
 test("lays prerequisites before dependents", () => {
@@ -108,7 +234,7 @@ test("caps visible graph work while retaining an explicit truncation count", () 
   const graph = normalizeIssues(
     Array.from({ length: 700 }, (_, index) => ({ id: `issue-${index}`, title: `Issue ${index}` })),
   );
-  const filtered = filterGraph(graph, { maxNodes: 600 });
+  const filtered = filterGraph(graph, { maxNodes: 600, view: "all" });
   assert.equal(filtered.nodes.length, 600);
   assert.equal(filtered.truncatedCount, 100);
 });
@@ -149,15 +275,37 @@ test("restores keyboard focus to the same issue and interaction surface", () => 
 
 test("reads only through the supported read-only bd list command", async () => {
   assert.deepEqual(BD_LIST_ARGUMENTS, ["list", "--all", "--flat", "--limit", "0", "--json", "--readonly"]);
-  let call;
   const calls = [];
   const graph = await loadGraph(async (...arguments_) => {
     calls.push(arguments_);
-    return { stdout: JSON.stringify(arguments_[1] === BD_READY_ARGUMENTS ? [fixtures[1]] : fixtures) };
+    const command = arguments_[1];
+    if (command === BD_LIST_ARGUMENTS) return { stdout: JSON.stringify(fixtures) };
+    if (command === BD_READY_ARGUMENTS) return { stdout: JSON.stringify([fixtures[1]]) };
+    if (command === BD_BLOCKED_ARGUMENTS) return { stdout: JSON.stringify([fixtures[2]]) };
+    return { stdout: JSON.stringify([]) };
   });
   assert.equal(calls[0][0], "bd");
-  assert.deepEqual(calls.map((entry) => entry[1]), [BD_LIST_ARGUMENTS, BD_READY_ARGUMENTS]);
+  assert.deepEqual(calls.map((entry) => entry[1]), [
+    BD_LIST_ARGUMENTS,
+    BD_READY_ARGUMENTS,
+    BD_BLOCKED_ARGUMENTS,
+    BD_STALE_ARGUMENTS,
+  ]);
   assert.equal(graph.nodes.length, 3);
+});
+
+test("lets blocked evidence dominate a stale ready observation", async () => {
+  const issue = { id: "x", title: "Transitioning", status: "open" };
+  const graph = await loadGraph(async (_file, arguments_) => {
+    if (arguments_ === BD_LIST_ARGUMENTS) return { stdout: JSON.stringify([issue]) };
+    if (arguments_ === BD_READY_ARGUMENTS) return { stdout: JSON.stringify([issue]) };
+    if (arguments_ === BD_BLOCKED_ARGUMENTS) {
+      return { stdout: JSON.stringify([{ ...issue, blocked_by: ["external:synthetic:capability"] }]) };
+    }
+    return { stdout: "[]" };
+  });
+  assert.equal(graph.nodes[0].displayState, "blocked");
+  assert.deepEqual(graph.nodes[0].activeBlockers, ["external:synthetic:capability"]);
 });
 
 test("rejects malformed bd output and unsafe port arguments", async () => {

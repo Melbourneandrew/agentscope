@@ -50,8 +50,12 @@ bd update <id> --claim
 4. Create durable follow-up work when implementation reveals new tasks:
 
 ```bash
-bd create "Short title" --description="Why this exists and what needs to be done" --type=task --priority=2
+node .beads/create.mjs <workstream> "Short title" --description="Why this exists and what needs to be done" --type=task --priority=2
 ```
+
+For Agentscope, this repository-local helper is the required creation path. It allocates the next canonical
+`agentscope-{workstream}-{NNN}` ID safely and prints the conversational `{workstream}-{NNN}` form. Do not bypass it
+with direct `bd create --id` or rename historical IDs.
 
 5. Close completed work:
 
@@ -76,5 +80,6 @@ Use agent-local planning tools only for the current turn's execution checklist. 
 - Do not create markdown TODO files as the source of truth when Beads is available.
 - Do not use `bd edit`; it opens an interactive editor. Use `bd update` flags instead.
 - Prefer `--json` when parsing `bd` output programmatically.
+- Use `.beads/create.mjs` rather than direct `bd create` for new Agentscope work.
 - If hooks are installed, `bd prime` may already be injected. Run it manually when context is missing.
 - Do not auto-close or mutate tasks unless the work is actually complete.

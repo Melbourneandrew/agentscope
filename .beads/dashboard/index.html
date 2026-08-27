@@ -19,7 +19,18 @@
       <form id="filters" aria-label="Graph filters">
         <label>
           Search ID, title, or label
-          <input id="query" type="search" autocomplete="off" placeholder="agentscope-c1k or release" />
+          <input id="query" type="search" autocomplete="off" placeholder="c1k.2 or release-001" />
+        </label>
+        <label>
+          View
+          <select id="view">
+            <option value="active">Active leaves</option>
+            <option value="attention">Needs attention</option>
+            <option value="ready">Ready leaves</option>
+            <option value="containers">Containers</option>
+            <option value="all-open">All open</option>
+            <option value="all">All including closed</option>
+          </select>
         </label>
         <label>
           Priority
@@ -32,7 +43,6 @@
             <option value="4">P4</option>
           </select>
         </label>
-        <label class="check"><input id="closed" type="checkbox" /> Include closed</label>
         <label class="check"><input id="hierarchy" type="checkbox" /> Parent links</label>
         <label class="check"><input id="related" type="checkbox" /> Context links</label>
         <button id="clear-focus" type="button" disabled>Clear focus</button>
@@ -40,9 +50,12 @@
 
       <section class="summary" aria-live="polite">
         <span id="count">Loading…</span>
+        <span class="legend active">Active leaf</span>
+        <span class="legend blocked-active">Blocked active</span>
+        <span class="legend stale-active">Stale active</span>
+        <span class="legend container">Container</span>
         <span class="legend ready">Ready</span>
         <span class="legend blocked">Blocked</span>
-        <span class="legend in-progress">In progress</span>
         <span class="legend deferred">Deferred</span>
         <span class="legend closed">Closed</span>
       </section>

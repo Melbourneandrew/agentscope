@@ -13,8 +13,8 @@ Beads is issue tracking that lives in your repo, making it perfect for AI coding
 ### Essential Commands
 
 ```bash
-# Create new issues
-bd create "Add user authentication"
+# Create the next sequential issue in a workstream
+node .beads/create.mjs auth "Add user authentication"
 
 # View all issues
 bd list
@@ -29,6 +29,23 @@ bd update <issue-id> --status done
 # Sync with Dolt remote
 bd dolt push
 ```
+
+## Agentscope issue IDs
+
+New work uses a short workstream plus a three-digit sequence. The database keeps its required project prefix, while people and the dashboard use the shorter reference:
+
+- stored: `agentscope-release-007`
+- conversational: `release-007`
+
+Create the next collision-safe ID in a workstream from the repository root:
+
+```bash
+node .beads/create.mjs release "Rehearse alpha publication" --type task --priority 1
+```
+
+The helper reads existing IDs through supported read-only `bd` JSON, serializes compliant allocators with an ignored local lock in the canonical Beads workspace, rechecks candidate IDs, calls `bd create --id` directly without a shell, and prints the short ID. The lock records the allocator's PID and process-start identity; a later helper run can atomically retire a released lock or one whose exact owner is gone, including after abrupt termination. Ambiguous lock state fails closed instead of being deleted. `--parent release-003` and dependency values such as `--deps blocks:hermetic-012` are expanded to canonical IDs. The helper owns ID, title, database, directory, repository-routing, global-store, and execution-mode flags; always use it for sequential IDs because the current `bd create --id` does not reject an existing explicit ID. Do not use `bd rename-prefix` or mass-rename historical issues.
+
+Suggested workstreams are short and durable: `crabbox`, `hermetic`, `release`, `codex`, `claude`, `sqlite`, and `beads`.
 
 ### Working with Issues
 
