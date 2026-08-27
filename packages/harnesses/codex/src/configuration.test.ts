@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { createHash } from "node:crypto";
+
 import {
   CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION,
   CodexConfigurationError,
@@ -62,9 +64,15 @@ it("pins the upstream 0.149.1 external capability registry authority", () => {
       "in_app_browser",
       "in_app_updates",
       "skill_mcp_dependency_install",
+      "unbounded_connection_retries",
       "workspace_dependencies",
     ]),
   );
+  expect(
+    createHash("sha256")
+      .update(CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features.join("\n"))
+      .digest("hex"),
+  ).toBe("d2ec2685df722cf37f717a2e0d3fd689327b5b984d66da0cfdba943024ab8c2f");
 });
 
 describe("Codex internal provider configuration", () => {

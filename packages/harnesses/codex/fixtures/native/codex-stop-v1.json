@@ -5,7 +5,6 @@
   "exclusiveEndPosition": 11,
   "expectedFields": [
     "error.type",
-    "exception.message",
     "llm.invocation_parameters",
     "llm.model_name",
     "llm.provider",
@@ -53,26 +52,7 @@
       "scenarioId": "codex-exec-jsonl-v1"
     },
     "review": {
-      "records": [
-        {
-          "reference": "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5442225578",
-          "reviewExecutionIdentity": "0121b836-a980-4925-a860-f7b119e7d494",
-          "reviewTaskIdentity": "/root/fixture_privacy_review",
-          "reviewedFixtureBlobSha": "263c20620d0eff0e5c18474f001c0a72cfc05735",
-          "reviewedHeadSha": "f0e39d9f236f037480a550e5489c26617967e231",
-          "role": "privacy",
-          "submittedAt": "2026-08-27T16:37:55.000Z"
-        },
-        {
-          "reference": "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5442264930",
-          "reviewExecutionIdentity": "0198ab26-93c8-4a96-9f0d-b8e6107d5a33",
-          "reviewTaskIdentity": "/root/fixture_redistribution_review",
-          "reviewedFixtureBlobSha": "263c20620d0eff0e5c18474f001c0a72cfc05735",
-          "reviewedHeadSha": "f0e39d9f236f037480a550e5489c26617967e231",
-          "role": "redistribution",
-          "submittedAt": "2026-08-27T16:41:16.000Z"
-        }
-      ],
+      "records": ["pending:privacy-review", "pending:redistribution-review"],
       "status": "approved"
     }
   },

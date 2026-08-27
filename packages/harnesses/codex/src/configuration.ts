@@ -55,6 +55,7 @@ export const CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION = Object.freeze({
     "tool_search",
     "tool_search_always_defer_mcp_tools",
     "tool_suggest",
+    "unbounded_connection_retries",
     "web_search",
     "web_search_cached",
     "web_search_request",

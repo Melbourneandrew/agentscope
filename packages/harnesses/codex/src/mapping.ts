@@ -104,7 +104,12 @@ const ownDataRecord = (value: unknown): Record<string, unknown> => {
     for (const [key, descriptor] of Object.entries(descriptors)) {
       if (!("value" in descriptor) || descriptor.enumerable !== true)
         return invalid();
-      output[key] = descriptor.value as unknown;
+      Object.defineProperty(output, key, {
+        configurable: true,
+        enumerable: true,
+        value: descriptor.value as unknown,
+        writable: true,
+      });
     }
     return output;
   } catch (error) {
@@ -323,7 +328,6 @@ const createToolMapping = (
   value: CodexSanitizedNativeObservation,
 ): Readonly<{
   fields: readonly SemanticFieldCandidate[];
-  unavailable: readonly FieldUnavailableCandidate[];
 }> => {
   if (value.toolName !== null && value.toolId !== null)
     return Object.freeze({
@@ -339,24 +343,9 @@ const createToolMapping = (
           "native-artifact",
         ),
       ]),
-      unavailable: Object.freeze([]),
     });
   return Object.freeze({
     fields: Object.freeze([]),
-    unavailable: Object.freeze([
-      createNativeUnavailableField({
-        field: COMMON_NATIVE_SEMANTIC_FIELDS.toolName,
-        source: "native-artifact",
-        state: "unavailable",
-        reason: "not-emitted",
-      }),
-      createNativeUnavailableField({
-        field: COMMON_NATIVE_SEMANTIC_FIELDS.toolId,
-        source: "native-artifact",
-        state: "unavailable",
-        reason: "not-emitted",
-      }),
-    ]),
   });
 };
 
@@ -466,12 +455,6 @@ const createMappedFields = (
           }),
         ]
       : []),
-    createNativeUnavailableField({
-      field: COMMON_NATIVE_SEMANTIC_FIELDS.errorMessage,
-      source: "native-artifact",
-      state: "unavailable",
-      reason: "not-emitted",
-    }),
   ]);
   const tool = createToolMapping(value);
   const toolFields = tool.fields;
@@ -479,7 +462,7 @@ const createMappedFields = (
     ...modelAndTokenUnavailable,
     ...errorUnavailable,
   ]);
-  const rootUnavailable = tool.unavailable;
+  const rootUnavailable = Object.freeze([]);
   const fields = [
     ...modelFields,
     ...tokenFields,

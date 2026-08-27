@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { semanticProfileDescriptors } from "@agentscope/protocol";
+
 import {
   CodexMappingError,
   decodeCodexRootHookInput,
@@ -61,6 +63,27 @@ const expectUnavailableParity = (
   expect(new Set(candidateKeys).size).toBe(candidateKeys.length);
   expect(new Set(contractKeys).size).toBe(contractKeys.length);
   expect(candidateKeys.sort()).toEqual(contractKeys.sort());
+};
+
+const expectProtocolValidCandidateSemantics = (
+  mapped: CodexMappedNativeObservation,
+): void => {
+  const descriptors = new Map(
+    semanticProfileDescriptors.attributes.map((descriptor) => [
+      descriptor.key,
+      descriptor,
+    ]),
+  );
+  for (const operation of mapped.candidate.operations) {
+    const location =
+      operation.parentLogicalKey === undefined ? "root-span" : "span";
+    for (const { field } of [...operation.fields, ...operation.unavailable]) {
+      const descriptor = descriptors.get(field);
+      expect(descriptor?.locations).toContain(location);
+      if (descriptor?.openInferenceKinds !== undefined)
+        expect(descriptor.openInferenceKinds).toContain(operation.kind);
+    }
+  }
 };
 
 describe("Codex root hook input", () => {
@@ -170,6 +193,14 @@ describe("Codex root hook input", () => {
       CodexMappingError,
     );
   });
+
+  it("rejects inherited identity authority from a __proto__ member", () => {
+    const raw =
+      '{"hook_event_name":"Stop","__proto__":{"session_id":"session-1","turn_id":"turn-1","model":"component-model"}}';
+    expect(() => decodeCodexRootHookInput(encoder.encode(raw))).toThrow(
+      CodexMappingError,
+    );
+  });
 });
 
 describe("Codex native OpenInference mapping", () => {
@@ -214,12 +245,6 @@ describe("Codex native OpenInference mapping", () => {
         state: "unavailable",
         reason: "not-emitted",
       },
-      {
-        field: "exception.message",
-        source: "native-artifact",
-        state: "unavailable",
-        reason: "not-emitted",
-      },
     ]);
     expect(mapped.contract.provenance.map(({ field }) => field)).toContain(
       "llm.token_count.completion_details.reasoning",
@@ -229,6 +254,7 @@ describe("Codex native OpenInference mapping", () => {
       unavailable: [],
     });
     expectUnavailableParity(mapped);
+    expectProtocolValidCandidateSemantics(mapped);
   });
 });
 
@@ -349,6 +375,8 @@ describe("Codex unavailable native metadata", () => {
     );
     expectUnavailableParity(mapped);
     expectUnavailableParity(correlatedUnavailable);
+    expectProtocolValidCandidateSemantics(mapped);
+    expectProtocolValidCandidateSemantics(correlatedUnavailable);
   });
 
   it("maps a categorical native error without inventing a message", () => {
@@ -362,14 +390,13 @@ describe("Codex unavailable native metadata", () => {
     expect(mapped.contract.provenance.map(({ field }) => field)).toContain(
       "error.type",
     );
-    expect(mapped.contract.unavailable.map(({ field }) => field)).toEqual([
-      "exception.message",
-    ]);
+    expect(mapped.contract.unavailable).toEqual([]);
     expect(
       mapped.candidate.operations.find(({ kind }) => kind === "LLM")
         ?.unavailable,
     ).toEqual(mapped.contract.unavailable);
     expectUnavailableParity(mapped);
+    expectProtocolValidCandidateSemantics(mapped);
   });
 
   it("records an unavailable tool family without inventing a tool operation", () => {
@@ -386,23 +413,15 @@ describe("Codex unavailable native metadata", () => {
     ]);
     expect(mapped.contract.unavailable.map(({ field }) => field)).toEqual([
       "error.type",
-      "exception.message",
-      "tool.name",
-      "tool.id",
     ]);
     const root = mapped.candidate.operations.find(
       ({ logicalKey }) => logicalKey === "codex-turn",
     );
     const llm = mapped.candidate.operations.find(({ kind }) => kind === "LLM");
-    expect(root?.unavailable.map(({ field }) => field)).toEqual([
-      "tool.name",
-      "tool.id",
-    ]);
-    expect(llm?.unavailable.map(({ field }) => field)).toEqual([
-      "error.type",
-      "exception.message",
-    ]);
+    expect(root?.unavailable).toEqual([]);
+    expect(llm?.unavailable.map(({ field }) => field)).toEqual(["error.type"]);
     expectUnavailableParity(mapped);
+    expectProtocolValidCandidateSemantics(mapped);
   });
 });
 

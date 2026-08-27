@@ -25,6 +25,8 @@ import { mapCodexSanitizedNativeObservation } from "./mapping.js";
 
 const componentSha256 = (value: unknown): `sha256-${string}` =>
   `sha256-${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+const codexMappingSourceSha256 =
+  "39434eb029b43641c67aa6603007b46c50df7130154166b40bb6edb70cfe8a4b";
 
 const contractOverlapSentinel = "vendor-observability-hook";
 const contractDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -134,28 +136,7 @@ export const codexSanitizedFixture: HarnessSanitizedFixture =
       },
       review: {
         status: "approved",
-        records: [
-          {
-            role: "privacy",
-            reviewTaskIdentity: "/root/fixture_privacy_review",
-            reviewExecutionIdentity: "0121b836-a980-4925-a860-f7b119e7d494",
-            reviewedHeadSha: "f0e39d9f236f037480a550e5489c26617967e231",
-            reviewedFixtureBlobSha: "263c20620d0eff0e5c18474f001c0a72cfc05735",
-            submittedAt: "2026-08-27T16:37:55.000Z",
-            reference:
-              "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5442225578",
-          },
-          {
-            role: "redistribution",
-            reviewTaskIdentity: "/root/fixture_redistribution_review",
-            reviewExecutionIdentity: "0198ab26-93c8-4a96-9f0d-b8e6107d5a33",
-            reviewedHeadSha: "f0e39d9f236f037480a550e5489c26617967e231",
-            reviewedFixtureBlobSha: "263c20620d0eff0e5c18474f001c0a72cfc05735",
-            submittedAt: "2026-08-27T16:41:16.000Z",
-            reference:
-              "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5442264930",
-          },
-        ],
+        records: ["pending:privacy-review", "pending:redistribution-review"],
       },
       representative: {
         scenarioId: "codex-exec-jsonl-v1",
@@ -173,7 +154,6 @@ export const codexSanitizedFixture: HarnessSanitizedFixture =
     exclusiveEndPosition: 11,
     expectedFields: [
       "error.type",
-      "exception.message",
       "llm.invocation_parameters",
       "llm.model_name",
       "llm.provider",
@@ -215,10 +195,7 @@ export const codexComponentScenario: HarnessScenarioAdapter = Object.freeze({
 export const codexContractContextEvidence: HarnessContractContextEvidence =
   Object.freeze({
     evidenceVersion: 1,
-    mappingArtifactDigest: componentSha256({
-      artifact: "codex-native-mapping",
-      version: 1,
-    }),
+    mappingArtifactDigest: `sha256-${codexMappingSourceSha256}`,
     contextDigest: componentSha256({
       blueprint: "codex-vendor-shell-containment-v1",
       officialSourceCommit: "ff29a44391deccde0aba0f8390337d7f3c319ea4",

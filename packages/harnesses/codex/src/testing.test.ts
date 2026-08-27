@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -16,6 +17,7 @@ import * as productionRoot from "./index.js";
 import {
   codexComponentContractAdapter,
   codexComponentEvidence,
+  codexContractContextEvidence,
   codexSanitizedFixture,
 } from "./testing.js";
 import { createCodexInstallationPlanner } from "./installation.js";
@@ -53,6 +55,15 @@ const genuineTarget = (text: string): HarnessTargetInspection => ({
 });
 
 describe("Codex governed component fixture", () => {
+  it("binds component evidence to the exact reviewed mapping source", async () => {
+    const mappingSource = await readFile(
+      resolve(import.meta.dirname, "mapping.ts"),
+    );
+    expect(codexContractContextEvidence.mappingArtifactDigest).toBe(
+      `sha256-${createHash("sha256").update(mappingSource).digest("hex")}`,
+    );
+  });
+
   it("is serialized canonically from the governed fixture value", async () => {
     const fixturePath = resolve(
       import.meta.dirname,
