@@ -46,6 +46,11 @@ function terminalContractSha256(plan, admission) {
       scriptWorkersDev: false,
       worker: "absent",
     });
+  } else if (plan.kind === "account-workers-dev-enable") {
+    Object.assign(contract, {
+      accountWorkersDev: `enabled:${plan.operations[0]?.subdomain ?? "invalid"}`,
+      worker: "unchanged",
+    });
   } else {
     Object.assign(contract, {
       cron: admission.deployment.cron,
@@ -56,6 +61,18 @@ function terminalContractSha256(plan, admission) {
       scriptWorkersDev: true,
       worker: "present",
     });
+    Object.assign(
+      contract,
+      plan.currentWorkerVersionId === "absent"
+        ? {
+            durableObjectNamespace: "create-exactly-one-owned-namespace",
+            migrationTag: "v1",
+          }
+        : {
+            durableObjectNamespace: plan.durableObjectNamespaceId,
+            migrationTag: plan.currentMigrationTag,
+          },
+    );
   }
   return sha256(JSON.stringify(canonicalJson(contract)));
 }
@@ -127,9 +144,11 @@ function validateQuotaProjection(quotas, quotaNames) {
     exactKeys(`quota ${name}`, quota, ["limit", "used", "sourceIdentity"]);
     if (
       !Number.isFinite(quota.limit) ||
-      quota.limit < 0 ||
+      quota.limit <= 0 ||
       !Number.isFinite(quota.used) ||
       quota.used < 0 ||
+      quota.used > quota.limit ||
+      quota.used * 100 >= quota.limit * 80 ||
       !identifierPattern.test(quota.sourceIdentity ?? "")
     ) {
       throw new Error(`quota ${name} is incomplete`);
@@ -244,7 +263,7 @@ function operationSchema(action) {
     ],
     "worker.schedule.delete": ["action", "target", "requestId"],
     "worker.scriptWorkersDev.disable": ["action", "target", "requestId"],
-    "account.workersDev.enable": ["action", "target", "requestId", "accountId"],
+    "account.workersDev.enable": ["action", "target", "requestId", "subdomain"],
     "worker.terminalArtifact.deploy": [
       "action",
       "target",
@@ -263,6 +282,7 @@ function operationSchema(action) {
 function allowedActions(kind) {
   return {
     deploy: new Set(["worker.secret.put", "worker.deploy"]),
+    "rotate-secrets": new Set(["worker.secret.put"]),
     rollback: new Set(["worker.rollback"]),
     "account-workers-dev-enable": new Set(["account.workersDev.enable"]),
     retire: new Set([
@@ -304,10 +324,10 @@ function validateOperationAdmission(operation, plan, admission, manifest) {
   if (operation.action === "account.workersDev.enable") {
     if (
       operation.target !== plan.accountId ||
-      operation.accountId !== plan.accountId
+      !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(operation.subdomain ?? "")
     ) {
       throw new Error(
-        "account workers.dev operation differs from the exact account",
+        "account workers.dev operation differs from the exact account/subdomain authority",
       );
     }
   }
@@ -373,13 +393,55 @@ function validateOperation(operation, plan, admission, manifest) {
 function validateKindSequence(plan, admission) {
   const actions = plan.operations.map(({ action }) => action);
   if (plan.kind === "deploy") {
-    const required = [
-      ...admission.deployment.secretNames.map(() => "worker.secret.put"),
-      "worker.deploy",
-    ];
+    const initial = plan.currentWorkerVersionId === "absent";
+    const required = initial
+      ? [
+          "worker.deploy",
+          ...admission.deployment.secretNames.map(() => "worker.secret.put"),
+        ]
+      : ["worker.deploy"];
     if (JSON.stringify(actions) !== JSON.stringify(required)) {
       throw new Error(
-        "deploy plan must put the exact secret sequence then perform one compound profile-bound deploy",
+        "deploy plan does not match the authoritative launcher sequence",
+      );
+    }
+    if (
+      plan.operations[0].expectedPreviousVersionId !==
+      plan.currentWorkerVersionId
+    ) {
+      throw new Error("deploy does not bind the exact previous version");
+    }
+    if (
+      (initial && plan.rollbackActions.length !== 0) ||
+      (!initial &&
+        (plan.rollbackActions.length !== 1 ||
+          plan.rollbackActions[0].action !== "worker.rollback" ||
+          plan.rollbackActions[0].versionId !== plan.currentWorkerVersionId))
+    ) {
+      throw new Error("deploy rollback does not match the authoritative state");
+    }
+    if (
+      initial &&
+      JSON.stringify(
+        plan.operations.slice(1).map(({ secretName }) => secretName),
+      ) !== JSON.stringify(admission.deployment.secretNames)
+    ) {
+      throw new Error("deploy does not bind the exact secret order");
+    }
+  }
+  if (plan.kind === "rotate-secrets") {
+    const required = admission.deployment.secretNames.map(
+      () => "worker.secret.put",
+    );
+    if (
+      plan.currentWorkerVersionId === "absent" ||
+      JSON.stringify(actions) !== JSON.stringify(required) ||
+      plan.rollbackActions.length !== 0 ||
+      JSON.stringify(plan.operations.map(({ secretName }) => secretName)) !==
+        JSON.stringify(admission.deployment.secretNames)
+    ) {
+      throw new Error(
+        "secret rotation does not match the authoritative launcher sequence",
       );
     }
   }
@@ -483,6 +545,17 @@ function validatePlanIdentity(plan, context) {
     !digestPattern.test(plan.compatibleVersionDetailSha256 ?? "")
   ) {
     throw new Error("compatible version detail identity is invalid");
+  }
+  const requiresCompatibleVersion =
+    plan.kind === "rollback" ||
+    (plan.kind === "deploy" && plan.currentWorkerVersionId !== "absent");
+  if (
+    (requiresCompatibleVersion &&
+      !digestPattern.test(plan.compatibleVersionDetailSha256 ?? "")) ||
+    (!requiresCompatibleVersion &&
+      plan.compatibleVersionDetailSha256 !== "none")
+  ) {
+    throw new Error("compatible version detail does not match plan kind");
   }
   if (
     plan.admissionSha256 !== sha256(admissionBytes) ||

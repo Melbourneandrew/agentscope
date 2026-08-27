@@ -48,15 +48,27 @@ function terminalContractSha256(plan, admission) {
           scriptWorkersDev: false,
           worker: "absent",
         }
-      : {
-          cron: admission.deployment.cron,
-          durableObjectBinding: admission.deployment.durableObjectBinding,
-          durableObjectClass: admission.deployment.durableObjectClass,
-          migrationTag: plan.currentMigrationTag,
-          secretNames: admission.deployment.secretNames,
-          scriptWorkersDev: true,
-          worker: "present",
-        }),
+      : plan.kind === "account-workers-dev-enable"
+        ? {
+            accountWorkersDev: `enabled:${plan.operations[0]?.subdomain ?? "invalid"}`,
+            worker: "unchanged",
+          }
+        : {
+            cron: admission.deployment.cron,
+            durableObjectBinding: admission.deployment.durableObjectBinding,
+            durableObjectClass: admission.deployment.durableObjectClass,
+            durableObjectNamespace:
+              plan.currentWorkerVersionId === "absent"
+                ? "create-exactly-one-owned-namespace"
+                : plan.durableObjectNamespaceId,
+            migrationTag:
+              plan.currentWorkerVersionId === "absent"
+                ? "v1"
+                : plan.currentMigrationTag,
+            secretNames: admission.deployment.secretNames,
+            scriptWorkersDev: true,
+            worker: "present",
+          }),
   };
   return sha256(JSON.stringify(contract, Object.keys(contract).sort()));
 }
@@ -117,7 +129,7 @@ function buildPlan({
     profileSha256: sha256(profileBytes),
     observablePrestateSha256: "1".repeat(64),
     observationId: observation.observationId,
-    currentWorkerVersionId: "no-existing-version",
+    currentWorkerVersionId: "absent",
     durableObjectNamespaceId: "planned-durable-object-namespace",
     currentMigrationTag: admission.deployment.migrationTag,
     compatibleVersionDetailSha256: "none",
@@ -127,6 +139,13 @@ function buildPlan({
     acquisitionFreezeId: null,
     launcherCredentialRevocationId: null,
     operations: [
+      {
+        action: "worker.deploy",
+        target: admission.deployment.workerName,
+        requestId: "deploy-worker",
+        profileSha256: sha256(profileBytes),
+        expectedPreviousVersionId: "absent",
+      },
       {
         action: "worker.secret.put",
         target: admission.deployment.workerName,
@@ -151,23 +170,8 @@ function buildPlan({
         slotId: "hetzner-worker",
         slotVersion: "v1",
       },
-      {
-        action: "worker.deploy",
-        target: admission.deployment.workerName,
-        requestId: "deploy-worker",
-        profileSha256: sha256(profileBytes),
-        expectedPreviousVersionId: "no-existing-version",
-      },
     ],
-    rollbackActions: [
-      {
-        action: "worker.rollback",
-        target: admission.deployment.workerName,
-        requestId: "rollback-worker",
-        versionId: "no-existing-version",
-        compatibleMigrationTag: admission.deployment.migrationTag,
-      },
-    ],
+    rollbackActions: [],
     issuedAt: new Date(now - 30_000).toISOString(),
     expiresAt: new Date(now + 10 * 60_000).toISOString(),
     nonce: "owner-approved-plan-1",
@@ -280,6 +284,36 @@ test("validates canonical structure but never grants mutation authority", async 
   assert.equal(evidence.mutationAuthorized, false);
 });
 
+test("admits the launcher rotation and account workers.dev grammars", async () => {
+  const item = await fixture();
+  await item.writePlan({
+    ...item.plan,
+    kind: "rotate-secrets",
+    currentWorkerVersionId: "version-current",
+    operations: item.plan.operations.slice(1),
+    intendedTerminalStateSha256: "__canonical__",
+  });
+  const rotation = run(item.args);
+  assert.equal(rotation.status, 0, rotation.stderr);
+
+  await item.writePlan({
+    ...item.plan,
+    kind: "account-workers-dev-enable",
+    operations: [
+      {
+        action: "account.workersDev.enable",
+        target: item.plan.accountId,
+        requestId: "enable-account-workers-dev",
+        subdomain: "agentscope-dev",
+      },
+    ],
+    rollbackActions: [],
+    intendedTerminalStateSha256: "__canonical__",
+  });
+  const account = run(item.args);
+  assert.equal(account.status, 0, account.stderr);
+});
+
 test("rejects an altered canonical admission identity", async () => {
   const item = await fixture();
   await item.writePlan({ ...item.plan, admissionSha256: "3".repeat(64) });
@@ -313,6 +347,24 @@ test("rejects stale signed quota evidence", async () => {
   const result = run(item.args);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /stale, future-dated, or exceeds/);
+});
+
+test("rejects the exact 80 percent quota freeze boundary", async () => {
+  const item = await fixture();
+  await item.writeObservation({
+    ...item.observation,
+    quotas: {
+      ...item.observation.quotas,
+      workersRequestsDaily: {
+        ...item.observation.quotas.workersRequestsDaily,
+        limit: 100,
+        used: 80,
+      },
+    },
+  });
+  const result = run(item.args);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /quota workersRequestsDaily is incomplete/);
 });
 
 test("rejects a secret value or digest embedded in an operation", async () => {
@@ -351,7 +403,7 @@ test("rejects cross-kind operations", async () => {
         action: "account.workersDev.enable",
         target: item.plan.accountId,
         requestId: "enable-account-workers-dev",
-        accountId: item.plan.accountId,
+        subdomain: "agentscope-dev",
       },
       item.plan.operations[1],
     ],

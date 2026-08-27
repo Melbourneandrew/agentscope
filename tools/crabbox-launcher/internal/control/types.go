@@ -30,7 +30,8 @@ const (
 	ObservationDomain             = "agentscope-crabbox-billing-observation-v1"
 	FreezeDomain                  = "agentscope-crabbox-acquisition-freeze-v1"
 	RecoveryDomain                = "agentscope-crabbox-recovery-decision-v1"
-	RetirementDomain              = "agentscope-crabbox-retirement-complete-v1"
+	RetirementDomain              = "agentscope-crabbox-retirement-cloud-absence-v1"
+	RetirementFinalizationDomain  = "agentscope-crabbox-retirement-finalization-v1"
 	RetirementEvidenceDomain      = "agentscope-crabbox-retirement-evidence-v1"
 	CanonicalAdmissionSHA256      = "947f1c128ca030d89c3e6100ce96a159fc4b045afb36b1cf1ef02276e16e2357"
 	CanonicalPermissionSHA256     = "b8d01f9fe098abc9a67eeba6ee5f8bd18e0b273bbf5bb7766a72e9acc9d2922f"
@@ -556,7 +557,7 @@ func ValidateObservationCandidate(observation Observation, installation Installa
 	names := make([]string, 0, len(observation.Quotas))
 	for name, quota := range observation.Quotas {
 		names = append(names, name)
-		if quota.Limit <= 0 || quota.Used < 0 || quota.Used > quota.Limit || quota.Used*100 > quota.Limit*80 || !identifierPattern.MatchString(quota.SourceIdentity) {
+		if quota.Limit <= 0 || quota.Used < 0 || quota.Used > quota.Limit || quota.Used*100 >= quota.Limit*80 || !identifierPattern.MatchString(quota.SourceIdentity) {
 			return errors.New("E_OBSERVATION_QUOTA")
 		}
 	}

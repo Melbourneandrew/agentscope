@@ -65,8 +65,9 @@ type cloudflareEnvelope struct {
 }
 
 type cloudflareSurfaceRequest struct {
-	path      string
-	paginated bool
+	path          string
+	paginated     bool
+	allowNotFound bool
 }
 
 func fetchCloudflareSurface(ctx context.Context, client *http.Client, credential []byte, surface cloudflareSurfaceRequest) (any, error) {
@@ -90,7 +91,10 @@ func fetchCloudflareSurface(ctx context.Context, client *http.Client, credential
 		return nil, errors.New("E_OBSERVER_OUTPUT")
 	}
 	if response.StatusCode == http.StatusNotFound {
-		return map[string]any{"absent": true}, nil
+		if surface.allowNotFound {
+			return map[string]any{"absent": true}, nil
+		}
+		return nil, errors.New("E_OBSERVER_NOT_FOUND")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, errors.New("E_OBSERVER_FAILURE")
@@ -129,18 +133,18 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 	base := "/client/v4/accounts/" + observer.AccountID
 	script := base + "/workers/scripts/" + WorkerName
 	paths := map[string]cloudflareSurfaceRequest{
-		"accountWorkers":    {base + "/workers/scripts", false},
-		"accountWorkersDev": {base + "/workers/subdomain", false},
-		"durableObjects":    {base + "/workers/durable_objects/namespaces?page=1&per_page=1000", true},
-		"scriptDomains":     {base + "/workers/domains", false},
-		"scriptDeployments": {script + "/deployments", false},
-		"scriptSchedules":   {script + "/schedules", false},
-		"scriptSecrets":     {script + "/secrets", false},
-		"scriptSettings":    {script + "/script-settings", false},
-		"workerSettings":    {script + "/settings", false},
-		"scriptTails":       {script + "/tails", false},
-		"scriptWorkersDev":  {script + "/subdomain", false},
-		"scriptVersions":    {base + "/workers/workers/" + WorkerName + "/versions?page=1&per_page=1000", true},
+		"accountWorkers":    {base + "/workers/scripts", false, false},
+		"accountWorkersDev": {base + "/workers/subdomain", false, false},
+		"durableObjects":    {base + "/workers/durable_objects/namespaces?page=1&per_page=1000", true, false},
+		"scriptDomains":     {base + "/workers/domains", false, false},
+		"scriptDeployments": {script + "/deployments", false, true},
+		"scriptSchedules":   {script + "/schedules", false, true},
+		"scriptSecrets":     {script + "/secrets", false, true},
+		"scriptSettings":    {script + "/script-settings", false, true},
+		"workerSettings":    {script + "/settings", false, true},
+		"scriptTails":       {script + "/tails", false, true},
+		"scriptWorkersDev":  {script + "/subdomain", false, true},
+		"scriptVersions":    {base + "/workers/workers/" + WorkerName + "/versions?page=1&per_page=1000", true, true},
 	}
 	client := observer.Client
 	if client == nil {
@@ -156,11 +160,18 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 		}
 		surfaces[name] = value
 	}
+	if workerPresent(surfaces["accountWorkers"]) {
+		for _, name := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions"} {
+			if surfaceAbsent(surfaces[name]) {
+				return StateObservation{}, errors.New("E_OBSERVER_FALSE_ABSENCE")
+			}
+		}
+	}
 	if observer.RollbackVersionID != "" {
 		if !identifierPattern.MatchString(observer.RollbackVersionID) || observer.RollbackVersionID == "latest" {
 			return StateObservation{}, errors.New("E_OBSERVER_VERSION_IDENTITY")
 		}
-		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, cloudflareSurfaceRequest{base + "/workers/workers/" + WorkerName + "/versions/" + observer.RollbackVersionID, false})
+		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, cloudflareSurfaceRequest{base + "/workers/workers/" + WorkerName + "/versions/" + observer.RollbackVersionID, false, false})
 		if err != nil {
 			return StateObservation{}, err
 		}
@@ -181,14 +192,14 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 		workerBase := base + "/workers/scripts/" + name
 		workerSurfaces := map[string]any{}
 		for surfaceName, surface := range map[string]cloudflareSurfaceRequest{
-			"deployments": {workerBase + "/deployments", false},
-			"schedules":   {workerBase + "/schedules", false},
-			"secrets":     {workerBase + "/secrets", false},
-			"script":      {workerBase + "/script-settings", false},
-			"settings":    {workerBase + "/settings", false},
-			"tails":       {workerBase + "/tails", false},
-			"workersDev":  {workerBase + "/subdomain", false},
-			"versions":    {base + "/workers/workers/" + name + "/versions?page=1&per_page=1000", true},
+			"deployments": {workerBase + "/deployments", false, false},
+			"schedules":   {workerBase + "/schedules", false, false},
+			"secrets":     {workerBase + "/secrets", false, false},
+			"script":      {workerBase + "/script-settings", false, false},
+			"settings":    {workerBase + "/settings", false, false},
+			"tails":       {workerBase + "/tails", false, false},
+			"workersDev":  {workerBase + "/subdomain", false, false},
+			"versions":    {base + "/workers/workers/" + name + "/versions?page=1&per_page=1000", true, false},
 		} {
 			value, err := fetchCloudflareSurface(ctx, &safeClient, credential, surface)
 			if err != nil {

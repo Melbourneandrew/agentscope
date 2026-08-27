@@ -912,6 +912,15 @@ func TestObservationRejectsPaidStaleAndWrongRoot(t *testing.T) {
 	if _, err := ValidateObservation(paidData, paidAttestationData, item.installation, item.now); err == nil {
 		t.Fatal("paid observation accepted")
 	}
+	observation.PaidOrOverageEnabled = false
+	for _, name := range requiredQuotaNames() {
+		observation.Quotas[name] = Quota{Limit: 100, Used: 10, SourceIdentity: "source-" + name}
+	}
+	boundary := requiredQuotaNames()[0]
+	observation.Quotas[boundary] = Quota{Limit: 100, Used: 80, SourceIdentity: "source-" + boundary}
+	if err := ValidateObservationCandidate(observation, item.installation, item.now); err == nil || !strings.Contains(err.Error(), "E_OBSERVATION_QUOTA") {
+		t.Fatalf("80 percent quota boundary admitted: %v", err)
+	}
 }
 
 func TestApplyConsumesBeforeResolutionAndNeverReplays(t *testing.T) {
@@ -1233,8 +1242,35 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	if executor.count() != 8 {
 		t.Fatalf("retirement calls=%d", executor.count())
 	}
-	if _, err := os.Stat(item.store.path("evidence", "retirement-complete.json")); err != nil {
-		t.Fatal("terminal retirement evidence absent")
+	if _, err := os.Stat(item.store.path("evidence", "retirement-cloud-absence.json")); err != nil {
+		t.Fatal("retirement Cloudflare/provider absence evidence missing")
+	}
+	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); err != nil {
+		t.Fatal("retirement released mutation fence before credential revocation")
+	}
+	planDigest := SHA256(retirementData)
+	recoveryEvidence := strings.Repeat("7", 64)
+	if _, err := item.store.RecoverQuarantine(planDigest, "plan", recoveryEvidence, item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("terminal retirement quarantine: %v", err)
+	}
+	if _, err := item.store.ResolveQuarantine(planDigest, "plan", recoveryEvidence, item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("terminal retirement resolution: %v", err)
+	}
+	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); err != nil {
+		t.Fatal("generic recovery bypassed retirement finalization")
+	}
+	record, err := item.store.FinalizeRetirement(planDigest, "cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(time.Second), syntheticOperatorPassphrase)
+	if err != nil || record.Disposition != "finalized" {
+		t.Fatalf("retirement finalization: %v %#v", err, record)
+	}
+	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); !os.IsNotExist(err) {
+		t.Fatal("finalized retirement retained mutation fence")
+	}
+	if _, err := item.store.ResolveCredential("cloudflare-deployment"); err == nil {
+		t.Fatal("finalized retirement retained local credential authority")
+	}
+	if _, err := item.store.FinalizeRetirement(planDigest, "different-deployment-revocation", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_FENCE") {
+		t.Fatalf("finalized retirement accepted changed evidence: %v", err)
 	}
 }
 
@@ -1719,6 +1755,34 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 	})}
 	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_PAGINATION") {
 		t.Fatal("missing completeness metadata accepted on paginated inventory")
+	}
+	notFoundClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{"success":false,"result":null}`)), Header: http.Header{}, Request: request}, nil
+	})}
+	if _, err := fetchCloudflareSurface(context.Background(), notFoundClient, []byte("read-only-canary"), cloudflareSurfaceRequest{path: "/client/v4/accounts/account-1/workers/scripts"}); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_NOT_FOUND") {
+		t.Fatalf("account inventory 404 fabricated absence: %v", err)
+	}
+	value, err := fetchCloudflareSurface(context.Background(), notFoundClient, []byte("read-only-canary"), cloudflareSurfaceRequest{path: "/client/v4/accounts/account-1/workers/scripts/agentscope-crabbox-development/deployments", allowNotFound: true})
+	if err != nil || !surfaceAbsent(value) {
+		t.Fatalf("target-scoped 404 was not represented for inventory cross-check: %v %#v", err, value)
+	}
+	observer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/deployments") {
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`{"success":false,"result":null}`)), Header: http.Header{}, Request: request}, nil
+		}
+		result := `[]`
+		if request.URL.Path == "/client/v4/accounts/account-1/workers/scripts" {
+			result = `[{"id":"agentscope-crabbox-development"}]`
+		}
+		resultInfo := ""
+		if request.URL.RawQuery != "" {
+			resultInfo = `,"result_info":{"page":1,"per_page":1000,"total_pages":1}`
+		}
+		body := `{"success":true,"result":` + result + `,"errors":[],"messages":[]` + resultInfo + `}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
+	})}
+	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_FALSE_ABSENCE") {
+		t.Fatalf("target 404 contradicted complete account inventory without failing: %v", err)
 	}
 }
 

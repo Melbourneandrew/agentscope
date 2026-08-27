@@ -144,7 +144,8 @@ attended root copy and verifies the root-owned bootstrap copy before executing
 it. After installation, use only the root-owned installed binary. It exposes the
 closed commands `status`, `state-observe`, `credential-enroll`,
 `plan-build`, `observation-admit`, `retirement-evidence-admit`, `authorize`,
-`apply`, `freeze`, `recover-quarantine`, `recover-resolve`, `thaw`, and `retire`. `apply` accepts no
+`apply`, `freeze`, `recover-quarantine`, `recover-resolve`, `thaw`, `retire`, and
+`retirement-finalize`. `apply` accepts no
 caller-selected executable, source, profile, endpoint, method, body, or target.
 It verifies installed roots and the entire protected runtime tree, durably
 consumes the plan, independently observes the fixed Cloudflare permission
@@ -349,6 +350,30 @@ after Cloudflare confirms it removes remaining versions and the script. It does
 not delete a zone route, Worker Domain, or the shared account-level workers.dev
 subdomain. Keep plan-observation, inventory, recovery, and deployment authority
 until exact provider and Cloudflare absence is proven.
+
+`retire` deliberately leaves the mutation fence held after recording terminal
+Cloudflare/provider absence. The operator then revokes the coordinator-dedicated
+Cloudflare deployment credential and plan-read credential and revokes or rotates
+the three Hetzner credentials outside the launcher. Only after those five
+credential actions have immutable, pairwise-distinct revocation identities may
+the operator run:
+
+```sh
+agentscope-crabbox-control retirement-finalize \
+  --plan-sha256 <terminal-retirement-plan-sha256> \
+  --deployment-revocation-id <cloudflare-deployment-revocation-id> \
+  --plan-read-revocation-id <cloudflare-plan-read-revocation-id> \
+  --hetzner-worker-revocation-id <worker-token-revocation-or-rotation-id> \
+  --hetzner-inventory-revocation-id <inventory-token-revocation-or-rotation-id> \
+  --hetzner-recovery-revocation-id <recovery-token-revocation-or-rotation-id>
+```
+
+The attended command signs the exact revocation tuple, retires every local
+credential ciphertext and its sealing key, publishes terminal finalization
+evidence, and only then releases the mutation fence. A crash before final fence
+removal is re-entered with the same identities; different evidence fails
+closed. No other command may report retirement finalized or reopen the account
+mutation surface.
 
 `scripts/crabbox-coordinator-retirement-profile.mjs` structurally renders that
 terminal profile only from a recent candidate-signed provider-zero record bound

@@ -289,6 +289,8 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		}
 		receipt, err := executor.Invoke(operationContext, invocation)
 		if err != nil {
+			// mutation.lock is durable and IsFrozen treats this exact journal
+			// prefix as acquisition-freeze authority until attended recovery.
 			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
 		}
 		postTime := clock()
@@ -364,6 +366,10 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		if err := store.recordRetirement(planDigest, *plan.RetirementTombstoneSHA256, clock()); err != nil {
 			return err
 		}
+		// Terminal Cloudflare absence is only the first retirement terminal.
+		// Keep the mutation fence until the attended credential-revocation and
+		// local credential retirement ceremony is durably finalized.
+		return nil
 	}
 	if err := store.releaseFence(fence); err != nil {
 		return err

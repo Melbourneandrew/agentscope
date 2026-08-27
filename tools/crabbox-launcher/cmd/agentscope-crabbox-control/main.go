@@ -419,7 +419,39 @@ func applyPlan(args []string, retirement bool, startedAt time.Time) {
 	if err := control.NewStore(stateRoot()).Apply(commandContext, input, executor, observer); err != nil {
 		fail(errorCode(err))
 	}
-	emit(map[string]any{"schemaVersion": 1, "applied": true, "planSha256": control.SHA256(values[0]), "secretValuesPresent": false})
+	emit(map[string]any{"schemaVersion": 1, "applied": true, "planSha256": control.SHA256(values[0]), "retirementFinalizationRequired": retirement, "secretValuesPresent": false})
+}
+
+func finalizeRetirement(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("retirement-finalize", flag.ContinueOnError)
+	planSHA256 := flags.String("plan-sha256", "", "terminal retirement plan digest")
+	deploymentRevocationID := flags.String("deployment-revocation-id", "", "Cloudflare deployment credential revocation identity")
+	planReadRevocationID := flags.String("plan-read-revocation-id", "", "Cloudflare plan-read credential revocation identity")
+	hetznerWorkerRevocationID := flags.String("hetzner-worker-revocation-id", "", "Hetzner Worker credential revocation or rotation identity")
+	hetznerInventoryRevocationID := flags.String("hetzner-inventory-revocation-id", "", "Hetzner inventory credential revocation or rotation identity")
+	hetznerRecoveryRevocationID := flags.String("hetzner-recovery-revocation-id", "", "Hetzner recovery credential revocation or rotation identity")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	confirmation, err := control.ReadSecretFromTTY("Confirm all five external credential revocations or rotations are complete? Type REVOKED: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "REVOKED" {
+		fail("E_OWNER_REJECTED")
+	}
+	passphrase, err := control.ReadSecretFromTTY("Recovery authorization passphrase: ")
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(passphrase)
+	record, err := control.NewStore(stateRoot()).FinalizeRetirement(*planSHA256, *deploymentRevocationID, *planReadRevocationID, *hetznerWorkerRevocationID, *hetznerInventoryRevocationID, *hetznerRecoveryRevocationID, time.Now().UTC(), passphrase)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "retirementFinalized": true, "planSha256": record.PlanSHA256, "revocationEvidenceSha256": record.EvidenceSHA256, "localCredentialsRetired": true, "mutationFenceReleased": true, "secretValuesPresent": false})
 }
 
 func status() {
@@ -431,7 +463,15 @@ func status() {
 	_, fenceErr := os.Lstat(filepath.Join(stateRoot(), "journal", "mutation.lock"))
 	entries, _ := os.ReadDir(filepath.Join(stateRoot(), "slots"))
 	_, credentialsErr := store.CredentialSetSHA256()
-	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": []string{"credential-enroll --role <one-of-seven-closed-roles> --slot <opaque-id> --version <immutable-version>", "state-observe --output <state.json> [--rollback-version <current-or-target-version>]", "observation-admit --observation <billing.json> --output <billing-attestation.json>", "plan-build --kind <closed-kind> --state <state.json> --observation-id <id> [--slots <slots.json>] --output <plan.json>", "authorize --plan <plan.json> --output <authorization.json>", "apply --plan <plan.json> --authorization <authorization.json> --observation <billing.json> --observation-attestation <billing-attestation.json>"}, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
+	_, cloudAbsenceErr := os.Lstat(filepath.Join(stateRoot(), "evidence", "retirement-cloud-absence.json"))
+	_, finalizationErr := os.Lstat(filepath.Join(stateRoot(), "evidence", "retirement-finalized.json"))
+	next := []string{"credential-enroll --role <one-of-seven-closed-roles> --slot <opaque-id> --version <immutable-version>", "state-observe --output <state.json> [--rollback-version <current-or-target-version>]", "observation-admit --observation <billing.json> --output <billing-attestation.json>", "plan-build --kind <closed-kind> --state <state.json> --observation-id <id> [--slots <slots.json>] --output <plan.json>", "authorize --plan <plan.json> --output <authorization.json>", "apply --plan <plan.json> --authorization <authorization.json> --observation <billing.json> --observation-attestation <billing-attestation.json>"}
+	if cloudAbsenceErr == nil && finalizationErr != nil {
+		next = []string{"revoke the Cloudflare deployment and plan-read credentials and revoke/rotate all three Hetzner credentials", "retirement-finalize --plan-sha256 <digest> --deployment-revocation-id <id> --plan-read-revocation-id <id> --hetzner-worker-revocation-id <id> --hetzner-inventory-revocation-id <id> --hetzner-recovery-revocation-id <id>"}
+	} else if finalizationErr == nil {
+		next = []string{}
+	}
+	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "retirementCloudAbsenceRecorded": cloudAbsenceErr == nil, "retirementFinalized": finalizationErr == nil, "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": next, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
 }
 
 func observeState(args []string, startedAt time.Time) {
@@ -670,6 +710,8 @@ func main() {
 		applyPlan(os.Args[2:], false, startedAt)
 	case "retire":
 		applyPlan(os.Args[2:], true, startedAt)
+	case "retirement-finalize":
+		finalizeRetirement(os.Args[2:])
 	case "freeze":
 		freeze(os.Args[2:])
 	case "recover-quarantine":
