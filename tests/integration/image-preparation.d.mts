@@ -26,6 +26,7 @@ export interface PreparePinnedDockerImagesOptions {
   maximumPreparationMilliseconds?: number;
   teardownMilliseconds?: number;
   dockerSocketForTesting?: string;
+  dockerExecutableForTesting?: string;
   socketIdentityForTesting?: Readonly<DockerSocketIdentity>;
   engineRequestForTesting?: (
     request: ImagePreparationRequest,
@@ -94,11 +95,46 @@ export declare const validatePreparedImageEvidence: (
   }
 >;
 
+export declare const readPreparedImageEvidence: (
+  path: string,
+  manifestIdentity: string,
+) => Readonly<
+  PreparedDockerImageSet & {
+    imageEvidenceVersion: 2;
+    manifestIdentity: string;
+  }
+>;
+
 export declare const revalidatePreparedImageAdmission: (
   evidence: PreparedDockerImageSet,
   image: string,
   options?: PreparePinnedDockerImagesOptions,
 ) => Promise<boolean>;
+
+export interface PreparedDockerClient {
+  readonly evidence: PreparedDockerImageSet;
+}
+
+export declare const createPreparedDockerClient: (
+  evidence: PreparedDockerImageSet,
+  options?: PreparePinnedDockerImagesOptions,
+) => PreparedDockerClient;
+
+export declare const prepareDockerInvocation: (
+  client: PreparedDockerClient,
+  arguments_: readonly string[],
+  signal?: AbortSignal,
+) => Promise<
+  Readonly<{
+    executable: string;
+    arguments: readonly string[];
+    environment: Readonly<Record<string, string>>;
+  }>
+>;
+
+export declare const closePreparedDockerClient: (
+  client: PreparedDockerClient,
+) => void;
 
 export declare const publishPreparedImageEvidence: (
   target: string,

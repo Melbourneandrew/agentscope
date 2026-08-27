@@ -9,6 +9,18 @@ const digest = z.string().regex(/^sha256-[a-f\d]{64}$/u);
 const imageReference = z
   .string()
   .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u);
+const ociDigest = z.string().regex(/^sha256:[a-f\d]{64}$/u);
+const platformComponent = z.string().regex(/^[a-z\d][a-z\d._-]{0,63}$/u);
+const preparedImageIdentitySchema = z.strictObject({
+  image: imageReference,
+  platform: z.strictObject({
+    os: platformComponent,
+    architecture: platformComponent,
+    variant: platformComponent.optional(),
+  }),
+  manifestDigest: ociDigest,
+  configDigest: ociDigest,
+});
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
 const version = z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$/u);
 const productName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .()_-]{0,95}$/u);
@@ -228,6 +240,8 @@ export interface IsolationPlan {
   readonly candidateRevision: string;
   readonly baseImage: string;
   readonly mockServerImage: string;
+  readonly baseImageIdentity: Readonly<PreparedImageIdentity>;
+  readonly mockServerImageIdentity: Readonly<PreparedImageIdentity>;
   readonly imageTag: string;
   readonly mockServerImageTag: string;
   readonly networkName: string;
@@ -243,6 +257,7 @@ export interface IsolationPlan {
 
 export type IsolationExecutionPolicy = z.infer<typeof executionPolicySchema>;
 export type IsolationCleanupInventory = z.infer<typeof cleanupInventorySchema>;
+export type PreparedImageIdentity = z.infer<typeof preparedImageIdentitySchema>;
 
 const isolationEvidenceSchema = z
   .strictObject({
@@ -254,6 +269,8 @@ const isolationEvidenceSchema = z
     candidateRevision: z.string().regex(/^[a-f\d]{40}$/u),
     baseImage: imageReference,
     mockServerImage: imageReference,
+    baseImageIdentity: preparedImageIdentitySchema,
+    mockServerImageIdentity: preparedImageIdentitySchema,
     builtImageDigest: digest.nullable(),
     builtMockServerImageDigest: digest.nullable(),
     networkMode: z.literal("internal-only"),
@@ -276,6 +293,8 @@ const isolationEvidenceSchema = z
     if (
       value.executionPolicy.selection.manifestIdentity !==
         value.manifestIdentity ||
+      value.baseImageIdentity.image !== value.baseImage ||
+      value.mockServerImageIdentity.image !== value.mockServerImage ||
       !value.executionPolicy.selection.scenarioIds.includes(value.scenarioId) ||
       (runtimeInspectionUnavailable &&
         (value.outcome === "passed" ||
@@ -336,18 +355,31 @@ export const createIsolationPlan = (input: {
   readonly manifestIdentity: string;
   readonly candidate: CandidateEvidence;
   readonly runToken: string;
+  readonly baseImageIdentity: unknown;
+  readonly mockServerImageIdentity: unknown;
   readonly selection: unknown;
   readonly maximumParallelScenarios: number;
   readonly scenarioTimeoutMilliseconds: number;
 }): Readonly<IsolationPlan> => {
   const parsedToken = runToken.safeParse(input.runToken);
   const parsedSelection = selectionPolicySchema.safeParse(input.selection);
+  const parsedBaseImageIdentity = preparedImageIdentitySchema.safeParse(
+    input.baseImageIdentity,
+  );
+  const parsedMockServerImageIdentity = preparedImageIdentitySchema.safeParse(
+    input.mockServerImageIdentity,
+  );
   if (
     !parsedToken.success ||
     !parsedSelection.success ||
+    !parsedBaseImageIdentity.success ||
+    !parsedMockServerImageIdentity.success ||
     !digest.safeParse(input.manifestIdentity).success ||
     !imageReference.safeParse(input.scenario.image).success ||
     !imageReference.safeParse(input.scenario.mockServerImage).success ||
+    parsedBaseImageIdentity.data.image !== input.scenario.image ||
+    parsedMockServerImageIdentity.data.image !==
+      input.scenario.mockServerImage ||
     parsedSelection.data.manifestIdentity !== input.manifestIdentity ||
     !parsedSelection.data.scenarioIds.includes(input.scenario.scenarioId) ||
     !Number.isSafeInteger(input.maximumParallelScenarios) ||
@@ -367,6 +399,8 @@ export const createIsolationPlan = (input: {
     candidateRevision: input.candidate.candidateRevision,
     baseImage: input.scenario.image,
     mockServerImage: input.scenario.mockServerImage,
+    baseImageIdentity: parsedBaseImageIdentity.data,
+    mockServerImageIdentity: parsedMockServerImageIdentity.data,
     imageTag: `${prefix}:candidate`,
     mockServerImageTag: `${prefix}:mockserver`,
     networkName: `${prefix}-network`,
@@ -490,6 +524,8 @@ export const executeIsolationPlan = async (
     candidateRevision: plan.candidateRevision,
     baseImage: plan.baseImage,
     mockServerImage: plan.mockServerImage,
+    baseImageIdentity: plan.baseImageIdentity,
+    mockServerImageIdentity: plan.mockServerImageIdentity,
     builtImageDigest: imageDigest ?? null,
     builtMockServerImageDigest: mockServerImageDigest ?? null,
     networkMode: "internal-only" as const,

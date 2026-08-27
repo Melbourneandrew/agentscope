@@ -26,8 +26,11 @@ import {
   verifyPreparedCandidate,
 } from "./dist/index.js";
 import {
+  closePreparedDockerClient,
+  createPreparedDockerClient,
+  prepareDockerInvocation,
+  readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
-  validatePreparedImageEvidence,
 } from "./image-preparation.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
@@ -50,7 +53,6 @@ const manifest = compileCapabilityManifest(
 verifyManifestEvidence(manifest, integrationRoot);
 const selection = readJson(resolve(artifactsRoot, "current-selection.json"));
 const pointer = readJson(resolve(artifactsRoot, "current-candidate.json"));
-const imageEvidence = readJson(resolve(artifactsRoot, "current-images.json"));
 const modelRoutes = readJson(
   resolve(artifactsRoot, "current-model-routes.json"),
 );
@@ -76,8 +78,8 @@ const scenarioTimeoutMilliseconds = boundedInteger(
 );
 let preparedImageEvidence;
 try {
-  preparedImageEvidence = validatePreparedImageEvidence(
-    imageEvidence,
+  preparedImageEvidence = readPreparedImageEvidence(
+    resolve(artifactsRoot, "current-images.json"),
     manifest.manifestIdentity,
   );
 } catch {
@@ -138,16 +140,24 @@ if (
 )
   throw new Error("integration.isolation.inputs");
 
-const docker = async (arguments_, options = {}) =>
-  execute(capability.binding.dockerExecutable, arguments_, {
+let preparedDockerClient;
+const docker = async (arguments_, options = {}) => {
+  const invocation = await prepareDockerInvocation(
+    preparedDockerClient,
+    arguments_,
+    options.signal,
+  );
+  return execute(invocation.executable, invocation.arguments, {
     encoding: "utf8",
-    env: capability.binding.dockerEnvironment,
     maxBuffer: 16 * 1024 * 1024,
     timeout: remainingIntegrationOperationMilliseconds(
       scenarioTimeoutMilliseconds,
     ),
     ...options,
+    cwd: integrationRoot,
+    env: invocation.environment,
   });
+};
 const dockerWithSignal = (arguments_, signal, options = {}) =>
   docker(arguments_, { ...options, signal });
 const ignoreMissing = async (arguments_, signal) => {
@@ -816,12 +826,26 @@ const scenarios = selectedScenarios.map((scenario) => {
     throw new Error("integration.isolation.model-routes");
   return scenario;
 });
+const preparedIdentityFor = (image) => {
+  const prepared = preparedImageEvidence.images.find(
+    (candidate) => candidate.image === image,
+  );
+  if (prepared === undefined) throw new Error("integration.isolation.inputs");
+  return {
+    image: prepared.image,
+    platform: prepared.platform,
+    manifestDigest: prepared.manifestDigest,
+    configDigest: prepared.configDigest,
+  };
+};
 const plans = scenarios.map((scenario) =>
   createIsolationPlan({
     scenario,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
     runToken: randomBytes(8).toString("hex"),
+    baseImageIdentity: preparedIdentityFor(scenario.image),
+    mockServerImageIdentity: preparedIdentityFor(scenario.mockServerImage),
     selection: executorSelection,
     maximumParallelScenarios: scenarioConcurrency,
     scenarioTimeoutMilliseconds,
@@ -832,6 +856,9 @@ const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
 process.once("SIGTERM", abort);
+preparedDockerClient = createPreparedDockerClient(preparedImageEvidence, {
+  dockerExecutableForTesting: capability.binding.dockerExecutable,
+});
 try {
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
@@ -854,4 +881,6 @@ try {
     rmSync(activeMarkerFor(plan.runId), { force: true });
   process.removeListener("SIGINT", abort);
   process.removeListener("SIGTERM", abort);
+  if (preparedDockerClient !== undefined)
+    closePreparedDockerClient(preparedDockerClient);
 }

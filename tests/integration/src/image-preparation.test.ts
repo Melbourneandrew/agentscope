@@ -7,8 +7,9 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { resolve } from "node:path";
 import { createServer } from "node:http";
 import type { Socket } from "node:net";
@@ -18,9 +19,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PreparedDockerImageSet } from "../image-preparation.mjs";
 
 import {
+  closePreparedDockerClient,
+  createPreparedDockerClient,
   IMAGE_PREPARATION_LIMITS,
+  prepareDockerInvocation,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
+  readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
   retirePreparedImageEvidence,
   validatePreparedImageEvidence,
@@ -299,7 +304,9 @@ describe("subprocess-free pinned image preparation", () => {
       ),
     );
     const prior = process.env.HTTPS_PROXY;
+    const priorTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
     process.env.HTTPS_PROXY = "http://CANARY.invalid";
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     try {
       await expect(
         preparePinnedDockerImages([image], options(engine, registry)),
@@ -313,6 +320,9 @@ describe("subprocess-free pinned image preparation", () => {
     } finally {
       if (prior === undefined) delete process.env.HTTPS_PROXY;
       else process.env.HTTPS_PROXY = prior;
+      if (priorTls === undefined)
+        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = priorTls;
     }
     expect(engine.requests.every(({ origin }) => origin === undefined)).toBe(
       true,
@@ -331,6 +341,17 @@ describe("subprocess-free pinned image preparation", () => {
     ).toEqual(before);
   });
 
+  it("derives the fixed Desktop socket fallback from OS-owned identity", () => {
+    const prior = process.env.HOME;
+    process.env.HOME = "/private/tmp/agentscope-home-canary";
+    try {
+      expect(userInfo().homedir).not.toBe(process.env.HOME);
+    } finally {
+      if (prior === undefined) delete process.env.HOME;
+      else process.env.HOME = prior;
+    }
+  });
+
   it("reconciles an exact existing digest without issuing a pull", async () => {
     const engine = engineFixture({ localInitiallyPresent: true });
     await preparePinnedDockerImages([image], options(engine));
@@ -343,6 +364,9 @@ describe("subprocess-free pinned image preparation", () => {
     expect(
       engine.requests.filter(({ method }) => method === "POST"),
     ).toHaveLength(1);
+    expect(engine.requests.find(({ method }) => method === "POST")?.path).toBe(
+      `/v1.50/images/create?fromImage=fixture&tag=${encodeURIComponent(image.split("@")[1]!)}`,
+    );
   });
 
   it("permits one credential-free config redirect to the closed CDN origin", async () => {
@@ -518,9 +542,109 @@ describe("self-authenticating v2 image evidence", () => {
       );
     }).toThrow("integration.images.publication");
   });
+
+  it("bounds the persisted envelope before JSON proof decoding", () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    writeFileSync(target, JSON.stringify(prepared()));
+    expect(readPreparedImageEvidence(target, manifestIdentity)).toEqual(
+      prepared(),
+    );
+    writeFileSync(
+      target,
+      JSON.stringify({
+        ...prepared(),
+        surplus: "A".repeat(IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes),
+      }),
+    );
+    expect(() => readPreparedImageEvidence(target, manifestIdentity)).toThrow(
+      "integration.images.evidence",
+    );
+  });
 });
 
 describe("prepared image runtime admission and publication", () => {
+  it("fences every consuming Docker call to one executable and daemon", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const engine = engineFixture();
+    const prior = {
+      PATH: process.env.PATH,
+      DOCKER_HOST: process.env.DOCKER_HOST,
+      DOCKER_CONTEXT: process.env.DOCKER_CONTEXT,
+      DOCKER_CONFIG: process.env.DOCKER_CONFIG,
+    };
+    Object.assign(process.env, {
+      PATH: "/private/tmp/CANARY",
+      DOCKER_HOST: "tcp://CANARY.invalid:2375",
+      DOCKER_CONTEXT: "CANARY",
+      DOCKER_CONFIG: "/private/tmp/CANARY-config",
+    });
+    const client = createPreparedDockerClient(admitted, {
+      dockerExecutableForTesting: process.execPath,
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engine.request,
+    });
+    let configDirectory: string | undefined;
+    try {
+      const invocation = await prepareDockerInvocation(
+        client,
+        ["image", "inspect", image],
+        new AbortController().signal,
+      );
+      configDirectory = invocation.arguments[3];
+      expect(invocation).toEqual({
+        executable: realpathSync(process.execPath),
+        arguments: [
+          "--host",
+          `unix://${socket.path}`,
+          "--config",
+          configDirectory,
+          "image",
+          "inspect",
+          image,
+        ],
+        environment: {},
+      });
+      expect(
+        readFileSync(resolve(configDirectory!, "config.json"), "utf8"),
+      ).toBe('{"auths":{}}\n');
+      expect(
+        engine.requests.filter(({ path }) => path === "/version"),
+      ).toHaveLength(2);
+    } finally {
+      closePreparedDockerClient(client);
+      for (const [name, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    expect(existsSync(configDirectory ?? "")).toBe(false);
+  });
+
+  it("rejects a consuming invocation after daemon identity changes", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const client = createPreparedDockerClient(admitted, {
+      dockerExecutableForTesting: process.execPath,
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engineFixture({ daemonSwitch: true }).request,
+    });
+    try {
+      await expect(
+        prepareDockerInvocation(client, ["version"]),
+      ).rejects.toThrow("integration.images.docker-client");
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+});
+
+describe("prepared image admission and publication", () => {
   it("recomputes proof and daemon/config identity at runtime admission", async () => {
     const admitted = validatePreparedImageEvidence(
       prepared(),

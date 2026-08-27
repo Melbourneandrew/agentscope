@@ -42,12 +42,24 @@ const candidate = {
   scenarioNetworkPolicy: "offline-no-package-or-registry-download",
 } satisfies CandidateEvidence;
 
+const preparedIdentityFor = (image: string, fill: string) => ({
+  image,
+  platform: { os: "linux", architecture: "amd64" },
+  manifestDigest: `sha256:${fill.repeat(64)}`,
+  configDigest: `sha256:${fill.toUpperCase().repeat(64)}`.toLowerCase(),
+});
+
 const planFor = (token: string) =>
   createIsolationPlan({
     scenario: manifest.scenarios[0]!,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
     runToken: token,
+    baseImageIdentity: preparedIdentityFor(manifest.scenarios[0]!.image, "a"),
+    mockServerImageIdentity: preparedIdentityFor(
+      manifest.scenarios[0]!.mockServerImage,
+      "b",
+    ),
     selection: {
       selectionVersion: 2,
       manifestIdentity: manifest.manifestIdentity,
@@ -473,10 +485,13 @@ describe("compiled scenario evidence", () => {
       containerRuntime: { version: "1.3.4-0ubuntu1~24.04.1" },
     });
   });
+});
 
-  it("compiles only the closed evidence and policy envelopes", () => {
-    const policy = compileIsolationExecutionPolicy(executionPolicyFor());
-    const evidence = {
+const compiledEvidenceFixture = () => {
+  const policy = compileIsolationExecutionPolicy(executionPolicyFor());
+  return {
+    policy,
+    evidence: {
       evidenceVersion: 2,
       runId: "0123456789abcdef",
       scenarioId: "fixture-process-smoke",
@@ -485,6 +500,14 @@ describe("compiled scenario evidence", () => {
       candidateRevision: "3".repeat(40),
       baseImage: `node@sha256:${"4".repeat(64)}`,
       mockServerImage: `mockserver@sha256:${"5".repeat(64)}`,
+      baseImageIdentity: preparedIdentityFor(
+        `node@sha256:${"4".repeat(64)}`,
+        "a",
+      ),
+      mockServerImageIdentity: preparedIdentityFor(
+        `mockserver@sha256:${"5".repeat(64)}`,
+        "b",
+      ),
       builtImageDigest: `sha256-${"6".repeat(64)}`,
       builtMockServerImageDigest: `sha256-${"7".repeat(64)}`,
       networkMode: "internal-only",
@@ -500,7 +523,42 @@ describe("compiled scenario evidence", () => {
         remaining: emptyCleanupInventory(),
       },
       outcome: "passed",
-    };
+    },
+  };
+};
+
+describe("prepared OCI identity evidence", () => {
+  it("rejects omission and substitution of the canonical tuple", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const withoutIdentity = { ...evidence } as Partial<typeof evidence>;
+    delete withoutIdentity.baseImageIdentity;
+    expect(() => compileIsolationEvidence(withoutIdentity)).toThrow(
+      "integration.isolation.evidence",
+    );
+    expect(() =>
+      compileIsolationEvidence({
+        ...evidence,
+        baseImageIdentity: {
+          ...evidence.baseImageIdentity,
+          image: evidence.mockServerImage,
+        },
+      }),
+    ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileIsolationEvidence({
+        ...evidence,
+        baseImageIdentity: {
+          ...evidence.baseImageIdentity,
+          manifestDigest: `sha256-${"f".repeat(64)}`,
+        },
+      }),
+    ).toThrow("integration.isolation.evidence");
+  });
+});
+
+describe("compiled scenario evidence", () => {
+  it("compiles only the closed evidence and policy envelopes", () => {
+    const { evidence, policy } = compiledEvidenceFixture();
     expect(compileIsolationEvidence(evidence)).toEqual(evidence);
     expect(() =>
       compileIsolationEvidence({ ...evidence, credential: "CANARY_SECRET" }),

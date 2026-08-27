@@ -4,10 +4,12 @@ import {
   chmodSync,
   closeSync,
   constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -17,9 +19,10 @@ import {
 } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { homedir } from "node:os";
+import { userInfo } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { rootCertificates } from "node:tls";
 
 const maximumPreparationMilliseconds = 300_000;
 const preparationTeardownMilliseconds = 5_000;
@@ -48,9 +51,16 @@ const configMediaTypes = new Set([
 const manifestAccept = [...indexMediaTypes, ...manifestMediaTypes].join(", ");
 const dockerSocketCandidates = Object.freeze([
   "/var/run/docker.sock",
-  resolve(homedir(), ".docker/run/docker.sock"),
+  resolve(userInfo().homedir, ".docker/run/docker.sock"),
+]);
+const dockerExecutableCandidates = Object.freeze([
+  "/usr/bin/docker",
+  "/usr/local/bin/docker",
+  "/opt/homebrew/bin/docker",
+  "/Applications/Docker.app/Contents/Resources/bin/docker",
 ]);
 const preparedSets = new WeakSet();
+const preparedDockerClients = new WeakSet();
 
 const fixedError = (code, timedOut = false) => {
   const error = new Error(code);
@@ -170,6 +180,56 @@ const sameSocket = (left, right) =>
   left.inode === right.inode &&
   left.mode === right.mode &&
   left.owner === right.owner;
+const executableRecord = (path) => {
+  if (typeof path !== "string" || !isAbsolute(path))
+    throw fixedError("integration.images.executable");
+  try {
+    const canonicalPath = realpathSync(path);
+    const status = statSync(canonicalPath, { bigint: true });
+    accessSync(canonicalPath, constants.X_OK);
+    const currentUser = process.getuid?.();
+    if (
+      !status.isFile() ||
+      (status.mode & 0o22n) !== 0n ||
+      !(
+        status.uid === 0n ||
+        (currentUser !== undefined && status.uid === BigInt(currentUser))
+      )
+    )
+      throw fixedError("integration.images.executable");
+    return Object.freeze({
+      path: canonicalPath,
+      device: String(status.dev),
+      inode: String(status.ino),
+      mode: String(status.mode),
+      owner: String(status.uid),
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "integration.images.executable"
+    )
+      throw error;
+    throw fixedError("integration.images.executable");
+  }
+};
+const sameExecutable = (left, right) =>
+  left.path === right.path &&
+  left.device === right.device &&
+  left.inode === right.inode &&
+  left.mode === right.mode &&
+  left.owner === right.owner;
+const resolveDockerExecutable = (requested) => {
+  if (requested !== undefined) return executableRecord(requested);
+  for (const candidate of dockerExecutableCandidates) {
+    try {
+      return executableRecord(candidate);
+    } catch {
+      // The fixed absolute executable list is authoritative.
+    }
+  }
+  throw fixedError("integration.images.executable");
+};
 const resolveDockerSocket = (requested) => {
   if (requested !== undefined) return socketRecord(requested);
   for (const candidate of dockerSocketCandidates) {
@@ -254,9 +314,12 @@ const boundedRequest = ({
       path,
       ...(socketPath === undefined
         ? {
+            ca: rootCertificates,
             hostname: origin.hostname,
             port: origin.port || 443,
             protocol: "https:",
+            rejectUnauthorized: true,
+            servername: origin.hostname,
           }
         : { socketPath }),
     };
@@ -541,6 +604,17 @@ const evidenceImage = (value) => {
 };
 
 export const validatePreparedImageEvidence = (value, manifestIdentity) => {
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw fixedError("integration.images.evidence");
+  }
+  if (
+    typeof serialized !== "string" ||
+    Buffer.byteLength(serialized, "utf8") > maximumEvidenceBytes + 65_536
+  )
+    throw fixedError("integration.images.evidence");
   if (
     !exactKeys(value, [
       "dockerDaemon",
@@ -581,6 +655,31 @@ export const validatePreparedImageEvidence = (value, manifestIdentity) => {
     terminalCleanup: Object.freeze({ ...value.terminalCleanup }),
     images: Object.freeze(images),
   });
+};
+
+export const readPreparedImageEvidence = (path, manifestIdentity) => {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const status = fstatSync(descriptor);
+    if (
+      !status.isFile() ||
+      status.size < 1 ||
+      status.size > maximumEvidenceBytes + 65_536
+    )
+      throw fixedError("integration.images.evidence");
+    const body = readFileSync(descriptor);
+    if (body.byteLength !== status.size)
+      throw fixedError("integration.images.evidence");
+    return validatePreparedImageEvidence(
+      JSON.parse(body.toString("utf8")),
+      manifestIdentity,
+    );
+  } catch {
+    throw fixedError("integration.images.evidence");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 };
 
 const localImageRecord = (value, image) => {
@@ -980,13 +1079,16 @@ const acquireManifestProof = async ({
 };
 
 const pullImage = async (transport, daemon, policy, signal, image) => {
+  const separator = image.lastIndexOf("@");
+  const repository = image.slice(0, separator);
+  const digest = image.slice(separator + 1);
   try {
     const response = await engineCall(
       { policy, signal, transport },
       {
         expected: [200],
         method: "POST",
-        path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(image)}`,
+        path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(repository)}&tag=${encodeURIComponent(digest)}`,
       },
     );
     const lines = response.body
@@ -1202,6 +1304,97 @@ export const revalidatePreparedImageAdmission = async (
   } catch {
     return false;
   }
+};
+
+export const createPreparedDockerClient = (evidence, options = {}) => {
+  let privateClient;
+  try {
+    if (
+      typeof evidence !== "object" ||
+      evidence === null ||
+      !validSocketEvidence(evidence.dockerSocket) ||
+      !validEvidenceDaemon(evidence.dockerDaemon) ||
+      !Array.isArray(evidence.images) ||
+      evidence.images.length === 0
+    )
+      throw fixedError("integration.images.docker-client");
+    const socket =
+      options.socketIdentityForTesting === undefined
+        ? socketRecord(evidence.dockerSocket.path)
+        : Object.freeze({ ...options.socketIdentityForTesting });
+    if (!sameSocket(socket, evidence.dockerSocket))
+      throw fixedError("integration.images.docker-client");
+    const executable = resolveDockerExecutable(
+      options.dockerExecutableForTesting,
+    );
+    privateClient = createPrivateClientRoot({});
+    const client = Object.freeze({
+      evidence,
+      executable,
+      privateClient,
+      socket,
+      engineRequestForTesting: options.engineRequestForTesting,
+    });
+    preparedDockerClients.add(client);
+    return client;
+  } catch {
+    if (privateClient !== undefined)
+      cleanupPrivateClient(
+        privateClient,
+        performance.now() + preparationTeardownMilliseconds,
+      );
+    throw fixedError("integration.images.docker-client");
+  }
+};
+
+export const prepareDockerInvocation = async (client, arguments_, signal) => {
+  if (
+    !preparedDockerClients.has(client) ||
+    !Array.isArray(arguments_) ||
+    arguments_.length === 0 ||
+    arguments_.length > 256 ||
+    arguments_.some(
+      (argument) =>
+        typeof argument !== "string" ||
+        argument.length === 0 ||
+        argument.length > 4_096 ||
+        argument.includes("\0"),
+    ) ||
+    !sameExecutable(client.executable, executableRecord(client.executable.path))
+  )
+    throw fixedError("integration.images.docker-client");
+  const authorityImage = client.evidence.images[0]?.image;
+  if (
+    typeof authorityImage !== "string" ||
+    !(await revalidatePreparedImageAdmission(client.evidence, authorityImage, {
+      maximumPreparationMilliseconds: 30_000,
+      teardownMilliseconds: 1_000,
+      socketIdentityForTesting: client.socket,
+      engineRequestForTesting: client.engineRequestForTesting,
+      signal,
+    }))
+  )
+    throw fixedError("integration.images.docker-client");
+  return Object.freeze({
+    executable: client.executable.path,
+    arguments: Object.freeze([
+      "--host",
+      `unix://${client.socket.path}`,
+      "--config",
+      resolve(client.privateClient.root, "docker"),
+      ...arguments_,
+    ]),
+    environment: Object.freeze({}),
+  });
+};
+
+export const closePreparedDockerClient = (client) => {
+  if (!preparedDockerClients.delete(client))
+    throw fixedError("integration.images.docker-client");
+  cleanupPrivateClient(
+    client.privateClient,
+    performance.now() + preparationTeardownMilliseconds,
+  );
 };
 
 export const publishPreparedImageEvidence = (
