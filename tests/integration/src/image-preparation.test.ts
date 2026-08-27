@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,8 +11,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createServer } from "node:http";
+import { get as httpsGet, createServer as createHttpsServer } from "node:https";
 import type { Socket } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,17 +21,148 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PreparedDockerImageSet } from "../image-preparation.mjs";
 
 import {
+  buildPreparedDockerImage,
   closePreparedDockerClient,
+  createBoundedBuildContext,
   createPreparedDockerClient,
   IMAGE_PREPARATION_LIMITS,
   prepareDockerInvocation,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
+  probePinnedRegistryTlsForTesting,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
   retirePreparedImageEvidence,
   validatePreparedImageEvidence,
 } from "../image-preparation.mjs";
+
+const derLength = (length: number) => {
+  if (length < 128) return Buffer.from([length]);
+  const bytes = [];
+  for (let remaining = length; remaining > 0; remaining >>>= 8)
+    bytes.unshift(remaining & 0xff);
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+};
+const der = (tag: number, ...values: Buffer[]) => {
+  const value = Buffer.concat(values);
+  return Buffer.concat([Buffer.from([tag]), derLength(value.length), value]);
+};
+const signatureAlgorithm = der(
+  0x30,
+  der(0x06, Buffer.from("2a864886f70d01010b", "hex")),
+  der(0x05),
+);
+const certificateName = der(
+  0x30,
+  der(
+    0x31,
+    der(
+      0x30,
+      der(0x06, Buffer.from("550403", "hex")),
+      der(0x0c, Buffer.from("127.0.0.1")),
+    ),
+  ),
+);
+const certificateExtensions = der(
+  0xa3,
+  der(
+    0x30,
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d13", "hex")),
+      der(0x01, Buffer.from([0xff])),
+      der(0x04, der(0x30)),
+    ),
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d0f", "hex")),
+      der(0x01, Buffer.from([0xff])),
+      der(0x04, der(0x03, Buffer.from([5, 0xa0]))),
+    ),
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d25", "hex")),
+      der(
+        0x04,
+        der(0x30, der(0x06, Buffer.from("2b06010505070301", "hex"))),
+      ),
+    ),
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d11", "hex")),
+      der(0x04, der(0x30, der(0x87, Buffer.from([127, 0, 0, 1])))),
+    ),
+  ),
+);
+const pem = (label: string, value: Buffer) => {
+  const body = value.toString("base64").match(/.{1,64}/gu)?.join("\n");
+  if (body === undefined) throw new Error("fixture PEM encoding failed");
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
+};
+const createSelfSignedTlsFixture = () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const subjectPublicKey = publicKey.export({ format: "der", type: "spki" });
+  const validity = der(
+    0x30,
+    der(0x17, Buffer.from("200101000000Z")),
+    der(0x17, Buffer.from("491231235959Z")),
+  );
+  const certificateBody = der(
+    0x30,
+    der(0xa0, der(0x02, Buffer.from([2]))),
+    der(0x02, Buffer.from([1])),
+    signatureAlgorithm,
+    certificateName,
+    validity,
+    certificateName,
+    subjectPublicKey,
+    certificateExtensions,
+  );
+  const signature = sign("sha256", certificateBody, privateKey);
+  return {
+    key: privateKey.export({ format: "pem", type: "pkcs8" }),
+    certificate: pem(
+      "CERTIFICATE",
+      der(
+        0x30,
+        certificateBody,
+        signatureAlgorithm,
+        der(0x03, Buffer.from([0]), signature),
+      ),
+    ),
+  };
+};
+const selfSignedTls = createSelfSignedTlsFixture();
+const requestTrustedSelfSignedFixture = async (port: number) => {
+  const signal = AbortSignal.timeout(5_000);
+  let request: ReturnType<typeof httpsGet> | undefined;
+  try {
+    await new Promise<void>((resolveRequest, rejectRequest) => {
+      request = httpsGet(
+        {
+          ca: selfSignedTls.certificate,
+          hostname: "127.0.0.1",
+          path: "/",
+          port,
+          rejectUnauthorized: true,
+          signal,
+        },
+        (response) => {
+          response.resume();
+          response.once("end", () => {
+            if (response.statusCode === 200) resolveRequest();
+            else rejectRequest(new Error("fixture TLS response failed"));
+          });
+        },
+      );
+      request.once("error", rejectRequest);
+    });
+  } finally {
+    request?.destroy();
+  }
+};
 
 const sha256 = (value: Buffer | string) =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -113,6 +246,7 @@ const root = () => {
 };
 
 type Request = {
+  body?: Buffer;
   method: string;
   origin?: URL;
   path: string;
@@ -127,14 +261,20 @@ type Response = {
 };
 
 const engineFixture = ({
+  buildFailure = false,
+  buildTag,
   daemonSwitch = false,
   localValue = local,
   localInitiallyPresent = true,
+  pullCompletesThenDisconnect = false,
   pullFailure = false,
 }: {
+  buildFailure?: boolean;
+  buildTag?: string;
   daemonSwitch?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
+  pullCompletesThenDisconnect?: boolean;
   pullFailure?: boolean;
 } = {}) => {
   const requests: Request[] = [];
@@ -160,7 +300,23 @@ const engineFixture = ({
             : info,
       };
     }
+    if (entry.path.startsWith("/v1.50/build?"))
+      return buildFailure
+        ? { statusCode: 200, body: '{"error":"fixture build failed"}\n' }
+        : { statusCode: 200, body: '{"stream":"fixture build complete"}\n' };
+    if (
+      buildTag !== undefined &&
+      entry.path === `/v1.50/images/${encodeURIComponent(buildTag)}/json`
+    )
+      return {
+        statusCode: 200,
+        body: JSON.stringify({ Id: configDigest, RepoTags: [buildTag] }),
+      };
     if (entry.method === "POST") {
+      if (pullCompletesThenDisconnect) {
+        pulled = true;
+        throw new Error("response lost after daemon completion");
+      }
       if (pullFailure) throw new Error("transport disconnected");
       pulled = true;
       return { statusCode: 200, body: '{"status":"pulled"}\n' };
@@ -304,9 +460,7 @@ describe("subprocess-free pinned image preparation", () => {
       ),
     );
     const prior = process.env.HTTPS_PROXY;
-    const priorTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
     process.env.HTTPS_PROXY = "http://CANARY.invalid";
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
     try {
       await expect(
         preparePinnedDockerImages([image], options(engine, registry)),
@@ -320,9 +474,6 @@ describe("subprocess-free pinned image preparation", () => {
     } finally {
       if (prior === undefined) delete process.env.HTTPS_PROXY;
       else process.env.HTTPS_PROXY = prior;
-      if (priorTls === undefined)
-        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
-      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = priorTls;
     }
     expect(engine.requests.every(({ origin }) => origin === undefined)).toBe(
       true,
@@ -352,6 +503,58 @@ describe("subprocess-free pinned image preparation", () => {
     }
   });
 
+  it("rejects a self-signed registry despite ambient TLS disablement", async () => {
+    let handledRequests = 0;
+    const server = createHttpsServer(
+      { key: selfSignedTls.key, cert: selfSignedTls.certificate },
+      (_request, response) => {
+        handledRequests += 1;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}\n");
+      },
+    );
+    const prior = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        const failed = (error: Error) => {
+          rejectListen(error);
+        };
+        server.once("error", failed);
+        server.listen(0, "127.0.0.1", () => {
+          server.removeListener("error", failed);
+          resolveListen();
+        });
+      });
+      const address = server.address();
+      if (address === null || typeof address === "string")
+        throw new Error("fixture TLS address unavailable");
+      await expect(
+        requestTrustedSelfSignedFixture(address.port),
+      ).resolves.toBeUndefined();
+      expect(handledRequests).toBe(1);
+      handledRequests = 0;
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+      await expect(
+        probePinnedRegistryTlsForTesting(
+          new URL(`https://127.0.0.1:${address.port}`),
+        ),
+      ).rejects.toThrow();
+      expect(handledRequests).toBe(0);
+    } finally {
+      if (prior === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prior;
+      await new Promise<void>((resolveClose) => {
+        if (!server.listening) resolveClose();
+        else
+          server.close(() => {
+            resolveClose();
+          });
+      });
+    }
+  });
+});
+
+describe("Engine image reconciliation", () => {
   it("reconciles an exact existing digest without issuing a pull", async () => {
     const engine = engineFixture({ localInitiallyPresent: true });
     await preparePinnedDockerImages([image], options(engine));
@@ -394,6 +597,22 @@ describe("subprocess-free pinned image preparation", () => {
         ({ method, path }) => method === "GET" && path.includes("/images/"),
       ),
     ).toHaveLength(2);
+  });
+
+  it("reconciles only on a later attempt after a completed pull response is lost", async () => {
+    const engine = engineFixture({
+      localInitiallyPresent: false,
+      pullCompletesThenDisconnect: true,
+    });
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).rejects.toThrow("integration.images.daemon-uncertain");
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).resolves.toMatchObject({ images: [{ image, configDigest }] });
+    expect(
+      engine.requests.filter(({ method }) => method === "POST"),
+    ).toHaveLength(1);
   });
 
   it("rejects daemon replacement before evidence can return", async () => {
@@ -644,6 +863,152 @@ describe("prepared image runtime admission and publication", () => {
   });
 });
 
+describe("prepared Docker client terminal authority", () => {
+  it("rejects executable replacement adjacent to consuming invocation", async () => {
+    const directory = root();
+    const executable = resolve(directory, "docker-fixture");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+    const engine = engineFixture();
+    let infoCount = 0;
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: executable,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: async (request) => {
+          const response = await engine.request(request);
+          if (request.path === "/v1.50/info") {
+            infoCount += 1;
+            if (infoCount === 2)
+              writeFileSync(executable, "#!/bin/sh\nexit 99\n");
+          }
+          return response;
+        },
+      },
+    );
+    try {
+      await expect(
+        prepareDockerInvocation(client, ["version"]),
+      ).rejects.toThrow("integration.images.docker-client");
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("keeps cleanup authority when a shared prepared image is absent", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const client = createPreparedDockerClient(admitted, {
+      dockerExecutableForTesting: process.execPath,
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engineFixture({
+        localInitiallyPresent: false,
+      }).request,
+    });
+    const invocation = await prepareDockerInvocation(client, ["rm", "owned"]);
+    const privateRoot = dirname(invocation.arguments[3]!);
+    mkdirSync(resolve(privateRoot, "unexpected"));
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    rmSync(resolve(privateRoot, "unexpected"), { recursive: true });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).not.toThrow();
+    expect(existsSync(privateRoot)).toBe(false);
+  });
+});
+
+describe("authenticated Engine build consumption", () => {
+  const buildContext = () => {
+    const directory = root();
+    writeFileSync(resolve(directory, "Dockerfile"), "FROM scratch\n");
+    mkdirSync(resolve(directory, "nested"));
+    writeFileSync(resolve(directory, "nested/input.txt"), "fixture\n");
+    return directory;
+  };
+  const buildTag = "agentscope-int-fixture:candidate";
+
+  it("sends one bounded deterministic context and verifies the built tag", async () => {
+    const context = buildContext();
+    expect(createBoundedBuildContext(context)).toEqual(
+      createBoundedBuildContext(context),
+    );
+    const engine = engineFixture({ buildTag });
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      },
+    );
+    try {
+      await expect(
+        buildPreparedDockerImage(client, {
+          buildArguments: { BASE_IMAGE: image },
+          context,
+          dockerfile: "Dockerfile",
+          labels: { "com.agentscope.integration": "true" },
+          maximumMilliseconds: 4_000,
+          tag: buildTag,
+        }),
+      ).resolves.toBe(configDigest.replace(":", "-"));
+      const request = engine.requests.find(({ path }) =>
+        path.startsWith("/v1.50/build?"),
+      );
+      expect(request).toMatchObject({
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-tar",
+        },
+      });
+      expect(request?.body).toBeInstanceOf(Buffer);
+      expect(request?.body?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
+        true,
+      );
+      expect(request?.body?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it.each([
+    { buildFailure: true, daemonSwitch: false },
+    { buildFailure: false, daemonSwitch: true },
+  ])(
+    "fails uncertain on malformed result or daemon substitution %#",
+    async (fixtureOptions) => {
+      const engine = engineFixture({ buildTag, ...fixtureOptions });
+      const client = createPreparedDockerClient(
+        validatePreparedImageEvidence(prepared(), manifestIdentity),
+        {
+          dockerExecutableForTesting: process.execPath,
+          socketIdentityForTesting: socket,
+          engineRequestForTesting: engine.request,
+        },
+      );
+      try {
+        await expect(
+          buildPreparedDockerImage(client, {
+            buildArguments: { BASE_IMAGE: image },
+            context: buildContext(),
+            dockerfile: "Dockerfile",
+            labels: { "com.agentscope.integration": "true" },
+            maximumMilliseconds: 4_000,
+            tag: buildTag,
+          }),
+        ).rejects.toThrow("integration.images.build-uncertain");
+      } finally {
+        closePreparedDockerClient(client);
+      }
+    },
+  );
+});
+
 describe("prepared image admission and publication", () => {
   it("recomputes proof and daemon/config identity at runtime admission", async () => {
     const admitted = validatePreparedImageEvidence(
@@ -699,6 +1064,35 @@ describe("prepared image admission and publication", () => {
     }).toThrow("integration.images.publication");
     expect(readdirSync(directory)).toEqual(["current-images.json"]);
     expect(readdirSync(target)).toEqual([]);
+  });
+
+  it("bounds the exact persisted encoding before replacing prior evidence", async () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    writeFileSync(target, "prior-authority\n");
+    const trusted = await preparePinnedDockerImages([image], options());
+    const evidence = {
+      imageEvidenceVersion: 2,
+      manifestIdentity,
+      ...trusted,
+    };
+    const compactBytes = Buffer.byteLength(JSON.stringify(evidence), "utf8");
+    const persistedBytes = Buffer.byteLength(
+      `${JSON.stringify(evidence, undefined, 2)}\n`,
+      "utf8",
+    );
+    expect(persistedBytes).toBeGreaterThan(compactBytes);
+    expect(() => {
+      publishPreparedImageEvidence(target, manifestIdentity, trusted, {
+        maximumEvidenceBytesForTesting: compactBytes,
+      });
+    }).toThrow("integration.images.publication");
+    expect(readFileSync(target, "utf8")).toBe("prior-authority\n");
+    publishPreparedImageEvidence(target, manifestIdentity, trusted);
+    expect(readPreparedImageEvidence(target, manifestIdentity)).toEqual(
+      evidence,
+    );
+    expect(readFileSync(target).byteLength).toBe(persistedBytes);
   });
 
   it("retires stale authority before later preparation work can fail", async () => {

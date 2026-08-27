@@ -81,8 +81,12 @@ const runMode = async (mode, interrupt) => {
 };
 
 const failure = await runMode("failure", false);
+const preparedAuthority = {
+  baseImageIdentity: failure.baseImageIdentity,
+  mockServerImageIdentity: failure.mockServerImageIdentity,
+};
 if (
-  compileIsolationEvidence(failure).outcome !== "failed" ||
+  compileIsolationEvidence(failure, preparedAuthority).outcome !== "failed" ||
   failure.evidenceVersion !== 2 ||
   failure.cleanup?.outcome !== "complete" ||
   Object.values(failure.cleanup.remaining ?? {}).some((count) => count !== 0)
@@ -119,10 +123,17 @@ for (const substitution of [
     ...failure,
     builtImageDigest: null,
   },
+  {
+    ...failure,
+    baseImageIdentity: {
+      ...failure.baseImageIdentity,
+      manifestDigest: `sha256:${"f".repeat(64)}`,
+    },
+  },
 ]) {
   let rejected = false;
   try {
-    compileIsolationEvidence(substitution);
+    compileIsolationEvidence(substitution, preparedAuthority);
   } catch {
     rejected = true;
   }
@@ -175,6 +186,8 @@ const cleanupBoundaryPlan = createIsolationPlan({
     scenarioNetworkPolicy: "offline-no-package-or-registry-download",
   },
   runToken: "0123456789abcdef",
+  baseImageIdentity: failure.baseImageIdentity,
+  mockServerImageIdentity: failure.mockServerImageIdentity,
   selection: failure.executionPolicy.selection,
   maximumParallelScenarios: failure.executionPolicy.maximumParallelScenarios,
   scenarioTimeoutMilliseconds:

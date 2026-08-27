@@ -258,6 +258,10 @@ export interface IsolationPlan {
 export type IsolationExecutionPolicy = z.infer<typeof executionPolicySchema>;
 export type IsolationCleanupInventory = z.infer<typeof cleanupInventorySchema>;
 export type PreparedImageIdentity = z.infer<typeof preparedImageIdentitySchema>;
+export interface PreparedImageAuthority {
+  readonly baseImageIdentity: PreparedImageIdentity;
+  readonly mockServerImageIdentity: PreparedImageIdentity;
+}
 
 const isolationEvidenceSchema = z
   .strictObject({
@@ -344,9 +348,28 @@ export const compileIsolationExecutionPolicy = (
 
 export const compileIsolationEvidence = (
   input: unknown,
+  authority?: PreparedImageAuthority,
 ): Readonly<IsolationEvidence> => {
   const parsed = isolationEvidenceSchema.safeParse(input);
-  if (!parsed.success) throw new Error("integration.isolation.evidence");
+  const parsedAuthority =
+    authority === undefined
+      ? undefined
+      : z
+          .strictObject({
+            baseImageIdentity: preparedImageIdentitySchema,
+            mockServerImageIdentity: preparedImageIdentitySchema,
+          })
+          .safeParse(authority);
+  if (
+    !parsed.success ||
+    (parsedAuthority !== undefined &&
+      (!parsedAuthority.success ||
+        JSON.stringify(parsed.data.baseImageIdentity) !==
+          JSON.stringify(parsedAuthority.data.baseImageIdentity) ||
+        JSON.stringify(parsed.data.mockServerImageIdentity) !==
+          JSON.stringify(parsedAuthority.data.mockServerImageIdentity)))
+  )
+    throw new Error("integration.isolation.evidence");
   return deepFreeze(structuredClone(parsed.data));
 };
 
@@ -515,31 +538,37 @@ export const executeIsolationPlan = async (
     : removalFailureCount === 0 && remainingCount === 0
       ? ("complete" as const)
       : ("failed" as const);
-  const evidence = compileIsolationEvidence({
-    evidenceVersion: 2,
-    runId: plan.runId,
-    scenarioId: plan.scenarioId,
-    manifestIdentity: plan.manifestIdentity,
-    candidateBundleIdentity: plan.candidateBundleIdentity,
-    candidateRevision: plan.candidateRevision,
-    baseImage: plan.baseImage,
-    mockServerImage: plan.mockServerImage,
-    baseImageIdentity: plan.baseImageIdentity,
-    mockServerImageIdentity: plan.mockServerImageIdentity,
-    builtImageDigest: imageDigest ?? null,
-    builtMockServerImageDigest: mockServerImageDigest ?? null,
-    networkMode: "internal-only" as const,
-    hostMountCount: 0 as const,
-    readOnlyRootFilesystem: true as const,
-    tmpfsMounts: plan.tmpfsMounts,
-    executionPolicy,
-    cleanup: {
-      outcome: cleanupOutcome,
-      removalFailureCount,
-      remaining: cleanupInventory,
+  const evidence = compileIsolationEvidence(
+    {
+      evidenceVersion: 2,
+      runId: plan.runId,
+      scenarioId: plan.scenarioId,
+      manifestIdentity: plan.manifestIdentity,
+      candidateBundleIdentity: plan.candidateBundleIdentity,
+      candidateRevision: plan.candidateRevision,
+      baseImage: plan.baseImage,
+      mockServerImage: plan.mockServerImage,
+      baseImageIdentity: plan.baseImageIdentity,
+      mockServerImageIdentity: plan.mockServerImageIdentity,
+      builtImageDigest: imageDigest ?? null,
+      builtMockServerImageDigest: mockServerImageDigest ?? null,
+      networkMode: "internal-only" as const,
+      hostMountCount: 0 as const,
+      readOnlyRootFilesystem: true as const,
+      tmpfsMounts: plan.tmpfsMounts,
+      executionPolicy,
+      cleanup: {
+        outcome: cleanupOutcome,
+        removalFailureCount,
+        remaining: cleanupInventory,
+      },
+      outcome: workOutcome,
     },
-    outcome: workOutcome,
-  });
+    {
+      baseImageIdentity: plan.baseImageIdentity,
+      mockServerImageIdentity: plan.mockServerImageIdentity,
+    },
+  );
   await driver.recordEvidence(evidence);
   if (cleanupOutcome !== "complete") {
     throw new Error("integration.isolation.cleanup");

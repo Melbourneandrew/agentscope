@@ -26,8 +26,10 @@ import {
   verifyPreparedCandidate,
 } from "./dist/index.js";
 import {
+  buildPreparedDockerImage,
   closePreparedDockerClient,
   createPreparedDockerClient,
+  IMAGE_PREPARATION_LIMITS,
   prepareDockerInvocation,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
@@ -398,13 +400,6 @@ const preparedImageFor = async (image, signal) => {
   )
     throw new Error("integration.isolation.base-image");
 };
-const inspectImage = async (tag, signal) => {
-  const { stdout } = await dockerWithSignal(
-    ["image", "inspect", "--format", "{{.Id}}", tag],
-    signal,
-  );
-  return stdout.trim().replace(":", "-");
-};
 const inspectDockerRuntimeIdentity = async (signal) => {
   const [{ stdout: versionOutput }, { stdout: infoOutput }] = await Promise.all(
     [
@@ -452,44 +447,40 @@ const inspectDockerRuntimeIdentity = async (signal) => {
 const buildImage = async (plan, signal) => {
   await preparedImageFor(plan.baseImage, signal);
   const context = stageBuildContext(plan);
-  await dockerWithSignal(
-    [
-      "build",
-      "--network",
-      "none",
-      "--pull=false",
-      ...labelArguments(plan),
-      "--build-arg",
-      `BASE_IMAGE=${plan.baseImage}`,
-      "--tag",
-      plan.imageTag,
-      context,
-    ],
+  return buildPreparedDockerImage(preparedDockerClient, {
+    buildArguments: { BASE_IMAGE: plan.baseImage },
+    context,
+    dockerfile: "Dockerfile",
+    labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": plan.runId,
+    },
+    maximumMilliseconds: Math.min(
+      scenarioTimeoutMilliseconds,
+      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+    ),
     signal,
-  );
-  return inspectImage(plan.imageTag, signal);
+    tag: plan.imageTag,
+  });
 };
 const buildMockServerImage = async (plan, signal) => {
   await preparedImageFor(plan.mockServerImage, signal);
   const context = resolve(artifactsRoot, "contexts", plan.runId);
-  await dockerWithSignal(
-    [
-      "build",
-      "--network",
-      "none",
-      "--pull=false",
-      ...labelArguments(plan),
-      "--file",
-      resolve(context, "MockServer.Dockerfile"),
-      "--build-arg",
-      `MOCKSERVER_IMAGE=${plan.mockServerImage}`,
-      "--tag",
-      plan.mockServerImageTag,
-      context,
-    ],
+  return buildPreparedDockerImage(preparedDockerClient, {
+    buildArguments: { MOCKSERVER_IMAGE: plan.mockServerImage },
+    context,
+    dockerfile: "MockServer.Dockerfile",
+    labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": plan.runId,
+    },
+    maximumMilliseconds: Math.min(
+      scenarioTimeoutMilliseconds,
+      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+    ),
     signal,
-  );
-  return inspectImage(plan.mockServerImageTag, signal);
+    tag: plan.mockServerImageTag,
+  });
 };
 const createNetwork = async (plan, signal) => {
   await dockerWithSignal(
@@ -685,7 +676,10 @@ const runScenario = async (plan, signal) => {
   }
 };
 const recordEvidence = async (evidence) => {
-  const verifiedEvidence = compileIsolationEvidence(evidence);
+  const verifiedEvidence = compileIsolationEvidence(evidence, {
+    baseImageIdentity: preparedIdentityFor(evidence.baseImage),
+    mockServerImageIdentity: preparedIdentityFor(evidence.mockServerImage),
+  });
   const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
   mkdirSync(directory, { recursive: true });
   writeFileSync(

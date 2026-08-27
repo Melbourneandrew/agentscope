@@ -7,6 +7,7 @@ export interface DockerSocketIdentity {
 }
 
 export interface ImagePreparationRequest {
+  body?: Buffer;
   deadline: number;
   headers: Readonly<Record<string, string>>;
   method: "GET" | "POST";
@@ -132,14 +133,34 @@ export declare const prepareDockerInvocation: (
   }>
 >;
 
+export declare const createBoundedBuildContext: (root: string) => Buffer;
+
+export declare const buildPreparedDockerImage: (
+  client: PreparedDockerClient,
+  options: Readonly<{
+    buildArguments: Readonly<Record<string, string>>;
+    context: string;
+    dockerfile: string;
+    labels: Readonly<Record<string, string>>;
+    maximumMilliseconds: number;
+    signal?: AbortSignal;
+    tag: string;
+  }>,
+) => Promise<string>;
+
 export declare const closePreparedDockerClient: (
   client: PreparedDockerClient,
 ) => void;
+
+export declare const probePinnedRegistryTlsForTesting: (
+  origin: URL,
+) => Promise<ImagePreparationResponse>;
 
 export declare const publishPreparedImageEvidence: (
   target: string,
   manifestIdentity: string,
   prepared: PreparedDockerImageSet,
+  options?: Readonly<{ maximumEvidenceBytesForTesting?: number }>,
 ) => void;
 
 export declare const retirePreparedImageEvidence: (target: string) => void;
