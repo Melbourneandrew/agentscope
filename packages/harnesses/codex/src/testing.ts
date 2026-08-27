@@ -134,7 +134,28 @@ export const codexSanitizedFixture: HarnessSanitizedFixture =
       },
       review: {
         status: "approved",
-        records: ["pending:privacy-review", "pending:redistribution-review"],
+        records: [
+          {
+            role: "privacy",
+            reviewTaskIdentity: "/root/fixture_privacy_review",
+            reviewExecutionIdentity: "0121b836-a980-4925-a860-f7b119e7d494",
+            reviewedHeadSha: "f0e39d9f236f037480a550e5489c26617967e231",
+            reviewedFixtureBlobSha: "263c20620d0eff0e5c18474f001c0a72cfc05735",
+            submittedAt: "2026-08-27T16:37:55.000Z",
+            reference:
+              "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5442225578",
+          },
+          {
+            role: "redistribution",
+            reviewTaskIdentity: "/root/fixture_redistribution_review",
+            reviewExecutionIdentity: "0198ab26-93c8-4a96-9f0d-b8e6107d5a33",
+            reviewedHeadSha: "f0e39d9f236f037480a550e5489c26617967e231",
+            reviewedFixtureBlobSha: "263c20620d0eff0e5c18474f001c0a72cfc05735",
+            submittedAt: "2026-08-27T16:41:16.000Z",
+            reference:
+              "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5442264930",
+          },
+        ],
       },
       representative: {
         scenarioId: "codex-exec-jsonl-v1",
