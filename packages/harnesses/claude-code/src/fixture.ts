@@ -41,7 +41,28 @@ export const claudeCodeFixture = {
     },
     review: {
       status: "approved",
-      reviewedAt: "2026-08-26",
+      records: [
+        {
+          role: "privacy",
+          reviewTaskIdentity: "/root/claude_fixture_privacy_review",
+          reviewExecutionIdentity: "01a04414-c0d1-7400-92c3-bcdb35e17cdd",
+          reviewedHeadSha: "25dbf34b89725a7f0b2df6f1065dbd892c6eff5b",
+          reviewedFixtureBlobSha: "e0283cb19c0e638099174c9cedb3e58c1e1439da",
+          submittedAt: "2026-08-27T16:40:38.000Z",
+          reference:
+            "https://github.com/Melbourneandrew/agentscope/pull/94#pullrequestreview-5043279170",
+        },
+        {
+          role: "redistribution",
+          reviewTaskIdentity: "/root/claude_fixture_redistribution_review",
+          reviewExecutionIdentity: "01a04419-599e-7ac0-9eb8-dee9cedc3679",
+          reviewedHeadSha: "25dbf34b89725a7f0b2df6f1065dbd892c6eff5b",
+          reviewedFixtureBlobSha: "e0283cb19c0e638099174c9cedb3e58c1e1439da",
+          submittedAt: "2026-08-27T16:45:59.000Z",
+          reference:
+            "https://github.com/Melbourneandrew/agentscope/pull/94#pullrequestreview-5043329394",
+        },
+      ],
     },
     representative: {
       scenarioId: CLAUDE_CODE_SCENARIO_ID,
