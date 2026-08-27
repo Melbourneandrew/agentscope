@@ -498,6 +498,20 @@ function validateKindSequence(plan, admission) {
   }
 }
 
+function validateResourceIdentityTuple(plan) {
+  const fresh = plan.currentWorkerVersionId === "absent";
+  if (
+    (fresh &&
+      (plan.durableObjectNamespaceId !== "absent" ||
+        plan.currentMigrationTag !== "absent")) ||
+    (!fresh &&
+      (plan.durableObjectNamespaceId === "absent" ||
+        plan.currentMigrationTag === "absent"))
+  ) {
+    throw new Error("plan resource identities are not a coherent tuple");
+  }
+}
+
 function validatePlanIdentity(plan, context) {
   const {
     admission,
@@ -507,6 +521,7 @@ function validatePlanIdentity(plan, context) {
     profileBytes,
     observation,
   } = context;
+  validateResourceIdentityTuple(plan);
   if (
     plan.schemaVersion !== 1 ||
     !allowedActions(plan.kind) ||

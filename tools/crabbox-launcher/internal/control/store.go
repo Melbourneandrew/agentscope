@@ -414,8 +414,13 @@ func (store Store) privateKey(role string, passphrase []byte) (ed25519.PrivateKe
 }
 
 func (store Store) SignAuthorization(planData []byte, plan Plan, now time.Time, passphrase []byte) (Authorization, error) {
-	if store.IsRetired() {
-		return Authorization{}, errors.New("E_ENVIRONMENT_RETIRED")
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return Authorization{}, err
+	}
+	defer releaseAdmissionGuard(guard)
+	if err := store.requireActiveLocked(); err != nil {
+		return Authorization{}, err
 	}
 	installation, err := store.LoadInstallation()
 	if err != nil {
@@ -443,6 +448,22 @@ func (store Store) SignAuthorization(planData []byte, plan Plan, now time.Time, 
 	defer zeroBytes(privateKey)
 	authorization.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
 	return authorization, nil
+}
+
+func (store Store) BuildPlan(input PlanBuildInput) (Plan, error) {
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return Plan{}, err
+	}
+	defer releaseAdmissionGuard(guard)
+	if err := store.requireActiveLocked(); err != nil {
+		return Plan{}, err
+	}
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return Plan{}, err
+	}
+	return BuildPlan(installation, input)
 }
 
 func (store Store) SignObservation(data []byte, observation Observation, now time.Time, passphrase []byte) (ObservationAttestation, error) {
@@ -543,9 +564,104 @@ func (store Store) IsFrozen() bool {
 	return fenceErr == nil
 }
 
-func (store Store) IsRetired() bool {
-	_, err := os.Lstat(store.path("evidence", "retirement-finalized.json"))
-	return err == nil
+type RetirementStatus struct {
+	CloudAbsenceRecorded bool
+	Finalized            bool
+	PlanSHA256           string
+}
+
+func (store Store) RetirementStatus() (RetirementStatus, error) {
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return RetirementStatus{}, err
+	}
+	defer releaseAdmissionGuard(guard)
+	return store.retirementStatusLocked()
+}
+
+func (store Store) retirementStatusLocked() (RetirementStatus, error) {
+	var status RetirementStatus
+	installation, err := store.LoadInstallation()
+	if err != nil {
+		return status, err
+	}
+	cloudData, err := readPrivate(store.path("evidence", "retirement-cloud-absence.json"))
+	if os.IsNotExist(err) {
+		if _, finalErr := os.Lstat(store.path("evidence", "retirement-finalized.json")); finalErr == nil || !os.IsNotExist(finalErr) {
+			return status, errors.New("E_RETIREMENT_STATE")
+		}
+		return status, nil
+	}
+	if err != nil {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	var cloud SignedControlRecord
+	if strictJSON(cloudData, &cloud) != nil || cloud.Domain != RetirementDomain || cloud.RequestID != "retirement" || cloud.Disposition != "cloud-resources-absent" || !digestPattern.MatchString(cloud.PlanSHA256) || !digestPattern.MatchString(cloud.EvidenceSHA256) || verifyControlRecord(cloud, installation.Roots[JournalRole], JournalRole) != nil {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	planData, err := readPrivate(store.path("journal", cloud.PlanSHA256, "plan.json"))
+	if err != nil || SHA256(planData) != cloud.PlanSHA256 {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	var plan Plan
+	if strictJSON(planData, &plan) != nil || plan.Kind != "retire" || plan.AccountID != installation.AccountID || plan.EnvironmentID != installation.EnvironmentID || plan.AcquisitionFreezeID == nil || plan.RetirementTombstoneSHA256 == nil || cloud.EvidenceSHA256 != *plan.RetirementTombstoneSHA256 {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	if err := store.VerifyJournal(cloud.PlanSHA256); err != nil {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	last, err := store.lastEvent(cloud.PlanSHA256)
+	if err != nil || last.State != "reconciled-terminal" {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	freeze, err := store.currentFreeze()
+	if err != nil || freeze.RequestID != *plan.AcquisitionFreezeID {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	status.CloudAbsenceRecorded = true
+	status.PlanSHA256 = cloud.PlanSHA256
+
+	finalData, err := readPrivate(store.path("evidence", "retirement-finalized.json"))
+	if os.IsNotExist(err) {
+		fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
+		if fenceErr != nil || strings.TrimSpace(string(fenceData)) != cloud.PlanSHA256 {
+			return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+		}
+		return status, nil
+	}
+	if err != nil {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
+	var final SignedControlRecord
+	if strictJSON(finalData, &final) != nil || final.Domain != RetirementFinalizationDomain || final.PlanSHA256 != cloud.PlanSHA256 || final.RequestID != "credential-revocations" || final.Disposition != "finalized" || !digestPattern.MatchString(final.EvidenceSHA256) || final.RecordedAt.Before(cloud.RecordedAt) || verifyControlRecord(final, installation.Roots[RecoveryRole], RecoveryRole) != nil {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
+	entries, err := os.ReadDir(store.path("slots"))
+	if err != nil || len(entries) != 0 {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
+	if _, keyErr := os.Lstat(store.path("keys", "credential-store.key")); !os.IsNotExist(keyErr) {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
+	if _, fenceErr := os.Lstat(store.path("journal", "mutation.lock")); !os.IsNotExist(fenceErr) {
+		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	}
+	status.Finalized = true
+	return status, nil
+}
+
+func (store Store) requireActiveLocked() error {
+	status, err := store.retirementStatusLocked()
+	if err != nil {
+		return err
+	}
+	if status.Finalized {
+		return errors.New("E_ENVIRONMENT_RETIRED")
+	}
+	if status.CloudAbsenceRecorded {
+		return errors.New("E_RETIREMENT_FINALIZATION_REQUIRED")
+	}
+	return nil
 }
 
 func (store Store) currentFreeze() (SignedControlRecord, error) {
@@ -584,14 +700,14 @@ func (store Store) Thaw(evidenceSHA256 string, now time.Time, passphrase []byte)
 	if !digestPattern.MatchString(evidenceSHA256) {
 		return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
 	}
-	if store.IsRetired() {
-		return SignedControlRecord{}, errors.New("E_ENVIRONMENT_RETIRED")
-	}
 	guard, err := store.acquireAdmissionGuard()
 	if err != nil {
 		return SignedControlRecord{}, err
 	}
 	defer releaseAdmissionGuard(guard)
+	if err := store.requireActiveLocked(); err != nil {
+		return SignedControlRecord{}, err
+	}
 	installation, err := store.LoadInstallation()
 	if err != nil {
 		return SignedControlRecord{}, err
@@ -1052,9 +1168,6 @@ var credentialRoles = map[string]*string{
 func stringPointer(value string) *string { return &value }
 
 func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion string, value []byte, now time.Time) (SlotMetadata, error) {
-	if store.IsRetired() {
-		return SlotMetadata{}, errors.New("E_ENVIRONMENT_RETIRED")
-	}
 	if len(value) < 16 || len(value) > 8192 || !identifierPattern.MatchString(slotID) || !identifierPattern.MatchString(slotVersion) {
 		return SlotMetadata{}, errors.New("E_SLOT_VALUE")
 	}
@@ -1067,6 +1180,9 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 		return SlotMetadata{}, err
 	}
 	defer releaseAdmissionGuard(guard)
+	if err := store.requireActiveLocked(); err != nil {
+		return SlotMetadata{}, err
+	}
 	directory := store.path("slots", slotID)
 	if err := os.Mkdir(directory, 0o700); err != nil && !os.IsExist(err) {
 		return SlotMetadata{}, err

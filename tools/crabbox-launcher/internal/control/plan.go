@@ -52,7 +52,8 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 	if migration == "" {
 		migration = "absent"
 	}
-	if currentVersion != "absent" && (namespace == "absent" || migration == "absent") {
+	fresh := currentVersion == "absent"
+	if (fresh && (namespace != "absent" || migration != "absent")) || (!fresh && (namespace == "absent" || migration == "absent")) {
 		return Plan{}, errors.New("E_PLAN_BUILD_RESOURCE_IDENTITY")
 	}
 	profile := installation.LiveProfileSHA256

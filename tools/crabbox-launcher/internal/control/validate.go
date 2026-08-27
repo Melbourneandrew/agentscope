@@ -87,6 +87,10 @@ func validatePlanIdentity(plan Plan, installation Installation, now time.Time) e
 	if plan.SourceCommit != installation.CoordinatorCommit || !identifierPattern.MatchString(plan.ObservationID) || !identifierPattern.MatchString(plan.CurrentWorkerVersionID) || !identifierPattern.MatchString(plan.DurableObjectNamespaceID) || !identifierPattern.MatchString(plan.CurrentMigrationTag) {
 		return errors.New("E_PLAN_RESOURCE_IDENTITY")
 	}
+	fresh := plan.CurrentWorkerVersionID == "absent"
+	if (fresh && (plan.DurableObjectNamespaceID != "absent" || plan.CurrentMigrationTag != "absent")) || (!fresh && (plan.DurableObjectNamespaceID == "absent" || plan.CurrentMigrationTag == "absent")) {
+		return errors.New("E_PLAN_RESOURCE_IDENTITY")
+	}
 	requiresCompatibleVersion := plan.Kind == "rollback" || (plan.Kind == "deploy" && plan.CurrentWorkerVersionID != "absent")
 	if (requiresCompatibleVersion && !digestPattern.MatchString(plan.CompatibleVersionDetailSHA256)) || (!requiresCompatibleVersion && plan.CompatibleVersionDetailSHA256 != "none") {
 		return errors.New("E_PLAN_COMPATIBLE_VERSION")

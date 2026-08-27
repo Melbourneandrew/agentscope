@@ -94,8 +94,8 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err != nil {
 		return err
 	}
-	if store.IsRetired() {
-		return errors.New("E_ENVIRONMENT_RETIRED")
+	if err := store.requireActiveLocked(); err != nil {
+		return err
 	}
 	credentialSetSHA256, err := store.credentialBindingSHA256()
 	if err != nil {

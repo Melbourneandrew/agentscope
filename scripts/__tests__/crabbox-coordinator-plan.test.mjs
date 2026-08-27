@@ -324,6 +324,23 @@ test("rejects an altered canonical admission identity", async () => {
   assert.match(result.stderr, /canonical policy/);
 });
 
+test("rejects orphaned deployment resource identity tuples", async () => {
+  const item = await fixture();
+  for (const change of [
+    { durableObjectNamespaceId: "namespace-orphan" },
+    { currentMigrationTag: "v1" },
+  ]) {
+    await item.writePlan({
+      ...item.plan,
+      ...change,
+      intendedTerminalStateSha256: "__canonical__",
+    });
+    const result = run(item.args);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /coherent tuple/);
+  }
+});
+
 test("rejects an incomplete deployment profile", async () => {
   const item = await fixture();
   const profileIndex = item.args.indexOf("--profile") + 1;

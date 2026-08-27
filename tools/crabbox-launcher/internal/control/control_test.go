@@ -460,6 +460,22 @@ func TestFreshDeployAdmitsWorkerBeforeSecretMutations(t *testing.T) {
 	if err != nil || len(plan.Operations) != 4 || plan.Operations[0].Action != "worker.deploy" {
 		t.Fatalf("fresh plan: %v %#v", err, plan.Operations)
 	}
+	orphanNamespace := freshWorkerState(item.installation.AccountID, item.now)
+	orphanNamespace.Surfaces["durableObjects"] = []any{map[string]any{"id": "namespace-orphan", "script": WorkerName, "class": "FleetDurableObject"}}
+	if _, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: orphanNamespace, ObservationID: "observation-orphan", Slots: slots, Now: item.now}); err == nil || !strings.Contains(err.Error(), "E_PLAN_BUILD_RESOURCE_IDENTITY") {
+		t.Fatalf("orphan namespace admitted by builder: %v", err)
+	}
+	orphanMigration := freshWorkerState(item.installation.AccountID, item.now)
+	orphanMigration.Surfaces["workerSettings"] = map[string]any{"migrations": map[string]any{"new_tag": "v1"}}
+	if _, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: orphanMigration, ObservationID: "observation-orphan", Slots: slots, Now: item.now}); err == nil || !strings.Contains(err.Error(), "E_PLAN_BUILD_RESOURCE_IDENTITY") {
+		t.Fatalf("orphan migration admitted by builder: %v", err)
+	}
+	contradictory := plan
+	contradictory.DurableObjectNamespaceID = "namespace-orphan"
+	contradictory.IntendedTerminalStateSHA256 = terminalContractSHA256(contradictory)
+	if err := ValidatePlanCandidate(contradictory, item.installation, item.now); err == nil || !strings.Contains(err.Error(), "E_PLAN_RESOURCE_IDENTITY") {
+		t.Fatalf("orphan namespace admitted by candidate validator: %v", err)
+	}
 	targetEquivalent := plan
 	targetEquivalent.CurrentMigrationTag = "v1"
 	if terminalContractSHA256(plan) != terminalContractSHA256(targetEquivalent) {
@@ -1263,6 +1279,10 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	if err != nil || record.Disposition != "finalized" {
 		t.Fatalf("retirement finalization: %v %#v", err, record)
 	}
+	retirementStatus, err := item.store.RetirementStatus()
+	if err != nil || !retirementStatus.CloudAbsenceRecorded || !retirementStatus.Finalized || retirementStatus.PlanSHA256 != planDigest {
+		t.Fatalf("authenticated retirement status: %v %#v", err, retirementStatus)
+	}
 	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); !os.IsNotExist(err) {
 		t.Fatal("finalized retirement retained mutation fence")
 	}
@@ -1284,6 +1304,62 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	}
 	if _, err := item.store.FinalizeRetirement(planDigest, "different-deployment-revocation", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(2*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_FENCE") {
 		t.Fatalf("finalized retirement accepted changed evidence: %v", err)
+	}
+	if err := os.WriteFile(item.store.path("evidence", "retirement-finalized.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.RetirementStatus(); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+		t.Fatalf("malformed finalization claimed terminal status: %v", err)
+	}
+	if _, err := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-deployment", "malformed-slot", "v1", []byte(strings.Repeat("x", 32)), item.now.Add(3*time.Second)); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+		t.Fatalf("malformed retirement evidence did not fail closed: %v", err)
+	}
+}
+
+func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
+	item := newFixture(t)
+	if _, err := item.store.Freeze("freeze-1", item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	plan, data := item.retirementPlan()
+	authorization, observation, attestation := item.authority(plan, data)
+	if err := item.store.Apply(context.Background(), ApplyInput{PlanData: data, AuthorizationData: authorization, ObservationData: observation, AttestationData: attestation, RetirementEvidenceData: item.signedRetirementEvidence(plan), Now: item.now, Clock: func() time.Time { return item.now }}, &recordingExecutor{}, item.retirementObserver()); err != nil {
+		t.Fatal(err)
+	}
+	guard, err := item.store.acquireAdmissionGuard()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, enrollErr := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-deployment", "late-slot", "v1", []byte(strings.Repeat("x", 32)), item.now.Add(2*time.Second))
+		result <- enrollErr
+	}()
+	time.Sleep(25 * time.Millisecond)
+	identities := []string{"cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated"}
+	evidenceData, _ := json.Marshal(identities)
+	planDigest := SHA256(data)
+	record, err := item.store.signControlRecord(SignedControlRecord{Domain: RetirementFinalizationDomain, PlanSHA256: planDigest, RequestID: "credential-revocations", Disposition: "finalized", EvidenceSHA256: SHA256(evidenceData), RecordedAt: item.now.Add(time.Second)}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := item.store.retireLocalCredentials(); err != nil {
+		t.Fatal(err)
+	}
+	recordData, _ := json.MarshalIndent(record, "", "  ")
+	if err := writeAtomicExclusive(item.store.path("evidence", "retirement-finalized.json"), append(recordData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(item.store.path("journal", "mutation.lock")); err != nil {
+		t.Fatal(err)
+	}
+	releaseAdmissionGuard(guard)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
+		t.Fatalf("waiting enrollment crossed terminal retirement: %v", err)
+	}
+	entries, err := os.ReadDir(item.store.path("slots"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("waiting enrollment published post-retirement slot: %v %#v", err, entries)
 	}
 }
 
