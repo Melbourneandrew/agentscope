@@ -111,7 +111,8 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	operationContext, cancel := context.WithTimeout(ctx, authorityLifetime)
 	defer cancel()
 	if store.IsFrozen() && plan.Kind != "retire" {
-		if plan.Kind != "rollback" || !store.hasResolvedRecovery() {
+		freeze, freezeErr := store.currentFreeze()
+		if plan.Kind != "rollback" || freezeErr != nil || !store.hasResolvedRecovery(freeze) {
 			return errors.New("E_ACQUISITION_FROZEN")
 		}
 	}

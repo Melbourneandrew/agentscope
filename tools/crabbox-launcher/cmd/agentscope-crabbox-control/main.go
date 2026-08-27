@@ -34,7 +34,10 @@ func stateRoot() string {
 	return productionRoot
 }
 
-func verifyInstalledExecutable() {
+func verifyInstalledExecutable(ctx context.Context) {
+	if err := ctx.Err(); err != nil {
+		fail("E_COMMAND_DEADLINE")
+	}
 	installation, err := control.NewStore(stateRoot()).LoadInstallation()
 	if err != nil {
 		fail(errorCode(err))
@@ -57,6 +60,9 @@ func verifyInstalledExecutable() {
 	data, err := readBounded(physical)
 	if err != nil || control.SHA256(data) != installation.LauncherSHA256 {
 		fail("E_LAUNCHER_IDENTITY")
+	}
+	if err := ctx.Err(); err != nil {
+		fail("E_COMMAND_DEADLINE")
 	}
 }
 
@@ -352,8 +358,7 @@ func enrollSecret(args []string) {
 	emit(map[string]any{"schemaVersion": 1, "enrolled": true, "role": metadata.Role, "slotId": metadata.SlotID, "slotVersion": metadata.SlotVersion, "secretValuePresent": false})
 }
 
-func applyPlan(args []string, retirement bool) {
-	startedAt := time.Now().UTC()
+func applyPlan(args []string, retirement bool, startedAt time.Time) {
 	commandContext, cancel := context.WithDeadline(context.Background(), startedAt.Add(10*time.Minute))
 	defer cancel()
 	requireRoot()
@@ -401,7 +406,11 @@ func applyPlan(args []string, retirement bool) {
 	}
 	executor := control.CommandExecutor{AccountID: installation.AccountID, ExecutorUID: installation.ExecutorUID, ProtectedRoot: filepath.Join(stateRoot(), "toolchain"), Installation: installation, ProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.live.jsonc"), ProfileSHA256: installation.LiveProfileSHA256, TerminalProfilePath: filepath.Join(stateRoot(), "policy", "wrangler.terminal.jsonc"), TerminalProfileSHA256: installation.TerminalProfileSHA256, TerminalEntryPointPath: filepath.Join(stateRoot(), "policy", "terminal-worker.agentscope.mjs"), TerminalEntryPointSHA256: installation.TerminalEntryPointSHA256, RuntimeHome: filepath.Join(stateRoot(), "runtime"), Timeout: 5 * time.Minute}
 	input := control.ApplyInput{PlanData: values[0], AuthorizationData: values[1], ObservationData: values[2], AttestationData: values[3], RetirementEvidenceData: retirementEvidence, Now: time.Now().UTC()}
-	observer := control.CloudflareObserver{AccountID: installation.AccountID}
+	rollbackVersionID := ""
+	if plan.Kind == "rollback" && len(plan.Operations) == 1 && plan.Operations[0].VersionID != nil {
+		rollbackVersionID = *plan.Operations[0].VersionID
+	}
+	observer := control.CloudflareObserver{AccountID: installation.AccountID, RollbackVersionID: rollbackVersionID}
 	if err := commandContext.Err(); err != nil {
 		fail("E_COMMAND_DEADLINE")
 	}
@@ -423,12 +432,13 @@ func status() {
 	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanSteps": []string{"authenticate the approved personal Cloudflare account through the installed launcher", "enroll the closed credential slots", "confirm and admit an independent Free/no-overage observation", "review and authorize the exact deployment plan"}})
 }
 
-func observeState(args []string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+func observeState(args []string, startedAt time.Time) {
+	ctx, cancel := context.WithDeadline(context.Background(), startedAt.Add(20*time.Second))
 	defer cancel()
 	requireRoot()
 	flags := flag.NewFlagSet("state-observe", flag.ContinueOnError)
 	output := flags.String("output", "", "optional new raw state observation file")
+	rollbackVersion := flags.String("rollback-version", "", "optional exact Worker version detail to bind for rollback")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		fail("E_ARGUMENTS")
 	}
@@ -449,7 +459,7 @@ func observeState(args []string) {
 	if err := ctx.Err(); err != nil {
 		fail("E_COMMAND_DEADLINE")
 	}
-	observation, err := (control.CloudflareObserver{AccountID: installation.AccountID}).Observe(ctx, credential, now)
+	observation, err := (control.CloudflareObserver{AccountID: installation.AccountID, RollbackVersionID: *rollbackVersion}).Observe(ctx, credential, now)
 	if err != nil {
 		fail(errorCode(err))
 	}
@@ -628,11 +638,14 @@ func errorCode(err error) string {
 }
 
 func main() {
+	startedAt := time.Now().UTC()
+	commandContext, cancel := context.WithDeadline(context.Background(), startedAt.Add(10*time.Minute))
+	defer cancel()
 	if len(os.Args) < 2 {
 		fail("E_COMMAND")
 	}
 	if os.Args[1] != "install" {
-		verifyInstalledExecutable()
+		verifyInstalledExecutable(commandContext)
 	}
 	switch os.Args[1] {
 	case "install":
@@ -640,7 +653,7 @@ func main() {
 	case "status":
 		status()
 	case "state-observe":
-		observeState(os.Args[2:])
+		observeState(os.Args[2:], startedAt)
 	case "plan-build":
 		buildPlan(os.Args[2:])
 	case "authorize":
@@ -652,9 +665,9 @@ func main() {
 	case "credential-enroll":
 		enrollSecret(os.Args[2:])
 	case "apply":
-		applyPlan(os.Args[2:], false)
+		applyPlan(os.Args[2:], false, startedAt)
 	case "retire":
-		applyPlan(os.Args[2:], true)
+		applyPlan(os.Args[2:], true, startedAt)
 	case "freeze":
 		freeze(os.Args[2:])
 	case "recover-quarantine":

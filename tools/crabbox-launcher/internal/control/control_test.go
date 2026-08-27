@@ -105,6 +105,10 @@ func runtimeArchive(t *testing.T, files map[string][]byte) []byte {
 func pointer(value string) *string { return &value }
 
 func syntheticState(account string, step int, kind string, now time.Time) StateObservation {
+	deployedVersion := "version-current"
+	if step > 0 {
+		deployedVersion = fmt.Sprintf("version-%d", step)
+	}
 	bindings := []any{map[string]any{"name": "FLEET", "type": "durable_object_namespace", "class_name": "FleetDurableObject", "namespace_id": "namespace-1"}, map[string]any{"name": "CF_VERSION_METADATA", "type": "version_metadata"}}
 	for _, variable := range [][2]string{{"AGENTSCOPE_CRABBOX_ENVIRONMENT_ID", "asgcf_0123456789abcdef0123456789abcdef"}, {"CRABBOX_DEFAULT_ORG", "agentscope-development"}, {"CRABBOX_MAX_ACTIVE_LEASES", "4"}, {"CRABBOX_MAX_ACTIVE_LEASES_PER_ORG", "4"}, {"CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER", "4"}, {"CRABBOX_MAX_MONTHLY_USD", "25"}, {"CRABBOX_MAX_MONTHLY_USD_PER_ORG", "25"}, {"CRABBOX_MAX_MONTHLY_USD_PER_OWNER", "25"}, {"CRABBOX_RUN_RETENTION_DAYS", "30"}, {"CRABBOX_SHARED_OWNER", "agentscope-fleet-control"}} {
 		bindings = append(bindings, map[string]any{"name": variable[0], "type": "plain_text", "text": variable[1]})
@@ -112,8 +116,8 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 	surfaces := map[string]any{
 		"accountWorkers": []any{map[string]any{"id": WorkerName, "modified_on": "stable"}}, "accountWorkersDev": map[string]any{"enabled": true, "subdomain": "agentscope-dev"},
 		"durableObjects": []any{map[string]any{"id": "namespace-1", "script": WorkerName, "class": "FleetDurableObject"}}, "scriptDomains": []any{},
-		"scriptSettings": map[string]any{"logpush": false, "observability": map[string]any{"enabled": false}, "tags": []any{}, "tail_consumers": []any{}}, "workerSettings": map[string]any{"bindings": bindings, "compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"}, "migration_tag": "v1", "cache_options": map[string]any{"enabled": false}},
-		"scriptDeployments": map[string]any{"id": fmt.Sprintf("version-%d", step)}, "scriptVersions": []any{map[string]any{"id": "version-current"}, map[string]any{"id": "version-old"}},
+		"scriptSettings": map[string]any{"logpush": false, "observability": map[string]any{"enabled": false}, "tags": []any{}, "tail_consumers": []any{}}, "workerSettings": map[string]any{"bindings": bindings, "compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"}, "migrations": map[string]any{"new_tag": "v1", "new_sqlite_classes": []any{"FleetDurableObject"}}, "cache_options": map[string]any{"enabled": false}},
+		"scriptDeployments": map[string]any{"id": fmt.Sprintf("deployment-%d", step), "versions": []any{map[string]any{"version_id": deployedVersion, "percentage": 100}}}, "scriptVersions": []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "version-old", "migration_tag": "v1"}},
 		"scriptSchedules": []any{map[string]any{"cron": "*/15 * * * *"}}, "scriptSecrets": []any{}, "scriptWorkersDev": map[string]any{"enabled": true}, "scriptTails": []any{},
 	}
 	if kind == "deploy" || kind == "rotate" {
@@ -128,7 +132,7 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 			surfaces["scriptVersions"] = append(surfaces["scriptVersions"].([]any), map[string]any{"id": fmt.Sprintf("version-%d", index)})
 		}
 	} else if kind == "account" {
-		surfaces["scriptDeployments"] = map[string]any{"id": "version-current"}
+		surfaces["scriptDeployments"] = map[string]any{"id": "deployment-current", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}}
 		if step == 0 {
 			surfaces["accountWorkersDev"] = map[string]any{"absent": true}
 		} else {
@@ -136,7 +140,7 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		}
 		surfaces["scriptSecrets"] = []any{map[string]any{"name": "CRABBOX_ADMIN_TOKEN"}, map[string]any{"name": "CRABBOX_SHARED_TOKEN"}, map[string]any{"name": "HETZNER_TOKEN"}}
 	} else {
-		surfaces["scriptDeployments"] = map[string]any{"id": "version-current"}
+		surfaces["scriptDeployments"] = map[string]any{"id": "deployment-current", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}}
 		secrets := append([]string{}, canonicalSecrets...)
 		if step >= 3 {
 			secrets = secrets[1:]
@@ -161,10 +165,11 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		if step >= 6 {
 			surfaces["durableObjects"] = []any{}
 			surfaces["workerSettings"] = map[string]any{"bindings": []any{}}
-			surfaces["scriptDeployments"] = map[string]any{"id": "terminal-version"}
+			surfaces["scriptDeployments"] = map[string]any{"id": "terminal-deployment", "versions": []any{map[string]any{"version_id": "terminal-version", "percentage": 100}}}
+			surfaces["scriptVersions"] = []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "version-old", "migration_tag": "v1"}, map[string]any{"id": "terminal-version", "migration_tag": "v2-retire-fleet-durable-object"}}
 		}
 		if step >= 7 {
-			surfaces["scriptVersions"] = []any{map[string]any{"id": "terminal-version"}}
+			surfaces["scriptVersions"] = []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "terminal-version", "migration_tag": "v2-retire-fleet-durable-object"}}
 		}
 		if step >= 8 {
 			surfaces["accountWorkers"], surfaces["durableObjects"] = []any{}, []any{}
@@ -195,9 +200,10 @@ func freshDeployedState(account string, step int, now time.Time) StateObservatio
 	state := syntheticState(account, step, "deploy", now)
 	versions := []any{}
 	for index := 0; index <= step; index++ {
-		versions = append(versions, map[string]any{"id": fmt.Sprintf("version-%d", index)})
+		versions = append(versions, map[string]any{"id": fmt.Sprintf("version-%d", index), "migration_tag": "v1"})
 	}
 	state.Surfaces["scriptVersions"] = versions
+	state.Surfaces["scriptDeployments"] = map[string]any{"id": fmt.Sprintf("deployment-%d", step), "versions": []any{map[string]any{"version_id": fmt.Sprintf("version-%d", step), "percentage": 100}}}
 	return state
 }
 
@@ -502,6 +508,31 @@ func TestActionTransitionRejectsUnrelatedDriftAndWriteOnlyRotation(t *testing.T)
 	if err := ValidateActionTransition(deploy, deploy.Operations[0], fresh, deployed); err == nil || !strings.Contains(err.Error(), "E_UNRELATED_RESOURCE_DRIFT") {
 		t.Fatalf("unrelated Durable Object creation accepted: %v", err)
 	}
+	retirement, _ := item.retirementPlan()
+	deleteBefore := syntheticState(item.installation.AccountID, 2, "retire", item.now)
+	deleteAfter := syntheticState(item.installation.AccountID, 3, "retire", item.now)
+	deleteAfter.Surfaces["scriptSecrets"] = []any{}
+	if err := ValidateActionTransition(retirement, retirement.Operations[2], deleteBefore, deleteAfter); err == nil || !strings.Contains(err.Error(), "E_SECRET_UNEXPECTED_DELTA") {
+		t.Fatalf("collateral secret deletion accepted: %v", err)
+	}
+	rollbackState := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	rollbackState.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v1", "bindings": rollbackState.Surfaces["workerSettings"].(map[string]any)["bindings"]}
+	rollbackPlan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rollback", State: rollbackState, ObservationID: "observation-rollback", RollbackVersionID: "version-old", Now: item.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackBefore := rollbackState
+	rollbackAfter := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	rollbackAfter.Surfaces["rollbackVersionDetail"] = rollbackState.Surfaces["rollbackVersionDetail"]
+	rollbackAfter.Surfaces["scriptDeployments"] = map[string]any{"id": "wrong-current-deployment", "versions": []any{map[string]any{"version_id": "wrong-current-version", "percentage": 100}}, "history": []any{map[string]any{"id": "version-old"}}}
+	if err := ValidateActionTransition(rollbackPlan, rollbackPlan.Operations[0], rollbackBefore, rollbackAfter); err == nil || !strings.Contains(err.Error(), "E_ROLLBACK_NOT_OBSERVED") {
+		t.Fatalf("historical rollback identity accepted as current: %v", err)
+	}
+	incompatible := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	incompatible.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v0", "bindings": incompatible.Surfaces["workerSettings"].(map[string]any)["bindings"]}
+	if _, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rollback", State: incompatible, ObservationID: "observation-incompatible", RollbackVersionID: "version-old", Now: item.now}); err == nil || !strings.Contains(err.Error(), "E_PLAN_BUILD_VERSION_COMPATIBILITY") {
+		t.Fatalf("unobserved rollback compatibility accepted: %v", err)
+	}
 }
 
 func TestTerminalObservationCannotBorrowUnrelatedResourceFields(t *testing.T) {
@@ -544,7 +575,7 @@ func TestTerminalObservationRejectsExtraProfileAuthority(t *testing.T) {
 		t.Fatalf("tail consumer accepted: %v", err)
 	}
 	state = syntheticState(item.installation.AccountID, 4, "deploy", item.now)
-	state.Surfaces["workerSettings"].(map[string]any)["migration_tag"] = "replacement"
+	state.Surfaces["workerSettings"].(map[string]any)["migrations"].(map[string]any)["new_tag"] = "replacement"
 	if err := ValidateTerminalObservation(plan, state); err == nil || !strings.Contains(err.Error(), "E_DEPLOYMENT_MIGRATION_STATE") {
 		t.Fatalf("migration drift accepted: %v", err)
 	}
@@ -558,6 +589,25 @@ func TestTerminalObservationRejectsExtraProfileAuthority(t *testing.T) {
 	settings["bindings"] = append(settings["bindings"].([]any), settings["bindings"].([]any)[0])
 	if err := ValidateTerminalObservation(plan, state); err == nil || !strings.Contains(err.Error(), "E_DEPLOYMENT_EXTRA_BINDING") {
 		t.Fatalf("duplicate allowed binding accepted: %v", err)
+	}
+	for name, mutate := range map[string]func(StateObservation){
+		"cache enabled": func(state StateObservation) {
+			state.Surfaces["workerSettings"].(map[string]any)["cache_options"].(map[string]any)["enabled"] = "false"
+		},
+		"worker logpush": func(state StateObservation) { state.Surfaces["workerSettings"].(map[string]any)["logpush"] = "false" },
+		"worker observability": func(state StateObservation) {
+			state.Surfaces["workerSettings"].(map[string]any)["observability"] = "disabled"
+		},
+		"script logpush": func(state StateObservation) { state.Surfaces["scriptSettings"].(map[string]any)["logpush"] = "false" },
+		"observability": func(state StateObservation) {
+			state.Surfaces["scriptSettings"].(map[string]any)["observability"].(map[string]any)["enabled"] = "false"
+		},
+	} {
+		state = syntheticState(item.installation.AccountID, 4, "deploy", item.now)
+		mutate(state)
+		if err := ValidateTerminalObservation(plan, state); err == nil {
+			t.Fatalf("malformed %s accepted", name)
+		}
 	}
 }
 
@@ -1104,11 +1154,21 @@ func TestRecoveryQuarantineRequiresIntactJournalAndKeepsFence(t *testing.T) {
 	if err := item.store.ensureNoActiveMutation(); err != nil {
 		t.Fatalf("resolved exact uncertain prefix still blocks mutation: %v", err)
 	}
-	if _, err := item.store.Thaw(strings.Repeat("7", 64), item.now.Add(time.Second), syntheticOperatorPassphrase); err != nil {
+	resolvedEvidence := strings.Repeat("8", 64)
+	if _, err := item.store.Thaw(resolvedEvidence, item.now.Add(time.Second), syntheticOperatorPassphrase); err != nil {
 		t.Fatalf("reviewed restoration could not re-enable acquisition: %v", err)
+	}
+	if _, err := item.store.Thaw(resolvedEvidence, item.now.Add(2*time.Second), syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("completed thaw was not idempotent: %v", err)
 	}
 	if item.store.IsFrozen() {
 		t.Fatal("reviewed restoration retained acquisition freeze")
+	}
+	if _, err := item.store.Freeze("unrelated-later-freeze", item.now.Add(3*time.Second), syntheticOperatorPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.Thaw(resolvedEvidence, item.now.Add(4*time.Second), syntheticOperatorPassphrase); err == nil || !strings.Contains(err.Error(), "E_THAW_PREREQUISITE") {
+		t.Fatalf("historical recovery thawed an unrelated freeze: %v", err)
 	}
 	first := item.store.path("journal", digest, "000000-consumed.json")
 	if err := os.WriteFile(first, []byte("corrupt"), 0o600); err != nil {
@@ -1145,6 +1205,28 @@ func TestRecoveryClassifiesCrashAfterConsumeBeforeFenceAsDefiniteNoncommit(t *te
 	}
 	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); !os.IsNotExist(err) {
 		t.Fatal("definite noncommit retained matching fence")
+	}
+}
+
+func TestRecoveryRemovesMalformedPreInvocationFence(t *testing.T) {
+	item := newFixture(t)
+	_, data := item.plan()
+	digest := SHA256(data)
+	if _, err := item.store.consumePlan(digest, data, item.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(item.store.path("journal", "mutation.lock"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evidence := strings.Repeat("d", 64)
+	if _, err := item.store.RecoverQuarantine(digest, "plan", evidence, item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.ResolveQuarantine(digest, "plan", evidence, item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("malformed pre-invocation fence was not recoverable: %v", err)
+	}
+	if _, err := os.Stat(item.store.path("journal", "mutation.lock")); !os.IsNotExist(err) {
+		t.Fatal("malformed recovered fence survived")
 	}
 }
 
@@ -1381,6 +1463,9 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 	var requests []*http.Request
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests = append(requests, request.Clone(request.Context()))
+		if strings.HasSuffix(request.URL.Path, "/versions/version-old") {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"id":"version-old","migration_tag":"v1","bindings":[]},"errors":[],"messages":[]}`)), Header: http.Header{}, Request: request}, nil
+		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"id":"version-current","namespace_id":"namespace-1","tag":"v1"},"errors":[],"messages":[],"result_info":{"page":1,"per_page":1000,"total_pages":1}}`)), Header: http.Header{}}, nil
 	})}
 	observer := CloudflareObserver{AccountID: "account-1", Client: client}
@@ -1393,6 +1478,14 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 			t.Fatalf("unclosed observation request: %s %s", request.Method, request.URL.String())
 		}
 	}
+	requests = nil
+	observer.RollbackVersionID = "version-old"
+	state, err = observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC())
+	detail, detailOK := state.Surfaces["rollbackVersionDetail"].(map[string]any)
+	if err != nil || len(requests) != 13 || !detailOK || fmt.Sprint(detail["id"]) != "version-old" {
+		t.Fatalf("rollback detail observation failed: %v requests=%d detail=%#v", err, len(requests), detail)
+	}
+	observer.RollbackVersionID = ""
 	observer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":false,"result":null,"errors":[{"code":1}]}`)), Header: http.Header{}}, nil
 	})}

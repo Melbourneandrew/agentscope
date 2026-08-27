@@ -38,10 +38,16 @@ func TestUIDProcessSetContainsImmediateDetachedChild(t *testing.T) {
 	if err := os.Chmod(helperRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chown(helperRoot, uid, -1); err != nil {
+		t.Fatal(err)
+	}
 	helperPath := filepath.Join(helperRoot, "control.test")
 	helperData, err := os.ReadFile(os.Args[0])
 	if err != nil || os.WriteFile(helperPath, helperData, 0o755) != nil {
 		t.Fatal("copying detached helper into uid-readable root")
+	}
+	if err := os.Chown(helperPath, uid, -1); err != nil {
+		t.Fatal(err)
 	}
 	helper := exec.Command(helperPath, "-test.run=TestUIDProcessSetContainsImmediateDetachedChild")
 	helper.Env = append(os.Environ(), "AGENTSCOPE_UID_DETACH_HELPER=1")

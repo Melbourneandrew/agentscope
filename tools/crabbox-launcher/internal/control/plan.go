@@ -39,7 +39,7 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
-	currentVersion := currentDeploymentID(input.State.Surfaces["scriptDeployments"])
+	currentVersion := currentWorkerVersionID(input.State.Surfaces["scriptDeployments"])
 	if currentVersion == "" {
 		currentVersion = "absent"
 	}
@@ -94,6 +94,10 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 	case "rollback":
 		if !identifierPattern.MatchString(input.RollbackVersionID) || input.RollbackVersionID == "latest" {
 			return Plan{}, errors.New("E_PLAN_BUILD_VERSION")
+		}
+		detail, ok := input.State.Surfaces["rollbackVersionDetail"].(map[string]any)
+		if !ok || fmt.Sprint(detail["id"]) != input.RollbackVersionID || currentMigrationTag(detail) != migration || !bindingPresent(detail, "FLEET", "FleetDurableObject", namespace) {
+			return Plan{}, errors.New("E_PLAN_BUILD_VERSION_COMPATIBILITY")
 		}
 		version, tag := input.RollbackVersionID, migration
 		plan.Operations = []Operation{{Action: "worker.rollback", Target: WorkerName, RequestID: request("rollback"), VersionID: &version, CompatibleMigrationTag: &tag}}
@@ -188,6 +192,22 @@ func currentDeploymentID(value any) string {
 	return ""
 }
 
+func currentWorkerVersionID(value any) string {
+	item, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	deployments := objectSlice(item["deployments"])
+	if len(deployments) > 0 {
+		item = deployments[0]
+	}
+	versions := objectSlice(item["versions"])
+	if len(versions) != 1 || fmt.Sprint(versions[0]["percentage"]) != "100" {
+		return ""
+	}
+	return fmt.Sprint(versions[0]["version_id"])
+}
+
 func currentNamespaceID(value any) string {
 	for _, item := range objectSlice(value) {
 		if fmt.Sprint(item["script"]) == WorkerName || fmt.Sprint(item["class"]) == "FleetDurableObject" {
@@ -204,6 +224,11 @@ func currentMigrationTag(value any) string {
 	}
 	if tag := fmt.Sprint(settings["migration_tag"]); tag != "" && tag != "<nil>" {
 		return tag
+	}
+	if migration, ok := settings["migrations"].(map[string]any); ok {
+		if tag := fmt.Sprint(migration["new_tag"]); tag != "" && tag != "<nil>" {
+			return tag
+		}
 	}
 	if migrations := objectSlice(settings["migrations"]); len(migrations) > 0 {
 		return fmt.Sprint(migrations[len(migrations)-1]["tag"])

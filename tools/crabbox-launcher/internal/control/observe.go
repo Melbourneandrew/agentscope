@@ -44,8 +44,9 @@ type StateObserver interface {
 }
 
 type CloudflareObserver struct {
-	AccountID string
-	Client    *http.Client
+	AccountID         string
+	RollbackVersionID string
+	Client            *http.Client
 }
 
 type cloudflareEnvelope struct {
@@ -147,6 +148,16 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 			return StateObservation{}, err
 		}
 		surfaces[name] = value
+	}
+	if observer.RollbackVersionID != "" {
+		if !identifierPattern.MatchString(observer.RollbackVersionID) || observer.RollbackVersionID == "latest" {
+			return StateObservation{}, errors.New("E_OBSERVER_VERSION_IDENTITY")
+		}
+		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, cloudflareSurfaceRequest{base + "/workers/workers/" + WorkerName + "/versions/" + observer.RollbackVersionID, false})
+		if err != nil {
+			return StateObservation{}, err
+		}
+		surfaces["rollbackVersionDetail"] = value
 	}
 	unrelated := map[string]any{}
 	for _, worker := range objectSlice(surfaces["accountWorkers"]) {
@@ -270,7 +281,8 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 		return errors.New("E_DEPLOYMENT_SECRET_STATE")
 	}
 	schedules := objectSlice(state.Surfaces["scriptSchedules"])
-	if len(schedules) != 1 || fmt.Sprint(schedules[0]["cron"]) != "*/15 * * * *" || !bindingPresent(state.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", namespaceID) || !mapBool(state.Surfaces["scriptWorkersDev"], "enabled") || mapBool(state.Surfaces["scriptWorkersDev"], "previews_enabled") {
+	workersDev, workersDevOK := state.Surfaces["scriptWorkersDev"].(map[string]any)
+	if len(schedules) != 1 || fmt.Sprint(schedules[0]["cron"]) != "*/15 * * * *" || !bindingPresent(state.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", namespaceID) || !workersDevOK || !allowedObjectKeys(workersDev, "enabled", "previews_enabled") || !exactBoolean(workersDev, "enabled", true) || !optionalBoolean(workersDev, "previews_enabled", false) {
 		return errors.New("E_DEPLOYMENT_PROFILE_STATE")
 	}
 	if !collectionEmpty(state.Surfaces["scriptTails"]) || unsafeDiagnosticSettings(state.Surfaces["scriptSettings"]) {
@@ -297,32 +309,21 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 	if !ok {
 		return errors.New("E_DEPLOYMENT_SETTINGS_SCHEMA")
 	}
-	allowedSettingKeys := map[string]bool{"bindings": true, "compatibility_date": true, "compatibility_flags": true, "cache_options": true, "limits": true, "logpush": true, "migrations": true, "migration_tag": true, "observability": true, "placement": true, "tags": true, "tail_consumers": true, "usage_model": true}
+	allowedSettingKeys := map[string]bool{"bindings": true, "compatibility_date": true, "compatibility_flags": true, "cache_options": true, "limits": true, "logpush": true, "migrations": true, "observability": true, "placement": true, "tags": true, "tail_consumers": true, "usage_model": true}
 	for key := range settings {
 		if !allowedSettingKeys[key] {
 			return errors.New("E_DEPLOYMENT_EXTRA_WORKER_SETTING")
 		}
 	}
-	if fmt.Sprint(settings["compatibility_date"]) != "2026-04-30" || !sameStringSet(stringSlice(settings["compatibility_flags"]), []string{"nodejs_compat"}) || cacheEnabled(settings["cache_options"]) {
+	cache, cacheOK := settings["cache_options"].(map[string]any)
+	if fmt.Sprint(settings["compatibility_date"]) != "2026-04-30" || !sameStringSet(stringSlice(settings["compatibility_flags"]), []string{"nodejs_compat"}) || !cacheOK || !exactObjectKeys(cache, "enabled") || !exactBoolean(cache, "enabled", false) {
 		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
 	}
-	if cache, exists := settings["cache_options"].(map[string]any); exists && !exactObjectKeys(cache, "enabled") {
+	if !collectionEmpty(settings["limits"]) || !optionalBoolean(settings, "logpush", false) || !optionalDisabledObservability(settings) || !collectionEmpty(settings["placement"]) || !collectionEmpty(settings["tags"]) || !collectionEmpty(settings["tail_consumers"]) || (settings["usage_model"] != nil && fmt.Sprint(settings["usage_model"]) != "standard") {
 		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
 	}
-	if !collectionEmpty(settings["limits"]) || mapBool(settings, "logpush") || unsafeDiagnosticSettings(settings) || !collectionEmpty(settings["placement"]) || !collectionEmpty(settings["tags"]) || !collectionEmpty(settings["tail_consumers"]) || (settings["usage_model"] != nil && fmt.Sprint(settings["usage_model"]) != "standard") {
-		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
-	}
-	_, hasMigrationTag := settings["migration_tag"]
-	migrations, hasMigrations := settings["migrations"]
-	if hasMigrationTag == hasMigrations {
-		return errors.New("E_DEPLOYMENT_MIGRATION_STATE")
-	}
-	migrationValid := hasMigrationTag && fmt.Sprint(settings["migration_tag"]) == "v1"
-	if hasMigrations {
-		items := objectSlice(migrations)
-		migrationValid = len(items) == 1 && fmt.Sprint(items[0]["tag"]) == "v1" && sameStringSet(stringSlice(items[0]["new_sqlite_classes"]), []string{"FleetDurableObject"}) && exactObjectKeys(items[0], "tag", "new_sqlite_classes")
-	}
-	if !migrationValid {
+	migration, hasMigration := settings["migrations"].(map[string]any)
+	if !hasMigration || !validInitialMigrationProjection(migration) {
 		return errors.New("E_DEPLOYMENT_MIGRATION_STATE")
 	}
 	bindings := objectSlice(settings["bindings"])
@@ -366,10 +367,27 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 		return errors.New("E_DEPLOYMENT_SCRIPT_SETTINGS")
 	}
 	observability, observationOK := scriptSettings["observability"].(map[string]any)
-	if !exactObjectKeys(scriptSettings, "logpush", "observability", "tags", "tail_consumers") || !observationOK || !exactObjectKeys(observability, "enabled") || mapBool(scriptSettings, "logpush") || mapBool(observability, "enabled") || !collectionEmpty(scriptSettings["tail_consumers"]) || !collectionEmpty(scriptSettings["tags"]) {
+	if !exactObjectKeys(scriptSettings, "logpush", "observability", "tags", "tail_consumers") || !observationOK || !exactObjectKeys(observability, "enabled") || !exactBoolean(scriptSettings, "logpush", false) || !exactBoolean(observability, "enabled", false) || !collectionEmpty(scriptSettings["tail_consumers"]) || !collectionEmpty(scriptSettings["tags"]) {
 		return errors.New("E_DEPLOYMENT_SCRIPT_SETTINGS")
 	}
 	return nil
+}
+
+func validInitialMigrationProjection(migration map[string]any) bool {
+	if fmt.Sprint(migration["new_tag"]) != "v1" {
+		return false
+	}
+	if oldTag, exists := migration["old_tag"]; exists && fmt.Sprint(oldTag) != "" {
+		return false
+	}
+	if classes, exists := migration["new_sqlite_classes"]; exists {
+		return allowedObjectKeys(migration, "new_tag", "old_tag", "new_sqlite_classes") && sameStringSet(stringSlice(classes), []string{"FleetDurableObject"})
+	}
+	if rawSteps, exists := migration["steps"]; exists {
+		steps := objectSlice(rawSteps)
+		return allowedObjectKeys(migration, "new_tag", "old_tag", "steps") && len(steps) == 1 && exactObjectKeys(steps[0], "new_sqlite_classes") && sameStringSet(stringSlice(steps[0]["new_sqlite_classes"]), []string{"FleetDurableObject"})
+	}
+	return allowedObjectKeys(migration, "new_tag", "old_tag")
 }
 
 func exactObjectKeys(value map[string]any, expected ...string) bool {
@@ -382,6 +400,40 @@ func exactObjectKeys(value map[string]any, expected ...string) bool {
 		}
 	}
 	return true
+}
+
+func allowedObjectKeys(value map[string]any, allowed ...string) bool {
+	set := map[string]bool{}
+	for _, key := range allowed {
+		set[key] = true
+	}
+	for key := range value {
+		if !set[key] {
+			return false
+		}
+	}
+	return true
+}
+
+func exactBoolean(value map[string]any, key string, expected bool) bool {
+	actual, ok := value[key].(bool)
+	return ok && actual == expected
+}
+
+func optionalBoolean(value map[string]any, key string, expected bool) bool {
+	if _, exists := value[key]; !exists {
+		return true
+	}
+	return exactBoolean(value, key, expected)
+}
+
+func optionalDisabledObservability(value map[string]any) bool {
+	raw, exists := value["observability"]
+	if !exists {
+		return true
+	}
+	observation, ok := raw.(map[string]any)
+	return ok && exactObjectKeys(observation, "enabled") && exactBoolean(observation, "enabled", false)
 }
 
 func stringInSlice(value string, values []string) bool {
@@ -419,7 +471,7 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 	case "worker.scriptWorkersDev.disable":
 		allow("scriptWorkersDev")
 	case "worker.terminalArtifact.deploy":
-		allow("accountWorkers", "durableObjects", "scriptDeployments", "scriptSchedules", "scriptSettings", "workerSettings", "scriptWorkersDev", "scriptVersions")
+		allow("accountWorkers", "durableObjects", "scriptDeployments", "workerSettings", "scriptVersions")
 	case "worker.version.delete":
 		allow("scriptVersions")
 	case "worker.delete":
@@ -447,51 +499,64 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		if afterDeployment == "" || afterDeployment == beforeDeployment {
 			return nil, errors.New("E_SECRET_DEPLOYMENT_IDENTITY")
 		}
-		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || !oneIdentityAdded(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
+		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) == "" {
 			return nil, errors.New("E_SECRET_UNEXPECTED_DELTA")
 		}
 		return []string{"deployment=" + afterDeployment, "secret=" + *operation.SecretName}, nil
 	case "worker.secret.delete":
-		if operation.SecretName == nil || namedObjectPresent(after.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
+		if operation.SecretName == nil || !namedObjectPresent(before.Surfaces["scriptSecrets"], "name", *operation.SecretName) || namedObjectPresent(after.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
 			return nil, errors.New("E_SECRET_DELETE_NOT_OBSERVED")
+		}
+		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) {
+			return nil, errors.New("E_SECRET_UNEXPECTED_DELTA")
 		}
 		return []string{"secret-absent=" + *operation.SecretName}, nil
 	case "worker.deploy":
 		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
-		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || operation.ExpectedPreviousVersionID == nil || (*operation.ExpectedPreviousVersionID != "absent" && *operation.ExpectedPreviousVersionID != beforeDeployment) {
+		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || operation.ExpectedPreviousVersionID == nil || (*operation.ExpectedPreviousVersionID != "absent" && *operation.ExpectedPreviousVersionID != currentWorkerVersionID(before.Surfaces["scriptDeployments"])) {
 			return nil, errors.New("E_DEPLOY_NOT_OBSERVED")
 		}
 		if err := validateDeploymentProfile(plan, after, false); err != nil {
 			return nil, err
 		}
-		if !sameStringSet(namedObjectValues(before.Surfaces["scriptSecrets"], "name"), namedObjectValues(after.Surfaces["scriptSecrets"], "name")) || !oneIdentityAdded(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
+		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
+		if !sameStringSet(namedObjectValues(before.Surfaces["scriptSecrets"], "name"), namedObjectValues(after.Surfaces["scriptSecrets"], "name")) || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion {
 			return nil, errors.New("E_DEPLOY_UNEXPECTED_DELTA")
 		}
 		namespaceID, _ := ownedDurableObjectIdentity(after.Surfaces["durableObjects"], plan)
-		return []string{"deployment=" + afterDeployment, "durable-object-namespace=" + namespaceID, "migration=v1"}, nil
+		return []string{"deployment=" + afterDeployment, "worker-version=" + newVersion, "durable-object-namespace=" + namespaceID, "migration=v1"}, nil
 	case "worker.rollback":
-		if operation.VersionID == nil || !containsIdentityOnSurface(after.Surfaces["scriptDeployments"], *operation.VersionID) || currentDeploymentID(after.Surfaces["scriptDeployments"]) == currentDeploymentID(before.Surfaces["scriptDeployments"]) {
+		if operation.VersionID == nil || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != *operation.VersionID || currentDeploymentID(after.Surfaces["scriptDeployments"]) == currentDeploymentID(before.Surfaces["scriptDeployments"]) || !sameCanonicalValue(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
 			return nil, errors.New("E_ROLLBACK_NOT_OBSERVED")
 		}
 		return []string{"rollback-version=" + *operation.VersionID}, nil
 	case "worker.schedule.delete":
-		if !collectionEmpty(after.Surfaces["scriptSchedules"]) {
+		if collectionEmpty(before.Surfaces["scriptSchedules"]) || !collectionEmpty(after.Surfaces["scriptSchedules"]) {
 			return nil, errors.New("E_SCHEDULE_DELETE_NOT_OBSERVED")
 		}
 		return []string{"schedule=absent"}, nil
 	case "worker.scriptWorkersDev.disable":
-		if !surfaceAbsent(after.Surfaces["scriptWorkersDev"]) && mapBool(after.Surfaces["scriptWorkersDev"], "enabled") {
+		beforeWorkersDev, beforeOK := before.Surfaces["scriptWorkersDev"].(map[string]any)
+		if !beforeOK || !exactBoolean(beforeWorkersDev, "enabled", true) {
 			return nil, errors.New("E_WORKERS_DEV_DISABLE_NOT_OBSERVED")
+		}
+		if !surfaceAbsent(after.Surfaces["scriptWorkersDev"]) {
+			workersDev, ok := after.Surfaces["scriptWorkersDev"].(map[string]any)
+			if !ok || !exactObjectKeys(workersDev, "enabled") || !exactBoolean(workersDev, "enabled", false) {
+				return nil, errors.New("E_WORKERS_DEV_DISABLE_NOT_OBSERVED")
+			}
 		}
 		return []string{"script-workers-dev=disabled"}, nil
 	case "worker.terminalArtifact.deploy":
 		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
-		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || bindingPresent(after.Surfaces["workerSettings"], "FLEET", "FleetDurableObject", plan.DurableObjectNamespaceID) {
+		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
+		settings, settingsOK := after.Surfaces["workerSettings"].(map[string]any)
+		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !settingsOK || !exactObjectKeys(settings, "bindings") || !collectionEmpty(settings["bindings"]) || !collectionEmpty(after.Surfaces["durableObjects"]) {
 			return nil, errors.New("E_TERMINAL_DEPLOY_NOT_OBSERVED")
 		}
-		return []string{"terminal-deployment=" + afterDeployment}, nil
+		return []string{"terminal-deployment=" + afterDeployment, "terminal-version=" + newVersion}, nil
 	case "worker.version.delete":
-		if operation.VersionID == nil || containsIdentityOnSurface(after.Surfaces["scriptVersions"], *operation.VersionID) {
+		if operation.VersionID == nil || !namedObjectPresent(before.Surfaces["scriptVersions"], "id", *operation.VersionID) || containsIdentityOnSurface(after.Surfaces["scriptVersions"], *operation.VersionID) || !namedObjectsEqualExcept(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"], "id", *operation.VersionID) {
 			return nil, errors.New("E_VERSION_DELETE_NOT_OBSERVED")
 		}
 		return []string{"version-absent=" + *operation.VersionID}, nil
@@ -535,6 +600,12 @@ func filteredObjectsEqual(before, after any, owned func(map[string]any) bool) bo
 	leftData, leftErr := json.Marshal(canonicalizeForComparison(left))
 	rightData, rightErr := json.Marshal(canonicalizeForComparison(right))
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftData, rightData)
+}
+
+func sameCanonicalValue(before, after any) bool {
+	left, leftErr := json.Marshal(canonicalizeForComparison(before))
+	right, rightErr := json.Marshal(canonicalizeForComparison(after))
+	return leftErr == nil && rightErr == nil && bytes.Equal(left, right)
 }
 
 func namedObjectsEqualExcept(before, after any, key, except string) bool {
@@ -581,30 +652,34 @@ func bindingObjectsEqualExcept(before, after any, except string) bool {
 	return bytes.Equal(left, right)
 }
 
-func oneIdentityAdded(before, after any) bool {
-	beforeIDs, afterIDs := map[string]bool{}, map[string]bool{}
+func singleAddedIdentity(before, after any) string {
+	beforeIDs, afterIDs := map[string]map[string]any{}, map[string]map[string]any{}
 	for _, item := range objectSlice(before) {
 		if id := fmt.Sprint(item["id"]); id != "" && id != "<nil>" {
-			beforeIDs[id] = true
+			beforeIDs[id] = item
 		}
 	}
 	for _, item := range objectSlice(after) {
 		if id := fmt.Sprint(item["id"]); id != "" && id != "<nil>" {
-			afterIDs[id] = true
+			afterIDs[id] = item
 		}
 	}
-	added := 0
-	for id := range beforeIDs {
-		if !afterIDs[id] {
-			return false
+	added := ""
+	for id, beforeItem := range beforeIDs {
+		afterItem, exists := afterIDs[id]
+		if !exists || !sameCanonicalValue(beforeItem, afterItem) {
+			return ""
 		}
 	}
 	for id := range afterIDs {
-		if !beforeIDs[id] {
-			added++
+		if _, exists := beforeIDs[id]; !exists {
+			if added != "" {
+				return ""
+			}
+			added = id
 		}
 	}
-	return added == 1
+	return added
 }
 
 func canonicalizeForComparison(value any) any {
@@ -758,12 +833,6 @@ func objectHasKeyValue(value any, key, expected string) bool {
 	return namedObjectPresent(value, key, expected)
 }
 
-func mapBool(value any, key string) bool {
-	item, ok := value.(map[string]any)
-	result, _ := item[key].(bool)
-	return ok && result
-}
-
 func mapString(value any, key string) string {
 	item, ok := value.(map[string]any)
 	if !ok {
@@ -787,15 +856,6 @@ func stringSlice(value any) []string {
 		result = append(result, text)
 	}
 	return result
-}
-
-func cacheEnabled(value any) bool {
-	item, ok := value.(map[string]any)
-	if !ok {
-		return false
-	}
-	enabled, _ := item["enabled"].(bool)
-	return enabled
 }
 
 func bindingPresent(value any, name, className, namespaceID string) bool {
@@ -891,16 +951,23 @@ func collectionEmpty(value any) bool {
 func unsafeDiagnosticSettings(value any) bool {
 	settings, ok := value.(map[string]any)
 	if !ok {
-		return false
-	}
-	if logpush, ok := settings["logpush"].(bool); ok && logpush {
 		return true
+	}
+	if raw, exists := settings["logpush"]; exists {
+		logpush, valid := raw.(bool)
+		if !valid || logpush {
+			return true
+		}
 	}
 	if consumers, exists := settings["tail_consumers"]; exists && !collectionEmpty(consumers) {
 		return true
 	}
-	if observability, ok := settings["observability"].(map[string]any); ok {
-		if enabled, ok := observability["enabled"].(bool); ok && enabled {
+	if raw, exists := settings["observability"]; exists {
+		observability, valid := raw.(map[string]any)
+		if !valid {
+			return true
+		}
+		if enabled, valid := observability["enabled"].(bool); !valid || enabled {
 			return true
 		}
 	}

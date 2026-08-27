@@ -165,7 +165,10 @@ attended recovery confirmation, no active mutation, and no unclassified
 journal; it cannot erase or reinterpret the original record.
 
 `state-observe --output <new-file>` writes the exact read-only Cloudflare
-projection. `plan-build` is the only supported plan-construction path: it
+projection. A rollback candidate must first be observed with
+`state-observe --rollback-version <exact-version-id>`; the resulting projection
+binds the target Worker version's detailed migration and Durable Object binding,
+separately from the current deployment identity. `plan-build` is the only supported plan-construction path: it
 derives resource identities and the prestate digest from that file and emits
 one closed deploy, rollback, retirement, or account-workers.dev plan. The
 caller may supply only opaque slot/version references and the kind-specific
