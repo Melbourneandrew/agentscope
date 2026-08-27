@@ -3,6 +3,7 @@ package control
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -63,7 +64,8 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 		SourceCommit: installation.CoordinatorCommit, ToolchainIdentity: installation.ToolchainIdentity, AdmissionSHA256: installation.AdmissionSHA256,
 		PermissionManifestSHA256: installation.PermissionManifestSHA256, ProfileSHA256: profile, ObservablePrestateSHA256: stateDigest, ObservationID: input.ObservationID,
 		CurrentWorkerVersionID: currentVersion, DurableObjectNamespaceID: namespace, CurrentMigrationTag: migration, HetznerProjectID: installation.HetznerProjectID,
-		IssuedAt: input.Now.UTC(), ExpiresAt: input.Now.UTC().Add(10 * time.Minute), Nonce: nonce,
+		CompatibleVersionDetailSHA256: "none",
+		IssuedAt:                      input.Now.UTC(), ExpiresAt: input.Now.UTC().Add(10 * time.Minute), Nonce: nonce,
 	}
 	request := func(prefix string) string {
 		value, randomErr := randomIdentifier(prefix)
@@ -87,6 +89,7 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 			if !compatibleCoordinatorVersion(input.State.Surfaces["rollbackVersionDetail"], currentVersion, migration, namespace, installation.CoordinatorCommit) {
 				return Plan{}, errors.New("E_PLAN_BUILD_VERSION_COMPATIBILITY")
 			}
+			plan.CompatibleVersionDetailSHA256 = canonicalDetailSHA256(input.State.Surfaces["rollbackVersionDetail"])
 			version, tag := currentVersion, migration
 			plan.RollbackActions = []Operation{{Action: "worker.rollback", Target: WorkerName, RequestID: request("rollback"), VersionID: &version, CompatibleMigrationTag: &tag}}
 		}
@@ -105,6 +108,7 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 		if !ok || !compatibleCoordinatorVersion(detail, input.RollbackVersionID, migration, namespace, installation.CoordinatorCommit) {
 			return Plan{}, errors.New("E_PLAN_BUILD_VERSION_COMPATIBILITY")
 		}
+		plan.CompatibleVersionDetailSHA256 = canonicalDetailSHA256(detail)
 		version, tag := input.RollbackVersionID, migration
 		plan.Operations = []Operation{{Action: "worker.rollback", Target: WorkerName, RequestID: request("rollback"), VersionID: &version, CompatibleMigrationTag: &tag}}
 	case "account-workers-dev-enable":
@@ -168,6 +172,29 @@ func compatibleCoordinatorVersion(raw any, versionID, migration, namespace, sour
 	return ok && fmt.Sprint(annotations["workers/message"]) == "agentscope-source:"+sourceCommit
 }
 
+func canonicalDetailSHA256(raw any) string {
+	data, err := json.Marshal(canonicalizeForComparison(raw))
+	if err != nil {
+		return ""
+	}
+	return SHA256(data)
+}
+
+func validateCompatibleVersionEvidence(plan Plan, state StateObservation) error {
+	if plan.CompatibleVersionDetailSHA256 == "none" {
+		return nil
+	}
+	versionID := plan.CurrentWorkerVersionID
+	if plan.Kind == "rollback" && len(plan.Operations) == 1 && plan.Operations[0].VersionID != nil {
+		versionID = *plan.Operations[0].VersionID
+	}
+	raw := state.Surfaces["rollbackVersionDetail"]
+	if canonicalDetailSHA256(raw) != plan.CompatibleVersionDetailSHA256 || !compatibleCoordinatorVersion(raw, versionID, plan.CurrentMigrationTag, plan.DurableObjectNamespaceID, plan.SourceCommit) {
+		return errors.New("E_COMPATIBLE_VERSION_EVIDENCE")
+	}
+	return nil
+}
+
 func appendSecretOperations(plan *Plan, slots map[string]SlotReference, request func(string) string) error {
 	if len(slots) != len(canonicalSecrets) {
 		return errors.New("E_PLAN_BUILD_SLOT")
@@ -194,27 +221,23 @@ func randomIdentifier(prefix string) (string, error) {
 func pointerString(value string) *string { return &value }
 
 func currentDeploymentID(value any) string {
-	if item, ok := value.(map[string]any); ok {
-		if id := fmt.Sprint(item["id"]); id != "" && id != "<nil>" {
-			return id
-		}
-		if deployments, ok := item["deployments"].([]any); ok && len(deployments) > 0 {
-			if first, ok := deployments[0].(map[string]any); ok {
-				return fmt.Sprint(first["id"])
-			}
+	items := deploymentItems(value)
+	if len(items) > 0 {
+		if item, ok := items[0].(map[string]any); ok {
+			return fmt.Sprint(item["id"])
 		}
 	}
 	return ""
 }
 
 func currentWorkerVersionID(value any) string {
-	item, ok := value.(map[string]any)
-	if !ok {
+	items := deploymentItems(value)
+	if len(items) == 0 {
 		return ""
 	}
-	deployments := objectSlice(item["deployments"])
-	if len(deployments) > 0 {
-		item = deployments[0]
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		return ""
 	}
 	versions := objectSlice(item["versions"])
 	if len(versions) != 1 || fmt.Sprint(versions[0]["percentage"]) != "100" {

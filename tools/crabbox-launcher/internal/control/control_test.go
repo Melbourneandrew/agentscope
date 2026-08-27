@@ -106,10 +106,6 @@ func runtimeArchive(t *testing.T, files map[string][]byte) []byte {
 func pointer(value string) *string { return &value }
 
 func syntheticState(account string, step int, kind string, now time.Time) StateObservation {
-	deployedVersion := "version-current"
-	if step > 0 {
-		deployedVersion = fmt.Sprintf("version-%d", step)
-	}
 	bindings := []any{map[string]any{"name": "FLEET", "type": "durable_object_namespace", "class_name": "FleetDurableObject", "namespace_id": "namespace-1"}, map[string]any{"name": "CF_VERSION_METADATA", "type": "version_metadata"}}
 	for _, variable := range [][2]string{{"AGENTSCOPE_CRABBOX_ENVIRONMENT_ID", "asgcf_0123456789abcdef0123456789abcdef"}, {"CRABBOX_DEFAULT_ORG", "agentscope-development"}, {"CRABBOX_MAX_ACTIVE_LEASES", "4"}, {"CRABBOX_MAX_ACTIVE_LEASES_PER_ORG", "4"}, {"CRABBOX_MAX_ACTIVE_LEASES_PER_OWNER", "4"}, {"CRABBOX_MAX_MONTHLY_USD", "25"}, {"CRABBOX_MAX_MONTHLY_USD_PER_ORG", "25"}, {"CRABBOX_MAX_MONTHLY_USD_PER_OWNER", "25"}, {"CRABBOX_RUN_RETENTION_DAYS", "30"}, {"CRABBOX_SHARED_OWNER", "agentscope-fleet-control"}} {
 		bindings = append(bindings, map[string]any{"name": variable[0], "type": "plain_text", "text": variable[1]})
@@ -118,10 +114,19 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		"accountWorkers": []any{map[string]any{"id": WorkerName, "modified_on": "stable"}}, "accountWorkersDev": map[string]any{"enabled": true, "subdomain": "agentscope-dev"},
 		"durableObjects": []any{map[string]any{"id": "namespace-1", "script": WorkerName, "class": "FleetDurableObject"}}, "scriptDomains": []any{},
 		"scriptSettings": map[string]any{"logpush": false, "observability": map[string]any{"enabled": false}, "tags": []any{}, "tail_consumers": []any{}}, "workerSettings": map[string]any{"bindings": bindings, "compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"}, "migrations": map[string]any{"new_tag": "v1", "new_sqlite_classes": []any{"FleetDurableObject"}}, "cache_options": map[string]any{"enabled": false}},
-		"scriptDeployments": map[string]any{"id": fmt.Sprintf("deployment-%d", step), "versions": []any{map[string]any{"version_id": deployedVersion, "percentage": 100}}}, "scriptVersions": []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "version-old", "migration_tag": "v1"}},
+		"scriptDeployments": map[string]any{"deployments": []any{map[string]any{"id": "deployment-0", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}}}}, "scriptVersions": []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "version-old", "migration_tag": "v1"}},
 		"scriptSchedules": []any{map[string]any{"cron": "*/15 * * * *"}}, "scriptSecrets": []any{}, "scriptWorkersDev": map[string]any{"enabled": true}, "scriptTails": []any{},
 	}
 	if kind == "deploy" || kind == "rotate" {
+		deployments := []any{}
+		for index := step; index >= 0; index-- {
+			version := "version-current"
+			if index > 0 {
+				version = fmt.Sprintf("version-%d", index)
+			}
+			deployments = append(deployments, map[string]any{"id": fmt.Sprintf("deployment-%d", index), "versions": []any{map[string]any{"version_id": version, "percentage": 100}}})
+		}
+		surfaces["scriptDeployments"] = map[string]any{"deployments": deployments}
 		for index, secret := range canonicalSecrets {
 			if kind == "rotate" || step > index {
 				surfaces["scriptSecrets"] = append(surfaces["scriptSecrets"].([]any), map[string]any{"name": secret})
@@ -133,7 +138,7 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 			surfaces["scriptVersions"] = append(surfaces["scriptVersions"].([]any), map[string]any{"id": fmt.Sprintf("version-%d", index)})
 		}
 	} else if kind == "account" {
-		surfaces["scriptDeployments"] = map[string]any{"id": "deployment-current", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}}
+		surfaces["scriptDeployments"] = map[string]any{"deployments": []any{map[string]any{"id": "deployment-current", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}}}}
 		if step == 0 {
 			surfaces["accountWorkersDev"] = map[string]any{"absent": true}
 		} else {
@@ -141,7 +146,15 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		}
 		surfaces["scriptSecrets"] = []any{map[string]any{"name": "CRABBOX_ADMIN_TOKEN"}, map[string]any{"name": "CRABBOX_SHARED_TOKEN"}, map[string]any{"name": "HETZNER_TOKEN"}}
 	} else {
-		surfaces["scriptDeployments"] = map[string]any{"id": "deployment-current", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}}
+		retirementDeployments := []any{}
+		for index := min(step, 5); index >= 3; index-- {
+			retirementDeployments = append(retirementDeployments, map[string]any{"id": fmt.Sprintf("retirement-deployment-%d", index), "versions": []any{map[string]any{"version_id": fmt.Sprintf("retirement-version-%d", index), "percentage": 100}}})
+		}
+		retirementDeployments = append(retirementDeployments, map[string]any{"id": "deployment-current", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}})
+		surfaces["scriptDeployments"] = map[string]any{"deployments": retirementDeployments}
+		for index := 3; index <= min(step, 5); index++ {
+			surfaces["scriptVersions"] = append(surfaces["scriptVersions"].([]any), map[string]any{"id": fmt.Sprintf("retirement-version-%d", index), "migration_tag": "v1"})
+		}
 		secrets := append([]string{}, canonicalSecrets...)
 		if step >= 3 {
 			secrets = secrets[1:]
@@ -165,12 +178,19 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		}
 		if step >= 6 {
 			surfaces["durableObjects"] = []any{}
-			surfaces["workerSettings"] = map[string]any{"bindings": []any{}, "migrations": map[string]any{"new_tag": "v2-retire-fleet-durable-object", "old_tag": "v1", "deleted_classes": []any{"FleetDurableObject"}}}
-			surfaces["scriptDeployments"] = map[string]any{"id": "terminal-deployment", "versions": []any{map[string]any{"version_id": "terminal-version", "percentage": 100}}}
-			surfaces["scriptVersions"] = []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "version-old", "migration_tag": "v1"}, map[string]any{"id": "terminal-version", "migration_tag": "v2-retire-fleet-durable-object"}}
+			surfaces["workerSettings"] = map[string]any{"bindings": []any{}, "compatibility_date": "2026-04-30", "compatibility_flags": []any{"nodejs_compat"}, "cache_options": map[string]any{"enabled": false}, "migrations": map[string]any{"new_tag": "v2-retire-fleet-durable-object", "old_tag": "v1", "deleted_classes": []any{"FleetDurableObject"}}}
+			terminalDeployments := append([]any{map[string]any{"id": "terminal-deployment", "versions": []any{map[string]any{"version_id": "terminal-version", "percentage": 100}}}}, retirementDeployments...)
+			surfaces["scriptDeployments"] = map[string]any{"deployments": terminalDeployments}
+			surfaces["scriptVersions"] = append(surfaces["scriptVersions"].([]any), map[string]any{"id": "terminal-version", "migration_tag": "v2-retire-fleet-durable-object"})
 		}
 		if step >= 7 {
-			surfaces["scriptVersions"] = []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "terminal-version", "migration_tag": "v2-retire-fleet-durable-object"}}
+			versions := []any{}
+			for _, version := range objectSlice(surfaces["scriptVersions"]) {
+				if fmt.Sprint(version["id"]) != "version-old" {
+					versions = append(versions, version)
+				}
+			}
+			surfaces["scriptVersions"] = versions
 		}
 		if step >= 8 {
 			surfaces["accountWorkers"], surfaces["durableObjects"] = []any{}, []any{}
@@ -204,7 +224,11 @@ func freshDeployedState(account string, step int, now time.Time) StateObservatio
 		versions = append(versions, map[string]any{"id": fmt.Sprintf("version-%d", index), "migration_tag": "v1"})
 	}
 	state.Surfaces["scriptVersions"] = versions
-	state.Surfaces["scriptDeployments"] = map[string]any{"id": fmt.Sprintf("deployment-%d", step), "versions": []any{map[string]any{"version_id": fmt.Sprintf("version-%d", step), "percentage": 100}}}
+	deployments := []any{}
+	for index := step; index >= 0; index-- {
+		deployments = append(deployments, map[string]any{"id": fmt.Sprintf("deployment-%d", index), "versions": []any{map[string]any{"version_id": fmt.Sprintf("version-%d", index), "percentage": 100}}})
+	}
+	state.Surfaces["scriptDeployments"] = map[string]any{"deployments": deployments}
 	return state
 }
 
@@ -228,7 +252,7 @@ func (observer *sequenceStateObserver) Observe(_ context.Context, _ []byte, now 
 
 func (item fixture) plan() (Plan, []byte) {
 	pre, _, _ := syntheticState(item.installation.AccountID, 0, "rotate", item.now).Digests()
-	plan := Plan{SchemaVersion: SchemaVersion, Kind: "rotate-secrets", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.profileDigest, ObservablePrestateSHA256: pre, ObservationID: "observation-1", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", HetznerProjectID: item.installation.HetznerProjectID, Operations: []Operation{
+	plan := Plan{SchemaVersion: SchemaVersion, Kind: "rotate-secrets", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.profileDigest, ObservablePrestateSHA256: pre, ObservationID: "observation-1", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", CompatibleVersionDetailSHA256: "none", HetznerProjectID: item.installation.HetznerProjectID, Operations: []Operation{
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-admin", SecretName: pointer("CRABBOX_ADMIN_TOKEN"), SlotID: pointer("slot-crabbox-admin"), SlotVersion: pointer("version-1")},
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-shared", SecretName: pointer("CRABBOX_SHARED_TOKEN"), SlotID: pointer("slot-crabbox-shared"), SlotVersion: pointer("version-1")},
 		{Action: "worker.secret.put", Target: WorkerName, RequestID: "put-provider", SecretName: pointer("HETZNER_TOKEN"), SlotID: pointer("slot-hetzner-worker"), SlotVersion: pointer("version-1")},
@@ -264,7 +288,7 @@ func (item fixture) authority(plan Plan, planData []byte) ([]byte, []byte, []byt
 func (item fixture) retirementPlan() (Plan, []byte) {
 	providerZero, tombstone := strings.Repeat("6", 64), strings.Repeat("7", 64)
 	pre, _, _ := syntheticState(item.installation.AccountID, 0, "retire", item.now).Digests()
-	plan := Plan{SchemaVersion: SchemaVersion, Kind: "retire", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.installation.TerminalProfileSHA256, ObservablePrestateSHA256: pre, ObservationID: "observation-retire", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", HetznerProjectID: item.installation.HetznerProjectID, ProviderZeroSHA256: &providerZero, RetirementTombstoneSHA256: &tombstone, AcquisitionFreezeID: pointer("freeze-1"), LauncherCredentialRevocationID: pointer("revocation-1"), Operations: []Operation{
+	plan := Plan{SchemaVersion: SchemaVersion, Kind: "retire", AccountID: item.installation.AccountID, EnvironmentID: item.installation.EnvironmentID, WorkerName: WorkerName, SourceCommit: strings.Repeat("a", 40), ToolchainIdentity: item.toolchain, AdmissionSHA256: item.installation.AdmissionSHA256, PermissionManifestSHA256: item.installation.PermissionManifestSHA256, ProfileSHA256: item.installation.TerminalProfileSHA256, ObservablePrestateSHA256: pre, ObservationID: "observation-retire", CurrentWorkerVersionID: "version-current", DurableObjectNamespaceID: "namespace-1", CurrentMigrationTag: "v1", CompatibleVersionDetailSHA256: "none", HetznerProjectID: item.installation.HetznerProjectID, ProviderZeroSHA256: &providerZero, RetirementTombstoneSHA256: &tombstone, AcquisitionFreezeID: pointer("freeze-1"), LauncherCredentialRevocationID: pointer("revocation-1"), Operations: []Operation{
 		{Action: "worker.schedule.delete", Target: WorkerName, RequestID: "delete-schedule"},
 		{Action: "worker.scriptWorkersDev.disable", Target: WorkerName, RequestID: "disable-workers-dev"},
 		{Action: "worker.secret.delete", Target: WorkerName, RequestID: "delete-admin", SecretName: pointer("CRABBOX_ADMIN_TOKEN"), SlotID: pointer("slot-crabbox-admin"), SlotVersion: pointer("version-1")},
@@ -523,12 +547,28 @@ func TestActionTransitionRejectsUnrelatedDriftAndWriteOnlyRotation(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !digestPattern.MatchString(rollbackPlan.CompatibleVersionDetailSHA256) {
+		t.Fatal("rollback plan did not bind the canonical compatible-version detail")
+	}
 	rollbackBefore := rollbackState
 	rollbackAfter := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
 	rollbackAfter.Surfaces["rollbackVersionDetail"] = rollbackState.Surfaces["rollbackVersionDetail"]
 	rollbackAfter.Surfaces["scriptDeployments"] = map[string]any{"id": "wrong-current-deployment", "versions": []any{map[string]any{"version_id": "wrong-current-version", "percentage": 100}}, "history": []any{map[string]any{"id": "version-old"}}}
 	if err := ValidateActionTransition(rollbackPlan, rollbackPlan.Operations[0], rollbackBefore, rollbackAfter); err == nil || !strings.Contains(err.Error(), "E_ROLLBACK_NOT_OBSERVED") {
 		t.Fatalf("historical rollback identity accepted as current: %v", err)
+	}
+	tamperedAfter := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	tamperedAfter.Surfaces["scriptDeployments"] = map[string]any{"deployments": []any{
+		map[string]any{"id": "rollback-deployment", "versions": []any{map[string]any{"version_id": "version-old", "percentage": 100}}},
+		map[string]any{"id": "deployment-0", "versions": []any{map[string]any{"version_id": "version-current", "percentage": 100}}},
+	}}
+	tamperedAfter.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v0", "bindings": []any{}, "annotations": map[string]any{"workers/message": "agentscope-source:" + strings.Repeat("b", 40)}}
+	badDetailState := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	badDetailState.Surfaces["rollbackVersionDetail"] = tamperedAfter.Surfaces["rollbackVersionDetail"]
+	goodDigest, _, _ := rollbackBefore.Digests()
+	badDigest, _, _ := badDetailState.Digests()
+	if goodDigest != badDigest || validateCompatibleVersionEvidence(rollbackPlan, badDetailState) == nil || ValidateActionTransition(rollbackPlan, rollbackPlan.Operations[0], rollbackBefore, tamperedAfter) == nil {
+		t.Fatal("fresh rollback detail substitution was not rejected independently of the core-state digest")
 	}
 	incompatible := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
 	incompatible.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v0", "bindings": incompatible.Surfaces["workerSettings"].(map[string]any)["bindings"]}
@@ -568,7 +608,7 @@ func TestMigrationNamespaceAndActionOraclesAreExact(t *testing.T) {
 	before := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
 	after := syntheticState(item.installation.AccountID, 1, "rotate", item.now)
 	after.Surfaces["scriptDeployments"].(map[string]any)["collateral"] = "unexpected"
-	if err := ValidateActionTransition(rotation, rotation.Operations[0], before, after); err == nil || !strings.Contains(err.Error(), "E_SECRET_UNEXPECTED_DELTA") {
+	if err := ValidateActionTransition(rotation, rotation.Operations[0], before, after); err == nil || (!strings.Contains(err.Error(), "E_SECRET_UNEXPECTED_DELTA") && !strings.Contains(err.Error(), "E_SECRET_DEPLOYMENT_IDENTITY")) {
 		t.Fatalf("secret write with collateral deployment drift accepted: %v", err)
 	}
 
@@ -578,6 +618,23 @@ func TestMigrationNamespaceAndActionOraclesAreExact(t *testing.T) {
 	delete(terminalAfter.Surfaces["workerSettings"].(map[string]any), "migrations")
 	if err := ValidateActionTransition(retirement, retirement.Operations[5], terminalBefore, terminalAfter); err == nil || !strings.Contains(err.Error(), "E_TERMINAL_DEPLOY_NOT_OBSERVED") {
 		t.Fatalf("terminal deployment without class-deletion migration accepted: %v", err)
+	}
+	malformedTerminal := syntheticState(item.installation.AccountID, 6, "retire", item.now)
+	malformedTerminal.Surfaces["workerSettings"].(map[string]any)["compatibility_date"] = "1999-01-01"
+	malformedTerminal.Surfaces["workerSettings"].(map[string]any)["compatibility_flags"] = []any{"unsafe"}
+	malformedTerminal.Surfaces["workerSettings"].(map[string]any)["logpush"] = true
+	if err := ValidateActionTransition(retirement, retirement.Operations[5], terminalBefore, malformedTerminal); err == nil || !strings.Contains(err.Error(), "E_TERMINAL_DEPLOY_NOT_OBSERVED") {
+		t.Fatalf("terminal deployment with noncanonical runtime settings accepted: %v", err)
+	}
+	secretDeleteBefore := syntheticState(item.installation.AccountID, 2, "retire", item.now)
+	secretDeleteAfter := syntheticState(item.installation.AccountID, 3, "retire", item.now)
+	if err := ValidateActionTransition(retirement, retirement.Operations[2], secretDeleteBefore, secretDeleteAfter); err != nil {
+		t.Fatalf("Cloudflare-faithful secret deletion was rejected: %v", err)
+	}
+	workerDeleteAfter := syntheticState(item.installation.AccountID, 8, "retire", item.now)
+	workerDeleteAfter.Surfaces["workerSettings"] = map[string]any{"residue": true}
+	if err := ValidateActionTransition(retirement, retirement.Operations[7], syntheticState(item.installation.AccountID, 7, "retire", item.now), workerDeleteAfter); err == nil || !strings.Contains(err.Error(), "E_WORKER_DELETE_NOT_OBSERVED") {
+		t.Fatalf("Worker deletion with residual settings accepted: %v", err)
 	}
 }
 
@@ -782,7 +839,10 @@ func TestCredentialMetadataRejectsIncompleteImmutableVersion(t *testing.T) {
 	if err := writeExclusive(filepath.Join(directory, "version-2.secret"), []byte("sealed-but-uncommitted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := item.store.CredentialSetSHA256(); err == nil || !strings.Contains(err.Error(), "E_SLOT_VERSION_INCOMPLETE") {
+	if err := writeExclusive(filepath.Join(directory, "version-2.json.staging-deadbeef"), []byte("{partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := item.store.CredentialSetSHA256(); err == nil || (!strings.Contains(err.Error(), "E_SLOT_VERSION_INCOMPLETE") && !strings.Contains(err.Error(), "E_SLOT_VERSION_FILE")) {
 		t.Fatalf("incomplete slot version accepted: %v", err)
 	}
 	if _, err := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-plan-read", "slot-incomplete", "version-2", []byte(strings.Repeat("q", 32)), item.now.Add(time.Second)); err != nil {
@@ -899,6 +959,35 @@ func TestConcurrentApplyReachesExecutorOnce(t *testing.T) {
 	}
 	if successes != 1 || executor.count() != 3 {
 		t.Fatalf("successes=%d calls=%d", successes, executor.count())
+	}
+}
+
+func TestApplyRechecksFreezeAndCredentialAuthorityInsideAdmissionGuard(t *testing.T) {
+	item := newFixture(t)
+	plan, data := item.plan()
+	authorization, observation, attestation := item.authority(plan, data)
+	guard, err := item.store.acquireAdmissionGuard()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := &recordingExecutor{}
+	result := make(chan error, 1)
+	go func() {
+		result <- item.store.Apply(context.Background(), ApplyInput{PlanData: data, AuthorizationData: authorization, ObservationData: observation, AttestationData: attestation, Now: item.now, Clock: func() time.Time { return item.now }}, executor, item.observer())
+	}()
+	freeze, err := item.store.signControlRecord(SignedControlRecord{Domain: FreezeDomain, PlanSHA256: strings.Repeat("6", 64), RequestID: "concurrent-incident", Disposition: "frozen", RecordedAt: item.now}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		releaseAdmissionGuard(guard)
+		t.Fatal(err)
+	}
+	freezeData, _ := json.MarshalIndent(freeze, "", "  ")
+	if err := writeAtomicExclusive(item.store.path("journal", "acquisition.freeze"), append(freezeData, '\n'), 0o600); err != nil {
+		releaseAdmissionGuard(guard)
+		t.Fatal(err)
+	}
+	releaseAdmissionGuard(guard)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "E_ACQUISITION_FROZEN") || executor.count() != 0 {
+		t.Fatalf("apply crossed a concurrently published freeze: %v calls=%d", err, executor.count())
 	}
 }
 

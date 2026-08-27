@@ -479,6 +479,12 @@ function validatePlanIdentity(plan, context) {
     assertDigest(name, value);
   }
   if (
+    plan.compatibleVersionDetailSha256 !== "none" &&
+    !digestPattern.test(plan.compatibleVersionDetailSha256 ?? "")
+  ) {
+    throw new Error("compatible version detail identity is invalid");
+  }
+  if (
     plan.admissionSha256 !== sha256(admissionBytes) ||
     plan.permissionManifestSha256 !== sha256(manifestBytes) ||
     plan.profileSha256 !== sha256(profileBytes)
@@ -569,6 +575,7 @@ function validatePlan(plan, context) {
     "currentWorkerVersionId",
     "durableObjectNamespaceId",
     "currentMigrationTag",
+    "compatibleVersionDetailSha256",
     "hetznerProjectId",
     "providerZeroSha256",
     "retirementTombstoneSha256",

@@ -409,6 +409,8 @@ func applyPlan(args []string, retirement bool, startedAt time.Time) {
 	rollbackVersionID := ""
 	if plan.Kind == "rollback" && len(plan.Operations) == 1 && plan.Operations[0].VersionID != nil {
 		rollbackVersionID = *plan.Operations[0].VersionID
+	} else if plan.Kind == "deploy" && plan.CurrentWorkerVersionID != "absent" {
+		rollbackVersionID = plan.CurrentWorkerVersionID
 	}
 	observer := control.CloudflareObserver{AccountID: installation.AccountID, RollbackVersionID: rollbackVersionID}
 	if err := commandContext.Err(); err != nil {
@@ -429,7 +431,7 @@ func status() {
 	_, fenceErr := os.Lstat(filepath.Join(stateRoot(), "journal", "mutation.lock"))
 	entries, _ := os.ReadDir(filepath.Join(stateRoot(), "slots"))
 	_, credentialsErr := store.CredentialSetSHA256()
-	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanSteps": []string{"authenticate the approved personal Cloudflare account through the installed launcher", "enroll the closed credential slots", "confirm and admit an independent Free/no-overage observation", "review and authorize the exact deployment plan"}})
+	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": []string{"credential-enroll --role <one-of-seven-closed-roles> --slot <opaque-id> --version <immutable-version>", "state-observe --output <state.json> [--rollback-version <current-or-target-version>]", "observation-admit --observation <billing.json> --output <billing-attestation.json>", "plan-build --kind <closed-kind> --state <state.json> --observation-id <id> [--slots <slots.json>] --output <plan.json>", "authorize --plan <plan.json> --output <authorization.json>", "apply --plan <plan.json> --authorization <authorization.json> --observation <billing.json> --observation-attestation <billing-attestation.json>"}, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
 }
 
 func observeState(args []string, startedAt time.Time) {

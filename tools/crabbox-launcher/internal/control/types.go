@@ -135,6 +135,7 @@ type Plan struct {
 	CurrentWorkerVersionID         string            `json:"currentWorkerVersionId"`
 	DurableObjectNamespaceID       string            `json:"durableObjectNamespaceId"`
 	CurrentMigrationTag            string            `json:"currentMigrationTag"`
+	CompatibleVersionDetailSHA256  string            `json:"compatibleVersionDetailSha256"`
 	HetznerProjectID               string            `json:"hetznerProjectId"`
 	ProviderZeroSHA256             *string           `json:"providerZeroSha256"`
 	RetirementTombstoneSHA256      *string           `json:"retirementTombstoneSha256"`

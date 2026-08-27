@@ -62,11 +62,14 @@ workers.dev, preview URLs disabled, and the exact allowlists in `admission.json`
 
 ## Authenticate and admit the shared account
 
-Use the project-local Wrangler under the admitted Node runtime and a dedicated
-external Wrangler configuration directory. `wrangler whoami` must identify
-Andrew's explicitly approved personal Cloudflare account. If authentication is absent, stop for
-interactive `wrangler login`; do not use a temporary preview account or a
-repository/GitHub token.
+The attended operator creates the least-privilege Cloudflare and Hetzner API
+tokens in the official account UIs, verifies the approved account/project IDs,
+and enters each value only through the installed launcher's no-echo
+`credential-enroll` prompt. Do not run `wrangler login`, place Wrangler state in
+the repository, use a temporary preview account, or use a repository/GitHub
+token. The launcher later passes the exact enrolled deployment token only to
+the root-owned pinned Wrangler runtime; there is no generic login or raw
+Wrangler command.
 
 The account is intentionally shared and may contain unrelated zones, Pages
 projects, Workers, and other products. Before resolving deployment authority,
@@ -190,6 +193,32 @@ and authorize one exact plan. The launcher verifies such an observation but
 does not claim that Cloudflare exposes the required authoritative quota surface;
 the deployment task must prove that empirical acquisition or stop for an
 approved architecture amendment.
+
+The installed `status` command emits this same closed ceremony as executable
+command shapes. The attended deployment task substitutes only reviewed opaque
+IDs and private output paths:
+
+```sh
+<installed-control> credential-enroll --role cloudflare-deployment --slot cf-deploy --version v1
+<installed-control> credential-enroll --role cloudflare-plan-read --slot cf-plan-read --version v1
+<installed-control> credential-enroll --role hetzner-worker --slot hcloud-worker --version v1
+<installed-control> credential-enroll --role crabbox-shared --slot crabbox-shared --version v1
+<installed-control> credential-enroll --role crabbox-admin --slot crabbox-admin --version v1
+<installed-control> credential-enroll --role hetzner-inventory-read --slot hcloud-inventory --version v1
+<installed-control> credential-enroll --role hetzner-recovery --slot hcloud-recovery --version v1
+<installed-control> state-observe --output <state.json> [--rollback-version <current-or-target-version>]
+<installed-control> observation-admit --observation <independent-billing.json> --output <billing-attestation.json>
+<installed-control> plan-build --kind <closed-kind> --state <state.json> --observation-id <id> [--slots <slots.json>] --output <plan.json>
+<installed-control> authorize --plan <plan.json> --output <authorization.json>
+<installed-control> apply --plan <plan.json> --authorization <authorization.json> --observation <independent-billing.json> --observation-attestation <billing-attestation.json>
+```
+
+Every enrollment reads and confirms the value from the controlling terminal
+without echo; values never appear in argv, environment, files, or command
+output. The independent billing observation is produced by the separately
+approved attended account/billing authority. Recovery uses only `freeze`,
+`recover-quarantine`, `recover-resolve`, `thaw`, or the separately admitted
+`retire` command—never a raw API or Wrangler fallback.
 
 Credential enrollment is serialized with plan admission. Each immutable slot
 version is signed, predecessor-linked, and has one current head per role. A

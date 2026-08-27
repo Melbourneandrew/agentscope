@@ -120,6 +120,7 @@ function buildPlan({
     currentWorkerVersionId: "no-existing-version",
     durableObjectNamespaceId: "planned-durable-object-namespace",
     currentMigrationTag: admission.deployment.migrationTag,
+    compatibleVersionDetailSha256: "none",
     hetznerProjectId: "fleet-only-project",
     providerZeroSha256: null,
     retirementTombstoneSha256: null,

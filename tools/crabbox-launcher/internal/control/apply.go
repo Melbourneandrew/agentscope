@@ -78,6 +78,14 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err := ctx.Err(); err != nil {
 		return errors.New("E_AUTHORITY_DEADLINE")
 	}
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return err
+	}
+	defer releaseAdmissionGuard(guard)
+	if err := ctx.Err(); err != nil {
+		return errors.New("E_AUTHORITY_DEADLINE")
+	}
 	clock := input.Clock
 	if clock == nil {
 		clock = func() time.Time { return time.Now().UTC() }
@@ -132,11 +140,6 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		return errors.New("E_OBSERVER_REQUIRED")
 	}
 	planDigest := SHA256(input.PlanData)
-	guard, err := store.acquireAdmissionGuard()
-	if err != nil {
-		return err
-	}
-	defer releaseAdmissionGuard(guard)
 	if err := operationContext.Err(); err != nil {
 		return errors.New("E_AUTHORITY_DEADLINE")
 	}
@@ -222,6 +225,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 	if err != nil {
 		return err
 	}
+	if err := validateCompatibleVersionEvidence(plan, currentState); err != nil {
+		return err
+	}
 	currentDigest, currentIdentityDigest, err := currentState.Digests()
 	expectedStateDigest := plan.ObservablePrestateSHA256
 	if resumeEvent.State != "" && resumeEvent.State != "consumed" {
@@ -251,6 +257,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		}
 		freshState, err := observer.Observe(operationContext, readCredential, now)
 		if err != nil {
+			return err
+		}
+		if err := validateCompatibleVersionEvidence(plan, freshState); err != nil {
 			return err
 		}
 		freshDigest, freshIdentityDigest, err := freshState.Digests()
@@ -288,6 +297,9 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		}
 		postState, postDigest, postIdentityDigest, observedIdentities, err := observeChangedState(operationContext, observer, readCredential, plan, operation, currentState, clock)
 		if err != nil {
+			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
+		}
+		if err := validateCompatibleVersionEvidence(plan, postState); err != nil {
 			return fmt.Errorf("E_OUTCOME_UNCERTAIN: %w", err)
 		}
 		receipt.ObservedResourceIdentities = observedIdentities

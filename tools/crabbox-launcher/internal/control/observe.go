@@ -259,7 +259,7 @@ func ValidateTerminalObservation(plan Plan, state StateObservation) error {
 		if workerPresent(state.Surfaces["accountWorkers"]) || ownedDurableObjectPresent(state.Surfaces["durableObjects"], plan) || ownedDomainPresent(state.Surfaces["scriptDomains"]) {
 			return errors.New("E_RETIREMENT_ACCOUNT_RESOURCE_PRESENT")
 		}
-		for _, surface := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "scriptTails", "scriptWorkersDev", "scriptVersions"} {
+		for _, surface := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions"} {
 			if !surfaceAbsent(state.Surfaces[surface]) && !collectionEmpty(state.Surfaces[surface]) {
 				return errors.New("E_RETIREMENT_CLOUDFLARE_NOT_ABSENT")
 			}
@@ -322,11 +322,7 @@ func validateDeploymentProfile(plan Plan, state StateObservation, requireSecrets
 			return errors.New("E_DEPLOYMENT_EXTRA_WORKER_SETTING")
 		}
 	}
-	cache, cacheOK := settings["cache_options"].(map[string]any)
-	if fmt.Sprint(settings["compatibility_date"]) != "2026-04-30" || !sameStringSet(stringSlice(settings["compatibility_flags"]), []string{"nodejs_compat"}) || !cacheOK || !exactObjectKeys(cache, "enabled") || !exactBoolean(cache, "enabled", false) {
-		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
-	}
-	if !collectionEmpty(settings["limits"]) || !optionalBoolean(settings, "logpush", false) || !optionalDisabledObservability(settings) || !collectionEmpty(settings["placement"]) || !collectionEmpty(settings["tags"]) || !collectionEmpty(settings["tail_consumers"]) || (settings["usage_model"] != nil && fmt.Sprint(settings["usage_model"]) != "standard") {
+	if !validCanonicalRuntimeSettings(settings) {
 		return errors.New("E_DEPLOYMENT_RUNTIME_SETTINGS")
 	}
 	migration, hasMigration := settings["migrations"].(map[string]any)
@@ -515,10 +511,11 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		if operation.SecretName == nil || !namedObjectPresent(before.Surfaces["scriptSecrets"], "name", *operation.SecretName) || namedObjectPresent(after.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
 			return nil, errors.New("E_SECRET_DELETE_NOT_OBSERVED")
 		}
-		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || !sameCanonicalValue(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"]) || !sameCanonicalValue(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
+		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
+		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !deploymentTransitionExact(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"], newVersion) {
 			return nil, errors.New("E_SECRET_UNEXPECTED_DELTA")
 		}
-		return []string{"secret-absent=" + *operation.SecretName}, nil
+		return []string{"deployment=" + currentDeploymentID(after.Surfaces["scriptDeployments"]), "secret-absent=" + *operation.SecretName, "worker-version=" + newVersion}, nil
 	case "worker.deploy":
 		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
 		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || operation.ExpectedPreviousVersionID == nil || (*operation.ExpectedPreviousVersionID != "absent" && *operation.ExpectedPreviousVersionID != currentWorkerVersionID(before.Surfaces["scriptDeployments"])) {
@@ -528,13 +525,13 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 			return nil, err
 		}
 		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
-		if !sameStringSet(namedObjectValues(before.Surfaces["scriptSecrets"], "name"), namedObjectValues(after.Surfaces["scriptSecrets"], "name")) || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion {
+		if !sameStringSet(namedObjectValues(before.Surfaces["scriptSecrets"], "name"), namedObjectValues(after.Surfaces["scriptSecrets"], "name")) || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !deploymentTransitionExact(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"], newVersion) {
 			return nil, errors.New("E_DEPLOY_UNEXPECTED_DELTA")
 		}
 		namespaceID, _ := ownedDurableObjectIdentity(after.Surfaces["durableObjects"], plan)
 		return []string{"deployment=" + afterDeployment, "worker-version=" + newVersion, "durable-object-namespace=" + namespaceID, "migration=v1"}, nil
 	case "worker.rollback":
-		if operation.VersionID == nil || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != *operation.VersionID || currentDeploymentID(after.Surfaces["scriptDeployments"]) == currentDeploymentID(before.Surfaces["scriptDeployments"]) || !sameCanonicalValue(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
+		if operation.VersionID == nil || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != *operation.VersionID || !deploymentTransitionExact(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"], *operation.VersionID) || !sameCanonicalValue(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) || validateCompatibleVersionEvidence(plan, after) != nil {
 			return nil, errors.New("E_ROLLBACK_NOT_OBSERVED")
 		}
 		return []string{"rollback-version=" + *operation.VersionID}, nil
@@ -560,7 +557,7 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
 		settings, settingsOK := after.Surfaces["workerSettings"].(map[string]any)
 		migration, migrationOK := settings["migrations"].(map[string]any)
-		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !settingsOK || !allowedObjectKeys(settings, "bindings", "compatibility_date", "compatibility_flags", "cache_options", "migrations", "limits", "logpush", "observability", "placement", "tags", "tail_consumers", "usage_model") || !collectionEmpty(settings["bindings"]) || !migrationOK || !validTerminalMigrationProjection(migration) || !collectionEmpty(after.Surfaces["durableObjects"]) {
+		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !deploymentTransitionExact(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"], newVersion) || !settingsOK || !allowedObjectKeys(settings, "bindings", "compatibility_date", "compatibility_flags", "cache_options", "migrations", "limits", "logpush", "observability", "placement", "tags", "tail_consumers", "usage_model") || !validCanonicalRuntimeSettings(settings) || !collectionEmpty(settings["bindings"]) || !migrationOK || !validTerminalMigrationProjection(migration) || !collectionEmpty(after.Surfaces["durableObjects"]) {
 			return nil, errors.New("E_TERMINAL_DEPLOY_NOT_OBSERVED")
 		}
 		return []string{"terminal-deployment=" + afterDeployment, "terminal-version=" + newVersion}, nil
@@ -570,8 +567,13 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		}
 		return []string{"version-absent=" + *operation.VersionID}, nil
 	case "worker.delete":
-		if workerPresent(after.Surfaces["accountWorkers"]) {
+		if !workerPresent(before.Surfaces["accountWorkers"]) || workerPresent(after.Surfaces["accountWorkers"]) {
 			return nil, errors.New("E_WORKER_DELETE_NOT_OBSERVED")
+		}
+		for _, surface := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions"} {
+			if !surfaceAbsent(after.Surfaces[surface]) && !collectionEmpty(after.Surfaces[surface]) {
+				return nil, errors.New("E_WORKER_DELETE_NOT_OBSERVED")
+			}
 		}
 		return []string{"worker-absent=" + WorkerName}, nil
 	case "account.workersDev.enable":
@@ -598,23 +600,38 @@ func validTerminalMigrationProjection(migration map[string]any) bool {
 }
 
 func deploymentTransitionExact(before, after any, expectedVersion string) bool {
-	beforeObject, beforeOK := before.(map[string]any)
-	afterObject, afterOK := after.(map[string]any)
-	if !beforeOK || !afterOK || currentDeploymentID(before) == "" || currentDeploymentID(after) == "" || currentDeploymentID(before) == currentDeploymentID(after) || currentWorkerVersionID(after) != expectedVersion {
+	beforeItems, afterItems := deploymentItems(before), deploymentItems(after)
+	if len(afterItems) == 0 || currentDeploymentID(after) == "" || (currentDeploymentID(before) != "" && currentDeploymentID(before) == currentDeploymentID(after)) || currentWorkerVersionID(after) != expectedVersion {
 		return false
 	}
-	beforeCopy, afterCopy := map[string]any{}, map[string]any{}
-	for key, value := range beforeObject {
-		if key != "id" && key != "versions" {
-			beforeCopy[key] = value
-		}
+	newDeployment := currentDeploymentID(after)
+	return singleAddedIdentity(beforeItems, afterItems) == newDeployment && namedObjectsEqualExcept(beforeItems, afterItems, "id", newDeployment)
+}
+
+func deploymentItems(value any) []any {
+	if surfaceAbsent(value) {
+		return nil
 	}
-	for key, value := range afterObject {
-		if key != "id" && key != "versions" {
-			afterCopy[key] = value
-		}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil
 	}
-	return sameCanonicalValue(beforeCopy, afterCopy)
+	if raw, exists := object["deployments"]; exists {
+		if !exactObjectKeys(object, "deployments") {
+			return nil
+		}
+		items := []any{}
+		for _, item := range objectSlice(raw) {
+			items = append(items, item)
+		}
+		return items
+	}
+	return []any{object}
+}
+
+func validCanonicalRuntimeSettings(settings map[string]any) bool {
+	cache, cacheOK := settings["cache_options"].(map[string]any)
+	return fmt.Sprint(settings["compatibility_date"]) == "2026-04-30" && sameStringSet(stringSlice(settings["compatibility_flags"]), []string{"nodejs_compat"}) && cacheOK && exactObjectKeys(cache, "enabled") && exactBoolean(cache, "enabled", false) && collectionEmpty(settings["limits"]) && optionalBoolean(settings, "logpush", false) && optionalDisabledObservability(settings) && collectionEmpty(settings["placement"]) && collectionEmpty(settings["tags"]) && collectionEmpty(settings["tail_consumers"]) && (settings["usage_model"] == nil || fmt.Sprint(settings["usage_model"]) == "standard")
 }
 
 func requireUnchangedSurfaces(before, after StateObservation, allowed map[string]struct{}) error {

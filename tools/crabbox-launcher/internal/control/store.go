@@ -936,6 +936,12 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 		return SlotMetadata{}, err
 	}
 	secretPath, metadataPath := filepath.Join(directory, slotVersion+".secret"), filepath.Join(directory, slotVersion+".json")
+	if err := reconcileAtomicExclusiveStaging(secretPath); err != nil {
+		return SlotMetadata{}, err
+	}
+	if err := reconcileAtomicExclusiveStaging(metadataPath); err != nil {
+		return SlotMetadata{}, err
+	}
 	_, secretErr := os.Lstat(secretPath)
 	_, metadataErr := os.Lstat(metadataPath)
 	if secretErr == nil && os.IsNotExist(metadataErr) {
@@ -982,11 +988,11 @@ func (store Store) EnrollCredential(environmentID, role, slotID, slotVersion str
 	}
 	defer zeroBytes(privateKey)
 	metadata.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(privateKey, payload))
-	if err := writeExclusive(secretPath, sealedValue, 0o600); err != nil {
+	if err := writeAtomicExclusive(secretPath, sealedValue, 0o600); err != nil {
 		return SlotMetadata{}, err
 	}
 	data, _ := json.MarshalIndent(metadata, "", "  ")
-	if err := writeExclusive(metadataPath, append(data, '\n'), 0o600); err != nil {
+	if err := writeAtomicExclusive(metadataPath, append(data, '\n'), 0o600); err != nil {
 		return SlotMetadata{}, err
 	}
 	return metadata, nil
