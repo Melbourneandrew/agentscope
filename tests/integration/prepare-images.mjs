@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import { compileCapabilityManifest } from "./dist/index.js";
 import {
+  BUILDKIT_IMAGE,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
   retirePreparedImageEvidence,
@@ -46,6 +47,7 @@ const scenarios = new Map(
   manifest.scenarios.map((scenario) => [scenario.scenarioId, scenario]),
 );
 const images = [
+  BUILDKIT_IMAGE,
   ...new Set(
     selection.scenarioIds.flatMap((scenarioId) => {
       const scenario = scenarios.get(scenarioId);

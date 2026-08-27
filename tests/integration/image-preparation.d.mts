@@ -10,7 +10,7 @@ export interface ImagePreparationRequest {
   body?: Buffer;
   deadline: number;
   headers: Readonly<Record<string, string>>;
-  method: "GET" | "POST";
+  method: "DELETE" | "GET" | "POST";
   origin?: URL;
   path: string;
   signal?: AbortSignal;
@@ -28,6 +28,18 @@ export interface PreparePinnedDockerImagesOptions {
   teardownMilliseconds?: number;
   dockerSocketForTesting?: string;
   dockerExecutableForTesting?: string;
+  buildxExecutableForTesting?: string;
+  buildkitImageForTesting?: string;
+  buildxRunForTesting?: (
+    arguments_: readonly string[],
+    options: Readonly<{
+      deadline: number;
+      environment: Readonly<Record<string, string>>;
+      input?: Buffer;
+      signal?: AbortSignal;
+      teardownMilliseconds: number;
+    }>,
+  ) => Promise<string>;
   socketIdentityForTesting?: Readonly<DockerSocketIdentity>;
   engineRequestForTesting?: (
     request: ImagePreparationRequest,
@@ -142,6 +154,18 @@ export declare const createBoundedBuildContext: (
   }>,
 ) => Buffer;
 
+export declare const runOwnedImageCommandForTesting: (
+  executable: string,
+  arguments_: readonly string[],
+  options: Readonly<{
+    deadline: number;
+    environment?: Readonly<Record<string, string>>;
+    input?: Buffer;
+    signal?: AbortSignal;
+    teardownMilliseconds?: number;
+  }>,
+) => Promise<string>;
+
 export declare const buildPreparedDockerImage: (
   client: PreparedDockerClient,
   options: Readonly<{
@@ -159,6 +183,8 @@ export declare const buildPreparedDockerImage: (
 export declare const closePreparedDockerClient: (
   client: PreparedDockerClient,
 ) => void;
+
+export declare const BUILDKIT_IMAGE: string;
 
 export declare const probePinnedRegistryTlsForTesting: (
   origin: URL,

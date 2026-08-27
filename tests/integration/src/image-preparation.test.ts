@@ -8,6 +8,9 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  truncateSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -22,6 +25,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PreparedDockerImageSet } from "../image-preparation.mjs";
 
 import {
+  BUILDKIT_IMAGE,
   buildPreparedDockerImage,
   closePreparedDockerClient,
   createBoundedBuildContext,
@@ -34,6 +38,7 @@ import {
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
   retirePreparedImageEvidence,
+  runOwnedImageCommandForTesting,
   validatePreparedImageEvidence,
 } from "../image-preparation.mjs";
 
@@ -260,27 +265,107 @@ type Response = {
   headers?: Record<string, string>;
   body: Buffer | string;
 };
+const builderInspection = (name: string, mismatched = false) => ({
+  statusCode: 200,
+  body: JSON.stringify({
+    Name: `/${name}`,
+    Image: mismatched ? `sha256:${"f".repeat(64)}` : configDigest,
+    Config: {
+      Image: image,
+      Labels: {
+        "com.docker.buildx.builder": name.slice("buildx_buildkit_".length, -1),
+      },
+    },
+    State: { Running: true },
+    Platform: "linux",
+    HostConfig: { NetworkMode: "default" },
+    NetworkSettings: { Networks: { bridge: {} } },
+  }),
+});
+const runFixtureBuildx = async (
+  state: {
+    buildFailure: boolean;
+    builderContainer: string | undefined;
+    builderVolume: string | undefined;
+    built: boolean;
+    calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
+    cleanupLeak: boolean;
+  },
+  arguments_: readonly string[],
+  options: { input?: Buffer },
+) => {
+  await Promise.resolve();
+  state.calls.push({
+    arguments_,
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+  const command = arguments_[0];
+  if (command === "create") {
+    const builder = arguments_[arguments_.indexOf("--name") + 1];
+    if (builder === undefined) throw new Error("missing builder name");
+    state.builderContainer = `buildx_buildkit_${builder}0`;
+    state.builderVolume = `${state.builderContainer}_state`;
+    return builder;
+  }
+  if (command === "inspect") return "fixture builder\n";
+  if (command === "build") {
+    if (state.buildFailure) throw new Error("integration.images.command");
+    state.built = true;
+    return "fixture build complete\n";
+  }
+  if (command === "rm") {
+    state.builderContainer = undefined;
+    if (!state.cleanupLeak) state.builderVolume = undefined;
+    return "";
+  }
+  throw new Error("unexpected buildx command");
+};
 
+// The simulated daemon keeps one coherent mutable lifecycle across all endpoints.
 const engineFixture = ({
+  builderMismatch = false,
   buildFailure = false,
   buildTag,
+  cleanupLeak = false,
   daemonSwitch = false,
+  lateTagAfterDelete = false,
   localValue = local,
   localInitiallyPresent = true,
   pullCompletesThenDisconnect = false,
   pullFailure = false,
 }: {
+  builderMismatch?: boolean;
   buildFailure?: boolean;
   buildTag?: string;
+  cleanupLeak?: boolean;
   daemonSwitch?: boolean;
+  lateTagAfterDelete?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
   pullCompletesThenDisconnect?: boolean;
   pullFailure?: boolean;
+  // eslint-disable-next-line max-lines-per-function
 } = {}) => {
   const requests: Request[] = [];
   let infoCount = 0;
   let pulled = localInitiallyPresent;
+  const state: {
+    buildFailure: boolean;
+    builderContainer: string | undefined;
+    builderVolume: string | undefined;
+    built: boolean;
+    calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
+    cleanupLeak: boolean;
+    imageDeleted: boolean;
+  } = {
+    buildFailure,
+    builderContainer: undefined,
+    builderVolume: undefined,
+    built: false,
+    calls: [],
+    cleanupLeak,
+    imageDeleted: false,
+  };
   const request = async (entry: Request): Promise<Response> => {
     await Promise.resolve();
     requests.push(entry);
@@ -301,18 +386,58 @@ const engineFixture = ({
             : info,
       };
     }
-    if (entry.path.startsWith("/v1.50/build?"))
-      return buildFailure
-        ? { statusCode: 200, body: '{"error":"fixture build failed"}\n' }
-        : { statusCode: 200, body: '{"stream":"fixture build complete"}\n' };
     if (
-      buildTag !== undefined &&
-      entry.path === `/v1.50/images/${encodeURIComponent(buildTag)}/json`
+      state.builderContainer !== undefined &&
+      entry.path ===
+        `/v1.50/containers/${encodeURIComponent(state.builderContainer)}/json`
+    )
+      return builderInspection(state.builderContainer, builderMismatch);
+    if (
+      state.builderVolume !== undefined &&
+      entry.path === `/v1.50/volumes/${encodeURIComponent(state.builderVolume)}`
     )
       return {
         statusCode: 200,
-        body: JSON.stringify({ Id: configDigest, RepoTags: [buildTag] }),
+        body: JSON.stringify({ Name: state.builderVolume }),
       };
+    if (
+      buildTag !== undefined &&
+      entry.path === `/v1.50/images/${encodeURIComponent(buildTag)}/json`
+    ) {
+      if (lateTagAfterDelete && state.imageDeleted) state.built = true;
+      return state.built
+        ? {
+            statusCode: 200,
+            body: JSON.stringify({
+              Id: configDigest,
+              RepoTags: [buildTag],
+              Config: {
+                Labels: { "com.agentscope.integration": "true" },
+              },
+              Os: "linux",
+              Architecture: "amd64",
+              Variant: "",
+            }),
+          }
+        : { statusCode: 404, body: "{}" };
+    }
+    if (entry.method === "DELETE") {
+      if (entry.path.includes("/containers/"))
+        state.builderContainer = undefined;
+      if (entry.path.includes("/volumes/") && !cleanupLeak)
+        state.builderVolume = undefined;
+      if (entry.path.includes("/images/")) {
+        state.built = false;
+        state.imageDeleted = true;
+        return { statusCode: 200, body: "[]" };
+      }
+      return { statusCode: 204, body: "" };
+    }
+    if (
+      entry.method === "GET" &&
+      (entry.path.includes("/containers/") || entry.path.includes("/volumes/"))
+    )
+      return { statusCode: 404, body: "{}" };
     if (entry.method === "POST") {
       if (pullCompletesThenDisconnect) {
         pulled = true;
@@ -328,7 +453,15 @@ const engineFixture = ({
         : { statusCode: 404, body: "{}" };
     throw new Error(`unexpected engine path ${entry.path}`);
   };
-  return { request, requests };
+  return {
+    buildxCalls: state.calls,
+    buildxRun: (
+      arguments_: readonly string[],
+      runOptions: { input?: Buffer },
+    ) => runFixtureBuildx(state, arguments_, runOptions),
+    request,
+    requests,
+  };
 };
 
 const registryFixture = ({
@@ -923,15 +1056,127 @@ describe("prepared Docker client terminal authority", () => {
   });
 });
 
-describe("authenticated Engine build consumption", () => {
-  const buildContext = () => {
+const buildContext = () => {
+  const directory = root();
+  writeFileSync(resolve(directory, "Dockerfile"), "FROM scratch\n");
+  mkdirSync(resolve(directory, "nested"));
+  writeFileSync(resolve(directory, "nested/input.txt"), "fixture\n");
+  return directory;
+};
+const buildTag = "agentscope-int-fixture:candidate";
+const buildClient = (engine: ReturnType<typeof engineFixture>) =>
+  createPreparedDockerClient(
+    validatePreparedImageEvidence(prepared(), manifestIdentity),
+    {
+      buildkitImageForTesting: image,
+      buildxExecutableForTesting: process.execPath,
+      buildxRunForTesting: engine.buildxRun,
+      dockerExecutableForTesting: process.execPath,
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engine.request,
+    },
+  );
+
+describe("bounded build-context acquisition", () => {
+  it("rejects symlink and pre-read size authority violations", () => {
+    const context = buildContext();
+    const links = root();
+    const rootLink = resolve(links, "context-link");
+    symlinkSync(context, rootLink);
+    expect(() => createBoundedBuildContext(rootLink)).toThrow(
+      "integration.images.build",
+    );
+    symlinkSync(resolve(context, "nested"), resolve(context, "nested-link"));
+    expect(() => createBoundedBuildContext(context)).toThrow(
+      "integration.images.build",
+    );
+    rmSync(resolve(context, "nested-link"));
+    writeFileSync(resolve(context, "oversized"), "");
+    truncateSync(resolve(context, "oversized"), 64 * 1024 * 1024 + 1);
+    expect(() => createBoundedBuildContext(context)).toThrow(
+      "integration.images.build",
+    );
+  });
+
+  it("rejects same-inode mutation during context acquisition", () => {
+    const context = buildContext();
+    expect(() =>
+      createBoundedBuildContext(context, {
+        afterEntryForTesting: (entryCount) => {
+          if (entryCount === 1)
+            writeFileSync(resolve(context, "Dockerfile"), "FROM invalid\n");
+        },
+      }),
+    ).toThrow("integration.images.build");
+  });
+});
+
+describe("owned buildx process execution", () => {
+  const fixture = resolve(
+    import.meta.dirname,
+    "../fixtures/image-preparation-process.mjs",
+  );
+
+  it.each([
+    ["hang-descendant", "integration.images.timeout"],
+    ["close-descendant", "integration.images.containment"],
+  ])("kills and joins the exact process group for %s", async (mode, code) => {
     const directory = root();
-    writeFileSync(resolve(directory, "Dockerfile"), "FROM scratch\n");
-    mkdirSync(resolve(directory, "nested"));
-    writeFileSync(resolve(directory, "nested/input.txt"), "fixture\n");
-    return directory;
-  };
-  const buildTag = "agentscope-int-fixture:candidate";
+    await expect(
+      runOwnedImageCommandForTesting(process.execPath, [fixture], {
+        deadline: performance.now() + 500,
+        environment: {
+          AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
+          AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
+        },
+        teardownMilliseconds: 250,
+      }),
+    ).rejects.toThrow(code);
+    const descendant = Number(
+      readFileSync(resolve(directory, "ready"), "utf8"),
+    );
+    expect(() => process.kill(descendant, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+  });
+});
+
+// These cases share the exact builder fixture and exercise one lifecycle matrix.
+// eslint-disable-next-line max-lines-per-function
+describe("authenticated buildx consumption", () => {
+  it("rejects buildx executable replacement before the first invocation", async () => {
+    const executable = resolve(root(), "buildx");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const engine = engineFixture({ buildTag });
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        buildkitImageForTesting: image,
+        buildxExecutableForTesting: executable,
+        buildxRunForTesting: engine.buildxRun,
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      },
+    );
+    unlinkSync(executable);
+    writeFileSync(executable, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    try {
+      await expect(
+        buildPreparedDockerImage(client, {
+          buildArguments: { BASE_IMAGE: image },
+          context: buildContext(),
+          dockerfile: "Dockerfile",
+          labels: { "com.agentscope.integration": "true" },
+          maximumMilliseconds: 4_000,
+          tag: buildTag,
+        }),
+      ).rejects.toThrow("integration.images.executable");
+      expect(engine.buildxCalls).toEqual([]);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
 
   it("sends one bounded deterministic context and verifies the built tag", async () => {
     const context = buildContext();
@@ -939,14 +1184,7 @@ describe("authenticated Engine build consumption", () => {
       createBoundedBuildContext(context),
     );
     const engine = engineFixture({ buildTag });
-    const client = createPreparedDockerClient(
-      validatePreparedImageEvidence(prepared(), manifestIdentity),
-      {
-        dockerExecutableForTesting: process.execPath,
-        socketIdentityForTesting: socket,
-        engineRequestForTesting: engine.request,
-      },
-    );
+    const client = buildClient(engine);
     try {
       await expect(
         buildPreparedDockerImage(client, {
@@ -958,40 +1196,60 @@ describe("authenticated Engine build consumption", () => {
           tag: buildTag,
         }),
       ).resolves.toBe(configDigest.replace(":", "-"));
-      const request = engine.requests.find(({ path }) =>
-        path.startsWith("/v1.50/build?"),
+      expect(engine.requests.some(({ path }) => path.includes("/build?"))).toBe(
+        false,
       );
-      expect(request).toMatchObject({
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-tar",
-        },
-      });
-      expect(request?.body).toBeInstanceOf(Buffer);
-      expect(request?.body?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
+      const create = engine.buildxCalls.find(
+        ({ arguments_ }) => arguments_[0] === "create",
+      );
+      expect(create?.arguments_).toContain("docker-container");
+      expect(create?.arguments_).not.toContain(BUILDKIT_IMAGE);
+      const build = engine.buildxCalls.find(
+        ({ arguments_ }) => arguments_[0] === "build",
+      );
+      expect(build?.input?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
         true,
       );
-      expect(request?.body?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
+      expect(build?.input?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
     } finally {
       closePreparedDockerClient(client);
     }
   });
 
   it.each([
-    { buildFailure: true, daemonSwitch: false },
-    { buildFailure: false, daemonSwitch: true },
+    {
+      buildFailure: true,
+      daemonSwitch: false,
+      expected: "integration.images.build",
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: true,
+      expected: "integration.images.containment",
+    },
+    {
+      builderMismatch: true,
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.build",
+    },
+    {
+      buildFailure: false,
+      cleanupLeak: true,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+    },
+    {
+      buildFailure: true,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      lateTagAfterDelete: true,
+    },
   ])(
-    "fails uncertain on malformed result or daemon substitution %#",
-    async (fixtureOptions) => {
+    "joins its dedicated builder on command failure or daemon substitution %#",
+    async ({ expected, ...fixtureOptions }) => {
       const engine = engineFixture({ buildTag, ...fixtureOptions });
-      const client = createPreparedDockerClient(
-        validatePreparedImageEvidence(prepared(), manifestIdentity),
-        {
-          dockerExecutableForTesting: process.execPath,
-          socketIdentityForTesting: socket,
-          engineRequestForTesting: engine.request,
-        },
-      );
+      const client = buildClient(engine);
       try {
         await expect(
           buildPreparedDockerImage(client, {
@@ -1002,7 +1260,7 @@ describe("authenticated Engine build consumption", () => {
             maximumMilliseconds: 4_000,
             tag: buildTag,
           }),
-        ).rejects.toThrow("integration.images.build-uncertain");
+        ).rejects.toThrow(expected);
       } finally {
         closePreparedDockerClient(client);
       }
@@ -1011,14 +1269,7 @@ describe("authenticated Engine build consumption", () => {
 
   it("expires during context acquisition before any Engine request", async () => {
     const engine = engineFixture({ buildTag });
-    const client = createPreparedDockerClient(
-      validatePreparedImageEvidence(prepared(), manifestIdentity),
-      {
-        dockerExecutableForTesting: process.execPath,
-        socketIdentityForTesting: socket,
-        engineRequestForTesting: engine.request,
-      },
-    );
+    const client = buildClient(engine);
     try {
       await expect(
         buildPreparedDockerImage(client, {

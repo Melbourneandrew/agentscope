@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
   chmodSync,
@@ -34,6 +35,8 @@ const maximumTokenBytes = 16_384;
 const maximumHeaderBytes = 16_384;
 const maximumBuildContextBytes = 64 * 1024 * 1024;
 const maximumBuildOutputBytes = 16 * 1024 * 1024;
+const maximumProcessInspectionBytes = 1_048_576;
+const processAbsencePollMilliseconds = 10;
 const digestPattern = /^sha256:[a-f\d]{64}$/u;
 const imagePattern = /^[^\s@]{1,448}@sha256:[a-f\d]{64}$/u;
 const manifestIdentityPattern = /^sha256-[a-f\d]{64}$/u;
@@ -62,6 +65,18 @@ const dockerExecutableCandidates = Object.freeze([
   "/opt/homebrew/bin/docker",
   "/Applications/Docker.app/Contents/Resources/bin/docker",
 ]);
+const buildxExecutableCandidates = Object.freeze([
+  "/Applications/Docker.app/Contents/Resources/cli-plugins/docker-buildx",
+  "/usr/local/bin/docker-buildx",
+  "/usr/local/lib/docker/cli-plugins/docker-buildx",
+  "/usr/local/libexec/docker/cli-plugins/docker-buildx",
+  "/opt/homebrew/lib/docker/cli-plugins/docker-buildx",
+  "/opt/homebrew/bin/docker-buildx",
+  "/usr/lib/docker/cli-plugins/docker-buildx",
+  "/usr/libexec/docker/cli-plugins/docker-buildx",
+]);
+export const BUILDKIT_IMAGE =
+  "moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e";
 const preparedSets = new WeakSet();
 const preparedDockerClients = new WeakSet();
 const closingPreparedDockerClients = new WeakSet();
@@ -238,6 +253,193 @@ const resolveDockerExecutable = (requested) => {
   }
   throw fixedError("integration.images.executable");
 };
+const resolveBuildxExecutable = (requested) => {
+  if (requested !== undefined) return executableRecord(requested);
+  for (const candidate of buildxExecutableCandidates) {
+    try {
+      return executableRecord(candidate);
+    } catch {
+      // The fixed absolute executable list is authoritative.
+    }
+  }
+  throw fixedError("integration.images.executable");
+};
+const processInspectionExecutable =
+  process.platform === "darwin"
+    ? "/bin/ps"
+    : process.platform === "linux"
+      ? "/usr/bin/ps"
+      : undefined;
+const processGroupState = (processGroup, deadline) => {
+  const remaining = Math.floor(deadline - performance.now());
+  if (processInspectionExecutable === undefined || remaining < 1)
+    return "unavailable";
+  try {
+    const output = execFileSync(
+      processInspectionExecutable,
+      ["-axo", "pid=,pgid=,state="],
+      {
+        encoding: "utf8",
+        maxBuffer: maximumProcessInspectionBytes,
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: remaining,
+      },
+    );
+    const states = output
+      .trimEnd()
+      .split("\n")
+      .map((line) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/u.exec(line))
+      .filter((match) => match !== null && Number(match[2]) === processGroup)
+      .map((match) => match[3]);
+    if (states.length === 0) return "absent";
+    return states.every((state) => state.startsWith("Z"))
+      ? "zombie-only"
+      : "live";
+  } catch {
+    return "unavailable";
+  }
+};
+const killProcessGroup = (processGroup) => {
+  try {
+    process.kill(-processGroup, "SIGKILL");
+    return true;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+};
+const processGroupIsAbsent = (processGroup) => {
+  try {
+    process.kill(-processGroup, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+};
+const waitForProcessGroupAbsence = async (processGroup, deadline) => {
+  for (;;) {
+    if (processGroupIsAbsent(processGroup)) return true;
+    if (performance.now() >= deadline) return false;
+    await new Promise((resolveWait) =>
+      setTimeout(
+        resolveWait,
+        Math.min(
+          processAbsencePollMilliseconds,
+          Math.max(1, deadline - performance.now()),
+        ),
+      ),
+    );
+  }
+};
+const runOwnedCommand = async (
+  executable,
+  arguments_,
+  { deadline, environment, input, signal, teardownMilliseconds },
+) => {
+  if (process.platform === "win32" || processInspectionExecutable === undefined)
+    throw fixedError("integration.images.platform");
+  if (signal?.aborted) throw fixedError("integration.images.interrupted");
+  const executableIdentity = executableRecord(executable.path);
+  if (!sameExecutable(executable, executableIdentity))
+    throw fixedError("integration.images.executable");
+  const teardownDeadline = deadline;
+  const workDeadline = deadline - teardownMilliseconds;
+  if (performance.now() >= workDeadline)
+    throw fixedError("integration.images.timeout", true);
+  const child = spawn(executableIdentity.path, arguments_, {
+    detached: true,
+    env: environment,
+    shell: false,
+    stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+  });
+  const processGroup = child.pid;
+  if (!Number.isSafeInteger(processGroup) || processGroup < 1) {
+    child.kill("SIGKILL");
+    throw fixedError("integration.images.command");
+  }
+  let bytes = 0;
+  const output = [];
+  let failure;
+  const fail = (code, timedOut = false) => {
+    failure ??= fixedError(code, timedOut);
+    killProcessGroup(processGroup);
+  };
+  const consume = (chunk, retain) => {
+    bytes += chunk.byteLength;
+    if (bytes > maximumBuildOutputBytes) fail("integration.images.output");
+    else if (retain) output.push(chunk);
+  };
+  child.stdout.on("data", (chunk) => consume(chunk, true));
+  child.stderr.on("data", (chunk) => consume(chunk, false));
+  const onAbort = () => fail("integration.images.interrupted");
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const timeout = setTimeout(
+    () => fail("integration.images.timeout", true),
+    Math.max(1, workDeadline - performance.now()),
+  );
+  const closed = new Promise((resolveClose) => {
+    child.once("error", () => fail("integration.images.command"));
+    child.once("close", (code, childSignal) =>
+      resolveClose({ code, childSignal }),
+    );
+  });
+  if (input !== undefined) {
+    child.stdin.on("error", () => fail("integration.images.command"));
+    child.stdin.end(input);
+  }
+  try {
+    const result = await Promise.race([
+      closed,
+      new Promise((resolveClose) =>
+        setTimeout(
+          () => resolveClose(undefined),
+          Math.max(1, teardownDeadline - performance.now()),
+        ).unref(),
+      ),
+    ]);
+    if (result === undefined)
+      throw fixedError("integration.images.containment", true);
+    if (
+      failure === undefined &&
+      (result.code !== 0 || result.childSignal !== null)
+    )
+      failure = fixedError("integration.images.command");
+    if (failure === undefined && !processGroupIsAbsent(processGroup))
+      failure = fixedError("integration.images.containment");
+    if (!killProcessGroup(processGroup))
+      failure = fixedError("integration.images.containment", true);
+    const absent = await waitForProcessGroupAbsence(
+      processGroup,
+      Math.max(performance.now(), teardownDeadline - 250),
+    );
+    const state = absent
+      ? "absent"
+      : processGroupState(processGroup, teardownDeadline);
+    if (state !== "absent")
+      throw fixedError(
+        state === "zombie-only"
+          ? "integration.images.teardown"
+          : "integration.images.containment",
+        true,
+      );
+    if (failure !== undefined) throw failure;
+    return Buffer.concat(output).toString("utf8");
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
+    killProcessGroup(processGroup);
+  }
+};
+export const runOwnedImageCommandForTesting = (
+  executable,
+  arguments_,
+  options,
+) =>
+  runOwnedCommand(executableRecord(executable), arguments_, {
+    ...options,
+    environment: options.environment ?? {},
+    teardownMilliseconds:
+      options.teardownMilliseconds ?? preparationTeardownMilliseconds,
+  });
 const resolveDockerSocket = (requested) => {
   if (requested !== undefined) return socketRecord(requested);
   for (const candidate of dockerSocketCandidates) {
@@ -760,7 +962,14 @@ const createPrivateClientRoot = (options) => {
   try {
     chmodSync(root, 0o700);
     options.afterPrivateRootCreatedForTesting?.(root);
-    for (const name of ["docker", "home", "tmp", "xdg", "npm-cache"]) {
+    for (const name of [
+      "buildx",
+      "docker",
+      "home",
+      "tmp",
+      "xdg",
+      "npm-cache",
+    ]) {
       const path = resolve(root, name);
       mkdirSync(path, { mode: 0o700 });
       owned.directories.push(path);
@@ -857,17 +1066,123 @@ const tarHeader = (relative, status, directory) => {
   writeTarText(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
   return header;
 };
+const sameFileIdentity = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.mode === right.mode &&
+  left.size === right.size &&
+  left.mtimeNs === right.mtimeNs &&
+  left.ctimeNs === right.ctimeNs;
+const assertBuildContextActive = (deadline, signal) => {
+  if (signal?.aborted) throw fixedError("integration.images.interrupted");
+  if (performance.now() > deadline)
+    throw fixedError("integration.images.timeout", true);
+};
+const readBuildContextFile = (path, expected, state) => {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const current = fstatSync(descriptor, { bigint: true });
+    const size = Number(current.size);
+    const padding = (512 - (size % 512)) % 512;
+    if (
+      !current.isFile() ||
+      !sameFileIdentity(expected, current) ||
+      current.size > BigInt(maximumBuildContextBytes) ||
+      state.total() + 512 + size + padding + 1024 > maximumBuildContextBytes
+    )
+      throw fixedError("integration.images.build");
+    const body = readFileSync(descriptor);
+    state.assertActive();
+    if (
+      body.byteLength !== size ||
+      !sameFileIdentity(current, fstatSync(descriptor, { bigint: true }))
+    )
+      throw fixedError("integration.images.build");
+    return body;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+const visitBuildContextDirectory = (
+  directoryDescriptor,
+  directoryPath,
+  prefix,
+  state,
+) => {
+  state.assertActive();
+  const directoryIdentity = fstatSync(directoryDescriptor, { bigint: true });
+  if (
+    !directoryIdentity.isDirectory() ||
+    !sameFileIdentity(
+      directoryIdentity,
+      lstatSync(directoryPath, { bigint: true }),
+    )
+  )
+    throw fixedError("integration.images.build");
+  const entries = readdirSync(directoryPath, { withFileTypes: true }).sort(
+    (left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  for (const entry of entries) {
+    state.observeEntry();
+    const childPath = `${directoryPath}/${entry.name}`;
+    const status = lstatSync(childPath, { bigint: true });
+    if (status.isSymbolicLink()) throw fixedError("integration.images.build");
+    state.afterEntry();
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    const headerStatus = {
+      mode: Number(status.mode),
+      size: Number(status.size),
+    };
+    if (status.isDirectory()) {
+      const descriptor = openSync(
+        childPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      try {
+        const current = fstatSync(descriptor, { bigint: true });
+        if (
+          !current.isDirectory() ||
+          !sameFileIdentity(status, current) ||
+          !sameFileIdentity(
+            directoryIdentity,
+            lstatSync(directoryPath, { bigint: true }),
+          )
+        )
+          throw fixedError("integration.images.build");
+        state.append(tarHeader(`${relative}/`, headerStatus, true));
+        visitBuildContextDirectory(descriptor, childPath, relative, state);
+        if (!sameFileIdentity(current, fstatSync(descriptor, { bigint: true })))
+          throw fixedError("integration.images.build");
+      } finally {
+        closeSync(descriptor);
+      }
+    } else if (status.isFile()) {
+      const body = readBuildContextFile(childPath, status, state);
+      state.append(tarHeader(relative, headerStatus, false));
+      state.append(body);
+      const padding = (512 - (body.byteLength % 512)) % 512;
+      if (padding > 0) state.append(Buffer.alloc(padding));
+    } else throw fixedError("integration.images.build");
+    if (
+      !sameFileIdentity(
+        directoryIdentity,
+        lstatSync(directoryPath, { bigint: true }),
+      )
+    )
+      throw fixedError("integration.images.build");
+  }
+};
 const boundedBuildContext = (
   root,
   { afterEntryForTesting, deadline = Number.POSITIVE_INFINITY, signal } = {},
 ) => {
-  const assertActive = () => {
-    if (signal?.aborted) throw fixedError("integration.images.interrupted");
-    if (performance.now() > deadline)
-      throw fixedError("integration.images.timeout", true);
-  };
+  const assertActive = () => assertBuildContextActive(deadline, signal);
   assertActive();
-  const canonicalRoot = realpathSync(root);
+  const rootStatus = lstatSync(root, { bigint: true });
+  if (!rootStatus.isDirectory() || rootStatus.isSymbolicLink())
+    throw fixedError("integration.images.build");
   const chunks = [];
   let total = 0;
   let entries = 0;
@@ -878,60 +1193,38 @@ const boundedBuildContext = (
       throw fixedError("integration.images.build");
     chunks.push(chunk);
   };
-  const visit = (directory, prefix) => {
-    assertActive();
-    for (const entry of readdirSync(directory, { withFileTypes: true }).sort(
-      (left, right) =>
-        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-    )) {
-      assertActive();
-      entries += 1;
-      if (entries > 8_192 || entry.isSymbolicLink())
-        throw fixedError("integration.images.build");
-      const absolute = resolve(directory, entry.name);
-      const status = lstatSync(absolute);
+  const state = {
+    afterEntry: () => {
       afterEntryForTesting?.(entries);
       assertActive();
-      const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-      if (entry.isDirectory()) {
-        const physical = realpathSync(absolute);
-        if (!physical.startsWith(`${canonicalRoot}/`))
-          throw fixedError("integration.images.build");
-        append(tarHeader(`${relative}/`, status, true));
-        visit(physical, relative);
-      } else if (entry.isFile()) {
-        let descriptor;
-        let body;
-        try {
-          descriptor = openSync(
-            absolute,
-            constants.O_RDONLY | constants.O_NOFOLLOW,
-          );
-          const current = fstatSync(descriptor);
-          if (
-            !current.isFile() ||
-            current.dev !== status.dev ||
-            current.ino !== status.ino ||
-            current.size !== status.size
-          )
-            throw fixedError("integration.images.build");
-          body = readFileSync(descriptor);
-          assertActive();
-          if (body.byteLength !== current.size)
-            throw fixedError("integration.images.build");
-        } finally {
-          if (descriptor !== undefined) closeSync(descriptor);
-        }
-        append(tarHeader(relative, status, false));
-        append(body);
-        const padding = (512 - (body.byteLength % 512)) % 512;
-        if (padding > 0) append(Buffer.alloc(padding));
-      } else throw fixedError("integration.images.build");
-    }
+    },
+    append,
+    assertActive,
+    observeEntry: () => {
+      assertActive();
+      entries += 1;
+      if (entries > 8_192) throw fixedError("integration.images.build");
+    },
+    total: () => total,
   };
-  visit(canonicalRoot, "");
-  assertActive();
-  append(Buffer.alloc(1024));
+  const rootDescriptor = openSync(
+    root,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const openedRoot = fstatSync(rootDescriptor, { bigint: true });
+    if (!openedRoot.isDirectory() || !sameFileIdentity(rootStatus, openedRoot))
+      throw fixedError("integration.images.build");
+    visitBuildContextDirectory(rootDescriptor, root, "", state);
+    assertActive();
+    if (
+      !sameFileIdentity(openedRoot, fstatSync(rootDescriptor, { bigint: true }))
+    )
+      throw fixedError("integration.images.build");
+    append(Buffer.alloc(1024));
+  } finally {
+    closeSync(rootDescriptor);
+  }
   return Buffer.concat(chunks);
 };
 export const createBoundedBuildContext = (root, options) => {
@@ -1511,9 +1804,15 @@ export const createPreparedDockerClient = (evidence, options = {}) => {
     const executable = resolveDockerExecutable(
       options.dockerExecutableForTesting,
     );
+    const buildxExecutable = resolveBuildxExecutable(
+      options.buildxExecutableForTesting ?? options.dockerExecutableForTesting,
+    );
     privateClient = createPrivateClientRoot({});
     const client = Object.freeze({
       evidence,
+      buildxExecutable,
+      buildkitImage: options.buildkitImageForTesting ?? BUILDKIT_IMAGE,
+      buildxRunForTesting: options.buildxRunForTesting,
       executable,
       privateClient,
       socket,
@@ -1591,17 +1890,327 @@ const validBuildMap = (value) =>
   Object.entries(value).every(
     ([name, entry]) => boundedText(name, 128) && boundedText(entry, 1_024),
   );
-const buildQuery = ({ buildArguments, dockerfile, labels, tag }) =>
-  new URLSearchParams({
-    buildargs: JSON.stringify(buildArguments),
-    dockerfile,
-    forcerm: "1",
-    labels: JSON.stringify(labels),
-    networkmode: "none",
-    pull: "0",
-    rm: "1",
-    t: tag,
+const buildxEnvironment = (client) =>
+  Object.freeze({
+    BUILDX_CONFIG: resolve(client.privateClient.root, "buildx"),
+    DOCKER_CONFIG: resolve(client.privateClient.root, "docker"),
+    DOCKER_HOST: `unix://${client.socket.path}`,
+    HOME: resolve(client.privateClient.root, "home"),
+    TMPDIR: resolve(client.privateClient.root, "tmp"),
+    XDG_CONFIG_HOME: resolve(client.privateClient.root, "xdg"),
   });
+const platformText = (platform) =>
+  `${platform.os}/${platform.architecture}${
+    platform.variant === undefined ? "" : `/${platform.variant}`
+  }`;
+const builderResources = (builder) =>
+  Object.freeze({
+    container: `buildx_buildkit_${builder}0`,
+    volume: `buildx_buildkit_${builder}0_state`,
+  });
+const inspectEngineObject = async ({
+  daemon,
+  engine,
+  name,
+  policy,
+  signal,
+  type,
+}) => {
+  const response = await engineCall(
+    { policy, signal, transport: engine },
+    {
+      expected: [200, 404],
+      method: "GET",
+      path: `/v${daemon.apiVersion}/${type}/${encodeURIComponent(name)}${
+        type === "volumes" ? "" : "/json"
+      }`,
+    },
+  );
+  return response.statusCode === 404
+    ? undefined
+    : jsonRecord(response.body, "integration.images.build");
+};
+const removeBuilderResources = async ({
+  client,
+  daemon,
+  engine,
+  policy,
+  resources,
+}) => {
+  for (const [type, name] of [
+    ["containers", resources.container],
+    ["volumes", resources.volume],
+  ])
+    await engineCall(
+      { policy, signal: undefined, transport: engine },
+      {
+        expected: [204, 404],
+        method: "DELETE",
+        path: `/v${daemon.apiVersion}/${type}/${encodeURIComponent(name)}?force=1${
+          type === "containers" ? "&v=1" : ""
+        }`,
+      },
+    );
+  assertSocketCurrentFor(engine, client.socket);
+  const [container, volume] = await Promise.all([
+    inspectEngineObject({
+      daemon,
+      engine,
+      name: resources.container,
+      policy,
+      type: "containers",
+    }),
+    inspectEngineObject({
+      daemon,
+      engine,
+      name: resources.volume,
+      policy,
+      type: "volumes",
+    }),
+  ]);
+  if (container !== undefined || volume !== undefined)
+    throw fixedError("integration.images.containment");
+};
+const assertBuilderContainer = (
+  container,
+  resources,
+  buildkit,
+  buildkitImage,
+) => {
+  if (
+    container?.Name !== `/${resources.container}` ||
+    container.Image !== buildkit.configDigest ||
+    container.Config?.Image !== buildkitImage ||
+    container.Config?.Labels?.["com.docker.buildx.builder"] !==
+      resources.container.slice("buildx_buildkit_".length, -1) ||
+    container.State?.Running !== true ||
+    container.Platform !== buildkit.platform.os ||
+    container.HostConfig?.NetworkMode !== "default" ||
+    JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
+      JSON.stringify(["bridge"])
+  )
+    throw fixedError("integration.images.build");
+};
+const inspectBuiltTag = async (
+  engine,
+  daemon,
+  policy,
+  signal,
+  { labels, platform, tag },
+) => {
+  const built = await inspectEngineObject({
+    daemon,
+    engine,
+    name: tag,
+    policy,
+    signal,
+    type: "images",
+  });
+  if (
+    built === undefined ||
+    !digestPattern.test(built.Id ?? "") ||
+    !Array.isArray(built.RepoTags) ||
+    !built.RepoTags.includes(tag) ||
+    !Object.entries(labels).every(
+      ([name, value]) => built.Config?.Labels?.[name] === value,
+    ) ||
+    !samePlatform(
+      platform,
+      normalizePlatform({
+        os: built.Os,
+        architecture: built.Architecture,
+        variant: built.Variant,
+      }),
+    )
+  )
+    throw fixedError("integration.images.build");
+  return built;
+};
+const buildArgumentsFor = ({
+  buildArguments,
+  builder,
+  dockerfile,
+  labels,
+  tag,
+}) => {
+  const result = [
+    "build",
+    "--builder",
+    builder,
+    "--file",
+    dockerfile,
+    "--load",
+    "--network",
+    "default",
+    "--pull=false",
+    "--tag",
+    tag,
+  ];
+  for (const [name, value] of Object.entries(buildArguments).sort())
+    result.push("--build-arg", `${name}=${value}`);
+  for (const [name, value] of Object.entries(labels).sort())
+    result.push("--label", `${name}=${value}`);
+  result.push("-");
+  return result;
+};
+const createBuildAuthority = async (client, policy, signal) => {
+  const engine =
+    client.engineRequestForTesting ?? engineTransport(client.socket);
+  const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+  if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+    throw fixedError("integration.images.build");
+  const buildkit = client.evidence.images
+    .map(evidenceImage)
+    .find((entry) => entry.image === client.buildkitImage);
+  if (buildkit === undefined) throw fixedError("integration.images.build");
+  const local = await inspectLocalImage({
+    daemon,
+    image: client.buildkitImage,
+    policy,
+    signal,
+    transport: engine,
+  });
+  if (
+    local.configDigest !== buildkit.configDigest ||
+    !samePlatform(local.platform, buildkit.platform)
+  )
+    throw fixedError("integration.images.build");
+  const builder = `agentscope-${randomBytes(8).toString("hex")}`;
+  const run = (arguments_, input) => {
+    if (
+      !sameExecutable(
+        client.buildxExecutable,
+        executableRecord(client.buildxExecutable.path),
+      )
+    )
+      throw fixedError("integration.images.executable");
+    const options = {
+      deadline: policy.deadline,
+      environment: buildxEnvironment(client),
+      input,
+      signal,
+      teardownMilliseconds: policy.teardownMilliseconds,
+    };
+    return client.buildxRunForTesting === undefined
+      ? runOwnedCommand(client.buildxExecutable, arguments_, options)
+      : client.buildxRunForTesting(arguments_, options);
+  };
+  return { builder, buildkit, client, daemon, engine, policy, run, signal };
+};
+const executeBuilderBuild = async (authority, options, archive) => {
+  const { builder, buildkit, client, daemon, engine, policy, run, signal } =
+    authority;
+  const resources = builderResources(builder);
+  await run([
+    "create",
+    "--name",
+    builder,
+    "--driver",
+    "docker-container",
+    "--driver-opt",
+    `image=${client.buildkitImage}`,
+    "--platform",
+    platformText(buildkit.platform),
+    `unix://${client.socket.path}`,
+  ]);
+  authority.builderCreated = true;
+  await run(["inspect", "--builder", builder, "--bootstrap"]);
+  const container = await inspectEngineObject({
+    daemon,
+    engine,
+    name: resources.container,
+    policy,
+    signal,
+    type: "containers",
+  });
+  assertBuilderContainer(container, resources, buildkit, client.buildkitImage);
+  const volume = await inspectEngineObject({
+    daemon,
+    engine,
+    name: resources.volume,
+    policy,
+    signal,
+    type: "volumes",
+  });
+  if (volume?.Name !== resources.volume)
+    throw fixedError("integration.images.build");
+  await run(buildArgumentsFor({ ...options, builder }), archive);
+  const built = await inspectBuiltTag(engine, daemon, policy, signal, {
+    labels: options.labels,
+    platform: buildkit.platform,
+    tag: options.tag,
+  });
+  assertSocketCurrentFor(engine, client.socket);
+  if (
+    !sameDaemon(
+      daemon,
+      await inspectDaemon(engine, client.socket, policy, signal),
+    )
+  )
+    throw fixedError("integration.images.build");
+  return built;
+};
+const settleBuilderBuild = async (authority, options, built, failed) => {
+  const { builder, client, daemon, engine, policy, run } = authority;
+  try {
+    if (authority.builderCreated)
+      await run(["rm", "--force", builder]).catch(() => undefined);
+    await removeBuilderResources({
+      client,
+      daemon,
+      engine,
+      policy: { ...policy, workDeadline: policy.reconciliationDeadline },
+      resources: builderResources(builder),
+    });
+    if (failed) {
+      await engineCall(
+        {
+          policy: { ...policy, workDeadline: policy.reconciliationDeadline },
+          signal: undefined,
+          transport: engine,
+        },
+        {
+          expected: [200, 404],
+          method: "DELETE",
+          path: `/v${daemon.apiVersion}/images/${encodeURIComponent(options.tag)}?force=1&noprune=0`,
+        },
+      );
+      const late = await inspectEngineObject({
+        daemon,
+        engine,
+        name: options.tag,
+        policy: { ...policy, workDeadline: policy.deadline },
+        type: "images",
+      });
+      if (late !== undefined)
+        throw fixedError("integration.images.containment");
+    } else {
+      const terminal = await inspectBuiltTag(
+        engine,
+        daemon,
+        { ...policy, workDeadline: policy.deadline },
+        undefined,
+        {
+          labels: options.labels,
+          platform: authority.buildkit.platform,
+          tag: options.tag,
+        },
+      );
+      if (terminal.Id !== built.Id)
+        throw fixedError("integration.images.containment");
+    }
+    const finalDaemon = await inspectDaemon(
+      engine,
+      client.socket,
+      { ...policy, workDeadline: policy.deadline },
+      undefined,
+    );
+    if (!sameDaemon(daemon, finalDaemon))
+      throw fixedError("integration.images.containment");
+  } catch {
+    throw fixedError("integration.images.containment");
+  }
+};
 
 export const buildPreparedDockerImage = async (
   client,
@@ -1642,80 +2251,34 @@ export const buildPreparedDockerImage = async (
     deadline: policy.workDeadline,
     signal,
   });
-  const engine =
-    client.engineRequestForTesting === undefined
-      ? engineTransport(client.socket)
-      : client.engineRequestForTesting;
-  const initialDaemon = await inspectDaemon(
-    engine,
-    client.socket,
-    policy,
-    signal,
-  );
-  if (!sameDaemon(client.evidence.dockerDaemon, initialDaemon))
-    throw fixedError("integration.images.build");
-  const query = buildQuery({ buildArguments, dockerfile, labels, tag });
-  let buildStarted = false;
+  const authority = await createBuildAuthority(client, policy, signal);
+  let built;
+  let failure;
   try {
-    buildStarted = true;
-    const response = await engineCall(
-      { policy, signal, transport: engine },
-      {
-        body: archive,
-        expected: [200],
-        headers: Object.freeze({
-          "Content-Length": String(archive.byteLength),
-          "Content-Type": "application/x-tar",
-        }),
-        maximumBytes: maximumBuildOutputBytes,
-        method: "POST",
-        path: `/v${initialDaemon.apiVersion}/build?${query.toString()}`,
-      },
+    built = await executeBuilderBuild(
+      authority,
+      { buildArguments, dockerfile, labels, tag },
+      archive,
     );
-    const lines = response.body
-      .toString("utf8")
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    if (lines.length === 0) throw fixedError("integration.images.build");
-    for (const line of lines) {
-      const event = jsonRecord(line, "integration.images.build");
-      if (event.error !== undefined || event.errorDetail !== undefined)
-        throw fixedError("integration.images.build");
-    }
-    const inspection = await engineCall(
-      { policy, signal, transport: engine },
-      {
-        expected: [200],
-        method: "GET",
-        path: `/v${initialDaemon.apiVersion}/images/${encodeURIComponent(tag)}/json`,
-      },
-    );
-    const built = jsonRecord(inspection.body, "integration.images.build");
-    if (
-      !digestPattern.test(built.Id ?? "") ||
-      !Array.isArray(built.RepoTags) ||
-      !built.RepoTags.includes(tag)
-    )
-      throw fixedError("integration.images.build");
-    assertSocketCurrentFor(engine, client.socket);
-    const finalDaemon = await inspectDaemon(
-      engine,
-      client.socket,
-      policy,
-      signal,
-    );
-    if (!sameDaemon(initialDaemon, finalDaemon))
-      throw fixedError("integration.images.build");
-    return built.Id.replace(":", "-");
   } catch (error) {
-    throw fixedError(
-      buildStarted
-        ? "integration.images.build-uncertain"
-        : "integration.images.build",
-      error?.code === "ETIMEDOUT",
-    );
+    failure = error;
   }
+  await settleBuilderBuild(
+    authority,
+    { labels, tag },
+    built,
+    failure !== undefined,
+  );
+  if (failure !== undefined)
+    throw [
+      "integration.images.executable",
+      "integration.images.interrupted",
+      "integration.images.output",
+      "integration.images.timeout",
+    ].includes(failure?.message)
+      ? failure
+      : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
+  return built.Id.replace(":", "-");
 };
 
 export const closePreparedDockerClient = (client) => {
