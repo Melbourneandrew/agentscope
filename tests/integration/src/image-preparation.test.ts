@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createServer } from "node:http";
 import { get as httpsGet, createServer as createHttpsServer } from "node:https";
 import type { Socket } from "node:net";
@@ -1007,6 +1008,42 @@ describe("authenticated Engine build consumption", () => {
       }
     },
   );
+
+  it("expires during context acquisition before any Engine request", async () => {
+    const engine = engineFixture({ buildTag });
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      },
+    );
+    try {
+      await expect(
+        buildPreparedDockerImage(client, {
+          afterBuildContextEntryForTesting: () => {
+            const releaseAt = performance.now() + 10;
+            while (performance.now() < releaseAt) {
+              // Deterministically expire the one build deadline mid-packing.
+            }
+          },
+          buildArguments: { BASE_IMAGE: image },
+          context: buildContext(),
+          dockerfile: "Dockerfile",
+          labels: { "com.agentscope.integration": "true" },
+          maximumMilliseconds: 4,
+          tag: buildTag,
+        }),
+      ).rejects.toMatchObject({
+        code: "ETIMEDOUT",
+        message: "integration.images.timeout",
+      });
+      expect(engine.requests).toEqual([]);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
 });
 
 describe("prepared image admission and publication", () => {

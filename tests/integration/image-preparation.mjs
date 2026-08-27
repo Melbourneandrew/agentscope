@@ -857,27 +857,41 @@ const tarHeader = (relative, status, directory) => {
   writeTarText(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
   return header;
 };
-const boundedBuildContext = (root) => {
+const boundedBuildContext = (
+  root,
+  { afterEntryForTesting, deadline = Number.POSITIVE_INFINITY, signal } = {},
+) => {
+  const assertActive = () => {
+    if (signal?.aborted) throw fixedError("integration.images.interrupted");
+    if (performance.now() > deadline)
+      throw fixedError("integration.images.timeout", true);
+  };
+  assertActive();
   const canonicalRoot = realpathSync(root);
   const chunks = [];
   let total = 0;
   let entries = 0;
   const append = (chunk) => {
+    assertActive();
     total += chunk.byteLength;
     if (total > maximumBuildContextBytes)
       throw fixedError("integration.images.build");
     chunks.push(chunk);
   };
   const visit = (directory, prefix) => {
+    assertActive();
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort(
       (left, right) =>
         left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
     )) {
+      assertActive();
       entries += 1;
       if (entries > 8_192 || entry.isSymbolicLink())
         throw fixedError("integration.images.build");
       const absolute = resolve(directory, entry.name);
       const status = lstatSync(absolute);
+      afterEntryForTesting?.(entries);
+      assertActive();
       const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
       if (entry.isDirectory()) {
         const physical = realpathSync(absolute);
@@ -902,6 +916,7 @@ const boundedBuildContext = (root) => {
           )
             throw fixedError("integration.images.build");
           body = readFileSync(descriptor);
+          assertActive();
           if (body.byteLength !== current.size)
             throw fixedError("integration.images.build");
         } finally {
@@ -915,13 +930,21 @@ const boundedBuildContext = (root) => {
     }
   };
   visit(canonicalRoot, "");
+  assertActive();
   append(Buffer.alloc(1024));
   return Buffer.concat(chunks);
 };
-export const createBoundedBuildContext = (root) => {
+export const createBoundedBuildContext = (root, options) => {
   try {
-    return boundedBuildContext(root);
-  } catch {
+    return boundedBuildContext(root, options);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      ["integration.images.interrupted", "integration.images.timeout"].includes(
+        error.message,
+      )
+    )
+      throw error;
     throw fixedError("integration.images.build");
   }
 };
@@ -1568,11 +1591,23 @@ const validBuildMap = (value) =>
   Object.entries(value).every(
     ([name, entry]) => boundedText(name, 128) && boundedText(entry, 1_024),
   );
+const buildQuery = ({ buildArguments, dockerfile, labels, tag }) =>
+  new URLSearchParams({
+    buildargs: JSON.stringify(buildArguments),
+    dockerfile,
+    forcerm: "1",
+    labels: JSON.stringify(labels),
+    networkmode: "none",
+    pull: "0",
+    rm: "1",
+    t: tag,
+  });
 
 export const buildPreparedDockerImage = async (
   client,
   {
     buildArguments,
+    afterBuildContextEntryForTesting,
     context,
     dockerfile,
     labels,
@@ -1602,7 +1637,11 @@ export const buildPreparedDockerImage = async (
       Math.floor(maximumMilliseconds / 4),
     ),
   });
-  const archive = createBoundedBuildContext(context);
+  const archive = createBoundedBuildContext(context, {
+    afterEntryForTesting: afterBuildContextEntryForTesting,
+    deadline: policy.workDeadline,
+    signal,
+  });
   const engine =
     client.engineRequestForTesting === undefined
       ? engineTransport(client.socket)
@@ -1615,16 +1654,7 @@ export const buildPreparedDockerImage = async (
   );
   if (!sameDaemon(client.evidence.dockerDaemon, initialDaemon))
     throw fixedError("integration.images.build");
-  const query = new URLSearchParams({
-    buildargs: JSON.stringify(buildArguments),
-    dockerfile,
-    forcerm: "1",
-    labels: JSON.stringify(labels),
-    networkmode: "none",
-    pull: "0",
-    rm: "1",
-    t: tag,
-  });
+  const query = buildQuery({ buildArguments, dockerfile, labels, tag });
   let buildStarted = false;
   try {
     buildStarted = true;

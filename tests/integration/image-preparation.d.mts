@@ -133,12 +133,20 @@ export declare const prepareDockerInvocation: (
   }>
 >;
 
-export declare const createBoundedBuildContext: (root: string) => Buffer;
+export declare const createBoundedBuildContext: (
+  root: string,
+  options?: Readonly<{
+    afterEntryForTesting?: (entryCount: number) => void;
+    deadline?: number;
+    signal?: AbortSignal;
+  }>,
+) => Buffer;
 
 export declare const buildPreparedDockerImage: (
   client: PreparedDockerClient,
   options: Readonly<{
     buildArguments: Readonly<Record<string, string>>;
+    afterBuildContextEntryForTesting?: (entryCount: number) => void;
     context: string;
     dockerfile: string;
     labels: Readonly<Record<string, string>>;
