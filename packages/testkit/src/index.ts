@@ -7,6 +7,8 @@ import {
 
 export * from "./harness.js";
 export * from "./headless-supervisor-contract.js";
+export * from "./headless-supervisor-kernel.js";
+export * from "./headless-supervisor.js";
 export * from "./model-routes.js";
 export * from "./platform-fixture.js";
 
