@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { describe, expect, it } from "vitest";
@@ -27,6 +31,102 @@ const descendant = Object.freeze({
 });
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
+
+type ProcessSnapshot = Readonly<{
+  pid: number;
+  ppid: number;
+  pgid: number;
+  startIdentity: string;
+}>;
+
+const delay = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
+const closeOf = (
+  child: ChildProcess,
+): Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>> =>
+  new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      resolve({ code, signal });
+    });
+  });
+
+const snapshots = (): readonly ProcessSnapshot[] => {
+  const output = execFileSync("/bin/ps", ["-axo", "pid=,ppid=,pgid=,lstart="], {
+    encoding: "utf8",
+    env: { PATH: "/usr/bin:/bin" },
+    maxBuffer: 1_048_576,
+    timeout: 1_000,
+  });
+  const rows: ProcessSnapshot[] = [];
+  for (const line of output.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+    if (match === null) continue;
+    rows.push({
+      pid: Number(match[1]),
+      ppid: Number(match[2]),
+      pgid: Number(match[3]),
+      startIdentity: match[4]!,
+    });
+  }
+  return rows;
+};
+
+const snapshotFor = (pid: number): ProcessSnapshot | undefined =>
+  snapshots().find((candidate) => candidate.pid === pid);
+
+const waitForDescendant = async (
+  parentPid: number,
+  parentClosed: Promise<unknown>,
+): Promise<ProcessSnapshot> => {
+  const deadlineMs = performance.now() + 5_000;
+  while (performance.now() < deadlineMs) {
+    const descendant = snapshots().find(
+      (candidate) => candidate.ppid === parentPid,
+    );
+    if (descendant !== undefined) return descendant;
+    await Promise.race([
+      delay(10),
+      parentClosed.then(() => {
+        throw new Error("testkit.headless.seed.parent-released");
+      }),
+    ]);
+  }
+  throw new Error("testkit.headless.seed.descendant-not-observed");
+};
+
+const killObserved = async (identity: ProcessSnapshot): Promise<void> => {
+  const current = snapshotFor(identity.pid);
+  if (current?.startIdentity !== identity.startIdentity) return;
+  process.kill(identity.pid, "SIGKILL");
+  const deadlineMs = performance.now() + 2_000;
+  while (performance.now() < deadlineMs) {
+    const remaining = snapshotFor(identity.pid);
+    if (remaining?.startIdentity !== identity.startIdentity) return;
+    await delay(10);
+  }
+  throw new Error("testkit.headless.seed.process-not-joined");
+};
+
+const writeFixture = (
+  source: string,
+): Readonly<{ file: string; root: string }> => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-headless-fixture-"));
+  const file = join(root, "fixture.mjs");
+  writeFileSync(file, source, { encoding: "utf8", mode: 0o600 });
+  return { file, root };
+};
+
+const waitForReadyByte = (child: ChildProcess): Promise<void> =>
+  new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.stderr?.once("data", () => {
+      resolve();
+    });
+  });
 
 const contractRun = (name: string): HeadlessSupervisorContractRun => {
   const selected = cases.find((candidate) => candidate.name === name);
@@ -281,7 +381,165 @@ describe("bounded headless supervisor trace protocol", () => {
       true,
     );
   });
+});
 
+describe("real-process timeout stimulus causality", () => {
+  it("keeps the timeout fixture alive through TERM grace until KILL", async () => {
+    if (process.platform === "win32") return;
+    const candidate = cases.find(
+      ({ name }) => name === "headless:timeout-escalation",
+    )!;
+    const fixture = writeFixture(candidate.fixtureSource);
+    const run = candidate.instantiate({
+      root: fixture.root,
+      fixturePath: fixture.file,
+    });
+    let child: ChildProcess | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: fixture.root,
+        env: {},
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      const closed = closeOf(child);
+      await waitForReadyByte(child);
+      const termAtMs = performance.now();
+      expect(child.kill("SIGTERM")).toBe(true);
+      expect(run.request.terminationGraceMs).toBe(1_000);
+      const killAuthorityAtMs = termAtMs + run.request.terminationGraceMs;
+      while (performance.now() < killAuthorityAtMs)
+        await delay(Math.min(10, killAuthorityAtMs - performance.now()));
+      expect(performance.now() - termAtMs).toBeGreaterThanOrEqual(
+        run.request.terminationGraceMs,
+      );
+      expect(snapshotFor(child.pid!)).toBeDefined();
+      expect(child.kill("SIGKILL")).toBe(true);
+      expect(await closed).toEqual({ code: null, signal: "SIGKILL" });
+    } finally {
+      if (child?.pid !== undefined && snapshotFor(child.pid) !== undefined)
+        child.kill("SIGKILL");
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
+  it("proves the missing TERM-survival seed cannot satisfy escalation", async () => {
+    if (process.platform === "win32") return;
+    const source = cases.find(
+      ({ name }) => name === "headless:timeout-escalation",
+    )!.fixtureSource;
+    const defective = source.replace('process.on("SIGTERM", () => {});', "");
+    expect(defective).not.toBe(source);
+    const fixture = writeFixture(defective);
+    let child: ChildProcess | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: fixture.root,
+        env: {},
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      const closed = closeOf(child);
+      await waitForReadyByte(child);
+      child.kill("SIGTERM");
+      expect(
+        await Promise.race([
+          closed,
+          delay(500).then(() => ({ code: 999, signal: null })),
+        ]),
+      ).toEqual({ code: null, signal: "SIGTERM" });
+    } finally {
+      if (child?.pid !== undefined && snapshotFor(child.pid) !== undefined)
+        child.kill("SIGKILL");
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("real-process descendant stimulus causality", () => {
+  it("retains the descendant root until an OS snapshot binds the child", async () => {
+    if (process.platform === "win32") return;
+    const source = cases.find(
+      ({ name }) => name === "headless:descendant-cleanup",
+    )!.fixtureSource;
+    const fixture = writeFixture(source);
+    let child: ChildProcess | undefined;
+    let descendant: ProcessSnapshot | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: fixture.root,
+        env: {},
+        stdio: "ignore",
+      });
+      const closed = closeOf(child);
+      descendant = await waitForDescendant(child.pid!, closed);
+      expect(descendant.ppid).toBe(child.pid);
+      expect(descendant.pgid).toBe(descendant.pid);
+      expect(descendant.startIdentity.length).toBeGreaterThan(0);
+      expect(snapshotFor(child.pid!)).toBeDefined();
+      expect(await closed).toEqual({ code: 0, signal: null });
+      const rebound = snapshotFor(descendant.pid);
+      expect(rebound?.startIdentity).toBe(descendant.startIdentity);
+      await killObserved(descendant);
+    } finally {
+      if (descendant !== undefined) {
+        const rebound = snapshotFor(descendant.pid);
+        if (rebound?.startIdentity === descendant.startIdentity)
+          await killObserved(descendant);
+      }
+      if (child?.pid !== undefined && snapshotFor(child.pid) !== undefined)
+        child.kill("SIGKILL");
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
+  it("proves releasing the descendant root removes parent binding", async () => {
+    if (process.platform === "win32") return;
+    const source = cases.find(
+      ({ name }) => name === "headless:descendant-cleanup",
+    )!.fixtureSource;
+    const defective = source
+      .replace(
+        "child.unref();",
+        "process.stdout.write(String(child.pid)); child.unref();",
+      )
+      .replace("setTimeout(() => {}, 1500);", "");
+    expect(defective).not.toBe(source);
+    const fixture = writeFixture(defective);
+    let child: ChildProcess | undefined;
+    let descendant: ProcessSnapshot | undefined;
+    try {
+      child = spawn(process.execPath, [fixture.file], {
+        cwd: fixture.root,
+        env: {},
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const closed = closeOf(child);
+      const pid = await new Promise<number>((resolve, reject) => {
+        child!.once("error", reject);
+        child!.stdout?.once("data", (chunk: Buffer) => {
+          resolve(Number(chunk.toString("utf8")));
+        });
+      });
+      await closed;
+      const observed = snapshotFor(pid);
+      if (observed === undefined)
+        throw new Error("testkit.headless.seed.descendant-missing");
+      descendant = observed;
+      expect(snapshotFor(descendant.pid)?.ppid).not.toBe(child.pid);
+      await killObserved(descendant);
+    } finally {
+      if (descendant !== undefined) {
+        const rebound = snapshotFor(descendant.pid);
+        if (rebound?.startIdentity === descendant.startIdentity)
+          await killObserved(descendant);
+      }
+      if (child?.pid !== undefined && snapshotFor(child.pid) !== undefined)
+        child.kill("SIGKILL");
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("bounded headless supervisor trace protocol", () => {
   it("accepts the five closed synthetic protocol traces", () => {
     for (const candidate of cases) {
       const run = candidate.instantiate({
