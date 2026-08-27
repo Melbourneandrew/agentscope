@@ -25,8 +25,15 @@ type StateObservation struct {
 func (observation StateObservation) Digests() (string, string, error) {
 	copy := observation
 	copy.ObservedAt = time.Time{}
-	copy.Surfaces, _ = canonicalizeForComparison(observation.Surfaces).(map[string]any)
-	copy.IdentitySet = append([]string{}, observation.IdentitySet...)
+	coreSurfaces := map[string]any{}
+	for name, value := range observation.Surfaces {
+		if name != "rollbackVersionDetail" {
+			coreSurfaces[name] = value
+		}
+	}
+	copy.Surfaces, _ = canonicalizeForComparison(coreSurfaces).(map[string]any)
+	copy.IdentitySet = []string{}
+	collectIdentities(copy.Surfaces, "", &copy.IdentitySet)
 	sort.Strings(copy.IdentitySet)
 	data, err := json.Marshal(copy)
 	if err != nil {
@@ -387,7 +394,7 @@ func validInitialMigrationProjection(migration map[string]any) bool {
 		steps := objectSlice(rawSteps)
 		return allowedObjectKeys(migration, "new_tag", "old_tag", "steps") && len(steps) == 1 && exactObjectKeys(steps[0], "new_sqlite_classes") && sameStringSet(stringSlice(steps[0]["new_sqlite_classes"]), []string{"FleetDurableObject"})
 	}
-	return allowedObjectKeys(migration, "new_tag", "old_tag")
+	return false
 }
 
 func exactObjectKeys(value map[string]any, expected ...string) bool {
@@ -499,7 +506,8 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		if afterDeployment == "" || afterDeployment == beforeDeployment {
 			return nil, errors.New("E_SECRET_DEPLOYMENT_IDENTITY")
 		}
-		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) == "" {
+		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
+		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !deploymentTransitionExact(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"], newVersion) {
 			return nil, errors.New("E_SECRET_UNEXPECTED_DELTA")
 		}
 		return []string{"deployment=" + afterDeployment, "secret=" + *operation.SecretName}, nil
@@ -507,7 +515,7 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		if operation.SecretName == nil || !namedObjectPresent(before.Surfaces["scriptSecrets"], "name", *operation.SecretName) || namedObjectPresent(after.Surfaces["scriptSecrets"], "name", *operation.SecretName) {
 			return nil, errors.New("E_SECRET_DELETE_NOT_OBSERVED")
 		}
-		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) {
+		if !namedObjectsEqualExcept(before.Surfaces["scriptSecrets"], after.Surfaces["scriptSecrets"], "name", *operation.SecretName) || !bindingObjectsEqualExcept(before.Surfaces["workerSettings"], after.Surfaces["workerSettings"], *operation.SecretName) || !sameCanonicalValue(before.Surfaces["scriptDeployments"], after.Surfaces["scriptDeployments"]) || !sameCanonicalValue(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"]) {
 			return nil, errors.New("E_SECRET_UNEXPECTED_DELTA")
 		}
 		return []string{"secret-absent=" + *operation.SecretName}, nil
@@ -551,7 +559,8 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		beforeDeployment, afterDeployment := currentDeploymentID(before.Surfaces["scriptDeployments"]), currentDeploymentID(after.Surfaces["scriptDeployments"])
 		newVersion := singleAddedIdentity(before.Surfaces["scriptVersions"], after.Surfaces["scriptVersions"])
 		settings, settingsOK := after.Surfaces["workerSettings"].(map[string]any)
-		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !settingsOK || !exactObjectKeys(settings, "bindings") || !collectionEmpty(settings["bindings"]) || !collectionEmpty(after.Surfaces["durableObjects"]) {
+		migration, migrationOK := settings["migrations"].(map[string]any)
+		if !workerPresent(after.Surfaces["accountWorkers"]) || afterDeployment == "" || afterDeployment == beforeDeployment || newVersion == "" || currentWorkerVersionID(after.Surfaces["scriptDeployments"]) != newVersion || !settingsOK || !allowedObjectKeys(settings, "bindings", "compatibility_date", "compatibility_flags", "cache_options", "migrations", "limits", "logpush", "observability", "placement", "tags", "tail_consumers", "usage_model") || !collectionEmpty(settings["bindings"]) || !migrationOK || !validTerminalMigrationProjection(migration) || !collectionEmpty(after.Surfaces["durableObjects"]) {
 			return nil, errors.New("E_TERMINAL_DEPLOY_NOT_OBSERVED")
 		}
 		return []string{"terminal-deployment=" + afterDeployment, "terminal-version=" + newVersion}, nil
@@ -572,6 +581,40 @@ func actionTransitionIdentities(plan Plan, operation Operation, before, after St
 		return []string{"account-subdomain=" + *operation.Subdomain}, nil
 	}
 	return nil, errors.New("E_ACTION_TRANSITION_UNKNOWN")
+}
+
+func validTerminalMigrationProjection(migration map[string]any) bool {
+	if fmt.Sprint(migration["new_tag"]) != "v2-retire-fleet-durable-object" || fmt.Sprint(migration["old_tag"]) != "v1" {
+		return false
+	}
+	if classes, exists := migration["deleted_classes"]; exists {
+		return allowedObjectKeys(migration, "new_tag", "old_tag", "deleted_classes") && sameStringSet(stringSlice(classes), []string{"FleetDurableObject"})
+	}
+	if rawSteps, exists := migration["steps"]; exists {
+		steps := objectSlice(rawSteps)
+		return allowedObjectKeys(migration, "new_tag", "old_tag", "steps") && len(steps) == 1 && exactObjectKeys(steps[0], "deleted_classes") && sameStringSet(stringSlice(steps[0]["deleted_classes"]), []string{"FleetDurableObject"})
+	}
+	return false
+}
+
+func deploymentTransitionExact(before, after any, expectedVersion string) bool {
+	beforeObject, beforeOK := before.(map[string]any)
+	afterObject, afterOK := after.(map[string]any)
+	if !beforeOK || !afterOK || currentDeploymentID(before) == "" || currentDeploymentID(after) == "" || currentDeploymentID(before) == currentDeploymentID(after) || currentWorkerVersionID(after) != expectedVersion {
+		return false
+	}
+	beforeCopy, afterCopy := map[string]any{}, map[string]any{}
+	for key, value := range beforeObject {
+		if key != "id" && key != "versions" {
+			beforeCopy[key] = value
+		}
+	}
+	for key, value := range afterObject {
+		if key != "id" && key != "versions" {
+			afterCopy[key] = value
+		}
+	}
+	return sameCanonicalValue(beforeCopy, afterCopy)
 }
 
 func requireUnchangedSurfaces(before, after StateObservation, allowed map[string]struct{}) error {

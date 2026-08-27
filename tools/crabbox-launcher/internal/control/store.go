@@ -132,34 +132,21 @@ func writeExclusive(path string, value []byte, mode os.FileMode) error {
 }
 
 func writeAtomicExclusive(path string, value []byte, mode os.FileMode) error {
-	if _, err := os.Lstat(path); err == nil {
-		return os.ErrExist
-	} else if !os.IsNotExist(err) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
 		return err
 	}
-	staging := path + ".staging"
-	if info, err := os.Lstat(staging); err == nil {
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("E_STATE_PATH")
-		}
-		if err := os.Remove(staging); err != nil {
-			return err
-		}
-		if err := syncDirectory(filepath.Dir(path)); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
+	staging := path + ".staging-" + fmt.Sprintf("%x", random)
 	if err := writeExclusive(staging, value, mode); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(path); err == nil {
-		return os.ErrExist
-	} else if !os.IsNotExist(err) {
+	defer os.Remove(staging)
+	// link(2) publishes a fully durable file and, unlike rename(2), cannot
+	// replace a destination won by a concurrent writer.
+	if err := os.Link(staging, path); err != nil {
 		return err
 	}
-	if err := os.Rename(staging, path); err != nil {
+	if err := os.Remove(staging); err != nil {
 		return err
 	}
 	return syncDirectory(filepath.Dir(path))
@@ -175,10 +162,47 @@ func syncDirectory(path string) error {
 }
 
 func readPrivate(path string) ([]byte, error) {
+	if err := reconcileAtomicExclusiveStaging(path); err != nil {
+		return nil, err
+	}
 	if err := validateOwnedPath(path, false); err != nil {
 		return nil, err
 	}
 	return os.ReadFile(path)
+}
+
+func reconcileAtomicExclusiveStaging(path string) error {
+	parent, base := filepath.Dir(path), filepath.Base(path)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return err
+	}
+	prefix := base + ".staging-"
+	changed := false
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		staging := filepath.Join(parent, entry.Name())
+		info, infoErr := os.Lstat(staging)
+		if infoErr != nil {
+			if os.IsNotExist(infoErr) {
+				continue
+			}
+			return infoErr
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("E_STATE_PATH")
+		}
+		if err := os.Remove(staging); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		changed = true
+	}
+	if changed {
+		return syncDirectory(parent)
+	}
+	return nil
 }
 
 func readProtected(path string) ([]byte, error) {
@@ -487,7 +511,13 @@ func (store Store) Freeze(reason string, now time.Time, passphrase []byte) (Sign
 	if !identifierPattern.MatchString(reason) {
 		return SignedControlRecord{}, errors.New("E_FREEZE_REASON")
 	}
-	record, err := store.signControlRecord(SignedControlRecord{Domain: FreezeDomain, RequestID: reason, Disposition: "frozen", RecordedAt: now}, RecoveryRole, passphrase)
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return SignedControlRecord{}, err
+	}
+	defer releaseAdmissionGuard(guard)
+	incidentID := SHA256([]byte(store.Root + "\x00" + reason + "\x00" + now.UTC().Format(time.RFC3339Nano)))
+	record, err := store.signControlRecord(SignedControlRecord{Domain: FreezeDomain, PlanSHA256: incidentID, RequestID: reason, Disposition: "frozen", RecordedAt: now}, RecoveryRole, passphrase)
 	if err != nil {
 		return record, err
 	}
@@ -561,7 +591,29 @@ func (store Store) Thaw(evidenceSHA256 string, now time.Time, passphrase []byte)
 		return SignedControlRecord{}, readErr
 	}
 	freeze, err := store.currentFreeze()
-	if err != nil || freeze.EvidenceSHA256 != evidenceSHA256 || !store.hasResolvedRecovery(freeze) {
+	if err != nil {
+		return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
+	}
+	if freeze.EvidenceSHA256 == "" {
+		resolutionPath := store.path("journal", "incident-resolved-"+freeze.PlanSHA256+".json")
+		var resolution SignedControlRecord
+		if data, readErr := readPrivate(resolutionPath); readErr == nil {
+			if strictJSON(data, &resolution) != nil || resolution.Domain != RecoveryDomain || resolution.PlanSHA256 != freeze.PlanSHA256 || resolution.RequestID != freeze.RequestID || resolution.Disposition != "incident-resolved" || resolution.EvidenceSHA256 != evidenceSHA256 || verifyControlRecord(resolution, installation.Roots[RecoveryRole], RecoveryRole) != nil {
+				return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
+			}
+		} else if !os.IsNotExist(readErr) {
+			return SignedControlRecord{}, readErr
+		} else {
+			resolution, err = store.signControlRecord(SignedControlRecord{Domain: RecoveryDomain, PlanSHA256: freeze.PlanSHA256, RequestID: freeze.RequestID, Disposition: "incident-resolved", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
+			if err != nil {
+				return SignedControlRecord{}, err
+			}
+			data, _ := json.MarshalIndent(resolution, "", "  ")
+			if err := writeAtomicExclusive(resolutionPath, append(data, '\n'), 0o600); err != nil {
+				return SignedControlRecord{}, err
+			}
+		}
+	} else if freeze.EvidenceSHA256 != evidenceSHA256 || !store.hasResolvedRecovery(freeze) {
 		return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
 	}
 	if err := store.ensureNoActiveMutation(); err != nil {
@@ -578,7 +630,7 @@ func (store Store) Thaw(evidenceSHA256 string, now time.Time, passphrase []byte)
 			return record, err
 		}
 	} else if record.PlanSHA256 != freeze.PlanSHA256 || record.RequestID != freeze.RequestID {
-		return SignedControlRecord{}, errors.New("E_THAW_BINDING")
+		return SignedControlRecord{}, errors.New("E_THAW_PREREQUISITE")
 	}
 	if err := os.Remove(store.path("journal", "acquisition.freeze")); err != nil {
 		return record, err
@@ -627,6 +679,11 @@ func (store Store) RecoverQuarantine(planSHA256, requestID, evidenceSHA256 strin
 	if !digestPattern.MatchString(planSHA256) || !identifierPattern.MatchString(requestID) || !digestPattern.MatchString(evidenceSHA256) {
 		return SignedControlRecord{}, errors.New("E_RECOVERY_INPUT")
 	}
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return SignedControlRecord{}, err
+	}
+	defer releaseAdmissionGuard(guard)
 	if err := store.VerifyJournal(planSHA256); err != nil {
 		return SignedControlRecord{}, err
 	}
@@ -650,6 +707,11 @@ func (store Store) ResolveQuarantine(planSHA256, requestID, evidenceSHA256 strin
 	if !digestPattern.MatchString(planSHA256) || !identifierPattern.MatchString(requestID) || !digestPattern.MatchString(evidenceSHA256) {
 		return SignedControlRecord{}, errors.New("E_RECOVERY_INPUT")
 	}
+	guard, err := store.acquireAdmissionGuard()
+	if err != nil {
+		return SignedControlRecord{}, err
+	}
+	defer releaseAdmissionGuard(guard)
 	if err := store.VerifyJournal(planSHA256); err != nil {
 		return SignedControlRecord{}, err
 	}

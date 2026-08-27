@@ -51,6 +51,9 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 	if migration == "" {
 		migration = "absent"
 	}
+	if currentVersion != "absent" && (namespace == "absent" || migration == "absent") {
+		return Plan{}, errors.New("E_PLAN_BUILD_RESOURCE_IDENTITY")
+	}
 	profile := installation.LiveProfileSHA256
 	if input.Kind == "retire" {
 		profile = installation.TerminalProfileSHA256
@@ -81,6 +84,9 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 			if len(input.Slots) != 0 {
 				return Plan{}, errors.New("E_PLAN_BUILD_UNEXPECTED_SLOT")
 			}
+			if !compatibleCoordinatorVersion(input.State.Surfaces["rollbackVersionDetail"], currentVersion, migration, namespace, installation.CoordinatorCommit) {
+				return Plan{}, errors.New("E_PLAN_BUILD_VERSION_COMPATIBILITY")
+			}
 			version, tag := currentVersion, migration
 			plan.RollbackActions = []Operation{{Action: "worker.rollback", Target: WorkerName, RequestID: request("rollback"), VersionID: &version, CompatibleMigrationTag: &tag}}
 		}
@@ -96,7 +102,7 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 			return Plan{}, errors.New("E_PLAN_BUILD_VERSION")
 		}
 		detail, ok := input.State.Surfaces["rollbackVersionDetail"].(map[string]any)
-		if !ok || fmt.Sprint(detail["id"]) != input.RollbackVersionID || currentMigrationTag(detail) != migration || !bindingPresent(detail, "FLEET", "FleetDurableObject", namespace) {
+		if !ok || !compatibleCoordinatorVersion(detail, input.RollbackVersionID, migration, namespace, installation.CoordinatorCommit) {
 			return Plan{}, errors.New("E_PLAN_BUILD_VERSION_COMPATIBILITY")
 		}
 		version, tag := input.RollbackVersionID, migration
@@ -151,6 +157,15 @@ func BuildPlan(installation Installation, input PlanBuildInput) (Plan, error) {
 		return Plan{}, err
 	}
 	return plan, nil
+}
+
+func compatibleCoordinatorVersion(raw any, versionID, migration, namespace, sourceCommit string) bool {
+	detail, ok := raw.(map[string]any)
+	if !ok || fmt.Sprint(detail["id"]) != versionID || currentMigrationTag(detail) != migration || !bindingPresent(detail, "FLEET", "FleetDurableObject", namespace) {
+		return false
+	}
+	annotations, ok := detail["annotations"].(map[string]any)
+	return ok && fmt.Sprint(annotations["workers/message"]) == "agentscope-source:"+sourceCommit
 }
 
 func appendSecretOperations(plan *Plan, slots map[string]SlotReference, request func(string) string) error {
@@ -210,7 +225,7 @@ func currentWorkerVersionID(value any) string {
 
 func currentNamespaceID(value any) string {
 	for _, item := range objectSlice(value) {
-		if fmt.Sprint(item["script"]) == WorkerName || fmt.Sprint(item["class"]) == "FleetDurableObject" {
+		if fmt.Sprint(item["script"]) == WorkerName && fmt.Sprint(item["class"]) == "FleetDurableObject" {
 			return fmt.Sprint(item["id"])
 		}
 	}

@@ -160,15 +160,20 @@ continuing and never replays an `invoking-uncertain` request.
 for any stranded prefix. Only a second signed `recover-resolve` decision with
 terminal reconciliation evidence may release the local mutation fence. A
 subsequent owner-authorized exact rollback or retirement plan is allowed while
-acquisition remains frozen. `thaw` requires a signed resolved recovery, a new
+acquisition remains frozen. `thaw` requires either the exact plan-bound signed
+resolution or new incident evidence bound to the current generic freeze, a new
 attended recovery confirmation, no active mutation, and no unclassified
-journal; it cannot erase or reinterpret the original record.
+journal; it cannot reuse historical evidence to erase or reinterpret a later
+freeze.
 
 `state-observe --output <new-file>` writes the exact read-only Cloudflare
-projection. A rollback candidate must first be observed with
+projection. An existing deployment's compatible predecessor, and any explicit
+rollback candidate, must first be observed with
 `state-observe --rollback-version <exact-version-id>`; the resulting projection
-binds the target Worker version's detailed migration and Durable Object binding,
-separately from the current deployment identity. `plan-build` is the only supported plan-construction path: it
+binds the target Worker version's detailed migration, Durable Object binding,
+and exact admitted coordinator-source annotation separately from the current
+deployment identity. The auxiliary detail is not part of the live prestate
+digest. `plan-build` is the only supported plan-construction path: it
 derives resource identities and the prestate digest from that file and emits
 one closed deploy, rollback, retirement, or account-workers.dev plan. The
 caller may supply only opaque slot/version references and the kind-specific

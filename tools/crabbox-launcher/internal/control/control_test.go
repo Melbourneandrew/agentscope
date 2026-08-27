@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -164,7 +165,7 @@ func syntheticState(account string, step int, kind string, now time.Time) StateO
 		}
 		if step >= 6 {
 			surfaces["durableObjects"] = []any{}
-			surfaces["workerSettings"] = map[string]any{"bindings": []any{}}
+			surfaces["workerSettings"] = map[string]any{"bindings": []any{}, "migrations": map[string]any{"new_tag": "v2-retire-fleet-durable-object", "old_tag": "v1", "deleted_classes": []any{"FleetDurableObject"}}}
 			surfaces["scriptDeployments"] = map[string]any{"id": "terminal-deployment", "versions": []any{map[string]any{"version_id": "terminal-version", "percentage": 100}}}
 			surfaces["scriptVersions"] = []any{map[string]any{"id": "version-current", "migration_tag": "v1"}, map[string]any{"id": "version-old", "migration_tag": "v1"}, map[string]any{"id": "terminal-version", "migration_tag": "v2-retire-fleet-durable-object"}}
 		}
@@ -402,6 +403,7 @@ func TestCanonicalInstallInputsRejectEverySubstitutedAuthority(t *testing.T) {
 func TestPlanBuilderOwnsClosedDeployAndAccountSequences(t *testing.T) {
 	item := newFixture(t)
 	state := syntheticState(item.installation.AccountID, 0, "deploy", item.now)
+	state.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-current", "migration_tag": "v1", "bindings": state.Surfaces["workerSettings"].(map[string]any)["bindings"], "annotations": map[string]any{"workers/message": "agentscope-source:" + item.installation.CoordinatorCommit}}
 	slots := map[string]SlotReference{}
 	for _, secret := range canonicalSecrets {
 		slots[secret] = SlotReference{SlotID: "slot-" + strings.ToLower(secret), SlotVersion: "version-1"}
@@ -516,7 +518,7 @@ func TestActionTransitionRejectsUnrelatedDriftAndWriteOnlyRotation(t *testing.T)
 		t.Fatalf("collateral secret deletion accepted: %v", err)
 	}
 	rollbackState := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
-	rollbackState.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v1", "bindings": rollbackState.Surfaces["workerSettings"].(map[string]any)["bindings"]}
+	rollbackState.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v1", "bindings": rollbackState.Surfaces["workerSettings"].(map[string]any)["bindings"], "annotations": map[string]any{"workers/message": "agentscope-source:" + item.installation.CoordinatorCommit}}
 	rollbackPlan, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rollback", State: rollbackState, ObservationID: "observation-rollback", RollbackVersionID: "version-old", Now: item.now})
 	if err != nil {
 		t.Fatal(err)
@@ -532,6 +534,50 @@ func TestActionTransitionRejectsUnrelatedDriftAndWriteOnlyRotation(t *testing.T)
 	incompatible.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v0", "bindings": incompatible.Surfaces["workerSettings"].(map[string]any)["bindings"]}
 	if _, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rollback", State: incompatible, ObservationID: "observation-incompatible", RollbackVersionID: "version-old", Now: item.now}); err == nil || !strings.Contains(err.Error(), "E_PLAN_BUILD_VERSION_COMPATIBILITY") {
 		t.Fatalf("unobserved rollback compatibility accepted: %v", err)
+	}
+	wrongSource := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	wrongSource.Surfaces["rollbackVersionDetail"] = map[string]any{"id": "version-old", "migration_tag": "v1", "bindings": wrongSource.Surfaces["workerSettings"].(map[string]any)["bindings"], "annotations": map[string]any{"workers/message": "agentscope-source:" + strings.Repeat("b", 40)}}
+	if _, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rollback", State: wrongSource, ObservationID: "observation-wrong-source", RollbackVersionID: "version-old", Now: item.now}); err == nil || !strings.Contains(err.Error(), "E_PLAN_BUILD_VERSION_COMPATIBILITY") {
+		t.Fatalf("rollback to unadmitted coordinator source accepted: %v", err)
+	}
+}
+
+func TestMigrationNamespaceAndActionOraclesAreExact(t *testing.T) {
+	item := newFixture(t)
+	plan, _ := item.plan()
+	bareMigration := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	bareMigration.Surfaces["workerSettings"].(map[string]any)["migrations"] = map[string]any{"new_tag": "v1"}
+	if err := validateDeploymentProfile(plan, bareMigration, true); err == nil || !strings.Contains(err.Error(), "E_DEPLOYMENT_MIGRATION_STATE") {
+		t.Fatalf("migration without SQLite class admission accepted: %v", err)
+	}
+
+	unrelatedNamespace := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	unrelatedNamespace.Surfaces["durableObjects"] = []any{map[string]any{"id": "namespace-other", "script": "other-worker", "class": "FleetDurableObject"}}
+	if _, err := BuildPlan(item.installation, PlanBuildInput{Kind: "deploy", State: unrelatedNamespace, ObservationID: "observation-unrelated-namespace", Now: item.now}); err == nil {
+		t.Fatal("same-class namespace owned by another Worker was adopted")
+	}
+
+	rotation, err := BuildPlan(item.installation, PlanBuildInput{Kind: "rotate-secrets", State: syntheticState(item.installation.AccountID, 0, "rotate", item.now), ObservationID: "observation-rotation", Slots: map[string]SlotReference{
+		"CRABBOX_ADMIN_TOKEN":  {SlotID: "slot-crabbox-admin", SlotVersion: "version-1"},
+		"CRABBOX_SHARED_TOKEN": {SlotID: "slot-crabbox-shared", SlotVersion: "version-1"},
+		"HETZNER_TOKEN":        {SlotID: "slot-hetzner-worker", SlotVersion: "version-1"},
+	}, Now: item.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := syntheticState(item.installation.AccountID, 0, "rotate", item.now)
+	after := syntheticState(item.installation.AccountID, 1, "rotate", item.now)
+	after.Surfaces["scriptDeployments"].(map[string]any)["collateral"] = "unexpected"
+	if err := ValidateActionTransition(rotation, rotation.Operations[0], before, after); err == nil || !strings.Contains(err.Error(), "E_SECRET_UNEXPECTED_DELTA") {
+		t.Fatalf("secret write with collateral deployment drift accepted: %v", err)
+	}
+
+	retirement, _ := item.retirementPlan()
+	terminalBefore := syntheticState(item.installation.AccountID, 5, "retire", item.now)
+	terminalAfter := syntheticState(item.installation.AccountID, 6, "retire", item.now)
+	delete(terminalAfter.Surfaces["workerSettings"].(map[string]any), "migrations")
+	if err := ValidateActionTransition(retirement, retirement.Operations[5], terminalBefore, terminalAfter); err == nil || !strings.Contains(err.Error(), "E_TERMINAL_DEPLOY_NOT_OBSERVED") {
+		t.Fatalf("terminal deployment without class-deletion migration accepted: %v", err)
 	}
 }
 
@@ -1179,6 +1225,65 @@ func TestRecoveryQuarantineRequiresIntactJournalAndKeepsFence(t *testing.T) {
 	}
 }
 
+func TestGenericIncidentFreezeHasAttendedRestorationAndExclusivePublication(t *testing.T) {
+	item := newFixture(t)
+	if _, err := item.store.Freeze("billing-observation-stale", item.now, syntheticOperatorPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	evidence := strings.Repeat("7", 64)
+	if _, err := item.store.Thaw(evidence, item.now.Add(time.Second), syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("generic incident could not be restored through attended evidence: %v", err)
+	}
+	if item.store.IsFrozen() {
+		t.Fatal("restored generic incident remained frozen")
+	}
+
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "one-use.json")
+	values := [][]byte{[]byte("first"), []byte("second"), []byte("third"), []byte("fourth")}
+	var successes atomic.Int32
+	var wait sync.WaitGroup
+	for _, value := range values {
+		value := append([]byte(nil), value...)
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if writeAtomicExclusive(path, value, 0o600) == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	wait.Wait()
+	data, err := os.ReadFile(path)
+	if err != nil || successes.Load() != 1 {
+		t.Fatalf("exclusive publication successes=%d read=%v", successes.Load(), err)
+	}
+	found := false
+	for _, value := range values {
+		found = found || bytes.Equal(data, value)
+	}
+	if !found {
+		t.Fatalf("exclusive publication produced torn bytes: %q", data)
+	}
+	crashPath := filepath.Join(directory, "crash.json")
+	stagingPath := crashPath + ".staging-deadbeef"
+	if err := os.WriteFile(stagingPath, []byte("durable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(stagingPath, crashPath); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := readPrivate(crashPath); err != nil || string(recovered) != "durable" {
+		t.Fatalf("post-publication crash was not recoverable: %q %v", recovered, err)
+	}
+	if _, err := os.Stat(stagingPath); !os.IsNotExist(err) {
+		t.Fatal("recovered publication retained staging alias")
+	}
+}
+
 func TestRecoveryClassifiesCrashAfterConsumeBeforeFenceAsDefiniteNoncommit(t *testing.T) {
 	item := newFixture(t)
 	_, data := item.plan()
@@ -1362,6 +1467,10 @@ IFS= read -r secret
 	if _, _, err := executor.command(Invocation{Action: "forbidden"}); err == nil {
 		t.Fatal("arbitrary action accepted")
 	}
+	deployArgs, _, err := executor.command(Invocation{Action: "worker.deploy", SourceCommit: strings.Repeat("a", 40)})
+	if err != nil || !strings.Contains(strings.Join(deployArgs, " "), "--message agentscope-source:"+strings.Repeat("a", 40)) {
+		t.Fatalf("deploy did not bind coordinator source identity: %v %v", deployArgs, err)
+	}
 }
 
 func TestCloudflareDeleteUsesFixedResourceAndNoForce(t *testing.T) {
@@ -1408,6 +1517,7 @@ func TestCloudflareDeleteUsesFixedResourceAndNoForce(t *testing.T) {
 }
 
 func TestCoordinatorCredentialForwardCheckProvesDistinctRoles(t *testing.T) {
+	sharedOwner, sharedOrg := "agentscope-fleet-control", "agentscope-development"
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		token := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
 		if request.URL.Host == "api.hetzner.cloud" && request.URL.Path == "/v1/servers" {
@@ -1436,7 +1546,8 @@ func TestCoordinatorCredentialForwardCheckProvesDistinctRoles(t *testing.T) {
 		}
 		switch token {
 		case "shared-canary-value":
-			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"owner":"agentscope-fleet-control","org":"agentscope-development","auth":"shared","admin":false}`)), Header: http.Header{}, Request: request}, nil
+			body, _ := json.Marshal(map[string]any{"owner": sharedOwner, "org": sharedOrg, "auth": "shared", "admin": false})
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: http.Header{}, Request: request}, nil
 		case "admin-canary-value":
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"owner":"agentscope-admin","org":"agentscope-development","auth":"admin","admin":true}`)), Header: http.Header{}, Request: request}, nil
 		case "hetzner-canary-value":
@@ -1451,6 +1562,16 @@ func TestCoordinatorCredentialForwardCheckProvesDistinctRoles(t *testing.T) {
 	if err != nil || receipt.Action != "coordinator.credentials.validate" || len(receipt.ObservedResourceIdentities) != 5 {
 		t.Fatalf("forward check: %v %#v", err, receipt)
 	}
+	sharedOwner = "attacker-owner"
+	if _, err := executor.ValidateCoordinatorCredentials(context.Background(), "agentscope-dev", map[string][]byte{"CRABBOX_SHARED_TOKEN": []byte("shared-canary-value"), "CRABBOX_ADMIN_TOKEN": []byte("admin-canary-value"), "HETZNER_TOKEN": []byte("hetzner-canary-value")}); err == nil || !strings.Contains(err.Error(), "E_CREDENTIAL_FORWARD_ROLE") {
+		t.Fatalf("wrong coordinator owner was admitted: %v", err)
+	}
+	sharedOwner = "agentscope-fleet-control"
+	sharedOrg = "attacker-org"
+	if _, err := executor.ValidateCoordinatorCredentials(context.Background(), "agentscope-dev", map[string][]byte{"CRABBOX_SHARED_TOKEN": []byte("shared-canary-value"), "CRABBOX_ADMIN_TOKEN": []byte("admin-canary-value"), "HETZNER_TOKEN": []byte("hetzner-canary-value")}); err == nil || !strings.Contains(err.Error(), "E_CREDENTIAL_FORWARD_ROLE") {
+		t.Fatalf("wrong coordinator org was admitted: %v", err)
+	}
+	sharedOrg = "agentscope-development"
 	redirecting := CommandExecutor{HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://example.invalid/stolen"}}, Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
 	})}}

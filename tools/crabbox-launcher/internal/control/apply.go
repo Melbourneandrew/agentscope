@@ -28,6 +28,7 @@ type Invocation struct {
 	ExpectedPreviousVersionID string
 	Subdomain                 string
 	Terminal                  bool
+	SourceCommit              string
 }
 
 type MutationReceipt struct {
@@ -261,7 +262,7 @@ func (store Store) Apply(ctx context.Context, input ApplyInput, executor Executo
 		if err != nil {
 			return err
 		}
-		invocation := Invocation{Action: operation.Action, RequestID: operation.RequestID, DeploymentCredential: deploymentCredential, Terminal: plan.Kind == "retire"}
+		invocation := Invocation{Action: operation.Action, RequestID: operation.RequestID, DeploymentCredential: deploymentCredential, Terminal: plan.Kind == "retire", SourceCommit: plan.SourceCommit}
 		if operation.SecretName != nil && operation.Action == "worker.secret.put" {
 			invocation.SecretName = *operation.SecretName
 			invocation.Secret = secrets[*operation.SecretName]
@@ -626,7 +627,7 @@ func (executor CommandExecutor) ValidateCoordinatorCredentials(ctx context.Conte
 		Admin bool   `json:"admin"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
-	if err != nil || status != http.StatusOK || decoder.Decode(&whoami) != nil || decoder.Decode(&struct{}{}) != io.EOF || whoami.Admin || whoami.Auth == "" || whoami.Owner == "" {
+	if err != nil || status != http.StatusOK || decoder.Decode(&whoami) != nil || decoder.Decode(&struct{}{}) != io.EOF || whoami.Admin || whoami.Auth != "shared" || whoami.Owner != "agentscope-fleet-control" || whoami.Org != "agentscope-development" {
 		return MutationReceipt{}, errors.New("E_CREDENTIAL_FORWARD_ROLE")
 	}
 	identities = append(identities, "crabbox-shared=ordinary")
@@ -799,7 +800,7 @@ func (executor CommandExecutor) command(invocation Invocation) ([]string, *bytes
 		action = []string{"secret", "put", invocation.SecretName, "--config", config, "--name", WorkerName}
 		stdin = bytes.NewReader(invocation.Secret)
 	case "worker.deploy":
-		action = []string{"deploy", "--config", config, "--name", WorkerName, "--strict", "--no-autoconfig"}
+		action = []string{"deploy", "--config", config, "--name", WorkerName, "--strict", "--no-autoconfig", "--message", "agentscope-source:" + invocation.SourceCommit}
 	case "worker.rollback":
 		action = []string{"rollback", invocation.VersionID, "--config", config, "--name", WorkerName, "--yes"}
 	case "worker.terminalArtifact.deploy":
