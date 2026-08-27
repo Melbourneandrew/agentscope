@@ -612,8 +612,16 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 	if err != nil {
 		return status, err
 	}
+	completionData, completionErr := readPrivate(store.path("evidence", "retirement-complete.json"))
+	completionAbsent := os.IsNotExist(completionErr)
+	if completionErr != nil && !completionAbsent {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
 	cloudData, err := readPrivate(store.path("evidence", "retirement-cloud-absence.json"))
 	if os.IsNotExist(err) {
+		if !completionAbsent {
+			return status, errors.New("E_RETIREMENT_STATE")
+		}
 		if _, finalErr := os.Lstat(store.path("evidence", "retirement-finalized.json")); finalErr == nil || !os.IsNotExist(finalErr) {
 			return status, errors.New("E_RETIREMENT_STATE")
 		}
@@ -647,12 +655,6 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 	}
 	status.CloudAbsenceRecorded = true
 	status.PlanSHA256 = cloud.PlanSHA256
-	completionData, completionErr := readPrivate(store.path("evidence", "retirement-complete.json"))
-	completionAbsent := os.IsNotExist(completionErr)
-	if completionErr != nil && !completionAbsent {
-		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
-	}
-
 	finalData, err := readPrivate(store.path("evidence", "retirement-finalized.json"))
 	if os.IsNotExist(err) {
 		if !completionAbsent {
@@ -1100,7 +1102,11 @@ func (store Store) FinalizeRetirement(planDigest, deploymentRevocationID, planRe
 	} else if !os.IsNotExist(readErr) {
 		return SignedControlRecord{}, readErr
 	} else {
-		record, err = store.signControlRecord(SignedControlRecord{Domain: RetirementFinalizationDomain, PlanSHA256: planDigest, RequestID: "credential-revocations", Disposition: "finalized", EvidenceSHA256: evidenceSHA256, RecordedAt: now}, RecoveryRole, passphrase)
+		finalizationRecordedAt := now
+		if finalizationRecordedAt.Before(retirement.RecordedAt) {
+			finalizationRecordedAt = retirement.RecordedAt
+		}
+		record, err = store.signControlRecord(SignedControlRecord{Domain: RetirementFinalizationDomain, PlanSHA256: planDigest, RequestID: "credential-revocations", Disposition: "finalized", EvidenceSHA256: evidenceSHA256, RecordedAt: finalizationRecordedAt}, RecoveryRole, passphrase)
 		if err != nil {
 			return record, err
 		}

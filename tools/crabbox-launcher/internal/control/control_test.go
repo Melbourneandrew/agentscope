@@ -1363,7 +1363,7 @@ func TestFreezeBlocksDeployButAdmitsExactRetirement(t *testing.T) {
 	if err := os.Remove(finalizationPath); err != nil {
 		t.Fatal(err)
 	}
-	record, err := item.store.FinalizeRetirement(planDigest, "cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(time.Second), syntheticOperatorPassphrase)
+	record, err := item.store.FinalizeRetirement(planDigest, "cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated", item.now.Add(-time.Second), syntheticOperatorPassphrase)
 	if err != nil || record.Disposition != "finalized" {
 		t.Fatalf("retirement finalization: %v %#v", err, record)
 	}
@@ -1505,6 +1505,33 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("waiting enrollment published post-retirement slot: %v %#v", err, entries)
 	}
+}
+
+func TestCompletionOnlyRetirementStateFailsClosed(t *testing.T) {
+	item := newFixture(t)
+	completion, err := item.store.signControlRecord(SignedControlRecord{Domain: RetirementCompletionDomain, PlanSHA256: strings.Repeat("a", 64), RequestID: "mutation-fence-release", Disposition: "durably-released", EvidenceSHA256: strings.Repeat("b", 64), RecordedAt: item.now}, RecoveryRole, syntheticOperatorPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := item.store.path("evidence", "retirement-complete.json")
+	data, _ := json.MarshalIndent(completion, "", "  ")
+	if err := writeAtomicExclusive(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertBlocked := func(label string) {
+		t.Helper()
+		if _, err := item.store.RetirementStatus(); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+			t.Fatalf("%s completion-only state was accepted: %v", label, err)
+		}
+		if _, err := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-deployment", "late-slot", "v1", []byte(strings.Repeat("x", 32)), item.now); err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_STATE") {
+			t.Fatalf("%s completion-only state admitted enrollment: %v", label, err)
+		}
+	}
+	assertBlocked("signed")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertBlocked("malformed")
 }
 
 func TestRetirementRejectsDigestShapedButUnsignedZeroState(t *testing.T) {
