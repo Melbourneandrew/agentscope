@@ -67,6 +67,7 @@ function showDetail(node) {
   elements.detail.innerHTML = `
     <h2>${escapeHtml(node.title)}</h2>
     <p><code>${escapeHtml(node.id)}</code><br>P${node.priority} · ${escapeHtml(node.displayState)} · ${escapeHtml(node.issueType)}</p>
+    <h2>Active blockers</h2>${list(node.activeBlockers.map((source) => ({ source })), "source")}
     <h2>Prerequisites</h2>${list(prerequisites, "source")}
     <h2>Dependents</h2>${list(dependents, "target")}
     ${node.labels.length ? `<h2>Labels</h2><p>${node.labels.map(escapeHtml).join(" · ")}</p>` : ""}

@@ -115,13 +115,10 @@ export function normalizeIssues(input, { readyIds } = {}) {
   }
   const canonicalReadyIds = readyIds === undefined ? null : new Set(readyIds);
   for (const node of nodes) {
-    const activeBlockers = activeBlockersByTarget.get(node.id) ?? [];
+    const canonicallyReady = canonicalReadyIds ? canonicalReadyIds.has(node.id) : undefined;
+    const activeBlockers = canonicallyReady ? [] : (activeBlockersByTarget.get(node.id) ?? []);
     node.activeBlockers = activeBlockers;
-    node.displayState = deriveDisplayState(
-      node.status,
-      activeBlockers.length,
-      canonicalReadyIds ? canonicalReadyIds.has(node.id) : undefined,
-    );
+    node.displayState = deriveDisplayState(node.status, activeBlockers.length, canonicallyReady);
   }
 
   return { nodes, edges, warnings };
@@ -156,8 +153,10 @@ export function filterGraph(graph, options = {}) {
   const maxNodes = Math.max(1, Math.min(1_000, integer(options.maxNodes, 600)));
 
   let allowedByFocus = null;
+  let focusDistances = null;
   if (focusId && graph.nodes.some((node) => node.id === focusId)) {
     allowedByFocus = new Set([focusId]);
+    focusDistances = new Map([[focusId, 0]]);
     let frontier = new Set([focusId]);
     for (let depth = 0; depth < focusDepth; depth += 1) {
       const next = new Set();
@@ -166,7 +165,10 @@ export function filterGraph(graph, options = {}) {
         if (frontier.has(edge.source)) next.add(edge.target);
         if (frontier.has(edge.target)) next.add(edge.source);
       }
-      for (const id of next) allowedByFocus.add(id);
+      for (const id of next) {
+        allowedByFocus.add(id);
+        if (!focusDistances.has(id)) focusDistances.set(id, depth + 1);
+      }
       frontier = next;
     }
   }
@@ -180,6 +182,15 @@ export function filterGraph(graph, options = {}) {
       (!allowedByFocus || allowedByFocus.has(node.id))
     );
   });
+  if (focusDistances) {
+    matchingNodes.sort(
+      (a, b) =>
+        (focusDistances.get(a.id) ?? Number.POSITIVE_INFINITY) -
+          (focusDistances.get(b.id) ?? Number.POSITIVE_INFINITY) ||
+        a.priority - b.priority ||
+        a.id.localeCompare(b.id),
+    );
+  }
   const nodes = matchingNodes.slice(0, maxNodes);
   const ids = new Set(nodes.map((node) => node.id));
   const edges = graph.edges.filter(
@@ -189,6 +200,7 @@ export function filterGraph(graph, options = {}) {
 }
 
 export function layoutGraph(graph) {
+  const maxRowsPerColumn = 40;
   const ids = new Set(graph.nodes.map((node) => node.id));
   const dependencyEdges = graph.edges.filter(
     (edge) => edge.type === "blocks" && ids.has(edge.source) && ids.has(edge.target),
@@ -230,12 +242,21 @@ export function layoutGraph(graph) {
   }
 
   const positions = new Map();
-  for (const [lane, nodes] of lanes) {
-    nodes.forEach((node, row) => positions.set(node.id, { x: 40 + lane * 292, y: 44 + row * 74, lane, row }));
+  const physicalLaneStart = new Map();
+  let nextPhysicalLane = 0;
+  for (const lane of [...lanes.keys()].sort((a, b) => a - b)) {
+    physicalLaneStart.set(lane, nextPhysicalLane);
+    nextPhysicalLane += Math.max(1, Math.ceil(lanes.get(lane).length / maxRowsPerColumn));
   }
-  const maxRows = Math.max(1, ...[...lanes.values()].map((nodes) => nodes.length));
-  const maxLane = Math.max(0, ...lanes.keys());
-  return { positions, width: 320 + maxLane * 292, height: 90 + maxRows * 74, cycleLayer };
+  for (const [lane, nodes] of lanes) {
+    nodes.forEach((node, index) => {
+      const physicalLane = physicalLaneStart.get(lane) + Math.floor(index / maxRowsPerColumn);
+      const row = index % maxRowsPerColumn;
+      positions.set(node.id, { x: 40 + physicalLane * 292, y: 44 + row * 74, lane, row });
+    });
+  }
+  const maxRows = Math.max(1, ...[...lanes.values()].map((nodes) => Math.min(nodes.length, maxRowsPerColumn)));
+  return { positions, width: 320 + Math.max(0, nextPhysicalLane - 1) * 292, height: 90 + maxRows * 74, cycleLayer };
 }
 
 export function escapeHtml(value) {

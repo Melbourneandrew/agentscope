@@ -111,6 +111,25 @@ test("caps visible graph work while retaining an explicit truncation count", () 
   assert.equal(filtered.truncatedCount, 100);
 });
 
+test("keeps a focused high-degree neighborhood coherent and layout height bounded", () => {
+  const dependents = Array.from({ length: 700 }, (_, index) => ({
+    id: `dependent-${index}`,
+    title: `Dependent ${index}`,
+    dependencies: [{ issue_id: `dependent-${index}`, depends_on_id: "root", type: "blocks" }],
+  }));
+  const graph = normalizeIssues([...dependents, { id: "root", title: "Root" }]);
+  const filtered = filterGraph(graph, {
+    focusId: "root",
+    focusDepth: 1,
+    relationshipTypes: ["blocks"],
+    maxNodes: 600,
+  });
+  assert.equal(filtered.nodes[0].id, "root");
+  assert.equal(filtered.nodes.length, 600);
+  assert.equal(filtered.edges.length, 599);
+  assert.ok(layoutGraph(filtered).height <= 90 + 40 * 74);
+});
+
 test("reads only through the supported read-only bd list command", async () => {
   assert.deepEqual(BD_LIST_ARGUMENTS, ["list", "--all", "--flat", "--limit", "0", "--json", "--readonly"]);
   let call;
