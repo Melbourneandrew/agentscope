@@ -1215,16 +1215,52 @@ describe("owned buildx process execution", () => {
     ["close-descendant", "integration.images.containment"],
   ])("kills and joins the exact process group for %s", async (mode, code) => {
     const directory = root();
-    await expect(
-      runOwnedImageCommandForTesting(process.execPath, [fixture], {
+    const error = await runOwnedImageCommandForTesting(
+      process.execPath,
+      [fixture],
+      {
         deadline: performance.now() + 500,
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
         },
         teardownMilliseconds: 250,
-      }),
-    ).rejects.toThrow(code);
+      },
+    ).catch((failure: unknown) => failure);
+    if (mode === "hang-descendant") {
+      expect(error).toMatchObject({ code: "ETIMEDOUT" });
+      expect([
+        "integration.images.timeout",
+        "integration.images.containment",
+      ]).toContain((error as Error).message);
+    } else expect(error).toEqual(expect.objectContaining({ message: code }));
+    const descendant = Number(
+      readFileSync(resolve(directory, "ready"), "utf8"),
+    );
+    expect(() => process.kill(descendant, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+  });
+
+  it("fails closed when close observation exhausts the teardown reserve", async () => {
+    const directory = root();
+    const error = await runOwnedImageCommandForTesting(
+      process.execPath,
+      [fixture],
+      {
+        closeBarrierForTesting: () => new Promise(() => {}),
+        deadline: performance.now() + 500,
+        environment: {
+          AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
+          AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
+        },
+        teardownMilliseconds: 250,
+      },
+    ).catch((failure: unknown) => failure);
+    expect(error).toMatchObject({
+      code: "ETIMEDOUT",
+      message: "integration.images.containment",
+    });
     const descendant = Number(
       readFileSync(resolve(directory, "ready"), "utf8"),
     );

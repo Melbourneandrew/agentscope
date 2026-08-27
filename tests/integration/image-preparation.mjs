@@ -333,7 +333,14 @@ const waitForProcessGroupAbsence = async (processGroup, deadline) => {
 const runOwnedCommand = async (
   executable,
   arguments_,
-  { deadline, environment, input, signal, teardownMilliseconds },
+  {
+    closeBarrierForTesting,
+    deadline,
+    environment,
+    input,
+    signal,
+    teardownMilliseconds,
+  },
 ) => {
   if (process.platform === "win32" || processInspectionExecutable === undefined)
     throw fixedError("integration.images.platform");
@@ -382,13 +389,17 @@ const runOwnedCommand = async (
       resolveClose({ code, childSignal }),
     );
   });
+  const observedClose = closed.then(async (result) => {
+    await closeBarrierForTesting?.(processGroup);
+    return result;
+  });
   if (input !== undefined) {
     child.stdin.on("error", () => fail("integration.images.command"));
     child.stdin.end(input);
   }
   try {
     const result = await Promise.race([
-      closed,
+      observedClose,
       new Promise((resolveClose) =>
         setTimeout(
           () => resolveClose(undefined),

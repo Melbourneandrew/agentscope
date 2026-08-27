@@ -158,6 +158,7 @@ export declare const runOwnedImageCommandForTesting: (
   executable: string,
   arguments_: readonly string[],
   options: Readonly<{
+    closeBarrierForTesting?: (processGroup: number) => Promise<void>;
     deadline: number;
     environment?: Readonly<Record<string, string>>;
     input?: Buffer;
