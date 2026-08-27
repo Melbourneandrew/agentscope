@@ -121,12 +121,16 @@ export function normalizeIssues(input, { readyIds, blockedIds = [], staleIds = [
   const canonicalBlockedIds = new Set(blockedIds);
   const canonicalStaleIds = new Set(staleIds);
   const containerIds = new Set(nodes.filter((node) => node.issueType === "epic").map((node) => node.id));
+  const childIds = new Set();
   for (const edge of edges) if (edge.type === "parent-child") containerIds.add(edge.source);
+  for (const edge of edges) if (edge.type === "parent-child") childIds.add(edge.target);
   for (const node of nodes) {
     const canonicallyReady = canonicalReadyIds ? canonicalReadyIds.has(node.id) : undefined;
-    const canonicallyBlocked = canonicalBlockedIds.has(node.id);
+    const localActiveBlockers = activeBlockersByTarget.get(node.id) ?? [];
+    const blockedOnlyByHierarchy = childIds.has(node.id) && localActiveBlockers.length === 0;
+    const canonicallyBlocked = canonicalBlockedIds.has(node.id) && !blockedOnlyByHierarchy;
     const stale = node.status === "in_progress" && canonicalStaleIds.has(node.id);
-    const activeBlockers = canonicallyReady ? [] : (activeBlockersByTarget.get(node.id) ?? []);
+    const activeBlockers = canonicallyReady ? [] : localActiveBlockers;
     node.activeBlockers = activeBlockers;
     node.isContainer = containerIds.has(node.id);
     node.isLeaf = !node.isContainer;
@@ -152,7 +156,7 @@ export function deriveDisplayState(status, activeBlockerCount, canonicallyReady,
   if (status === "in_progress") return "active";
   if (status === "deferred") return "deferred";
   if (status === "blocked") return "blocked";
-  if (canonicallyReady !== undefined) return canonicallyReady ? "ready" : "blocked";
+  if (canonicallyReady === true) return "ready";
   if (activeBlockerCount > 0) return "blocked";
   return "ready";
 }

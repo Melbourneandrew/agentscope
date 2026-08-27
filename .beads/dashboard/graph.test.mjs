@@ -55,23 +55,26 @@ test("normalizes dependency direction from prerequisite to dependent", () => {
 });
 
 test("treats parents as containers without making hierarchy a blocker", () => {
-  const graph = normalizeIssues([
-    { id: "agentscope-release-001", title: "Parent", status: "in_progress" },
-    {
-      id: "agentscope-release-002",
-      title: "Child",
-      status: "in_progress",
-      dependencies: [
-        { issue_id: "agentscope-release-002", depends_on_id: "agentscope-release-001", type: "parent-child" },
-      ],
-    },
-  ]);
+  const graph = normalizeIssues(
+    [
+      { id: "agentscope-release-001", title: "Parent", status: "open" },
+      {
+        id: "agentscope-release-002",
+        title: "Child",
+        status: "open",
+        dependencies: [
+          { issue_id: "agentscope-release-002", depends_on_id: "agentscope-release-001", type: "parent-child" },
+        ],
+      },
+    ],
+    { readyIds: [], blockedIds: ["agentscope-release-002"] },
+  );
   const parent = graph.nodes.find((node) => node.id === "agentscope-release-001");
   const child = graph.nodes.find((node) => node.id === "agentscope-release-002");
   assert.equal(parent.isContainer, true);
   assert.equal(parent.workClass, "container");
-  assert.equal(child.displayState, "active");
-  assert.equal(child.workClass, "active-leaf");
+  assert.equal(child.displayState, "ready");
+  assert.equal(child.workClass, "ready-leaf");
   assert.equal(child.displayId, "release-002");
   assert.equal(displayIssueId("agentscope-vah.11.1"), "vah.11.1");
 });
@@ -86,7 +89,7 @@ test("derives every visible workflow state without weakening explicit status", (
   assert.equal(deriveDisplayState("closed", 2), "closed");
   assert.equal(deriveDisplayState("deferred", 0), "deferred");
   assert.equal(deriveDisplayState("open", 1, true), "ready");
-  assert.equal(deriveDisplayState("open", 0, false), "blocked");
+  assert.equal(deriveDisplayState("open", 0, false), "ready");
 });
 
 test("filters by search, status, priority and focused dependency neighborhood", () => {
