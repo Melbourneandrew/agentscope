@@ -13,8 +13,8 @@ Beads is issue tracking that lives in your repo, making it perfect for AI coding
 ### Essential Commands
 
 ```bash
-# Create new issues
-bd create "Add user authentication"
+# Create the next sequential issue in a workstream
+node .beads/create.mjs auth "Add user authentication"
 
 # View all issues
 bd list
