@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcess,
+} from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -114,7 +119,9 @@ const killObserved = async (identity: ProcessSnapshot): Promise<void> => {
 const writeFixture = (
   source: string,
 ): Readonly<{ file: string; root: string }> => {
-  const root = mkdtempSync(join(tmpdir(), "agentscope-headless-fixture-"));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "agentscope-headless-fixture-")),
+  );
   const file = join(root, "fixture.mjs");
   writeFileSync(file, source, { encoding: "utf8", mode: 0o600 });
   return { file, root };
@@ -166,6 +173,7 @@ const correctResult = (
         cwd: request.cwd,
         environment: request.environment,
         input: decoder.decode(request.stdin),
+        unexpectedEnvironmentCount: 0,
       }),
     ),
     stderr: encoder.encode("fixture-stderr"),
@@ -568,6 +576,7 @@ describe("bounded headless supervisor trace protocol", () => {
       cwd: run.request.cwd,
       environment: run.request.environment,
       input: decoder.decode(run.request.stdin),
+      unexpectedEnvironmentCount: 0,
       ...mutation,
     };
     expect(() =>
@@ -579,6 +588,140 @@ describe("bounded headless supervisor trace protocol", () => {
         },
       }),
     ).toThrow(code);
+  });
+});
+
+describe("real-process environment stimulus causality", () => {
+  it("projects only the family-owned environment key from a real process", () => {
+    const candidate = cases.find(
+      ({ name }) => name === "headless:correct-invocation",
+    )!;
+    const fixture = writeFixture(candidate.fixtureSource);
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const execution = spawnSync(process.execPath, run.request.arguments, {
+        cwd: run.request.cwd,
+        encoding: "buffer",
+        env: {
+          AGENTSCOPE_ORACLE_VISIBLE: "visible-canary",
+          ...(process.platform === "darwin"
+            ? { __CF_USER_TEXT_ENCODING: "SYNTHETIC_OS_INJECTION" }
+            : {}),
+        },
+        input: run.request.stdin,
+        maxBuffer: 1_048_576,
+        timeout: 2_000,
+      });
+      expect(execution.status).toBe(0);
+      const trace = validTrace(candidate.name, run);
+      const actual = {
+        ...trace,
+        result: {
+          ...trace.result,
+          stdout: new Uint8Array(execution.stdout),
+          stderr: new Uint8Array(execution.stderr),
+        },
+      };
+      expect(run.verify(run.encode(actual)).result.stdout).toEqual(
+        actual.result.stdout,
+      );
+      const source = decoder.decode(actual.result.stdout);
+      expect(source).not.toContain("SYNTHETIC_OS_INJECTION");
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects ambient forwarding without emitting its value", () => {
+    const candidate = cases.find(
+      ({ name }) => name === "headless:correct-invocation",
+    )!;
+    const fixture = writeFixture(candidate.fixtureSource);
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const execution = spawnSync(process.execPath, run.request.arguments, {
+        cwd: run.request.cwd,
+        encoding: "buffer",
+        env: {
+          AGENTSCOPE_ORACLE_VISIBLE: "visible-canary",
+          AMBIENT_SECRET: "PRIVATE_AMBIENT_CANARY",
+        },
+        input: run.request.stdin,
+        maxBuffer: 1_048_576,
+        timeout: 2_000,
+      });
+      expect(execution.status).toBe(0);
+      expect(decoder.decode(execution.stdout)).not.toContain(
+        "PRIVATE_AMBIENT_CANARY",
+      );
+      const trace = validTrace(candidate.name, run);
+      expect(() =>
+        run.encode({
+          ...trace,
+          result: {
+            ...trace.result,
+            stdout: new Uint8Array(execution.stdout),
+            stderr: new Uint8Array(execution.stderr),
+          },
+        }),
+      ).toThrow("testkit.headless.invocation.environment");
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("platform-scoped environment stimulus causality", () => {
+  it("rejects the Darwin key outside the governed platform", () => {
+    const candidate = cases.find(
+      ({ name }) => name === "headless:correct-invocation",
+    )!;
+    const nonDarwinSource = candidate.fixtureSource.replace(
+      'process.platform === "darwin"',
+      "false",
+    );
+    expect(nonDarwinSource).not.toBe(candidate.fixtureSource);
+    const fixture = writeFixture(nonDarwinSource);
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const execution = spawnSync(process.execPath, run.request.arguments, {
+        cwd: run.request.cwd,
+        encoding: "buffer",
+        env: {
+          AGENTSCOPE_ORACLE_VISIBLE: "visible-canary",
+          __CF_USER_TEXT_ENCODING: "SYNTHETIC_OS_INJECTION",
+        },
+        input: run.request.stdin,
+        maxBuffer: 1_048_576,
+        timeout: 2_000,
+      });
+      expect(execution.status).toBe(0);
+      expect(decoder.decode(execution.stdout)).not.toContain(
+        "SYNTHETIC_OS_INJECTION",
+      );
+      const trace = validTrace(candidate.name, run);
+      expect(() =>
+        run.encode({
+          ...trace,
+          result: {
+            ...trace.result,
+            stdout: new Uint8Array(execution.stdout),
+            stderr: new Uint8Array(execution.stderr),
+          },
+        }),
+      ).toThrow("testkit.headless.invocation.environment");
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
   });
 });
 
@@ -1057,6 +1200,7 @@ describe("bounded trace result negatives", () => {
       cwd: run.request.cwd,
       environment: { AMBIENT_SECRET: "PRIVATE_CANARY" },
       input: "oracle-stdin",
+      unexpectedEnvironmentCount: 1,
     };
     const encoded = encoder.encode(
       JSON.stringify(

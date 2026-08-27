@@ -288,8 +288,9 @@ const fixtures: Readonly<Record<HeadlessObserverScenario, string>> = safeFreeze(
     correct: String.raw`
 import { readFileSync } from "node:fs";
 const input = readFileSync(0, "utf8");
-const environment = Object.fromEntries(Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right)));
-process.stdout.write(JSON.stringify({ arguments: process.argv.slice(2), cwd: process.cwd(), environment, input }));
+const environment = { AGENTSCOPE_ORACLE_VISIBLE: process.env.AGENTSCOPE_ORACLE_VISIBLE };
+const unexpectedEnvironmentCount = Object.keys(process.env).filter((key) => key !== "AGENTSCOPE_ORACLE_VISIBLE" && !(process.platform === "darwin" && key === "__CF_USER_TEXT_ENCODING")).length;
+process.stdout.write(JSON.stringify({ arguments: process.argv.slice(2), cwd: process.cwd(), environment, input, unexpectedEnvironmentCount }));
 process.stderr.write("fixture-stderr");
 `,
     "stdout-limit":
@@ -1135,7 +1136,7 @@ const assertCorrect = (
   }
   exactKeys(
     invocation,
-    ["arguments", "cwd", "environment", "input"],
+    ["arguments", "cwd", "environment", "input", "unexpectedEnvironmentCount"],
     "testkit.headless.invocation.record",
   );
   const arguments_ = strictArray(
@@ -1159,7 +1160,8 @@ const assertCorrect = (
   );
   assert(
     environment.AGENTSCOPE_ORACLE_VISIBLE ===
-      request.environment.AGENTSCOPE_ORACLE_VISIBLE,
+      request.environment.AGENTSCOPE_ORACLE_VISIBLE &&
+      invocation.unexpectedEnvironmentCount === 0,
     "testkit.headless.invocation.environment",
   );
   assert(
