@@ -6,6 +6,7 @@ import {
 } from "node:http";
 
 export * from "./harness.js";
+export * from "./headless-supervisor-contract.js";
 export * from "./model-routes.js";
 export * from "./platform-fixture.js";
 
