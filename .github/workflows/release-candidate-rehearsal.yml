@@ -79,11 +79,18 @@ jobs:
           --protected-tag v0.1.0
       - name: Validate synthetic records against executing bytes
         env:
+          CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest-path }}
+          EXPECTED_MANIFEST_DIGEST: ${{ inputs.trusted-candidate-manifest-digest }}
+          EXPECTED_SOURCE_REVISION: ${{ github.sha }}
           REHEARSAL_RECORDS: ${{ inputs.rehearsal-records-path }}
         run: >-
           node scripts/verify-release-records.mjs
           --artifact-root artifacts/release-candidate
           --record-set-relative "$REHEARSAL_RECORDS"
+          --candidate-manifest-relative "$CANDIDATE_MANIFEST"
+          --trusted-candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST"
+          --source-revision "$EXPECTED_SOURCE_REVISION"
+          --protected-tag v0.1.0
           --workspace-root .
           --workflow-relative .github/workflows/release.yml
       - run: pnpm verify:release-lane-substrate

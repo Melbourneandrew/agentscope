@@ -95,6 +95,65 @@ function validateWorkflowShape(workflow) {
     );
 }
 
+const forbiddenAmbientIdentifiers = new Set([
+  "eval",
+  "Function",
+  "global",
+  "globalThis",
+  "Reflect",
+  "WebSocket",
+  "XMLHttpRequest",
+]);
+
+function assertNoAmbientCodeGeneration(path, node) {
+  const forbiddenIdentifier =
+    ts.isIdentifier(node) && forbiddenAmbientIdentifiers.has(node.text);
+  const forbiddenProperty =
+    ts.isPropertyAccessExpression(node) && node.name.text === "constructor";
+  const forbiddenElement =
+    ts.isElementAccessExpression(node) &&
+    ts.isStringLiteral(node.argumentExpression) &&
+    node.argumentExpression.text === "constructor";
+  if (forbiddenIdentifier || forbiddenProperty || forbiddenElement)
+    throw new Error(
+      `Release script ${path} contains forbidden runtime code-generation authority`,
+    );
+}
+
+function assertNoAmbientNetworkOrLoader(path, node) {
+  const forbiddenCall =
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    ["require", "createRequire"].includes(node.expression.text);
+  const property = ts.isPropertyAccessExpression(node)
+    ? node.name.text
+    : ts.isElementAccessExpression(node) &&
+        ts.isStringLiteral(node.argumentExpression)
+      ? node.argumentExpression.text
+      : undefined;
+  const forbiddenFetch = ts.isIdentifier(node) && node.text === "fetch";
+  if (
+    forbiddenCall ||
+    forbiddenFetch ||
+    ["getBuiltinModule", "fetch"].includes(property)
+  )
+    throw new Error(
+      `Release script ${path} contains forbidden network/process authority`,
+    );
+  const processAccess =
+    (ts.isPropertyAccessExpression(node) ||
+      ts.isElementAccessExpression(node)) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "process";
+  const allowedProcessAccess =
+    ts.isPropertyAccessExpression(node) &&
+    ["argv", "stdout"].includes(node.name.text);
+  if (processAccess && !allowedProcessAccess)
+    throw new Error(
+      `Release script ${path} contains forbidden process authority`,
+    );
+}
+
 function localModuleSpecifiers(path, script) {
   const parsed = ts.createSourceFile(
     path,
@@ -127,34 +186,9 @@ function localModuleSpecifiers(path, script) {
       );
       assertAllowedModuleSpecifier(path, node.arguments[0].text);
       specifiers.push(node.arguments[0].text);
-    } else if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      ["require", "createRequire"].includes(node.expression.text)
-    ) {
-      throw new Error(
-        `Release script ${path} contains forbidden network/process authority`,
-      );
-    } else if (
-      (ts.isPropertyAccessExpression(node) &&
-        node.name.text === "getBuiltinModule") ||
-      (ts.isElementAccessExpression(node) &&
-        ts.isStringLiteral(node.argumentExpression) &&
-        node.argumentExpression.text === "getBuiltinModule")
-    ) {
-      throw new Error(
-        `Release script ${path} contains forbidden network/process authority`,
-      );
-    } else if (
-      (ts.isIdentifier(node) && node.text === "fetch") ||
-      (ts.isPropertyAccessExpression(node) && node.name.text === "fetch") ||
-      (ts.isElementAccessExpression(node) &&
-        ts.isStringLiteral(node.argumentExpression) &&
-        node.argumentExpression.text === "fetch")
-    ) {
-      throw new Error(
-        `Release script ${path} contains forbidden network/process authority`,
-      );
+    } else {
+      assertNoAmbientCodeGeneration(path, node);
+      assertNoAmbientNetworkOrLoader(path, node);
     }
     ts.forEachChild(node, visit);
   };

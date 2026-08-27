@@ -147,6 +147,7 @@ function readTarInventory(tarball) {
   let packedManifest;
   let manifestCount = 0;
   const paths = new Set();
+  const portablePaths = new Set();
   const inventory = [];
   while (offset + 512 <= unpacked.length) {
     const header = unpacked.subarray(offset, offset + 512);
@@ -164,6 +165,12 @@ function readTarInventory(tarball) {
     assertCanonicalTarPath(path);
     assert(!paths.has(path), `Duplicate tar path: ${path}`);
     paths.add(path);
+    const portablePath = path.normalize("NFC").toLowerCase();
+    assert(
+      !portablePaths.has(portablePath),
+      `Platform-ambiguous tar path: ${path}`,
+    );
+    portablePaths.add(portablePath);
     const size = parseOctal(header, 124, 12, "size");
     const type = header[156];
     assert(type === 0 || type === 0x30, `Forbidden tar entry: ${path}`);

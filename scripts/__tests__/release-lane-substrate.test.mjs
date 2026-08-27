@@ -38,6 +38,16 @@ const sourceRevision = "a".repeat(40);
 const candidateManifestDigest = `sha256:${"c".repeat(64)}`;
 const candidateTarballSha256 = `sha256:${"d".repeat(64)}`;
 const integrity = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
+const trustedCandidate = Object.freeze({
+  manifestDigest: candidateManifestDigest,
+  tarballSha256: candidateTarballSha256,
+  integrity,
+  sourceRevision,
+  protectedTag: "v0.1.0",
+  packageName: "agentscope-cli",
+  packageVersion: "0.1.0",
+  distTag: "alpha",
+});
 const observedReleaseBytes = {
   workflowBytes: Buffer.from("workflow-v1\n"),
   releaseScripts: {
@@ -403,6 +413,14 @@ test("rejects duplicate and noncanonical tar inventory paths", () => {
     ],
   });
   assert.throws(verify(backslash), /noncanonical tar path/);
+
+  const casefoldCollision = createCandidateFixture({
+    extraEntries: [
+      { path: "package/README", content: "first\n" },
+      { path: "package/readme", content: "second\n" },
+    ],
+  });
+  assert.throws(verify(casefoldCollision), /Platform-ambiguous tar path/);
 });
 
 test("authenticates exact checkout, caller workflow, and reusable workflow identity", () => {
@@ -456,7 +474,7 @@ function probe() {
     repository: "Melbourneandrew/agentscope",
     workflowPath: ".github/workflows/release.yml",
     environment: "npm-release",
-    sourceRevision: "b".repeat(40),
+    sourceRevision,
     trustedPublisher: {
       repository: "Melbourneandrew/agentscope",
       workflowPath: ".github/workflows/release.yml",
@@ -536,11 +554,31 @@ const githubRelease = (draft, immutable) => ({
   immutable,
   assetManifestDigest: `sha256:${"f".repeat(64)}`,
 });
+const stageReconciliation = () => ({
+  classification: "absent",
+  stageId: null,
+  terminal: true,
+  evidenceDigest: `sha256:${"6".repeat(64)}`,
+});
+const npmQuarantine = () => ({
+  ownerCeremonyDigest: `sha256:${"b".repeat(64)}`,
+  deprecationResultDigest: `sha256:${"c".repeat(64)}`,
+  versionDeprecated: true,
+  alpha: {
+    state: "absent",
+    version: null,
+    authorizationDigest: null,
+  },
+  distTags: bootstrapTags,
+  distTagsDigest: sha256(canonicalJson(bootstrapTags)),
+  pendingStagesAbsent: true,
+});
 
 const quarantinePayload = (failureClass = "ambiguous-stage-response") => ({
   failureClass,
   ownerCheckpointDigest: `sha256:${"9".repeat(64)}`,
   pendingStagesCheckpointDigest: `sha256:${"6".repeat(64)}`,
+  stageReconciliation: stageReconciliation(),
   recoveryPlanDigest: `sha256:${"a".repeat(64)}`,
   githubRelease: githubRelease(true, false),
   ...(failureClass.startsWith("postpublication-")
@@ -548,19 +586,7 @@ const quarantinePayload = (failureClass = "ambiguous-stage-response") => ({
         ...(failureClass === "postpublication-registry-ambiguous"
           ? { registryObservationDigest: `sha256:${"4".repeat(64)}` }
           : { registry: exactRegistry() }),
-        npmQuarantine: {
-          ownerCeremonyDigest: `sha256:${"b".repeat(64)}`,
-          deprecationResultDigest: `sha256:${"c".repeat(64)}`,
-          versionDeprecated: true,
-          alpha: {
-            state: "absent",
-            version: null,
-            authorizationDigest: null,
-          },
-          distTags: bootstrapTags,
-          distTagsDigest: sha256(canonicalJson(bootstrapTags)),
-          pendingStagesAbsent: true,
-        },
+        npmQuarantine: npmQuarantine(),
       }
     : {}),
 });
@@ -593,7 +619,17 @@ function payload(transition) {
         candidateManifestDigest,
         tarballSha256: candidateTarballSha256,
       },
-      ownerCheckpointDigest: `sha256:${"4".repeat(64)}`,
+      ownerCheckpoint: {
+        transactionId: "synthetic-transaction-100",
+        draftReleaseDatabaseId: "synthetic-release-100",
+        ownerIdentity: "synthetic-owner",
+        pendingStagesState: "none-conflicting",
+        issuedAt: "2026-08-27T16:40:00.000Z",
+        expiresAt: "2026-08-27T16:50:00.000Z",
+        consumedAt: "2026-08-27T16:45:00.000Z",
+        state: "consumed-for-stage",
+        authenticationDigest: `sha256:${"4".repeat(64)}`,
+      },
       stageResultDigest: `sha256:${"5".repeat(64)}`,
     };
   if (transition === "ready-to-publish") {
@@ -617,6 +653,7 @@ function payload(transition) {
         stageId: "synthetic-stage-100",
         observedDistTagsDigest: publicationCheckpoint.distTagsDigest,
         reauthenticationDigest: `sha256:${"8".repeat(64)}`,
+        consumedAt: "2026-08-27T17:05:00.000Z",
         state: "consumed-for-approved-stage",
       },
       releaseLedgerPath: "release-records/releases/",
@@ -658,6 +695,8 @@ function payload(transition) {
     recoveryPlanDigest: `sha256:${"b".repeat(64)}`,
     incidentManifestDigest: `sha256:${"c".repeat(64)}`,
     readyManifestDigest: null,
+    stageReconciliation: stageReconciliation(),
+    npmQuarantine: npmQuarantine(),
   };
 }
 
@@ -687,6 +726,8 @@ function recordSet(
         candidateManifestDigest,
         sourceRevision,
         protectedTag: "v0.1.0",
+        transactionId: "synthetic-transaction-100",
+        actor: "synthetic-release-recorder",
         simulation: true,
         payload: transitionPayload,
       });
@@ -697,6 +738,14 @@ function recordSet(
   return {
     schemaVersion: 1,
     mode: "synthetic-nonpublishing-rehearsal",
+    transactionId: "synthetic-transaction-100",
+    activeTransactionFence: {
+      transactionId: "synthetic-transaction-100",
+      concurrencyGroup: "agentscope-release-records",
+      state: "exclusive-active",
+      competingTransaction: null,
+      evidenceDigest: `sha256:${"f".repeat(64)}`,
+    },
     package: {
       name: "agentscope-cli",
       version: "0.1.0",
@@ -717,7 +766,7 @@ function recordSet(
 }
 
 const validateRecords = (records, observed = observedReleaseBytes) =>
-  validateSyntheticReleaseRecords(records, observed);
+  validateSyntheticReleaseRecords(records, observed, trustedCandidate);
 const rebindProbe = (records) => {
   records.applicableProbeDigest = sha256(canonicalJson(records.probe));
   return records;
@@ -751,6 +800,30 @@ const replaceReady = (records, readyPayload) => {
   records.transactions[readyIndex] = createSyntheticRecord({
     ...records.transactions[readyIndex],
     payload: readyPayload,
+  });
+  records.transactions[terminalIndex] = createSyntheticRecord({
+    ...records.transactions[terminalIndex],
+    previousDigest: records.transactions[readyIndex].digest,
+    payload: {
+      ...records.transactions[terminalIndex].payload,
+      readyManifestDigest: records.transactions[readyIndex].digest,
+    },
+  });
+  return records;
+};
+const replaceStage = (records, stagePayload) => {
+  const stageIndex = records.transactions.findIndex(
+    ({ transition }) => transition === "stage-recorded",
+  );
+  const readyIndex = stageIndex + 1;
+  const terminalIndex = readyIndex + 1;
+  records.transactions[stageIndex] = createSyntheticRecord({
+    ...records.transactions[stageIndex],
+    payload: stagePayload,
+  });
+  records.transactions[readyIndex] = createSyntheticRecord({
+    ...records.transactions[readyIndex],
+    previousDigest: records.transactions[stageIndex].digest,
   });
   records.transactions[terminalIndex] = createSyntheticRecord({
     ...records.transactions[terminalIndex],
@@ -878,6 +951,20 @@ test("rejects incomplete, reordered, digest-broken, continued, or authority-bear
   const authority = recordSet();
   authority.probe = { ...authority.probe, authority: "production" };
   assert.throws(() => validateRecords(authority), /probe record drifted/);
+
+  const mixedActor = recordSet();
+  mixedActor.transactions[0] = createSyntheticRecord({
+    ...mixedActor.transactions[0],
+    actor: "synthetic-other-actor",
+  });
+  assert.throws(() => validateRecords(mixedActor), /identity drifted/);
+
+  const detachedFence = recordSet();
+  detachedFence.activeTransactionFence = {
+    ...detachedFence.activeTransactionFence,
+    transactionId: "synthetic-transaction-other",
+  };
+  assert.throws(() => validateRecords(detachedFence), /fence is detached/);
 });
 
 test("binds probe and record-set digests to actual workflow and finite script bytes", () => {
@@ -974,6 +1061,23 @@ test("keeps the inert probe artifact and stage lifecycle distinct from the produ
   assert.throws(
     () => validateRecords(rebindProbe(mixedRejection)),
     /rejection mixes stage or owner/,
+  );
+
+  const staleSource = recordSet();
+  staleSource.probe = {
+    ...staleSource.probe,
+    sourceRevision: "b".repeat(40),
+  };
+  assert.throws(
+    () => validateRecords(rebindProbe(staleSource)),
+    /probe record drifted/,
+  );
+
+  const candidateB = recordSet();
+  candidateB.candidateTarballSha256 = `sha256:${"0".repeat(64)}`;
+  assert.throws(
+    () => validateRecords(candidateB),
+    /trusted candidate authority/,
   );
 });
 
@@ -1133,6 +1237,26 @@ test("binds a fresh one-use publication checkpoint and preserves every non-alpha
     /did not consume the exact fresh checkpoint/,
   );
 
+  const postExpiry = recordSet();
+  const postExpiryReady = structuredClone(postExpiry.transactions[2].payload);
+  postExpiryReady.approvalConsumption.consumedAt = "2026-08-27T17:11:00.000Z";
+  replaceReady(postExpiry, postExpiryReady);
+  assert.throws(
+    () => validateRecords(postExpiry),
+    /consumed outside its authority window/,
+  );
+
+  const stalePreStage = recordSet();
+  const staleStagePayload = structuredClone(
+    stalePreStage.transactions[1].payload,
+  );
+  staleStagePayload.ownerCheckpoint.consumedAt = "2026-08-27T16:51:00.000Z";
+  replaceStage(stalePreStage, staleStagePayload);
+  assert.throws(
+    () => validateRecords(stalePreStage),
+    /consumed outside its authority window/,
+  );
+
   const incomplete = recordSet();
   const incompleteReady = structuredClone(incomplete.transactions[2].payload);
   delete incompleteReady.publicationCheckpoint.distTags.bootstrap;
@@ -1167,6 +1291,39 @@ test("binds a fresh one-use publication checkpoint and preserves every non-alpha
   assert.throws(
     () => validateRecords(alphaMovedLatestBeforeApproval),
     /does not preserve the exact inert bootstrap channels/,
+  );
+});
+
+test("rejects unresolved stage and incident recovery evidence", () => {
+  const unresolvedStage = recordSet("quarantine-immutable-prerelease", [
+    "draft-prepared",
+    "quarantine-still-draft",
+  ]);
+  const unresolvedPayload = quarantinePayload("ambiguous-stage-response");
+  unresolvedPayload.stageReconciliation = {
+    classification: "frozen-unresolved",
+    stageId: null,
+    terminal: false,
+    evidenceDigest: `sha256:${"6".repeat(64)}`,
+  };
+  replaceQuarantine(unresolvedStage, unresolvedPayload);
+  assert.throws(
+    () => validateRecords(unresolvedStage),
+    /unresolved or nonterminal/,
+  );
+
+  const incidentWithoutQuarantine = recordSet("incident-immutable-release");
+  const incompleteIncident = {
+    ...incidentWithoutQuarantine.transactions[3].payload,
+  };
+  delete incompleteIncident.npmQuarantine;
+  incidentWithoutQuarantine.transactions[3] = createSyntheticRecord({
+    ...incidentWithoutQuarantine.transactions[3],
+    payload: incompleteIncident,
+  });
+  assert.throws(
+    () => validateRecords(incidentWithoutQuarantine),
+    /incident payload keys drifted/,
   );
 });
 
@@ -1373,6 +1530,17 @@ test("enforces the checked-in reusable workflow as read-only and offline", () =>
       workflow: ".github/workflows/release-candidate-rehearsal.yml",
     },
   );
+  const workflow = readFileSync(
+    join(workspaceRoot, ".github/workflows/release-candidate-rehearsal.yml"),
+    "utf8",
+  );
+  for (const binding of [
+    '--candidate-manifest-relative "$CANDIDATE_MANIFEST"',
+    '--trusted-candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST"',
+    '--source-revision "$EXPECTED_SOURCE_REVISION"',
+    "--protected-tag v0.1.0",
+  ])
+    assert.match(workflow, new RegExp(binding.replaceAll("$", "\\$"), "u"));
 });
 
 test("rejects workflow triggers, write authority, and unallowlisted actions", () => {
@@ -1653,4 +1821,22 @@ test("rejects indirect and dynamic module-loader authority", () => {
       }),
     /unbounded dynamic import/,
   );
+
+  for (const source of [
+    "await eval('import(\"node:https\")');\n",
+    "Function('return import(\"node:https\")')();\n",
+    'const request = Reflect.get(globalThis, "fetch");\nawait request("https://example.invalid");\n',
+    "const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;\nAsyncFunction('return import(\"node:https\")')();\n",
+  ]) {
+    writeFileSync(join(root, scriptPath), source);
+    assert.throws(
+      () =>
+        validateOfflineReleasePolicy({
+          workspaceRoot: root,
+          workflowPath,
+          scriptPaths: [scriptPath],
+        }),
+      /runtime code-generation authority/,
+    );
+  }
 });
