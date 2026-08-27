@@ -67,7 +67,10 @@ test("treats parents as containers without making hierarchy a blocker", () => {
         ],
       },
     ],
-    { readyIds: [], blockedIds: ["agentscope-release-002"] },
+    {
+      readyIds: [],
+      blockedIssues: [{ id: "agentscope-release-002", blocked_by: ["agentscope-release-001"] }],
+    },
   );
   const parent = graph.nodes.find((node) => node.id === "agentscope-release-001");
   const child = graph.nodes.find((node) => node.id === "agentscope-release-002");
@@ -77,6 +80,30 @@ test("treats parents as containers without making hierarchy a blocker", () => {
   assert.equal(child.workClass, "ready-leaf");
   assert.equal(child.displayId, "release-002");
   assert.equal(displayIssueId("agentscope-vah.11.1"), "vah.11.1");
+});
+
+test("never hides an external blocker merely because the issue is also a child", () => {
+  const graph = normalizeIssues(
+    [
+      { id: "parent", title: "Parent", status: "open" },
+      {
+        id: "child",
+        title: "Child",
+        status: "open",
+        dependencies: [
+          { issue_id: "child", depends_on_id: "parent", type: "parent-child" },
+          { issue_id: "child", depends_on_id: "external:synthetic:capability", type: "blocks" },
+        ],
+      },
+    ],
+    {
+      readyIds: [],
+      blockedIssues: [{ id: "child", blocked_by: ["parent", "external:synthetic:capability"] }],
+    },
+  );
+  const child = graph.nodes.find((node) => node.id === "child");
+  assert.equal(child.displayState, "blocked");
+  assert.deepEqual(child.activeBlockers, ["external:synthetic:capability"]);
 });
 
 test("derives every visible workflow state without weakening explicit status", () => {
@@ -93,7 +120,7 @@ test("derives every visible workflow state without weakening explicit status", (
   assert.equal(
     normalizeIssues([{ id: "plain", title: "Canonical non-ready", status: "open" }], {
       readyIds: [],
-      blockedIds: ["plain"],
+      blockedIssues: [{ id: "plain", blocked_by: ["external:synthetic:capability"] }],
     }).nodes[0].displayState,
     "blocked",
   );
@@ -124,7 +151,10 @@ test("defaults to active unblocked leaves and separates attention and containers
       { id: "agentscope-beads-003", title: "Stale", status: "in_progress", priority: 1 },
       { id: "agentscope-beads-004", title: "Container", status: "in_progress", issue_type: "epic" },
     ],
-    { blockedIds: ["agentscope-beads-002"], staleIds: ["agentscope-beads-003"] },
+    {
+      blockedIssues: [{ id: "agentscope-beads-002", blocked_by: ["external:synthetic:capability"] }],
+      staleIds: ["agentscope-beads-003"],
+    },
   );
   assert.deepEqual(filterGraph(graph).nodes.map((node) => node.displayId), ["beads-001"]);
   assert.deepEqual(

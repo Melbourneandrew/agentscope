@@ -20,7 +20,7 @@ export function displayIssueId(id) {
   return typeof id === "string" && id.startsWith("agentscope-") ? id.slice("agentscope-".length) : id;
 }
 
-export function normalizeIssues(input, { readyIds, blockedIds = [], staleIds = [] } = {}) {
+export function normalizeIssues(input, { readyIds, blockedIssues = [], staleIds = [] } = {}) {
   if (!Array.isArray(input)) {
     return { nodes: [], edges: [], warnings: ["Beads returned a non-array JSON document."] };
   }
@@ -118,20 +118,47 @@ export function normalizeIssues(input, { readyIds, blockedIds = [], staleIds = [
     }
   }
   const canonicalReadyIds = readyIds === undefined ? null : new Set(readyIds);
-  const canonicalBlockedIds = new Set(blockedIds);
+  const canonicalBlockedBy = new Map();
+  if (Array.isArray(blockedIssues)) {
+    for (const blocked of blockedIssues.slice(0, MAX_ISSUES)) {
+      if (!blocked || typeof blocked !== "object" || typeof blocked.id !== "string" || !Array.isArray(blocked.blocked_by)) {
+        continue;
+      }
+      canonicalBlockedBy.set(
+        blocked.id,
+        blocked.blocked_by.filter((id) => typeof id === "string" && id.length <= 160).slice(0, MAX_RELATIONSHIPS_PER_ISSUE),
+      );
+    }
+  }
   const canonicalStaleIds = new Set(staleIds);
   const containerIds = new Set(nodes.filter((node) => node.issueType === "epic").map((node) => node.id));
   const childIds = new Set();
+  const parentIdsByChild = new Map();
   for (const edge of edges) if (edge.type === "parent-child") containerIds.add(edge.source);
-  for (const edge of edges) if (edge.type === "parent-child") childIds.add(edge.target);
+  for (const edge of edges) {
+    if (edge.type !== "parent-child") continue;
+    childIds.add(edge.target);
+    const parents = parentIdsByChild.get(edge.target) ?? new Set();
+    parents.add(edge.source);
+    parentIdsByChild.set(edge.target, parents);
+  }
   for (const node of nodes) {
     const canonicallyReady = canonicalReadyIds ? canonicalReadyIds.has(node.id) : undefined;
     const localActiveBlockers = activeBlockersByTarget.get(node.id) ?? [];
-    const blockedOnlyByHierarchy = childIds.has(node.id) && localActiveBlockers.length === 0;
-    const canonicallyBlocked = canonicalBlockedIds.has(node.id) && !blockedOnlyByHierarchy;
+    const reportedBlockers = canonicalBlockedBy.get(node.id) ?? [];
+    const parents = parentIdsByChild.get(node.id) ?? new Set();
+    const reportedNonHierarchyBlockers = reportedBlockers.filter((id) => !parents.has(id));
+    const blockedOnlyByHierarchy =
+      childIds.has(node.id) &&
+      localActiveBlockers.length === 0 &&
+      reportedBlockers.length > 0 &&
+      reportedNonHierarchyBlockers.length === 0;
+    const canonicallyBlocked = reportedBlockers.length > 0 && !blockedOnlyByHierarchy;
     const effectiveCanonicalReadiness = blockedOnlyByHierarchy ? undefined : canonicallyReady;
     const stale = node.status === "in_progress" && canonicalStaleIds.has(node.id);
-    const activeBlockers = canonicallyReady ? [] : localActiveBlockers;
+    const activeBlockers = canonicallyReady
+      ? []
+      : [...new Set([...localActiveBlockers, ...reportedNonHierarchyBlockers])];
     node.activeBlockers = activeBlockers;
     node.isContainer = containerIds.has(node.id);
     node.isLeaf = !node.isContainer;

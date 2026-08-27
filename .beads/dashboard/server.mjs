@@ -65,7 +65,7 @@ export async function loadGraph(run = executeFile) {
       .map((issue) => issue.id);
   return normalizeIssues(decodedList, {
     readyIds: ids(decodedReady),
-    blockedIds: ids(decodedBlocked),
+    blockedIssues: decodedBlocked,
     staleIds: ids(decodedStale),
   });
 }
