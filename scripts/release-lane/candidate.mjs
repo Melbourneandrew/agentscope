@@ -92,7 +92,9 @@ function assertCanonicalTarPath(path) {
 
 function assertNoPrivateMetadata(manifest, label) {
   for (const field of dependencyFields) {
-    const value = manifest[field];
+    const value = Object.entries(manifest)
+      .find(([name]) => name === field)
+      ?.at(1);
     if (value === undefined) continue;
     assert(
       value !== null && typeof value === "object" && !Array.isArray(value),
@@ -126,7 +128,9 @@ function assertNoPrivateMetadata(manifest, label) {
     }
   }
   for (const field of ["bundledDependencies", "bundleDependencies"]) {
-    const value = manifest[field];
+    const value = Object.entries(manifest)
+      .find(([name]) => name === field)
+      ?.at(1);
     if (value === undefined) continue;
     assert(Array.isArray(value), `${label} ${field} must be an array`);
     for (const name of value)

@@ -26,9 +26,12 @@ export function assertExactKeys(value, keys, label) {
 export function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(value)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+  return `{${Object.entries(value)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(
+      ([key, entryValue]) =>
+        `${JSON.stringify(key)}:${canonicalJson(entryValue)}`,
+    )
     .join(",")}}`;
 }
 

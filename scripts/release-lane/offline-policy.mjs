@@ -123,16 +123,31 @@ function assertNoAmbientCodeGeneration(path, node) {
     ts.isIdentifier(node) && forbiddenAmbientIdentifiers.has(node.text);
   const forbiddenProperty =
     ts.isPropertyAccessExpression(node) &&
-    ["constructor", "getPrototypeOf", "getOwnPropertyDescriptor"].includes(
-      node.name.text,
-    );
+    [
+      "constructor",
+      "__proto__",
+      "getPrototypeOf",
+      "getOwnPropertyDescriptor",
+    ].includes(node.name.text);
   const forbiddenElement =
     ts.isElementAccessExpression(node) &&
-    (["constructor", "getPrototypeOf", "getOwnPropertyDescriptor"].includes(
-      constantString(node.argumentExpression),
-    ) ||
+    ([
+      "constructor",
+      "__proto__",
+      "getPrototypeOf",
+      "getOwnPropertyDescriptor",
+    ].includes(constantString(node.argumentExpression)) ||
       (ts.isIdentifier(node.expression) && node.expression.text === "Object"));
-  if (forbiddenIdentifier || forbiddenProperty || forbiddenElement)
+  const forbiddenDynamicElement =
+    ts.isElementAccessExpression(node) &&
+    !ts.isStringLiteral(node.argumentExpression) &&
+    !ts.isNumericLiteral(node.argumentExpression);
+  if (
+    forbiddenIdentifier ||
+    forbiddenProperty ||
+    forbiddenElement ||
+    forbiddenDynamicElement
+  )
     throw new Error(
       `Release script ${path} contains forbidden runtime code-generation authority`,
     );

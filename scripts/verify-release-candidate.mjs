@@ -7,8 +7,9 @@ import {
 
 const value = (name) => {
   const index = process.argv.indexOf(name);
-  if (index < 0 || !process.argv[index + 1]) throw new Error(`Missing ${name}`);
-  return process.argv[index + 1];
+  const result = process.argv.at(index + 1);
+  if (index < 0 || !result) throw new Error(`Missing ${name}`);
+  return result;
 };
 
 const artifactRoot = value("--artifact-root");

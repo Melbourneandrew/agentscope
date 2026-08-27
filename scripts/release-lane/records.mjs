@@ -42,16 +42,18 @@ function validateDistTags(distTags, distTagsDigest, label) {
       Object.keys(distTags).length > 0,
     `${label} must contain a complete dist-tag mapping`,
   );
-  const keys = Object.keys(distTags);
+  const entries = Object.entries(distTags);
   assert(
     canonicalJson(distTags) ===
       canonicalJson(
-        Object.fromEntries([...keys].sort().map((key) => [key, distTags[key]])),
+        Object.fromEntries(
+          [...entries].sort(([left], [right]) => left.localeCompare(right)),
+        ),
       ) &&
-      keys.every(
-        (key) =>
+      entries.every(
+        ([key, version]) =>
           /^[a-z0-9][a-z0-9._-]*$/u.test(key) &&
-          /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(distTags[key]),
+          /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(version),
       ),
     `${label} contains a noncanonical tag or version`,
   );
@@ -66,7 +68,9 @@ function validateReleaseChannels(registry, expected, ledger, allowDrift) {
   validateDistTags(registry.distTags, registry.distTagsDigest, "registry tags");
   if (allowDrift) return;
   assert(
-    registry.distTags[expected.package.distTag] === expected.package.version,
+    Object.entries(registry.distTags)
+      .find(([tag]) => tag === expected.package.distTag)
+      ?.at(1) === expected.package.version,
     `Registry ${expected.package.distTag} channel does not select the candidate`,
   );
   assert(
@@ -137,8 +141,13 @@ function validateReleaseScripts(records, observed) {
     );
     digest(record.digest, `release script ${record.path}`);
     assert(
-      observedPaths[index] === record.path &&
-        record.digest === sha256(observed[record.path]),
+      observedPaths.at(index) === record.path &&
+        record.digest ===
+          sha256(
+            Object.entries(observed)
+              .find(([path]) => path === record.path)
+              ?.at(1),
+          ),
       `Release script digest mismatch: ${record.path}`,
     );
     previous = record.path;
@@ -359,7 +368,12 @@ function validateDraftPayload(payload, expected) {
     "attestationDigest",
     "evidenceIndexDigest",
   ])
-    digest(payload.assets[field], `draft ${field}`);
+    digest(
+      Object.entries(payload.assets)
+        .find(([name]) => name === field)
+        ?.at(1),
+      `draft ${field}`,
+    );
   return {
     assetManifestDigest: payload.assets.releaseAssetManifestDigest,
     releaseDatabaseId: payload.release.databaseId,
@@ -742,8 +756,9 @@ function validateNpmQuarantine(quarantine, expected, ledger) {
     (alphaAbsent &&
       !Object.hasOwn(quarantine.distTags, expected.package.distTag)) ||
       (alphaSafe &&
-        quarantine.distTags[expected.package.distTag] ===
-          quarantine.alpha.version),
+        Object.entries(quarantine.distTags)
+          .find(([tag]) => tag === expected.package.distTag)
+          ?.at(1) === quarantine.alpha.version),
     "npm quarantine alpha result does not match the complete dist-tag mapping",
   );
   const preserveOtherTags = (tags) =>
