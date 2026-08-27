@@ -15,6 +15,13 @@ import { createInterface } from "node:readline";
 import { basename, dirname, parse, resolve } from "node:path";
 import { types } from "node:util";
 
+const intrinsicReflectApply = Reflect.apply;
+const intrinsicIsProxy = types.isProxy;
+const intrinsicObjectGetPrototypeOf = Object.getPrototypeOf;
+const intrinsicReflectOwnKeys = Reflect.ownKeys;
+const intrinsicObjectGetOwnPropertyDescriptors =
+  Object.getOwnPropertyDescriptors;
+
 type AuthenticatedArtifactAuthority = Readonly<{
   status: "authenticated";
   digest: string;
@@ -42,6 +49,18 @@ export type HarnessNativeFixtureProvenance =
       captureRecipe: string;
     }>;
 
+export type HarnessNativeFixtureReviewRecord<
+  Role extends "privacy" | "redistribution",
+> = Readonly<{
+  role: Role;
+  reviewTaskIdentity: string;
+  reviewExecutionIdentity: string;
+  reviewedHeadSha: string;
+  reviewedFixtureBlobSha: string;
+  submittedAt: string;
+  reference: string;
+}>;
+
 export type HarnessNativeFixtureGovernance = Readonly<{
   provenance: HarnessNativeFixtureProvenance;
   license: Readonly<{
@@ -63,8 +82,10 @@ export type HarnessNativeFixtureGovernance = Readonly<{
   }>;
   review: Readonly<{
     status: "approved";
-    reviewedAt: string;
-    references: readonly [privacyReview: string, redistributionReview: string];
+    records: readonly [
+      privacyReview: HarnessNativeFixtureReviewRecord<"privacy">,
+      redistributionReview: HarnessNativeFixtureReviewRecord<"redistribution">,
+    ];
   }>;
   representative: Readonly<{
     scenarioId: string;
@@ -130,21 +151,29 @@ const record = (
   expected: readonly string[] | undefined,
   code: string,
 ): Readonly<Record<string, unknown>> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    intrinsicReflectApply(intrinsicIsProxy, undefined, [value]) ||
+    Array.isArray(value)
+  )
     fail(code);
   const target = value as object;
-  let prototype: object | null = null;
-  let keys: readonly (string | symbol)[] = [];
-  let descriptors: Readonly<
+  const prototype = intrinsicReflectApply(
+    intrinsicObjectGetPrototypeOf,
+    Object,
+    [target],
+  ) as object | null;
+  const keys = intrinsicReflectApply(intrinsicReflectOwnKeys, Reflect, [
+    target,
+  ]) as readonly (string | symbol)[];
+  const descriptors = intrinsicReflectApply(
+    intrinsicObjectGetOwnPropertyDescriptors,
+    Object,
+    [target],
+  ) as Readonly<
     Record<string, PropertyDescriptor> & { [key: symbol]: PropertyDescriptor }
-  > = {};
-  try {
-    prototype = Object.getPrototypeOf(target) as object | null;
-    keys = Reflect.ownKeys(target);
-    descriptors = Object.getOwnPropertyDescriptors(target);
-  } catch {
-    fail(code);
-  }
+  >;
   if (
     prototype !== Object.prototype ||
     keys.some((key) => typeof key !== "string")
@@ -174,25 +203,30 @@ const denseArray = (
   maximum: number,
   code: string,
 ): readonly unknown[] => {
-  const array = Array.isArray(value) ? value : fail(code);
-  let prototype: object | null = null;
-  let keys: readonly (string | symbol)[] = [];
-  let descriptors: Readonly<
-    Record<string, PropertyDescriptor> & { [key: symbol]: PropertyDescriptor }
-  > = {};
-  try {
-    prototype = Object.getPrototypeOf(array) as object | null;
-    keys = Reflect.ownKeys(array);
-    descriptors = Object.getOwnPropertyDescriptors(
-      array,
-    ) as unknown as Readonly<
-      Record<string, PropertyDescriptor> & {
-        [key: symbol]: PropertyDescriptor;
-      }
-    >;
-  } catch {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    intrinsicReflectApply(intrinsicIsProxy, undefined, [value])
+  )
     fail(code);
-  }
+  const array = Array.isArray(value) ? value : fail(code);
+  const prototype = intrinsicReflectApply(
+    intrinsicObjectGetPrototypeOf,
+    Object,
+    [array],
+  ) as object | null;
+  const keys = intrinsicReflectApply(intrinsicReflectOwnKeys, Reflect, [
+    array,
+  ]) as readonly (string | symbol)[];
+  const descriptors = intrinsicReflectApply(
+    intrinsicObjectGetOwnPropertyDescriptors,
+    Object,
+    [array],
+  ) as unknown as Readonly<
+    Record<string, PropertyDescriptor> & {
+      [key: symbol]: PropertyDescriptor;
+    }
+  >;
   const lengthValue: unknown = (
     descriptors.length as PropertyDescriptor & { value: unknown }
   ).value;
@@ -228,6 +262,8 @@ const semverPattern =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const digestPattern = /^sha256-[a-f0-9]{64}$/u;
 const isoDatePattern = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u;
+const submittedTimestampPattern =
+  /^(?<date>\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]))T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/u;
 const syntheticReferencePattern =
   /^urn:agentscope:synthetic:[a-z0-9][a-z0-9._:-]{0,127}$/u;
 const forbiddenPayloadKey =
@@ -306,7 +342,12 @@ const agentscopeSyntheticLicenseId = "LicenseRef-Agentscope-Synthetic";
 const agentscopeSyntheticLicenseSourcePattern =
   /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/blob\/(?!0{40}\/)[a-f0-9]{40}\/packages\/harnesses\/core\/NATIVE_FIXTURES\.md#licenseref-agentscope-synthetic$/u;
 const concreteFixtureReviewPattern =
-  /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/pull\/[1-9]\d{0,9}#pullrequestreview-[1-9]\d{0,19}$/u;
+  /^https:\/\/github\.com\/Melbourneandrew\/agentscope\/pull\/(?<pullRequest>[1-9]\d{0,9})#(?:(?:pullrequestreview|issuecomment)-[1-9]\d{0,19})$/u;
+const gitObjectShaPattern = /^(?!0{40}$)[a-f0-9]{40}$/u;
+const reviewTaskIdentityPattern =
+  /^\/root(?:\/[a-z0-9][a-z0-9_-]{0,63}){1,6}$/u;
+const reviewExecutionIdentityPattern =
+  /^01[a-f0-9]{6}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
 
 const calendarDate = (value: unknown): string => {
   const candidate = string(
@@ -335,6 +376,21 @@ const calendarDate = (value: unknown): string => {
   ][month - 1];
   if (year < 1 || daysInMonth === undefined || day > daysInMonth)
     fail("harness.fixture.review.date");
+  return candidate;
+};
+
+const submittedTimestamp = (value: unknown): string => {
+  const candidate = string(
+    value,
+    submittedTimestampPattern,
+    "harness.fixture.review.records",
+  );
+  const date = submittedTimestampPattern.exec(candidate)?.groups?.date;
+  try {
+    calendarDate(date);
+  } catch {
+    fail("harness.fixture.review.records");
+  }
   return candidate;
 };
 
@@ -485,13 +541,62 @@ const governanceRecords = (value: unknown): GovernanceRecords => {
     ),
     review: record(
       root.review,
-      ["status", "reviewedAt", "references"],
+      ["status", "records"],
       "harness.fixture.review.shape",
     ),
     representative: record(
       root.representative,
       ["scenarioId", "representativeVersion", "evidenceSlot"],
       "harness.fixture.representative.shape",
+    ),
+  });
+};
+
+const parseReviewRecord = <Role extends "privacy" | "redistribution">(
+  value: unknown,
+  expectedRole: Role,
+): HarnessNativeFixtureReviewRecord<Role> => {
+  const review = record(
+    value,
+    [
+      "role",
+      "reviewTaskIdentity",
+      "reviewExecutionIdentity",
+      "reviewedHeadSha",
+      "reviewedFixtureBlobSha",
+      "submittedAt",
+      "reference",
+    ],
+    "harness.fixture.review.records",
+  );
+  if (review.role !== expectedRole) fail("harness.fixture.review.records");
+  return Object.freeze({
+    role: expectedRole,
+    reviewTaskIdentity: string(
+      review.reviewTaskIdentity,
+      reviewTaskIdentityPattern,
+      "harness.fixture.review.records",
+    ),
+    reviewExecutionIdentity: string(
+      review.reviewExecutionIdentity,
+      reviewExecutionIdentityPattern,
+      "harness.fixture.review.records",
+    ),
+    reviewedHeadSha: string(
+      review.reviewedHeadSha,
+      gitObjectShaPattern,
+      "harness.fixture.review.records",
+    ),
+    reviewedFixtureBlobSha: string(
+      review.reviewedFixtureBlobSha,
+      gitObjectShaPattern,
+      "harness.fixture.review.records",
+    ),
+    submittedAt: submittedTimestamp(review.submittedAt),
+    reference: string(
+      review.reference,
+      concreteFixtureReviewPattern,
+      "harness.fixture.review.records",
     ),
   });
 };
@@ -596,23 +701,37 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
     ).some((category, index) => category !== removedCategories[index])
   )
     fail("harness.fixture.redaction.categories");
-  const references = denseArray(
-    review.references,
+  const rawReviewRecords = denseArray(
+    review.records,
     2,
     2,
-    "harness.fixture.review.references",
+    "harness.fixture.review.records",
+  );
+  const privacyReview = parseReviewRecord(rawReviewRecords[0], "privacy");
+  const redistributionReview = parseReviewRecord(
+    rawReviewRecords[1],
+    "redistribution",
+  );
+  const privacyReference = concreteFixtureReviewPattern.exec(
+    privacyReview.reference,
+  );
+  const redistributionReference = concreteFixtureReviewPattern.exec(
+    redistributionReview.reference,
   );
   if (
-    references.some(
-      (reference) =>
-        typeof reference !== "string" ||
-        !concreteFixtureReviewPattern.test(reference) ||
-        baselineContentIsForbidden(reference),
-    ) ||
-    new Set(references).size !== references.length
+    privacyReview.reviewTaskIdentity ===
+      redistributionReview.reviewTaskIdentity ||
+    privacyReview.reviewExecutionIdentity ===
+      redistributionReview.reviewExecutionIdentity ||
+    privacyReview.reviewedHeadSha !== redistributionReview.reviewedHeadSha ||
+    privacyReview.reviewedFixtureBlobSha !==
+      redistributionReview.reviewedFixtureBlobSha ||
+    privacyReview.submittedAt >= redistributionReview.submittedAt ||
+    privacyReview.reference === redistributionReview.reference ||
+    privacyReference?.groups?.pullRequest !==
+      redistributionReference?.groups?.pullRequest
   )
-    fail("harness.fixture.review.references");
-  const reviewedReferences = references as [string, string];
+    fail("harness.fixture.review.records");
   const parsedProvenance = parseProvenance(provenance);
   const reviewedLicenseId = string(
     license.reviewedLicenseId,
@@ -658,8 +777,7 @@ const parseGovernance = (value: unknown): HarnessNativeFixtureGovernance => {
     }),
     review: Object.freeze({
       status: "approved" as const,
-      reviewedAt: calendarDate(review.reviewedAt),
-      references: Object.freeze([...reviewedReferences] as [string, string]),
+      records: Object.freeze([privacyReview, redistributionReview] as const),
     }),
     representative: Object.freeze({
       scenarioId: string(
@@ -906,8 +1024,6 @@ const activeAuditWorkerPids = new Set<number>();
 /* eslint-disable-next-line @typescript-eslint/unbound-method -- captured before
  * any hostile test input can mutate the public intrinsic. */
 const intrinsicPromiseThen = Promise.prototype.then;
-const intrinsicReflectApply = Reflect.apply;
-const intrinsicIsProxy = types.isProxy;
 const intrinsicIsPromise = types.isPromise;
 const discardPromiseRejection = (): undefined => undefined;
 

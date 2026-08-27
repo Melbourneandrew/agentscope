@@ -23,6 +23,8 @@ const decoder = new TextDecoder();
 const structurallyValidSyntheticLicenseSource =
   `https://github.com/Melbourneandrew/agentscope/blob/${"a".repeat(40)}` +
   "/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic";
+const reviewedHeadSha = "c".repeat(40);
+const reviewedFixtureBlobSha = "d".repeat(40);
 const referenceContextEvidence = Object.freeze({
   evidenceVersion: 1 as const,
   mappingArtifactDigest: `sha256-${"a".repeat(64)}`,
@@ -100,10 +102,27 @@ const referenceFixture = {
     },
     review: {
       status: "approved",
-      reviewedAt: "2026-08-25",
-      references: [
-        "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001",
-        "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1002",
+      records: [
+        {
+          role: "privacy",
+          reviewTaskIdentity: "/root/reference_privacy_review",
+          reviewExecutionIdentity: "01a00000-0000-4000-8000-000000000001",
+          reviewedHeadSha,
+          reviewedFixtureBlobSha,
+          submittedAt: "2026-08-25T10:00:00.000Z",
+          reference:
+            "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001",
+        },
+        {
+          role: "redistribution",
+          reviewTaskIdentity: "/root/reference_redistribution_review",
+          reviewExecutionIdentity: "01a00000-0000-4000-8000-000000000002",
+          reviewedHeadSha,
+          reviewedFixtureBlobSha,
+          submittedAt: "2026-08-25T10:01:00.000Z",
+          reference:
+            "https://github.com/Melbourneandrew/agentscope/pull/101#issuecomment-1002",
+        },
       ],
     },
     representative: {

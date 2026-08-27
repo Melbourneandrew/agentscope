@@ -26,16 +26,35 @@ import {
   type HarnessSanitizedFixture,
   type NativeFixtureAuditTestPlan,
 } from "./native-fixture-governance.js";
+import type { HarnessNativeFixtureReviewRecord } from "./testing.js";
 
 const roots: string[] = [];
 const physicalTemporaryRoot = realpathSync(tmpdir());
 const structurallyValidSyntheticLicenseSource =
   `https://github.com/Melbourneandrew/agentscope/blob/${"a".repeat(40)}` +
   "/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic";
-const structuralPrivacyReview =
-  "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001";
-const structuralRedistributionReview =
-  "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1002";
+const reviewedHeadSha = "c".repeat(40);
+const reviewedFixtureBlobSha = "d".repeat(40);
+const structuralPrivacyReview = Object.freeze({
+  role: "privacy" as const,
+  reviewTaskIdentity: "/root/native_fixture_privacy_review",
+  reviewExecutionIdentity: "01a00000-0000-4000-8000-000000000001",
+  reviewedHeadSha,
+  reviewedFixtureBlobSha,
+  submittedAt: "2026-08-25T10:00:00.000Z",
+  reference:
+    "https://github.com/Melbourneandrew/agentscope/pull/101#pullrequestreview-1001",
+} satisfies HarnessNativeFixtureReviewRecord<"privacy">);
+const structuralRedistributionReview = Object.freeze({
+  role: "redistribution" as const,
+  reviewTaskIdentity: "/root/native_fixture_redistribution_review",
+  reviewExecutionIdentity: "01a00000-0000-4000-8000-000000000002",
+  reviewedHeadSha,
+  reviewedFixtureBlobSha,
+  submittedAt: "2026-08-25T10:01:00.000Z",
+  reference:
+    "https://github.com/Melbourneandrew/agentscope/pull/101#issuecomment-1002",
+} satisfies HarnessNativeFixtureReviewRecord<"redistribution">);
 const auditPlan = (value: unknown): NativeFixtureAuditTestPlan =>
   JSON.stringify(value) as NativeFixtureAuditTestPlan;
 const auditPlanNamespaces = async (): Promise<readonly string[]> =>
@@ -83,8 +102,7 @@ const fixture = (): HarnessSanitizedFixture => ({
     },
     review: {
       status: "approved",
-      reviewedAt: "2026-08-25",
-      references: [structuralPrivacyReview, structuralRedistributionReview],
+      records: [structuralPrivacyReview, structuralRedistributionReview],
     },
     representative: {
       scenarioId: "codex-headless-v1",
@@ -143,6 +161,17 @@ const expectCode = (operation: () => unknown, code: string): void => {
   throw new Error(`Expected ${code}`);
 };
 
+const withReviewRecords = (records: unknown): unknown => {
+  const base = fixture();
+  return {
+    ...base,
+    governance: {
+      ...base.governance,
+      review: { ...base.governance.review, records },
+    },
+  };
+};
+
 const retainedStringCandidates = (): readonly [unknown, string][] => {
   const token = `github_pat_${"a".repeat(30)}`;
   const base = fixture();
@@ -174,11 +203,14 @@ const retainedStringCandidates = (): readonly [unknown, string][] => {
           ...base.governance,
           review: {
             ...base.governance.review,
-            references: [token, structuralRedistributionReview],
+            records: [
+              { ...structuralPrivacyReview, reference: token },
+              structuralRedistributionReview,
+            ],
           },
         },
       },
-      "harness.fixture.review.references",
+      "harness.fixture.review.records",
     ],
   ];
 };
@@ -211,7 +243,9 @@ describe("native fixture schema", () => {
     expect(parsed).toEqual(input);
     expect(parsed).not.toBe(input);
     expect(Object.isFrozen(parsed)).toBe(true);
-    expect(Object.isFrozen(parsed.governance.review.references)).toBe(true);
+    expect(Object.isFrozen(parsed.governance.review.records)).toBe(true);
+    expect(Object.isFrozen(parsed.governance.review.records[0])).toBe(true);
+    expect(Object.isFrozen(parsed.governance.review.records[1])).toBe(true);
     expect(Object.isFrozen(parsed.sanitizedPayload)).toBe(true);
   });
 
@@ -225,11 +259,11 @@ describe("native fixture schema", () => {
             ...input.governance,
             review: {
               ...input.governance.review,
-              references: [structuralPrivacyReview],
+              records: [structuralPrivacyReview],
             },
           },
         }),
-      "harness.fixture.review.references",
+      "harness.fixture.review.records",
     );
     expectCode(
       () =>
@@ -386,21 +420,84 @@ describe("native fixture privacy and array boundaries", () => {
   });
 });
 
-describe("native fixture governance array boundaries", () => {
-  it("applies the dense-array boundary to review and redaction metadata", () => {
+describe("native fixture transparent proxy boundaries", () => {
+  it("rejects transparent proxies without executing their traps", () => {
     const base = fixture();
-    const sparseReferences = Array(2) as string[];
-    sparseReferences[1] = structuralRedistributionReview;
+    let proxyTrapExecuted = false;
+    const transparentRecords = new Proxy(
+      [structuralPrivacyReview, structuralRedistributionReview],
+      {
+        getPrototypeOf: () => {
+          proxyTrapExecuted = true;
+          return Reflect.getPrototypeOf([]);
+        },
+        ownKeys: () => {
+          proxyTrapExecuted = true;
+          return Reflect.ownKeys([]);
+        },
+      },
+    );
     expectCode(
       () =>
         parseHarnessSanitizedFixture({
           ...base,
           governance: {
             ...base.governance,
-            review: { ...base.governance.review, references: sparseReferences },
+            review: {
+              ...base.governance.review,
+              records: transparentRecords,
+            },
           },
         }),
-      "harness.fixture.review.references",
+      "harness.fixture.review.records",
+    );
+    expect(proxyTrapExecuted).toBe(false);
+    const transparentPrivacyReview = new Proxy(structuralPrivacyReview, {
+      getPrototypeOf: () => {
+        proxyTrapExecuted = true;
+        return Reflect.getPrototypeOf(structuralPrivacyReview);
+      },
+      ownKeys: () => {
+        proxyTrapExecuted = true;
+        return Reflect.ownKeys(structuralPrivacyReview);
+      },
+    });
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...base,
+          governance: {
+            ...base.governance,
+            review: {
+              ...base.governance.review,
+              records: [
+                transparentPrivacyReview,
+                structuralRedistributionReview,
+              ],
+            },
+          },
+        }),
+      "harness.fixture.review.records",
+    );
+    expect(proxyTrapExecuted).toBe(false);
+  });
+});
+
+describe("native fixture governance array boundaries", () => {
+  it("applies the dense-array boundary to review and redaction metadata", () => {
+    const base = fixture();
+    const sparseRecords = Array(2) as unknown[];
+    sparseRecords[1] = structuralRedistributionReview;
+    expectCode(
+      () =>
+        parseHarnessSanitizedFixture({
+          ...base,
+          governance: {
+            ...base.governance,
+            review: { ...base.governance.review, records: sparseRecords },
+          },
+        }),
+      "harness.fixture.review.records",
     );
     const removed = [...base.governance.redaction.removedCategories];
     Object.defineProperty(removed, "0", {
@@ -443,15 +540,14 @@ describe("native fixture governance array boundaries", () => {
         }),
       "harness.fixture.redaction.categories",
     );
-    for (const references of [
+    for (const records of [
+      {},
       [structuralPrivacyReview, structuralPrivacyReview],
       [structuralPrivacyReview, 2],
+      [structuralPrivacyReview],
       [
-        "https://github.com/Melbourneandrew/agentscope/pull/101",
+        structuralPrivacyReview,
         structuralRedistributionReview,
-      ],
-      [
-        "https://github.com/Melbourneandrew/agentscope/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/packages/harnesses/core/NATIVE_FIXTURES.md",
         structuralRedistributionReview,
       ],
     ]) {
@@ -461,10 +557,119 @@ describe("native fixture governance array boundaries", () => {
             ...base,
             governance: {
               ...base.governance,
-              review: { ...base.governance.review, references },
+              review: { ...base.governance.review, records },
             },
           }),
-        "harness.fixture.review.references",
+        "harness.fixture.review.records",
+      );
+    }
+  });
+});
+
+describe("native fixture independent agent review records", () => {
+  it("requires distinct tasks and executions in privacy-first order", () => {
+    for (const records of [
+      [structuralRedistributionReview, structuralPrivacyReview],
+      [
+        structuralPrivacyReview,
+        { ...structuralRedistributionReview, role: "privacy" },
+      ],
+      [
+        structuralPrivacyReview,
+        {
+          ...structuralRedistributionReview,
+          reviewTaskIdentity: structuralPrivacyReview.reviewTaskIdentity,
+        },
+      ],
+      [
+        structuralPrivacyReview,
+        {
+          ...structuralRedistributionReview,
+          reviewExecutionIdentity:
+            structuralPrivacyReview.reviewExecutionIdentity,
+        },
+      ],
+    ]) {
+      expectCode(
+        () => parseHarnessSanitizedFixture(withReviewRecords(records)),
+        "harness.fixture.review.records",
+      );
+    }
+  });
+
+  it("requires one shared reviewed snapshot and increasing submissions", () => {
+    for (const redistributionReview of [
+      {
+        ...structuralRedistributionReview,
+        reviewedHeadSha: "e".repeat(40),
+      },
+      {
+        ...structuralRedistributionReview,
+        reviewedFixtureBlobSha: "e".repeat(40),
+      },
+      {
+        ...structuralRedistributionReview,
+        submittedAt: structuralPrivacyReview.submittedAt,
+      },
+      {
+        ...structuralRedistributionReview,
+        submittedAt: "2026-08-25T09:59:59.999Z",
+      },
+    ]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture(
+            withReviewRecords([structuralPrivacyReview, redistributionReview]),
+          ),
+        "harness.fixture.review.records",
+      );
+    }
+  });
+
+  it("requires structurally valid identities, timestamps, SHAs, and references", () => {
+    const malformedPrivacyRecords = [
+      { ...structuralPrivacyReview, reviewTaskIdentity: "/root" },
+      { ...structuralPrivacyReview, reviewExecutionIdentity: "review-1" },
+      { ...structuralPrivacyReview, reviewedHeadSha: "0".repeat(40) },
+      { ...structuralPrivacyReview, reviewedFixtureBlobSha: "D".repeat(40) },
+      { ...structuralPrivacyReview, submittedAt: "2026-02-30T10:00:00.000Z" },
+      { ...structuralPrivacyReview, submittedAt: "2026-08-25T10:00:00Z" },
+      {
+        ...structuralPrivacyReview,
+        reference: "https://github.com/Melbourneandrew/agentscope/pull/101",
+      },
+      {
+        ...structuralPrivacyReview,
+        authenticatedGithubActor: "transport-only",
+      },
+      { ...structuralPrivacyReview, unexpected: true },
+    ];
+    for (const privacyReview of malformedPrivacyRecords) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture(
+            withReviewRecords([privacyReview, structuralRedistributionReview]),
+          ),
+        "harness.fixture.review.records",
+      );
+    }
+    for (const redistributionReview of [
+      {
+        ...structuralRedistributionReview,
+        reference: structuralPrivacyReview.reference,
+      },
+      {
+        ...structuralRedistributionReview,
+        reference:
+          "https://github.com/Melbourneandrew/agentscope/pull/102#issuecomment-1002",
+      },
+    ]) {
+      expectCode(
+        () =>
+          parseHarnessSanitizedFixture(
+            withReviewRecords([structuralPrivacyReview, redistributionReview]),
+          ),
+        "harness.fixture.review.records",
       );
     }
   });
@@ -487,6 +692,22 @@ describe("native fixture schema adversarial inputs", () => {
       () => parseHarnessSanitizedFixture(throwing),
       "harness.fixture.shape",
     );
+    let transparentProxyTrapExecuted = false;
+    const transparent = new Proxy(fixture(), {
+      getPrototypeOf: () => {
+        transparentProxyTrapExecuted = true;
+        return Reflect.getPrototypeOf({});
+      },
+      ownKeys: () => {
+        transparentProxyTrapExecuted = true;
+        return Reflect.ownKeys(fixture());
+      },
+    });
+    expectCode(
+      () => parseHarnessSanitizedFixture(transparent),
+      "harness.fixture.shape",
+    );
+    expect(transparentProxyTrapExecuted).toBe(false);
     const symbol = { ...fixture(), [Symbol("synthetic")]: true };
     expectCode(
       () => parseHarnessSanitizedFixture(symbol),
@@ -762,7 +983,7 @@ describe("native fixture reviewed authority separation", () => {
     expect(parsed.governance.license.sourceReference).toBe(
       structurallyValidSyntheticLicenseSource,
     );
-    expect(parsed.governance.review.references).toEqual([
+    expect(parsed.governance.review.records).toEqual([
       structuralPrivacyReview,
       structuralRedistributionReview,
     ]);
@@ -788,44 +1009,43 @@ describe("native fixture reviewed authority values", () => {
     ).toBe(true);
   });
 
-  it("requires an exact Gregorian approval date", () => {
-    const base = fixture();
-    for (const reviewedAt of [
-      "2024-02-29",
-      "2000-02-29",
-      "0001-01-01",
-      "2026-04-30",
-      "2026-12-31",
-      "9999-12-31",
+  it("requires exact Gregorian submitted timestamps", () => {
+    for (const [privacySubmittedAt, redistributionSubmittedAt] of [
+      ["2024-02-29T00:00:00.000Z", "2024-02-29T00:00:00.001Z"],
+      ["2000-02-29T12:00:00.000Z", "2000-02-29T12:00:01.000Z"],
+      ["0001-01-01T00:00:00.000Z", "2026-08-25T10:01:00.000Z"],
+      ["2026-04-30T10:00:00.000Z", "2026-04-30T10:00:00.001Z"],
+      ["9999-12-31T23:59:59.998Z", "9999-12-31T23:59:59.999Z"],
     ]) {
       expect(
-        parseHarnessSanitizedFixture({
-          ...base,
-          governance: {
-            ...base.governance,
-            review: { ...base.governance.review, reviewedAt },
-          },
-        }).governance.review.reviewedAt,
-      ).toBe(reviewedAt);
+        parseHarnessSanitizedFixture(
+          withReviewRecords([
+            { ...structuralPrivacyReview, submittedAt: privacySubmittedAt },
+            {
+              ...structuralRedistributionReview,
+              submittedAt: redistributionSubmittedAt,
+            },
+          ]),
+        ).governance.review.records.map((record) => record.submittedAt),
+      ).toEqual([privacySubmittedAt, redistributionSubmittedAt]);
     }
-    for (const reviewedAt of [
-      "2026-02-29",
-      "2026-02-31",
-      "0000-02-29",
-      "1900-02-29",
-      "2026-04-31",
-      "2026-11-31",
+    for (const submittedAt of [
+      "2026-02-29T10:00:00.000Z",
+      "2026-02-31T10:00:00.000Z",
+      "0000-02-29T10:00:00.000Z",
+      "1900-02-29T10:00:00.000Z",
+      "2026-04-31T10:00:00.000Z",
+      "2026-11-31T10:00:00.000Z",
     ]) {
       expectCode(
         () =>
-          parseHarnessSanitizedFixture({
-            ...base,
-            governance: {
-              ...base.governance,
-              review: { ...base.governance.review, reviewedAt },
-            },
-          }),
-        "harness.fixture.review.date",
+          parseHarnessSanitizedFixture(
+            withReviewRecords([
+              { ...structuralPrivacyReview, submittedAt },
+              structuralRedistributionReview,
+            ]),
+          ),
+        "harness.fixture.review.records",
       );
     }
   });

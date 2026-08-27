@@ -18,7 +18,7 @@ Review for:
 - contradicting ownership, lifecycle, identifiers, configuration precedence, or failure semantics;
 - missing source of truth, migration/rollback boundary, trust boundary, or compatibility decision;
 - undefined cross-Blueprint references or duplicated decisions that will drift;
-- release milestones, alpha or version subsets, implementation or merge order, rollout, or project sequencing presented as durable architecture instead of ROADMAP/Beads delivery records;
+- release milestones, alpha or version subsets, implementation or merge order, rollout, ownership, dependencies, blockers, or project sequencing presented as durable architecture instead of Beads delivery records;
 - a proposed abstraction, option, integration, or configuration surface that does not earn its complexity;
 - an overlooked existing system, open standard, or reusable project capability;
 - inadequate verification for a consequential decision, especially installer, hook, credential, redaction, delivery, or recovery behavior.
