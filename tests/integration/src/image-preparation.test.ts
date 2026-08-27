@@ -342,6 +342,11 @@ const runFixtureBuildx = async (
     return "fixture build complete\n";
   }
   if (command === "rm") {
+    if (state.createTimeoutAfterResources) {
+      const error = new Error("integration.images.timeout");
+      Object.assign(error, { code: "ETIMEDOUT" });
+      throw error;
+    }
     state.builderContainer = undefined;
     if (!state.cleanupLeak) state.builderVolume = undefined;
     return "";
@@ -355,6 +360,7 @@ const engineFixture = ({
   buildFailure = false,
   buildTag,
   cleanupLeak = false,
+  createdAt = new Date().toISOString(),
   createFailureCollision = false,
   createTimeoutAfterResources = false,
   daemonSwitch = false,
@@ -374,6 +380,7 @@ const engineFixture = ({
   buildFailure?: boolean;
   buildTag?: string;
   cleanupLeak?: boolean;
+  createdAt?: string;
   createFailureCollision?: boolean;
   createTimeoutAfterResources?: boolean;
   daemonSwitch?: boolean;
@@ -393,7 +400,7 @@ const engineFixture = ({
   const requests: Request[] = [];
   let infoCount = 0;
   let pulled = localInitiallyPresent;
-  const fixtureCreatedAt = new Date().toISOString();
+  const fixtureCreatedAt = createdAt;
   const state: {
     buildFailure: boolean;
     builderContainer: string | undefined;
@@ -1302,6 +1309,28 @@ describe("authenticated buildx consumption", () => {
     }
   });
 
+  it.each(["2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"])(
+    "does not treat the daemon clock %s as controller authority",
+    async (createdAt) => {
+      const engine = engineFixture({ buildTag, createdAt });
+      const client = buildClient(engine);
+      try {
+        await expect(
+          buildPreparedDockerImage(client, {
+            buildArguments: { BASE_IMAGE: image },
+            context: buildContext(),
+            dockerfile: "Dockerfile",
+            labels: { "com.agentscope.integration": "true" },
+            maximumMilliseconds: 4_000,
+            tag: buildTag,
+          }),
+        ).resolves.toBe(configDigest.replace(":", "-"));
+      } finally {
+        closePreparedDockerClient(client);
+      }
+    },
+  );
+
   it.each([
     {
       buildFailure: true,
@@ -1391,7 +1420,7 @@ describe("authenticated buildx consumption", () => {
       createTimeoutAfterResources: true,
       daemonSwitch: false,
       expected: "integration.images.timeout",
-      expectBuilderRemove: true,
+      expectEngineDelete: true,
       maximumMilliseconds: 400,
       noDestructiveCleanup: false,
     },
@@ -1399,7 +1428,7 @@ describe("authenticated buildx consumption", () => {
     "joins its dedicated builder on command failure or daemon substitution %#",
     async ({
       expected,
-      expectBuilderRemove = false,
+      expectEngineDelete = false,
       maximumMilliseconds = 4_000,
       noDestructiveCleanup,
       ...fixtureOptions
@@ -1425,10 +1454,22 @@ describe("authenticated buildx consumption", () => {
             engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
           ).toBe(false);
         }
-        if (expectBuilderRemove)
+        if (expectEngineDelete) {
+          const deleteIndexes = engine.requests
+            .map(({ method }, index) => (method === "DELETE" ? index : -1))
+            .filter((index) => index >= 0);
+          expect(deleteIndexes).toHaveLength(2);
+          const finalRequests = engine.requests.slice(
+            Math.max(...deleteIndexes) + 1,
+          );
           expect(
-            engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
-          ).toBe(true);
+            finalRequests.filter(
+              ({ method, path }) =>
+                method === "GET" &&
+                (path.includes("/containers/") || path.includes("/volumes/")),
+            ),
+          ).toHaveLength(3);
+        }
       } finally {
         closePreparedDockerClient(client);
       }

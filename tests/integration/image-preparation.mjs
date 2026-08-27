@@ -2031,13 +2031,13 @@ const validBuilderMount = (container, resources) =>
   container.Mounts[0]?.RW === true;
 const assertBuilderContainer = (
   container,
-  { buildkit, buildkitImage, creationNotBefore, requireRunning, resources },
+  { buildkit, buildkitImage, requireRunning, resources },
 ) => {
-  const created = Date.parse(container?.Created ?? "");
   if (
     !/^[a-f\d]{64}$/u.test(container?.Id ?? "") ||
-    !Number.isFinite(created) ||
-    created < creationNotBefore - 1_000 ||
+    typeof container?.Created !== "string" ||
+    container.Created.length === 0 ||
+    container.Created.length > 128 ||
     container?.Name !== `/${resources.container}` ||
     container.Image !== buildkit.configDigest ||
     container.Config?.Image !== buildkitImage ||
@@ -2052,11 +2052,11 @@ const assertBuilderContainer = (
     throw fixedError("integration.images.build");
   return Object.freeze({ id: container.Id, createdAt: container.Created });
 };
-const assertBuilderVolume = (volume, resources, creationNotBefore) => {
-  const created = Date.parse(volume?.CreatedAt ?? "");
+const assertBuilderVolume = (volume, resources) => {
   if (
-    !Number.isFinite(created) ||
-    created < creationNotBefore - 1_000 ||
+    typeof volume?.CreatedAt !== "string" ||
+    volume.CreatedAt.length === 0 ||
+    volume.CreatedAt.length > 128 ||
     volume?.Name !== resources.volume ||
     volume.Driver !== "local" ||
     volume.Scope !== "local" ||
@@ -2113,14 +2113,11 @@ const authenticateBuilderResources = (
         : assertBuilderContainer(container, {
             buildkit: authority.buildkit,
             buildkitImage: authority.client.buildkitImage,
-            creationNotBefore: authority.creationNotBefore,
             requireRunning,
             resources,
           }),
     volume:
-      volume === undefined
-        ? undefined
-        : assertBuilderVolume(volume, resources, authority.creationNotBefore),
+      volume === undefined ? undefined : assertBuilderVolume(volume, resources),
   });
   const prior = authority.resourceIdentity;
   if (
@@ -2138,7 +2135,7 @@ const inspectBuiltTag = async (
   daemon,
   policy,
   signal,
-  { creationNotBefore, labels, platform, tag },
+  { labels, platform, tag },
 ) => {
   const built = await inspectEngineObject({
     daemon,
@@ -2148,11 +2145,8 @@ const inspectBuiltTag = async (
     signal,
     type: "images",
   });
-  const created = Date.parse(built?.Created ?? "");
   if (
     built === undefined ||
-    !Number.isFinite(created) ||
-    created < creationNotBefore - 1_000 ||
     !digestPattern.test(built.Id ?? "") ||
     !Array.isArray(built.RepoTags) ||
     !built.RepoTags.includes(tag) ||
@@ -2272,7 +2266,8 @@ const executeBuilderBuild = async (authority, options, archive) => {
   });
   if (priorTag !== undefined)
     throw fixedError("integration.images.containment");
-  authority.creationNotBefore = Date.now();
+  authority.resourcePreflightComplete = true;
+  authority.tagPreflightComplete = true;
   await run([
     "create",
     "--name",
@@ -2300,7 +2295,6 @@ const executeBuilderBuild = async (authority, options, archive) => {
   );
   await run(buildArgumentsFor({ ...options, builder }), archive);
   const built = await inspectBuiltTag(engine, daemon, policy, signal, {
-    creationNotBefore: authority.creationNotBefore,
     labels: options.labels,
     platform: buildkit.platform,
     tag: options.tag,
@@ -2330,7 +2324,6 @@ const settleBuiltTag = async (
       { ...policy, workDeadline: policy.deadline },
       undefined,
       {
-        creationNotBefore: authority.creationNotBefore,
         labels: options.labels,
         platform: authority.buildkit.platform,
         tag: options.tag,
@@ -2348,10 +2341,9 @@ const settleBuiltTag = async (
     type: "images",
   });
   if (candidate !== undefined) {
-    if (authority.creationNotBefore === undefined)
+    if (!authority.tagPreflightComplete)
       throw fixedError("integration.images.containment");
     await inspectBuiltTag(engine, daemon, reconciliationPolicy, undefined, {
-      creationNotBefore: authority.creationNotBefore,
       labels: options.labels,
       platform: authority.buildkit.platform,
       tag: options.tag,
@@ -2390,7 +2382,7 @@ const settleBuilderBuild = async (authority, options, built, failed) => {
     );
     let identity;
     if (container !== undefined || volume !== undefined) {
-      if (authority.creationNotBefore === undefined)
+      if (!authority.resourcePreflightComplete)
         throw fixedError("integration.images.containment");
       identity = authenticateBuilderResources(
         authority,
