@@ -241,6 +241,8 @@ const outputLimitBytes = 1_024;
 // the remaining fixed two-process/two-signal schema is bounded below 8 KiB.
 export const headlessTraceEnvelopeLimitBytes = 16_384;
 const terminationGraceMs = 1_000;
+// Test-stimulus readiness only; this is not a product or containment deadline.
+const descendantDiscoveryWindowMs = 1_500;
 const resultKeys = [
   "cleanup",
   "diagnosticCode",
@@ -295,6 +297,7 @@ process.stderr.write("fixture-stderr");
     "stderr-limit":
       'process.stderr.write("E".repeat(4096)); setInterval(() => {}, 1000);',
     timeout: String.raw`
+process.on("SIGTERM", () => {});
 process.stderr.write("PRIVATE_TIMEOUT_CANARY");
 setTimeout(() => process.exit(71), 9000).unref();
 setInterval(() => {}, 1000);
@@ -304,6 +307,8 @@ import { spawn } from "node:child_process";
 const source = 'process.on("SIGTERM", () => {}); setTimeout(() => process.exit(0), 9000).unref(); setInterval(() => {}, 1000);';
 const child = spawn(process.execPath, ["-e", source], { detached: true, env: {}, stdio: "ignore" });
 child.unref();
+// Family-owned discovery window only: containment still authenticates the child.
+setTimeout(() => {}, ${descendantDiscoveryWindowMs});
 `,
   },
 );
