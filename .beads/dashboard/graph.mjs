@@ -121,13 +121,19 @@ export function normalizeIssues(input, { readyIds, blockedIssues = [], staleIds 
   const canonicalBlockedBy = new Map();
   if (Array.isArray(blockedIssues)) {
     for (const blocked of blockedIssues.slice(0, MAX_ISSUES)) {
-      if (!blocked || typeof blocked !== "object" || typeof blocked.id !== "string" || !Array.isArray(blocked.blocked_by)) {
+      if (!blocked || typeof blocked !== "object" || typeof blocked.id !== "string") {
         continue;
       }
-      canonicalBlockedBy.set(
-        blocked.id,
-        blocked.blocked_by.filter((id) => typeof id === "string" && id.length <= 160).slice(0, MAX_RELATIONSHIPS_PER_ISSUE),
-      );
+      if (
+        canonicalBlockedBy.has(blocked.id) ||
+        !Array.isArray(blocked.blocked_by) ||
+        blocked.blocked_by.length > MAX_RELATIONSHIPS_PER_ISSUE ||
+        blocked.blocked_by.some((id) => typeof id !== "string" || !id || id.length > 160)
+      ) {
+        canonicalBlockedBy.set(blocked.id, ["unresolved:blocked-evidence"]);
+        continue;
+      }
+      canonicalBlockedBy.set(blocked.id, [...blocked.blocked_by]);
     }
   }
   const canonicalStaleIds = new Set(staleIds);
@@ -156,9 +162,11 @@ export function normalizeIssues(input, { readyIds, blockedIssues = [], staleIds 
     const canonicallyBlocked = reportedBlockers.length > 0 && !blockedOnlyByHierarchy;
     const effectiveCanonicalReadiness = blockedOnlyByHierarchy ? undefined : canonicallyReady;
     const stale = node.status === "in_progress" && canonicalStaleIds.has(node.id);
-    const activeBlockers = canonicallyReady
-      ? []
-      : [...new Set([...localActiveBlockers, ...reportedNonHierarchyBlockers])];
+    const activeBlockers = canonicallyBlocked
+      ? [...new Set([...localActiveBlockers, ...reportedNonHierarchyBlockers])]
+      : canonicallyReady
+        ? []
+        : [...new Set([...localActiveBlockers, ...reportedNonHierarchyBlockers])];
     node.activeBlockers = activeBlockers;
     node.isContainer = containerIds.has(node.id);
     node.isLeaf = !node.isContainer;
@@ -184,8 +192,8 @@ export function deriveDisplayState(status, activeBlockerCount, canonicallyReady,
   if (status === "in_progress") return "active";
   if (status === "deferred") return "deferred";
   if (status === "blocked") return "blocked";
-  if (canonicallyReady === true) return "ready";
   if (activeBlockerCount > 0) return "blocked";
+  if (canonicallyReady === true) return "ready";
   if (canonicallyReady === false) return "blocked";
   return "ready";
 }

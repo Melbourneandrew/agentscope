@@ -106,6 +106,35 @@ test("never hides an external blocker merely because the issue is also a child",
   assert.deepEqual(child.activeBlockers, ["external:synthetic:capability"]);
 });
 
+test("fails closed on conflicting, duplicate, or over-limit canonical blocker evidence", () => {
+  const issue = { id: "child", title: "Child", status: "open" };
+  const conflict = normalizeIssues([issue], {
+    readyIds: ["child"],
+    blockedIssues: [{ id: "child", blocked_by: ["external:synthetic:capability"] }],
+  }).nodes[0];
+  assert.equal(conflict.displayState, "blocked");
+  assert.deepEqual(conflict.activeBlockers, ["external:synthetic:capability"]);
+
+  const parented = [
+    { id: "parent", title: "Parent", status: "open" },
+    {
+      ...issue,
+      dependencies: [{ issue_id: "child", depends_on_id: "parent", type: "parent-child" }],
+    },
+  ];
+  for (const blockedIssues of [
+    [
+      { id: "child", blocked_by: ["external:synthetic:capability"] },
+      { id: "child", blocked_by: ["parent"] },
+    ],
+    [{ id: "child", blocked_by: [...Array(256).fill("parent"), "external:synthetic:capability"] }],
+  ]) {
+    const child = normalizeIssues(parented, { readyIds: [], blockedIssues }).nodes.find((node) => node.id === "child");
+    assert.equal(child.displayState, "blocked");
+    assert.deepEqual(child.activeBlockers, ["unresolved:blocked-evidence"]);
+  }
+});
+
 test("derives every visible workflow state without weakening explicit status", () => {
   assert.equal(deriveDisplayState("open", 0), "ready");
   assert.equal(deriveDisplayState("open", 1), "blocked");
@@ -115,7 +144,7 @@ test("derives every visible workflow state without weakening explicit status", (
   assert.equal(deriveDisplayState("in_progress", 0), "active");
   assert.equal(deriveDisplayState("closed", 2), "closed");
   assert.equal(deriveDisplayState("deferred", 0), "deferred");
-  assert.equal(deriveDisplayState("open", 1, true), "ready");
+  assert.equal(deriveDisplayState("open", 1, true), "blocked");
   assert.equal(deriveDisplayState("open", 0, false), "blocked");
   assert.equal(
     normalizeIssues([{ id: "plain", title: "Canonical non-ready", status: "open" }], {
@@ -251,6 +280,20 @@ test("reads only through the supported read-only bd list command", async () => {
     BD_STALE_ARGUMENTS,
   ]);
   assert.equal(graph.nodes.length, 3);
+});
+
+test("lets blocked evidence dominate a stale ready observation", async () => {
+  const issue = { id: "x", title: "Transitioning", status: "open" };
+  const graph = await loadGraph(async (_file, arguments_) => {
+    if (arguments_ === BD_LIST_ARGUMENTS) return { stdout: JSON.stringify([issue]) };
+    if (arguments_ === BD_READY_ARGUMENTS) return { stdout: JSON.stringify([issue]) };
+    if (arguments_ === BD_BLOCKED_ARGUMENTS) {
+      return { stdout: JSON.stringify([{ ...issue, blocked_by: ["external:synthetic:capability"] }]) };
+    }
+    return { stdout: "[]" };
+  });
+  assert.equal(graph.nodes[0].displayState, "blocked");
+  assert.deepEqual(graph.nodes[0].activeBlockers, ["external:synthetic:capability"]);
 });
 
 test("rejects malformed bd output and unsafe port arguments", async () => {
