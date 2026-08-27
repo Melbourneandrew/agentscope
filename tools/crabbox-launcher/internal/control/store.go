@@ -565,9 +565,15 @@ func (store Store) IsFrozen() bool {
 }
 
 type RetirementStatus struct {
-	CloudAbsenceRecorded bool
-	Finalized            bool
-	PlanSHA256           string
+	CloudAbsenceRecorded  bool
+	FinalizationRecorded  bool
+	FenceReleasePending   bool
+	Finalized             bool
+	PlanSHA256            string
+	MutationFenceHeld     bool
+	AcquisitionFrozen     bool
+	EnrolledSlotCount     int
+	CredentialSetComplete bool
 }
 
 func (store Store) RetirementStatus() (RetirementStatus, error) {
@@ -581,6 +587,19 @@ func (store Store) RetirementStatus() (RetirementStatus, error) {
 
 func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 	var status RetirementStatus
+	if _, fenceErr := os.Lstat(store.path("journal", "mutation.lock")); fenceErr == nil {
+		status.MutationFenceHeld = true
+	} else if !os.IsNotExist(fenceErr) {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	status.AcquisitionFrozen = store.IsFrozen()
+	entries, err := os.ReadDir(store.path("slots"))
+	if err != nil {
+		return status, errors.New("E_RETIREMENT_STATE")
+	}
+	status.EnrolledSlotCount = len(entries)
+	_, credentialErr := store.CredentialSetSHA256()
+	status.CredentialSetComplete = credentialErr == nil
 	installation, err := store.LoadInstallation()
 	if err != nil {
 		return status, err
@@ -636,15 +655,20 @@ func (store Store) retirementStatusLocked() (RetirementStatus, error) {
 	if strictJSON(finalData, &final) != nil || final.Domain != RetirementFinalizationDomain || final.PlanSHA256 != cloud.PlanSHA256 || final.RequestID != "credential-revocations" || final.Disposition != "finalized" || !digestPattern.MatchString(final.EvidenceSHA256) || final.RecordedAt.Before(cloud.RecordedAt) || verifyControlRecord(final, installation.Roots[RecoveryRole], RecoveryRole) != nil {
 		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
 	}
-	entries, err := os.ReadDir(store.path("slots"))
-	if err != nil || len(entries) != 0 {
+	if status.EnrolledSlotCount != 0 {
 		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
 	}
 	if _, keyErr := os.Lstat(store.path("keys", "credential-store.key")); !os.IsNotExist(keyErr) {
 		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
 	}
-	if _, fenceErr := os.Lstat(store.path("journal", "mutation.lock")); !os.IsNotExist(fenceErr) {
-		return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+	status.FinalizationRecorded = true
+	if status.MutationFenceHeld {
+		fenceData, fenceErr := readPrivate(store.path("journal", "mutation.lock"))
+		if fenceErr != nil || strings.TrimSpace(string(fenceData)) != cloud.PlanSHA256 {
+			return RetirementStatus{}, errors.New("E_RETIREMENT_STATE")
+		}
+		status.FenceReleasePending = true
+		return status, nil
 	}
 	status.Finalized = true
 	return status, nil

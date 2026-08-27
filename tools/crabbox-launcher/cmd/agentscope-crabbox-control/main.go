@@ -457,19 +457,18 @@ func status() {
 	if err != nil {
 		fail(errorCode(err))
 	}
-	_, fenceErr := os.Lstat(filepath.Join(stateRoot(), "journal", "mutation.lock"))
-	entries, _ := os.ReadDir(filepath.Join(stateRoot(), "slots"))
-	_, credentialsErr := store.CredentialSetSHA256()
 	retirement, retirementErr := store.RetirementStatus()
 	next := []string{"credential-enroll --role <one-of-seven-closed-roles> --slot <opaque-id> --version <immutable-version>", "state-observe --output <state.json> [--rollback-version <current-or-target-version>]", "observation-admit --observation <billing.json> --output <billing-attestation.json>", "plan-build --kind <closed-kind> --state <state.json> --observation-id <id> [--slots <slots.json>] --output <plan.json>", "authorize --plan <plan.json> --output <authorization.json>", "apply --plan <plan.json> --authorization <authorization.json> --observation <billing.json> --observation-attestation <billing-attestation.json>"}
 	if retirementErr != nil {
 		next = []string{"retirement evidence is malformed or unauthenticated; preserve all fences and inspect exact signed state"}
+	} else if retirement.FenceReleasePending {
+		next = []string{"retry retirement-finalize with the exact same five retained revocation identities to release the mutation fence"}
 	} else if retirement.CloudAbsenceRecorded && !retirement.Finalized {
 		next = []string{"revoke the Cloudflare deployment and plan-read credentials and revoke/rotate all three Hetzner credentials", "retirement-finalize --plan-sha256 <digest> --deployment-revocation-id <id> --plan-read-revocation-id <id> --hetzner-worker-revocation-id <id> --hetzner-inventory-revocation-id <id> --hetzner-recovery-revocation-id <id>"}
 	} else if retirement.Finalized {
 		next = []string{}
 	}
-	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": len(entries), "credentialSetComplete": credentialsErr == nil, "mutationFenceHeld": fenceErr == nil, "acquisitionFrozen": store.IsFrozen(), "retirementStateIncident": retirementErr != nil, "retirementCloudAbsenceRecorded": retirementErr == nil && retirement.CloudAbsenceRecorded, "retirementFinalized": retirementErr == nil && retirement.Finalized, "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": next, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
+	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": retirement.EnrolledSlotCount, "credentialSetComplete": retirement.CredentialSetComplete, "mutationFenceHeld": retirement.MutationFenceHeld, "acquisitionFrozen": retirement.AcquisitionFrozen, "retirementStateIncident": retirementErr != nil, "retirementCloudAbsenceRecorded": retirementErr == nil && retirement.CloudAbsenceRecorded, "retirementFinalizationRecorded": retirementErr == nil && retirement.FinalizationRecorded, "retirementFenceReleasePending": retirementErr == nil && retirement.FenceReleasePending, "retirementFinalized": retirementErr == nil && retirement.Finalized, "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": next, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
 }
 
 func observeState(args []string, startedAt time.Time) {

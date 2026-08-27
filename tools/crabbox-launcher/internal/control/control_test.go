@@ -1331,9 +1331,20 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := make(chan error, 1)
+	statusResult := make(chan struct {
+		status RetirementStatus
+		err    error
+	}, 1)
 	go func() {
 		_, enrollErr := item.store.EnrollCredential(item.installation.EnvironmentID, "cloudflare-deployment", "late-slot", "v1", []byte(strings.Repeat("x", 32)), item.now.Add(2*time.Second))
 		result <- enrollErr
+	}()
+	go func() {
+		status, statusErr := item.store.RetirementStatus()
+		statusResult <- struct {
+			status RetirementStatus
+			err    error
+		}{status, statusErr}
 	}()
 	time.Sleep(25 * time.Millisecond)
 	identities := []string{"cloudflare-deployment-revoked", "cloudflare-plan-read-revoked", "hetzner-worker-rotated", "hetzner-inventory-rotated", "hetzner-recovery-rotated"}
@@ -1350,12 +1361,24 @@ func TestAdmissionWaiterRechecksRetirementInsideGuard(t *testing.T) {
 	if err := writeAtomicExclusive(item.store.path("evidence", "retirement-finalized.json"), append(recordData, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(item.store.path("journal", "mutation.lock")); err != nil {
-		t.Fatal(err)
+	prefixStatus, err := item.store.retirementStatusLocked()
+	if err != nil || !prefixStatus.FinalizationRecorded || !prefixStatus.FenceReleasePending || prefixStatus.Finalized || !prefixStatus.MutationFenceHeld || prefixStatus.EnrolledSlotCount != 0 || prefixStatus.CredentialSetComplete {
+		t.Fatalf("signed finalization crash prefix misclassified: %v %#v", err, prefixStatus)
 	}
 	releaseAdmissionGuard(guard)
-	if err := <-result; err == nil || !strings.Contains(err.Error(), "E_ENVIRONMENT_RETIRED") {
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "E_RETIREMENT_FINALIZATION_REQUIRED") {
 		t.Fatalf("waiting enrollment crossed terminal retirement: %v", err)
+	}
+	queuedStatus := <-statusResult
+	if queuedStatus.err != nil || !queuedStatus.status.FenceReleasePending || queuedStatus.status.Finalized || !queuedStatus.status.MutationFenceHeld || queuedStatus.status.EnrolledSlotCount != 0 || queuedStatus.status.CredentialSetComplete {
+		t.Fatalf("queued status crossed retirement with a mixed snapshot: %v %#v", queuedStatus.err, queuedStatus.status)
+	}
+	if _, err := item.store.FinalizeRetirement(planDigest, identities[0], identities[1], identities[2], identities[3], identities[4], item.now.Add(2*time.Second), syntheticOperatorPassphrase); err != nil {
+		t.Fatalf("same-evidence finalization retry failed: %v", err)
+	}
+	finalStatus, err := item.store.RetirementStatus()
+	if err != nil || !finalStatus.Finalized || finalStatus.FenceReleasePending || finalStatus.MutationFenceHeld {
+		t.Fatalf("finalization retry did not close terminal state: %v %#v", err, finalStatus)
 	}
 	entries, err := os.ReadDir(item.store.path("slots"))
 	if err != nil || len(entries) != 0 {
