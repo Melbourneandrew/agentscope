@@ -4,6 +4,7 @@ import { connect } from "node:net";
 import test from "node:test";
 
 import { dashboardMessage, deriveDisplayState, filterGraph, layoutGraph, normalizeIssues } from "./graph.mjs";
+import { captureIssueFocus, restoreIssueFocus } from "./focus.mjs";
 import { BD_LIST_ARGUMENTS, BD_READY_ARGUMENTS, createDashboardServer, loadGraph, parsePort } from "./server.mjs";
 
 const fixtures = [
@@ -129,6 +130,21 @@ test("keeps a focused high-degree neighborhood coherent and layout height bounde
   assert.equal(filtered.nodes.length, 600);
   assert.equal(filtered.edges.length, 599);
   assert.ok(layoutGraph(filtered).height <= 90 + 40 * 74);
+});
+
+test("restores keyboard focus to the same issue and interaction surface", () => {
+  const activeElement = { dataset: { id: "issue-a" }, closest: (selector) => (selector === "#issue-list" ? {} : null) };
+  const target = captureIssueFocus(activeElement, "issue-a");
+  assert.deepEqual(target, { issueId: "issue-a", surface: "list" });
+  let focused = false;
+  const replacement = { dataset: { id: "issue-a" }, focus: () => (focused = true) };
+  const roots = {
+    graph: { querySelectorAll: () => [] },
+    issueList: { querySelectorAll: () => [{ dataset: { id: "other" } }, replacement] },
+  };
+  assert.equal(restoreIssueFocus(roots, target), true);
+  assert.equal(focused, true);
+  assert.equal(captureIssueFocus(activeElement, "other"), null);
 });
 
 test("reads only through the supported read-only bd list command", async () => {

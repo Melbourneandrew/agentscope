@@ -1,10 +1,12 @@
 import { dashboardMessage, escapeHtml, filterGraph, layoutGraph } from "./graph.mjs";
+import { captureIssueFocus, restoreIssueFocus } from "./focus.mjs";
 
 const elements = {
   clearFocus: document.querySelector("#clear-focus"),
   closed: document.querySelector("#closed"),
   count: document.querySelector("#count"),
   detail: document.querySelector("#detail"),
+  filters: document.querySelector("#filters"),
   graph: document.querySelector("#graph"),
   graphScroll: document.querySelector("#graph-scroll"),
   hierarchy: document.querySelector("#hierarchy"),
@@ -75,14 +77,15 @@ function showDetail(node) {
 }
 
 function selectNode(id) {
-  focusId = focusId === id ? "" : id;
+  const restoreTarget = captureIssueFocus(document.activeElement, id);
+  focusId = id;
   if (focusId) elements.query.value = "";
   elements.clearFocus.disabled = !focusId;
   showDetail(fullGraph.nodes.find((node) => node.id === focusId));
-  render();
+  render(restoreTarget);
 }
 
-function render() {
+function render(restoreTarget = null) {
   const graph = filterGraph(fullGraph, stateOptions());
   const layout = layoutGraph(graph);
   elements.count.textContent = `${graph.nodes.length} of ${fullGraph.nodes.length} issues · ${graph.edges.length} visible links`;
@@ -134,6 +137,7 @@ function render() {
   for (const nodeElement of elements.issueList.querySelectorAll("button")) {
     nodeElement.addEventListener("click", () => selectNode(nodeElement.dataset.id));
   }
+  restoreIssueFocus(elements, restoreTarget);
 }
 
 async function refresh() {
@@ -166,6 +170,10 @@ elements.clearFocus.addEventListener("click", () => {
   render();
 });
 elements.refresh.addEventListener("click", refresh);
+elements.filters.addEventListener("submit", (event) => {
+  event.preventDefault();
+  render();
+});
 window.addEventListener("resize", render);
 
 await refresh();

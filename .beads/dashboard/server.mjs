@@ -13,6 +13,7 @@ const REPOSITORY_DIRECTORY = path.resolve(DASHBOARD_DIRECTORY, "../..");
 const STATIC_FILES = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
   ["/app.mjs", ["app.mjs", "text/javascript; charset=utf-8"]],
+  ["/focus.mjs", ["focus.mjs", "text/javascript; charset=utf-8"]],
   ["/graph.mjs", ["graph.mjs", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
 ]);
