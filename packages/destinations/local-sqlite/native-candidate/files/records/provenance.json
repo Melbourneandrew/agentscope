@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "candidateDisposition": "proposed-unpublished-execution-eligible",
   "nativeTupleId": "node127-linux-x64-glibc",
-  "releaseMaterialManifestSha256": "01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
+  "releaseMaterialManifestSha256": "ab4feba21b07211467235ffdef83b3de9c627f7ccd7402d17c1a01fa90b35b56",
   "sourceMaterials": [
     {
       "name": "better-sqlite3",
@@ -31,8 +31,17 @@
   ],
   "ownedBuild": {
     "profile": "agentscope-owned-native-build-v1",
-    "containerImage": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "containerImageSourceIndex": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "containerImage": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+    "containerImageManifestBytes": 2493,
     "containerImageId": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+    "containerImageConfigBytes": 6629,
+    "containerPlatform": {
+      "docker": "linux/amd64",
+      "os": "linux",
+      "architecture": "amd64",
+      "variant": ""
+    },
     "node": "22.18.0",
     "nodeAbi": 127,
     "python": "3.11.2",

@@ -37,13 +37,13 @@ const expected = Object.freeze([
   }),
   Object.freeze({
     path: 'records/provenance.json',
-    bytes: 3369,
-    sha256: '0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df',
+    bytes: 3699,
+    sha256: 'e9f1b67b2778a3919b912d7bd03ec2658058090c7a46230d87cb0a3075d20823',
   }),
   Object.freeze({
     path: 'records/release-materials.json',
-    bytes: 18893,
-    sha256: '01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f',
+    bytes: 22208,
+    sha256: 'ab4feba21b07211467235ffdef83b3de9c627f7ccd7402d17c1a01fa90b35b56',
   }),
   Object.freeze({
     path: 'records/sbom.spdx.json',

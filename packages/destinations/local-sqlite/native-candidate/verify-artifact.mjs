@@ -23,14 +23,20 @@ import {
   verifyArchiveCompilerHostileFixtures,
   verifyMaterializerParentSwapFixture,
 } from "./tooling/archive-compiler.mjs";
+import {
+  assertOwnedToolingAuthority,
+  assertToolchainImageAuthority,
+  ensurePlatformImage,
+  nativeCandidatePlatform,
+  nativeCandidateToolchainImageAuthority,
+} from "./tooling/image-platform-authority.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const workspace = fileURLToPath(new URL("../../../../", import.meta.url));
 const records = join(root, "files/records");
-const image =
-  "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
-const imageId =
-  "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b";
+const image = nativeCandidateToolchainImageAuthority.sourceIndex;
+const imageManifest = nativeCandidateToolchainImageAuthority.selectedManifest;
+const imageId = nativeCandidateToolchainImageAuthority.configDigest;
 const executionImage =
   "node@sha256:0d130e2ee18e88e1561375276daced6bff032539200173f2daf48c2e33f38ff5";
 const executionImageId =
@@ -76,6 +82,7 @@ const materials = Object.freeze([
 
 const sha = (algorithm, bytes, encoding = "hex") =>
   createHash(algorithm).update(bytes).digest(encoding);
+const verifierSelfSourceMaximumBytes = 68 * 1024;
 const snapshot = (file, maximumBytes) => {
   const descriptor = openSync(
     file,
@@ -83,7 +90,10 @@ const snapshot = (file, maximumBytes) => {
   );
   try {
     const before = fstatSync(descriptor);
-    assert(before.isFile() && before.size > 0 && before.size <= maximumBytes);
+    assert(
+      before.isFile() && before.size > 0 && before.size <= maximumBytes,
+      "native candidate snapshot is outside its byte ceiling",
+    );
     const bytes = Buffer.allocUnsafe(before.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -120,23 +130,17 @@ const command = (program, arguments_, options = {}) => {
     );
   return result.stdout.trim();
 };
-const ensureImage = (reference = image, expectedId = imageId) => {
-  let inspected = spawnSync(
-    "docker",
-    ["image", "inspect", reference, "--format", "{{.Id}} {{.Architecture}}"],
-    { encoding: "utf8" },
-  );
-  if (inspected.status !== 0) {
-    command("docker", ["pull", reference]);
-    inspected = spawnSync(
-      "docker",
-      ["image", "inspect", reference, "--format", "{{.Id}} {{.Architecture}}"],
-      { encoding: "utf8" },
-    );
-  }
-  assert.equal(inspected.status, 0);
-  assert.equal(inspected.stdout.trim(), `${expectedId} amd64`);
-};
+const ensureImage = (reference, expectedId) =>
+  ensurePlatformImage({
+    reference,
+    expectedId,
+    invoke: (arguments_) =>
+      spawnSync("docker", arguments_, {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 180_000,
+      }),
+  });
 const verifySourceRevision = (material, temporaryRoot) => {
   const tagReference = `refs/tags/${material.sourceTag}`;
   const expected = [
@@ -612,7 +616,7 @@ const compileExecSupervisor = (temporaryRoot) => {
       const result = runContainer(name, [
         "--rm",
         "--platform",
-        "linux/amd64",
+        nativeCandidatePlatform.docker,
         "--network",
         "none",
         "--read-only",
@@ -630,7 +634,7 @@ const compileExecSupervisor = (temporaryRoot) => {
         `${output}:/output:rw`,
         "--entrypoint",
         "/usr/bin/cc",
-        image,
+        imageManifest,
         "-O2",
         "-Wall",
         "-Wextra",
@@ -650,7 +654,7 @@ const compileExecSupervisor = (temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -662,7 +666,7 @@ const compileExecSupervisor = (temporaryRoot) => {
       `${outputs[0]}:/authority/exec-supervisor:ro`,
       "--entrypoint",
       "/authority/exec-supervisor",
-      image,
+      imageManifest,
       "--verify-clone-exec-observed",
     ],
     30_000,
@@ -844,7 +848,7 @@ const allowedBuildExecutables = new Set([
 ]);
 const timingContainerProfile = (execSupervisor) => [
   "--platform",
-  "linux/amd64",
+  nativeCandidatePlatform.docker,
   "--network",
   "none",
   "--read-only",
@@ -894,7 +898,7 @@ const verifyControlledSlowCompiler = (temporaryRoot, execSupervisor) => {
       ...timingContainerProfile(execSupervisor),
       "-v",
       `${driver}:/authority/controlled-slow-compiler.py:ro`,
-      image,
+      imageManifest,
       "/usr/bin/python3",
       "-B",
       "/authority/controlled-slow-compiler.py",
@@ -916,7 +920,7 @@ const verifySupervisedSignalCleanup = (execSupervisor) => {
     [
       "--rm",
       ...timingContainerProfile(execSupervisor),
-      image,
+      imageManifest,
       "/bin/sleep",
       "30",
     ],
@@ -934,7 +938,7 @@ const buildContainerArguments = (
 ) => [
   "--rm",
   "--platform",
-  "linux/amd64",
+  nativeCandidatePlatform.docker,
   "--network",
   "none",
   "--read-only",
@@ -980,7 +984,7 @@ const buildContainerArguments = (
   `${execSupervisor}:/authority/exec-supervisor:ro`,
   "--entrypoint",
   "/authority/exec-supervisor",
-  image,
+  imageManifest,
   "/usr/bin/python3",
   "-B",
   "/authority/build-driver.py",
@@ -1091,39 +1095,46 @@ const validateRecords = () => {
     outputClosure:
       "exact-whole-writable-root-inventory-with-32MiB-output-cap-v2",
   });
-  assert.deepEqual(lock.ownedTooling, {
-    acquisitionDriverSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/acquire-driver.mjs"), 32 * 1024),
+  assertOwnedToolingAuthority(lock.ownedTooling, {
+    acquisitionDriver: snapshot(
+      join(root, "tooling/acquire-driver.mjs"),
+      32 * 1024,
     ),
-    archiveCompilerSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/archive-compiler.mjs"), 64 * 1024),
+    archiveCompiler: snapshot(
+      join(root, "tooling/archive-compiler.mjs"),
+      64 * 1024,
     ),
-    materializeHelperSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/materialize-helper.py"), 16 * 1024),
+    materializeHelper: snapshot(
+      join(root, "tooling/materialize-helper.py"),
+      16 * 1024,
     ),
-    execSupervisorSourceSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/exec-supervisor.c"), 16 * 1024),
+    execSupervisorSource: snapshot(
+      join(root, "tooling/exec-supervisor.c"),
+      16 * 1024,
     ),
-    buildDriverSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/build-driver.py"), 64 * 1024),
+    buildDriver: snapshot(join(root, "tooling/build-driver.py"), 64 * 1024),
+    namespaceHelperSource: snapshot(
+      join(root, "tooling/namespace-helper.cpp"),
+      16 * 1024,
     ),
-    namespaceHelperSourceSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/namespace-helper.cpp"), 16 * 1024),
-    ),
-    namespaceHelperLicense: "MIT",
-    runtimeBundlerSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/runtime-bundler.py"), 32 * 1024),
+    runtimeBundler: snapshot(
+      join(root, "tooling/runtime-bundler.py"),
+      32 * 1024,
     ),
   });
   assert.deepEqual(lock.toolchainClosure, {
     image,
+    selectedManifest: {
+      reference: imageManifest,
+      bytes: nativeCandidateToolchainImageAuthority.selectedManifestBytes,
+      configDigest: imageId,
+      configBytes: nativeCandidateToolchainImageAuthority.configBytes,
+      rawIndexGzipBase64:
+        lock.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+      rawManifestGzipBase64:
+        lock.toolchainClosure.selectedManifest.rawManifestGzipBase64,
+      platform: nativeCandidatePlatform,
+    },
     imageId,
     architecture: "amd64",
     node: "22.18.0",
@@ -1145,6 +1156,18 @@ const validateRecords = () => {
     authority: "complete-content-addressed-container-filesystem",
     networkDuringBuild: "denied",
     credentialAuthority: "none",
+  });
+  assertToolchainImageAuthority({
+    sourceIndex: lock.toolchainClosure.image,
+    selectedManifest: lock.toolchainClosure.selectedManifest.reference,
+    selectedManifestBytes: lock.toolchainClosure.selectedManifest.bytes,
+    configDigest: lock.toolchainClosure.selectedManifest.configDigest,
+    configBytes: lock.toolchainClosure.selectedManifest.configBytes,
+    rawIndexGzipBase64:
+      lock.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+    rawManifestGzipBase64:
+      lock.toolchainClosure.selectedManifest.rawManifestGzipBase64,
+    platform: lock.toolchainClosure.selectedManifest.platform,
   });
   assert.deepEqual(
     lock.materials.map(({ name, tarballBytes, tarballSha256 }) => ({
@@ -1246,8 +1269,14 @@ const validateRecords = () => {
     ),
     ownedBuild: {
       profile: "agentscope-owned-native-build-v1",
-      containerImage: image,
+      containerImageSourceIndex: image,
+      containerImage: imageManifest,
+      containerImageManifestBytes:
+        nativeCandidateToolchainImageAuthority.selectedManifestBytes,
       containerImageId: imageId,
+      containerImageConfigBytes:
+        nativeCandidateToolchainImageAuthority.configBytes,
+      containerPlatform: nativeCandidatePlatform,
       node: "22.18.0",
       nodeAbi: 127,
       python: "3.11.2",
@@ -1507,7 +1536,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
       "run",
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--entrypoint",
@@ -1531,7 +1560,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -1581,7 +1610,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     "run",
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1604,7 +1633,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   const oracle = runContainer(oracleName, [
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1622,7 +1651,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     `${evidenceVolume}:/evidence:ro`,
     "--entrypoint",
     "/usr/bin/python3",
-    image,
+    imageManifest,
     "-c",
     "import os,sqlite3; assert sorted(os.listdir('/evidence'))==['proof.sqlite','traces.sqlite','traces.sqlite-shm','traces.sqlite-wal']; assert 0<os.stat('/evidence/proof.sqlite').st_size<=1048576; assert 0<os.stat('/evidence/traces.sqlite').st_size<=1048576; assert 0<os.stat('/evidence/traces.sqlite-shm').st_size<=65536; assert 0<=os.stat('/evidence/traces.sqlite-wal').st_size<=1048576; c=sqlite3.connect('file:/evidence/proof.sqlite?mode=ro',uri=True); assert c.execute(\"select name from sqlite_master where type='table'\").fetchall()==[('proof',)]; assert c.execute('select value from proof').fetchall()==[('packed-ok',)]; c.close(); r=sqlite3.connect('file:/evidence/traces.sqlite?mode=ro',uri=True); assert r.execute('select delivery_identity,trace_id,admission_time_unix_nano from traces').fetchall()==[('2'*64,'3'*32,'5')]; assert r.execute(\"select value from destination_metadata where key='last_trusted_time_unix_nano'\").fetchall()==[('5',)]; r.close(); print('externally-observed-packed-ok')",
   ]);
@@ -1646,7 +1675,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -1697,7 +1726,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -1742,7 +1771,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   const hostileArguments = (mode) => [
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1778,7 +1807,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   const forged = runContainer(forgedName, [
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1835,7 +1864,7 @@ try {
   verifyMaterializerParentSwapFixture();
   validateRecords();
   for (const material of materials) verifySourceRevision(material, temporary);
-  ensureImage();
+  ensureImage(imageManifest, imageId);
   ensureImage(executionImage, executionImageId);
   const materialDirectory = join(temporary, "materials");
   mkdirSync(materialDirectory, { mode: 0o700 });
@@ -1966,6 +1995,7 @@ try {
     nativeTupleId: "node127-linux-x64-glibc",
     platformTupleId: "linux-x64-node22-ci-ext4-proposed",
     image,
+    imageManifest,
     imageId,
     executionImage,
     executionImageId,
@@ -2001,7 +2031,7 @@ try {
     )}`,
     supervisorDigest: `sha256:${sha(
       "sha256",
-      snapshot(fileURLToPath(import.meta.url), 64 * 1024),
+      snapshot(fileURLToPath(import.meta.url), verifierSelfSourceMaximumBytes),
     )}`,
     testDriverDigest: `sha256:${sha(
       "sha256",

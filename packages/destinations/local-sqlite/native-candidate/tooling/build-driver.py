@@ -1,4 +1,5 @@
 import base64
+import gzip
 import hashlib
 import json
 import os
@@ -82,6 +83,21 @@ def expected_tree_nodes(files: list[str]) -> list[str]:
 authority = Path("/authority")
 material_lock = json.loads((authority / "release-materials.json").read_text())
 namespace_helper = (authority / "namespace-helper.cpp").read_bytes()
+selected_manifest = material_lock.get("toolchainClosure", {}).get("selectedManifest", {})
+try:
+    raw_index = gzip.decompress(base64.b64decode(selected_manifest.get("rawIndexGzipBase64", ""), validate=True))
+    raw_manifest = gzip.decompress(base64.b64decode(selected_manifest.get("rawManifestGzipBase64", ""), validate=True))
+    index_document = json.loads(raw_index)
+    manifest_document = json.loads(raw_manifest)
+except Exception:
+    fail()
+selected_descriptors = [
+    descriptor
+    for descriptor in index_document.get("manifests", [])
+    if descriptor.get("platform", {}).get("os") == "linux"
+    and descriptor.get("platform", {}).get("architecture") == "amd64"
+    and descriptor.get("platform", {}).get("variant", "") == ""
+]
 if (
     material_lock.get("schemaVersion") != 3
     or len(material_lock.get("materials", [])) != 2
@@ -89,6 +105,29 @@ if (
     != "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2"
     or material_lock.get("toolchainClosure", {}).get("image")
     != "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2"
+    or material_lock.get("toolchainClosure", {}).get("selectedManifest")
+    != {
+        "reference": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+        "bytes": 2493,
+        "configDigest": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+        "configBytes": 6629,
+        "rawIndexGzipBase64": selected_manifest.get("rawIndexGzipBase64"),
+        "rawManifestGzipBase64": selected_manifest.get("rawManifestGzipBase64"),
+        "platform": {
+            "docker": "linux/amd64",
+            "os": "linux",
+            "architecture": "amd64",
+            "variant": "",
+        },
+    }
+    or sha256(raw_index) != "3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2"
+    or len(selected_descriptors) != 1
+    or selected_descriptors[0].get("digest") != "sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4"
+    or selected_descriptors[0].get("size") != 2493
+    or len(raw_manifest) != 2493
+    or sha256(raw_manifest) != "bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4"
+    or manifest_document.get("config", {}).get("digest") != "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b"
+    or manifest_document.get("config", {}).get("size") != 6629
     or material_lock.get("ownedTooling", {}).get("namespaceHelperSourceSha256")
     != sha256(namespace_helper)
 ):

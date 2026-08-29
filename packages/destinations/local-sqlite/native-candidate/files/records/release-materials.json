@@ -28,13 +28,27 @@
     "archiveCompilerSha256": "81669934c98c189cd68eef207d29c6aefb9c03c47454f6cc707ef68a15a22e46",
     "materializeHelperSha256": "8dac5f559bb0c220b3c6532d60072e5d26a0a8aa884ce8d13f2f6eb2d271dfd6",
     "execSupervisorSourceSha256": "9cf8b6916cadaeaa4632966fbdf33e863b1154c368088b7eb6e9fdc0928c9264",
-    "buildDriverSha256": "da8f51f4d5e8178ec98c9eca9b57bda1fe325c11ce3c6482dbd806a386a2e459",
+    "buildDriverSha256": "a1384bab10a62730744febae9b10734e9b6dc15f6c02c3ea45951b0dc108725b",
     "namespaceHelperSourceSha256": "b272a64d95d184924e3cae5d3ed661bd45d863948a16b4b019ad48b92a22a162",
     "namespaceHelperLicense": "MIT",
     "runtimeBundlerSha256": "0edd81721b6f45f24f4855a2ccc70e0171af102dd1f7a8ddbb3b3eb76b0a9597"
   },
   "toolchainClosure": {
     "image": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "selectedManifest": {
+      "reference": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+      "bytes": 2493,
+      "configDigest": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+      "configBytes": 6629,
+      "rawIndexGzipBase64": "H4sIAAAAAAACE+2Y224bRwyG30W9rC3PcE4cPUfQi9ZFwSE58cbWriDJTtog716uD2mSBq6NSgkCGAIEjaRZcnn45ue+X6xpHLru9rvF6rf3CxrHaU/7YRpt/X7B03opE1/qdjn1PvBAV6fDml7rbtlod9G2+nZJW75YrBa0lhwXJ4tp+3o5bXTkadzTMOp2t7zdMW/QpQy2d29/310QpLxKFYVd5Fiq6yXXULLUVjy7TrVLy9mzUMi5eqgUHEopLUERxFxdov80ONJazVy7Hq5kQ3x5KrrZrdo0Xb6dtuvHtvNWaa9im8FBOnV46uEVwMq8DvXXx3Zu9WbYWQhtq6hn5Fqj+taREsbQe5EoFYuqOibJFWJ47HK76XrL801c7Pfm+/nZ+dnrYX9x3ZaWnvOzcRJ9szs/u8vT6bxc2u8/PdX0CuD87CkBud5efebE7MF9cdw68sedL49d4sY+3gUGYPHhZPFlObSWMUR2lm8iq4LGKDVml1P2VMCT9Ii151aDlIYNIXXH3bdYkYHn+lurDPTqz80cMNpsrga+Lefzs5tRlhMP9548lP3yxv/8ZmcunSw2V7Tvcwys8OeiHvbK++utflrc1hWLq2G8fjd7vxv+sh8h1vDh5BCtM3t4v2WrXbcWwH93zAFC9FU7+/uQ7fdm7vY2Th9i9LVMOfDeUU0ihaBH39WhNoHuMlcXIgnayytbYxeMVbEDJU6ullY59WNl6nq8HKe340OuHpYfs4UR/meytusAN+XZpJOatHqffAhE4tCTy5o7SiOG4rylKYTgWwjMMbqSGhZfHVD0KcJtwL4h6cJMOgcr719IdxTSIViH1oASoOTcSvcE6F3nZOdhQVFQcXY/vuSY5lWtPqJ1vaLkFMvRSHcXmX84Z7ig7UDj7LuV/afYS4fqpCeB7wAROwT4uEThBL4aWSW45lLMGs0zMv/Evg7qrXcZU+vEWk3QaCreV+g9UNYfGXw53uDzwYeY7EAwijERdkrqLV1ZYm4pZSQ7KnqIQVNPXYG5xRyJjJXQJEL/xhIvvnJhFesqphfwHQV8JtqRqUgrJADSu2tkwsW0gsOc0IR/5IKoCUOTgq5SM9FPAQRnrZOPCL4vJd5n6MMDo+++l56EvgPE7BDoi7FpMmPSul3Wp9SxAmIxGQiNKpoe5aQmMkMskgqZy06FrUC7GLD5h0XfZsM5Xumz0RcCmOK1Hi1aIBU7txTmwEBDrEFdVMureDQCFmHATGTZBepclSyj3xp9HlaxrGJ4Qd9R0BeDzUcEVcFaxFKPVhqRmiTtNg+oZgKuWAkzWjO5ZpkpvSubijCdwf5Y/fNJeX99vk2Hap8n0e4AYToE7Wo21vlIJZm6y2aiJQ2+SMbMpZRuROZoE3Z2zocayRiNXUiUrIObiz8s7XahunfPZp0LYEK4Z58MaIUdsPd+fiohXH0picG53EyeEzqLUFM7HdQlb2Nv6pDDd5hvQ1z5lyd5x2Fdt8MtVkgcvBZK1sc95MgYoubi0UqlcfaOlFpB0KIt2DIIl6RQfTpW93ws7qM8yXu4+pM4d4AQHWSgtTkr2OAKyVN0wtgdpaxavHHP3qzsWqmxFIpqECxkb15sNMtFQLJ8T879/mTbwyj67hPDO77QNf3yUMXw4W8oaod5ChkAAA==",
+      "rawManifestGzipBase64": "H4sIAAAAAAACE72WUW8bNwzH3/spAu+xzZmSKErK5yj2sGEYKIqyr4l9hs9J0Rb97qMv6brBA5KX+eWA0x2p/4+kSH17d3OzmmWrO/5Vj/M47Vd3N/7DeXWnbeSPXw5qKys+HB5G4ZP9sH7at2GScRh3vNFhx/ux63wantz7T7PZL8Yy7fu4Mctv9vZ2Z89m/3Jlxm3c2AZny3nLPtIdu6rsexanmnIm6tlDKExQmZ0Exgw5eXCZGbRjLg4AVFIJ2rKvPxzP49ezICJfbOH7ovyBv1ggbPX35Z9n/W8nWMwNYDjx8f3m63h42eu/MDo4zDGwmvggoC6FCMBFIvgkQaV39b2z1AalplxYfPdNKLTGTOGn6xcQzFgwOrcsf//wvwNQIwRXEwWqlYOpbcVRdRErI3I1sOw4haTOpeolBXKUhEkZfQh4AeARzASvBnCOcE8W0V6KQg6pN5d75OproMC95+bEeW0hJVdKPwOn3DNUjFkgXgAQolVahGsBOCVDsLBatJE9eWasgr2kWLSoYBL0orHWELzrAD5kF0vCgCi11MsMOBcKBsKrEQA06SE0X8RHq5eGwhibuuhNhtcIsWYoEaGWmHNskrBAI+9qqP7yEBhovpZ4FJNSKGh1SJ0baOjsuRUhJfBekSl3IA4kNfiWwVMKHJmz9SdJF+IjhUIuxGsBFOGMUrpPoC366LGVngtiMNG9uyKIEaxLQXJEJYceu9WaNVYXc3TtAsBZDildrwNVYs0SpVRHrpFIsj7ZUuRWpYhVTc5VqXrUjCC+stMGiRJkKSj5soVietZuzz+WgcD7/XRadM4/55lMu6FNcm9Cp95HGfnhdlE/D5XnbT3q54GPsl1Id9Y1foyc6bgZpoPubdKdeNzbqHmhNjMdLvhiyU3AyiwV6IlKSNRsFDiBzqW3SuSkWXVRcb5wgNxSqtGnZlOxQOS3bbvn3ZKT+jg+tAPL/W3Tw3xXp+n+83TcvepEjsonbWcXHny8hXwL7qODO7DzTb+9an/Up/Hl7rGygy+Wm4Lqas8cM4ZuLdrqMidVBeFGxWN41ek8PR5lwdqeTkazXm/G0/ax2iVjt95PTT/N6+cU3p7fBvv6y1s3v/N+/eboPB4f/qniLOGldM5K/ly0vOrk6e/b2cr71fm28u77X0Rbpcu9CQAA",
+      "platform": {
+        "docker": "linux/amd64",
+        "os": "linux",
+        "architecture": "amd64",
+        "variant": ""
+      }
+    },
     "imageId": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
     "architecture": "amd64",
     "node": "22.18.0",

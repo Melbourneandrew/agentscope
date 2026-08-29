@@ -11,8 +11,8 @@
   "maximumSnapshotBytes": 17179869184,
   "minimumNativeChildBudgetMilliseconds": 50,
   "nativeTeardownReserveMilliseconds": 250,
-  "releaseMaterialManifestDigest": "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
-  "provenanceDigest": "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
+  "releaseMaterialManifestDigest": "sha256:ab4feba21b07211467235ffdef83b3de9c627f7ccd7402d17c1a01fa90b35b56",
+  "provenanceDigest": "sha256:e9f1b67b2778a3919b912d7bd03ec2658058090c7a46230d87cb0a3075d20823",
   "sbomDigest": "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
   "noticeInventoryDigest": "sha256:748161db20ee1f0f96e74bc7a54cbb0ba9705fcf7ca0a52313a978d482f3534c",
   "artifactFiles": [
@@ -20,7 +20,7 @@
       "kind": "loader",
       "relativePath": "loader/owned-loader.cjs",
       "bytes": 15896,
-      "digest": "sha256:f1bf552b702d1249f23e2e2b5bfdab9be8328a24e600b212cdf40df05963e0ba"
+      "digest": "sha256:fd889541a607528c17c7ac1492c90ba631bfd4e6ef391115314cf9f4cdb82f70"
     },
     {
       "kind": "native-binary",
@@ -55,14 +55,14 @@
     {
       "kind": "release-materials",
       "relativePath": "records/release-materials.json",
-      "bytes": 18893,
-      "digest": "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f"
+      "bytes": 22208,
+      "digest": "sha256:ab4feba21b07211467235ffdef83b3de9c627f7ccd7402d17c1a01fa90b35b56"
     },
     {
       "kind": "provenance",
       "relativePath": "records/provenance.json",
-      "bytes": 3369,
-      "digest": "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df"
+      "bytes": 3699,
+      "digest": "sha256:e9f1b67b2778a3919b912d7bd03ec2658058090c7a46230d87cb0a3075d20823"
     },
     {
       "kind": "sbom",

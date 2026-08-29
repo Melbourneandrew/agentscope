@@ -820,7 +820,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
   const supportManifestBytes = readFileSync(supportManifestPath);
   assert.equal(
     createHash("sha256").update(supportManifestBytes).digest("hex"),
-    "07059633fd124a278d16a1421d3dbd27f5778b1b26f5fecca9f24f27addedd2d",
+    "587e01fac592f3989b05d634fd8a5a03f1d72bebef3c83da0a22b0ca18d1ff76",
   );
   const supportManifest = JSON.parse(supportManifestBytes);
   assert.equal(

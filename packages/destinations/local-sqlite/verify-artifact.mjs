@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import { standardsManifest } from "@agentscope/protocol";
 import { isDestinationRetriever } from "@agentscope/destinations-core";
 
+import { assertToolchainImageAuthority } from "./native-candidate/tooling/image-platform-authority.mjs";
+
 import * as root from "./dist/index.js";
 import * as reporter from "./dist/reporter/index.js";
 import { executePreparedLocalSqliteTransaction } from "./dist/reporter/transaction.js";
@@ -448,6 +450,20 @@ if (
   releaseMaterials.materials?.length !== 2 ||
   releaseMaterials.toolchainClosure?.image !==
     "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2" ||
+  releaseMaterials.toolchainClosure?.selectedManifest?.reference !==
+    "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4" ||
+  releaseMaterials.toolchainClosure?.selectedManifest?.bytes !== 2493 ||
+  releaseMaterials.toolchainClosure?.selectedManifest?.configDigest !==
+    "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b" ||
+  JSON.stringify(
+    releaseMaterials.toolchainClosure?.selectedManifest?.platform,
+  ) !==
+    JSON.stringify({
+      docker: "linux/amd64",
+      os: "linux",
+      architecture: "amd64",
+      variant: "",
+    }) ||
   releaseMaterials.toolchainClosure?.imageId !==
     "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b" ||
   releaseMaterials.materials.some(
@@ -463,6 +479,20 @@ if (
 const provenance = JSON.parse(
   readFileSync(resolve(builtCandidateRoot, "records/provenance.json")),
 );
+assertToolchainImageAuthority({
+  sourceIndex: releaseMaterials.toolchainClosure.image,
+  selectedManifest:
+    releaseMaterials.toolchainClosure.selectedManifest.reference,
+  selectedManifestBytes:
+    releaseMaterials.toolchainClosure.selectedManifest.bytes,
+  configDigest: releaseMaterials.toolchainClosure.selectedManifest.configDigest,
+  configBytes: releaseMaterials.toolchainClosure.selectedManifest.configBytes,
+  rawIndexGzipBase64:
+    releaseMaterials.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+  rawManifestGzipBase64:
+    releaseMaterials.toolchainClosure.selectedManifest.rawManifestGzipBase64,
+  platform: releaseMaterials.toolchainClosure.selectedManifest.platform,
+});
 const releaseMaterialDigest = createHash("sha256")
   .update(
     readFileSync(resolve(builtCandidateRoot, "records/release-materials.json")),
@@ -474,9 +504,17 @@ if (
     "b07b4ab1f139c8d2b2b6701ceaf3b4f5905b45660f122fab3e3c1fcaa47641c9" ||
   provenance.output?.repeatBuildSha256 !== provenance.output.sha256 ||
   provenance.ownedBuild?.containerImage !==
+    releaseMaterials.toolchainClosure.selectedManifest.reference ||
+  provenance.ownedBuild?.containerImageSourceIndex !==
     releaseMaterials.toolchainClosure.image ||
+  provenance.ownedBuild?.containerImageManifestBytes !==
+    releaseMaterials.toolchainClosure.selectedManifest.bytes ||
   provenance.ownedBuild?.containerImageId !==
-    releaseMaterials.toolchainClosure.imageId
+    releaseMaterials.toolchainClosure.selectedManifest.configDigest ||
+  provenance.ownedBuild?.containerImageConfigBytes !==
+    releaseMaterials.toolchainClosure.selectedManifest.configBytes ||
+  JSON.stringify(provenance.ownedBuild?.containerPlatform) !==
+    JSON.stringify(releaseMaterials.toolchainClosure.selectedManifest.platform)
 )
   throw new Error("Local SQLite build provenance authority drifted.");
 const sbom = JSON.parse(
