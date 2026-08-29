@@ -23,6 +23,10 @@ import {
   verifyArchiveCompilerHostileFixtures,
   verifyMaterializerParentSwapFixture,
 } from "./tooling/archive-compiler.mjs";
+import {
+  ensurePlatformImage,
+  nativeCandidatePlatform,
+} from "./tooling/image-platform-authority.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const workspace = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -120,23 +124,17 @@ const command = (program, arguments_, options = {}) => {
     );
   return result.stdout.trim();
 };
-const ensureImage = (reference = image, expectedId = imageId) => {
-  let inspected = spawnSync(
-    "docker",
-    ["image", "inspect", reference, "--format", "{{.Id}} {{.Architecture}}"],
-    { encoding: "utf8" },
-  );
-  if (inspected.status !== 0) {
-    command("docker", ["pull", reference]);
-    inspected = spawnSync(
-      "docker",
-      ["image", "inspect", reference, "--format", "{{.Id}} {{.Architecture}}"],
-      { encoding: "utf8" },
-    );
-  }
-  assert.equal(inspected.status, 0);
-  assert.equal(inspected.stdout.trim(), `${expectedId} amd64`);
-};
+const ensureImage = (reference = image, expectedId = imageId) =>
+  ensurePlatformImage({
+    reference,
+    expectedId,
+    invoke: (arguments_) =>
+      spawnSync("docker", arguments_, {
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 180_000,
+      }),
+  });
 const verifySourceRevision = (material, temporaryRoot) => {
   const tagReference = `refs/tags/${material.sourceTag}`;
   const expected = [
@@ -612,7 +610,7 @@ const compileExecSupervisor = (temporaryRoot) => {
       const result = runContainer(name, [
         "--rm",
         "--platform",
-        "linux/amd64",
+        nativeCandidatePlatform.docker,
         "--network",
         "none",
         "--read-only",
@@ -650,7 +648,7 @@ const compileExecSupervisor = (temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -844,7 +842,7 @@ const allowedBuildExecutables = new Set([
 ]);
 const timingContainerProfile = (execSupervisor) => [
   "--platform",
-  "linux/amd64",
+  nativeCandidatePlatform.docker,
   "--network",
   "none",
   "--read-only",
@@ -934,7 +932,7 @@ const buildContainerArguments = (
 ) => [
   "--rm",
   "--platform",
-  "linux/amd64",
+  nativeCandidatePlatform.docker,
   "--network",
   "none",
   "--read-only",
@@ -1507,7 +1505,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
       "run",
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--entrypoint",
@@ -1531,7 +1529,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -1581,7 +1579,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     "run",
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1604,7 +1602,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   const oracle = runContainer(oracleName, [
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1646,7 +1644,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -1697,7 +1695,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     [
       "--rm",
       "--platform",
-      "linux/amd64",
+      nativeCandidatePlatform.docker,
       "--network",
       "none",
       "--read-only",
@@ -1742,7 +1740,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   const hostileArguments = (mode) => [
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
@@ -1778,7 +1776,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
   const forged = runContainer(forgedName, [
     "--rm",
     "--platform",
-    "linux/amd64",
+    nativeCandidatePlatform.docker,
     "--network",
     "none",
     "--read-only",
