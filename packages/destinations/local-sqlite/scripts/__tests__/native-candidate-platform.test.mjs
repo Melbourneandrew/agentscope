@@ -6,12 +6,16 @@ import {
 } from "../../native-candidate/tooling/image-platform-authority.mjs";
 
 const toolchain = Object.freeze({
-  reference:
+  sourceReference:
     "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+  reference:
+    "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
   expectedId:
     "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
 });
 const execution = Object.freeze({
+  sourceReference:
+    "node@sha256:0d130e2ee18e88e1561375276daced6bff032539200173f2daf48c2e33f38ff5",
   reference:
     "node@sha256:0d130e2ee18e88e1561375276daced6bff032539200173f2daf48c2e33f38ff5",
   expectedId:
@@ -81,6 +85,22 @@ describe("native candidate platform image authority", () => {
       }),
     ).toThrow("native candidate image identity mismatch");
     expect(invocations).toBe(1);
+  });
+
+  it("never reacquires the multi-platform index after it is bound to arm64", () => {
+    const observed = [];
+    const results = [missing, pulled, inspection(toolchain.expectedId)];
+    ensurePlatformImage({
+      ...toolchain,
+      invoke(arguments_) {
+        observed.push(arguments_);
+        return results.shift();
+      },
+    });
+
+    expect(toolchain.reference).not.toBe(toolchain.sourceReference);
+    expect(observed.flat()).not.toContain(toolchain.sourceReference);
+    expect(observed.flat()).toContain(toolchain.reference);
   });
 
   it.each([

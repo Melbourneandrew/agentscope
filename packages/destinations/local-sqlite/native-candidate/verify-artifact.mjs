@@ -33,6 +33,8 @@ const workspace = fileURLToPath(new URL("../../../../", import.meta.url));
 const records = join(root, "files/records");
 const image =
   "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
+const imageManifest =
+  "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4";
 const imageId =
   "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b";
 const executionImage =
@@ -124,7 +126,7 @@ const command = (program, arguments_, options = {}) => {
     );
   return result.stdout.trim();
 };
-const ensureImage = (reference = image, expectedId = imageId) =>
+const ensureImage = (reference, expectedId) =>
   ensurePlatformImage({
     reference,
     expectedId,
@@ -628,7 +630,7 @@ const compileExecSupervisor = (temporaryRoot) => {
         `${output}:/output:rw`,
         "--entrypoint",
         "/usr/bin/cc",
-        image,
+        imageManifest,
         "-O2",
         "-Wall",
         "-Wextra",
@@ -660,7 +662,7 @@ const compileExecSupervisor = (temporaryRoot) => {
       `${outputs[0]}:/authority/exec-supervisor:ro`,
       "--entrypoint",
       "/authority/exec-supervisor",
-      image,
+      imageManifest,
       "--verify-clone-exec-observed",
     ],
     30_000,
@@ -892,7 +894,7 @@ const verifyControlledSlowCompiler = (temporaryRoot, execSupervisor) => {
       ...timingContainerProfile(execSupervisor),
       "-v",
       `${driver}:/authority/controlled-slow-compiler.py:ro`,
-      image,
+      imageManifest,
       "/usr/bin/python3",
       "-B",
       "/authority/controlled-slow-compiler.py",
@@ -914,7 +916,7 @@ const verifySupervisedSignalCleanup = (execSupervisor) => {
     [
       "--rm",
       ...timingContainerProfile(execSupervisor),
-      image,
+      imageManifest,
       "/bin/sleep",
       "30",
     ],
@@ -978,7 +980,7 @@ const buildContainerArguments = (
   `${execSupervisor}:/authority/exec-supervisor:ro`,
   "--entrypoint",
   "/authority/exec-supervisor",
-  image,
+  imageManifest,
   "/usr/bin/python3",
   "-B",
   "/authority/build-driver.py",
@@ -1620,7 +1622,7 @@ const execute = (candidate, authorityManifest, temporaryRoot) => {
     `${evidenceVolume}:/evidence:ro`,
     "--entrypoint",
     "/usr/bin/python3",
-    image,
+    imageManifest,
     "-c",
     "import os,sqlite3; assert sorted(os.listdir('/evidence'))==['proof.sqlite','traces.sqlite','traces.sqlite-shm','traces.sqlite-wal']; assert 0<os.stat('/evidence/proof.sqlite').st_size<=1048576; assert 0<os.stat('/evidence/traces.sqlite').st_size<=1048576; assert 0<os.stat('/evidence/traces.sqlite-shm').st_size<=65536; assert 0<=os.stat('/evidence/traces.sqlite-wal').st_size<=1048576; c=sqlite3.connect('file:/evidence/proof.sqlite?mode=ro',uri=True); assert c.execute(\"select name from sqlite_master where type='table'\").fetchall()==[('proof',)]; assert c.execute('select value from proof').fetchall()==[('packed-ok',)]; c.close(); r=sqlite3.connect('file:/evidence/traces.sqlite?mode=ro',uri=True); assert r.execute('select delivery_identity,trace_id,admission_time_unix_nano from traces').fetchall()==[('2'*64,'3'*32,'5')]; assert r.execute(\"select value from destination_metadata where key='last_trusted_time_unix_nano'\").fetchall()==[('5',)]; r.close(); print('externally-observed-packed-ok')",
   ]);
@@ -1833,7 +1835,7 @@ try {
   verifyMaterializerParentSwapFixture();
   validateRecords();
   for (const material of materials) verifySourceRevision(material, temporary);
-  ensureImage();
+  ensureImage(imageManifest, imageId);
   ensureImage(executionImage, executionImageId);
   const materialDirectory = join(temporary, "materials");
   mkdirSync(materialDirectory, { mode: 0o700 });
@@ -1964,6 +1966,7 @@ try {
     nativeTupleId: "node127-linux-x64-glibc",
     platformTupleId: "linux-x64-node22-ci-ext4-proposed",
     image,
+    imageManifest,
     imageId,
     executionImage,
     executionImageId,
