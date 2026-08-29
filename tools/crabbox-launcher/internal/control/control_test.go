@@ -2052,7 +2052,14 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 		if strings.HasSuffix(request.URL.Path, "/versions/version-old") {
 			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"id":"version-old","migration_tag":"v1","bindings":[]},"errors":[],"messages":[]}`)), Header: http.Header{}, Request: request}, nil
 		}
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"success":true,"result":{"id":"version-current","namespace_id":"namespace-1","tag":"v1"},"errors":[],"messages":[],"result_info":{"page":1,"per_page":1000,"total_pages":1}}`)), Header: http.Header{}}, nil
+		result := `{"id":"surface-current"}`
+		resultInfo := ""
+		if request.URL.RawQuery != "" {
+			result = `[{"id":"version-current","namespace_id":"namespace-1","tag":"v1"}]`
+			resultInfo = `,"result_info":{"page":1,"per_page":1000,"total_pages":1}`
+		}
+		body := `{"success":true,"result":` + result + `,"errors":[],"messages":[]` + resultInfo + `}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
 	})}
 	observer := CloudflareObserver{AccountID: "account-1", Client: client}
 	state, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC())
@@ -2123,6 +2130,54 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 	})}
 	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || !strings.Contains(err.Error(), "E_OBSERVER_FALSE_ABSENCE") {
 		t.Fatalf("target 404 contradicted complete account inventory without failing: %v", err)
+	}
+}
+
+func TestCloudflareObserverAcceptsOnlyProvenCompleteSinglePageResults(t *testing.T) {
+	testCases := []struct {
+		name       string
+		result     string
+		resultInfo string
+		paginated  bool
+		wantError  bool
+	}{
+		{name: "empty-count-total", result: `[]`, resultInfo: `{"page":1,"count":0,"total_count":0}`, paginated: true},
+		{name: "empty-live-shape", result: `[]`, resultInfo: `{"page":1,"per_page":1000,"count":0,"total_count":0}`, paginated: true},
+		{name: "nonempty-count-total", result: `[{"id":"namespace-1"}]`, resultInfo: `{"page":1,"per_page":1000,"count":1,"total_count":1}`, paginated: true},
+		{name: "optional-surface-count-total", result: `[]`, resultInfo: `{"page":1,"per_page":1000,"count":0,"total_count":0}`},
+		{name: "classic-total-pages", result: `[]`, resultInfo: `{"page":1,"per_page":1000,"total_pages":1}`, paginated: true},
+		{name: "classic-scalar-result", result: `{"id":"namespace-1"}`, resultInfo: `{"page":1,"per_page":1000,"total_pages":1}`, paginated: true, wantError: true},
+		{name: "classic-overfull-page", result: `[{"id":"one"},{"id":"two"}]`, resultInfo: `{"page":1,"per_page":1,"total_pages":1}`, paginated: true, wantError: true},
+		{name: "later-page", result: `[]`, resultInfo: `{"page":2,"count":0,"total_count":0}`, paginated: true, wantError: true},
+		{name: "multiple-pages", result: `[]`, resultInfo: `{"page":1,"per_page":1000,"total_pages":2}`, paginated: true, wantError: true},
+		{name: "truncated-total", result: `[{"id":"namespace-1"}]`, resultInfo: `{"page":1,"per_page":1000,"count":1,"total_count":2}`, paginated: true, wantError: true},
+		{name: "optional-surface-truncated-total", result: `[{"id":"domain-1"}]`, resultInfo: `{"page":1,"per_page":1000,"count":1,"total_count":2}`, wantError: true},
+		{name: "count-does-not-match-result", result: `[]`, resultInfo: `{"page":1,"per_page":1000,"count":1,"total_count":1}`, paginated: true, wantError: true},
+		{name: "partial-count-shape", result: `[]`, resultInfo: `{"page":1,"count":0}`, paginated: true, wantError: true},
+		{name: "missing-terminal-proof", result: `[]`, resultInfo: `{"page":1,"per_page":1000}`, paginated: true, wantError: true},
+		{name: "invalid-per-page", result: `[]`, resultInfo: `{"page":1,"per_page":0,"count":0,"total_count":0}`, paginated: true, wantError: true},
+		{name: "count-exceeds-page", result: `[{"id":"one"},{"id":"two"}]`, resultInfo: `{"page":1,"per_page":1,"count":2,"total_count":2}`, paginated: true, wantError: true},
+		{name: "count-shape-requires-array", result: `{"id":"namespace-1"}`, resultInfo: `{"page":1,"count":1,"total_count":1}`, paginated: true, wantError: true},
+		{name: "unknown-pagination-field", result: `[]`, resultInfo: `{"page":1,"count":0,"total_count":0,"cursor":"opaque"}`, paginated: true, wantError: true},
+		{name: "duplicate-pagination-field", result: `[]`, resultInfo: `{"page":1,"count":0,"count":1,"total_count":0}`, paginated: true, wantError: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := `{"success":true,"result":` + testCase.result + `,"errors":[],"messages":[],"result_info":` + testCase.resultInfo + `}`
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
+			})}
+			value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{path: "/client/v4/accounts/account-1/workers/durable_objects/namespaces?page=1&per_page=1000", paginated: testCase.paginated})
+			if testCase.wantError {
+				if err == nil || err.Error() != "E_OBSERVER_PAGINATION" {
+					t.Fatalf("incomplete pagination accepted: value=%#v err=%v", value, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("complete pagination rejected: %v", err)
+			}
+		})
 	}
 }
 

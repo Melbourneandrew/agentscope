@@ -70,6 +70,48 @@ type cloudflareSurfaceRequest struct {
 	allowNotFound bool
 }
 
+func validateCloudflarePagination(result any, raw json.RawMessage, required bool) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		if required {
+			return errors.New("E_OBSERVER_PAGINATION")
+		}
+		return nil
+	}
+	var page struct {
+		Page       *int `json:"page"`
+		PerPage    *int `json:"per_page"`
+		Count      *int `json:"count"`
+		TotalCount *int `json:"total_count"`
+		TotalPages *int `json:"total_pages"`
+	}
+	if err := strictJSON(raw, &page); err != nil || page.Page == nil || *page.Page != 1 {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	items, ok := result.([]any)
+	if !ok {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	if page.PerPage != nil && *page.PerPage <= 0 {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	if page.PerPage != nil && len(items) > *page.PerPage {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	hasCount := page.Count != nil
+	if hasCount != (page.TotalCount != nil) || (page.TotalPages == nil && !hasCount) {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	if page.TotalPages != nil && *page.TotalPages != 1 {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	if hasCount {
+		if *page.Count < 0 || *page.TotalCount < 0 || *page.Count != len(items) || *page.TotalCount != *page.Count {
+			return errors.New("E_OBSERVER_PAGINATION")
+		}
+	}
+	return nil
+}
+
 func fetchCloudflareSurface(ctx context.Context, client *http.Client, credential []byte, surface cloudflareSurfaceRequest) (any, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.cloudflare.com"+surface.path, nil)
 	if err != nil {
@@ -105,25 +147,17 @@ func fetchCloudflareSurface(ctx context.Context, client *http.Client, credential
 	if err := decoder.Decode(&envelope); err != nil || decoder.Decode(&struct{}{}) != io.EOF || !envelope.Success || len(envelope.Result) == 0 {
 		return nil, errors.New("E_OBSERVER_ENVELOPE")
 	}
-	if surface.paginated && (len(envelope.ResultInfo) == 0 || string(envelope.ResultInfo) == "null") {
-		return nil, errors.New("E_OBSERVER_PAGINATION")
-	}
-	if len(envelope.ResultInfo) > 0 && string(envelope.ResultInfo) != "null" {
-		var page struct {
-			Page       int `json:"page"`
-			TotalPages int `json:"total_pages"`
-		}
-		if err := json.Unmarshal(envelope.ResultInfo, &page); err != nil || (surface.paginated && (page.Page != 1 || page.TotalPages != 1)) || page.TotalPages > 1 {
-			return nil, errors.New("E_OBSERVER_PAGINATION")
-		}
-	}
 	var value any
 	decoder = json.NewDecoder(bytes.NewReader(envelope.Result))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 		return nil, errors.New("E_OBSERVER_SCHEMA")
 	}
-	return canonicalizeJSON(value), nil
+	value = canonicalizeJSON(value)
+	if err := validateCloudflarePagination(value, envelope.ResultInfo, surface.paginated); err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 func (observer CloudflareObserver) Observe(ctx context.Context, credential []byte, now time.Time) (StateObservation, error) {
