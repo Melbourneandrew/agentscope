@@ -124,11 +124,12 @@ func ensureUpgradeDirectory(path string, syncFn func(string) error) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
 		return err
 	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		return err
-	}
 	if err := validateOwnedPath(path, true); err != nil {
 		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode().Perm() != 0o700 {
+		return errors.New("E_UPGRADE_DIRECTORY")
 	}
 	if err := syncFn(path); err != nil {
 		return err
