@@ -24,6 +24,7 @@ import {
   verifyMaterializerParentSwapFixture,
 } from "./tooling/archive-compiler.mjs";
 import {
+  assertOwnedToolingAuthority,
   assertToolchainImageAuthority,
   ensurePlatformImage,
   nativeCandidatePlatform,
@@ -1090,35 +1091,31 @@ const validateRecords = () => {
     outputClosure:
       "exact-whole-writable-root-inventory-with-32MiB-output-cap-v2",
   });
-  assert.deepEqual(lock.ownedTooling, {
-    acquisitionDriverSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/acquire-driver.mjs"), 32 * 1024),
+  assertOwnedToolingAuthority(lock.ownedTooling, {
+    acquisitionDriver: snapshot(
+      join(root, "tooling/acquire-driver.mjs"),
+      32 * 1024,
     ),
-    archiveCompilerSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/archive-compiler.mjs"), 64 * 1024),
+    archiveCompiler: snapshot(
+      join(root, "tooling/archive-compiler.mjs"),
+      64 * 1024,
     ),
-    materializeHelperSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/materialize-helper.py"), 16 * 1024),
+    materializeHelper: snapshot(
+      join(root, "tooling/materialize-helper.py"),
+      16 * 1024,
     ),
-    execSupervisorSourceSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/exec-supervisor.c"), 16 * 1024),
+    execSupervisorSource: snapshot(
+      join(root, "tooling/exec-supervisor.c"),
+      16 * 1024,
     ),
-    buildDriverSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/build-driver.py"), 64 * 1024),
+    buildDriver: snapshot(join(root, "tooling/build-driver.py"), 64 * 1024),
+    namespaceHelperSource: snapshot(
+      join(root, "tooling/namespace-helper.cpp"),
+      16 * 1024,
     ),
-    namespaceHelperSourceSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/namespace-helper.cpp"), 16 * 1024),
-    ),
-    namespaceHelperLicense: "MIT",
-    runtimeBundlerSha256: sha(
-      "sha256",
-      snapshot(join(root, "tooling/runtime-bundler.py"), 32 * 1024),
+    runtimeBundler: snapshot(
+      join(root, "tooling/runtime-bundler.py"),
+      32 * 1024,
     ),
   });
   assert.deepEqual(lock.toolchainClosure, {

@@ -6,6 +6,24 @@ const base64Pattern =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const maximumRawProofBytes = 16_384;
 
+const sha256Hex = (value) => createHash("sha256").update(value).digest("hex");
+
+export const assertOwnedToolingAuthority = (claimed, tooling) => {
+  const expected = {
+    acquisitionDriverSha256: sha256Hex(tooling.acquisitionDriver),
+    archiveCompilerSha256: sha256Hex(tooling.archiveCompiler),
+    materializeHelperSha256: sha256Hex(tooling.materializeHelper),
+    execSupervisorSourceSha256: sha256Hex(tooling.execSupervisorSource),
+    buildDriverSha256: sha256Hex(tooling.buildDriver),
+    namespaceHelperSourceSha256: sha256Hex(tooling.namespaceHelperSource),
+    namespaceHelperLicense: "MIT",
+    runtimeBundlerSha256: sha256Hex(tooling.runtimeBundler),
+  };
+  if (JSON.stringify(claimed) !== JSON.stringify(expected))
+    throw new Error("native candidate owned tooling authority invalid");
+  return Object.freeze(expected);
+};
+
 export const nativeCandidatePlatform = Object.freeze({
   docker: "linux/amd64",
   os: "linux",

@@ -3,6 +3,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import {
+  assertOwnedToolingAuthority,
   assertToolchainImageAuthority,
   ensurePlatformImage,
   nativeCandidatePlatform,
@@ -41,6 +42,47 @@ const releaseMaterials = JSON.parse(
     "utf8",
   ),
 );
+const toolingBytes = Object.freeze({
+  acquisitionDriver: readFileSync(
+    new URL(
+      "../../native-candidate/tooling/acquire-driver.mjs",
+      import.meta.url,
+    ),
+  ),
+  archiveCompiler: readFileSync(
+    new URL(
+      "../../native-candidate/tooling/archive-compiler.mjs",
+      import.meta.url,
+    ),
+  ),
+  materializeHelper: readFileSync(
+    new URL(
+      "../../native-candidate/tooling/materialize-helper.py",
+      import.meta.url,
+    ),
+  ),
+  execSupervisorSource: readFileSync(
+    new URL(
+      "../../native-candidate/tooling/exec-supervisor.c",
+      import.meta.url,
+    ),
+  ),
+  buildDriver: readFileSync(
+    new URL("../../native-candidate/tooling/build-driver.py", import.meta.url),
+  ),
+  namespaceHelperSource: readFileSync(
+    new URL(
+      "../../native-candidate/tooling/namespace-helper.cpp",
+      import.meta.url,
+    ),
+  ),
+  runtimeBundler: readFileSync(
+    new URL(
+      "../../native-candidate/tooling/runtime-bundler.py",
+      import.meta.url,
+    ),
+  ),
+});
 const recordedToolchainAuthority = Object.freeze({
   sourceIndex: releaseMaterials.toolchainClosure.image,
   selectedManifest:
@@ -139,6 +181,31 @@ const expectToolchainAuthorityBinding = () => {
     );
 };
 
+const expectOwnedToolingBinding = () => {
+  expect(() =>
+    assertOwnedToolingAuthority(releaseMaterials.ownedTooling, toolingBytes),
+  ).not.toThrow();
+  expect(() =>
+    assertOwnedToolingAuthority(
+      {
+        ...releaseMaterials.ownedTooling,
+        buildDriverSha256:
+          "da8f51f4d5e8178ec98c9eca9b57bda1fe325c11ce3c6482dbd806a386a2e459",
+      },
+      toolingBytes,
+    ),
+  ).toThrow("native candidate owned tooling authority invalid");
+  expect(() =>
+    assertOwnedToolingAuthority(releaseMaterials.ownedTooling, {
+      ...toolingBytes,
+      buildDriver: Buffer.concat([
+        toolingBytes.buildDriver,
+        Buffer.from("# substituted\n"),
+      ]),
+    }),
+  ).toThrow("native candidate owned tooling authority invalid");
+};
+
 describe("native candidate platform image authority", () => {
   it.each([toolchain, execution])(
     "pulls and inspects $reference only for the admitted platform",
@@ -214,6 +281,10 @@ describe("native candidate platform image authority", () => {
 
   it("binds the selected manifest to the authoritative source index", () => {
     expectToolchainAuthorityBinding();
+  });
+
+  it("binds retained tooling evidence to the exact current build driver", () => {
+    expectOwnedToolingBinding();
   });
 
   it.each([

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "candidateDisposition": "proposed-unpublished-execution-eligible",
   "nativeTupleId": "node127-linux-x64-glibc",
-  "releaseMaterialManifestSha256": "197535308eadaecfa3d3af8fbc8a921fe3c5a43d185bacdb58f6637d5276fbed",
+  "releaseMaterialManifestSha256": "ab4feba21b07211467235ffdef83b3de9c627f7ccd7402d17c1a01fa90b35b56",
   "sourceMaterials": [
     {
       "name": "better-sqlite3",

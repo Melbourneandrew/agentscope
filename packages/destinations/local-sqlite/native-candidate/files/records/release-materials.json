@@ -28,7 +28,7 @@
     "archiveCompilerSha256": "81669934c98c189cd68eef207d29c6aefb9c03c47454f6cc707ef68a15a22e46",
     "materializeHelperSha256": "8dac5f559bb0c220b3c6532d60072e5d26a0a8aa884ce8d13f2f6eb2d271dfd6",
     "execSupervisorSourceSha256": "9cf8b6916cadaeaa4632966fbdf33e863b1154c368088b7eb6e9fdc0928c9264",
-    "buildDriverSha256": "da8f51f4d5e8178ec98c9eca9b57bda1fe325c11ce3c6482dbd806a386a2e459",
+    "buildDriverSha256": "a1384bab10a62730744febae9b10734e9b6dc15f6c02c3ea45951b0dc108725b",
     "namespaceHelperSourceSha256": "b272a64d95d184924e3cae5d3ed661bd45d863948a16b4b019ad48b92a22a162",
     "namespaceHelperLicense": "MIT",
     "runtimeBundlerSha256": "0edd81721b6f45f24f4855a2ccc70e0171af102dd1f7a8ddbb3b3eb76b0a9597"
