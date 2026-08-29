@@ -16,6 +16,7 @@ type UpgradeInput struct {
 	InstallInput
 	Now                            time.Time
 	predecessorSourceCommitForTest string
+	syncDirectoryForTest           func(string) error
 	afterStagingForTest            func() error
 	afterInstallationForTest       func() error
 	afterLauncherForTest           func() error
@@ -119,14 +120,20 @@ func verifyLauncherUpgradeCompletion(completion LauncherUpgradeCompletion, recor
 	return verifyDetached(installation.Roots[JournalRole], JournalRole, signature, payload)
 }
 
-func ensureUpgradeDirectory(path string) error {
+func ensureUpgradeDirectory(path string, syncFn func(string) error) error {
 	if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
 		return err
 	}
 	if err := os.Chmod(path, 0o700); err != nil {
 		return err
 	}
-	return validateOwnedPath(path, true)
+	if err := validateOwnedPath(path, true); err != nil {
+		return err
+	}
+	if err := syncFn(path); err != nil {
+		return err
+	}
+	return syncFn(filepath.Dir(path))
 }
 
 func removeUpgradeStage(path string) {
@@ -186,6 +193,10 @@ func Upgrade(input UpgradeInput) (Installation, error) {
 		input.Now = input.Now.UTC()
 	}
 	store := NewStore(input.Root)
+	syncUpgradeDirectory := syncDirectory
+	if input.syncDirectoryForTest != nil {
+		syncUpgradeDirectory = input.syncDirectoryForTest
+	}
 	guard, err := store.acquireAdmissionGuardUnchecked()
 	if err != nil {
 		return Installation{}, err
@@ -272,11 +283,11 @@ func Upgrade(input UpgradeInput) (Installation, error) {
 	}
 
 	upgradesRoot := store.path("journal", "launcher-upgrades")
-	if err := ensureUpgradeDirectory(upgradesRoot); err != nil {
+	if err := ensureUpgradeDirectory(upgradesRoot, syncUpgradeDirectory); err != nil {
 		return Installation{}, err
 	}
 	upgradeRoot := filepath.Join(upgradesRoot, fmt.Sprintf("%06d-%s", generation, launcherSHA256))
-	if err := ensureUpgradeDirectory(upgradeRoot); err != nil {
+	if err := ensureUpgradeDirectory(upgradeRoot, syncUpgradeDirectory); err != nil {
 		return Installation{}, err
 	}
 	intentPath := filepath.Join(upgradeRoot, "intent.json")

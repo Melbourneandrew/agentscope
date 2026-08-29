@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -237,5 +238,50 @@ func TestUpgradeRejectsSignedIntentSubstitution(t *testing.T) {
 	input.afterInstallationForTest = nil
 	if _, err := Upgrade(input); err == nil || err.Error() != "E_UPGRADE_RECORD" {
 		t.Fatalf("substituted intent accepted: %v", err)
+	}
+}
+
+func TestUpgradeRequiresDurableGenerationDirectoriesBeforeReplacement(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		failAt int
+	}{
+		{name: "upgrade-root-parent", failAt: 2},
+		{name: "generation-parent", failAt: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := newFixture(t)
+			input := item.upgradeInput(t)
+			installationBefore, err := os.ReadFile(item.store.path("policy", "installation.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			launcherBefore, err := os.ReadFile(item.store.path("bin", "agentscope-crabbox-control"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var synced []string
+			input.syncDirectoryForTest = func(path string) error {
+				synced = append(synced, path)
+				if len(synced) == test.failAt {
+					return errors.New("synthetic directory sync failure")
+				}
+				return nil
+			}
+			if _, err := Upgrade(input); err == nil || err.Error() != "synthetic directory sync failure" {
+				t.Fatalf("directory sync failure did not stop upgrade: %v", err)
+			}
+			upgradeRoot := item.store.path("journal", "launcher-upgrades")
+			generationRoot := filepath.Join(upgradeRoot, "000002-"+SHA256(input.Launcher))
+			expected := []string{upgradeRoot, item.store.path("journal"), generationRoot, upgradeRoot}
+			if len(synced) != test.failAt || !slices.Equal(synced, expected[:test.failAt]) {
+				t.Fatalf("upgrade directories were not synced child-before-parent: %v", synced)
+			}
+			installationAfter, _ := os.ReadFile(item.store.path("policy", "installation.json"))
+			launcherAfter, _ := os.ReadFile(item.store.path("bin", "agentscope-crabbox-control"))
+			if !bytes.Equal(installationBefore, installationAfter) || !bytes.Equal(launcherBefore, launcherAfter) {
+				t.Fatal("directory sync failure replaced protected identity or launcher")
+			}
+		})
 	}
 }
