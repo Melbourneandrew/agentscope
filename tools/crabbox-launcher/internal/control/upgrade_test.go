@@ -289,9 +289,9 @@ func TestUpgradeRequiresDurableGenerationDirectoriesBeforeReplacement(t *testing
 func TestEnsureUpgradeDirectoryRejectsExistingPathWithoutMutation(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		setup func(*testing.T, string) (string, os.FileMode)
+		setup func(*testing.T, string) string
 	}{
-		{name: "symlink", setup: func(t *testing.T, path string) (string, os.FileMode) {
+		{name: "symlink", setup: func(t *testing.T, path string) string {
 			target := filepath.Join(filepath.Dir(path), "unrelated")
 			if err := os.Mkdir(target, 0o755); err != nil {
 				t.Fatal(err)
@@ -299,19 +299,23 @@ func TestEnsureUpgradeDirectoryRejectsExistingPathWithoutMutation(t *testing.T) 
 			if err := os.Symlink(target, path); err != nil {
 				t.Fatal(err)
 			}
-			return target, 0o755
+			return target
 		}},
-		{name: "regular-file", setup: func(t *testing.T, path string) (string, os.FileMode) {
+		{name: "regular-file", setup: func(t *testing.T, path string) string {
 			if err := os.WriteFile(path, []byte("unrelated"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			return path, 0o644
+			return path
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			parent := t.TempDir()
 			path := filepath.Join(parent, "launcher-upgrades")
-			target, expectedMode := test.setup(t, path)
+			target := test.setup(t, path)
+			infoBefore, err := os.Lstat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
 			before, err := os.ReadFile(target)
 			if err != nil && test.name != "symlink" {
 				t.Fatal(err)
@@ -320,7 +324,7 @@ func TestEnsureUpgradeDirectoryRejectsExistingPathWithoutMutation(t *testing.T) 
 				t.Fatal("unsafe existing path accepted")
 			}
 			info, err := os.Lstat(target)
-			if err != nil || info.Mode().Perm() != expectedMode {
+			if err != nil || info.Mode().Perm() != infoBefore.Mode().Perm() {
 				t.Fatalf("target mode changed through rejected path: %v %o", err, info.Mode().Perm())
 			}
 			if test.name != "symlink" {
