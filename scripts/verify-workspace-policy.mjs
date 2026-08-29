@@ -50,20 +50,26 @@ const expectedInternalDependencies = new Map([
     ["@agentscope/destinations-core", "@agentscope/protocol"],
   ],
   ["@agentscope/harnesses-core", ["@agentscope/protocol"]],
-  ...[
-    "claude-code",
-    "codex",
-    "gemini-cli",
-    "hermes",
-    "opencode",
-    "openclaw",
-    "pi",
-  ].map((harness) => [
-    `@agentscope/harness-${harness}`,
-    ["@agentscope/core", "@agentscope/harnesses-core", "@agentscope/protocol"],
-  ]),
+  [
+    "@agentscope/harness-codex",
+    ["@agentscope/harnesses-core", "@agentscope/protocol"],
+  ],
+  ...["claude-code", "gemini-cli", "hermes", "opencode", "openclaw", "pi"].map(
+    (harness) => [
+      `@agentscope/harness-${harness}`,
+      [
+        "@agentscope/core",
+        "@agentscope/harnesses-core",
+        "@agentscope/protocol",
+      ],
+    ],
+  ),
   ["@agentscope/integration", ["@agentscope/testkit"]],
 ]);
+
+export function expectedInternalDependenciesFor(name) {
+  return [...(expectedInternalDependencies.get(name) ?? [])].sort();
+}
 
 const packageRoots = [
   "apps",
@@ -183,7 +189,7 @@ for (const [name, { manifest }] of manifests) {
   const internal = Object.keys(declared)
     .filter((dependency) => dependency.startsWith("@agentscope/"))
     .sort();
-  const expected = [...(expectedInternalDependencies.get(name) ?? [])].sort();
+  const expected = expectedInternalDependenciesFor(name);
 
   if (JSON.stringify(internal) !== JSON.stringify(expected)) {
     throw new Error(

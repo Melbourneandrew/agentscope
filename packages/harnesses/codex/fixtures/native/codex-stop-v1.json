@@ -1,0 +1,97 @@
+{
+  "availableStartPosition": 7,
+  "boundaryId": "turn-0008",
+  "boundaryKind": "turn",
+  "exclusiveEndPosition": 11,
+  "expectedFields": [
+    "error.type",
+    "llm.invocation_parameters",
+    "llm.model_name",
+    "llm.provider",
+    "llm.system",
+    "llm.token_count.completion",
+    "llm.token_count.completion_details.reasoning",
+    "llm.token_count.prompt",
+    "llm.token_count.total",
+    "span.name",
+    "tool.id",
+    "tool.name"
+  ],
+  "fixtureId": "codex-stop-v1",
+  "fixtureVersion": 1,
+  "governance": {
+    "license": {
+      "redistribution": "reviewed-for-repository",
+      "reviewedLicenseId": "LicenseRef-Agentscope-Synthetic",
+      "sourceReference": "https://github.com/Melbourneandrew/agentscope/blob/7a2743b901ae43db1125b1ec8b87343207be16aa/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic"
+    },
+    "provenance": {
+      "artifactAuthority": {
+        "reason": "independent-integrity-unavailable",
+        "status": "unresolved"
+      },
+      "captureKind": "synthetic",
+      "captureRecipe": "codex-synthetic-stop-v1",
+      "sourceReference": "urn:agentscope:synthetic:codex-stop-v1"
+    },
+    "redaction": {
+      "classification": "sanitized-native-fixture",
+      "profileVersion": 1,
+      "rawContentRetained": false,
+      "removedCategories": [
+        "credentials",
+        "raw-transcript",
+        "terminal-output",
+        "user-content",
+        "user-paths"
+      ]
+    },
+    "representative": {
+      "evidenceSlot": "codex-0-149-1",
+      "representativeVersion": "0.149.1",
+      "scenarioId": "codex-exec-jsonl-v1"
+    },
+    "review": {
+      "records": [
+        {
+          "reference": "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5444077784",
+          "reviewExecutionIdentity": "0179d87d-bc1c-427d-b179-608f51b4ef7b",
+          "reviewTaskIdentity": "/root/fixture_privacy_review",
+          "reviewedFixtureBlobSha": "565a2f749be5da3435bc75bd5a75192e8259b5fc",
+          "reviewedHeadSha": "9f8f5f53ea66ae51f487f7de4276211964f754ec",
+          "role": "privacy",
+          "submittedAt": "2026-08-27T19:16:11.621Z"
+        },
+        {
+          "reference": "https://github.com/Melbourneandrew/agentscope/pull/95#issuecomment-5444106555",
+          "reviewExecutionIdentity": "01e074fb-3da2-4548-b34a-e543d2c57eab",
+          "reviewTaskIdentity": "/root/fixture_redistribution_review",
+          "reviewedFixtureBlobSha": "565a2f749be5da3435bc75bd5a75192e8259b5fc",
+          "reviewedHeadSha": "9f8f5f53ea66ae51f487f7de4276211964f754ec",
+          "role": "redistribution",
+          "submittedAt": "2026-08-27T19:18:56.556Z"
+        }
+      ],
+      "status": "approved"
+    }
+  },
+  "harnessId": "codex",
+  "harnessVersion": "0.149.1",
+  "nativeIdentity": "session-component-0001",
+  "nativeIdentityKind": "session",
+  "positionKind": "sequence",
+  "sanitizedPayload": {
+    "error-present": false,
+    "input-units": 21,
+    "model-name": "gpt-5.2-codex",
+    "model-provider": "openai",
+    "model-system": "openai",
+    "output-units": 13,
+    "reasoning-level": "medium",
+    "reasoning-units": 5,
+    "tool-id": "tool-0001",
+    "tool-name": "exec-command",
+    "total-units": 34
+  },
+  "sourceGeneration": 1
+}

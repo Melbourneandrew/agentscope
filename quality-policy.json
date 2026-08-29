@@ -110,9 +110,13 @@
     },
     "packages/harnesses/codex": {
       "role": "harness-adapter",
-      "unitTests": "marker-only",
-      "maxSourceFiles": 1,
-      "maxSourceLines": 1
+      "unitTests": "required",
+      "coverage": {
+        "statements": 93,
+        "branches": 91,
+        "functions": 100,
+        "lines": 95
+      }
     },
     "packages/harnesses/gemini-cli": {
       "role": "harness-adapter",
