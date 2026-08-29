@@ -1,4 +1,17 @@
-import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
@@ -97,6 +110,26 @@ const recordedToolchainAuthority = Object.freeze({
     releaseMaterials.toolchainClosure.selectedManifest.rawManifestGzipBase64,
   platform: releaseMaterials.toolchainClosure.selectedManifest.platform,
 });
+
+const loadSnapshotAuthority = () => {
+  const source = readFileSync(
+    new URL("../../native-candidate/verify-artifact.mjs", import.meta.url),
+    "utf8",
+  );
+  const start = source.indexOf("const verifierSelfSourceMaximumBytes =");
+  const end = source.indexOf("\nconst command =", start);
+  assert(start >= 0 && end > start);
+  const authority = new Function(
+    "assert",
+    "openSync",
+    "constants",
+    "fstatSync",
+    "readSync",
+    "closeSync",
+    `${source.slice(start, end)}; return { snapshot, verifierSelfSourceMaximumBytes };`,
+  )(assert, openSync, constants, fstatSync, readSync, closeSync);
+  return { authority, source };
+};
 
 const mutateRawProof = (field, mutate) => {
   const document = JSON.parse(
@@ -217,6 +250,45 @@ const expectOwnedToolingBinding = () => {
     }),
   ).toThrow("native candidate owned tooling authority invalid");
 };
+
+describe("native candidate verifier source authority", () => {
+  it("bounds the exact verifier source with its dedicated ceiling", () => {
+    const { authority, source } = loadSnapshotAuthority();
+    const temporary = mkdtempSync(
+      join(tmpdir(), "agentscope-verifier-source-"),
+    );
+    const admitted = join(temporary, "admitted.mjs");
+    const rejected = join(temporary, "rejected.mjs");
+    try {
+      expect(authority.verifierSelfSourceMaximumBytes).toBe(73_728);
+      expect(
+        authority.snapshot(
+          new URL(
+            "../../native-candidate/verify-artifact.mjs",
+            import.meta.url,
+          ),
+          authority.verifierSelfSourceMaximumBytes,
+        ),
+      ).toHaveLength(Buffer.byteLength(source));
+
+      writeFileSync(admitted, Buffer.alloc(73_728, 0x61));
+      expect(
+        authority.snapshot(admitted, authority.verifierSelfSourceMaximumBytes),
+      ).toHaveLength(73_728);
+
+      writeFileSync(rejected, Buffer.alloc(73_729, 0x61));
+      expect(() =>
+        authority.snapshot(rejected, authority.verifierSelfSourceMaximumBytes),
+      ).toThrow("native candidate snapshot is outside its byte ceiling");
+
+      expect(source).toMatch(
+        /snapshot\(join\(root, "tooling\/build-driver\.py"\), 64 \* 1024\)/,
+      );
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("native candidate platform image authority", () => {
   it.each([toolchain, execution])(

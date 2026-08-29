@@ -82,6 +82,7 @@ const materials = Object.freeze([
 
 const sha = (algorithm, bytes, encoding = "hex") =>
   createHash(algorithm).update(bytes).digest(encoding);
+const verifierSelfSourceMaximumBytes = 72 * 1024;
 const snapshot = (file, maximumBytes) => {
   const descriptor = openSync(
     file,
@@ -89,7 +90,10 @@ const snapshot = (file, maximumBytes) => {
   );
   try {
     const before = fstatSync(descriptor);
-    assert(before.isFile() && before.size > 0 && before.size <= maximumBytes);
+    assert(
+      before.isFile() && before.size > 0 && before.size <= maximumBytes,
+      "native candidate snapshot is outside its byte ceiling",
+    );
     const bytes = Buffer.allocUnsafe(before.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -2027,7 +2031,7 @@ try {
     )}`,
     supervisorDigest: `sha256:${sha(
       "sha256",
-      snapshot(fileURLToPath(import.meta.url), 64 * 1024),
+      snapshot(fileURLToPath(import.meta.url), verifierSelfSourceMaximumBytes),
     )}`,
     testDriverDigest: `sha256:${sha(
       "sha256",
