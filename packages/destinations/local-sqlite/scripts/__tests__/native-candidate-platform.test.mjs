@@ -260,7 +260,7 @@ describe("native candidate verifier source authority", () => {
     const admitted = join(temporary, "admitted.mjs");
     const rejected = join(temporary, "rejected.mjs");
     try {
-      expect(authority.verifierSelfSourceMaximumBytes).toBe(73_728);
+      expect(authority.verifierSelfSourceMaximumBytes).toBe(69_632);
       expect(
         authority.snapshot(
           new URL(
@@ -271,12 +271,12 @@ describe("native candidate verifier source authority", () => {
         ),
       ).toHaveLength(Buffer.byteLength(source));
 
-      writeFileSync(admitted, Buffer.alloc(73_728, 0x61));
+      writeFileSync(admitted, Buffer.alloc(69_632, 0x61));
       expect(
         authority.snapshot(admitted, authority.verifierSelfSourceMaximumBytes),
-      ).toHaveLength(73_728);
+      ).toHaveLength(69_632);
 
-      writeFileSync(rejected, Buffer.alloc(73_729, 0x61));
+      writeFileSync(rejected, Buffer.alloc(69_633, 0x61));
       expect(() =>
         authority.snapshot(rejected, authority.verifierSelfSourceMaximumBytes),
       ).toThrow("native candidate snapshot is outside its byte ceiling");

@@ -82,7 +82,7 @@ const materials = Object.freeze([
 
 const sha = (algorithm, bytes, encoding = "hex") =>
   createHash(algorithm).update(bytes).digest(encoding);
-const verifierSelfSourceMaximumBytes = 72 * 1024;
+const verifierSelfSourceMaximumBytes = 68 * 1024;
 const snapshot = (file, maximumBytes) => {
   const descriptor = openSync(
     file,
