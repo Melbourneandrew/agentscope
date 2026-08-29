@@ -26,7 +26,6 @@
     "prepack": "node ../../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
-    "@agentscope/core": "workspace:*",
     "@agentscope/harnesses-core": "workspace:*",
     "@agentscope/protocol": "workspace:*"
   },

@@ -245,6 +245,7 @@ const productionRoot = await import(pathToFileURL(rootRuntime).href);
 exactExports(
   productionRoot,
   [
+    "CODEX_0_149_1_ROOT_HOOK_SCHEMA_AUTHORITY",
     "CODEX_COMPONENT_EVIDENCE_SLOT",
     "CODEX_HOOK_CONFIGURATION_PATH",
     "CODEX_REPRESENTATIVE_VERSION",

@@ -14,6 +14,7 @@ export {
   encodeCodexPosixHookCommand,
 } from "./installation.js";
 export {
+  CODEX_0_149_1_ROOT_HOOK_SCHEMA_AUTHORITY,
   CodexMappingError,
   decodeCodexRootHookInput,
   mapCodexSanitizedNativeObservation,

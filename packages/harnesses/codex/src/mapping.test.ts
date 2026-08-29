@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { semanticProfileDescriptors } from "@agentscope/protocol";
 
 import {
+  CODEX_0_149_1_ROOT_HOOK_SCHEMA_AUTHORITY,
   CodexMappingError,
   decodeCodexRootHookInput,
   mapCodexSanitizedNativeObservation,
@@ -14,6 +15,39 @@ const encoder = new TextEncoder();
 
 const hookInput = (value: unknown): Uint8Array =>
   encoder.encode(JSON.stringify(value));
+
+const completeHookInput = (
+  value: Record<string, unknown> & { hook_event_name: string },
+): Uint8Array => {
+  const common = {
+    cwd: "/untrusted/workspace",
+    session_id: "session-1",
+    transcript_path: null,
+  };
+  if (value.hook_event_name === "SessionStart")
+    return hookInput({
+      ...common,
+      model: "component-model",
+      permission_mode: "default",
+      source: "startup",
+      ...value,
+    });
+  if (value.hook_event_name === "Stop")
+    return hookInput({
+      ...common,
+      last_assistant_message: null,
+      model: "component-model",
+      permission_mode: "default",
+      stop_hook_active: false,
+      turn_id: "turn-1",
+      ...value,
+    });
+  return hookInput({
+    ...common,
+    reason: "other",
+    ...value,
+  });
+};
 
 const observation = (
   overrides: Partial<CodexSanitizedNativeObservation> = {},
@@ -86,6 +120,52 @@ const expectProtocolValidCandidateSemantics = (
   }
 };
 
+describe("Codex root hook schema authority", () => {
+  it("pins the exact closed 0.149.1 root hook schema authority", () => {
+    const authority = CODEX_0_149_1_ROOT_HOOK_SCHEMA_AUTHORITY;
+    expect(authority.representativeVersion).toBe("0.149.1");
+    expect(authority.sourceCommit).toBe(
+      "ff29a44391deccde0aba0f8390337d7f3c319ea4",
+    );
+    expect(authority.schemas.SessionStart.sourceSha256).toBe(
+      "690c0eef7c9f3ddcd41e24207b81b362101a300b4abec076b990a1cd79a66e20",
+    );
+    expect(authority.schemas.SessionStart.requiredKeys).toEqual([
+      "cwd",
+      "hook_event_name",
+      "model",
+      "permission_mode",
+      "session_id",
+      "source",
+      "transcript_path",
+    ]);
+    expect(authority.schemas.Stop.sourceSha256).toBe(
+      "7db4793c404b5c46b230c27b9507eb1a558fd958689d8715221c5dd81351a06a",
+    );
+    expect(authority.schemas.Stop.requiredKeys).toEqual([
+      "cwd",
+      "hook_event_name",
+      "last_assistant_message",
+      "model",
+      "permission_mode",
+      "session_id",
+      "stop_hook_active",
+      "transcript_path",
+      "turn_id",
+    ]);
+    expect(authority.schemas.SessionEnd.sourceSha256).toBe(
+      "23b1b69f92fa8ac29f8319478984b5aa5aaf09e5ca355ce90aa010452937e41c",
+    );
+    expect(authority.schemas.SessionEnd.requiredKeys).toEqual([
+      "cwd",
+      "hook_event_name",
+      "reason",
+      "session_id",
+      "transcript_path",
+    ]);
+  });
+});
+
 describe("Codex root hook input", () => {
   it.each([
     [
@@ -99,7 +179,7 @@ describe("Codex root hook input", () => {
         eventName: "SessionStart",
         sessionId: "session-1",
         turnId: null,
-        model: null,
+        model: "component-model",
         transcriptAvailable: true,
       },
     ],
@@ -134,7 +214,7 @@ describe("Codex root hook input", () => {
       },
     ],
   ])("retains only bounded categorical root metadata", (input, expected) => {
-    const decoded = decodeCodexRootHookInput(hookInput(input));
+    const decoded = decodeCodexRootHookInput(completeHookInput(input));
     expect(decoded).toEqual(expected);
     expect(decoded).not.toHaveProperty("transcript_path");
   });
@@ -169,7 +249,109 @@ describe("Codex root hook input", () => {
       CodexMappingError,
     );
   });
+});
 
+describe("Codex closed hook schema", () => {
+  it.each(["startup", "resume", "clear", "compact"])(
+    "accepts the pinned SessionStart source %s",
+    (source) => {
+      expect(
+        decodeCodexRootHookInput(
+          completeHookInput({ hook_event_name: "SessionStart", source }),
+        ).eventName,
+      ).toBe("SessionStart");
+    },
+  );
+
+  it.each(["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"])(
+    "accepts the pinned permission mode %s",
+    (permission_mode) => {
+      expect(
+        decodeCodexRootHookInput(
+          completeHookInput({ hook_event_name: "Stop", permission_mode }),
+        ).eventName,
+      ).toBe("Stop");
+    },
+  );
+
+  it("accepts the complete Stop nullable fields and boolean state", () => {
+    expect(
+      decodeCodexRootHookInput(
+        completeHookInput({
+          hook_event_name: "Stop",
+          last_assistant_message: "bounded-message",
+          stop_hook_active: true,
+          transcript_path: "/untrusted/transcript.jsonl",
+        }),
+      ).transcriptAvailable,
+    ).toBe(true);
+  });
+
+  it.each([
+    { hook_event_name: "SessionStart", cwd: 42 },
+    { hook_event_name: "SessionStart", permission_mode: "invalid" },
+    { hook_event_name: "SessionStart", transcript_path: 42 },
+    { hook_event_name: "SessionStart", transcript_path: "x".repeat(4_097) },
+    { hook_event_name: "Stop", last_assistant_message: 42 },
+    { hook_event_name: "Stop", stop_hook_active: "false" },
+    { hook_event_name: "SessionEnd", reason: "shutdown" },
+  ])("rejects a value outside the pinned schema %#", (value) => {
+    expect(() => decodeCodexRootHookInput(completeHookInput(value))).toThrow(
+      CodexMappingError,
+    );
+  });
+
+  it("rejects missing, additional, and inherited closed-schema fields", () => {
+    expect(() =>
+      decodeCodexRootHookInput(
+        completeHookInput({ hook_event_name: "Stop", extra: true }),
+      ),
+    ).toThrow(CodexMappingError);
+    expect(() =>
+      decodeCodexRootHookInput(
+        hookInput({
+          cwd: "/untrusted/workspace",
+          hook_event_name: "SessionStart",
+          model: "component-model",
+          permission_mode: "default",
+          source: "startup",
+          transcript_path: null,
+        }),
+      ),
+    ).toThrow(CodexMappingError);
+    const previous = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      "session_id",
+    );
+    Object.defineProperty(Object.prototype, "session_id", {
+      value: "inherited-session",
+      configurable: true,
+      writable: true,
+    });
+    let rejected = false;
+    try {
+      decodeCodexRootHookInput(
+        hookInput({
+          cwd: "/untrusted/workspace",
+          hook_event_name: "SessionStart",
+          model: "component-model",
+          permission_mode: "default",
+          source: "startup",
+          transcript_path: null,
+        }),
+      );
+    } catch (error) {
+      rejected = error instanceof CodexMappingError;
+    } finally {
+      if (previous === undefined)
+        Reflect.deleteProperty(Object.prototype, "session_id");
+      else Object.defineProperty(Object.prototype, "session_id", previous);
+    }
+    expect(rejected).toBe(true);
+  });
+});
+
+describe("Codex root hook input rejection", () => {
   it("rejects malformed, oversized, and subclassed byte input", () => {
     expect(() => decodeCodexRootHookInput(encoder.encode("{"))).toThrow(
       CodexMappingError,
@@ -311,7 +493,7 @@ describe("Codex native OpenInference mapping", () => {
 describe("Codex hook correlation", () => {
   it("claims hook model provenance only after exact native correlation", () => {
     const hook = decodeCodexRootHookInput(
-      hookInput({
+      completeHookInput({
         hook_event_name: "Stop",
         session_id: "session-component-0001",
         turn_id: "turn-0008",
@@ -348,7 +530,7 @@ describe("Codex hook correlation", () => {
         model: "model-other",
       },
     ]) {
-      const candidate = decodeCodexRootHookInput(hookInput(mismatch));
+      const candidate = decodeCodexRootHookInput(completeHookInput(mismatch));
       expect(() =>
         mapCodexSanitizedNativeObservation(
           observation(),
@@ -448,7 +630,7 @@ describe("Codex unavailable native metadata", () => {
       ]),
     );
     const hook = decodeCodexRootHookInput(
-      hookInput({
+      completeHookInput({
         hook_event_name: "Stop",
         session_id: "session-component-0001",
         turn_id: "turn-0008",

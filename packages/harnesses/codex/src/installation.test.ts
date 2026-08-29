@@ -390,6 +390,7 @@ describe("Codex duplicate-aware configuration rejection", () => {
   it.each([
     '{"hooks":42}',
     '{"hooks":{"Stop":{}}}',
+    '{"foreign":9007199254740993}',
     '{"hooks":{},"hooks":{"Stop":[]}}',
     '{"hooks":{"Stop":[],"Stop":[{"hooks":[]}]}}',
     '{"hooks":{"Stop":[],"\\u0053top":[{"hooks":[]}]}}',

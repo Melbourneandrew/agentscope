@@ -84,6 +84,8 @@ const cloneOwnJsonData = (value: unknown): unknown => {
     }
     return output;
   }
+  if (typeof value === "number" && !Number.isSafeInteger(value))
+    return invalid();
   if (!plainRecord(value)) return value;
   const output = emptyRecord();
   const keys = Reflect.ownKeys(value);
