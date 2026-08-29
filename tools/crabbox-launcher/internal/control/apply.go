@@ -442,6 +442,12 @@ type CommandExecutor struct {
 	Timeout                        time.Duration
 	HTTPClient                     *http.Client
 	skipRuntimeVerificationForTest bool
+	copyOutputForTest              func(io.Reader) error
+	waitCommandForTest             func(*exec.Cmd) error
+	drainTimeoutForTest            time.Duration
+	beforeCommandStartForTest      func()
+	processJoinTimeoutForTest      time.Duration
+	processWaitExceededForTest     func()
 }
 
 func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocation) (receipt MutationReceipt, retErr error) {
@@ -462,8 +468,9 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 	commandContext, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	paths := runtimePaths(executor.ProtectedRoot)
-	command := exec.Command(paths.node, append([]string{paths.wranglerCLI}, args...)...)
+	command := exec.CommandContext(commandContext, paths.node, append([]string{paths.wranglerCLI}, args...)...)
 	configureProcessGroup(command)
+	command.Cancel = func() error { return terminateProcessGroup(command) }
 	if !executor.skipRuntimeVerificationForTest {
 		if executor.ExecutorUID <= 0 || uidProcessesPresent(executor.ExecutorUID) {
 			return MutationReceipt{}, errors.New("E_EXECUTOR_IDENTITY_BUSY")
@@ -487,17 +494,37 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 	if stdin != nil {
 		command.Stdin = stdin
 	}
-	stdout, err := command.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return MutationReceipt{}, errors.New("E_EXECUTOR_PIPE")
 	}
-	stderr, err := command.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return MutationReceipt{}, errors.New("E_EXECUTOR_PIPE")
+	}
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
+	if executor.beforeCommandStartForTest != nil {
+		executor.beforeCommandStartForTest()
+	}
+	if commandContext.Err() != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
+		return MutationReceipt{}, errors.New("E_EXECUTOR_TIMEOUT")
 	}
 	if err := command.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return MutationReceipt{}, errors.New("E_EXECUTOR_START")
 	}
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 	tracked := map[int]struct{}{}
 	var trackedMu sync.Mutex
 	trackerDone := make(chan struct{})
@@ -541,23 +568,40 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 		}
 	}()
 	outputDone := make(chan error, 2)
+	copyOutput := func(reader io.Reader) error {
+		if executor.copyOutputForTest != nil {
+			return executor.copyOutputForTest(reader)
+		}
+		return CopyBounded(ioDiscard{}, reader, 64<<10)
+	}
 	go func() {
-		err := CopyBounded(ioDiscard{}, stdout, 64<<10)
+		err := copyOutput(stdout)
 		if err != nil {
 			_ = stdout.Close()
 		}
 		outputDone <- err
 	}()
 	go func() {
-		err := CopyBounded(ioDiscard{}, stderr, 64<<10)
+		err := copyOutput(stderr)
 		if err != nil {
 			_ = stderr.Close()
 		}
 		outputDone <- err
 	}()
 	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
+	go func() {
+		if executor.waitCommandForTest != nil {
+			waitDone <- executor.waitCommandForTest(command)
+			return
+		}
+		waitDone <- command.Wait()
+	}()
 	var waitErr error
+	waitExceededBound := false
+	processJoinTimeout := 2 * time.Second
+	if executor.processJoinTimeoutForTest > 0 {
+		processJoinTimeout = executor.processJoinTimeoutForTest
+	}
 	select {
 	case waitErr = <-waitDone:
 	case <-commandContext.Done():
@@ -569,27 +613,43 @@ func (executor CommandExecutor) Invoke(ctx context.Context, invocation Invocatio
 		_ = terminateProcessGroup(command)
 		select {
 		case waitErr = <-waitDone:
-		case <-time.After(2 * time.Second):
+		case <-time.After(processJoinTimeout):
 			_ = killProcessGroup(command)
 			select {
 			case waitErr = <-waitDone:
-			case <-time.After(2 * time.Second):
+			case <-time.After(processJoinTimeout):
 				_ = stdout.Close()
 				_ = stderr.Close()
-				return MutationReceipt{}, errors.New("E_EXECUTOR_UNJOINED")
+				if executor.processWaitExceededForTest != nil {
+					executor.processWaitExceededForTest()
+				}
+				waitErr = <-waitDone
+				waitExceededBound = true
 			}
 		}
 	}
-	_ = stdout.Close()
-	_ = stderr.Close()
+	drainTimeout := 2 * time.Second
+	if executor.drainTimeoutForTest > 0 {
+		drainTimeout = executor.drainTimeoutForTest
+	}
 	var outputErrors []error
 	for len(outputErrors) < 2 {
 		select {
 		case outputErr := <-outputDone:
 			outputErrors = append(outputErrors, outputErr)
-		case <-time.After(2 * time.Second):
+		case <-time.After(drainTimeout):
+			_ = stdout.Close()
+			_ = stderr.Close()
+			for len(outputErrors) < 2 {
+				outputErrors = append(outputErrors, <-outputDone)
+			}
 			return MutationReceipt{}, errors.New("E_EXECUTOR_DRAIN_TIMEOUT")
 		}
+	}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	if waitExceededBound {
+		return MutationReceipt{}, errors.New("E_EXECUTOR_UNJOINED")
 	}
 	if commandContext.Err() != nil {
 		return MutationReceipt{}, errors.New("E_EXECUTOR_TIMEOUT")
