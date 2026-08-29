@@ -256,6 +256,30 @@ describe("Codex native OpenInference mapping", () => {
     expectUnavailableParity(mapped);
     expectProtocolValidCandidateSemantics(mapped);
   });
+
+  it("encodes invocation parameters without inherited callbacks", () => {
+    const previous = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      "toJSON",
+    );
+    let mapped: CodexMappedNativeObservation;
+    Object.defineProperty(Object.prototype, "toJSON", {
+      value: () => ({ prototypeCanary: true }),
+      configurable: true,
+      writable: true,
+    });
+    try {
+      mapped = mapCodexSanitizedNativeObservation(observation(), checkpoint);
+    } finally {
+      if (previous === undefined)
+        delete (Object.prototype as { toJSON?: unknown }).toJSON;
+      else Object.defineProperty(Object.prototype, "toJSON", previous);
+    }
+    const invocationParameters = mapped.candidate.operations
+      .flatMap(({ fields }) => fields)
+      .find(({ field }) => field === "llm.invocation_parameters");
+    expect(invocationParameters?.value).toBe('{"reasoning_effort":"medium"}');
+  });
 });
 
 describe("Codex hook correlation", () => {

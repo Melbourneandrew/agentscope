@@ -266,6 +266,53 @@ describe("Codex duplicate-aware configuration boundary", () => {
     }
   });
 
+  it("serializes owned and preserved configuration without inherited callbacks", () => {
+    const ownedInvocation = invocation();
+    const target = JSON.stringify({
+      description: "foreign",
+      foreignNull: null,
+      foreignTrue: true,
+      foreignFalse: false,
+      foreignNumber: 42,
+      foreignArray: [1, false, null],
+      foreignEmpty: {},
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [] }],
+      },
+    });
+    const previous = Object.getOwnPropertyDescriptor(
+      Object.prototype,
+      "toJSON",
+    );
+    let decision: HarnessTargetDecision;
+    Object.defineProperty(Object.prototype, "toJSON", {
+      value: () => ({ prototypeCanary: true }),
+      configurable: true,
+      writable: true,
+    });
+    try {
+      decision = decide("install", ownedInvocation, target);
+    } finally {
+      if (previous === undefined)
+        delete (Object.prototype as { toJSON?: unknown }).toJSON;
+      else Object.defineProperty(Object.prototype, "toJSON", previous);
+    }
+    const serialized = replacementText(decision);
+    expect(serialized).toContain('"PreToolUse"');
+    expect(serialized).toContain('"matcher": "Bash"');
+    expect(serialized).toContain('"SessionStart"');
+    expect(serialized).toContain('"SessionEnd"');
+    expect(serialized).not.toContain("prototypeCanary");
+    expect(JSON.parse(serialized)).toMatchObject({
+      foreignNull: null,
+      foreignTrue: true,
+      foreignFalse: false,
+      foreignNumber: 42,
+      foreignArray: [1, false, null],
+      foreignEmpty: {},
+    });
+  });
+
   it.each([
     '{"hooks":{},"hooks":{"Stop":[]}}',
     '{"hooks":{"Stop":[],"Stop":[{"hooks":[]}]}}',

@@ -376,7 +376,7 @@ const createModelFields = (
         ),
         semanticField(
           COMMON_NATIVE_SEMANTIC_FIELDS.modelInvocationParameters,
-          JSON.stringify({ reasoning_effort: value.reasoningLevel }),
+          `{"reasoning_effort":${JSON.stringify(value.reasoningLevel)}}`,
           "native-artifact",
         ),
       ]);

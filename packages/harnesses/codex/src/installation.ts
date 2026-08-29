@@ -229,8 +229,35 @@ const parseConfiguration = (bytes: Uint8Array): JsonRecord | undefined => {
   }
 };
 
+const quoteJsonString = (value: string): string => JSON.stringify(value);
+
+const serializeOwnJsonData = (value: unknown, depth = 0): string => {
+  if (value === null) return "null";
+  if (typeof value === "string") return quoteJsonString(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number")
+    return Number.isFinite(value) ? String(value) : invalid();
+  const indentation = "  ".repeat(depth);
+  const childIndentation = "  ".repeat(depth + 1);
+  if (Array.isArray(value)) {
+    const items = value.map((item) => serializeOwnJsonData(item, depth + 1));
+    return items.length === 0
+      ? "[]"
+      : `[\n${items.map((item) => `${childIndentation}${item}`).join(",\n")}\n${indentation}]`;
+  }
+  if (!plainRecord(value)) return invalid();
+  const entries = Object.keys(value).map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !("value" in descriptor)) return invalid();
+    return `${childIndentation}${quoteJsonString(key)}: ${serializeOwnJsonData(descriptor.value, depth + 1)}`;
+  });
+  return entries.length === 0
+    ? "{}"
+    : `{\n${entries.join(",\n")}\n${indentation}}`;
+};
+
 const serializeConfiguration = (root: JsonRecord): Uint8Array =>
-  encodeUtf8.encode(`${JSON.stringify(root, null, 2)}\n`);
+  encodeUtf8.encode(`${serializeOwnJsonData(root)}\n`);
 
 const installOwnedGroups = (
   root: JsonRecord,
