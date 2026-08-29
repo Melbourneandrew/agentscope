@@ -235,9 +235,6 @@ importers:
 
   packages/harnesses/codex:
     dependencies:
-      "@agentscope/core":
-        specifier: workspace:*
-        version: link:../../core
       "@agentscope/harnesses-core":
         specifier: workspace:*
         version: link:../core
