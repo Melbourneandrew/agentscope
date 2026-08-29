@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "candidateDisposition": "proposed-unpublished-execution-eligible",
   "nativeTupleId": "node127-linux-x64-glibc",
-  "releaseMaterialManifestSha256": "b29e79f65ae968c6d337fc524ff6d0aee52b2665597bc40f6bc9a5b437b69587",
+  "releaseMaterialManifestSha256": "197535308eadaecfa3d3af8fbc8a921fe3c5a43d185bacdb58f6637d5276fbed",
   "sourceMaterials": [
     {
       "name": "better-sqlite3",
@@ -35,6 +35,7 @@
     "containerImage": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
     "containerImageManifestBytes": 2493,
     "containerImageId": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+    "containerImageConfigBytes": 6629,
     "containerPlatform": {
       "docker": "linux/amd64",
       "os": "linux",

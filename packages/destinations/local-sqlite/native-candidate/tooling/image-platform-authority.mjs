@@ -1,4 +1,10 @@
+import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
+
 const dockerDigestPattern = /^sha256:[0-9a-f]{64}$/u;
+const base64Pattern =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const maximumRawProofBytes = 16_384;
 
 export const nativeCandidatePlatform = Object.freeze({
   docker: "linux/amd64",
@@ -15,19 +21,48 @@ export const nativeCandidateToolchainImageAuthority = Object.freeze({
   selectedManifestBytes: 2493,
   configDigest:
     "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+  configBytes: 6629,
   platform: nativeCandidatePlatform,
 });
 
-export const assertToolchainImageAuthority = (authority) => {
-  const expected = nativeCandidateToolchainImageAuthority;
+const rawProof = (encoded) => {
   if (
+    typeof encoded !== "string" ||
+    encoded.length === 0 ||
+    encoded.length > maximumRawProofBytes ||
+    !base64Pattern.test(encoded)
+  )
+    throw new Error("native candidate toolchain image authority invalid");
+  const compressed = Buffer.from(encoded, "base64");
+  if (compressed.toString("base64") !== encoded)
+    throw new Error("native candidate toolchain image authority invalid");
+  try {
+    return gunzipSync(compressed, { maxOutputLength: maximumRawProofBytes });
+  } catch {
+    throw new Error("native candidate toolchain image authority invalid");
+  }
+};
+
+const digest = (value) =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+const invalidAuthority = () => {
+  throw new Error("native candidate toolchain image authority invalid");
+};
+
+const authorityFieldsMatch = (authority) => {
+  const expected = nativeCandidateToolchainImageAuthority;
+  return !(
     authority === null ||
     typeof authority !== "object" ||
-    Object.keys(authority).length !== 5 ||
+    Object.keys(authority).length !== 8 ||
     authority.sourceIndex !== expected.sourceIndex ||
     authority.selectedManifest !== expected.selectedManifest ||
     authority.selectedManifestBytes !== expected.selectedManifestBytes ||
     authority.configDigest !== expected.configDigest ||
+    authority.configBytes !== expected.configBytes ||
+    typeof authority.rawIndexGzipBase64 !== "string" ||
+    typeof authority.rawManifestGzipBase64 !== "string" ||
     authority.platform === null ||
     typeof authority.platform !== "object" ||
     Object.keys(authority.platform).length !== 4 ||
@@ -35,8 +70,59 @@ export const assertToolchainImageAuthority = (authority) => {
     authority.platform.os !== expected.platform.os ||
     authority.platform.architecture !== expected.platform.architecture ||
     authority.platform.variant !== expected.platform.variant
+  );
+};
+
+const parseProofDocuments = (rawIndex, rawManifest) => {
+  try {
+    return Object.freeze({
+      index: JSON.parse(rawIndex.toString("utf8")),
+      manifest: JSON.parse(rawManifest.toString("utf8")),
+    });
+  } catch {
+    return invalidAuthority();
+  }
+};
+
+const documentsMatch = (index, manifest) => {
+  const expected = nativeCandidateToolchainImageAuthority;
+  const selected = index?.manifests?.filter(
+    ({ platform }) =>
+      platform?.os === expected.platform.os &&
+      platform?.architecture === expected.platform.architecture &&
+      (platform.variant ?? "") === expected.platform.variant,
+  );
+  return (
+    index?.schemaVersion === 2 &&
+    index?.mediaType === "application/vnd.oci.image.index.v1+json" &&
+    Array.isArray(selected) &&
+    selected.length === 1 &&
+    selected[0].mediaType === "application/vnd.oci.image.manifest.v1+json" &&
+    selected[0].digest === expected.selectedManifest.slice("node@".length) &&
+    selected[0].size === expected.selectedManifestBytes &&
+    manifest?.schemaVersion === 2 &&
+    manifest?.mediaType === "application/vnd.oci.image.manifest.v1+json" &&
+    manifest?.config?.mediaType ===
+      "application/vnd.oci.image.config.v1+json" &&
+    manifest?.config?.digest === expected.configDigest &&
+    manifest?.config?.size === expected.configBytes
+  );
+};
+
+export const assertToolchainImageAuthority = (authority) => {
+  const expected = nativeCandidateToolchainImageAuthority;
+  if (!authorityFieldsMatch(authority)) invalidAuthority();
+
+  const rawIndex = rawProof(authority.rawIndexGzipBase64);
+  const rawManifest = rawProof(authority.rawManifestGzipBase64);
+  if (
+    digest(rawIndex) !== expected.sourceIndex.slice("node@".length) ||
+    rawManifest.length !== expected.selectedManifestBytes ||
+    digest(rawManifest) !== expected.selectedManifest.slice("node@".length)
   )
-    throw new Error("native candidate toolchain image authority invalid");
+    invalidAuthority();
+  const { index, manifest } = parseProofDocuments(rawIndex, rawManifest);
+  if (!documentsMatch(index, manifest)) invalidAuthority();
 };
 
 const imageInspectionArguments = (reference) =>

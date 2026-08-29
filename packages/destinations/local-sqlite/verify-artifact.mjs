@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import { standardsManifest } from "@agentscope/protocol";
 import { isDestinationRetriever } from "@agentscope/destinations-core";
 
+import { assertToolchainImageAuthority } from "./native-candidate/tooling/image-platform-authority.mjs";
+
 import * as root from "./dist/index.js";
 import * as reporter from "./dist/reporter/index.js";
 import { executePreparedLocalSqliteTransaction } from "./dist/reporter/transaction.js";
@@ -477,6 +479,20 @@ if (
 const provenance = JSON.parse(
   readFileSync(resolve(builtCandidateRoot, "records/provenance.json")),
 );
+assertToolchainImageAuthority({
+  sourceIndex: releaseMaterials.toolchainClosure.image,
+  selectedManifest:
+    releaseMaterials.toolchainClosure.selectedManifest.reference,
+  selectedManifestBytes:
+    releaseMaterials.toolchainClosure.selectedManifest.bytes,
+  configDigest: releaseMaterials.toolchainClosure.selectedManifest.configDigest,
+  configBytes: releaseMaterials.toolchainClosure.selectedManifest.configBytes,
+  rawIndexGzipBase64:
+    releaseMaterials.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+  rawManifestGzipBase64:
+    releaseMaterials.toolchainClosure.selectedManifest.rawManifestGzipBase64,
+  platform: releaseMaterials.toolchainClosure.selectedManifest.platform,
+});
 const releaseMaterialDigest = createHash("sha256")
   .update(
     readFileSync(resolve(builtCandidateRoot, "records/release-materials.json")),
@@ -495,6 +511,8 @@ if (
     releaseMaterials.toolchainClosure.selectedManifest.bytes ||
   provenance.ownedBuild?.containerImageId !==
     releaseMaterials.toolchainClosure.selectedManifest.configDigest ||
+  provenance.ownedBuild?.containerImageConfigBytes !==
+    releaseMaterials.toolchainClosure.selectedManifest.configBytes ||
   JSON.stringify(provenance.ownedBuild?.containerPlatform) !==
     JSON.stringify(releaseMaterials.toolchainClosure.selectedManifest.platform)
 )

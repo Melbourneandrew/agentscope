@@ -1127,6 +1127,11 @@ const validateRecords = () => {
       reference: imageManifest,
       bytes: nativeCandidateToolchainImageAuthority.selectedManifestBytes,
       configDigest: imageId,
+      configBytes: nativeCandidateToolchainImageAuthority.configBytes,
+      rawIndexGzipBase64:
+        lock.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+      rawManifestGzipBase64:
+        lock.toolchainClosure.selectedManifest.rawManifestGzipBase64,
       platform: nativeCandidatePlatform,
     },
     imageId,
@@ -1156,6 +1161,11 @@ const validateRecords = () => {
     selectedManifest: lock.toolchainClosure.selectedManifest.reference,
     selectedManifestBytes: lock.toolchainClosure.selectedManifest.bytes,
     configDigest: lock.toolchainClosure.selectedManifest.configDigest,
+    configBytes: lock.toolchainClosure.selectedManifest.configBytes,
+    rawIndexGzipBase64:
+      lock.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+    rawManifestGzipBase64:
+      lock.toolchainClosure.selectedManifest.rawManifestGzipBase64,
     platform: lock.toolchainClosure.selectedManifest.platform,
   });
   assert.deepEqual(
@@ -1263,6 +1273,8 @@ const validateRecords = () => {
       containerImageManifestBytes:
         nativeCandidateToolchainImageAuthority.selectedManifestBytes,
       containerImageId: imageId,
+      containerImageConfigBytes:
+        nativeCandidateToolchainImageAuthority.configBytes,
       containerPlatform: nativeCandidatePlatform,
       node: "22.18.0",
       nodeAbi: 127,

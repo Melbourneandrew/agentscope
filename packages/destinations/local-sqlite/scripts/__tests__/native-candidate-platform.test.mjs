@@ -1,10 +1,11 @@
+import { readFileSync } from "node:fs";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 
 import {
   assertToolchainImageAuthority,
   ensurePlatformImage,
   nativeCandidatePlatform,
-  nativeCandidateToolchainImageAuthority,
 } from "../../native-candidate/tooling/image-platform-authority.mjs";
 
 const toolchain = Object.freeze({
@@ -31,25 +32,111 @@ const inspection = (expectedId, architecture = "amd64") =>
   });
 const missing = Object.freeze({ error: undefined, status: 1, stdout: "" });
 const pulled = Object.freeze({ error: undefined, status: 0, stdout: "" });
+const releaseMaterials = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../native-candidate/files/records/release-materials.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+);
+const recordedToolchainAuthority = Object.freeze({
+  sourceIndex: releaseMaterials.toolchainClosure.image,
+  selectedManifest:
+    releaseMaterials.toolchainClosure.selectedManifest.reference,
+  selectedManifestBytes:
+    releaseMaterials.toolchainClosure.selectedManifest.bytes,
+  configDigest: releaseMaterials.toolchainClosure.selectedManifest.configDigest,
+  configBytes: releaseMaterials.toolchainClosure.selectedManifest.configBytes,
+  rawIndexGzipBase64:
+    releaseMaterials.toolchainClosure.selectedManifest.rawIndexGzipBase64,
+  rawManifestGzipBase64:
+    releaseMaterials.toolchainClosure.selectedManifest.rawManifestGzipBase64,
+  platform: releaseMaterials.toolchainClosure.selectedManifest.platform,
+});
+
+const mutateRawProof = (field, mutate) => {
+  const document = JSON.parse(
+    gunzipSync(
+      Buffer.from(recordedToolchainAuthority[field], "base64"),
+    ).toString("utf8"),
+  );
+  mutate(document);
+  return gzipSync(Buffer.from(JSON.stringify(document)), {
+    level: 9,
+    mtime: 0,
+  }).toString("base64");
+};
 
 const expectToolchainAuthorityBinding = () => {
   expect(() =>
-    assertToolchainImageAuthority(nativeCandidateToolchainImageAuthority),
+    assertToolchainImageAuthority(recordedToolchainAuthority),
   ).not.toThrow();
   expect(() =>
     assertToolchainImageAuthority({
-      ...nativeCandidateToolchainImageAuthority,
+      ...recordedToolchainAuthority,
       selectedManifest:
         "node@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     }),
   ).toThrow("native candidate toolchain image authority invalid");
   expect(() =>
     assertToolchainImageAuthority({
-      ...nativeCandidateToolchainImageAuthority,
+      ...recordedToolchainAuthority,
       sourceIndex:
         "node@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     }),
   ).toThrow("native candidate toolchain image authority invalid");
+  expect(() =>
+    assertToolchainImageAuthority({
+      ...recordedToolchainAuthority,
+      selectedManifestBytes:
+        recordedToolchainAuthority.selectedManifestBytes + 1,
+    }),
+  ).toThrow("native candidate toolchain image authority invalid");
+  expect(() =>
+    assertToolchainImageAuthority({
+      ...recordedToolchainAuthority,
+      rawManifestGzipBase64: `${recordedToolchainAuthority.rawManifestGzipBase64.slice(0, -4)}AAAA`,
+    }),
+  ).toThrow("native candidate toolchain image authority invalid");
+  for (const authority of [
+    {
+      ...recordedToolchainAuthority,
+      rawIndexGzipBase64: mutateRawProof("rawIndexGzipBase64", (index) => {
+        index.manifests[0].digest =
+          "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+      }),
+    },
+    {
+      ...recordedToolchainAuthority,
+      rawIndexGzipBase64: mutateRawProof("rawIndexGzipBase64", (index) => {
+        index.manifests[0].size += 1;
+      }),
+    },
+    {
+      ...recordedToolchainAuthority,
+      rawManifestGzipBase64: mutateRawProof(
+        "rawManifestGzipBase64",
+        (manifest) => {
+          manifest.config.digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        },
+      ),
+    },
+    {
+      ...recordedToolchainAuthority,
+      rawManifestGzipBase64: mutateRawProof(
+        "rawManifestGzipBase64",
+        (manifest) => {
+          manifest.config.size += 1;
+        },
+      ),
+    },
+  ])
+    expect(() => assertToolchainImageAuthority(authority)).toThrow(
+      "native candidate toolchain image authority invalid",
+    );
 };
 
 describe("native candidate platform image authority", () => {
