@@ -120,6 +120,20 @@ fetch only lockfile-integrity-pinned npm artifacts; it performs no login,
 cloud/provider credential receipt, Cloudflare/Hetzner request, Wrangler command,
 or cloud/provider mutation.
 
+When that root already exists, the same attended command performs only an
+authenticated launcher upgrade. It requires the installed source commit to be
+an ancestor of the exact reviewed replacement, reconstructs and verifies the
+same runtime closure, and rejects any runtime, installation, environment,
+account, project, policy, toolchain, retirement, or active-mutation drift before
+replacement. It versions only `policy/installation.json`, atomically replaces
+only `bin/agentscope-crabbox-control`, and retains a signed generation intent
+and completion. Roots, private keys, seven credential slots, runtime bytes,
+operation journals, fences, and evidence are preserved. A crash leaves either
+the prior launcher authoritative or the transition fail closed; rerunning the
+same exact attended command resumes the signed generation and proves its
+terminal state. A different runtime closure or non-descendant source requires
+a separately reviewed transition.
+
 The installer creates or reuses exactly one hidden no-login
 `_agentscope_crabbox` identity. Credentialed Node/Wrangler runs only under that
 UID. Admission fails if any process is already using it, and completion kills
@@ -142,7 +156,7 @@ ops/crabbox-coordinator/install-protected-launcher.sh \
 The installer prints the exact launcher and runtime-closure digests before the
 attended root copy and verifies the root-owned bootstrap copy before executing
 it. After installation, use only the root-owned installed binary. It exposes the
-closed commands `status`, `state-observe`, `credential-enroll`,
+closed commands `status`, `upgrade`, `state-observe`, `credential-enroll`,
 `plan-build`, `observation-admit`, `retirement-evidence-admit`, `authorize`,
 `apply`, `freeze`, `recover-quarantine`, `recover-resolve`, `thaw`, `retire`, and
 `retirement-finalize`. `apply` accepts no

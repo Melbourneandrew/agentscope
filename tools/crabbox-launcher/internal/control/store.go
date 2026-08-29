@@ -289,6 +289,9 @@ func Install(input InstallInput) (Installation, error) {
 	if !input.skipCanonicalPolicyValidationForTest && (BuildSourceCommit != input.LauncherSourceCommit || BuildSourceTree != input.LauncherSourceTree) {
 		return Installation{}, errors.New("E_LAUNCHER_SOURCE_BINDING")
 	}
+	if !input.skipCanonicalPolicyValidationForTest && BuildUpgradePredecessorCommit != "none" {
+		return Installation{}, errors.New("E_UPGRADE_CANDIDATE_INSTALL")
+	}
 	if input.AdmissionSHA256 != SHA256(input.Admission) || input.PermissionManifestSHA256 != SHA256(input.PermissionManifest) || input.LiveProfileSHA256 != SHA256(input.LiveProfile) || input.TerminalProfileSHA256 != SHA256(input.TerminalProfile) || input.RuntimeClosureSHA256 != SHA256(input.RuntimeClosure) {
 		return Installation{}, errors.New("E_INSTALL_INPUT_BINDING")
 	}
@@ -1670,7 +1673,7 @@ func (store Store) resumeFence(planDigest string) (*os.File, error) {
 	return file, nil
 }
 
-func (store Store) acquireAdmissionGuard() (*os.File, error) {
+func (store Store) acquireAdmissionGuardUnchecked() (*os.File, error) {
 	path := store.path("journal", "admission.guard")
 	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -1679,6 +1682,19 @@ func (store Store) acquireAdmissionGuard() (*os.File, error) {
 	if err := file.Chmod(0o600); err != nil || lockFile(file) != nil {
 		file.Close()
 		return nil, errors.New("E_ADMISSION_GUARD")
+	}
+	return file, nil
+}
+
+func (store Store) acquireAdmissionGuard() (*os.File, error) {
+	file, err := store.acquireAdmissionGuardUnchecked()
+	if err != nil {
+		return nil, err
+	}
+	installation, err := store.LoadInstallation()
+	if err != nil || (installation.CanonicalPolicy && (installation.LauncherSourceCommit != BuildSourceCommit || installation.LauncherSourceTree != BuildSourceTree)) {
+		releaseAdmissionGuard(file)
+		return nil, errors.New("E_LAUNCHER_SOURCE_BINDING")
 	}
 	return file, nil
 }
