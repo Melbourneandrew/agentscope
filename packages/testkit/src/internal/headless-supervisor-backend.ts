@@ -53,6 +53,23 @@ type ExecutionTrigger =
   | Readonly<{ kind: "aborted" }>;
 
 const authority = new WeakSet<object>();
+const internalErrors = new WeakSet<Error>();
+const abortSignalPrototype = AbortSignal.prototype;
+const abortSignalAborted = Object.getOwnPropertyDescriptor(
+  abortSignalPrototype,
+  "aborted",
+)!;
+const eventTargetPrototype = Object.getPrototypeOf(
+  abortSignalPrototype,
+) as object;
+const abortSignalAddEventListener = Object.getOwnPropertyDescriptor(
+  eventTargetPrototype,
+  "addEventListener",
+)!;
+const abortSignalRemoveEventListener = Object.getOwnPropertyDescriptor(
+  eventTargetPrototype,
+  "removeEventListener",
+)!;
 const maximumStreamBytes = 1_048_576;
 const maximumStdinBytes = 1_048_576;
 // Process snapshots are external commands. A 50 ms cadence stays well inside
@@ -61,8 +78,39 @@ const maximumStdinBytes = 1_048_576;
 const observerPollMs = 50;
 const finalJoinMs = 2_000;
 
+const kernelError = (code: string): HeadlessSupervisorError => {
+  const error = new HeadlessSupervisorError(code);
+  internalErrors.add(error);
+  return error;
+};
+
 const fail = (code: string): never => {
-  throw new HeadlessSupervisorError(code);
+  throw kernelError(code);
+};
+
+const signalAborted = (signal: AbortSignal): boolean => {
+  // The captured getter is deliberately invoked with the signal receiver.
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  return Reflect.apply(abortSignalAborted.get!, signal, []) as boolean;
+};
+
+const addAbortListener = (signal: AbortSignal, listener: () => void): void => {
+  Reflect.apply(abortSignalAddEventListener.value as CallableFunction, signal, [
+    "abort",
+    listener,
+    { once: true },
+  ]);
+};
+
+const removeAbortListener = (
+  signal: AbortSignal,
+  listener: () => void,
+): void => {
+  Reflect.apply(
+    abortSignalRemoveEventListener.value as CallableFunction,
+    signal,
+    ["abort", listener],
+  );
 };
 
 const delay = (milliseconds: number): Promise<void> =>
@@ -87,7 +135,7 @@ const bounded = async <T>(
   if (wait <= 0) return fail(code);
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new HeadlessSupervisorError(code));
+      reject(kernelError(code));
     }, wait);
     void promise.then(
       (value) => {
@@ -99,7 +147,7 @@ const bounded = async <T>(
         reject(
           error instanceof Error
             ? error
-            : new HeadlessSupervisorError("testkit.headless.kernel.failure"),
+            : kernelError("testkit.headless.kernel.failure"),
         );
       },
     );
@@ -161,7 +209,7 @@ const listProcesses = (): Promise<readonly ProcessSnapshot[]> =>
       },
       (error, stdout) => {
         if (error !== null) {
-          reject(new HeadlessSupervisorError("testkit.headless.observer.read"));
+          reject(kernelError("testkit.headless.observer.read"));
           return;
         }
         const rows: ProcessSnapshot[] = [];
@@ -300,7 +348,7 @@ const finishCapture = (capture: MutableCapture): CapturedStream => ({
 const closeOf = (child: ChildProcess): Promise<ExitState> =>
   new Promise((resolve, reject) => {
     child.once("error", () => {
-      reject(new HeadlessSupervisorError("testkit.headless.kernel.spawn"));
+      reject(kernelError("testkit.headless.kernel.spawn"));
     });
     child.once("close", (code, signal) => {
       resolve({ code, signal });
@@ -311,7 +359,7 @@ const eventOf = (child: ChildProcess, event: "spawn"): Promise<void> =>
   new Promise((resolve, reject) => {
     child.once(event, resolve);
     child.once("error", () => {
-      reject(new HeadlessSupervisorError("testkit.headless.kernel.spawn"));
+      reject(kernelError("testkit.headless.kernel.spawn"));
     });
   });
 
@@ -337,8 +385,8 @@ const triggerOf = (
     abort = () => {
       resolve({ kind: "aborted" });
     };
-    if (signal?.aborted === true) abort();
-    else signal?.addEventListener("abort", abort, { once: true });
+    if (signal !== undefined && signalAborted(signal)) abort();
+    else if (signal !== undefined) addAbortListener(signal, abort);
   });
   return {
     promise: Promise.race([
@@ -353,7 +401,12 @@ const triggerOf = (
     ]),
     release: () => {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
-      if (abort !== undefined) signal?.removeEventListener("abort", abort);
+      if (abort !== undefined && signal !== undefined)
+        try {
+          removeAbortListener(signal, abort);
+        } catch {
+          // Listener disposal must never bypass process and observer joins.
+        }
     },
   };
 };
@@ -735,7 +788,7 @@ const recoverExecution = async (
 };
 
 const sanitizedErrorCode = (error: unknown): string =>
-  error instanceof HeadlessSupervisorError
+  error instanceof HeadlessSupervisorError && internalErrors.has(error)
     ? error.code
     : "testkit.headless.kernel.failure";
 
@@ -746,7 +799,8 @@ const execute = async (
 ): Promise<HeadlessCanonicalTraceEnvelope> => {
   validateRequest(scenario, request);
   if (process.platform === "win32") fail("testkit.headless.kernel.platform");
-  if (abortSignal?.aborted === true) fail("testkit.headless.aborted");
+  if (abortSignal !== undefined && signalAborted(abortSignal))
+    fail("testkit.headless.aborted");
   if (performance.now() >= request.monotonicStartupDeadlineMs)
     fail("testkit.headless.startup.deadline");
 
@@ -836,6 +890,13 @@ export const createComponentHeadlessSupervisorCapability =
     authority.add(capability);
     return capability as HeadlessSupervisorCapability;
   };
+
+export const readHeadlessSupervisorKernelErrorCode = (
+  error: unknown,
+): string | undefined =>
+  error instanceof HeadlessSupervisorError && internalErrors.has(error)
+    ? error.code
+    : undefined;
 
 export const executeWithHeadlessSupervisorCapability = async (
   capability: HeadlessSupervisorCapability,

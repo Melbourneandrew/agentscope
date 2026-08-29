@@ -8,7 +8,10 @@ import {
   type HeadlessSupervisorCapability,
   type HeadlessSupervisorExecutionOptions,
 } from "./headless-supervisor.js";
-import { executeWithHeadlessSupervisorCapability } from "./internal/headless-supervisor-backend.js";
+import {
+  executeWithHeadlessSupervisorCapability,
+  readHeadlessSupervisorKernelErrorCode,
+} from "./internal/headless-supervisor-backend.js";
 
 /**
  * Executes one family-owned non-PTY scenario through a package-authenticated
@@ -29,8 +32,9 @@ export const executeBoundedHeadlessSupervisor = async (
       options.signal,
     );
   } catch (error: unknown) {
-    throw error instanceof HeadlessSupervisorError
-      ? error
-      : new HeadlessSupervisorError("testkit.headless.kernel.failure");
+    throw new HeadlessSupervisorError(
+      readHeadlessSupervisorKernelErrorCode(error) ??
+        "testkit.headless.kernel.failure",
+    );
   }
 };

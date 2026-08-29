@@ -18,7 +18,10 @@ import {
   type HeadlessObserverScenario,
 } from "../headless-supervisor-contract.js";
 import { executeBoundedHeadlessSupervisor } from "../headless-supervisor-kernel.js";
-import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
+import {
+  HeadlessSupervisorError,
+  type HeadlessSupervisorCapability,
+} from "../headless-supervisor.js";
 import { createComponentHeadlessSupervisorCapability } from "../internal/headless-supervisor-backend.js";
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
@@ -255,6 +258,11 @@ describe("bounded headless supervisor cancellation and surface", () => {
         fixturePath: fixture.file,
       });
       const controller = new AbortController();
+      Object.defineProperty(controller.signal, "removeEventListener", {
+        value: () => {
+          throw new HeadlessSupervisorError("caller-controlled-diagnostic");
+        },
+      });
       const execution = executeBoundedHeadlessSupervisor(
         createComponentHeadlessSupervisorCapability(),
         "timeout",
@@ -273,6 +281,42 @@ describe("bounded headless supervisor cancellation and surface", () => {
       rmSync(fixture.root, { force: true, recursive: true });
     }
   }, 12_000);
+
+  it("sanitizes caller failures before a capability can launch", async () => {
+    const candidate = cases[0]!;
+    const fixture = fixtureFor(candidate.fixtureSource);
+    const secret = "caller-controlled-diagnostic";
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const options = Object.defineProperty({}, "signal", {
+        get: () => {
+          throw new HeadlessSupervisorError(secret);
+        },
+      });
+      let received: unknown;
+      try {
+        await executeBoundedHeadlessSupervisor(
+          createComponentHeadlessSupervisorCapability(),
+          "correct",
+          run.request,
+          options,
+        );
+      } catch (error: unknown) {
+        received = error;
+      }
+      expect(received).toMatchObject({
+        code: "testkit.headless.kernel.failure",
+        message: "testkit.headless.kernel.failure",
+      });
+      expect(String(received)).not.toContain(secret);
+      expect(processesContaining(fixture.file)).toEqual([]);
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
 
   it("keeps the package-private authority mint off root and subpath surfaces", async () => {
     expect("createComponentHeadlessSupervisorCapability" in rootApi).toBe(
