@@ -43,6 +43,19 @@ const plainRecord = (value: unknown): value is JsonRecord =>
 
 const emptyRecord = (): JsonRecord => Object.create(null) as JsonRecord;
 
+const setOwnArrayValue = <T>(values: T[], index: number, value: T): void => {
+  Object.defineProperty(values, String(index), {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+};
+
+const appendOwnArrayValue = <T>(values: T[], value: T): void => {
+  setOwnArrayValue(values, values.length, value);
+};
+
 const hasExactOwnKeys = (
   value: JsonRecord,
   expected: readonly string[],
@@ -67,7 +80,7 @@ const cloneOwnJsonData = (value: unknown): unknown => {
       const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
       if (descriptor === undefined || !("value" in descriptor))
         return invalid();
-      output[index] = cloneOwnJsonData(descriptor.value);
+      setOwnArrayValue(output, index, cloneOwnJsonData(descriptor.value));
     }
     return output;
   }
@@ -329,8 +342,8 @@ const installOwnedGroups = (
     if (!replaceOverlap)
       for (let index = 0; index < current.length; index += 1)
         if (!ownedGroupForHarness(current[index], event, invocation))
-          replacement[replacement.length] = current[index];
-    replacement[replacement.length] = ownedGroup(event, command);
+          appendOwnArrayValue(replacement, current[index]);
+    appendOwnArrayValue(replacement, ownedGroup(event, command));
     hooks[event] = replacement;
   }
   root.hooks = hooks;
@@ -351,7 +364,7 @@ const uninstallOwnedGroups = (
     const retained: unknown[] = [];
     for (let index = 0; index < eventGroups.length; index += 1)
       if (!ownedGroupForHarness(eventGroups[index], event, invocation))
-        retained[retained.length] = eventGroups[index];
+        appendOwnArrayValue(retained, eventGroups[index]);
     if (retained.length === eventGroups.length) continue;
     changed = true;
     if (retained.length === 0) delete hooks[event];

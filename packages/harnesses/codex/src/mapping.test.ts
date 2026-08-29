@@ -368,11 +368,22 @@ describe("Codex hook correlation", () => {
 describe("Codex mapping prototype boundary", () => {
   it("retains unavailable and provenance ledgers without inherited array callbacks", () => {
     const previous = Object.getOwnPropertyDescriptor(Array.prototype, "map");
+    const previousNumeric = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      "0",
+    );
+    let numericSetterCalls = 0;
     let mapped: CodexMappedNativeObservation;
     Object.defineProperty(Array.prototype, "map", {
       value: () => [],
       configurable: true,
       writable: true,
+    });
+    Object.defineProperty(Array.prototype, "0", {
+      set() {
+        numericSetterCalls += 1;
+      },
+      configurable: true,
     });
     try {
       mapped = mapCodexSanitizedNativeObservation(
@@ -392,7 +403,11 @@ describe("Codex mapping prototype boundary", () => {
       if (previous === undefined)
         delete (Array.prototype as { map?: unknown }).map;
       else Object.defineProperty(Array.prototype, "map", previous);
+      if (previousNumeric === undefined)
+        Reflect.deleteProperty(Array.prototype, "0");
+      else Object.defineProperty(Array.prototype, "0", previousNumeric);
     }
+    expect(numericSetterCalls).toBe(0);
     expect(mapped.contract.unavailable).toHaveLength(9);
     expect(mapped.contract.provenance.length).toBeGreaterThan(0);
   });

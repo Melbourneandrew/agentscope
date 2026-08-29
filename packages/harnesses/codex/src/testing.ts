@@ -26,7 +26,7 @@ import { mapCodexSanitizedNativeObservation } from "./mapping.js";
 const componentSha256 = (value: unknown): `sha256-${string}` =>
   `sha256-${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 const codexMappingSourceSha256 =
-  "2189cdb5c9f91471b9bf9a7100b6fd06259e43b641d1f319b68eb0eccce46c90";
+  "5082554d2ee26cecee68d31f1e70b153cd7f57ec245cf246ff104d23c4066621";
 
 const contractOverlapSentinel = "vendor-observability-hook";
 const contractDecoder = new TextDecoder("utf-8", { fatal: true });

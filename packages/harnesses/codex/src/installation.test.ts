@@ -332,12 +332,23 @@ describe("Codex configuration callback isolation", () => {
       },
     });
     const previous = Object.getOwnPropertyDescriptor(Array.prototype, "map");
+    const previousNumeric = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      "0",
+    );
+    let numericSetterCalls = 0;
     let absent: HarnessTargetDecision;
     let overlap: HarnessTargetDecision;
     Object.defineProperty(Array.prototype, "map", {
       value: () => [],
       configurable: true,
       writable: true,
+    });
+    Object.defineProperty(Array.prototype, "0", {
+      set() {
+        numericSetterCalls += 1;
+      },
+      configurable: true,
     });
     try {
       absent = decide("install", ownedInvocation, '{"description":"foreign"}');
@@ -346,7 +357,11 @@ describe("Codex configuration callback isolation", () => {
       if (previous === undefined)
         delete (Array.prototype as { map?: unknown }).map;
       else Object.defineProperty(Array.prototype, "map", previous);
+      if (previousNumeric === undefined)
+        Reflect.deleteProperty(Array.prototype, "0");
+      else Object.defineProperty(Array.prototype, "0", previousNumeric);
     }
+    expect(numericSetterCalls).toBe(0);
     expect(overlap.kind).toBe("replace-overlap");
     const absentValue = JSON.parse(replacementText(absent)) as {
       description: string;

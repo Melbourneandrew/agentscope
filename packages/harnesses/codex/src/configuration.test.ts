@@ -78,11 +78,22 @@ it("pins the upstream 0.149.1 external capability registry authority", () => {
 describe("Codex configuration prototype boundary", () => {
   it("emits the complete suppression inventory without inherited array callbacks", () => {
     const previous = Object.getOwnPropertyDescriptor(Array.prototype, "map");
+    const previousNumeric = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      "27",
+    );
+    let numericSetterCalls = 0;
     let configuration: string;
     Object.defineProperty(Array.prototype, "map", {
       value: () => [],
       configurable: true,
       writable: true,
+    });
+    Object.defineProperty(Array.prototype, "27", {
+      set() {
+        numericSetterCalls += 1;
+      },
+      configurable: true,
     });
     try {
       configuration = createCodexInternalProviderConfiguration({
@@ -93,7 +104,11 @@ describe("Codex configuration prototype boundary", () => {
       if (previous === undefined)
         delete (Array.prototype as { map?: unknown }).map;
       else Object.defineProperty(Array.prototype, "map", previous);
+      if (previousNumeric === undefined)
+        Reflect.deleteProperty(Array.prototype, "27");
+      else Object.defineProperty(Array.prototype, "27", previousNumeric);
     }
+    expect(numericSetterCalls).toBe(0);
     for (const feature of CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features)
       expect(configuration).toContain(`${feature} = false`);
   });

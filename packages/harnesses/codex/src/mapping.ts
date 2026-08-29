@@ -46,6 +46,19 @@ const decodedRootHooks = new WeakSet<object>();
 const decodedRootHookAdd = decodedRootHooks.add.bind(decodedRootHooks);
 const decodedRootHookHas = decodedRootHooks.has.bind(decodedRootHooks);
 
+const setOwnArrayValue = <T>(values: T[], index: number, value: T): void => {
+  Object.defineProperty(values, String(index), {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+};
+
+const appendOwnArrayValue = <T>(values: T[], value: T): void => {
+  setOwnArrayValue(values, values.length, value);
+};
+
 const hasExactOwnKeys = (
   value: Record<string, unknown>,
   expected: readonly string[],
@@ -337,7 +350,7 @@ const concatenateFrozen = <T>(
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
     const group = groups[groupIndex]!;
     for (let itemIndex = 0; itemIndex < group.length; itemIndex += 1)
-      output[output.length] = group[itemIndex]!;
+      appendOwnArrayValue(output, group[itemIndex]!);
   }
   return Object.freeze(output);
 };
@@ -347,12 +360,16 @@ const unavailableFields = (
 ): readonly FieldUnavailableCandidate[] => {
   const unavailable: FieldUnavailableCandidate[] = [];
   for (let index = 0; index < fields.length; index += 1)
-    unavailable[index] = createNativeUnavailableField({
-      field: fields[index]!,
-      source: "native-artifact",
-      state: "unavailable",
-      reason: "not-emitted",
-    });
+    setOwnArrayValue(
+      unavailable,
+      index,
+      createNativeUnavailableField({
+        field: fields[index]!,
+        source: "native-artifact",
+        state: "unavailable",
+        reason: "not-emitted",
+      }),
+    );
   return Object.freeze(unavailable);
 };
 
@@ -521,7 +538,7 @@ const createMappedFields = (
     provenance("span.name", "native-artifact"),
   ];
   for (let index = 0; index < fields.length; index += 1)
-    provenanceFields[provenanceFields.length] = fields[index]!.provenance;
+    appendOwnArrayValue(provenanceFields, fields[index]!.provenance);
   return Object.freeze({
     modelFields,
     tokenFields,

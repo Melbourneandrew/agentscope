@@ -11,6 +11,14 @@ const trustedInternalHost = (hostname: string): boolean => {
       return false;
   }
 };
+const appendOwnArrayValue = <T>(values: T[], value: T): void => {
+  Object.defineProperty(values, String(values.length), {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+};
 export const CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION = Object.freeze({
   representativeVersion: "0.149.1",
   sourceCommit: "ff29a44391deccde0aba0f8390337d7f3c319ea4",
@@ -169,7 +177,7 @@ export const createCodexInternalProviderConfiguration = (
   ];
   const features = CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features;
   for (let index = 0; index < features.length; index += 1)
-    lines[lines.length] = `${features[index]} = false`;
+    appendOwnArrayValue(lines, `${features[index]} = false`);
   const suffix = [
     "",
     "[mcp_servers]",
@@ -184,7 +192,7 @@ export const createCodexInternalProviderConfiguration = (
     "",
   ];
   for (let index = 0; index < suffix.length; index += 1)
-    lines[lines.length] = suffix[index]!;
+    appendOwnArrayValue(lines, suffix[index]!);
   let output = "";
   for (let index = 0; index < lines.length; index += 1)
     output += `${index === 0 ? "" : "\n"}${lines[index]}`;
