@@ -1,0 +1,84 @@
+{
+  "availableStartPosition": 0,
+  "boundaryId": "claude-session-v1",
+  "boundaryKind": "session",
+  "exclusiveEndPosition": 5,
+  "expectedFields": [
+    "error.type",
+    "llm.model_name",
+    "llm.provider",
+    "llm.system",
+    "tool.id",
+    "tool.name"
+  ],
+  "fixtureId": "claude-code-lifecycle-v1",
+  "fixtureVersion": 1,
+  "governance": {
+    "license": {
+      "redistribution": "reviewed-for-repository",
+      "reviewedLicenseId": "LicenseRef-Agentscope-Synthetic",
+      "sourceReference": "https://github.com/Melbourneandrew/agentscope/blob/7a2743b901ae43db1125b1ec8b87343207be16aa/packages/harnesses/core/NATIVE_FIXTURES.md#licenseref-agentscope-synthetic"
+    },
+    "provenance": {
+      "artifactAuthority": {
+        "reason": "independent-integrity-unavailable",
+        "status": "unresolved"
+      },
+      "captureKind": "synthetic",
+      "captureRecipe": "claude-code-lifecycle-v1",
+      "sourceReference": "urn:agentscope:synthetic:claude-code-lifecycle-v1"
+    },
+    "redaction": {
+      "classification": "sanitized-native-fixture",
+      "profileVersion": 1,
+      "rawContentRetained": false,
+      "removedCategories": [
+        "credentials",
+        "raw-transcript",
+        "terminal-output",
+        "user-content",
+        "user-paths"
+      ]
+    },
+    "representative": {
+      "evidenceSlot": "claude-code-2-1-245-component",
+      "representativeVersion": "2.1.245",
+      "scenarioId": "claude-code-print-v1"
+    },
+    "review": {
+      "records": [
+        {
+          "reference": "https://github.com/Melbourneandrew/agentscope/pull/94#pullrequestreview-5043279170",
+          "reviewExecutionIdentity": "01a04414-c0d1-7400-92c3-bcdb35e17cdd",
+          "reviewTaskIdentity": "/root/claude_fixture_privacy_review",
+          "reviewedFixtureBlobSha": "e0283cb19c0e638099174c9cedb3e58c1e1439da",
+          "reviewedHeadSha": "25dbf34b89725a7f0b2df6f1065dbd892c6eff5b",
+          "role": "privacy",
+          "submittedAt": "2026-08-27T16:40:38.000Z"
+        },
+        {
+          "reference": "https://github.com/Melbourneandrew/agentscope/pull/94#pullrequestreview-5043329394",
+          "reviewExecutionIdentity": "01a04419-599e-7ac0-9eb8-dee9cedc3679",
+          "reviewTaskIdentity": "/root/claude_fixture_redistribution_review",
+          "reviewedFixtureBlobSha": "e0283cb19c0e638099174c9cedb3e58c1e1439da",
+          "reviewedHeadSha": "25dbf34b89725a7f0b2df6f1065dbd892c6eff5b",
+          "role": "redistribution",
+          "submittedAt": "2026-08-27T16:45:59.000Z"
+        }
+      ],
+      "status": "approved"
+    }
+  },
+  "harnessId": "claude-code",
+  "harnessVersion": "2.1.245",
+  "nativeIdentity": "claude-session-v1",
+  "nativeIdentityKind": "session",
+  "positionKind": "sequence",
+  "sanitizedPayload": {
+    "hook_event_count": 5,
+    "interface": "print-stream-json",
+    "lifecycle": "session-turn-tool",
+    "model_provider": "anthropic"
+  },
+  "sourceGeneration": 1
+}

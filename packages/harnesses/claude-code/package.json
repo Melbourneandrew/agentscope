@@ -7,17 +7,21 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node ../../../scripts/clean-workspace.mjs && tsc -p tsconfig.build.json && node verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --max-warnings=0",
-    "test": "vitest run --config ../../../vitest.config.ts --passWithNoTests",
-    "coverage": "vitest run --config ../../../vitest.config.ts --coverage --passWithNoTests",
+    "test": "vitest run --config ../../../vitest.config.ts",
+    "coverage": "vitest run --config ../../../vitest.config.ts --coverage",
     "clean": "node ../../../scripts/clean-workspace.mjs",
     "prepack": "node ../../../scripts/refuse-private-package.mjs"
   },
