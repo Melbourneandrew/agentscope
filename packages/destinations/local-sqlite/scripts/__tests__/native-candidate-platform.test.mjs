@@ -306,9 +306,10 @@ describe("native candidate platform image authority", () => {
       "operating-system substitution",
       {
         ...inspection(toolchain.expectedId),
-        stdout: `${toolchain.expectedId}\tdarwin\tamd64\t\n`,
+        stdout: `${toolchain.expectedId}\tdarwin\tamd64\n`,
       },
     ],
+    ["architecture substitution", inspection(toolchain.expectedId, "arm64")],
   ])("rejects %s after platform-exact inspection", (_name, result) => {
     expect(() =>
       ensurePlatformImage({
