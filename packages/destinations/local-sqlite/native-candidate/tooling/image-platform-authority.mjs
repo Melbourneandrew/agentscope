@@ -149,7 +149,7 @@ const imageInspectionArguments = (reference) =>
     "inspect",
     reference,
     "--format",
-    "{{.Id}}\t{{.Os}}\t{{.Architecture}}\t{{.Variant}}",
+    "{{.Id}}\t{{.Os}}\t{{.Architecture}}",
   ]);
 
 const imagePullArguments = (reference) =>
@@ -168,11 +168,10 @@ const assertExpectedImage = (inspection, expectedId) => {
     throw new Error("native candidate image inspection failed");
   const fields = inspection.stdout.replace(/\r?\n$/u, "").split("\t");
   if (
-    fields.length !== 4 ||
+    fields.length !== 3 ||
     fields[0] !== expectedId ||
     fields[1] !== nativeCandidatePlatform.os ||
-    fields[2] !== nativeCandidatePlatform.architecture ||
-    fields[3] !== nativeCandidatePlatform.variant
+    fields[2] !== nativeCandidatePlatform.architecture
   )
     throw new Error("native candidate image identity mismatch");
 };

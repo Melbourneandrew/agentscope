@@ -29,7 +29,7 @@ const inspection = (expectedId, architecture = "amd64") =>
   Object.freeze({
     error: undefined,
     status: 0,
-    stdout: `${expectedId}\tlinux\t${architecture}\t\n`,
+    stdout: `${expectedId}\tlinux\t${architecture}\n`,
   });
 const missing = Object.freeze({ error: undefined, status: 1, stdout: "" });
 const pulled = Object.freeze({ error: undefined, status: 0, stdout: "" });
@@ -158,6 +158,18 @@ const expectToolchainAuthorityBinding = () => {
     },
     {
       ...recordedToolchainAuthority,
+      rawIndexGzipBase64: mutateRawProof("rawIndexGzipBase64", (index) => {
+        const selected = index.manifests.find(
+          ({ platform }) =>
+            platform.os === "linux" &&
+            platform.architecture === "amd64" &&
+            (platform.variant ?? "") === "",
+        );
+        selected.platform.variant = "v8";
+      }),
+    },
+    {
+      ...recordedToolchainAuthority,
       rawManifestGzipBase64: mutateRawProof(
         "rawManifestGzipBase64",
         (manifest) => {
@@ -228,7 +240,7 @@ describe("native candidate platform image authority", () => {
           "inspect",
           authority.expectedId,
           "--format",
-          "{{.Id}}\t{{.Os}}\t{{.Architecture}}\t{{.Variant}}",
+          "{{.Id}}\t{{.Os}}\t{{.Architecture}}",
         ],
         ["pull", "--platform", "linux/amd64", authority.reference],
         [
@@ -236,7 +248,7 @@ describe("native candidate platform image authority", () => {
           "inspect",
           authority.expectedId,
           "--format",
-          "{{.Id}}\t{{.Os}}\t{{.Architecture}}\t{{.Variant}}",
+          "{{.Id}}\t{{.Os}}\t{{.Architecture}}",
         ],
       ]);
     },
@@ -295,13 +307,6 @@ describe("native candidate platform image authority", () => {
       {
         ...inspection(toolchain.expectedId),
         stdout: `${toolchain.expectedId}\tdarwin\tamd64\t\n`,
-      },
-    ],
-    [
-      "variant substitution",
-      {
-        ...inspection(toolchain.expectedId),
-        stdout: `${toolchain.expectedId}\tlinux\tamd64\tv8\n`,
       },
     ],
   ])("rejects %s after platform-exact inspection", (_name, result) => {
