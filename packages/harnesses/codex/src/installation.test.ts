@@ -234,6 +234,38 @@ describe("Codex owned hook migration and removal", () => {
 });
 
 describe("Codex duplicate-aware configuration boundary", () => {
+  it("ignores ambient prototype hooks and never mutates inherited state", () => {
+    const ownedInvocation = invocation();
+    const inheritedHooks = {
+      Stop: [
+        {
+          hooks: [{ type: "command", command: "/foreign/hook", timeout: 1 }],
+        },
+      ],
+    };
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, "hooks");
+    Object.defineProperty(Object.prototype, "hooks", {
+      value: inheritedHooks,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const target = '{"description":"foreign"}';
+      expect(decide("install", ownedInvocation, target).kind).toBe("replace");
+      expect(decide("migrate", ownedInvocation, target).kind).toBe("replace");
+      expect(decide("uninstall", ownedInvocation, target)).toEqual({
+        kind: "unchanged",
+      });
+      expect(Object.keys(inheritedHooks)).toEqual(["Stop"]);
+      expect(inheritedHooks).not.toHaveProperty("SessionStart");
+      expect(inheritedHooks).not.toHaveProperty("SessionEnd");
+    } finally {
+      if (previous === undefined)
+        delete (Object.prototype as { hooks?: unknown }).hooks;
+      else Object.defineProperty(Object.prototype, "hooks", previous);
+    }
+  });
+
   it.each([
     '{"hooks":{},"hooks":{"Stop":[]}}',
     '{"hooks":{"Stop":[],"Stop":[{"hooks":[]}]}}',

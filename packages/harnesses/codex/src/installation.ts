@@ -38,7 +38,27 @@ const plainRecord = (value: unknown): value is JsonRecord =>
   typeof value === "object" &&
   value !== null &&
   !Array.isArray(value) &&
-  Object.getPrototypeOf(value) === Object.prototype;
+  (Object.getPrototypeOf(value) === Object.prototype ||
+    Object.getPrototypeOf(value) === null);
+
+const emptyRecord = (): JsonRecord => Object.create(null) as JsonRecord;
+
+const cloneOwnJsonData = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map((item) => cloneOwnJsonData(item));
+  if (!plainRecord(value)) return value;
+  const output = emptyRecord();
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !("value" in descriptor)) return invalid();
+    Object.defineProperty(output, key, {
+      value: cloneOwnJsonData(descriptor.value),
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return output;
+};
 
 const unknownArray = (value: unknown): value is unknown[] =>
   Array.isArray(value);
@@ -99,8 +119,9 @@ const ownedGroup = (
   event: (typeof rootEvents)[number],
   command: string,
 ): JsonRecord => {
-  const group: JsonRecord = {
-    hooks: [
+  const group = emptyRecord();
+  Object.defineProperty(group, "hooks", {
+    value: [
       {
         type: "command",
         command,
@@ -108,9 +129,18 @@ const ownedGroup = (
         statusMessage: ownedStatus,
       },
     ],
-  };
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
   const matcher = matcherFor(event);
-  if (matcher !== undefined) group.matcher = matcher;
+  if (matcher !== undefined)
+    Object.defineProperty(group, "matcher", {
+      value: matcher,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   return group;
 };
 
@@ -181,7 +211,7 @@ const ownedGroupForHarness = (
 
 const parseConfiguration = (bytes: Uint8Array): JsonRecord | undefined => {
   try {
-    const parsed = parseDuplicateAwareJson(bytes);
+    const parsed = cloneOwnJsonData(parseDuplicateAwareJson(bytes));
     if (!plainRecord(parsed)) return undefined;
     if (parsed.hooks !== undefined && !plainRecord(parsed.hooks))
       return undefined;
@@ -208,7 +238,7 @@ const installOwnedGroups = (
   invocation: OwnedHarnessHookInvocation,
   replaceOverlap: boolean,
 ): Uint8Array => {
-  const hooks = plainRecord(root.hooks) ? root.hooks : {};
+  const hooks = plainRecord(root.hooks) ? root.hooks : emptyRecord();
   for (const event of rootEvents) {
     const current = unknownArray(hooks[event]) ? hooks[event] : [];
     hooks[event] = [
@@ -264,7 +294,7 @@ const plan = (
     if (operation === "uninstall") return { kind: "unchanged" };
     return {
       kind: "replace",
-      bytes: installOwnedGroups({}, command, invocation, false),
+      bytes: installOwnedGroups(emptyRecord(), command, invocation, false),
     };
   }
   const root = parseConfiguration(target.bytes);
@@ -273,7 +303,7 @@ const plan = (
       ? { kind: "unchanged" }
       : { kind: "unsupported" };
   if (operation === "uninstall") return uninstallOwnedGroups(root, invocation);
-  const hooks = plainRecord(root.hooks) ? root.hooks : {};
+  const hooks = plainRecord(root.hooks) ? root.hooks : emptyRecord();
   const foreignOverlap = rootEvents.some((event) =>
     (unknownArray(hooks[event]) ? hooks[event] : []).some(
       (group) => !ownedGroupForHarness(group, event, invocation),
