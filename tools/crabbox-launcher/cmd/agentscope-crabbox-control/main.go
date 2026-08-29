@@ -157,6 +157,89 @@ func install(args []string) {
 	emit(map[string]any{"schemaVersion": 1, "installed": true, "installationId": installed.InstallationID, "environmentId": installed.EnvironmentID, "launcherSha256": installed.LauncherSHA256, "cloudMutation": false, "cloudCredentialReceipt": false, "operatorAuthorizationInitialized": true, "next": []string{"enroll the seven closed credential slots through the attended prompt", "record a fresh signed billing observation", "import and authorize one exact deployment plan"}})
 }
 
+func upgrade(args []string) {
+	requireRoot()
+	flags := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+	installationID := flags.String("installation-id", "", "existing installation identity")
+	environmentID := flags.String("environment-id", "", "existing environment identity")
+	accountID := flags.String("account-id", "", "existing Cloudflare account identity")
+	projectID := flags.String("hetzner-project-id", "", "existing Hetzner project identity")
+	executorUID := flags.Int("executor-uid", 0, "existing dedicated executor UID")
+	launcherSourceCommit := flags.String("launcher-source-commit", "", "replacement launcher source commit")
+	launcherSourceTree := flags.String("launcher-source-tree", "", "replacement launcher source tree")
+	admission := flags.String("admission", "", "canonical admission policy")
+	manifest := flags.String("permission-manifest", "", "canonical permission manifest")
+	liveProfile := flags.String("live-profile", "", "canonical live profile")
+	terminalProfile := flags.String("terminal-profile", "", "canonical terminal profile")
+	terminalEntryPoint := flags.String("terminal-entry-point", "", "canonical terminal Worker entry point")
+	runtimeClosurePath := flags.String("runtime-closure", "", "exact attended runtime closure archive")
+	runtimeClosureSHA256 := flags.String("runtime-closure-sha256", "", "human-reviewed runtime closure digest")
+	toolchainIdentityPath := flags.String("toolchain-identity", "", "canonical toolchain identity")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		fail("E_ARGUMENTS")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		fail("E_EXECUTABLE")
+	}
+	launcher, err := readBounded(executable)
+	if err != nil {
+		fail(err.Error())
+	}
+	files := []*string{admission, manifest, liveProfile, terminalProfile, terminalEntryPoint}
+	digests := make([]string, len(files))
+	contents := make([][]byte, len(files))
+	for index, path := range files {
+		value, err := readBounded(*path)
+		if err != nil {
+			fail(err.Error())
+		}
+		digests[index], contents[index] = control.SHA256(value), value
+	}
+	toolchainData, err := readBounded(*toolchainIdentityPath)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	toolchainIdentity, err := control.ParseToolchainIdentity(toolchainData)
+	if err != nil {
+		fail(errorCode(err))
+	}
+	coordinatorCommit, err := control.CoordinatorCommitFromAdmission(contents[0])
+	if err != nil {
+		fail(errorCode(err))
+	}
+	runtimeInfo, statErr := os.Lstat(*runtimeClosurePath)
+	if statErr != nil || !runtimeInfo.Mode().IsRegular() || runtimeInfo.Mode()&os.ModeSymlink != 0 || runtimeInfo.Size() <= 0 || runtimeInfo.Size() > 768<<20 {
+		fail("E_RUNTIME_ARCHIVE")
+	}
+	runtimeClosure, err := os.ReadFile(*runtimeClosurePath)
+	if err != nil || control.SHA256(runtimeClosure) != *runtimeClosureSHA256 {
+		fail("E_RUNTIME_ARCHIVE")
+	}
+	current, err := control.NewStore(stateRoot()).LoadInstallation()
+	if err != nil {
+		fail(errorCode(err))
+	}
+	installedLauncher, err := readBounded(filepath.Join(stateRoot(), "bin", "agentscope-crabbox-control"))
+	if err != nil {
+		fail(errorCode(err))
+	}
+	candidateSHA256 := control.SHA256(launcher)
+	confirmation, err := control.ReadSecretFromTTY(fmt.Sprintf("Upgrade protected launcher policy %s/%s with installed artifact %s to %s/%s artifact %s using runtime closure %s? Type UPGRADE: ", current.LauncherSourceCommit, current.LauncherSourceTree, control.SHA256(installedLauncher), *launcherSourceCommit, *launcherSourceTree, candidateSHA256, *runtimeClosureSHA256))
+	if err != nil {
+		fail(errorCode(err))
+	}
+	defer zero(confirmation)
+	if string(confirmation) != "UPGRADE" {
+		fail("E_OWNER_REJECTED")
+	}
+	upgraded, err := control.Upgrade(control.UpgradeInput{InstallInput: control.InstallInput{Root: stateRoot(), ExecutorUID: *executorUID, InstallationID: *installationID, EnvironmentID: *environmentID, AccountID: *accountID, HetznerProjectID: *projectID, CoordinatorCommit: coordinatorCommit, LauncherSourceCommit: *launcherSourceCommit, LauncherSourceTree: *launcherSourceTree, AdmissionSHA256: digests[0], PermissionManifestSHA256: digests[1], LiveProfileSHA256: digests[2], TerminalProfileSHA256: digests[3], Launcher: launcher, Admission: contents[0], PermissionManifest: contents[1], LiveProfile: contents[2], TerminalProfile: contents[3], TerminalEntryPoint: contents[4], RuntimeClosure: runtimeClosure, RuntimeClosureSHA256: *runtimeClosureSHA256, ToolchainIdentity: toolchainIdentity}})
+	if err != nil {
+		fail(errorCode(err))
+	}
+	emit(map[string]any{"schemaVersion": 1, "upgraded": true, "installationId": upgraded.InstallationID, "environmentId": upgraded.EnvironmentID, "launcherGeneration": upgraded.LauncherGeneration, "launcherSourceCommit": upgraded.LauncherSourceCommit, "launcherSha256": upgraded.LauncherSHA256, "runtimeTreeSha256": upgraded.RuntimeTreeSHA256, "cloudMutation": false, "cloudCredentialReceipt": false})
+}
+
 func authorize(args []string) {
 	requireRoot()
 	flags := flag.NewFlagSet("authorize", flag.ContinueOnError)
@@ -468,7 +551,14 @@ func status() {
 	} else if retirement.Finalized {
 		next = []string{}
 	}
-	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "enrolledSlotCount": retirement.EnrolledSlotCount, "credentialSetComplete": retirement.CredentialSetComplete, "mutationFenceHeld": retirement.MutationFenceHeld, "acquisitionFrozen": retirement.AcquisitionFrozen, "retirementStateIncident": retirementErr != nil, "retirementCloudAbsenceRecorded": retirementErr == nil && retirement.CloudAbsenceRecorded, "retirementFinalizationRecorded": retirementErr == nil && retirement.FinalizationRecorded, "retirementFenceReleasePending": retirementErr == nil && retirement.FenceReleasePending, "retirementFinalized": retirementErr == nil && retirement.Finalized, "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": next, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
+	emit(map[string]any{"schemaVersion": 1, "installationId": installation.InstallationID, "environmentId": installation.EnvironmentID, "accountId": installation.AccountID, "workerName": installation.WorkerName, "launcherGeneration": installationGenerationForOutput(installation), "launcherSourceCommit": installation.LauncherSourceCommit, "launcherSha256": installation.LauncherSHA256, "runtimeTreeSha256": installation.RuntimeTreeSHA256, "enrolledSlotCount": retirement.EnrolledSlotCount, "credentialSetComplete": retirement.CredentialSetComplete, "mutationFenceHeld": retirement.MutationFenceHeld, "acquisitionFrozen": retirement.AcquisitionFrozen, "retirementStateIncident": retirementErr != nil, "retirementCloudAbsenceRecorded": retirementErr == nil && retirement.CloudAbsenceRecorded, "retirementFinalizationRecorded": retirementErr == nil && retirement.FinalizationRecorded, "retirementFenceReleasePending": retirementErr == nil && retirement.FenceReleasePending, "retirementFinalized": retirementErr == nil && retirement.Finalized, "cloudAuthenticated": false, "billingObservationReady": false, "deploymentReady": false, "nextHumanCommands": next, "credentialRoles": []string{"cloudflare-deployment", "cloudflare-plan-read", "hetzner-worker", "crabbox-shared", "crabbox-admin", "hetzner-inventory-read", "hetzner-recovery"}, "secretValuesEnterVia": "attended no-echo credential-enroll prompt only"})
+}
+
+func installationGenerationForOutput(installation control.Installation) int {
+	if installation.LauncherGeneration == 0 {
+		return 1
+	}
+	return installation.LauncherGeneration
 }
 
 func observeState(args []string, startedAt time.Time) {
@@ -683,12 +773,14 @@ func main() {
 	if len(os.Args) < 2 {
 		fail("E_COMMAND")
 	}
-	if os.Args[1] != "install" {
+	if os.Args[1] != "install" && os.Args[1] != "upgrade" {
 		verifyInstalledExecutable(commandContext)
 	}
 	switch os.Args[1] {
 	case "install":
 		install(os.Args[2:])
+	case "upgrade":
+		upgrade(os.Args[2:])
 	case "status":
 		status()
 	case "state-observe":

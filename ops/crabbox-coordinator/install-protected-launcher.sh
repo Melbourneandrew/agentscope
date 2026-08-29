@@ -42,6 +42,39 @@ case "$launcher_source_tree" in *[!0-9a-f]*) echo "protected launcher: E_SOURCE_
 if [ "${#launcher_source_tree}" -ne 40 ]; then echo "protected launcher: E_SOURCE_TREE" >&2; exit 1; fi
 echo "Protected launcher source tree: $launcher_source_tree"
 
+protected_root="/Library/Application Support/Agentscope/CrabboxControl"
+installed_policy="$protected_root/policy/installation.json"
+upgrade_predecessor_commit=none
+upgrade_mode=0
+if sudo /bin/test -e "$protected_root"; then
+  if ! sudo /bin/test -d "$protected_root" || sudo /bin/test -L "$protected_root" || ! sudo /bin/test -f "$installed_policy" || sudo /bin/test -L "$installed_policy"; then
+    echo "protected launcher: E_UPGRADE_INSTALLED_PATH" >&2
+    exit 1
+  fi
+  installed_source_commit=$(sudo /usr/bin/plutil -extract launcherSourceCommit raw -o - "$installed_policy" 2>/dev/null || true)
+  case "$installed_source_commit" in *[!0-9a-f]*) echo "protected launcher: E_UPGRADE_INSTALLED_SOURCE" >&2; exit 1 ;; esac
+  if [ "${#installed_source_commit}" -ne 40 ]; then
+    echo "protected launcher: E_UPGRADE_INSTALLED_SOURCE" >&2
+    exit 1
+  fi
+  upgrade_predecessor_commit=$installed_source_commit
+  if [ "$installed_source_commit" = "$launcher_source_commit" ]; then
+    # A crash after publishing the next installation identity deliberately
+    # fences the predecessor launcher. Resume the same authenticated
+    # generation through the rebuilt candidate; its signed intent proves the
+    # predecessor and every replacement identity before another rename.
+    upgrade_predecessor_commit=$(sudo /usr/bin/plutil -extract previousLauncherSourceCommit raw -o - "$installed_policy" 2>/dev/null || true)
+  fi
+  case "$upgrade_predecessor_commit" in *[!0-9a-f]*) echo "protected launcher: E_UPGRADE_PREDECESSOR" >&2; exit 1 ;; esac
+  if [ "${#upgrade_predecessor_commit}" -ne 40 ] || [ "$upgrade_predecessor_commit" = "$launcher_source_commit" ] ||
+     ! /usr/bin/env -i HOME=/var/empty PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_NO_REPLACE_OBJECTS=1 /usr/bin/git -C "$repository_root" merge-base --is-ancestor "$upgrade_predecessor_commit" "$launcher_source_commit"; then
+    echo "protected launcher: E_UPGRADE_PREDECESSOR" >&2
+    exit 1
+  fi
+  upgrade_mode=1
+  echo "Protected launcher predecessor commit: $upgrade_predecessor_commit"
+fi
+
 bundle_root=$(mktemp -d "${TMPDIR:-/tmp}/agentscope-crabbox-bundles.XXXXXX")
 build_root=
 bootstrap_path="/Library/Application Support/Agentscope/.agentscope-crabbox-control.bootstrap"
@@ -102,7 +135,7 @@ fi
 sudo /usr/bin/env -i HOME="$build_root/home" PATH="$go_root/bin:/usr/bin:/bin" GOTOOLCHAIN=local CGO_ENABLED=0 \
   "$go_binary" -C "$source_root/tools/crabbox-launcher" test ./...
 sudo /usr/bin/env -i HOME="$build_root/home" PATH="$go_root/bin:/usr/bin:/bin" GOTOOLCHAIN=local CGO_ENABLED=0 \
-  "$go_binary" -C "$source_root/tools/crabbox-launcher" build -trimpath -ldflags="-X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildSourceCommit=$launcher_source_commit -X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildSourceTree=$launcher_source_tree" -o "$build_root/agentscope-crabbox-control" ./cmd/agentscope-crabbox-control
+  "$go_binary" -C "$source_root/tools/crabbox-launcher" build -trimpath -ldflags="-X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildSourceCommit=$launcher_source_commit -X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildSourceTree=$launcher_source_tree -X github.com/Melbourneandrew/agentscope/tools/crabbox-launcher/internal/control.BuildUpgradePredecessorCommit=$upgrade_predecessor_commit" -o "$build_root/agentscope-crabbox-control" ./cmd/agentscope-crabbox-control
 
 # Prepare a complete nonsecret runtime closure before privilege is acquired.
 # The root launcher verifies the exact archive digest, extracts only regular
@@ -184,7 +217,9 @@ if [ "$installed_launcher_sha256" != "$launcher_sha256" ]; then
   echo "protected launcher: E_BOOTSTRAP_DIGEST" >&2
   exit 1
 fi
-sudo "$bootstrap_path" install \
+bootstrap_command=install
+if [ "$upgrade_mode" -eq 1 ]; then bootstrap_command=upgrade; fi
+sudo "$bootstrap_path" "$bootstrap_command" \
   --installation-id "$installation_id" \
   --environment-id "$environment_id" \
   --account-id "$account_id" \

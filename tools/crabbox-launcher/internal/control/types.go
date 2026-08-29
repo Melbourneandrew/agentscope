@@ -34,6 +34,8 @@ const (
 	RetirementFinalizationDomain  = "agentscope-crabbox-retirement-finalization-v1"
 	RetirementCompletionDomain    = "agentscope-crabbox-retirement-completion-v1"
 	RetirementEvidenceDomain      = "agentscope-crabbox-retirement-evidence-v1"
+	LauncherUpgradeDomain         = "agentscope-crabbox-launcher-upgrade-v1"
+	LauncherUpgradeCompleteDomain = "agentscope-crabbox-launcher-upgrade-complete-v1"
 	CanonicalAdmissionSHA256      = "947f1c128ca030d89c3e6100ce96a159fc4b045afb36b1cf1ef02276e16e2357"
 	CanonicalPermissionSHA256     = "b8d01f9fe098abc9a67eeba6ee5f8bd18e0b273bbf5bb7766a72e9acc9d2922f"
 	CanonicalTerminalEntrySHA256  = "449b7b4f5ee8c639fff349db2c70bfd2ad2fa749e07e53c026f0d22b46f9813e"
@@ -57,6 +59,7 @@ var (
 // while compiling from the immutable git archive it has just authenticated.
 var BuildSourceCommit = "development"
 var BuildSourceTree = "development"
+var BuildUpgradePredecessorCommit = "none"
 
 type Root struct {
 	Algorithm  string `json:"algorithm"`
@@ -85,6 +88,10 @@ type Installation struct {
 	LauncherSHA256           string            `json:"launcherSha256"`
 	LauncherSourceCommit     string            `json:"launcherSourceCommit"`
 	LauncherSourceTree       string            `json:"launcherSourceTree"`
+	LauncherGeneration       int               `json:"launcherGeneration,omitempty"`
+	PreviousLauncherSHA256   string            `json:"previousLauncherSha256,omitempty"`
+	PreviousLauncherCommit   string            `json:"previousLauncherSourceCommit,omitempty"`
+	PreviousLauncherTree     string            `json:"previousLauncherSourceTree,omitempty"`
 	RuntimeClosureSHA256     string            `json:"runtimeClosureSha256"`
 	RuntimeTreeSHA256        string            `json:"runtimeTreeSha256"`
 	NodeSHA256               string            `json:"nodeSha256"`
@@ -92,6 +99,40 @@ type Installation struct {
 	WranglerCLISHA256        string            `json:"wranglerCliSha256"`
 	ToolchainIdentity        ToolchainIdentity `json:"toolchainIdentity"`
 	Roots                    map[string]Root   `json:"roots"`
+}
+
+type LauncherUpgradeRecord struct {
+	SchemaVersion              int       `json:"schemaVersion"`
+	Domain                     string    `json:"domain"`
+	InstallationID             string    `json:"installationId"`
+	EnvironmentID              string    `json:"environmentId"`
+	Generation                 int       `json:"generation"`
+	PreviousInstallationSHA256 string    `json:"previousInstallationSha256"`
+	PreviousLauncherSHA256     string    `json:"previousLauncherSha256"`
+	PreviousSourceCommit       string    `json:"previousSourceCommit"`
+	PreviousSourceTree         string    `json:"previousSourceTree"`
+	LauncherSHA256             string    `json:"launcherSha256"`
+	SourceCommit               string    `json:"sourceCommit"`
+	SourceTree                 string    `json:"sourceTree"`
+	RuntimeTreeSHA256          string    `json:"runtimeTreeSha256"`
+	InstallationSHA256         string    `json:"installationSha256"`
+	RecordedAt                 time.Time `json:"recordedAt"`
+	KeyID                      string    `json:"keyId"`
+	Signature                  string    `json:"signature"`
+}
+
+type LauncherUpgradeCompletion struct {
+	SchemaVersion      int       `json:"schemaVersion"`
+	Domain             string    `json:"domain"`
+	InstallationID     string    `json:"installationId"`
+	EnvironmentID      string    `json:"environmentId"`
+	Generation         int       `json:"generation"`
+	UpgradeSHA256      string    `json:"upgradeSha256"`
+	InstallationSHA256 string    `json:"installationSha256"`
+	LauncherSHA256     string    `json:"launcherSha256"`
+	RecordedAt         time.Time `json:"recordedAt"`
+	KeyID              string    `json:"keyId"`
+	Signature          string    `json:"signature"`
 }
 
 type ToolchainIdentity struct {
@@ -475,8 +516,15 @@ func verifyDetached(root Root, role string, signatureText string, payload []byte
 }
 
 func ValidateInstallation(installation Installation) error {
-	if installation.SchemaVersion != SchemaVersion || !identifierPattern.MatchString(installation.InstallationID) || !environmentPattern.MatchString(installation.EnvironmentID) || !identifierPattern.MatchString(installation.AccountID) || installation.WorkerName != WorkerName || !identifierPattern.MatchString(installation.HetznerProjectID) || len(installation.CoordinatorCommit) != 40 || strings.Trim(installation.CoordinatorCommit, "0123456789abcdef") != "" {
+	if (installation.SchemaVersion != 1 && installation.SchemaVersion != 2) || !identifierPattern.MatchString(installation.InstallationID) || !environmentPattern.MatchString(installation.EnvironmentID) || !identifierPattern.MatchString(installation.AccountID) || installation.WorkerName != WorkerName || !identifierPattern.MatchString(installation.HetznerProjectID) || len(installation.CoordinatorCommit) != 40 || strings.Trim(installation.CoordinatorCommit, "0123456789abcdef") != "" {
 		return errors.New("E_INSTALLATION_IDENTITY")
+	}
+	if installation.SchemaVersion == 1 {
+		if installation.LauncherGeneration != 0 || installation.PreviousLauncherSHA256 != "" || installation.PreviousLauncherCommit != "" || installation.PreviousLauncherTree != "" {
+			return errors.New("E_INSTALLATION_UPGRADE")
+		}
+	} else if installation.LauncherGeneration < 2 || !digestPattern.MatchString(installation.PreviousLauncherSHA256) || len(installation.PreviousLauncherCommit) != 40 || strings.Trim(installation.PreviousLauncherCommit, "0123456789abcdef") != "" || len(installation.PreviousLauncherTree) != 40 || strings.Trim(installation.PreviousLauncherTree, "0123456789abcdef") != "" {
+		return errors.New("E_INSTALLATION_UPGRADE")
 	}
 	if installation.CanonicalPolicy && (installation.ExecutorUID <= 0 || len(installation.LauncherSourceCommit) != 40 || strings.Trim(installation.LauncherSourceCommit, "0123456789abcdef") != "" || len(installation.LauncherSourceTree) != 40 || strings.Trim(installation.LauncherSourceTree, "0123456789abcdef") != "") {
 		return errors.New("E_EXECUTOR_IDENTITY")
