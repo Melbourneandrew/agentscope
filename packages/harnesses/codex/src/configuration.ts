@@ -1,11 +1,16 @@
 const providerId = "agentscope_internal";
 const safeModelPattern = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
-const trustedInternalHosts = new Set([
-  "127.0.0.1",
-  "[::1]",
-  "localhost",
-  "mockserver",
-]);
+const trustedInternalHost = (hostname: string): boolean => {
+  switch (hostname) {
+    case "127.0.0.1":
+    case "[::1]":
+    case "localhost":
+    case "mockserver":
+      return true;
+    default:
+      return false;
+  }
+};
 export const CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION = Object.freeze({
   representativeVersion: "0.149.1",
   sourceCommit: "ff29a44391deccde0aba0f8390337d7f3c319ea4",
@@ -88,12 +93,17 @@ const exactInput = (
     )
       return invalid();
     const descriptors = Object.getOwnPropertyDescriptors(input);
-    if (
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
-      Object.keys(descriptors).sort().join("\0") !== "baseUrl\0model" ||
-      Object.values(descriptors).some((descriptor) => !("value" in descriptor))
-    )
-      return invalid();
+    const descriptorKeys = Reflect.ownKeys(descriptors);
+    if (descriptorKeys.length !== 2) return invalid();
+    for (let index = 0; index < descriptorKeys.length; index += 1) {
+      const key = descriptorKeys[index];
+      if (
+        (key !== "baseUrl" && key !== "model") ||
+        typeof key !== "string" ||
+        !("value" in descriptors[key])
+      )
+        return invalid();
+    }
     const baseUrl = descriptors.baseUrl?.value as unknown;
     const model = descriptors.model?.value as unknown;
     if (
@@ -106,7 +116,7 @@ const exactInput = (
     const hostname = parsed.hostname.toLowerCase();
     if (
       parsed.protocol !== "http:" ||
-      !trustedInternalHosts.has(hostname) ||
+      !trustedInternalHost(hostname) ||
       parsed.username !== "" ||
       parsed.password !== "" ||
       parsed.port === "" ||
@@ -130,7 +140,7 @@ export const createCodexInternalProviderConfiguration = (
   input: Readonly<{ baseUrl: string; model: string }>,
 ): string => {
   const parsed = exactInput(input);
-  return [
+  const lines = [
     `model = ${JSON.stringify(parsed.model)}`,
     `model_provider = ${JSON.stringify(providerId)}`,
     "check_for_update_on_startup = false",
@@ -156,9 +166,11 @@ export const createCodexInternalProviderConfiguration = (
     "open_world_enabled = false",
     "",
     "[features]",
-    ...CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features.map(
-      (feature) => `${feature} = false`,
-    ),
+  ];
+  const features = CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features;
+  for (let index = 0; index < features.length; index += 1)
+    lines[lines.length] = `${features[index]} = false`;
+  const suffix = [
     "",
     "[mcp_servers]",
     "",
@@ -170,5 +182,11 @@ export const createCodexInternalProviderConfiguration = (
     "request_max_retries = 0",
     "stream_max_retries = 0",
     "",
-  ].join("\n");
+  ];
+  for (let index = 0; index < suffix.length; index += 1)
+    lines[lines.length] = suffix[index]!;
+  let output = "";
+  for (let index = 0; index < lines.length; index += 1)
+    output += `${index === 0 ? "" : "\n"}${lines[index]}`;
+  return output;
 };

@@ -30,7 +30,10 @@ const auditString = (state: JsonAuditState): string => {
       continue;
     }
     if (character === '"') {
-      const value: unknown = JSON.parse(state.text.slice(start, state.index));
+      let encoded = "";
+      for (let index = start; index < state.index; index += 1)
+        encoded += state.text[index];
+      const value: unknown = JSON.parse(encoded);
       return typeof value === "string" ? value : reject();
     }
   }
@@ -68,7 +71,7 @@ const auditValue = (state: JsonAuditState, depth: number): void => {
 
 const auditObject = (state: JsonAuditState, depth: number): void => {
   state.index += 1;
-  const keys = new Set<string>();
+  const keys = Object.create(null) as Record<string, true>;
   skipWhitespace(state);
   if (state.text[state.index] === "}") {
     state.index += 1;
@@ -77,8 +80,13 @@ const auditObject = (state: JsonAuditState, depth: number): void => {
   for (;;) {
     if (state.text[state.index] !== '"') reject();
     const key = auditString(state);
-    if (keys.has(key)) reject();
-    keys.add(key);
+    if (Object.getOwnPropertyDescriptor(keys, key) !== undefined) reject();
+    Object.defineProperty(keys, key, {
+      value: true,
+      enumerable: true,
+      configurable: true,
+      writable: false,
+    });
     skipWhitespace(state);
     if (state.text[state.index] !== ":") reject();
     state.index += 1;

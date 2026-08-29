@@ -42,8 +42,26 @@ export type CodexCapturedTraceCandidate = Readonly<{
 }>;
 
 const safeTokenPattern = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
-const rootHookEvents = new Set(["SessionStart", "Stop", "SessionEnd"]);
 const decodedRootHooks = new WeakSet<object>();
+const decodedRootHookAdd = decodedRootHooks.add.bind(decodedRootHooks);
+const decodedRootHookHas = decodedRootHooks.has.bind(decodedRootHooks);
+
+const hasExactOwnKeys = (
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean => {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expected.length) return false;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string") return false;
+    let matched = false;
+    for (let candidate = 0; candidate < expected.length; candidate += 1)
+      if (key === expected[candidate]) matched = true;
+    if (!matched) return false;
+  }
+  return true;
+};
 
 export class CodexMappingError extends Error {
   public readonly code = "codex.mapping.invalid";
@@ -95,13 +113,13 @@ const ownDataRecord = (value: unknown): Record<string, unknown> => {
     )
       return invalid();
     const descriptors = Object.getOwnPropertyDescriptors(value);
-    if (
-      Reflect.ownKeys(descriptors).length > 32 ||
-      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string")
-    )
-      return invalid();
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length > 32) return invalid();
     const output: Record<string, unknown> = {};
-    for (const [key, descriptor] of Object.entries(descriptors)) {
+    for (let index = 0; index < keys.length; index += 1) {
+      const key = keys[index];
+      if (typeof key !== "string") return invalid();
+      const descriptor = descriptors[key]!;
       if (!("value" in descriptor) || descriptor.enumerable !== true)
         return invalid();
       Object.defineProperty(output, key, {
@@ -137,10 +155,17 @@ export const decodeCodexRootHookInput = (
       bytes.byteLength > 65_536
     )
       return invalid();
-    const parsed = parseCodexBoundedDuplicateAwareJson(bytes.slice(), 65_536);
+    const copy = new Uint8Array(bytes.byteLength);
+    for (let index = 0; index < bytes.byteLength; index += 1)
+      copy[index] = bytes[index]!;
+    const parsed = parseCodexBoundedDuplicateAwareJson(copy, 65_536);
     const record = ownDataRecord(parsed);
     const eventName = record.hook_event_name;
-    if (typeof eventName !== "string" || !rootHookEvents.has(eventName))
+    if (
+      eventName !== "SessionStart" &&
+      eventName !== "Stop" &&
+      eventName !== "SessionEnd"
+    )
       return invalid();
     const sessionId = safeToken(record.session_id);
     const turnId =
@@ -156,19 +181,22 @@ export const decodeCodexRootHookInput = (
       return invalid();
     if (
       eventName === "SessionStart" &&
-      !["startup", "resume", "clear", "compact"].includes(String(record.source))
+      record.source !== "startup" &&
+      record.source !== "resume" &&
+      record.source !== "clear" &&
+      record.source !== "compact"
     )
       return invalid();
     if (eventName === "SessionEnd" && record.reason !== "other")
       return invalid();
     const result = Object.freeze({
-      eventName: eventName as CodexRootHookInput["eventName"],
+      eventName,
       sessionId,
       turnId,
       model,
       transcriptAvailable: typeof transcript === "string",
     });
-    decodedRootHooks.add(result);
+    decodedRootHookAdd(result);
     return result;
   } catch (error) {
     if (error instanceof CodexMappingError) throw error;
@@ -198,8 +226,7 @@ const parseObservation = (
     "toolName",
     "totalTokens",
   ];
-  if (Object.keys(record).sort().join("\0") !== expected.join("\0"))
-    return invalid();
+  if (!hasExactOwnKeys(record, expected)) return invalid();
   const optionalToken = (value: unknown): number | null =>
     value === null ? null : nonnegativeInteger(value);
   const promptTokens = optionalToken(record.promptTokens);
@@ -210,12 +237,17 @@ const parseObservation = (
     record.availableStartPosition,
   );
   const exclusiveEndPosition = nonnegativeInteger(record.exclusiveEndPosition);
-  const usage = [promptTokens, completionTokens, reasoningTokens, totalTokens];
-  if (
-    usage.some((value) => value === null) &&
-    usage.some((value) => value !== null)
-  )
-    return invalid();
+  const anyUsageMissing =
+    promptTokens === null ||
+    completionTokens === null ||
+    reasoningTokens === null ||
+    totalTokens === null;
+  const anyUsagePresent =
+    promptTokens !== null ||
+    completionTokens !== null ||
+    reasoningTokens !== null ||
+    totalTokens !== null;
+  if (anyUsageMissing && anyUsagePresent) return invalid();
   if (
     promptTokens !== null &&
     completionTokens !== null &&
@@ -235,12 +267,17 @@ const parseObservation = (
   const modelProvider = optionalTokenString(record.modelProvider);
   const modelName = optionalTokenString(record.modelName);
   const reasoningLevel = optionalTokenString(record.reasoningLevel);
-  const model = [modelSystem, modelProvider, modelName, reasoningLevel];
-  if (
-    model.some((value) => value === null) &&
-    model.some((value) => value !== null)
-  )
-    return invalid();
+  const anyModelMissing =
+    modelSystem === null ||
+    modelProvider === null ||
+    modelName === null ||
+    reasoningLevel === null;
+  const anyModelPresent =
+    modelSystem !== null ||
+    modelProvider !== null ||
+    modelName !== null ||
+    reasoningLevel !== null;
+  if (anyModelMissing && anyModelPresent) return invalid();
   return Object.freeze({
     nativeIdentity: safeToken(record.nativeIdentity),
     sourceGeneration: nonnegativeInteger(record.sourceGeneration),
@@ -293,19 +330,31 @@ type MappedFields = Readonly<{
   provenance: readonly FieldProvenanceCandidate[];
 }>;
 
+const concatenateFrozen = <T>(
+  groups: readonly (readonly T[])[],
+): readonly T[] => {
+  const output: T[] = [];
+  for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
+    const group = groups[groupIndex]!;
+    for (let itemIndex = 0; itemIndex < group.length; itemIndex += 1)
+      output[output.length] = group[itemIndex]!;
+  }
+  return Object.freeze(output);
+};
+
 const unavailableFields = (
   fields: readonly string[],
-): readonly FieldUnavailableCandidate[] =>
-  Object.freeze(
-    fields.map((field) =>
-      createNativeUnavailableField({
-        field,
-        source: "native-artifact",
-        state: "unavailable",
-        reason: "not-emitted",
-      }),
-    ),
-  );
+): readonly FieldUnavailableCandidate[] => {
+  const unavailable: FieldUnavailableCandidate[] = [];
+  for (let index = 0; index < fields.length; index += 1)
+    unavailable[index] = createNativeUnavailableField({
+      field: fields[index]!,
+      source: "native-artifact",
+      state: "unavailable",
+      reason: "not-emitted",
+    });
+  return Object.freeze(unavailable);
+};
 
 const correlateRootHook = (
   value: CodexSanitizedNativeObservation,
@@ -313,7 +362,7 @@ const correlateRootHook = (
 ): "hook-payload" | "native-artifact" => {
   if (hook === undefined) return "native-artifact";
   if (
-    !decodedRootHooks.has(hook) ||
+    !decodedRootHookHas(hook) ||
     hook.eventName !== "Stop" ||
     hook.sessionId !== value.nativeIdentity ||
     hook.turnId !== value.boundaryId
@@ -440,35 +489,39 @@ const createMappedFields = (
             "native-artifact",
           ),
         ]);
-  const modelAndTokenUnavailable = Object.freeze([
-    ...(modelFields.length === 0 ? unavailableFields(modelFieldNames) : []),
-    ...(tokenFields.length === 0 ? unavailableFields(tokenFieldNames) : []),
+  const modelAndTokenUnavailable = concatenateFrozen([
+    modelFields.length === 0 ? unavailableFields(modelFieldNames) : [],
+    tokenFields.length === 0 ? unavailableFields(tokenFieldNames) : [],
   ]);
-  const errorUnavailable = Object.freeze([
-    ...(value.errorType === null
-      ? [
+  const errorUnavailable =
+    value.errorType === null
+      ? Object.freeze([
           createNativeUnavailableField({
             field: COMMON_NATIVE_SEMANTIC_FIELDS.errorType,
             source: "native-artifact",
             state: "unavailable",
             reason: "not-emitted",
           }),
-        ]
-      : []),
-  ]);
+        ])
+      : Object.freeze([]);
   const tool = createToolMapping(value);
   const toolFields = tool.fields;
-  const llmUnavailable = Object.freeze([
-    ...modelAndTokenUnavailable,
-    ...errorUnavailable,
+  const llmUnavailable = concatenateFrozen([
+    modelAndTokenUnavailable,
+    errorUnavailable,
   ]);
   const rootUnavailable = Object.freeze([]);
-  const fields = [
-    ...modelFields,
-    ...tokenFields,
-    ...errorFields,
-    ...toolFields,
+  const fields = concatenateFrozen([
+    modelFields,
+    tokenFields,
+    errorFields,
+    toolFields,
+  ]);
+  const provenanceFields: FieldProvenanceCandidate[] = [
+    provenance("span.name", "native-artifact"),
   ];
+  for (let index = 0; index < fields.length; index += 1)
+    provenanceFields[provenanceFields.length] = fields[index]!.provenance;
   return Object.freeze({
     modelFields,
     tokenFields,
@@ -476,11 +529,8 @@ const createMappedFields = (
     toolFields,
     llmUnavailable,
     rootUnavailable,
-    unavailable: Object.freeze([...llmUnavailable, ...rootUnavailable]),
-    provenance: Object.freeze([
-      provenance("span.name", "native-artifact"),
-      ...fields.map((field) => field.provenance),
-    ]),
+    unavailable: concatenateFrozen([llmUnavailable, rootUnavailable]),
+    provenance: Object.freeze(provenanceFields),
   });
 };
 
@@ -512,10 +562,10 @@ const createOperations = (
     kind: "LLM" as const,
     name: "codex.response",
     nameProvenance: provenance("span.name", "native-artifact"),
-    fields: Object.freeze([
-      ...fields.modelFields,
-      ...fields.tokenFields,
-      ...fields.errorFields,
+    fields: concatenateFrozen([
+      fields.modelFields,
+      fields.tokenFields,
+      fields.errorFields,
     ]),
     unavailable: fields.llmUnavailable,
     events: Object.freeze([]),

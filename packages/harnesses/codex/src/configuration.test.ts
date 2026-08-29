@@ -75,6 +75,30 @@ it("pins the upstream 0.149.1 external capability registry authority", () => {
   ).toBe("d2ec2685df722cf37f717a2e0d3fd689327b5b984d66da0cfdba943024ab8c2f");
 });
 
+describe("Codex configuration prototype boundary", () => {
+  it("emits the complete suppression inventory without inherited array callbacks", () => {
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, "map");
+    let configuration: string;
+    Object.defineProperty(Array.prototype, "map", {
+      value: () => [],
+      configurable: true,
+      writable: true,
+    });
+    try {
+      configuration = createCodexInternalProviderConfiguration({
+        baseUrl: "http://127.0.0.1:4319/v1",
+        model: "component-model",
+      });
+    } finally {
+      if (previous === undefined)
+        delete (Array.prototype as { map?: unknown }).map;
+      else Object.defineProperty(Array.prototype, "map", previous);
+    }
+    for (const feature of CODEX_0_149_1_EXTERNAL_CAPABILITY_SUPPRESSION.features)
+      expect(configuration).toContain(`${feature} = false`);
+  });
+});
+
 describe("Codex internal provider configuration", () => {
   it("routes Responses to an unauthenticated loopback endpoint and disables fallbacks", () => {
     const configuration = createCodexInternalProviderConfiguration({

@@ -203,6 +203,32 @@ describe("Codex root hook input", () => {
   });
 });
 
+describe("Codex hook parser prototype boundary", () => {
+  it("rejects duplicate hook identity independently of mutable Set callbacks", () => {
+    const previous = Object.getOwnPropertyDescriptor(Set.prototype, "has");
+    let rejected = false;
+    Object.defineProperty(Set.prototype, "has", {
+      value: () => false,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      decodeCodexRootHookInput(
+        encoder.encode(
+          '{"hook_event_name":"Stop","session_id":"session-1","session_id":"session-2","turn_id":"turn-1"}',
+        ),
+      );
+    } catch (error) {
+      rejected = error instanceof CodexMappingError;
+    } finally {
+      if (previous === undefined)
+        delete (Set.prototype as { has?: unknown }).has;
+      else Object.defineProperty(Set.prototype, "has", previous);
+    }
+    expect(rejected).toBe(true);
+  });
+});
+
 describe("Codex native OpenInference mapping", () => {
   it("binds checkpoint identity, stable boundary, provenance, and unavailable fields", () => {
     let request: unknown;
@@ -336,6 +362,39 @@ describe("Codex hook correlation", () => {
         ...hook,
       }),
     ).toThrow(CodexMappingError);
+  });
+});
+
+describe("Codex mapping prototype boundary", () => {
+  it("retains unavailable and provenance ledgers without inherited array callbacks", () => {
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, "map");
+    let mapped: CodexMappedNativeObservation;
+    Object.defineProperty(Array.prototype, "map", {
+      value: () => [],
+      configurable: true,
+      writable: true,
+    });
+    try {
+      mapped = mapCodexSanitizedNativeObservation(
+        observation({
+          modelSystem: null,
+          modelProvider: null,
+          modelName: null,
+          reasoningLevel: null,
+          promptTokens: null,
+          completionTokens: null,
+          reasoningTokens: null,
+          totalTokens: null,
+        }),
+        checkpoint,
+      );
+    } finally {
+      if (previous === undefined)
+        delete (Array.prototype as { map?: unknown }).map;
+      else Object.defineProperty(Array.prototype, "map", previous);
+    }
+    expect(mapped.contract.unavailable).toHaveLength(9);
+    expect(mapped.contract.provenance.length).toBeGreaterThan(0);
   });
 });
 

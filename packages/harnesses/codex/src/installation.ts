@@ -43,11 +43,40 @@ const plainRecord = (value: unknown): value is JsonRecord =>
 
 const emptyRecord = (): JsonRecord => Object.create(null) as JsonRecord;
 
+const hasExactOwnKeys = (
+  value: JsonRecord,
+  expected: readonly string[],
+): boolean => {
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expected.length) return false;
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string") return false;
+    let matched = false;
+    for (let candidate = 0; candidate < expected.length; candidate += 1)
+      if (key === expected[candidate]) matched = true;
+    if (!matched) return false;
+  }
+  return true;
+};
+
 const cloneOwnJsonData = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map((item) => cloneOwnJsonData(item));
+  if (Array.isArray(value)) {
+    const output = new Array<unknown>(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !("value" in descriptor))
+        return invalid();
+      output[index] = cloneOwnJsonData(descriptor.value);
+    }
+    return output;
+  }
   if (!plainRecord(value)) return value;
   const output = emptyRecord();
-  for (const key of Object.keys(value)) {
+  const keys = Reflect.ownKeys(value);
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string") return invalid();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !("value" in descriptor)) return invalid();
     Object.defineProperty(output, key, {
@@ -82,15 +111,32 @@ const encodePosixShellWord = (value: string): string => {
     value.length === 0 ||
     bytes.byteLength > 4_096 ||
     utf8.decode(bytes) !== value ||
-    value.includes("\0")
+    (() => {
+      for (let index = 0; index < value.length; index += 1)
+        if (value[index] === "\0") return true;
+      return false;
+    })()
   )
     return invalid();
-  return `'${value.replaceAll("'", posixSingleQuoteEscape)}'`;
+  let encoded = "'";
+  for (let index = 0; index < value.length; index += 1)
+    encoded += value[index] === "'" ? posixSingleQuoteEscape : value[index];
+  return `${encoded}'`;
 };
 
 const decodeOwnedPosixShellWord = (value: string): string | undefined => {
-  if (!value.startsWith("'") || !value.endsWith("'")) return undefined;
-  const decoded = value.slice(1, -1).replaceAll(posixSingleQuoteEscape, "'");
+  if (value[0] !== "'" || value[value.length - 1] !== "'") return undefined;
+  let decoded = "";
+  for (let index = 1; index < value.length - 1; index += 1) {
+    let escaped = true;
+    for (let offset = 0; offset < posixSingleQuoteEscape.length; offset += 1)
+      if (value[index + offset] !== posixSingleQuoteEscape[offset])
+        escaped = false;
+    if (escaped) {
+      decoded += "'";
+      index += posixSingleQuoteEscape.length - 1;
+    } else decoded += value[index];
+  }
   try {
     return encodePosixShellWord(decoded) === value ? decoded : undefined;
   } catch {
@@ -105,7 +151,11 @@ export const encodeCodexPosixHookCommand = (
     !isOwnedHarnessHookInvocation(invocation) ||
     invocation.harnessType !== codexHarnessDescriptor.harnessType ||
     invocation.arguments.length !== 0 ||
-    invocation.launcherPath.endsWith(".exe") ||
+    (invocation.launcherPath.length >= 4 &&
+      invocation.launcherPath[invocation.launcherPath.length - 4] === "." &&
+      invocation.launcherPath[invocation.launcherPath.length - 3] === "e" &&
+      invocation.launcherPath[invocation.launcherPath.length - 2] === "x" &&
+      invocation.launcherPath[invocation.launcherPath.length - 1] === "e") ||
     invocation.hookDeadlineMilliseconds > maximumCodexHookDeadlineMilliseconds
   )
     return invalid();
@@ -152,8 +202,7 @@ const currentGroup = (
   if (!plainRecord(value)) return false;
   const expectedKeys =
     matcherFor(event) === undefined ? ["hooks"] : ["hooks", "matcher"];
-  if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0"))
-    return false;
+  if (!hasExactOwnKeys(value, expectedKeys)) return false;
   const matcher = matcherFor(event);
   if (
     (matcher !== undefined && value.matcher !== matcher) ||
@@ -164,8 +213,7 @@ const currentGroup = (
   const handler = value.hooks[0];
   return (
     plainRecord(handler) &&
-    Object.keys(handler).sort().join("\0") ===
-      "command\0statusMessage\0timeout\0type" &&
+    hasExactOwnKeys(handler, ["command", "statusMessage", "timeout", "type"]) &&
     handler.type === "command" &&
     handler.command === command &&
     handler.timeout === 3 &&
@@ -182,7 +230,7 @@ const ownedGroupForHarness = (
   const matcher = matcherFor(event);
   const expectedKeys = matcher === undefined ? ["hooks"] : ["hooks", "matcher"];
   if (
-    Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0") ||
+    !hasExactOwnKeys(value, expectedKeys) ||
     (matcher !== undefined && value.matcher !== matcher) ||
     !unknownArray(value.hooks)
   )
@@ -191,8 +239,12 @@ const ownedGroupForHarness = (
   const handler = value.hooks[0];
   if (
     !plainRecord(handler) ||
-    Object.keys(handler).sort().join("\0") !==
-      "command\0statusMessage\0timeout\0type" ||
+    !hasExactOwnKeys(handler, [
+      "command",
+      "statusMessage",
+      "timeout",
+      "type",
+    ]) ||
     handler.type !== "command" ||
     handler.statusMessage !== ownedStatus ||
     handler.timeout !== 3 ||
@@ -216,13 +268,12 @@ const parseConfiguration = (bytes: Uint8Array): JsonRecord | undefined => {
     if (parsed.hooks !== undefined && !plainRecord(parsed.hooks))
       return undefined;
     const hooks = parsed.hooks;
-    if (
-      hooks !== undefined &&
-      rootEvents.some(
-        (event) => hooks[event] !== undefined && !unknownArray(hooks[event]),
-      )
-    )
-      return undefined;
+    if (hooks !== undefined)
+      for (let index = 0; index < rootEvents.length; index += 1) {
+        const event = rootEvents[index]!;
+        if (hooks[event] !== undefined && !unknownArray(hooks[event]))
+          return undefined;
+      }
     return parsed;
   } catch {
     return undefined;
@@ -231,29 +282,33 @@ const parseConfiguration = (bytes: Uint8Array): JsonRecord | undefined => {
 
 const quoteJsonString = (value: string): string => JSON.stringify(value);
 
-const serializeOwnJsonData = (value: unknown, depth = 0): string => {
+const serializeOwnJsonData = (value: unknown): string => {
   if (value === null) return "null";
   if (typeof value === "string") return quoteJsonString(value);
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number")
     return Number.isFinite(value) ? String(value) : invalid();
-  const indentation = "  ".repeat(depth);
-  const childIndentation = "  ".repeat(depth + 1);
   if (Array.isArray(value)) {
-    const items = value.map((item) => serializeOwnJsonData(item, depth + 1));
-    return items.length === 0
-      ? "[]"
-      : `[\n${items.map((item) => `${childIndentation}${item}`).join(",\n")}\n${indentation}]`;
+    let output = "[";
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !("value" in descriptor))
+        return invalid();
+      output += `${index === 0 ? "" : ","}${serializeOwnJsonData(descriptor.value)}`;
+    }
+    return `${output}]`;
   }
   if (!plainRecord(value)) return invalid();
-  const entries = Object.keys(value).map((key) => {
+  const keys = Reflect.ownKeys(value);
+  let output = "{";
+  for (let index = 0; index < keys.length; index += 1) {
+    const key = keys[index];
+    if (typeof key !== "string") return invalid();
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || !("value" in descriptor)) return invalid();
-    return `${childIndentation}${quoteJsonString(key)}: ${serializeOwnJsonData(descriptor.value, depth + 1)}`;
-  });
-  return entries.length === 0
-    ? "{}"
-    : `{\n${entries.join(",\n")}\n${indentation}}`;
+    output += `${index === 0 ? "" : ","}${quoteJsonString(key)}:${serializeOwnJsonData(descriptor.value)}`;
+  }
+  return `${output}}`;
 };
 
 const serializeConfiguration = (root: JsonRecord): Uint8Array =>
@@ -266,16 +321,17 @@ const installOwnedGroups = (
   replaceOverlap: boolean,
 ): Uint8Array => {
   const hooks = plainRecord(root.hooks) ? root.hooks : emptyRecord();
-  for (const event of rootEvents) {
-    const current = unknownArray(hooks[event]) ? hooks[event] : [];
-    hooks[event] = [
-      ...(replaceOverlap
-        ? []
-        : current.filter(
-            (group) => !ownedGroupForHarness(group, event, invocation),
-          )),
-      ownedGroup(event, command),
-    ];
+  for (let eventIndex = 0; eventIndex < rootEvents.length; eventIndex += 1) {
+    const event = rootEvents[eventIndex]!;
+    const eventValue = hooks[event];
+    const current = unknownArray(eventValue) ? eventValue : [];
+    const replacement: unknown[] = [];
+    if (!replaceOverlap)
+      for (let index = 0; index < current.length; index += 1)
+        if (!ownedGroupForHarness(current[index], event, invocation))
+          replacement[replacement.length] = current[index];
+    replacement[replacement.length] = ownedGroup(event, command);
+    hooks[event] = replacement;
   }
   root.hooks = hooks;
   return serializeConfiguration(root);
@@ -288,20 +344,22 @@ const uninstallOwnedGroups = (
   if (!plainRecord(root.hooks)) return { kind: "unchanged" };
   const hooks = root.hooks;
   let changed = false;
-  for (const event of rootEvents) {
+  for (let eventIndex = 0; eventIndex < rootEvents.length; eventIndex += 1) {
+    const event = rootEvents[eventIndex]!;
     const eventGroups = hooks[event];
     if (!unknownArray(eventGroups)) continue;
-    const retained = eventGroups.filter(
-      (group) => !ownedGroupForHarness(group, event, invocation),
-    );
+    const retained: unknown[] = [];
+    for (let index = 0; index < eventGroups.length; index += 1)
+      if (!ownedGroupForHarness(eventGroups[index], event, invocation))
+        retained[retained.length] = eventGroups[index];
     if (retained.length === eventGroups.length) continue;
     changed = true;
     if (retained.length === 0) delete hooks[event];
     else hooks[event] = retained;
   }
   if (!changed) return { kind: "unchanged" };
-  if (Object.keys(hooks).length === 0) delete root.hooks;
-  return Object.keys(root).length === 0
+  if (Reflect.ownKeys(hooks).length === 0) delete root.hooks;
+  return Reflect.ownKeys(root).length === 0
     ? { kind: "remove" }
     : { kind: "replace", bytes: serializeConfiguration(root) };
 };
@@ -331,19 +389,28 @@ const plan = (
       : { kind: "unsupported" };
   if (operation === "uninstall") return uninstallOwnedGroups(root, invocation);
   const hooks = plainRecord(root.hooks) ? root.hooks : emptyRecord();
-  const foreignOverlap = rootEvents.some((event) =>
-    (unknownArray(hooks[event]) ? hooks[event] : []).some(
-      (group) => !ownedGroupForHarness(group, event, invocation),
-    ),
-  );
+  let foreignOverlap = false;
+  for (let eventIndex = 0; eventIndex < rootEvents.length; eventIndex += 1) {
+    const event = rootEvents[eventIndex]!;
+    const eventValue = hooks[event];
+    const groups = unknownArray(eventValue) ? eventValue : [];
+    for (let groupIndex = 0; groupIndex < groups.length; groupIndex += 1)
+      if (!ownedGroupForHarness(groups[groupIndex], event, invocation))
+        foreignOverlap = true;
+  }
   if (foreignOverlap && operation === "install")
     return { kind: "replace-overlap", bytes: new Uint8Array() };
-  const complete = rootEvents.every((event) => {
-    const eventGroups = unknownArray(hooks[event]) ? hooks[event] : [];
-    return (
-      eventGroups.length === 1 && currentGroup(eventGroups[0], event, command)
-    );
-  });
+  let complete = true;
+  for (let index = 0; index < rootEvents.length; index += 1) {
+    const event = rootEvents[index]!;
+    const eventValue = hooks[event];
+    const eventGroups = unknownArray(eventValue) ? eventValue : [];
+    if (
+      eventGroups.length !== 1 ||
+      !currentGroup(eventGroups[0], event, command)
+    )
+      complete = false;
+  }
   if (complete && !foreignOverlap) return { kind: "unchanged" };
   return {
     kind: foreignOverlap ? "replace-overlap" : "replace",

@@ -146,9 +146,12 @@ describe("Codex owned hook migration and removal", () => {
     expect(migrated.kind).toBe("replace-overlap");
     if (migrated.kind !== "replace-overlap")
       throw new Error("expected migration");
-    const migratedText = decoder.decode(migrated.bytes);
-    expect(migratedText).toContain('"description": "foreign"');
-    expect(migratedText).toContain('"PreToolUse"');
+    const migratedValue = JSON.parse(decoder.decode(migrated.bytes)) as {
+      description: string;
+      hooks: { PreToolUse: unknown };
+    };
+    expect(migratedValue.description).toBe("foreign");
+    expect(migratedValue.hooks).toHaveProperty("PreToolUse");
     expect(decide("uninstall", ownedInvocation, foreign)).toEqual({
       kind: "unchanged",
     });
@@ -157,14 +160,15 @@ describe("Codex owned hook migration and removal", () => {
   it("uninstalls only exact owned groups and preserves foreign state", () => {
     const ownedInvocation = invocation();
     const installed = replacementText(decide("install", ownedInvocation, null));
-    const withForeignState = installed.replace(
-      '{\n  "hooks"',
-      '{\n  "description": "foreign",\n  "hooks"',
-    );
+    const installedValue = JSON.parse(installed) as Record<string, unknown>;
+    const withForeignState = JSON.stringify({
+      description: "foreign",
+      ...installedValue,
+    });
     const uninstalled = replacementText(
       decide("uninstall", ownedInvocation, withForeignState),
     );
-    expect(uninstalled).toBe('{\n  "description": "foreign"\n}\n');
+    expect(JSON.parse(uninstalled)).toEqual({ description: "foreign" });
     expect(decide("uninstall", ownedInvocation, null)).toEqual({
       kind: "unchanged",
     });
@@ -299,7 +303,7 @@ describe("Codex duplicate-aware configuration boundary", () => {
     }
     const serialized = replacementText(decision);
     expect(serialized).toContain('"PreToolUse"');
-    expect(serialized).toContain('"matcher": "Bash"');
+    expect(serialized).toContain('"matcher":"Bash"');
     expect(serialized).toContain('"SessionStart"');
     expect(serialized).toContain('"SessionEnd"');
     expect(serialized).not.toContain("prototypeCanary");
@@ -312,8 +316,65 @@ describe("Codex duplicate-aware configuration boundary", () => {
       foreignEmpty: {},
     });
   });
+});
 
+describe("Codex configuration callback isolation", () => {
+  it("ignores mutable array callbacks during overlap classification and output", () => {
+    const ownedInvocation = invocation();
+    const foreign = JSON.stringify({
+      description: "foreign",
+      hooks: {
+        Stop: [
+          {
+            hooks: [{ type: "command", command: "/foreign/hook", timeout: 1 }],
+          },
+        ],
+      },
+    });
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, "map");
+    let absent: HarnessTargetDecision;
+    let overlap: HarnessTargetDecision;
+    Object.defineProperty(Array.prototype, "map", {
+      value: () => [],
+      configurable: true,
+      writable: true,
+    });
+    try {
+      absent = decide("install", ownedInvocation, '{"description":"foreign"}');
+      overlap = decide("install", ownedInvocation, foreign);
+    } finally {
+      if (previous === undefined)
+        delete (Array.prototype as { map?: unknown }).map;
+      else Object.defineProperty(Array.prototype, "map", previous);
+    }
+    expect(overlap.kind).toBe("replace-overlap");
+    const absentValue = JSON.parse(replacementText(absent)) as {
+      description: string;
+      hooks: Record<string, unknown>;
+    };
+    expect(absentValue.description).toBe("foreign");
+    expect(Object.keys(absentValue.hooks).sort()).toEqual([
+      "SessionEnd",
+      "SessionStart",
+      "Stop",
+    ]);
+  });
+
+  it("keeps maximum-depth bounded input below the Core decision ceiling", () => {
+    const values = new Array<string>(8_000);
+    for (let index = 0; index < values.length; index += 1) values[index] = "0";
+    const nested = `${"[".repeat(63)}${values.join(",")}${"]".repeat(63)}`;
+    const decision = decide("install", invocation(), `{"bounded":${nested}}`);
+    expect(decision.kind).toBe("replace");
+    if (decision.kind !== "replace") throw new Error("expected replacement");
+    expect(decision.bytes.byteLength).toBeLessThanOrEqual(1_048_576);
+  });
+});
+
+describe("Codex duplicate-aware configuration rejection", () => {
   it.each([
+    '{"hooks":42}',
+    '{"hooks":{"Stop":{}}}',
     '{"hooks":{},"hooks":{"Stop":[]}}',
     '{"hooks":{"Stop":[],"Stop":[{"hooks":[]}]}}',
     '{"hooks":{"Stop":[],"\\u0053top":[{"hooks":[]}]}}',
