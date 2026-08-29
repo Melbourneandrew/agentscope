@@ -24,19 +24,18 @@ import {
   verifyMaterializerParentSwapFixture,
 } from "./tooling/archive-compiler.mjs";
 import {
+  assertToolchainImageAuthority,
   ensurePlatformImage,
   nativeCandidatePlatform,
+  nativeCandidateToolchainImageAuthority,
 } from "./tooling/image-platform-authority.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const workspace = fileURLToPath(new URL("../../../../", import.meta.url));
 const records = join(root, "files/records");
-const image =
-  "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2";
-const imageManifest =
-  "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4";
-const imageId =
-  "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b";
+const image = nativeCandidateToolchainImageAuthority.sourceIndex;
+const imageManifest = nativeCandidateToolchainImageAuthority.selectedManifest;
+const imageId = nativeCandidateToolchainImageAuthority.configDigest;
 const executionImage =
   "node@sha256:0d130e2ee18e88e1561375276daced6bff032539200173f2daf48c2e33f38ff5";
 const executionImageId =
@@ -1124,6 +1123,12 @@ const validateRecords = () => {
   });
   assert.deepEqual(lock.toolchainClosure, {
     image,
+    selectedManifest: {
+      reference: imageManifest,
+      bytes: nativeCandidateToolchainImageAuthority.selectedManifestBytes,
+      configDigest: imageId,
+      platform: nativeCandidatePlatform,
+    },
     imageId,
     architecture: "amd64",
     node: "22.18.0",
@@ -1145,6 +1150,13 @@ const validateRecords = () => {
     authority: "complete-content-addressed-container-filesystem",
     networkDuringBuild: "denied",
     credentialAuthority: "none",
+  });
+  assertToolchainImageAuthority({
+    sourceIndex: lock.toolchainClosure.image,
+    selectedManifest: lock.toolchainClosure.selectedManifest.reference,
+    selectedManifestBytes: lock.toolchainClosure.selectedManifest.bytes,
+    configDigest: lock.toolchainClosure.selectedManifest.configDigest,
+    platform: lock.toolchainClosure.selectedManifest.platform,
   });
   assert.deepEqual(
     lock.materials.map(({ name, tarballBytes, tarballSha256 }) => ({
@@ -1246,8 +1258,12 @@ const validateRecords = () => {
     ),
     ownedBuild: {
       profile: "agentscope-owned-native-build-v1",
-      containerImage: image,
+      containerImageSourceIndex: image,
+      containerImage: imageManifest,
+      containerImageManifestBytes:
+        nativeCandidateToolchainImageAuthority.selectedManifestBytes,
       containerImageId: imageId,
+      containerPlatform: nativeCandidatePlatform,
       node: "22.18.0",
       nodeAbi: 127,
       python: "3.11.2",

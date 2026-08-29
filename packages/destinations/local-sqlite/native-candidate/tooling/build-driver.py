@@ -89,6 +89,18 @@ if (
     != "agentscope-owned-cc-ar-cxx-link-plus-namespace-v2"
     or material_lock.get("toolchainClosure", {}).get("image")
     != "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2"
+    or material_lock.get("toolchainClosure", {}).get("selectedManifest")
+    != {
+        "reference": "node@sha256:bb6834c0669aa71cbc8d94606561a721adf489f6b93d7b8b825f0cf1b498c2c4",
+        "bytes": 2493,
+        "configDigest": "sha256:a1bea2f8c1ee78866f82039a60baa1c3a480872018aa0ef4891000ec793ed82b",
+        "platform": {
+            "docker": "linux/amd64",
+            "os": "linux",
+            "architecture": "amd64",
+            "variant": "",
+        },
+    }
     or material_lock.get("ownedTooling", {}).get("namespaceHelperSourceSha256")
     != sha256(namespace_helper)
 ):

@@ -3,7 +3,7 @@
   "profile": "agentscope-sacrificial-native-execution-v1",
   "executionImage": "node@sha256:0d130e2ee18e88e1561375276daced6bff032539200173f2daf48c2e33f38ff5",
   "executionImageId": "sha256:955b467cb9a2a941cb181f7cf1d2405c1dd24b4566a3598b7eae7ecca1a769d1",
-  "supportManifestDigest": "sha256:07059633fd124a278d16a1421d3dbd27f5778b1b26f5fecca9f24f27addedd2d",
+  "supportManifestDigest": "sha256:23d9e3fb66cb207cdf547b5461e9a03edc5be494e4d1077ac9134eaf4193ded7",
   "nativeTupleId": "node127-linux-x64-glibc",
   "platformTupleId": "linux-x64-node22-ci-ext4-proposed",
   "steps": [

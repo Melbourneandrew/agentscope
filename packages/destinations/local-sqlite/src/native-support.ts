@@ -113,7 +113,7 @@ const candidateArtifacts = Object.freeze([
     relativePath: "loader/owned-loader.cjs",
     bytes: 15_896,
     digest:
-      "sha256:f1bf552b702d1249f23e2e2b5bfdab9be8328a24e600b212cdf40df05963e0ba",
+      "sha256:c6e70c91ea6a23aac212f57e692aa0bb3163931c3f9ab8fb36b86649e28e80b8",
   }),
   Object.freeze({
     kind: "native-binary" as const,
@@ -152,16 +152,16 @@ const candidateArtifacts = Object.freeze([
   Object.freeze({
     kind: "release-materials" as const,
     relativePath: "records/release-materials.json",
-    bytes: 18_893,
+    bytes: 19_282,
     digest:
-      "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
+      "sha256:b29e79f65ae968c6d337fc524ff6d0aee52b2665597bc40f6bc9a5b437b69587",
   }),
   Object.freeze({
     kind: "provenance" as const,
     relativePath: "records/provenance.json",
-    bytes: 3_369,
+    bytes: 3_660,
     digest:
-      "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
+      "sha256:b8185d55b363d65734540dc8d8df254db83e6d05b78fe91a2794cd49b28bc2d3",
   }),
   Object.freeze({
     kind: "sbom" as const,
@@ -188,9 +188,9 @@ export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManif
     minimumNativeChildBudgetMilliseconds: 50,
     nativeTeardownReserveMilliseconds: 250,
     releaseMaterialManifestDigest:
-      "sha256:01cc76a9f8c1902e2b52ab242a104edda9082b74cb347489a2cb2c8c47ff0e6f",
+      "sha256:b29e79f65ae968c6d337fc524ff6d0aee52b2665597bc40f6bc9a5b437b69587",
     provenanceDigest:
-      "sha256:0a775662e9afdb51ba479a1c6a529863e7cdcbfb9f5214b62375dad0c535b1df",
+      "sha256:b8185d55b363d65734540dc8d8df254db83e6d05b78fe91a2794cd49b28bc2d3",
     sbomDigest:
       "sha256:04280bcb8de98f8be1e8638888a1a906529e7e4451129f8a1b131219ed2a7f08",
     noticeInventoryDigest:
@@ -209,7 +209,7 @@ export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST: LocalSqliteNativeSupportManif
   });
 
 export const LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST =
-  "sha256:07059633fd124a278d16a1421d3dbd27f5778b1b26f5fecca9f24f27addedd2d" as const;
+  "sha256:23d9e3fb66cb207cdf547b5461e9a03edc5be494e4d1077ac9134eaf4193ded7" as const;
 
 const unavailable = (): LocalSqliteNativeSupportResult =>
   Object.freeze({

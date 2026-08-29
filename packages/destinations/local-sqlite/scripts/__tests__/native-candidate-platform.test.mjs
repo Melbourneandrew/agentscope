@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertToolchainImageAuthority,
   ensurePlatformImage,
   nativeCandidatePlatform,
+  nativeCandidateToolchainImageAuthority,
 } from "../../native-candidate/tooling/image-platform-authority.mjs";
 
 const toolchain = Object.freeze({
@@ -29,6 +31,26 @@ const inspection = (expectedId, architecture = "amd64") =>
   });
 const missing = Object.freeze({ error: undefined, status: 1, stdout: "" });
 const pulled = Object.freeze({ error: undefined, status: 0, stdout: "" });
+
+const expectToolchainAuthorityBinding = () => {
+  expect(() =>
+    assertToolchainImageAuthority(nativeCandidateToolchainImageAuthority),
+  ).not.toThrow();
+  expect(() =>
+    assertToolchainImageAuthority({
+      ...nativeCandidateToolchainImageAuthority,
+      selectedManifest:
+        "node@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }),
+  ).toThrow("native candidate toolchain image authority invalid");
+  expect(() =>
+    assertToolchainImageAuthority({
+      ...nativeCandidateToolchainImageAuthority,
+      sourceIndex:
+        "node@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    }),
+  ).toThrow("native candidate toolchain image authority invalid");
+};
 
 describe("native candidate platform image authority", () => {
   it.each([toolchain, execution])(
@@ -101,6 +123,10 @@ describe("native candidate platform image authority", () => {
     expect(toolchain.reference).not.toBe(toolchain.sourceReference);
     expect(observed.flat()).not.toContain(toolchain.sourceReference);
     expect(observed.flat()).toContain(toolchain.reference);
+  });
+
+  it("binds the selected manifest to the authoritative source index", () => {
+    expectToolchainAuthorityBinding();
   });
 
   it.each([
