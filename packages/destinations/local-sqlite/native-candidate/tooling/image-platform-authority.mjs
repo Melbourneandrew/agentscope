@@ -186,12 +186,12 @@ export const ensurePlatformImage = ({ reference, expectedId, invoke }) => {
   )
     throw new Error("native candidate image authority invalid");
 
-  let inspection = inspectImage(reference, invoke);
+  let inspection = inspectImage(expectedId, invoke);
   if (inspection.error || inspection.status !== 0) {
     const pull = invoke(imagePullArguments(reference));
     if (pull.error || pull.status !== 0)
       throw new Error("native candidate image acquisition failed");
-    inspection = inspectImage(reference, invoke);
+    inspection = inspectImage(expectedId, invoke);
   }
   assertExpectedImage(inspection, expectedId);
 };

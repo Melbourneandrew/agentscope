@@ -208,7 +208,7 @@ const expectOwnedToolingBinding = () => {
 
 describe("native candidate platform image authority", () => {
   it.each([toolchain, execution])(
-    "pulls $reference for the platform and inspects identity without API 1.49",
+    "pulls $reference for the platform and inspects its exact config identity",
     (authority) => {
       const observed = [];
       const results = [missing, pulled, inspection(authority.expectedId)];
@@ -226,7 +226,7 @@ describe("native candidate platform image authority", () => {
         [
           "image",
           "inspect",
-          authority.reference,
+          authority.expectedId,
           "--format",
           "{{.Id}}\t{{.Os}}\t{{.Architecture}}\t{{.Variant}}",
         ],
@@ -234,7 +234,7 @@ describe("native candidate platform image authority", () => {
         [
           "image",
           "inspect",
-          authority.reference,
+          authority.expectedId,
           "--format",
           "{{.Id}}\t{{.Os}}\t{{.Architecture}}\t{{.Variant}}",
         ],
