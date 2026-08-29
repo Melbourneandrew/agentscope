@@ -147,8 +147,6 @@ const imageInspectionArguments = (reference) =>
   Object.freeze([
     "image",
     "inspect",
-    "--platform",
-    nativeCandidatePlatform.docker,
     reference,
     "--format",
     "{{.Id}}\t{{.Os}}\t{{.Architecture}}\t{{.Variant}}",
