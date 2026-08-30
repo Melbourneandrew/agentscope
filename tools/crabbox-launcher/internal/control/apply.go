@@ -837,11 +837,15 @@ func (executor CommandExecutor) invokeCloudflare(ctx context.Context, invocation
 }
 
 func verifiedFileDigest(path, expected string) error {
+	return verifiedFileDigestBounded(path, expected, 64<<20)
+}
+
+func verifiedFileDigestBounded(path, expected string, maxBytes int64) error {
 	if err := validateProtectedReadablePath(path, false); err != nil {
 		return errors.New("E_TOOLCHAIN_FILE")
 	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 64<<20 {
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxBytes {
 		return errors.New("E_TOOLCHAIN_FILE")
 	}
 	data, err := os.ReadFile(path)

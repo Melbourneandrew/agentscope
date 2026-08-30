@@ -2242,6 +2242,82 @@ func TestInstalledRuntimeIsRootLocalAndTamperEvident(t *testing.T) {
 	}
 }
 
+func TestInstalledRuntimeAdmitsPinnedNodeBinarySize(t *testing.T) {
+	item := newFixture(t)
+	paths := runtimePaths(item.store.path("toolchain"))
+	const pinnedNodeSize = int64(121306800)
+	if pinnedNodeSize <= 64<<20 || pinnedNodeSize > maxRuntimeEntryBytes {
+		t.Fatalf("pinned Node size is outside the intended runtime-only bound: %d", pinnedNodeSize)
+	}
+	if err := os.Chmod(paths.node, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(paths.node, pinnedNodeSize); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(paths.node, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	node, err := os.ReadFile(paths.node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.installation.NodeSHA256 = SHA256(node)
+	item.installation.RuntimeTreeSHA256, err = runtimeTreeDigest(item.store.path("toolchain"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyRuntimeClosure(item.store.path("toolchain"), item.installation); err != nil {
+		t.Fatalf("pinned Node-sized protected runtime rejected: %v", err)
+	}
+	if err := verifiedFileDigest(paths.node, item.installation.NodeSHA256); err == nil || !strings.Contains(err.Error(), "E_TOOLCHAIN_FILE") {
+		t.Fatalf("unrelated 64 MiB verifier bound widened: %v", err)
+	}
+	item.installation.NodeSHA256 = strings.Repeat("0", 64)
+	if _, err := verifyRuntimeClosure(item.store.path("toolchain"), item.installation); err == nil || !strings.Contains(err.Error(), "E_TOOLCHAIN_CHANGED") {
+		t.Fatalf("wrong pinned Node digest accepted: %v", err)
+	}
+}
+
+func TestRuntimeVerifierRejectsEntryAboveArchiveBound(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "oversized-runtime-entry")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(maxRuntimeEntryBytes + 1); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifiedFileDigestBounded(path, strings.Repeat("0", 64), maxRuntimeEntryBytes); err == nil || !strings.Contains(err.Error(), "E_TOOLCHAIN_FILE") {
+		t.Fatalf("runtime entry above archive bound accepted: %v", err)
+	}
+	valid := filepath.Join(root, "valid-runtime-entry")
+	if err := os.WriteFile(valid, []byte("runtime"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "runtime-entry-link")
+	if err := os.Symlink(valid, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifiedFileDigestBounded(link, SHA256([]byte("runtime")), maxRuntimeEntryBytes); err == nil || !strings.Contains(err.Error(), "E_TOOLCHAIN_FILE") {
+		t.Fatalf("runtime entry symlink accepted: %v", err)
+	}
+	if err := os.Chmod(valid, 0o622); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifiedFileDigestBounded(valid, SHA256([]byte("runtime")), maxRuntimeEntryBytes); err == nil || !strings.Contains(err.Error(), "E_TOOLCHAIN_FILE") {
+		t.Fatalf("group/world-writable runtime entry accepted: %v", err)
+	}
+}
+
 func TestRuntimeClosureRejectsSymlinkAndTraversal(t *testing.T) {
 	makeArchive := func(header tar.Header) []byte {
 		var buffer bytes.Buffer
