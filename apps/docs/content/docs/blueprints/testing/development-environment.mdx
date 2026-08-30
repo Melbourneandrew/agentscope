@@ -141,7 +141,7 @@ Suspected exposure of the account-scoped Cloudflare deployment credential additi
 
 ### ADR-012: Keep the remote host outside the hermetic and release boundaries
 
-**Decision:** Crabbox provisions only the disposable outer Linux host. Agentscope launches the unchanged hermetic Docker scenario inside it with dummy harness credentials, internal model proxy/mock, loopback OTLP ledger, and denied public egress. Real provider model credentials and live Langfuse credentials are prohibited. The same candidate and manifest remain runnable locally and in GitHub CI.
+**Decision:** Crabbox provisions only the disposable outer Linux host. Agentscope launches the unchanged hermetic Docker scenario inside it with dummy harness credentials, internal model proxy/mock, loopback OTLP ledger, and denied public egress. Real provider model credentials and live Langfuse credentials are prohibited. The same candidate and manifest remain runnable through workstation execution and CI execution.
 
 Crabbox checkpoints are disabled for the initial brokered Hetzner environment. The pinned checkpoint record does not authenticate prepared-image/tool digests or prove the absence of credentials and prior scenario state, and brokered Hetzner does not provide a native snapshot authority. Enabling checkpoint reuse requires a later reviewed decision for an authenticated provenance manifest, allowed cache contents, secret scanning, clean-room revalidation, retention, and deletion. A checkpoint can never become acquisition, candidate, harness, image, or support authority.
 
