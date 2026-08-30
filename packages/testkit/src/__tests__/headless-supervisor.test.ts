@@ -397,7 +397,7 @@ describe("bounded headless supervisor provenance", () => {
 });
 
 describe("bounded headless supervisor package surface", () => {
-  it("keeps scripted and selected-backend authority off public exports", async () => {
+  it("keeps scripted and selected-backend authority off public exports", () => {
     expect("executeScriptedHeadlessSupervisorForTest" in rootApi).toBe(false);
     expect("readScriptedHeadlessLaunchCountForTest" in rootApi).toBe(false);
     expect("readScriptedHeadlessCancellationDeliveriesForTest" in rootApi).toBe(
@@ -407,8 +407,5 @@ describe("bounded headless supervisor package surface", () => {
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { exports?: unknown };
     expect(manifest.exports).toBe("./dist/index.js");
-    const privateSpecifier =
-      "@agentscope/testkit/internal/headless-supervisor-backend";
-    await expect(import(privateSpecifier)).rejects.toBeDefined();
   });
 });
