@@ -1,0 +1,66 @@
+---
+title: Getting started
+description: Installation status and the safe Agentscope setup sequence.
+---
+
+## Before you begin
+
+Agentscope 0.1.0 is not published yet. Do not install an artifact from an
+untrusted source or treat source checkout behavior as a released support claim.
+The first alpha targets Codex and Claude Code; exact versions and supported
+platform combinations will be listed here only after actual-binary admission.
+
+Agentscope requires Node.js 22 or later. The public product is one npm package,
+`agentscope-cli`, which exposes the `agentscope` command. Internal workspace
+packages are not separately supported products.
+
+## Safe setup sequence
+
+Once the alpha is published, use this order:
+
+1. Install the exact published `agentscope-cli` version named by the release.
+2. Run `agentscope --version` and `agentscope init`.
+3. Review the initialization plan. Repeat with `--yes` only when you intend to
+   create the non-secret Agentscope configuration.
+4. Configure a destination, then select it explicitly with `agentscope routing
+set`. Configuring a destination does not enable delivery by itself.
+5. Run `agentscope harness list` and `agentscope harness status <harness>`.
+6. Run `agentscope install <harness>` without `--yes` and inspect the plan.
+   Repeat with `--yes` only when the current plan is acceptable.
+7. Run `agentscope doctor` to inspect the resulting setup.
+
+Ordinary harness installation never replaces an overlapping vendor observability
+hook. If installation reports an overlap, review it before using the separate
+`agentscope harness migrate` command.
+
+## Configuration and credentials
+
+Non-secret configuration lives under `~/.agentscope`. Credentials use the
+governed credential backend or an explicit CI environment-variable reference;
+Agentscope does not store credential values in its configuration or print them.
+`AGENTSCOPE_HOME` is reserved for isolated test and CI environments.
+
+Routing is always explicit. An empty routing selection disables delivery, and
+Agentscope never chooses the first configured destination as a default.
+
+## Check and remove an installation
+
+Use `agentscope harness status <harness>` and `agentscope doctor` for read-only
+inspection. `agentscope uninstall <harness>` is also a dry run until `--yes` is
+present and removes only an exact Agentscope-owned integration.
+
+Destination unconfiguration and data deletion are separate operations. In
+particular, unconfiguring Local SQLite preserves its database; deletion requires
+the dedicated confirmed command.
+
+## Troubleshooting
+
+- Use `agentscope doctor --output json` for a bounded machine-readable report.
+- Treat `unsupported` and `indeterminate` as distinct from an absent harness.
+- A configured destination is inactive until routing selects it.
+- If a command reports recovery-required or outcome-unknown, stop mutation and
+  use the exact recovery command suggested by Doctor.
+- Never paste credential values into `--settings`, command arguments, issue
+  reports, or logs.
+
+See the [CLI reference](/docs/cli) for exact syntax and stable diagnostics.
