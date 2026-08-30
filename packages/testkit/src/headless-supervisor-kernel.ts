@@ -30,7 +30,7 @@ export const executeBoundedHeadlessSupervisor = async (
       capability,
       scenario,
       request,
-      options.signal,
+      options,
     );
   } catch (error: unknown) {
     throw new HeadlessSupervisorError(
