@@ -61,7 +61,9 @@ describe("bounded headless supervisor scripted protocol", () => {
       ).rejects.toMatchObject({ code: "testkit.headless.backend.receipt" });
     },
   );
+});
 
+describe("bounded headless supervisor sequencing", () => {
   it("fails closed at the original shutdown authority without a fresh callback", async () => {
     const candidate = cases[0]!;
     const run = candidate.instantiate({
@@ -69,22 +71,54 @@ describe("bounded headless supervisor scripted protocol", () => {
       fixturePath: "/synthetic/fixture/fixture.mjs",
     });
     const now = performance.now();
-    await expect(
-      executeScriptedHeadlessSupervisorForTest(
-        "correct",
-        {
-          ...run.request,
-          monotonicStartupDeadlineMs: now + 50,
-          monotonicExecutionDeadlineMs: now + 100,
-          monotonicShutdownDeadlineMs: now + 180,
-          terminationGraceMs: 10,
-        },
-        "late",
-      ),
-    ).rejects.toMatchObject({
+    const request = {
+      ...run.request,
+      arguments: [...run.request.arguments],
+      environment: { ...run.request.environment },
+      stdin: new Uint8Array(run.request.stdin),
+      monotonicStartupDeadlineMs: now + 50,
+      monotonicExecutionDeadlineMs: now + 100,
+      monotonicShutdownDeadlineMs: now + 300,
+      terminationGraceMs: 10,
+    };
+    const startedAt = performance.now();
+    const pending = executeScriptedHeadlessSupervisorForTest(
+      "correct",
+      request,
+      "late",
+    );
+    request.monotonicShutdownDeadlineMs = now + 1_500;
+    await expect(pending).rejects.toMatchObject({
       code: "testkit.headless.reconciliation.deadline",
     });
+    expect(performance.now() - startedAt).toBeLessThan(800);
     expect(readScriptedHeadlessLaunchCountForTest()).toBe(1);
+  });
+
+  it("uses one deep request snapshot across every asynchronous boundary", async () => {
+    const candidate = cases[0]!;
+    const run = candidate.instantiate({
+      root: "/synthetic/fixture",
+      fixturePath: "/synthetic/fixture/fixture.mjs",
+    });
+    const request = {
+      ...run.request,
+      arguments: [...run.request.arguments],
+      environment: { ...run.request.environment },
+      stdin: new Uint8Array(run.request.stdin),
+    };
+    const pending = executeScriptedHeadlessSupervisorForTest(
+      "correct",
+      request,
+    );
+    request.runId = "mutated-run";
+    request.requestFingerprint = "mutated-fingerprint";
+    request.arguments[0] = "mutated-argument";
+    request.environment.AGENTSCOPE_ORACLE_VISIBLE = "mutated-environment";
+    request.stdin[0] = 0;
+    request.monotonicShutdownDeadlineMs += 20_000;
+    const envelope = await pending;
+    expect(() => run.verify(envelope)).not.toThrow();
   });
 
   it("delivers cancellation to the already-armed backend and fails closed", async () => {
@@ -214,6 +248,36 @@ describe("bounded headless supervisor authority", () => {
         monotonicShutdownDeadlineMs: now + 2_000,
       }),
     ).rejects.toMatchObject({ code: "testkit.headless.startup.deadline" });
+    expect(readScriptedHeadlessLaunchCountForTest()).toBe(0);
+  });
+
+  it("rejects proxy and accessor request shapes without invoking caller code", async () => {
+    const candidate = cases[0]!;
+    const run = candidate.instantiate({
+      root: "/synthetic/fixture",
+      fixturePath: "/synthetic/fixture/fixture.mjs",
+    });
+    let callbacks = 0;
+    const proxied = new Proxy(run.request, {
+      get: () => {
+        callbacks += 1;
+        throw new Error("caller-content");
+      },
+    });
+    await expect(
+      executeScriptedHeadlessSupervisorForTest("correct", proxied),
+    ).rejects.toMatchObject({ code: "testkit.headless.kernel.request" });
+    const accessor = { ...run.request };
+    Object.defineProperty(accessor, "runId", {
+      get: () => {
+        callbacks += 1;
+        throw new Error("caller-content");
+      },
+    });
+    await expect(
+      executeScriptedHeadlessSupervisorForTest("correct", accessor),
+    ).rejects.toMatchObject({ code: "testkit.headless.kernel.request" });
+    expect(callbacks).toBe(0);
     expect(readScriptedHeadlessLaunchCountForTest()).toBe(0);
   });
 });

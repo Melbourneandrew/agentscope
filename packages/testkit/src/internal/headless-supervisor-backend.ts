@@ -54,6 +54,7 @@ const selectedBackendAuthorities = new WeakMap<
 // with a real external parent/container isolation backend.
 const internalErrorCodes = new WeakMap<object, string>();
 const SafePromise = Promise;
+const SafeArray = Array;
 const SafeTextEncoder = TextEncoder;
 const SafeUint8Array = Uint8Array;
 const safeReflectApply = Reflect.apply;
@@ -66,12 +67,42 @@ const numberIsSafeInteger = Number.isSafeInteger;
 const jsonStringify = JSON.stringify;
 const maximum = Math.max;
 const minimum = Math.min;
+const objectPrototype = Object.prototype;
+const arrayPrototype = Array.prototype;
+const uint8ArrayPrototype = Uint8Array.prototype;
+const getPrototypeOf = Object.getPrototypeOf;
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const freeze = Object.freeze;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const performanceNow = performance.now;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const textEncoderEncode = TextEncoder.prototype.encode;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const uint8ArrayFill = Uint8Array.prototype.fill;
+const typedArrayPrototype = getPrototypeOf(uint8ArrayPrototype) as object;
+const arrayBufferPrototype = ArrayBuffer.prototype;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const typedArrayBuffer = getOwnPropertyDescriptor(
+  typedArrayPrototype,
+  "buffer",
+)!.get!;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const typedArrayByteLength = getOwnPropertyDescriptor(
+  typedArrayPrototype,
+  "byteLength",
+)!.get!;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const arrayBufferByteLength = getOwnPropertyDescriptor(
+  arrayBufferPrototype,
+  "byteLength",
+)!.get!;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const arrayBufferResizable = getOwnPropertyDescriptor(
+  arrayBufferPrototype,
+  "resizable",
+)?.get;
+const typedArraySet = getOwnPropertyDescriptor(typedArrayPrototype, "set")!
+  .value as (source: ArrayLike<number>) => void;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const abortSignalAborted = Object.getOwnPropertyDescriptor(
   AbortSignal.prototype,
@@ -233,43 +264,176 @@ const boundedInvoke = <T>(
   );
 };
 
-const validateRequest = (
-  scenario: HeadlessObserverScenario,
-  request: HeadlessExecutionRequest,
-): void => {
+const ownData = (value: object, key: string): unknown => {
+  const descriptor = getOwnPropertyDescriptor(value, key);
   if (
-    (scenario !== "correct" &&
-      scenario !== "stdout-limit" &&
-      scenario !== "stderr-limit" &&
-      scenario !== "timeout" &&
-      scenario !== "descendant") ||
-    typeof request !== "object" ||
-    request === null ||
-    typeof request.runId !== "string" ||
-    typeof request.requestFingerprint !== "string" ||
-    typeof request.executable !== "string" ||
-    !arrayIsArray(request.arguments) ||
-    typeof request.cwd !== "string" ||
-    typeof request.environment !== "object" ||
-    request.environment === null ||
-    !(request.stdin instanceof Uint8Array) ||
-    request.stdin.byteLength > maximumStdinBytes ||
-    !numberIsSafeInteger(request.stdoutLimitBytes) ||
-    request.stdoutLimitBytes < 1 ||
-    request.stdoutLimitBytes > maximumStreamBytes ||
-    !numberIsSafeInteger(request.stderrLimitBytes) ||
-    request.stderrLimitBytes < 1 ||
-    request.stderrLimitBytes > maximumStreamBytes ||
-    !numberIsFinite(request.monotonicStartupDeadlineMs) ||
-    !numberIsFinite(request.monotonicExecutionDeadlineMs) ||
-    !numberIsFinite(request.monotonicShutdownDeadlineMs) ||
-    !numberIsFinite(request.terminationGraceMs) ||
-    request.terminationGraceMs < 0 ||
-    request.monotonicStartupDeadlineMs > request.monotonicExecutionDeadlineMs ||
-    request.monotonicExecutionDeadlineMs + request.terminationGraceMs >=
-      request.monotonicShutdownDeadlineMs
+    descriptor === undefined ||
+    descriptor.get !== undefined ||
+    descriptor.set !== undefined ||
+    !("value" in descriptor)
   )
-    fail("testkit.headless.kernel.request");
+    return fail("testkit.headless.kernel.request");
+  return descriptor.value;
+};
+const plainRecord = (value: unknown): value is object =>
+  typeof value === "object" &&
+  value !== null &&
+  !isProxy(value) &&
+  (getPrototypeOf(value) === objectPrototype || getPrototypeOf(value) === null);
+const validScenario = (scenario: HeadlessObserverScenario): boolean =>
+  scenario === "correct" ||
+  scenario === "stdout-limit" ||
+  scenario === "stderr-limit" ||
+  scenario === "timeout" ||
+  scenario === "descendant";
+const finiteNumber = (value: unknown): value is number =>
+  typeof value === "number" && numberIsFinite(value);
+const boundedInteger = (
+  value: unknown,
+  maximumValue: number,
+): value is number =>
+  typeof value === "number" &&
+  numberIsSafeInteger(value) &&
+  value >= 1 &&
+  value <= maximumValue;
+const snapshotArguments = (
+  value: unknown,
+  expectedLength: number,
+): readonly string[] => {
+  if (
+    !arrayIsArray(value) ||
+    isProxy(value) ||
+    getPrototypeOf(value) !== arrayPrototype ||
+    value.length !== expectedLength
+  )
+    return fail("testkit.headless.kernel.request");
+  const result = new SafeArray<string>(expectedLength);
+  for (let index = 0; index < expectedLength; index += 1) {
+    const argument = ownData(value, String(index));
+    if (typeof argument !== "string")
+      return fail("testkit.headless.kernel.request");
+    result[index] = argument;
+  }
+  return safeReflectApply(freeze, Object, [result]) as readonly string[];
+};
+const snapshotEnvironment = (
+  value: unknown,
+): Readonly<Record<string, string>> => {
+  if (!plainRecord(value)) return fail("testkit.headless.kernel.request");
+  const visible = ownData(value, "AGENTSCOPE_ORACLE_VISIBLE");
+  if (typeof visible !== "string")
+    return fail("testkit.headless.kernel.request");
+  return safeReflectApply(freeze, Object, [
+    { AGENTSCOPE_ORACLE_VISIBLE: visible },
+  ]);
+};
+const snapshotStdin = (value: unknown): Uint8Array => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    isProxy(value) ||
+    getPrototypeOf(value) !== uint8ArrayPrototype
+  )
+    return fail("testkit.headless.kernel.request");
+  let length: number;
+  let buffer: ArrayBuffer;
+  try {
+    buffer = safeReflectApply(typedArrayBuffer, value, []) as ArrayBuffer;
+    if (getPrototypeOf(buffer) !== arrayBufferPrototype)
+      return fail("testkit.headless.kernel.request");
+    safeReflectApply(arrayBufferByteLength, buffer, []);
+    if (
+      arrayBufferResizable !== undefined &&
+      safeReflectApply(arrayBufferResizable, buffer, []) === true
+    )
+      return fail("testkit.headless.kernel.request");
+    length = safeReflectApply(typedArrayByteLength, value, []) as number;
+  } catch {
+    return fail("testkit.headless.kernel.request");
+  }
+  if (length > maximumStdinBytes)
+    return fail("testkit.headless.kernel.request");
+  const result = new SafeUint8Array(length);
+  try {
+    safeReflectApply(typedArraySet, result, [value]);
+    if (
+      safeReflectApply(typedArrayByteLength, value, []) !== length ||
+      safeReflectApply(typedArrayBuffer, value, []) !== buffer
+    )
+      return fail("testkit.headless.kernel.request");
+  } catch {
+    return fail("testkit.headless.kernel.request");
+  }
+  return result;
+};
+const snapshotRequest = (
+  scenario: HeadlessObserverScenario,
+  candidate: HeadlessExecutionRequest,
+): HeadlessExecutionRequest => {
+  if (!validScenario(scenario) || !plainRecord(candidate))
+    return fail("testkit.headless.kernel.request");
+  const runId = ownData(candidate, "runId");
+  const requestFingerprint = ownData(candidate, "requestFingerprint");
+  const executable = ownData(candidate, "executable");
+  const argumentsCandidate = ownData(candidate, "arguments");
+  const cwd = ownData(candidate, "cwd");
+  const environmentCandidate = ownData(candidate, "environment");
+  const stdinCandidate = ownData(candidate, "stdin");
+  const stdoutLimitBytes = ownData(candidate, "stdoutLimitBytes");
+  const stderrLimitBytes = ownData(candidate, "stderrLimitBytes");
+  const monotonicStartupDeadlineMs = ownData(
+    candidate,
+    "monotonicStartupDeadlineMs",
+  );
+  const monotonicExecutionDeadlineMs = ownData(
+    candidate,
+    "monotonicExecutionDeadlineMs",
+  );
+  const monotonicShutdownDeadlineMs = ownData(
+    candidate,
+    "monotonicShutdownDeadlineMs",
+  );
+  const terminationGraceMs = ownData(candidate, "terminationGraceMs");
+  if (
+    typeof runId !== "string" ||
+    typeof requestFingerprint !== "string" ||
+    typeof executable !== "string" ||
+    typeof cwd !== "string" ||
+    !boundedInteger(stdoutLimitBytes, maximumStreamBytes) ||
+    !boundedInteger(stderrLimitBytes, maximumStreamBytes) ||
+    !finiteNumber(monotonicStartupDeadlineMs) ||
+    !finiteNumber(monotonicExecutionDeadlineMs) ||
+    !finiteNumber(monotonicShutdownDeadlineMs) ||
+    !finiteNumber(terminationGraceMs) ||
+    terminationGraceMs < 0 ||
+    monotonicStartupDeadlineMs > monotonicExecutionDeadlineMs ||
+    monotonicExecutionDeadlineMs + terminationGraceMs >=
+      monotonicShutdownDeadlineMs
+  )
+    return fail("testkit.headless.kernel.request");
+  const argumentsSnapshot = snapshotArguments(
+    argumentsCandidate,
+    scenario === "correct" ? 3 : 1,
+  );
+  const environment = snapshotEnvironment(environmentCandidate);
+  const stdin = snapshotStdin(stdinCandidate);
+  return safeReflectApply(freeze, Object, [
+    {
+      runId,
+      requestFingerprint,
+      executable,
+      arguments: argumentsSnapshot,
+      cwd,
+      environment,
+      stdin,
+      stdoutLimitBytes,
+      stderrLimitBytes,
+      monotonicStartupDeadlineMs,
+      monotonicExecutionDeadlineMs,
+      monotonicShutdownDeadlineMs,
+      terminationGraceMs,
+    },
+  ]) as HeadlessExecutionRequest;
 };
 const assertReceipt = (
   receipt: BackendTerminalReceipt,
@@ -292,12 +456,15 @@ const execute = async (
   request: HeadlessExecutionRequest,
   abortSignal: AbortSignal | undefined,
 ): Promise<HeadlessCanonicalTraceEnvelope> => {
-  validateRequest(scenario, request);
+  request = snapshotRequest(scenario, request);
+  // The backend receives its own bounded copy. In particular, mutable stdin
+  // storage cannot change the kernel's receipt and canonical-envelope view.
+  const backendRequest = snapshotRequest(scenario, request);
   const cancellation = cancellationAuthority(abortSignal);
   try {
     if (cancellation.abortedAtCreation) return fail("testkit.headless.aborted");
     const armed = await boundedInvoke(
-      () => backend.arm(request, cancellation.whenAborted),
+      () => backend.arm(backendRequest, cancellation.whenAborted),
       request.monotonicStartupDeadlineMs,
       "testkit.headless.startup.deadline",
     );
