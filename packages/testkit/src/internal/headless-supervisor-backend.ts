@@ -102,6 +102,7 @@ const selectedBackendAuthorities = new WeakMap<
 // its restricted in-package mint here in the separately reviewed composition
 // work; neither caller data nor the component-fixture backend can populate it.
 const internalErrorCodes = new WeakMap<object, string>();
+const SafePromise = Promise;
 const safeReflectApply = Reflect.apply;
 // Capture the authority/provenance operations before any caller code can run.
 // Invoking them with their genuine receivers prevents post-import prototype
@@ -110,6 +111,8 @@ const safeReflectApply = Reflect.apply;
 const weakMapGet = WeakMap.prototype.get;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const weakMapSet = WeakMap.prototype.set;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const promiseThen = Promise.prototype.then;
 const abortSignalPrototype = AbortSignal.prototype;
 const abortSignalAborted = Object.getOwnPropertyDescriptor(
   abortSignalPrototype,
@@ -132,6 +135,9 @@ const maximumStdinBytes = 1_048_576;
 // the family-owned descendant discovery window without turning aggregate test
 // load into hundreds of repeated observer processes.
 const observerPollMs = 50;
+
+type Terminal<T> =
+  Readonly<{ ok: true; value: T }> | Readonly<{ error: unknown; ok: false }>;
 
 const readWeakMap = <K extends object, V>(
   map: WeakMap<K, V>,
@@ -161,6 +167,37 @@ const trustedErrorCode = (error: unknown): string | undefined =>
     ? readWeakMap(internalErrorCodes, error)
     : undefined;
 
+const terminalOf = <T>(promise: Promise<T>): Promise<Terminal<T>> =>
+  safeReflectApply(promiseThen, promise, [
+    (value: T) => ({ ok: true as const, value }),
+    (error: unknown) => ({ error, ok: false as const }),
+  ]) as Promise<Terminal<T>>;
+
+const observeAtCreation = <T>(promise: Promise<T>): Promise<T> => {
+  void terminalOf(promise);
+  return promise;
+};
+
+const joinSettled = (promises: readonly Promise<unknown>[]): Promise<void> =>
+  observeAtCreation(
+    new SafePromise<void>((resolve) => {
+      if (promises.length === 0) {
+        resolve();
+        return;
+      }
+      let remainingPromises = promises.length;
+      for (let index = 0; index < promises.length; index += 1) {
+        const terminal = terminalOf(promises[index]!);
+        void safeReflectApply(promiseThen, terminal, [
+          () => {
+            remainingPromises -= 1;
+            if (remainingPromises === 0) resolve();
+          },
+        ]);
+      }
+    }),
+  );
+
 const signalAborted = (signal: AbortSignal): boolean => {
   // The captured getter is deliberately invoked with the signal receiver.
   // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -187,7 +224,7 @@ const removeAbortListener = (
 };
 
 const delay = (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => {
+  new SafePromise((resolve) => {
     setTimeout(resolve, Math.max(0, milliseconds));
   });
 
@@ -221,11 +258,13 @@ const before = async (deadline: number): Promise<void> => {
   if (wait > 0) await delay(wait);
 };
 
-const bounded = async <T>(
+const bounded = <T>(
   operation: () => Promise<T>,
   deadline: number,
   code: string,
 ): Promise<T> => {
+  const initialWait = remaining(deadline);
+  if (initialWait <= 0) return fail(code);
   let operationPromise: Promise<T>;
   try {
     operationPromise = operation();
@@ -234,35 +273,34 @@ const bounded = async <T>(
       trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
     );
   }
-  // Attach both terminal handlers before consulting the deadline. Even an
-  // already-expired authority must not leave a newly-created lifecycle
-  // operation able to reject after the API has returned.
-  const observed = operationPromise.then(
-    (value) => ({ ok: true as const, value }),
-    (error: unknown) => ({ ok: false as const, error }),
-  );
+  // Attach both terminal handlers immediately after an authorized operation
+  // is created. An expired authority is rejected above without invoking a new
+  // backend callback or constructing a new aggregate operation.
+  const observed = terminalOf(operationPromise);
   const wait = remaining(deadline);
   if (wait <= 0) {
     void observed;
     return fail(code);
   }
-  return new Promise<T>((resolve, reject) => {
+  return new SafePromise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(kernelError(code));
     }, wait);
-    void observed.then((settled) => {
-      clearTimeout(timer);
-      if (settled.ok) {
-        resolve(settled.value);
-      } else {
-        reject(
-          kernelError(
-            trustedErrorCode(settled.error) ??
-              "testkit.headless.kernel.failure",
-          ),
-        );
-      }
-    });
+    safeReflectApply(promiseThen, observed, [
+      (settled: Terminal<T>) => {
+        clearTimeout(timer);
+        if (settled.ok) {
+          resolve(settled.value);
+        } else {
+          reject(
+            kernelError(
+              trustedErrorCode(settled.error) ??
+                "testkit.headless.kernel.failure",
+            ),
+          );
+        }
+      },
+    ]);
   });
 };
 
@@ -313,48 +351,52 @@ const listProcesses = (
 ): Promise<readonly ProcessSnapshot[]> => {
   const authority = remaining(deadline);
   if (authority <= 0)
-    return Promise.reject(
-      kernelError("testkit.headless.reconciliation.deadline"),
+    return observeAtCreation(
+      new SafePromise((_, reject) => {
+        reject(kernelError("testkit.headless.reconciliation.deadline"));
+      }),
     );
-  return new Promise((resolve, reject) => {
-    execFile(
-      "/bin/ps",
-      ["-axo", "pid=,ppid=,pgid=,lstart="],
-      {
-        encoding: "utf8",
-        env: { PATH: "/usr/bin:/bin" },
-        maxBuffer: 1_048_576,
-        timeout: Math.max(1, Math.ceil(Math.min(1_000, authority))),
-      },
-      (error, stdout) => {
-        if (error !== null) {
-          reject(
-            kernelError(
-              performance.now() >= deadline
-                ? "testkit.headless.reconciliation.deadline"
-                : "testkit.headless.observer.read",
-            ),
-          );
-          return;
-        }
-        const rows: ProcessSnapshot[] = [];
-        for (const line of stdout.split("\n")) {
-          const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
-          if (match === null) continue;
-          const pid = Number(match[1]);
-          rows.push({
-            pid,
-            ppid: Number(match[2]),
-            pgid: Number(match[3]),
-            startIdentity: `${pid}:${match[4]!}`,
-          });
-        }
-        if (performance.now() > deadline)
-          reject(kernelError("testkit.headless.reconciliation.deadline"));
-        else resolve(rows);
-      },
-    );
-  });
+  return observeAtCreation(
+    new SafePromise((resolve, reject) => {
+      execFile(
+        "/bin/ps",
+        ["-axo", "pid=,ppid=,pgid=,lstart="],
+        {
+          encoding: "utf8",
+          env: { PATH: "/usr/bin:/bin" },
+          maxBuffer: 1_048_576,
+          timeout: Math.max(1, Math.ceil(Math.min(1_000, authority))),
+        },
+        (error, stdout) => {
+          if (error !== null) {
+            reject(
+              kernelError(
+                performance.now() >= deadline
+                  ? "testkit.headless.reconciliation.deadline"
+                  : "testkit.headless.observer.read",
+              ),
+            );
+            return;
+          }
+          const rows: ProcessSnapshot[] = [];
+          for (const line of stdout.split("\n")) {
+            const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+            if (match === null) continue;
+            const pid = Number(match[1]);
+            rows.push({
+              pid,
+              ppid: Number(match[2]),
+              pgid: Number(match[3]),
+              startIdentity: `${pid}:${match[4]!}`,
+            });
+          }
+          if (performance.now() > deadline)
+            reject(kernelError("testkit.headless.reconciliation.deadline"));
+          else resolve(rows);
+        },
+      );
+    }),
+  );
 };
 
 const findSnapshot = (
@@ -423,10 +465,12 @@ const observeUntil = (
   let timer: ReturnType<typeof setTimeout> | undefined;
   let resolveObserver!: () => void;
   let rejectObserver!: (error: unknown) => void;
-  const promise = new Promise<void>((resolve, reject) => {
-    resolveObserver = resolve;
-    rejectObserver = reject;
-  });
+  const promise = observeAtCreation(
+    new SafePromise<void>((resolve, reject) => {
+      resolveObserver = resolve;
+      rejectObserver = reject;
+    }),
+  );
   const poll = async (): Promise<void> => {
     try {
       discoverMembers(await listProcesses(deadline), observed);
@@ -475,29 +519,39 @@ const finishCapture = (capture: MutableCapture): CapturedStream => ({
 });
 
 const closeOf = (child: ChildProcess): Promise<ExitState> =>
-  new Promise((resolve, reject) => {
-    child.once("error", () => {
-      reject(kernelError("testkit.headless.kernel.spawn"));
-    });
-    child.once("close", (code, signal) => {
-      resolve({ code, signal });
-    });
-  });
+  observeAtCreation(
+    new SafePromise((resolve, reject) => {
+      child.once("error", () => {
+        reject(kernelError("testkit.headless.kernel.spawn"));
+      });
+      child.once("close", (code, signal) => {
+        resolve({ code, signal });
+      });
+    }),
+  );
 
 const eventOf = (child: ChildProcess, event: "spawn"): Promise<void> =>
-  new Promise((resolve, reject) => {
-    child.once(event, resolve);
-    child.once("error", () => {
-      reject(kernelError("testkit.headless.kernel.spawn"));
-    });
-  });
+  observeAtCreation(
+    new SafePromise((resolve, reject) => {
+      child.once(event, resolve);
+      child.once("error", () => {
+        reject(kernelError("testkit.headless.kernel.spawn"));
+      });
+    }),
+  );
 
 const streamClose = (stream: NodeJS.EventEmitter | null): Promise<void> =>
   stream === null
-    ? Promise.resolve()
-    : new Promise((resolve) => {
-        stream.once("close", resolve);
-      });
+    ? observeAtCreation(
+        new SafePromise((resolve) => {
+          resolve();
+        }),
+      )
+    : observeAtCreation(
+        new SafePromise((resolve) => {
+          stream.once("close", resolve);
+        }),
+      );
 
 const componentFixtureBackend = (
   scenario: HeadlessObserverScenario,
@@ -573,6 +627,8 @@ const componentFixtureBackend = (
 
 type ComponentDeadlineSeed = "live-never" | "signal-never";
 
+let syntheticPostExpiryCallbackCount = 0;
+
 const componentDeadlineSeedBackend = (
   scenario: HeadlessObserverScenario,
   seed: ComponentDeadlineSeed,
@@ -586,16 +642,48 @@ const componentDeadlineSeedBackend = (
         ...launch,
         openProcessSet: async (startupDeadline) => {
           const processSet = await launch.openProcessSet(startupDeadline);
+          const afterExpiry = (): void => {
+            if (performance.now() >= request.monotonicShutdownDeadlineMs)
+              syntheticPostExpiryCallbackCount += 1;
+          };
           return {
             ...processSet,
             live:
               seed === "live-never"
-                ? () => new Promise<never>(() => undefined)
-                : processSet.live,
+                ? () => {
+                    afterExpiry();
+                    return observeAtCreation(
+                      new SafePromise<never>(() => undefined),
+                    );
+                  }
+                : (target, deadline) => {
+                    afterExpiry();
+                    return processSet.live(target, deadline);
+                  },
             signal:
               seed === "signal-never"
-                ? () => new Promise<never>(() => undefined)
-                : processSet.signal,
+                ? () => {
+                    afterExpiry();
+                    return observeAtCreation(
+                      new SafePromise<never>(() => undefined),
+                    );
+                  }
+                : (identity, signal, deadline) => {
+                    afterExpiry();
+                    return processSet.signal(identity, signal, deadline);
+                  },
+            forceTerminateAndJoin: (deadline) => {
+              afterExpiry();
+              return processSet.forceTerminateAndJoin(deadline);
+            },
+            assertTerminal: (deadline) => {
+              afterExpiry();
+              return processSet.assertTerminal(deadline);
+            },
+            stopAndJoin: (deadline) => {
+              afterExpiry();
+              return processSet.stopAndJoin(deadline);
+            },
           };
         },
       };
@@ -614,24 +702,42 @@ const triggerOf = (
 }> => {
   let abort: (() => void) | undefined;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-  const aborted = new Promise<ExecutionTrigger>((resolve) => {
-    abort = () => {
-      resolve({ kind: "aborted" });
-    };
-    if (signal !== undefined && signalAborted(signal)) abort();
-    else if (signal !== undefined) addAbortListener(signal, abort);
-  });
+  const aborted = observeAtCreation(
+    new SafePromise<ExecutionTrigger>((resolve) => {
+      abort = () => {
+        resolve({ kind: "aborted" });
+      };
+      if (signal !== undefined && signalAborted(signal)) abort();
+      else if (signal !== undefined) addAbortListener(signal, abort);
+    }),
+  );
+  const closed = terminalOf(close);
+  const outputObserved = terminalOf(output);
+  const timeout = observeAtCreation(
+    new SafePromise<ExecutionTrigger>((resolve) => {
+      deadlineTimer = setTimeout(() => {
+        resolve({ kind: "timeout" });
+      }, remaining(request.monotonicExecutionDeadlineMs));
+    }),
+  );
+  const trigger = observeAtCreation(
+    new SafePromise<ExecutionTrigger>((resolve, reject) => {
+      const settleClosed = (settled: Terminal<ExitState>): void => {
+        if (settled.ok) resolve({ kind: "closed", exit: settled.value });
+        else reject(kernelError("testkit.headless.kernel.spawn"));
+      };
+      const settleOutput = (settled: Terminal<"stdout" | "stderr">): void => {
+        if (settled.ok) resolve({ kind: "output", stream: settled.value });
+        else reject(kernelError("testkit.headless.kernel.failure"));
+      };
+      safeReflectApply(promiseThen, closed, [settleClosed]);
+      safeReflectApply(promiseThen, outputObserved, [settleOutput]);
+      safeReflectApply(promiseThen, timeout, [resolve]);
+      safeReflectApply(promiseThen, aborted, [resolve]);
+    }),
+  );
   return {
-    promise: Promise.race([
-      close.then((exit) => ({ kind: "closed", exit }) as const),
-      output.then((stream) => ({ kind: "output", stream }) as const),
-      new Promise<ExecutionTrigger>((resolve) => {
-        deadlineTimer = setTimeout(() => {
-          resolve({ kind: "timeout" });
-        }, remaining(request.monotonicExecutionDeadlineMs));
-      }),
-      aborted,
-    ]),
+    promise: trigger,
     release: () => {
       if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
       if (abort !== undefined && signal !== undefined)
@@ -825,7 +931,7 @@ const waitForJoinedHandles = async (
 ): Promise<void> => {
   try {
     await bounded(
-      () => Promise.all(handles).then(() => undefined),
+      () => joinSettled(handles),
       deadline,
       "testkit.headless.handles.deadline",
     );
@@ -948,7 +1054,7 @@ const rejectStartedChild = async (
   child.stdout?.destroy();
   child.stderr?.destroy();
   await bounded(
-    () => Promise.allSettled(handles).then(() => undefined),
+    () => joinSettled(handles),
     reconciliationDeadline,
     "testkit.headless.reconciliation.deadline",
   );
@@ -970,9 +1076,11 @@ const startExecution = async (
     truncated: false,
   };
   let resolveOutput!: (stream: "stdout" | "stderr") => void;
-  const output = new Promise<"stdout" | "stderr">((resolve) => {
-    resolveOutput = resolve;
-  });
+  const output = observeAtCreation(
+    new SafePromise<"stdout" | "stderr">((resolve) => {
+      resolveOutput = resolve;
+    }),
+  );
   const launch = backend.launch(request);
   const { child } = launch;
   if (child.stdin === null || child.stdout === null || child.stderr === null) {
@@ -1107,7 +1215,7 @@ const recoverExecution = async (
   }
   try {
     await bounded(
-      () => Promise.allSettled(started.handles).then(() => undefined),
+      () => joinSettled(started.handles),
       deadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -1287,6 +1395,7 @@ export const executeSyntheticBackendDeadlineSeedForTest = async (
   scenario: HeadlessObserverScenario,
   request: HeadlessExecutionRequest,
 ): Promise<HeadlessCanonicalTraceEnvelope> => {
+  syntheticPostExpiryCallbackCount = 0;
   try {
     return await execute(
       componentDeadlineSeedBackend(scenario, seed),
@@ -1298,3 +1407,7 @@ export const executeSyntheticBackendDeadlineSeedForTest = async (
     return fail(sanitizedErrorCode(error));
   }
 };
+
+/** Package-private causal counter; never production or acceptance evidence. */
+export const readSyntheticPostExpiryCallbackCountForTest = (): number =>
+  syntheticPostExpiryCallbackCount;

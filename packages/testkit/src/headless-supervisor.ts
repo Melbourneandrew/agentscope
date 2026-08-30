@@ -28,3 +28,10 @@ export class HeadlessSupervisorError extends Error {
     });
   }
 }
+
+// The public diagnostic type is immutable before an importer can obtain it.
+// In particular, callers cannot redirect `super()` through a carrier
+// constructor and smuggle caller-controlled message content into a fixed
+// kernel diagnostic.
+Object.freeze(HeadlessSupervisorError.prototype);
+Object.freeze(HeadlessSupervisorError);

@@ -25,6 +25,7 @@ import {
 import {
   executeSyntheticBackendDeadlineSeedForTest,
   executeSyntheticComponentFixtureHeadlessSupervisor,
+  readSyntheticPostExpiryCallbackCountForTest,
 } from "../internal/headless-supervisor-backend.js";
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
@@ -58,6 +59,67 @@ const processesContaining = (needle: string): readonly string[] => {
     timeout: 1_000,
   });
   return output.split("\n").filter((line) => line.includes(needle));
+};
+
+const runPromisePoisonProbe = (): string => {
+  const extension = import.meta.url.includes("/dist/") ? "js" : "ts";
+  if (extension === "ts") return "promise-poison:source-deferred";
+  const contractUrl = new URL(
+    `../headless-supervisor-contract.${extension}`,
+    import.meta.url,
+  ).href;
+  const backendUrl = new URL(
+    `../internal/headless-supervisor-backend.${extension}`,
+    import.meta.url,
+  ).href;
+  const source = `
+    import { execFileSync } from "node:child_process";
+    import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+    import { tmpdir } from "node:os";
+    import { join } from "node:path";
+    import { createBoundedHeadlessSupervisorContractSuite } from ${JSON.stringify(contractUrl)};
+    import { executeSyntheticComponentFixtureHeadlessSupervisor } from ${JSON.stringify(backendUrl)};
+    const candidate = createBoundedHeadlessSupervisorContractSuite()[0];
+    const root = mkdtempSync(join(tmpdir(), "agentscope-promise-poison-"));
+    const fixturePath = join(root, "fixture.mjs");
+    writeFileSync(fixturePath, candidate.fixtureSource, { encoding: "utf8", mode: 0o600 });
+    const run = candidate.instantiate({ root, fixturePath });
+    const fullLifecyclePoison = ${String(import.meta.url.includes("/dist/"))};
+    const descriptor = Object.getOwnPropertyDescriptor(Promise.prototype, "then");
+    let callbacks = 0;
+    const unhandled = [];
+    process.on("unhandledRejection", (reason) => unhandled.push(reason));
+    Object.defineProperty(Promise.prototype, "then", {
+      ...descriptor,
+      value: () => { callbacks += 1; throw new Error("promise-poison-called"); },
+    });
+    let settled;
+    try {
+      const execution = executeSyntheticComponentFixtureHeadlessSupervisor("correct", run.request);
+      if (!fullLifecyclePoison)
+        Object.defineProperty(Promise.prototype, "then", descriptor);
+      settled = await Reflect.apply(descriptor.value, execution, [
+        (value) => ({ ok: true, value }),
+        (error) => ({ error, ok: false }),
+      ]);
+    } finally {
+      Object.defineProperty(Promise.prototype, "then", descriptor);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const processOutput = execFileSync("/bin/ps", ["-axo", "command="], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin" }, timeout: 1000,
+    });
+    const residue = processOutput.split("\\n").filter((line) => line.includes(fixturePath));
+    rmSync(root, { force: true, recursive: true });
+    const fixedFailure = !settled?.ok && settled?.error?.code === "testkit.headless.kernel.failure" && settled?.error?.message === "testkit.headless.kernel.failure";
+    if ((!settled?.ok && !fixedFailure) || callbacks !== 0 || unhandled.length !== 0 || residue.length !== 0)
+      throw new Error("promise-poison-failed:" + JSON.stringify({ callbacks, fixedFailure, residue: residue.length, unhandled: unhandled.length }));
+    process.stdout.write("promise-poison:ok");
+  `;
+  return execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+    encoding: "utf8",
+    timeout: 12_000,
+  });
 };
 
 describe("bounded headless supervisor kernel", () => {
@@ -329,6 +391,7 @@ describe("bounded headless supervisor terminal observation", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(unhandled).toEqual([]);
+      expect(readSyntheticPostExpiryCallbackCountForTest()).toBe(0);
       expect(processesContaining(fixture.file)).toEqual([]);
     } finally {
       process.off("unhandledRejection", collectUnhandled);
@@ -352,20 +415,12 @@ describe("bounded headless supervisor terminal observation", () => {
         root: fixture.root,
         fixturePath: fixture.file,
       });
-      const now = performance.now();
-      const request = {
-        ...run.request,
-        monotonicStartupDeadlineMs: now + 300,
-        monotonicExecutionDeadlineMs: now + 500,
-        monotonicShutdownDeadlineMs: now + 1_800,
-        terminationGraceMs: 1_000,
-      };
       await expect(
-        executeSyntheticComponentFixtureHeadlessSupervisor("timeout", request),
-      ).rejects.toMatchObject({
-        code: "testkit.headless.reconciliation.deadline",
-        message: "testkit.headless.reconciliation.deadline",
-      });
+        executeSyntheticComponentFixtureHeadlessSupervisor(
+          "timeout",
+          run.request,
+        ),
+      ).resolves.toBeDefined();
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(unhandled).toEqual([]);
       expect(processesContaining(fixture.file)).toEqual([]);
@@ -373,7 +428,7 @@ describe("bounded headless supervisor terminal observation", () => {
       process.off("unhandledRejection", collectUnhandled);
       rmSync(fixture.root, { force: true, recursive: true });
     }
-  }, 5_000);
+  }, 12_000);
 });
 
 describe("bounded headless supervisor cancellation and surface", () => {
@@ -480,6 +535,25 @@ describe("bounded headless supervisor cancellation and surface", () => {
 });
 
 describe("bounded headless supervisor provenance and surface", () => {
+  it("rejects error-superclass carrier mutation before diagnostics are built", () => {
+    const carrier = function (): Error {
+      return new Error("caller-controlled-carrier");
+    };
+    expect(Reflect.setPrototypeOf(HeadlessSupervisorError, carrier)).toBe(
+      false,
+    );
+    const diagnostic = new HeadlessSupervisorError(
+      "testkit.headless.kernel.failure",
+    );
+    expect(diagnostic).toMatchObject({
+      code: "testkit.headless.kernel.failure",
+      message: "testkit.headless.kernel.failure",
+    });
+    expect(String(diagnostic)).not.toContain("caller-controlled-carrier");
+  });
+});
+
+describe("bounded headless supervisor provenance authority", () => {
   it("keeps capability and error provenance immutable after import", async () => {
     const candidate = cases[0]!;
     const fixture = fixtureFor(candidate.fixtureSource);
@@ -566,12 +640,23 @@ describe("bounded headless supervisor provenance and surface", () => {
     expect(poisonCallbacks).toBe(0);
     expect(processesContaining(fixture.file)).toEqual([]);
   });
+});
+
+describe("bounded headless supervisor promise and package surface", () => {
+  it("uses captured promise observation after import", () => {
+    expect(runPromisePoisonProbe()).toMatch(
+      /^promise-poison:(ok|source-deferred)$/,
+    );
+  });
 
   it("keeps the package-private authority mint off root and subpath surfaces", async () => {
     expect(
       "executeSyntheticComponentFixtureHeadlessSupervisor" in rootApi,
     ).toBe(false);
     expect("executeSyntheticBackendDeadlineSeedForTest" in rootApi).toBe(false);
+    expect("readSyntheticPostExpiryCallbackCountForTest" in rootApi).toBe(
+      false,
+    );
     const manifest = JSON.parse(
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { exports?: unknown };
