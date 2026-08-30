@@ -22,7 +22,10 @@ import {
   HeadlessSupervisorError,
   type HeadlessSupervisorCapability,
 } from "../headless-supervisor.js";
-import { executeSyntheticComponentFixtureHeadlessSupervisor } from "../internal/headless-supervisor-backend.js";
+import {
+  executeSyntheticBackendDeadlineSeedForTest,
+  executeSyntheticComponentFixtureHeadlessSupervisor,
+} from "../internal/headless-supervisor-backend.js";
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
 
@@ -142,7 +145,7 @@ describe("bounded headless supervisor authority and startup", () => {
         ...run.request,
         monotonicStartupDeadlineMs: now - 3_000,
         monotonicExecutionDeadlineMs: now - 2_000,
-        monotonicShutdownDeadlineMs: now - 1_000,
+        monotonicShutdownDeadlineMs: now - 500,
       };
       await expect(
         executeSyntheticComponentFixtureHeadlessSupervisor("correct", expired),
@@ -243,6 +246,50 @@ describe("bounded headless supervisor diagnostics", () => {
       rmSync(fixture.root, { force: true, recursive: true });
     }
   });
+});
+
+describe("bounded headless supervisor reconciliation authority", () => {
+  it.each(["live-never", "signal-never"] as const)(
+    "fails the %s backend seed within the original shutdown authority",
+    async (seed) => {
+      if (process.platform === "win32") return;
+      const candidate = cases.find(
+        ({ name }) => name === "headless:stdout-limit",
+      )!;
+      const fixture = fixtureFor(candidate.fixtureSource);
+      try {
+        const run = candidate.instantiate({
+          root: fixture.root,
+          fixturePath: fixture.file,
+        });
+        const now = performance.now();
+        const request = {
+          ...run.request,
+          monotonicStartupDeadlineMs: now + 300,
+          monotonicExecutionDeadlineMs: now + 700,
+          monotonicShutdownDeadlineMs: now + 1_700,
+          terminationGraceMs: 200,
+        };
+        await expect(
+          executeSyntheticBackendDeadlineSeedForTest(
+            seed,
+            "stdout-limit",
+            request,
+          ),
+        ).rejects.toMatchObject({
+          code: "testkit.headless.reconciliation.deadline",
+          message: "testkit.headless.reconciliation.deadline",
+        });
+        expect(performance.now()).toBeLessThan(
+          request.monotonicShutdownDeadlineMs + 500,
+        );
+        expect(processesContaining(fixture.file)).toEqual([]);
+      } finally {
+        rmSync(fixture.root, { force: true, recursive: true });
+      }
+    },
+    5_000,
+  );
 });
 
 describe("bounded headless supervisor cancellation and surface", () => {
@@ -351,6 +398,7 @@ describe("bounded headless supervisor cancellation and surface", () => {
     expect(
       "executeSyntheticComponentFixtureHeadlessSupervisor" in rootApi,
     ).toBe(false);
+    expect("executeSyntheticBackendDeadlineSeedForTest" in rootApi).toBe(false);
     const manifest = JSON.parse(
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { exports?: unknown };
