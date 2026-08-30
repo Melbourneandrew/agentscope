@@ -22,8 +22,9 @@ Once the alpha is published, use this order:
 2. Run `agentscope --version` and `agentscope init`.
 3. Review the initialization plan. Repeat with `--yes` only when you intend to
    create the non-secret Agentscope configuration.
-4. Configure a destination, then select it explicitly with `agentscope routing
-set`. Configuring a destination does not enable delivery by itself.
+4. Configure a named destination, then select it explicitly with `agentscope
+routing set <connection-name>`. Configuring a destination does not enable
+   delivery by itself; a bare `agentscope routing set` disables delivery.
 5. Run `agentscope harness list` and `agentscope harness status <harness>`.
 6. Run `agentscope install <harness>` without `--yes` and inspect the plan.
    Repeat with `--yes` only when the current plan is acceptable.
@@ -38,7 +39,8 @@ hook. If installation reports an overlap, review it before using the separate
 Non-secret configuration lives under `~/.agentscope`. Credentials use the
 governed credential backend or an explicit CI environment-variable reference;
 Agentscope does not store credential values in its configuration or print them.
-`AGENTSCOPE_HOME` is reserved for isolated test and CI environments.
+`AGENTSCOPE_HOME` is an explicit override for portable installations, tests, and
+CI isolation.
 
 Routing is always explicit. An empty routing selection disables delivery, and
 Agentscope never chooses the first configured destination as a default.
@@ -58,8 +60,11 @@ the dedicated confirmed command.
 - Use `agentscope doctor --output json` for a bounded machine-readable report.
 - Treat `unsupported` and `indeterminate` as distinct from an absent harness.
 - A configured destination is inactive until routing selects it.
-- If a command reports recovery-required or outcome-unknown, stop mutation and
-  use the exact recovery command suggested by Doctor.
+- If Local SQLite reports a recoverable lifecycle state, inspect the documented
+  `agentscope destination recover` plan before applying it. For a harness
+  recovery requirement or an outcome-unknown/reconciliation state, stop mutation
+  and follow the state-specific suggested action; Doctor reports an action
+  identifier, not a shell command.
 - Never paste credential values into `--settings`, command arguments, issue
   reports, or logs.
 

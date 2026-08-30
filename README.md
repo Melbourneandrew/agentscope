@@ -32,7 +32,7 @@ empty until admission completes.
 ## Start here
 
 - [Getting started](https://melbourneandrew.github.io/agentscope/docs/getting-started)
-- [CLI reference](https://melbourneandrew.github.io/agentscope/docs/cli/index)
+- [CLI reference](https://melbourneandrew.github.io/agentscope/docs/cli)
 - [Product requirements](https://melbourneandrew.github.io/agentscope/docs/requirements/product-description)
 - [Contributing](CONTRIBUTING.md)
 
@@ -55,8 +55,9 @@ plan-first; mutation requires explicit confirmation, and uninstall removes only
 Agentscope-owned state.
 
 `~/.agentscope` stores non-secret machine configuration. Credentials use the
-governed credential backend or explicit CI references. `AGENTSCOPE_HOME` is for
-isolated test and CI environments, not ordinary user configuration.
+governed credential backend or explicit CI references. `AGENTSCOPE_HOME` is an
+explicit override for portable installations, tests, and CI isolation—not an
+implicit source of ordinary user configuration.
 
 ## Development
 
@@ -81,6 +82,8 @@ the same `pnpm test:integration` controller.
 
 Crabbox is contributor infrastructure for development and burst testing. GitHub
 CI remains release authority; neither is an end-user installation path.
+
+The [contributor guide](CONTRIBUTING.md) explains how to run the permitted checks.
 
 ## Repository packages
 
