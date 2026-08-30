@@ -292,6 +292,90 @@ describe("bounded headless supervisor reconciliation authority", () => {
   );
 });
 
+describe("bounded headless supervisor terminal observation", () => {
+  it("observes late lifecycle rejection after the absolute authority expires", async () => {
+    if (process.platform === "win32") return;
+    const candidate = cases.find(
+      ({ name }) => name === "headless:stdout-limit",
+    )!;
+    const fixture = fixtureFor(candidate.fixtureSource);
+    const unhandled: unknown[] = [];
+    const collectUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", collectUnhandled);
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const now = performance.now();
+      const request = {
+        ...run.request,
+        monotonicStartupDeadlineMs: now + 200,
+        monotonicExecutionDeadlineMs: now + 400,
+        monotonicShutdownDeadlineMs: now + 900,
+        terminationGraceMs: 100,
+      };
+      await expect(
+        executeSyntheticBackendDeadlineSeedForTest(
+          "live-never",
+          "stdout-limit",
+          request,
+        ),
+      ).rejects.toMatchObject({
+        code: "testkit.headless.reconciliation.deadline",
+        message: "testkit.headless.reconciliation.deadline",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(unhandled).toEqual([]);
+      expect(processesContaining(fixture.file)).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", collectUnhandled);
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  }, 5_000);
+
+  it("does not emit a post-return rejection for a real timeout fixture", async () => {
+    if (process.platform === "win32") return;
+    const candidate = cases.find(
+      ({ name }) => name === "headless:timeout-escalation",
+    )!;
+    const fixture = fixtureFor(candidate.fixtureSource);
+    const unhandled: unknown[] = [];
+    const collectUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", collectUnhandled);
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const now = performance.now();
+      const request = {
+        ...run.request,
+        monotonicStartupDeadlineMs: now + 300,
+        monotonicExecutionDeadlineMs: now + 500,
+        monotonicShutdownDeadlineMs: now + 1_800,
+        terminationGraceMs: 1_000,
+      };
+      await expect(
+        executeSyntheticComponentFixtureHeadlessSupervisor("timeout", request),
+      ).rejects.toMatchObject({
+        code: "testkit.headless.reconciliation.deadline",
+        message: "testkit.headless.reconciliation.deadline",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(unhandled).toEqual([]);
+      expect(processesContaining(fixture.file)).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", collectUnhandled);
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  }, 5_000);
+});
+
 describe("bounded headless supervisor cancellation and surface", () => {
   it("delivers cancellation and joins the process before rejecting", async () => {
     if (process.platform === "win32") return;
@@ -392,6 +476,95 @@ describe("bounded headless supervisor cancellation and surface", () => {
     } finally {
       rmSync(fixture.root, { force: true, recursive: true });
     }
+  });
+});
+
+describe("bounded headless supervisor provenance and surface", () => {
+  it("keeps capability and error provenance immutable after import", async () => {
+    const candidate = cases[0]!;
+    const fixture = fixtureFor(candidate.fixtureSource);
+    const secret = "caller-controlled-diagnostic";
+    const forgedError = new HeadlessSupervisorError(secret);
+    const weakMapGet = Object.getOwnPropertyDescriptor(
+      WeakMap.prototype,
+      "get",
+    )!;
+    const weakMapSet = Object.getOwnPropertyDescriptor(
+      WeakMap.prototype,
+      "set",
+    )!;
+    const weakSetAdd = Object.getOwnPropertyDescriptor(
+      WeakSet.prototype,
+      "add",
+    )!;
+    const weakSetHas = Object.getOwnPropertyDescriptor(
+      WeakSet.prototype,
+      "has",
+    )!;
+    let poisonCallbacks = 0;
+    const poison = (): never => {
+      poisonCallbacks += 1;
+      throw new Error("prototype-poison-called");
+    };
+    let capabilityFailure: unknown;
+    let callerFailure: unknown;
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      Object.defineProperties(WeakMap.prototype, {
+        get: { ...weakMapGet, value: poison },
+        set: { ...weakMapSet, value: poison },
+      });
+      Object.defineProperties(WeakSet.prototype, {
+        add: { ...weakSetAdd, value: poison },
+        has: { ...weakSetHas, value: poison },
+      });
+
+      try {
+        await executeBoundedHeadlessSupervisor(
+          Object.freeze({}) as HeadlessSupervisorCapability,
+          "correct",
+          run.request,
+        );
+      } catch (error: unknown) {
+        capabilityFailure = error;
+      }
+
+      const options = Object.defineProperty({}, "signal", {
+        get: () => {
+          throw forgedError;
+        },
+      });
+      try {
+        await executeBoundedHeadlessSupervisor(
+          Object.freeze({}) as HeadlessSupervisorCapability,
+          "correct",
+          run.request,
+          options,
+        );
+      } catch (error: unknown) {
+        callerFailure = error;
+      }
+    } finally {
+      Object.defineProperty(WeakMap.prototype, "get", weakMapGet);
+      Object.defineProperty(WeakMap.prototype, "set", weakMapSet);
+      Object.defineProperty(WeakSet.prototype, "add", weakSetAdd);
+      Object.defineProperty(WeakSet.prototype, "has", weakSetHas);
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+    expect(capabilityFailure).toMatchObject({
+      code: "testkit.headless.capability",
+      message: "testkit.headless.capability",
+    });
+    expect(callerFailure).toMatchObject({
+      code: "testkit.headless.kernel.failure",
+      message: "testkit.headless.kernel.failure",
+    });
+    expect(String(callerFailure)).not.toContain(secret);
+    expect(poisonCallbacks).toBe(0);
+    expect(processesContaining(fixture.file)).toEqual([]);
   });
 
   it("keeps the package-private authority mint off root and subpath surfaces", async () => {

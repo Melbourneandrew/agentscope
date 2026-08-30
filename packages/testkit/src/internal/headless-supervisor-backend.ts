@@ -101,7 +101,15 @@ const selectedBackendAuthorities = new WeakMap<
 // Intentionally write-closed in c1k.2. A concrete isolation backend must add
 // its restricted in-package mint here in the separately reviewed composition
 // work; neither caller data nor the component-fixture backend can populate it.
-const internalErrors = new WeakSet<Error>();
+const internalErrorCodes = new WeakMap<object, string>();
+const safeReflectApply = Reflect.apply;
+// Capture the authority/provenance operations before any caller code can run.
+// Invoking them with their genuine receivers prevents post-import prototype
+// poisoning from authenticating a caller object or blessing a caller error.
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const weakMapGet = WeakMap.prototype.get;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const weakMapSet = WeakMap.prototype.set;
 const abortSignalPrototype = AbortSignal.prototype;
 const abortSignalAborted = Object.getOwnPropertyDescriptor(
   abortSignalPrototype,
@@ -125,9 +133,22 @@ const maximumStdinBytes = 1_048_576;
 // load into hundreds of repeated observer processes.
 const observerPollMs = 50;
 
+const readWeakMap = <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+): V | undefined => safeReflectApply(weakMapGet, map, [key]) as V | undefined;
+
+const writeWeakMap = <K extends object, V>(
+  map: WeakMap<K, V>,
+  key: K,
+  value: V,
+): void => {
+  safeReflectApply(weakMapSet, map, [key, value]);
+};
+
 const kernelError = (code: string): HeadlessSupervisorError => {
   const error = new HeadlessSupervisorError(code);
-  internalErrors.add(error);
+  writeWeakMap(internalErrorCodes, error, code);
   return error;
 };
 
@@ -135,25 +156,30 @@ const fail = (code: string): never => {
   throw kernelError(code);
 };
 
+const trustedErrorCode = (error: unknown): string | undefined =>
+  typeof error === "object" && error !== null
+    ? readWeakMap(internalErrorCodes, error)
+    : undefined;
+
 const signalAborted = (signal: AbortSignal): boolean => {
   // The captured getter is deliberately invoked with the signal receiver.
   // eslint-disable-next-line @typescript-eslint/unbound-method
-  return Reflect.apply(abortSignalAborted.get!, signal, []) as boolean;
+  return safeReflectApply(abortSignalAborted.get!, signal, []) as boolean;
 };
 
 const addAbortListener = (signal: AbortSignal, listener: () => void): void => {
-  Reflect.apply(abortSignalAddEventListener.value as CallableFunction, signal, [
-    "abort",
-    listener,
-    { once: true },
-  ]);
+  safeReflectApply(
+    abortSignalAddEventListener.value as CallableFunction,
+    signal,
+    ["abort", listener, { once: true }],
+  );
 };
 
 const removeAbortListener = (
   signal: AbortSignal,
   listener: () => void,
 ): void => {
-  Reflect.apply(
+  safeReflectApply(
     abortSignalRemoveEventListener.value as CallableFunction,
     signal,
     ["abort", listener],
@@ -196,30 +222,47 @@ const before = async (deadline: number): Promise<void> => {
 };
 
 const bounded = async <T>(
-  promise: Promise<T>,
+  operation: () => Promise<T>,
   deadline: number,
   code: string,
 ): Promise<T> => {
+  let operationPromise: Promise<T>;
+  try {
+    operationPromise = operation();
+  } catch (error: unknown) {
+    throw kernelError(
+      trustedErrorCode(error) ?? "testkit.headless.kernel.failure",
+    );
+  }
+  // Attach both terminal handlers before consulting the deadline. Even an
+  // already-expired authority must not leave a newly-created lifecycle
+  // operation able to reject after the API has returned.
+  const observed = operationPromise.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
   const wait = remaining(deadline);
-  if (wait <= 0) return fail(code);
+  if (wait <= 0) {
+    void observed;
+    return fail(code);
+  }
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(kernelError(code));
     }, wait);
-    void promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
+    void observed.then((settled) => {
+      clearTimeout(timer);
+      if (settled.ok) {
+        resolve(settled.value);
+      } else {
         reject(
-          error instanceof Error
-            ? error
-            : kernelError("testkit.headless.kernel.failure"),
+          kernelError(
+            trustedErrorCode(settled.error) ??
+              "testkit.headless.kernel.failure",
+          ),
         );
-      },
-    );
+      }
+    });
   });
 };
 
@@ -690,7 +733,7 @@ const componentProcessSet = (
     stopAndJoin: async (deadline) => {
       observer.stop();
       await bounded(
-        observer.promise,
+        () => observer.promise,
         boundedDeadline(deadline),
         "testkit.headless.reconciliation.deadline",
       );
@@ -746,14 +789,14 @@ const cleanupMembers = async (
 ): Promise<void> => {
   const { termDeadline, killDeadline } = reconciliationAuthorities(request);
   const targets = await bounded(
-    processSet.live(target, termDeadline),
+    () => processSet.live(target, termDeadline),
     termDeadline,
     "testkit.headless.reconciliation.deadline",
   );
   if (targets.length === 0) return;
   for (const member of targets) {
     const observed = await bounded(
-      processSet.signal(member, "SIGTERM", termDeadline),
+      () => processSet.signal(member, "SIGTERM", termDeadline),
       termDeadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -762,13 +805,13 @@ const cleanupMembers = async (
   const graceDeadline = performance.now() + request.terminationGraceMs;
   await before(Math.min(graceDeadline, killDeadline));
   const afterGrace = await bounded(
-    processSet.live(target, killDeadline),
+    () => processSet.live(target, killDeadline),
     killDeadline,
     "testkit.headless.reconciliation.deadline",
   );
   for (const member of afterGrace) {
     const observed = await bounded(
-      processSet.signal(member, "SIGKILL", killDeadline),
+      () => processSet.signal(member, "SIGKILL", killDeadline),
       killDeadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -782,7 +825,7 @@ const waitForJoinedHandles = async (
 ): Promise<void> => {
   try {
     await bounded(
-      Promise.all(handles).then(() => undefined),
+      () => Promise.all(handles).then(() => undefined),
       deadline,
       "testkit.headless.handles.deadline",
     );
@@ -897,7 +940,7 @@ const rejectStartedChild = async (
 ): Promise<never> => {
   const { child } = launch;
   await bounded(
-    launch.cleanupUncertainLaunch(reconciliationDeadline),
+    () => launch.cleanupUncertainLaunch(reconciliationDeadline),
     reconciliationDeadline,
     "testkit.headless.reconciliation.deadline",
   );
@@ -905,7 +948,7 @@ const rejectStartedChild = async (
   child.stdout?.destroy();
   child.stderr?.destroy();
   await bounded(
-    Promise.allSettled(handles).then(() => undefined),
+    () => Promise.allSettled(handles).then(() => undefined),
     reconciliationDeadline,
     "testkit.headless.reconciliation.deadline",
   );
@@ -934,7 +977,7 @@ const startExecution = async (
   const { child } = launch;
   if (child.stdin === null || child.stdout === null || child.stderr === null) {
     await bounded(
-      launch.cleanupUncertainLaunch(request.monotonicShutdownDeadlineMs),
+      () => launch.cleanupUncertainLaunch(request.monotonicShutdownDeadlineMs),
       request.monotonicShutdownDeadlineMs,
       "testkit.headless.reconciliation.deadline",
     );
@@ -961,12 +1004,12 @@ const startExecution = async (
   let processSet: AuthenticatedProcessSetSession;
   try {
     await bounded(
-      spawned,
+      () => spawned,
       request.monotonicStartupDeadlineMs,
       "testkit.headless.startup.deadline",
     );
     processSet = await bounded(
-      launch.openProcessSet(request.monotonicStartupDeadlineMs),
+      () => launch.openProcessSet(request.monotonicStartupDeadlineMs),
       request.monotonicStartupDeadlineMs,
       "testkit.headless.startup.deadline",
     );
@@ -976,9 +1019,7 @@ const startExecution = async (
     return rejectStartedChild(
       launch,
       handles,
-      error instanceof HeadlessSupervisorError
-        ? error.code
-        : "testkit.headless.kernel.failure",
+      sanitizedErrorCode(error),
       request.monotonicShutdownDeadlineMs,
     );
   }
@@ -1057,7 +1098,7 @@ const recoverExecution = async (
   let failed = false;
   try {
     await bounded(
-      started.processSet.forceTerminateAndJoin(deadline),
+      () => started.processSet.forceTerminateAndJoin(deadline),
       deadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -1066,7 +1107,7 @@ const recoverExecution = async (
   }
   try {
     await bounded(
-      Promise.allSettled(started.handles).then(() => undefined),
+      () => Promise.allSettled(started.handles).then(() => undefined),
       deadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -1075,7 +1116,7 @@ const recoverExecution = async (
   }
   try {
     await bounded(
-      started.processSet.assertTerminal(deadline),
+      () => started.processSet.assertTerminal(deadline),
       deadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -1086,9 +1127,7 @@ const recoverExecution = async (
 };
 
 const sanitizedErrorCode = (error: unknown): string =>
-  error instanceof HeadlessSupervisorError && internalErrors.has(error)
-    ? error.code
-    : "testkit.headless.kernel.failure";
+  trustedErrorCode(error) ?? "testkit.headless.kernel.failure";
 
 const execute = async (
   backend: ExecutionBackendAuthority,
@@ -1120,12 +1159,15 @@ const execute = async (
     if (selected.kind === "aborted") {
       await cleanupMembers(started.processSet, signals, request, "all");
       exit = await bounded(
-        started.closed,
+        () => started.closed,
         request.monotonicShutdownDeadlineMs,
         "testkit.headless.shutdown.deadline",
       );
       await bounded(
-        started.processSet.assertTerminal(request.monotonicShutdownDeadlineMs),
+        () =>
+          started.processSet.assertTerminal(
+            request.monotonicShutdownDeadlineMs,
+          ),
         request.monotonicShutdownDeadlineMs,
         "testkit.headless.reconciliation.deadline",
       );
@@ -1134,7 +1176,7 @@ const execute = async (
     if (selected.kind === "output") {
       await cleanupMembers(started.processSet, signals, request, "root");
       exit = await bounded(
-        started.closed,
+        () => started.closed,
         request.monotonicShutdownDeadlineMs,
         "testkit.headless.shutdown.deadline",
       );
@@ -1143,7 +1185,7 @@ const execute = async (
     } else if (selected.kind === "timeout") {
       await cleanupMembers(started.processSet, signals, request, "root");
       exit = await bounded(
-        started.closed,
+        () => started.closed,
         request.monotonicShutdownDeadlineMs,
         "testkit.headless.shutdown.deadline",
       );
@@ -1153,7 +1195,8 @@ const execute = async (
     if (scenario === "descendant")
       await cleanupMembers(started.processSet, signals, request, "descendant");
     await bounded(
-      started.processSet.assertTerminal(request.monotonicShutdownDeadlineMs),
+      () =>
+        started.processSet.assertTerminal(request.monotonicShutdownDeadlineMs),
       request.monotonicShutdownDeadlineMs,
       "testkit.headless.reconciliation.deadline",
     );
@@ -1168,7 +1211,8 @@ const execute = async (
     trigger.release();
     try {
       await bounded(
-        started.processSet.stopAndJoin(request.monotonicShutdownDeadlineMs),
+        () =>
+          started.processSet.stopAndJoin(request.monotonicShutdownDeadlineMs),
         request.monotonicShutdownDeadlineMs,
         "testkit.headless.reconciliation.deadline",
       );
@@ -1195,10 +1239,7 @@ const execute = async (
 
 export const readHeadlessSupervisorKernelErrorCode = (
   error: unknown,
-): string | undefined =>
-  error instanceof HeadlessSupervisorError && internalErrors.has(error)
-    ? error.code
-    : undefined;
+): string | undefined => trustedErrorCode(error);
 
 export const executeWithHeadlessSupervisorCapability = async (
   capability: HeadlessSupervisorCapability,
@@ -1208,7 +1249,7 @@ export const executeWithHeadlessSupervisorCapability = async (
 ): Promise<HeadlessCanonicalTraceEnvelope> => {
   const backend =
     typeof capability === "object" && capability !== null
-      ? selectedBackendAuthorities.get(capability)
+      ? readWeakMap(selectedBackendAuthorities, capability)
       : undefined;
   if (backend === undefined) return fail("testkit.headless.capability");
   try {

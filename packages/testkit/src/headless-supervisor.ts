@@ -1,5 +1,7 @@
 declare const headlessSupervisorCapabilityBrand: unique symbol;
 
+const defineOwnProperty = Object.defineProperty;
+
 /**
  * Opaque authority for the selected native or container isolation backend.
  * Testkit runtime-authenticates it; caller data and component fixtures cannot
@@ -14,10 +16,15 @@ export type HeadlessSupervisorExecutionOptions = Readonly<{
 }>;
 
 export class HeadlessSupervisorError extends Error {
-  public readonly code: string;
+  declare public readonly code: string;
 
   public constructor(code: string) {
     super(code);
-    this.code = code;
+    defineOwnProperty(this, "code", {
+      configurable: false,
+      enumerable: true,
+      value: code,
+      writable: false,
+    });
   }
 }
