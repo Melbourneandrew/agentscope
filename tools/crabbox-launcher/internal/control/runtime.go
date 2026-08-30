@@ -13,7 +13,10 @@ import (
 	"strings"
 )
 
-const maxRuntimeClosureBytes = 768 << 20
+const (
+	maxRuntimeClosureBytes = 768 << 20
+	maxRuntimeEntryBytes   = 256 << 20
+)
 
 type RuntimeIdentity struct {
 	TreeSHA256        string
@@ -62,7 +65,7 @@ func extractRuntimeClosure(archive []byte, destination string, workerLockSHA256 
 				return RuntimeIdentity{}, err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if header.Size < 0 || header.Size > 256<<20 || total+header.Size > maxRuntimeClosureBytes {
+			if header.Size < 0 || header.Size > maxRuntimeEntryBytes || total+header.Size > maxRuntimeClosureBytes {
 				return RuntimeIdentity{}, errors.New("E_RUNTIME_ARCHIVE_BOUNDS")
 			}
 			total += header.Size
@@ -189,7 +192,7 @@ func verifyRuntimeClosure(root string, installation Installation) (protectedRunt
 	}
 	paths := runtimePaths(root)
 	for path, digest := range map[string]string{paths.node: installation.NodeSHA256, paths.npmCLI: installation.NPMCLISHA256, paths.wranglerCLI: installation.WranglerCLISHA256, paths.workerLock: installation.ToolchainIdentity.WorkerLockSHA256} {
-		if err := verifiedFileDigest(path, digest); err != nil {
+		if err := verifiedFileDigestBounded(path, digest, maxRuntimeEntryBytes); err != nil {
 			return protectedRuntimePaths{}, err
 		}
 	}
