@@ -1,8 +1,9 @@
 declare const headlessSupervisorCapabilityBrand: unique symbol;
 
 /**
- * Opaque authority consumed by the bounded supervisor kernel. The authority is
- * runtime-authenticated inside Testkit; caller data cannot construct or mint it.
+ * Opaque authority for the selected native or container isolation backend.
+ * Testkit runtime-authenticates it; caller data and component fixtures cannot
+ * construct or mint it.
  */
 export type HeadlessSupervisorCapability = Readonly<{
   [headlessSupervisorCapabilityBrand]: true;

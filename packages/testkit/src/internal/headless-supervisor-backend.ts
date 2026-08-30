@@ -1,8 +1,11 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { performance } from "node:perf_hooks";
 import { spawn, type ChildProcess } from "node:child_process";
 
 import {
+  createBoundedHeadlessSupervisorContractSuite,
   encodeCanonicalHeadlessExecutionTrace,
   type HeadlessCanonicalTraceEnvelope,
   type HeadlessExecutionRequest,
@@ -52,7 +55,47 @@ type ExecutionTrigger =
   | Readonly<{ kind: "timeout" }>
   | Readonly<{ kind: "aborted" }>;
 
-const authority = new WeakSet<object>();
+type ProcessTarget = "root" | "descendant" | "all";
+
+type AuthenticatedProcessSetSession = Readonly<{
+  identities: () => readonly HeadlessProcessIdentity[];
+  live: (target: ProcessTarget) => Promise<readonly HeadlessProcessIdentity[]>;
+  signal: (
+    identity: HeadlessProcessIdentity,
+    signal: "SIGTERM" | "SIGKILL",
+  ) => Promise<HeadlessObservedSignal | undefined>;
+  assertTerminal: (deadline: number) => Promise<void>;
+  stopAndJoin: (deadline: number) => Promise<void>;
+}>;
+
+type IsolationBackendLaunch = Readonly<{
+  child: ChildProcess;
+  openProcessSet: (
+    startupDeadline: number,
+  ) => Promise<AuthenticatedProcessSetSession>;
+  cleanupUncertainLaunch: (deadline: number) => Promise<void>;
+}>;
+
+type SelectedIsolationBackendAuthority = Readonly<{
+  kind: "selected-isolation-backend";
+  launch: (request: HeadlessExecutionRequest) => IsolationBackendLaunch;
+}>;
+
+type ComponentFixtureBackendAuthority = Readonly<{
+  kind: "synthetic-component-fixture";
+  launch: (request: HeadlessExecutionRequest) => IsolationBackendLaunch;
+}>;
+
+type ExecutionBackendAuthority =
+  SelectedIsolationBackendAuthority | ComponentFixtureBackendAuthority;
+
+const selectedBackendAuthorities = new WeakMap<
+  object,
+  SelectedIsolationBackendAuthority
+>();
+// Intentionally write-closed in c1k.2. A concrete isolation backend must add
+// its restricted in-package mint here in the separately reviewed composition
+// work; neither caller data nor the component-fixture backend can populate it.
 const internalErrors = new WeakSet<Error>();
 const abortSignalPrototype = AbortSignal.prototype;
 const abortSignalAborted = Object.getOwnPropertyDescriptor(
@@ -370,6 +413,70 @@ const streamClose = (stream: NodeJS.EventEmitter | null): Promise<void> =>
         stream.once("close", resolve);
       });
 
+const componentFixtureBackend = (
+  scenario: HeadlessObserverScenario,
+): ComponentFixtureBackendAuthority => ({
+  kind: "synthetic-component-fixture",
+  launch: (request) => {
+    validateComponentFixtureRequest(scenario, request);
+    const child = spawn(request.executable, [...request.arguments], {
+      cwd: request.cwd,
+      detached: true,
+      env: { ...request.environment },
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return {
+      child,
+      openProcessSet: async (startupDeadline) => {
+        const rootPid = child.pid ?? fail("testkit.headless.kernel.spawn");
+        const root = await observeRoot(rootPid, startupDeadline);
+        return componentProcessSet(
+          new Map<string, ObservedProcess>([
+            [root.identity.startIdentity, root],
+          ]),
+        );
+      },
+      cleanupUncertainLaunch: async (deadline) => {
+        const pid = child.pid;
+        if (pid === undefined) return;
+        const snapshots = await listProcesses();
+        const rootSnapshot = snapshots.find(
+          ({ pid: candidate }) => candidate === pid,
+        );
+        const observed = new Map<string, ObservedProcess>();
+        if (rootSnapshot !== undefined) {
+          observed.set(rootSnapshot.startIdentity, {
+            identity: {
+              pid,
+              role: "root",
+              startIdentity: rootSnapshot.startIdentity,
+            },
+            pgid: rootSnapshot.pgid,
+          });
+          discoverMembers(snapshots, observed);
+          for (const member of observed.values())
+            await deliverSignal(member, "SIGKILL");
+        }
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+        while (performance.now() <= deadline) {
+          const remainingMembers = await liveMembers(observed);
+          const root = (await listProcesses()).find(
+            ({ pid: candidate }) => candidate === pid,
+          );
+          if (root === undefined && remainingMembers.length === 0) return;
+          await delay(observerPollMs);
+        }
+        fail("testkit.headless.cleanup.uncertain-launch");
+      },
+    };
+  },
+});
+
 const triggerOf = (
   close: Promise<ExitState>,
   output: Promise<"stdout" | "stderr">,
@@ -419,10 +526,9 @@ const currentSnapshot = async (
 const deliverSignal = async (
   process: ObservedProcess,
   signal: "SIGTERM" | "SIGKILL",
-  signals: HeadlessObservedSignal[],
-): Promise<boolean> => {
+): Promise<HeadlessObservedSignal | undefined> => {
   const snapshot = await currentSnapshot(process.identity);
-  if (snapshot === undefined) return false;
+  if (snapshot === undefined) return undefined;
   try {
     if (
       process.identity.role === "root" &&
@@ -431,14 +537,13 @@ const deliverSignal = async (
       globalThis.process.kill(-snapshot.pgid, signal);
     else globalThis.process.kill(process.identity.pid, signal);
   } catch {
-    return false;
+    return undefined;
   }
-  signals.push({
+  return {
     signal,
     targetStartIdentity: process.identity.startIdentity,
     monotonicAtMs: performance.now(),
-  });
-  return true;
+  };
 };
 
 const liveMembers = async (
@@ -453,35 +558,106 @@ const liveMembers = async (
   return live;
 };
 
-const cleanupMembers = async (
+const componentProcessSet = (
   observed: Map<string, ObservedProcess>,
-  signals: HeadlessObservedSignal[],
-  request: HeadlessExecutionRequest,
-  target: "root" | "descendant" | "all",
-): Promise<void> => {
-  const initial = await liveMembers(observed);
-  const targets = initial.filter(
-    (member) => target === "all" || member.identity.role === target,
-  );
-  if (targets.length === 0) return;
-  for (const member of targets) await deliverSignal(member, "SIGTERM", signals);
-  const graceDeadline = performance.now() + request.terminationGraceMs;
-  await before(Math.min(graceDeadline, request.monotonicShutdownDeadlineMs));
-  const afterGrace = await liveMembers(observed);
-  for (const member of afterGrace)
-    if (target === "all" || member.identity.role === target)
-      await deliverSignal(member, "SIGKILL", signals);
+): AuthenticatedProcessSetSession => {
+  const observer = observeUntil(observed);
+  return {
+    identities: () =>
+      [...observed.values()].map(({ identity }) => ({ ...identity })),
+    live: async (target) => {
+      const live = await liveMembers(observed);
+      return live
+        .filter(({ identity }) => target === "all" || identity.role === target)
+        .map(({ identity }) => ({ ...identity }));
+    },
+    signal: async (identity, signal) => {
+      const member = observed.get(identity.startIdentity);
+      if (
+        member === undefined ||
+        member.identity.pid !== identity.pid ||
+        member.identity.role !== identity.role
+      )
+        return fail("testkit.headless.backend.identity");
+      return deliverSignal(member, signal);
+    },
+    assertTerminal: async (deadline) => {
+      while (performance.now() <= deadline) {
+        if ((await liveMembers(observed)).length === 0) return;
+        await delay(observerPollMs);
+      }
+      fail("testkit.headless.cleanup.residual");
+    },
+    stopAndJoin: async (deadline) => {
+      observer.stop();
+      await bounded(
+        observer.promise,
+        deadline,
+        "testkit.headless.observer.join",
+      );
+    },
+  };
 };
 
-const waitForNoMembers = async (
-  observed: Map<string, ObservedProcess>,
-  deadline: number,
+const componentScenarioCase = (scenario: HeadlessObserverScenario) => {
+  const expectedName =
+    scenario === "correct"
+      ? "headless:correct-invocation"
+      : scenario === "stdout-limit"
+        ? "headless:stdout-limit"
+        : scenario === "stderr-limit"
+          ? "headless:stderr-limit"
+          : scenario === "timeout"
+            ? "headless:timeout-escalation"
+            : "headless:descendant-cleanup";
+  return createBoundedHeadlessSupervisorContractSuite().find(
+    ({ name }) => name === expectedName,
+  )!;
+};
+
+const validateComponentFixtureRequest = (
+  scenario: HeadlessObserverScenario,
+  request: HeadlessExecutionRequest,
+): void => {
+  const definition = componentScenarioCase(scenario);
+  const expectedArguments =
+    scenario === "correct"
+      ? ["argument one", "--literal=$VALUE"]
+      : ([] as const);
+  if (
+    request.executable !== process.execPath ||
+    request.arguments.length !== expectedArguments.length + 1 ||
+    request.cwd !== dirname(request.arguments[0] ?? "") ||
+    request.environment.AGENTSCOPE_ORACLE_VISIBLE !== "visible-canary" ||
+    Object.keys(request.environment).length !== 1 ||
+    Buffer.from(request.stdin).toString("utf8") !== "oracle-stdin" ||
+    readFileSync(request.arguments[0]!, "utf8") !== definition.fixtureSource
+  )
+    fail("testkit.headless.component.fixture");
+  for (let index = 0; index < expectedArguments.length; index += 1)
+    if (request.arguments[index + 1] !== expectedArguments[index])
+      fail("testkit.headless.component.fixture");
+};
+
+const cleanupMembers = async (
+  processSet: AuthenticatedProcessSetSession,
+  signals: HeadlessObservedSignal[],
+  request: HeadlessExecutionRequest,
+  target: ProcessTarget,
 ): Promise<void> => {
-  while (performance.now() <= deadline) {
-    if ((await liveMembers(observed)).length === 0) return;
-    await delay(observerPollMs);
+  const targets = await processSet.live(target);
+  if (targets.length === 0) return;
+  for (const member of targets) {
+    const observed = await processSet.signal(member, "SIGTERM");
+    if (observed !== undefined) signals.push(observed);
   }
-  fail("testkit.headless.cleanup.residual");
+  const graceDeadline = performance.now() + request.terminationGraceMs;
+  await before(Math.min(graceDeadline, request.monotonicShutdownDeadlineMs));
+  const afterGrace = await processSet.live(target);
+  for (const member of afterGrace) {
+    const observed = await processSet.signal(member, "SIGKILL");
+    if (observed !== undefined) signals.push(observed);
+  }
 };
 
 const waitForJoinedHandles = async (
@@ -590,28 +766,20 @@ type StartedExecution = Readonly<{
   closed: Promise<ExitState>;
   handles: readonly Promise<unknown>[];
   output: Promise<"stdout" | "stderr">;
-  observed: Map<string, ObservedProcess>;
-  observer: Promise<void>;
+  processSet: AuthenticatedProcessSetSession;
   readyAtMs: number;
   spawnedAtMs: number;
   stderrCapture: MutableCapture;
   stdoutCapture: MutableCapture;
-  stopObserver: () => void;
 }>;
 
 const rejectStartedChild = async (
-  child: ChildProcess,
+  launch: IsolationBackendLaunch,
   handles: readonly Promise<unknown>[],
   code: string,
 ): Promise<never> => {
-  const pid = child.pid;
-  if (pid !== undefined) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      child.kill("SIGKILL");
-    }
-  }
+  const { child } = launch;
+  await launch.cleanupUncertainLaunch(performance.now() + finalJoinMs);
   child.stdin?.destroy();
   child.stdout?.destroy();
   child.stderr?.destroy();
@@ -624,6 +792,7 @@ const rejectStartedChild = async (
 };
 
 const startExecution = async (
+  backend: ExecutionBackendAuthority,
   request: HeadlessExecutionRequest,
 ): Promise<StartedExecution> => {
   const stdoutCapture: MutableCapture = {
@@ -640,13 +809,12 @@ const startExecution = async (
   const output = new Promise<"stdout" | "stderr">((resolve) => {
     resolveOutput = resolve;
   });
-  const child = spawn(request.executable, [...request.arguments], {
-    cwd: request.cwd,
-    detached: true,
-    env: { ...request.environment },
-    shell: false,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
+  const launch = backend.launch(request);
+  const { child } = launch;
+  if (child.stdin === null || child.stdout === null || child.stderr === null) {
+    await launch.cleanupUncertainLaunch(performance.now() + finalJoinMs);
+    return fail("testkit.headless.backend.launch");
+  }
   const spawnedAtMs = performance.now();
   const closed = closeOf(child);
   const spawned = eventOf(child, "spawn");
@@ -665,42 +833,39 @@ const startExecution = async (
       resolveOutput("stderr");
   });
   child.stdin.end(Buffer.from(request.stdin));
-  let root: ObservedProcess;
+  let processSet: AuthenticatedProcessSetSession;
   try {
     await bounded(
       spawned,
       request.monotonicStartupDeadlineMs,
       "testkit.headless.startup.deadline",
     );
-    const rootPid = child.pid ?? fail("testkit.headless.kernel.spawn");
-    root = await observeRoot(rootPid, request.monotonicStartupDeadlineMs);
+    processSet = await bounded(
+      launch.openProcessSet(request.monotonicStartupDeadlineMs),
+      request.monotonicStartupDeadlineMs,
+      "testkit.headless.startup.deadline",
+    );
     if (performance.now() > request.monotonicStartupDeadlineMs)
       fail("testkit.headless.startup.deadline");
   } catch (error: unknown) {
     return rejectStartedChild(
-      child,
+      launch,
       handles,
       error instanceof HeadlessSupervisorError
         ? error.code
         : "testkit.headless.kernel.failure",
     );
   }
-  const observed = new Map<string, ObservedProcess>([
-    [root.identity.startIdentity, root],
-  ]);
-  const observer = observeUntil(observed);
   return {
     child,
     closed,
     handles,
-    observed,
-    observer: observer.promise,
+    processSet,
     output,
     readyAtMs: performance.now(),
     spawnedAtMs,
     stderrCapture,
     stdoutCapture,
-    stopObserver: observer.stop,
   };
 };
 
@@ -730,9 +895,7 @@ const encodeExecution = ({
     stderr: finishCapture(started.stderrCapture),
     signals,
   });
-  const processes = [...started.observed.values()].map(
-    ({ identity }) => identity,
-  );
+  const processes = started.processSet.identities();
   const observation: HeadlessProcessSetObservation = {
     observationVersion: 1,
     runId: request.runId,
@@ -765,26 +928,13 @@ const recoverExecution = async (
   signals: HeadlessObservedSignal[],
   request: HeadlessExecutionRequest,
 ): Promise<void> => {
-  try {
-    await cleanupMembers(started.observed, signals, request, "all");
-  } catch {
-    const root = [...started.observed.values()].find(
-      ({ identity }) => identity.role === "root",
-    );
-    if (root !== undefined) {
-      try {
-        process.kill(-root.pgid, "SIGKILL");
-      } catch {
-        started.child.kill("SIGKILL");
-      }
-    }
-  }
+  await cleanupMembers(started.processSet, signals, request, "all");
   await bounded(
     Promise.allSettled(started.handles).then(() => undefined),
     performance.now() + finalJoinMs,
     "testkit.headless.recovery.join",
   );
-  await waitForNoMembers(started.observed, performance.now() + finalJoinMs);
+  await started.processSet.assertTerminal(performance.now() + finalJoinMs);
 };
 
 const sanitizedErrorCode = (error: unknown): string =>
@@ -793,6 +943,7 @@ const sanitizedErrorCode = (error: unknown): string =>
     : "testkit.headless.kernel.failure";
 
 const execute = async (
+  backend: ExecutionBackendAuthority,
   scenario: HeadlessObserverScenario,
   request: HeadlessExecutionRequest,
   abortSignal: AbortSignal | undefined,
@@ -804,7 +955,7 @@ const execute = async (
   if (performance.now() >= request.monotonicStartupDeadlineMs)
     fail("testkit.headless.startup.deadline");
 
-  const started = await startExecution(request);
+  const started = await startExecution(backend, request);
   const signals: HeadlessObservedSignal[] = [];
   const trigger = triggerOf(
     started.closed,
@@ -818,20 +969,19 @@ const execute = async (
     selected = await trigger.promise;
     trigger.release();
     if (selected.kind === "aborted") {
-      await cleanupMembers(started.observed, signals, request, "all");
+      await cleanupMembers(started.processSet, signals, request, "all");
       exit = await bounded(
         started.closed,
         request.monotonicShutdownDeadlineMs,
         "testkit.headless.shutdown.deadline",
       );
-      await waitForNoMembers(
-        started.observed,
+      await started.processSet.assertTerminal(
         request.monotonicShutdownDeadlineMs,
       );
       fail("testkit.headless.aborted");
     }
     if (selected.kind === "output") {
-      await cleanupMembers(started.observed, signals, request, "root");
+      await cleanupMembers(started.processSet, signals, request, "root");
       exit = await bounded(
         started.closed,
         request.monotonicShutdownDeadlineMs,
@@ -840,7 +990,7 @@ const execute = async (
       if (signals.some(({ signal }) => signal === "SIGKILL"))
         fail("testkit.headless.output.escalated");
     } else if (selected.kind === "timeout") {
-      await cleanupMembers(started.observed, signals, request, "root");
+      await cleanupMembers(started.processSet, signals, request, "root");
       exit = await bounded(
         started.closed,
         request.monotonicShutdownDeadlineMs,
@@ -850,9 +1000,8 @@ const execute = async (
     else fail("testkit.headless.kernel.trigger");
 
     if (scenario === "descendant")
-      await cleanupMembers(started.observed, signals, request, "descendant");
-    await waitForNoMembers(
-      started.observed,
+      await cleanupMembers(started.processSet, signals, request, "descendant");
+    await started.processSet.assertTerminal(
       request.monotonicShutdownDeadlineMs,
     );
   } catch (error: unknown) {
@@ -860,12 +1009,7 @@ const execute = async (
     fail(sanitizedErrorCode(error));
   } finally {
     trigger.release();
-    started.stopObserver();
-    await bounded(
-      started.observer,
-      performance.now() + finalJoinMs,
-      "testkit.headless.observer.join",
-    );
+    await started.processSet.stopAndJoin(performance.now() + finalJoinMs);
   }
   await waitForJoinedHandles(
     started.handles,
@@ -883,14 +1027,6 @@ const execute = async (
   });
 };
 
-/** Package-private mint for component tests and later in-package composition. */
-export const createComponentHeadlessSupervisorCapability =
-  (): HeadlessSupervisorCapability => {
-    const capability = Object.freeze(Object.create(null)) as object;
-    authority.add(capability);
-    return capability as HeadlessSupervisorCapability;
-  };
-
 export const readHeadlessSupervisorKernelErrorCode = (
   error: unknown,
 ): string | undefined =>
@@ -904,14 +1040,35 @@ export const executeWithHeadlessSupervisorCapability = async (
   request: HeadlessExecutionRequest,
   signal: AbortSignal | undefined,
 ): Promise<HeadlessCanonicalTraceEnvelope> => {
-  if (
-    typeof capability !== "object" ||
-    capability === null ||
-    !authority.has(capability)
-  )
-    fail("testkit.headless.capability");
+  const backend =
+    typeof capability === "object" && capability !== null
+      ? selectedBackendAuthorities.get(capability)
+      : undefined;
+  if (backend === undefined) return fail("testkit.headless.capability");
   try {
-    return await execute(scenario, request, signal);
+    return await execute(backend, scenario, request, signal);
+  } catch (error: unknown) {
+    return fail(sanitizedErrorCode(error));
+  }
+};
+
+/**
+ * Package-private component evidence for the five closed family fixtures.
+ * This local backend is not a selected native/container isolation authority,
+ * cannot mint a production capability, and makes no containment claim.
+ */
+export const executeSyntheticComponentFixtureHeadlessSupervisor = async (
+  scenario: HeadlessObserverScenario,
+  request: HeadlessExecutionRequest,
+  signal?: AbortSignal,
+): Promise<HeadlessCanonicalTraceEnvelope> => {
+  try {
+    return await execute(
+      componentFixtureBackend(scenario),
+      scenario,
+      request,
+      signal,
+    );
   } catch (error: unknown) {
     return fail(sanitizedErrorCode(error));
   }

@@ -22,7 +22,7 @@ import {
   HeadlessSupervisorError,
   type HeadlessSupervisorCapability,
 } from "../headless-supervisor.js";
-import { createComponentHeadlessSupervisorCapability } from "../internal/headless-supervisor-backend.js";
+import { executeSyntheticComponentFixtureHeadlessSupervisor } from "../internal/headless-supervisor-backend.js";
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
 
@@ -59,7 +59,7 @@ const processesContaining = (needle: string): readonly string[] => {
 
 describe("bounded headless supervisor kernel", () => {
   it.each(cases)(
-    "executes and verifies $name with authenticated component authority",
+    "executes and verifies $name as closed synthetic component evidence",
     async (candidate) => {
       if (process.platform === "win32") return;
       const fixture = fixtureFor(candidate.fixtureSource);
@@ -68,11 +68,11 @@ describe("bounded headless supervisor kernel", () => {
           root: fixture.root,
           fixturePath: fixture.file,
         });
-        const envelope = await executeBoundedHeadlessSupervisor(
-          createComponentHeadlessSupervisorCapability(),
-          scenarioFor(candidate.name),
-          run.request,
-        );
+        const envelope =
+          await executeSyntheticComponentFixtureHeadlessSupervisor(
+            scenarioFor(candidate.name),
+            run.request,
+          );
         const trace = run.verify(envelope);
         expect(trace.runId).toBe(run.request.runId);
         expect(trace.observation.processJoined).toBe(true);
@@ -145,11 +145,7 @@ describe("bounded headless supervisor authority and startup", () => {
         monotonicShutdownDeadlineMs: now - 1_000,
       };
       await expect(
-        executeBoundedHeadlessSupervisor(
-          createComponentHeadlessSupervisorCapability(),
-          "correct",
-          expired,
-        ),
+        executeSyntheticComponentFixtureHeadlessSupervisor("correct", expired),
       ).rejects.toMatchObject({ code: "testkit.headless.startup.deadline" });
       expect(processesContaining(fixture.file)).toEqual([]);
     } finally {
@@ -157,7 +153,7 @@ describe("bounded headless supervisor authority and startup", () => {
     }
   });
 
-  it("settles a failed spawn with a fixed diagnostic and no process", async () => {
+  it("rejects a non-fixture executable before component launch", async () => {
     const candidate = cases[0]!;
     const fixture = fixtureFor(candidate.fixtureSource);
     try {
@@ -166,14 +162,13 @@ describe("bounded headless supervisor authority and startup", () => {
         fixturePath: fixture.file,
       });
       await expect(
-        executeBoundedHeadlessSupervisor(
-          createComponentHeadlessSupervisorCapability(),
-          "correct",
-          { ...run.request, executable: join(fixture.root, "missing") },
-        ),
+        executeSyntheticComponentFixtureHeadlessSupervisor("correct", {
+          ...run.request,
+          executable: join(fixture.root, "missing"),
+        }),
       ).rejects.toMatchObject({
-        code: "testkit.headless.kernel.spawn",
-        message: "testkit.headless.kernel.spawn",
+        code: "testkit.headless.component.fixture",
+        message: "testkit.headless.component.fixture",
       });
       expect(processesContaining(fixture.file)).toEqual([]);
     } finally {
@@ -182,8 +177,45 @@ describe("bounded headless supervisor authority and startup", () => {
   });
 });
 
+describe("bounded headless supervisor component boundary", () => {
+  it("rejects an escaped-descendant stimulus outside the closed component family", async () => {
+    if (process.platform === "win32") return;
+    const token = `agentscope-fast-escape-${process.pid}`;
+    const fixture = fixtureFor(`
+      import { spawn } from "node:child_process";
+      spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)", ${JSON.stringify(token)}], {
+        detached: true,
+        stdio: "ignore",
+      }).unref();
+      setTimeout(() => {}, 300);
+    `);
+    try {
+      const candidate = cases.find(
+        ({ name }) => name === "headless:descendant-cleanup",
+      )!;
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      await expect(
+        executeSyntheticComponentFixtureHeadlessSupervisor(
+          "descendant",
+          run.request,
+        ),
+      ).rejects.toMatchObject({
+        code: "testkit.headless.component.fixture",
+        message: "testkit.headless.component.fixture",
+      });
+      expect(processesContaining(token)).toEqual([]);
+      expect(processesContaining(fixture.file)).toEqual([]);
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+});
+
 describe("bounded headless supervisor diagnostics", () => {
-  it("collapses platform spawn errors to content-free diagnostics", async () => {
+  it("rejects hostile component arguments with a content-free diagnostic", async () => {
     const candidate = cases[0]!;
     const fixture = fixtureFor(candidate.fixtureSource);
     const secret = "must-not-escape";
@@ -194,17 +226,16 @@ describe("bounded headless supervisor diagnostics", () => {
       });
       let received: unknown;
       try {
-        await executeBoundedHeadlessSupervisor(
-          createComponentHeadlessSupervisorCapability(),
-          "correct",
-          { ...run.request, arguments: [`\0${secret}`] },
-        );
+        await executeSyntheticComponentFixtureHeadlessSupervisor("correct", {
+          ...run.request,
+          arguments: [`\0${secret}`],
+        });
       } catch (error: unknown) {
         received = error;
       }
       expect(received).toMatchObject({
-        code: "testkit.headless.kernel.failure",
-        message: "testkit.headless.kernel.failure",
+        code: "testkit.headless.component.fixture",
+        message: "testkit.headless.component.fixture",
       });
       expect(String(received)).not.toContain(secret);
       expect(processesContaining(fixture.file)).toEqual([]);
@@ -232,11 +263,10 @@ describe("bounded headless supervisor cancellation and surface", () => {
       const controller = new AbortController();
       controller.abort();
       await expect(
-        executeBoundedHeadlessSupervisor(
-          createComponentHeadlessSupervisorCapability(),
+        executeSyntheticComponentFixtureHeadlessSupervisor(
           "timeout",
           run.request,
-          { signal: controller.signal },
+          controller.signal,
         ),
       ).rejects.toMatchObject({ code: "testkit.headless.aborted" });
       expect(() => readFileSync(join(fixture.root, markerName))).toThrow();
@@ -263,11 +293,10 @@ describe("bounded headless supervisor cancellation and surface", () => {
           throw new HeadlessSupervisorError("caller-controlled-diagnostic");
         },
       });
-      const execution = executeBoundedHeadlessSupervisor(
-        createComponentHeadlessSupervisorCapability(),
+      const execution = executeSyntheticComponentFixtureHeadlessSupervisor(
         "timeout",
         run.request,
-        { signal: controller.signal },
+        controller.signal,
       );
       setTimeout(() => {
         controller.abort();
@@ -299,7 +328,7 @@ describe("bounded headless supervisor cancellation and surface", () => {
       let received: unknown;
       try {
         await executeBoundedHeadlessSupervisor(
-          createComponentHeadlessSupervisorCapability(),
+          Object.freeze({}) as HeadlessSupervisorCapability,
           "correct",
           run.request,
           options,
@@ -319,9 +348,9 @@ describe("bounded headless supervisor cancellation and surface", () => {
   });
 
   it("keeps the package-private authority mint off root and subpath surfaces", async () => {
-    expect("createComponentHeadlessSupervisorCapability" in rootApi).toBe(
-      false,
-    );
+    expect(
+      "executeSyntheticComponentFixtureHeadlessSupervisor" in rootApi,
+    ).toBe(false);
     const manifest = JSON.parse(
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { exports?: unknown };
