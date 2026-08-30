@@ -132,7 +132,7 @@ describe("bounded headless supervisor sequencing", () => {
       "correct",
       run.request,
       "cancelled",
-      controller.signal,
+      { signal: controller.signal },
     );
     controller.abort();
     await expect(pending).rejects.toMatchObject({
@@ -155,7 +155,7 @@ describe("bounded headless supervisor sequencing", () => {
         "correct",
         run.request,
         "clean",
-        controller.signal,
+        { signal: controller.signal },
       ),
     ).rejects.toMatchObject({ code: "testkit.headless.aborted" });
     expect(readScriptedHeadlessLaunchCountForTest()).toBe(0);
@@ -224,13 +224,77 @@ describe("bounded headless supervisor authority", () => {
         "correct",
         run.request,
         "clean",
-        signal as AbortSignal,
+        { signal: signal as AbortSignal },
       ),
     ).rejects.toMatchObject({
       code: "testkit.headless.aborted",
       message: "testkit.headless.aborted",
     });
     expect(consulted).toBe(0);
+  });
+});
+
+describe("bounded headless supervisor input authority", () => {
+  it("rejects cancellation accessors only after snapshotting request authority", async () => {
+    const candidate = cases[0]!;
+    const run = candidate.instantiate({
+      root: "/synthetic/fixture",
+      fixturePath: "/synthetic/fixture/fixture.mjs",
+    });
+    const request = { ...run.request };
+    const originalDeadline = request.monotonicShutdownDeadlineMs;
+    let callbacks = 0;
+    const options = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(options, "signal", {
+      get: () => {
+        callbacks += 1;
+        request.monotonicShutdownDeadlineMs += 20_000;
+        return undefined;
+      },
+    });
+    await expect(
+      executeScriptedHeadlessSupervisorForTest(
+        "correct",
+        request,
+        "clean",
+        options as never,
+      ),
+    ).rejects.toMatchObject({ code: "testkit.headless.kernel.options" });
+    expect(callbacks).toBe(0);
+    expect(request.monotonicShutdownDeadlineMs).toBe(originalDeadline);
+    expect(readScriptedHeadlessLaunchCountForTest()).toBe(0);
+  });
+
+  it("keeps pre-abort semantics when ambient Boolean changes after import", async () => {
+    const candidate = cases[0]!;
+    const run = candidate.instantiate({
+      root: "/synthetic/fixture",
+      fixturePath: "/synthetic/fixture/fixture.mjs",
+    });
+    const controller = new AbortController();
+    controller.abort();
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Boolean")!;
+    let failure: unknown;
+    try {
+      Object.defineProperty(globalThis, "Boolean", {
+        ...descriptor,
+        value: () => false,
+      });
+      try {
+        await executeScriptedHeadlessSupervisorForTest(
+          "correct",
+          run.request,
+          "clean",
+          { signal: controller.signal },
+        );
+      } catch (error: unknown) {
+        failure = error;
+      }
+    } finally {
+      Object.defineProperty(globalThis, "Boolean", descriptor);
+    }
+    expect(failure).toMatchObject({ code: "testkit.headless.aborted" });
+    expect(readScriptedHeadlessLaunchCountForTest()).toBe(0);
   });
 
   it("does not launch after the startup authority expires", async () => {

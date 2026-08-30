@@ -170,7 +170,10 @@ const isAborted = (signal: AbortSignal): boolean => {
   try {
     if (safeReflectApply(isProxy, types, [signal]))
       return fail("testkit.headless.aborted");
-    return Boolean(safeReflectApply(abortSignalAborted, signal, []));
+    const value = safeReflectApply(abortSignalAborted, signal, []) as unknown;
+    if (value === true) return true;
+    if (value === false) return false;
+    return fail("testkit.headless.aborted");
   } catch {
     return fail("testkit.headless.aborted");
   }
@@ -434,6 +437,20 @@ const snapshotRequest = (
       terminationGraceMs,
     },
   ]) as HeadlessExecutionRequest;
+};
+const readOptionsSignal = (
+  options: HeadlessSupervisorExecutionOptions,
+): AbortSignal | undefined => {
+  if (!plainRecord(options)) return fail("testkit.headless.kernel.options");
+  const descriptor = getOwnPropertyDescriptor(options, "signal");
+  if (descriptor === undefined) return undefined;
+  if (
+    descriptor.get !== undefined ||
+    descriptor.set !== undefined ||
+    !("value" in descriptor)
+  )
+    return fail("testkit.headless.kernel.options");
+  return descriptor.value as AbortSignal | undefined;
 };
 const assertReceipt = (
   receipt: BackendTerminalReceipt,
@@ -753,7 +770,9 @@ export const executeWithHeadlessSupervisorCapability = async (
       : undefined;
   if (backend === undefined) return fail("testkit.headless.capability");
   try {
-    return await execute(backend, scenario, request, options.signal);
+    const stableRequest = snapshotRequest(scenario, request);
+    const signal = readOptionsSignal(options);
+    return await execute(backend, scenario, stableRequest, signal);
   } catch (error: unknown) {
     return fail(trustedErrorCode(error) ?? "testkit.headless.kernel.failure");
   }
@@ -763,15 +782,17 @@ export const executeScriptedHeadlessSupervisorForTest = async (
   scenario: HeadlessObserverScenario,
   request: HeadlessExecutionRequest,
   seed: ScriptedSeed = "clean",
-  signal?: AbortSignal,
+  options: HeadlessSupervisorExecutionOptions = {},
 ): Promise<HeadlessCanonicalTraceEnvelope> => {
   scriptedLaunches = 0;
   scriptedCancellationDeliveries = 0;
   try {
+    const stableRequest = snapshotRequest(scenario, request);
+    const signal = readOptionsSignal(options);
     return await execute(
       scriptedBackend(scenario, seed),
       scenario,
-      request,
+      stableRequest,
       signal,
     );
   } catch (error: unknown) {
