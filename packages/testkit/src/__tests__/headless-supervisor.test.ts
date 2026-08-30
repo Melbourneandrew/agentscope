@@ -355,6 +355,48 @@ describe("bounded headless supervisor reconciliation authority", () => {
 });
 
 describe("bounded headless supervisor terminal observation", () => {
+  it("uses a pre-armed watchdog when the controller stalls across shutdown", async () => {
+    if (process.platform === "win32") return;
+    const candidate = cases.find(
+      ({ name }) => name === "headless:stdout-limit",
+    )!;
+    const fixture = fixtureFor(candidate.fixtureSource);
+    try {
+      const run = candidate.instantiate({
+        root: fixture.root,
+        fixturePath: fixture.file,
+      });
+      const now = performance.now();
+      const request = {
+        ...run.request,
+        monotonicStartupDeadlineMs: now + 400,
+        monotonicExecutionDeadlineMs: now + 800,
+        monotonicShutdownDeadlineMs: now + 820,
+        terminationGraceMs: 1,
+      };
+      const execution = executeSyntheticBackendDeadlineSeedForTest(
+        "signal-never",
+        "stdout-limit",
+        request,
+      );
+      setTimeout(() => {
+        const stalledUntil = performance.now() + 100;
+        while (performance.now() < stalledUntil) {
+          // Deliberately stall only the controller. The pre-armed watchdog is
+          // a separate process and must still terminate the exact fixture.
+        }
+      }, 805);
+      await expect(execution).rejects.toMatchObject({
+        code: "testkit.headless.reconciliation.deadline",
+        message: "testkit.headless.reconciliation.deadline",
+      });
+      expect(readSyntheticPostExpiryCallbackCountForTest()).toBe(0);
+      expect(processesContaining(fixture.file)).toEqual([]);
+    } finally {
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  }, 5_000);
+
   it("observes late lifecycle rejection after the absolute authority expires", async () => {
     if (process.platform === "win32") return;
     const candidate = cases.find(

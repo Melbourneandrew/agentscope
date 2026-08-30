@@ -81,14 +81,27 @@ type IsolationBackendLaunch = Readonly<{
   cleanupUncertainLaunch: (deadline: number) => Promise<void>;
 }>;
 
+type ArmedExpiryReceipt = Readonly<{
+  cleanup: "disarmed" | "killed";
+  monotonicShutdownDeadlineMs: number;
+  requestFingerprint: string;
+  runId: string;
+}>;
+
+type ArmedIsolationBackend = Readonly<{
+  disarmAndJoin: (deadline: number) => Promise<ArmedExpiryReceipt>;
+  expiryReceipt: Promise<ArmedExpiryReceipt>;
+  launch: () => IsolationBackendLaunch;
+}>;
+
 type SelectedIsolationBackendAuthority = Readonly<{
   kind: "selected-isolation-backend";
-  launch: (request: HeadlessExecutionRequest) => IsolationBackendLaunch;
+  arm: (request: HeadlessExecutionRequest) => Promise<ArmedIsolationBackend>;
 }>;
 
 type ComponentFixtureBackendAuthority = Readonly<{
   kind: "synthetic-component-fixture";
-  launch: (request: HeadlessExecutionRequest) => IsolationBackendLaunch;
+  arm: (request: HeadlessExecutionRequest) => Promise<ArmedIsolationBackend>;
 }>;
 
 type ExecutionBackendAuthority =
@@ -553,75 +566,216 @@ const streamClose = (stream: NodeJS.EventEmitter | null): Promise<void> =>
         }),
       );
 
+// Closed synthetic component watchdog. It is deliberately a separate process
+// so a finite stall in this Testkit process cannot prevent the pre-armed
+// expiry action. It is not a native/container containment backend and cannot
+// populate the production selected-backend authority map.
+const componentWatchdogSource = String.raw`
+  const { execFileSync } = require("node:child_process");
+  const deadline = Number(process.argv[1]);
+  let root;
+  let input = "";
+  let finished = false;
+  const tracked = new Set();
+  const snapshot = () => {
+    const rows = execFileSync("/bin/ps", ["-axo", "pid=,ppid="], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin" }, timeout: 500,
+    }).trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
+    if (root !== undefined) tracked.add(root);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [pid, ppid] of rows) if (tracked.has(ppid) && !tracked.has(pid)) {
+        tracked.add(pid); changed = true;
+      }
+    }
+  };
+  const live = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const finish = (word) => { if (finished) return; finished = true; process.stdout.write(word + "\n", () => process.exit(0)); };
+  const kill = () => {
+    try { snapshot(); } catch {}
+    for (const pid of [...tracked].reverse()) try { process.kill(pid, "SIGKILL"); } catch {}
+    const reconcile = () => {
+      if (![...tracked].some(live)) finish("killed");
+      else setTimeout(reconcile, 10);
+    };
+    reconcile();
+  };
+  const discover = setInterval(() => { try { snapshot(); } catch {} }, 25);
+  const expiry = setTimeout(() => { clearInterval(discover); kill(); }, Math.max(0, deadline - Date.now()));
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => {
+    input += chunk;
+    for (;;) {
+      const newline = input.indexOf("\n"); if (newline < 0) break;
+      const line = input.slice(0, newline); input = input.slice(newline + 1);
+      if (/^[1-9][0-9]*$/.test(line)) root = Number(line);
+      else if (line === "disarm") { clearInterval(discover); clearTimeout(expiry); finish("disarmed"); }
+    }
+  });
+  process.stdout.write("armed\n");
+`;
+
+const armComponentWatchdog = async (
+  request: HeadlessExecutionRequest,
+  launch: () => IsolationBackendLaunch,
+): Promise<ArmedIsolationBackend> => {
+  const watchdog = spawn(
+    process.execPath,
+    [
+      "-e",
+      componentWatchdogSource,
+      String(performance.timeOrigin + request.monotonicShutdownDeadlineMs),
+    ],
+    {
+      env: { PATH: "/usr/bin:/bin" },
+      shell: false,
+      stdio: ["pipe", "pipe", "ignore"],
+    },
+  );
+  if (watchdog.stdin === null || watchdog.stdout === null)
+    fail("testkit.headless.watchdog.arm");
+  let output = "";
+  let resolveArmed!: () => void;
+  let resolveReceipt!: (receipt: ArmedExpiryReceipt) => void;
+  let rejectReceipt!: (error: unknown) => void;
+  let receiptSettled = false;
+  const armed = observeAtCreation(
+    new SafePromise<void>((resolve) => {
+      resolveArmed = resolve;
+    }),
+  );
+  const expiryReceipt = observeAtCreation(
+    new SafePromise<ArmedExpiryReceipt>((resolve, reject) => {
+      resolveReceipt = resolve;
+      rejectReceipt = reject;
+    }),
+  );
+  watchdog.stdout.on("data", (chunk: Buffer) => {
+    output += chunk.toString("utf8");
+    for (;;) {
+      const newline = output.indexOf("\n");
+      if (newline < 0) break;
+      const line = output.slice(0, newline);
+      output = output.slice(newline + 1);
+      if (line === "armed") resolveArmed();
+      else if (line === "disarmed" || line === "killed") {
+        receiptSettled = true;
+        resolveReceipt({
+          cleanup: line,
+          monotonicShutdownDeadlineMs: request.monotonicShutdownDeadlineMs,
+          requestFingerprint: request.requestFingerprint,
+          runId: request.runId,
+        });
+      } else {
+        receiptSettled = true;
+        rejectReceipt(kernelError("testkit.headless.watchdog.receipt"));
+      }
+    }
+  });
+  watchdog.once("error", () => {
+    receiptSettled = true;
+    rejectReceipt(kernelError("testkit.headless.watchdog.failure"));
+  });
+  watchdog.once("close", () => {
+    if (!receiptSettled)
+      rejectReceipt(kernelError("testkit.headless.watchdog.failure"));
+  });
+  await bounded(
+    () => armed,
+    request.monotonicStartupDeadlineMs,
+    "testkit.headless.watchdog.arm",
+  );
+  let launched = false;
+  return {
+    expiryReceipt,
+    launch: () => {
+      if (launched) return fail("testkit.headless.watchdog.launch");
+      launched = true;
+      const launchedProcess = launch();
+      const pid = launchedProcess.child.pid;
+      if (pid === undefined) return fail("testkit.headless.kernel.spawn");
+      watchdog.stdin.write(`${pid}\n`);
+      return launchedProcess;
+    },
+    disarmAndJoin: () => {
+      watchdog.stdin.write("disarm\n");
+      return expiryReceipt;
+    },
+  };
+};
+
 const componentFixtureBackend = (
   scenario: HeadlessObserverScenario,
 ): ComponentFixtureBackendAuthority => ({
   kind: "synthetic-component-fixture",
-  launch: (request) => {
+  arm: (request) => {
     validateComponentFixtureRequest(scenario, request);
-    const child = spawn(request.executable, [...request.arguments], {
-      cwd: request.cwd,
-      detached: true,
-      env: { ...request.environment },
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    return {
-      child,
-      openProcessSet: async (startupDeadline) => {
-        const rootPid = child.pid ?? fail("testkit.headless.kernel.spawn");
-        const root = await observeRoot(rootPid, startupDeadline);
-        return componentProcessSet(
-          new Map<string, ObservedProcess>([
-            [root.identity.startIdentity, root],
-          ]),
-          request.monotonicShutdownDeadlineMs,
-        );
-      },
-      cleanupUncertainLaunch: async (deadline) => {
-        const reconciliationDeadline = Math.min(
-          deadline,
-          request.monotonicShutdownDeadlineMs,
-        );
-        const pid = child.pid;
-        if (pid === undefined) return;
-        const snapshots = await listProcesses(reconciliationDeadline);
-        const rootSnapshot = snapshots.find(
-          ({ pid: candidate }) => candidate === pid,
-        );
-        const observed = new Map<string, ObservedProcess>();
-        if (rootSnapshot !== undefined) {
-          observed.set(rootSnapshot.startIdentity, {
-            identity: {
-              pid,
-              role: "root",
-              startIdentity: rootSnapshot.startIdentity,
-            },
-            pgid: rootSnapshot.pgid,
-          });
-          discoverMembers(snapshots, observed);
-          for (const member of observed.values())
-            await deliverSignal(member, "SIGKILL", reconciliationDeadline);
-        }
-        try {
-          process.kill(-pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-        while (performance.now() <= reconciliationDeadline) {
-          const remainingMembers = await liveMembers(
-            observed,
-            reconciliationDeadline,
+    return armComponentWatchdog(request, () => {
+      const child = spawn(request.executable, [...request.arguments], {
+        cwd: request.cwd,
+        detached: true,
+        env: { ...request.environment },
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      return {
+        child,
+        openProcessSet: async (startupDeadline) => {
+          const rootPid = child.pid ?? fail("testkit.headless.kernel.spawn");
+          const root = await observeRoot(rootPid, startupDeadline);
+          return componentProcessSet(
+            new Map<string, ObservedProcess>([
+              [root.identity.startIdentity, root],
+            ]),
+            request.monotonicShutdownDeadlineMs,
           );
-          const root = (await listProcesses(reconciliationDeadline)).find(
+        },
+        cleanupUncertainLaunch: async (deadline) => {
+          const reconciliationDeadline = Math.min(
+            deadline,
+            request.monotonicShutdownDeadlineMs,
+          );
+          const pid = child.pid;
+          if (pid === undefined) return;
+          const snapshots = await listProcesses(reconciliationDeadline);
+          const rootSnapshot = snapshots.find(
             ({ pid: candidate }) => candidate === pid,
           );
-          if (root === undefined && remainingMembers.length === 0) return;
-          await delay(observerPollMs);
-        }
-        fail("testkit.headless.reconciliation.deadline");
-      },
-    };
+          const observed = new Map<string, ObservedProcess>();
+          if (rootSnapshot !== undefined) {
+            observed.set(rootSnapshot.startIdentity, {
+              identity: {
+                pid,
+                role: "root",
+                startIdentity: rootSnapshot.startIdentity,
+              },
+              pgid: rootSnapshot.pgid,
+            });
+            discoverMembers(snapshots, observed);
+            for (const member of observed.values())
+              await deliverSignal(member, "SIGKILL", reconciliationDeadline);
+          }
+          try {
+            process.kill(-pid, "SIGKILL");
+          } catch {
+            child.kill("SIGKILL");
+          }
+          while (performance.now() <= reconciliationDeadline) {
+            const remainingMembers = await liveMembers(
+              observed,
+              reconciliationDeadline,
+            );
+            const root = (await listProcesses(reconciliationDeadline)).find(
+              ({ pid: candidate }) => candidate === pid,
+            );
+            if (root === undefined && remainingMembers.length === 0) return;
+            await delay(observerPollMs);
+          }
+          fail("testkit.headless.reconciliation.deadline");
+        },
+      };
+    });
   },
 });
 
@@ -636,53 +790,59 @@ const componentDeadlineSeedBackend = (
   const component = componentFixtureBackend(scenario);
   return {
     kind: "synthetic-component-fixture",
-    launch: (request) => {
-      const launch = component.launch(request);
+    arm: async (request) => {
+      const armed = await component.arm(request);
       return {
-        ...launch,
-        openProcessSet: async (startupDeadline) => {
-          const processSet = await launch.openProcessSet(startupDeadline);
-          const afterExpiry = (): void => {
-            if (performance.now() >= request.monotonicShutdownDeadlineMs)
-              syntheticPostExpiryCallbackCount += 1;
-          };
+        ...armed,
+        launch: () => {
+          const launch = armed.launch();
           return {
-            ...processSet,
-            live:
-              seed === "live-never"
-                ? () => {
-                    afterExpiry();
-                    return observeAtCreation(
-                      new SafePromise<never>(() => undefined),
-                    );
-                  }
-                : (target, deadline) => {
-                    afterExpiry();
-                    return processSet.live(target, deadline);
-                  },
-            signal:
-              seed === "signal-never"
-                ? () => {
-                    afterExpiry();
-                    return observeAtCreation(
-                      new SafePromise<never>(() => undefined),
-                    );
-                  }
-                : (identity, signal, deadline) => {
-                    afterExpiry();
-                    return processSet.signal(identity, signal, deadline);
-                  },
-            forceTerminateAndJoin: (deadline) => {
-              afterExpiry();
-              return processSet.forceTerminateAndJoin(deadline);
-            },
-            assertTerminal: (deadline) => {
-              afterExpiry();
-              return processSet.assertTerminal(deadline);
-            },
-            stopAndJoin: (deadline) => {
-              afterExpiry();
-              return processSet.stopAndJoin(deadline);
+            ...launch,
+            openProcessSet: async (startupDeadline) => {
+              const processSet = await launch.openProcessSet(startupDeadline);
+              const afterExpiry = (): void => {
+                if (performance.now() >= request.monotonicShutdownDeadlineMs)
+                  syntheticPostExpiryCallbackCount += 1;
+              };
+              return {
+                ...processSet,
+                live:
+                  seed === "live-never"
+                    ? () => {
+                        afterExpiry();
+                        return observeAtCreation(
+                          new SafePromise<never>(() => undefined),
+                        );
+                      }
+                    : (target, deadline) => {
+                        afterExpiry();
+                        return processSet.live(target, deadline);
+                      },
+                signal:
+                  seed === "signal-never"
+                    ? () => {
+                        afterExpiry();
+                        return observeAtCreation(
+                          new SafePromise<never>(() => undefined),
+                        );
+                      }
+                    : (identity, signal, deadline) => {
+                        afterExpiry();
+                        return processSet.signal(identity, signal, deadline);
+                      },
+                forceTerminateAndJoin: (deadline) => {
+                  afterExpiry();
+                  return processSet.forceTerminateAndJoin(deadline);
+                },
+                assertTerminal: (deadline) => {
+                  afterExpiry();
+                  return processSet.assertTerminal(deadline);
+                },
+                stopAndJoin: (deadline) => {
+                  afterExpiry();
+                  return processSet.stopAndJoin(deadline);
+                },
+              };
             },
           };
         },
@@ -926,12 +1086,12 @@ const cleanupMembers = async (
 };
 
 const waitForJoinedHandles = async (
-  handles: readonly Promise<unknown>[],
+  handlesJoined: Promise<void>,
   deadline: number,
 ): Promise<void> => {
   try {
     await bounded(
-      () => joinSettled(handles),
+      () => handlesJoined,
       deadline,
       "testkit.headless.handles.deadline",
     );
@@ -1027,9 +1187,11 @@ const resultFor = ({
 };
 
 type StartedExecution = Readonly<{
+  armed: ArmedIsolationBackend;
   child: ChildProcess;
   closed: Promise<ExitState>;
   handles: readonly Promise<unknown>[];
+  handlesJoined: Promise<void>;
   output: Promise<"stdout" | "stderr">;
   processSet: AuthenticatedProcessSetSession;
   readyAtMs: number;
@@ -1040,7 +1202,7 @@ type StartedExecution = Readonly<{
 
 const rejectStartedChild = async (
   launch: IsolationBackendLaunch,
-  handles: readonly Promise<unknown>[],
+  handlesJoined: Promise<void>,
   code: string,
   reconciliationDeadline: number,
 ): Promise<never> => {
@@ -1054,7 +1216,7 @@ const rejectStartedChild = async (
   child.stdout?.destroy();
   child.stderr?.destroy();
   await bounded(
-    () => joinSettled(handles),
+    () => handlesJoined,
     reconciliationDeadline,
     "testkit.headless.reconciliation.deadline",
   );
@@ -1062,7 +1224,7 @@ const rejectStartedChild = async (
 };
 
 const startExecution = async (
-  backend: ExecutionBackendAuthority,
+  armed: ArmedIsolationBackend,
   request: HeadlessExecutionRequest,
 ): Promise<StartedExecution> => {
   const stdoutCapture: MutableCapture = {
@@ -1081,7 +1243,7 @@ const startExecution = async (
       resolveOutput = resolve;
     }),
   );
-  const launch = backend.launch(request);
+  const launch = armed.launch();
   const { child } = launch;
   if (child.stdin === null || child.stdout === null || child.stderr === null) {
     await bounded(
@@ -1100,6 +1262,7 @@ const startExecution = async (
     streamClose(child.stdout),
     streamClose(child.stderr),
   ];
+  const handlesJoined = joinSettled(handles);
   child.stdout.on("data", (chunk: Buffer) => {
     if (appendChunk(stdoutCapture, chunk, request.stdoutLimitBytes))
       resolveOutput("stdout");
@@ -1126,15 +1289,17 @@ const startExecution = async (
   } catch (error: unknown) {
     return rejectStartedChild(
       launch,
-      handles,
+      handlesJoined,
       sanitizedErrorCode(error),
       request.monotonicShutdownDeadlineMs,
     );
   }
   return {
+    armed,
     child,
     closed,
     handles,
+    handlesJoined,
     processSet,
     output,
     readyAtMs: performance.now(),
@@ -1215,7 +1380,7 @@ const recoverExecution = async (
   }
   try {
     await bounded(
-      () => joinSettled(started.handles),
+      () => started.handlesJoined,
       deadline,
       "testkit.headless.reconciliation.deadline",
     );
@@ -1237,6 +1402,80 @@ const recoverExecution = async (
 const sanitizedErrorCode = (error: unknown): string =>
   trustedErrorCode(error) ?? "testkit.headless.kernel.failure";
 
+const assertArmedReceipt = (
+  receipt: ArmedExpiryReceipt,
+  request: HeadlessExecutionRequest,
+  cleanup: ArmedExpiryReceipt["cleanup"],
+): void => {
+  if (
+    receipt.cleanup !== cleanup ||
+    receipt.runId !== request.runId ||
+    receipt.requestFingerprint !== request.requestFingerprint ||
+    receipt.monotonicShutdownDeadlineMs !== request.monotonicShutdownDeadlineMs
+  )
+    fail("testkit.headless.watchdog.receipt");
+};
+
+const armAndStartExecution = async (
+  backend: ExecutionBackendAuthority,
+  request: HeadlessExecutionRequest,
+): Promise<StartedExecution> => {
+  const armed = await bounded(
+    () => backend.arm(request),
+    request.monotonicStartupDeadlineMs,
+    "testkit.headless.watchdog.arm",
+  );
+  try {
+    return await startExecution(armed, request);
+  } catch (error: unknown) {
+    if (remaining(request.monotonicShutdownDeadlineMs) > 0) {
+      const receipt = await bounded(
+        () => armed.disarmAndJoin(request.monotonicShutdownDeadlineMs),
+        request.monotonicShutdownDeadlineMs,
+        "testkit.headless.watchdog.deadline",
+      );
+      assertArmedReceipt(receipt, request, "disarmed");
+    } else {
+      const receipt = await armed.expiryReceipt;
+      assertArmedReceipt(receipt, request, "killed");
+    }
+    throw error;
+  }
+};
+
+const finalizeExecution = async (
+  started: StartedExecution,
+  request: HeadlessExecutionRequest,
+): Promise<unknown> => {
+  if (remaining(request.monotonicShutdownDeadlineMs) <= 0) {
+    try {
+      const receipt = await started.armed.expiryReceipt;
+      assertArmedReceipt(receipt, request, "killed");
+      await started.handlesJoined;
+    } catch {
+      // Expiry is always classified as uncertain even if the independently
+      // armed receipt itself is malformed or failed.
+    }
+    return kernelError("testkit.headless.reconciliation.deadline");
+  }
+  try {
+    await bounded(
+      () => started.processSet.stopAndJoin(request.monotonicShutdownDeadlineMs),
+      request.monotonicShutdownDeadlineMs,
+      "testkit.headless.reconciliation.deadline",
+    );
+    const receipt = await bounded(
+      () => started.armed.disarmAndJoin(request.monotonicShutdownDeadlineMs),
+      request.monotonicShutdownDeadlineMs,
+      "testkit.headless.watchdog.deadline",
+    );
+    assertArmedReceipt(receipt, request, "disarmed");
+    return undefined;
+  } catch (error: unknown) {
+    return error;
+  }
+};
+
 const execute = async (
   backend: ExecutionBackendAuthority,
   scenario: HeadlessObserverScenario,
@@ -1250,7 +1489,7 @@ const execute = async (
   if (performance.now() >= request.monotonicStartupDeadlineMs)
     fail("testkit.headless.startup.deadline");
 
-  const started = await startExecution(backend, request);
+  const started = await armAndStartExecution(backend, request);
   const signals: HeadlessObservedSignal[] = [];
   const trigger = triggerOf(
     started.closed,
@@ -1317,20 +1556,12 @@ const execute = async (
     }
   } finally {
     trigger.release();
-    try {
-      await bounded(
-        () =>
-          started.processSet.stopAndJoin(request.monotonicShutdownDeadlineMs),
-        request.monotonicShutdownDeadlineMs,
-        "testkit.headless.reconciliation.deadline",
-      );
-    } catch (joinError: unknown) {
-      lifecycleError = joinError;
-    }
+    lifecycleError =
+      (await finalizeExecution(started, request)) ?? lifecycleError;
   }
   if (lifecycleError !== undefined) fail(sanitizedErrorCode(lifecycleError));
   await waitForJoinedHandles(
-    started.handles,
+    started.handlesJoined,
     request.monotonicShutdownDeadlineMs,
   );
   const settledTrigger = selected ?? fail("testkit.headless.kernel.settlement");
