@@ -117,13 +117,24 @@ const productionSources = sourceFiles
 const expectedArtifacts = productionSources
   .flatMap((file) => [`${file}.d.ts`, `${file}.js`])
   .sort();
+const artifactAncestorDirectories = (file) => {
+  const directories = [];
+  for (
+    let directory = dirname(file);
+    directory !== ".";
+    directory = dirname(directory)
+  )
+    directories.push(directory);
+  return directories;
+};
 const expectedArtifactDirectories = [
-  ...new Set(
-    expectedArtifacts
-      .map((file) => dirname(file))
-      .filter((directory) => directory !== "."),
-  ),
+  ...new Set(expectedArtifacts.flatMap(artifactAncestorDirectories)),
 ].sort();
+if (
+  artifactAncestorDirectories("nested/deeper/canary.js").join(",") !==
+  "nested/deeper,nested"
+)
+  throw new Error("Testkit artifact directory grammar is not closed.");
 const actualArtifactDirectories = [];
 const actualArtifacts = listRegularFiles(
   resolve(root, "dist"),
