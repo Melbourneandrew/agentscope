@@ -36,8 +36,9 @@ const readBoundedRegularFile = (absolute) => {
 const listRegularFiles = (
   directory,
   prefix = "",
-  budget = { files: 0 },
+  budget = { entries: 0 },
   depth = 0,
+  directories = [],
 ) => {
   if (depth > maximumDirectoryDepth)
     throw new Error("Testkit artifact directory nesting is too deep.");
@@ -51,13 +52,19 @@ const listRegularFiles = (
   if (entries.length > maximumFiles)
     throw new Error("Testkit artifact directory is too large.");
   for (const entry of entries) {
+    budget.entries += 1;
+    if (budget.entries > maximumFiles)
+      throw new Error("Testkit artifact inventory is too large.");
     const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
     const absolute = resolve(directory, entry.name);
     const stat = lstatSync(absolute);
     if (stat.isSymbolicLink())
       throw new Error(`Testkit artifact contains a symlink: ${relative}`);
     if (stat.isDirectory()) {
-      files.push(...listRegularFiles(absolute, relative, budget, depth + 1));
+      directories.push(relative);
+      files.push(
+        ...listRegularFiles(absolute, relative, budget, depth + 1, directories),
+      );
       continue;
     }
     if (!stat.isFile() || stat.size > maximumFileBytes)
@@ -65,9 +72,6 @@ const listRegularFiles = (
         `Testkit artifact entry is not bounded regular data: ${relative}`,
       );
     files.push(relative);
-    budget.files += 1;
-    if (budget.files > maximumFiles)
-      throw new Error("Testkit artifact inventory is too large.");
   }
   const after = lstatSync(directory);
   if (
@@ -113,10 +117,29 @@ const productionSources = sourceFiles
 const expectedArtifacts = productionSources
   .flatMap((file) => [`${file}.d.ts`, `${file}.js`])
   .sort();
-const actualArtifacts = listRegularFiles(resolve(root, "dist"));
+const expectedArtifactDirectories = [
+  ...new Set(
+    expectedArtifacts
+      .map((file) => dirname(file))
+      .filter((directory) => directory !== "."),
+  ),
+].sort();
+const actualArtifactDirectories = [];
+const actualArtifacts = listRegularFiles(
+  resolve(root, "dist"),
+  "",
+  { entries: 0 },
+  0,
+  actualArtifactDirectories,
+);
+actualArtifactDirectories.sort();
 if (
   actualArtifacts.length !== expectedArtifacts.length ||
   actualArtifacts.some((file, index) => file !== expectedArtifacts[index]) ||
+  actualArtifactDirectories.length !== expectedArtifactDirectories.length ||
+  actualArtifactDirectories.some(
+    (directory, index) => directory !== expectedArtifactDirectories[index],
+  ) ||
   actualArtifacts.some(
     (file) =>
       file.includes(".spec.") ||
