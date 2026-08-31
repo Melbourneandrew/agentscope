@@ -24,6 +24,7 @@ import {
   publishTerminalOutcome,
   purePolicyFiles,
   requiredPolicyFiles,
+  runInternalVitestChild,
   runWorkspacePolicyPlan,
   validateWorkspacePolicyInventory,
 } from "../workspace-policy-runner.mjs";
@@ -32,22 +33,25 @@ const workspaceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 function createLifecycleHarness() {
   let now = 0;
-  let observation = { groupAbsent: true, leader: "absent" };
+  let observation = { groupAbsent: true, leader: "absent", memberCount: 0 };
   let inspectError = false;
   let signalError = false;
+  const deadlines = [];
   const inspections = [];
   const signals = [];
   const timers = [];
   const authority = {
-    capture(pid) {
+    capture(pid, _platform, hardDeadline) {
       assert.equal(pid, 4242);
+      deadlines.push(hardDeadline);
       return Object.freeze({ pid, startIdentity: "start-1" });
     },
     clearTimer(timer) {
       timer.cleared = true;
     },
-    inspect(identity) {
+    inspect(identity, _platform, hardDeadline) {
       assert.deepEqual(identity, { pid: 4242, startIdentity: "start-1" });
+      deadlines.push(hardDeadline);
       inspections.push(identity);
       if (inspectError) throw new Error("synthetic inspection failure");
       return observation;
@@ -65,7 +69,11 @@ function createLifecycleHarness() {
     },
   };
   return {
+    activeTimerCount() {
+      return timers.filter((item) => !item.cleared).length;
+    },
     authority,
+    deadlines,
     async advanceTo(deadline) {
       while (true) {
         const timer = timers
@@ -94,7 +102,12 @@ function createLifecycleHarness() {
       inspectError = value;
     },
     setObservation(value) {
-      observation = value;
+      observation = {
+        ...value,
+        memberCount:
+          value.memberCount ??
+          (value.groupAbsent ? 0 : value.leader === "same" ? 1 : 1),
+      };
     },
     setSignalError(value) {
       signalError = value;
@@ -283,10 +296,8 @@ test("pure tests batch once before authority tests serialize", async () => {
   const calls = [];
   const outcome = await runWorkspacePolicyPlan(plan, async (invocation) => {
     calls.push({
-      files: invocation.arguments
-        .slice(6)
-        .map((path) => path.split("/").at(-1)),
-      workers: invocation.arguments[5],
+      files: invocation.files,
+      workers: String(invocation.workerCeiling),
     });
     return { code: 0, signal: undefined };
   });
@@ -316,7 +327,7 @@ test("a failed child preserves its result and admits no later child", async () =
   );
   const calls = [];
   const outcome = await runWorkspacePolicyPlan(plan, async (invocation) => {
-    const name = invocation.arguments.at(-1).split("/").at(-1);
+    const name = invocation.files.at(-1);
     calls.push(name);
     return name === "code-quality-policy.test.mjs"
       ? { code: 73, signal: undefined }
@@ -337,7 +348,7 @@ test("a signaled child admits no later authority child", async () => {
   );
   const calls = [];
   const outcome = await runWorkspacePolicyPlan(plan, async (invocation) => {
-    calls.push(invocation.arguments.slice(6));
+    calls.push(invocation.files);
     return { code: 0, signal: "SIGTERM" };
   });
   assert.deepEqual(outcome, { code: 0, signal: "SIGTERM" });
@@ -359,7 +370,7 @@ test("the next authority child waits for prior terminal publication", async () =
     release = resolveTerminal;
   });
   const running = runWorkspacePolicyPlan(plan, async (invocation) => {
-    starts.push(invocation.arguments.at(-1).split("/").at(-1));
+    starts.push(invocation.files.at(-1));
     if (starts.length === 1) await firstTerminal;
     return { code: 0, signal: undefined };
   });
@@ -376,23 +387,28 @@ test("the next authority child waits for prior terminal publication", async () =
 test("Vitest execution is direct, closed, and joins the child terminal", async () => {
   const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
   assert.equal(invocation.executable, process.execPath);
-  assert.equal(invocation.arguments[1], "run");
-  assert.equal(invocation.arguments[2], "--config");
   assert.equal(
-    invocation.arguments[3],
-    resolve(workspaceRoot, "vitest.config.ts"),
+    invocation.arguments[0],
+    resolve(workspaceRoot, "scripts/workspace-policy-runner.mjs"),
   );
-  assert.equal(invocation.arguments[4], "--maxWorkers");
-  assert.equal(invocation.arguments[5], "1");
-  assert.equal(
-    invocation.arguments[6],
-    resolve(workspaceRoot, "scripts/__tests__/validation-lease.test.mjs"),
-  );
-  assert.equal(invocation.arguments[0], realpathSync(invocation.arguments[0]));
+  assert.equal(invocation.arguments[1], "--internal-workspace-policy-child");
+  assert.equal(invocation.arguments[2], "1");
+  assert.deepEqual(invocation.files, ["validation-lease.test.mjs"]);
 
   const child = new EventEmitter();
   child.pid = 4242;
   const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({
+    groupAbsent: false,
+    leader: "same",
+    memberCount: 1,
+  });
+  child.send = (message, callback) => {
+    assert.deepEqual(message, { kind: "release" });
+    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+    callback?.(null);
+    queueMicrotask(() => child.emit("close", 0, null));
+  };
   let options;
   const result = executeVitestInvocation(
     invocation,
@@ -400,7 +416,9 @@ test("Vitest execution is direct, closed, and joins the child terminal", async (
       assert.equal(executable, process.execPath);
       assert.deepEqual(arguments_, invocation.arguments);
       options = value;
-      queueMicrotask(() => child.emit("close", 0, null));
+      queueMicrotask(() =>
+        child.emit("message", { code: 0, kind: "direct-terminal" }),
+      );
       return child;
     },
     process,
@@ -528,7 +546,11 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
       childLifecycleBounds.teardownMilliseconds,
   );
   assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
-  lifecycle.setObservation({ groupAbsent: false, leader: "absent" });
+  lifecycle.setObservation({
+    groupAbsent: false,
+    leader: "same",
+    memberCount: 2,
+  });
   await lifecycle.advanceTo(
     childLifecycleBounds.hardMilliseconds -
       childLifecycleBounds.teardownMilliseconds +
@@ -538,6 +560,41 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
   lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
   child.emit("close", null, "SIGKILL");
   await rejected;
+  assert.ok(lifecycle.deadlines.length > 2);
+  assert.ok(
+    lifecycle.deadlines.every(
+      (deadline) => deadline === childLifecycleBounds.hardMilliseconds,
+    ),
+  );
+});
+
+test("a persistent wrapper contains a TERM-ignoring descendant with one poll chain", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.send = assert.fail;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({
+    groupAbsent: false,
+    leader: "same",
+    memberCount: 2,
+  });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  child.emit("message", { code: 0, kind: "direct-terminal" });
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, "SIGKILL");
+  assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
+  assert.equal(lifecycle.activeTimerCount(), 0);
 });
 
 test("an absent then reused group is never signaled", async () => {
@@ -576,10 +633,7 @@ test("a surviving same-group descendant blocks the next suite", async () => {
     process,
     lifecycle.authority,
   );
-  const rejected = assert.rejects(
-    first,
-    /leader closed before process-group join/,
-  );
+  const rejected = assert.rejects(first, /wrapper terminal uncertainty/);
   child.emit("close", 0, null);
   let terminal = false;
   void first.catch(() => {
@@ -672,7 +726,7 @@ test("group inspection uncertainty reaches the same hard deadline and admits not
   lifecycle.setInspectionError(true);
   const calls = [];
   const result = runWorkspacePolicyPlan(plan, async (invocation) => {
-    calls.push(invocation.arguments.at(-1).split("/").at(-1));
+    calls.push(invocation.files.at(-1));
     return executeVitestInvocation(
       invocation,
       () => child,
@@ -684,11 +738,91 @@ test("group inspection uncertainty reaches the same hard deadline and admits not
     result,
     /process-group inspection uncertainty/,
   );
-  child.emit("close", 1, null);
   await lifecycle.fireAt(childLifecycleBounds.hardMilliseconds);
   await rejected;
   assert.deepEqual(calls, ["code-quality-policy.test.mjs"]);
   assert.deepEqual(lifecycle.signals, []);
+});
+
+test("the internal wrapper validates grammar and holds terminal publication for release", async () => {
+  for (const direct of [
+    { code: 0, signal: null },
+    { code: 73, signal: null },
+    { code: null, signal: "SIGTERM" },
+  ]) {
+    const host = new EventEmitter();
+    host.connected = true;
+    host.pid = 4242;
+    host.send = (message) => host.sent.push(message);
+    host.kill = assert.fail;
+    host.sent = [];
+    const child = new EventEmitter();
+    let options;
+    const result = runInternalVitestChild(
+      ["--internal-workspace-policy-child", "1", "validation-lease.test.mjs"],
+      (executable, arguments_, value) => {
+        assert.equal(executable, process.execPath);
+        assert.equal(arguments_[0], realpathSync(arguments_[0]));
+        assert.equal(arguments_[1], "run");
+        assert.ok(arguments_.at(-1).endsWith("validation-lease.test.mjs"));
+        options = value;
+        return child;
+      },
+      host,
+    );
+    let settled = false;
+    void result.then(() => {
+      settled = true;
+    });
+    host.emit("SIGTERM");
+    child.emit("close", direct.code, direct.signal);
+    await Promise.resolve();
+    assert.equal(settled, false);
+    assert.equal(host.listenerCount("SIGTERM"), 1);
+    assert.deepEqual(host.sent, [
+      {
+        code: direct.code ?? 1,
+        kind: "direct-terminal",
+        ...(direct.signal === null ? {} : { signal: direct.signal }),
+      },
+    ]);
+    host.emit("message", { kind: "release" });
+    assert.deepEqual(await result, {
+      code: direct.code ?? 1,
+      signal: direct.signal ?? undefined,
+    });
+    assert.equal(options.detached, false);
+    assert.equal(options.shell, false);
+    assert.equal(host.listenerCount("SIGTERM"), 0);
+  }
+
+  assert.throws(
+    () =>
+      runInternalVitestChild([
+        "--internal-workspace-policy-child",
+        "2",
+        "validation-lease.test.mjs",
+      ]),
+    /internal child classification is invalid/,
+  );
+  assert.throws(
+    () =>
+      runInternalVitestChild([
+        "--internal-workspace-policy-child",
+        "1",
+        "unknown.test.mjs",
+      ]),
+    /internal child classification is invalid/,
+  );
+  assert.throws(
+    () =>
+      runInternalVitestChild(
+        ["--internal-workspace-policy-child", "1", "validation-lease.test.mjs"],
+        assert.fail,
+        { connected: false },
+      ),
+    /authenticated parent channel/,
+  );
 });
 
 test("the executable boundary preserves exit or terminating signal", () => {
