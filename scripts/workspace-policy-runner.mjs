@@ -190,26 +190,29 @@ export function executeVitestInvocation(
   signalHost = process,
 ) {
   return new Promise((resolveExecution, rejectExecution) => {
-    const child = spawnChild(invocation.executable, invocation.arguments, {
-      cwd: workspaceRoot,
-      detached: signalHost.platform !== "win32",
-      env: childEnvironment(),
-      shell: false,
-      stdio: "inherit",
-    });
+    let child;
     let terminal = false;
     let failure;
+    let pendingSignal;
+    let signalForwarded = false;
     const handlers = new Map();
     const removeHandlers = () => {
       for (const [signal, handler] of handlers) signalHost.off(signal, handler);
       handlers.clear();
     };
-    const terminate = (signal) => {
-      if (terminal || child.pid === undefined) return;
+    const forwardPendingSignal = () => {
+      if (
+        terminal ||
+        signalForwarded ||
+        pendingSignal === undefined ||
+        child?.pid === undefined
+      )
+        return;
+      signalForwarded = true;
       try {
         signalHost.kill(
           signalHost.platform === "win32" ? child.pid : -child.pid,
-          signal,
+          pendingSignal,
         );
       } catch (error) {
         if (error?.code === "ESRCH") return;
@@ -222,16 +225,40 @@ export function executeVitestInvocation(
       }
     };
     for (const signal of forwardedSignals) {
-      const handler = () => terminate(signal);
+      const handler = () => {
+        pendingSignal ??= signal;
+        forwardPendingSignal();
+      };
       handlers.set(signal, handler);
       signalHost.on(signal, handler);
     }
+    try {
+      child = spawnChild(invocation.executable, invocation.arguments, {
+        cwd: workspaceRoot,
+        detached: signalHost.platform !== "win32",
+        env: childEnvironment(),
+        shell: false,
+        stdio: "inherit",
+      });
+    } catch (error) {
+      terminal = true;
+      removeHandlers();
+      if (pendingSignal !== undefined)
+        resolveExecution(Object.freeze({ code: 1, signal: pendingSignal }));
+      else rejectExecution(error);
+      return;
+    }
+    forwardPendingSignal();
     child.once("error", (error) => {
       failure ??= error;
     });
     child.once("close", (code, signal) => {
       terminal = true;
       removeHandlers();
+      if (pendingSignal !== undefined) {
+        resolveExecution(Object.freeze({ code: 1, signal: pendingSignal }));
+        return;
+      }
       if (failure !== undefined) {
         rejectExecution(failure);
         return;

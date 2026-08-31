@@ -228,6 +228,21 @@ test("a failed child preserves its result and admits no later child", async () =
   ]);
 });
 
+test("a signaled child admits no later authority child", async () => {
+  const inventory = discoverWorkspacePolicyInventory();
+  const plan = createWorkspacePolicyPlan(
+    inventory,
+    classifyWorkspacePolicyInventory(inventory),
+  );
+  const calls = [];
+  const outcome = await runWorkspacePolicyPlan(plan, async (invocation) => {
+    calls.push(invocation.arguments.slice(6));
+    return { code: 0, signal: "SIGTERM" };
+  });
+  assert.deepEqual(outcome, { code: 0, signal: "SIGTERM" });
+  assert.equal(calls.length, 1);
+});
+
 test("the next authority child waits for prior terminal publication", async () => {
   const inventory = [
     "code-quality-policy.test.mjs",
@@ -311,9 +326,31 @@ test("a forwarded signal waits for the exact child terminal", async () => {
   await new Promise((resolveReady) => setImmediate(resolveReady));
   assert.deepEqual(signals, [[-4242, "SIGTERM"]]);
   assert.equal(terminal, false);
-  child.emit("close", null, "SIGTERM");
+  child.emit("close", 0, null);
   assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
   assert.equal(terminal, true);
+  assert.equal(signalHost.listenerCount("SIGTERM"), 0);
+});
+
+test("a publication-gap signal queues until child authority exists", async () => {
+  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const signals = [];
+  signalHost.kill = (pid, signal) => signals.push([pid, signal]);
+  const result = executeVitestInvocation(
+    invocation,
+    () => {
+      signalHost.emit("SIGTERM");
+      return child;
+    },
+    signalHost,
+  );
+  assert.deepEqual(signals, [[-4242, "SIGTERM"]]);
+  child.emit("close", 0, null);
+  assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
   assert.equal(signalHost.listenerCount("SIGTERM"), 0);
 });
 
@@ -335,7 +372,7 @@ test("spawn errors remain pending until child terminal publication", async () =>
   assert.equal(settled, true);
 });
 
-test("signal forwarding failure contains and joins before rejection", async () => {
+test("signal forwarding failure contains and joins before signaling", async () => {
   const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
   const child = new EventEmitter();
   child.pid = 4242;
@@ -351,7 +388,7 @@ test("signal forwarding failure contains and joins before rejection", async () =
   };
   const result = executeVitestInvocation(invocation, () => child, signalHost);
   let settled = false;
-  void result.catch(() => {
+  void result.then(() => {
     settled = true;
   });
   signalHost.emit("SIGTERM");
@@ -359,7 +396,7 @@ test("signal forwarding failure contains and joins before rejection", async () =
   assert.deepEqual(directSignals, ["SIGKILL"]);
   assert.equal(settled, false);
   child.emit("close", null, "SIGKILL");
-  await assert.rejects(result, (error) => error === expected);
+  assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
   assert.equal(settled, true);
   assert.equal(signalHost.listenerCount("SIGTERM"), 0);
 });
