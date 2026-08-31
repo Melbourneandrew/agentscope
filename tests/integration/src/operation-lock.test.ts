@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
+import { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { acquireIntegrationOperationLock } from "../operation-lock.mjs";
 
@@ -124,5 +125,134 @@ describe("integration operation lock", () => {
       ),
     );
     expect(new Set(entered).size).toBe(8);
+  });
+});
+
+describe("integration operation lock shared release settlement", () => {
+  it("makes every release caller join the same pending settlement", async () => {
+    const root = createRoot();
+    const release = await acquireIntegrationOperationLock(
+      root,
+      "integration.lock.shared-release",
+    );
+    const close = Object.getOwnPropertyDescriptor(Server.prototype, "close")
+      ?.value as Server["close"] | undefined;
+    if (close === undefined) throw new Error("integration.lock.close-method");
+    let finishClose: (() => void) | undefined;
+    const closeSpy = vi
+      .spyOn(Server.prototype, "close")
+      .mockImplementation(function (
+        this: Server,
+        callback?: Parameters<Server["close"]>[0],
+      ) {
+        finishClose = () => {
+          Reflect.apply(close, this, [callback]);
+        };
+        return this;
+      });
+    try {
+      const firstRelease = release();
+      const secondRelease = release();
+      expect(secondRelease).toBe(firstRelease);
+      let settlement = "waiting";
+      void secondRelease.then(
+        () => {
+          settlement = "resolved";
+        },
+        () => {
+          settlement = "rejected";
+        },
+      );
+      await Promise.resolve();
+      expect(settlement).toBe("waiting");
+      closeSpy.mockRestore();
+      if (finishClose === undefined)
+        throw new Error("integration.lock.close-settlement");
+      finishClose();
+      await Promise.all([firstRelease, secondRelease]);
+      expect(settlement).toBe("resolved");
+    } finally {
+      closeSpy.mockRestore();
+    }
+  });
+});
+
+describe("integration operation lock release failure", () => {
+  it("shares one release failure with every caller", async () => {
+    const root = createRoot();
+    const release = await acquireIntegrationOperationLock(
+      root,
+      "integration.lock.shared-release-failure",
+    );
+    const close = Object.getOwnPropertyDescriptor(Server.prototype, "close")
+      ?.value as Server["close"] | undefined;
+    if (close === undefined) throw new Error("integration.lock.close-method");
+    const closeSpy = vi
+      .spyOn(Server.prototype, "close")
+      .mockImplementation(function (
+        this: Server,
+        callback?: Parameters<Server["close"]>[0],
+      ) {
+        return Reflect.apply(close, this, [
+          () => callback?.(new Error("synthetic close failure")),
+        ]);
+      });
+    try {
+      const firstRelease = release();
+      const secondRelease = release();
+      expect(secondRelease).toBe(firstRelease);
+      const [firstResult, secondResult] = await Promise.allSettled([
+        firstRelease,
+        secondRelease,
+      ]);
+      expect(firstResult.status).toBe("rejected");
+      expect(secondResult.status).toBe("rejected");
+      if (
+        firstResult.status !== "rejected" ||
+        secondResult.status !== "rejected"
+      )
+        throw new Error("integration.lock.release-result");
+      expect(secondResult.reason).toBe(firstResult.reason);
+      expect(firstResult.reason).toMatchObject({
+        message: "integration.lock.shared-release-failure",
+      });
+    } finally {
+      closeSpy.mockRestore();
+    }
+  });
+});
+
+describe("integration operation lock late waiter settlement", () => {
+  it("joins a waiter accepted after release starts", async () => {
+    const root = createRoot();
+    const release = await acquireIntegrationOperationLock(
+      root,
+      "integration.lock.late-waiter",
+    );
+    let destroyed = false;
+    const lateSocket = {
+      destroy: () => {
+        destroyed = true;
+      },
+      once: () => lateSocket,
+    };
+    const close = Object.getOwnPropertyDescriptor(Server.prototype, "close")
+      ?.value as Server["close"] | undefined;
+    if (close === undefined) throw new Error("integration.lock.close-method");
+    const closeSpy = vi
+      .spyOn(Server.prototype, "close")
+      .mockImplementation(function (
+        this: Server,
+        callback?: Parameters<Server["close"]>[0],
+      ) {
+        queueMicrotask(() => this.emit("connection", lateSocket));
+        return Reflect.apply(close, this, [callback]);
+      });
+    try {
+      await release();
+      expect(destroyed).toBe(true);
+    } finally {
+      closeSpy.mockRestore();
+    }
   });
 });
