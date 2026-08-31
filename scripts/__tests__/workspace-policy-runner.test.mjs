@@ -36,6 +36,7 @@ function createLifecycleHarness() {
   let observation = { groupAbsent: true, leader: "absent", memberCount: 0 };
   let inspectError = false;
   let signalError = false;
+  let signalResult = "sent";
   const deadlines = [];
   const inspections = [];
   const signals = [];
@@ -66,6 +67,7 @@ function createLifecycleHarness() {
       assert.deepEqual(identity, { pid: 4242, startIdentity: "start-1" });
       if (signalError) throw new Error("synthetic signal failure");
       signals.push(signal);
+      return signalResult;
     },
   };
   return {
@@ -111,6 +113,9 @@ function createLifecycleHarness() {
     },
     setSignalError(value) {
       signalError = value;
+    },
+    setSignalResult(value) {
+      signalResult = value;
     },
     inspections,
     signals,
@@ -458,6 +463,52 @@ test("a forwarded signal waits for the exact child terminal", async () => {
   assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
   assert.equal(terminal, true);
   assert.equal(signalHost.listenerCount("SIGTERM"), 0);
+});
+
+test("exact group absence before or during retirement is a safe terminal", async () => {
+  for (const mode of ["before", "during"]) {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    const lifecycle = createLifecycleHarness();
+    lifecycle.setObservation({
+      groupAbsent: mode === "before",
+      leader: mode === "before" ? "absent" : "same",
+    });
+    if (mode === "during") lifecycle.setSignalResult("absent");
+    const result = executeVitestInvocation(
+      createVitestInvocation(["validation-lease.test.mjs"]),
+      () => child,
+      process,
+      lifecycle.authority,
+    );
+    child.emit("message", { code: 0, kind: "direct-terminal" });
+    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+    child.emit("close", 0, null);
+    assert.deepEqual(await result, { code: 0, signal: undefined });
+    assert.deepEqual(lifecycle.signals, mode === "before" ? [] : ["SIGTERM"]);
+  }
+});
+
+test("the wrapper protocol preserves other platform terminal signals", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  child.emit("message", {
+    code: 1,
+    kind: "direct-terminal",
+    signal: "SIGKILL",
+  });
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, "SIGKILL");
+  assert.deepEqual(await result, { code: 1, signal: "SIGKILL" });
 });
 
 test("a publication-gap signal queues until child authority exists", async () => {

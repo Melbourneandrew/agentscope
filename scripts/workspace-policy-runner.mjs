@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -44,6 +45,7 @@ export const requiredPolicyFiles = Object.freeze([
   "validation-lease.test.mjs",
 ]);
 const forwardedSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
+const terminalSignals = Object.freeze(Object.keys(osConstants.signals).sort());
 const pureWorkerCeiling = 2;
 const internalChildMarker = "--internal-workspace-policy-child";
 export const childLifecycleBounds = Object.freeze({
@@ -374,7 +376,13 @@ const defaultLifecycle = Object.freeze({
   now: () => performance.now(),
   setTimer: (callback, delay) => setTimeout(callback, delay),
   signal(authority, signal) {
-    process.kill(-authority.pid, signal);
+    try {
+      process.kill(-authority.pid, signal);
+      return "sent";
+    } catch (error) {
+      if (error?.code === "ESRCH") return "absent";
+      throw error;
+    }
   },
 });
 
@@ -450,7 +458,7 @@ class ChildLifecycleController {
         !["same", "absent", "mismatch"].includes(observation.leader)
       )
         throw new Error("malformed observation");
-      if (observation.leader === "mismatch")
+      if (!observation.groupAbsent && observation.leader === "mismatch")
         this.failUncertain("process identity mismatch");
       if (observation.leader === "absent" && !observation.groupAbsent)
         this.failUncertain("wrapper identity lost before group retirement");
@@ -469,14 +477,23 @@ class ChildLifecycleController {
     if (
       observation === undefined ||
       this.groupAuthorityRevoked ||
-      observation.groupAbsent ||
       observation.leader !== "same"
     ) {
+      if (observation?.groupAbsent === true) {
+        this.contained = true;
+        this.finish();
+        return;
+      }
       this.failUncertain("process identity unavailable before signal");
       return;
     }
     try {
-      this.lifecycle.signal(this.authority, signal);
+      const result = this.lifecycle.signal(this.authority, signal);
+      if (result === "absent") {
+        this.groupAuthorityRevoked = true;
+        this.contained = true;
+        this.finish();
+      } else if (result !== "sent") throw new Error("malformed signal result");
     } catch {
       this.groupAuthorityRevoked = true;
       this.failUncertain("process-group signal uncertainty");
@@ -551,7 +568,7 @@ class ChildLifecycleController {
       !Number.isSafeInteger(message.code) ||
       message.code < 0 ||
       message.code > 255 ||
-      ![undefined, ...forwardedSignals].includes(message.signal) ||
+      ![undefined, ...terminalSignals].includes(message.signal) ||
       (message.signal === undefined
         ? keys.join(",") !== "code,kind"
         : keys.join(",") !== "code,kind,signal" || message.code !== 1)
@@ -648,6 +665,7 @@ class ChildLifecycleController {
         this.directOutcome.signal !== this.closeOutcome.signal)
     )
       this.failUncertain("wrapper terminal uncertainty");
+    if (this.contained) return this.finish();
     const observation = this.inspect();
     if (observation?.groupAbsent === true) this.contained = true;
     else {
