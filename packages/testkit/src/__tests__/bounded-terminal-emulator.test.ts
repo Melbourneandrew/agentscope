@@ -236,15 +236,74 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
 
     const hostile = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
     const oversized = new Uint8Array(8 * 1_048_576);
-    const buffersBefore = process.memoryUsage().arrayBuffers;
-    expect(() => {
+    const originalConstructor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "Uint8Array",
+    )!;
+    let constructorCalls = 0;
+    const guardedConstructor = new Proxy(Uint8Array, {
+      construct: () => {
+        constructorCalls += 1;
+        throw new Error("synthetic copy canary");
+      },
+    });
+    Object.defineProperty(globalThis, "Uint8Array", {
+      ...originalConstructor,
+      value: guardedConstructor,
+    });
+    let hostileError;
+    try {
       hostile.write(oversized);
-    }).toThrowError(
+    } catch (error) {
+      hostileError = error;
+    } finally {
+      Object.defineProperty(globalThis, "Uint8Array", originalConstructor);
+    }
+    expect(hostileError).toEqual(
       new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),
     );
-    expect(process.memoryUsage().arrayBuffers - buffersBefore).toBeLessThan(
-      1_048_576,
-    );
+    expect(constructorCalls).toBe(0);
+  });
+
+  it("decodes through captured authority after typed-array prototype mutation", () => {
+    const typedArrayPrototype: object = Reflect.getPrototypeOf(
+      Uint8Array.prototype,
+    )!;
+    const bufferDescriptor = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      "buffer",
+    )!;
+    const byteLengthDescriptor = Object.getOwnPropertyDescriptor(
+      typedArrayPrototype,
+      "byteLength",
+    )!;
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    const input = bytes("AGENTSCOPE_PTY_READY\r\nAccess token: ");
+    Object.defineProperty(typedArrayPrototype, "buffer", {
+      ...bufferDescriptor,
+      get: () => {
+        throw new Error("synthetic live buffer getter");
+      },
+    });
+    Object.defineProperty(typedArrayPrototype, "byteLength", {
+      ...byteLengthDescriptor,
+      get: () => {
+        throw new Error("synthetic live byteLength getter");
+      },
+    });
+    let snapshot;
+    try {
+      terminal.write(input);
+      snapshot = terminal.end();
+    } finally {
+      Object.defineProperty(typedArrayPrototype, "buffer", bufferDescriptor);
+      Object.defineProperty(
+        typedArrayPrototype,
+        "byteLength",
+        byteLengthDescriptor,
+      );
+    }
+    expect(snapshot?.semanticState).toBe("credential-prompt");
   });
 
   it("does not dispatch screen or recent text through inherited numeric setters", () => {
