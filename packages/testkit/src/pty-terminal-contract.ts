@@ -298,13 +298,14 @@ const exactAction = (value: unknown): PtyTransportAction => {
     );
     if (
       !integer(r.byteLength, 1_048_576) ||
-      !sha256Pattern.test(r.inputSha256 as string)
+      typeof r.inputSha256 !== "string" ||
+      !sha256Pattern.test(r.inputSha256)
     )
       return fail("testkit.pty.trace.action");
     return Object.freeze({
       action: "input",
       byteLength: r.byteLength,
-      inputSha256: r.inputSha256 as string,
+      inputSha256: r.inputSha256,
       monotonicAtMs: r.monotonicAtMs as number,
     });
   }
@@ -340,14 +341,15 @@ const exactAction = (value: unknown): PtyTransportAction => {
     );
     if (
       !["SIGINT", "SIGTERM", "SIGKILL"].includes(r.signal as string) ||
-      !identifierPattern.test(r.targetStartIdentity as string)
+      typeof r.targetStartIdentity !== "string" ||
+      !identifierPattern.test(r.targetStartIdentity)
     )
       return fail("testkit.pty.trace.action");
     return Object.freeze({
       action: "signal",
       monotonicAtMs: r.monotonicAtMs as number,
       signal: r.signal as "SIGINT" | "SIGTERM" | "SIGKILL",
-      targetStartIdentity: r.targetStartIdentity as string,
+      targetStartIdentity: r.targetStartIdentity,
     });
   }
   return fail("testkit.pty.trace.action");
@@ -694,13 +696,15 @@ export const validatePtyModeApplicability = (
   );
   if (
     exact.status !== "available" ||
-    !identifierPattern.test(exact.documentedMode as string) ||
-    !identifierPattern.test(exact.exactHarnessVersion as string)
+    typeof exact.documentedMode !== "string" ||
+    typeof exact.exactHarnessVersion !== "string" ||
+    !identifierPattern.test(exact.documentedMode) ||
+    !identifierPattern.test(exact.exactHarnessVersion)
   )
     return fail("testkit.pty.mode-applicability");
   return Object.freeze({
     status: "available",
-    documentedMode: exact.documentedMode as string,
-    exactHarnessVersion: exact.exactHarnessVersion as string,
+    documentedMode: exact.documentedMode,
+    exactHarnessVersion: exact.exactHarnessVersion,
   });
 };

@@ -600,9 +600,11 @@ export const validatePtyTerminalSemanticSnapshot = (
       "malformed-control",
       "output-limit",
     ].includes(record.semanticState as string) ||
-    !sha256Pattern.test(record.screenSha256 as string) ||
+    typeof record.screenSha256 !== "string" ||
+    !sha256Pattern.test(record.screenSha256) ||
     (record.titleSha256 !== null &&
-      !sha256Pattern.test(record.titleSha256 as string)) ||
+      (typeof record.titleSha256 !== "string" ||
+        !sha256Pattern.test(record.titleSha256))) ||
     record.titlePresent !== (record.titleSha256 !== null)
   )
     return fail("testkit.pty.snapshot");
@@ -638,8 +640,8 @@ export const validatePtyTerminalSemanticSnapshot = (
     unsupportedControlCount: record.unsupportedControlCount as number,
     sawCursorPositionQuery: record.sawCursorPositionQuery,
     titlePresent: record.titlePresent,
-    titleSha256: record.titleSha256 as string | null,
-    screenSha256: record.screenSha256 as string,
+    titleSha256: record.titleSha256,
+    screenSha256: record.screenSha256,
     semanticState: record.semanticState as PtySemanticState,
   });
 };

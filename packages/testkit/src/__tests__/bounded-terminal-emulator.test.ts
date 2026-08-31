@@ -57,6 +57,8 @@ describe("bounded semantic terminal emulator", () => {
   });
 });
 
+// These cases share one bounded emulator fixture surface across all hostile inputs.
+// eslint-disable-next-line max-lines-per-function
 describe("bounded semantic terminal emulator adversarial inputs", () => {
   it("bounds malformed, incomplete, unsupported, and invalid UTF-8 controls", () => {
     const malformed = new BoundedTerminalEmulator(
@@ -139,6 +141,20 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     expect(() =>
       validatePtyTerminalSemanticSnapshot({ ...snapshot, raw: "forbidden" }),
     ).toThrowError(new BoundedTerminalEmulatorError("testkit.pty.snapshot"));
+    let coercions = 0;
+    expect(() =>
+      validatePtyTerminalSemanticSnapshot({
+        ...snapshot,
+        screenSha256: {
+          [Symbol.toPrimitive]: () => {
+            coercions += 1;
+            return snapshot.screenSha256;
+          },
+          toJSON: () => "synthetic-canary",
+        },
+      }),
+    ).toThrowError(new BoundedTerminalEmulatorError("testkit.pty.snapshot"));
+    expect(coercions).toBe(0);
   });
 
   it("rejects accessors and proxies before reading hostile values", () => {

@@ -301,6 +301,25 @@ describe("semantic PTY contract", () => {
     expect(() => run.encode(new Proxy(trace, {}))).toThrowError(
       new PtySemanticContractError("testkit.pty.trace"),
     );
+    let coercions = 0;
+    const hostileDigest = {
+      [Symbol.toPrimitive]: () => {
+        coercions += 1;
+        return digest("fixture");
+      },
+      toJSON: () => "synthetic-canary",
+    };
+    expect(() =>
+      run.encode({
+        ...trace,
+        actions: trace.actions.map((action) =>
+          action.action === "input"
+            ? { ...action, inputSha256: hostileDigest }
+            : action,
+        ),
+      }),
+    ).toThrowError(new PtySemanticContractError("testkit.pty.trace.action"));
+    expect(coercions).toBe(0);
   });
 
   it("keeps undocumented interactive modes explicitly not applicable", () => {
@@ -332,5 +351,21 @@ describe("semantic PTY contract", () => {
     ).toThrowError(
       new PtySemanticContractError("testkit.pty.mode-applicability"),
     );
+    let coercions = 0;
+    expect(() =>
+      validatePtyModeApplicability({
+        status: "available",
+        documentedMode: {
+          [Symbol.toPrimitive]: () => {
+            coercions += 1;
+            return "interactive";
+          },
+        },
+        exactHarnessVersion: "1.2.3",
+      }),
+    ).toThrowError(
+      new PtySemanticContractError("testkit.pty.mode-applicability"),
+    );
+    expect(coercions).toBe(0);
   });
 });
