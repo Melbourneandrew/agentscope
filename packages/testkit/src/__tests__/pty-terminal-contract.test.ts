@@ -322,6 +322,27 @@ describe("semantic PTY contract", () => {
     expect(coercions).toBe(0);
   });
 
+  it("keeps action authority closed against inherited JSON hooks", () => {
+    const run = suite[0]!.instantiate();
+    const trace = traceFor(run);
+    const prior = Object.getOwnPropertyDescriptor(Array.prototype, "toJSON");
+    Object.defineProperty(Array.prototype, "toJSON", {
+      configurable: true,
+      value: () => [],
+    });
+    try {
+      const envelope = run.encode(trace);
+      expect(run.verify(envelope).actions).toHaveLength(3);
+      expect(() => run.encode({ ...trace, actions: [] })).toThrowError(
+        new PtySemanticContractError("testkit.pty.trace.action-oracle"),
+      );
+    } finally {
+      if (prior === undefined)
+        delete (Array.prototype as { toJSON?: unknown }).toJSON;
+      else Object.defineProperty(Array.prototype, "toJSON", prior);
+    }
+  });
+
   it("keeps undocumented interactive modes explicitly not applicable", () => {
     expect(
       validatePtyModeApplicability({

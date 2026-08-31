@@ -121,6 +121,10 @@ export const ptySemanticTraceEnvelopeLimitBytes = 32_768;
 const componentVersion = "component-fixture-v1" as const;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const stringifyPrimitive = JSON.stringify.bind(JSON);
+const arrayIsArray = Array.isArray;
+const objectKeys = Object.keys;
+const ownPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const fail = (code: string): never => {
@@ -474,8 +478,47 @@ const expectedActions = (
     );
   return Object.freeze(actions);
 };
+const canonicalJson = (value: unknown): string => {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    const result = stringifyPrimitive(value);
+    if (typeof result !== "string") return fail("testkit.pty.trace.canonical");
+    return result;
+  }
+  if (arrayIsArray(value)) {
+    let result = "[";
+    for (let index = 0; index < value.length; index += 1) {
+      if (index > 0) result += ",";
+      result += canonicalJson(value[index]);
+    }
+    return `${result}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    let result = "{";
+    let index = 0;
+    for (const key of objectKeys(value)) {
+      const descriptor = ownPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        descriptor.get !== undefined ||
+        descriptor.set !== undefined ||
+        !("value" in descriptor)
+      )
+        return fail("testkit.pty.trace.canonical");
+      if (index > 0) result += ",";
+      result += `${canonicalJson(key)}:${canonicalJson(descriptor.value)}`;
+      index += 1;
+    }
+    return `${result}}`;
+  }
+  return fail("testkit.pty.trace.canonical");
+};
 const canonicalEqual = (left: unknown, right: unknown): boolean =>
-  JSON.stringify(left) === JSON.stringify(right);
+  canonicalJson(left) === canonicalJson(right);
 
 const validateTrace = (
   value: unknown,
@@ -580,7 +623,7 @@ const encodeTrace = (
   snapshot: PtyTerminalSemanticSnapshot,
 ): PtySemanticTraceEnvelope => {
   const encoded = encoder.encode(
-    JSON.stringify(validateTrace(value, request, snapshot)),
+    canonicalJson(validateTrace(value, request, snapshot)),
   );
   if (encoded.byteLength > ptySemanticTraceEnvelopeLimitBytes)
     return fail("testkit.pty.trace.envelope-limit");
@@ -615,7 +658,7 @@ const verifyEnvelope = (
     return fail("testkit.pty.trace.envelope");
   }
   const trace = validateTrace(parsed, request, snapshot);
-  const canonical = encoder.encode(JSON.stringify(trace));
+  const canonical = encoder.encode(canonicalJson(trace));
   if (
     canonical.byteLength !== bytes.byteLength ||
     canonical.some((byte, index) => byte !== bytes[index])
