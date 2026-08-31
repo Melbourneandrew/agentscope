@@ -65,17 +65,36 @@ type cloudflareEnvelope struct {
 }
 
 type cloudflareSurfaceRequest struct {
+	name          string
 	path          string
-	paginated     bool
+	pageSize      int
 	allowNotFound bool
 }
 
-func validateCloudflarePagination(result any, raw json.RawMessage, required bool) error {
+const (
+	maxCloudflarePages = 100
+	maxCloudflareItems = 10_000
+)
+
+type cloudflarePageInfo struct {
+	perPage    int
+	totalPages int
+	totalCount *int
+}
+
+func cloudflarePaginationError(surface string) error {
+	if surface == "" {
+		return errors.New("E_OBSERVER_PAGINATION")
+	}
+	return fmt.Errorf("E_OBSERVER_PAGINATION: %s", surface)
+}
+
+func validateCloudflarePagination(result any, raw json.RawMessage, required bool, expectedPage int, requestedPageSize int, surface string) (cloudflarePageInfo, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		if required {
-			return errors.New("E_OBSERVER_PAGINATION")
+			return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 		}
-		return nil
+		return cloudflarePageInfo{totalPages: 1}, nil
 	}
 	var page struct {
 		Page       *int `json:"page"`
@@ -84,80 +103,148 @@ func validateCloudflarePagination(result any, raw json.RawMessage, required bool
 		TotalCount *int `json:"total_count"`
 		TotalPages *int `json:"total_pages"`
 	}
-	if err := strictJSON(raw, &page); err != nil || page.Page == nil || *page.Page != 1 {
-		return errors.New("E_OBSERVER_PAGINATION")
+	if err := strictJSON(raw, &page); err != nil || page.Page == nil || *page.Page != expectedPage {
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 	}
 	items, ok := result.([]any)
 	if !ok {
-		return errors.New("E_OBSERVER_PAGINATION")
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 	}
 	if page.PerPage != nil && *page.PerPage <= 0 {
-		return errors.New("E_OBSERVER_PAGINATION")
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
+	}
+	if page.PerPage != nil && requestedPageSize > 0 && *page.PerPage > requestedPageSize {
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 	}
 	if page.PerPage != nil && len(items) > *page.PerPage {
-		return errors.New("E_OBSERVER_PAGINATION")
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 	}
 	hasCount := page.Count != nil
 	if hasCount != (page.TotalCount != nil) || (page.TotalPages == nil && !hasCount) {
-		return errors.New("E_OBSERVER_PAGINATION")
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 	}
-	if page.TotalPages != nil && *page.TotalPages != 1 {
-		return errors.New("E_OBSERVER_PAGINATION")
+	if page.TotalPages != nil && (*page.TotalPages < expectedPage || *page.TotalPages < 1 || *page.TotalPages > maxCloudflarePages) {
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 	}
 	if hasCount {
-		if *page.Count < 0 || *page.TotalCount < 0 || *page.Count != len(items) || *page.TotalCount != *page.Count {
-			return errors.New("E_OBSERVER_PAGINATION")
+		if *page.Count < 0 || *page.TotalCount < 0 || *page.Count != len(items) || *page.TotalCount > maxCloudflareItems {
+			return cloudflarePageInfo{}, cloudflarePaginationError(surface)
 		}
 	}
-	return nil
+	perPage := 0
+	if page.PerPage != nil {
+		perPage = *page.PerPage
+	}
+	totalPages := 0
+	if page.TotalPages != nil {
+		totalPages = *page.TotalPages
+	}
+	if hasCount {
+		inferredPages := 0
+		if *page.TotalCount == 0 {
+			inferredPages = 1
+		} else if perPage > 0 {
+			inferredPages = (*page.TotalCount + perPage - 1) / perPage
+		} else if expectedPage == 1 && *page.TotalCount == *page.Count {
+			inferredPages = 1
+		}
+		if inferredPages == 0 || inferredPages > maxCloudflarePages || (totalPages != 0 && totalPages != inferredPages) {
+			return cloudflarePageInfo{}, cloudflarePaginationError(surface)
+		}
+		totalPages = inferredPages
+		if totalPages == 1 && *page.TotalCount != *page.Count {
+			return cloudflarePageInfo{}, cloudflarePaginationError(surface)
+		}
+	}
+	if totalPages == 0 || (!required && totalPages != 1) || (expectedPage < totalPages && perPage > 0 && len(items) != perPage) {
+		return cloudflarePageInfo{}, cloudflarePaginationError(surface)
+	}
+	return cloudflarePageInfo{perPage: perPage, totalPages: totalPages, totalCount: page.TotalCount}, nil
 }
 
 func fetchCloudflareSurface(ctx context.Context, client *http.Client, credential []byte, surface cloudflareSurfaceRequest) (any, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.cloudflare.com"+surface.path, nil)
+	page := 1
+	var combined []any
+	var expectedInfo cloudflarePageInfo
+	for {
+		path := surface.path
+		if surface.pageSize > 0 {
+			path += fmt.Sprintf("?page=%d&per_page=%d", page, surface.pageSize)
+		}
+		value, info, absent, err := fetchCloudflarePage(ctx, client, credential, surface, path, page)
+		if err != nil {
+			return nil, err
+		}
+		if absent || surface.pageSize == 0 {
+			return value, nil
+		}
+		items, ok := value.([]any)
+		if !ok || len(combined)+len(items) > maxCloudflareItems {
+			return nil, cloudflarePaginationError(surface.name)
+		}
+		combined = append(combined, items...)
+		if page == 1 {
+			expectedInfo = info
+		} else if info.totalPages != expectedInfo.totalPages || info.perPage != expectedInfo.perPage || (info.totalCount == nil) != (expectedInfo.totalCount == nil) || (info.totalCount != nil && *info.totalCount != *expectedInfo.totalCount) {
+			return nil, cloudflarePaginationError(surface.name)
+		}
+		if page == expectedInfo.totalPages {
+			if expectedInfo.totalCount != nil && len(combined) != *expectedInfo.totalCount {
+				return nil, cloudflarePaginationError(surface.name)
+			}
+			return combined, nil
+		}
+		page++
+	}
+}
+
+func fetchCloudflarePage(ctx context.Context, client *http.Client, credential []byte, surface cloudflareSurfaceRequest, path string, page int) (any, cloudflarePageInfo, bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.cloudflare.com"+path, nil)
 	if err != nil {
-		return nil, errors.New("E_OBSERVER_REQUEST")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_REQUEST")
 	}
 	request.Header.Set("Authorization", "Bearer "+string(credential))
 	request.Header.Set("Accept", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, errors.New("E_OBSERVER_UNAVAILABLE")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_UNAVAILABLE")
 	}
 	if response.Request != nil && (response.Request.URL.Scheme != "https" || response.Request.URL.Host != "api.cloudflare.com") {
 		response.Body.Close()
-		return nil, errors.New("E_OBSERVER_ORIGIN")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_ORIGIN")
 	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
 	response.Body.Close()
 	if readErr != nil || len(body) > 1<<20 {
-		return nil, errors.New("E_OBSERVER_OUTPUT")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_OUTPUT")
 	}
 	if response.StatusCode == http.StatusNotFound {
-		if surface.allowNotFound {
-			return map[string]any{"absent": true}, nil
+		if surface.allowNotFound && page == 1 {
+			return map[string]any{"absent": true}, cloudflarePageInfo{}, true, nil
 		}
-		return nil, errors.New("E_OBSERVER_NOT_FOUND")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_NOT_FOUND")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, errors.New("E_OBSERVER_FAILURE")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_FAILURE")
 	}
 	var envelope cloudflareEnvelope
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&envelope); err != nil || decoder.Decode(&struct{}{}) != io.EOF || !envelope.Success || len(envelope.Result) == 0 {
-		return nil, errors.New("E_OBSERVER_ENVELOPE")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_ENVELOPE")
 	}
 	var value any
 	decoder = json.NewDecoder(bytes.NewReader(envelope.Result))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		return nil, errors.New("E_OBSERVER_SCHEMA")
+		return nil, cloudflarePageInfo{}, false, errors.New("E_OBSERVER_SCHEMA")
 	}
 	value = canonicalizeJSON(value)
-	if err := validateCloudflarePagination(value, envelope.ResultInfo, surface.paginated); err != nil {
-		return nil, err
+	info, err := validateCloudflarePagination(value, envelope.ResultInfo, surface.pageSize > 0, page, surface.pageSize, surface.name)
+	if err != nil {
+		return nil, cloudflarePageInfo{}, false, err
 	}
-	return value, nil
+	return value, info, false, nil
 }
 
 func (observer CloudflareObserver) Observe(ctx context.Context, credential []byte, now time.Time) (StateObservation, error) {
@@ -166,19 +253,19 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 	}
 	base := "/client/v4/accounts/" + observer.AccountID
 	script := base + "/workers/scripts/" + WorkerName
-	paths := map[string]cloudflareSurfaceRequest{
-		"accountWorkers":    {base + "/workers/scripts", false, false},
-		"accountWorkersDev": {base + "/workers/subdomain", false, false},
-		"durableObjects":    {base + "/workers/durable_objects/namespaces?page=1&per_page=1000", true, false},
-		"scriptDomains":     {base + "/workers/domains", false, false},
-		"scriptDeployments": {script + "/deployments", false, true},
-		"scriptSchedules":   {script + "/schedules", false, true},
-		"scriptSecrets":     {script + "/secrets", false, true},
-		"scriptSettings":    {script + "/script-settings", false, true},
-		"workerSettings":    {script + "/settings", false, true},
-		"scriptTails":       {script + "/tails", false, true},
-		"scriptWorkersDev":  {script + "/subdomain", false, true},
-		"scriptVersions":    {base + "/workers/workers/" + WorkerName + "/versions?page=1&per_page=1000", true, true},
+	paths := []cloudflareSurfaceRequest{
+		{name: "accountWorkers", path: base + "/workers/scripts"},
+		{name: "accountWorkersDev", path: base + "/workers/subdomain"},
+		{name: "durableObjects", path: base + "/workers/durable_objects/namespaces", pageSize: 1000},
+		{name: "scriptDomains", path: base + "/workers/domains"},
+		{name: "scriptDeployments", path: script + "/deployments", allowNotFound: true},
+		{name: "scriptSchedules", path: script + "/schedules", allowNotFound: true},
+		{name: "scriptSecrets", path: script + "/secrets", allowNotFound: true},
+		{name: "scriptSettings", path: script + "/script-settings", allowNotFound: true},
+		{name: "workerSettings", path: script + "/settings", allowNotFound: true},
+		{name: "scriptTails", path: script + "/tails", allowNotFound: true},
+		{name: "scriptWorkersDev", path: script + "/subdomain", allowNotFound: true},
+		{name: "scriptVersions", path: base + "/workers/workers/" + WorkerName + "/versions", pageSize: 100, allowNotFound: true},
 	}
 	client := observer.Client
 	if client == nil {
@@ -187,12 +274,12 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 	safeClient := *client
 	safeClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("E_OBSERVER_REDIRECT") }
 	surfaces := make(map[string]any, len(paths))
-	for name, surface := range paths {
+	for _, surface := range paths {
 		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, surface)
 		if err != nil {
 			return StateObservation{}, err
 		}
-		surfaces[name] = value
+		surfaces[surface.name] = value
 	}
 	if workerPresent(surfaces["accountWorkers"]) {
 		for _, name := range []string{"scriptDeployments", "scriptSchedules", "scriptSecrets", "scriptSettings", "workerSettings", "scriptTails", "scriptWorkersDev", "scriptVersions"} {
@@ -205,7 +292,7 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 		if !identifierPattern.MatchString(observer.RollbackVersionID) || observer.RollbackVersionID == "latest" {
 			return StateObservation{}, errors.New("E_OBSERVER_VERSION_IDENTITY")
 		}
-		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, cloudflareSurfaceRequest{base + "/workers/workers/" + WorkerName + "/versions/" + observer.RollbackVersionID, false, false})
+		value, err := fetchCloudflareSurface(ctx, &safeClient, credential, cloudflareSurfaceRequest{name: "rollbackVersionDetail", path: base + "/workers/workers/" + WorkerName + "/versions/" + observer.RollbackVersionID})
 		if err != nil {
 			return StateObservation{}, err
 		}
@@ -225,21 +312,21 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 		}
 		workerBase := base + "/workers/scripts/" + name
 		workerSurfaces := map[string]any{}
-		for surfaceName, surface := range map[string]cloudflareSurfaceRequest{
-			"deployments": {workerBase + "/deployments", false, false},
-			"schedules":   {workerBase + "/schedules", false, false},
-			"secrets":     {workerBase + "/secrets", false, false},
-			"script":      {workerBase + "/script-settings", false, false},
-			"settings":    {workerBase + "/settings", false, false},
-			"tails":       {workerBase + "/tails", false, false},
-			"workersDev":  {workerBase + "/subdomain", false, false},
-			"versions":    {base + "/workers/workers/" + name + "/versions?page=1&per_page=1000", true, false},
+		for _, surface := range []cloudflareSurfaceRequest{
+			{name: "deployments", path: workerBase + "/deployments"},
+			{name: "schedules", path: workerBase + "/schedules"},
+			{name: "secrets", path: workerBase + "/secrets"},
+			{name: "script", path: workerBase + "/script-settings"},
+			{name: "settings", path: workerBase + "/settings"},
+			{name: "tails", path: workerBase + "/tails"},
+			{name: "workersDev", path: workerBase + "/subdomain"},
+			{name: "versions", path: base + "/workers/workers/" + name + "/versions", pageSize: 100},
 		} {
 			value, err := fetchCloudflareSurface(ctx, &safeClient, credential, surface)
 			if err != nil {
 				return StateObservation{}, err
 			}
-			workerSurfaces[surfaceName] = value
+			workerSurfaces[surface.name] = value
 		}
 		unrelated[name] = workerSurfaces
 	}

@@ -2056,7 +2056,7 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 		resultInfo := ""
 		if request.URL.RawQuery != "" {
 			result = `[{"id":"version-current","namespace_id":"namespace-1","tag":"v1"}]`
-			resultInfo = `,"result_info":{"page":1,"per_page":1000,"total_pages":1}`
+			resultInfo = fmt.Sprintf(`,"result_info":{"page":1,"per_page":%s,"total_pages":1}`, request.URL.Query().Get("per_page"))
 		}
 		body := `{"success":true,"result":` + result + `,"errors":[],"messages":[]` + resultInfo + `}`
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
@@ -2067,7 +2067,7 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 		t.Fatalf("observation failed: %v requests=%d identities=%v", err, len(requests), state.IdentitySet)
 	}
 	for _, request := range requests {
-		if request.Method != http.MethodGet || request.URL.Host != "api.cloudflare.com" || (request.URL.RawQuery != "" && request.URL.RawQuery != "page=1&per_page=1000") || request.Header.Get("Authorization") != "Bearer read-only-canary" {
+		if request.Method != http.MethodGet || request.URL.Host != "api.cloudflare.com" || (request.URL.RawQuery != "" && request.URL.RawQuery != "page=1&per_page=1000" && request.URL.RawQuery != "page=1&per_page=100") || request.Header.Get("Authorization") != "Bearer read-only-canary" {
 			t.Fatalf("unclosed observation request: %s %s", request.Method, request.URL.String())
 		}
 	}
@@ -2123,7 +2123,7 @@ func TestCloudflareObserverUsesClosedReadOnlySurfaceAndRejectsFalseSuccess(t *te
 		}
 		resultInfo := ""
 		if request.URL.RawQuery != "" {
-			resultInfo = `,"result_info":{"page":1,"per_page":1000,"total_pages":1}`
+			resultInfo = fmt.Sprintf(`,"result_info":{"page":1,"per_page":%s,"total_pages":1}`, request.URL.Query().Get("per_page"))
 		}
 		body := `{"success":true,"result":` + result + `,"errors":[],"messages":[]` + resultInfo + `}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
@@ -2167,9 +2167,13 @@ func TestCloudflareObserverAcceptsOnlyProvenCompleteSinglePageResults(t *testing
 			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
 			})}
-			value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{path: "/client/v4/accounts/account-1/workers/durable_objects/namespaces?page=1&per_page=1000", paginated: testCase.paginated})
+			pageSize := 0
+			if testCase.paginated {
+				pageSize = 1000
+			}
+			value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "testSurface", path: "/client/v4/accounts/account-1/workers/durable_objects/namespaces", pageSize: pageSize})
 			if testCase.wantError {
-				if err == nil || err.Error() != "E_OBSERVER_PAGINATION" {
+				if err == nil || err.Error() != "E_OBSERVER_PAGINATION: testSurface" {
 					t.Fatalf("incomplete pagination accepted: value=%#v err=%v", value, err)
 				}
 				return
@@ -2178,6 +2182,51 @@ func TestCloudflareObserverAcceptsOnlyProvenCompleteSinglePageResults(t *testing
 				t.Fatalf("complete pagination rejected: %v", err)
 			}
 		})
+	}
+}
+
+func TestCloudflareObserverTraversesWorkerVersionPaginationWithinBounds(t *testing.T) {
+	versionPage := func(start, count int) string {
+		items := make([]string, count)
+		for index := range items {
+			items[index] = fmt.Sprintf(`{"id":"version-%03d"}`, start+index)
+		}
+		return "[" + strings.Join(items, ",") + "]"
+	}
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.Path != "/client/v4/accounts/account-1/workers/workers/worker-1/versions" || request.URL.Query().Get("per_page") != "100" {
+			t.Fatalf("unexpected version request: %s", request.URL.String())
+		}
+		page := request.URL.Query().Get("page")
+		result := versionPage(1, 100)
+		count := 100
+		if page == "2" {
+			result = versionPage(101, 1)
+			count = 1
+		} else if page != "1" {
+			t.Fatalf("unexpected page: %s", page)
+		}
+		body := fmt.Sprintf(`{"success":true,"result":%s,"result_info":{"page":%s,"per_page":100,"count":%d,"total_count":101,"total_pages":2}}`, result, page, count)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
+	})}
+	value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{
+		name:     "scriptVersions",
+		path:     "/client/v4/accounts/account-1/workers/workers/worker-1/versions",
+		pageSize: 100,
+	})
+	items, ok := value.([]any)
+	if err != nil || !ok || len(items) != 101 || requests != 2 {
+		t.Fatalf("complete version pagination failed: value=%T len=%d requests=%d err=%v", value, len(items), requests, err)
+	}
+
+	client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		body := `{"success":true,"result":[],"result_info":{"page":1,"per_page":100,"count":0,"total_count":10000,"total_pages":101}}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
+	})
+	if _, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "scriptVersions", path: "/client/v4/accounts/account-1/workers/workers/worker-1/versions", pageSize: 100}); err == nil || err.Error() != "E_OBSERVER_PAGINATION: scriptVersions" {
+		t.Fatalf("oversized pagination was not rejected with surface identity: %v", err)
 	}
 }
 
@@ -2191,7 +2240,7 @@ func TestCloudflareObserverInventoriesEveryUnrelatedWorkerSurface(t *testing.T) 
 		}
 		resultInfo := ""
 		if request.URL.RawQuery != "" {
-			resultInfo = `,"result_info":{"page":1,"per_page":1000,"total_pages":1}`
+			resultInfo = fmt.Sprintf(`,"result_info":{"page":1,"per_page":%s,"total_pages":1}`, request.URL.Query().Get("per_page"))
 		}
 		body := `{"success":true,"result":` + result + `,"errors":[],"messages":[]` + resultInfo + `}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
