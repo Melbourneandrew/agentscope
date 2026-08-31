@@ -239,7 +239,13 @@ function childEnvironment() {
   return environment;
 }
 
-function readLinuxProcess(pid) {
+function ensureInspectionBudget(hardDeadline) {
+  if (hardDeadline - performance.now() <= 0)
+    throw new Error("process inspection deadline reached");
+}
+
+function readLinuxProcess(pid, hardDeadline) {
+  ensureInspectionBudget(hardDeadline);
   let value;
   try {
     value = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -247,6 +253,7 @@ function readLinuxProcess(pid) {
     if (error?.code === "ENOENT") return undefined;
     throw error;
   }
+  ensureInspectionBudget(hardDeadline);
   const commandEnd = value.lastIndexOf(")");
   if (commandEnd < 0) throw new Error("malformed process record");
   const fields = value.slice(commandEnd + 2).split(" ");
@@ -265,6 +272,7 @@ if n != ctypes.sizeof(b) or b.pid != int(sys.argv[1]): raise SystemExit(1)
 print(f"{b.pid}:{b.pgid}:{b.sec}:{b.usec}")`;
 
 function boundedProbeTimeout(hardDeadline) {
+  ensureInspectionBudget(hardDeadline);
   const remaining = Math.floor(hardDeadline - performance.now());
   if (remaining <= 0) throw new Error("process inspection deadline reached");
   return Math.min(1_000, remaining);
@@ -315,7 +323,7 @@ const defaultLifecycle = Object.freeze({
     if (!Number.isSafeInteger(pid) || pid <= 0)
       throw new Error("invalid process identifier");
     if (platform === "linux") {
-      const record = readLinuxProcess(pid);
+      const record = readLinuxProcess(pid, hardDeadline);
       if (record === undefined || record.processGroup !== pid)
         throw new Error("child process authority unavailable");
       return Object.freeze({ pid, startIdentity: record.startIdentity });
@@ -333,13 +341,16 @@ const defaultLifecycle = Object.freeze({
   },
   inspect(authority, platform, hardDeadline) {
     if (platform === "linux") {
-      const leader = readLinuxProcess(authority.pid);
+      const leader = readLinuxProcess(authority.pid, hardDeadline);
       let memberCount = 0;
+      ensureInspectionBudget(hardDeadline);
       for (const entry of readdirSync("/proc", { withFileTypes: true })) {
+        ensureInspectionBudget(hardDeadline);
         if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-        const record = readLinuxProcess(Number(entry.name));
+        const record = readLinuxProcess(Number(entry.name), hardDeadline);
         if (record?.processGroup === authority.pid) memberCount += 1;
       }
+      ensureInspectionBudget(hardDeadline);
       return Object.freeze({
         groupAbsent: memberCount === 0,
         leader:
