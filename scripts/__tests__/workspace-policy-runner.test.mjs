@@ -516,7 +516,8 @@ test("signal forwarding failure contains and joins before signaling", async () =
     lifecycle.authority,
   );
   let settled = false;
-  void result.then(() => {
+  const rejected = assert.rejects(result, /process-group signal uncertainty/);
+  void result.catch(() => {
     settled = true;
   });
   signalHost.emit("SIGTERM");
@@ -524,7 +525,7 @@ test("signal forwarding failure contains and joins before signaling", async () =
   assert.equal(settled, false);
   lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
   child.emit("close", null, "SIGKILL");
-  assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
+  await rejected;
   assert.equal(settled, true);
   assert.equal(signalHost.listenerCount("SIGTERM"), 0);
 });
@@ -622,6 +623,42 @@ test("an absent then reused group is never signaled", async () => {
   await rejected;
 });
 
+test("leader loss permanently revokes a still-present group", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const calls = [];
+  const plan = createWorkspacePolicyPlan(
+    ["code-quality-policy.test.mjs", "validation-lease.test.mjs"],
+    classifyWorkspacePolicyInventory([
+      "code-quality-policy.test.mjs",
+      "validation-lease.test.mjs",
+    ]),
+  );
+  const result = runWorkspacePolicyPlan(plan, (invocation) => {
+    calls.push(invocation.files.at(-1));
+    return executeVitestInvocation(
+      invocation,
+      () => child,
+      signalHost,
+      lifecycle.authority,
+    );
+  });
+  signalHost.emit("SIGTERM");
+  lifecycle.setObservation({ groupAbsent: false, leader: "absent" });
+  await lifecycle.advanceTo(childLifecycleBounds.pollMilliseconds);
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, null);
+  await assert.rejects(result, /wrapper identity lost before group retirement/);
+  assert.deepEqual(calls, ["code-quality-policy.test.mjs"]);
+});
+
 test("a surviving same-group descendant blocks the next suite", async () => {
   const child = new EventEmitter();
   child.pid = 4242;
@@ -667,7 +704,12 @@ test("PID reuse and inspection uncertainty fail without signaling", async () => 
     lifecycle.setInspectionError(false);
     lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
     child.emit("close", 1, null);
-    assert.deepEqual(await result, { code: 1, signal: "SIGTERM" });
+    await assert.rejects(
+      result,
+      mode === "mismatch"
+        ? /process identity mismatch/
+        : /process-group inspection uncertainty/,
+    );
   }
 });
 

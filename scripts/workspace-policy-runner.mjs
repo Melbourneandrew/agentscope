@@ -396,6 +396,11 @@ class ChildLifecycleController {
     this.failure ??= lifecycleFailure(reason);
   }
 
+  failUncertain(reason) {
+    this.terminalUncertainty = true;
+    this.fail(reason);
+  }
+
   clearTimer(timer) {
     if (timer !== undefined) this.lifecycle.clearTimer(timer);
   }
@@ -418,7 +423,8 @@ class ChildLifecycleController {
     ])
       this.clearTimer(timer);
     this.removeHandlers();
-    if (this.pendingSignal !== undefined)
+    if (this.terminalUncertainty) this.rejectExecution(this.failure);
+    else if (this.pendingSignal !== undefined)
       this.resolveExecution(
         Object.freeze({ code: 1, signal: this.pendingSignal }),
       );
@@ -428,7 +434,7 @@ class ChildLifecycleController {
 
   inspect() {
     if (this.authority === undefined) {
-      this.fail("process authority unavailable");
+      this.failUncertain("process authority unavailable");
       return undefined;
     }
     try {
@@ -445,13 +451,15 @@ class ChildLifecycleController {
       )
         throw new Error("malformed observation");
       if (observation.leader === "mismatch")
-        this.fail("process identity mismatch");
-      if (observation.leader === "mismatch" || observation.groupAbsent)
+        this.failUncertain("process identity mismatch");
+      if (observation.leader === "absent" && !observation.groupAbsent)
+        this.failUncertain("wrapper identity lost before group retirement");
+      if (observation.leader !== "same" || observation.groupAbsent)
         this.groupAuthorityRevoked = true;
       return observation;
     } catch {
       this.groupAuthorityRevoked = true;
-      this.fail("process-group inspection uncertainty");
+      this.failUncertain("process-group inspection uncertainty");
       return undefined;
     }
   }
@@ -464,14 +472,14 @@ class ChildLifecycleController {
       observation.groupAbsent ||
       observation.leader !== "same"
     ) {
-      this.fail("process identity unavailable before signal");
+      this.failUncertain("process identity unavailable before signal");
       return;
     }
     try {
       this.lifecycle.signal(this.authority, signal);
     } catch {
       this.groupAuthorityRevoked = true;
-      this.fail("process-group signal uncertainty");
+      this.failUncertain("process-group signal uncertainty");
     }
   }
 
@@ -548,7 +556,7 @@ class ChildLifecycleController {
         ? keys.join(",") !== "code,kind"
         : keys.join(",") !== "code,kind,signal" || message.code !== 1)
     ) {
-      this.fail("wrapper message uncertainty");
+      this.failUncertain("wrapper message uncertainty");
       this.beginStop("SIGTERM");
       return;
     }
@@ -604,7 +612,7 @@ class ChildLifecycleController {
         this.hardDeadline,
       );
     } catch {
-      this.fail("process authority unavailable");
+      this.failUncertain("process authority unavailable");
     }
     this.executionTimer = this.lifecycle.setTimer(
       () => {
@@ -639,11 +647,11 @@ class ChildLifecycleController {
         this.directOutcome.code !== this.closeOutcome.code ||
         this.directOutcome.signal !== this.closeOutcome.signal)
     )
-      this.fail("wrapper terminal uncertainty");
+      this.failUncertain("wrapper terminal uncertainty");
     const observation = this.inspect();
     if (observation?.groupAbsent === true) this.contained = true;
     else {
-      this.fail("child leader closed before process-group join");
+      this.failUncertain("child leader closed before process-group join");
       if (observation?.leader === "same") this.forceKill();
       else this.pollForContainment();
     }
