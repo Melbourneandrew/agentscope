@@ -14,6 +14,7 @@ import ts from "typescript";
 const root = import.meta.dirname;
 const maximumFiles = 256;
 const maximumFileBytes = 2 * 1024 * 1024;
+const maximumDirectoryDepth = 32;
 
 const readBoundedRegularFile = (absolute) => {
   const descriptor = openSync(
@@ -32,7 +33,19 @@ const readBoundedRegularFile = (absolute) => {
   }
 };
 
-const listRegularFiles = (directory, prefix = "") => {
+const listRegularFiles = (
+  directory,
+  prefix = "",
+  budget = { files: 0 },
+  depth = 0,
+) => {
+  if (depth > maximumDirectoryDepth)
+    throw new Error("Testkit artifact directory nesting is too deep.");
+  const before = lstatSync(directory);
+  if (before.isSymbolicLink() || !before.isDirectory())
+    throw new Error(
+      `Testkit artifact root is not a regular directory: ${directory}`,
+    );
   const files = [];
   const entries = readdirSync(directory, { withFileTypes: true });
   if (entries.length > maximumFiles)
@@ -44,7 +57,7 @@ const listRegularFiles = (directory, prefix = "") => {
     if (stat.isSymbolicLink())
       throw new Error(`Testkit artifact contains a symlink: ${relative}`);
     if (stat.isDirectory()) {
-      files.push(...listRegularFiles(absolute, relative));
+      files.push(...listRegularFiles(absolute, relative, budget, depth + 1));
       continue;
     }
     if (!stat.isFile() || stat.size > maximumFileBytes)
@@ -52,11 +65,36 @@ const listRegularFiles = (directory, prefix = "") => {
         `Testkit artifact entry is not bounded regular data: ${relative}`,
       );
     files.push(relative);
-    if (files.length > maximumFiles)
+    budget.files += 1;
+    if (budget.files > maximumFiles)
       throw new Error("Testkit artifact inventory is too large.");
   }
+  const after = lstatSync(directory);
+  if (
+    after.isSymbolicLink() ||
+    !after.isDirectory() ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino
+  )
+    throw new Error(
+      `Testkit artifact directory changed during traversal: ${directory}`,
+    );
   return files.sort();
 };
+
+const isTestSource = (file) =>
+  file.endsWith(".spec.ts") ||
+  file.endsWith(".test.ts") ||
+  file.startsWith("__tests__/") ||
+  file.includes("/__tests__/");
+
+if (
+  !isTestSource("fixture.spec.ts") ||
+  !isTestSource("fixture.test.ts") ||
+  !isTestSource("__tests__/fixture.ts") ||
+  isTestSource("fixture.ts")
+)
+  throw new Error("Testkit test-source grammar is not closed.");
 
 const packageManifest = JSON.parse(
   readBoundedRegularFile(resolve(root, "package.json")),
@@ -69,13 +107,7 @@ const allowedExternals = new Set(
 
 const sourceFiles = listRegularFiles(resolve(root, "src"));
 const productionSources = sourceFiles
-  .filter(
-    (file) =>
-      file.endsWith(".ts") &&
-      !file.endsWith(".test.ts") &&
-      !file.startsWith("__tests__/") &&
-      !file.includes("/__tests__/"),
-  )
+  .filter((file) => file.endsWith(".ts") && !isTestSource(file))
   .map((file) => file.slice(0, -3))
   .sort();
 const expectedArtifacts = productionSources
@@ -86,7 +118,10 @@ if (
   actualArtifacts.length !== expectedArtifacts.length ||
   actualArtifacts.some((file, index) => file !== expectedArtifacts[index]) ||
   actualArtifacts.some(
-    (file) => file.includes(".test.") || file.includes("__tests__"),
+    (file) =>
+      file.includes(".spec.") ||
+      file.includes(".test.") ||
+      file.includes("__tests__"),
   )
 )
   throw new Error("Testkit production artifact inventory is not exact.");
