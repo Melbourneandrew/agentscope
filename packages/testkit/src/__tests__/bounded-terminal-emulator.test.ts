@@ -56,6 +56,17 @@ describe("bounded semantic terminal emulator", () => {
     expect(JSON.stringify(snapshot)).not.toContain("Password");
     expect(JSON.stringify(snapshot)).not.toContain("sign in");
   });
+
+  it.each(["API token: ", "Access token: ", "Passphrase: ", "Username: "])(
+    "classifies the common credential prompt %s",
+    (prompt) => {
+      const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+      terminal.write(bytes(`AGENTSCOPE_PTY_READY\r\n${prompt}`));
+      const snapshot = terminal.end();
+      expect(snapshot.semanticState).toBe("credential-prompt");
+      expect(JSON.stringify(snapshot)).not.toContain(prompt.trim());
+    },
+  );
 });
 
 // These cases share one bounded emulator fixture surface across all hostile inputs.
@@ -212,5 +223,27 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
       defaultPtyTerminalEmulatorLimits.maximumOutputBytes,
     );
     expect(elapsedMs).toBeLessThan(2_000);
+  });
+
+  it("does not dispatch recent text through inherited numeric setters", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    const prior = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+    let setterCalls = 0;
+    Object.defineProperty(Array.prototype, "0", {
+      configurable: true,
+      set: () => {
+        setterCalls += 1;
+      },
+    });
+    let snapshot;
+    try {
+      terminal.write(bytes("x"));
+      snapshot = terminal.end();
+    } finally {
+      if (prior === undefined) Reflect.deleteProperty(Array.prototype, "0");
+      else Object.defineProperty(Array.prototype, "0", prior);
+    }
+    expect(setterCalls).toBe(0);
+    expect(snapshot?.semanticState).toBe("active");
   });
 });

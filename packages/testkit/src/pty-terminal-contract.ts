@@ -126,6 +126,7 @@ const arrayIsArray = Array.isArray;
 const objectKeys = Object.keys;
 const ownPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const freezeAuthority = Object.freeze;
+const defineOwnProperty = Reflect.defineProperty;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const fail = (code: string): never => {
@@ -147,6 +148,22 @@ const containsString = (
   for (let index = 0; index < values.length; index += 1)
     if (values[index] === candidate) return true;
   return false;
+};
+const setOwnIndex = (
+  target: unknown[],
+  index: number,
+  value: unknown,
+  code: string,
+): void => {
+  if (
+    !defineOwnProperty(target, String(index), {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    })
+  )
+    return fail(code);
 };
 
 const strictRecord = (
@@ -235,7 +252,7 @@ const strictArray = (value: unknown, code: string): readonly unknown[] => {
         !("value" in descriptor)
       )
         return fail(code);
-      result[index] = descriptor.value;
+      setOwnIndex(result, index, descriptor.value, code);
     }
     return Object.freeze(result);
   } catch {
@@ -593,7 +610,12 @@ const validateTrace = (
   const rawActions = strictArray(r.actions, "testkit.pty.trace");
   const reconstructedActions: PtyTransportAction[] = [];
   for (let index = 0; index < rawActions.length; index += 1)
-    reconstructedActions[index] = exactAction(rawActions[index]);
+    setOwnIndex(
+      reconstructedActions,
+      index,
+      exactAction(rawActions[index]),
+      "testkit.pty.trace.action",
+    );
   const actions = Object.freeze(reconstructedActions);
   let lateAction = false;
   for (let index = 0; index < actions.length; index += 1)
@@ -724,19 +746,24 @@ export const createPtySemanticContractSuite =
     const suite: PtySemanticContractCase[] = [];
     for (let index = 0; index < names.length; index += 1) {
       const name = names[index]!;
-      suite[index] = freezeAuthority({
-        name,
-        instantiate: (): PtySemanticContractRun => {
-          const request = createRequest(name);
-          const snapshot = expectedSnapshot(name);
-          return freezeAuthority({
-            request,
-            encode: (trace: unknown) => encodeTrace(trace, request, snapshot),
-            verify: (envelope: unknown) =>
-              verifyEnvelope(envelope, request, snapshot),
-          });
-        },
-      });
+      setOwnIndex(
+        suite,
+        index,
+        freezeAuthority({
+          name,
+          instantiate: (): PtySemanticContractRun => {
+            const request = createRequest(name);
+            const snapshot = expectedSnapshot(name);
+            return freezeAuthority({
+              request,
+              encode: (trace: unknown) => encodeTrace(trace, request, snapshot),
+              verify: (envelope: unknown) =>
+                verifyEnvelope(envelope, request, snapshot),
+            });
+          },
+        }),
+        "testkit.pty.contract-suite",
+      );
     }
     return freezeAuthority(suite);
   };

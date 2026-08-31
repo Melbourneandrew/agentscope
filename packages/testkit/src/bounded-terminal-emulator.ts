@@ -67,9 +67,10 @@ const defaultLimits: PtyTerminalEmulatorLimits = Object.freeze({
   maximumTitleBytes: 512,
 });
 const credentialPromptPattern =
-  /(?:password|api[ _-]?key|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
+  /(?:password|passphrase|user[ _-]?name|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
+const defineOwnProperty = Reflect.defineProperty;
 
 type ParserState = "ground" | "escape" | "csi" | "osc" | "osc-escape";
 
@@ -81,6 +82,17 @@ const boundedInteger = (value: unknown, maximum: number): value is number =>
   Number.isSafeInteger(value) &&
   value >= 1 &&
   value <= maximum;
+const setOwnIndex = <T>(target: T[], index: number, value: T): void => {
+  if (
+    !defineOwnProperty(target, String(index), {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    })
+  )
+    return fail("testkit.pty.emulator.array");
+};
 const strictRecord = (
   value: unknown,
   keys: readonly string[],
@@ -208,7 +220,7 @@ const parseCsiParameters = (
   for (let index = 0; index < parts.length; index += 1) {
     const part = parts[index] === "" ? 0 : Number(parts[index]);
     if (!Number.isSafeInteger(part) || part > 65_535) return undefined;
-    values[index] = part;
+    setOwnIndex(values, index, part);
   }
   return { privateMode, values };
 };
@@ -528,10 +540,14 @@ export class BoundedTerminalEmulator {
 
   #appendRecent(character: string): void {
     if (this.#recentCodePoints.length < this.#limits.maximumRecentCodePoints) {
-      this.#recentCodePoints[this.#recentCodePoints.length] = character;
+      setOwnIndex(
+        this.#recentCodePoints,
+        this.#recentCodePoints.length,
+        character,
+      );
       return;
     }
-    this.#recentCodePoints[this.#recentStart] = character;
+    setOwnIndex(this.#recentCodePoints, this.#recentStart, character);
     this.#recentStart =
       (this.#recentStart + 1) % this.#limits.maximumRecentCodePoints;
   }

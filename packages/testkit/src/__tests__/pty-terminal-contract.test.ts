@@ -336,6 +336,7 @@ describe("semantic PTY contract", () => {
       Array.prototype,
       "includes",
     )!;
+    const priorZero = Object.getOwnPropertyDescriptor(Array.prototype, "0");
     Object.defineProperty(Array.prototype, "toJSON", {
       configurable: true,
       value: () => [],
@@ -347,6 +348,12 @@ describe("semantic PTY contract", () => {
           throw new Error("synthetic-array-canary");
         },
       });
+    Object.defineProperty(Array.prototype, "0", {
+      configurable: true,
+      set: () => {
+        throw new Error("synthetic-index-canary");
+      },
+    });
     let outcome: string | undefined;
     let actionCount: number | undefined;
     let actionlessError: unknown;
@@ -368,6 +375,8 @@ describe("semantic PTY contract", () => {
       Object.defineProperty(Array.prototype, "push", priorPush);
       Object.defineProperty(Array.prototype, "some", priorSome);
       Object.defineProperty(Array.prototype, "includes", priorIncludes);
+      if (priorZero === undefined) Reflect.deleteProperty(Array.prototype, "0");
+      else Object.defineProperty(Array.prototype, "0", priorZero);
     }
     expect(outcome).toBe("ready");
     expect(actionCount).toBe(3);
