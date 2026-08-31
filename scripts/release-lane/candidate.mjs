@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
+import npa from "npm-package-arg";
+
+import { publishManifestFields } from "../../apps/cli/scripts/publish-manifest-contract.mjs";
 
 import {
   assert,
@@ -22,6 +25,27 @@ const dependencyFields = [
   "peerDependencies",
   "devDependencies",
 ];
+
+function assertRegistryDependency(name, specification, label) {
+  let parsed;
+  try {
+    parsed = npa.resolve(name, String(specification));
+  } catch {
+    throw new Error(`${label} contains invalid dependency specification`);
+  }
+  assert(
+    parsed.registry === true &&
+      ["alias", "range", "tag", "version"].includes(parsed.type),
+    `${label} contains non-registry dependency specification`,
+  );
+  if (parsed.type === "alias") {
+    assert(
+      parsed.subSpec?.registry === true &&
+        !privatePackage.test(parsed.subSpec.name ?? ""),
+      `${label} contains private or non-registry alias specification`,
+    );
+  }
+}
 
 export function resolveContainedArtifactPath(artifactRoot, input, label) {
   assert(
@@ -113,18 +137,10 @@ function assertNoPrivateMetadata(manifest, label) {
         `${label} contains private dependency ${name}`,
       );
       assert(
-        !/^(?:workspace|file|link):/u.test(text),
-        `${label} contains local dependency specification`,
-      );
-      assert(
         !decoded.includes("@agentscope/"),
         `${label} contains private package specification`,
       );
-      assert(
-        !/^(?:https?|git(?:\+[^:]*)?|github|ssh):/u.test(text) &&
-          !/^[^@./\s]+\/[^/\s]+(?:#.*)?$/u.test(text),
-        `${label} contains non-registry dependency specification`,
-      );
+      assertRegistryDependency(name, text, label);
     }
   }
   for (const field of ["bundledDependencies", "bundleDependencies"]) {
@@ -412,6 +428,11 @@ export function verifyCandidateArtifact({
     "Candidate inventory digest mismatch",
   );
   const { packedManifest } = inspected;
+  for (const field of Object.keys(packedManifest))
+    assert(
+      publishManifestFields.includes(field),
+      `Packed manifest contains non-publish authority: ${field}`,
+    );
   assert(
     packedManifest.name === manifest.package.name &&
       packedManifest.version === manifest.package.version &&

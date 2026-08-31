@@ -1,0 +1,15 @@
+export const publishManifestFields = Object.freeze([
+  "name",
+  "version",
+  "description",
+  "license",
+  "type",
+  "engines",
+  "bin",
+  "files",
+  "publishConfig",
+  "dependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "peerDependenciesMeta",
+]);

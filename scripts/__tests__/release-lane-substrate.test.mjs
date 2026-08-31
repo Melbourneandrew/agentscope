@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { afterEach, test } from "vitest";
+import { parse, stringify } from "yaml";
 
 import {
   resolveContainedArtifactPath,
@@ -33,6 +34,10 @@ import { canonicalJson, sha256 } from "../release-lane/validation.mjs";
 import { validateReleaseWorkflowContext } from "../release-lane/workflow-context.mjs";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+const checkedInWorkflow = readFileSync(
+  join(workspaceRoot, ".github/workflows/release-candidate-rehearsal.yml"),
+  "utf8",
+);
 const fixtures = [];
 const sourceRevision = "a".repeat(40);
 const candidateManifestDigest = `sha256:${"c".repeat(64)}`;
@@ -324,6 +329,23 @@ test("rejects stale private-package, rebuilt-substitution, and packed channel dr
     },
   });
   assert.throws(verify(channel), /packed publishConfig keys drifted/);
+
+  for (const extraAuthority of [
+    { scripts: { preinstall: "node install.mjs" } },
+    { workspaces: ["packages/*"] },
+    { packageManager: "pnpm@9.15.0" },
+  ]) {
+    const extraManifestAuthority = createCandidateFixture({
+      packageManifest: {
+        name: "agentscope-cli",
+        version: "0.1.0",
+        bin: { agentscope: "./dist/bin/agentscope.js" },
+        publishConfig: { access: "public" },
+        ...extraAuthority,
+      },
+    });
+    assert.throws(verify(extraManifestAuthority), /non-publish authority/);
+  }
 });
 
 test("rejects private dependency metadata and nested payload while allowing bundled code", () => {
@@ -370,6 +392,27 @@ test("rejects private dependency metadata and nested payload while allowing bund
       assert.throws(
         verify(privateUrl),
         /private package|non-registry dependency/,
+      );
+    }
+    for (const specification of [
+      "../packages/core",
+      "./packages/core",
+      "/private/tmp/core",
+      "~/packages/core",
+      "GIT+SSH://example.invalid/core.git",
+    ]) {
+      const nonRegistryDependency = createCandidateFixture({
+        packageManifest: {
+          name: "agentscope-cli",
+          version: "0.1.0",
+          bin: { agentscope: "./dist/bin/agentscope.js" },
+          publishConfig: { access: "public" },
+          [field]: { publicAlias: specification },
+        },
+      });
+      assert.throws(
+        verify(nonRegistryDependency),
+        /non-registry dependency specification/,
       );
     }
   }
@@ -1687,7 +1730,7 @@ test("enforces the checked-in reusable workflow as read-only and offline", () =>
       scriptPaths: releaseEntryPoints,
     }),
     {
-      scripts: 9,
+      scripts: 10,
       workflow: ".github/workflows/release-candidate-rehearsal.yml",
     },
   );
@@ -1710,11 +1753,12 @@ test("rejects workflow triggers, write authority, and unallowlisted actions", ()
   mkdirSync(join(root, "scripts"));
   const workflowPath = "workflow.yml";
   const scriptPath = "scripts/check.mjs";
-  const baseWorkflow =
-    "on:\n  workflow_call:\npermissions:\n  contents: read\n";
   writeFileSync(
     join(root, workflowPath),
-    `${baseWorkflow}jobs:\n  bad:\n    id-token: write\n`,
+    checkedInWorkflow.replace(
+      "    name: Validate existing certified tarball\n",
+      '    name: Validate existing certified tarball\n    permissions: { "contents": "read", "id-token": "write" }\n    "environment": "npm-release"\n',
+    ),
   );
   writeFileSync(join(root, scriptPath), "export const safe = true;\n");
   assert.throws(
@@ -1724,12 +1768,15 @@ test("rejects workflow triggers, write authority, and unallowlisted actions", ()
         workflowPath,
         scriptPaths: [scriptPath],
       }),
-    /forbidden authority/,
+    /keys drifted|forbidden authority/,
   );
 
   writeFileSync(
     join(root, workflowPath),
-    "on:\n  workflow_call:\n  push:\npermissions:\n  contents: read\n",
+    checkedInWorkflow.replace(
+      "  workflow_call:\n",
+      "  workflow_call:\n  push:\n",
+    ),
   );
   assert.throws(
     () =>
@@ -1738,13 +1785,15 @@ test("rejects workflow triggers, write authority, and unallowlisted actions", ()
         workflowPath,
         scriptPaths: [scriptPath],
       }),
-    /non-reusable triggers/,
+    /workflow triggers keys drifted/,
   );
 
-  writeFileSync(join(root, workflowPath), baseWorkflow);
   writeFileSync(
     join(root, workflowPath),
-    `${baseWorkflow}jobs:\n  bad:\n    steps:\n      - uses: attacker/action@${"a".repeat(40)}\n`,
+    checkedInWorkflow.replace(
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      `attacker/action@${"a".repeat(40)}`,
+    ),
   );
   assert.throws(
     () =>
@@ -1753,12 +1802,15 @@ test("rejects workflow triggers, write authority, and unallowlisted actions", ()
         workflowPath,
         scriptPaths: [scriptPath],
       }),
-    /not exact-SHA allowlisted/,
+    /topology drifted|not exact-SHA allowlisted/,
   );
 
   writeFileSync(
     join(root, workflowPath),
-    `${baseWorkflow}jobs:\n  bad:\n    steps:\n      - name: spaced action key\n        uses : attacker/action@${"a".repeat(40)}\n`,
+    checkedInWorkflow.replace(
+      "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      `- name: spaced action key\n        uses : attacker/action@${"a".repeat(40)}`,
+    ),
   );
   assert.throws(
     () =>
@@ -1767,12 +1819,15 @@ test("rejects workflow triggers, write authority, and unallowlisted actions", ()
         workflowPath,
         scriptPaths: [scriptPath],
       }),
-    /not exact-SHA allowlisted/,
+    /topology drifted|not exact-SHA allowlisted/,
   );
 
   writeFileSync(
     join(root, workflowPath),
-    `${baseWorkflow}jobs:\n  bad:\n    steps:\n      - name: disguised external action\n        uses: attacker/action@${"a".repeat(40)}\n`,
+    checkedInWorkflow.replace(
+      "- uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      `- name: disguised external action\n        uses: attacker/action@${"a".repeat(40)}`,
+    ),
   );
   assert.throws(
     () =>
@@ -1781,8 +1836,79 @@ test("rejects workflow triggers, write authority, and unallowlisted actions", ()
         workflowPath,
         scriptPaths: [scriptPath],
       }),
-    /not exact-SHA allowlisted/,
+    /topology drifted|not exact-SHA allowlisted/,
   );
+
+  for (const run of [
+    "node -e 'fetch(process.env.ACTIONS_ID_TOKEN_REQUEST_URL)'",
+    'tool=npm; verb=stage; "$tool" "$verb"',
+    "python -c 'import urllib.request'",
+  ]) {
+    writeFileSync(
+      join(root, workflowPath),
+      checkedInWorkflow.replace(
+        "- run: pnpm install --frozen-lockfile",
+        `- run: ${run}`,
+      ),
+    );
+    assert.throws(
+      () =>
+        validateOfflineReleasePolicy({
+          workspaceRoot: root,
+          workflowPath,
+          scriptPaths: [scriptPath],
+        }),
+      /run topology drifted|run command is not exact allowlisted/,
+    );
+  }
+});
+
+test("requires the exact ordered workflow topology and environment bindings", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-release-topology-"));
+  fixtures.push(root);
+  mkdirSync(join(root, "scripts"));
+  const workflowPath = "workflow.yml";
+  const scriptPath = "scripts/check.mjs";
+  writeFileSync(join(root, scriptPath), "export const safe = true;\n");
+  const verify = (workflow) => {
+    writeFileSync(join(root, workflowPath), stringify(workflow));
+    assert.throws(
+      () =>
+        validateOfflineReleasePolicy({
+          workspaceRoot: root,
+          workflowPath,
+          scriptPaths: [scriptPath],
+        }),
+      /topology|run environment/,
+    );
+  };
+
+  const omitted = parse(checkedInWorkflow);
+  omitted.jobs["validate-certified-candidate"].steps.pop();
+  verify(omitted);
+
+  const reordered = parse(checkedInWorkflow);
+  const reorderedSteps = reordered.jobs["validate-certified-candidate"].steps;
+  [reorderedSteps[0], reorderedSteps[1]] = [
+    reorderedSteps[1],
+    reorderedSteps[0],
+  ];
+  verify(reordered);
+
+  const duplicated = parse(checkedInWorkflow);
+  const duplicatedSteps = duplicated.jobs["validate-certified-candidate"].steps;
+  duplicatedSteps.push(structuredClone(duplicatedSteps.at(-1)));
+  verify(duplicated);
+
+  const substituted = parse(checkedInWorkflow);
+  const candidateStep = substituted.jobs[
+    "validate-certified-candidate"
+  ].steps.find(
+    ({ name }) => name === "Validate exact candidate without rebuilding",
+  );
+  candidateStep.env.EXPECTED_MANIFEST_DIGEST = "sha256:attacker-selected";
+  candidateStep.env.EXPECTED_SOURCE_REVISION = "attacker-selected";
+  verify(substituted);
 });
 
 test("rejects direct and imported network/process authority", () => {
@@ -1791,10 +1917,7 @@ test("rejects direct and imported network/process authority", () => {
   mkdirSync(join(root, "scripts"));
   const workflowPath = "workflow.yml";
   const scriptPath = "scripts/check.mjs";
-  const baseWorkflow =
-    "on:\n  workflow_call:\npermissions:\n  contents: read\n";
-
-  writeFileSync(join(root, workflowPath), baseWorkflow);
+  writeFileSync(join(root, workflowPath), checkedInWorkflow);
   writeFileSync(join(root, scriptPath), 'import "node:https";\n');
   assert.throws(
     () =>
@@ -1885,10 +2008,7 @@ test("rejects indirect and dynamic module-loader authority", () => {
   mkdirSync(join(root, "scripts"));
   const workflowPath = "workflow.yml";
   const scriptPath = "scripts/check.mjs";
-  writeFileSync(
-    join(root, workflowPath),
-    "on:\n  workflow_call:\npermissions:\n  contents: read\n",
-  );
+  writeFileSync(join(root, workflowPath), checkedInWorkflow);
   writeFileSync(join(root, "scripts/helper.mjs"), 'import "node:https";\n');
   writeFileSync(join(root, scriptPath), 'await import("https");\n');
   assert.throws(
@@ -1991,10 +2111,7 @@ test("rejects runtime code-generation recovery shapes", () => {
   mkdirSync(join(root, "scripts"));
   const workflowPath = "workflow.yml";
   const scriptPath = "scripts/check.mjs";
-  writeFileSync(
-    join(root, workflowPath),
-    "on:\n  workflow_call:\npermissions:\n  contents: read\n",
-  );
+  writeFileSync(join(root, workflowPath), checkedInWorkflow);
   for (const source of [
     "await eval('import(\"node:https\")');\n",
     "Function('return import(\"node:https\")')();\n",
@@ -2027,10 +2144,7 @@ test("rejects aliased process loaders and ambient event streams", () => {
   mkdirSync(join(root, "scripts"));
   const workflowPath = "workflow.yml";
   const scriptPath = "scripts/check.mjs";
-  writeFileSync(
-    join(root, workflowPath),
-    "on:\n  workflow_call:\npermissions:\n  contents: read\n",
-  );
+  writeFileSync(join(root, workflowPath), checkedInWorkflow);
   for (const source of [
     'const { getBuiltinModule: load } = process;\nload("node:https");\n',
     'const p = process;\np["getBuiltin" + "Module"]("node:https");\n',

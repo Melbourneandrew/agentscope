@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import ts from "typescript";
+import { parseDocument } from "yaml";
 
-import { assert } from "./validation.mjs";
+import { assert, assertExactKeys } from "./validation.mjs";
 
 const forbiddenWorkflow = [
   /:\s*write\b/u,
@@ -23,6 +24,112 @@ const allowedActions = new Set([
   "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
   "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1",
 ]);
+const installCommand = "pnpm install --frozen-lockfile";
+const substrateCommand = "pnpm verify:release-lane-substrate";
+const workflowContextCommand =
+  'node scripts/verify-release-workflow-context.mjs --repository "$GITHUB_REPOSITORY" --source-revision "$SOURCE_REVISION" --observed-head "$(git rev-parse HEAD)" --caller-workflow-ref "$CALLER_WORKFLOW_REF" --job-workflow-ref "$JOB_WORKFLOW_REF" --job-workflow-sha "$JOB_WORKFLOW_SHA" --candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --protected-tag v0.1.0';
+const candidateCommand =
+  'node scripts/verify-release-candidate.mjs --artifact-root artifacts/release-candidate --manifest-relative "$CANDIDATE_MANIFEST" --certification-relative "$CANDIDATE_CERTIFICATION" --tarball-relative "$CANDIDATE_TARBALL" --manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0';
+const recordsCommand =
+  'node scripts/verify-release-records.mjs --artifact-root artifacts/release-candidate --record-set-relative "$REHEARSAL_RECORDS" --candidate-manifest-relative "$CANDIDATE_MANIFEST" --trusted-candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST" --source-revision "$EXPECTED_SOURCE_REVISION" --protected-tag v0.1.0 --workspace-root . --workflow-relative .github/workflows/release.yml';
+const allowedRunCommands = new Set([
+  installCommand,
+  substrateCommand,
+  workflowContextCommand,
+  candidateCommand,
+  recordsCommand,
+]);
+const allowedRunEnvironment = new Set([
+  "CALLER_WORKFLOW_REF",
+  "CANDIDATE_CERTIFICATION",
+  "CANDIDATE_MANIFEST",
+  "CANDIDATE_TARBALL",
+  "EXPECTED_MANIFEST_DIGEST",
+  "EXPECTED_SOURCE_REVISION",
+  "JOB_WORKFLOW_REF",
+  "JOB_WORKFLOW_SHA",
+  "REHEARSAL_RECORDS",
+  "SOURCE_REVISION",
+]);
+const expectedWorkflowInputs = Object.freeze({
+  "candidate-artifact-name": { required: true, type: "string" },
+  "candidate-certification-path": { required: true, type: "string" },
+  "candidate-manifest-path": { required: true, type: "string" },
+  "candidate-tarball-path": { required: true, type: "string" },
+  "rehearsal-records-path": { required: true, type: "string" },
+  "trusted-candidate-manifest-digest": { required: true, type: "string" },
+});
+const expectedActionInputs = new Map([
+  [
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    {
+      "fetch-depth": 1,
+      "persist-credentials": false,
+      ref: "${{ github.sha }}",
+    },
+  ],
+  [
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    {
+      name: "${{ inputs.candidate-artifact-name }}",
+      path: "artifacts/release-candidate",
+    },
+  ],
+  [
+    "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+    { "node-version": 22, cache: "pnpm" },
+  ],
+  ["pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1", null],
+]);
+const expectedRunEnvironments = new Map([
+  [installCommand, null],
+  [substrateCommand, null],
+  [
+    workflowContextCommand,
+    {
+      EXPECTED_MANIFEST_DIGEST:
+        "${{ inputs.trusted-candidate-manifest-digest }}",
+      CALLER_WORKFLOW_REF: "${{ github.workflow_ref }}",
+      JOB_WORKFLOW_REF: "${{ job.workflow_ref }}",
+      JOB_WORKFLOW_SHA: "${{ job.workflow_sha }}",
+      SOURCE_REVISION: "${{ github.sha }}",
+    },
+  ],
+  [
+    candidateCommand,
+    {
+      CANDIDATE_MANIFEST: "${{ inputs.candidate-manifest-path }}",
+      CANDIDATE_CERTIFICATION: "${{ inputs.candidate-certification-path }}",
+      CANDIDATE_TARBALL: "${{ inputs.candidate-tarball-path }}",
+      EXPECTED_MANIFEST_DIGEST:
+        "${{ inputs.trusted-candidate-manifest-digest }}",
+      EXPECTED_SOURCE_REVISION: "${{ github.sha }}",
+    },
+  ],
+  [
+    recordsCommand,
+    {
+      CANDIDATE_MANIFEST: "${{ inputs.candidate-manifest-path }}",
+      EXPECTED_MANIFEST_DIGEST:
+        "${{ inputs.trusted-candidate-manifest-digest }}",
+      EXPECTED_SOURCE_REVISION: "${{ github.sha }}",
+      REHEARSAL_RECORDS: "${{ inputs.rehearsal-records-path }}",
+    },
+  ],
+]);
+const expectedStepTopology = Object.freeze([
+  { uses: "actions/checkout@11d5960a326750d5838078e36cf38b85af677262" },
+  { uses: "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1" },
+  { uses: "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020" },
+  { run: installCommand },
+  {
+    uses: "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+  },
+  { run: workflowContextCommand },
+  { run: candidateCommand },
+  { run: recordsCommand },
+  { run: substrateCommand },
+]);
 export const releaseEntryPoints = Object.freeze([
   "scripts/verify-release-candidate.mjs",
   "scripts/verify-release-lane-policy.mjs",
@@ -42,7 +149,9 @@ const allowedExternalModules = new Set([
   "node:path",
   "node:url",
   "node:zlib",
+  "npm-package-arg",
   "typescript",
+  "yaml",
 ]);
 
 function assertAllowedModuleSpecifier(path, specifier) {
@@ -63,36 +172,145 @@ function contained(root, path) {
   return absolute;
 }
 
-function validateWorkflowShape(workflow) {
-  const onStart = workflow.indexOf("on:\n");
-  const permissionsStart = workflow.indexOf("permissions:\n");
+function assertAllowedKeys(value, allowed, label) {
   assert(
-    onStart >= 0 && permissionsStart > onStart,
-    "Release workflow trigger block is malformed",
+    value !== null && typeof value === "object" && !Array.isArray(value),
+    `${label} must be an object`,
   );
-  const triggerBlock = workflow.slice(onStart + 3, permissionsStart);
-  const triggerKeys = [
-    ...triggerBlock.matchAll(/^ {2}([a-zA-Z0-9_-]+):/gmu),
-  ].map((match) => match[1]);
-  assert(
-    JSON.stringify(triggerKeys) === JSON.stringify(["workflow_call"]),
-    `Release substrate has non-reusable triggers: ${triggerKeys.join(",")}`,
-  );
-  const actions = [
-    ...workflow.matchAll(
-      /^\s+(?:-\s+)?(?:uses|"uses"|'uses')\s*:\s*(\S+)\s*$/gmu,
-    ),
-  ].map((match) => match[1]);
-  const usesKeys = workflow.match(/(?:uses|"uses"|'uses')\s*:/gu) ?? [];
-  assert(
-    actions.length === usesKeys.length,
-    "Release workflow contains an unparsed action mapping",
-  );
-  for (const action of actions)
+  for (const key of Object.keys(value))
     assert(
-      allowedActions.has(action),
-      `Release workflow action is not exact-SHA allowlisted: ${action}`,
+      allowed.includes(key),
+      `${label} contains forbidden authority: ${key}`,
     );
+}
+
+function assertExactObject(value, expected, label) {
+  assertExactKeys(value, Object.keys(expected), label);
+  const sortedEntries = (subject) =>
+    Object.entries(subject).sort(([left], [right]) =>
+      left.localeCompare(right),
+    );
+  assert(
+    JSON.stringify(sortedEntries(value)) ===
+      JSON.stringify(sortedEntries(expected)),
+    `${label} values drifted`,
+  );
+}
+
+function normalizeRun(run) {
+  return run.trim().replace(/\s+/gu, " ");
+}
+
+function validateActionStep(step) {
+  assertAllowedKeys(step, ["name", "uses", "with"], "release action step");
+  assert(
+    allowedActions.has(step.uses),
+    `Release workflow action is not exact-SHA allowlisted: ${step.uses}`,
+  );
+  const expectedWith = expectedActionInputs.get(step.uses);
+  if (expectedWith === null) {
+    assert(step.with === undefined, "Release action inputs drifted");
+    return;
+  }
+  assertExactObject(step.with, expectedWith, "release action inputs");
+}
+
+function validateRunStep(step) {
+  assertAllowedKeys(step, ["env", "name", "run"], "release run step");
+  const command = typeof step.run === "string" ? normalizeRun(step.run) : "";
+  assert(
+    allowedRunCommands.has(command),
+    "Release workflow run command is not exact allowlisted",
+  );
+  const expectedEnvironment = expectedRunEnvironments.get(command);
+  if (expectedEnvironment === null) {
+    assert(step.env === undefined, "Release run environment drifted");
+    return;
+  }
+  assertAllowedKeys(
+    step.env,
+    [...allowedRunEnvironment],
+    "release run environment",
+  );
+  assertExactObject(step.env, expectedEnvironment, "release run environment");
+}
+
+function validateWorkflowShape(workflow) {
+  const document = parseDocument(workflow, { uniqueKeys: true });
+  assert(
+    document.errors.length === 0,
+    `Release workflow YAML is invalid: ${document.errors[0]?.message ?? "unknown"}`,
+  );
+  const parsed = document.toJS();
+  assertExactKeys(
+    parsed,
+    ["jobs", "name", "on", "permissions"],
+    "release workflow",
+  );
+  assertExactKeys(parsed.on, ["workflow_call"], "release workflow triggers");
+  assertExactKeys(parsed.on.workflow_call, ["inputs"], "release workflow_call");
+  assertExactKeys(
+    parsed.on.workflow_call.inputs,
+    Object.keys(expectedWorkflowInputs),
+    "release workflow inputs",
+  );
+  for (const [name, observed] of Object.entries(
+    parsed.on.workflow_call.inputs,
+  )) {
+    const expected = Object.entries(expectedWorkflowInputs)
+      .find(([expectedName]) => expectedName === name)
+      ?.at(1);
+    assert(expected !== undefined, `Unexpected release workflow input ${name}`);
+    assertExactObject(observed, expected, `release workflow input ${name}`);
+  }
+  assertExactObject(
+    parsed.permissions,
+    { contents: "read" },
+    "release permissions",
+  );
+  assertExactKeys(
+    parsed.jobs,
+    ["validate-certified-candidate"],
+    "release workflow jobs",
+  );
+  const job = parsed.jobs["validate-certified-candidate"];
+  assertExactKeys(
+    job,
+    ["name", "runs-on", "steps", "timeout-minutes"],
+    "release validation job",
+  );
+  assert(
+    job["runs-on"] === "ubuntu-latest" &&
+      job["timeout-minutes"] === 15 &&
+      Array.isArray(job.steps),
+    "Release validation job authority drifted",
+  );
+  assert(
+    job.steps.length === expectedStepTopology.length,
+    "Release workflow step topology length drifted",
+  );
+  for (const [index, step] of job.steps.entries()) {
+    const expectedStep = expectedStepTopology.at(index);
+    const hasUses = Object.hasOwn(step, "uses");
+    const hasRun = Object.hasOwn(step, "run");
+    assert(
+      hasUses !== hasRun,
+      "Release step must select exactly one authority",
+    );
+    if (hasUses) {
+      assert(
+        expectedStep?.uses === step.uses,
+        `Release workflow action topology drifted at step ${index}`,
+      );
+      validateActionStep(step);
+    } else {
+      assert(
+        expectedStep?.run === normalizeRun(step.run),
+        `Release workflow run topology drifted at step ${index}`,
+      );
+      validateRunStep(step);
+    }
+  }
 }
 
 const forbiddenAmbientIdentifiers = new Set([
@@ -300,14 +518,6 @@ export function validateOfflineReleasePolicy({
 }) {
   const workflow = readFileSync(contained(workspaceRoot, workflowPath), "utf8");
   validateWorkflowShape(workflow);
-  assert(
-    /^permissions:\n {2}contents: read$/mu.test(workflow),
-    "Release workflow lacks exact read-only permissions",
-  );
-  assert(
-    /^ {2}workflow_call:$/mu.test(workflow),
-    "Release substrate must be reusable-only",
-  );
   for (const pattern of forbiddenWorkflow) {
     assert(
       !pattern.test(workflow),

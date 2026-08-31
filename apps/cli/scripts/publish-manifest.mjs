@@ -1,18 +1,4 @@
-const publishFields = [
-  "name",
-  "version",
-  "description",
-  "license",
-  "type",
-  "engines",
-  "bin",
-  "files",
-  "publishConfig",
-  "dependencies",
-  "optionalDependencies",
-  "peerDependencies",
-  "peerDependenciesMeta",
-];
+import { publishManifestFields } from "./publish-manifest-contract.mjs";
 
 const runtimeDependencyFields = [
   "dependencies",
@@ -39,7 +25,7 @@ export function createPublishManifest(developmentManifest) {
   }
 
   return Object.fromEntries(
-    publishFields.flatMap((field) =>
+    publishManifestFields.flatMap((field) =>
       developmentManifest[field] === undefined
         ? []
         : [[field, developmentManifest[field]]],
