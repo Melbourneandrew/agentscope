@@ -2171,9 +2171,9 @@ func TestCloudflareObserverAcceptsOnlyProvenCompleteSinglePageResults(t *testing
 			if testCase.paginated {
 				pageSize = 1000
 			}
-			value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "testSurface", path: "/client/v4/accounts/account-1/workers/durable_objects/namespaces", pageSize: pageSize})
+			value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "durableObjects", path: "/client/v4/accounts/account-1/workers/durable_objects/namespaces", pageSize: pageSize})
 			if testCase.wantError {
-				if err == nil || err.Error() != "E_OBSERVER_PAGINATION_TEST_SURFACE" {
+				if err == nil || err.Error() != "E_OBSERVER_PAGINATION_DURABLE_OBJECTS" {
 					t.Fatalf("incomplete pagination accepted: value=%#v err=%v", value, err)
 				}
 				return
@@ -2239,9 +2239,9 @@ func TestCloudflareObserverRejectsCrossPageDriftAndStopsOnCancellation(t *testin
 		cancelAfter bool
 		wantError   string
 	}{
-		{name: "total-count-drift", secondBody: `{"success":true,"result":[{}],"result_info":{"page":2,"per_page":100,"count":1,"total_count":102,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_CONTRACT_TEST"},
-		{name: "per-page-drift", secondBody: `{"success":true,"result":[{}],"result_info":{"page":2,"per_page":51,"count":1,"total_count":101,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_CONTRACT_TEST"},
-		{name: "final-aggregate-mismatch", secondBody: `{"success":true,"result":[],"result_info":{"page":2,"per_page":100,"count":0,"total_count":101,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_CONTRACT_TEST"},
+		{name: "total-count-drift", secondBody: `{"success":true,"result":[{}],"result_info":{"page":2,"per_page":100,"count":1,"total_count":102,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_SCRIPT_VERSIONS"},
+		{name: "per-page-drift", secondBody: `{"success":true,"result":[{}],"result_info":{"page":2,"per_page":51,"count":1,"total_count":101,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_SCRIPT_VERSIONS"},
+		{name: "final-aggregate-mismatch", secondBody: `{"success":true,"result":[],"result_info":{"page":2,"per_page":100,"count":0,"total_count":101,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_SCRIPT_VERSIONS"},
 		{name: "later-page-not-found", secondCode: http.StatusNotFound, secondBody: `{"success":false,"result":null}`, wantError: "E_OBSERVER_NOT_FOUND"},
 		{name: "cancel-between-pages", cancelAfter: true, wantError: "E_OBSERVER_UNAVAILABLE"},
 	}
@@ -2268,7 +2268,7 @@ func TestCloudflareObserverRejectsCrossPageDriftAndStopsOnCancellation(t *testin
 				}
 				return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(testCase.secondBody)), Header: http.Header{}, Request: request}, nil
 			})}
-			_, err := fetchCloudflareSurface(ctx, client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "paginationContractTest", path: "/client/v4/accounts/account-1/workers/workers/worker-1/versions", pageSize: 100})
+			_, err := fetchCloudflareSurface(ctx, client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "scriptVersions", path: "/client/v4/accounts/account-1/workers/workers/worker-1/versions", pageSize: 100})
 			if err == nil || err.Error() != testCase.wantError {
 				t.Fatalf("cross-page failure mismatch: requests=%d err=%v want=%s", requests, err, testCase.wantError)
 			}

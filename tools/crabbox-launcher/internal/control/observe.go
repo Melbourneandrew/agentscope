@@ -84,11 +84,9 @@ type cloudflarePageInfo struct {
 
 func cloudflarePaginationError(surface string) error {
 	suffix := map[string]string{
-		"durableObjects":         "DURABLE_OBJECTS",
-		"scriptVersions":         "SCRIPT_VERSIONS",
-		"versions":               "UNRELATED_WORKER_VERSIONS",
-		"testSurface":            "TEST_SURFACE",
-		"paginationContractTest": "CONTRACT_TEST",
+		"durableObjects": "DURABLE_OBJECTS",
+		"scriptVersions": "SCRIPT_VERSIONS",
+		"versions":       "UNRELATED_WORKER_VERSIONS",
 	}[surface]
 	if suffix == "" {
 		return errors.New("E_OBSERVER_PAGINATION")
