@@ -2173,7 +2173,7 @@ func TestCloudflareObserverAcceptsOnlyProvenCompleteSinglePageResults(t *testing
 			}
 			value, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "testSurface", path: "/client/v4/accounts/account-1/workers/durable_objects/namespaces", pageSize: pageSize})
 			if testCase.wantError {
-				if err == nil || err.Error() != "E_OBSERVER_PAGINATION: testSurface" {
+				if err == nil || err.Error() != "E_OBSERVER_PAGINATION_TEST_SURFACE" {
 					t.Fatalf("incomplete pagination accepted: value=%#v err=%v", value, err)
 				}
 				return
@@ -2225,18 +2225,65 @@ func TestCloudflareObserverTraversesWorkerVersionPaginationWithinBounds(t *testi
 		body := `{"success":true,"result":[],"result_info":{"page":1,"per_page":100,"count":0,"total_count":10000,"total_pages":101}}`
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
 	})
-	if _, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "scriptVersions", path: "/client/v4/accounts/account-1/workers/workers/worker-1/versions", pageSize: 100}); err == nil || err.Error() != "E_OBSERVER_PAGINATION: scriptVersions" {
+	if _, err := fetchCloudflareSurface(context.Background(), client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "scriptVersions", path: "/client/v4/accounts/account-1/workers/workers/worker-1/versions", pageSize: 100}); err == nil || err.Error() != "E_OBSERVER_PAGINATION_SCRIPT_VERSIONS" {
 		t.Fatalf("oversized pagination was not rejected with surface identity: %v", err)
+	}
+}
+
+func TestCloudflareObserverRejectsCrossPageDriftAndStopsOnCancellation(t *testing.T) {
+	hundredItems := "[" + strings.TrimSuffix(strings.Repeat(`{},`, 100), ",") + "]"
+	testCases := []struct {
+		name        string
+		secondBody  string
+		secondCode  int
+		cancelAfter bool
+		wantError   string
+	}{
+		{name: "total-count-drift", secondBody: `{"success":true,"result":[{}],"result_info":{"page":2,"per_page":100,"count":1,"total_count":102,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_CONTRACT_TEST"},
+		{name: "per-page-drift", secondBody: `{"success":true,"result":[{}],"result_info":{"page":2,"per_page":51,"count":1,"total_count":101,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_CONTRACT_TEST"},
+		{name: "final-aggregate-mismatch", secondBody: `{"success":true,"result":[],"result_info":{"page":2,"per_page":100,"count":0,"total_count":101,"total_pages":2}}`, wantError: "E_OBSERVER_PAGINATION_CONTRACT_TEST"},
+		{name: "later-page-not-found", secondCode: http.StatusNotFound, secondBody: `{"success":false,"result":null}`, wantError: "E_OBSERVER_NOT_FOUND"},
+		{name: "cancel-between-pages", cancelAfter: true, wantError: "E_OBSERVER_UNAVAILABLE"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			requests := 0
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests++
+				if err := request.Context().Err(); err != nil {
+					return nil, err
+				}
+				if requests == 1 {
+					if testCase.cancelAfter {
+						cancel()
+					}
+					body := fmt.Sprintf(`{"success":true,"result":%s,"result_info":{"page":1,"per_page":100,"count":100,"total_count":101,"total_pages":2}}`, hundredItems)
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}, Request: request}, nil
+				}
+				code := testCase.secondCode
+				if code == 0 {
+					code = http.StatusOK
+				}
+				return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(testCase.secondBody)), Header: http.Header{}, Request: request}, nil
+			})}
+			_, err := fetchCloudflareSurface(ctx, client, []byte("read-only-canary"), cloudflareSurfaceRequest{name: "paginationContractTest", path: "/client/v4/accounts/account-1/workers/workers/worker-1/versions", pageSize: 100})
+			if err == nil || err.Error() != testCase.wantError {
+				t.Fatalf("cross-page failure mismatch: requests=%d err=%v want=%s", requests, err, testCase.wantError)
+			}
+		})
 	}
 }
 
 func TestCloudflareObserverInventoriesEveryUnrelatedWorkerSurface(t *testing.T) {
 	var paths []string
+	accountWorkers := `[{"id":"agentscope-crabbox-development"},{"id":"unrelated-z"},{"id":"unrelated-a"}]`
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		paths = append(paths, request.URL.Path)
 		result := `[]`
 		if request.URL.Path == "/client/v4/accounts/account-1/workers/scripts" {
-			result = `[{"id":"agentscope-crabbox-development"},{"id":"unrelated-worker"}]`
+			result = accountWorkers
 		}
 		resultInfo := ""
 		if request.URL.RawQuery != "" {
@@ -2251,20 +2298,40 @@ func TestCloudflareObserverInventoriesEveryUnrelatedWorkerSurface(t *testing.T) 
 		t.Fatal(err)
 	}
 	unrelated, ok := state.Surfaces["unrelatedWorkers"].(map[string]any)
-	if !ok || len(unrelated) != 1 || unrelated["unrelated-worker"] == nil {
+	if !ok || len(unrelated) != 2 || unrelated["unrelated-a"] == nil || unrelated["unrelated-z"] == nil {
 		t.Fatalf("unrelated worker projection missing: %#v", state.Surfaces["unrelatedWorkers"])
 	}
+	firstUnrelated := ""
+	for _, path := range paths {
+		if strings.Contains(path, "unrelated-") {
+			firstUnrelated = path
+			break
+		}
+	}
+	if !strings.Contains(firstUnrelated, "unrelated-a") {
+		t.Fatalf("unrelated Workers were not inventoried in stable identity order: %v", paths)
+	}
 	for _, suffix := range []string{"/deployments", "/schedules", "/secrets", "/script-settings", "/settings", "/tails", "/subdomain", "/versions"} {
-		found := false
-		for _, path := range paths {
-			if strings.Contains(path, "unrelated-worker") && strings.HasSuffix(path, suffix) {
-				found = true
-				break
+		for _, workerName := range []string{"unrelated-a", "unrelated-z"} {
+			found := false
+			for _, path := range paths {
+				if strings.Contains(path, workerName) && strings.HasSuffix(path, suffix) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("unrelated Worker %s surface %s was not inventoried: %v", workerName, suffix, paths)
 			}
 		}
-		if !found {
-			t.Fatalf("unrelated Worker surface %s was not inventoried: %v", suffix, paths)
-		}
+	}
+	accountWorkers = `[{"id":"agentscope-crabbox-development"},{"id":"duplicate-worker"},{"id":"duplicate-worker"}]`
+	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || err.Error() != "E_OBSERVER_WORKER_IDENTITY" {
+		t.Fatalf("duplicate Worker identity was not rejected: %v", err)
+	}
+	accountWorkers = `[{"id":"agentscope-crabbox-development"},{"id":"agentscope-crabbox-development"}]`
+	if _, err := observer.Observe(context.Background(), []byte("read-only-canary"), time.Now().UTC()); err == nil || err.Error() != "E_OBSERVER_WORKER_IDENTITY" {
+		t.Fatalf("duplicate owned Worker identity was not rejected: %v", err)
 	}
 }
 

@@ -83,10 +83,17 @@ type cloudflarePageInfo struct {
 }
 
 func cloudflarePaginationError(surface string) error {
-	if surface == "" {
+	suffix := map[string]string{
+		"durableObjects":         "DURABLE_OBJECTS",
+		"scriptVersions":         "SCRIPT_VERSIONS",
+		"versions":               "UNRELATED_WORKER_VERSIONS",
+		"testSurface":            "TEST_SURFACE",
+		"paginationContractTest": "CONTRACT_TEST",
+	}[surface]
+	if suffix == "" {
 		return errors.New("E_OBSERVER_PAGINATION")
 	}
-	return fmt.Errorf("E_OBSERVER_PAGINATION: %s", surface)
+	return errors.New("E_OBSERVER_PAGINATION_" + suffix)
 }
 
 func validateCloudflarePagination(result any, raw json.RawMessage, required bool, expectedPage int, requestedPageSize int, surface string) (cloudflarePageInfo, error) {
@@ -299,17 +306,26 @@ func (observer CloudflareObserver) Observe(ctx context.Context, credential []byt
 		surfaces["rollbackVersionDetail"] = value
 	}
 	unrelated := map[string]any{}
+	unrelatedNames := []string{}
+	seenWorkerNames := map[string]struct{}{}
 	for _, worker := range objectSlice(surfaces["accountWorkers"]) {
 		name := fmt.Sprint(worker["id"])
 		if name == "<nil>" || name == "" {
 			name = fmt.Sprint(worker["name"])
 		}
-		if name == WorkerName {
-			continue
-		}
 		if !identifierPattern.MatchString(name) {
 			return StateObservation{}, errors.New("E_OBSERVER_WORKER_IDENTITY")
 		}
+		if _, exists := seenWorkerNames[name]; exists {
+			return StateObservation{}, errors.New("E_OBSERVER_WORKER_IDENTITY")
+		}
+		seenWorkerNames[name] = struct{}{}
+		if name != WorkerName {
+			unrelatedNames = append(unrelatedNames, name)
+		}
+	}
+	sort.Strings(unrelatedNames)
+	for _, name := range unrelatedNames {
 		workerBase := base + "/workers/scripts/" + name
 		workerSurfaces := map[string]any{}
 		for _, surface := range []cloudflareSurfaceRequest{
