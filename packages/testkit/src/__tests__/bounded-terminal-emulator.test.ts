@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { performance } from "node:perf_hooks";
 
 import {
   BoundedTerminalEmulator,
@@ -196,5 +197,20 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     expect(snapshot.geometry).toEqual({ columns: 8, rows: 2 });
     expect(snapshot.printableCellCount).toBeLessThanOrEqual(16);
     expect(snapshot.outputBytes).toBeLessThanOrEqual(32_768);
+  });
+
+  it("processes the advertised byte ceiling with linear bounded work", () => {
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    const payload = bytes(
+      "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes),
+    );
+    const startedAt = performance.now();
+    terminal.write(payload);
+    const snapshot = terminal.end();
+    const elapsedMs = performance.now() - startedAt;
+    expect(snapshot.outputBytes).toBe(
+      defaultPtyTerminalEmulatorLimits.maximumOutputBytes,
+    );
+    expect(elapsedMs).toBeLessThan(2_000);
   });
 });

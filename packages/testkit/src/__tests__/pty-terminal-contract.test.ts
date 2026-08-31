@@ -376,6 +376,28 @@ describe("semantic PTY contract", () => {
     );
   });
 
+  it("keeps request deadlines immutable when ambient freeze is replaced", () => {
+    const prior = Object.getOwnPropertyDescriptor(Object, "freeze")!;
+    Object.defineProperty(Object, "freeze", {
+      configurable: true,
+      value: <T>(value: T): T => value,
+    });
+    let run: PtySemanticContractRun;
+    try {
+      run = suite[0]!.instantiate();
+    } finally {
+      Object.defineProperty(Object, "freeze", prior);
+    }
+    expect(
+      Reflect.set(
+        run.request,
+        "monotonicShutdownDeadlineMs",
+        run.request.monotonicShutdownDeadlineMs + 99_000,
+      ),
+    ).toBe(false);
+    expect(run.verify(run.encode(traceFor(run))).outcome).toBe("ready");
+  });
+
   it("keeps undocumented interactive modes explicitly not applicable", () => {
     expect(
       validatePtyModeApplicability({

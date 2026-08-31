@@ -228,7 +228,8 @@ export class BoundedTerminalEmulator {
   #malformedControlCount = 0;
   #unsupportedControlCount = 0;
   #sawCursorPositionQuery = false;
-  #recent = "";
+  readonly #recentCodePoints: string[] = [];
+  #recentStart = 0;
   #titleSha256: string | null = null;
   #ended = false;
   #outputLimitReached = false;
@@ -321,15 +322,16 @@ export class BoundedTerminalEmulator {
       }
       if (nonEmpty) nonEmptyLineCount += 1;
     }
+    const recent = this.#recentText();
     const semanticState: PtySemanticState = this.#outputLimitReached
       ? "output-limit"
       : this.#malformedControlCount > 0 || this.#unsupportedControlCount > 0
         ? "malformed-control"
-        : credentialPromptPattern.test(this.#recent)
+        : credentialPromptPattern.test(recent)
           ? "credential-prompt"
-          : containsText(this.#recent, completedMarker)
+          : containsText(recent, completedMarker)
             ? "completed"
-            : containsText(this.#recent, readyMarker)
+            : containsText(recent, readyMarker)
               ? "ready"
               : "active";
     let cells = "";
@@ -525,15 +527,23 @@ export class BoundedTerminalEmulator {
   }
 
   #appendRecent(character: string): void {
-    this.#recent += character;
-    const codePoints = [...this.#recent];
-    if (codePoints.length > this.#limits.maximumRecentCodePoints) {
-      let recent = "";
-      const start = codePoints.length - this.#limits.maximumRecentCodePoints;
-      for (let index = start; index < codePoints.length; index += 1)
-        recent += codePoints[index];
-      this.#recent = recent;
+    if (this.#recentCodePoints.length < this.#limits.maximumRecentCodePoints) {
+      this.#recentCodePoints[this.#recentCodePoints.length] = character;
+      return;
     }
+    this.#recentCodePoints[this.#recentStart] = character;
+    this.#recentStart =
+      (this.#recentStart + 1) % this.#limits.maximumRecentCodePoints;
+  }
+
+  #recentText(): string {
+    let recent = "";
+    for (let offset = 0; offset < this.#recentCodePoints.length; offset += 1) {
+      const index =
+        (this.#recentStart + offset) % this.#recentCodePoints.length;
+      recent += this.#recentCodePoints[index];
+    }
+    return recent;
   }
 
   #lineFeed(): void {

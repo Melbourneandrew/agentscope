@@ -125,6 +125,7 @@ const stringifyPrimitive = JSON.stringify.bind(JSON);
 const arrayIsArray = Array.isArray;
 const objectKeys = Object.keys;
 const ownPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const freezeAuthority = Object.freeze;
 const sha256Pattern = /^[a-f0-9]{64}$/u;
 const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const fail = (code: string): never => {
@@ -283,7 +284,7 @@ const exactLifecycle = (value: unknown): PtyLifecycleObservation => {
     !integer(r.residualProcessCount, 65_536)
   )
     return fail("testkit.pty.trace.lifecycle");
-  return Object.freeze({
+  return freezeAuthority({
     observationVersion: 1,
     cleanup: r.cleanup,
     processJoined: r.processJoined,
@@ -697,12 +698,12 @@ const createRequest = (
 ): PtySemanticContractRequest => {
   const now = performance.now();
   const runId = randomUUID();
-  return Object.freeze({
+  return freezeAuthority({
     requestVersion: 1,
     caseName,
     runId,
     requestFingerprint: digest(`${caseName}:${runId}`),
-    initialGeometry: Object.freeze({ columns: 80, rows: 24 }),
+    initialGeometry: freezeAuthority({ columns: 80, rows: 24 }),
     monotonicStartupDeadlineMs: now + 1_000,
     monotonicExecutionDeadlineMs: now + 2_000,
     monotonicShutdownDeadlineMs: now + 3_000,
@@ -723,12 +724,12 @@ export const createPtySemanticContractSuite =
     const suite: PtySemanticContractCase[] = [];
     for (let index = 0; index < names.length; index += 1) {
       const name = names[index]!;
-      suite[index] = Object.freeze({
+      suite[index] = freezeAuthority({
         name,
         instantiate: (): PtySemanticContractRun => {
           const request = createRequest(name);
           const snapshot = expectedSnapshot(name);
-          return Object.freeze({
+          return freezeAuthority({
             request,
             encode: (trace: unknown) => encodeTrace(trace, request, snapshot),
             verify: (envelope: unknown) =>
@@ -737,7 +738,7 @@ export const createPtySemanticContractSuite =
         },
       });
     }
-    return Object.freeze(suite);
+    return freezeAuthority(suite);
   };
 
 export const validatePtyModeApplicability = (
