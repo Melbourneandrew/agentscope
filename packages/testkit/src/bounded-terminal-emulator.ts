@@ -57,7 +57,8 @@ export class BoundedTerminalEmulatorError extends Error {
 }
 
 const sha256Pattern = /^[a-f0-9]{64}$/u;
-const defaultLimits: PtyTerminalEmulatorLimits = Object.freeze({
+const freezeAuthority = Object.freeze;
+const defaultLimits: PtyTerminalEmulatorLimits = freezeAuthority({
   maximumCells: 65_536,
   maximumColumns: 512,
   maximumControlBytes: 512,
@@ -67,7 +68,7 @@ const defaultLimits: PtyTerminalEmulatorLimits = Object.freeze({
   maximumTitleBytes: 512,
 });
 const credentialPromptPattern =
-  /(?:password|passphrase|user[ _-]?name|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
+  /(?:password|passphrase|user[ _-]?name|e[ -]?mail|api[ _-]?(?:key|token)|access[ _-]?token|credential|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
 const defineOwnProperty = Reflect.defineProperty;
@@ -92,6 +93,12 @@ const setOwnIndex = <T>(target: T[], index: number, value: T): void => {
     })
   )
     return fail("testkit.pty.emulator.array");
+};
+const filledOwnArray = <T>(length: number, value: T): T[] => {
+  const result: T[] = [];
+  for (let index = 0; index < length; index += 1)
+    setOwnIndex(result, index, value);
+  return result;
 };
 const strictRecord = (
   value: unknown,
@@ -179,7 +186,7 @@ const validateLimits = (
     !boundedInteger(record.maximumTitleBytes, 4_096)
   )
     return fail("testkit.pty.emulator.limits");
-  return Object.freeze({
+  return freezeAuthority({
     maximumCells: record.maximumCells,
     maximumColumns: record.maximumColumns,
     maximumControlBytes: record.maximumControlBytes,
@@ -205,7 +212,7 @@ const validateGeometry = (
     record.columns * record.rows > limits.maximumCells
   )
     return fail("testkit.pty.emulator.geometry");
-  return Object.freeze({ columns: record.columns, rows: record.rows });
+  return freezeAuthority({ columns: record.columns, rows: record.rows });
 };
 
 const parseCsiParameters = (
@@ -252,9 +259,10 @@ export class BoundedTerminalEmulator {
   ) {
     this.#limits = validateLimits(limits);
     this.#geometry = validateGeometry(geometry, this.#limits);
-    this.#cells = new Array<string>(
+    this.#cells = filledOwnArray(
       this.#geometry.columns * this.#geometry.rows,
-    ).fill(" ");
+      " ",
+    );
   }
 
   public write(bytes: Uint8Array): void {
@@ -292,13 +300,16 @@ export class BoundedTerminalEmulator {
   public resize(geometry: PtyTerminalGeometry): void {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
     const next = validateGeometry(geometry, this.#limits);
-    const cells = new Array<string>(next.columns * next.rows).fill(" ");
+    const cells = filledOwnArray(next.columns * next.rows, " ");
     const rows = Math.min(next.rows, this.#geometry.rows);
     const columns = Math.min(next.columns, this.#geometry.columns);
     for (let row = 0; row < rows; row += 1)
       for (let column = 0; column < columns; column += 1)
-        cells[row * next.columns + column] =
-          this.#cells[row * this.#geometry.columns + column]!;
+        setOwnIndex(
+          cells,
+          row * next.columns + column,
+          this.#cells[row * this.#geometry.columns + column]!,
+        );
     this.#geometry = next;
     this.#cells = cells;
     this.#row = Math.min(this.#row, next.rows - 1);
@@ -352,10 +363,10 @@ export class BoundedTerminalEmulator {
     const screenSha256 = hash(
       `${this.#alternateScreen ? "1" : "0"}\u0000${cells}\u0000${this.#row}\u0000${this.#column}\u0000${this.#geometry.columns}\u0000${this.#geometry.rows}`,
     );
-    return Object.freeze({
+    return freezeAuthority({
       snapshotVersion: 1 as const,
       geometry: this.#geometry,
-      cursor: Object.freeze({ column: this.#column, row: this.#row }),
+      cursor: freezeAuthority({ column: this.#column, row: this.#row }),
       alternateScreen: this.#alternateScreen,
       cursorVisible: this.#cursorVisible,
       outputBytes: this.#outputBytes,
@@ -567,12 +578,16 @@ export class BoundedTerminalEmulator {
       this.#row += 1;
       return;
     }
-    this.#cells.copyWithin(0, this.#geometry.columns);
-    this.#cells.fill(" ", (this.#geometry.rows - 1) * this.#geometry.columns);
+    const retained = this.#cells.length - this.#geometry.columns;
+    for (let index = 0; index < retained; index += 1)
+      this.#cells[index] = this.#cells[index + this.#geometry.columns]!;
+    for (let index = retained; index < this.#cells.length; index += 1)
+      this.#cells[index] = " ";
   }
 
   #clearScreen(): void {
-    this.#cells.fill(" ");
+    for (let index = 0; index < this.#cells.length; index += 1)
+      this.#cells[index] = " ";
     this.#row = 0;
     this.#column = 0;
   }
@@ -581,7 +596,7 @@ export class BoundedTerminalEmulator {
     const start =
       this.#row * this.#geometry.columns + (entire ? 0 : this.#column);
     const end = (this.#row + 1) * this.#geometry.columns;
-    this.#cells.fill(" ", start, end);
+    for (let index = start; index < end; index += 1) this.#cells[index] = " ";
     if (entire) this.#column = 0;
   }
 }
@@ -667,13 +682,13 @@ export const validatePtyTerminalSemanticSnapshot = (
       (record[key] as number) > 16_777_216
     )
       return fail("testkit.pty.snapshot");
-  return Object.freeze({
+  return freezeAuthority({
     snapshotVersion: 1 as const,
-    geometry: Object.freeze({
+    geometry: freezeAuthority({
       columns: geometry.columns,
       rows: geometry.rows,
     }),
-    cursor: Object.freeze({
+    cursor: freezeAuthority({
       column: cursorColumn,
       row: cursorRow,
     }),

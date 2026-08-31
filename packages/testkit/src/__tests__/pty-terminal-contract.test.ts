@@ -385,7 +385,7 @@ describe("semantic PTY contract", () => {
     );
   });
 
-  it("keeps request deadlines immutable when ambient freeze is replaced", () => {
+  it("keeps request and verified evidence immutable when ambient freeze is replaced", () => {
     const prior = Object.getOwnPropertyDescriptor(Object, "freeze")!;
     Object.defineProperty(Object, "freeze", {
       configurable: true,
@@ -404,7 +404,20 @@ describe("semantic PTY contract", () => {
         run.request.monotonicShutdownDeadlineMs + 99_000,
       ),
     ).toBe(false);
-    expect(run.verify(run.encode(traceFor(run))).outcome).toBe("ready");
+    const envelope = run.encode(traceFor(run));
+    Object.defineProperty(Object, "freeze", {
+      configurable: true,
+      value: <T>(value: T): T => value,
+    });
+    let verified: PtySemanticTrace;
+    try {
+      verified = run.verify(envelope);
+    } finally {
+      Object.defineProperty(Object, "freeze", prior);
+    }
+    expect(verified.outcome).toBe("ready");
+    expect(Reflect.set(verified, "outcome", "completed")).toBe(false);
+    expect(Reflect.set(verified.actions, "0", { action: "eof" })).toBe(false);
   });
 
   it("keeps undocumented interactive modes explicitly not applicable", () => {

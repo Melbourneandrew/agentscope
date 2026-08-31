@@ -254,7 +254,7 @@ const strictArray = (value: unknown, code: string): readonly unknown[] => {
         return fail(code);
       setOwnIndex(result, index, descriptor.value, code);
     }
-    return Object.freeze(result);
+    return freezeAuthority(result);
   } catch {
     return fail(code);
   }
@@ -273,7 +273,7 @@ const exactGeometry = (value: unknown): PtyTerminalGeometry => {
     r.columns * r.rows > 65_536
   )
     return fail("testkit.pty.trace.geometry");
-  return Object.freeze({ columns: r.columns, rows: r.rows });
+  return freezeAuthority({ columns: r.columns, rows: r.rows });
 };
 const exactLifecycle = (value: unknown): PtyLifecycleObservation => {
   const r = strictRecord(
@@ -324,7 +324,7 @@ const exactAction = (value: unknown): PtyTransportAction => {
       ["action", "geometry", "monotonicAtMs"],
       "testkit.pty.trace.action",
     );
-    return Object.freeze({
+    return freezeAuthority({
       action: "resize",
       geometry: exactGeometry(r.geometry),
       monotonicAtMs: r.monotonicAtMs as number,
@@ -342,7 +342,7 @@ const exactAction = (value: unknown): PtyTransportAction => {
       !sha256Pattern.test(r.inputSha256)
     )
       return fail("testkit.pty.trace.action");
-    return Object.freeze({
+    return freezeAuthority({
       action: "input",
       byteLength: r.byteLength,
       inputSha256: r.inputSha256,
@@ -355,7 +355,7 @@ const exactAction = (value: unknown): PtyTransportAction => {
       ["action", "monotonicAtMs"],
       "testkit.pty.trace.action",
     );
-    return Object.freeze({
+    return freezeAuthority({
       action: "eof",
       monotonicAtMs: r.monotonicAtMs as number,
     });
@@ -367,7 +367,7 @@ const exactAction = (value: unknown): PtyTransportAction => {
       "testkit.pty.trace.action",
     );
     if (r.byte !== 3) return fail("testkit.pty.trace.action");
-    return Object.freeze({
+    return freezeAuthority({
       action: "interrupt-byte",
       byte: 3,
       monotonicAtMs: r.monotonicAtMs as number,
@@ -387,7 +387,7 @@ const exactAction = (value: unknown): PtyTransportAction => {
       !identifierPattern.test(r.targetStartIdentity)
     )
       return fail("testkit.pty.trace.action");
-    return Object.freeze({
+    return freezeAuthority({
       action: "signal",
       monotonicAtMs: r.monotonicAtMs as number,
       signal: r.signal,
@@ -474,42 +474,42 @@ const expectedActions = (
 ): readonly PtyTransportAction[] => {
   const at = request.monotonicStartupDeadlineMs - 100;
   const common = [
-    Object.freeze({
+    freezeAuthority({
       action: "resize",
-      geometry: Object.freeze({ columns: 100, rows: 30 }),
+      geometry: freezeAuthority({ columns: 100, rows: 30 }),
       monotonicAtMs: at,
     }),
-    Object.freeze({
+    freezeAuthority({
       action: "input",
       byteLength: 7,
       inputSha256: digest("fixture"),
       monotonicAtMs: at + 1,
     }),
-    Object.freeze({ action: "eof", monotonicAtMs: at + 2 }),
+    freezeAuthority({ action: "eof", monotonicAtMs: at + 2 }),
   ] as const;
   if (request.caseName === "pty:timeout-escalation")
-    return Object.freeze([
+    return freezeAuthority([
       common[0],
       common[1],
       common[2],
-      Object.freeze({
+      freezeAuthority({
         action: "interrupt-byte",
         byte: 3,
         monotonicAtMs: request.monotonicExecutionDeadlineMs - 500,
       }),
-      Object.freeze({
+      freezeAuthority({
         action: "signal",
         monotonicAtMs: request.monotonicExecutionDeadlineMs - 400,
         signal: "SIGINT",
         targetStartIdentity: "fixture-root",
       }),
-      Object.freeze({
+      freezeAuthority({
         action: "signal",
         monotonicAtMs: request.monotonicExecutionDeadlineMs,
         signal: "SIGTERM",
         targetStartIdentity: "fixture-root",
       }),
-      Object.freeze({
+      freezeAuthority({
         action: "signal",
         monotonicAtMs:
           request.monotonicExecutionDeadlineMs + request.terminationGraceMs,
@@ -517,7 +517,7 @@ const expectedActions = (
         targetStartIdentity: "fixture-root",
       }),
     ]);
-  return Object.freeze([common[0], common[1], common[2]]);
+  return freezeAuthority([common[0], common[1], common[2]]);
 };
 const canonicalJson = (value: unknown): string => {
   if (
@@ -616,7 +616,7 @@ const validateTrace = (
       exactAction(rawActions[index]),
       "testkit.pty.trace.action",
     );
-  const actions = Object.freeze(reconstructedActions);
+  const actions = freezeAuthority(reconstructedActions);
   let lateAction = false;
   for (let index = 0; index < actions.length; index += 1)
     if (actions[index]!.monotonicAtMs > r.returnedAtMs) lateAction = true;
@@ -648,7 +648,7 @@ const validateTrace = (
     returnedAtMs !== expectedReturnedAt
   )
     return fail("testkit.pty.trace.oracle");
-  return Object.freeze({
+  return freezeAuthority({
     traceVersion: 1,
     caseName: request.caseName,
     runId: request.runId,
@@ -784,7 +784,7 @@ export const validatePtyModeApplicability = (
     );
     if (exact.reason !== "no-documented-interactive-mode")
       return fail("testkit.pty.mode-applicability");
-    return Object.freeze({
+    return freezeAuthority({
       status: "not-applicable",
       reason: "no-documented-interactive-mode",
     });
@@ -802,7 +802,7 @@ export const validatePtyModeApplicability = (
     !identifierPattern.test(exact.exactHarnessVersion)
   )
     return fail("testkit.pty.mode-applicability");
-  return Object.freeze({
+  return freezeAuthority({
     status: "available",
     documentedMode: exact.documentedMode,
     exactHarnessVersion: exact.exactHarnessVersion,
