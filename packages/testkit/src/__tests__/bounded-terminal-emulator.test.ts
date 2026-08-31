@@ -306,6 +306,28 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     expect(snapshot?.semanticState).toBe("credential-prompt");
   });
 
+  it("does not invoke caller-controlled backing-buffer species authority", () => {
+    let speciesCalls = 0;
+    class HostileArrayBuffer extends ArrayBuffer {
+      public constructor(_length: number) {
+        speciesCalls += 1;
+        super(8 * 1_048_576);
+      }
+    }
+    const backing = new ArrayBuffer(1);
+    const input = new Uint8Array(backing);
+    input[0] = 120;
+    Object.defineProperty(backing, "constructor", {
+      configurable: true,
+      value: { [Symbol.species]: HostileArrayBuffer },
+    });
+    const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    terminal.write(input);
+    const snapshot = terminal.end();
+    expect(snapshot.outputBytes).toBe(1);
+    expect(speciesCalls).toBe(0);
+  });
+
   it("does not dispatch screen or recent text through inherited numeric setters", () => {
     const prior = Object.getOwnPropertyDescriptor(Array.prototype, "0");
     let setterCalls = 0;

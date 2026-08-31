@@ -74,10 +74,11 @@ const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
 const defineOwnProperty = Reflect.defineProperty;
 const getPrototypeOf = Reflect.getPrototypeOf;
 const applyFunction = Reflect.apply;
+const Uint8ArrayAuthority = Uint8Array;
 const uint8ArrayPrototype = Uint8Array.prototype;
 const arrayBufferPrototype = ArrayBuffer.prototype;
 // eslint-disable-next-line @typescript-eslint/unbound-method
-const arrayBufferSlice = ArrayBuffer.prototype.slice;
+const typedArraySet = Uint8Array.prototype.set;
 const TextDecoderAuthority = TextDecoder;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const textDecoderDecode = TextDecoder.prototype.decode;
@@ -94,21 +95,13 @@ const typedArrayByteLengthGetterCandidate = Object.getOwnPropertyDescriptor(
   typedArrayPrototype,
   "byteLength",
 )?.get as ((this: Uint8Array) => number) | undefined;
-// eslint-disable-next-line @typescript-eslint/unbound-method
-const typedArrayByteOffsetGetterCandidate = Object.getOwnPropertyDescriptor(
-  typedArrayPrototype,
-  "byteOffset",
-)?.get as ((this: Uint8Array) => number) | undefined;
-
 if (
   typedArrayBufferGetterCandidate === undefined ||
-  typedArrayByteLengthGetterCandidate === undefined ||
-  typedArrayByteOffsetGetterCandidate === undefined
+  typedArrayByteLengthGetterCandidate === undefined
 )
   throw new Error("testkit.pty.emulator.runtime");
 const typedArrayBufferGetter = typedArrayBufferGetterCandidate;
 const typedArrayByteLengthGetter = typedArrayByteLengthGetterCandidate;
-const typedArrayByteOffsetGetter = typedArrayByteOffsetGetterCandidate;
 
 type ParserState = "ground" | "escape" | "csi" | "osc" | "osc-escape";
 
@@ -305,10 +298,8 @@ export class BoundedTerminalEmulator {
   public write(bytes: Uint8Array): void {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
     let byteLength: number;
-    let byteOffset: number;
-    let buffer: ArrayBuffer;
     try {
-      buffer = applyFunction(typedArrayBufferGetter, bytes, []);
+      const buffer = applyFunction(typedArrayBufferGetter, bytes, []);
       if (
         isProxy(bytes) ||
         getPrototypeOf(bytes) !== uint8ArrayPrototype ||
@@ -316,7 +307,6 @@ export class BoundedTerminalEmulator {
       )
         return fail("testkit.pty.emulator.bytes");
       byteLength = applyFunction(typedArrayByteLengthGetter, bytes, []);
-      byteOffset = applyFunction(typedArrayByteOffsetGetter, bytes, []);
     } catch {
       return fail("testkit.pty.emulator.bytes");
     }
@@ -327,10 +317,13 @@ export class BoundedTerminalEmulator {
     this.#outputBytes += byteLength;
     let decoded: string;
     try {
-      const boundedInput = applyFunction(arrayBufferSlice, buffer, [
-        byteOffset,
-        byteOffset + byteLength,
-      ]);
+      const boundedView = new Uint8ArrayAuthority(byteLength);
+      applyFunction(typedArraySet, boundedView, [bytes]);
+      const boundedInput = applyFunction(
+        typedArrayBufferGetter,
+        boundedView,
+        [],
+      );
       decoded = applyFunction(textDecoderDecode, this.#decoder, [
         boundedInput,
         {
