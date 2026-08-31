@@ -36,6 +36,11 @@ const classificationsByName = new Map([
   ...purePolicyFiles.map((name) => [name, "pure"]),
   ...processAuthorityFiles.map((name) => [name, "authority"]),
 ]);
+export const requiredPolicyFiles = Object.freeze([
+  ...purePolicyFiles,
+  "code-quality-policy.test.mjs",
+  "validation-lease.test.mjs",
+]);
 const forwardedSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
 const pureWorkerCeiling = 2;
 
@@ -65,6 +70,18 @@ export function classifyWorkspacePolicyInventory(inventory) {
       fail(`test has no reviewed classification: ${name}`);
     return { classification, name };
   });
+}
+
+export function validateWorkspacePolicyInventory(inventory) {
+  if (!Array.isArray(inventory)) fail("inventory must be an array");
+  const observed = new Set(inventory);
+  if (observed.size !== inventory.length) fail("inventory contains duplicates");
+  for (const name of requiredPolicyFiles)
+    if (!observed.has(name)) fail(`required test is missing: ${name}`);
+  for (const name of observed)
+    if (!classificationsByName.has(name))
+      fail(`test has no reviewed classification: ${name}`);
+  return inventory;
 }
 
 export function createWorkspacePolicyPlan(inventory, classifications) {
@@ -256,6 +273,7 @@ export async function runWorkspacePolicyPlan(
 export async function main(arguments_ = process.argv.slice(2)) {
   if (arguments_.length !== 0) fail("caller arguments are not accepted");
   const inventory = discoverWorkspacePolicyInventory();
+  validateWorkspacePolicyInventory(inventory);
   const plan = createWorkspacePolicyPlan(
     inventory,
     classifyWorkspacePolicyInventory(inventory),

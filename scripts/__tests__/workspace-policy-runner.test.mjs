@@ -15,13 +15,16 @@ import {
   processAuthorityFiles,
   publishTerminalOutcome,
   purePolicyFiles,
+  requiredPolicyFiles,
   runWorkspacePolicyPlan,
+  validateWorkspacePolicyInventory,
 } from "../workspace-policy-runner.mjs";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 test("the checked-in inventory is classified exactly once", () => {
   const inventory = discoverWorkspacePolicyInventory();
+  assert.equal(validateWorkspacePolicyInventory(inventory), inventory);
   const plan = createWorkspacePolicyPlan(
     inventory,
     classifyWorkspacePolicyInventory(inventory),
@@ -42,6 +45,37 @@ test("the checked-in inventory is classified exactly once", () => {
       assert.ok(!plan.pure.includes(name));
     }
   }
+});
+
+test("the checked-in inventory rejects omissions and unreviewed growth", () => {
+  const inventory = discoverWorkspacePolicyInventory();
+  for (const required of requiredPolicyFiles) {
+    assert.throws(
+      () =>
+        validateWorkspacePolicyInventory(
+          inventory.filter((name) => name !== required),
+        ),
+      new RegExp(
+        `required test is missing: ${required.replaceAll(".", "\\.")}`,
+      ),
+    );
+  }
+  assert.throws(
+    () =>
+      validateWorkspacePolicyInventory([
+        ...inventory,
+        "future-authority.test.mjs",
+      ]),
+    /no reviewed classification/,
+  );
+  assert.throws(
+    () => validateWorkspacePolicyInventory([...inventory, inventory[0]]),
+    /inventory contains duplicates/,
+  );
+  assert.equal(
+    validateWorkspacePolicyInventory([...inventory, "prepush.test.mjs"]).length,
+    inventory.length + 1,
+  );
 });
 
 test("the reserved prepush suite is authority only when present", () => {
