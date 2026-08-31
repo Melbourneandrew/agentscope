@@ -78,6 +78,7 @@ export const acquireIntegrationOperationLock = async (
   let server;
   let waitingSockets;
   let released = false;
+  let releaseSettlement;
   for (;;) {
     waitingSockets = new Set();
     server = createServer((socket) => {
@@ -118,16 +119,16 @@ export const acquireIntegrationOperationLock = async (
         throw operationTimeoutError(errorCode, error);
     }
   }
-  return async () => {
-    if (released) return;
+  return () => {
+    if (releaseSettlement !== undefined) return releaseSettlement;
     released = true;
-    const closed = new Promise((resolve, reject) => {
+    releaseSettlement = new Promise((resolve, reject) => {
       server.close((error) => {
         if (error === undefined) resolve();
         else reject(new Error(errorCode, { cause: error }));
       });
+      for (const socket of waitingSockets) socket.destroy();
     });
-    for (const socket of waitingSockets) socket.destroy();
-    await closed;
+    return releaseSettlement;
   };
 };
