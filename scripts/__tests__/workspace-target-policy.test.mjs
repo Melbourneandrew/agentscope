@@ -215,6 +215,69 @@ test("build cleanup preserves coverage while full cleanup owns it", () => {
   }
 });
 
+test("cleanup remains bound to its authenticated directory after parent replacement", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-clean-identity-"));
+  const workspaceDirectory = join(root, "packages/example");
+  const movedWorkspaceDirectory = join(root, "packages/example-moved");
+  const externalDirectory = join(root, "external");
+  const cleaner = join(root, "scripts/clean-workspace.mjs");
+  const preload = join(root, "replace-parent.cjs");
+  try {
+    mkdirSync(workspaceDirectory, { recursive: true });
+    mkdirSync(join(externalDirectory, ".next"), { recursive: true });
+    mkdirSync(join(workspaceDirectory, ".next"), { recursive: true });
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      join(workspaceDirectory, ".next/original-canary"),
+      "original",
+    );
+    writeFileSync(join(externalDirectory, ".next/external-canary"), "external");
+    writeFileSync(
+      cleaner,
+      readFileSync(join(repositoryRoot, "scripts/clean-workspace.mjs")),
+    );
+    writeFileSync(
+      join(root, "scripts/workspace-packages.mjs"),
+      'export const expectedWorkspacePackages = new Map([["packages/example", "@agentscope/example"]]);\n',
+    );
+    writeFileSync(
+      preload,
+      `const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const originalRmSync = fs.rmSync;
+const originalDirectory = process.cwd();
+let replaced = false;
+fs.rmSync = function (target, options) {
+  if (!replaced) {
+    replaced = true;
+    fs.renameSync(originalDirectory, ${JSON.stringify(movedWorkspaceDirectory)});
+    fs.symlinkSync(${JSON.stringify(externalDirectory)}, originalDirectory, "dir");
+  }
+  return Reflect.apply(originalRmSync, this, [target, options]);
+};
+syncBuiltinESMExports();
+`,
+    );
+
+    const result = spawnSync(process.execPath, [cleaner, "--build-outputs"], {
+      cwd: workspaceDirectory,
+      encoding: "utf8",
+      env: { ...process.env, NODE_OPTIONS: `--require=${preload}` },
+    });
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.equal(
+      existsSync(join(movedWorkspaceDirectory, ".next/original-canary")),
+      false,
+    );
+    assert.equal(
+      existsSync(join(externalDirectory, ".next/external-canary")),
+      true,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the shared strict configuration rejects a seeded type error", () => {
   const root = createFixture();
   try {

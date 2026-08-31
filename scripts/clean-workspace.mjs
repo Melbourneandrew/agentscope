@@ -32,6 +32,5 @@ const outputs =
     : [...buildOutputs, "coverage"];
 
 for (const output of outputs) {
-  const target = resolve(currentDirectory, output);
-  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+  if (existsSync(output)) rmSync(output, { recursive: true, force: true });
 }
