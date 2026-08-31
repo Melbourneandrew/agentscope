@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isProxy } from "node:util/types";
 
 export type PtyTerminalGeometry = Readonly<{
   columns: number;
@@ -69,10 +70,6 @@ const credentialPromptPattern =
   /(?:password|api[ _-]?key|sign[ -]?in|log[ -]?in|authenticate|authorization code)\s*[:>?]?\s*$/iu;
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
-const arrayBufferResizableDescriptor = Object.getOwnPropertyDescriptor(
-  ArrayBuffer.prototype,
-  "resizable",
-);
 
 type ParserState = "ground" | "escape" | "csi" | "osc" | "osc-escape";
 
@@ -84,22 +81,45 @@ const boundedInteger = (value: unknown, maximum: number): value is number =>
   Number.isSafeInteger(value) &&
   value >= 1 &&
   value <= maximum;
-const plainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  (Object.getPrototypeOf(value) === Object.prototype ||
-    Object.getPrototypeOf(value) === null);
-const exactKeys = (
-  value: Record<string, unknown>,
+const strictRecord = (
+  value: unknown,
   keys: readonly string[],
-): boolean => {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return (
-    actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
-  );
+  code: string,
+): Record<string, unknown> => {
+  let prototype: object | null;
+  let ownKeys: readonly PropertyKey[];
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      isProxy(value)
+    )
+      return fail(code);
+    prototype = Reflect.getPrototypeOf(value);
+    ownKeys = Reflect.ownKeys(value);
+  } catch {
+    return fail(code);
+  }
+  if (
+    (prototype !== Object.prototype && prototype !== null) ||
+    ownKeys.length !== keys.length ||
+    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key))
+  )
+    return fail(code);
+  const result = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      descriptor === undefined ||
+      descriptor.get !== undefined ||
+      descriptor.set !== undefined ||
+      !("value" in descriptor)
+    )
+      return fail(code);
+    result[key] = descriptor.value;
+  }
+  return result;
 };
 const hash = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
@@ -107,9 +127,9 @@ const hash = (value: string): string =>
 const validateLimits = (
   value: PtyTerminalEmulatorLimits,
 ): PtyTerminalEmulatorLimits => {
-  if (
-    !plainObject(value) ||
-    !exactKeys(value, [
+  const record = strictRecord(
+    value,
+    [
       "maximumCells",
       "maximumColumns",
       "maximumControlBytes",
@@ -117,32 +137,46 @@ const validateLimits = (
       "maximumRecentCodePoints",
       "maximumRows",
       "maximumTitleBytes",
-    ]) ||
-    !boundedInteger(value.maximumCells, 1_048_576) ||
-    !boundedInteger(value.maximumColumns, 4_096) ||
-    !boundedInteger(value.maximumControlBytes, 4_096) ||
-    !boundedInteger(value.maximumOutputBytes, 16_777_216) ||
-    !boundedInteger(value.maximumRecentCodePoints, 16_384) ||
-    !boundedInteger(value.maximumRows, 4_096) ||
-    !boundedInteger(value.maximumTitleBytes, 4_096)
+    ],
+    "testkit.pty.emulator.limits",
+  );
+  if (
+    !boundedInteger(record.maximumCells, 1_048_576) ||
+    !boundedInteger(record.maximumColumns, 4_096) ||
+    !boundedInteger(record.maximumControlBytes, 4_096) ||
+    !boundedInteger(record.maximumOutputBytes, 16_777_216) ||
+    !boundedInteger(record.maximumRecentCodePoints, 16_384) ||
+    !boundedInteger(record.maximumRows, 4_096) ||
+    !boundedInteger(record.maximumTitleBytes, 4_096)
   )
     return fail("testkit.pty.emulator.limits");
-  return Object.freeze({ ...value });
+  return Object.freeze({
+    maximumCells: record.maximumCells,
+    maximumColumns: record.maximumColumns,
+    maximumControlBytes: record.maximumControlBytes,
+    maximumOutputBytes: record.maximumOutputBytes,
+    maximumRecentCodePoints: record.maximumRecentCodePoints,
+    maximumRows: record.maximumRows,
+    maximumTitleBytes: record.maximumTitleBytes,
+  });
 };
 
 const validateGeometry = (
   value: PtyTerminalGeometry,
   limits: PtyTerminalEmulatorLimits,
 ): PtyTerminalGeometry => {
+  const record = strictRecord(
+    value,
+    ["columns", "rows"],
+    "testkit.pty.emulator.geometry",
+  );
   if (
-    !plainObject(value) ||
-    !exactKeys(value, ["columns", "rows"]) ||
-    !boundedInteger(value.columns, limits.maximumColumns) ||
-    !boundedInteger(value.rows, limits.maximumRows) ||
-    value.columns * value.rows > limits.maximumCells
+    !boundedInteger(record.columns, limits.maximumColumns) ||
+    !boundedInteger(record.rows, limits.maximumRows) ||
+    record.columns * record.rows > limits.maximumCells
   )
     return fail("testkit.pty.emulator.geometry");
-  return Object.freeze({ columns: value.columns, rows: value.rows });
+  return Object.freeze({ columns: record.columns, rows: record.rows });
 };
 
 const parseCsiParameters = (
@@ -193,27 +227,29 @@ export class BoundedTerminalEmulator {
 
   public write(bytes: Uint8Array): void {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
-    if (
-      Object.getPrototypeOf(bytes) !== Uint8Array.prototype ||
-      Object.getPrototypeOf(bytes.buffer) !== ArrayBuffer.prototype ||
-      (arrayBufferResizableDescriptor?.get !== undefined &&
-        // The captured intrinsic getter is deliberately called with its buffer receiver.
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        Reflect.apply(arrayBufferResizableDescriptor.get, bytes.buffer, []) ===
-          true)
-    )
+    let input: Uint8Array;
+    try {
+      if (
+        isProxy(bytes) ||
+        Object.getPrototypeOf(bytes) !== Uint8Array.prototype ||
+        Object.getPrototypeOf(bytes.buffer) !== ArrayBuffer.prototype
+      )
+        return fail("testkit.pty.emulator.bytes");
+      input = new Uint8Array(bytes);
+    } catch {
       return fail("testkit.pty.emulator.bytes");
+    }
     if (
-      this.#outputBytes + bytes.byteLength >
+      this.#outputBytes + input.byteLength >
       this.#limits.maximumOutputBytes
     ) {
       this.#outputLimitReached = true;
       return fail("testkit.pty.emulator.output-limit");
     }
-    this.#outputBytes += bytes.byteLength;
+    this.#outputBytes += input.byteLength;
     let decoded: string;
     try {
-      decoded = this.#decoder.decode(bytes, { stream: true });
+      decoded = this.#decoder.decode(input, { stream: true });
     } catch {
       this.#malformedControlCount += 1;
       return fail("testkit.pty.emulator.utf8");
@@ -507,9 +543,9 @@ export class BoundedTerminalEmulator {
 export const validatePtyTerminalSemanticSnapshot = (
   value: unknown,
 ): PtyTerminalSemanticSnapshot => {
-  if (
-    !plainObject(value) ||
-    !exactKeys(value, [
+  const record = strictRecord(
+    value,
+    [
       "alternateScreen",
       "cursor",
       "cursorVisible",
@@ -525,24 +561,37 @@ export const validatePtyTerminalSemanticSnapshot = (
       "titlePresent",
       "titleSha256",
       "unsupportedControlCount",
-    ]) ||
-    value.snapshotVersion !== 1 ||
-    !plainObject(value.geometry) ||
-    !exactKeys(value.geometry, ["columns", "rows"]) ||
-    !boundedInteger(value.geometry.columns, 4_096) ||
-    !boundedInteger(value.geometry.rows, 4_096) ||
-    !plainObject(value.cursor) ||
-    !exactKeys(value.cursor, ["column", "row"]) ||
-    !Number.isSafeInteger(value.cursor.column) ||
-    !Number.isSafeInteger(value.cursor.row) ||
-    (value.cursor.column as number) < 0 ||
-    (value.cursor.column as number) >= value.geometry.columns ||
-    (value.cursor.row as number) < 0 ||
-    (value.cursor.row as number) >= value.geometry.rows ||
-    typeof value.alternateScreen !== "boolean" ||
-    typeof value.cursorVisible !== "boolean" ||
-    typeof value.sawCursorPositionQuery !== "boolean" ||
-    typeof value.titlePresent !== "boolean" ||
+    ],
+    "testkit.pty.snapshot",
+  );
+  const geometry = strictRecord(
+    record.geometry,
+    ["columns", "rows"],
+    "testkit.pty.snapshot",
+  );
+  const cursor = strictRecord(
+    record.cursor,
+    ["column", "row"],
+    "testkit.pty.snapshot",
+  );
+  const cursorColumn = cursor.column;
+  const cursorRow = cursor.row;
+  if (
+    record.snapshotVersion !== 1 ||
+    !boundedInteger(geometry.columns, 4_096) ||
+    !boundedInteger(geometry.rows, 4_096) ||
+    typeof cursorColumn !== "number" ||
+    typeof cursorRow !== "number" ||
+    !Number.isSafeInteger(cursorColumn) ||
+    !Number.isSafeInteger(cursorRow) ||
+    cursorColumn < 0 ||
+    cursorColumn >= geometry.columns ||
+    cursorRow < 0 ||
+    cursorRow >= geometry.rows ||
+    typeof record.alternateScreen !== "boolean" ||
+    typeof record.cursorVisible !== "boolean" ||
+    typeof record.sawCursorPositionQuery !== "boolean" ||
+    typeof record.titlePresent !== "boolean" ||
     ![
       "active",
       "ready",
@@ -550,11 +599,11 @@ export const validatePtyTerminalSemanticSnapshot = (
       "credential-prompt",
       "malformed-control",
       "output-limit",
-    ].includes(value.semanticState as string) ||
-    !sha256Pattern.test(value.screenSha256 as string) ||
-    (value.titleSha256 !== null &&
-      !sha256Pattern.test(value.titleSha256 as string)) ||
-    value.titlePresent !== (value.titleSha256 !== null)
+    ].includes(record.semanticState as string) ||
+    !sha256Pattern.test(record.screenSha256 as string) ||
+    (record.titleSha256 !== null &&
+      !sha256Pattern.test(record.titleSha256 as string)) ||
+    record.titlePresent !== (record.titleSha256 !== null)
   )
     return fail("testkit.pty.snapshot");
   for (const key of [
@@ -565,12 +614,34 @@ export const validatePtyTerminalSemanticSnapshot = (
     "unsupportedControlCount",
   ] as const)
     if (
-      !Number.isSafeInteger(value[key]) ||
-      (value[key] as number) < 0 ||
-      (value[key] as number) > 16_777_216
+      !Number.isSafeInteger(record[key]) ||
+      (record[key] as number) < 0 ||
+      (record[key] as number) > 16_777_216
     )
       return fail("testkit.pty.snapshot");
-  return value as PtyTerminalSemanticSnapshot;
+  return Object.freeze({
+    snapshotVersion: 1 as const,
+    geometry: Object.freeze({
+      columns: geometry.columns,
+      rows: geometry.rows,
+    }),
+    cursor: Object.freeze({
+      column: cursorColumn,
+      row: cursorRow,
+    }),
+    alternateScreen: record.alternateScreen,
+    cursorVisible: record.cursorVisible,
+    outputBytes: record.outputBytes as number,
+    printableCellCount: record.printableCellCount as number,
+    nonEmptyLineCount: record.nonEmptyLineCount as number,
+    malformedControlCount: record.malformedControlCount as number,
+    unsupportedControlCount: record.unsupportedControlCount as number,
+    sawCursorPositionQuery: record.sawCursorPositionQuery,
+    titlePresent: record.titlePresent,
+    titleSha256: record.titleSha256 as string | null,
+    screenSha256: record.screenSha256 as string,
+    semanticState: record.semanticState as PtySemanticState,
+  });
 };
 
 export const defaultPtyTerminalEmulatorLimits = defaultLimits;

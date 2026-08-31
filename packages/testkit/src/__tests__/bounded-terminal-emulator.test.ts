@@ -128,7 +128,8 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
     terminal.write(bytes("AGENTSCOPE_PTY_READY"));
     const snapshot = terminal.end();
-    expect(validatePtyTerminalSemanticSnapshot(snapshot)).toBe(snapshot);
+    expect(validatePtyTerminalSemanticSnapshot(snapshot)).toEqual(snapshot);
+    expect(validatePtyTerminalSemanticSnapshot(snapshot)).not.toBe(snapshot);
     expect(() =>
       validatePtyTerminalSemanticSnapshot({
         ...snapshot,
@@ -138,6 +139,35 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     expect(() =>
       validatePtyTerminalSemanticSnapshot({ ...snapshot, raw: "forbidden" }),
     ).toThrowError(new BoundedTerminalEmulatorError("testkit.pty.snapshot"));
+  });
+
+  it("rejects accessors and proxies before reading hostile values", () => {
+    let reads = 0;
+    const hostileGeometry = Object.defineProperty({}, "columns", {
+      enumerable: true,
+      get: () => {
+        reads += 1;
+        return 80;
+      },
+    });
+    Object.defineProperty(hostileGeometry, "rows", {
+      enumerable: true,
+      value: 24,
+    });
+    expect(
+      () => new BoundedTerminalEmulator(hostileGeometry as never),
+    ).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.geometry"),
+    );
+    expect(reads).toBe(0);
+    expect(
+      () =>
+        new BoundedTerminalEmulator(
+          new Proxy({ columns: 80, rows: 24 }, {}) as never,
+        ),
+    ).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.geometry"),
+    );
   });
 
   it("keeps memory bounded while scrolling and processing hostile tabs", () => {

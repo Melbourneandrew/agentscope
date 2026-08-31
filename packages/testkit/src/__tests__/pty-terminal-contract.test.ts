@@ -30,6 +30,7 @@ const snapshotFor = (name: PtySemanticTrace["caseName"]) => {
     { columns: 80, rows: 24 },
     limits,
   );
+  terminal.resize({ columns: 100, rows: 30 });
   if (name === "pty:interactive-ready")
     terminal.write(encoder.encode("\u001b[?1049hAGENTSCOPE_PTY_READY"));
   else if (name === "pty:interactive-completed")
@@ -68,6 +69,17 @@ const traceFor = (run: PtySemanticContractRun): PtySemanticTrace => {
   ];
   if (request.caseName === "pty:timeout-escalation")
     actions.push(
+      {
+        action: "interrupt-byte",
+        byte: 3,
+        monotonicAtMs: request.monotonicExecutionDeadlineMs - 500,
+      },
+      {
+        action: "signal",
+        monotonicAtMs: request.monotonicExecutionDeadlineMs - 400,
+        signal: "SIGINT",
+        targetStartIdentity: "fixture-root",
+      },
       {
         action: "signal",
         monotonicAtMs: request.monotonicExecutionDeadlineMs,
@@ -137,6 +149,8 @@ const traceFor = (run: PtySemanticContractRun): PtySemanticTrace => {
   };
 };
 
+// The single suite shares one fixed family-owned trace constructor across all adversarial cases.
+// eslint-disable-next-line max-lines-per-function
 describe("semantic PTY contract", () => {
   it.each(suite)("verifies the fixed $name component oracle", (candidate) => {
     const run = candidate.instantiate();
@@ -187,11 +201,26 @@ describe("semantic PTY contract", () => {
     expect(() =>
       run.encode({ ...trace, actions: [...trace.actions].reverse() }),
     ).toThrowError(
-      new PtySemanticContractError("testkit.pty.trace.action-order"),
+      new PtySemanticContractError("testkit.pty.trace.action-oracle"),
+    );
+    expect(() =>
+      run.encode({
+        ...trace,
+        finalSnapshot: {
+          ...trace.finalSnapshot,
+          outputBytes: 0,
+          screenSha256: "0".repeat(64),
+        },
+      }),
+    ).toThrowError(new PtySemanticContractError("testkit.pty.trace.oracle"));
+    expect(() =>
+      run.encode({ ...trace, actions: trace.actions.slice(1) }),
+    ).toThrowError(
+      new PtySemanticContractError("testkit.pty.trace.action-oracle"),
     );
   });
 
-  it("requires exact TERM-to-KILL escalation inside the original deadline", () => {
+  it("requires the exact interrupt, SIGINT, TERM, and KILL causal grammar", () => {
     const run = suite
       .find((candidate) => candidate.name === "pty:timeout-escalation")!
       .instantiate();
@@ -199,7 +228,19 @@ describe("semantic PTY contract", () => {
     expect(() =>
       run.encode({ ...trace, actions: trace.actions.slice(0, -1) }),
     ).toThrowError(
-      new PtySemanticContractError("testkit.pty.trace.escalation"),
+      new PtySemanticContractError("testkit.pty.trace.action-oracle"),
+    );
+    expect(() =>
+      run.encode({
+        ...trace,
+        actions: trace.actions.map((action) =>
+          action.action === "signal" && action.signal === "SIGKILL"
+            ? { ...action, targetStartIdentity: "different-root" }
+            : action,
+        ),
+      }),
+    ).toThrowError(
+      new PtySemanticContractError("testkit.pty.trace.action-oracle"),
     );
     expect(() =>
       run.encode({
@@ -221,6 +262,44 @@ describe("semantic PTY contract", () => {
       run.verify(new Uint8Array(ptySemanticTraceEnvelopeLimitBytes + 1)),
     ).toThrowError(
       new PtySemanticContractError("testkit.pty.trace.envelope-limit"),
+    );
+  });
+
+  it("rejects noncanonical encodings and hostile descriptor substitution", () => {
+    const run = suite[0]!.instantiate();
+    const trace = traceFor(run);
+    const envelope = run.encode(trace);
+    expect(() =>
+      run.verify(encoder.encode(` ${new TextDecoder().decode(envelope)}`)),
+    ).toThrowError(
+      new PtySemanticContractError("testkit.pty.trace.envelope-canonical"),
+    );
+    const source = new TextDecoder().decode(envelope);
+    expect(() =>
+      run.verify(
+        encoder.encode(
+          source.replace(
+            '{"traceVersion":1,',
+            '{"traceVersion":1,"traceVersion":1,',
+          ),
+        ),
+      ),
+    ).toThrowError(
+      new PtySemanticContractError("testkit.pty.trace.envelope-canonical"),
+    );
+
+    let reads = 0;
+    const hostile = { ...trace } as Record<string, unknown>;
+    Object.defineProperty(hostile, "diagnosticCode", {
+      enumerable: true,
+      get: () => (++reads === 1 ? null : "synthetic-canary"),
+    });
+    expect(() => run.encode(hostile)).toThrowError(
+      new PtySemanticContractError("testkit.pty.trace"),
+    );
+    expect(reads).toBe(0);
+    expect(() => run.encode(new Proxy(trace, {}))).toThrowError(
+      new PtySemanticContractError("testkit.pty.trace"),
     );
   });
 

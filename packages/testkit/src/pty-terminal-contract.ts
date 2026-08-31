@@ -1,7 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { isProxy } from "node:util/types";
 
 import {
+  BoundedTerminalEmulator,
+  defaultPtyTerminalEmulatorLimits,
   type PtyTerminalGeometry,
   type PtyTerminalSemanticSnapshot,
   validatePtyTerminalSemanticSnapshot,
@@ -17,7 +20,6 @@ export type PtyModeApplicability =
       status: "not-applicable";
       reason: "no-documented-interactive-mode";
     }>;
-
 export type PtyTransportAction =
   | Readonly<{
       action: "resize";
@@ -30,22 +32,14 @@ export type PtyTransportAction =
       inputSha256: string;
       monotonicAtMs: number;
     }>
-  | Readonly<{
-      action: "eof";
-      monotonicAtMs: number;
-    }>
-  | Readonly<{
-      action: "interrupt-byte";
-      byte: 3;
-      monotonicAtMs: number;
-    }>
+  | Readonly<{ action: "eof"; monotonicAtMs: number }>
+  | Readonly<{ action: "interrupt-byte"; byte: 3; monotonicAtMs: number }>
   | Readonly<{
       action: "signal";
       monotonicAtMs: number;
       signal: "SIGINT" | "SIGTERM" | "SIGKILL";
       targetStartIdentity: string;
     }>;
-
 export type PtyLifecycleObservation = Readonly<{
   observationVersion: 1;
   cleanup: "clean" | "residual" | "uncertain";
@@ -55,17 +49,21 @@ export type PtyLifecycleObservation = Readonly<{
   terminalOutputJoined: boolean;
   terminalTransportClosed: boolean;
 }>;
-
 export type PtySemanticOutcome =
   "ready" | "completed" | "rejected" | "timed-out" | "cleanup-failed";
-
 export type PtySemanticDiagnosticCode =
   | "testkit.pty.credential-prompt"
   | "testkit.pty.malformed-control"
   | "testkit.pty.output-limit"
   | "testkit.pty.timeout"
   | "testkit.pty.cleanup";
-
+export type PtySemanticContractCaseName =
+  | "pty:interactive-ready"
+  | "pty:interactive-completed"
+  | "pty:credential-prompt"
+  | "pty:malformed-control"
+  | "pty:output-limit"
+  | "pty:timeout-escalation";
 export type PtySemanticTrace = Readonly<{
   traceVersion: 1;
   caseName: PtySemanticContractCaseName;
@@ -84,17 +82,7 @@ export type PtySemanticTrace = Readonly<{
   diagnosticCode: PtySemanticDiagnosticCode | null;
   returnedAtMs: number;
 }>;
-
 export type PtySemanticTraceEnvelope = Uint8Array;
-
-export type PtySemanticContractCaseName =
-  | "pty:interactive-ready"
-  | "pty:interactive-completed"
-  | "pty:credential-prompt"
-  | "pty:malformed-control"
-  | "pty:output-limit"
-  | "pty:timeout-escalation";
-
 export type PtySemanticContractRequest = Readonly<{
   requestVersion: 1;
   caseName: PtySemanticContractCaseName;
@@ -106,13 +94,11 @@ export type PtySemanticContractRequest = Readonly<{
   monotonicShutdownDeadlineMs: number;
   terminationGraceMs: number;
 }>;
-
 export type PtySemanticContractRun = Readonly<{
   request: PtySemanticContractRequest;
   encode: (trace: unknown) => PtySemanticTraceEnvelope;
   verify: (envelope: unknown) => PtySemanticTrace;
 }>;
-
 export type PtySemanticContractCase = Readonly<{
   name: PtySemanticContractCaseName;
   instantiate: () => PtySemanticContractRun;
@@ -120,7 +106,6 @@ export type PtySemanticContractCase = Readonly<{
 
 export class PtySemanticContractError extends Error {
   declare public readonly code: string;
-
   public constructor(code: string) {
     super(code);
     Object.defineProperty(this, "code", {
@@ -133,56 +118,129 @@ export class PtySemanticContractError extends Error {
 }
 
 export const ptySemanticTraceEnvelopeLimitBytes = 32_768;
-const sha256Pattern = /^[a-f0-9]{64}$/u;
-const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const componentVersion = "component-fixture-v1" as const;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-
+const sha256Pattern = /^[a-f0-9]{64}$/u;
+const identifierPattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const fail = (code: string): never => {
   throw new PtySemanticContractError(code);
 };
-const plainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  (Object.getPrototypeOf(value) === Object.prototype ||
-    Object.getPrototypeOf(value) === null);
-const exactKeys = (
-  value: Record<string, unknown>,
-  keys: readonly string[],
-): boolean => {
-  const actual = Object.keys(value).sort();
-  const expected = [...keys].sort();
-  return (
-    actual.length === expected.length &&
-    actual.every((key, index) => key === expected[index])
-  );
-};
-const nonNegativeInteger = (value: unknown, maximum: number): value is number =>
+const finite = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+const integer = (value: unknown, maximum: number): value is number =>
   typeof value === "number" &&
   Number.isSafeInteger(value) &&
   value >= 0 &&
   value <= maximum;
-const finite = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
+const digest = (value: string): string =>
+  createHash("sha256").update(value).digest("hex");
+
+const strictRecord = (
+  value: unknown,
+  keys: readonly string[],
+  code: string,
+): Record<string, unknown> => {
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      isProxy(value)
+    )
+      return fail(code);
+    const prototype = Reflect.getPrototypeOf(value);
+    const ownKeys = Reflect.ownKeys(value);
+    if (
+      (prototype !== Object.prototype && prototype !== null) ||
+      ownKeys.length !== keys.length ||
+      ownKeys.some((key) => typeof key !== "string" || !keys.includes(key))
+    )
+      return fail(code);
+    const result = Object.create(null) as Record<string, unknown>;
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        descriptor === undefined ||
+        descriptor.get !== undefined ||
+        descriptor.set !== undefined ||
+        !("value" in descriptor)
+      )
+        return fail(code);
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch {
+    return fail(code);
+  }
+};
+const ownStringKeys = (value: unknown, code: string): readonly string[] => {
+  try {
+    if (typeof value !== "object" || value === null || isProxy(value))
+      return fail(code);
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) return fail(code);
+    return keys as string[];
+  } catch {
+    return fail(code);
+  }
+};
+const strictArray = (value: unknown, code: string): readonly unknown[] => {
+  try {
+    if (
+      !Array.isArray(value) ||
+      isProxy(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype
+    )
+      return fail(code);
+    const keys = Reflect.ownKeys(value);
+    const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+    const length = lengthDescriptor?.value as unknown;
+    if (
+      typeof length !== "number" ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      length > 128 ||
+      keys.length !== length + 1
+    )
+      return fail(code);
+    const result: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (
+        descriptor === undefined ||
+        descriptor.get !== undefined ||
+        descriptor.set !== undefined ||
+        !("value" in descriptor)
+      )
+        return fail(code);
+      result.push(descriptor.value);
+    }
+    return Object.freeze(result);
+  } catch {
+    return fail(code);
+  }
+};
 const exactGeometry = (value: unknown): PtyTerminalGeometry => {
+  const r = strictRecord(
+    value,
+    ["columns", "rows"],
+    "testkit.pty.trace.geometry",
+  );
   if (
-    !plainObject(value) ||
-    !exactKeys(value, ["columns", "rows"]) ||
-    !nonNegativeInteger(value.columns, 512) ||
-    !nonNegativeInteger(value.rows, 512) ||
-    value.columns === 0 ||
-    value.rows === 0 ||
-    value.columns * value.rows > 65_536
+    !integer(r.columns, 512) ||
+    !integer(r.rows, 512) ||
+    r.columns === 0 ||
+    r.rows === 0 ||
+    r.columns * r.rows > 65_536
   )
     return fail("testkit.pty.trace.geometry");
-  return value as PtyTerminalGeometry;
+  return Object.freeze({ columns: r.columns, rows: r.rows });
 };
 const exactLifecycle = (value: unknown): PtyLifecycleObservation => {
-  if (
-    !plainObject(value) ||
-    !exactKeys(value, [
+  const r = strictRecord(
+    value,
+    [
       "cleanup",
       "observationVersion",
       "processJoined",
@@ -190,61 +248,109 @@ const exactLifecycle = (value: unknown): PtyLifecycleObservation => {
       "terminalInputJoined",
       "terminalOutputJoined",
       "terminalTransportClosed",
-    ]) ||
-    value.observationVersion !== 1 ||
-    !["clean", "residual", "uncertain"].includes(value.cleanup as string) ||
-    typeof value.processJoined !== "boolean" ||
-    typeof value.terminalInputJoined !== "boolean" ||
-    typeof value.terminalOutputJoined !== "boolean" ||
-    typeof value.terminalTransportClosed !== "boolean" ||
-    !nonNegativeInteger(value.residualProcessCount, 65_536)
+    ],
+    "testkit.pty.trace.lifecycle",
+  );
+  if (
+    r.observationVersion !== 1 ||
+    !["clean", "residual", "uncertain"].includes(r.cleanup as string) ||
+    typeof r.processJoined !== "boolean" ||
+    typeof r.terminalInputJoined !== "boolean" ||
+    typeof r.terminalOutputJoined !== "boolean" ||
+    typeof r.terminalTransportClosed !== "boolean" ||
+    !integer(r.residualProcessCount, 65_536)
   )
     return fail("testkit.pty.trace.lifecycle");
-  return value as PtyLifecycleObservation;
+  return Object.freeze({
+    observationVersion: 1,
+    cleanup: r.cleanup as PtyLifecycleObservation["cleanup"],
+    processJoined: r.processJoined,
+    residualProcessCount: r.residualProcessCount,
+    terminalInputJoined: r.terminalInputJoined,
+    terminalOutputJoined: r.terminalOutputJoined,
+    terminalTransportClosed: r.terminalTransportClosed,
+  });
 };
-
 const exactAction = (value: unknown): PtyTransportAction => {
-  if (!plainObject(value) || !finite(value.monotonicAtMs))
-    return fail("testkit.pty.trace.action");
-  if (value.action === "resize") {
-    if (!exactKeys(value, ["action", "geometry", "monotonicAtMs"]))
-      return fail("testkit.pty.trace.action");
-    exactGeometry(value.geometry);
-  } else if (value.action === "input") {
+  const first = strictRecord(
+    value,
+    ownStringKeys(value, "testkit.pty.trace.action"),
+    "testkit.pty.trace.action",
+  );
+  if (!finite(first.monotonicAtMs)) return fail("testkit.pty.trace.action");
+  if (first.action === "resize") {
+    const r = strictRecord(
+      value,
+      ["action", "geometry", "monotonicAtMs"],
+      "testkit.pty.trace.action",
+    );
+    return Object.freeze({
+      action: "resize",
+      geometry: exactGeometry(r.geometry),
+      monotonicAtMs: r.monotonicAtMs as number,
+    });
+  }
+  if (first.action === "input") {
+    const r = strictRecord(
+      value,
+      ["action", "byteLength", "inputSha256", "monotonicAtMs"],
+      "testkit.pty.trace.action",
+    );
     if (
-      !exactKeys(value, [
-        "action",
-        "byteLength",
-        "inputSha256",
-        "monotonicAtMs",
-      ]) ||
-      !nonNegativeInteger(value.byteLength, 1_048_576) ||
-      !sha256Pattern.test(value.inputSha256 as string)
+      !integer(r.byteLength, 1_048_576) ||
+      !sha256Pattern.test(r.inputSha256 as string)
     )
       return fail("testkit.pty.trace.action");
-  } else if (value.action === "eof") {
-    if (!exactKeys(value, ["action", "monotonicAtMs"]))
-      return fail("testkit.pty.trace.action");
-  } else if (value.action === "interrupt-byte") {
+    return Object.freeze({
+      action: "input",
+      byteLength: r.byteLength,
+      inputSha256: r.inputSha256 as string,
+      monotonicAtMs: r.monotonicAtMs as number,
+    });
+  }
+  if (first.action === "eof") {
+    const r = strictRecord(
+      value,
+      ["action", "monotonicAtMs"],
+      "testkit.pty.trace.action",
+    );
+    return Object.freeze({
+      action: "eof",
+      monotonicAtMs: r.monotonicAtMs as number,
+    });
+  }
+  if (first.action === "interrupt-byte") {
+    const r = strictRecord(
+      value,
+      ["action", "byte", "monotonicAtMs"],
+      "testkit.pty.trace.action",
+    );
+    if (r.byte !== 3) return fail("testkit.pty.trace.action");
+    return Object.freeze({
+      action: "interrupt-byte",
+      byte: 3,
+      monotonicAtMs: r.monotonicAtMs as number,
+    });
+  }
+  if (first.action === "signal") {
+    const r = strictRecord(
+      value,
+      ["action", "monotonicAtMs", "signal", "targetStartIdentity"],
+      "testkit.pty.trace.action",
+    );
     if (
-      !exactKeys(value, ["action", "byte", "monotonicAtMs"]) ||
-      value.byte !== 3
+      !["SIGINT", "SIGTERM", "SIGKILL"].includes(r.signal as string) ||
+      !identifierPattern.test(r.targetStartIdentity as string)
     )
       return fail("testkit.pty.trace.action");
-  } else if (value.action === "signal") {
-    if (
-      !exactKeys(value, [
-        "action",
-        "monotonicAtMs",
-        "signal",
-        "targetStartIdentity",
-      ]) ||
-      !["SIGINT", "SIGTERM", "SIGKILL"].includes(value.signal as string) ||
-      !identifierPattern.test(value.targetStartIdentity as string)
-    )
-      return fail("testkit.pty.trace.action");
-  } else return fail("testkit.pty.trace.action");
-  return value as PtyTransportAction;
+    return Object.freeze({
+      action: "signal",
+      monotonicAtMs: r.monotonicAtMs as number,
+      signal: r.signal as "SIGINT" | "SIGTERM" | "SIGKILL",
+      targetStartIdentity: r.targetStartIdentity as string,
+    });
+  }
+  return fail("testkit.pty.trace.action");
 };
 
 const expectedOutcome = (
@@ -286,14 +392,97 @@ const expectedOutcome = (
     semanticState: "active",
   };
 };
+const expectedSnapshot = (
+  name: PtySemanticContractCaseName,
+): PtyTerminalSemanticSnapshot => {
+  const limits =
+    name === "pty:output-limit"
+      ? { ...defaultPtyTerminalEmulatorLimits, maximumOutputBytes: 4 }
+      : defaultPtyTerminalEmulatorLimits;
+  const terminal = new BoundedTerminalEmulator(
+    { columns: 80, rows: 24 },
+    limits,
+  );
+  terminal.resize({ columns: 100, rows: 30 });
+  const text =
+    name === "pty:interactive-ready"
+      ? "\u001b[?1049hAGENTSCOPE_PTY_READY"
+      : name === "pty:interactive-completed"
+        ? "AGENTSCOPE_PTY_COMPLETE"
+        : name === "pty:credential-prompt"
+          ? "Password: "
+          : name === "pty:malformed-control"
+            ? "\u001b["
+            : name === "pty:output-limit"
+              ? "1234"
+              : "waiting";
+  terminal.write(encoder.encode(text));
+  if (name === "pty:output-limit")
+    try {
+      terminal.write(encoder.encode("5"));
+    } catch {
+      /* fixed categorical oracle */
+    }
+  return terminal.end();
+};
+const expectedActions = (
+  request: PtySemanticContractRequest,
+): readonly PtyTransportAction[] => {
+  const at = request.monotonicStartupDeadlineMs - 100;
+  const actions: PtyTransportAction[] = [
+    Object.freeze({
+      action: "resize",
+      geometry: Object.freeze({ columns: 100, rows: 30 }),
+      monotonicAtMs: at,
+    }),
+    Object.freeze({
+      action: "input",
+      byteLength: 7,
+      inputSha256: digest("fixture"),
+      monotonicAtMs: at + 1,
+    }),
+    Object.freeze({ action: "eof", monotonicAtMs: at + 2 }),
+  ];
+  if (request.caseName === "pty:timeout-escalation")
+    actions.push(
+      Object.freeze({
+        action: "interrupt-byte",
+        byte: 3,
+        monotonicAtMs: request.monotonicExecutionDeadlineMs - 500,
+      }),
+      Object.freeze({
+        action: "signal",
+        monotonicAtMs: request.monotonicExecutionDeadlineMs - 400,
+        signal: "SIGINT",
+        targetStartIdentity: "fixture-root",
+      }),
+      Object.freeze({
+        action: "signal",
+        monotonicAtMs: request.monotonicExecutionDeadlineMs,
+        signal: "SIGTERM",
+        targetStartIdentity: "fixture-root",
+      }),
+      Object.freeze({
+        action: "signal",
+        monotonicAtMs:
+          request.monotonicExecutionDeadlineMs + request.terminationGraceMs,
+        signal: "SIGKILL",
+        targetStartIdentity: "fixture-root",
+      }),
+    );
+  return Object.freeze(actions);
+};
+const canonicalEqual = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
 
-const traceRecord = (
+const validateTrace = (
   value: unknown,
   request: PtySemanticContractRequest,
-): Record<string, unknown> => {
-  if (
-    !plainObject(value) ||
-    !exactKeys(value, [
+  oracle: PtyTerminalSemanticSnapshot,
+): PtySemanticTrace => {
+  const r = strictRecord(
+    value,
+    [
       "actions",
       "caseName",
       "componentEvidenceOnly",
@@ -310,44 +499,38 @@ const traceRecord = (
       "returnedAtMs",
       "runId",
       "traceVersion",
-    ]) ||
-    value.traceVersion !== 1 ||
-    value.caseName !== request.caseName ||
-    value.runId !== request.runId ||
-    value.requestFingerprint !== request.requestFingerprint ||
-    value.exactHarnessVersion !== componentVersion ||
-    value.executionMode !== "interactive" ||
-    value.componentEvidenceOnly !== true ||
-    value.containmentAuthority !== "not-claimed" ||
-    value.retainedRawTerminalBytes !== false ||
-    !finite(value.returnedAtMs) ||
-    value.returnedAtMs > request.monotonicShutdownDeadlineMs ||
-    !Array.isArray(value.actions) ||
-    value.actions.length > 128
+    ],
+    "testkit.pty.trace",
+  );
+  if (
+    r.traceVersion !== 1 ||
+    r.caseName !== request.caseName ||
+    r.runId !== request.runId ||
+    r.requestFingerprint !== request.requestFingerprint ||
+    r.exactHarnessVersion !== componentVersion ||
+    r.executionMode !== "interactive" ||
+    r.componentEvidenceOnly !== true ||
+    r.containmentAuthority !== "not-claimed" ||
+    r.retainedRawTerminalBytes !== false ||
+    !finite(r.returnedAtMs) ||
+    r.returnedAtMs > request.monotonicShutdownDeadlineMs
   )
     return fail("testkit.pty.trace");
-  return value;
-};
-
-const validateActions = (
-  value: readonly unknown[],
-  request: PtySemanticContractRequest,
-): readonly PtyTransportAction[] => {
-  const actions = value.map(exactAction);
-  let previous = -Infinity;
-  for (const action of actions) {
-    if (
-      action.monotonicAtMs < previous ||
-      action.monotonicAtMs > request.monotonicShutdownDeadlineMs
-    )
-      return fail("testkit.pty.trace.action-order");
-    previous = action.monotonicAtMs;
-  }
-  return actions;
-};
-
-const validateCleanLifecycle = (value: unknown): PtyLifecycleObservation => {
-  const lifecycle = exactLifecycle(value);
+  const initialGeometry = exactGeometry(r.initialGeometry);
+  if (!canonicalEqual(initialGeometry, request.initialGeometry))
+    return fail("testkit.pty.trace.binding");
+  const actions = Object.freeze(
+    strictArray(r.actions, "testkit.pty.trace").map(exactAction),
+  );
+  if (
+    !canonicalEqual(actions, expectedActions(request)) ||
+    actions.some((action) => action.monotonicAtMs > (r.returnedAtMs as number))
+  )
+    return fail("testkit.pty.trace.action-oracle");
+  const snapshot = validatePtyTerminalSemanticSnapshot(r.finalSnapshot);
+  if (!canonicalEqual(snapshot, oracle))
+    return fail("testkit.pty.trace.oracle");
+  const lifecycle = exactLifecycle(r.lifecycle);
   if (
     lifecycle.cleanup !== "clean" ||
     !lifecycle.processJoined ||
@@ -357,69 +540,70 @@ const validateCleanLifecycle = (value: unknown): PtyLifecycleObservation => {
     lifecycle.residualProcessCount !== 0
   )
     return fail("testkit.pty.trace.cleanup");
-  return lifecycle;
-};
-
-const validateTrace = (
-  value: unknown,
-  request: PtySemanticContractRequest,
-): PtySemanticTrace => {
-  const trace = traceRecord(value, request);
-  const initialGeometry = exactGeometry(trace.initialGeometry);
-  if (
-    initialGeometry.columns !== request.initialGeometry.columns ||
-    initialGeometry.rows !== request.initialGeometry.rows
-  )
-    return fail("testkit.pty.trace.binding");
-  const actions = validateActions(trace.actions as readonly unknown[], request);
-  const snapshot = validatePtyTerminalSemanticSnapshot(trace.finalSnapshot);
-  validateCleanLifecycle(trace.lifecycle);
   const expected = expectedOutcome(request.caseName);
+  const returnedAtMs = r.returnedAtMs;
+  const expectedReturnedAt =
+    request.caseName === "pty:timeout-escalation"
+      ? request.monotonicExecutionDeadlineMs + request.terminationGraceMs
+      : request.monotonicExecutionDeadlineMs - 1;
   if (
-    trace.outcome !== expected.outcome ||
-    trace.diagnosticCode !== expected.diagnosticCode ||
-    snapshot.semanticState !== expected.semanticState
+    r.outcome !== expected.outcome ||
+    r.diagnosticCode !== expected.diagnosticCode ||
+    snapshot.semanticState !== expected.semanticState ||
+    returnedAtMs !== expectedReturnedAt
   )
     return fail("testkit.pty.trace.oracle");
-  if (request.caseName === "pty:timeout-escalation") {
-    const signals = actions.filter(
-      (action): action is Extract<PtyTransportAction, { action: "signal" }> =>
-        action.action === "signal",
-    );
-    if (
-      signals.length !== 2 ||
-      signals[0]?.signal !== "SIGTERM" ||
-      signals[1]?.signal !== "SIGKILL" ||
-      signals[1].monotonicAtMs - signals[0].monotonicAtMs !==
-        request.terminationGraceMs
-    )
-      return fail("testkit.pty.trace.escalation");
-  }
-  return trace as PtySemanticTrace;
+  return Object.freeze({
+    traceVersion: 1,
+    caseName: request.caseName,
+    runId: request.runId,
+    requestFingerprint: request.requestFingerprint,
+    exactHarnessVersion: componentVersion,
+    executionMode: "interactive",
+    componentEvidenceOnly: true,
+    containmentAuthority: "not-claimed",
+    retainedRawTerminalBytes: false,
+    initialGeometry,
+    finalSnapshot: snapshot,
+    actions,
+    lifecycle,
+    outcome: expected.outcome,
+    diagnosticCode: expected.diagnosticCode,
+    returnedAtMs,
+  });
 };
-
 const encodeTrace = (
   value: unknown,
   request: PtySemanticContractRequest,
+  snapshot: PtyTerminalSemanticSnapshot,
 ): PtySemanticTraceEnvelope => {
-  const trace = validateTrace(value, request);
-  const encoded = encoder.encode(JSON.stringify(trace));
+  const encoded = encoder.encode(
+    JSON.stringify(validateTrace(value, request, snapshot)),
+  );
   if (encoded.byteLength > ptySemanticTraceEnvelopeLimitBytes)
     return fail("testkit.pty.trace.envelope-limit");
   return encoded;
 };
-
 const verifyEnvelope = (
   value: unknown,
   request: PtySemanticContractRequest,
+  snapshot: PtyTerminalSemanticSnapshot,
 ): PtySemanticTrace => {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Object.getPrototypeOf(value) !== Uint8Array.prototype
-  )
+  let bytes: Uint8Array;
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      isProxy(value) ||
+      Object.getPrototypeOf(value) !== Uint8Array.prototype ||
+      Object.getPrototypeOf((value as Uint8Array).buffer) !==
+        ArrayBuffer.prototype
+    )
+      return fail("testkit.pty.trace.envelope");
+    bytes = new Uint8Array(value as Uint8Array);
+  } catch {
     return fail("testkit.pty.trace.envelope");
-  const bytes = value as Uint8Array;
+  }
   if (bytes.byteLength > ptySemanticTraceEnvelopeLimitBytes)
     return fail("testkit.pty.trace.envelope-limit");
   let parsed: unknown;
@@ -428,21 +612,25 @@ const verifyEnvelope = (
   } catch {
     return fail("testkit.pty.trace.envelope");
   }
-  return validateTrace(parsed, request);
+  const trace = validateTrace(parsed, request, snapshot);
+  const canonical = encoder.encode(JSON.stringify(trace));
+  if (
+    canonical.byteLength !== bytes.byteLength ||
+    canonical.some((byte, index) => byte !== bytes[index])
+  )
+    return fail("testkit.pty.trace.envelope-canonical");
+  return trace;
 };
-
 const createRequest = (
   caseName: PtySemanticContractCaseName,
 ): PtySemanticContractRequest => {
   const now = performance.now();
   const runId = randomUUID();
   return Object.freeze({
-    requestVersion: 1 as const,
+    requestVersion: 1,
     caseName,
     runId,
-    requestFingerprint: createHash("sha256")
-      .update(`${caseName}:${runId}`)
-      .digest("hex"),
+    requestFingerprint: digest(`${caseName}:${runId}`),
     initialGeometry: Object.freeze({ columns: 80, rows: 24 }),
     monotonicStartupDeadlineMs: now + 1_000,
     monotonicExecutionDeadlineMs: now + 2_000,
@@ -467,10 +655,12 @@ export const createPtySemanticContractSuite =
         name,
         instantiate: (): PtySemanticContractRun => {
           const request = createRequest(name);
+          const snapshot = expectedSnapshot(name);
           return Object.freeze({
             request,
-            encode: (trace: unknown) => encodeTrace(trace, request),
-            verify: (envelope: unknown) => verifyEnvelope(envelope, request),
+            encode: (trace: unknown) => encodeTrace(trace, request, snapshot),
+            verify: (envelope: unknown) =>
+              verifyEnvelope(envelope, request, snapshot),
           });
         },
       }),
@@ -479,21 +669,38 @@ export const createPtySemanticContractSuite =
 export const validatePtyModeApplicability = (
   value: unknown,
 ): PtyModeApplicability => {
-  if (!plainObject(value)) return fail("testkit.pty.mode-applicability");
-  if (value.status === "not-applicable") {
-    if (
-      !exactKeys(value, ["reason", "status"]) ||
-      value.reason !== "no-documented-interactive-mode"
-    )
+  const first = strictRecord(
+    value,
+    ownStringKeys(value, "testkit.pty.mode-applicability"),
+    "testkit.pty.mode-applicability",
+  );
+  if (first.status === "not-applicable") {
+    const exact = strictRecord(
+      value,
+      ["reason", "status"],
+      "testkit.pty.mode-applicability",
+    );
+    if (exact.reason !== "no-documented-interactive-mode")
       return fail("testkit.pty.mode-applicability");
-    return value as PtyModeApplicability;
+    return Object.freeze({
+      status: "not-applicable",
+      reason: "no-documented-interactive-mode",
+    });
   }
+  const exact = strictRecord(
+    value,
+    ["documentedMode", "exactHarnessVersion", "status"],
+    "testkit.pty.mode-applicability",
+  );
   if (
-    value.status !== "available" ||
-    !exactKeys(value, ["documentedMode", "exactHarnessVersion", "status"]) ||
-    !identifierPattern.test(value.documentedMode as string) ||
-    !identifierPattern.test(value.exactHarnessVersion as string)
+    exact.status !== "available" ||
+    !identifierPattern.test(exact.documentedMode as string) ||
+    !identifierPattern.test(exact.exactHarnessVersion as string)
   )
     return fail("testkit.pty.mode-applicability");
-  return value as PtyModeApplicability;
+  return Object.freeze({
+    status: "available",
+    documentedMode: exact.documentedMode as string,
+    exactHarnessVersion: exact.exactHarnessVersion as string,
+  });
 };
