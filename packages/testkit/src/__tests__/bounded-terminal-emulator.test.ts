@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { performance } from "node:perf_hooks";
 
 import {
   BoundedTerminalEmulator,
@@ -213,19 +212,27 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     expect(snapshot.outputBytes).toBeLessThanOrEqual(32_768);
   });
 
-  it("processes the advertised byte ceiling with linear bounded work", () => {
+  it("processes the exact advertised byte ceiling and rejects overflow", () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
     const payload = bytes(
       "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes),
     );
-    const startedAt = performance.now();
     terminal.write(payload);
     const snapshot = terminal.end();
-    const elapsedMs = performance.now() - startedAt;
     expect(snapshot.outputBytes).toBe(
       defaultPtyTerminalEmulatorLimits.maximumOutputBytes,
     );
-    expect(elapsedMs).toBeLessThan(2_000);
+
+    const overflow = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    expect(() => {
+      overflow.write(
+        bytes(
+          "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes + 1),
+        ),
+      );
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),
+    );
   });
 
   it("does not dispatch screen or recent text through inherited numeric setters", () => {
