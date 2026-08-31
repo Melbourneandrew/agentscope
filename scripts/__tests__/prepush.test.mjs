@@ -235,7 +235,7 @@ test("signals prevent pre-spawn execution or forward and join prepush", async ()
   executable(
     afterRoot,
     "pnpm",
-    `#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');const descendant=spawn(process.execPath,['-e','process.on("SIGTERM",()=>process.exit(0));setTimeout(()=>{},30000)'],{detached:true,stdio:'ignore'});fs.writeFileSync(${JSON.stringify(childPid)},String(process.pid));fs.writeFileSync(${JSON.stringify(descendantPid)},String(descendant.pid));process.on('SIGTERM',()=>setTimeout(()=>{descendant.once('close',()=>{fs.writeFileSync(${JSON.stringify(joined)},'joined');process.exit(0)});descendant.kill('SIGTERM')},2250));setTimeout(()=>{},30000)\n`,
+    `#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');const descendant=spawn(process.execPath,['-e','process.on("SIGTERM",()=>process.exit(0));setTimeout(()=>{},30000)'],{detached:true,stdio:'ignore'});process.on('SIGTERM',()=>setTimeout(()=>{descendant.once('close',()=>{fs.writeFileSync(${JSON.stringify(joined)},'joined');process.exit(0)});descendant.kill('SIGTERM')},2250));fs.writeFileSync(${JSON.stringify(descendantPid)},String(descendant.pid));fs.writeFileSync(${JSON.stringify(childPid)},String(process.pid));setTimeout(()=>{},30000)\n`,
   );
   const after = spawn(process.execPath, [entrypoint], {
     cwd: repositoryRoot,
