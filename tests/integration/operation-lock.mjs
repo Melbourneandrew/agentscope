@@ -77,9 +77,14 @@ export const acquireIntegrationOperationLock = async (
   const deadline = performance.now() + maximumWaitMilliseconds;
   let server;
   let waitingSockets;
+  let released = false;
   for (;;) {
     waitingSockets = new Set();
     server = createServer((socket) => {
+      if (released) {
+        socket.destroy();
+        return;
+      }
       waitingSockets.add(socket);
       socket.once("close", () => waitingSockets.delete(socket));
     });
@@ -113,7 +118,6 @@ export const acquireIntegrationOperationLock = async (
         throw operationTimeoutError(errorCode, error);
     }
   }
-  let released = false;
   return async () => {
     if (released) return;
     released = true;
