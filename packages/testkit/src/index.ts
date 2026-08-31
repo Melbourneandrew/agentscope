@@ -6,11 +6,13 @@ import {
 } from "node:http";
 
 export * from "./harness.js";
+export * from "./bounded-terminal-emulator.js";
 export * from "./headless-supervisor-contract.js";
 export * from "./headless-supervisor-kernel.js";
 export * from "./headless-supervisor.js";
 export * from "./model-routes.js";
 export * from "./platform-fixture.js";
+export * from "./pty-terminal-contract.js";
 
 export interface MockRequest {
   method: string;
