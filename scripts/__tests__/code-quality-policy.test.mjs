@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -35,6 +36,8 @@ const coveragePolicyTestDeadlineMs =
   coveragePolicyPhaseDeadlineMs + coveragePolicyTeardownMilliseconds + 1_000;
 const coveragePolicyOutputBytes = 512 * 1024;
 const vitestModuleUrl = import.meta.resolve("vitest/node");
+const coverageFixtureReadinessMilliseconds = 2_000;
+const coverageFixtureTeardownMilliseconds = 1_000;
 
 function coverageWorkerError(message, workerJoined = true) {
   const error = new Error(message);
@@ -303,6 +306,42 @@ const coverageWorkerSource = String.raw`
       })
       .finally(() => process.disconnect());
   });
+`;
+
+const coverageHeartbeatFixtureSource = String.raw`
+  const { appendFileSync } = require("node:fs");
+  const [heartbeatPath, token, startIdentity, mode] = process.argv.slice(1);
+  const ready = {
+    kind: "ready",
+    token,
+    startIdentity,
+    pid: process.pid,
+    groupPid: process.pid,
+  };
+  if (mode === "missing") process.send(ready);
+  else if (mode === "substituted") {
+    appendFileSync(
+      heartbeatPath,
+      "ready:" + token + ":" + process.pid + ":" + startIdentity + "\n",
+    );
+    process.send({ ...ready, pid: process.pid + 1 });
+  } else if (mode === "unrelated-token") {
+    appendFileSync(
+      heartbeatPath,
+      "ready:unrelated:" + process.pid + ":" + startIdentity + "\n",
+    );
+    process.send({ ...ready, token: "unrelated" });
+  } else if (mode === "valid") {
+    appendFileSync(
+      heartbeatPath,
+      "ready:" + token + ":" + process.pid + ":" + startIdentity + "\n",
+    );
+    process.send(ready);
+  }
+  setInterval(
+    () => appendFileSync(heartbeatPath, "tick:" + token + "\n"),
+    5,
+  );
 `;
 
 function createCoverageOutputBudget(maximumOutputBytes, overflow) {
@@ -633,8 +672,11 @@ function createCoverageHangFixture() {
       readFileSync(join(repositoryRoot, "quality-policy.json"), "utf8"),
     );
     return {
+      fixtureRoot,
+      heartbeatRoot,
       heartbeatPath,
       reportRoot,
+      readinessToken: randomBytes(32).toString("hex"),
       testPath,
       thresholds: qualityPolicy.packages["packages/testkit"].coverage,
       cleanup() {
@@ -663,6 +705,154 @@ function createCoverageHangFixture() {
       }
     }
     throw error;
+  }
+}
+
+function coverageFixtureReadinessMatches(message, owner, fixture) {
+  if (
+    message?.kind !== "ready" ||
+    message.token !== fixture.readinessToken ||
+    message.startIdentity !== owner.startIdentity ||
+    message.pid !== owner.child.pid ||
+    message.groupPid !== owner.child.pid ||
+    !existsSync(fixture.heartbeatPath) ||
+    !statSync(fixture.heartbeatPath).isFile()
+  )
+    return false;
+  const [readyLine] = readFileSync(fixture.heartbeatPath, "utf8").split("\n");
+  return (
+    readyLine ===
+      `ready:${fixture.readinessToken}:${owner.child.pid}:${owner.startIdentity}` &&
+    !coverageGroupIsAbsent(owner.child.pid)
+  );
+}
+
+async function stopCoverageHeartbeatOwner(owner) {
+  try {
+    process.kill(-owner.child.pid, "SIGTERM");
+  } catch (error) {
+    if (error?.code !== "ESRCH")
+      throw coverageWorkerError(
+        "Coverage heartbeat fixture readiness failed",
+        false,
+      );
+  }
+  const cooperative = await waitForCoverageContainment(
+    owner.child,
+    owner.closed,
+    Math.min(owner.outerDeadlineAt, performance.now() + 100),
+    coverageGroupIsAbsent,
+  );
+  if (cooperative !== undefined) return;
+  killCoverageGroup(owner.child.pid);
+  const forced = await waitForCoverageContainment(
+    owner.child,
+    owner.closed,
+    owner.outerDeadlineAt,
+    coverageGroupIsAbsent,
+  );
+  if (forced === undefined)
+    throw coverageWorkerError(
+      "Coverage heartbeat fixture readiness failed",
+      false,
+    );
+}
+
+async function waitForCoverageFixtureReadiness(
+  owner,
+  fixture,
+  observeReadinessAt,
+) {
+  let readinessTimer;
+  let fail;
+  let ready;
+  try {
+    await new Promise((resolveReady, rejectReady) => {
+      fail = () =>
+        rejectReady(
+          coverageWorkerError("Coverage heartbeat fixture readiness failed"),
+        );
+      ready = (message) => {
+        try {
+          const observedAt = observeReadinessAt(owner);
+          if (
+            !Number.isFinite(observedAt) ||
+            observedAt >= owner.readinessDeadlineAt ||
+            !coverageFixtureReadinessMatches(message, owner, fixture)
+          ) {
+            fail();
+            return;
+          }
+        } catch {
+          fail();
+          return;
+        }
+        resolveReady();
+      };
+      owner.child.once("message", ready);
+      owner.child.once("error", fail);
+      owner.child.once("close", fail);
+      readinessTimer = setTimeout(
+        fail,
+        Math.max(1, owner.readinessDeadlineAt - performance.now()),
+      );
+    });
+  } finally {
+    clearTimeout(readinessTimer);
+    owner.child.off("message", ready);
+    owner.child.off("error", fail);
+    owner.child.off("close", fail);
+  }
+}
+
+async function startCoverageHeartbeatOwner(
+  fixture,
+  mode = "valid",
+  observeReadinessAt = () => performance.now(),
+) {
+  const startedAt = performance.now();
+  const readinessDeadlineAt = startedAt + coverageFixtureReadinessMilliseconds;
+  const outerDeadlineAt =
+    readinessDeadlineAt + coverageFixtureTeardownMilliseconds;
+  const startIdentity = randomBytes(32).toString("hex");
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=commonjs",
+      "--eval",
+      coverageHeartbeatFixtureSource,
+      fixture.heartbeatPath,
+      fixture.readinessToken,
+      startIdentity,
+      mode,
+    ],
+    {
+      cwd: repositoryRoot,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
+    },
+  );
+  const closed = new Promise((resolveClose) => {
+    child.once("close", (code, signal) => resolveClose({ code, signal }));
+  });
+  const owner = {
+    child,
+    closed,
+    outerDeadlineAt,
+    readinessDeadlineAt,
+    startIdentity,
+  };
+  try {
+    await waitForCoverageFixtureReadiness(owner, fixture, observeReadinessAt);
+    return owner;
+  } catch {
+    await stopCoverageHeartbeatOwner(owner);
+    try {
+      fixture.cleanup();
+    } catch {
+      throw coverageWorkerError("Coverage heartbeat fixture readiness failed");
+    }
+    throw coverageWorkerError("Coverage heartbeat fixture readiness failed");
   }
 }
 
@@ -1403,36 +1593,83 @@ test("coverage worker rejects a successful leader with a live descendant", async
 
 test("unproved coverage containment preserves owned fixture evidence", async () => {
   const fixture = createCoverageHangFixture();
+  let cleanupAllowed = false;
   try {
-    const failure = await runCoveragePolicyWorker({
-      mode: "success-with-descendant",
+    const owner = await startCoverageHeartbeatOwner(fixture);
+    let containmentFailureInvoked = false;
+    const containmentStartedAt = performance.now();
+    const containmentDeadlineAt = performance.now() + 200;
+    const outcome = await settleCoveragePolicyWorker({
+      worker: owner.child,
+      startedAt: containmentStartedAt,
+      deadlineAt: containmentDeadlineAt,
       phaseDeadlineMs: 200,
       maximumOutputBytes: 1_024,
-      readinessPath: fixture.heartbeatPath,
       groupIsAbsent: () => false,
-      teardownMilliseconds: 100,
+      killGroup: killCoverageGroup,
       containmentFailure: async () => {
-        throw coverageWorkerError(
-          "Vitest coverage policy containment failed",
-          false,
-        );
+        containmentFailureInvoked = true;
       },
+      teardownMilliseconds: 100,
     }).then(
-      () => assert.fail("coverage worker accepted unproved containment"),
-      (error) => error,
+      (value) => ({ kind: "success", value }),
+      (error) => ({ error, kind: "failure" }),
     );
-    assert.equal(failure.workerJoined, false);
-    assert.equal(failure.message, "Vitest coverage policy containment failed");
+    const contained = await waitForCoverageContainment(
+      owner.child,
+      owner.closed,
+      owner.outerDeadlineAt,
+      coverageGroupIsAbsent,
+    );
+    if (contained === undefined)
+      throw coverageWorkerError(
+        "Vitest coverage policy containment failed",
+        false,
+      );
+    cleanupAllowed = true;
+    assert.equal(outcome.kind, "failure");
+    assert.equal(outcome.error.workerJoined, false);
+    assert.equal(
+      outcome.error.message,
+      "Vitest coverage policy containment failed",
+    );
+    assert.equal(containmentFailureInvoked, true);
     assert.equal(existsSync(fixture.testPath), true);
     assert.equal(existsSync(fixture.reportRoot), true);
     await assertHeartbeatStopped(fixture.heartbeatPath);
   } finally {
-    // This is the isolated test supervisor: the real group kill above has
-    // stopped the controlled descendant before the preserved evidence is
-    // deliberately removed.
-    fixture.cleanup();
+    if (cleanupAllowed) fixture.cleanup();
   }
 });
+
+test.each([
+  ["missing", "missing"],
+  ["substituted", "substituted"],
+  ["unready", "unready"],
+  ["unrelated-token", "unrelated-token"],
+  ["late", "valid", (owner) => owner.readinessDeadlineAt],
+])(
+  "coverage heartbeat readiness rejects %s evidence",
+  async (_label, mode, observeReadinessAt) => {
+    const fixture = createCoverageHangFixture();
+    const failure = await startCoverageHeartbeatOwner(
+      fixture,
+      mode,
+      observeReadinessAt,
+    ).then(
+      () => assert.fail("coverage heartbeat accepted invalid readiness"),
+      (error) => error,
+    );
+    assert.equal(failure.workerJoined, true);
+    assert.equal(
+      failure.message,
+      "Coverage heartbeat fixture readiness failed",
+    );
+    assert.equal(existsSync(fixture.fixtureRoot), false);
+    assert.equal(existsSync(fixture.reportRoot), false);
+    assert.equal(existsSync(fixture.heartbeatRoot), false);
+  },
+);
 
 test("coverage result observed after its deadline is rejected", async () => {
   const pending = runCoveragePolicyWorker({
