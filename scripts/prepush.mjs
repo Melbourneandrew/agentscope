@@ -6,7 +6,6 @@ const MAX_GIT_OUTPUT_BYTES = 8 * 1024;
 const MAX_LOCAL_ENVIRONMENT_NAMES = 64;
 const MAX_ENVIRONMENT_NAME_BYTES = 128;
 const GIT_ENUMERATION_TIMEOUT_MS = 2_000;
-const CHILD_JOIN_TIMEOUT_MS = 2_000;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const FORWARDED_SIGNALS = ["SIGHUP", "SIGINT", "SIGTERM"];
 const SIGNAL_EXIT_CODES = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
@@ -59,6 +58,22 @@ function terminateBySignal(signal) {
   process.exit(SIGNAL_EXIT_CODES[signal] ?? 74);
 }
 
+function processGroupIsAbsent(processGroup) {
+  try {
+    process.kill(-processGroup, 0);
+    return false;
+  } catch (error) {
+    if (error?.code === "ESRCH") return true;
+    throw error;
+  }
+}
+
+async function joinProcessGroup(processGroup) {
+  while (!processGroupIsAbsent(processGroup)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function runChild(command, arguments_, options) {
   return new Promise((resolve) => {
     const child = spawn(command, arguments_, {
@@ -72,9 +87,10 @@ function runChild(command, arguments_, options) {
         resolve({ code: null, signal: null, spawnError: true });
       }
     });
-    child.once("close", (code, signal) => {
+    child.once("close", async (code, signal) => {
       if (!settled) {
         settled = true;
+        if (child.pid !== undefined) await joinProcessGroup(child.pid);
         resolve({ code, signal, spawnError: false });
       }
     });
@@ -85,16 +101,11 @@ function runChild(command, arguments_, options) {
 export async function main() {
   let activeChild;
   let pendingSignal;
-  let forcedJoin;
   const forward = (signal) => {
     if (pendingSignal !== undefined) return;
     pendingSignal = signal;
     if (activeChild !== undefined) {
       signalProcessGroup(activeChild, signal);
-      forcedJoin = setTimeout(() => {
-        signalProcessGroup(activeChild, "SIGKILL");
-      }, CHILD_JOIN_TIMEOUT_MS);
-      forcedJoin.unref();
     }
   };
   for (const signal of FORWARDED_SIGNALS)
@@ -131,7 +142,6 @@ export async function main() {
     },
   });
   clearTimeout(enumerationTimer);
-  clearTimeout(forcedJoin);
   activeChild = undefined;
   if (pendingSignal !== undefined) terminateBySignal(pendingSignal);
 
@@ -158,10 +168,9 @@ export async function main() {
     stdio: "inherit",
     onSpawn(child) {
       activeChild = child;
-      if (pendingSignal !== undefined) forward(pendingSignal);
+      if (pendingSignal !== undefined) signalProcessGroup(child, pendingSignal);
     },
   });
-  clearTimeout(forcedJoin);
   activeChild = undefined;
   if (pendingSignal !== undefined) terminateBySignal(pendingSignal);
   if (validation.spawnError) {

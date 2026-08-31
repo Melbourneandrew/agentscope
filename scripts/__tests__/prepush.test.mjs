@@ -225,6 +225,7 @@ test("signals prevent pre-spawn execution or forward and join prepush", async ()
 
   const afterRoot = temporaryRoot();
   const childPid = join(afterRoot, "pnpm.pid");
+  const descendantPid = join(afterRoot, "descendant.pid");
   const joined = join(afterRoot, "pnpm.joined");
   executable(
     afterRoot,
@@ -234,7 +235,7 @@ test("signals prevent pre-spawn execution or forward and join prepush", async ()
   executable(
     afterRoot,
     "pnpm",
-    `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(childPid)},String(process.pid));process.on('SIGTERM',()=>setTimeout(()=>{fs.writeFileSync(${JSON.stringify(joined)},'joined');process.exit(0)},50));setTimeout(()=>{},30000)\n`,
+    `#!${process.execPath}\nconst {spawn}=require('node:child_process');const fs=require('node:fs');const descendant=spawn(process.execPath,['-e','process.on("SIGTERM",()=>process.exit(0));setTimeout(()=>{},30000)'],{detached:true,stdio:'ignore'});fs.writeFileSync(${JSON.stringify(childPid)},String(process.pid));fs.writeFileSync(${JSON.stringify(descendantPid)},String(descendant.pid));process.on('SIGTERM',()=>setTimeout(()=>{descendant.once('close',()=>{fs.writeFileSync(${JSON.stringify(joined)},'joined');process.exit(0)});descendant.kill('SIGTERM')},2250));setTimeout(()=>{},30000)\n`,
   );
   const after = spawn(process.execPath, [entrypoint], {
     cwd: repositoryRoot,
@@ -255,6 +256,8 @@ test("signals prevent pre-spawn execution or forward and join prepush", async ()
   );
   assert.deepEqual(afterResult, { code: null, signal: "SIGTERM" });
   assert.equal(readFileSync(joined, "utf8"), "joined");
+  const escapedPid = Number(readFileSync(descendantPid, "utf8"));
+  assert.throws(() => process.kill(escapedPid, 0), /ESRCH/u);
 });
 
 test("pre-push hook invokes only the scrubbed entrypoint", () => {
