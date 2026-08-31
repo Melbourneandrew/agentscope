@@ -103,10 +103,17 @@ const strictRecord = (
   }
   if (
     (prototype !== Object.prototype && prototype !== null) ||
-    ownKeys.length !== keys.length ||
-    ownKeys.some((key) => typeof key !== "string" || !keys.includes(key))
+    ownKeys.length !== keys.length
   )
     return fail(code);
+  for (let index = 0; index < ownKeys.length; index += 1) {
+    const ownKey = ownKeys[index];
+    let found = false;
+    if (typeof ownKey === "string")
+      for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1)
+        if (keys[keyIndex] === ownKey) found = true;
+    if (!found) return fail(code);
+  }
   const result = Object.create(null) as Record<string, unknown>;
   for (const key of keys) {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -123,6 +130,16 @@ const strictRecord = (
 };
 const hash = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
+const containsText = (value: string, needle: string): boolean => {
+  if (needle.length === 0) return true;
+  for (let start = 0; start + needle.length <= value.length; start += 1) {
+    let matches = true;
+    for (let offset = 0; offset < needle.length; offset += 1)
+      if (value[start + offset] !== needle[offset]) matches = false;
+    if (matches) return true;
+  }
+  return false;
+};
 
 const validateLimits = (
   value: PtyTerminalEmulatorLimits,
@@ -186,11 +203,13 @@ const parseCsiParameters = (
   const privateMode = value.startsWith("?");
   const body = privateMode ? value.slice(1) : value;
   if (!/^\d*(?:;\d*)*$/u.test(body)) return undefined;
-  const values = body
-    .split(";")
-    .map((part) => (part === "" ? 0 : Number(part)));
-  if (values.some((part) => !Number.isSafeInteger(part) || part > 65_535))
-    return undefined;
+  const parts = body.split(";");
+  const values: number[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index] === "" ? 0 : Number(parts[index]);
+    if (!Number.isSafeInteger(part) || part > 65_535) return undefined;
+    values[index] = part;
+  }
   return { privateMode, values };
 };
 
@@ -308,18 +327,16 @@ export class BoundedTerminalEmulator {
         ? "malformed-control"
         : credentialPromptPattern.test(this.#recent)
           ? "credential-prompt"
-          : this.#recent.includes(completedMarker)
+          : containsText(this.#recent, completedMarker)
             ? "completed"
-            : this.#recent.includes(readyMarker)
+            : containsText(this.#recent, readyMarker)
               ? "ready"
               : "active";
+    let cells = "";
+    for (let index = 0; index < this.#cells.length; index += 1)
+      cells += this.#cells[index];
     const screenSha256 = hash(
-      JSON.stringify({
-        alternateScreen: this.#alternateScreen,
-        cells: this.#cells.join(""),
-        cursor: [this.#row, this.#column],
-        geometry: this.#geometry,
-      }),
+      `${this.#alternateScreen ? "1" : "0"}\u0000${cells}\u0000${this.#row}\u0000${this.#column}\u0000${this.#geometry.columns}\u0000${this.#geometry.rows}`,
     );
     return Object.freeze({
       snapshotVersion: 1 as const,
@@ -510,10 +527,13 @@ export class BoundedTerminalEmulator {
   #appendRecent(character: string): void {
     this.#recent += character;
     const codePoints = [...this.#recent];
-    if (codePoints.length > this.#limits.maximumRecentCodePoints)
-      this.#recent = codePoints
-        .slice(codePoints.length - this.#limits.maximumRecentCodePoints)
-        .join("");
+    if (codePoints.length > this.#limits.maximumRecentCodePoints) {
+      let recent = "";
+      const start = codePoints.length - this.#limits.maximumRecentCodePoints;
+      for (let index = start; index < codePoints.length; index += 1)
+        recent += codePoints[index];
+      this.#recent = recent;
+    }
   }
 
   #lineFeed(): void {
@@ -540,6 +560,8 @@ export class BoundedTerminalEmulator {
   }
 }
 
+// Closed-schema validation deliberately keeps every semantic bound in one audit point.
+/* eslint-disable complexity -- one closed-schema audit point */
 export const validatePtyTerminalSemanticSnapshot = (
   value: unknown,
 ): PtyTerminalSemanticSnapshot => {
@@ -592,14 +614,12 @@ export const validatePtyTerminalSemanticSnapshot = (
     typeof record.cursorVisible !== "boolean" ||
     typeof record.sawCursorPositionQuery !== "boolean" ||
     typeof record.titlePresent !== "boolean" ||
-    ![
-      "active",
-      "ready",
-      "completed",
-      "credential-prompt",
-      "malformed-control",
-      "output-limit",
-    ].includes(record.semanticState as string) ||
+    (record.semanticState !== "active" &&
+      record.semanticState !== "ready" &&
+      record.semanticState !== "completed" &&
+      record.semanticState !== "credential-prompt" &&
+      record.semanticState !== "malformed-control" &&
+      record.semanticState !== "output-limit") ||
     typeof record.screenSha256 !== "string" ||
     !sha256Pattern.test(record.screenSha256) ||
     (record.titleSha256 !== null &&
@@ -642,8 +662,9 @@ export const validatePtyTerminalSemanticSnapshot = (
     titlePresent: record.titlePresent,
     titleSha256: record.titleSha256,
     screenSha256: record.screenSha256,
-    semanticState: record.semanticState as PtySemanticState,
+    semanticState: record.semanticState,
   });
 };
+/* eslint-enable complexity */
 
 export const defaultPtyTerminalEmulatorLimits = defaultLimits;

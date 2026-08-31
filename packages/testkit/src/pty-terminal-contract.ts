@@ -139,6 +139,14 @@ const integer = (value: unknown, maximum: number): value is number =>
   value <= maximum;
 const digest = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
+const containsString = (
+  values: readonly string[],
+  candidate: string,
+): boolean => {
+  for (let index = 0; index < values.length; index += 1)
+    if (values[index] === candidate) return true;
+  return false;
+};
 
 const strictRecord = (
   value: unknown,
@@ -149,7 +157,7 @@ const strictRecord = (
     if (
       typeof value !== "object" ||
       value === null ||
-      Array.isArray(value) ||
+      arrayIsArray(value) ||
       isProxy(value)
     )
       return fail(code);
@@ -158,7 +166,14 @@ const strictRecord = (
     if (
       (prototype !== Object.prototype && prototype !== null) ||
       ownKeys.length !== keys.length ||
-      ownKeys.some((key) => typeof key !== "string" || !keys.includes(key))
+      (() => {
+        for (let index = 0; index < ownKeys.length; index += 1) {
+          const key = ownKeys[index];
+          if (typeof key !== "string" || !containsString(keys, key))
+            return true;
+        }
+        return false;
+      })()
     )
       return fail(code);
     const result = Object.create(null) as Record<string, unknown>;
@@ -183,7 +198,8 @@ const ownStringKeys = (value: unknown, code: string): readonly string[] => {
     if (typeof value !== "object" || value === null || isProxy(value))
       return fail(code);
     const keys = Reflect.ownKeys(value);
-    if (keys.some((key) => typeof key !== "string")) return fail(code);
+    for (let index = 0; index < keys.length; index += 1)
+      if (typeof keys[index] !== "string") return fail(code);
     return keys as string[];
   } catch {
     return fail(code);
@@ -192,7 +208,7 @@ const ownStringKeys = (value: unknown, code: string): readonly string[] => {
 const strictArray = (value: unknown, code: string): readonly unknown[] => {
   try {
     if (
-      !Array.isArray(value) ||
+      !arrayIsArray(value) ||
       isProxy(value) ||
       Object.getPrototypeOf(value) !== Array.prototype
     )
@@ -218,7 +234,7 @@ const strictArray = (value: unknown, code: string): readonly unknown[] => {
         !("value" in descriptor)
       )
         return fail(code);
-      result.push(descriptor.value);
+      result[index] = descriptor.value;
     }
     return Object.freeze(result);
   } catch {
@@ -257,7 +273,9 @@ const exactLifecycle = (value: unknown): PtyLifecycleObservation => {
   );
   if (
     r.observationVersion !== 1 ||
-    !["clean", "residual", "uncertain"].includes(r.cleanup as string) ||
+    (r.cleanup !== "clean" &&
+      r.cleanup !== "residual" &&
+      r.cleanup !== "uncertain") ||
     typeof r.processJoined !== "boolean" ||
     typeof r.terminalInputJoined !== "boolean" ||
     typeof r.terminalOutputJoined !== "boolean" ||
@@ -267,7 +285,7 @@ const exactLifecycle = (value: unknown): PtyLifecycleObservation => {
     return fail("testkit.pty.trace.lifecycle");
   return Object.freeze({
     observationVersion: 1,
-    cleanup: r.cleanup as PtyLifecycleObservation["cleanup"],
+    cleanup: r.cleanup,
     processJoined: r.processJoined,
     residualProcessCount: r.residualProcessCount,
     terminalInputJoined: r.terminalInputJoined,
@@ -344,7 +362,9 @@ const exactAction = (value: unknown): PtyTransportAction => {
       "testkit.pty.trace.action",
     );
     if (
-      !["SIGINT", "SIGTERM", "SIGKILL"].includes(r.signal as string) ||
+      (r.signal !== "SIGINT" &&
+        r.signal !== "SIGTERM" &&
+        r.signal !== "SIGKILL") ||
       typeof r.targetStartIdentity !== "string" ||
       !identifierPattern.test(r.targetStartIdentity)
     )
@@ -352,7 +372,7 @@ const exactAction = (value: unknown): PtyTransportAction => {
     return Object.freeze({
       action: "signal",
       monotonicAtMs: r.monotonicAtMs as number,
-      signal: r.signal as "SIGINT" | "SIGTERM" | "SIGKILL",
+      signal: r.signal,
       targetStartIdentity: r.targetStartIdentity,
     });
   }
@@ -435,7 +455,7 @@ const expectedActions = (
   request: PtySemanticContractRequest,
 ): readonly PtyTransportAction[] => {
   const at = request.monotonicStartupDeadlineMs - 100;
-  const actions: PtyTransportAction[] = [
+  const common = [
     Object.freeze({
       action: "resize",
       geometry: Object.freeze({ columns: 100, rows: 30 }),
@@ -448,9 +468,12 @@ const expectedActions = (
       monotonicAtMs: at + 1,
     }),
     Object.freeze({ action: "eof", monotonicAtMs: at + 2 }),
-  ];
+  ] as const;
   if (request.caseName === "pty:timeout-escalation")
-    actions.push(
+    return Object.freeze([
+      common[0],
+      common[1],
+      common[2],
       Object.freeze({
         action: "interrupt-byte",
         byte: 3,
@@ -475,8 +498,8 @@ const expectedActions = (
         signal: "SIGKILL",
         targetStartIdentity: "fixture-root",
       }),
-    );
-  return Object.freeze(actions);
+    ]);
+  return Object.freeze([common[0], common[1], common[2]]);
 };
 const canonicalJson = (value: unknown): string => {
   if (
@@ -500,7 +523,9 @@ const canonicalJson = (value: unknown): string => {
   if (typeof value === "object" && value !== null) {
     let result = "{";
     let index = 0;
-    for (const key of objectKeys(value)) {
+    const keys = objectKeys(value);
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      const key = keys[keyIndex]!;
       const descriptor = ownPropertyDescriptor(value, key);
       if (
         descriptor === undefined ||
@@ -564,13 +589,15 @@ const validateTrace = (
   const initialGeometry = exactGeometry(r.initialGeometry);
   if (!canonicalEqual(initialGeometry, request.initialGeometry))
     return fail("testkit.pty.trace.binding");
-  const actions = Object.freeze(
-    strictArray(r.actions, "testkit.pty.trace").map(exactAction),
-  );
-  if (
-    !canonicalEqual(actions, expectedActions(request)) ||
-    actions.some((action) => action.monotonicAtMs > (r.returnedAtMs as number))
-  )
+  const rawActions = strictArray(r.actions, "testkit.pty.trace");
+  const reconstructedActions: PtyTransportAction[] = [];
+  for (let index = 0; index < rawActions.length; index += 1)
+    reconstructedActions[index] = exactAction(rawActions[index]);
+  const actions = Object.freeze(reconstructedActions);
+  let lateAction = false;
+  for (let index = 0; index < actions.length; index += 1)
+    if (actions[index]!.monotonicAtMs > r.returnedAtMs) lateAction = true;
+  if (!canonicalEqual(actions, expectedActions(request)) || lateAction)
     return fail("testkit.pty.trace.action-oracle");
   const snapshot = validatePtyTerminalSemanticSnapshot(r.finalSnapshot);
   if (!canonicalEqual(snapshot, oracle))
@@ -659,11 +686,10 @@ const verifyEnvelope = (
   }
   const trace = validateTrace(parsed, request, snapshot);
   const canonical = encoder.encode(canonicalJson(trace));
-  if (
-    canonical.byteLength !== bytes.byteLength ||
-    canonical.some((byte, index) => byte !== bytes[index])
-  )
-    return fail("testkit.pty.trace.envelope-canonical");
+  let mismatch = canonical.byteLength !== bytes.byteLength;
+  for (let index = 0; !mismatch && index < canonical.byteLength; index += 1)
+    if (canonical[index] !== bytes[index]) mismatch = true;
+  if (mismatch) return fail("testkit.pty.trace.envelope-canonical");
   return trace;
 };
 const createRequest = (
@@ -685,18 +711,19 @@ const createRequest = (
 };
 
 export const createPtySemanticContractSuite =
-  (): readonly PtySemanticContractCase[] =>
-    (
-      [
-        "pty:interactive-ready",
-        "pty:interactive-completed",
-        "pty:credential-prompt",
-        "pty:malformed-control",
-        "pty:output-limit",
-        "pty:timeout-escalation",
-      ] as const
-    ).map((name) =>
-      Object.freeze({
+  (): readonly PtySemanticContractCase[] => {
+    const names = [
+      "pty:interactive-ready",
+      "pty:interactive-completed",
+      "pty:credential-prompt",
+      "pty:malformed-control",
+      "pty:output-limit",
+      "pty:timeout-escalation",
+    ] as const;
+    const suite: PtySemanticContractCase[] = [];
+    for (let index = 0; index < names.length; index += 1) {
+      const name = names[index]!;
+      suite[index] = Object.freeze({
         name,
         instantiate: (): PtySemanticContractRun => {
           const request = createRequest(name);
@@ -708,8 +735,10 @@ export const createPtySemanticContractSuite =
               verifyEnvelope(envelope, request, snapshot),
           });
         },
-      }),
-    );
+      });
+    }
+    return Object.freeze(suite);
+  };
 
 export const validatePtyModeApplicability = (
   value: unknown,

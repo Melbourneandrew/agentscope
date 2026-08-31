@@ -322,25 +322,58 @@ describe("semantic PTY contract", () => {
     expect(coercions).toBe(0);
   });
 
-  it("keeps action authority closed against inherited JSON hooks", () => {
+  it("keeps action authority closed against inherited array hooks", () => {
     const run = suite[0]!.instantiate();
     const trace = traceFor(run);
-    const prior = Object.getOwnPropertyDescriptor(Array.prototype, "toJSON");
+    const priorToJson = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      "toJSON",
+    );
+    const priorMap = Object.getOwnPropertyDescriptor(Array.prototype, "map")!;
+    const priorPush = Object.getOwnPropertyDescriptor(Array.prototype, "push")!;
+    const priorSome = Object.getOwnPropertyDescriptor(Array.prototype, "some")!;
+    const priorIncludes = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      "includes",
+    )!;
     Object.defineProperty(Array.prototype, "toJSON", {
       configurable: true,
       value: () => [],
     });
+    for (const name of ["map", "push", "some", "includes"] as const)
+      Object.defineProperty(Array.prototype, name, {
+        configurable: true,
+        value: () => {
+          throw new Error("synthetic-array-canary");
+        },
+      });
+    let outcome: string | undefined;
+    let actionCount: number | undefined;
+    let actionlessError: unknown;
     try {
       const envelope = run.encode(trace);
-      expect(run.verify(envelope).actions).toHaveLength(3);
-      expect(() => run.encode({ ...trace, actions: [] })).toThrowError(
-        new PtySemanticContractError("testkit.pty.trace.action-oracle"),
-      );
+      const verified = run.verify(envelope);
+      outcome = verified.outcome;
+      actionCount = verified.actions.length;
+      try {
+        run.encode({ ...trace, actions: [] });
+      } catch (error) {
+        actionlessError = error;
+      }
     } finally {
-      if (prior === undefined)
+      if (priorToJson === undefined)
         delete (Array.prototype as { toJSON?: unknown }).toJSON;
-      else Object.defineProperty(Array.prototype, "toJSON", prior);
+      else Object.defineProperty(Array.prototype, "toJSON", priorToJson);
+      Object.defineProperty(Array.prototype, "map", priorMap);
+      Object.defineProperty(Array.prototype, "push", priorPush);
+      Object.defineProperty(Array.prototype, "some", priorSome);
+      Object.defineProperty(Array.prototype, "includes", priorIncludes);
     }
+    expect(outcome).toBe("ready");
+    expect(actionCount).toBe(3);
+    expect(actionlessError).toEqual(
+      new PtySemanticContractError("testkit.pty.trace.action-oracle"),
+    );
   });
 
   it("keeps undocumented interactive modes explicitly not applicable", () => {
