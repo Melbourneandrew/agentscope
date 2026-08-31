@@ -52,9 +52,11 @@ export function discoverWorkspacePolicyInventory(root = testRoot) {
   const canonicalRoot = realpathSync(root);
   const inventory = [];
   for (const entry of readdirSync(canonicalRoot, { withFileTypes: true })) {
-    if (!entry.name.endsWith(".test.mjs")) continue;
+    if (entry.isDirectory())
+      fail(`nested test directory is not admitted: ${entry.name}`);
     if (!entry.isFile())
-      fail(`test entry is not a regular file: ${entry.name}`);
+      fail(`test-root entry is not a regular file: ${entry.name}`);
+    if (!entry.name.endsWith(".test.mjs")) continue;
     const path = resolve(canonicalRoot, entry.name);
     if (realpathSync(path) !== path)
       fail(`test path is not canonical: ${entry.name}`);

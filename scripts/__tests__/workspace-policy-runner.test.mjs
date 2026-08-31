@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
@@ -76,6 +83,25 @@ test("the checked-in inventory rejects omissions and unreviewed growth", () => {
     validateWorkspacePolicyInventory([...inventory, "prepush.test.mjs"]).length,
     inventory.length + 1,
   );
+});
+
+test("nested test-domain growth fails before classification", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-policy-inventory-"));
+  try {
+    mkdirSync(join(root, "nested"));
+    assert.throws(
+      () => discoverWorkspacePolicyInventory(root),
+      /nested test directory is not admitted: nested/,
+    );
+    rmSync(join(root, "nested"), { recursive: true });
+    symlinkSync("missing.test.mjs", join(root, "linked.test.mjs"));
+    assert.throws(
+      () => discoverWorkspacePolicyInventory(root),
+      /test-root entry is not a regular file: linked.test.mjs/,
+    );
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
 });
 
 test("the reserved prepush suite is authority only when present", () => {
