@@ -68,6 +68,15 @@ export function auditWorkspaceTargets({ workspaceRoot, expectedPackages }) {
     );
   }
   assert(nx.targetDefaults?.clean?.cache === false, "clean must not be cached");
+  for (const target of ["lint", "test", "coverage"]) {
+    const dependencies = nx.targetDefaults?.[target]?.dependsOn;
+    assert(
+      Array.isArray(dependencies) &&
+        dependencies.length === 1 &&
+        dependencies[0] === "build",
+      `nx ${target} must depend on its own settled build`,
+    );
+  }
 
   const audited = [];
   for (const [relativePath, expectedName] of expectedPackages) {
@@ -86,6 +95,20 @@ export function auditWorkspaceTargets({ workspaceRoot, expectedPackages }) {
         typeof manifest.scripts?.[target] === "string" &&
           manifest.scripts[target].trim().length > 0,
         `${expectedName} is missing mandatory Nx/package target: ${target}`,
+      );
+    }
+    if (manifest.scripts.build.includes("clean-workspace.mjs")) {
+      const cleanerInvocations = [
+        ...manifest.scripts.build.matchAll(/clean-workspace\.mjs/gu),
+      ];
+      const scopedCleanerInvocations = [
+        ...manifest.scripts.build.matchAll(
+          /clean-workspace\.mjs\s+--build-outputs(?=\s*(?:&&|\|\||;|$))/gu,
+        ),
+      ];
+      assert(
+        cleanerInvocations.length === scopedCleanerInvocations.length,
+        `${expectedName} build cleanup must preserve other target outputs`,
       );
     }
 

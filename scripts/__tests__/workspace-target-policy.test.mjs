@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -91,6 +92,186 @@ test("fails deterministically when a workspace target is missing", () => {
           ]),
         }),
       /missing mandatory Nx\/package target: coverage/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const target of ["lint", "test", "coverage"]) {
+  test(`rejects ${target} without a same-project build settlement edge`, () => {
+    const root = createFixture();
+    try {
+      const nxPath = join(root, "nx.json");
+      const nx = JSON.parse(readFileSync(nxPath, "utf8"));
+      nx.targetDefaults[target].dependsOn = ["^build"];
+      writeFileSync(nxPath, JSON.stringify(nx));
+      assert.throws(
+        () =>
+          auditWorkspaceTargets({
+            workspaceRoot: root,
+            expectedPackages: new Map([
+              ["packages/example", "@agentscope/example"],
+            ]),
+          }),
+        new RegExp(`nx ${target} must depend on its own settled build`),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("rejects build cleanup that can delete another target's output", () => {
+  const root = createFixture();
+  try {
+    const manifestPath = join(root, "packages/example/package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.scripts.build =
+      "node ../../scripts/clean-workspace.mjs && tsc -p tsconfig.json";
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(
+      () =>
+        auditWorkspaceTargets({
+          workspaceRoot: root,
+          expectedPackages: new Map([
+            ["packages/example", "@agentscope/example"],
+          ]),
+        }),
+      /build cleanup must preserve other target outputs/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects any unscoped cleaner invocation in a build script", () => {
+  const root = createFixture();
+  try {
+    const manifestPath = join(root, "packages/example/package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.scripts.build =
+      "node ../../scripts/clean-workspace.mjs --build-outputs && node ../../scripts/clean-workspace.mjs";
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(
+      () =>
+        auditWorkspaceTargets({
+          workspaceRoot: root,
+          expectedPackages: new Map([
+            ["packages/example", "@agentscope/example"],
+          ]),
+        }),
+      /build cleanup must preserve other target outputs/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("build cleanup preserves coverage while full cleanup owns it", () => {
+  const workspaceDirectory = join(repositoryRoot, "packages/testkit");
+  const coverageCanary = join(
+    workspaceDirectory,
+    "coverage/artifact-owner-canary",
+  );
+  const buildCanary = join(workspaceDirectory, "dist/build-owner-canary");
+  const cleaner = join(repositoryRoot, "scripts/clean-workspace.mjs");
+  try {
+    mkdirSync(join(workspaceDirectory, "coverage"), { recursive: true });
+    mkdirSync(join(workspaceDirectory, "dist"), { recursive: true });
+    writeFileSync(coverageCanary, "coverage-owned");
+    writeFileSync(buildCanary, "build-owned");
+
+    const buildCleanup = spawnSync(
+      process.execPath,
+      [cleaner, "--build-outputs"],
+      { cwd: workspaceDirectory, encoding: "utf8" },
+    );
+    assert.equal(buildCleanup.status, 0, buildCleanup.stderr);
+    assert.equal(existsSync(coverageCanary), true);
+    assert.equal(existsSync(buildCanary), false);
+
+    const invalidCleanup = spawnSync(
+      process.execPath,
+      [cleaner, "--build-outputs", "--unexpected"],
+      { cwd: workspaceDirectory, encoding: "utf8" },
+    );
+    assert.notEqual(invalidCleanup.status, 0);
+    assert.match(
+      `${invalidCleanup.stdout}${invalidCleanup.stderr}`,
+      /Usage: clean-workspace\.mjs/,
+    );
+    assert.equal(existsSync(coverageCanary), true);
+
+    const fullCleanup = spawnSync(process.execPath, [cleaner], {
+      cwd: workspaceDirectory,
+      encoding: "utf8",
+    });
+    assert.equal(fullCleanup.status, 0, fullCleanup.stderr);
+    assert.equal(existsSync(coverageCanary), false);
+  } finally {
+    rmSync(coverageCanary, { force: true });
+    rmSync(buildCanary, { force: true });
+  }
+});
+
+test("cleanup remains bound to its authenticated directory after parent replacement", () => {
+  const root = mkdtempSync(join(tmpdir(), "agentscope-clean-identity-"));
+  const workspaceDirectory = join(root, "packages/example");
+  const movedWorkspaceDirectory = join(root, "packages/example-moved");
+  const externalDirectory = join(root, "external");
+  const cleaner = join(root, "scripts/clean-workspace.mjs");
+  const preload = join(root, "replace-parent.cjs");
+  try {
+    mkdirSync(workspaceDirectory, { recursive: true });
+    mkdirSync(join(externalDirectory, ".next"), { recursive: true });
+    mkdirSync(join(workspaceDirectory, ".next"), { recursive: true });
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    writeFileSync(
+      join(workspaceDirectory, ".next/original-canary"),
+      "original",
+    );
+    writeFileSync(join(externalDirectory, ".next/external-canary"), "external");
+    writeFileSync(
+      cleaner,
+      readFileSync(join(repositoryRoot, "scripts/clean-workspace.mjs")),
+    );
+    writeFileSync(
+      join(root, "scripts/workspace-packages.mjs"),
+      'export const expectedWorkspacePackages = new Map([["packages/example", "@agentscope/example"]]);\n',
+    );
+    writeFileSync(
+      preload,
+      `const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const originalRmSync = fs.rmSync;
+const originalDirectory = process.cwd();
+let replaced = false;
+fs.rmSync = function (target, options) {
+  if (!replaced) {
+    replaced = true;
+    fs.renameSync(originalDirectory, ${JSON.stringify(movedWorkspaceDirectory)});
+    fs.symlinkSync(${JSON.stringify(externalDirectory)}, originalDirectory, "dir");
+  }
+  return Reflect.apply(originalRmSync, this, [target, options]);
+};
+syncBuiltinESMExports();
+`,
+    );
+
+    const result = spawnSync(process.execPath, [cleaner, "--build-outputs"], {
+      cwd: workspaceDirectory,
+      encoding: "utf8",
+      env: { ...process.env, NODE_OPTIONS: `--require=${preload}` },
+    });
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.equal(
+      existsSync(join(movedWorkspaceDirectory, ".next/original-canary")),
+      false,
+    );
+    assert.equal(
+      existsSync(join(externalDirectory, ".next/external-canary")),
+      true,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

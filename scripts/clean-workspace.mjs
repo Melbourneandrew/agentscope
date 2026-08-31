@@ -19,14 +19,18 @@ if (!allowedDirectories.has(currentDirectory)) {
   );
 }
 
-for (const output of [
-  ".next",
-  ".turbo",
-  "coverage",
-  "dist",
-  "out",
-  "tsconfig.tsbuildinfo",
-]) {
-  const target = resolve(currentDirectory, output);
-  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
+const buildOutputs = [".next", ".turbo", "dist", "out", "tsconfig.tsbuildinfo"];
+const arguments_ = process.argv.slice(2);
+if (
+  arguments_.length > 1 ||
+  (arguments_.length === 1 && arguments_[0] !== "--build-outputs")
+)
+  throw new Error("Usage: clean-workspace.mjs [--build-outputs]");
+const outputs =
+  arguments_[0] === "--build-outputs"
+    ? buildOutputs
+    : [...buildOutputs, "coverage"];
+
+for (const output of outputs) {
+  if (existsSync(output)) rmSync(output, { recursive: true, force: true });
 }

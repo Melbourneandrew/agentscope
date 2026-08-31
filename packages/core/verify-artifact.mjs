@@ -463,22 +463,61 @@ const artifactOperationalSnapshot = await inspectOperationalState(
 const serializedOperationalSnapshot = JSON.stringify(
   artifactOperationalSnapshot,
 );
-if (
-  lifecycleResult.outcome !== "completed" ||
-  lifecycleResult.connections[0]?.outcome !== "accepted" ||
-  lifecycleResult.operationalEvidence.persistence.code !== "recorded" ||
-  lifecycleResult.operationalEvidence.checkpoints[0]?.code !== "advanced" ||
-  lifecycleResult.operationalEvidence.checkpoints[0]
-    ?.acknowledgedExclusivePosition !== 1 ||
-  artifactOperationalSnapshot.checkpoints[0]?.acknowledgedExclusivePosition !==
-    1 ||
-  serializedOperationalSnapshot.includes("artifact-thread") ||
-  serializedOperationalSnapshot.includes(directTrace.delivery.identity) ||
-  serializedOperationalSnapshot.includes(directTrace.graph.traceId) ||
-  !isRedactedCanonicalTrace(directTrace) ||
-  isRedactedCanonicalTrace(structuredClone(directTrace))
-)
-  throw new Error("Core resolved lifecycle artifact verification failed.");
+const lifecycleArtifactFailures = [
+  ["lifecycle-outcome", lifecycleResult.outcome === "completed"],
+  [
+    "connection-outcome",
+    lifecycleResult.connections[0]?.outcome === "accepted",
+  ],
+  [
+    "operational-persistence",
+    lifecycleResult.operationalEvidence.persistence.code === "recorded",
+  ],
+  [
+    "checkpoint-advance",
+    lifecycleResult.operationalEvidence.checkpoints[0]?.code === "advanced",
+  ],
+  [
+    "checkpoint-position",
+    lifecycleResult.operationalEvidence.checkpoints[0]
+      ?.acknowledgedExclusivePosition === 1,
+  ],
+  [
+    "persisted-checkpoint-position",
+    artifactOperationalSnapshot.checkpoints[0]
+      ?.acknowledgedExclusivePosition === 1,
+  ],
+  [
+    "thread-content-containment",
+    !serializedOperationalSnapshot.includes("artifact-thread"),
+  ],
+  [
+    "delivery-identity-containment",
+    !serializedOperationalSnapshot.includes(directTrace.delivery.identity),
+  ],
+  [
+    "trace-identity-containment",
+    !serializedOperationalSnapshot.includes(directTrace.graph.traceId),
+  ],
+  ["redacted-trace-brand", isRedactedCanonicalTrace(directTrace)],
+  [
+    "redacted-trace-brand-forgery",
+    !isRedactedCanonicalTrace(structuredClone(directTrace)),
+  ],
+]
+  .filter(([, passed]) => !passed)
+  .map(([name]) => name);
+if (lifecycleArtifactFailures.length > 0) {
+  const diagnosticCodes = lifecycleResult.operationalEvidence.diagnostics.map(
+    ({ code }) => code,
+  );
+  const healthOutcomes = lifecycleResult.operationalEvidence.health.map(
+    ({ scope, stage, outcome }) => `${scope}:${stage}:${outcome}`,
+  );
+  throw new Error(
+    `Core resolved lifecycle artifact verification failed: checks=${lifecycleArtifactFailures.join(",")}; outcome=${lifecycleResult.outcome}; persistence=${lifecycleResult.operationalEvidence.persistence.code}; diagnostics=${diagnosticCodes.join(",") || "none"}; health=${healthOutcomes.join(",") || "none"}.`,
+  );
+}
 const artifactCheckpoint = artifactOperationalSnapshot.checkpoints[0];
 const lostAcknowledgementCommit = spawnSync(
   process.execPath,
