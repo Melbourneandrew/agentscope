@@ -528,6 +528,7 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
       childLifecycleBounds.teardownMilliseconds,
   );
   assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  lifecycle.setObservation({ groupAbsent: false, leader: "absent" });
   await lifecycle.advanceTo(
     childLifecycleBounds.hardMilliseconds -
       childLifecycleBounds.teardownMilliseconds +
@@ -536,6 +537,31 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
   assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
   lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
   child.emit("close", null, "SIGKILL");
+  await rejected;
+});
+
+test("an absent then reused group is never signaled", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  await lifecycle.advanceTo(childLifecycleBounds.pollMilliseconds);
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  const rejected = assert.rejects(result, /hard deadline reached before join/);
+  await lifecycle.fireAt(childLifecycleBounds.hardMilliseconds);
   await rejected;
 });
 

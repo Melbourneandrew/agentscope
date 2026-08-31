@@ -211,24 +211,47 @@ function readLinuxProcess(pid) {
   return { processGroup, startIdentity };
 }
 
-function readDarwinProcesses() {
+const darwinBirthProbe = String.raw`import ctypes,sys
+class B(ctypes.Structure):
+ _fields_=[("flags",ctypes.c_uint32),("status",ctypes.c_uint32),("xstatus",ctypes.c_uint32),("pid",ctypes.c_uint32),("ppid",ctypes.c_uint32),("uid",ctypes.c_uint32),("gid",ctypes.c_uint32),("ruid",ctypes.c_uint32),("rgid",ctypes.c_uint32),("svuid",ctypes.c_uint32),("svgid",ctypes.c_uint32),("rfu",ctypes.c_uint32),("comm",ctypes.c_char*16),("name",ctypes.c_char*32),("nfiles",ctypes.c_uint32),("pgid",ctypes.c_uint32),("pjobc",ctypes.c_uint32),("tdev",ctypes.c_uint32),("tpgid",ctypes.c_uint32),("nice",ctypes.c_int32),("sec",ctypes.c_uint64),("usec",ctypes.c_uint64)]
+b=B();lib=ctypes.CDLL("/usr/lib/libproc.dylib");n=lib.proc_pidinfo(int(sys.argv[1]),3,0,ctypes.byref(b),ctypes.sizeof(b))
+if n != ctypes.sizeof(b) or b.pid != int(sys.argv[1]): raise SystemExit(1)
+print(f"{b.pid}:{b.pgid}:{b.sec}:{b.usec}")`;
+
+function readDarwinBirth(pid) {
   const output = execFileSync(
-    realpathSync("/bin/ps"),
-    ["-axo", "pid=,pgid=,lstart="],
+    realpathSync("/usr/bin/python3"),
+    ["-c", darwinBirthProbe, String(pid)],
     {
       encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
+      env: {},
+      maxBuffer: 256,
       shell: false,
+      timeout: 1_000,
     },
   );
+  const match = /^(\d+):(\d+):(\d+):(\d+)\n$/.exec(output);
+  if (match === null || Number(match[1]) !== pid)
+    throw new Error("malformed process birth record");
+  return Object.freeze({
+    processGroup: Number(match[2]),
+    startIdentity: `${match[3]}:${match[4]}`,
+  });
+}
+
+function readDarwinProcesses() {
+  const output = execFileSync(realpathSync("/bin/ps"), ["-axo", "pid=,pgid="], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    shell: false,
+  });
   const records = [];
   for (const line of output.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
     if (match === null) continue;
     records.push({
       pid: Number(match[1]),
       processGroup: Number(match[2]),
-      startIdentity: match[3],
     });
   }
   return records;
@@ -245,7 +268,7 @@ const defaultLifecycle = Object.freeze({
       return Object.freeze({ pid, startIdentity: record.startIdentity });
     }
     if (platform === "darwin") {
-      const record = readDarwinProcesses().find((item) => item.pid === pid);
+      const record = readDarwinBirth(pid);
       if (record === undefined || record.processGroup !== pid)
         throw new Error("child process authority unavailable");
       return Object.freeze({ pid, startIdentity: record.startIdentity });
@@ -278,6 +301,8 @@ const defaultLifecycle = Object.freeze({
     if (platform === "darwin") {
       const records = readDarwinProcesses();
       const leader = records.find((item) => item.pid === authority.pid);
+      const birth =
+        leader === undefined ? undefined : readDarwinBirth(authority.pid);
       return Object.freeze({
         groupAbsent: !records.some(
           (item) => item.processGroup === authority.pid,
@@ -286,7 +311,8 @@ const defaultLifecycle = Object.freeze({
           leader === undefined
             ? "absent"
             : leader.processGroup === authority.pid &&
-                leader.startIdentity === authority.startIdentity
+                birth.processGroup === authority.pid &&
+                birth.startIdentity === authority.startIdentity
               ? "same"
               : "mismatch",
       });
@@ -367,8 +393,11 @@ class ChildLifecycleController {
         throw new Error("malformed observation");
       if (observation.leader === "mismatch")
         this.fail("process identity mismatch");
+      if (observation.leader === "mismatch" || observation.groupAbsent)
+        this.groupAuthorityRevoked = true;
       return observation;
     } catch {
+      this.groupAuthorityRevoked = true;
       this.fail("process-group inspection uncertainty");
       return undefined;
     }
@@ -378,15 +407,19 @@ class ChildLifecycleController {
     const observation = this.inspect();
     if (
       observation === undefined ||
-      observation.leader !== "same" ||
-      observation.groupAbsent
+      this.groupAuthorityRevoked ||
+      observation.groupAbsent ||
+      (observation.leader !== "same" &&
+        !(observation.leader === "absent" && this.groupSignalAuthorized))
     ) {
       this.fail("process identity unavailable before signal");
       return;
     }
     try {
       this.lifecycle.signal(this.authority, signal);
+      this.groupSignalAuthorized = true;
     } catch {
+      this.groupAuthorityRevoked = true;
       this.fail("process-group signal uncertainty");
     }
   }
