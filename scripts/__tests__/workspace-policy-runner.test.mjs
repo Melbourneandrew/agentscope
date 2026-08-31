@@ -403,12 +403,6 @@ test("Vitest execution is direct, closed, and joins the child terminal", async (
     leader: "same",
     memberCount: 1,
   });
-  child.send = (message, callback) => {
-    assert.deepEqual(message, { kind: "release" });
-    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
-    callback?.(null);
-    queueMicrotask(() => child.emit("close", 0, null));
-  };
   let options;
   const result = executeVitestInvocation(
     invocation,
@@ -424,6 +418,12 @@ test("Vitest execution is direct, closed, and joins the child terminal", async (
     process,
     lifecycle.authority,
   );
+  await Promise.resolve();
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, "SIGKILL");
   assert.deepEqual(await result, { code: 0, signal: undefined });
   assert.equal(options.shell, false);
   assert.equal(options.cwd, workspaceRoot);
@@ -787,13 +787,11 @@ test("the internal wrapper validates grammar and holds terminal publication for 
       },
     ]);
     host.emit("message", { kind: "release" });
-    assert.deepEqual(await result, {
-      code: direct.code ?? 1,
-      signal: direct.signal ?? undefined,
-    });
+    await Promise.resolve();
+    assert.equal(settled, false);
     assert.equal(options.detached, false);
     assert.equal(options.shell, false);
-    assert.equal(host.listenerCount("SIGTERM"), 0);
+    assert.equal(host.listenerCount("SIGTERM"), 1);
   }
 
   assert.throws(

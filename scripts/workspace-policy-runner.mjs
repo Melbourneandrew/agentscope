@@ -291,31 +291,28 @@ function readDarwinBirth(pid, hardDeadline) {
     },
   );
   const match = /^(\d+):(\d+):(\d+):(\d+)\n$/.exec(output);
+  ensureInspectionBudget(hardDeadline);
   if (match === null || Number(match[1]) !== pid)
     throw new Error("malformed process birth record");
-  return Object.freeze({
+  const record = Object.freeze({
     processGroup: Number(match[2]),
     startIdentity: `${match[3]}:${match[4]}`,
   });
+  ensureInspectionBudget(hardDeadline);
+  return record;
 }
 
-function readDarwinProcesses(hardDeadline) {
-  const output = execFileSync(realpathSync("/bin/ps"), ["-axo", "pid=,pgid="], {
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024,
-    shell: false,
-    timeout: boundedProbeTimeout(hardDeadline),
-  });
-  const records = [];
-  for (const line of output.split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
-    if (match === null) continue;
-    records.push({
-      pid: Number(match[1]),
-      processGroup: Number(match[2]),
-    });
+function kernelAuthorityExists(pid, hardDeadline) {
+  ensureInspectionBudget(hardDeadline);
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    throw error;
+  } finally {
+    ensureInspectionBudget(hardDeadline);
   }
-  return records;
+  return true;
 }
 
 const defaultLifecycle = Object.freeze({
@@ -340,19 +337,12 @@ const defaultLifecycle = Object.freeze({
     clearTimeout(timer);
   },
   inspect(authority, platform, hardDeadline) {
+    const groupAbsent = !kernelAuthorityExists(-authority.pid, hardDeadline);
     if (platform === "linux") {
       const leader = readLinuxProcess(authority.pid, hardDeadline);
-      let memberCount = 0;
-      ensureInspectionBudget(hardDeadline);
-      for (const entry of readdirSync("/proc", { withFileTypes: true })) {
-        ensureInspectionBudget(hardDeadline);
-        if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-        const record = readLinuxProcess(Number(entry.name), hardDeadline);
-        if (record?.processGroup === authority.pid) memberCount += 1;
-      }
       ensureInspectionBudget(hardDeadline);
       return Object.freeze({
-        groupAbsent: memberCount === 0,
+        groupAbsent,
         leader:
           leader === undefined
             ? "absent"
@@ -360,30 +350,23 @@ const defaultLifecycle = Object.freeze({
                 leader.startIdentity === authority.startIdentity
               ? "same"
               : "mismatch",
-        memberCount,
       });
     }
     if (platform === "darwin") {
-      const records = readDarwinProcesses(hardDeadline);
-      const leader = records.find((item) => item.pid === authority.pid);
-      const birth =
-        leader === undefined
-          ? undefined
-          : readDarwinBirth(authority.pid, hardDeadline);
-      const memberCount = records.filter(
-        (item) => item.processGroup === authority.pid,
-      ).length;
+      const leaderExists = kernelAuthorityExists(authority.pid, hardDeadline);
+      const birth = leaderExists
+        ? readDarwinBirth(authority.pid, hardDeadline)
+        : undefined;
+      ensureInspectionBudget(hardDeadline);
       return Object.freeze({
-        groupAbsent: memberCount === 0,
+        groupAbsent,
         leader:
-          leader === undefined
+          birth === undefined
             ? "absent"
-            : leader.processGroup === authority.pid &&
-                birth.processGroup === authority.pid &&
+            : birth.processGroup === authority.pid &&
                 birth.startIdentity === authority.startIdentity
               ? "same"
               : "mismatch",
-        memberCount,
       });
     }
     throw new Error("unsupported process authority platform");
@@ -440,7 +423,7 @@ class ChildLifecycleController {
         Object.freeze({ code: 1, signal: this.pendingSignal }),
       );
     else if (this.failure !== undefined) this.rejectExecution(this.failure);
-    else this.resolveExecution(this.closeOutcome);
+    else this.resolveExecution(this.directOutcome ?? this.closeOutcome);
   }
 
   inspect() {
@@ -458,9 +441,6 @@ class ChildLifecycleController {
         observation === null ||
         typeof observation !== "object" ||
         typeof observation.groupAbsent !== "boolean" ||
-        !Number.isSafeInteger(observation.memberCount) ||
-        observation.memberCount < 0 ||
-        observation.groupAbsent !== (observation.memberCount === 0) ||
         !["same", "absent", "mismatch"].includes(observation.leader)
       )
         throw new Error("malformed observation");
@@ -495,26 +475,9 @@ class ChildLifecycleController {
     }
   }
 
-  releaseWrapper(observation) {
-    if (
-      this.releaseRequested ||
-      this.directOutcome === undefined ||
-      observation?.leader !== "same" ||
-      observation.memberCount !== 1
-    )
-      return;
-    this.releaseRequested = true;
-    try {
-      this.child.send(Object.freeze({ kind: "release" }));
-    } catch {
-      this.fail("wrapper release uncertainty");
-    }
-  }
-
   checkContainment() {
     const observation = this.inspect();
     if (observation?.groupAbsent === true) this.contained = true;
-    else this.releaseWrapper(observation);
     this.finish();
     return this.contained;
   }
@@ -593,7 +556,7 @@ class ChildLifecycleController {
       code: message.code,
       signal: message.signal,
     });
-    this.pollForContainment();
+    this.beginStop("SIGTERM");
   }
 
   hardStop = () => {
@@ -720,41 +683,17 @@ export function runInternalVitestChild(
   const specification = parseInternalChildArguments(arguments_);
   if (typeof processHost.send !== "function" || processHost.connected !== true)
     fail("internal child requires the authenticated parent channel");
-  return new Promise((resolveChild) => {
+  return new Promise(() => {
     let child;
     let directOutcome;
     let executionFailed = false;
     const signalHandlers = new Map();
-    const removeHandlers = () => {
-      for (const [signal, handler] of signalHandlers)
-        processHost.off(signal, handler);
-      signalHandlers.clear();
-      processHost.off("message", onMessage);
-      processHost.off("disconnect", onDisconnect);
-      if (
-        processHost.connected === true &&
-        typeof processHost.disconnect === "function"
-      )
-        processHost.disconnect();
-    };
     const onDisconnect = () => {
       try {
         processHost.kill(-processHost.pid, "SIGKILL");
       } catch {
         processHost.exitCode = 1;
       }
-    };
-    const onMessage = (message) => {
-      if (
-        directOutcome === undefined ||
-        message === null ||
-        typeof message !== "object" ||
-        message.kind !== "release" ||
-        Object.keys(message).length !== 1
-      )
-        return onDisconnect();
-      removeHandlers();
-      resolveChild(directOutcome);
     };
     const publishDirectOutcome = () => {
       try {
@@ -776,7 +715,6 @@ export function runInternalVitestChild(
       signalHandlers.set(signal, handler);
       processHost.on(signal, handler);
     }
-    processHost.on("message", onMessage);
     processHost.on("disconnect", onDisconnect);
     try {
       child = spawnChild(
