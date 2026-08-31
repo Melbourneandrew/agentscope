@@ -13,6 +13,8 @@ import {
   executeVitestInvocation,
   main,
   processAuthorityFiles,
+  publishTerminalOutcome,
+  purePolicyFiles,
   runWorkspacePolicyPlan,
 } from "../workspace-policy-runner.mjs";
 
@@ -33,6 +35,7 @@ test("the checked-in inventory is classified exactly once", () => {
     inventory.length,
   );
   assert.ok(plan.pure.includes("workspace-policy-runner.test.mjs"));
+  assert.deepEqual(plan.pure, purePolicyFiles);
   for (const name of processAuthorityFiles) {
     if (inventory.includes(name)) {
       assert.ok(plan.authority.includes(name));
@@ -42,29 +45,32 @@ test("the checked-in inventory is classified exactly once", () => {
 });
 
 test("the reserved prepush suite is authority only when present", () => {
-  const absentInventory = ["pure.test.mjs"];
+  const absentInventory = ["acceptance-evidence.test.mjs"];
   const absent = createWorkspacePolicyPlan(
     absentInventory,
     classifyWorkspacePolicyInventory(absentInventory),
   );
   assert.deepEqual(absent, {
     authority: [],
-    pure: ["pure.test.mjs"],
+    pure: ["acceptance-evidence.test.mjs"],
   });
 
-  const presentInventory = ["pure.test.mjs", "prepush.test.mjs"];
+  const presentInventory = ["acceptance-evidence.test.mjs", "prepush.test.mjs"];
   const present = createWorkspacePolicyPlan(
     presentInventory,
     classifyWorkspacePolicyInventory(presentInventory),
   );
   assert.deepEqual(present, {
     authority: ["prepush.test.mjs"],
-    pure: ["pure.test.mjs"],
+    pure: ["acceptance-evidence.test.mjs"],
   });
 });
 
 test("invalid inventory and classifications fail closed", () => {
-  const inventory = ["pure.test.mjs", "validation-lease.test.mjs"];
+  const inventory = [
+    "acceptance-evidence.test.mjs",
+    "validation-lease.test.mjs",
+  ];
   const valid = classifyWorkspacePolicyInventory(inventory);
   assert.throws(
     () => createWorkspacePolicyPlan([...inventory, inventory[0]], valid),
@@ -100,7 +106,7 @@ test("invalid inventory and classifications fail closed", () => {
         { classification: "unsafe", name: inventory[0] },
         valid[1],
       ]),
-    /unknown classification/,
+    /disagrees with reviewed policy/,
   );
   assert.throws(
     () =>
@@ -108,7 +114,7 @@ test("invalid inventory and classifications fail closed", () => {
         ["unknown-authority.test.mjs"],
         [{ classification: "authority", name: "unknown-authority.test.mjs" }],
       ),
-    /outside the closed authority set/,
+    /no reviewed classification/,
   );
   assert.throws(
     () =>
@@ -116,7 +122,11 @@ test("invalid inventory and classifications fail closed", () => {
         ["validation-lease.test.mjs"],
         [{ classification: "pure", name: "validation-lease.test.mjs" }],
       ),
-    /authority test was classified as pure/,
+    /disagrees with reviewed policy/,
+  );
+  assert.throws(
+    () => classifyWorkspacePolicyInventory(["future-authority.test.mjs"]),
+    /no reviewed classification/,
   );
 });
 
@@ -124,15 +134,15 @@ test("pure tests batch once before authority tests serialize", async () => {
   const plan = createWorkspacePolicyPlan(
     [
       "validation-lease.test.mjs",
-      "pure-b.test.mjs",
+      "restricted-import-policy.test.mjs",
       "code-quality-policy.test.mjs",
-      "pure-a.test.mjs",
+      "acceptance-evidence.test.mjs",
     ],
     classifyWorkspacePolicyInventory([
       "validation-lease.test.mjs",
-      "pure-b.test.mjs",
+      "restricted-import-policy.test.mjs",
       "code-quality-policy.test.mjs",
-      "pure-a.test.mjs",
+      "acceptance-evidence.test.mjs",
     ]),
   );
   const calls = [];
@@ -147,7 +157,13 @@ test("pure tests batch once before authority tests serialize", async () => {
   });
   assert.deepEqual(outcome, { code: 0, signal: undefined });
   assert.deepEqual(calls, [
-    { files: ["pure-a.test.mjs", "pure-b.test.mjs"], workers: "2" },
+    {
+      files: [
+        "acceptance-evidence.test.mjs",
+        "restricted-import-policy.test.mjs",
+      ],
+      workers: "2",
+    },
     { files: ["code-quality-policy.test.mjs"], workers: "1" },
     { files: ["validation-lease.test.mjs"], workers: "1" },
   ]);
@@ -155,7 +171,7 @@ test("pure tests batch once before authority tests serialize", async () => {
 
 test("a failed child preserves its result and admits no later child", async () => {
   const inventory = [
-    "pure.test.mjs",
+    "acceptance-evidence.test.mjs",
     "code-quality-policy.test.mjs",
     "validation-lease.test.mjs",
   ];
@@ -172,7 +188,10 @@ test("a failed child preserves its result and admits no later child", async () =
       : { code: 0, signal: undefined };
   });
   assert.deepEqual(outcome, { code: 73, signal: undefined });
-  assert.deepEqual(calls, ["pure.test.mjs", "code-quality-policy.test.mjs"]);
+  assert.deepEqual(calls, [
+    "acceptance-evidence.test.mjs",
+    "code-quality-policy.test.mjs",
+  ]);
 });
 
 test("the next authority child waits for prior terminal publication", async () => {
@@ -264,10 +283,73 @@ test("a forwarded signal waits for the exact child terminal", async () => {
   assert.equal(signalHost.listenerCount("SIGTERM"), 0);
 });
 
+test("spawn errors remain pending until child terminal publication", async () => {
+  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const child = new EventEmitter();
+  child.pid = undefined;
+  const expected = new Error("synthetic spawn failure");
+  const result = executeVitestInvocation(invocation, () => child);
+  let settled = false;
+  void result.catch(() => {
+    settled = true;
+  });
+  child.emit("error", expected);
+  await new Promise((resolveReady) => setImmediate(resolveReady));
+  assert.equal(settled, false);
+  child.emit("close", -2, null);
+  await assert.rejects(result, (error) => error === expected);
+  assert.equal(settled, true);
+});
+
+test("signal forwarding failure contains and joins before rejection", async () => {
+  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const directSignals = [];
+  child.kill = (signal) => directSignals.push(signal);
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const expected = Object.assign(new Error("synthetic forwarding failure"), {
+    code: "EPERM",
+  });
+  signalHost.kill = () => {
+    throw expected;
+  };
+  const result = executeVitestInvocation(invocation, () => child, signalHost);
+  let settled = false;
+  void result.catch(() => {
+    settled = true;
+  });
+  signalHost.emit("SIGTERM");
+  await new Promise((resolveReady) => setImmediate(resolveReady));
+  assert.deepEqual(directSignals, ["SIGKILL"]);
+  assert.equal(settled, false);
+  child.emit("close", null, "SIGKILL");
+  await assert.rejects(result, (error) => error === expected);
+  assert.equal(settled, true);
+  assert.equal(signalHost.listenerCount("SIGTERM"), 0);
+});
+
+test("the executable boundary preserves exit or terminating signal", () => {
+  const exitHost = { exitCode: undefined, kill: assert.fail, pid: 42 };
+  publishTerminalOutcome({ code: 73, signal: undefined }, exitHost);
+  assert.equal(exitHost.exitCode, 73);
+
+  const signals = [];
+  const signalHost = {
+    exitCode: undefined,
+    kill: (pid, signal) => signals.push([pid, signal]),
+    pid: 42,
+  };
+  publishTerminalOutcome({ code: 1, signal: "SIGTERM" }, signalHost);
+  assert.deepEqual(signals, [[42, "SIGTERM"]]);
+  assert.equal(signalHost.exitCode, undefined);
+});
+
 test("caller arguments and empty child batches are rejected", async () => {
   assert.throws(() => createVitestInvocation([]), /requires at least one/);
   assert.throws(
-    () => createVitestInvocation(["pure.test.mjs"], 0),
+    () => createVitestInvocation(["acceptance-evidence.test.mjs"], 0),
     /positive worker ceiling/,
   );
   await assert.rejects(main(["--retry"]), /caller arguments are not accepted/);

@@ -19,7 +19,23 @@ export const processAuthorityFiles = Object.freeze([
   "prepush.test.mjs",
 ]);
 
-const processAuthoritySet = new Set(processAuthorityFiles);
+export const purePolicyFiles = Object.freeze([
+  "acceptance-evidence.test.mjs",
+  "crabbox-coordinator-plan.test.mjs",
+  "crabbox-coordinator-profile.test.mjs",
+  "crabbox-coordinator-retirement-profile.test.mjs",
+  "release-lane-substrate.test.mjs",
+  "restricted-import-policy.test.mjs",
+  "review-skill.test.mjs",
+  "workspace-dependency-policy.test.mjs",
+  "workspace-policy-runner.test.mjs",
+  "workspace-target-policy.test.mjs",
+]);
+
+const classificationsByName = new Map([
+  ...purePolicyFiles.map((name) => [name, "pure"]),
+  ...processAuthorityFiles.map((name) => [name, "authority"]),
+]);
 const forwardedSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
 const pureWorkerCeiling = 2;
 
@@ -43,10 +59,12 @@ export function discoverWorkspacePolicyInventory(root = testRoot) {
 }
 
 export function classifyWorkspacePolicyInventory(inventory) {
-  return inventory.map((name) => ({
-    classification: processAuthoritySet.has(name) ? "authority" : "pure",
-    name,
-  }));
+  return inventory.map((name) => {
+    const classification = classificationsByName.get(name);
+    if (classification === undefined)
+      fail(`test has no reviewed classification: ${name}`);
+    return { classification, name };
+  });
 }
 
 export function createWorkspacePolicyPlan(inventory, classifications) {
@@ -78,9 +96,14 @@ export function createWorkspacePolicyPlan(inventory, classifications) {
     if (classified.has(record.name))
       fail(`duplicate classification: ${record.name}`);
     classified.add(record.name);
+    const expectedClassification = classificationsByName.get(record.name);
+    if (expectedClassification === undefined)
+      fail(`test has no reviewed classification: ${record.name}`);
+    if (record.classification !== expectedClassification)
+      fail(
+        `test classification disagrees with reviewed policy: ${record.name}`,
+      );
     if (record.classification === "pure") {
-      if (processAuthoritySet.has(record.name))
-        fail(`authority test was classified as pure: ${record.name}`);
       pure.push(record.name);
     } else if (record.classification === "authority")
       authority.push(record.name);
@@ -104,7 +127,11 @@ export function createVitestInvocation(files, workerCeiling = 1) {
     fail("a Vitest child requires at least one test file");
   if (!Number.isSafeInteger(workerCeiling) || workerCeiling < 1)
     fail("a Vitest child requires a positive worker ceiling");
-  const paths = files.map((name) => resolve(testRoot, name));
+  const paths = files.map((name) => {
+    if (!classificationsByName.has(name))
+      fail(`test has no reviewed classification: ${name}`);
+    return resolve(testRoot, name);
+  });
   return Object.freeze({
     arguments: Object.freeze([
       vitestPath,
@@ -154,6 +181,7 @@ export function executeVitestInvocation(
       stdio: "inherit",
     });
     let terminal = false;
+    let failure;
     const handlers = new Map();
     const removeHandlers = () => {
       for (const [signal, handler] of handlers) signalHost.off(signal, handler);
@@ -167,7 +195,13 @@ export function executeVitestInvocation(
           signal,
         );
       } catch (error) {
-        if (error?.code !== "ESRCH") rejectExecution(error);
+        if (error?.code === "ESRCH") return;
+        failure ??= error;
+        try {
+          child.kill("SIGKILL");
+        } catch (killError) {
+          failure ??= killError;
+        }
       }
     };
     for (const signal of forwardedSignals) {
@@ -176,18 +210,28 @@ export function executeVitestInvocation(
       signalHost.on(signal, handler);
     }
     child.once("error", (error) => {
-      terminal = true;
-      removeHandlers();
-      rejectExecution(error);
+      failure ??= error;
     });
     child.once("close", (code, signal) => {
       terminal = true;
       removeHandlers();
+      if (failure !== undefined) {
+        rejectExecution(failure);
+        return;
+      }
       resolveExecution(
         Object.freeze({ code: code ?? 1, signal: signal ?? undefined }),
       );
     });
   });
+}
+
+export function publishTerminalOutcome(outcome, processHost = process) {
+  if (outcome.signal !== undefined) {
+    processHost.kill(processHost.pid, outcome.signal);
+    return;
+  }
+  processHost.exitCode = outcome.code;
 }
 
 export async function runWorkspacePolicyPlan(
@@ -225,7 +269,7 @@ if (
 ) {
   try {
     const outcome = await main();
-    process.exitCode = outcome.code;
+    publishTerminalOutcome(outcome);
   } catch (error) {
     process.stderr.write(
       `${error instanceof Error ? error.message : String(error)}\n`,
