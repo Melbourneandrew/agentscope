@@ -72,6 +72,31 @@ const credentialPromptPattern =
 const readyMarker = "AGENTSCOPE_PTY_READY";
 const completedMarker = "AGENTSCOPE_PTY_COMPLETE";
 const defineOwnProperty = Reflect.defineProperty;
+const getPrototypeOf = Reflect.getPrototypeOf;
+const applyFunction = Reflect.apply;
+const uint8ArrayPrototype = Uint8Array.prototype;
+const arrayBufferPrototype = ArrayBuffer.prototype;
+const typedArrayPrototype = getPrototypeOf(uint8ArrayPrototype);
+// Capturing the intrinsic getter prevents later prototype replacement from
+// becoming input-validation authority.
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const typedArrayBufferGetterCandidate = Object.getOwnPropertyDescriptor(
+  typedArrayPrototype,
+  "buffer",
+)?.get as ((this: Uint8Array) => ArrayBuffer) | undefined;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const typedArrayByteLengthGetterCandidate = Object.getOwnPropertyDescriptor(
+  typedArrayPrototype,
+  "byteLength",
+)?.get as ((this: Uint8Array) => number) | undefined;
+
+if (
+  typedArrayBufferGetterCandidate === undefined ||
+  typedArrayByteLengthGetterCandidate === undefined
+)
+  throw new Error("testkit.pty.emulator.runtime");
+const typedArrayBufferGetter = typedArrayBufferGetterCandidate;
+const typedArrayByteLengthGetter = typedArrayByteLengthGetterCandidate;
 
 type ParserState = "ground" | "escape" | "csi" | "osc" | "osc-escape";
 
@@ -267,29 +292,27 @@ export class BoundedTerminalEmulator {
 
   public write(bytes: Uint8Array): void {
     if (this.#ended) return fail("testkit.pty.emulator.ended");
-    let input: Uint8Array;
+    let byteLength: number;
     try {
+      const buffer = applyFunction(typedArrayBufferGetter, bytes, []);
       if (
         isProxy(bytes) ||
-        Object.getPrototypeOf(bytes) !== Uint8Array.prototype ||
-        Object.getPrototypeOf(bytes.buffer) !== ArrayBuffer.prototype
+        getPrototypeOf(bytes) !== uint8ArrayPrototype ||
+        getPrototypeOf(buffer) !== arrayBufferPrototype
       )
         return fail("testkit.pty.emulator.bytes");
-      input = new Uint8Array(bytes);
+      byteLength = applyFunction(typedArrayByteLengthGetter, bytes, []);
     } catch {
       return fail("testkit.pty.emulator.bytes");
     }
-    if (
-      this.#outputBytes + input.byteLength >
-      this.#limits.maximumOutputBytes
-    ) {
+    if (this.#outputBytes + byteLength > this.#limits.maximumOutputBytes) {
       this.#outputLimitReached = true;
       return fail("testkit.pty.emulator.output-limit");
     }
-    this.#outputBytes += input.byteLength;
+    this.#outputBytes += byteLength;
     let decoded: string;
     try {
-      decoded = this.#decoder.decode(input, { stream: true });
+      decoded = this.#decoder.decode(bytes, { stream: true });
     } catch {
       this.#malformedControlCount += 1;
       return fail("testkit.pty.emulator.utf8");

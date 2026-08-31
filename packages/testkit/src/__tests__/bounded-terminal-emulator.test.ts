@@ -233,6 +233,18 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     }).toThrowError(
       new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),
     );
+
+    const hostile = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
+    const oversized = new Uint8Array(8 * 1_048_576);
+    const buffersBefore = process.memoryUsage().arrayBuffers;
+    expect(() => {
+      hostile.write(oversized);
+    }).toThrowError(
+      new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),
+    );
+    expect(process.memoryUsage().arrayBuffers - buffersBefore).toBeLessThan(
+      1_048_576,
+    );
   });
 
   it("does not dispatch screen or recent text through inherited numeric setters", () => {
