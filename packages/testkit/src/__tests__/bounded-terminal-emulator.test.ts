@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   BoundedTerminalEmulator,
@@ -212,7 +212,7 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
     expect(snapshot.outputBytes).toBeLessThanOrEqual(32_768);
   });
 
-  it("processes the exact advertised byte ceiling and rejects overflow", () => {
+  it("processes the exact advertised byte ceiling and rejects overflow", async () => {
     const terminal = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
     const payload = bytes(
       "x".repeat(defaultPtyTerminalEmulatorLimits.maximumOutputBytes),
@@ -234,28 +234,36 @@ describe("bounded semantic terminal emulator adversarial inputs", () => {
       new BoundedTerminalEmulatorError("testkit.pty.emulator.output-limit"),
     );
 
-    const hostile = new BoundedTerminalEmulator({ columns: 80, rows: 24 });
-    const oversized = new Uint8Array(8 * 1_048_576);
     const originalConstructor = Object.getOwnPropertyDescriptor(
       globalThis,
       "Uint8Array",
     )!;
+    const OriginalUint8Array = Uint8Array;
+    const oversized = new OriginalUint8Array(8 * 1_048_576);
     let constructorCalls = 0;
-    const guardedConstructor = new Proxy(Uint8Array, {
+    const guardedConstructor = new Proxy(OriginalUint8Array, {
       construct: () => {
         constructorCalls += 1;
-        throw new Error("synthetic copy canary");
+        return new OriginalUint8Array(0);
       },
     });
     Object.defineProperty(globalThis, "Uint8Array", {
       ...originalConstructor,
       value: guardedConstructor,
     });
-    let hostileError;
+    let hostileError: unknown;
     try {
-      hostile.write(oversized);
-    } catch (error) {
-      hostileError = error;
+      vi.resetModules();
+      const freshModule = await import("../bounded-terminal-emulator.js");
+      const hostile = new freshModule.BoundedTerminalEmulator({
+        columns: 80,
+        rows: 24,
+      });
+      try {
+        hostile.write(oversized);
+      } catch (error) {
+        hostileError = error;
+      }
     } finally {
       Object.defineProperty(globalThis, "Uint8Array", originalConstructor);
     }
