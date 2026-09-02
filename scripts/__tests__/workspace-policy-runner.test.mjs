@@ -177,10 +177,16 @@ test("the checked-in inventory rejects omissions and unreviewed growth", () => {
     () => validateWorkspacePolicyInventory([...inventory, inventory[0]]),
     /inventory contains duplicates/,
   );
-  assert.equal(
-    validateWorkspacePolicyInventory([...inventory, "prepush.test.mjs"]).length,
-    inventory.length + 1,
+  const withoutReserved = inventory.filter(
+    (name) => name !== "prepush.test.mjs",
   );
+  const withReserved = [...withoutReserved, "prepush.test.mjs"].sort();
+  assert.equal(
+    validateWorkspacePolicyInventory(withoutReserved),
+    withoutReserved,
+  );
+  assert.equal(validateWorkspacePolicyInventory(withReserved), withReserved);
+  assert.equal(withReserved.length, withoutReserved.length + 1);
 });
 
 test("nested test-domain growth fails before classification", () => {
