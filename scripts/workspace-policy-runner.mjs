@@ -680,9 +680,13 @@ class ChildLifecycleController {
     const observation = this.inspect();
     if (observation?.groupAbsent === true) this.contained = true;
     else {
-      this.failUncertain("child leader closed before process-group join");
-      if (observation?.leader === "same") this.forceKill();
-      else this.pollForContainment();
+      if (this.groupKillSent && this.directOutcome !== undefined)
+        this.pollForContainment();
+      else {
+        this.failUncertain("child leader closed before process-group join");
+        if (observation?.leader === "same") this.forceKill();
+        else this.pollForContainment();
+      }
     }
     this.finish();
   }

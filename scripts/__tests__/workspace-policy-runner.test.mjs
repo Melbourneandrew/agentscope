@@ -736,6 +736,33 @@ test("successful KILL retirement tolerates leader exit until exact group absence
   assert.deepEqual(await result, { code: 0, signal: undefined });
 });
 
+test("successful KILL retirement remains pending when the wrapper closes first", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  child.emit("message", { code: 0, kind: "direct-terminal" });
+  await lifecycle.advanceTo(0);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  lifecycle.setObservation({ groupAbsent: false, leader: "absent" });
+  child.emit("close", 1, "SIGKILL");
+  let terminal = false;
+  void result.then(() => {
+    terminal = true;
+  });
+  await Promise.resolve();
+  assert.equal(terminal, false);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  await lifecycle.advanceTo(childLifecycleBounds.pollMilliseconds);
+  assert.deepEqual(await result, { code: 0, signal: undefined });
+});
+
 test("an absent then reused group is never signaled", async () => {
   const child = new EventEmitter();
   child.pid = 4242;
