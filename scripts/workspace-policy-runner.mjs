@@ -547,7 +547,7 @@ class ChildLifecycleController {
 
   forceKill = () => {
     if (this.settled || this.contained) return;
-    this.signalGroup("SIGKILL", this.escalationDeadline);
+    this.signalGroup("SIGKILL", this.hardDeadline);
     this.pollForContainment();
   };
 
@@ -556,11 +556,11 @@ class ChildLifecycleController {
     this.stopping = true;
     const result = this.signalGroup(signal);
     if (result !== "sent" || this.settled || this.contained) return;
-    this.escalationDeadline = Math.min(
-      this.hardDeadline,
-      this.lifecycle.now() + childLifecycleBounds.signalGraceMilliseconds,
+    this.graceTimer = this.lifecycle.setTimer(
+      this.forceKill,
+      childLifecycleBounds.signalGraceMilliseconds,
     );
-    this.graceTimer = this.lifecycle.setTimer(this.forceKill, 0);
+    this.pollForContainment();
   }
 
   onMessage(message) {
