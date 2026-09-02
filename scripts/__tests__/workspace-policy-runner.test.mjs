@@ -37,6 +37,7 @@ function createLifecycleHarness() {
   let inspectError = false;
   let signalError = false;
   let signalResult = "sent";
+  let signalHook;
   let inspectionDuration = 0;
   const deadlines = [];
   const inspections = [];
@@ -69,6 +70,7 @@ function createLifecycleHarness() {
       assert.deepEqual(identity, { pid: 4242, startIdentity: "start-1" });
       if (signalError) throw new Error("synthetic signal failure");
       signals.push(signal);
+      signalHook?.(signal);
       return signalResult;
     },
   };
@@ -121,6 +123,9 @@ function createLifecycleHarness() {
     },
     setSignalResult(value) {
       signalResult = value;
+    },
+    setSignalHook(value) {
+      signalHook = value;
     },
     inspections,
     signals,
@@ -499,6 +504,47 @@ test("a delayed KILL identity probe may use the existing teardown reserve", asyn
   assert.deepEqual(await result, { code: 0, signal: undefined });
 });
 
+test("a delayed TERM probe preserves grace and fresh KILL authentication", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  lifecycle.setInspectionDuration(
+    childLifecycleBounds.teardownMilliseconds -
+      childLifecycleBounds.signalGraceMilliseconds -
+      childLifecycleBounds.inspectionMilliseconds,
+  );
+  lifecycle.setSignalHook((signal) => {
+    if (signal === "SIGTERM" || signal === "SIGKILL")
+      lifecycle.setInspectionDuration(0);
+  });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  const rejected = assert.rejects(result, /execution deadline exceeded/);
+  await lifecycle.advanceTo(
+    childLifecycleBounds.hardMilliseconds -
+      childLifecycleBounds.teardownMilliseconds,
+  );
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  const termSentAt =
+    childLifecycleBounds.hardMilliseconds -
+    childLifecycleBounds.signalGraceMilliseconds -
+    childLifecycleBounds.inspectionMilliseconds;
+  lifecycle.setInspectionDuration(childLifecycleBounds.inspectionMilliseconds);
+  await lifecycle.fireAt(
+    termSentAt + childLifecycleBounds.signalGraceMilliseconds,
+  );
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  lifecycle.setInspectionDuration(0);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, "SIGKILL");
+  await rejected;
+});
+
 test("KILL authentication at the original deadline is the inclusive boundary", async () => {
   const child = new EventEmitter();
   child.pid = 4242;
@@ -720,7 +766,12 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
   assert.ok(lifecycle.deadlines.length > 2);
   assert.ok(
     lifecycle.deadlines.every(
-      (deadline) => deadline === childLifecycleBounds.hardMilliseconds,
+      (deadline) =>
+        deadline === childLifecycleBounds.hardMilliseconds ||
+        deadline ===
+          childLifecycleBounds.hardMilliseconds -
+            childLifecycleBounds.signalGraceMilliseconds -
+            childLifecycleBounds.inspectionMilliseconds,
     ),
   );
 });
