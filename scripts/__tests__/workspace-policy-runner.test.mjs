@@ -37,6 +37,7 @@ function createLifecycleHarness() {
   let inspectError = false;
   let signalError = false;
   let signalResult = "sent";
+  let inspectionDuration = 0;
   const deadlines = [];
   const inspections = [];
   const signals = [];
@@ -55,6 +56,7 @@ function createLifecycleHarness() {
       deadlines.push(hardDeadline);
       inspections.push(identity);
       if (inspectError) throw new Error("synthetic inspection failure");
+      now += inspectionDuration;
       return observation;
     },
     now: () => now,
@@ -102,6 +104,9 @@ function createLifecycleHarness() {
     },
     setInspectionError(value) {
       inspectError = value;
+    },
+    setInspectionDuration(value) {
+      inspectionDuration = value;
     },
     setObservation(value) {
       observation = {
@@ -436,6 +441,56 @@ test("Vitest execution is direct, closed, and joins the child terminal", async (
   assert.equal(options.env.AGENTSCOPE_VALIDATION_LEASE_TOKEN, undefined);
 });
 
+test("TERM transmission starts one absolute grace that includes KILL inspection", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  lifecycle.setInspectionDuration(40);
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  child.emit("message", { code: 0, kind: "direct-terminal" });
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  await lifecycle.advanceTo(40);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  assert.ok(
+    lifecycle.deadlines.includes(
+      40 + childLifecycleBounds.signalGraceMilliseconds,
+    ),
+  );
+  lifecycle.setInspectionDuration(0);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, "SIGKILL");
+  assert.deepEqual(await result, { code: 0, signal: undefined });
+});
+
+test("a KILL inspection that crosses the grace becomes uncertainty", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  child.emit("message", { code: 0, kind: "direct-terminal" });
+  lifecycle.setInspectionDuration(
+    childLifecycleBounds.signalGraceMilliseconds + 1,
+  );
+  await lifecycle.advanceTo(0);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  lifecycle.setInspectionDuration(0);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, null);
+  await assert.rejects(result, /process-group inspection uncertainty/);
+});
+
 test("a forwarded signal waits for the exact child terminal", async () => {
   const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
   const child = new EventEmitter();
@@ -597,25 +652,24 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
     childLifecycleBounds.hardMilliseconds -
       childLifecycleBounds.teardownMilliseconds,
   );
-  assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
   lifecycle.setObservation({
     groupAbsent: false,
     leader: "same",
     memberCount: 2,
   });
-  await lifecycle.advanceTo(
-    childLifecycleBounds.hardMilliseconds -
-      childLifecycleBounds.teardownMilliseconds +
-      childLifecycleBounds.signalGraceMilliseconds,
-  );
-  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
   lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
   child.emit("close", null, "SIGKILL");
   await rejected;
   assert.ok(lifecycle.deadlines.length > 2);
   assert.ok(
     lifecycle.deadlines.every(
-      (deadline) => deadline === childLifecycleBounds.hardMilliseconds,
+      (deadline) =>
+        deadline === childLifecycleBounds.hardMilliseconds ||
+        deadline ===
+          childLifecycleBounds.hardMilliseconds -
+            childLifecycleBounds.teardownMilliseconds +
+            childLifecycleBounds.signalGraceMilliseconds,
     ),
   );
 });
@@ -669,7 +723,7 @@ test("an absent then reused group is never signaled", async () => {
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
   assert.deepEqual(lifecycle.signals, ["SIGTERM"]);
-  const rejected = assert.rejects(result, /hard deadline reached before join/);
+  const rejected = assert.rejects(result, /terminal containment uncertainty/);
   await lifecycle.fireAt(childLifecycleBounds.hardMilliseconds);
   await rejected;
 });
@@ -798,10 +852,51 @@ test("the original hard deadline creates no second containment window", async ()
     process,
     lifecycle.authority,
   );
-  const rejected = assert.rejects(result, /execution deadline exceeded/);
+  const rejected = assert.rejects(result, /terminal containment uncertainty/);
   await lifecycle.advanceTo(childLifecycleBounds.hardMilliseconds);
   await rejected;
   assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("hard-boundary uncertainty revokes IPC and detaches without later admission", async () => {
+  const inventory = [
+    "code-quality-policy.test.mjs",
+    "validation-lease.test.mjs",
+  ];
+  const plan = createWorkspacePolicyPlan(
+    inventory,
+    classifyWorkspacePolicyInventory(inventory),
+  );
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.connected = true;
+  let disconnects = 0;
+  let unrefs = 0;
+  child.disconnect = () => {
+    disconnects += 1;
+    child.connected = false;
+  };
+  child.unref = () => {
+    unrefs += 1;
+  };
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "absent" });
+  const calls = [];
+  const result = runWorkspacePolicyPlan(plan, (invocation) => {
+    calls.push(invocation.files.at(-1));
+    return executeVitestInvocation(
+      invocation,
+      () => child,
+      process,
+      lifecycle.authority,
+    );
+  });
+  await lifecycle.fireAt(childLifecycleBounds.hardMilliseconds);
+  await assert.rejects(result, /terminal containment uncertainty/);
+  assert.equal(disconnects, 1);
+  assert.equal(unrefs, 1);
+  assert.deepEqual(calls, ["code-quality-policy.test.mjs"]);
+  assert.deepEqual(lifecycle.signals, []);
 });
 
 test("group inspection uncertainty reaches the same hard deadline and admits nothing later", async () => {
@@ -827,10 +922,7 @@ test("group inspection uncertainty reaches the same hard deadline and admits not
       lifecycle.authority,
     );
   });
-  const rejected = assert.rejects(
-    result,
-    /process-group inspection uncertainty/,
-  );
+  const rejected = assert.rejects(result, /terminal containment uncertainty/);
   await lifecycle.fireAt(childLifecycleBounds.hardMilliseconds);
   await rejected;
   assert.deepEqual(calls, ["code-quality-policy.test.mjs"]);

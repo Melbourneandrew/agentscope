@@ -440,7 +440,7 @@ class ChildLifecycleController {
     else this.resolveExecution(this.directOutcome ?? this.closeOutcome);
   }
 
-  inspect() {
+  inspect(deadline = this.hardDeadline) {
     if (this.authority === undefined) {
       this.failUncertain("process authority unavailable");
       return undefined;
@@ -449,8 +449,10 @@ class ChildLifecycleController {
       const observation = this.lifecycle.inspect(
         this.authority,
         this.signalHost.platform,
-        this.hardDeadline,
+        deadline,
       );
+      if (this.lifecycle.now() > deadline)
+        throw new Error("process-group inspection exceeded its authority");
       if (
         observation === null ||
         typeof observation !== "object" ||
@@ -472,8 +474,8 @@ class ChildLifecycleController {
     }
   }
 
-  signalGroup(signal) {
-    const observation = this.inspect();
+  signalGroup(signal, deadline = this.hardDeadline) {
+    const observation = this.inspect(deadline);
     if (
       observation === undefined ||
       this.groupAuthorityRevoked ||
@@ -482,10 +484,10 @@ class ChildLifecycleController {
       if (observation?.groupAbsent === true) {
         this.contained = true;
         this.finish();
-        return;
+        return "absent";
       }
       this.failUncertain("process identity unavailable before signal");
-      return;
+      return "uncertain";
     }
     try {
       const result = this.lifecycle.signal(this.authority, signal);
@@ -493,10 +495,13 @@ class ChildLifecycleController {
         this.groupAuthorityRevoked = true;
         this.contained = true;
         this.finish();
+        return "absent";
       } else if (result !== "sent") throw new Error("malformed signal result");
+      return "sent";
     } catch {
       this.groupAuthorityRevoked = true;
       this.failUncertain("process-group signal uncertainty");
+      return "uncertain";
     }
   }
 
@@ -537,22 +542,20 @@ class ChildLifecycleController {
 
   forceKill = () => {
     if (this.settled || this.contained) return;
-    this.signalGroup("SIGKILL");
+    this.signalGroup("SIGKILL", this.escalationDeadline);
     this.pollForContainment();
   };
 
   beginStop(signal) {
     if (this.settled || this.stopping) return;
     this.stopping = true;
-    this.signalGroup(signal);
-    this.pollForContainment();
-    this.graceTimer = this.lifecycle.setTimer(
-      this.forceKill,
-      Math.min(
-        childLifecycleBounds.signalGraceMilliseconds,
-        Math.max(0, this.hardDeadline - this.lifecycle.now()),
-      ),
+    const result = this.signalGroup(signal);
+    if (result !== "sent" || this.settled || this.contained) return;
+    this.escalationDeadline = Math.min(
+      this.hardDeadline,
+      this.lifecycle.now() + childLifecycleBounds.signalGraceMilliseconds,
     );
+    this.graceTimer = this.lifecycle.setTimer(this.forceKill, 0);
   }
 
   onMessage(message) {
@@ -587,13 +590,16 @@ class ChildLifecycleController {
   hardStop = () => {
     this.clearTimer(this.graceTimer);
     this.clearTimer(this.pollTimer);
-    this.checkContainment();
-    if (this.settled) return;
     this.settled = true;
+    this.terminalUncertainty = true;
     this.removeHandlers();
-    this.rejectExecution(
-      this.failure ?? lifecycleFailure("hard deadline reached before join"),
-    );
+    try {
+      if (this.child?.connected === true) this.child.disconnect();
+      this.child?.unref();
+    } catch {
+      // The terminal is deliberately content-free for every revocation failure.
+    }
+    this.rejectExecution(lifecycleFailure("terminal containment uncertainty"));
   };
 
   installHandlers() {
