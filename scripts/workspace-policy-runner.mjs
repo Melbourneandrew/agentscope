@@ -50,6 +50,7 @@ const pureWorkerCeiling = 2;
 const internalChildMarker = "--internal-workspace-policy-child";
 export const childLifecycleBounds = Object.freeze({
   hardMilliseconds: 300_000,
+  inspectionMilliseconds: 1_000,
   pollMilliseconds: 20,
   signalGraceMilliseconds: 100,
   teardownMilliseconds: 5_000,
@@ -277,7 +278,7 @@ function boundedProbeTimeout(hardDeadline) {
   ensureInspectionBudget(hardDeadline);
   const remaining = Math.floor(hardDeadline - performance.now());
   if (remaining <= 0) throw new Error("process inspection deadline reached");
-  return Math.min(1_000, remaining);
+  return Math.min(childLifecycleBounds.inspectionMilliseconds, remaining);
 }
 
 function readDarwinBirth(pid, hardDeadline) {
@@ -547,20 +548,25 @@ class ChildLifecycleController {
 
   forceKill = () => {
     if (this.settled || this.contained) return;
-    this.signalGroup("SIGKILL", this.escalationDeadline);
+    this.signalGroup("SIGKILL", this.hardDeadline);
     this.pollForContainment();
   };
 
   beginStop(signal) {
     if (this.settled || this.stopping) return;
     this.stopping = true;
-    const result = this.signalGroup(signal);
-    if (result !== "sent" || this.settled || this.contained) return;
-    this.escalationDeadline = Math.min(
-      this.hardDeadline,
-      this.lifecycle.now() + childLifecycleBounds.signalGraceMilliseconds,
+    const result = this.signalGroup(
+      signal,
+      this.hardDeadline -
+        childLifecycleBounds.signalGraceMilliseconds -
+        childLifecycleBounds.inspectionMilliseconds,
     );
-    this.graceTimer = this.lifecycle.setTimer(this.forceKill, 0);
+    if (result !== "sent" || this.settled || this.contained) return;
+    this.graceTimer = this.lifecycle.setTimer(
+      this.forceKill,
+      childLifecycleBounds.signalGraceMilliseconds,
+    );
+    this.pollForContainment();
   }
 
   onMessage(message) {
