@@ -451,6 +451,14 @@ const defaultLifecycle = Object.freeze({
   },
 });
 
+export function inspectProcessAuthorityForTesting(
+  authority,
+  platform,
+  hardDeadline,
+) {
+  return defaultLifecycle.inspect(authority, platform, hardDeadline);
+}
+
 function lifecycleFailure(reason) {
   return new Error(`workspace-policy child containment failed: ${reason}`);
 }

@@ -20,6 +20,7 @@ import {
   discoverWorkspacePolicyInventory,
   executeVitestInvocation,
   inspectionFailureStages,
+  inspectProcessAuthorityForTesting,
   main,
   parseDarwinBirthProbeForTesting,
   processAuthorityFiles,
@@ -1162,6 +1163,35 @@ test("post-inspection deadline crossing reports deadline-after", async () => {
   await assert.rejects(
     result,
     /process-group inspection uncertainty: deadline-after/,
+  );
+  assert.deepEqual(lifecycle.signals, []);
+});
+
+test("expired authority before kernel inspection reports deadline-before", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = process.platform;
+  const lifecycle = createLifecycleHarness();
+  const syntheticInspect = lifecycle.authority.inspect;
+  let expired = true;
+  lifecycle.authority.inspect = (authority, platform, hardDeadline) =>
+    expired
+      ? inspectProcessAuthorityForTesting(authority, platform, -1)
+      : syntheticInspect(authority, platform, hardDeadline);
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  expired = false;
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, null);
+  await assert.rejects(
+    result,
+    /process-group inspection uncertainty: deadline-before/,
   );
   assert.deepEqual(lifecycle.signals, []);
 });
