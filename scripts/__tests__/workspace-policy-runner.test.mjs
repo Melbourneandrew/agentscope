@@ -34,6 +34,7 @@ const workspaceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 test("Darwin birth evidence distinguishes exact ESRCH absence", () => {
   assert.equal(parseDarwinBirthProbeForTesting("absent\n", 4242), undefined);
+  assert.equal(parseDarwinBirthProbeForTesting("unavailable\n", 4242), null);
   assert.deepEqual(
     parseDarwinBirthProbeForTesting("4242:4242:1700000000:123456\n", 4242),
     { processGroup: 4242, startIdentity: "1700000000:123456" },
@@ -42,6 +43,7 @@ test("Darwin birth evidence distinguishes exact ESRCH absence", () => {
     "absent",
     " absent\n",
     "missing\n",
+    "unavailable",
     "4243:4242:1700000000:123456\n",
     "4242:4242:1700000000:123456\nextra\n",
   ])
@@ -853,6 +855,74 @@ test("successful KILL retirement tolerates leader exit until exact group absence
   lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
   child.emit("close", 1, "SIGKILL");
   assert.deepEqual(await result, { code: 0, signal: undefined });
+});
+
+test("post-KILL birth unavailability remains poll-only until exact group absence", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  child.emit("message", { code: 0, kind: "direct-terminal" });
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  lifecycle.setObservation({ groupAbsent: false, leader: "unavailable" });
+  await lifecycle.advanceTo(
+    childLifecycleBounds.signalGraceMilliseconds +
+      childLifecycleBounds.pollMilliseconds,
+  );
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
+  lifecycle.setObservation({ groupAbsent: true, leader: "unavailable" });
+  child.emit("close", 1, "SIGKILL");
+  assert.deepEqual(await result, { code: 0, signal: undefined });
+});
+
+test("birth unavailability before KILL is uncertainty and starts no signal", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "unavailable" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  assert.deepEqual(lifecycle.signals, []);
+  lifecycle.setObservation({ groupAbsent: true, leader: "unavailable" });
+  child.emit("close", 1, null);
+  await assert.rejects(
+    result,
+    /process birth unavailable before group retirement/,
+  );
+});
+
+test("post-KILL birth unavailability never becomes absence authority", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    process,
+    lifecycle.authority,
+  );
+  child.emit("message", { code: 0, kind: "direct-terminal" });
+  await lifecycle.advanceTo(childLifecycleBounds.signalGraceMilliseconds);
+  lifecycle.setObservation({ groupAbsent: false, leader: "unavailable" });
+  const rejected = assert.rejects(result, /terminal containment uncertainty/);
+  await lifecycle.fireAt(childLifecycleBounds.hardMilliseconds);
+  await rejected;
+  assert.deepEqual(lifecycle.signals, ["SIGTERM", "SIGKILL"]);
 });
 
 test("an absent then reused group is never signaled", async () => {

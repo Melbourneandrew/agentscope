@@ -272,6 +272,7 @@ class B(ctypes.Structure):
  _fields_=[("flags",ctypes.c_uint32),("status",ctypes.c_uint32),("xstatus",ctypes.c_uint32),("pid",ctypes.c_uint32),("ppid",ctypes.c_uint32),("uid",ctypes.c_uint32),("gid",ctypes.c_uint32),("ruid",ctypes.c_uint32),("rgid",ctypes.c_uint32),("svuid",ctypes.c_uint32),("svgid",ctypes.c_uint32),("rfu",ctypes.c_uint32),("comm",ctypes.c_char*16),("name",ctypes.c_char*32),("nfiles",ctypes.c_uint32),("pgid",ctypes.c_uint32),("pjobc",ctypes.c_uint32),("tdev",ctypes.c_uint32),("tpgid",ctypes.c_uint32),("nice",ctypes.c_int32),("sec",ctypes.c_uint64),("usec",ctypes.c_uint64)]
 b=B();lib=ctypes.CDLL("/usr/lib/libproc.dylib",use_errno=True);ctypes.set_errno(0);n=lib.proc_pidinfo(int(sys.argv[1]),3,0,ctypes.byref(b),ctypes.sizeof(b));e=ctypes.get_errno()
 if n == 0 and e == errno.ESRCH: print("absent");raise SystemExit(0)
+if n == 0: print("unavailable");raise SystemExit(0)
 if n != ctypes.sizeof(b) or b.pid != int(sys.argv[1]): raise SystemExit(1)
 print(f"{b.pid}:{b.pgid}:{b.sec}:{b.usec}")`;
 
@@ -284,6 +285,7 @@ function boundedProbeTimeout(hardDeadline) {
 
 export function parseDarwinBirthProbeForTesting(output, pid) {
   if (output === "absent\n") return undefined;
+  if (output === "unavailable\n") return null;
   const match = /^(\d+):(\d+):(\d+):(\d+)\n$/.exec(output);
   if (match === null || Number(match[1]) !== pid)
     throw new Error("malformed process birth record");
@@ -372,10 +374,12 @@ const defaultLifecycle = Object.freeze({
         leader:
           birth === undefined
             ? "absent"
-            : birth.processGroup === authority.pid &&
-                birth.startIdentity === authority.startIdentity
-              ? "same"
-              : "mismatch",
+            : birth === null
+              ? "unavailable"
+              : birth.processGroup === authority.pid &&
+                  birth.startIdentity === authority.startIdentity
+                ? "same"
+                : "mismatch",
       });
     }
     throw new Error("unsupported process authority platform");
@@ -464,11 +468,15 @@ class ChildLifecycleController {
         observation === null ||
         typeof observation !== "object" ||
         typeof observation.groupAbsent !== "boolean" ||
-        !["same", "absent", "mismatch"].includes(observation.leader)
+        !["same", "absent", "mismatch", "unavailable"].includes(
+          observation.leader,
+        )
       )
         throw new Error("malformed observation");
       if (!observation.groupAbsent && observation.leader === "mismatch")
         this.failUncertain("process identity mismatch");
+      if (observation.leader === "unavailable" && !this.groupKillSent)
+        this.failUncertain("process birth unavailable before group retirement");
       if (
         observation.leader === "absent" &&
         !observation.groupAbsent &&
