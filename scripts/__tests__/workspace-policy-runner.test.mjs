@@ -20,6 +20,7 @@ import {
   discoverWorkspacePolicyInventory,
   executeVitestInvocation,
   main,
+  parseDarwinBirthProbeForTesting,
   processAuthorityFiles,
   publishTerminalOutcome,
   purePolicyFiles,
@@ -30,6 +31,25 @@ import {
 } from "../workspace-policy-runner.mjs";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
+
+test("Darwin birth evidence distinguishes exact ESRCH absence", () => {
+  assert.equal(parseDarwinBirthProbeForTesting("absent\n", 4242), undefined);
+  assert.deepEqual(
+    parseDarwinBirthProbeForTesting("4242:4242:1700000000:123456\n", 4242),
+    { processGroup: 4242, startIdentity: "1700000000:123456" },
+  );
+  for (const output of [
+    "absent",
+    " absent\n",
+    "missing\n",
+    "4243:4242:1700000000:123456\n",
+    "4242:4242:1700000000:123456\nextra\n",
+  ])
+    assert.throws(
+      () => parseDarwinBirthProbeForTesting(output, 4242),
+      /malformed process birth record/,
+    );
+});
 
 function createLifecycleHarness() {
   let now = 0;
