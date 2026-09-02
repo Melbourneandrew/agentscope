@@ -42,7 +42,7 @@
     "verify:workspace": "pnpm verify:review-skill && pnpm verify:release-lane-substrate && pnpm --filter agentscope-cli verify:docs && node scripts/verify-workspace-policy.mjs && pnpm verify:targets",
     "verify:review-skill": "python3 .agents/skills/review-agentscope/scripts/validate_review_skill.py",
     "verify:targets": "node scripts/verify-workspace-targets.mjs",
-    "test:workspace-policy": "vitest run --config vitest.config.ts scripts/__tests__",
+    "test:workspace-policy": "node scripts/workspace-policy-runner.mjs",
     "verify:quality": "node scripts/verify-code-quality-policy.mjs",
     "verify:coverage-ratchet": "node scripts/verify-coverage-ratchet.mjs",
     "validate": "python3 scripts/validation-lease.py run validate",
