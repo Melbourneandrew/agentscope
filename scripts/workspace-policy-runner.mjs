@@ -462,7 +462,11 @@ class ChildLifecycleController {
         throw new Error("malformed observation");
       if (!observation.groupAbsent && observation.leader === "mismatch")
         this.failUncertain("process identity mismatch");
-      if (observation.leader === "absent" && !observation.groupAbsent)
+      if (
+        observation.leader === "absent" &&
+        !observation.groupAbsent &&
+        !this.groupKillSent
+      )
         this.failUncertain("wrapper identity lost before group retirement");
       if (observation.leader !== "same" || observation.groupAbsent)
         this.groupAuthorityRevoked = true;
@@ -497,6 +501,7 @@ class ChildLifecycleController {
         this.finish();
         return "absent";
       } else if (result !== "sent") throw new Error("malformed signal result");
+      if (signal === "SIGKILL") this.groupKillSent = true;
       return "sent";
     } catch {
       this.groupAuthorityRevoked = true;
