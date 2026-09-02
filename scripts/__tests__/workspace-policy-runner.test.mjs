@@ -19,6 +19,7 @@ import {
   createWorkspacePolicyPlan,
   discoverWorkspacePolicyInventory,
   executeVitestInvocation,
+  inspectionFailureStages,
   main,
   parseDarwinBirthProbeForTesting,
   processAuthorityFiles,
@@ -78,7 +79,14 @@ function createLifecycleHarness() {
       assert.deepEqual(identity, { pid: 4242, startIdentity: "start-1" });
       deadlines.push(hardDeadline);
       inspections.push(identity);
-      if (inspectError) throw new Error("synthetic inspection failure");
+      if (inspectError) {
+        const error = new Error("synthetic secret must not escape");
+        if (typeof inspectError === "string")
+          Object.defineProperty(error, "inspectionStage", {
+            value: inspectError,
+          });
+        throw error;
+      }
       now += inspectionDuration;
       return observation;
     },
@@ -1037,6 +1045,52 @@ test("PID reuse and inspection uncertainty fail without signaling", async () => 
         ? /process identity mismatch/
         : /process-group inspection uncertainty/,
     );
+  }
+});
+
+test("inspection failures expose only the closed content-free stage", async () => {
+  assert.deepEqual(inspectionFailureStages, [
+    "birth-probe-exit",
+    "birth-probe-parse",
+    "deadline-after",
+    "deadline-before",
+    "group-existence",
+    "leader-existence",
+    "observation-shape",
+    "unknown",
+  ]);
+  for (const expectedStage of inspectionFailureStages) {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    const signalHost = new EventEmitter();
+    signalHost.platform = "darwin";
+    const lifecycle = createLifecycleHarness();
+    lifecycle.setInspectionError(
+      expectedStage === "unknown" ? true : expectedStage,
+    );
+    const result = executeVitestInvocation(
+      createVitestInvocation(["validation-lease.test.mjs"]),
+      () => child,
+      signalHost,
+      lifecycle.authority,
+    );
+    signalHost.emit("SIGTERM");
+    lifecycle.setInspectionError(false);
+    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+    child.emit("close", 1, null);
+    let failure;
+    try {
+      await result;
+      assert.fail("inspection uncertainty must reject");
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(
+      failure.message,
+      `workspace-policy child containment failed: process-group inspection uncertainty: ${expectedStage}`,
+    );
+    assert.ok(!failure.message.includes("synthetic secret"));
+    assert.deepEqual(lifecycle.signals, []);
   }
 });
 
