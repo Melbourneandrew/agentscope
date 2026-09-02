@@ -70,9 +70,26 @@ function inspectionFailure(stage) {
 }
 
 function inspectionStage(error) {
-  return inspectionFailureStages.includes(error?.inspectionStage)
-    ? error.inspectionStage
-    : "unknown";
+  try {
+    if (
+      (typeof error !== "object" && typeof error !== "function") ||
+      error === null
+    )
+      return "unknown";
+    const descriptor = Object.getOwnPropertyDescriptor(
+      error,
+      "inspectionStage",
+    );
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      !inspectionFailureStages.includes(descriptor.value)
+    )
+      return "unknown";
+    return descriptor.value;
+  } catch {
+    return "unknown";
+  }
 }
 
 function fail(message) {
@@ -500,7 +517,7 @@ class ChildLifecycleController {
         deadline,
       );
       if (this.lifecycle.now() > deadline)
-        throw new Error("process-group inspection exceeded its authority");
+        throw inspectionFailure("deadline-after");
       if (
         observation === null ||
         typeof observation !== "object" ||

@@ -80,6 +80,7 @@ function createLifecycleHarness() {
       deadlines.push(hardDeadline);
       inspections.push(identity);
       if (inspectError) {
+        if (typeof inspectError === "object") throw inspectError;
         const error = new Error("synthetic secret must not escape");
         if (typeof inspectError === "string")
           Object.defineProperty(error, "inspectionStage", {
@@ -147,6 +148,9 @@ function createLifecycleHarness() {
           value.memberCount ??
           (value.groupAbsent ? 0 : value.leader === "same" ? 1 : 1),
       };
+    },
+    setNow(value) {
+      now = value;
     },
     setSignalError(value) {
       signalError = value;
@@ -1092,6 +1096,74 @@ test("inspection failures expose only the closed content-free stage", async () =
     assert.ok(!failure.message.includes("synthetic secret"));
     assert.deepEqual(lifecycle.signals, []);
   }
+});
+
+test("hostile inspection-stage carriers map to unknown without observation", async () => {
+  let getterReads = 0;
+  const hostileErrors = [
+    Object.defineProperty(new Error("raw canary"), "inspectionStage", {
+      get() {
+        getterReads += 1;
+        return getterReads === 1 ? "group-existence" : "RAW_CANARY";
+      },
+    }),
+    new Proxy(new Error("proxy canary"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("PROXY_CANARY");
+      },
+    }),
+  ];
+  for (const hostileError of hostileErrors) {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    const signalHost = new EventEmitter();
+    signalHost.platform = "darwin";
+    const lifecycle = createLifecycleHarness();
+    lifecycle.setInspectionError(hostileError);
+    const result = executeVitestInvocation(
+      createVitestInvocation(["validation-lease.test.mjs"]),
+      () => child,
+      signalHost,
+      lifecycle.authority,
+    );
+    signalHost.emit("SIGTERM");
+    lifecycle.setInspectionError(false);
+    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+    child.emit("close", 1, null);
+    await assert.rejects(
+      result,
+      (error) =>
+        error.message ===
+        "workspace-policy child containment failed: process-group inspection uncertainty: unknown",
+    );
+  }
+  assert.equal(getterReads, 0);
+});
+
+test("post-inspection deadline crossing reports deadline-after", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  lifecycle.setInspectionDuration(childLifecycleBounds.hardMilliseconds + 1);
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  lifecycle.setInspectionDuration(0);
+  lifecycle.setNow(0);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, null);
+  await assert.rejects(
+    result,
+    /process-group inspection uncertainty: deadline-after/,
+  );
+  assert.deepEqual(lifecycle.signals, []);
 });
 
 test("a signal during deadline teardown is republished only after join", async () => {
