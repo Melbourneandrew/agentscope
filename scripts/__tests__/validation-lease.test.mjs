@@ -1994,7 +1994,11 @@ test("all host aggregate entry points are wired through the lease", () => {
     );
   assert.equal(
     readFileSync(join(repositoryRoot, ".husky/pre-push"), "utf8").trim(),
-    "pnpm prepush",
+    "node scripts/prepush.mjs",
+  );
+  assert.match(
+    readFileSync(join(repositoryRoot, "scripts/prepush.mjs"), "utf8"),
+    /runChild\("pnpm", \["prepush"\]/u,
   );
   assert.equal(
     readFileSync(join(repositoryRoot, ".husky/pre-commit"), "utf8").trim(),

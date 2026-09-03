@@ -1,1 +1,1 @@
-pnpm prepush
+node scripts/prepush.mjs
