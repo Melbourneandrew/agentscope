@@ -7,7 +7,7 @@ description: ADRs for bounded Crabbox development capacity through the supported
 
 Agentscope development may use a self-hosted Crabbox coordinator on Cloudflare Workers to acquire bounded disposable Hetzner Linux workers. The deployment follows the documented Wrangler, Crabbox, Cloudflare, and Hetzner operating paths. The custom protected launcher and every associated credential ceremony, policy, installer, service, and runtime are removed completely; they are neither an alternative nor a recovery authority.
 
-Crabbox supplies disposable outer development capacity. The shared hermetic scenario runner remains the inner test boundary across workstation execution, CI execution, and Crabbox execution. Crabbox is optional development capacity; GitHub-hosted CI remains merge and release authority.
+Crabbox supplies the disposable outer host for mutation-heavy development integration. Crabbox execution and CI execution share the inner hermetic scenario runner, while workstation execution is limited to the focused deterministic and nonmutating checks selected by [Local Validation](/docs/blueprints/operations/local-validation). Crabbox is optional development and burst capacity; GitHub-hosted CI independently runs the complete integration gates and remains merge and release authority.
 
 ## Architecture Decision Records
 
@@ -53,9 +53,9 @@ A content-free substrate proof makes no repository-test claim and requires a ret
 
 **Consequences:** Legacy credentials are revoked without touching replacement credentials, and only exact launcher-owned files, processes, and identities are removed. The replacement path never migrates or reads legacy credentials. A need for stronger separation in the future starts with a new reviewed Blueprint; it cannot reactivate the deleted launcher.
 
-### ADR-006: Keep Crabbox outside hermetic and release authority
+### ADR-006: Use Crabbox for development integration without release authority
 
-**Decision:** Crabbox provisions only the disposable outer Linux guest. Before a guest may run repository tests, a repo-owned setup path must hydrate the exact inner hermetic scenario without provider credentials and retain output within that boundary. Every admitted Crabbox scenario composes the complete evidence and reconciliation contract in Harness Execution ADR-006, including its candidate, catalog, artifact, runtime, containment, and owned-resource identities; the ADR-004 receipt is only supplemental fleet-operational evidence. Until such a path is separately admitted, Crabbox is limited to the content-free substrate proof in ADR-004.
+**Decision:** Crabbox provisions only the disposable outer Linux guest. A repo-owned run-scoped controller hydrates and executes the exact inner hermetic scenario without provider credentials and retains output within that boundary. It may use the guest's ordinary Docker daemon with fresh exact per-run identities and bounded commands, but it cannot create a second daemon lifecycle or expose the daemon outside the guest. Every Crabbox scenario composes the complete evidence and reconciliation contract in Harness Execution ADR-006, including its candidate, catalog, artifact, runtime, containment, and owned-resource identities; the ADR-004 receipt is only supplemental fleet-operational evidence. Successful execution proves the scenario's own processes and resources terminal. Mutation uncertainty fails the run and makes that exact guest non-reusable until the Crabbox coordinator has destroyed it; guest destruction contains uncertainty but does not turn it into cleanup success.
 
 GitHub-hosted CI remains merge and release authority. Crabbox results are development evidence only; provider availability, quota, budget, cleanup delay, or Crabbox results can never make CI pass or block a product release.
 
