@@ -27,19 +27,19 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 ### ADR-003: Make local commit and CI gates equivalent in intent
 
-**Decision:** A pre-commit hook runs Prettier and ESLint on staged supported files, then Nx affected strict type checks for the staged paths. The pre-push validation command runs repository-wide workspace-policy validation, format verification, lint, strict type checks, coverage-enforced unit tests, and builds; CI repeats the same guarantees in independently observable lanes.
+**Decision:** A pre-commit hook runs Prettier and ESLint on staged supported files, then Nx affected strict type checks for the staged paths. The pre-push validation command follows the exact-pushed-snapshot classification and conservative gate matrix in [Local Validation](/docs/blueprints/operations/local-validation). CI does not adopt that local selection and follows the independently observable full-gate contract in [Continuous Integration](/docs/blueprints/operations/continuous-integration).
 
 **Context:** Fast commit feedback prevents routine violations, while staged-only checks cannot establish workspace-wide correctness or detect changed public contracts.
 
-**Consequences:** Generated files and approved vendored fixtures are explicitly excluded in configuration rather than ignored ad hoc. A hook is a convenience layer, not the authority: CI repeats every mandatory gate and no PR may merge with a failing quality job.
+**Consequences:** Generated files and approved vendored fixtures are explicitly excluded in configuration rather than ignored ad hoc. A hook is a convenience layer, not the authority: its path-aware omissions never become release evidence, and no PR may merge with a failing required CI job.
 
 ### ADR-004: Split CI by feedback horizon and trust boundary
 
-**Decision:** CI has named, independently observable lanes: `quality` (format, lint, type check), `unit`, `docs`, and hermetic `integration`. Dependency installation is lockfile-frozen and cache keys include the lockfile and Node version. No CI lane receives third-party destination credentials or contacts a public destination service.
+**Decision:** CI has named, independently observable lanes: `quality` (format, lint, type check), `unit`, `docs`, `native`, and hermetic `integration`. Dependency installation is lockfile-frozen and cache keys include the lockfile and Node version. No CI lane receives third-party destination credentials or contacts a public destination service.
 
 **Context:** The integration matrix is materially slower and has different Docker/artifact requirements than code quality. Separating lanes gives actionable failures and allows safe parallelism.
 
-**Consequences:** Pull requests run quality, unit, docs, and the defined hermetic compatibility matrix; integration work is sharded by scenario without sharing scenario containers. Scheduled/manual workflows may run a wider hermetic version matrix. Documentation deployment remains a separate post-merge workflow and never grants publishing credentials to pull-request jobs.
+**Consequences:** Pull requests run quality, unit, docs, native, and the defined hermetic compatibility matrix. Native candidate certification does not run inside the unit lane, and integration work is sharded by scenario without sharing scenario containers. Scheduled/manual workflows may run a wider hermetic version matrix. Documentation deployment remains a separate post-merge workflow and never grants publishing credentials to pull-request jobs.
 
 ### ADR-005: Enforce complexity and test posture through reviewed policy
 
