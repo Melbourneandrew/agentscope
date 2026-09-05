@@ -9,4 +9,5 @@ artifacts
 .env
 .env.*
 !.env.example
+ops/crabbox/.local/
 .husky/_
