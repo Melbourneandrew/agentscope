@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,51 @@ import { auditCoreFinalizationImports } from "./restricted-import-policy.mjs";
 import { expectedInternalDependenciesFor } from "./workspace-dependency-policy.mjs";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+const authoritativeDocumentationPaths = [
+  /^(?:AGENTS|CLAUDE|CONTRIBUTING|README)\.[mM][dD]$/u,
+  /^\.agents\/(?:research\/precedents|skills)\/.+\.[mM][dD]$/u,
+  /^\.beads\/.+\.[mM][dD]$/u,
+  /^\.github\/(?:ISSUE_TEMPLATE|PULL_REQUEST_TEMPLATE)\/.+\.[mM][dD]$/u,
+  /^apps\/docs\/(?:AGENTS|CLAUDE)\.[mM][dD]$/u,
+  /^apps\/docs\/content\/docs\/(?:index\.[mM][dD][xX]|(?:blueprints|cli|requirements)\/.+\.[mM][dD][xX])$/u,
+  /^(?:apps|ops|packages|tests)\/.+\/README\.[mM][dD]$/u,
+  /^packages\/harnesses\/core\/NATIVE_FIXTURES\.[mM][dD]$/u,
+];
+const ambiguousDocumentationSegment =
+  /^(?:draft|handoff|notes?|removal[-_.]?receipt|scratch(?:pad)?|temp(?:orary)?)$/iu;
+
+export function auditDocumentationPlacement(trackedPaths) {
+  const violations = trackedPaths
+    .filter((path) => /\.mdx?$/iu.test(path))
+    .filter((path) => {
+      if (path.startsWith(".beads/")) return false;
+      const segments = path.split("/");
+      const basename = segments.at(-1)?.replace(/\.mdx?$/iu, "") ?? "";
+      return (
+        ambiguousDocumentationSegment.test(basename) ||
+        !authoritativeDocumentationPaths.some((pattern) => pattern.test(path))
+      );
+    })
+    .sort();
+
+  if (violations.length > 0) {
+    throw new Error(
+      `Tracked Markdown must use an authoritative documentation path and non-scratch name: ${violations.join(", ")}`,
+    );
+  }
+}
+
+export function listTrackedPaths(cwd = workspaceRoot) {
+  return execFileSync("git", ["ls-files", "-z"], {
+    cwd,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean);
+}
+
+auditDocumentationPlacement(listTrackedPaths());
 
 const expectedPackages = expectedWorkspacePackages;
 

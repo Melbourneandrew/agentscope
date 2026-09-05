@@ -24,6 +24,7 @@ export const processAuthorityFiles = Object.freeze([
 
 export const purePolicyFiles = Object.freeze([
   "acceptance-evidence.test.mjs",
+  "documentation-policy.test.mjs",
   "release-lane-substrate.test.mjs",
   "restricted-import-policy.test.mjs",
   "review-skill.test.mjs",
