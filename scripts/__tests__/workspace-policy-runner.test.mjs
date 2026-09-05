@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   mkdirSync,
@@ -9,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
@@ -19,11 +21,14 @@ import {
   createWorkspacePolicyPlan,
   discoverWorkspacePolicyInventory,
   executeVitestInvocation,
+  inspectionFailureStages,
+  inspectProcessAuthorityForTesting,
   main,
   parseDarwinBirthProbeForTesting,
   processAuthorityFiles,
   publishTerminalOutcome,
   purePolicyFiles,
+  readDarwinBirthForTesting,
   requiredPolicyFiles,
   runInternalVitestChild,
   runWorkspacePolicyPlan,
@@ -53,6 +58,43 @@ test("Darwin birth evidence distinguishes exact ESRCH absence", () => {
     );
 });
 
+test("a bounded Darwin probe overrun reports the original deadline crossing", () => {
+  const hardDeadline = performance.now() + 100;
+  let observedTimeout;
+  assert.throws(
+    () =>
+      readDarwinBirthForTesting(
+        4242,
+        hardDeadline,
+        (_file, _arguments, options) => {
+          observedTimeout = options.timeout;
+          try {
+            return execFileSync(
+              process.execPath,
+              ["-e", "setTimeout(() => {}, 10_000)"],
+              {
+                encoding: "utf8",
+                env: {},
+                maxBuffer: 256,
+                shell: false,
+                timeout: options.timeout,
+              },
+            );
+          } catch (error) {
+            while (performance.now() <= hardDeadline) {
+              // Model a probe returning only after its original absolute authority.
+            }
+            throw error;
+          }
+        },
+      ),
+    (error) =>
+      Object.getOwnPropertyDescriptor(error, "inspectionStage")?.value ===
+      "deadline-after",
+  );
+  assert.ok(observedTimeout > 0 && observedTimeout <= 100);
+});
+
 function createLifecycleHarness() {
   let now = 0;
   let observation = { groupAbsent: true, leader: "absent", memberCount: 0 };
@@ -78,7 +120,15 @@ function createLifecycleHarness() {
       assert.deepEqual(identity, { pid: 4242, startIdentity: "start-1" });
       deadlines.push(hardDeadline);
       inspections.push(identity);
-      if (inspectError) throw new Error("synthetic inspection failure");
+      if (inspectError) {
+        if (typeof inspectError === "object") throw inspectError;
+        const error = new Error("synthetic secret must not escape");
+        if (typeof inspectError === "string")
+          Object.defineProperty(error, "inspectionStage", {
+            value: inspectError,
+          });
+        throw error;
+      }
       now += inspectionDuration;
       return observation;
     },
@@ -139,6 +189,9 @@ function createLifecycleHarness() {
           value.memberCount ??
           (value.groupAbsent ? 0 : value.leader === "same" ? 1 : 1),
       };
+    },
+    setNow(value) {
+      now = value;
     },
     setSignalError(value) {
       signalError = value;
@@ -1038,6 +1091,149 @@ test("PID reuse and inspection uncertainty fail without signaling", async () => 
         : /process-group inspection uncertainty/,
     );
   }
+});
+
+test("inspection failures expose only the closed content-free stage", async () => {
+  assert.deepEqual(inspectionFailureStages, [
+    "birth-probe-exit",
+    "birth-probe-parse",
+    "deadline-after",
+    "deadline-before",
+    "group-existence",
+    "leader-existence",
+    "observation-shape",
+    "unknown",
+  ]);
+  for (const expectedStage of inspectionFailureStages) {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    const signalHost = new EventEmitter();
+    signalHost.platform = "darwin";
+    const lifecycle = createLifecycleHarness();
+    lifecycle.setInspectionError(
+      expectedStage === "unknown" ? true : expectedStage,
+    );
+    const result = executeVitestInvocation(
+      createVitestInvocation(["validation-lease.test.mjs"]),
+      () => child,
+      signalHost,
+      lifecycle.authority,
+    );
+    signalHost.emit("SIGTERM");
+    lifecycle.setInspectionError(false);
+    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+    child.emit("close", 1, null);
+    let failure;
+    try {
+      await result;
+      assert.fail("inspection uncertainty must reject");
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(
+      failure.message,
+      `workspace-policy child containment failed: process-group inspection uncertainty: ${expectedStage}`,
+    );
+    assert.ok(!failure.message.includes("synthetic secret"));
+    assert.deepEqual(lifecycle.signals, []);
+  }
+});
+
+test("hostile inspection-stage carriers map to unknown without observation", async () => {
+  let getterReads = 0;
+  const hostileErrors = [
+    Object.defineProperty(new Error("raw canary"), "inspectionStage", {
+      get() {
+        getterReads += 1;
+        return getterReads === 1 ? "group-existence" : "RAW_CANARY";
+      },
+    }),
+    new Proxy(new Error("proxy canary"), {
+      getOwnPropertyDescriptor() {
+        throw new Error("PROXY_CANARY");
+      },
+    }),
+  ];
+  for (const hostileError of hostileErrors) {
+    const child = new EventEmitter();
+    child.pid = 4242;
+    const signalHost = new EventEmitter();
+    signalHost.platform = "darwin";
+    const lifecycle = createLifecycleHarness();
+    lifecycle.setInspectionError(hostileError);
+    const result = executeVitestInvocation(
+      createVitestInvocation(["validation-lease.test.mjs"]),
+      () => child,
+      signalHost,
+      lifecycle.authority,
+    );
+    signalHost.emit("SIGTERM");
+    lifecycle.setInspectionError(false);
+    lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+    child.emit("close", 1, null);
+    await assert.rejects(
+      result,
+      (error) =>
+        error.message ===
+        "workspace-policy child containment failed: process-group inspection uncertainty: unknown",
+    );
+  }
+  assert.equal(getterReads, 0);
+});
+
+test("post-inspection deadline crossing reports deadline-after", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = "darwin";
+  const lifecycle = createLifecycleHarness();
+  lifecycle.setObservation({ groupAbsent: false, leader: "same" });
+  lifecycle.setInspectionDuration(childLifecycleBounds.hardMilliseconds + 1);
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  lifecycle.setInspectionDuration(0);
+  lifecycle.setNow(0);
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, null);
+  await assert.rejects(
+    result,
+    /process-group inspection uncertainty: deadline-after/,
+  );
+  assert.deepEqual(lifecycle.signals, []);
+});
+
+test("expired authority before kernel inspection reports deadline-before", async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  const signalHost = new EventEmitter();
+  signalHost.platform = process.platform;
+  const lifecycle = createLifecycleHarness();
+  const syntheticInspect = lifecycle.authority.inspect;
+  let expired = true;
+  lifecycle.authority.inspect = (authority, platform, hardDeadline) =>
+    expired
+      ? inspectProcessAuthorityForTesting(authority, platform, -1)
+      : syntheticInspect(authority, platform, hardDeadline);
+  const result = executeVitestInvocation(
+    createVitestInvocation(["validation-lease.test.mjs"]),
+    () => child,
+    signalHost,
+    lifecycle.authority,
+  );
+  signalHost.emit("SIGTERM");
+  expired = false;
+  lifecycle.setObservation({ groupAbsent: true, leader: "absent" });
+  child.emit("close", 1, null);
+  await assert.rejects(
+    result,
+    /process-group inspection uncertainty: deadline-before/,
+  );
+  assert.deepEqual(lifecycle.signals, []);
 });
 
 test("a signal during deadline teardown is republished only after join", async () => {

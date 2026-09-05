@@ -52,6 +52,45 @@ export const childLifecycleBounds = Object.freeze({
   signalGraceMilliseconds: 100,
   teardownMilliseconds: 5_000,
 });
+export const inspectionFailureStages = Object.freeze([
+  "birth-probe-exit",
+  "birth-probe-parse",
+  "deadline-after",
+  "deadline-before",
+  "group-existence",
+  "leader-existence",
+  "observation-shape",
+  "unknown",
+]);
+
+function inspectionFailure(stage) {
+  const error = new Error("process inspection failed");
+  Object.defineProperty(error, "inspectionStage", { value: stage });
+  return error;
+}
+
+function inspectionStage(error) {
+  try {
+    if (
+      (typeof error !== "object" && typeof error !== "function") ||
+      error === null
+    )
+      return "unknown";
+    const descriptor = Object.getOwnPropertyDescriptor(
+      error,
+      "inspectionStage",
+    );
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      !inspectionFailureStages.includes(descriptor.value)
+    )
+      return "unknown";
+    return descriptor.value;
+  } catch {
+    return "unknown";
+  }
+}
 
 function fail(message) {
   throw new Error(`workspace-policy scheduling rejected: ${message}`);
@@ -239,28 +278,27 @@ function childEnvironment() {
   return environment;
 }
 
-function ensureInspectionBudget(hardDeadline) {
-  if (hardDeadline - performance.now() <= 0)
-    throw new Error("process inspection deadline reached");
+function ensureInspectionBudget(hardDeadline, stage = "deadline-before") {
+  if (hardDeadline - performance.now() <= 0) throw inspectionFailure(stage);
 }
 
 function readLinuxProcess(pid, hardDeadline) {
-  ensureInspectionBudget(hardDeadline);
+  ensureInspectionBudget(hardDeadline, "deadline-before");
   let value;
   try {
     value = readFileSync(`/proc/${pid}/stat`, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") return undefined;
-    throw error;
+    throw inspectionFailure("leader-existence");
   }
-  ensureInspectionBudget(hardDeadline);
+  ensureInspectionBudget(hardDeadline, "deadline-after");
   const commandEnd = value.lastIndexOf(")");
-  if (commandEnd < 0) throw new Error("malformed process record");
+  if (commandEnd < 0) throw inspectionFailure("observation-shape");
   const fields = value.slice(commandEnd + 2).split(" ");
   const processGroup = Number(fields[2]);
   const startIdentity = fields[19];
   if (!Number.isSafeInteger(processGroup) || startIdentity === undefined)
-    throw new Error("malformed process record");
+    throw inspectionFailure("observation-shape");
   return { processGroup, startIdentity };
 }
 
@@ -274,9 +312,9 @@ if n != ctypes.sizeof(b) or b.pid != int(sys.argv[1]): raise SystemExit(1)
 print(f"{b.pid}:{b.pgid}:{b.sec}:{b.usec}")`;
 
 function boundedProbeTimeout(hardDeadline) {
-  ensureInspectionBudget(hardDeadline);
+  ensureInspectionBudget(hardDeadline, "deadline-before");
   const remaining = Math.floor(hardDeadline - performance.now());
-  if (remaining <= 0) throw new Error("process inspection deadline reached");
+  if (remaining <= 0) throw inspectionFailure("deadline-before");
   return Math.min(childLifecycleBounds.inspectionMilliseconds, remaining);
 }
 
@@ -292,33 +330,49 @@ export function parseDarwinBirthProbeForTesting(output, pid) {
   });
 }
 
-function readDarwinBirth(pid, hardDeadline) {
-  const output = execFileSync(
-    realpathSync("/usr/bin/python3"),
-    ["-c", darwinBirthProbe, String(pid)],
-    {
-      encoding: "utf8",
-      env: {},
-      maxBuffer: 256,
-      shell: false,
-      timeout: boundedProbeTimeout(hardDeadline),
-    },
-  );
-  ensureInspectionBudget(hardDeadline);
-  const record = parseDarwinBirthProbeForTesting(output, pid);
-  ensureInspectionBudget(hardDeadline);
+function readDarwinBirth(pid, hardDeadline, executeProbe = execFileSync) {
+  let output;
+  try {
+    output = executeProbe(
+      realpathSync("/usr/bin/python3"),
+      ["-c", darwinBirthProbe, String(pid)],
+      {
+        encoding: "utf8",
+        env: {},
+        maxBuffer: 256,
+        shell: false,
+        timeout: boundedProbeTimeout(hardDeadline),
+      },
+    );
+  } catch (error) {
+    if (inspectionStage(error) !== "unknown") throw error;
+    ensureInspectionBudget(hardDeadline, "deadline-after");
+    throw inspectionFailure("birth-probe-exit");
+  }
+  ensureInspectionBudget(hardDeadline, "deadline-after");
+  let record;
+  try {
+    record = parseDarwinBirthProbeForTesting(output, pid);
+  } catch {
+    throw inspectionFailure("birth-probe-parse");
+  }
+  ensureInspectionBudget(hardDeadline, "deadline-after");
   return record;
 }
 
-function kernelAuthorityExists(pid, hardDeadline) {
-  ensureInspectionBudget(hardDeadline);
+export function readDarwinBirthForTesting(pid, hardDeadline, executeProbe) {
+  return readDarwinBirth(pid, hardDeadline, executeProbe);
+}
+
+function kernelAuthorityExists(pid, hardDeadline, failureStage) {
+  ensureInspectionBudget(hardDeadline, "deadline-before");
   try {
     process.kill(pid, 0);
   } catch (error) {
     if (error?.code === "ESRCH") return false;
-    throw error;
+    throw inspectionFailure(failureStage);
   } finally {
-    ensureInspectionBudget(hardDeadline);
+    ensureInspectionBudget(hardDeadline, "deadline-after");
   }
   return true;
 }
@@ -345,10 +399,14 @@ const defaultLifecycle = Object.freeze({
     clearTimeout(timer);
   },
   inspect(authority, platform, hardDeadline) {
-    const groupAbsent = !kernelAuthorityExists(-authority.pid, hardDeadline);
+    const groupAbsent = !kernelAuthorityExists(
+      -authority.pid,
+      hardDeadline,
+      "group-existence",
+    );
     if (platform === "linux") {
       const leader = readLinuxProcess(authority.pid, hardDeadline);
-      ensureInspectionBudget(hardDeadline);
+      ensureInspectionBudget(hardDeadline, "deadline-after");
       return Object.freeze({
         groupAbsent,
         leader:
@@ -361,11 +419,15 @@ const defaultLifecycle = Object.freeze({
       });
     }
     if (platform === "darwin") {
-      const leaderExists = kernelAuthorityExists(authority.pid, hardDeadline);
+      const leaderExists = kernelAuthorityExists(
+        authority.pid,
+        hardDeadline,
+        "leader-existence",
+      );
       const birth = leaderExists
         ? readDarwinBirth(authority.pid, hardDeadline)
         : undefined;
-      ensureInspectionBudget(hardDeadline);
+      ensureInspectionBudget(hardDeadline, "deadline-after");
       return Object.freeze({
         groupAbsent,
         leader:
@@ -393,6 +455,14 @@ const defaultLifecycle = Object.freeze({
     }
   },
 });
+
+export function inspectProcessAuthorityForTesting(
+  authority,
+  platform,
+  hardDeadline,
+) {
+  return defaultLifecycle.inspect(authority, platform, hardDeadline);
+}
 
 function lifecycleFailure(reason) {
   return new Error(`workspace-policy child containment failed: ${reason}`);
@@ -460,7 +530,7 @@ class ChildLifecycleController {
         deadline,
       );
       if (this.lifecycle.now() > deadline)
-        throw new Error("process-group inspection exceeded its authority");
+        throw inspectionFailure("deadline-after");
       if (
         observation === null ||
         typeof observation !== "object" ||
@@ -469,7 +539,7 @@ class ChildLifecycleController {
           observation.leader,
         )
       )
-        throw new Error("malformed observation");
+        throw inspectionFailure("observation-shape");
       if (!observation.groupAbsent && observation.leader === "mismatch")
         this.failUncertain("process identity mismatch");
       if (observation.leader === "unavailable" && !this.groupKillSent)
@@ -483,9 +553,11 @@ class ChildLifecycleController {
       if (observation.leader !== "same" || observation.groupAbsent)
         this.groupAuthorityRevoked = true;
       return observation;
-    } catch {
+    } catch (error) {
       this.groupAuthorityRevoked = true;
-      this.failUncertain("process-group inspection uncertainty");
+      this.failUncertain(
+        `process-group inspection uncertainty: ${inspectionStage(error)}`,
+      );
       return undefined;
     }
   }
