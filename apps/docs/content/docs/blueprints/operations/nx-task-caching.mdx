@@ -1,0 +1,34 @@
+---
+title: Nx Task Caching
+description: ADRs for standard local Nx task-result reuse.
+---
+
+## Capability Summary
+
+Agentscope uses Nx's supported local task cache to avoid repeating deterministic project work. Cache hits accelerate contributor feedback but never become CI, compatibility, or release evidence.
+
+## Architecture Decision Records
+
+### ADR-001: Use the standard repository-local Nx cache
+
+**Decision:** Audited deterministic `build`, `lint`, `typecheck`, and `test` targets opt into Nx caching through ordinary Nx target configuration. The repository uses Nx's local cache only; it configures no remote cache and introduces no cache database, registry, lease, tombstone, quarantine, or recovery protocol.
+
+**Context:** Nx already owns task hashing, atomic result storage, output restoration, and local cache maintenance. A parallel cache authority would add failure modes without improving local feedback.
+
+**Consequences:** `nx reset` is the supported remediation for suspected local cache or workspace-state problems. A reset discards an optimization and requires fresh execution; it does not repair or alter repository evidence.
+
+### ADR-002: Declare the complete task inputs and outputs
+
+**Decision:** Each cacheable target hashes its project sources, transitive production inputs, exact command and project manifest, lockfile, shared Nx/TypeScript/ESLint/Vitest/Prettier policy, and runtime inputs that can change results, including the active Node and package-manager versions. Output-producing targets declare only the directories and files they actually replace; no-output targets declare no outputs.
+
+**Context:** A cache hit is sound only when every result-affecting input changes the key and Nx restores the complete declared result.
+
+**Consequences:** Changes to a project, a dependency, root policy, command, lockfile, or declared runtime input invalidate the applicable target. A target remains non-cacheable until its inputs and outputs are known. Cleanups, native or integration execution, provider calls, and environmental attestations are never task-cache results.
+
+### ADR-003: Treat cache hits as local feedback only
+
+**Decision:** A local Nx cache hit may satisfy only the same deterministic workstation target for the same computed inputs. [Continuous Integration](/docs/blueprints/operations/continuous-integration) executes its required certification gates from a clean exact checkout without accepting local or prior task-result cache entries as passed evidence.
+
+**Context:** Reusing deterministic files or exit status is different from observing a current runtime, platform, external service, or release candidate.
+
+**Consequences:** Cache configuration cannot suppress a selected pre-push target. Native, hermetic integration, package publication, and support claims always use their governing fresh authorities.

@@ -5,17 +5,17 @@ description: ADRs for protected pull-request and main-branch automation.
 
 ## Capability Summary
 
-CI protects the repository from quality, package, documentation, and harness-compatibility regressions while separating privileged deployment and release work from pull requests.
+CI certifies exact repository revisions against quality, package, documentation, native, and harness-compatibility gates while separating privileged deployment and release work from pull requests. Local feedback and caching are deliberately non-authoritative.
 
 ## Architecture Decision Records
 
 ### ADR-001: Make quality, unit, docs, native, and integration independent required checks
 
-**Decision:** Pull requests run independently visible `quality`, `unit`, `docs`, `native`, and hermetic `integration` checks. Each required lane executes its complete governed gates from the exact checkout without Nx result-cache reuse; package-manager download caching is an input-transfer optimization and never supplies a passed validation result. The quality lane owns repository-wide workspace-policy, acceptance-evidence, formatting, lint, and strict TypeScript enforcement defined in [Code Quality and CI](/docs/blueprints/operations/code-quality-and-ci). The unit lane owns complete coverage-enforced unit tests, builds, and packed CLI artifact verification. The native lane owns native preparation, independent admission, and fresh live certification of the exact candidate. Documentation and integration lanes run their complete production-build and hermetic-matrix contracts under the [Test Strategy](/docs/blueprints/testing/test-strategy).
+**Decision:** Pull requests run independently visible `quality`, `unit`, `docs`, `native`, and hermetic `integration` checks. Each required lane starts from the exact clean checkout, installs frozen dependencies, and executes its complete governed gates without accepting an Nx result-cache hit as passed evidence; package-manager download caching is an input-transfer optimization only. The quality lane owns repository-wide workspace-policy, acceptance-evidence, formatting, lint, and strict TypeScript enforcement defined in [Code Quality and CI](/docs/blueprints/operations/code-quality-and-ci). The unit lane owns complete coverage-enforced unit tests, builds, and packed CLI artifact verification. The native lane invokes the existing candidate and destination authorities for independent admission and fresh live certification. Documentation and integration lanes run their complete production-build and hermetic-matrix contracts under the [Test Strategy](/docs/blueprints/testing/test-strategy).
 
 **Context:** A single monolithic job hides the class of failure and makes expensive harness testing block basic feedback.
 
-**Consequences:** Protected `main` requires the named checks and squash merges. Local path selection, local cache hits, and prior CI result-cache records cannot satisfy a required lane. The merge workflow has no npm publishing authority; documentation deployment and tagged CLI release are separate workflows.
+**Consequences:** Protected `main` requires the named checks and squash merges. [Local Feedback](/docs/blueprints/operations/local-feedback), [Nx Task Caching](/docs/blueprints/operations/nx-task-caching), Crabbox development runs, and prior CI results cannot satisfy a required lane. The merge workflow has no npm publishing authority; documentation deployment and tagged CLI release are separate workflows.
 
 ### ADR-002: Separate untrusted PR work from privileged main work
 

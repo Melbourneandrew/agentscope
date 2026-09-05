@@ -5,19 +5,19 @@ description: ADRs for safe integration entry points and lifecycle across executi
 
 ## Capability Summary
 
-Workstation execution provides the focused, nonmutating development checks selected by [Local Validation](/docs/blueprints/operations/local-validation). Mutation-heavy integration runs only on a disposable Crabbox guest or a GitHub-hosted CI runner. Crabbox execution and CI execution share the inner hermetic scenario runner and manifest contract, while their outer orchestration and authority remain distinct: Crabbox is development and burst capacity, and GitHub-hosted CI is release authority.
+Workstation execution provides the focused deterministic development checks selected by [Local Feedback](/docs/blueprints/operations/local-feedback). Mutation-heavy integration runs only on a disposable Crabbox guest or a GitHub-hosted CI runner. Crabbox execution and CI execution share the inner hermetic scenario runner and manifest contract, while their outer orchestration and authority remain distinct: Crabbox is development and burst capacity, and GitHub-hosted CI is release authority.
 
 ## Architecture Decision Records
 
 ### ADR-001: Keep workstation execution focused and nonmutating
 
-**Decision:** Workstation execution supports unit, lint, typecheck, build, package, and focused deterministic or nonmutating component checks selected by Local Validation. It may validate integration catalogs, manifests, adapters, and candidate artifacts without starting a mutation-bearing integration backend. A workstation request for a mutation-heavy integration scenario fails with a concise instruction to use Crabbox execution or CI execution.
+**Decision:** Workstation execution supports unit, lint, typecheck, build, package, and focused deterministic component checks selected by Local Feedback. It may validate integration catalogs, manifests, adapters, and candidate artifacts without starting a mutation-bearing integration backend. A workstation request for a mutation-heavy integration scenario fails with a concise instruction to use Crabbox execution or CI execution.
 
 Workstation integration must not connect to Docker Desktop, a shared host daemon, or any ambient Docker context. It must not bootstrap Docker-in-Docker, a nested or private `dockerd`, a Lima or VZ guest, a custom daemon storage root, or a durable cross-run Docker registry or recovery ledger.
 
 **Context:** A developer workstation may contain unrelated agents, credentials, containers, networks, and configuration. Attempting to make it a disposable mutation boundary adds a second platform architecture while still leaving host lifecycle and recovery coupled to a long-lived machine.
 
-**Consequences:** Workstation checks remain useful and bounded without claiming scenario, compatibility, or release evidence. Mutation-heavy integration is not a workstation fallback. Local Validation owns changed-path selection and cache policy; this Blueprint owns only the location boundary.
+**Consequences:** Workstation checks remain useful and bounded without claiming scenario, compatibility, or release evidence. Mutation-heavy integration is not a workstation fallback. Local Feedback owns affected selection, [Nx Task Caching](/docs/blueprints/operations/nx-task-caching) owns local result reuse, and this Blueprint owns only the location boundary.
 
 ### ADR-002: Gate pull requests with the complete hermetic matrix
 
