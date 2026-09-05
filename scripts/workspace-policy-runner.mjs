@@ -330,10 +330,10 @@ export function parseDarwinBirthProbeForTesting(output, pid) {
   });
 }
 
-function readDarwinBirth(pid, hardDeadline) {
+function readDarwinBirth(pid, hardDeadline, executeProbe = execFileSync) {
   let output;
   try {
-    output = execFileSync(
+    output = executeProbe(
       realpathSync("/usr/bin/python3"),
       ["-c", darwinBirthProbe, String(pid)],
       {
@@ -346,6 +346,7 @@ function readDarwinBirth(pid, hardDeadline) {
     );
   } catch (error) {
     if (inspectionStage(error) !== "unknown") throw error;
+    ensureInspectionBudget(hardDeadline, "deadline-after");
     throw inspectionFailure("birth-probe-exit");
   }
   ensureInspectionBudget(hardDeadline, "deadline-after");
@@ -357,6 +358,10 @@ function readDarwinBirth(pid, hardDeadline) {
   }
   ensureInspectionBudget(hardDeadline, "deadline-after");
   return record;
+}
+
+export function readDarwinBirthForTesting(pid, hardDeadline, executeProbe) {
+  return readDarwinBirth(pid, hardDeadline, executeProbe);
 }
 
 function kernelAuthorityExists(pid, hardDeadline, failureStage) {

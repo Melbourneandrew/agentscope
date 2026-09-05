@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   mkdirSync,
@@ -9,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 
@@ -26,6 +28,7 @@ import {
   processAuthorityFiles,
   publishTerminalOutcome,
   purePolicyFiles,
+  readDarwinBirthForTesting,
   requiredPolicyFiles,
   runInternalVitestChild,
   runWorkspacePolicyPlan,
@@ -53,6 +56,43 @@ test("Darwin birth evidence distinguishes exact ESRCH absence", () => {
       () => parseDarwinBirthProbeForTesting(output, 4242),
       /malformed process birth record/,
     );
+});
+
+test("a bounded Darwin probe overrun reports the original deadline crossing", () => {
+  const hardDeadline = performance.now() + 100;
+  let observedTimeout;
+  assert.throws(
+    () =>
+      readDarwinBirthForTesting(
+        4242,
+        hardDeadline,
+        (_file, _arguments, options) => {
+          observedTimeout = options.timeout;
+          try {
+            return execFileSync(
+              process.execPath,
+              ["-e", "setTimeout(() => {}, 10_000)"],
+              {
+                encoding: "utf8",
+                env: {},
+                maxBuffer: 256,
+                shell: false,
+                timeout: options.timeout,
+              },
+            );
+          } catch (error) {
+            while (performance.now() <= hardDeadline) {
+              // Model a probe returning only after its original absolute authority.
+            }
+            throw error;
+          }
+        },
+      ),
+    (error) =>
+      Object.getOwnPropertyDescriptor(error, "inspectionStage")?.value ===
+      "deadline-after",
+  );
+  assert.ok(observedTimeout > 0 && observedTimeout <= 100);
 });
 
 function createLifecycleHarness() {
