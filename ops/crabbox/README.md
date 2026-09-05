@@ -11,6 +11,12 @@ Wrangler, a `FLEET` Durable Object, a 15-minute trigger, and Worker secrets for
 the dedicated-project Hetzner token and one random Crabbox shared token. The
 Cloudflare deployment token is attended-only and is never written here.
 
+For attended deployment, the two provider deployment credentials may be kept
+only in the ignored local file `ops/crabbox/.local/credentials.env` with mode
+`0600`. It contains the field names `CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_ACCOUNT_ID`, and `HETZNER_TOKEN`; never commit it or place either
+secret value in shell history, command arguments, or operational evidence.
+
 Direct use is attended from the dedicated fleet-control user account. Its only
 reusable Crabbox bearer copy is the ordinary mode-0600 Crabbox client config;
 that account never runs repository or candidate code. Resolve the pinned
