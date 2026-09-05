@@ -21,7 +21,6 @@ import {
 } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { userInfo } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { rootCertificates } from "node:tls";
@@ -55,26 +54,15 @@ const configMediaTypes = new Set([
   "application/vnd.docker.container.image.v1+json",
 ]);
 const manifestAccept = [...indexMediaTypes, ...manifestMediaTypes].join(", ");
-const dockerSocketCandidates = Object.freeze([
-  "/var/run/docker.sock",
-  resolve(userInfo().homedir, ".docker/run/docker.sock"),
-]);
-const dockerExecutableCandidates = Object.freeze([
-  "/usr/bin/docker",
-  "/usr/local/bin/docker",
-  "/opt/homebrew/bin/docker",
-  "/Applications/Docker.app/Contents/Resources/bin/docker",
-]);
-const buildxExecutableCandidates = Object.freeze([
-  "/Applications/Docker.app/Contents/Resources/cli-plugins/docker-buildx",
-  "/usr/local/bin/docker-buildx",
-  "/usr/local/lib/docker/cli-plugins/docker-buildx",
-  "/usr/local/libexec/docker/cli-plugins/docker-buildx",
-  "/opt/homebrew/lib/docker/cli-plugins/docker-buildx",
-  "/opt/homebrew/bin/docker-buildx",
-  "/usr/lib/docker/cli-plugins/docker-buildx",
-  "/usr/libexec/docker/cli-plugins/docker-buildx",
-]);
+export const IMAGE_PREPARATION_EXECUTION_POLICY = Object.freeze({
+  platform: "linux",
+  socket: "/var/run/docker.sock",
+  dockerExecutables: Object.freeze(["/usr/bin/docker"]),
+  buildxExecutables: Object.freeze([
+    "/usr/lib/docker/cli-plugins/docker-buildx",
+    "/usr/libexec/docker/cli-plugins/docker-buildx",
+  ]),
+});
 export const BUILDKIT_IMAGE =
   "moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e";
 const preparedSets = new WeakSet();
@@ -245,7 +233,9 @@ const sameExecutable = (left, right) =>
   left.ctimeNanoseconds === right.ctimeNanoseconds;
 const resolveDockerExecutable = (requested) => {
   if (requested !== undefined) return executableRecord(requested);
-  for (const candidate of dockerExecutableCandidates) {
+  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform)
+    throw fixedError("integration.images.platform");
+  for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables) {
     try {
       return executableRecord(candidate);
     } catch {
@@ -256,7 +246,9 @@ const resolveDockerExecutable = (requested) => {
 };
 const resolveBuildxExecutable = (requested) => {
   if (requested !== undefined) return executableRecord(requested);
-  for (const candidate of buildxExecutableCandidates) {
+  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform)
+    throw fixedError("integration.images.platform");
+  for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.buildxExecutables) {
     try {
       return executableRecord(candidate);
     } catch {
@@ -475,14 +467,9 @@ export const runOwnedImageCommandForTesting = (
   });
 const resolveDockerSocket = (requested) => {
   if (requested !== undefined) return socketRecord(requested);
-  for (const candidate of dockerSocketCandidates) {
-    try {
-      return socketRecord(candidate);
-    } catch {
-      // The closed physical socket list is authoritative.
-    }
-  }
-  throw fixedError("integration.images.socket");
+  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform)
+    throw fixedError("integration.images.platform");
+  return socketRecord(IMAGE_PREPARATION_EXECUTION_POLICY.socket);
 };
 const assertSocketCurrent = (identity) => {
   if (!sameSocket(identity, socketRecord(identity.path)))

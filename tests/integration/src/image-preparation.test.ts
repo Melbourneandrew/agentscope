@@ -13,7 +13,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { createServer } from "node:http";
@@ -31,6 +31,7 @@ import {
   createBoundedBuildContext,
   createPreparedDockerClient,
   IMAGE_PREPARATION_LIMITS,
+  IMAGE_PREPARATION_EXECUTION_POLICY,
   prepareDockerInvocation,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
@@ -729,15 +730,19 @@ describe("subprocess-free pinned image preparation", () => {
     ).toEqual(before);
   });
 
-  it("derives the fixed Desktop socket fallback from OS-owned identity", () => {
-    const prior = process.env.HOME;
-    process.env.HOME = "/private/tmp/agentscope-home-canary";
-    try {
-      expect(userInfo().homedir).not.toBe(process.env.HOME);
-    } finally {
-      if (prior === undefined) delete process.env.HOME;
-      else process.env.HOME = prior;
-    }
+  it("admits only the closed disposable-Linux host defaults", () => {
+    expect(IMAGE_PREPARATION_EXECUTION_POLICY).toEqual({
+      platform: "linux",
+      socket: "/var/run/docker.sock",
+      dockerExecutables: ["/usr/bin/docker"],
+      buildxExecutables: [
+        "/usr/lib/docker/cli-plugins/docker-buildx",
+        "/usr/libexec/docker/cli-plugins/docker-buildx",
+      ],
+    });
+    expect(JSON.stringify(IMAGE_PREPARATION_EXECUTION_POLICY)).not.toMatch(
+      /Docker\.app|homebrew|\/usr\/local|\.docker\/run/u,
+    );
   });
 
   it("rejects a self-signed registry despite ambient TLS disablement", async () => {

@@ -187,6 +187,16 @@ export declare const closePreparedDockerClient: (
 
 export declare const BUILDKIT_IMAGE: string;
 
+export declare const IMAGE_PREPARATION_EXECUTION_POLICY: Readonly<{
+  platform: "linux";
+  socket: "/var/run/docker.sock";
+  dockerExecutables: readonly ["/usr/bin/docker"];
+  buildxExecutables: readonly [
+    "/usr/lib/docker/cli-plugins/docker-buildx",
+    "/usr/libexec/docker/cli-plugins/docker-buildx",
+  ];
+}>;
+
 export declare const probePinnedRegistryTlsForTesting: (
   origin: URL,
 ) => Promise<ImagePreparationResponse>;
