@@ -1,0 +1,52 @@
+---
+title: Policy Module Architecture
+description: ADRs for keeping validation policy ownership small, explicit, and non-duplicative.
+---
+
+## Capability Summary
+
+Agentscope keeps local feedback, Nx task caching, CI certification, and executable policy-module architecture as separate capabilities. [Local Validation ADR-001 and ADR-002](/docs/blueprints/operations/local-validation) currently own local feedback, Local Validation ADR-003 owns Nx task caching, and [Continuous Integration ADR-001](/docs/blueprints/operations/continuous-integration) owns CI certification. This Blueprint owns only the internal structure of repository policy code. It does not choose local gates, grant cache trust, define CI evidence, or replace the package, integration, native, acceptance, and release authorities that those policies verify.
+
+## Architecture Decision Records
+
+### ADR-001: Give each invariant one executable owner
+
+**Decision:** Each validation invariant has one internal domain module that accepts explicit inputs and returns a deterministic result. Command entry points own command-channel argument and environment parsing, bounded standard input and output, presentation, and exit status, then delegate the invariant instead of reimplementing it. A domain module or shared primitive may own the authenticated, bounded filesystem reads necessary to establish its explicit input. Orchestrators may order domain results, but they cannot become a second source of package membership, dependency direction, target requirements, acceptance ownership, artifact expectations, or release evidence.
+
+Workspace package identity and its internal dependency graph use one shared model. This model governs child packages, not the private `agentscope` repository-orchestration project at the workspace root. The checked-in expected child-package name/path registry currently exported by `scripts/workspace-packages.mjs` is the child-package membership authority. The model independently performs bounded all-and-only discovery of child packages through `pnpm-workspace.yaml` and package manifests, and rejects missing, unexpected, duplicate, or name/path-mismatched identities before producing a graph. The root `package.json` remains a separate orchestration manifest whose command text is a shared task input. Root commands are forwarding entry points; their delegated domain modules own their invariants. In particular, the workspace-target domain retains strict compiler options, mandatory target presence, cache and target dependency ordering, child-package target identity, and build-clean scoping. Other root commands delegate to their governing local-validation, CI, integration, artifact, native, documentation, release, or cleanup domains. Discovered manifests, Nx projects, and quality configuration cannot self-authorize child-package membership. Source reachability, restricted imports, Nx target declarations, quality thresholds, acceptance evidence, and release records remain separate policies because they answer different questions. Each package artifact verifier continues to own its exact expected source-to-artifact projection and built or packed behavior.
+
+**Context:** The current policy commands are individually testable, but workspace manifest and dependency-graph logic is reconstructed by more than one consumer. Thin entry points and one owner per invariant prevent a later optimization or orchestration change from silently creating a competing policy.
+
+**Consequences:** Internal policy modules are repository-private and are not package exports or user extension points. A command may compose several policy results while preserving their original failure. Exhaustive file inventories, current duplication measurements, migration order, delivery ownership, and blockers remain in Beads rather than this Blueprint.
+
+### ADR-002: Share only proven cross-consumer primitives
+
+**Decision:** A shared internal primitive is introduced only when at least two surviving production or verification consumers require the same semantics. The initial approved shared capabilities are the workspace manifest and dependency graph model, and bounded regular-file artifact inventory. The artifact primitive performs bounded no-follow traversal, rejects links and non-regular entries, and revalidates each file's physical identity before and after reading it. It returns immutable records binding each relative name to the captured bytes, digest, size, and physical identity. Consumers parse and hash only captured bytes; a consumer that must import or execute content first materializes and verifies those records in its own fresh private root. Returned source pathnames never authorize a later read.
+
+This per-entry snapshot does not claim that a mutable multi-file root was one coherent producer generation. The package-specific build and artifact authorities continue to own producer settlement, any generation or mutation fence their contract requires, canonical output publication, prior-generation handling, interruption recovery, and cleanup. They must establish their required settled-root condition before capture and retain their existing fail-closed lifecycle through consumption. The primitive neither creates that authority nor makes an exact checkout, generated root, or same-principal filesystem immutable. It does not decide what a package is permitted or required to emit.
+
+Small vocabulary helpers such as JSON parsing and assertions remain local. Changed-path classification, source-module classification, artifact-role classification, and filesystem containment do not share a generic classifier. Test fixtures do not share automatic cleanup when one suite must preserve evidence after uncertain containment. No generic policy framework, registry of policy callbacks, or configurable policy plug-in surface is introduced.
+
+**Context:** Similar loops and helper names do not establish a common trust boundary. Sharing a mechanism that also decides authority would make unrelated policies fail, recover, or delete state according to the wrong contract.
+
+**Consequences:** A proposed extraction names its active consumers and identical contract before implementation. If a second consumer disappears during simplification, the helper stays local or is deleted. Shared primitives expose observations and validated data only; the calling domain module retains the policy decision and diagnostic.
+
+### ADR-003: Keep lifecycle and certification authorities capability-specific
+
+**Decision:** Local-hook child supervision, workspace-policy test supervision, native or container certification, integration resource control, and release transaction validation retain distinct lifecycle owners. A common process helper may be considered only after local-validation simplification leaves at least two consumers with the same absolute-deadline, executable identity, environment, output-bound, signal, process-set join, and terminal-result contract. It cannot own a validation lease, Docker mutation fence, native evidence, release transaction, or cache result.
+
+Local Validation ADR-001 and ADR-002 own developer hook behavior. Local Validation ADR-003 owns cache eligibility, inputs, outputs, invalidation, and reset. Continuous Integration ADR-001 owns exact-checkout required lanes and release-grade evidence. This record owns none of those outcomes and cannot weaken them through a shared helper.
+
+**Context:** Existing controllers all launch work, but they cross materially different persistence and trust boundaries. Consolidating them before obsolete orchestration is removed would preserve code scheduled for deletion and blur the difference between local feedback and certification.
+
+**Consequences:** Validation-lease and integration-command retirement proceeds through their existing delivery owner. Native preparation and live certification remain under their governing native and integration decisions. Local Nx hits never become CI, native, artifact, acceptance, or release evidence.
+
+### ADR-004: Cut over one invariant without dual authority
+
+**Decision:** At every reachable revision, exactly one implementation determines an invariant's result. A consolidation cannot leave old and new implementations as alternative, fallback, comparison, or independently persisted authorities. A compatibility wrapper may be temporarily retained only as a thin forwarding entry point with no independent policy data, fallback, or persistence.
+
+New internal modules are included in every applicable Nx input and artifact closure before cache reuse is enabled. Unknown input, malformed inventory, traversal substitution, incomplete graph, subprocess uncertainty, or failed cleanup continues to fail at least as strictly as before. Coverage floors, restricted-import rules, exact artifact inventories, acceptance checks, exact-head CI, native runtime checks, and release evidence are never reduced to make a consolidation pass.
+
+**Context:** A staged migration is useful only if each stage has one authority. Keeping old and new implementations active for comparison creates divergent results and makes later deletion unsafe.
+
+**Consequences:** Migration order, implementation work, file fences, regression-suite baselines, and review scheduling remain in Beads. A proposed module that cannot remove demonstrated duplication from at least two consumers is rejected or returned to local scope.
