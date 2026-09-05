@@ -9,13 +9,13 @@ CI protects the repository from quality, package, documentation, and harness-com
 
 ## Architecture Decision Records
 
-### ADR-001: Make quality, unit, docs, and integration independent required checks
+### ADR-001: Make quality, unit, docs, native, and integration independent required checks
 
-**Decision:** Pull requests run independently visible `quality`, `unit`, `docs`, and hermetic `integration` checks. The quality lane enforces the shared ESLint, Prettier, and strict TypeScript policy defined in [Code Quality and CI](/docs/blueprints/operations/code-quality-and-ci); unit and integration lanes follow the [Test Strategy](/docs/blueprints/testing/test-strategy).
+**Decision:** Pull requests run independently visible `quality`, `unit`, `docs`, `native`, and hermetic `integration` checks. Each required lane executes its complete governed gates from the exact checkout without Nx result-cache reuse; package-manager download caching is an input-transfer optimization and never supplies a passed validation result. The quality lane owns repository-wide workspace-policy, acceptance-evidence, formatting, lint, and strict TypeScript enforcement defined in [Code Quality and CI](/docs/blueprints/operations/code-quality-and-ci). The unit lane owns complete coverage-enforced unit tests, builds, and packed CLI artifact verification. The native lane owns native preparation, independent admission, and fresh live certification of the exact candidate. Documentation and integration lanes run their complete production-build and hermetic-matrix contracts under the [Test Strategy](/docs/blueprints/testing/test-strategy).
 
 **Context:** A single monolithic job hides the class of failure and makes expensive harness testing block basic feedback.
 
-**Consequences:** Protected `main` requires the named checks and squash merges. The merge workflow has no npm publishing authority; documentation deployment and tagged CLI release are separate workflows.
+**Consequences:** Protected `main` requires the named checks and squash merges. Local path selection, local cache hits, and prior CI result-cache records cannot satisfy a required lane. The merge workflow has no npm publishing authority; documentation deployment and tagged CLI release are separate workflows.
 
 ### ADR-002: Separate untrusted PR work from privileged main work
 

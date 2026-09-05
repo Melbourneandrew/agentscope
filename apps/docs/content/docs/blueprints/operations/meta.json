@@ -13,6 +13,7 @@
     "cli-architecture",
     "hook-installation",
     "code-quality-and-ci",
+    "local-validation",
     "continuous-integration",
     "documentation-site",
     "npm-publishing"
