@@ -47,7 +47,7 @@ A content-free substrate proof makes no repository-test claim and requires a ret
 
 ### ADR-005: Completely remove the custom protected launcher
 
-**Decision:** Before replacement-path Cloudflare or Hetzner mutation, remove the custom protected launcher completely from the repository and workstation: source, installers, upgraders, tests, CI contracts, documentation, services, stored launcher credentials, and installed program/configuration. Preserve Git history and a content-free removal receipt. The protected launcher, seven-slot enrollment, one-use plans, signer roots, observer roles, privileged ceremony, brokered credential store, and terminal retirement artifact must not remain optional, deprecated, installed, credential-bearing, or authoritative.
+**Decision:** Before replacement-path Cloudflare or Hetzner mutation, remove the custom protected launcher completely from the repository and workstation: source, installers, upgraders, tests, CI contracts, documentation, services, stored launcher credentials, and installed program/configuration. Git history records repository removal. Beads retains the content-free exact terminal evidence for launcher-owned installed state, processes and services, and credential revocation or absence; do not retain a separate removal receipt in the current tree. The protected launcher, seven-slot enrollment, one-use plans, signer roots, observer roles, privileged ceremony, brokered credential store, and terminal retirement artifact must not remain optional, deprecated, installed, credential-bearing, or authoritative.
 
 **Context:** Keeping an optional legacy path preserves duplicate credentials and conflicting deployment authority. The user has explicitly selected the upstream happy path as the sole authority.
 
