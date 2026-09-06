@@ -35,3 +35,17 @@ Crabbox is development capacity only. GitHub CI remains the only merge and
 release authority. Repository scenarios require the separate admitted inner
 hermetic setup and complete Harness Execution ADR-006 evidence; the substrate
 proof is not a test result.
+
+For a repository scenario, fleet control allocates the disposable guest,
+hydrates the exact checkout, and installs frozen dependencies. The built
+checkout has one public development entry:
+
+```sh
+AGENTSCOPE_INTEGRATION_EXECUTOR=crabbox AGENTSCOPE_INTEGRATION_FULL=1 pnpm test:integration
+```
+
+The repository controller does not allocate or authenticate the guest. It owns
+only the private in-process integration stages, per-run resources, one deadline,
+and bounded cleanup. Fleet control destroys the guest after every run. If the
+controller reports `integration.controller.retire-outer-host`, it must destroy
+the guest without same-host retry regardless of cleanup output.

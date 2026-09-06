@@ -1,15 +1,21 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import {
-  createMockServerInitialization,
-  MODEL_PROTOCOL_ROUTES,
-} from "@agentscope/testkit";
+  registerIntegrationArtifactFile,
+  requireDisposableOuterHostCapability,
+} from "./dist/controller.js";
+
+requireDisposableOuterHostCapability();
+const { createMockServerInitialization, MODEL_PROTOCOL_ROUTES } =
+  await import("@agentscope/testkit");
 
 const integrationRoot = import.meta.dirname;
 const artifactsRoot = resolve(integrationRoot, "../../artifacts/integration");
 mkdirSync(artifactsRoot, { recursive: true });
 const target = resolve(artifactsRoot, "current-model-routes.json");
+registerIntegrationArtifactFile("current-model-routes.json");
 const temporary = `${target}.${process.pid}.tmp`;
 writeFileSync(
   temporary,

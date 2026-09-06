@@ -1,3 +1,4 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -6,6 +7,14 @@ import {
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
 } from "./image-preparation.mjs";
+import {
+  integrationStageSignal,
+  registerIntegrationArtifactFile,
+  remainingIntegrationOperationMilliseconds,
+  requireDisposableOuterHostCapability,
+} from "./dist/controller.js";
+
+const capability = requireDisposableOuterHostCapability();
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -44,8 +53,13 @@ process.once("SIGINT", interrupt);
 process.once("SIGTERM", interrupt);
 try {
   const prepared = await preparePinnedDockerImages(images, {
-    signal: controller.signal,
+    dockerExecutable: capability.binding.dockerExecutable,
+    environment: capability.binding.dockerEnvironment,
+    maximumPreparationMilliseconds:
+      remainingIntegrationOperationMilliseconds(300_000),
+    signal: AbortSignal.any([controller.signal, integrationStageSignal()]),
   });
+  registerIntegrationArtifactFile("current-images.json");
   publishPreparedImageEvidence(resolve(artifactsRoot, "current-images.json"), {
     imageEvidenceVersion: 1,
     manifestIdentity: manifest.manifestIdentity,
@@ -59,7 +73,7 @@ try {
       ? error.message
       : "integration.images.command";
   process.stderr.write(`${code}\n`);
-  process.exitCode = 1;
+  throw new Error(code, { cause: error });
 } finally {
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);

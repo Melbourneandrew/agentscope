@@ -18,7 +18,6 @@ const vitestPath = realpathSync(
 
 export const processAuthorityFiles = Object.freeze([
   "code-quality-policy.test.mjs",
-  "validation-lease.test.mjs",
   "prepush.test.mjs",
 ]);
 
@@ -40,7 +39,6 @@ const classificationsByName = new Map([
 export const requiredPolicyFiles = Object.freeze([
   ...purePolicyFiles,
   "code-quality-policy.test.mjs",
-  "validation-lease.test.mjs",
 ]);
 const forwardedSignals = Object.freeze(["SIGINT", "SIGTERM", "SIGHUP"]);
 const terminalSignals = Object.freeze(Object.keys(osConstants.signals).sort());

@@ -311,10 +311,7 @@ test("the reserved prepush suite is authority only when present", () => {
 });
 
 test("invalid inventory and classifications fail closed", () => {
-  const inventory = [
-    "acceptance-evidence.test.mjs",
-    "validation-lease.test.mjs",
-  ];
+  const inventory = ["acceptance-evidence.test.mjs", "prepush.test.mjs"];
   const valid = classifyWorkspacePolicyInventory(inventory);
   assert.throws(
     () => createWorkspacePolicyPlan([...inventory, inventory[0]], valid),
@@ -363,8 +360,8 @@ test("invalid inventory and classifications fail closed", () => {
   assert.throws(
     () =>
       createWorkspacePolicyPlan(
-        ["validation-lease.test.mjs"],
-        [{ classification: "pure", name: "validation-lease.test.mjs" }],
+        ["prepush.test.mjs"],
+        [{ classification: "pure", name: "prepush.test.mjs" }],
       ),
     /disagrees with reviewed policy/,
   );
@@ -377,13 +374,13 @@ test("invalid inventory and classifications fail closed", () => {
 test("pure tests batch once before authority tests serialize", async () => {
   const plan = createWorkspacePolicyPlan(
     [
-      "validation-lease.test.mjs",
+      "prepush.test.mjs",
       "restricted-import-policy.test.mjs",
       "code-quality-policy.test.mjs",
       "acceptance-evidence.test.mjs",
     ],
     classifyWorkspacePolicyInventory([
-      "validation-lease.test.mjs",
+      "prepush.test.mjs",
       "restricted-import-policy.test.mjs",
       "code-quality-policy.test.mjs",
       "acceptance-evidence.test.mjs",
@@ -407,7 +404,7 @@ test("pure tests batch once before authority tests serialize", async () => {
       workers: "2",
     },
     { files: ["code-quality-policy.test.mjs"], workers: "1" },
-    { files: ["validation-lease.test.mjs"], workers: "1" },
+    { files: ["prepush.test.mjs"], workers: "1" },
   ]);
 });
 
@@ -415,7 +412,7 @@ test("a failed child preserves its result and admits no later child", async () =
   const inventory = [
     "acceptance-evidence.test.mjs",
     "code-quality-policy.test.mjs",
-    "validation-lease.test.mjs",
+    "prepush.test.mjs",
   ];
   const plan = createWorkspacePolicyPlan(
     inventory,
@@ -452,10 +449,7 @@ test("a signaled child admits no later authority child", async () => {
 });
 
 test("the next authority child waits for prior terminal publication", async () => {
-  const inventory = [
-    "code-quality-policy.test.mjs",
-    "validation-lease.test.mjs",
-  ];
+  const inventory = ["code-quality-policy.test.mjs", "prepush.test.mjs"];
   const plan = createWorkspacePolicyPlan(
     inventory,
     classifyWorkspacePolicyInventory(inventory),
@@ -476,12 +470,12 @@ test("the next authority child waits for prior terminal publication", async () =
   assert.deepEqual(await running, { code: 0, signal: undefined });
   assert.deepEqual(starts, [
     "code-quality-policy.test.mjs",
-    "validation-lease.test.mjs",
+    "prepush.test.mjs",
   ]);
 });
 
 test("Vitest execution is direct, closed, and joins the child terminal", async () => {
-  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const invocation = createVitestInvocation(["prepush.test.mjs"]);
   assert.equal(invocation.executable, process.execPath);
   assert.equal(
     invocation.arguments[0],
@@ -489,7 +483,7 @@ test("Vitest execution is direct, closed, and joins the child terminal", async (
   );
   assert.equal(invocation.arguments[1], "--internal-workspace-policy-child");
   assert.equal(invocation.arguments[2], "1");
-  assert.deepEqual(invocation.files, ["validation-lease.test.mjs"]);
+  assert.deepEqual(invocation.files, ["prepush.test.mjs"]);
 
   const child = new EventEmitter();
   child.pid = 4242;
@@ -534,7 +528,7 @@ test("TERM gets its minimum grace before authenticated KILL inspection", async (
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   lifecycle.setInspectionDuration(40);
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -562,7 +556,7 @@ test("a delayed KILL identity probe may use the existing teardown reserve", asyn
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -594,7 +588,7 @@ test("a delayed TERM probe preserves grace and fresh KILL authentication", async
       lifecycle.setInspectionDuration(0);
   });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -626,7 +620,7 @@ test("KILL authentication at the original deadline is the inclusive boundary", a
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -649,7 +643,7 @@ test("KILL authentication beyond the original deadline remains uncertainty", asy
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -668,7 +662,7 @@ test("KILL authentication beyond the original deadline remains uncertainty", asy
 });
 
 test("a forwarded signal waits for the exact child terminal", async () => {
-  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const invocation = createVitestInvocation(["prepush.test.mjs"]);
   const child = new EventEmitter();
   child.pid = 4242;
   const signalHost = new EventEmitter();
@@ -707,7 +701,7 @@ test("exact group absence before or during retirement is a safe terminal", async
     });
     if (mode === "during") lifecycle.setSignalResult("absent");
     const result = executeVitestInvocation(
-      createVitestInvocation(["validation-lease.test.mjs"]),
+      createVitestInvocation(["prepush.test.mjs"]),
       () => child,
       process,
       lifecycle.authority,
@@ -726,7 +720,7 @@ test("the wrapper protocol preserves other platform terminal signals", async () 
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -743,7 +737,7 @@ test("the wrapper protocol preserves other platform terminal signals", async () 
 });
 
 test("a publication-gap signal queues until child authority exists", async () => {
-  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const invocation = createVitestInvocation(["prepush.test.mjs"]);
   const child = new EventEmitter();
   child.pid = 4242;
   const signalHost = new EventEmitter();
@@ -767,7 +761,7 @@ test("a publication-gap signal queues until child authority exists", async () =>
 });
 
 test("spawn uncertainty is fixed and starts no child lifecycle", async () => {
-  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const invocation = createVitestInvocation(["prepush.test.mjs"]);
   const lifecycle = createLifecycleHarness();
   await assert.rejects(
     executeVitestInvocation(
@@ -783,7 +777,7 @@ test("spawn uncertainty is fixed and starts no child lifecycle", async () => {
 });
 
 test("signal forwarding failure contains and joins before signaling", async () => {
-  const invocation = createVitestInvocation(["validation-lease.test.mjs"]);
+  const invocation = createVitestInvocation(["prepush.test.mjs"]);
   const child = new EventEmitter();
   child.pid = 4242;
   const signalHost = new EventEmitter();
@@ -818,7 +812,7 @@ test("the absolute deadline reserves teardown then kills a hung group", async ()
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -864,7 +858,7 @@ test("a persistent wrapper contains a TERM-ignoring descendant with one poll cha
     memberCount: 2,
   });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     signalHost,
     lifecycle.authority,
@@ -886,7 +880,7 @@ test("successful KILL retirement tolerates leader exit until exact group absence
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -916,7 +910,7 @@ test("post-KILL birth unavailability remains poll-only until exact group absence
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -943,7 +937,7 @@ test("birth unavailability before KILL is uncertainty and starts no signal", asy
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "unavailable" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     signalHost,
     lifecycle.authority,
@@ -964,7 +958,7 @@ test("post-KILL birth unavailability never becomes absence authority", async () 
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -986,7 +980,7 @@ test("an absent then reused group is never signaled", async () => {
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     signalHost,
     lifecycle.authority,
@@ -1012,10 +1006,10 @@ test("leader loss permanently revokes a still-present group", async () => {
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const calls = [];
   const plan = createWorkspacePolicyPlan(
-    ["code-quality-policy.test.mjs", "validation-lease.test.mjs"],
+    ["code-quality-policy.test.mjs", "prepush.test.mjs"],
     classifyWorkspacePolicyInventory([
       "code-quality-policy.test.mjs",
-      "validation-lease.test.mjs",
+      "prepush.test.mjs",
     ]),
   );
   const result = runWorkspacePolicyPlan(plan, (invocation) => {
@@ -1074,7 +1068,7 @@ test("PID reuse and inspection uncertainty fail without signaling", async () => 
       lifecycle.setObservation({ groupAbsent: false, leader: "mismatch" });
     else lifecycle.setInspectionError(true);
     const result = executeVitestInvocation(
-      createVitestInvocation(["validation-lease.test.mjs"]),
+      createVitestInvocation(["prepush.test.mjs"]),
       () => child,
       signalHost,
       lifecycle.authority,
@@ -1114,7 +1108,7 @@ test("inspection failures expose only the closed content-free stage", async () =
       expectedStage === "unknown" ? true : expectedStage,
     );
     const result = executeVitestInvocation(
-      createVitestInvocation(["validation-lease.test.mjs"]),
+      createVitestInvocation(["prepush.test.mjs"]),
       () => child,
       signalHost,
       lifecycle.authority,
@@ -1162,7 +1156,7 @@ test("hostile inspection-stage carriers map to unknown without observation", asy
     const lifecycle = createLifecycleHarness();
     lifecycle.setInspectionError(hostileError);
     const result = executeVitestInvocation(
-      createVitestInvocation(["validation-lease.test.mjs"]),
+      createVitestInvocation(["prepush.test.mjs"]),
       () => child,
       signalHost,
       lifecycle.authority,
@@ -1190,7 +1184,7 @@ test("post-inspection deadline crossing reports deadline-after", async () => {
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   lifecycle.setInspectionDuration(childLifecycleBounds.hardMilliseconds + 1);
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     signalHost,
     lifecycle.authority,
@@ -1220,7 +1214,7 @@ test("expired authority before kernel inspection reports deadline-before", async
       ? inspectProcessAuthorityForTesting(authority, platform, -1)
       : syntheticInspect(authority, platform, hardDeadline);
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     signalHost,
     lifecycle.authority,
@@ -1244,7 +1238,7 @@ test("a signal during deadline teardown is republished only after join", async (
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     signalHost,
     lifecycle.authority,
@@ -1265,7 +1259,7 @@ test("the original hard deadline creates no second containment window", async ()
   const lifecycle = createLifecycleHarness();
   lifecycle.setObservation({ groupAbsent: false, leader: "same" });
   const result = executeVitestInvocation(
-    createVitestInvocation(["validation-lease.test.mjs"]),
+    createVitestInvocation(["prepush.test.mjs"]),
     () => child,
     process,
     lifecycle.authority,
@@ -1277,10 +1271,7 @@ test("the original hard deadline creates no second containment window", async ()
 });
 
 test("hard-boundary uncertainty revokes IPC and detaches without later admission", async () => {
-  const inventory = [
-    "code-quality-policy.test.mjs",
-    "validation-lease.test.mjs",
-  ];
+  const inventory = ["code-quality-policy.test.mjs", "prepush.test.mjs"];
   const plan = createWorkspacePolicyPlan(
     inventory,
     classifyWorkspacePolicyInventory(inventory),
@@ -1318,10 +1309,7 @@ test("hard-boundary uncertainty revokes IPC and detaches without later admission
 });
 
 test("group inspection uncertainty reaches the same hard deadline and admits nothing later", async () => {
-  const inventory = [
-    "code-quality-policy.test.mjs",
-    "validation-lease.test.mjs",
-  ];
+  const inventory = ["code-quality-policy.test.mjs", "prepush.test.mjs"];
   const plan = createWorkspacePolicyPlan(
     inventory,
     classifyWorkspacePolicyInventory(inventory),
@@ -1362,12 +1350,12 @@ test("the internal wrapper validates grammar and holds terminal publication for 
     const child = new EventEmitter();
     let options;
     const result = runInternalVitestChild(
-      ["--internal-workspace-policy-child", "1", "validation-lease.test.mjs"],
+      ["--internal-workspace-policy-child", "1", "prepush.test.mjs"],
       (executable, arguments_, value) => {
         assert.equal(executable, process.execPath);
         assert.equal(arguments_[0], realpathSync(arguments_[0]));
         assert.equal(arguments_[1], "run");
-        assert.ok(arguments_.at(-1).endsWith("validation-lease.test.mjs"));
+        assert.ok(arguments_.at(-1).endsWith("prepush.test.mjs"));
         options = value;
         return child;
       },
@@ -1402,7 +1390,7 @@ test("the internal wrapper validates grammar and holds terminal publication for 
       runInternalVitestChild([
         "--internal-workspace-policy-child",
         "2",
-        "validation-lease.test.mjs",
+        "prepush.test.mjs",
       ]),
     /internal child classification is invalid/,
   );
@@ -1418,7 +1406,7 @@ test("the internal wrapper validates grammar and holds terminal publication for 
   assert.throws(
     () =>
       runInternalVitestChild(
-        ["--internal-workspace-policy-child", "1", "validation-lease.test.mjs"],
+        ["--internal-workspace-policy-child", "1", "prepush.test.mjs"],
         assert.fail,
         { connected: false },
       ),

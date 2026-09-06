@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": "./dist/index.js",
+  "agentscopeInternalProcessEntrypoints": "./dist/controller.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -11,14 +12,7 @@
     "test": "vitest run --config ../../vitest.config.ts",
     "coverage": "vitest run --config ../../vitest.config.ts --coverage",
     "clean": "node ../../scripts/clean-workspace.mjs",
-    "prepare:candidate": "python3 ../../scripts/validation-lease.py run integration-candidate",
-    "prepare:images": "python3 ../../scripts/validation-lease.py run integration-images",
-    "prepare:model-routes": "python3 ../../scripts/validation-lease.py run integration-model-routes",
-    "select": "node select.mjs",
-    "run:scenarios": "python3 ../../scripts/validation-lease.py run integration-scenarios",
-    "maintain:artifacts": "node maintain-artifacts.mjs",
-    "verify:isolation": "node verify-isolation.mjs",
-    "verify:operations": "node verify-operations.mjs",
+    "integration": "node controller.mjs",
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {

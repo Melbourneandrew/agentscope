@@ -1,25 +1,47 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { resolve } from "node:path";
 
 import { prepareCandidate } from "./dist/artifacts.js";
+import {
+  registerIntegrationArtifactFile,
+  registerIntegrationCandidateIdentity,
+  remainingIntegrationOperationMilliseconds,
+  requireDisposableOuterHostCapability,
+} from "./dist/controller.js";
+
+requireDisposableOuterHostCapability();
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
+const gitEnvironment = {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  LANG: "C.UTF-8",
+  PATH: "/usr/bin:/bin",
+};
 const cliManifest = JSON.parse(
   readFileSync(resolve(workspaceRoot, "apps/cli/package.json"), "utf8"),
 );
 if (typeof cliManifest.version !== "string")
   throw new Error("integration.artifact.cli-version");
-const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+const revision = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
   cwd: workspaceRoot,
   encoding: "utf8",
+  env: gitEnvironment,
+  timeout: remainingIntegrationOperationMilliseconds(30_000),
 }).trim();
 const worktreeState = execFileSync(
-  "git",
+  "/usr/bin/git",
   ["status", "--porcelain", "--untracked-files=all"],
-  { cwd: workspaceRoot, encoding: "utf8" },
+  {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    env: gitEnvironment,
+    timeout: remainingIntegrationOperationMilliseconds(30_000),
+  },
 ).trim();
 if (worktreeState.length > 0)
   throw new Error("integration.artifact.worktree-dirty");
@@ -44,8 +66,10 @@ const prepared = prepareCandidate({
     },
   ],
 });
+registerIntegrationCandidateIdentity(prepared.evidence.bundleIdentity);
 mkdirSync(integrationArtifacts, { recursive: true });
 const pointer = resolve(integrationArtifacts, "current-candidate.json");
+registerIntegrationArtifactFile("current-candidate.json");
 const temporaryPointer = `${pointer}.${process.pid}.tmp`;
 writeFileSync(
   temporaryPointer,
