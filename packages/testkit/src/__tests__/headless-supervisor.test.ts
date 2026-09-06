@@ -1,5 +1,8 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { spawnSync } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
 
@@ -8,12 +11,18 @@ import {
   createBoundedHeadlessSupervisorContractSuite,
   type HeadlessObserverScenario,
 } from "../headless-supervisor-contract.js";
-import { executeBoundedHeadlessSupervisor } from "../headless-supervisor-kernel.js";
+import {
+  executeBoundedHeadlessSupervisor,
+  executeSelectedHeadlessProcess,
+} from "../headless-supervisor-kernel.js";
 import {
   HeadlessSupervisorError,
   type HeadlessSupervisorCapability,
 } from "../headless-supervisor.js";
 import {
+  composeSelectedContainerHeadlessSupervisorCapability,
+  executeSelectedContainerBackendForTest,
+  executeScriptedSelectedHeadlessProcessForTest,
   executeScriptedHeadlessSupervisorForTest,
   readScriptedHeadlessCancellationDeliveriesForTest,
   readScriptedHeadlessLaunchCountForTest,
@@ -27,6 +36,24 @@ const scenarioFor = (name: string): HeadlessObserverScenario => {
   if (name === "headless:timeout-escalation") return "timeout";
   if (name === "headless:descendant-cleanup") return "descendant";
   throw new Error("testkit.headless.seed.case");
+};
+const genericRequest = () => {
+  const now = performance.now();
+  return {
+    runId: "0123456789abcdef",
+    requestFingerprint: `sha256:${"a".repeat(64)}`,
+    executable: "/opt/agentscope/bin/agentscope",
+    arguments: ["doctor", "--output", "json"],
+    cwd: "/worktree",
+    environment: { HOME: "/home/agentscope", LANG: "C.UTF-8" },
+    stdin: new Uint8Array(),
+    stdoutLimitBytes: 1_024,
+    stderrLimitBytes: 1_024,
+    monotonicStartupDeadlineMs: now + 100,
+    monotonicExecutionDeadlineMs: now + 200,
+    monotonicShutdownDeadlineMs: now + 400,
+    terminationGraceMs: 10,
+  };
 };
 
 describe("bounded headless supervisor scripted protocol", () => {
@@ -61,6 +88,123 @@ describe("bounded headless supervisor scripted protocol", () => {
       ).rejects.toMatchObject({ code: "testkit.headless.backend.receipt" });
     },
   );
+});
+
+describe("selected headless supervisor protocol", () => {
+  it("uses the selected backend for a closed generic request", async () => {
+    const request = genericRequest();
+    const pending = executeScriptedSelectedHeadlessProcessForTest(request);
+    request.arguments[0] = "mutated";
+    request.environment.HOME = "/mutated";
+    const trace = await pending;
+    expect(trace).toMatchObject({
+      runId: "0123456789abcdef",
+      requestFingerprint: `sha256:${"a".repeat(64)}`,
+      result: { cleanup: "clean", outcome: "exited" },
+      observation: { processJoined: true },
+    });
+  });
+
+  it.each(["wrong-binding", "uncertain"] as const)(
+    "rejects a generic %s receipt",
+    async (seed) => {
+      await expect(
+        executeScriptedSelectedHeadlessProcessForTest(genericRequest(), seed),
+      ).rejects.toMatchObject({ code: "testkit.headless.backend.receipt" });
+    },
+  );
+
+  it("does not create a fresh window after the generic deadline", async () => {
+    const request = genericRequest();
+    const now = performance.now();
+    request.monotonicStartupDeadlineMs = now + 5;
+    request.monotonicExecutionDeadlineMs = now + 15;
+    request.monotonicShutdownDeadlineMs = now + 30;
+    await expect(
+      executeScriptedSelectedHeadlessProcessForTest(request, "late"),
+    ).rejects.toMatchObject({
+      code: "testkit.headless.reconciliation.deadline",
+    });
+  });
+
+  it("rejects an already-aborted generic request before launch", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      executeScriptedSelectedHeadlessProcessForTest(genericRequest(), "clean", {
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: "testkit.headless.aborted" });
+  });
+});
+
+describe("selected-container lifecycle", () => {
+  it.each([
+    ["clean", "exited"],
+    ["descendant", "exited"],
+    ["output-limit", "output-limit"],
+    ["timeout", "timed-out"],
+  ] as const)(
+    "closes the selected-container %s lifecycle",
+    async (seed, outcome) => {
+      const request = genericRequest();
+      request.monotonicStartupDeadlineMs = performance.now() + 50;
+      request.monotonicExecutionDeadlineMs = performance.now() + 80;
+      request.monotonicShutdownDeadlineMs = performance.now() + 160;
+      const trace = await executeSelectedContainerBackendForTest(request, seed);
+      expect(trace.result).toMatchObject({ cleanup: "clean", outcome });
+      expect(trace.observation).toMatchObject({
+        processJoined: true,
+        stdinJoined: true,
+        stdoutJoined: true,
+        stderrJoined: true,
+      });
+    },
+  );
+
+  it.each([
+    ["fast-exit", "testkit.headless.observer.root"],
+    ["identity-substitution", "testkit.headless.observer.identity"],
+    ["observer-failure", "testkit.headless.observer.read"],
+    ["signal-failure", "testkit.headless.observer.signal"],
+    ["stream-join-failure", "testkit.headless.reconciliation.deadline"],
+    ["terminal-join-failure", "testkit.headless.reconciliation.deadline"],
+  ] as const)("fails closed for selected-container %s", async (seed, code) => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 30;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 100;
+    await expect(
+      executeSelectedContainerBackendForTest(request, seed),
+    ).rejects.toMatchObject({ code });
+  });
+
+  it("returns the joined selected-container abort receipt", async () => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 30;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 100;
+    const trace = await executeSelectedContainerBackendForTest(
+      request,
+      "abort",
+    );
+    expect(trace.result).toMatchObject({
+      cleanup: "clean",
+      exitCode: null,
+      signal: "SIGTERM",
+    });
+    expect(trace.observation.processJoined).toBe(true);
+  });
+
+  it("rechecks startup authority adjacent to selected-container spawn", async () => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 5;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 100;
+    await expect(
+      executeSelectedContainerBackendForTest(request, "startup-delay"),
+    ).rejects.toMatchObject({ code: "testkit.headless.startup.deadline" });
+  });
 });
 
 describe("bounded headless supervisor sequencing", () => {
@@ -163,6 +307,31 @@ describe("bounded headless supervisor sequencing", () => {
 });
 
 describe("bounded headless supervisor authority", () => {
+  it("does not compose selected-container authority outside PID 1", () => {
+    expect(() =>
+      composeSelectedContainerHeadlessSupervisorCapability(
+        performance.now() + 10_000,
+      ),
+    ).toThrow("testkit.headless.capability");
+  });
+
+  it("rejects forged production authority before hostile request input", async () => {
+    let consulted = 0;
+    const hostile = new Proxy(Object.create(null) as object, {
+      get: () => {
+        consulted += 1;
+        throw new Error("must-not-run");
+      },
+    });
+    await expect(
+      executeSelectedHeadlessProcess(
+        Object.freeze({}) as HeadlessSupervisorCapability,
+        hostile as never,
+      ),
+    ).rejects.toMatchObject({ code: "testkit.headless.capability" });
+    expect(consulted).toBe(0);
+  });
+
   it("rejects forged authority before consulting caller request data", async () => {
     let consulted = 0;
     const hostile = new Proxy(Object.create(null) as object, {
@@ -408,4 +577,73 @@ describe("bounded headless supervisor package surface", () => {
     ) as { exports?: unknown };
     expect(manifest.exports).toBe("./dist/index.js");
   });
+});
+
+describe("emitted selected-container lifecycle", () => {
+  it("runs the adversarial lifecycle matrix from freshly emitted JavaScript", () => {
+    const workspaceRoot = resolve(import.meta.dirname, "../../../..");
+    const directory = mkdtempSync(
+      resolve(tmpdir(), "agentscope-testkit-dist-"),
+    );
+    try {
+      const compilation = spawnSync(
+        process.execPath,
+        [
+          resolve(workspaceRoot, "node_modules/typescript/bin/tsc"),
+          "-p",
+          resolve(workspaceRoot, "packages/testkit/tsconfig.build.json"),
+          "--outDir",
+          directory,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(compilation.status, compilation.stderr).toBe(0);
+      const runner = resolve(directory, "emitted-lifecycle-review.mjs");
+      writeFileSync(
+        runner,
+        `import { performance } from "node:perf_hooks";
+import { executeSelectedContainerBackendForTest } from "./internal/headless-supervisor-backend.js";
+
+const request = () => {
+  const now = performance.now();
+  return {
+    runId: "0123456789abcdef",
+    requestFingerprint: "sha256:${"a".repeat(64)}",
+    executable: "/opt/agentscope/bin/agentscope",
+    arguments: [],
+    cwd: "/worktree",
+    environment: { HOME: "/home/agentscope" },
+    stdin: new Uint8Array(),
+    stdoutLimitBytes: 1024,
+    stderrLimitBytes: 1024,
+    monotonicStartupDeadlineMs: now + 50,
+    monotonicExecutionDeadlineMs: now + 80,
+    monotonicShutdownDeadlineMs: now + 160,
+    terminationGraceMs: 10,
+  };
+};
+
+for (const seed of ["clean", "descendant", "output-limit", "timeout", "abort"]) {
+  const result = await executeSelectedContainerBackendForTest(request(), seed);
+  if (!result.observation.processJoined) throw new Error("emitted-positive-not-joined");
+}
+for (const seed of ["fast-exit", "identity-substitution", "observer-failure", "signal-failure", "stream-join-failure", "terminal-join-failure"]) {
+  let rejected = false;
+  try { await executeSelectedContainerBackendForTest(request(), seed); }
+  catch { rejected = true; }
+  if (!rejected) throw new Error("emitted-negative-admitted:" + seed);
+}
+`,
+        { encoding: "utf8", mode: 0o600 },
+      );
+      const replay = spawnSync(process.execPath, [runner], {
+        cwd: directory,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      expect(replay.status, `${replay.stdout}\n${replay.stderr}`).toBe(0);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  }, 20_000);
 });

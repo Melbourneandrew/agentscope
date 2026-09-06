@@ -68,6 +68,14 @@ type CapabilityState = {
       size: number;
     }>
   >;
+  headlessReceipts: Map<
+    string,
+    Readonly<{
+      requestFingerprint: `sha256:${string}`;
+      returnedAtMs: number;
+      outerReceivedAtMs: number;
+    }>
+  >;
   requiredFailureEvidence: Set<string>;
   privateStorageRetirements: Map<
     number,
@@ -447,6 +455,59 @@ export const registerIntegrationFailureEvidence = (
   state.failureEvidence.set(evidence.runId, Object.freeze({ ...evidence }));
 };
 
+export const registerIntegrationHeadlessReceipt = (
+  receipt: Readonly<{
+    runId: string;
+    requestFingerprint: `sha256:${string}`;
+    returnedAtMs: number;
+    request: Readonly<{ monotonicShutdownDeadlineMs: number }>;
+  }>,
+  outerReceivedAtMs: number,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    !headlessReceiptFitsOuterAuthority(
+      receipt,
+      outerReceivedAtMs,
+      capability.binding.cleanupStartMonotonicMilliseconds,
+      state.runIds,
+    ) ||
+    state.headlessReceipts.has(receipt.runId)
+  )
+    throw new Error("integration.controller.headless-receipt");
+  state.headlessReceipts.set(
+    receipt.runId,
+    Object.freeze({
+      requestFingerprint: receipt.requestFingerprint,
+      returnedAtMs: receipt.returnedAtMs,
+      outerReceivedAtMs,
+    }),
+  );
+};
+
+export const headlessReceiptFitsOuterAuthority = (
+  receipt: Readonly<{
+    runId: string;
+    requestFingerprint: string;
+    returnedAtMs: number;
+    request: Readonly<{ monotonicShutdownDeadlineMs: number }>;
+  }>,
+  outerReceivedAtMs: number,
+  cleanupStartMonotonicMilliseconds: number,
+  runIds: ReadonlySet<string>,
+): boolean =>
+  runTokenPattern.test(receipt.runId) &&
+  runIds.has(receipt.runId) &&
+  /^sha256:[a-f0-9]{64}$/u.test(receipt.requestFingerprint) &&
+  Number.isFinite(receipt.returnedAtMs) &&
+  Number.isFinite(receipt.request.monotonicShutdownDeadlineMs) &&
+  Number.isFinite(outerReceivedAtMs) &&
+  receipt.returnedAtMs >= 0 &&
+  receipt.returnedAtMs <= receipt.request.monotonicShutdownDeadlineMs &&
+  outerReceivedAtMs >= 0 &&
+  outerReceivedAtMs < cleanupStartMonotonicMilliseconds;
+
 export const registerIntegrationPrivateStorageRetirement = (
   retirement: Readonly<{
     authorityDigest: `sha256:${string}`;
@@ -522,6 +583,12 @@ export const ownedIntegrationResources = (): Readonly<{
     path: string;
     totalBytes: number;
   }>[];
+  headlessReceipts: readonly Readonly<{
+    requestFingerprint: `sha256:${string}`;
+    returnedAtMs: number;
+    runId: string;
+    outerReceivedAtMs: number;
+  }>[];
   runIds: readonly string[];
 }> => {
   const capability = requireDisposableOuterHostCapability();
@@ -541,6 +608,11 @@ export const ownedIntegrationResources = (): Readonly<{
       [...state.privateStorageRetirements.values()].sort(
         (left, right) => left.ino - right.ino,
       ),
+    ),
+    headlessReceipts: Object.freeze(
+      [...state.headlessReceipts.entries()]
+        .map(([runId, receipt]) => Object.freeze({ runId, ...receipt }))
+        .sort((left, right) => left.runId.localeCompare(right.runId)),
     ),
     runIds: Object.freeze([...state.runIds].sort()),
   });
@@ -717,6 +789,7 @@ export const executeIntegrationController = async (): Promise<void> => {
     artifactFiles: new Set(),
     candidateIdentities: new Set(),
     failureEvidence: new Map(),
+    headlessReceipts: new Map(),
     requiredFailureEvidence: new Set(),
     privateStorageRetirements: new Map(),
     runIds: new Set(),

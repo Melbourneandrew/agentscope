@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
 import {
   lstatSync,
   mkdirSync,
@@ -8,9 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { performance } from "node:perf_hooks";
 
-const execute = promisify(execFile);
+import { executeSelectedHeadlessProcess } from "./testkit/headless-supervisor-kernel.js";
+import { composeSelectedContainerHeadlessSupervisorCapability } from "./testkit/internal/headless-supervisor-backend.js";
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
@@ -24,9 +24,52 @@ const harnessHome = requiredEnvironment("HARNESS_HOME");
 const agentscopeHome = requiredEnvironment("AGENTSCOPE_HOME");
 const worktree = requiredEnvironment("AGENTSCOPE_WORKTREE");
 const ledger = requiredEnvironment("AGENTSCOPE_LEDGER");
+const headlessOuterDeadline = Number(
+  requiredEnvironment("AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS"),
+);
+const linuxBootMonotonicMilliseconds = () => {
+  const source = readFileSync("/proc/uptime", "utf8");
+  if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
+    throw new Error("integration.runner.headless-clock");
+  const value = Number(source.split(/\s/u, 1)[0]) * 1_000;
+  if (!Number.isFinite(value) || value < 0)
+    throw new Error("integration.runner.headless-clock");
+  return value;
+};
+const headlessTranslationBootAt = linuxBootMonotonicMilliseconds();
+const headlessTranslationLocalAt = performance.now();
+if (!Number.isFinite(headlessOuterDeadline))
+  throw new Error("integration.runner.headless-authority");
+const headlessShutdownDeadline =
+  headlessTranslationLocalAt +
+  (headlessOuterDeadline - headlessTranslationBootAt);
+if (headlessShutdownDeadline <= headlessTranslationLocalAt + 6_000)
+  throw new Error("integration.runner.headless-authority");
+const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
+  headlessShutdownDeadline,
+);
 
 const digest = (bytes) =>
   `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
+const fingerprintHeadlessRequest = (request) =>
+  `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        runId: request.runId,
+        executable: request.executable,
+        arguments: request.arguments,
+        cwd: request.cwd,
+        environment: request.environment,
+        stdinBase64: Buffer.from(request.stdin).toString("base64"),
+        stdoutLimitBytes: request.stdoutLimitBytes,
+        stderrLimitBytes: request.stderrLimitBytes,
+        monotonicStartupDeadlineMs: request.monotonicStartupDeadlineMs,
+        monotonicExecutionDeadlineMs: request.monotonicExecutionDeadlineMs,
+        monotonicShutdownDeadlineMs: request.monotonicShutdownDeadlineMs,
+        terminationGraceMs: request.terminationGraceMs,
+      }),
+    )
+    .digest("hex")}`;
 const assertEmptyDirectory = (path) => {
   if (readdirSync(path).length !== 0)
     throw new Error("integration.runner.home-not-empty");
@@ -145,17 +188,105 @@ if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
 try {
-  ({ stdout: fixtureOutput } = await execute(
-    process.execPath,
-    [
+  const childEnvironment = Object.freeze({
+    AGENTSCOPE_HOME: agentscopeHome,
+    AGENTSCOPE_CANDIDATE_ROOT: candidateRoot,
+    AGENTSCOPE_COLLECTOR_URL: requiredEnvironment("AGENTSCOPE_COLLECTOR_URL"),
+    AGENTSCOPE_INGESTION_URL: requiredEnvironment("AGENTSCOPE_INGESTION_URL"),
+    AGENTSCOPE_LEDGER: ledger,
+    AGENTSCOPE_MODEL_SERVER_URL: requiredEnvironment(
+      "AGENTSCOPE_MODEL_SERVER_URL",
+    ),
+    AGENTSCOPE_RETRIEVAL_URL: requiredEnvironment("AGENTSCOPE_RETRIEVAL_URL"),
+    AGENTSCOPE_SCENARIO_ID: scenarioId,
+    AGENTSCOPE_WORKTREE: worktree,
+    HARNESS_HOME: harnessHome,
+    HOME: home,
+    LANG: "C.UTF-8",
+    NO_COLOR: "1",
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    XDG_CONFIG_HOME: requiredEnvironment("XDG_CONFIG_HOME"),
+    ...(process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === undefined
+      ? {}
+      : {
+          AGENTSCOPE_INTEGRATION_TEST_MODE:
+            process.env.AGENTSCOPE_INTEGRATION_TEST_MODE,
+        }),
+  });
+  const now = performance.now();
+  const request = {
+    runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+    executable: process.execPath,
+    arguments: [
       "/opt/agentscope/platform-fixture.mjs",
       "--artifact",
       join(directory, "files", cliArtifact.fileName),
     ],
-    { encoding: "utf8", maxBuffer: 1024 * 1024 },
-  ));
+    cwd: "/opt/agentscope",
+    environment: childEnvironment,
+    stdin: new Uint8Array(),
+    stdoutLimitBytes: 1024 * 1024,
+    stderrLimitBytes: 1024 * 1024,
+    monotonicStartupDeadlineMs: Math.min(
+      now + 10_000,
+      headlessShutdownDeadline - 5_000,
+    ),
+    monotonicExecutionDeadlineMs: headlessShutdownDeadline - 5_000,
+    monotonicShutdownDeadlineMs: headlessShutdownDeadline,
+    terminationGraceMs: 1_000,
+  };
+  request.requestFingerprint = fingerprintHeadlessRequest(request);
+  const trace = await executeSelectedHeadlessProcess(
+    headlessCapability,
+    request,
+  );
+  fixtureOutput = new TextDecoder("utf-8", { fatal: true }).decode(
+    trace.result.stdout,
+  );
+  const headlessReceipt = {
+    receiptVersion: 1,
+    runId: trace.runId,
+    requestFingerprint: trace.requestFingerprint,
+    outerMonotonicDeadlineMs: headlessOuterDeadline,
+    requestConstructedAtMs: now,
+    translationBootAtMs: headlessTranslationBootAt,
+    translationLocalAtMs: headlessTranslationLocalAt,
+    request: {
+      runId: request.runId,
+      executable: request.executable,
+      arguments: request.arguments,
+      cwd: request.cwd,
+      environment: request.environment,
+      stdinBase64: Buffer.from(request.stdin).toString("base64"),
+      stdoutLimitBytes: request.stdoutLimitBytes,
+      stderrLimitBytes: request.stderrLimitBytes,
+      monotonicStartupDeadlineMs: request.monotonicStartupDeadlineMs,
+      monotonicExecutionDeadlineMs: request.monotonicExecutionDeadlineMs,
+      monotonicShutdownDeadlineMs: request.monotonicShutdownDeadlineMs,
+      terminationGraceMs: request.terminationGraceMs,
+    },
+    returnedAtMs: trace.returnedAtMs,
+    outcome: trace.result.outcome,
+    exitCode: trace.result.exitCode,
+    signal: trace.result.signal,
+    cleanup: trace.result.cleanup,
+    residualProcessCount: trace.result.residualProcessCount,
+    processJoined: trace.observation.processJoined,
+    stdinJoined: trace.observation.stdinJoined,
+    stdoutJoined: trace.observation.stdoutJoined,
+    stderrJoined: trace.observation.stderrJoined,
+  };
+  console.log(
+    `AGENTSCOPE_HEADLESS_RECEIPT=${Buffer.from(JSON.stringify(headlessReceipt)).toString("base64url")}`,
+  );
+  if (
+    trace.result.outcome !== "exited" ||
+    trace.result.exitCode !== 0 ||
+    trace.result.cleanup !== "clean"
+  )
+    fixtureFailure = new Error("integration.runner.fixture-failed");
 } catch (error) {
-  fixtureOutput = `${error?.stdout ?? ""}`;
+  fixtureOutput = "";
   fixtureFailure = error;
 }
 const fixtureResult = fixtureOutput

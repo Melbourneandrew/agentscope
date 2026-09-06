@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -113,6 +114,44 @@ const emptyCleanupInventory = () => ({
   buildContexts: 0,
   activeRunMarkers: 0,
 });
+const headlessReceiptFor = (runId = "0123456789abcdef") => {
+  const request = {
+    runId,
+    executable: "/usr/local/bin/node",
+    arguments: ["/opt/agentscope/platform-fixture.mjs"],
+    cwd: "/opt/agentscope",
+    environment: { HOME: "/home/agentscope" },
+    stdinBase64: "",
+    stdoutLimitBytes: 1_048_576,
+    stderrLimitBytes: 1_048_576,
+    monotonicStartupDeadlineMs: 11_000,
+    monotonicExecutionDeadlineMs: 26_000,
+    monotonicShutdownDeadlineMs: 31_000,
+    terminationGraceMs: 1_000,
+  };
+  return {
+    receiptVersion: 1 as const,
+    runId,
+    requestFingerprint: `sha256:${createHash("sha256")
+      .update(JSON.stringify(request))
+      .digest("hex")}` as const,
+    outerMonotonicDeadlineMs: 31_000,
+    requestConstructedAtMs: 1_000,
+    translationBootAtMs: 1_000,
+    translationLocalAtMs: 1_000,
+    request,
+    returnedAtMs: 29_000,
+    outcome: "exited" as const,
+    exitCode: 0 as const,
+    signal: null,
+    cleanup: "clean" as const,
+    residualProcessCount: 0 as const,
+    processJoined: true as const,
+    stdinJoined: true as const,
+    stdoutJoined: true as const,
+    stderrJoined: true as const,
+  };
+};
 
 const driver = () => {
   const calls: string[] = [];
@@ -120,9 +159,12 @@ const driver = () => {
     calls.push("build");
     return Promise.resolve(`sha256-${"5".repeat(64)}`);
   });
-  const runScenario = vi.fn<IsolationDriver["runScenario"]>(() => {
+  const runScenario = vi.fn<IsolationDriver["runScenario"]>((plan) => {
     calls.push("scenario");
-    return Promise.resolve();
+    return Promise.resolve({
+      receipt: headlessReceiptFor(plan.runId),
+      succeeded: true,
+    });
   });
   const removeContainer = vi.fn<IsolationDriver["removeContainer"]>((name) => {
     calls.push(`container:${name}`);
@@ -232,6 +274,7 @@ describe("scenario isolation", () => {
       removalFailureCount: 0,
       remaining: emptyCleanupInventory(),
     });
+    expect(evidence.headlessTerminalReceipt).toEqual(headlessReceiptFor());
     expect(fixture.calls).toEqual([
       "build",
       "build-mockserver",
@@ -251,7 +294,9 @@ describe("scenario isolation", () => {
       "evidence",
     ]);
   });
+});
 
+describe("scenario isolation outcomes", () => {
   it("tears down and records failure and interruption outcomes", async () => {
     const failed = driver();
     failed.runScenario.mockRejectedValueOnce(new Error("scenario failed"));
@@ -263,6 +308,27 @@ describe("scenario isolation", () => {
       ),
     ).rejects.toThrow("scenario failed");
     expect(failed.calls).toContain("evidence");
+    const observedFailure = driver();
+    const timeoutReceipt = {
+      ...headlessReceiptFor(),
+      outcome: "timed-out" as const,
+      exitCode: null,
+      signal: "SIGKILL" as const,
+    };
+    observedFailure.runScenario.mockResolvedValueOnce({
+      receipt: timeoutReceipt,
+      succeeded: false,
+    });
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        observedFailure.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("integration.isolation.scenario-failed");
+    expect(
+      observedFailure.recordEvidence.mock.calls[0]?.[0].headlessTerminalReceipt,
+    ).toEqual(timeoutReceipt);
     const interrupted = driver();
     const controller = new AbortController();
     controller.abort();
@@ -537,6 +603,7 @@ const compiledEvidenceFixture = () => {
         removalFailureCount: 0,
         remaining: emptyCleanupInventory(),
       },
+      headlessTerminalReceipt: headlessReceiptFor(),
       outcome: "passed",
     },
   };
@@ -582,6 +649,40 @@ describe("prepared OCI identity evidence", () => {
         evidence,
       ),
     ).toThrow("integration.isolation.evidence");
+  });
+});
+
+describe("selected headless backend evidence", () => {
+  it("rejects missing, substituted, late, and uncertain terminal receipts", () => {
+    const { evidence } = compiledEvidenceFixture();
+    for (const headlessTerminalReceipt of [
+      null,
+      { ...evidence.headlessTerminalReceipt, runId: "fedcba9876543210" },
+      {
+        ...evidence.headlessTerminalReceipt,
+        returnedAtMs:
+          evidence.headlessTerminalReceipt.request.monotonicShutdownDeadlineMs +
+          1,
+      },
+      { ...evidence.headlessTerminalReceipt, cleanup: "uncertain" },
+      {
+        ...evidence.headlessTerminalReceipt,
+        requestFingerprint: `sha256:${"f".repeat(64)}`,
+      },
+      {
+        ...evidence.headlessTerminalReceipt,
+        request: {
+          ...evidence.headlessTerminalReceipt.request,
+          arguments: ["substituted"],
+        },
+      },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...evidence, headlessTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
   });
 });
 
