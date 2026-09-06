@@ -13,6 +13,7 @@ import {
 import { resolve, sep } from "node:path";
 
 import {
+  failureEvidenceCoverageIsExact,
   ownedIntegrationResources,
   remainingIntegrationOperationMilliseconds,
   requireDisposableOuterHostCapability,
@@ -86,6 +87,62 @@ const assertArtifactsRoot = () => {
     realpathSync(artifactsRoot) !== expectedRealArtifactsRoot
   )
     throw new Error("integration.cleanup.path");
+};
+const assertPrivateStorageRetirements = () => {
+  const storage = capability.binding.privateStorage;
+  const rootStatus = lstatSync(storage.root);
+  if (
+    !rootStatus.isDirectory() ||
+    rootStatus.isSymbolicLink() ||
+    rootStatus.dev !== storage.rootDev ||
+    rootStatus.ino !== storage.rootIno ||
+    rootStatus.uid !== storage.rootUid ||
+    rootStatus.gid !== storage.rootGid ||
+    (rootStatus.mode & 0o7777) !== storage.rootMode
+  )
+    throw new Error("integration.cleanup.private-storage");
+  const retirements = new Map(
+    owned.privateStorageRetirements.map((retirement) => [
+      retirement.path,
+      retirement,
+    ]),
+  );
+  const entries = readdirSync(storage.root, { withFileTypes: true });
+  if (
+    retirements.size !== owned.privateStorageRetirements.length ||
+    entries.length !== retirements.size
+  )
+    throw new Error("integration.cleanup.private-storage");
+  for (const entry of entries) {
+    const path = resolve(storage.root, entry.name);
+    const retirement = retirements.get(path);
+    const status = lstatSync(path);
+    if (
+      retirement === undefined ||
+      !/^docker-client-[A-Za-z0-9_-]{6}$/u.test(entry.name) ||
+      !entry.isDirectory() ||
+      entry.isSymbolicLink() ||
+      !status.isDirectory() ||
+      status.isSymbolicLink() ||
+      status.dev !== retirement.dev ||
+      status.ino !== retirement.ino ||
+      status.uid !== storage.rootUid ||
+      status.gid !== storage.rootGid ||
+      (status.mode & 0o7777) !== 0o700 ||
+      retirement.authorityDigest !== storage.authorityDigest
+    )
+      throw new Error("integration.cleanup.private-storage");
+  }
+  const after = lstatSync(storage.root);
+  if (after.dev !== rootStatus.dev || after.ino !== rootStatus.ino)
+    throw new Error("integration.cleanup.private-storage");
+  return owned.privateStorageRetirements.map(
+    ({ entryCount, entrySetDigest, totalBytes }) => ({
+      entryCount,
+      entrySetDigest,
+      totalBytes,
+    }),
+  );
 };
 const directoryBytes = (root) => {
   let bytes = 0;
@@ -194,15 +251,18 @@ const assertFailureEvidence = (identity) => {
 };
 
 const diskTargets = [];
+const privateStorage = assertPrivateStorageRetirements();
 try {
   assertArtifactsRoot();
   const failureEvidenceByRunId = new Map(
     owned.failureEvidence.map((identity) => [identity.runId, identity]),
   );
+  const requiredFailureEvidence = new Set(owned.requiredFailureEvidence);
   if (
-    failureEvidenceByRunId.size !== owned.failureEvidence.length ||
-    [...failureEvidenceByRunId.keys()].some(
-      (runId) => !owned.runIds.includes(runId),
+    !failureEvidenceCoverageIsExact(
+      owned.runIds,
+      owned.requiredFailureEvidence,
+      owned.failureEvidence.map(({ runId }) => runId),
     )
   )
     throw new Error("integration.cleanup.failure-evidence");
@@ -212,7 +272,7 @@ try {
     addDirectory(diskTargets, `candidates/${identity}`);
   for (const runId of owned.runIds) {
     addDirectory(diskTargets, `contexts/${runId}`);
-    if (failureEvidenceByRunId.has(runId))
+    if (requiredFailureEvidence.has(runId))
       assertFailureEvidence(failureEvidenceByRunId.get(runId));
     else addDirectory(diskTargets, `runs/${runId}`);
     const markerPath = resolve(artifactsRoot, "active", `${runId}.json`);
@@ -243,6 +303,7 @@ console.log(
     images,
     disk: diskTargets.map(({ relative, bytes }) => ({ relative, bytes })),
     diskBytes: diskTargets.reduce((total, target) => total + target.bytes, 0),
+    privateStorage,
   }),
 );
 removeDocker(["container", "rm", "--force"], containers);

@@ -14,7 +14,6 @@ import {
   readdirSync,
   realpathSync,
   renameSync,
-  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -24,6 +23,12 @@ import { request as httpsRequest } from "node:https";
 import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { rootCertificates } from "node:tls";
+
+// eslint-disable-next-line import-x/no-cycle -- private in-process controller capability
+import {
+  integrationPrivateStorageAuthority,
+  registerIntegrationPrivateStorageRetirement,
+} from "./dist/controller.js";
 
 const maximumPreparationMilliseconds = 300_000;
 const preparationTeardownMilliseconds = 5_000;
@@ -809,7 +814,7 @@ const validTerminalCleanup = (value) =>
   exactKeys(value, ["daemon", "handles", "privateState"]) &&
   value.daemon === "stable" &&
   value.handles === "settled" &&
-  value.privateState === "absent";
+  value.privateState === "retained-for-outer-host-retirement";
 
 const descriptor = (value) => {
   if (
@@ -1102,9 +1107,44 @@ const preparationPolicy = (images, options) => {
 };
 
 const createPrivateClientRoot = (options) => {
-  const parent = realpathSync("/tmp");
+  const testing =
+    options.socketIdentityForTesting !== undefined ||
+    options.engineRequestForTesting !== undefined ||
+    options.registryRequestForTesting !== undefined;
+  const authority = testing ? undefined : integrationPrivateStorageAuthority();
+  const parent =
+    authority === undefined ? realpathSync("/tmp") : authority.root;
   const parentStatus = lstatSync(parent);
-  const root = mkdtempSync(resolve(parent, "agentscope-image-preparation-"));
+  const outerParentStatus =
+    authority === undefined ? undefined : lstatSync(authority.parent);
+  if (
+    authority !== undefined &&
+    (!/^sha256:[a-f\d]{64}$/u.test(authority.authorityDigest ?? "") ||
+      authority.parent !== realpathSync("/tmp") ||
+      !outerParentStatus.isDirectory() ||
+      outerParentStatus.isSymbolicLink() ||
+      outerParentStatus.dev !== authority.parentDev ||
+      outerParentStatus.ino !== authority.parentIno ||
+      outerParentStatus.uid !== authority.parentUid ||
+      outerParentStatus.gid !== authority.parentGid ||
+      (outerParentStatus.mode & 0o7777) !== authority.parentMode ||
+      authority.root !== realpathSync(authority.root) ||
+      parentStatus.dev !== authority.rootDev ||
+      parentStatus.ino !== authority.rootIno ||
+      parentStatus.uid !== authority.rootUid ||
+      parentStatus.gid !== authority.rootGid ||
+      (parentStatus.mode & 0o7777) !== authority.rootMode ||
+      authority.rootMode !== 0o700)
+  )
+    throw fixedError("integration.images.private-storage");
+  const root = mkdtempSync(
+    resolve(
+      parent,
+      authority === undefined
+        ? "agentscope-image-preparation-"
+        : "docker-client-",
+    ),
+  );
   const owned = {
     root,
     parent,
@@ -1118,7 +1158,9 @@ const createPrivateClientRoot = (options) => {
     rootIdentity: undefined,
     directories: [],
     files: [],
+    retired: false,
     beforeRemovalForTesting: options.beforePrivateRemovalForTesting,
+    authorityDigest: authority?.authorityDigest,
   };
   try {
     chmodSync(root, 0o700);
@@ -1158,7 +1200,7 @@ const createPrivateClientRoot = (options) => {
     throw error;
   }
 };
-/* eslint-disable complexity, max-depth, max-lines-per-function -- one bounded no-follow inventory and identity-checked leaf-first retirement state machine */
+/* eslint-disable complexity, max-depth, max-lines-per-function -- one bounded no-follow inventory and identity-checked retirement state machine */
 const cleanupPrivateClient = (owned, deadline) => {
   const summary = {
     entryCount: 0,
@@ -1245,9 +1287,18 @@ const cleanupPrivateClient = (owned, deadline) => {
     }
   };
   try {
+    if (owned.retired) throw cleanupFailure("identity-substitution");
     assertBoundary();
-    const pending = [{ path: owned.root, relative: "", depth: 0 }];
+    const pending = [
+      {
+        path: owned.root,
+        relative: "",
+        depth: 0,
+        identity: owned.rootIdentity,
+      },
+    ];
     const directories = [];
+    const directoryInventories = [];
     const files = [];
     const diagnosticEntries = [];
     while (pending.length > 0) {
@@ -1255,10 +1306,19 @@ const cleanupPrivateClient = (owned, deadline) => {
       const current = pending.pop();
       let entries;
       try {
+        if (!sameDirectoryIdentity(lstatSync(current.path), current.identity))
+          throw cleanupFailure("entry-substitution");
         entries = readdirSync(current.path, { withFileTypes: true });
+        if (!sameDirectoryIdentity(lstatSync(current.path), current.identity))
+          throw cleanupFailure("entry-substitution");
       } catch {
         throw cleanupFailure("entry-inaccessible");
       }
+      directoryInventories.push({
+        ...current.identity,
+        path: current.path,
+        childDigest: diagnosticDigest(entries.map(({ name }) => name).sort()),
+      });
       for (const entry of entries) {
         summary.entryCount += 1;
         if (summary.entryCount > maximumPrivateStateEntries)
@@ -1291,7 +1351,7 @@ const cleanupPrivateClient = (owned, deadline) => {
             mode: mode(status),
           });
           directories.push(identity);
-          pending.push({ path, relative, depth });
+          pending.push({ path, relative, depth, identity });
           summary.directoryCount += 1;
           diagnosticEntries.push({
             nameDigest: digestBytes(Buffer.from(relative, "utf8")),
@@ -1367,41 +1427,43 @@ const cleanupPrivateClient = (owned, deadline) => {
       ),
     );
     owned.beforeRemovalForTesting?.(owned.root);
-    for (const file of files.sort((left, right) => right.depth - left.depth)) {
+    // The selected outer host is the destruction boundary. Once every trusted
+    // client/helper has joined, this pass authenticates the closed retained
+    // inventory and revokes its in-process capability. It deliberately performs
+    // no pathname deletion: any unproved writer or identity drift leaves the
+    // bytes for irreversible runner/guest retirement.
+    for (const inventory of directoryInventories) {
       assertBoundary();
-      snapshotFile(file.path, file);
-      unlinkSync(file.path);
-      try {
-        lstatSync(file.path);
-        throw cleanupFailure("late-mutation");
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-    }
-    for (const directory of directories.sort(
-      (left, right) => right.depth - left.depth,
-    )) {
-      assertBoundary();
-      const status = lstatSync(directory.path);
-      if (!sameDirectoryIdentity(status, directory))
+      if (!sameDirectoryIdentity(lstatSync(inventory.path), inventory))
         throw cleanupFailure("entry-substitution");
-      if (readdirSync(directory.path).length !== 0)
+      const childDigest = diagnosticDigest(readdirSync(inventory.path).sort());
+      if (childDigest !== inventory.childDigest)
         throw cleanupFailure("late-mutation");
-      rmdirSync(directory.path);
+    }
+    for (const file of files) {
+      assertBoundary();
+      for (const directory of directories) {
+        if (file.path.startsWith(`${directory.path}/`)) {
+          if (!sameDirectoryIdentity(lstatSync(directory.path), directory))
+            throw cleanupFailure("entry-substitution");
+        }
+      }
+      snapshotFile(file.path, file);
     }
     assertBoundary();
-    if (readdirSync(owned.root).length !== 0)
-      throw cleanupFailure("late-mutation");
-    rmdirSync(owned.root);
-    try {
-      lstatSync(owned.root);
-      throw cleanupFailure("late-mutation");
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    const parentStatus = lstatSync(owned.parent);
-    if (!sameDirectoryIdentity(parentStatus, owned.parentIdentity))
-      throw cleanupFailure("identity-substitution");
+    owned.retired = true;
+    const retirement = Object.freeze({
+      authorityDigest: owned.authorityDigest,
+      dev: owned.rootIdentity.dev,
+      entryCount: summary.entryCount,
+      entrySetDigest: summary.entrySetDigest,
+      ino: owned.rootIdentity.ino,
+      path: owned.root,
+      totalBytes: summary.totalBytes,
+    });
+    if (owned.authorityDigest !== undefined)
+      registerIntegrationPrivateStorageRetirement(retirement);
+    return retirement;
   } catch (error) {
     if (error?.message === "integration.images.cleanup") throw error;
     throw cleanupFailure("operation-failed");
@@ -2140,7 +2202,7 @@ export const preparePinnedDockerImages = async (images, options = {}) => {
     terminalCleanup: Object.freeze({
       daemon: "stable",
       handles: "settled",
-      privateState: "absent",
+      privateState: "retained-for-outer-host-retirement",
     }),
   });
   preparedSets.add(completed);

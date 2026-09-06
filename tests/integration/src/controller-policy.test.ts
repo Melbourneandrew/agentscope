@@ -52,6 +52,10 @@ describe("integration controller policy", () => {
     expect(source).toMatch(
       /const dockerEndpoint =\s*`unix:\/\/\$\{realpathSync\("\/var\/run\/docker\.sock"\)\}`/u,
     );
+    expect(source).toContain(
+      'resolve(privateStorageParent, "agentscope-integration-controller-")',
+    );
+    expect(source).toContain("rootMode: 0o700");
   });
 
   it("retains narrow cleanup ceilings for controller-owned artifacts", () => {
@@ -68,10 +72,11 @@ describe("integration controller policy", () => {
     expect(source).toContain(
       "const addFile = (targets, relative, maximumBytes = 16_384)",
     );
-    expect(source).toContain("failureEvidenceByRunId.has(runId)");
+    expect(source).toContain("requiredFailureEvidence.has(runId)");
     expect(source).toContain(
       "assertFailureEvidence(failureEvidenceByRunId.get(runId))",
     );
+    expect(source).toContain("failureEvidenceCoverageIsExact(");
   });
 
   it("rejects direct execution of every mutation stage", () => {
@@ -192,6 +197,9 @@ describe("integration workflow policy", () => {
     );
     expect(workflow).toContain("if-no-files-found: error");
     expect(workflow).not.toContain("if-no-files-found: ignore");
+    expect(workflow).toContain(
+      "path: artifacts/integration/runs/*/controller-failure.json",
+    );
     const scenarios = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
       "utf8",
@@ -199,7 +207,12 @@ describe("integration workflow policy", () => {
     const finalized = scenarios.indexOf(
       "finalizeControllerFailureEvidence(plan",
     );
+    const required = scenarios.indexOf(
+      "requireIntegrationFailureEvidence(plans.map",
+    );
     const propagated = scenarios.indexOf("throw primaryError");
+    expect(required).toBeGreaterThanOrEqual(0);
+    expect(finalized).toBeGreaterThan(required);
     expect(finalized).toBeGreaterThanOrEqual(0);
     expect(propagated).toBeGreaterThan(finalized);
   });

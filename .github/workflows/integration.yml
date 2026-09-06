@@ -133,7 +133,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
-          path: artifacts/integration/runs
+          path: artifacts/integration/runs/*/controller-failure.json
           if-no-files-found: error
           retention-days: 7
   hermetic-integration:

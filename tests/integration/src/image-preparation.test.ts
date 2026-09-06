@@ -735,6 +735,7 @@ const options = (engine = engineFixture(), registry = registryFixture()) => ({
   registryRequestForTesting: registry.request,
   maximumPreparationMilliseconds: 4_000,
   teardownMilliseconds: 500,
+  afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
 });
 const prepared = () => ({
   imageEvidenceVersion: 2,
@@ -751,7 +752,7 @@ const prepared = () => ({
   terminalCleanup: {
     daemon: "stable",
     handles: "settled",
-    privateState: "absent",
+    privateState: "retained-for-outer-host-retirement",
   },
   images: [
     {
@@ -770,6 +771,13 @@ afterEach(() => {
   for (const value of roots.splice(0))
     rmSync(value, { force: true, recursive: true });
 });
+const removeRetainedRoot = (value: string | undefined) => {
+  expect(value).toBeTypeOf("string");
+  if (value === undefined) throw new Error("missing private root");
+  expect(existsSync(value)).toBe(true);
+  rmSync(value, { force: true, recursive: true });
+  roots.splice(roots.indexOf(value), 1);
+};
 
 describe("canonical Docker socket authority", () => {
   it("binds a fixed socket alias to its one canonical physical endpoint", async () => {
@@ -846,6 +854,7 @@ describe("subprocess-free pinned image preparation", () => {
         ({ origin }) => origin?.hostname !== "CANARY.invalid",
       ),
     ).toBe(true);
+    removeRetainedRoot(roots.at(-1));
     expect(
       new Set(
         readdirSync(realpathSync("/tmp")).filter((entry) =>
@@ -1050,11 +1059,12 @@ describe("bounded image preparation request and cleanup handles", () => {
         ...options(),
         afterPrivateRootCreatedForTesting: (value: string) => {
           ownedRoot = value;
+          roots.push(value);
           throw new Error("injected setup failure");
         },
       }),
     ).rejects.toThrow("integration.images.setup");
-    expect(existsSync(ownedRoot ?? "")).toBe(false);
+    expect(existsSync(ownedRoot ?? "")).toBe(true);
   });
 
   it("settles a nonresponding Engine socket before timeout rejection", async () => {
@@ -1211,6 +1221,7 @@ describe("prepared image runtime admission and publication", () => {
     let configDirectory: string | undefined;
     try {
       client = createPreparedDockerClient(admitted, {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerExecutableForTesting: executable,
         socketIdentityForTesting: socket,
         engineRequestForTesting: engine.request,
@@ -1247,7 +1258,7 @@ describe("prepared image runtime admission and publication", () => {
         else process.env[name] = value;
       }
     }
-    expect(existsSync(configDirectory ?? "")).toBe(false);
+    expect(existsSync(configDirectory ?? "")).toBe(true);
   });
 
   it("rejects a consuming invocation after daemon identity changes", async () => {
@@ -1256,6 +1267,7 @@ describe("prepared image runtime admission and publication", () => {
       manifestIdentity,
     );
     const client = createPreparedDockerClient(admitted, {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
       dockerExecutableForTesting: executableFixture(),
       socketIdentityForTesting: socket,
       engineRequestForTesting: engineFixture({ daemonSwitch: true }).request,
@@ -1280,6 +1292,7 @@ describe("prepared image runtime admission and publication", () => {
       PATH: "/usr/bin:/bin",
     };
     const client = createPreparedDockerClient(admitted, {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
       dockerEnvironment,
       dockerExecutableForTesting: executableFixture(),
       socketIdentityForTesting: socket,
@@ -1294,6 +1307,7 @@ describe("prepared image runtime admission and publication", () => {
     }
     expect(() =>
       createPreparedDockerClient(admitted, {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerEnvironment: { ...dockerEnvironment, HTTP_PROXY: "CANARY" },
         dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
@@ -1308,6 +1322,7 @@ describe("prepared Docker client cleanup failure classification", () => {
     createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
@@ -1315,7 +1330,7 @@ describe("prepared Docker client cleanup failure classification", () => {
       },
     );
 
-  it("removes authenticated nested buildx private state leaf-first", () => {
+  it("authenticates and retires nested buildx state for outer-host destruction", () => {
     const client = cleanupClient();
     const privateRoot = (
       client as unknown as { privateClient: { root: string } }
@@ -1326,7 +1341,8 @@ describe("prepared Docker client cleanup failure classification", () => {
     expect(() => {
       closePreparedDockerClient(client);
     }).not.toThrow();
-    expect(existsSync(privateRoot)).toBe(false);
+    expect(existsSync(privateRoot)).toBe(true);
+    rmSync(privateRoot, { force: true, recursive: true });
   });
 
   it.each(["symlink", "hardlink", "mode", "oversize"])(
@@ -1426,11 +1442,69 @@ describe("prepared Docker client cleanup failure classification", () => {
   });
 });
 
+describe("private Docker client retirement substitution", () => {
+  const cleanupClient = (options = {}) =>
+    createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+        ...options,
+      },
+    );
+
+  it("fails closed without following a substituted private-state ancestor", () => {
+    const outside = root();
+    const canary = resolve(outside, "canary");
+    writeFileSync(canary, "outside\n", { mode: 0o600 });
+    let privateRoot: string | undefined;
+    const client = cleanupClient({
+      beforePrivateRemovalForTesting: (root: string) => {
+        privateRoot = root;
+        const buildx = resolve(root, "buildx");
+        renameSync(buildx, `${buildx}.original`);
+        symlinkSync(outside, buildx);
+      },
+    });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(readFileSync(canary, "utf8")).toBe("outside\n");
+    expect(privateRoot).toBeTypeOf("string");
+    if (privateRoot === undefined) throw new Error("missing private root");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("fails closed without deleting a file swapped after inventory", () => {
+    let privateRoot: string | undefined;
+    const client = cleanupClient({
+      beforePrivateRemovalForTesting: (root: string) => {
+        privateRoot = root;
+        const target = resolve(root, "docker", "config.json");
+        rmSync(target);
+        writeFileSync(target, "replacement\n", { mode: 0o600 });
+      },
+    });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(privateRoot).toBeTypeOf("string");
+    if (privateRoot === undefined) throw new Error("missing private root");
+    expect(
+      readFileSync(resolve(privateRoot, "docker", "config.json"), "utf8"),
+    ).toBe("replacement\n");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+});
+
 describe("prepared Docker client cleanup failure propagation", () => {
   it("retires after timeout even when partial output claims the resource is missing", async () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
@@ -1463,6 +1537,7 @@ describe("prepared Docker client cleanup failure propagation", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
@@ -1488,6 +1563,7 @@ describe("prepared Docker client terminal authority", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
@@ -1517,6 +1593,7 @@ describe("prepared Docker client terminal authority", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         dockerExecutableForTesting: executable,
         socketIdentityForTesting: socket,
         engineRequestForTesting: async (request) => {
@@ -1545,6 +1622,7 @@ describe("prepared Docker client terminal authority", () => {
       manifestIdentity,
     );
     const client = createPreparedDockerClient(admitted, {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
       dockerExecutableForTesting: executableFixture(),
       socketIdentityForTesting: socket,
       engineRequestForTesting: engineFixture({
@@ -1585,6 +1663,7 @@ const buildClient = (engine: ReturnType<typeof engineFixture>) => {
   return createPreparedDockerClient(
     validatePreparedImageEvidence(prepared(), manifestIdentity),
     {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
       buildkitImageForTesting: image,
       buildxExecutableForTesting: executable,
       buildxRunForTesting: engine.buildxRun,
@@ -1730,6 +1809,7 @@ describe("authenticated buildx consumption", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
         buildkitImageForTesting: image,
         buildxExecutableForTesting: executable,
         buildxRunForTesting: engine.buildxRun,

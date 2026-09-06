@@ -49,6 +49,7 @@ import {
   integrationStageSignal,
   registerIntegrationFailureEvidence,
   registerIntegrationRunIds,
+  requireIntegrationFailureEvidence,
   remainingIntegrationOperationMilliseconds,
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
@@ -1024,6 +1025,7 @@ try {
   }
   if (primaryError !== undefined) {
     try {
+      requireIntegrationFailureEvidence(plans.map(({ runId }) => runId));
       for (const plan of plans)
         finalizeControllerFailureEvidence(plan, primaryError, cleanupError);
     } catch {

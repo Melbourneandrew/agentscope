@@ -97,7 +97,7 @@ export interface PreparedDockerImageSet {
   terminalCleanup: Readonly<{
     daemon: "stable";
     handles: "settled";
-    privateState: "absent";
+    privateState: "retained-for-outer-host-retirement";
   }>;
 }
 

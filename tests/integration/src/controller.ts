@@ -1,6 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 
@@ -23,6 +30,21 @@ export type DisposableOuterHostBinding = Readonly<{
   dockerEnvironment: Readonly<NodeJS.ProcessEnv>;
   dockerExecutable: "/usr/bin/docker";
   hostKind: "crabbox" | "github-hosted";
+  privateStorage: Readonly<{
+    authorityDigest: `sha256:${string}`;
+    parent: string;
+    parentDev: number;
+    parentGid: number;
+    parentIno: number;
+    parentMode: number;
+    parentUid: number;
+    root: string;
+    rootDev: number;
+    rootGid: number;
+    rootIno: number;
+    rootMode: 448;
+    rootUid: number;
+  }>;
   suppliedIdentity: Readonly<Record<string, string>>;
   workspaceRevision: string;
   workspaceRoot: string;
@@ -44,6 +66,19 @@ type CapabilityState = {
       ino: number;
       runId: string;
       size: number;
+    }>
+  >;
+  requiredFailureEvidence: Set<string>;
+  privateStorageRetirements: Map<
+    number,
+    Readonly<{
+      authorityDigest: `sha256:${string}`;
+      dev: number;
+      entryCount: number;
+      entrySetDigest: `sha256:${string}`;
+      ino: number;
+      path: string;
+      totalBytes: number;
     }>
   >;
   signal: AbortSignal;
@@ -69,6 +104,27 @@ const capabilityStates = new WeakMap<
   CapabilityState
 >();
 let controllerConsumed = false;
+
+export const failureEvidenceCoverageIsExact = (
+  runIds: readonly string[],
+  requiredRunIds: readonly string[],
+  recordedRunIds: readonly string[],
+): boolean => {
+  const runs = new Set(runIds);
+  const required = new Set(requiredRunIds);
+  const recorded = new Set(recordedRunIds);
+  return (
+    runs.size === runIds.length &&
+    required.size === requiredRunIds.length &&
+    recorded.size === recordedRunIds.length &&
+    runIds.length <= 256 &&
+    runIds.every((runId) => runTokenPattern.test(runId)) &&
+    [...required].every((runId) => runs.has(runId)) &&
+    [...recorded].every((runId) => runs.has(runId)) &&
+    required.size === recorded.size &&
+    [...required].every((runId) => recorded.has(runId))
+  );
+};
 
 export class IntegrationControllerFailure extends Error {
   readonly cleanupCause: unknown;
@@ -224,6 +280,42 @@ const createBinding = (
     PATH: "/usr/bin:/bin",
     DOCKER_HOST: dockerEndpoint,
   });
+  const privateStorageParent = realpathSync("/tmp");
+  const parentStatus = lstatSync(privateStorageParent);
+  if (!parentStatus.isDirectory() || parentStatus.isSymbolicLink())
+    throw new Error("integration.controller.private-storage");
+  const privateStorageRoot = mkdtempSync(
+    resolve(privateStorageParent, "agentscope-integration-controller-"),
+  );
+  chmodSync(privateStorageRoot, 0o700);
+  const rootStatus = lstatSync(privateStorageRoot);
+  if (
+    !rootStatus.isDirectory() ||
+    rootStatus.isSymbolicLink() ||
+    (rootStatus.mode & 0o7777) !== 0o700 ||
+    rootStatus.uid !== process.getuid?.() ||
+    rootStatus.gid !== process.getgid?.()
+  )
+    throw new Error("integration.controller.private-storage");
+  const authorityDigest = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        hostKind,
+        identity: Object.entries(identity).sort(([left], [right]) =>
+          left.localeCompare(right),
+        ),
+        privateStorage: {
+          dev: rootStatus.dev,
+          gid: rootStatus.gid,
+          ino: rootStatus.ino,
+          mode: rootStatus.mode & 0o7777,
+          path: privateStorageRoot,
+          uid: rootStatus.uid,
+        },
+        workspaceRevision,
+      }),
+    )
+    .digest("hex")}` as const;
   return {
     mode,
     binding: Object.freeze({
@@ -234,6 +326,21 @@ const createBinding = (
       dockerEnvironment,
       dockerExecutable: "/usr/bin/docker",
       hostKind,
+      privateStorage: Object.freeze({
+        authorityDigest,
+        parent: privateStorageParent,
+        parentDev: parentStatus.dev,
+        parentGid: parentStatus.gid,
+        parentIno: parentStatus.ino,
+        parentMode: parentStatus.mode & 0o7777,
+        parentUid: parentStatus.uid,
+        root: privateStorageRoot,
+        rootDev: rootStatus.dev,
+        rootGid: rootStatus.gid,
+        rootIno: rootStatus.ino,
+        rootMode: 0o700,
+        rootUid: rootStatus.uid,
+      }),
       suppliedIdentity: identity,
       workspaceRevision,
       workspaceRoot,
@@ -261,6 +368,9 @@ export const integrationStageSignal = (): AbortSignal => {
   const capability = requireDisposableOuterHostCapability();
   return capabilityStates.get(capability)!.signal;
 };
+
+export const integrationPrivateStorageAuthority = () =>
+  requireDisposableOuterHostCapability().binding.privateStorage;
 
 export const remainingIntegrationOperationMilliseconds = (
   maximumMilliseconds: number,
@@ -337,6 +447,61 @@ export const registerIntegrationFailureEvidence = (
   state.failureEvidence.set(evidence.runId, Object.freeze({ ...evidence }));
 };
 
+export const registerIntegrationPrivateStorageRetirement = (
+  retirement: Readonly<{
+    authorityDigest: `sha256:${string}`;
+    dev: number;
+    entryCount: number;
+    entrySetDigest: `sha256:${string}`;
+    ino: number;
+    path: string;
+    totalBytes: number;
+  }>,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  const storage = capability.binding.privateStorage;
+  if (
+    retirement.authorityDigest !== storage.authorityDigest ||
+    !retirement.path.startsWith(`${storage.root}/docker-client-`) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(retirement.entrySetDigest) ||
+    !Number.isSafeInteger(retirement.dev) ||
+    !Number.isSafeInteger(retirement.ino) ||
+    !Number.isSafeInteger(retirement.entryCount) ||
+    !Number.isSafeInteger(retirement.totalBytes) ||
+    retirement.dev < 0 ||
+    retirement.ino < 1 ||
+    retirement.entryCount < 1 ||
+    retirement.entryCount > 4_096 ||
+    retirement.totalBytes < 0 ||
+    retirement.totalBytes > 64 * 1024 * 1024 ||
+    state.privateStorageRetirements.has(retirement.ino)
+  )
+    throw new Error("integration.controller.private-storage");
+  state.privateStorageRetirements.set(
+    retirement.ino,
+    Object.freeze({ ...retirement }),
+  );
+};
+
+export const requireIntegrationFailureEvidence = (
+  runIds: readonly string[],
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    runIds.length < 1 ||
+    runIds.length > 256 ||
+    new Set(runIds).size !== runIds.length ||
+    runIds.some(
+      (runId) => !runTokenPattern.test(runId) || !state.runIds.has(runId),
+    ) ||
+    state.requiredFailureEvidence.size !== 0
+  )
+    throw new Error("integration.controller.failure-evidence");
+  for (const runId of runIds) state.requiredFailureEvidence.add(runId);
+};
+
 export const ownedIntegrationResources = (): Readonly<{
   artifactFiles: readonly string[];
   candidateIdentities: readonly string[];
@@ -346,6 +511,16 @@ export const ownedIntegrationResources = (): Readonly<{
     ino: number;
     runId: string;
     size: number;
+  }>[];
+  requiredFailureEvidence: readonly string[];
+  privateStorageRetirements: readonly Readonly<{
+    authorityDigest: `sha256:${string}`;
+    dev: number;
+    entryCount: number;
+    entrySetDigest: `sha256:${string}`;
+    ino: number;
+    path: string;
+    totalBytes: number;
   }>[];
   runIds: readonly string[];
 }> => {
@@ -357,6 +532,14 @@ export const ownedIntegrationResources = (): Readonly<{
     failureEvidence: Object.freeze(
       [...state.failureEvidence.values()].sort((left, right) =>
         left.runId.localeCompare(right.runId),
+      ),
+    ),
+    requiredFailureEvidence: Object.freeze(
+      [...state.requiredFailureEvidence].sort(),
+    ),
+    privateStorageRetirements: Object.freeze(
+      [...state.privateStorageRetirements.values()].sort(
+        (left, right) => left.ino - right.ino,
       ),
     ),
     runIds: Object.freeze([...state.runIds].sort()),
@@ -534,6 +717,8 @@ export const executeIntegrationController = async (): Promise<void> => {
     artifactFiles: new Set(),
     candidateIdentities: new Set(),
     failureEvidence: new Map(),
+    requiredFailureEvidence: new Set(),
+    privateStorageRetirements: new Map(),
     runIds: new Set(),
     signal: new AbortController().signal,
   };
