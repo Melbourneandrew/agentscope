@@ -33,6 +33,16 @@
   "files": [
     "dist"
   ],
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": true,
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Melbourneandrew/agentscope.git"

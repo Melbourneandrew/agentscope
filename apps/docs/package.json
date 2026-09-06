@@ -2,6 +2,16 @@
   "name": "@agentscope/docs",
   "private": true,
   "version": "0.1.0",
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": false
+      },
+      "typecheck": {
+        "cache": false
+      }
+    }
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

@@ -11,6 +11,7 @@
     "sharedGlobals": [
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/pnpm-lock.yaml",
+      "{workspaceRoot}/pnpm-workspace.yaml",
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/tsconfig.base.json",
       "{workspaceRoot}/eslint.config.mjs",
@@ -25,38 +26,45 @@
       "{workspaceRoot}/scripts/verify-code-quality-policy.mjs",
       "{workspaceRoot}/scripts/acceptance-evidence.mjs",
       "{workspaceRoot}/acceptance-evidence.json"
+    ],
+    "runtimeEnvironment": [
+      {
+        "runtime": "node -p \"JSON.stringify([process.version, process.platform, process.arch])\""
+      },
+      { "runtime": "pnpm --version" }
     ]
   },
   "targetDefaults": {
     "build": {
+      "cache": false,
       "dependsOn": ["^build"],
-      "inputs": ["production", "^production"],
-      "outputs": [
-        "{projectRoot}/dist",
-        "{projectRoot}/.next",
-        "{projectRoot}/out"
-      ]
+      "inputs": ["production", "^production", "runtimeEnvironment"]
     },
     "typecheck": {
-      "dependsOn": ["^typecheck"],
-      "inputs": ["default", "^production"]
+      "cache": true,
+      "dependsOn": ["^typecheck", "^build"],
+      "inputs": ["default", "^production", "runtimeEnvironment"]
     },
     "lint": {
+      "cache": true,
       "dependsOn": ["build"],
-      "inputs": ["default", "^production"]
+      "inputs": ["default", "^production", "runtimeEnvironment"]
     },
     "test": {
+      "cache": true,
       "dependsOn": ["build"],
-      "inputs": ["default", "^production"]
+      "inputs": ["default", "^production", "runtimeEnvironment"]
     },
     "coverage": {
+      "cache": false,
       "dependsOn": ["build"],
-      "inputs": ["default", "^production"],
+      "inputs": ["default", "^production", "runtimeEnvironment"],
       "outputs": ["{projectRoot}/coverage"]
     },
     "clean": {
       "cache": false
     }
   },
+  "neverConnectToCloud": true,
   "analytics": false
 }

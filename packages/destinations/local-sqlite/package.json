@@ -25,6 +25,16 @@
   "files": [
     "dist"
   ],
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": true,
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
+  },
   "agentscopeInternalProcessEntrypoints": [
     "./dist/production/reporter-child.js",
     "./dist/production/reporter-watchdog.js",
