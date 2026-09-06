@@ -13,6 +13,7 @@ const maximumNxConfigurationBytes = 64 * 1024;
 const maximumChangedPaths = 4_096;
 const maximumProjects = 256;
 const admittedDefaultBase = "main";
+const nxOutputStyle = "--outputStyle=static";
 const objectIdPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const projectNamePattern = /^(?:@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)$/u;
 const baseNamePattern = /^(?!-)[A-Za-z0-9._/-]{1,256}$/u;
@@ -264,6 +265,7 @@ export function createPrepushPlan({
       `--base=${base}`,
       `--head=${head}`,
       "--json",
+      nxOutputStyle,
     ];
     const names = parseAffectedProjects(
       successfulOutput(captureCommand("pnpm", affectedArguments)),
@@ -271,7 +273,14 @@ export function createPrepushPlan({
     const projects = names.map((name) =>
       parseProjectMetadata(
         successfulOutput(
-          captureCommand("pnpm", ["nx", "show", "project", name, "--json"]),
+          captureCommand("pnpm", [
+            "nx",
+            "show",
+            "project",
+            name,
+            "--json",
+            nxOutputStyle,
+          ]),
         ),
         name,
       ),
@@ -294,13 +303,21 @@ export function createPrepushCommands(plan) {
   const selection = plan.mode.full
     ? ["run-many", "--all"]
     : ["affected", `--base=${plan.base}`, `--head=${plan.head}`];
-  commands.push(["nx", selection[0], "-t", "build", ...selection.slice(1)]);
+  commands.push([
+    "nx",
+    selection[0],
+    "-t",
+    "build",
+    ...selection.slice(1),
+    nxOutputStyle,
+  ]);
   commands.push([
     "nx",
     selection[0],
     "-t",
     "lint,typecheck,test",
     ...selection.slice(1),
+    nxOutputStyle,
   ]);
   if (plan.mode.verifyCliArtifact) commands.push(["verify:cli-artifact"]);
   return commands;

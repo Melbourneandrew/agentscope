@@ -145,7 +145,7 @@ test("one resolved base and head OID bind diff and every affected call", () => {
     head: HEAD,
     mode: { full: false, policyChecks: false, verifyCliArtifact: false },
   });
-  assert.deepEqual(fixture.calls.slice(0, 4), [
+  assert.deepEqual(fixture.calls, [
     ["git", ["rev-parse", "--verify", "main^{commit}"]],
     ["git", ["rev-parse", "--verify", "HEAD^{commit}"]],
     [
@@ -162,6 +162,18 @@ test("one resolved base and head OID bind diff and every affected call", () => {
         `--base=${BASE}`,
         `--head=${HEAD}`,
         "--json",
+        "--outputStyle=static",
+      ],
+    ],
+    [
+      "pnpm",
+      [
+        "nx",
+        "show",
+        "project",
+        "@agentscope/core",
+        "--json",
+        "--outputStyle=static",
       ],
     ],
   ]);
@@ -302,7 +314,15 @@ test("affected and fallback command order never includes native or integration",
   assert.deepEqual(affected, [
     ["verify:targets"],
     ["format:check"],
-    ["nx", "affected", "-t", "build", `--base=${BASE}`, `--head=${HEAD}`],
+    [
+      "nx",
+      "affected",
+      "-t",
+      "build",
+      `--base=${BASE}`,
+      `--head=${HEAD}`,
+      "--outputStyle=static",
+    ],
     [
       "nx",
       "affected",
@@ -310,6 +330,7 @@ test("affected and fallback command order never includes native or integration",
       "lint,typecheck,test",
       `--base=${BASE}`,
       `--head=${HEAD}`,
+      "--outputStyle=static",
     ],
     ["verify:cli-artifact"],
   ]);
@@ -322,8 +343,15 @@ test("affected and fallback command order never includes native or integration",
     ["test:workspace-policy"],
     ["verify:quality"],
     ["verify:acceptance-evidence"],
-    ["nx", "run-many", "-t", "build", "--all"],
-    ["nx", "run-many", "-t", "lint,typecheck,test", "--all"],
+    ["nx", "run-many", "-t", "build", "--all", "--outputStyle=static"],
+    [
+      "nx",
+      "run-many",
+      "-t",
+      "lint,typecheck,test",
+      "--all",
+      "--outputStyle=static",
+    ],
     ["verify:cli-artifact"],
   ]);
   assert.equal(JSON.stringify([affected, fallback]).includes("native"), false);
@@ -353,6 +381,57 @@ test("first command failure is exact and admits no later command", () => {
   });
   assert.equal(status, 31);
   assert.deepEqual(calls, [["verify:targets"], ["format:check"]]);
+});
+
+test("static Nx output survives a hook-like closed terminal and propagates target failure", () => {
+  const root = temporaryRoot();
+  const calls = join(root, "calls.jsonl");
+  const affectedEntrypoint = join(
+    repositoryRoot,
+    "scripts/prepush-affected.mjs",
+  );
+  executable(
+    root,
+    "git",
+    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='rev-parse'){process.stdout.write((args.at(-1).startsWith('main')?${JSON.stringify(BASE)}:${JSON.stringify(HEAD)})+'\\n');process.exit(0)}if(args[0]==='diff'){process.stdout.write('scripts/prepush-affected.mjs\\0');process.exit(0)}process.exit(72)\n`,
+  );
+  executable(
+    root,
+    "pnpm",
+    `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');if(args[0]==='nx'&&args[1]==='show'){process.stdout.write('[]');process.exit(0)}if(args[0]==='nx'&&args[1]==='run-many'&&args.includes('build')){if(!args.includes('--outputStyle=static'))process.exit(73);process.exit(37)}process.exit(0)\n`,
+  );
+  const outcome = spawnSync(process.execPath, [affectedEntrypoint], {
+    cwd: repositoryRoot,
+    env: environment(root, { CI: "1", TERM: "dumb" }),
+    stdio: "ignore",
+    timeout: 8_000,
+  });
+  assert.equal(outcome.status, 37);
+  assert.equal(outcome.signal, null);
+  assert.deepEqual(
+    readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+    [
+      [
+        "nx",
+        "show",
+        "projects",
+        "--affected",
+        `--base=${BASE}`,
+        `--head=${HEAD}`,
+        "--json",
+        "--outputStyle=static",
+      ],
+      ["verify:targets"],
+      ["format:check"],
+      ["test:workspace-policy"],
+      ["verify:quality"],
+      ["verify:acceptance-evidence"],
+      ["nx", "run-many", "-t", "build", "--all", "--outputStyle=static"],
+    ],
+  );
 });
 
 afterEach(() => {
