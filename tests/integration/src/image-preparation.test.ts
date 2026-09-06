@@ -26,6 +26,7 @@ import type { PreparedDockerImageSet } from "../image-preparation.mjs";
 
 import {
   assertImagePreparationPlatformForTesting,
+  authenticateDockerSocketAliasForTesting,
   BUILDKIT_IMAGE,
   buildPreparedDockerImage,
   closePreparedDockerClient,
@@ -723,6 +724,48 @@ const prepared = () => ({
 afterEach(() => {
   for (const value of roots.splice(0))
     rmSync(value, { force: true, recursive: true });
+});
+
+describe("canonical Docker socket authority", () => {
+  it("binds a fixed socket alias to its one canonical physical endpoint", async () => {
+    const directory = root();
+    const physicalDirectory = resolve(directory, "run");
+    const aliasDirectory = resolve(directory, "var-run");
+    mkdirSync(physicalDirectory);
+    symlinkSync(physicalDirectory, aliasDirectory);
+    const physicalSocket = resolve(physicalDirectory, "docker.sock");
+    const canonicalPhysicalSocket = resolve(
+      realpathSync(physicalDirectory),
+      "docker.sock",
+    );
+    const policySocket = resolve(aliasDirectory, "docker.sock");
+    const server = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(physicalSocket, () => {
+        server.removeListener("error", rejectListen);
+        resolveListen();
+      });
+    });
+    try {
+      expect(
+        authenticateDockerSocketAliasForTesting(
+          policySocket,
+          canonicalPhysicalSocket,
+        ),
+      ).toMatchObject({ path: canonicalPhysicalSocket });
+      expect(() =>
+        authenticateDockerSocketAliasForTesting(policySocket, policySocket),
+      ).toThrow("integration.images.socket");
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error === undefined) resolveClose();
+          else rejectClose(error);
+        });
+      });
+    }
+  });
 });
 
 describe("subprocess-free pinned image preparation", () => {

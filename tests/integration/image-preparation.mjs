@@ -485,12 +485,23 @@ const resolveDockerSocket = (requested) => {
     throw fixedError("integration.images.platform");
   return socketRecord(IMAGE_PREPARATION_EXECUTION_POLICY.socket);
 };
-const productionDockerSocket = (requested) => {
-  if (requested !== IMAGE_PREPARATION_EXECUTION_POLICY.socket)
+const authenticateDockerSocket = (policyPath, requested) => {
+  const policySocket = socketRecord(policyPath);
+  if (requested !== policySocket.path)
     throw fixedError("integration.images.socket");
-  assertProductionPlatform(process.platform);
-  return socketRecord(requested);
+  const socket = socketRecord(requested);
+  if (!sameSocket(socket, policySocket))
+    throw fixedError("integration.images.socket");
+  return socket;
 };
+const productionDockerSocket = (requested) => {
+  assertProductionPlatform(process.platform);
+  return authenticateDockerSocket(
+    IMAGE_PREPARATION_EXECUTION_POLICY.socket,
+    requested,
+  );
+};
+export const authenticateDockerSocketAliasForTesting = authenticateDockerSocket;
 const productionDockerEnvironment = (environment, socket) => {
   const expected = {
     DOCKER_HOST: `unix://${socket.path}`,

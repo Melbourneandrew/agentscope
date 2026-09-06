@@ -208,6 +208,17 @@ export declare const assertImagePreparationPlatformForTesting: (
   platform: string,
 ) => void;
 
+export declare const authenticateDockerSocketAliasForTesting: (
+  policyPath: string,
+  requested: string,
+) => Readonly<{
+  path: string;
+  device: string;
+  inode: string;
+  mode: string;
+  owner: string;
+}>;
+
 export declare const imagePreparationFailureRequiresOuterHostRetirement: (
   error: unknown,
 ) => boolean;
