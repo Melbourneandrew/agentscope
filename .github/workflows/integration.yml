@@ -28,7 +28,11 @@ jobs:
   prepare-candidate:
     name: Prepare immutable candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_USERCONFIG: /dev/null
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +67,10 @@ jobs:
     needs: prepare-candidate
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_USERCONFIG: /dev/null
     strategy:
       fail-fast: false
       matrix:

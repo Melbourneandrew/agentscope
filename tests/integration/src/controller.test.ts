@@ -30,18 +30,28 @@ const stages = (events: string[]): IntegrationStageDependencies =>
 describe("integration controller", () => {
   it("aborts at the deadline and joins the operation before returning", async () => {
     const events: string[] = [];
-    const operation = settleAbortableOperation(5, async (signal) => {
-      await new Promise<void>((resolveOperation) => {
-        signal.addEventListener("abort", () => {
-          setTimeout(() => {
-            events.push("settled");
-            resolveOperation();
-          }, 5);
+    const operation = settleAbortableOperation(
+      5,
+      async (signal) => {
+        await new Promise<void>((resolveOperation) => {
+          signal.addEventListener("abort", () => {
+            setTimeout(() => {
+              events.push("settled");
+              resolveOperation();
+            }, 5);
+          });
         });
-      });
-    });
+      },
+      10,
+    );
     await expect(operation).rejects.toThrow("integration.controller.deadline");
     expect(events).toEqual(["settled"]);
+  });
+
+  it("fails closed when an aborted operation does not settle", async () => {
+    await expect(
+      settleAbortableOperation(2, () => new Promise(() => {}), 2),
+    ).rejects.toThrow("integration.controller.unsettled-operation");
   });
 
   it("runs one private Crabbox lifecycle and cleans last", async () => {
@@ -107,5 +117,26 @@ describe("integration controller", () => {
       primaryCause: primary,
       retirementRequired: true,
     } satisfies Partial<IntegrationControllerFailure>);
+  });
+
+  it("skips in-process cleanup after an operation cannot be joined", async () => {
+    const events: string[] = [];
+    const dependencies = stages(events);
+    vi.mocked(dependencies.runScenarios).mockRejectedValue(
+      new Error("integration.controller.unsettled-operation"),
+    );
+    let failure: IntegrationControllerFailure | undefined;
+    try {
+      await runIntegrationStages("lifecycle", dependencies);
+    } catch (error) {
+      failure = error as IntegrationControllerFailure;
+    }
+    expect(failure).toBeDefined();
+    if (failure === undefined) throw new Error("expected controller failure");
+    expect(failure.retirementRequired).toBe(true);
+    expect(failure.cleanupCause).toMatchObject({
+      message: "integration.controller.unsettled-operation",
+    });
+    expect(dependencies.clean).not.toHaveBeenCalled();
   });
 });

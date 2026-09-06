@@ -1,10 +1,10 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { arch, platform } from "node:os";
 import { resolve } from "node:path";
 
 import { prepareCandidate } from "./dist/artifacts.js";
-// eslint-disable-next-line import-x/no-cycle -- private executable capability
 import {
   registerIntegrationArtifactFile,
   registerIntegrationCandidateIdentity,
@@ -16,6 +16,12 @@ requireDisposableOuterHostCapability();
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
+const gitEnvironment = {
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
+  LANG: "C.UTF-8",
+  PATH: "/usr/bin:/bin",
+};
 const cliManifest = JSON.parse(
   readFileSync(resolve(workspaceRoot, "apps/cli/package.json"), "utf8"),
 );
@@ -24,6 +30,7 @@ if (typeof cliManifest.version !== "string")
 const revision = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
   cwd: workspaceRoot,
   encoding: "utf8",
+  env: gitEnvironment,
   timeout: remainingIntegrationOperationMilliseconds(30_000),
 }).trim();
 const worktreeState = execFileSync(
@@ -32,6 +39,7 @@ const worktreeState = execFileSync(
   {
     cwd: workspaceRoot,
     encoding: "utf8",
+    env: gitEnvironment,
     timeout: remainingIntegrationOperationMilliseconds(30_000),
   },
 ).trim();

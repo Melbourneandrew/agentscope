@@ -41,6 +41,7 @@ type CapabilityState = {
 
 const totalLifecycleMilliseconds = 23 * 60 * 1000;
 const cleanupReserveMilliseconds = 60 * 1000;
+const settlementGraceMilliseconds = 5_000;
 const runTokenPattern = /^[a-f0-9]{16}$/u;
 const candidatePattern = /^sha256-[a-f0-9]{64}$/u;
 const artifactFiles = new Set([
@@ -151,7 +152,12 @@ const git = (workspaceRoot: string, arguments_: readonly string[]): string =>
   execFileSync("/usr/bin/git", [...arguments_], {
     cwd: workspaceRoot,
     encoding: "utf8",
-    env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+    env: {
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      LANG: "C.UTF-8",
+      PATH: "/usr/bin:/bin",
+    },
     timeout: 30_000,
   }).trim();
 
@@ -294,20 +300,51 @@ export const ownedIntegrationResources = (): Readonly<{
 export const settleAbortableOperation = async (
   remaining: number,
   operation: (signal: AbortSignal) => Promise<void>,
+  settlementGrace = settlementGraceMilliseconds,
 ): Promise<void> => {
-  if (!Number.isSafeInteger(remaining) || remaining < 1)
+  if (
+    !Number.isSafeInteger(remaining) ||
+    remaining < 1 ||
+    !Number.isSafeInteger(settlementGrace) ||
+    settlementGrace < 1
+  )
     throw new Error("integration.controller.deadline");
   const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, remaining);
-  try {
-    await operation(controller.signal);
-    if (controller.signal.aborted)
-      throw new Error("integration.controller.deadline");
-  } finally {
-    clearTimeout(timer);
+  let deadlineTimer: NodeJS.Timeout | undefined;
+  let graceTimer: NodeJS.Timeout | undefined;
+  const settled = Promise.resolve()
+    .then(() => operation(controller.signal))
+    .then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({ error, ok: false as const }),
+    );
+  const first = await Promise.race([
+    settled,
+    new Promise<undefined>((resolveDeadline) => {
+      deadlineTimer = setTimeout(() => {
+        controller.abort();
+        resolveDeadline(undefined);
+      }, remaining);
+    }),
+  ]);
+  if (deadlineTimer !== undefined) clearTimeout(deadlineTimer);
+  if (first !== undefined) {
+    if (!first.ok) throw first.error;
+    return;
   }
+  const terminal = await Promise.race([
+    settled,
+    new Promise<undefined>((resolveGrace) => {
+      graceTimer = setTimeout(() => {
+        resolveGrace(undefined);
+      }, settlementGrace);
+    }),
+  ]);
+  if (graceTimer !== undefined) clearTimeout(graceTimer);
+  if (terminal === undefined)
+    throw new Error("integration.controller.unsettled-operation");
+  if (!terminal.ok) throw terminal.error;
+  throw new Error("integration.controller.deadline");
 };
 
 const runCapabilityStage = async (
@@ -353,6 +390,15 @@ export const runIntegrationStages = async (
     await dependencies.runScenarios();
     await dependencies.maintainArtifacts();
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "integration.controller.unsettled-operation"
+    )
+      throw new IntegrationControllerFailure({
+        cleanupCause: error,
+        primaryCause: error,
+        retirementRequired: true,
+      });
     primaryCause = error;
   }
   let cleanupCause: unknown;

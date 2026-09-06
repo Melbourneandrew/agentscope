@@ -1,3 +1,4 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
@@ -10,8 +11,6 @@ import {
 } from "node:fs";
 import { resolve, sep } from "node:path";
 
-// Executable stage consumption is the intentional half of a private import cycle.
-// eslint-disable-next-line import-x/no-cycle
 import {
   ownedIntegrationResources,
   remainingIntegrationOperationMilliseconds,

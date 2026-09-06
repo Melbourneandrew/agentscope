@@ -1,3 +1,4 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -6,7 +7,6 @@ import {
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
 } from "./image-preparation.mjs";
-// eslint-disable-next-line import-x/no-cycle -- private executable capability
 import {
   integrationStageSignal,
   registerIntegrationArtifactFile,

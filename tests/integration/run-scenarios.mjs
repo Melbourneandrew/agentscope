@@ -1,3 +1,4 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -25,7 +26,6 @@ import {
   verifyPreparedCandidate,
 } from "./dist/index.js";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
-// eslint-disable-next-line import-x/no-cycle -- private executable capability
 import {
   integrationStageSignal,
   registerIntegrationRunIds,

@@ -1,3 +1,4 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -7,7 +8,6 @@ import {
   verifyManifestEvidence,
 } from "./dist/manifest.js";
 import { compileLocalSelection } from "./dist/operations.js";
-// eslint-disable-next-line import-x/no-cycle -- private executable capability
 import {
   registerIntegrationArtifactFile,
   requireDisposableOuterHostCapability,

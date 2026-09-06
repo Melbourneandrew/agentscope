@@ -1,7 +1,7 @@
+/* eslint import-x/no-cycle: "off" -- private executable capability */
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// eslint-disable-next-line import-x/no-cycle -- private executable capability
 import {
   registerIntegrationArtifactFile,
   requireDisposableOuterHostCapability,
