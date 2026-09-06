@@ -1,0 +1,11 @@
+provider: hetzner
+target: linux
+architecture: amd64
+os: ubuntu:24.04
+serverType: cx33
+lease:
+  ttl: 90m
+  idleTimeout: 20m
+actions:
+  workflow: .github/workflows/crabbox-hydrate.yml
+  job: hydrate

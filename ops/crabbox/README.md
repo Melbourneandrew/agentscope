@@ -37,8 +37,26 @@ hermetic setup and complete Harness Execution ADR-006 evidence; the substrate
 proof is not a test result.
 
 For a repository scenario, fleet control allocates the disposable guest,
-hydrates the exact checkout, and installs frozen dependencies. The built
-checkout has one public development entry:
+hydrates the exact checkout through `.github/workflows/crabbox-hydrate.yml`,
+and installs Node `22.14.0`, pnpm `9.15.0`, and frozen dependencies before any
+repository command starts. `.crabbox.yaml` pins the only supported guest to one
+Ubuntu 24.04 `cx33` with the existing 90-minute TTL and 20-minute idle timeout;
+the user config continues to own the coordinator URL and bearer.
+
+Fleet control must allocate a fresh explicit lease ID, hydrate it, and first run
+this content-free toolchain probe:
+
+```sh
+crabbox warmup --lease-id <fresh-cbx-id>
+crabbox actions hydrate --id <fresh-cbx-id>
+crabbox run --id <fresh-cbx-id> --no-hydrate --shell \
+  'test "$(node --version)" = "v22.14.0" && test "$(pnpm --version)" = "9.15.0"'
+crabbox stop --id <fresh-cbx-id>
+```
+
+The same explicit-ID sequence is required for a repository scenario. Omit
+`--no-hydrate` on its first `run` only when `actions hydrate` was not invoked
+separately. The hydrated checkout has one public development entry:
 
 ```sh
 AGENTSCOPE_INTEGRATION_EXECUTOR=crabbox AGENTSCOPE_INTEGRATION_FULL=1 pnpm test:integration
