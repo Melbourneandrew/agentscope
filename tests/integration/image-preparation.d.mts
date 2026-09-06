@@ -40,6 +40,7 @@ export interface PreparePinnedDockerImagesOptions {
       deadline: number;
       environment: Readonly<Record<string, string>>;
       input?: Buffer;
+      observeProcess?: (diagnostic: Readonly<Record<string, unknown>>) => void;
       signal?: AbortSignal;
       teardownMilliseconds: number;
     }>,
@@ -204,6 +205,7 @@ export declare const preparedDockerClientDiagnostic: (
       operationKind: string;
       identityDigests: Readonly<Record<string, string>>;
       process: Readonly<{
+        observed: boolean;
         exited: boolean;
         signaled: boolean;
         timedOut: boolean;

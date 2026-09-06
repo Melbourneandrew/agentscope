@@ -324,10 +324,14 @@ const runFixtureBuildx = async (
     cleanupLeak: boolean;
     createFailureCollision: boolean;
     createTimeoutAfterResources: boolean;
+    diagnosticObservations: boolean;
     unprovedContainment: boolean;
   },
   arguments_: readonly string[],
-  options: { input?: Buffer },
+  options: {
+    input?: Buffer;
+    observeProcess?: (diagnostic: Readonly<Record<string, unknown>>) => void;
+  },
 ) => {
   await Promise.resolve();
   state.calls.push({
@@ -335,6 +339,19 @@ const runFixtureBuildx = async (
     ...(options.input === undefined ? {} : { input: options.input }),
   });
   const command = arguments_[0];
+  const observe = (stderrClass = "unknown") => {
+    if (!state.diagnosticObservations) return;
+    options.observeProcess?.({
+      observed: true,
+      exited: true,
+      signaled: false,
+      timedOut: false,
+      joined: true,
+      outputBytes: command === "build" ? 23 : 0,
+      outputTruncated: false,
+      stderrClass,
+    });
+  };
   if (command === "create") {
     const builder = arguments_[arguments_.indexOf("--name") + 1];
     if (builder === undefined) throw new Error("missing builder name");
@@ -355,9 +372,16 @@ const runFixtureBuildx = async (
     }
     return builder;
   }
-  if (command === "inspect") return "fixture builder\n";
+  if (command === "inspect") {
+    observe();
+    return "fixture builder\n";
+  }
   if (command === "build") {
-    if (state.buildFailure) throw new Error("integration.images.command");
+    if (state.buildFailure) {
+      observe("build-failed");
+      throw new Error("integration.images.command");
+    }
+    observe();
     state.built = true;
     return "fixture build complete\n";
   }
@@ -369,6 +393,7 @@ const runFixtureBuildx = async (
     }
     state.builderContainer = undefined;
     if (!state.cleanupLeak) state.builderVolume = undefined;
+    observe("resource-conflict");
     return "";
   }
   throw new Error("unexpected buildx command");
@@ -383,6 +408,7 @@ const engineFixture = ({
   createdAt = new Date().toISOString(),
   createFailureCollision = false,
   createTimeoutAfterResources = false,
+  diagnosticObservations = false,
   daemonArchitecture = daemon.architecture,
   daemonSwitch = false,
   dockerDesktop = false,
@@ -406,6 +432,7 @@ const engineFixture = ({
   createdAt?: string;
   createFailureCollision?: boolean;
   createTimeoutAfterResources?: boolean;
+  diagnosticObservations?: boolean;
   daemonArchitecture?: string;
   daemonSwitch?: boolean;
   dockerDesktop?: boolean;
@@ -436,6 +463,7 @@ const engineFixture = ({
     cleanupLeak: boolean;
     createFailureCollision: boolean;
     createTimeoutAfterResources: boolean;
+    diagnosticObservations: boolean;
     imageDeleted: boolean;
     tagInspectionCount: number;
     unprovedContainment: boolean;
@@ -448,6 +476,7 @@ const engineFixture = ({
     cleanupLeak,
     createFailureCollision,
     createTimeoutAfterResources,
+    diagnosticObservations,
     imageDeleted: false,
     tagInspectionCount: 0,
     unprovedContainment,
@@ -1797,9 +1826,10 @@ describe("authenticated buildx consumption", () => {
             expectedResourceCount: 2,
             responseTruncated: false,
             process: {
+              observed: false,
               exited: false,
               signaled: false,
-              timedOut: false,
+              timedOut: expected === "integration.images.timeout",
               joined: false,
               outputBytes: 0,
               outputTruncated: false,
@@ -1859,6 +1889,53 @@ describe("authenticated buildx consumption", () => {
       }
     },
   );
+
+  it("preserves the first failed build observation across later reconciliation", async () => {
+    const engine = engineFixture({
+      buildFailure: true,
+      buildTag,
+      cleanupLeak: true,
+      diagnosticObservations: true,
+    });
+    const client = buildClient(engine);
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    await expect(
+      buildPreparedDockerImage(client, {
+        buildArguments: { BASE_IMAGE: image },
+        context: buildContext(),
+        dockerfile: "Dockerfile",
+        labels: {
+          "com.agentscope.integration": "true",
+          "com.agentscope.integration.run": "0123456789abcdef",
+        },
+        maximumMilliseconds: 4_000,
+        tag: buildTag,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientDiagnostic(client)).toMatchObject({
+      operationKind: "image-build",
+      outcome: "retired-failure",
+      process: {
+        observed: true,
+        exited: true,
+        signaled: false,
+        timedOut: false,
+        joined: true,
+        outputBytes: 23,
+        outputTruncated: false,
+        stderrClass: "build-failed",
+      },
+    });
+    expect(
+      engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+    ).toBe(true);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
 
   it("fences the client and private state when process-set absence is unproved", async () => {
     const engine = engineFixture({ buildTag, unprovedContainment: true });

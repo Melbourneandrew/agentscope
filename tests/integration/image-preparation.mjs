@@ -490,6 +490,7 @@ const runOwnedCommand = async (
       ? "absent"
       : processGroupState(processGroup, teardownDeadline);
     const processDiagnostic = Object.freeze({
+      observed: true,
       exited: result !== undefined && result.code !== null,
       signaled: result !== undefined && result.childSignal !== null,
       timedOut: failure?.code === "ETIMEDOUT",
@@ -2478,7 +2479,10 @@ const createBuildAuthority = async (client, policy, signal) => {
       environment: buildxEnvironment(client),
       input,
       observeProcess: (diagnostic) => {
-        authority.lastProcessDiagnostic = diagnostic;
+        authority.lastProcessObservation = Object.freeze({
+          operationKind: authority.currentOperationKind,
+          process: diagnostic,
+        });
       },
       signal,
       teardownMilliseconds: policy.teardownMilliseconds,
@@ -2736,6 +2740,30 @@ const settleBuilderBuild = async (authority, options, built, failed) => {
     throw fixedError("integration.images.containment");
   }
 };
+const unavailableProcessDiagnostic = (failure) =>
+  Object.freeze({
+    observed: false,
+    exited: false,
+    signaled: false,
+    timedOut: failure?.code === "ETIMEDOUT",
+    joined: false,
+    outputBytes: 0,
+    outputTruncated: false,
+    stderrClass: "unknown",
+  });
+const captureFirstBuildFailure = (authority, failure) => {
+  if (authority.firstFailureDiagnostic !== undefined) return;
+  authority.firstFailureDiagnostic = Object.freeze({
+    operationKind: authority.currentOperationKind,
+    process:
+      processDiagnostics.get(failure) ??
+      (authority.lastProcessObservation?.operationKind ===
+      authority.currentOperationKind
+        ? authority.lastProcessObservation.process
+        : undefined) ??
+      unavailableProcessDiagnostic(failure),
+  });
+};
 const recordPreparedDockerDiagnostic = (client, authority, labels, failure) => {
   if (preparedDockerClientDiagnostics.has(client)) return;
   const resources = builderResources(authority.builder);
@@ -2744,22 +2772,14 @@ const recordPreparedDockerDiagnostic = (client, authority, labels, failure) => {
     observedCount: 0,
     observedDigest: diagnosticDigest([]),
   };
-  const processDiagnostic = processDiagnostics.get(failure) ??
-    authority.lastProcessDiagnostic ?? {
-      exited: false,
-      signaled: false,
-      timedOut: false,
-      joined: false,
-      outputBytes: 0,
-      outputTruncated: false,
-      stderrClass: "unknown",
-    };
+  captureFirstBuildFailure(authority, failure);
+  const firstFailure = authority.firstFailureDiagnostic;
   preparedDockerClientDiagnostics.set(
     client,
     Object.freeze({
       diagnosticVersion: 1,
       stage: "builder-reconciliation",
-      operationKind: authority.currentOperationKind,
+      operationKind: firstFailure.operationKind,
       identityDigests: Object.freeze({
         daemon: diagnosticDigest(authority.daemon),
         builder: diagnosticDigest(authority.builder),
@@ -2772,7 +2792,7 @@ const recordPreparedDockerDiagnostic = (client, authority, labels, failure) => {
           labels["com.agentscope.integration.run"] ?? "unbound",
         ),
       }),
-      process: Object.freeze({ ...processDiagnostic }),
+      process: Object.freeze({ ...firstFailure.process }),
       responseBytes: observation.responseBytes,
       responseTruncated: false,
       expectedResourceCount: 2,
@@ -2842,6 +2862,7 @@ export const buildPreparedDockerImage = async (
     );
   } catch (error) {
     failure = error;
+    captureFirstBuildFailure(authority, error);
   }
   if (
     failure?.containmentProved === false ||
@@ -2865,6 +2886,7 @@ export const buildPreparedDockerImage = async (
     );
   } catch (error) {
     if (authority.requestCapable === true) {
+      captureFirstBuildFailure(authority, error);
       uncertainPreparedDockerClients.add(client);
       recordPreparedDockerDiagnostic(client, authority, labels, error);
     }
