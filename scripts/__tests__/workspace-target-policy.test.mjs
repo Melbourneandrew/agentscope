@@ -348,6 +348,9 @@ test("rejects missing cache metadata, remote runners, and unsafe cache widening"
         nx.namedInputs.production = [];
       },
       (nx) => {
+        nx.namedInputs.sharedGlobals.pop();
+      },
+      (nx) => {
         nx.neverConnectToCloud = false;
       },
       (nx) => {
@@ -417,29 +420,47 @@ test("a new workspace cannot inherit cache authority without explicit review", (
   }
 });
 
-test("GitHub release checks cannot consume Nx result-cache evidence", () => {
-  const workflow = parseYaml(
-    readFileSync(
-      join(repositoryRoot, ".github/workflows/pr-validation.yml"),
-      "utf8",
-    ),
-  );
+function assertWorkflowCacheBypass(workflow) {
   assert.equal(workflow.env?.NX_SKIP_NX_CACHE, "true");
   for (const job of ["quality", "unit"]) {
     assert.equal(workflow.jobs[job].env?.NX_SKIP_NX_CACHE, undefined);
+    for (const step of workflow.jobs[job].steps) {
+      assert.equal(step.env?.NX_SKIP_NX_CACHE, undefined);
+      assert.doesNotMatch(step.run ?? "", /NX_SKIP_NX_CACHE/u);
+    }
     const commands = workflow.jobs[job].steps
       .map((step) => step.run)
       .filter((command) => typeof command === "string")
       .join("\n");
     assert.match(commands, /pnpm (?:lint|test|coverage|build|typecheck)/u);
   }
-  assert.doesNotMatch(
-    readFileSync(
-      join(repositoryRoot, ".github/workflows/pr-validation.yml"),
-      "utf8",
-    ),
-    /\.nx\/cache|nx-cloud|nxCloud/iu,
+}
+
+test("GitHub release checks cannot consume Nx result-cache evidence", () => {
+  const workflowSource = readFileSync(
+    join(repositoryRoot, ".github/workflows/pr-validation.yml"),
+    "utf8",
   );
+  const workflow = parseYaml(workflowSource);
+  assertWorkflowCacheBypass(workflow);
+  assert.doesNotMatch(workflowSource, /\.nx\/cache|nx-cloud|nxCloud/iu);
+
+  for (const mutate of [
+    (copy) => {
+      copy.jobs.quality.env = { NX_SKIP_NX_CACHE: "false" };
+    },
+    (copy) => {
+      copy.jobs.unit.steps.at(-1).env = { NX_SKIP_NX_CACHE: "false" };
+    },
+    (copy) => {
+      copy.jobs.unit.steps.at(-1).run =
+        "NX_SKIP_NX_CACHE=false pnpm verify:native-candidate";
+    },
+  ]) {
+    const changed = structuredClone(workflow);
+    mutate(changed);
+    assert.throws(() => assertWorkflowCacheBypass(changed));
+  }
 });
 
 function createNxCacheFixture() {

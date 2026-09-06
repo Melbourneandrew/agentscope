@@ -37,6 +37,8 @@ const requiredSharedGlobals = Object.freeze([
   "{workspaceRoot}/scripts/clean-workspace.mjs",
   "{workspaceRoot}/scripts/code-quality-policy.mjs",
   "{workspaceRoot}/scripts/verify-code-quality-policy.mjs",
+  "{workspaceRoot}/scripts/acceptance-evidence.mjs",
+  "{workspaceRoot}/acceptance-evidence.json",
 ]);
 
 const requiredRuntimeEnvironment = Object.freeze([
@@ -156,10 +158,10 @@ function auditNxConfiguration(nx) {
     nx.nxCloudId === undefined && nx.tasksRunnerOptions === undefined,
     "nx remote or custom task runners are forbidden",
   );
-  const sharedGlobals = new Set(nx.namedInputs?.sharedGlobals ?? []);
-  for (const input of requiredSharedGlobals) {
-    assert(sharedGlobals.has(input), `nx sharedGlobals is missing ${input}`);
-  }
+  assert(
+    exactJson(nx.namedInputs?.sharedGlobals, requiredSharedGlobals),
+    "nx shared global inputs drifted",
+  );
   for (const target of mandatoryWorkspaceTargets) {
     assert(
       nx.targetDefaults?.[target] !== undefined,
