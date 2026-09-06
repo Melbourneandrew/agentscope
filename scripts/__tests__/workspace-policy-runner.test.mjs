@@ -22,6 +22,7 @@ import {
   discoverWorkspacePolicyInventory,
   executeVitestInvocation,
   inspectionFailureStages,
+  inspectGroupExistenceForTesting,
   inspectProcessAuthorityForTesting,
   main,
   parseDarwinBirthProbeForTesting,
@@ -93,6 +94,44 @@ test("a bounded Darwin probe overrun reports the original deadline crossing", ()
       "deadline-after",
   );
   assert.ok(observedTimeout > 0 && observedTimeout <= 100);
+});
+
+test("a zero-signal EPERM proves group presence without granting signal authority", () => {
+  const hardDeadline = performance.now() + 1_000;
+  const probes = [];
+  assert.equal(
+    inspectGroupExistenceForTesting(4242, hardDeadline, (pid, signal) => {
+      probes.push({ pid, signal });
+      const error = new Error("synthetic kernel detail must not escape");
+      Object.defineProperty(error, "code", { value: "EPERM" });
+      throw error;
+    }),
+    true,
+  );
+  assert.deepEqual(probes, [{ pid: 4242, signal: 0 }]);
+});
+
+test("group existence distinguishes ESRCH from genuine kernel ambiguity", () => {
+  const hardDeadline = performance.now() + 1_000;
+  assert.equal(
+    inspectGroupExistenceForTesting(4242, hardDeadline, () => {
+      const error = new Error("synthetic absence");
+      Object.defineProperty(error, "code", { value: "ESRCH" });
+      throw error;
+    }),
+    false,
+  );
+  assert.throws(
+    () =>
+      inspectGroupExistenceForTesting(4242, hardDeadline, () => {
+        const error = new Error("synthetic kernel detail must not escape");
+        Object.defineProperty(error, "code", { value: "EACCES" });
+        throw error;
+      }),
+    (error) =>
+      Object.getOwnPropertyDescriptor(error, "inspectionStage")?.value ===
+        "group-existence" && !error.message.includes("synthetic kernel detail"),
+  );
 });
 
 function createLifecycleHarness() {
