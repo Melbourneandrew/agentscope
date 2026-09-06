@@ -1,14 +1,11 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { loadWorkspacePackageGraph } from "./workspace-package-graph.mjs";
 
 const sourceExtension = /\.(?:[cm]?[jt]sx?)$/u;
 const testFile = /(?:^|\/)(?:__tests__\/|[^/]+\.(?:test|spec)\.)/u;
 const moduleReference =
   /\b(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']/gu;
-
-function readJson(path) {
-  return JSON.parse(readFileSync(path, "utf8"));
-}
 
 function walk(directory) {
   if (!existsSync(directory)) return [];
@@ -44,35 +41,6 @@ function sourceLines(paths) {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
-}
-
-function internalDependencies(manifest) {
-  return Object.keys({
-    ...manifest.dependencies,
-    ...manifest.optionalDependencies,
-    ...manifest.peerDependencies,
-    ...manifest.devDependencies,
-  }).filter((name) => name.startsWith("@agentscope/"));
-}
-
-function assertAcyclic(graph) {
-  const active = new Set();
-  const visited = new Set();
-  function visit(name, path) {
-    if (active.has(name)) {
-      throw new Error(
-        `Workspace dependency cycle: ${[...path, name].join(" -> ")}`,
-      );
-    }
-    if (visited.has(name)) return;
-    active.add(name);
-    for (const dependency of graph.get(name) ?? []) {
-      if (graph.has(dependency)) visit(dependency, [...path, name]);
-    }
-    active.delete(name);
-    visited.add(name);
-  }
-  for (const name of graph.keys()) visit(name, []);
 }
 
 function entryFiles(packageRoot, manifest) {
@@ -165,17 +133,15 @@ export function auditCodeQualityPolicy({
     "quality-policy.json must declare exactly every workspace package",
   );
 
-  const graph = new Map();
+  const { manifests } = loadWorkspacePackageGraph(
+    workspaceRoot,
+    expectedPackages,
+  );
   for (const [packagePath, expectedName] of expectedPackages) {
     const packageRoot = resolve(workspaceRoot, packagePath);
-    const manifest = readJson(join(packageRoot, "package.json"));
+    const manifest = manifests.get(expectedName).manifest;
     const packagePolicy = policy.packages[packagePath];
     assert(packagePolicy.role, `${packagePath} must declare a package role`);
-    assert(
-      manifest.name === expectedName,
-      `${packagePath} has an unexpected name`,
-    );
-    graph.set(expectedName, internalDependencies(manifest));
 
     const production = sourceFiles(packageRoot);
     const tests = testFiles(packageRoot);
@@ -242,6 +208,5 @@ export function auditCodeQualityPolicy({
       );
     }
   }
-  assertAcyclic(graph);
   return { packageCount: expectedPackages.size };
 }
