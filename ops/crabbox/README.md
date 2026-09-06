@@ -41,7 +41,7 @@ hydrates the exact checkout, and installs frozen dependencies. The built
 checkout has one public development entry:
 
 ```sh
-AGENTSCOPE_INTEGRATION_EXECUTOR=crabbox pnpm test:integration
+AGENTSCOPE_INTEGRATION_EXECUTOR=crabbox AGENTSCOPE_INTEGRATION_FULL=1 pnpm test:integration
 ```
 
 The repository controller does not allocate or authenticate the guest. It owns

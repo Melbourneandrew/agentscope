@@ -23,7 +23,7 @@ Fleet control allocates a disposable guest, hydrates the exact checkout, and
 installs frozen dependencies. From the built checkout it runs:
 
 ```sh
-AGENTSCOPE_INTEGRATION_EXECUTOR=crabbox pnpm test:integration
+AGENTSCOPE_INTEGRATION_EXECUTOR=crabbox AGENTSCOPE_INTEGRATION_FULL=1 pnpm test:integration
 ```
 
 The repository does not allocate, attest, or recycle the guest. The coordinator
