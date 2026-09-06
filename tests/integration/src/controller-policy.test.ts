@@ -1,7 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+
+import { runSupervisedProcess } from "../supervisor.mjs";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const manifest = (path: string) =>
@@ -70,6 +73,37 @@ describe("integration controller policy", () => {
     }
   });
 
+  it("kills and proves absence of descendants after the leader exits", async () => {
+    if (process.platform === "win32") return;
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-supervisor-"));
+    const evidence = resolve(directory, "descendant.pid");
+    try {
+      const result = await runSupervisedProcess({
+        arguments_: [
+          resolve(
+            workspaceRoot,
+            "tests/integration/fixtures/stubborn-controller-child.mjs",
+          ),
+        ],
+        environment: {
+          AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
+          LANG: "C.UTF-8",
+          PATH: "/usr/bin:/bin",
+        },
+        executable: process.execPath,
+        maximumMilliseconds: 5_000,
+        stdio: "ignore",
+      });
+      expect(result).toMatchObject({ code: 1, contained: true });
+      const descendant = Number(readFileSync(evidence, "utf8"));
+      expect(() => process.kill(descendant, 0)).toThrow(
+        expect.objectContaining({ code: "ESRCH" }),
+      );
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it("routes both CI phases through the same command", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -77,6 +111,12 @@ describe("integration controller policy", () => {
     );
     expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(2);
     expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
+    expect(
+      workflow.match(/NPM_CONFIG_GLOBALCONFIG: \/dev\/null/gu),
+    ).toHaveLength(2);
+    expect(
+      workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS/gu),
+    ).toHaveLength(2);
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,
     );

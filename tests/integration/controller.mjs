@@ -1,47 +1,31 @@
-import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 
-const maximumControllerMilliseconds = 24 * 60 * 1000;
-const forcedTerminationMilliseconds = 5_000;
-const child = spawn(
-  process.execPath,
-  [resolve(import.meta.dirname, "controller-process.mjs")],
-  {
-    detached: process.platform !== "win32",
-    env: process.env,
-    stdio: "inherit",
-  },
-);
-let forcedTimer;
-const terminate = () => {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32") child.kill("SIGTERM");
-  else process.kill(-child.pid, "SIGTERM");
-  forcedTimer = setTimeout(() => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    if (process.platform === "win32") child.kill("SIGKILL");
-    else process.kill(-child.pid, "SIGKILL");
-  }, forcedTerminationMilliseconds);
-};
-const deadlineTimer = setTimeout(terminate, maximumControllerMilliseconds);
-const forwardSignal = () => {
-  terminate();
-};
-process.once("SIGINT", forwardSignal);
-process.once("SIGTERM", forwardSignal);
-const result = await new Promise((resolveResult, rejectResult) => {
-  child.once("error", rejectResult);
-  child.once("close", (code, signal) => {
-    resolveResult({ code, signal });
-  });
-});
-clearTimeout(deadlineTimer);
-if (forcedTimer !== undefined) clearTimeout(forcedTimer);
-process.removeListener("SIGINT", forwardSignal);
-process.removeListener("SIGTERM", forwardSignal);
-if (result.code !== 0) {
-  process.stderr.write(
-    `${result.signal === null ? "integration.controller.failed" : "integration.controller.terminated"}\n`,
+import { runSupervisedProcess } from "./supervisor.mjs";
+
+const defaultMaximumControllerMilliseconds = 24 * 60 * 1000;
+const suppliedOuterDeadline =
+  process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS;
+let maximumControllerMilliseconds = defaultMaximumControllerMilliseconds;
+if (suppliedOuterDeadline !== undefined) {
+  if (!/^\d{13}$/u.test(suppliedOuterDeadline))
+    throw new Error("integration.controller.outer-deadline");
+  maximumControllerMilliseconds = Math.min(
+    maximumControllerMilliseconds,
+    Number(suppliedOuterDeadline) - Date.now(),
   );
-  process.exitCode = result.code ?? 1;
+}
+if (maximumControllerMilliseconds < 2 * 60 * 1000)
+  throw new Error("integration.controller.outer-deadline");
+
+const result = await runSupervisedProcess({
+  environment: process.env,
+  executable: process.execPath,
+  arguments_: [resolve(import.meta.dirname, "controller-process.mjs")],
+  maximumMilliseconds: maximumControllerMilliseconds,
+});
+if (result.code !== 0 || !result.contained) {
+  process.stderr.write(
+    `${result.contained ? "integration.controller.failed" : "integration.controller.containment"}\n`,
+  );
+  process.exitCode = result.code === 0 ? 1 : (result.code ?? 1);
 }

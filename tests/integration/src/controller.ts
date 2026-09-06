@@ -42,6 +42,7 @@ type CapabilityState = {
 const totalLifecycleMilliseconds = 23 * 60 * 1000;
 const cleanupReserveMilliseconds = 60 * 1000;
 const settlementGraceMilliseconds = 5_000;
+const supervisorReserveMilliseconds = 60 * 1000;
 const runTokenPattern = /^[a-f0-9]{16}$/u;
 const candidatePattern = /^sha256-[a-f0-9]{64}$/u;
 const artifactFiles = new Set([
@@ -129,6 +130,7 @@ const inferModeAndIdentity = (
       "GITHUB_RUN_ID",
       "GITHUB_SHA",
       "RUNNER_NAME",
+      "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS",
     ]);
     if (
       !/^\d+$/u.test(identity.GITHUB_RUN_ID!) ||
@@ -162,21 +164,19 @@ const git = (workspaceRoot: string, arguments_: readonly string[]): string =>
   }).trim();
 
 const hasCredentialGitState = (workspaceRoot: string): boolean => {
-  try {
+  const entries = git(workspaceRoot, ["config", "--local", "--null", "--list"])
+    .split("\0")
+    .filter(Boolean);
+  return entries.some((entry) => {
+    const newline = entry.indexOf("\n");
+    const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
+    const value = newline < 0 ? "" : entry.slice(newline + 1);
     return (
-      git(workspaceRoot, [
-        "config",
-        "--local",
-        "--get-regexp",
-        "^http\\..*\\.extraheader$",
-      ]).length > 0
+      /^(?:credential\.|http\.|include\.|includeif\.|url\.)/u.test(key) ||
+      key === "core.sshcommand" ||
+      /:\/\/[^/@\s]+@/u.test(value)
     );
-  } catch (error) {
-    const status = (error as NodeJS.ErrnoException & { status?: number })
-      .status;
-    if (status === 1) return false;
-    throw error;
-  }
+  });
 };
 
 const createBinding = (
@@ -190,7 +190,22 @@ const createBinding = (
     throw new Error("integration.controller.workspace-revision");
   if (hasCredentialGitState(workspaceRoot))
     throw new Error("integration.controller.git-credentials");
-  const deadlineMonotonicMilliseconds = now + totalLifecycleMilliseconds;
+  const suppliedOuterDeadline =
+    environment.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS;
+  let lifecycleMilliseconds = totalLifecycleMilliseconds;
+  if (suppliedOuterDeadline !== undefined) {
+    if (!/^\d{13}$/u.test(suppliedOuterDeadline))
+      throw new Error("integration.controller.outer-deadline");
+    lifecycleMilliseconds = Math.min(
+      lifecycleMilliseconds,
+      Number(suppliedOuterDeadline) -
+        Date.now() -
+        supervisorReserveMilliseconds,
+    );
+  }
+  if (lifecycleMilliseconds < 2 * cleanupReserveMilliseconds)
+    throw new Error("integration.controller.outer-deadline");
+  const deadlineMonotonicMilliseconds = now + lifecycleMilliseconds;
   const dockerEndpoint = "unix:///var/run/docker.sock" as const;
   const dockerEnvironment = Object.freeze({
     LANG: "C.UTF-8",

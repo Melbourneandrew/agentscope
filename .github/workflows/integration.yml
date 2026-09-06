@@ -32,8 +32,12 @@ jobs:
     env:
       GIT_CONFIG_GLOBAL: /dev/null
       GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_GLOBALCONFIG: /dev/null
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       NPM_CONFIG_USERCONFIG: /dev/null
     steps:
+      - name: Establish job-scoped integration deadline
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS=$(( $(date +%s) * 1000 + 1200000 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -66,10 +70,12 @@ jobs:
     name: Hermetic shard ${{ matrix.shard.name }} replay ${{ matrix.replay }}
     needs: prepare-candidate
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       GIT_CONFIG_GLOBAL: /dev/null
       GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_GLOBALCONFIG: /dev/null
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
       NPM_CONFIG_USERCONFIG: /dev/null
     strategy:
       fail-fast: false
@@ -79,6 +85,8 @@ jobs:
             name: 0-of-1
         replay: [1, 2]
     steps:
+      - name: Establish job-scoped integration deadline
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS=$(( $(date +%s) * 1000 + 1200000 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
