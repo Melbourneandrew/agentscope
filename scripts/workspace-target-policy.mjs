@@ -289,6 +289,10 @@ export function auditWorkspaceTargets({ workspaceRoot, expectedPackages }) {
   for (const [relativePath, expectedName] of expectedPackages) {
     const manifestPath = resolve(workspaceRoot, relativePath, "package.json");
     assert(
+      !existsSync(resolve(workspaceRoot, relativePath, "project.json")),
+      `${relativePath} must not add a second Nx project configuration`,
+    );
+    assert(
       existsSync(manifestPath),
       `Missing workspace manifest: ${relativePath}`,
     );

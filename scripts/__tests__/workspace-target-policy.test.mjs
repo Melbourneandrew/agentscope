@@ -430,6 +430,28 @@ test("a new workspace cannot inherit cache authority without explicit review", (
   }
 });
 
+test("a project.json cannot override the audited package target authority", () => {
+  const root = createFixture();
+  try {
+    writeFileSync(
+      join(root, "packages/protocol/project.json"),
+      JSON.stringify({ targets: { test: { cache: true, inputs: [] } } }),
+    );
+    assert.throws(
+      () =>
+        auditWorkspaceTargets({
+          workspaceRoot: root,
+          expectedPackages: new Map([
+            ["packages/protocol", "@agentscope/protocol"],
+          ]),
+        }),
+      /must not add a second Nx project configuration/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function assertWorkflowCacheBypass(workflow) {
   assert.equal(workflow.env?.NX_SKIP_NX_CACHE, "true");
   for (const job of ["quality", "unit"]) {
