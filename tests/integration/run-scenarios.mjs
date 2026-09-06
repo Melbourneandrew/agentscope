@@ -16,6 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 
 import {
@@ -48,6 +49,7 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   integrationStageSignal,
   registerIntegrationFailureEvidence,
+  registerIntegrationHeadlessReceipt,
   registerIntegrationRunIds,
   requireIntegrationFailureEvidence,
   remainingIntegrationOperationMilliseconds,
@@ -154,6 +156,11 @@ if (
   pointer.candidateRevision !== candidate.candidateRevision
 )
   throw new Error("integration.isolation.inputs");
+const cliArtifact = candidate.artifacts.find(
+  ({ id }) => id === "agentscope-cli",
+);
+if (cliArtifact === undefined)
+  throw new Error("integration.isolation.candidate-artifact");
 
 let preparedDockerClient;
 const docker = async (
@@ -250,6 +257,31 @@ const stageBuildContext = (plan) => {
     [
       "testkit/platform-fixture.js",
       resolve(workspaceRoot, "packages/testkit/dist/platform-fixture.js"),
+    ],
+    [
+      "testkit/headless-supervisor.js",
+      resolve(workspaceRoot, "packages/testkit/dist/headless-supervisor.js"),
+    ],
+    [
+      "testkit/headless-supervisor-contract.js",
+      resolve(
+        workspaceRoot,
+        "packages/testkit/dist/headless-supervisor-contract.js",
+      ),
+    ],
+    [
+      "testkit/headless-supervisor-kernel.js",
+      resolve(
+        workspaceRoot,
+        "packages/testkit/dist/headless-supervisor-kernel.js",
+      ),
+    ],
+    [
+      "testkit/internal/headless-supervisor-backend.js",
+      resolve(
+        workspaceRoot,
+        "packages/testkit/dist/internal/headless-supervisor-backend.js",
+      ),
     ],
     [
       "capability-manifest.json",
@@ -360,6 +392,39 @@ const assertContainer = async (
 
 const fixtureResults = new Map();
 const scenarioOutcomes = new Map();
+const fingerprintHeadlessRequest = (request) =>
+  `sha256:${createHash("sha256")
+    .update(JSON.stringify(request))
+    .digest("hex")}`;
+const linuxBootMonotonicMilliseconds = () => {
+  const source = readFileSync("/proc/uptime", "utf8");
+  if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
+    throw new Error("integration.isolation.headless-clock");
+  const value = Number(source.split(/\s/u, 1)[0]) * 1_000;
+  if (!Number.isFinite(value) || value < 0)
+    throw new Error("integration.isolation.headless-clock");
+  return value;
+};
+const expectedHeadlessEnvironment = (plan) => ({
+  AGENTSCOPE_HOME: "/agentscope-home",
+  AGENTSCOPE_CANDIDATE_ROOT: "/opt/agentscope/prepared",
+  AGENTSCOPE_COLLECTOR_URL: "http://collector:4318",
+  AGENTSCOPE_INGESTION_URL: "http://collector:4318",
+  AGENTSCOPE_LEDGER: "/ledger",
+  AGENTSCOPE_MODEL_SERVER_URL: "http://mockserver:1080",
+  AGENTSCOPE_RETRIEVAL_URL: "http://retrieval:4319",
+  AGENTSCOPE_SCENARIO_ID: plan.scenarioId,
+  AGENTSCOPE_WORKTREE: "/worktree",
+  HARNESS_HOME: "/harness-home",
+  HOME: "/home/agentscope",
+  LANG: "C.UTF-8",
+  NO_COLOR: "1",
+  PATH: "/usr/local/bin:/usr/bin:/bin",
+  XDG_CONFIG_HOME: "/harness-home",
+  ...(testMode === undefined
+    ? {}
+    : { AGENTSCOPE_INTEGRATION_TEST_MODE: testMode }),
+});
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
 const activateRuns = async (plans) => {
@@ -408,6 +473,92 @@ const captureFixtureResult = (output, plan) => {
     ),
   );
   return true;
+};
+const headlessRequestMatches = (receipt, plan) =>
+  receipt.request?.runId === plan.runId &&
+  receipt.request.executable === "/usr/local/bin/node" &&
+  JSON.stringify(receipt.request.arguments) ===
+    JSON.stringify([
+      "/opt/agentscope/platform-fixture.mjs",
+      "--artifact",
+      `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
+    ]) &&
+  receipt.request.cwd === "/opt/agentscope" &&
+  JSON.stringify(receipt.request.environment) ===
+    JSON.stringify(expectedHeadlessEnvironment(plan)) &&
+  receipt.request.stdinBase64 === "" &&
+  receipt.request.stdoutLimitBytes === 1024 * 1024 &&
+  receipt.request.stderrLimitBytes === 1024 * 1024 &&
+  receipt.request.monotonicShutdownDeadlineMs ===
+    receipt.translationLocalAtMs +
+      (receipt.outerMonotonicDeadlineMs - receipt.translationBootAtMs) &&
+  receipt.request.monotonicExecutionDeadlineMs ===
+    receipt.request.monotonicShutdownDeadlineMs - 5_000 &&
+  receipt.request.monotonicStartupDeadlineMs ===
+    Math.min(
+      receipt.requestConstructedAtMs + 10_000,
+      receipt.request.monotonicShutdownDeadlineMs - 5_000,
+    ) &&
+  receipt.request.terminationGraceMs === 1_000 &&
+  receipt.returnedAtMs <= receipt.request.monotonicShutdownDeadlineMs &&
+  receipt.requestFingerprint === fingerprintHeadlessRequest(receipt.request);
+const captureHeadlessReceipt = (output, plan, expected) => {
+  const line = output
+    .split("\n")
+    .filter((candidate) => candidate.startsWith("AGENTSCOPE_HEADLESS_RECEIPT="))
+    .at(-1);
+  if (line === undefined || line.length > 16_384)
+    throw new Error("integration.isolation.headless-receipt");
+  let receipt;
+  try {
+    receipt = JSON.parse(
+      Buffer.from(
+        line.slice("AGENTSCOPE_HEADLESS_RECEIPT=".length),
+        "base64url",
+      ).toString("utf8"),
+    );
+  } catch {
+    throw new Error("integration.isolation.headless-receipt");
+  }
+  if (
+    Object.keys(receipt).sort().join(",") !==
+      [
+        "cleanup",
+        "exitCode",
+        "outcome",
+        "outerMonotonicDeadlineMs",
+        "processJoined",
+        "request",
+        "requestConstructedAtMs",
+        "receiptVersion",
+        "requestFingerprint",
+        "residualProcessCount",
+        "returnedAtMs",
+        "runId",
+        "signal",
+        "stderrJoined",
+        "stdinJoined",
+        "stdoutJoined",
+        "translationBootAtMs",
+        "translationLocalAtMs",
+      ]
+        .sort()
+        .join(",") ||
+    receipt.receiptVersion !== 1 ||
+    receipt.runId !== plan.runId ||
+    receipt.outerMonotonicDeadlineMs !== expected.outerMonotonicDeadline ||
+    linuxBootMonotonicMilliseconds() >= expected.outerMonotonicDeadline ||
+    !Number.isFinite(receipt.translationBootAtMs) ||
+    !Number.isFinite(receipt.translationLocalAtMs) ||
+    !Number.isFinite(receipt.requestConstructedAtMs) ||
+    !Number.isFinite(receipt.returnedAtMs) ||
+    receipt.translationBootAtMs < 0 ||
+    receipt.translationLocalAtMs < 0 ||
+    receipt.requestConstructedAtMs < receipt.translationLocalAtMs ||
+    !headlessRequestMatches(receipt, plan)
+  )
+    throw new Error("integration.isolation.headless-receipt");
+  return Object.freeze(receipt);
 };
 const preparedImageFor = async (image, signal) => {
   if (
@@ -652,6 +803,14 @@ const startMockServer = async (plan, signal) => {
   });
 };
 const runScenario = async (plan, signal) => {
+  const remainingOuterMilliseconds = Math.min(
+    scenarioTimeoutMilliseconds,
+    capability.binding.cleanupStartMonotonicMilliseconds - performance.now(),
+  );
+  if (remainingOuterMilliseconds < 40_000)
+    throw new Error("integration.isolation.headless-authority");
+  const outerMonotonicDeadline =
+    linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
   const testModeArguments =
     testMode === undefined
       ? []
@@ -689,6 +848,10 @@ const runScenario = async (plan, signal) => {
       "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
       "--env",
       `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      "--env",
+      `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
+      "--env",
+      `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
       ...testModeArguments,
       plan.imageTag,
     ],
@@ -711,10 +874,34 @@ const runScenario = async (plan, signal) => {
       signal,
       { mutationCapable: true },
     );
-    if (!captureFixtureResult(stdout, plan))
-      throw new Error("integration.isolation.fixture-result");
+    const receipt = captureHeadlessReceipt(stdout, plan, {
+      outerMonotonicDeadline,
+    });
+    registerIntegrationHeadlessReceipt(receipt, performance.now());
+    return {
+      receipt,
+      succeeded:
+        receipt.outcome === "exited" &&
+        receipt.exitCode === 0 &&
+        receipt.signal === null &&
+        receipt.cleanup === "clean" &&
+        receipt.residualProcessCount === 0 &&
+        receipt.processJoined === true &&
+        receipt.stdinJoined === true &&
+        receipt.stdoutJoined === true &&
+        receipt.stderrJoined === true &&
+        captureFixtureResult(stdout, plan),
+    };
   } catch (error) {
-    captureFixtureResult(`${error?.stdout ?? ""}`, plan);
+    const output = `${error?.stdout ?? ""}`;
+    captureFixtureResult(output, plan);
+    if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
+      const receipt = captureHeadlessReceipt(output, plan, {
+        outerMonotonicDeadline,
+      });
+      registerIntegrationHeadlessReceipt(receipt, performance.now());
+      return { receipt, succeeded: false };
+    }
     throw error;
   }
 };

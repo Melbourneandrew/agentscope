@@ -1,6 +1,7 @@
 import type {
   HeadlessCanonicalTraceEnvelope,
   HeadlessExecutionRequest,
+  HeadlessExecutionTrace,
   HeadlessObserverScenario,
 } from "./headless-supervisor-contract.js";
 import {
@@ -10,6 +11,7 @@ import {
 } from "./headless-supervisor.js";
 import {
   executeWithHeadlessSupervisorCapability,
+  executeSelectedHeadlessProcessWithCapability,
   readHeadlessSupervisorKernelErrorCode,
 } from "./internal/headless-supervisor-backend.js";
 
@@ -29,6 +31,30 @@ export const executeBoundedHeadlessSupervisor = async (
     return await executeWithHeadlessSupervisorCapability(
       capability,
       scenario,
+      request,
+      options,
+    );
+  } catch (error: unknown) {
+    throw new HeadlessSupervisorError(
+      readHeadlessSupervisorKernelErrorCode(error) ??
+        "testkit.headless.kernel.failure",
+    );
+  }
+};
+
+/**
+ * Executes a production request through a capability that was already selected
+ * by the trusted isolation runner. The caller can consume but cannot mint that
+ * capability or substitute backend operations.
+ */
+export const executeSelectedHeadlessProcess = async (
+  capability: HeadlessSupervisorCapability,
+  request: HeadlessExecutionRequest,
+  options: HeadlessSupervisorExecutionOptions = {},
+): Promise<HeadlessExecutionTrace> => {
+  try {
+    return await executeSelectedHeadlessProcessWithCapability(
+      capability,
       request,
       options,
     );

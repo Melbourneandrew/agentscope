@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 import type { CandidateEvidence } from "./artifacts.js";
@@ -231,6 +233,81 @@ const cleanupEvidenceSchema = z
     )
       context.addIssue({ code: "custom", message: "cleanup evidence drift" });
   });
+const headlessRequestSchema = z
+  .strictObject({
+    runId: runToken,
+    executable: z.string().startsWith("/").max(16_384),
+    arguments: z.array(z.string().max(16_384)).max(256),
+    cwd: z.string().startsWith("/").max(16_384),
+    environment: z.record(z.string().max(128), z.string().max(16_384)),
+    stdinBase64: z.string().max(1_398_104),
+    stdoutLimitBytes: z.number().int().positive().max(1_048_576),
+    stderrLimitBytes: z.number().int().positive().max(1_048_576),
+    monotonicStartupDeadlineMs: z.number().finite().nonnegative(),
+    monotonicExecutionDeadlineMs: z.number().finite().positive(),
+    monotonicShutdownDeadlineMs: z.number().finite().positive(),
+    terminationGraceMs: z.number().int().nonnegative().max(60_000),
+  })
+  .superRefine((value, context) => {
+    if (
+      Object.keys(value.environment).length > 128 ||
+      Object.keys(value.environment).some(
+        (key) => !/^[A-Z][A-Z0-9_]{0,127}$/u.test(key),
+      ) ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+        value.stdinBase64,
+      ) ||
+      Buffer.from(value.stdinBase64, "base64").byteLength > 1_048_576
+    )
+      context.addIssue({ code: "custom", message: "headless request drift" });
+  });
+const headlessTerminalReceiptSchema = z
+  .strictObject({
+    receiptVersion: z.literal(1),
+    runId: runToken,
+    requestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+    outerMonotonicDeadlineMs: z.number().finite().positive(),
+    requestConstructedAtMs: z.number().finite().nonnegative(),
+    translationBootAtMs: z.number().finite().nonnegative(),
+    translationLocalAtMs: z.number().finite().nonnegative(),
+    request: headlessRequestSchema,
+    returnedAtMs: z.number().finite().nonnegative(),
+    outcome: z.enum(["exited", "output-limit", "timed-out", "cleanup-failed"]),
+    exitCode: z.number().int().nullable(),
+    signal: z.enum(["SIGTERM", "SIGKILL"]).nullable(),
+    cleanup: z.enum(["clean", "residual", "uncertain"]),
+    residualProcessCount: z.number().int().nonnegative().max(256),
+    processJoined: z.boolean(),
+    stdinJoined: z.boolean(),
+    stdoutJoined: z.boolean(),
+    stderrJoined: z.boolean(),
+  })
+  .superRefine((value, context) => {
+    const requestFingerprint = `sha256:${createHash("sha256")
+      .update(JSON.stringify(value.request))
+      .digest("hex")}`;
+    if (
+      value.request.runId !== value.runId ||
+      value.requestFingerprint !== requestFingerprint ||
+      value.request.monotonicStartupDeadlineMs >
+        value.request.monotonicExecutionDeadlineMs ||
+      value.request.monotonicExecutionDeadlineMs +
+        value.request.terminationGraceMs >=
+        value.request.monotonicShutdownDeadlineMs ||
+      value.request.monotonicShutdownDeadlineMs !==
+        value.translationLocalAtMs +
+          (value.outerMonotonicDeadlineMs - value.translationBootAtMs) ||
+      value.outerMonotonicDeadlineMs <= value.translationBootAtMs ||
+      value.requestConstructedAtMs < value.translationLocalAtMs ||
+      value.request.monotonicStartupDeadlineMs !==
+        Math.min(
+          value.requestConstructedAtMs + 10_000,
+          value.request.monotonicShutdownDeadlineMs - 5_000,
+        ) ||
+      value.returnedAtMs > value.request.monotonicShutdownDeadlineMs
+    )
+      context.addIssue({ code: "custom", message: "headless receipt drift" });
+  });
 
 export interface IsolationPlan {
   readonly runId: string;
@@ -258,6 +335,9 @@ export interface IsolationPlan {
 export type IsolationExecutionPolicy = z.infer<typeof executionPolicySchema>;
 export type IsolationCleanupInventory = z.infer<typeof cleanupInventorySchema>;
 export type PreparedImageIdentity = z.infer<typeof preparedImageIdentitySchema>;
+export type HeadlessTerminalReceipt = z.infer<
+  typeof headlessTerminalReceiptSchema
+>;
 export interface PreparedImageAuthority {
   readonly baseImageIdentity: PreparedImageIdentity;
   readonly mockServerImageIdentity: PreparedImageIdentity;
@@ -289,6 +369,7 @@ const isolationEvidenceSchema = z
       ),
     executionPolicy: executionPolicySchema,
     cleanup: cleanupEvidenceSchema,
+    headlessTerminalReceipt: headlessTerminalReceiptSchema.nullable(),
     outcome: z.enum(["passed", "failed", "interrupted"]),
   })
   .superRefine((value, context) => {
@@ -308,7 +389,21 @@ const isolationEvidenceSchema = z
         value.builtImageDigest === null) ||
       (value.outcome === "passed" &&
         (value.builtImageDigest === null ||
-          value.builtMockServerImageDigest === null))
+          value.builtMockServerImageDigest === null ||
+          value.headlessTerminalReceipt === null ||
+          value.headlessTerminalReceipt.outcome !== "exited" ||
+          value.headlessTerminalReceipt.exitCode !== 0 ||
+          value.headlessTerminalReceipt.signal !== null ||
+          value.headlessTerminalReceipt.cleanup !== "clean" ||
+          value.headlessTerminalReceipt.residualProcessCount !== 0 ||
+          !value.headlessTerminalReceipt.processJoined ||
+          !value.headlessTerminalReceipt.stdinJoined ||
+          !value.headlessTerminalReceipt.stdoutJoined ||
+          !value.headlessTerminalReceipt.stderrJoined)) ||
+      (value.headlessTerminalReceipt !== null &&
+        (value.headlessTerminalReceipt.runId !== value.runId ||
+          value.headlessTerminalReceipt.returnedAtMs >
+            value.headlessTerminalReceipt.request.monotonicShutdownDeadlineMs))
     )
       context.addIssue({ code: "custom", message: "evidence binding drift" });
   });
@@ -329,7 +424,12 @@ export interface IsolationDriver {
   startCollector(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startRetrieval(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
-  runScenario(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  runScenario(
+    plan: IsolationPlan,
+    signal: AbortSignal,
+  ): Promise<
+    Readonly<{ receipt: HeadlessTerminalReceipt; succeeded: boolean }>
+  >;
   recordEvidence(evidence: IsolationEvidence): Promise<void>;
   removeContainer(name: string): Promise<void>;
   removeNetwork(name: string): Promise<void>;
@@ -486,6 +586,7 @@ export const executeIsolationPlan = async (
   let imageDigest: string | undefined;
   let mockServerImageDigest: string | undefined;
   let failure: unknown;
+  let headlessTerminalReceipt: HeadlessTerminalReceipt | null = null;
   let workOutcome: IsolationEvidence["outcome"];
   try {
     executionPolicy = compileIsolationExecutionPolicy(
@@ -508,7 +609,12 @@ export const executeIsolationPlan = async (
     await driver.startCollector(plan, signal);
     await driver.startRetrieval(plan, signal);
     await driver.startMockServer(plan, signal);
-    await driver.runScenario(plan, signal);
+    const scenarioResult = await driver.runScenario(plan, signal);
+    headlessTerminalReceipt = headlessTerminalReceiptSchema.parse(
+      scenarioResult.receipt,
+    );
+    if (!scenarioResult.succeeded)
+      throw new Error("integration.isolation.scenario-failed");
     workOutcome = "passed";
   } catch (error) {
     failure = error;
@@ -562,6 +668,7 @@ export const executeIsolationPlan = async (
         removalFailureCount,
         remaining: cleanupInventory,
       },
+      headlessTerminalReceipt,
       outcome: workOutcome,
     },
     {

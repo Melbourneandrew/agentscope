@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   failureEvidenceCoverageIsExact,
+  headlessReceiptFitsOuterAuthority,
   runIntegrationStages,
   settleAbortableOperation,
 } from "./controller.js";
@@ -47,6 +48,44 @@ describe("integration failure evidence coverage", () => {
         [first, second],
         [first],
         [first, "aaaaaaaaaaaaaaaa"],
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("headless terminal receipt authority", () => {
+  const runId = "0123456789abcdef";
+  const receipt = {
+    runId,
+    requestFingerprint: `sha256:${"a".repeat(64)}`,
+    returnedAtMs: 90,
+    request: { monotonicShutdownDeadlineMs: 100 },
+  };
+
+  it("requires an earlier exact run-bound terminal receipt", () => {
+    expect(
+      headlessReceiptFitsOuterAuthority(receipt, 90, 101, new Set([runId])),
+    ).toBe(true);
+    expect(
+      headlessReceiptFitsOuterAuthority(receipt, 100, 100, new Set([runId])),
+    ).toBe(false);
+    expect(
+      headlessReceiptFitsOuterAuthority(
+        { ...receipt, returnedAtMs: 101 },
+        90,
+        102,
+        new Set([runId]),
+      ),
+    ).toBe(false);
+    expect(headlessReceiptFitsOuterAuthority(receipt, 90, 101, new Set())).toBe(
+      false,
+    );
+    expect(
+      headlessReceiptFitsOuterAuthority(
+        { ...receipt, requestFingerprint: `sha256:${"b".repeat(63)}` },
+        90,
+        101,
+        new Set([runId]),
       ),
     ).toBe(false);
   });
