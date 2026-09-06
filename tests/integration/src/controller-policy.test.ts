@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -85,6 +86,13 @@ describe("integration controller policy", () => {
       'resolve(privateStorageParent, "agentscope-integration-controller-")',
     );
     expect(source).toContain("rootMode: 0o700");
+  });
+
+  it("does not retain workstation-local substrate evidence", () => {
+    const evidenceRoot = resolve(workspaceRoot, "tests/integration/evidence");
+    expect(existsSync(evidenceRoot) ? readdirSync(evidenceRoot) : []).toEqual(
+      [],
+    );
   });
 
   it("retains narrow cleanup ceilings for controller-owned artifacts", () => {
