@@ -33,6 +33,7 @@ import {
   IMAGE_PREPARATION_LIMITS,
   IMAGE_PREPARATION_EXECUTION_POLICY,
   prepareDockerInvocation,
+  preparedDockerClientRequiresOuterHostRetirement,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
   probePinnedRegistryTlsForTesting,
@@ -226,17 +227,15 @@ const daemon = Object.freeze({
   id: "fixture-daemon",
   serverVersion: "fixture-server",
   apiVersion: "1.50",
+  product: "Docker Engine - Community",
+  operatingSystem: "Ubuntu 24.04 LTS",
   osType: "linux",
   architecture: "amd64",
 });
 const version = JSON.stringify({
   Version: daemon.serverVersion,
   ApiVersion: daemon.apiVersion,
-});
-const info = JSON.stringify({
-  ID: daemon.id,
-  OSType: daemon.osType,
-  Architecture: daemon.architecture,
+  Platform: { Name: daemon.product },
 });
 const local = JSON.stringify({
   Id: configDigest,
@@ -370,7 +369,9 @@ const engineFixture = ({
   createdAt = new Date().toISOString(),
   createFailureCollision = false,
   createTimeoutAfterResources = false,
+  daemonArchitecture = daemon.architecture,
   daemonSwitch = false,
+  dockerDesktop = false,
   lateTagAfterDelete = false,
   localValue = local,
   localInitiallyPresent = true,
@@ -391,7 +392,9 @@ const engineFixture = ({
   createdAt?: string;
   createFailureCollision?: boolean;
   createTimeoutAfterResources?: boolean;
+  daemonArchitecture?: string;
   daemonSwitch?: boolean;
+  dockerDesktop?: boolean;
   lateTagAfterDelete?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
@@ -436,13 +439,23 @@ const engineFixture = ({
     unprovedContainment,
   };
   // One stateful endpoint matrix intentionally models cross-request races.
-  // eslint-disable-next-line complexity
+  // eslint-disable-next-line complexity, max-lines-per-function -- one stateful daemon lifecycle fixture
   const request = async (entry: Request): Promise<Response> => {
     await Promise.resolve();
     requests.push(entry);
     if (entry.signal?.aborted)
       throw new Error("integration.images.interrupted");
-    if (entry.path === "/version") return { statusCode: 200, body: version };
+    if (entry.path === "/version")
+      return {
+        statusCode: 200,
+        body: dockerDesktop
+          ? JSON.stringify({
+              Version: daemon.serverVersion,
+              ApiVersion: daemon.apiVersion,
+              Platform: { Name: "Docker Desktop" },
+            })
+          : version,
+      };
     if (entry.path === "/v1.50/info") {
       infoCount += 1;
       return {
@@ -451,10 +464,23 @@ const engineFixture = ({
           daemonSwitch && infoCount > 1
             ? JSON.stringify({
                 ID: "other-daemon",
+                OperatingSystem: daemon.operatingSystem,
                 OSType: "linux",
-                Architecture: "amd64",
+                Architecture: daemonArchitecture,
               })
-            : info,
+            : dockerDesktop
+              ? JSON.stringify({
+                  ID: daemon.id,
+                  OperatingSystem: "Docker Desktop",
+                  OSType: daemon.osType,
+                  Architecture: daemonArchitecture,
+                })
+              : JSON.stringify({
+                  ID: daemon.id,
+                  OperatingSystem: daemon.operatingSystem,
+                  OSType: daemon.osType,
+                  Architecture: daemonArchitecture,
+                }),
       };
     }
     if (
@@ -732,7 +758,7 @@ describe("subprocess-free pinned image preparation", () => {
 
   it("admits only the closed disposable-Linux host defaults", () => {
     expect(IMAGE_PREPARATION_EXECUTION_POLICY).toEqual({
-      platform: "linux",
+      platform: { os: "linux", architecture: "amd64", variant: "" },
       socket: "/var/run/docker.sock",
       dockerExecutables: ["/usr/bin/docker"],
       buildxExecutables: [
@@ -743,6 +769,15 @@ describe("subprocess-free pinned image preparation", () => {
     expect(JSON.stringify(IMAGE_PREPARATION_EXECUTION_POLICY)).not.toMatch(
       /Docker\.app|homebrew|\/usr\/local|\.docker\/run/u,
     );
+  });
+
+  it("rejects Docker Desktop even when it presents the Linux socket shape", async () => {
+    await expect(
+      preparePinnedDockerImages(
+        [image],
+        options(engineFixture({ dockerDesktop: true })),
+      ),
+    ).rejects.toThrow("integration.images.daemon");
   });
 
   it("rejects a self-signed registry despite ambient TLS disablement", async () => {
@@ -810,7 +845,23 @@ describe("Engine image reconciliation", () => {
       engine.requests.filter(({ method }) => method === "POST"),
     ).toHaveLength(1);
     expect(engine.requests.find(({ method }) => method === "POST")?.path).toBe(
-      `/v1.50/images/create?fromImage=fixture&tag=${encodeURIComponent(image.split("@")[1]!)}`,
+      `/v1.50/images/create?fromImage=fixture&tag=${encodeURIComponent(image.split("@")[1]!)}&platform=linux%2Famd64`,
+    );
+  });
+
+  it("selects and pulls the canonical platform instead of the daemon architecture", async () => {
+    const engine = engineFixture({
+      daemonArchitecture: "arm64",
+      localInitiallyPresent: false,
+    });
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).resolves.toMatchObject({
+      dockerDaemon: { architecture: "arm64" },
+      images: [{ platform: { os: "linux", architecture: "amd64" } }],
+    });
+    expect(engine.requests.find(({ method }) => method === "POST")?.path).toBe(
+      `/v1.50/images/create?fromImage=fixture&tag=${encodeURIComponent(image.split("@")[1]!)}&platform=linux%2Famd64`,
     );
   });
 
@@ -841,7 +892,7 @@ describe("Engine image reconciliation", () => {
     ).toHaveLength(2);
   });
 
-  it("reconciles only on a later attempt after a completed pull response is lost", async () => {
+  it("never adopts a completed pull whose response was lost", async () => {
     const engine = engineFixture({
       localInitiallyPresent: false,
       pullCompletesThenDisconnect: true,
@@ -849,9 +900,6 @@ describe("Engine image reconciliation", () => {
     await expect(
       preparePinnedDockerImages([image], options(engine)),
     ).rejects.toThrow("integration.images.daemon-uncertain");
-    await expect(
-      preparePinnedDockerImages([image], options(engine)),
-    ).resolves.toMatchObject({ images: [{ image, configDigest }] });
     expect(
       engine.requests.filter(({ method }) => method === "POST"),
     ).toHaveLength(1);
@@ -1102,6 +1150,39 @@ describe("prepared image runtime admission and publication", () => {
     } finally {
       closePreparedDockerClient(client);
     }
+  });
+
+  it("uses only the controller-supplied closed Docker environment", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const dockerEnvironment = {
+      DOCKER_HOST: "unix:///var/run/docker.sock",
+      LANG: "C.UTF-8",
+      PATH: "/usr/bin:/bin",
+    };
+    const client = createPreparedDockerClient(admitted, {
+      dockerEnvironment,
+      dockerExecutableForTesting: process.execPath,
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engineFixture().request,
+    });
+    try {
+      await expect(
+        prepareDockerInvocation(client, ["version"]),
+      ).resolves.toMatchObject({ environment: dockerEnvironment });
+    } finally {
+      closePreparedDockerClient(client);
+    }
+    expect(() =>
+      createPreparedDockerClient(admitted, {
+        dockerEnvironment: { ...dockerEnvironment, HTTP_PROXY: "CANARY" },
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      }),
+    ).toThrow("integration.images.docker-client");
   });
 });
 
@@ -1401,13 +1482,15 @@ describe("authenticated buildx consumption", () => {
       buildFailure: false,
       daemonSwitch: true,
       expected: "integration.images.containment",
-      noDestructiveCleanup: false,
+      expectRetirement: true,
+      noDestructiveCleanup: true,
     },
     {
       builderMismatch: true,
       buildFailure: false,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: true,
     },
     {
@@ -1415,12 +1498,14 @@ describe("authenticated buildx consumption", () => {
       cleanupLeak: true,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: false,
     },
     {
       buildFailure: true,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       lateTagAfterDelete: true,
       noDestructiveCleanup: false,
     },
@@ -1428,6 +1513,7 @@ describe("authenticated buildx consumption", () => {
       buildFailure: false,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: true,
       wrongMount: true,
     },
@@ -1435,6 +1521,7 @@ describe("authenticated buildx consumption", () => {
       buildFailure: false,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: true,
       wrongVolume: true,
     },
@@ -1442,6 +1529,7 @@ describe("authenticated buildx consumption", () => {
       buildFailure: false,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: true,
       wrongVolumeLabels: true,
     },
@@ -1450,6 +1538,7 @@ describe("authenticated buildx consumption", () => {
       createFailureCollision: true,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: true,
       wrongVolume: true,
     },
@@ -1464,6 +1553,7 @@ describe("authenticated buildx consumption", () => {
       buildFailure: false,
       daemonSwitch: false,
       expected: "integration.images.containment",
+      expectRetirement: true,
       noDestructiveCleanup: true,
       substituteAfterBuild: true,
     },
@@ -1479,21 +1569,24 @@ describe("authenticated buildx consumption", () => {
       createTimeoutAfterResources: true,
       daemonSwitch: false,
       expected: "integration.images.timeout",
-      expectEngineDelete: true,
+      expectRetirement: true,
       maximumMilliseconds: 400,
-      noDestructiveCleanup: false,
+      noDestructiveCleanup: true,
     },
   ])(
     "joins its dedicated builder on command failure or daemon substitution %#",
     async ({
       expected,
-      expectEngineDelete = false,
+      expectRetirement = false,
       maximumMilliseconds = 4_000,
       noDestructiveCleanup,
       ...fixtureOptions
     }) => {
       const engine = engineFixture({ buildTag, ...fixtureOptions });
       const client = buildClient(engine);
+      const privateRoot = (
+        client as unknown as { privateClient: { root: string } }
+      ).privateClient.root;
       try {
         await expect(
           buildPreparedDockerImage(client, {
@@ -1513,24 +1606,18 @@ describe("authenticated buildx consumption", () => {
             engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
           ).toBe(false);
         }
-        if (expectEngineDelete) {
-          const deleteIndexes = engine.requests
-            .map(({ method }, index) => (method === "DELETE" ? index : -1))
-            .filter((index) => index >= 0);
-          expect(deleteIndexes).toHaveLength(2);
-          const finalRequests = engine.requests.slice(
-            Math.max(...deleteIndexes) + 1,
-          );
-          expect(
-            finalRequests.filter(
-              ({ method, path }) =>
-                method === "GET" &&
-                (path.includes("/containers/") || path.includes("/volumes/")),
-            ),
-          ).toHaveLength(3);
-        }
       } finally {
-        closePreparedDockerClient(client);
+        if (expectRetirement) {
+          expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(
+            true,
+          );
+          expect(() => {
+            closePreparedDockerClient(client);
+          }).toThrow("integration.images.docker-client");
+          rmSync(privateRoot, { force: true, recursive: true });
+        } else {
+          closePreparedDockerClient(client);
+        }
       }
     },
   );

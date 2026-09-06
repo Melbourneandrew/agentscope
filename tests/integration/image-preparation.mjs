@@ -55,7 +55,11 @@ const configMediaTypes = new Set([
 ]);
 const manifestAccept = [...indexMediaTypes, ...manifestMediaTypes].join(", ");
 export const IMAGE_PREPARATION_EXECUTION_POLICY = Object.freeze({
-  platform: "linux",
+  platform: Object.freeze({
+    os: "linux",
+    architecture: "amd64",
+    variant: "",
+  }),
   socket: "/var/run/docker.sock",
   dockerExecutables: Object.freeze(["/usr/bin/docker"]),
   buildxExecutables: Object.freeze([
@@ -244,9 +248,17 @@ const resolveDockerExecutable = (requested) => {
   }
   throw fixedError("integration.images.executable");
 };
+const productionDockerExecutable = (requested) => {
+  if (
+    process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os ||
+    !IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables.includes(requested)
+  )
+    throw fixedError("integration.images.executable");
+  return executableRecord(requested);
+};
 const resolveBuildxExecutable = (requested) => {
   if (requested !== undefined) return executableRecord(requested);
-  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform)
+  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os)
     throw fixedError("integration.images.platform");
   for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.buildxExecutables) {
     try {
@@ -467,9 +479,35 @@ export const runOwnedImageCommandForTesting = (
   });
 const resolveDockerSocket = (requested) => {
   if (requested !== undefined) return socketRecord(requested);
-  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform)
+  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os)
     throw fixedError("integration.images.platform");
   return socketRecord(IMAGE_PREPARATION_EXECUTION_POLICY.socket);
+};
+const productionDockerSocket = (requested) => {
+  if (
+    process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform ||
+    requested !== IMAGE_PREPARATION_EXECUTION_POLICY.socket
+  )
+    throw fixedError("integration.images.socket");
+  return socketRecord(requested);
+};
+const productionDockerEnvironment = (environment, socket) => {
+  const expected = {
+    DOCKER_HOST: `unix://${socket.path}`,
+    LANG: "C.UTF-8",
+    PATH: "/usr/bin:/bin",
+  };
+  if (
+    typeof environment !== "object" ||
+    environment === null ||
+    JSON.stringify(Object.keys(environment).sort()) !==
+      JSON.stringify(Object.keys(expected).sort()) ||
+    Object.entries(expected).some(
+      ([name, value]) => environment[name] !== value,
+    )
+  )
+    throw fixedError("integration.images.environment");
+  return Object.freeze({ ...expected });
 };
 const assertSocketCurrent = (identity) => {
   if (!sameSocket(identity, socketRecord(identity.path)))
@@ -621,6 +659,8 @@ const daemonIdentity = (socket, versionValue, infoValue) => {
     id: info.ID,
     serverVersion: version.Version,
     apiVersion: version.ApiVersion,
+    product: version.Platform?.Name,
+    operatingSystem: info.OperatingSystem,
     osType: info.OSType,
     architecture: info.Architecture,
   };
@@ -629,6 +669,11 @@ const daemonIdentity = (socket, versionValue, infoValue) => {
     !boundedText(identity.id, 128) ||
     !boundedText(identity.serverVersion, 64) ||
     !apiVersionPattern.test(identity.apiVersion ?? "") ||
+    !boundedText(identity.product, 96) ||
+    !boundedText(identity.operatingSystem, 96) ||
+    /docker desktop/iu.test(
+      `${identity.product} ${identity.operatingSystem}`,
+    ) ||
     !platformValuePattern.test(identity.osType ?? "") ||
     !platformValuePattern.test(identity.architecture ?? "")
   )
@@ -642,6 +687,8 @@ const sameDaemon = (left, right) =>
   left.id === right.id &&
   left.serverVersion === right.serverVersion &&
   left.apiVersion === right.apiVersion &&
+  left.product === right.product &&
+  left.operatingSystem === right.operatingSystem &&
   left.osType === right.osType &&
   left.architecture === right.architecture;
 const validEvidenceDaemon = (value) =>
@@ -650,7 +697,9 @@ const validEvidenceDaemon = (value) =>
     "architecture",
     "endpoint",
     "id",
+    "operatingSystem",
     "osType",
+    "product",
     "serverVersion",
     "socketDevice",
     "socketInode",
@@ -662,6 +711,9 @@ const validEvidenceDaemon = (value) =>
   boundedText(value.id, 128) &&
   boundedText(value.serverVersion, 64) &&
   apiVersionPattern.test(value.apiVersion ?? "") &&
+  boundedText(value.product, 96) &&
+  boundedText(value.operatingSystem, 96) &&
+  !/docker desktop/iu.test(`${value.product} ${value.operatingSystem}`) &&
   platformValuePattern.test(value.osType ?? "") &&
   platformValuePattern.test(value.architecture ?? "");
 const validPreparationPolicy = (value) =>
@@ -883,8 +935,12 @@ export const validatePreparedImageEvidence = (value, manifestIdentity) => {
   )
     throw fixedError("integration.images.evidence");
   const images = value.images.map(evidenceImage);
+  const canonicalPlatform = normalizePlatform(
+    IMAGE_PREPARATION_EXECUTION_POLICY.platform,
+  );
   if (
     new Set(images.map(({ image }) => image)).size !== images.length ||
+    images.some(({ platform }) => !samePlatform(platform, canonicalPlatform)) ||
     Buffer.byteLength(JSON.stringify(images), "utf8") > maximumEvidenceBytes
   )
     throw fixedError("integration.images.evidence");
@@ -1575,7 +1631,14 @@ const acquireManifestProof = async ({
   });
 };
 
-const pullImage = async (transport, daemon, policy, signal, image) => {
+const pullImage = async ({
+  daemon,
+  image,
+  platform,
+  policy,
+  signal,
+  transport,
+}) => {
   const separator = image.lastIndexOf("@");
   const repository = image.slice(0, separator);
   const digest = image.slice(separator + 1);
@@ -1585,7 +1648,7 @@ const pullImage = async (transport, daemon, policy, signal, image) => {
       {
         expected: [200],
         method: "POST",
-        path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(repository)}&tag=${encodeURIComponent(digest)}`,
+        path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(repository)}&tag=${encodeURIComponent(digest)}&platform=${encodeURIComponent(platformText(platform))}`,
       },
     );
     const lines = response.body
@@ -1634,17 +1697,16 @@ const prepareImageSet = async ({
   socket,
 }) => {
   const initialDaemon = await inspectDaemon(engine, socket, policy, signal);
-  const daemonPlatform = normalizePlatform({
-    os: initialDaemon.osType,
-    architecture: initialDaemon.architecture,
-  });
+  const canonicalPlatform = normalizePlatform(
+    IMAGE_PREPARATION_EXECUTION_POLICY.platform,
+  );
   const tokenCache = new Map();
   const preparedImages = [];
   let evidenceBytes = 2;
   for (const image of images) {
     const proof = await acquireManifestProof({
       image,
-      platform: daemonPlatform,
+      platform: canonicalPlatform,
       policy,
       signal,
       tokenCache,
@@ -1659,7 +1721,14 @@ const prepareImageSet = async ({
       transport: engine,
     });
     if (local === undefined) {
-      await pullImage(engine, initialDaemon, policy, signal, image);
+      await pullImage({
+        daemon: initialDaemon,
+        image,
+        platform: canonicalPlatform,
+        policy,
+        signal,
+        transport: engine,
+      });
       local = await inspectLocalImage({
         daemon: initialDaemon,
         image,
@@ -1705,7 +1774,9 @@ export const preparePinnedDockerImages = async (images, options = {}) => {
   try {
     const socket =
       options.socketIdentityForTesting === undefined
-        ? resolveDockerSocket(options.dockerSocketForTesting)
+        ? options.dockerSocket === undefined
+          ? resolveDockerSocket(options.dockerSocketForTesting)
+          : productionDockerSocket(options.dockerSocket)
         : Object.freeze({ ...options.socketIdentityForTesting });
     if (!validSocketEvidence(socket))
       throw fixedError("integration.images.socket");
@@ -1821,12 +1892,20 @@ export const createPreparedDockerClient = (evidence, options = {}) => {
         : Object.freeze({ ...options.socketIdentityForTesting });
     if (!sameSocket(socket, evidence.dockerSocket))
       throw fixedError("integration.images.docker-client");
-    const executable = resolveDockerExecutable(
-      options.dockerExecutableForTesting,
-    );
-    const buildxExecutable = resolveBuildxExecutable(
-      options.buildxExecutableForTesting ?? options.dockerExecutableForTesting,
-    );
+    const executable =
+      options.dockerExecutable === undefined
+        ? resolveDockerExecutable(options.dockerExecutableForTesting)
+        : productionDockerExecutable(options.dockerExecutable);
+    const requestedBuildxExecutable =
+      options.buildxExecutable ?? options.buildxExecutableForTesting;
+    const buildxExecutable =
+      requestedBuildxExecutable === undefined
+        ? undefined
+        : resolveBuildxExecutable(requestedBuildxExecutable);
+    const environment =
+      options.dockerEnvironment === undefined
+        ? Object.freeze({})
+        : productionDockerEnvironment(options.dockerEnvironment, socket);
     privateClient = createPrivateClientRoot({});
     const client = Object.freeze({
       evidence,
@@ -1834,6 +1913,7 @@ export const createPreparedDockerClient = (evidence, options = {}) => {
       buildkitImage: options.buildkitImageForTesting ?? BUILDKIT_IMAGE,
       buildxRunForTesting: options.buildxRunForTesting,
       executable,
+      environment,
       privateClient,
       socket,
       engineRequestForTesting: options.engineRequestForTesting,
@@ -1903,7 +1983,7 @@ export const prepareDockerInvocation = async (client, arguments_, signal) => {
       resolve(client.privateClient.root, "docker"),
       ...arguments_,
     ]),
-    environment: Object.freeze({}),
+    environment: client.environment,
   });
 };
 const validBuildMap = (value) =>
@@ -2223,6 +2303,7 @@ const createBuildAuthority = async (client, policy, signal) => {
     .map(evidenceImage)
     .find((entry) => entry.image === client.buildkitImage);
   if (buildkit === undefined) throw fixedError("integration.images.build");
+  const buildxExecutable = client.buildxExecutable ?? resolveBuildxExecutable();
   const local = await inspectLocalImage({
     daemon,
     image: client.buildkitImage,
@@ -2238,10 +2319,7 @@ const createBuildAuthority = async (client, policy, signal) => {
   const builder = `agentscope-${randomBytes(8).toString("hex")}`;
   const run = (arguments_, input, deadline = policy.workDeadline) => {
     if (
-      !sameExecutable(
-        client.buildxExecutable,
-        executableRecord(client.buildxExecutable.path),
-      )
+      !sameExecutable(buildxExecutable, executableRecord(buildxExecutable.path))
     )
       throw fixedError("integration.images.executable");
     const options = {
@@ -2252,7 +2330,7 @@ const createBuildAuthority = async (client, policy, signal) => {
       teardownMilliseconds: policy.teardownMilliseconds,
     };
     return client.buildxRunForTesting === undefined
-      ? runOwnedCommand(client.buildxExecutable, arguments_, options)
+      ? runOwnedCommand(buildxExecutable, arguments_, options)
       : client.buildxRunForTesting(arguments_, options);
   };
   return {
@@ -2289,6 +2367,7 @@ const executeBuilderBuild = async (authority, options, archive) => {
     throw fixedError("integration.images.containment");
   authority.resourcePreflightComplete = true;
   authority.tagPreflightComplete = true;
+  authority.requestCapable = true;
   await run([
     "create",
     "--name",
@@ -2395,6 +2474,14 @@ const settleBuilderBuild = async (authority, options, built, failed) => {
       ...policy,
       workDeadline: policy.reconciliationDeadline,
     };
+    const currentDaemon = await inspectDaemon(
+      engine,
+      client.socket,
+      reconciliationPolicy,
+      undefined,
+    );
+    if (!sameDaemon(daemon, currentDaemon))
+      throw fixedError("integration.images.containment");
     let [container, volume] = await inspectBuilderResources(
       authority,
       resources,
@@ -2517,16 +2604,30 @@ export const buildPreparedDockerImage = async (
   } catch (error) {
     failure = error;
   }
-  if (failure?.containmentProved === false) {
+  if (
+    failure?.containmentProved === false ||
+    (authority.requestCapable === true &&
+      (failure?.code === "ETIMEDOUT" ||
+        [
+          "integration.images.interrupted",
+          "integration.images.output",
+        ].includes(failure?.message)))
+  ) {
     uncertainPreparedDockerClients.add(client);
     throw failure;
   }
-  await settleBuilderBuild(
-    authority,
-    { labels, tag },
-    built,
-    failure !== undefined,
-  );
+  try {
+    await settleBuilderBuild(
+      authority,
+      { labels, tag },
+      built,
+      failure !== undefined,
+    );
+  } catch (error) {
+    if (authority.requestCapable === true)
+      uncertainPreparedDockerClients.add(client);
+    throw error;
+  }
   if (failure !== undefined)
     throw [
       "integration.images.executable",
@@ -2553,6 +2654,9 @@ export const closePreparedDockerClient = (client) => {
   preparedDockerClients.delete(client);
   closingPreparedDockerClients.delete(client);
 };
+
+export const preparedDockerClientRequiresOuterHostRetirement = (client) =>
+  uncertainPreparedDockerClients.has(client);
 
 export const publishPreparedImageEvidence = (
   target,

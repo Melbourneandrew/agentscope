@@ -87,7 +87,7 @@ const runtimeIdentitySchema = z.strictObject({
   executor: z.literal("docker"),
   clientVersion: version,
   engine: z.strictObject({
-    kind: z.enum(["docker-desktop", "docker-engine"]),
+    kind: z.literal("docker-engine"),
     product: productName,
     version,
     apiVersion: version,

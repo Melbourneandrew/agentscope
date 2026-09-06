@@ -24,9 +24,6 @@ const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
 const evidenceTarget = resolve(artifactsRoot, "current-images.json");
 // Retire prior authority before any fallible manifest or selection work.
 retirePreparedImageEvidence(evidenceTarget);
-const evidenceTarget = resolve(artifactsRoot, "current-images.json");
-// Retire prior authority before any fallible manifest or selection work.
-retirePreparedImageEvidence(evidenceTarget);
 const manifest = compileCapabilityManifest(
   JSON.parse(
     readFileSync(resolve(integrationRoot, "capability-manifest.json"), "utf8"),
@@ -62,8 +59,7 @@ process.once("SIGINT", interrupt);
 process.once("SIGTERM", interrupt);
 try {
   const prepared = await preparePinnedDockerImages(images, {
-    dockerExecutable: capability.binding.dockerExecutable,
-    environment: capability.binding.dockerEnvironment,
+    dockerSocket: new URL(capability.binding.dockerEndpoint).pathname,
     maximumPreparationMilliseconds:
       remainingIntegrationOperationMilliseconds(300_000),
     signal: AbortSignal.any([controller.signal, integrationStageSignal()]),

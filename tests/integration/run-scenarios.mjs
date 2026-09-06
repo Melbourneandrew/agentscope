@@ -29,8 +29,10 @@ import {
   buildPreparedDockerImage,
   closePreparedDockerClient,
   createPreparedDockerClient,
+  IMAGE_PREPARATION_EXECUTION_POLICY,
   IMAGE_PREPARATION_LIMITS,
   prepareDockerInvocation,
+  preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
 } from "./image-preparation.mjs";
@@ -43,6 +45,7 @@ import {
 } from "./dist/controller.js";
 
 const capability = requireDisposableOuterHostCapability();
+const canonicalImagePlatform = `${IMAGE_PREPARATION_EXECUTION_POLICY.platform.os}/${IMAGE_PREPARATION_EXECUTION_POLICY.platform.architecture}`;
 
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
@@ -498,6 +501,8 @@ const startCollector = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.collectorName,
       ...labelArguments(plan),
@@ -540,6 +545,8 @@ const startRetrieval = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.retrievalName,
       ...labelArguments(plan),
@@ -582,6 +589,8 @@ const startMockServer = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.mockServerName,
       ...labelArguments(plan),
@@ -622,6 +631,8 @@ const runScenario = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.scenarioName,
       ...labelArguments(plan),
@@ -851,8 +862,10 @@ const abort = () => controller.abort();
 process.once("SIGINT", abort);
 process.once("SIGTERM", abort);
 preparedDockerClient = createPreparedDockerClient(preparedImageEvidence, {
-  dockerExecutableForTesting: capability.binding.dockerExecutable,
+  dockerEnvironment: capability.binding.dockerEnvironment,
+  dockerExecutable: capability.binding.dockerExecutable,
 });
+let retirementRequired = false;
 try {
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
@@ -870,11 +883,22 @@ try {
       ),
   );
   console.log(JSON.stringify(evidence));
+} catch (error) {
+  if (
+    preparedDockerClient !== undefined &&
+    preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
+  ) {
+    retirementRequired = true;
+    throw new Error("integration.controller.unsettled-operation", {
+      cause: error,
+    });
+  }
+  throw error;
 } finally {
   for (const plan of plans)
     rmSync(activeMarkerFor(plan.runId), { force: true });
   process.removeListener("SIGINT", abort);
   process.removeListener("SIGTERM", abort);
-  if (preparedDockerClient !== undefined)
+  if (preparedDockerClient !== undefined && !retirementRequired)
     closePreparedDockerClient(preparedDockerClient);
 }

@@ -26,6 +26,10 @@ export interface ImagePreparationResponse {
 export interface PreparePinnedDockerImagesOptions {
   maximumPreparationMilliseconds?: number;
   teardownMilliseconds?: number;
+  dockerSocket?: string;
+  dockerExecutable?: string;
+  buildxExecutable?: string;
+  dockerEnvironment?: Readonly<Record<string, string>>;
   dockerSocketForTesting?: string;
   dockerExecutableForTesting?: string;
   buildxExecutableForTesting?: string;
@@ -75,6 +79,8 @@ export interface PreparedDockerImageSet {
     id: string;
     serverVersion: string;
     apiVersion: string;
+    product: string;
+    operatingSystem: string;
     osType: string;
     architecture: string;
   }>;
@@ -185,10 +191,18 @@ export declare const closePreparedDockerClient: (
   client: PreparedDockerClient,
 ) => void;
 
+export declare const preparedDockerClientRequiresOuterHostRetirement: (
+  client: PreparedDockerClient,
+) => boolean;
+
 export declare const BUILDKIT_IMAGE: string;
 
 export declare const IMAGE_PREPARATION_EXECUTION_POLICY: Readonly<{
-  platform: "linux";
+  platform: Readonly<{
+    os: "linux";
+    architecture: "amd64";
+    variant: "";
+  }>;
   socket: "/var/run/docker.sock";
   dockerExecutables: readonly ["/usr/bin/docker"];
   buildxExecutables: readonly [

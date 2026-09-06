@@ -432,6 +432,21 @@ describe("scenario evidence validation", () => {
           },
         },
       },
+      {
+        ...executionPolicyFor(),
+        runtimeInspection: {
+          ...executionPolicyFor().runtimeInspection,
+          identity: {
+            ...executionPolicyFor().runtimeInspection.identity,
+            engine: {
+              ...executionPolicyFor().runtimeInspection.identity.engine,
+              kind: "docker-desktop",
+              product: "Docker Desktop 4.99",
+              operatingSystem: "Docker Desktop",
+            },
+          },
+        },
+      },
     ];
     for (const policy of invalidPolicies) {
       const fixture = driver();
