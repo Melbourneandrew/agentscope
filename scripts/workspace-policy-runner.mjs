@@ -363,17 +363,27 @@ export function readDarwinBirthForTesting(pid, hardDeadline, executeProbe) {
   return readDarwinBirth(pid, hardDeadline, executeProbe);
 }
 
-function kernelAuthorityExists(pid, hardDeadline, failureStage) {
+function kernelAuthorityExists(
+  pid,
+  hardDeadline,
+  failureStage,
+  probe = process.kill,
+) {
   ensureInspectionBudget(hardDeadline, "deadline-before");
   try {
-    process.kill(pid, 0);
+    probe(pid, 0);
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
     throw inspectionFailure(failureStage);
   } finally {
     ensureInspectionBudget(hardDeadline, "deadline-after");
   }
   return true;
+}
+
+export function inspectGroupExistenceForTesting(pid, hardDeadline, probe) {
+  return kernelAuthorityExists(pid, hardDeadline, "group-existence", probe);
 }
 
 const defaultLifecycle = Object.freeze({
