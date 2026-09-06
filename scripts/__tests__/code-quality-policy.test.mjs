@@ -1129,6 +1129,10 @@ function createPackage(root, path, name, dependencies = {}) {
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "agentscope-quality-policy-"));
+  writeFileSync(
+    join(root, "pnpm-workspace.yaml"),
+    "packages:\n  - packages/*\n",
+  );
   createPackage(root, "packages/a", "@agentscope/a");
   createPackage(root, "packages/b", "@agentscope/b", {
     "@agentscope/a": "workspace:*",
@@ -1179,6 +1183,22 @@ test("rejects workspace dependency cycles", () => {
     manifest.dependencies = { "@agentscope/b": "workspace:*" };
     writeFileSync(manifestPath, JSON.stringify(manifest));
     assert.throws(() => auditCodeQualityPolicy(value), /dependency cycle/);
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
+test("rejects substituted workspace manifest identities", () => {
+  const value = fixture();
+  try {
+    const manifestPath = join(value.root, "packages/b/package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.name = "@agentscope/substitute";
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(
+      () => auditCodeQualityPolicy(value),
+      /packages\/b\/package.json must be named @agentscope\/b; found @agentscope\/substitute/u,
+    );
   } finally {
     rmSync(value.root, { recursive: true, force: true });
   }

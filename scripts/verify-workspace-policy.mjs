@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectedWorkspacePackages } from "./workspace-packages.mjs";
 import { auditCoreFinalizationImports } from "./restricted-import-policy.mjs";
 import { expectedInternalDependenciesFor } from "./workspace-dependency-policy.mjs";
+import { loadWorkspacePackageGraph } from "./workspace-package-graph.mjs";
 
 const workspaceRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -55,52 +56,10 @@ auditDocumentationPlacement(listTrackedPaths());
 
 const expectedPackages = expectedWorkspacePackages;
 
-const packageRoots = [
-  "apps",
-  "packages",
-  "packages/destinations",
-  "packages/harnesses",
-  "tests",
-];
-const discoveredPackagePaths = packageRoots.flatMap((packageRoot) =>
-  readdirSync(resolve(workspaceRoot, packageRoot), { withFileTypes: true })
-    .filter(
-      (entry) =>
-        entry.isDirectory() &&
-        existsSync(
-          resolve(workspaceRoot, packageRoot, entry.name, "package.json"),
-        ),
-    )
-    .map((entry) => `${packageRoot}/${entry.name}`),
+const { graph, manifests } = loadWorkspacePackageGraph(
+  workspaceRoot,
+  expectedPackages,
 );
-const unexpectedPackagePaths = discoveredPackagePaths.filter(
-  (packagePath) => !expectedPackages.has(packagePath),
-);
-if (unexpectedPackagePaths.length > 0) {
-  throw new Error(
-    `Unexpected workspace package paths: ${unexpectedPackagePaths.sort().join(", ")}`,
-  );
-}
-
-const manifests = new Map();
-
-for (const [relativePath, expectedName] of expectedPackages) {
-  const manifestPath = resolve(workspaceRoot, relativePath, "package.json");
-  if (!existsSync(manifestPath)) {
-    throw new Error(`Missing workspace manifest: ${relativePath}/package.json`);
-  }
-
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  if (manifest.name !== expectedName) {
-    throw new Error(
-      `${relativePath}/package.json must be named ${expectedName}; found ${String(manifest.name)}`,
-    );
-  }
-  if (manifests.has(manifest.name)) {
-    throw new Error(`Duplicate workspace package name: ${manifest.name}`);
-  }
-  manifests.set(manifest.name, { manifest, relativePath });
-}
 
 for (const legacyPath of [
   "packages/destinations/console/package.json",
@@ -155,7 +114,6 @@ if (
   );
 }
 
-const graph = new Map();
 for (const [name, { manifest }] of manifests) {
   if (
     name !== "agentscope-cli" &&
@@ -170,9 +128,7 @@ for (const [name, { manifest }] of manifests) {
     ...manifest.peerDependencies,
     ...manifest.devDependencies,
   };
-  const internal = Object.keys(declared)
-    .filter((dependency) => dependency.startsWith("@agentscope/"))
-    .sort();
+  const internal = graph.get(name);
   const expected = expectedInternalDependenciesFor(name);
 
   if (JSON.stringify(internal) !== JSON.stringify(expected)) {
@@ -191,28 +147,7 @@ for (const [name, { manifest }] of manifests) {
       );
     }
   }
-  graph.set(name, internal);
 }
-
-const visiting = new Set();
-const visited = new Set();
-function visit(name, path = []) {
-  if (visiting.has(name)) {
-    throw new Error(
-      `Workspace dependency cycle: ${[...path, name].join(" -> ")}`,
-    );
-  }
-  if (visited.has(name)) return;
-
-  visiting.add(name);
-  for (const dependency of graph.get(name) ?? []) {
-    visit(dependency, [...path, name]);
-  }
-  visiting.delete(name);
-  visited.add(name);
-}
-
-for (const name of graph.keys()) visit(name);
 
 auditCoreFinalizationImports(workspaceRoot, expectedPackages);
 
