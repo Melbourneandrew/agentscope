@@ -463,6 +463,17 @@ describe("scenario evidence validation", () => {
 });
 
 describe("compiled scenario evidence", () => {
+  it("accepts distro-qualified container runtime versions", () => {
+    const input = executionPolicyFor();
+    input.runtimeInspection.identity.containerRuntime.version =
+      "1.3.4-0ubuntu1~24.04.1";
+    expect(
+      compileIsolationExecutionPolicy(input).runtimeInspection.identity,
+    ).toMatchObject({
+      containerRuntime: { version: "1.3.4-0ubuntu1~24.04.1" },
+    });
+  });
+
   it("compiles only the closed evidence and policy envelopes", () => {
     const policy = compileIsolationExecutionPolicy(executionPolicyFor());
     const evidence = {

@@ -10,7 +10,7 @@ const imageReference = z
   .string()
   .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u);
 const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
-const version = z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/u);
+const version = z.string().regex(/^[0-9A-Za-z][0-9A-Za-z.+_~-]{0,63}$/u);
 const productName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9 .()_-]{0,95}$/u);
 const runtimeName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u);
 const boundedCount = z.number().int().min(0).max(256);
