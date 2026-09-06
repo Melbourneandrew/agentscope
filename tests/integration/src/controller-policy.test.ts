@@ -152,7 +152,13 @@ describe("integration workflow policy", () => {
     expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(2);
     expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
     expect(
-      workflow.match(/NPM_CONFIG_GLOBALCONFIG: \/dev\/null/gu),
+      workflow.match(/NPM_CONFIG_GLOBALCONFIG:.*agentscope-global\.npmrc/gu),
+    ).toHaveLength(2);
+    expect(
+      workflow.match(/NPM_CONFIG_USERCONFIG:.*agentscope-user\.npmrc/gu),
+    ).toHaveLength(2);
+    expect(
+      workflow.match(/Initialize closed npm configuration/gu),
     ).toHaveLength(2);
     expect(
       workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
