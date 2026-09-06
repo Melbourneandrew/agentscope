@@ -2271,6 +2271,7 @@ const buildArgumentsFor = ({
   builder,
   dockerfile,
   labels,
+  platform,
   tag,
 }) => {
   const result = [
@@ -2282,6 +2283,8 @@ const buildArgumentsFor = ({
     "--load",
     "--network",
     "default",
+    "--platform",
+    platformText(platform),
     "--pull=false",
     "--tag",
     tag,
@@ -2393,7 +2396,14 @@ const executeBuilderBuild = async (authority, options, archive) => {
     volume,
     true,
   );
-  await run(buildArgumentsFor({ ...options, builder }), archive);
+  await run(
+    buildArgumentsFor({
+      ...options,
+      builder,
+      platform: buildkit.platform,
+    }),
+    archive,
+  );
   const built = await inspectBuiltTag(engine, daemon, policy, signal, {
     labels: options.labels,
     platform: buildkit.platform,

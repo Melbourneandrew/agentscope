@@ -1440,6 +1440,8 @@ describe("authenticated buildx consumption", () => {
       const build = engine.buildxCalls.find(
         ({ arguments_ }) => arguments_[0] === "build",
       );
+      expect(build?.arguments_).toContain("--platform");
+      expect(build?.arguments_).toContain("linux/amd64");
       expect(build?.input?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
         true,
       );
