@@ -32,6 +32,7 @@ import {
   IMAGE_PREPARATION_EXECUTION_POLICY,
   IMAGE_PREPARATION_LIMITS,
   prepareDockerInvocation,
+  handlePreparedDockerCleanupFailure,
   markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
@@ -182,11 +183,7 @@ const ignoreMissing = async (arguments_, signal) => {
       timeout: remainingIntegrationOperationMilliseconds(30_000),
     });
   } catch (error) {
-    const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
-    if (!/(?:No such (?:container|image)|network .* not found)/u.test(output)) {
-      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
-      throw error;
-    }
+    handlePreparedDockerCleanupFailure(preparedDockerClient, error);
   }
 };
 const labelArguments = (plan) => [

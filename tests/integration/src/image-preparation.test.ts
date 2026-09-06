@@ -34,6 +34,7 @@ import {
   IMAGE_PREPARATION_LIMITS,
   IMAGE_PREPARATION_EXECUTION_POLICY,
   imagePreparationFailureRequiresOuterHostRetirement,
+  handlePreparedDockerCleanupFailure,
   markPreparedDockerClientForOuterHostRetirement,
   prepareDockerInvocation,
   preparedDockerClientRequiresOuterHostRetirement,
@@ -1202,6 +1203,63 @@ describe("prepared image runtime admission and publication", () => {
         engineRequestForTesting: engineFixture().request,
       }),
     ).toThrow("integration.images.docker-client");
+  });
+});
+
+describe("prepared Docker client cleanup failure classification", () => {
+  it("retires after timeout even when partial output claims the resource is missing", async () => {
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      },
+    );
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const timeout = Object.assign(new Error("timed out"), {
+      code: null,
+      killed: true,
+      signal: "SIGTERM",
+      stdout: "",
+      stderr: "Error response from daemon: No such container: owned\n",
+    });
+    expect(() => {
+      handlePreparedDockerCleanupFailure(client, timeout);
+    }).toThrow(timeout);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    await expect(prepareDockerInvocation(client, ["version"])).rejects.toThrow(
+      "integration.images.docker-client",
+    );
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("accepts an exact missing-resource response only after an ordinary exit", () => {
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      },
+    );
+    handlePreparedDockerCleanupFailure(
+      client,
+      Object.assign(new Error("missing"), {
+        code: 1,
+        killed: false,
+        signal: null,
+        stdout: "",
+        stderr: "Error response from daemon: No such image: owned\n",
+      }),
+    );
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(false);
+    closePreparedDockerClient(client);
   });
 });
 

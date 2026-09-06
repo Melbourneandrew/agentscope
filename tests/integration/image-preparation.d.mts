@@ -199,6 +199,11 @@ export declare const markPreparedDockerClientForOuterHostRetirement: (
   client: PreparedDockerClient,
 ) => void;
 
+export declare const handlePreparedDockerCleanupFailure: (
+  client: PreparedDockerClient,
+  error: unknown,
+) => void;
+
 export declare const assertImagePreparationPlatformForTesting: (
   platform: string,
 ) => void;

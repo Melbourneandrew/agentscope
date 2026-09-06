@@ -2681,6 +2681,28 @@ export const markPreparedDockerClientForOuterHostRetirement = (client) => {
   uncertainPreparedDockerClients.add(client);
 };
 
+const definiteMissingDockerResource = (error) => {
+  if (
+    !Number.isSafeInteger(error?.code) ||
+    error.code < 1 ||
+    error?.signal != null ||
+    error?.killed === true ||
+    error?.name === "AbortError" ||
+    (error?.stdout ?? "") !== "" ||
+    typeof error?.stderr !== "string"
+  )
+    return false;
+  return /^(?:Error response from daemon: )?(?:No such (?:container|image): [^\r\n]+|network [^\r\n]+ not found)\r?\n?$/u.test(
+    error.stderr,
+  );
+};
+
+export const handlePreparedDockerCleanupFailure = (client, error) => {
+  if (definiteMissingDockerResource(error)) return;
+  markPreparedDockerClientForOuterHostRetirement(client);
+  throw error;
+};
+
 export const publishPreparedImageEvidence = (
   target,
   manifestIdentity,
