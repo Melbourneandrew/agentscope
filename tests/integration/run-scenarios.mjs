@@ -826,13 +826,68 @@ const finalizeControllerFailureEvidence = (
       (status.mode & 0o7777) !== 0o600
     )
       throw new Error("integration.controller.failure-evidence");
-    registerIntegrationFailureEvidence({
+    const identity = Object.freeze({
       dev: status.dev,
       digest: `sha256:${createHash("sha256").update(serialized).digest("hex")}`,
       ino: status.ino,
       runId: plan.runId,
       size: status.size,
     });
+    registerIntegrationFailureEvidence(identity);
+    return identity;
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.controller.failure-evidence", {
+      cause: error,
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
+};
+const publishControllerFailureManifest = (identities) => {
+  const record = {
+    controllerFailureManifestVersion: 1,
+    controllerAuthorityDigest:
+      capability.binding.privateStorage.authorityDigest,
+    runIds: identities.map(({ runId }) => runId).sort(),
+    failureEvidence: [...identities].sort((left, right) =>
+      left.runId.localeCompare(right.runId),
+    ),
+  };
+  const serialized = `${JSON.stringify(record, undefined, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > 65_536)
+    throw new Error("integration.controller.failure-evidence");
+  const target = resolve(artifactsRoot, "controller-failure-manifest.json");
+  const temporary = resolve(
+    artifactsRoot,
+    `.controller-failure-manifest.${process.pid}.tmp`,
+  );
+  let descriptor;
+  let directoryDescriptor;
+  try {
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(artifactsRoot, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.controller.failure-evidence");
   } catch (error) {
     rmSync(temporary, { force: true });
     throw new Error("integration.controller.failure-evidence", {
@@ -1026,11 +1081,13 @@ try {
   if (primaryError !== undefined) {
     try {
       requireIntegrationFailureEvidence(plans.map(({ runId }) => runId));
-      for (const plan of plans)
-        finalizeControllerFailureEvidence(plan, primaryError, cleanupError);
+      const identities = plans.map((plan) =>
+        finalizeControllerFailureEvidence(plan, primaryError, cleanupError),
+      );
+      publishControllerFailureManifest(identities);
     } catch {
       // The original controller failure remains primary. The workflow's
-      // required artifact upload independently fails if evidence is absent.
+      // always-run exact verifier independently fails if evidence is absent.
     }
   }
 }

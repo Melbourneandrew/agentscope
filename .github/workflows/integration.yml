@@ -128,12 +128,148 @@ jobs:
             export AGENTSCOPE_INTEGRATION_SHARD="$REPLAY_SHARD"
           fi
           pnpm test:integration
-      - name: Upload sanitized failure evidence
+      - name: Verify complete sanitized failure evidence
+        id: failure_evidence
         if: failure()
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from "node:crypto";
+          import {
+            closeSync,
+            constants,
+            fstatSync,
+            lstatSync,
+            openSync,
+            readFileSync,
+            readdirSync,
+          } from "node:fs";
+          import { resolve } from "node:path";
+
+          const fail = () => {
+            throw new Error("integration.controller.failure-evidence");
+          };
+          const exactKeys = (value, keys) =>
+            typeof value === "object" &&
+            value !== null &&
+            JSON.stringify(Object.keys(value).sort()) ===
+              JSON.stringify([...keys].sort());
+          const readBounded = (path, maximumBytes) => {
+            let descriptor;
+            try {
+              descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+              const before = fstatSync(descriptor);
+              if (
+                !before.isFile() ||
+                before.nlink !== 1 ||
+                before.size < 1 ||
+                before.size > maximumBytes ||
+                (before.mode & 0o7777) !== 0o600
+              ) fail();
+              const content = readFileSync(descriptor);
+              const after = fstatSync(descriptor);
+              if (
+                after.dev !== before.dev ||
+                after.ino !== before.ino ||
+                after.size !== before.size ||
+                after.nlink !== before.nlink
+              ) fail();
+              return { content, status: before };
+            } finally {
+              if (descriptor !== undefined) closeSync(descriptor);
+            }
+          };
+          const artifactsRoot = resolve("artifacts/integration");
+          const runsRoot = resolve(artifactsRoot, "runs");
+          const manifestPath = resolve(
+            artifactsRoot,
+            "controller-failure-manifest.json",
+          );
+          const manifestBytes = readBounded(manifestPath, 65_536).content;
+          const manifest = JSON.parse(manifestBytes.toString("utf8"));
+          if (
+            !exactKeys(manifest, [
+              "controllerAuthorityDigest",
+              "controllerFailureManifestVersion",
+              "failureEvidence",
+              "runIds",
+            ]) ||
+            manifest.controllerFailureManifestVersion !== 1 ||
+            !/^sha256:[a-f0-9]{64}$/u.test(manifest.controllerAuthorityDigest) ||
+            !Array.isArray(manifest.runIds) ||
+            !Array.isArray(manifest.failureEvidence) ||
+            manifest.runIds.length < 1 ||
+            manifest.runIds.length > 256 ||
+            new Set(manifest.runIds).size !== manifest.runIds.length ||
+            JSON.stringify(manifest.runIds) !==
+              JSON.stringify([...manifest.runIds].sort()) ||
+            manifest.failureEvidence.length !== manifest.runIds.length
+          ) fail();
+          const expected = new Set(manifest.runIds);
+          const observed = [];
+          for (const identity of manifest.failureEvidence) {
+            if (
+              !exactKeys(identity, ["dev", "digest", "ino", "runId", "size"]) ||
+              !expected.has(identity.runId) ||
+              !/^[a-f0-9]{16}$/u.test(identity.runId) ||
+              !/^sha256:[a-f0-9]{64}$/u.test(identity.digest) ||
+              !Number.isSafeInteger(identity.dev) ||
+              !Number.isSafeInteger(identity.ino) ||
+              !Number.isSafeInteger(identity.size)
+            ) fail();
+            const path = resolve(runsRoot, identity.runId, "controller-failure.json");
+            const { content, status } = readBounded(path, 16_384);
+            const record = JSON.parse(content.toString("utf8"));
+            if (
+              status.dev !== identity.dev ||
+              status.ino !== identity.ino ||
+              status.size !== identity.size ||
+              `sha256:${createHash("sha256").update(content).digest("hex")}` !==
+                identity.digest ||
+              !exactKeys(record, [
+                "cleanupFailure",
+                "controllerFailureEvidenceVersion",
+                "controllerOutcome",
+                "primaryFailure",
+                "privateCleanup",
+                "runId",
+                "scenarioOutcome",
+              ]) ||
+              record.controllerFailureEvidenceVersion !== 1 ||
+              record.runId !== identity.runId ||
+              record.controllerOutcome !== "retired-failure" ||
+              !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
+              !(
+                record.cleanupFailure === null ||
+                /^integration\.[a-z.-]{1,96}$/u.test(record.cleanupFailure)
+              ) ||
+              !["passed", "failed", "not-complete"].includes(
+                record.scenarioOutcome,
+              )
+            ) fail();
+            observed.push(identity.runId);
+          }
+          if (
+            new Set(observed).size !== expected.size ||
+            observed.some((runId) => !expected.has(runId))
+          ) fail();
+          const runDirectories = readdirSync(runsRoot, { withFileTypes: true });
+          if (
+            runDirectories.length !== expected.size ||
+            runDirectories.some((entry) => {
+              if (!entry.isDirectory() || !expected.has(entry.name)) return true;
+              const status = lstatSync(resolve(runsRoot, entry.name));
+              return !status.isDirectory() || status.isSymbolicLink();
+            })
+          ) fail();
+          NODE
+      - name: Upload sanitized failure evidence
+        if: failure() && steps.failure_evidence.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
-          path: artifacts/integration/runs/*/controller-failure.json
+          path: |
+            artifacts/integration/controller-failure-manifest.json
+            artifacts/integration/runs/*/controller-failure.json
           if-no-files-found: error
           retention-days: 7
   hermetic-integration:
