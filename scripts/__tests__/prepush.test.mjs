@@ -16,7 +16,16 @@ import {
   parseLocalEnvironmentNames,
   scrubLocalEnvironment,
 } from "../prepush.mjs";
-import { selectPrepushMode } from "../prepush-affected.mjs";
+import {
+  createPrepushCommands,
+  createPrepushPlan,
+  executePrepush,
+  parseAffectedProjects,
+  parseChangedPaths,
+  parseObjectId,
+  parseProjectMetadata,
+  selectPrepushMode,
+} from "../prepush-affected.mjs";
 
 const repositoryRoot = resolve(
   fileURLToPath(new URL("../..", import.meta.url)),
@@ -24,28 +33,405 @@ const repositoryRoot = resolve(
 const entrypoint = join(repositoryRoot, "scripts/prepush.mjs");
 const temporaryRoots = [];
 
-test("pre-push selects Nx affected and conservatively falls back", () => {
+const BASE = "a".repeat(40);
+const HEAD = "b".repeat(40);
+const targets = Object.fromEntries(
+  ["build", "lint", "test", "typecheck"].map((name) => [name, {}]),
+);
+
+function result(stdout, additions = {}) {
+  return {
+    error: undefined,
+    signal: null,
+    status: 0,
+    stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout),
+    ...additions,
+  };
+}
+
+function project(name, root) {
+  return { name, root, targets };
+}
+
+function selectionFixture({
+  paths = ["packages/core/src/index.ts"],
+  projects = [project("@agentscope/core", "packages/core")],
+  replace,
+} = {}) {
+  const calls = [];
+  const captureCommand = (executable, arguments_) => {
+    calls.push([executable, arguments_]);
+    const index = calls.length - 1;
+    if (replace?.index === index) return replace.value;
+    if (index === 0) return result(`${BASE}\n`);
+    if (index === 1) return result(`${HEAD}\n`);
+    if (index === 2)
+      return result(
+        paths.length === 0
+          ? Buffer.alloc(0)
+          : Buffer.from(`${paths.join("\0")}\0`),
+      );
+    if (index === 3)
+      return result(JSON.stringify(projects.map(({ name }) => name)));
+    const expected = projects[index - 4];
+    if (expected === undefined) throw new Error("unexpected capture");
+    return result(JSON.stringify(expected));
+  };
+  return { calls, captureCommand };
+}
+
+test("selection observations are bounded, canonical, and duplicate-free", () => {
+  assert.equal(parseObjectId(Buffer.from(`${BASE}\n`)), BASE);
   assert.deepEqual(
-    selectPrepushMode(
-      ["packages/core/src/index.ts"],
-      ["@agentscope/core"],
-      true,
+    parseChangedPaths(Buffer.from("docs/new name.md\0packages/core/a.ts\0")),
+    ["docs/new name.md", "packages/core/a.ts"],
+  );
+  assert.deepEqual(
+    parseAffectedProjects(Buffer.from('["agentscope-cli","@agentscope/core"]')),
+    ["@agentscope/core", "agentscope-cli"],
+  );
+  assert.deepEqual(
+    parseProjectMetadata(
+      Buffer.from(JSON.stringify(project("@agentscope/core", "packages/core"))),
+      "@agentscope/core",
     ),
-    { full: false, verifyCliArtifact: false },
+    { name: "@agentscope/core", root: "packages/core" },
+  );
+  for (const invalid of [
+    Buffer.from(`${BASE}`),
+    Buffer.from(`${BASE}\n${HEAD}\n`),
+    Buffer.from("not-an-object\n"),
+  ])
+    assert.throws(() => parseObjectId(invalid), /prepush-base-invalid/u);
+  for (const invalid of [
+    Buffer.from("unterminated"),
+    Buffer.from("../escape\0"),
+    Buffer.from("duplicate\0duplicate\0"),
+    Buffer.from([0xff, 0]),
+  ])
+    assert.throws(() => parseChangedPaths(invalid), /prepush-paths-invalid/u);
+  for (const invalid of [
+    Buffer.from("{}"),
+    Buffer.from('["duplicate","duplicate"]'),
+    Buffer.from('["bad name"]'),
+  ])
+    assert.throws(
+      () => parseAffectedProjects(invalid),
+      /prepush-projects-invalid/u,
+    );
+  for (const invalid of [
+    project("other", "packages/core"),
+    project("@agentscope/core", "."),
+    { name: "@agentscope/core", root: "packages/core", targets: {} },
+  ])
+    assert.throws(
+      () =>
+        parseProjectMetadata(
+          Buffer.from(JSON.stringify(invalid)),
+          "@agentscope/core",
+        ),
+      /prepush-project-invalid/u,
+    );
+});
+
+test("one resolved base and head OID bind diff and every affected call", () => {
+  const fixture = selectionFixture();
+  const plan = createPrepushPlan({
+    captureCommand: fixture.captureCommand,
+    nxConfiguration: () => JSON.stringify({ defaultBase: "main" }),
+  });
+  assert.deepEqual(plan, {
+    base: BASE,
+    head: HEAD,
+    mode: { full: false, policyChecks: false, verifyCliArtifact: false },
+  });
+  assert.deepEqual(fixture.calls, [
+    ["git", ["rev-parse", "--verify", "main^{commit}"]],
+    ["git", ["rev-parse", "--verify", "HEAD^{commit}"]],
+    [
+      "git",
+      ["diff", "--name-only", "--no-renames", "-z", `${BASE}...${HEAD}`, "--"],
+    ],
+    [
+      "pnpm",
+      [
+        "nx",
+        "show",
+        "projects",
+        "--affected",
+        `--base=${BASE}`,
+        `--head=${HEAD}`,
+        "--json",
+        "--outputStyle=static",
+      ],
+    ],
+    [
+      "pnpm",
+      [
+        "nx",
+        "show",
+        "project",
+        "@agentscope/core",
+        "--json",
+        "--outputStyle=static",
+      ],
+    ],
+  ]);
+});
+
+test("path coverage selects docs, packages, CLI closure, and conservative full", () => {
+  const core = [{ name: "@agentscope/core", root: "packages/core" }];
+  const docs = [{ name: "@agentscope/docs", root: "apps/docs" }];
+  const sqliteCli = [
+    {
+      name: "@agentscope/destination-local-sqlite",
+      root: "packages/destinations/local-sqlite",
+    },
+    { name: "agentscope-cli", root: "apps/cli" },
+  ];
+  for (const path of ["README.md", "ops/crabbox/README.md"])
+    assert.deepEqual(selectPrepushMode([path], [], true), {
+      full: false,
+      policyChecks: false,
+      verifyCliArtifact: false,
+    });
+  assert.deepEqual(
+    selectPrepushMode(["apps/docs/content/docs/guide.mdx"], docs, true),
+    { full: false, policyChecks: false, verifyCliArtifact: false },
   );
   assert.deepEqual(
-    selectPrepushMode(["apps/cli/src/index.ts"], ["agentscope-cli"], true),
-    { full: false, verifyCliArtifact: true },
+    selectPrepushMode(["packages/core/src/index.ts"], core, true),
+    { full: false, policyChecks: false, verifyCliArtifact: false },
   );
-  for (const input of [
-    { base: false, files: [] },
-    { base: true, files: ["nx.json"] },
-    { base: true, files: ["scripts/verify-workspace-targets.mjs"] },
+  for (const path of [
+    "apps/cli/src/index.ts",
+    "packages/destinations/local-sqlite/src/index.ts",
+    "packages/destinations/local-sqlite/native-candidate/tooling/build.mjs",
   ])
-    assert.deepEqual(selectPrepushMode(input.files, [], input.base), {
-      full: true,
+    assert.deepEqual(selectPrepushMode([path], sqliteCli, true), {
+      full: false,
+      policyChecks: false,
       verifyCliArtifact: true,
     });
+  for (const path of [
+    "pnpm-lock.yaml",
+    "package.json",
+    "packages/core/package.json",
+    "packages/new/nested/project.json",
+    "packages/a/b/c/package.json",
+    "nx.json",
+    "scripts/verify-workspace-targets.mjs",
+    ".github/workflows/validate.yml",
+    "unknown/new-policy.bin",
+    "README.mjs",
+    "SECURITY.bin",
+    "CONTRIBUTING.sh",
+  ])
+    assert.deepEqual(selectPrepushMode([path], [], true), {
+      full: true,
+      policyChecks: true,
+      verifyCliArtifact: true,
+    });
+  assert.deepEqual(
+    selectPrepushMode(
+      ["README.md", "packages/core/src/index.ts"],
+      [...core, { name: "agentscope-cli", root: "apps/cli" }],
+      true,
+    ),
+    { full: false, policyChecks: false, verifyCliArtifact: true },
+  );
+});
+
+test("an empty changed range remains a bounded Nx affected invocation", () => {
+  const fixture = selectionFixture({ paths: [], projects: [] });
+  const plan = createPrepushPlan({
+    captureCommand: fixture.captureCommand,
+    nxConfiguration: () => JSON.stringify({ defaultBase: "main" }),
+  });
+  assert.deepEqual(plan.mode, {
+    full: false,
+    policyChecks: false,
+    verifyCliArtifact: false,
+  });
+  assert.equal(createPrepushCommands(plan)[2][1], "affected");
+});
+
+test("selection uncertainty falls back without using partial observations", () => {
+  const failures = [
+    result(`${BASE}\n${HEAD}\n`),
+    result(`${BASE}\n`, { status: 1 }),
+    result(Buffer.alloc(1024 * 1024 + 1)),
+    result('["duplicate","duplicate"]'),
+    result("{"),
+    result(Buffer.alloc(1024 * 1024 + 1)),
+    result(
+      JSON.stringify({
+        name: "@agentscope/core",
+        root: "packages/core",
+        targets: {},
+      }),
+    ),
+  ];
+  for (const [index, value] of failures.entries()) {
+    const captureIndex = index < 3 ? index : index < 6 ? 3 : 4;
+    const fixture = selectionFixture({
+      replace: { index: captureIndex, value },
+    });
+    assert.deepEqual(
+      createPrepushPlan({
+        captureCommand: fixture.captureCommand,
+        nxConfiguration: () => JSON.stringify({ defaultBase: "main" }),
+      }),
+      {
+        mode: { full: true, policyChecks: true, verifyCliArtifact: true },
+      },
+    );
+  }
+  for (const nxConfiguration of [
+    "{}",
+    JSON.stringify({ defaultBase: "-hostile" }),
+    JSON.stringify({ defaultBase: "main..other" }),
+    JSON.stringify({ defaultBase: "HEAD" }),
+  ]) {
+    assert.equal(
+      createPrepushPlan({
+        captureCommand: () => {
+          throw new Error("must not start selection");
+        },
+        nxConfiguration: () => nxConfiguration,
+      }).mode.full,
+      true,
+    );
+  }
+});
+
+test("affected and fallback command order never includes native or integration", () => {
+  const affected = createPrepushCommands({
+    base: BASE,
+    head: HEAD,
+    mode: { full: false, policyChecks: false, verifyCliArtifact: true },
+  });
+  assert.deepEqual(affected, [
+    ["verify:targets"],
+    ["format:check"],
+    [
+      "nx",
+      "affected",
+      "-t",
+      "build",
+      `--base=${BASE}`,
+      `--head=${HEAD}`,
+      "--outputStyle=static",
+    ],
+    [
+      "nx",
+      "affected",
+      "-t",
+      "lint,typecheck,test",
+      `--base=${BASE}`,
+      `--head=${HEAD}`,
+      "--outputStyle=static",
+    ],
+    ["verify:cli-artifact"],
+  ]);
+  const fallback = createPrepushCommands({
+    mode: { full: true, policyChecks: true, verifyCliArtifact: true },
+  });
+  assert.deepEqual(fallback, [
+    ["verify:targets"],
+    ["format:check"],
+    ["test:workspace-policy"],
+    ["verify:quality"],
+    ["verify:acceptance-evidence"],
+    ["nx", "run-many", "-t", "build", "--all", "--outputStyle=static"],
+    [
+      "nx",
+      "run-many",
+      "-t",
+      "lint,typecheck,test",
+      "--all",
+      "--outputStyle=static",
+    ],
+    ["verify:cli-artifact"],
+  ]);
+  assert.equal(JSON.stringify([affected, fallback]).includes("native"), false);
+  assert.equal(
+    JSON.stringify([affected, fallback]).includes("integration"),
+    false,
+  );
+});
+
+test("first command failure is exact and admits no later command", () => {
+  const fixture = selectionFixture({
+    paths: ["README.md"],
+    projects: [],
+  });
+  const calls = [];
+  const status = executePrepush({
+    captureCommand: fixture.captureCommand,
+    nxConfiguration: () => JSON.stringify({ defaultBase: "main" }),
+    runCommand(arguments_) {
+      calls.push(arguments_);
+      return {
+        error: undefined,
+        signal: null,
+        status: calls.length === 2 ? 31 : 0,
+      };
+    },
+  });
+  assert.equal(status, 31);
+  assert.deepEqual(calls, [["verify:targets"], ["format:check"]]);
+});
+
+test("static Nx output survives a hook-like closed terminal and propagates target failure", () => {
+  const root = temporaryRoot();
+  const calls = join(root, "calls.jsonl");
+  const affectedEntrypoint = join(
+    repositoryRoot,
+    "scripts/prepush-affected.mjs",
+  );
+  executable(
+    root,
+    "git",
+    `#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='rev-parse'){process.stdout.write((args.at(-1).startsWith('main')?${JSON.stringify(BASE)}:${JSON.stringify(HEAD)})+'\\n');process.exit(0)}if(args[0]==='diff'){process.stdout.write('scripts/prepush-affected.mjs\\0');process.exit(0)}process.exit(72)\n`,
+  );
+  executable(
+    root,
+    "pnpm",
+    `#!${process.execPath}\nconst fs=require('node:fs');const args=process.argv.slice(2);fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');if(args[0]==='nx'&&args[1]==='show'){process.stdout.write('[]');process.exit(0)}if(args[0]==='nx'&&args[1]==='run-many'&&args.includes('build')){if(!args.includes('--outputStyle=static'))process.exit(73);process.exit(37)}process.exit(0)\n`,
+  );
+  const outcome = spawnSync(process.execPath, [affectedEntrypoint], {
+    cwd: repositoryRoot,
+    env: environment(root, { CI: "1", TERM: "dumb" }),
+    stdio: "ignore",
+    timeout: 8_000,
+  });
+  assert.equal(outcome.status, 37);
+  assert.equal(outcome.signal, null);
+  assert.deepEqual(
+    readFileSync(calls, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+    [
+      [
+        "nx",
+        "show",
+        "projects",
+        "--affected",
+        `--base=${BASE}`,
+        `--head=${HEAD}`,
+        "--json",
+        "--outputStyle=static",
+      ],
+      ["verify:targets"],
+      ["format:check"],
+      ["test:workspace-policy"],
+      ["verify:quality"],
+      ["verify:acceptance-evidence"],
+      ["nx", "run-many", "-t", "build", "--all", "--outputStyle=static"],
+    ],
+  );
 });
 
 afterEach(() => {
