@@ -7,7 +7,7 @@ description: ADRs for bounded Crabbox development capacity through the supported
 
 Agentscope development may use a self-hosted Crabbox coordinator on Cloudflare Workers to acquire bounded disposable Hetzner Linux workers. The deployment follows the documented Wrangler, Crabbox, Cloudflare, and Hetzner operating paths. The custom protected launcher and every associated credential ceremony, policy, installer, service, and runtime are removed completely; they are neither an alternative nor a recovery authority.
 
-Crabbox supplies the disposable outer host for mutation-heavy development integration. Crabbox execution and CI execution share the inner hermetic scenario runner, while workstation execution is limited to the focused deterministic and nonmutating checks selected by [Local Validation](/docs/blueprints/operations/local-validation). Crabbox is optional development and burst capacity; GitHub-hosted CI independently runs the complete integration gates and remains merge and release authority.
+Crabbox supplies the disposable outer host for mutation-heavy development integration. Crabbox execution and CI execution share the inner hermetic scenario runner, while workstation execution is limited to the focused deterministic checks selected by [Local Feedback](/docs/blueprints/operations/local-feedback). Crabbox is optional development and burst capacity; GitHub-hosted CI independently runs the complete integration gates and remains merge and release authority.
 
 ## Architecture Decision Records
 

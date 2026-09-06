@@ -25,13 +25,13 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 **Consequences:** Each workspace package declares a role and public entry points in the repository quality policy. Cross-package imports use package exports, never `src` paths. Destination code cannot import harness-native artifacts, and harness code cannot import a destination reporter. The workspace dependency graph and source entry graphs must be acyclic; unreachable production modules and duplicate imports fail validation. Seeded boundary, private-import, and cycle violations prove the controls fail closed.
 
-### ADR-003: Make local commit and CI gates equivalent in intent
+### ADR-003: Give local feedback and CI distinct authority
 
-**Decision:** A pre-commit hook runs Prettier and ESLint on staged supported files, then Nx affected strict type checks for the staged paths. The pre-push validation command follows the exact-pushed-snapshot classification and conservative gate matrix in [Local Validation](/docs/blueprints/operations/local-validation). CI does not adopt that local selection and follows the independently observable full-gate contract in [Continuous Integration](/docs/blueprints/operations/continuous-integration).
+**Decision:** Pre-commit and pre-push follow [Local Feedback](/docs/blueprints/operations/local-feedback). Local Nx result reuse follows [Nx Task Caching](/docs/blueprints/operations/nx-task-caching). CI does not adopt local affected selection or cached success and follows the independently observable full-gate contract in [Continuous Integration](/docs/blueprints/operations/continuous-integration).
 
 **Context:** Fast commit feedback prevents routine violations, while staged-only checks cannot establish workspace-wide correctness or detect changed public contracts.
 
-**Consequences:** Generated files and approved vendored fixtures are explicitly excluded in configuration rather than ignored ad hoc. A hook is a convenience layer, not the authority: its path-aware omissions never become release evidence, and no PR may merge with a failing required CI job.
+**Consequences:** Generated files and approved vendored fixtures are explicitly excluded in configuration rather than ignored ad hoc. A hook is a convenience layer, not the authority: its affected selection and cache hits never become release evidence, and no PR may merge with a failing required CI job.
 
 ### ADR-004: Split CI by feedback horizon and trust boundary
 

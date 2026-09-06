@@ -1,0 +1,44 @@
+---
+title: Local Feedback
+description: ADRs for fast pre-commit and pre-push validation.
+---
+
+## Capability Summary
+
+Agentscope gives contributors prompt deterministic feedback before code reaches GitHub. Local hooks optimize iteration; they do not certify a pushed commit or replace the complete GitHub CI gates.
+
+## Architecture Decision Records
+
+### ADR-001: Keep pre-commit limited to staged-file feedback
+
+**Decision:** The pre-commit hook delegates to the repository's `lint-staged` configuration. It formats and lints only supported staged files and propagates every failure.
+
+**Context:** Commit-time feedback must be quick and must not pretend that a partial view establishes workspace correctness.
+
+**Consequences:** Cross-project type, build, test, package, native, and integration checks remain outside pre-commit. A contributor may run broader commands manually, but the hook has one public path and no parallel validation authority.
+
+### ADR-002: Use Nx affected for ordinary pre-push feedback
+
+**Decision:** The mandatory pre-push command runs Nx affected `lint`, `typecheck`, `test`, and `build` targets for the current branch against the configured default base. Nx owns project discovery and dependency expansion. If the base is missing or ambiguous, or a changed root policy can alter project discovery, target behavior, dependencies, or packaging, pre-push runs the full deterministic target set instead. Any selected failure blocks the push.
+
+When the affected graph includes the packed CLI production closure, pre-push also runs the existing packed CLI artifact verification. Root packaging or validation-policy changes select the full deterministic targets and that artifact check. Documentation-only work remains within the affected documentation project and repository formatting or link checks that govern those files.
+
+**Context:** Local feedback benefits from conservative selection, but it does not need a second Git object protocol or an immutable checkout because [Continuous Integration](/docs/blueprints/operations/continuous-integration) certifies the exact pushed commit independently.
+
+**Consequences:** The hook does not create detached worktrees, authenticate every pushed ref object, or maintain its own changed-path matrix. Unknown selection state costs a full deterministic run rather than skipping work. `--no-verify` is not a validation path, and a later CI run does not turn a failed local hook into success.
+
+### ADR-003: Keep environmental certification out of workstation hooks
+
+**Decision:** Mandatory workstation pre-push runs no live native certification and no mutation-heavy integration scenario. Contributors run mutation-heavy development integration through the Crabbox path governed by [Workstation, CI, and Crabbox Execution](/docs/blueprints/testing/integration/ci-execution). GitHub CI independently runs complete native and hermetic integration certification.
+
+**Context:** Live native and integration checks are materially slower and require disposable environmental authority that an ordinary workstation hook does not provide.
+
+**Consequences:** Packed artifact verification remains local because it is deterministic. A local success makes no native, provider, platform, compatibility, merge, or release claim.
+
+### ADR-004: Remove the superseded validation orchestrator instead of preserving aliases
+
+**Decision:** Local deterministic commands invoke lint-staged, Nx, and the existing artifact verifier directly. The general-purpose validation lease, exact-ref selector, detached-checkout machinery, local-native pre-push path, and compatibility aliases for those paths have no role in the target architecture.
+
+**Context:** Those mechanisms were introduced to support a broader workstation certification design that is no longer supported.
+
+**Consequences:** Their deletion is a migration, not a second implementation option. Resource-mutating integration authorities retain their own bounded lifecycle where required; no replacement local orchestration framework is created.
