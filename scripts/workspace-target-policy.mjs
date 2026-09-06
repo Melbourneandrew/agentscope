@@ -195,6 +195,31 @@ function auditProjectCache({ manifest, nx, relativePath, expectedName }) {
     coverage: false,
     clean: false,
   };
+  const expectedManifestNx = cacheableBuildPaths.has(relativePath)
+    ? {
+        targets: {
+          build: { cache: true, outputs: ["{projectRoot}/dist"] },
+        },
+      }
+    : relativePath === "apps/docs"
+      ? {
+          targets: {
+            build: { cache: false },
+            typecheck: { cache: false },
+          },
+        }
+      : relativePath === "tests/integration"
+        ? {
+            targets: {
+              build: { cache: false },
+              test: { cache: false },
+            },
+          }
+        : undefined;
+  assert(
+    exactJson(manifest.nx, expectedManifestNx),
+    `${expectedName} project Nx configuration drifted`,
+  );
   for (const [target, expected] of Object.entries(expectedCache)) {
     const override = targetOverride(manifest, target);
     const expectedOverride =

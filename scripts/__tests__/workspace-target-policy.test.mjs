@@ -384,13 +384,23 @@ test("rejects missing cache metadata, remote runners, and unsafe cache widening"
       },
     };
     writeFileSync(manifestPath, JSON.stringify(manifest));
-    assert.throws(audit, /build target override drifted/);
+    assert.throws(audit, /project Nx configuration drifted/);
 
     for (const target of ["typecheck", "lint", "test"]) {
       const changed = JSON.parse(originalManifest);
       changed.nx = { targets: { [target]: { inputs: [], dependsOn: [] } } };
       writeFileSync(manifestPath, JSON.stringify(changed));
-      assert.throws(audit, new RegExp(`${target} target override drifted`));
+      assert.throws(audit, /project Nx configuration drifted/);
+    }
+
+    for (const nxOverride of [
+      { namedInputs: { default: [], production: [] } },
+      { includedScripts: ["clean"] },
+    ]) {
+      const changed = JSON.parse(originalManifest);
+      changed.nx = nxOverride;
+      writeFileSync(manifestPath, JSON.stringify(changed));
+      assert.throws(audit, /project Nx configuration drifted/);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
