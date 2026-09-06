@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 
@@ -130,7 +131,7 @@ const inferModeAndIdentity = (
       "GITHUB_RUN_ID",
       "GITHUB_SHA",
       "RUNNER_NAME",
-      "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS",
+      "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS",
     ]);
     if (
       !/^\d+$/u.test(identity.GITHUB_RUN_ID!) ||
@@ -191,15 +192,15 @@ const createBinding = (
   if (hasCredentialGitState(workspaceRoot))
     throw new Error("integration.controller.git-credentials");
   const suppliedOuterDeadline =
-    environment.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS;
+    environment.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
   let lifecycleMilliseconds = totalLifecycleMilliseconds;
   if (suppliedOuterDeadline !== undefined) {
-    if (!/^\d{13}$/u.test(suppliedOuterDeadline))
+    if (!/^\d{7,15}$/u.test(suppliedOuterDeadline))
       throw new Error("integration.controller.outer-deadline");
     lifecycleMilliseconds = Math.min(
       lifecycleMilliseconds,
       Number(suppliedOuterDeadline) -
-        Date.now() -
+        Number(readFileSync("/proc/uptime", "utf8").split(" ", 1)[0]) * 1000 -
         supervisorReserveMilliseconds,
     );
   }

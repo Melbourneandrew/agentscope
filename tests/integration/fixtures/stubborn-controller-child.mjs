@@ -12,4 +12,4 @@ const descendant = spawn(
 if (!Number.isSafeInteger(descendant.pid) || descendant.pid < 1)
   throw new Error("integration.supervisor.fixture");
 writeFileSync(evidencePath, String(descendant.pid));
-process.exit(1);
+process.exit(Number(process.env.AGENTSCOPE_SUPERVISOR_LEADER_EXIT ?? "1"));

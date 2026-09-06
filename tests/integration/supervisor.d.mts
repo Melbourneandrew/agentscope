@@ -1,6 +1,7 @@
 export type SupervisedProcessResult = Readonly<{
   code: number | null;
   contained: boolean;
+  residualWorkObserved: boolean;
   signal: NodeJS.Signals | null;
 }>;
 

@@ -79,9 +79,9 @@ export const runSupervisedProcess = async ({
     });
     clearTimeout(deadlineTimer);
     if (forcedTimer !== undefined) clearTimeout(forcedTimer);
-    signalGroup(processGroup, "SIGKILL");
+    const residualWorkObserved = signalGroup(processGroup, "SIGKILL");
     const contained = await proveGroupAbsent(processGroup);
-    return { ...result, contained };
+    return { ...result, contained, residualWorkObserved };
   } finally {
     clearTimeout(deadlineTimer);
     if (forcedTimer !== undefined) clearTimeout(forcedTimer);

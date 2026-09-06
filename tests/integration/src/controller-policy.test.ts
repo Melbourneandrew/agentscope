@@ -72,7 +72,9 @@ describe("integration controller policy", () => {
       );
     }
   });
+});
 
+describe("integration controller supervision", () => {
   it("kills and proves absence of descendants after the leader exits", async () => {
     if (process.platform === "win32") return;
     const directory = mkdtempSync(resolve(tmpdir(), "agentscope-supervisor-"));
@@ -94,7 +96,11 @@ describe("integration controller policy", () => {
         maximumMilliseconds: 5_000,
         stdio: "ignore",
       });
-      expect(result).toMatchObject({ code: 1, contained: true });
+      expect(result).toMatchObject({
+        code: 1,
+        contained: true,
+        residualWorkObserved: true,
+      });
       const descendant = Number(readFileSync(evidence, "utf8"));
       expect(() => process.kill(descendant, 0)).toThrow(
         expect.objectContaining({ code: "ESRCH" }),
@@ -104,6 +110,40 @@ describe("integration controller policy", () => {
     }
   });
 
+  it("does not upgrade a successful leader with residual work", async () => {
+    if (process.platform === "win32") return;
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-supervisor-"));
+    const evidence = resolve(directory, "descendant.pid");
+    try {
+      const result = await runSupervisedProcess({
+        arguments_: [
+          resolve(
+            workspaceRoot,
+            "tests/integration/fixtures/stubborn-controller-child.mjs",
+          ),
+        ],
+        environment: {
+          AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
+          AGENTSCOPE_SUPERVISOR_LEADER_EXIT: "0",
+          LANG: "C.UTF-8",
+          PATH: "/usr/bin:/bin",
+        },
+        executable: process.execPath,
+        maximumMilliseconds: 5_000,
+        stdio: "ignore",
+      });
+      expect(result).toMatchObject({
+        code: 0,
+        contained: true,
+        residualWorkObserved: true,
+      });
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("integration workflow policy", () => {
   it("routes both CI phases through the same command", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -115,7 +155,7 @@ describe("integration controller policy", () => {
       workflow.match(/NPM_CONFIG_GLOBALCONFIG: \/dev\/null/gu),
     ).toHaveLength(2);
     expect(
-      workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS/gu),
+      workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
     ).toHaveLength(2);
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,

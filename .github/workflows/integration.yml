@@ -37,7 +37,7 @@ jobs:
       NPM_CONFIG_USERCONFIG: /dev/null
     steps:
       - name: Establish job-scoped integration deadline
-        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS=$(( $(date +%s) * 1000 + 1200000 ))" >> "$GITHUB_ENV"
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -86,7 +86,7 @@ jobs:
         replay: [1, 2]
     steps:
       - name: Establish job-scoped integration deadline
-        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_EPOCH_MS=$(( $(date +%s) * 1000 + 1200000 ))" >> "$GITHUB_ENV"
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
