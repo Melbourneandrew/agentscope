@@ -195,6 +195,36 @@ export declare const preparedDockerClientRequiresOuterHostRetirement: (
   client: PreparedDockerClient,
 ) => boolean;
 
+export declare const preparedDockerClientDiagnostic: (
+  client: PreparedDockerClient,
+) =>
+  | Readonly<{
+      diagnosticVersion: 1;
+      stage: "builder-reconciliation";
+      operationKind: string;
+      identityDigests: Readonly<Record<string, string>>;
+      process: Readonly<{
+        exited: boolean;
+        signaled: boolean;
+        timedOut: boolean;
+        joined: boolean;
+        outputBytes: number;
+        outputTruncated: boolean;
+        stderrClass: string;
+      }>;
+      responseBytes: number;
+      responseTruncated: false;
+      expectedResourceCount: number;
+      observedResourceCount: number;
+      expectedResourceDigest: string;
+      observedResourceDigest: string;
+      reconciliationReasons: Readonly<Record<string, string>>;
+      outcome: "retired-failure";
+    }>
+  | undefined;
+
+export declare const classifyBuildxStderrForTesting: (value: unknown) => string;
+
 export declare const markPreparedDockerClientForOuterHostRetirement: (
   client: PreparedDockerClient,
 ) => void;

@@ -34,6 +34,7 @@ import {
   prepareDockerInvocation,
   handlePreparedDockerCleanupFailure,
   markPreparedDockerClientForOuterHostRetirement,
+  preparedDockerClientDiagnostic,
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
@@ -720,6 +721,13 @@ const recordEvidence = async (evidence) => {
     resolve(directory, "evidence.json"),
     `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
   );
+  const diagnostic = preparedDockerClientDiagnostic(preparedDockerClient);
+  if (diagnostic !== undefined)
+    writeFileSync(
+      resolve(directory, "diagnostic.json"),
+      `${JSON.stringify(diagnostic, undefined, 2)}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
   const result = fixtureResults.get(verifiedEvidence.runId);
   if (
     verifiedEvidence.outcome === "passed" &&

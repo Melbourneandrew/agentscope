@@ -73,12 +73,34 @@ const preparedSets = new WeakSet();
 const preparedDockerClients = new WeakSet();
 const closingPreparedDockerClients = new WeakSet();
 const uncertainPreparedDockerClients = new WeakSet();
+const preparedDockerClientDiagnostics = new WeakMap();
+const processDiagnostics = new WeakMap();
 
 const fixedError = (code, timedOut = false) => {
   const error = new Error(code);
   if (timedOut) error.code = "ETIMEDOUT";
   return error;
 };
+const diagnosticDigest = (value) =>
+  digestBytes(Buffer.from(JSON.stringify(value), "utf8"));
+const buildxStderrClassifiers = Object.freeze([
+  ["resource-conflict", /(?:already exists|existing instance)/iu],
+  ["build-failed", /(?:failed to solve|failed to build)/iu],
+  [
+    "bootstrap-failed",
+    /(?:failed to boot|bootstrap|connection refused|unavailable)/iu,
+  ],
+  ["permission-denied", /(?:permission denied|operation not permitted)/iu],
+]);
+const classifyBuildxStderr = (value) => {
+  if (typeof value !== "string" || value.length > maximumHeaderBytes)
+    return "unknown";
+  return (
+    buildxStderrClassifiers.find(([, pattern]) => pattern.test(value))?.[0] ??
+    "unknown"
+  );
+};
+export const classifyBuildxStderrForTesting = classifyBuildxStderr;
 const boundedText = (value, maximum = 256) =>
   typeof value === "string" &&
   value.length > 0 &&
@@ -352,6 +374,8 @@ const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
     workDeadline,
   };
 };
+// The spawn-through-terminal-join path is one indivisible process authority.
+/* eslint-disable max-lines-per-function */
 const runOwnedCommand = async (
   executable,
   arguments_,
@@ -360,6 +384,7 @@ const runOwnedCommand = async (
     deadline,
     environment,
     input,
+    observeProcess,
     signal,
     teardownMilliseconds,
   },
@@ -387,6 +412,9 @@ const runOwnedCommand = async (
   }
   let bytes = 0;
   const output = [];
+  const diagnosticStderr = [];
+  let diagnosticStderrBytes = 0;
+  let outputTruncated = false;
   let failure;
   const fail = (code, timedOut = false) => {
     failure ??= fixedError(code, timedOut);
@@ -394,8 +422,19 @@ const runOwnedCommand = async (
   };
   const consume = (chunk, retain) => {
     bytes += chunk.byteLength;
-    if (bytes > maximumBuildOutputBytes) fail("integration.images.output");
-    else if (retain) output.push(chunk);
+    if (bytes > maximumBuildOutputBytes) {
+      outputTruncated = true;
+      fail("integration.images.output");
+    } else if (retain) output.push(chunk);
+    else if (diagnosticStderrBytes < maximumHeaderBytes) {
+      const retained = chunk.subarray(
+        0,
+        Math.max(0, maximumHeaderBytes - diagnosticStderrBytes),
+      );
+      diagnosticStderr.push(retained);
+      diagnosticStderrBytes += retained.byteLength;
+      if (retained.byteLength !== chunk.byteLength) outputTruncated = true;
+    } else outputTruncated = true;
   };
   child.stdout.on("data", (chunk) => consume(chunk, true));
   child.stderr.on("data", (chunk) => consume(chunk, false));
@@ -450,6 +489,20 @@ const runOwnedCommand = async (
     const state = absent
       ? "absent"
       : processGroupState(processGroup, teardownDeadline);
+    const processDiagnostic = Object.freeze({
+      exited: result !== undefined && result.code !== null,
+      signaled: result !== undefined && result.childSignal !== null,
+      timedOut: failure?.code === "ETIMEDOUT",
+      joined: state === "absent",
+      outputBytes: bytes,
+      outputTruncated,
+      stderrClass: classifyBuildxStderr(
+        Buffer.concat(diagnosticStderr).toString("utf8"),
+      ),
+    });
+    observeProcess?.(processDiagnostic);
+    if (failure instanceof Error)
+      processDiagnostics.set(failure, processDiagnostic);
     if (state !== "absent") {
       const error = fixedError(
         state === "zombie-only"
@@ -458,6 +511,7 @@ const runOwnedCommand = async (
         true,
       );
       error.containmentProved = false;
+      processDiagnostics.set(error, processDiagnostic);
       throw error;
     }
     if (failure !== undefined) throw failure;
@@ -468,6 +522,7 @@ const runOwnedCommand = async (
     killProcessGroup(processGroup);
   }
 };
+/* eslint-enable max-lines-per-function */
 export const runOwnedImageCommandForTesting = (
   executable,
   arguments_,
@@ -2148,46 +2203,73 @@ const validBuilderMount = (container, resources) =>
   container.Mounts[0]?.Name === resources.volume &&
   container.Mounts[0]?.Destination === "/var/lib/buildkit" &&
   container.Mounts[0]?.RW === true;
+const builderContainerFailureReason = (
+  container,
+  { buildkit, buildkitImage, requireRunning, resources },
+) => {
+  if (!/^[a-f\d]{64}$/u.test(container?.Id ?? "")) return "id";
+  if (
+    typeof container?.Created !== "string" ||
+    container.Created.length === 0 ||
+    container.Created.length > 128
+  )
+    return "created";
+  if (container?.Name !== `/${resources.container}`) return "name";
+  if (container.Image !== buildkit.configDigest) return "image-id";
+  if (container.Config?.Image !== buildkitImage) return "image-reference";
+  if (container.Platform !== buildkit.platform.os) return "platform";
+  if (container.HostConfig?.NetworkMode !== "default") return "network-mode";
+  if (
+    JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
+    JSON.stringify(["bridge"])
+  )
+    return "network-attachment";
+  if (!validBuilderMount(container, resources)) return "mount";
+  if (
+    (requireRunning && container.State?.Running !== true) ||
+    typeof container.State?.Running !== "boolean"
+  )
+    return "running-state";
+  return "matched";
+};
 const assertBuilderContainer = (
   container,
   { buildkit, buildkitImage, requireRunning, resources },
 ) => {
   if (
-    !/^[a-f\d]{64}$/u.test(container?.Id ?? "") ||
-    typeof container?.Created !== "string" ||
-    container.Created.length === 0 ||
-    container.Created.length > 128 ||
-    container?.Name !== `/${resources.container}` ||
-    container.Image !== buildkit.configDigest ||
-    container.Config?.Image !== buildkitImage ||
-    container.Platform !== buildkit.platform.os ||
-    container.HostConfig?.NetworkMode !== "default" ||
-    JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
-      JSON.stringify(["bridge"]) ||
-    !validBuilderMount(container, resources) ||
-    (requireRunning && container.State?.Running !== true) ||
-    typeof container.State?.Running !== "boolean"
+    builderContainerFailureReason(container, {
+      buildkit,
+      buildkitImage,
+      requireRunning,
+      resources,
+    }) !== "matched"
   )
     throw fixedError("integration.images.build");
   return Object.freeze({ id: container.Id, createdAt: container.Created });
 };
-const assertBuilderVolume = (volume, resources) => {
+const builderVolumeFailureReason = (volume, resources) => {
   if (
     typeof volume?.CreatedAt !== "string" ||
     volume.CreatedAt.length === 0 ||
-    volume.CreatedAt.length > 128 ||
-    volume?.Name !== resources.volume ||
-    volume.Driver !== "local" ||
-    volume.Scope !== "local" ||
-    typeof volume.Mountpoint !== "string" ||
-    !isAbsolute(volume.Mountpoint) ||
-    !(
-      volume.Labels === null ||
-      (typeof volume.Labels === "object" &&
-        volume.Labels !== null &&
-        Object.keys(volume.Labels).length === 0)
-    )
+    volume.CreatedAt.length > 128
   )
+    return "created";
+  if (volume?.Name !== resources.volume) return "name";
+  if (volume.Driver !== "local") return "driver";
+  if (volume.Scope !== "local") return "scope";
+  if (typeof volume.Mountpoint !== "string" || !isAbsolute(volume.Mountpoint))
+    return "mountpoint";
+  if (!(
+    volume.Labels === null ||
+    (typeof volume.Labels === "object" &&
+      volume.Labels !== null &&
+      Object.keys(volume.Labels).length === 0)
+  ))
+    return "labels";
+  return "matched";
+};
+const assertBuilderVolume = (volume, resources) => {
+  if (builderVolumeFailureReason(volume, resources) !== "matched")
     throw fixedError("integration.images.build");
   return Object.freeze({
     createdAt: volume.CreatedAt,
@@ -2199,8 +2281,8 @@ const inspectBuilderResources = async (
   resources,
   signal,
   policy = authority.policy,
-) =>
-  Promise.all([
+) => {
+  const observed = await Promise.all([
     inspectEngineObject({
       daemon: authority.daemon,
       engine: authority.engine,
@@ -2218,6 +2300,22 @@ const inspectBuilderResources = async (
       type: "volumes",
     }),
   ]);
+  authority.lastResourceObservation = Object.freeze({
+    responseBytes: observed.reduce(
+      (total, value) =>
+        total +
+        (value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value))),
+      0,
+    ),
+    observedCount: observed.filter((value) => value !== undefined).length,
+    observedDigest: diagnosticDigest(
+      observed.map((value) =>
+        value === undefined ? null : diagnosticDigest(value),
+      ),
+    ),
+  });
+  return observed;
+};
 const authenticateBuilderResources = (
   authority,
   resources,
@@ -2225,6 +2323,24 @@ const authenticateBuilderResources = (
   volume,
   requireRunning,
 ) => {
+  const containerReason =
+    container === undefined
+      ? "absent"
+      : builderContainerFailureReason(container, {
+          buildkit: authority.buildkit,
+          buildkitImage: authority.client.buildkitImage,
+          requireRunning,
+          resources,
+        });
+  const volumeReason =
+    volume === undefined
+      ? "absent"
+      : builderVolumeFailureReason(volume, resources);
+  authority.reconciliationReasons = Object.freeze({
+    builderContainer: containerReason,
+    builderVolume: volumeReason,
+    builtTag: authority.reconciliationReasons?.builtTag ?? "not-observed",
+  });
   const identity = Object.freeze({
     container:
       container === undefined
@@ -2245,8 +2361,22 @@ const authenticateBuilderResources = (
       JSON.stringify(identity.container) !== JSON.stringify(prior.container)) ||
       (identity.volume !== undefined &&
         JSON.stringify(identity.volume) !== JSON.stringify(prior.volume)))
-  )
+  ) {
+    authority.reconciliationReasons = Object.freeze({
+      builderContainer:
+        identity.container !== undefined &&
+        JSON.stringify(identity.container) !== JSON.stringify(prior.container)
+          ? "identity-substitution"
+          : containerReason,
+      builderVolume:
+        identity.volume !== undefined &&
+        JSON.stringify(identity.volume) !== JSON.stringify(prior.volume)
+          ? "identity-substitution"
+          : volumeReason,
+      builtTag: authority.reconciliationReasons.builtTag,
+    });
     throw fixedError("integration.images.containment");
+  }
   return identity;
 };
 const inspectBuiltTag = async (
@@ -2347,6 +2477,9 @@ const createBuildAuthority = async (client, policy, signal) => {
       deadline,
       environment: buildxEnvironment(client),
       input,
+      observeProcess: (diagnostic) => {
+        authority.lastProcessDiagnostic = diagnostic;
+      },
       signal,
       teardownMilliseconds: policy.teardownMilliseconds,
     };
@@ -2354,7 +2487,7 @@ const createBuildAuthority = async (client, policy, signal) => {
       ? runOwnedCommand(buildxExecutable, arguments_, options)
       : client.buildxRunForTesting(arguments_, options);
   };
-  return {
+  const authority = {
     builder,
     buildkit,
     client,
@@ -2363,7 +2496,14 @@ const createBuildAuthority = async (client, policy, signal) => {
     policy,
     run,
     signal,
+    currentOperationKind: "preflight",
+    reconciliationReasons: Object.freeze({
+      builderContainer: "not-observed",
+      builderVolume: "not-observed",
+      builtTag: "not-observed",
+    }),
   };
+  return authority;
 };
 const executeBuilderBuild = async (authority, options, archive) => {
   const { builder, buildkit, client, daemon, engine, policy, run, signal } =
@@ -2389,6 +2529,7 @@ const executeBuilderBuild = async (authority, options, archive) => {
   authority.resourcePreflightComplete = true;
   authority.tagPreflightComplete = true;
   authority.requestCapable = true;
+  authority.currentOperationKind = "builder-create";
   await run([
     "create",
     "--name",
@@ -2401,6 +2542,7 @@ const executeBuilderBuild = async (authority, options, archive) => {
     platformText(buildkit.platform),
     `unix://${client.socket.path}`,
   ]);
+  authority.currentOperationKind = "builder-bootstrap";
   await run(["inspect", "--builder", builder, "--bootstrap"]);
   const [container, volume] = await inspectBuilderResources(
     authority,
@@ -2414,6 +2556,7 @@ const executeBuilderBuild = async (authority, options, archive) => {
     volume,
     true,
   );
+  authority.currentOperationKind = "image-build";
   await run(
     buildArgumentsFor({
       ...options,
@@ -2459,6 +2602,10 @@ const settleBuiltTag = async (
     );
     if (terminal.Id !== built.Id)
       throw fixedError("integration.images.containment");
+    authority.reconciliationReasons = Object.freeze({
+      ...authority.reconciliationReasons,
+      builtTag: "matched",
+    });
     return;
   }
   const candidate = await inspectEngineObject({
@@ -2467,6 +2614,10 @@ const settleBuiltTag = async (
     name: options.tag,
     policy: reconciliationPolicy,
     type: "images",
+  });
+  authority.reconciliationReasons = Object.freeze({
+    ...authority.reconciliationReasons,
+    builtTag: candidate === undefined ? "absent" : "matched",
   });
   if (candidate !== undefined) {
     if (!authority.tagPreflightComplete)
@@ -2492,7 +2643,13 @@ const settleBuiltTag = async (
     policy: { ...policy, workDeadline: policy.deadline },
     type: "images",
   });
-  if (late !== undefined) throw fixedError("integration.images.containment");
+  if (late !== undefined) {
+    authority.reconciliationReasons = Object.freeze({
+      ...authority.reconciliationReasons,
+      builtTag: "late-publication",
+    });
+    throw fixedError("integration.images.containment");
+  }
 };
 const settleBuilderBuild = async (authority, options, built, failed) => {
   const { builder, client, daemon, engine, policy, run } = authority;
@@ -2579,6 +2736,60 @@ const settleBuilderBuild = async (authority, options, built, failed) => {
     throw fixedError("integration.images.containment");
   }
 };
+const recordPreparedDockerDiagnostic = (client, authority, labels, failure) => {
+  if (preparedDockerClientDiagnostics.has(client)) return;
+  const resources = builderResources(authority.builder);
+  const observation = authority.lastResourceObservation ?? {
+    responseBytes: 0,
+    observedCount: 0,
+    observedDigest: diagnosticDigest([]),
+  };
+  const processDiagnostic = processDiagnostics.get(failure) ??
+    authority.lastProcessDiagnostic ?? {
+      exited: false,
+      signaled: false,
+      timedOut: false,
+      joined: false,
+      outputBytes: 0,
+      outputTruncated: false,
+      stderrClass: "unknown",
+    };
+  preparedDockerClientDiagnostics.set(
+    client,
+    Object.freeze({
+      diagnosticVersion: 1,
+      stage: "builder-reconciliation",
+      operationKind: authority.currentOperationKind,
+      identityDigests: Object.freeze({
+        daemon: diagnosticDigest(authority.daemon),
+        builder: diagnosticDigest(authority.builder),
+        image: diagnosticDigest({
+          image: authority.buildkit.image,
+          configDigest: authority.buildkit.configDigest,
+        }),
+        platform: diagnosticDigest(authority.buildkit.platform),
+        runGeneration: diagnosticDigest(
+          labels["com.agentscope.integration.run"] ?? "unbound",
+        ),
+      }),
+      process: Object.freeze({ ...processDiagnostic }),
+      responseBytes: observation.responseBytes,
+      responseTruncated: false,
+      expectedResourceCount: 2,
+      observedResourceCount: observation.observedCount,
+      expectedResourceDigest: diagnosticDigest([
+        resources.container,
+        resources.volume,
+      ]),
+      observedResourceDigest: observation.observedDigest,
+      reconciliationReasons: authority.reconciliationReasons,
+      outcome: "retired-failure",
+    }),
+  );
+};
+
+export const preparedDockerClientDiagnostic = (client) =>
+  preparedDockerClientDiagnostics.get(client);
 
 export const buildPreparedDockerImage = async (
   client,
@@ -2642,6 +2853,7 @@ export const buildPreparedDockerImage = async (
         ].includes(failure?.message)))
   ) {
     uncertainPreparedDockerClients.add(client);
+    recordPreparedDockerDiagnostic(client, authority, labels, failure);
     throw failure;
   }
   try {
@@ -2652,8 +2864,10 @@ export const buildPreparedDockerImage = async (
       failure !== undefined,
     );
   } catch (error) {
-    if (authority.requestCapable === true)
+    if (authority.requestCapable === true) {
       uncertainPreparedDockerClients.add(client);
+      recordPreparedDockerDiagnostic(client, authority, labels, error);
+    }
     throw error;
   }
   if (failure !== undefined)

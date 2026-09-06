@@ -29,6 +29,7 @@ import {
   authenticateDockerSocketAliasForTesting,
   BUILDKIT_IMAGE,
   buildPreparedDockerImage,
+  classifyBuildxStderrForTesting,
   closePreparedDockerClient,
   createBoundedBuildContext,
   createPreparedDockerClient,
@@ -38,6 +39,7 @@ import {
   handlePreparedDockerCleanupFailure,
   markPreparedDockerClientForOuterHostRetirement,
   prepareDockerInvocation,
+  preparedDockerClientDiagnostic,
   preparedDockerClientRequiresOuterHostRetirement,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
@@ -1528,6 +1530,23 @@ describe("owned buildx process execution", () => {
   });
 });
 
+describe("content-free buildx failure classification", () => {
+  it.each([
+    ["builder already exists", "resource-conflict"],
+    ["failed to solve build graph", "build-failed"],
+    ["connection refused during bootstrap", "bootstrap-failed"],
+    ["operation not permitted", "permission-denied"],
+    ["provider detail that has no admitted class", "unknown"],
+    ["x".repeat(16_385), "unknown"],
+    [{ malformed: true }, "unknown"],
+  ])(
+    "classifies bounded input without retaining content %#",
+    (input, expected) => {
+      expect(classifyBuildxStderrForTesting(input)).toBe(expected);
+    },
+  );
+});
+
 // These cases share the exact builder fixture and exercise one lifecycle matrix.
 // eslint-disable-next-line max-lines-per-function
 describe("authenticated buildx consumption", () => {
@@ -1770,6 +1789,69 @@ describe("authenticated buildx consumption", () => {
           expect(() => {
             closePreparedDockerClient(client);
           }).toThrow("integration.images.docker-client");
+          const diagnostic = preparedDockerClientDiagnostic(client);
+          expect(diagnostic).toMatchObject({
+            diagnosticVersion: 1,
+            stage: "builder-reconciliation",
+            outcome: "retired-failure",
+            expectedResourceCount: 2,
+            responseTruncated: false,
+            process: {
+              exited: false,
+              signaled: false,
+              timedOut: false,
+              joined: false,
+              outputBytes: 0,
+              outputTruncated: false,
+              stderrClass: "unknown",
+            },
+          });
+          expect(diagnostic?.operationKind).toMatch(
+            /^(?:builder-create|builder-bootstrap|image-build)$/u,
+          );
+          expect(Object.values(diagnostic?.identityDigests ?? {})).toHaveLength(
+            5,
+          );
+          for (const digest of Object.values(diagnostic?.identityDigests ?? {}))
+            expect(digest).toMatch(/^sha256:[a-f\d]{64}$/u);
+          expect(diagnostic?.expectedResourceDigest).toMatch(
+            /^sha256:[a-f\d]{64}$/u,
+          );
+          expect(diagnostic?.observedResourceDigest).toMatch(
+            /^sha256:[a-f\d]{64}$/u,
+          );
+          expect(
+            Object.values(diagnostic?.reconciliationReasons ?? {}).every(
+              (reason) =>
+                [
+                  "not-observed",
+                  "absent",
+                  "matched",
+                  "id",
+                  "created",
+                  "name",
+                  "image-id",
+                  "image-reference",
+                  "platform",
+                  "network-mode",
+                  "network-attachment",
+                  "mount",
+                  "running-state",
+                  "driver",
+                  "scope",
+                  "mountpoint",
+                  "labels",
+                  "identity-substitution",
+                  "late-publication",
+                ].includes(reason),
+            ),
+          ).toBe(true);
+          const serialized = JSON.stringify(diagnostic);
+          expect(serialized).toMatch(/^\{"diagnosticVersion":1,/u);
+          expect(serialized).not.toContain(privateRoot);
+          expect(serialized).not.toContain(buildTag);
+          expect(serialized).not.toContain("com.agentscope.integration.run");
+          expect(serialized.length).toBeLessThan(4_096);
           rmSync(privateRoot, { force: true, recursive: true });
         } else {
           closePreparedDockerClient(client);
