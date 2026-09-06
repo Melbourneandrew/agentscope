@@ -1,11 +1,16 @@
 /* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
   cpSync,
+  fsyncSync,
   lstatSync,
+  linkSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -25,15 +30,32 @@ import {
   verifyManifestEvidence,
   verifyPreparedCandidate,
 } from "./dist/index.js";
+import {
+  buildPreparedDockerImage,
+  closePreparedDockerClient,
+  createPreparedDockerClient,
+  IMAGE_PREPARATION_EXECUTION_POLICY,
+  IMAGE_PREPARATION_LIMITS,
+  prepareDockerInvocation,
+  handlePreparedDockerCleanupFailure,
+  markPreparedDockerClientForOuterHostRetirement,
+  preparedDockerClientDiagnostic,
+  preparedDockerClientRequiresOuterHostRetirement,
+  readPreparedImageEvidence,
+  revalidatePreparedImageAdmission,
+} from "./image-preparation.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   integrationStageSignal,
+  registerIntegrationFailureEvidence,
   registerIntegrationRunIds,
+  requireIntegrationFailureEvidence,
   remainingIntegrationOperationMilliseconds,
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
 
 const capability = requireDisposableOuterHostCapability();
+const canonicalImagePlatform = `${IMAGE_PREPARATION_EXECUTION_POLICY.platform.os}/${IMAGE_PREPARATION_EXECUTION_POLICY.platform.architecture}`;
 
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
@@ -46,7 +68,6 @@ const manifest = compileCapabilityManifest(
 verifyManifestEvidence(manifest, integrationRoot);
 const selection = readJson(resolve(artifactsRoot, "current-selection.json"));
 const pointer = readJson(resolve(artifactsRoot, "current-candidate.json"));
-const imageEvidence = readJson(resolve(artifactsRoot, "current-images.json"));
 const modelRoutes = readJson(
   resolve(artifactsRoot, "current-model-routes.json"),
 );
@@ -70,6 +91,15 @@ const scenarioTimeoutMilliseconds = boundedInteger(
   5 * 60 * 1000,
   30 * 60 * 1000,
 );
+let preparedImageEvidence;
+try {
+  preparedImageEvidence = readPreparedImageEvidence(
+    resolve(artifactsRoot, "current-images.json"),
+    manifest.manifestIdentity,
+  );
+} catch {
+  throw new Error("integration.isolation.inputs");
+}
 if (
   testMode !== undefined &&
   testMode !== "failure" &&
@@ -86,9 +116,6 @@ if (
   typeof selection.selector !== "object" ||
   selection.selector === null ||
   !Array.isArray(selection.scenarioIds) ||
-  imageEvidence.imageEvidenceVersion !== 1 ||
-  imageEvidence.manifestIdentity !== manifest.manifestIdentity ||
-  !Array.isArray(imageEvidence.images) ||
   modelRoutes.routeFixtureVersion !== 1 ||
   !Array.isArray(modelRoutes.routeIds) ||
   !Array.isArray(modelRoutes.routes) ||
@@ -128,16 +155,33 @@ if (
 )
   throw new Error("integration.isolation.inputs");
 
-const docker = async (arguments_, options = {}) =>
-  execute(capability.binding.dockerExecutable, arguments_, {
-    encoding: "utf8",
-    env: capability.binding.dockerEnvironment,
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: remainingIntegrationOperationMilliseconds(
-      scenarioTimeoutMilliseconds,
-    ),
-    ...options,
-  });
+let preparedDockerClient;
+const docker = async (
+  arguments_,
+  { mutationCapable = false, ...options } = {},
+) => {
+  const invocation = await prepareDockerInvocation(
+    preparedDockerClient,
+    arguments_,
+    options.signal,
+  );
+  try {
+    return await execute(invocation.executable, invocation.arguments, {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: remainingIntegrationOperationMilliseconds(
+        scenarioTimeoutMilliseconds,
+      ),
+      ...options,
+      cwd: integrationRoot,
+      env: invocation.environment,
+    });
+  } catch (error) {
+    if (mutationCapable)
+      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
+};
 const dockerWithSignal = (arguments_, signal, options = {}) =>
   docker(arguments_, { ...options, signal });
 const ignoreMissing = async (arguments_, signal) => {
@@ -147,9 +191,7 @@ const ignoreMissing = async (arguments_, signal) => {
       timeout: remainingIntegrationOperationMilliseconds(30_000),
     });
   } catch (error) {
-    const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
-    if (!/(?:No such (?:container|image)|network .* not found)/u.test(output))
-      throw error;
+    handlePreparedDockerCleanupFailure(preparedDockerClient, error);
   }
 };
 const labelArguments = (plan) => [
@@ -317,6 +359,7 @@ const assertContainer = async (
 };
 
 const fixtureResults = new Map();
+const scenarioOutcomes = new Map();
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
 const activateRuns = async (plans) => {
@@ -367,21 +410,16 @@ const captureFixtureResult = (output, plan) => {
   return true;
 };
 const preparedImageFor = async (image, signal) => {
-  const prepared = imageEvidence.images.find((entry) => entry.image === image);
-  if (!prepared) throw new Error("integration.isolation.base-image");
-  const { stdout } = await dockerWithSignal(
-    ["image", "inspect", "--format", "{{.Id}}", image],
-    signal,
-  );
-  if (stdout.trim().replace(":", "-") !== prepared.localImageDigest)
+  if (
+    !(await revalidatePreparedImageAdmission(preparedImageEvidence, image, {
+      maximumPreparationMilliseconds: Math.min(
+        scenarioTimeoutMilliseconds,
+        30_000,
+      ),
+      signal,
+    }))
+  )
     throw new Error("integration.isolation.base-image");
-};
-const inspectImage = async (tag, signal) => {
-  const { stdout } = await dockerWithSignal(
-    ["image", "inspect", "--format", "{{.Id}}", tag],
-    signal,
-  );
-  return stdout.trim().replace(":", "-");
 };
 const inspectDockerRuntimeIdentity = async (signal) => {
   const [{ stdout: versionOutput }, { stdout: infoOutput }] = await Promise.all(
@@ -430,44 +468,40 @@ const inspectDockerRuntimeIdentity = async (signal) => {
 const buildImage = async (plan, signal) => {
   await preparedImageFor(plan.baseImage, signal);
   const context = stageBuildContext(plan);
-  await dockerWithSignal(
-    [
-      "build",
-      "--network",
-      "none",
-      "--pull=false",
-      ...labelArguments(plan),
-      "--build-arg",
-      `BASE_IMAGE=${plan.baseImage}`,
-      "--tag",
-      plan.imageTag,
-      context,
-    ],
+  return buildPreparedDockerImage(preparedDockerClient, {
+    buildArguments: { BASE_IMAGE: plan.baseImage },
+    context,
+    dockerfile: "Dockerfile",
+    labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": plan.runId,
+    },
+    maximumMilliseconds: Math.min(
+      scenarioTimeoutMilliseconds,
+      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+    ),
     signal,
-  );
-  return inspectImage(plan.imageTag, signal);
+    tag: plan.imageTag,
+  });
 };
 const buildMockServerImage = async (plan, signal) => {
   await preparedImageFor(plan.mockServerImage, signal);
   const context = resolve(artifactsRoot, "contexts", plan.runId);
-  await dockerWithSignal(
-    [
-      "build",
-      "--network",
-      "none",
-      "--pull=false",
-      ...labelArguments(plan),
-      "--file",
-      resolve(context, "MockServer.Dockerfile"),
-      "--build-arg",
-      `MOCKSERVER_IMAGE=${plan.mockServerImage}`,
-      "--tag",
-      plan.mockServerImageTag,
-      context,
-    ],
+  return buildPreparedDockerImage(preparedDockerClient, {
+    buildArguments: { MOCKSERVER_IMAGE: plan.mockServerImage },
+    context,
+    dockerfile: "MockServer.Dockerfile",
+    labels: {
+      "com.agentscope.integration": "true",
+      "com.agentscope.integration.run": plan.runId,
+    },
+    maximumMilliseconds: Math.min(
+      scenarioTimeoutMilliseconds,
+      IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
+    ),
     signal,
-  );
-  return inspectImage(plan.mockServerImageTag, signal);
+    tag: plan.mockServerImageTag,
+  });
 };
 const createNetwork = async (plan, signal) => {
   await dockerWithSignal(
@@ -479,12 +513,15 @@ const createNetwork = async (plan, signal) => {
       plan.networkName,
     ],
     signal,
+    { mutationCapable: true },
   );
 };
 const startCollector = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.collectorName,
       ...labelArguments(plan),
@@ -513,6 +550,7 @@ const startCollector = async (plan, signal) => {
       "ingestion",
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -521,12 +559,16 @@ const startCollector = async (plan, signal) => {
     signal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await dockerWithSignal(["start", plan.collectorName], signal);
+  await dockerWithSignal(["start", plan.collectorName], signal, {
+    mutationCapable: true,
+  });
 };
 const startRetrieval = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.retrievalName,
       ...labelArguments(plan),
@@ -555,6 +597,7 @@ const startRetrieval = async (plan, signal) => {
       "retrieval",
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -563,12 +606,16 @@ const startRetrieval = async (plan, signal) => {
     signal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await dockerWithSignal(["start", plan.retrievalName], signal);
+  await dockerWithSignal(["start", plan.retrievalName], signal, {
+    mutationCapable: true,
+  });
 };
 const startMockServer = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.mockServerName,
       ...labelArguments(plan),
@@ -592,6 +639,7 @@ const startMockServer = async (plan, signal) => {
       plan.mockServerImageTag,
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -599,7 +647,9 @@ const startMockServer = async (plan, signal) => {
     ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
     signal,
   );
-  await dockerWithSignal(["start", plan.mockServerName], signal);
+  await dockerWithSignal(["start", plan.mockServerName], signal, {
+    mutationCapable: true,
+  });
 };
 const runScenario = async (plan, signal) => {
   const testModeArguments =
@@ -609,6 +659,8 @@ const runScenario = async (plan, signal) => {
   await dockerWithSignal(
     [
       "create",
+      "--platform",
+      canonicalImagePlatform,
       "--name",
       plan.scenarioName,
       ...labelArguments(plan),
@@ -641,6 +693,7 @@ const runScenario = async (plan, signal) => {
       plan.imageTag,
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -649,11 +702,14 @@ const runScenario = async (plan, signal) => {
     signal,
   );
   if (testMode === "sidecar-failure")
-    await dockerWithSignal(["stop", plan.collectorName], signal);
+    await dockerWithSignal(["stop", plan.collectorName], signal, {
+      mutationCapable: true,
+    });
   try {
     const { stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
       signal,
+      { mutationCapable: true },
     );
     if (!captureFixtureResult(stdout, plan))
       throw new Error("integration.isolation.fixture-result");
@@ -663,13 +719,24 @@ const runScenario = async (plan, signal) => {
   }
 };
 const recordEvidence = async (evidence) => {
-  const verifiedEvidence = compileIsolationEvidence(evidence);
+  const verifiedEvidence = compileIsolationEvidence(evidence, {
+    baseImageIdentity: preparedIdentityFor(evidence.baseImage),
+    mockServerImageIdentity: preparedIdentityFor(evidence.mockServerImage),
+  });
   const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
   mkdirSync(directory, { recursive: true });
   writeFileSync(
     resolve(directory, "evidence.json"),
     `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
   );
+  scenarioOutcomes.set(verifiedEvidence.runId, verifiedEvidence.outcome);
+  const diagnostic = preparedDockerClientDiagnostic(preparedDockerClient);
+  if (diagnostic !== undefined)
+    writeFileSync(
+      resolve(directory, "diagnostic.json"),
+      `${JSON.stringify(diagnostic, undefined, 2)}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
   const result = fixtureResults.get(verifiedEvidence.runId);
   if (
     verifiedEvidence.outcome === "passed" &&
@@ -701,6 +768,134 @@ const recordEvidence = async (evidence) => {
       )}\n`,
     );
     fixtureResults.delete(verifiedEvidence.runId);
+  }
+};
+
+const failureCode = (error) =>
+  error instanceof Error && /^integration\.[a-z.-]{1,96}$/u.test(error.message)
+    ? error.message
+    : "integration.controller.failed";
+const finalizeControllerFailureEvidence = (
+  plan,
+  primaryError,
+  cleanupError,
+) => {
+  const directory = resolve(artifactsRoot, "runs", plan.runId);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const record = {
+    controllerFailureEvidenceVersion: 1,
+    runId: plan.runId,
+    scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
+    controllerOutcome: "retired-failure",
+    primaryFailure: failureCode(primaryError),
+    cleanupFailure:
+      cleanupError === undefined ? null : failureCode(cleanupError),
+    privateCleanup:
+      preparedDockerClientDiagnostic(preparedDockerClient) ?? null,
+  };
+  const serialized = `${JSON.stringify(record, undefined, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > 16_384)
+    throw new Error("integration.controller.failure-evidence");
+  const target = resolve(directory, "controller-failure.json");
+  const temporary = resolve(
+    directory,
+    `.controller-failure.${process.pid}.tmp`,
+  );
+  let descriptor;
+  let directoryDescriptor;
+  try {
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(directory, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.controller.failure-evidence");
+    const identity = Object.freeze({
+      dev: status.dev,
+      digest: `sha256:${createHash("sha256").update(serialized).digest("hex")}`,
+      ino: status.ino,
+      runId: plan.runId,
+      size: status.size,
+    });
+    registerIntegrationFailureEvidence(identity);
+    return identity;
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.controller.failure-evidence", {
+      cause: error,
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
+};
+const publishControllerFailureManifest = (identities) => {
+  const record = {
+    controllerFailureManifestVersion: 1,
+    controllerAuthorityDigest:
+      capability.binding.privateStorage.authorityDigest,
+    runIds: identities.map(({ runId }) => runId).sort(),
+    failureEvidence: [...identities].sort((left, right) =>
+      left.runId.localeCompare(right.runId),
+    ),
+  };
+  const serialized = `${JSON.stringify(record, undefined, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > 65_536)
+    throw new Error("integration.controller.failure-evidence");
+  const target = resolve(artifactsRoot, "controller-failure-manifest.json");
+  const temporary = resolve(
+    artifactsRoot,
+    `.controller-failure-manifest.${process.pid}.tmp`,
+  );
+  let descriptor;
+  let directoryDescriptor;
+  try {
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(artifactsRoot, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.controller.failure-evidence");
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.controller.failure-evidence", {
+      cause: error,
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
   }
 };
 const countDockerResources = async (kind, plan, signal) => {
@@ -804,12 +999,26 @@ const scenarios = selectedScenarios.map((scenario) => {
     throw new Error("integration.isolation.model-routes");
   return scenario;
 });
+const preparedIdentityFor = (image) => {
+  const prepared = preparedImageEvidence.images.find(
+    (candidate) => candidate.image === image,
+  );
+  if (prepared === undefined) throw new Error("integration.isolation.inputs");
+  return {
+    image: prepared.image,
+    platform: prepared.platform,
+    manifestDigest: prepared.manifestDigest,
+    configDigest: prepared.configDigest,
+  };
+};
 const plans = scenarios.map((scenario) =>
   createIsolationPlan({
     scenario,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
     runToken: randomBytes(8).toString("hex"),
+    baseImageIdentity: preparedIdentityFor(scenario.image),
+    mockServerImageIdentity: preparedIdentityFor(scenario.mockServerImage),
     selection: executorSelection,
     maximumParallelScenarios: scenarioConcurrency,
     scenarioTimeoutMilliseconds,
@@ -820,6 +1029,12 @@ const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
 process.once("SIGTERM", abort);
+preparedDockerClient = createPreparedDockerClient(preparedImageEvidence, {
+  dockerEnvironment: capability.binding.dockerEnvironment,
+  dockerExecutable: capability.binding.dockerExecutable,
+});
+let retirementRequired = false;
+let primaryError;
 try {
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
@@ -837,9 +1052,43 @@ try {
       ),
   );
   console.log(JSON.stringify(evidence));
+} catch (error) {
+  if (
+    preparedDockerClient !== undefined &&
+    preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
+  ) {
+    retirementRequired = true;
+    primaryError = new Error("integration.controller.unsettled-operation", {
+      cause: error,
+    });
+  } else {
+    primaryError = error;
+  }
 } finally {
   for (const plan of plans)
     rmSync(activeMarkerFor(plan.runId), { force: true });
   process.removeListener("SIGINT", abort);
   process.removeListener("SIGTERM", abort);
+  let cleanupError;
+  if (preparedDockerClient !== undefined && !retirementRequired) {
+    try {
+      closePreparedDockerClient(preparedDockerClient);
+    } catch (error) {
+      cleanupError = error;
+      primaryError ??= error;
+    }
+  }
+  if (primaryError !== undefined) {
+    try {
+      requireIntegrationFailureEvidence(plans.map(({ runId }) => runId));
+      const identities = plans.map((plan) =>
+        finalizeControllerFailureEvidence(plan, primaryError, cleanupError),
+      );
+      publishControllerFailureManifest(identities);
+    } catch {
+      // The original controller failure remains primary. The workflow's
+      // always-run exact verifier independently fails if evidence is absent.
+    }
+  }
 }
+if (primaryError !== undefined) throw primaryError;

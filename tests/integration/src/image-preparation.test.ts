@@ -1,323 +1,2407 @@
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
+  renameSync,
   rmSync,
+  symlinkSync,
+  truncateSync,
+  unlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
+import { createServer } from "node:http";
+import { get as httpsGet, createServer as createHttpsServer } from "node:https";
+import type { Socket } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { PreparedDockerImageSet } from "../image-preparation.mjs";
+
 import {
+  assertImagePreparationPlatformForTesting,
+  authenticateDockerSocketAliasForTesting,
+  BUILDKIT_IMAGE,
+  buildPreparedDockerImage,
+  classifyBuildxStderrForTesting,
+  closePreparedDockerClient,
+  createBoundedBuildContext,
+  createPreparedDockerClient,
   IMAGE_PREPARATION_LIMITS,
-  classifyProcessGroupState,
+  IMAGE_PREPARATION_EXECUTION_POLICY,
+  imagePreparationFailureRequiresOuterHostRetirement,
+  handlePreparedDockerCleanupFailure,
+  markPreparedDockerClientForOuterHostRetirement,
+  prepareDockerInvocation,
+  preparedDockerClientDiagnostic,
+  preparedDockerClientRequiresOuterHostRetirement,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
+  probePinnedRegistryTlsForTesting,
+  readPreparedImageEvidence,
+  revalidatePreparedImageAdmission,
+  retirePreparedImageEvidence,
+  runOwnedImageCommandForTesting,
+  validatePreparedImageEvidence,
 } from "../image-preparation.mjs";
 
-const fixture = resolve(
-  import.meta.dirname,
-  "../fixtures/image-preparation-process.mjs",
-);
-const image = `example.invalid/fixture@sha256:${"b".repeat(64)}`;
-const roots: string[] = [];
-const createRoot = () => {
-  const root = mkdtempSync(resolve(tmpdir(), "agentscope-image-preparation-"));
-  roots.push(root);
-  return root;
+const derLength = (length: number) => {
+  if (length < 128) return Buffer.from([length]);
+  const bytes = [];
+  for (let remaining = length; remaining > 0; remaining >>>= 8)
+    bytes.unshift(remaining & 0xff);
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
 };
-const options = (root: string, mode: string) => ({
-  dockerExecutable: process.execPath,
-  dockerArgumentsPrefix: [fixture],
-  environment: {
-    ...process.env,
-    AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
-    AGENTSCOPE_IMAGE_FIXTURE_ROOT: root,
-    DOCKER_AUTH_CONFIG: "CANARY_AUTHORITY",
-    DOCKER_CONFIG: "/forbidden/developer/docker-config",
-  },
-  maximumPreparationMilliseconds: 2_000,
-  teardownMilliseconds: 500,
-});
-const waitForFile = async (path: string) => {
-  const deadline = performance.now() + 1_000;
-  while (!existsSync(path)) {
-    if (performance.now() >= deadline)
-      throw new Error("integration.images.fixture");
-    await new Promise((resolveWait) => setTimeout(resolveWait, 5));
+const der = (tag: number, ...values: Buffer[]) => {
+  const value = Buffer.concat(values);
+  return Buffer.concat([Buffer.from([tag]), derLength(value.length), value]);
+};
+const signatureAlgorithm = der(
+  0x30,
+  der(0x06, Buffer.from("2a864886f70d01010b", "hex")),
+  der(0x05),
+);
+const certificateName = der(
+  0x30,
+  der(
+    0x31,
+    der(
+      0x30,
+      der(0x06, Buffer.from("550403", "hex")),
+      der(0x0c, Buffer.from("127.0.0.1")),
+    ),
+  ),
+);
+const certificateExtensions = der(
+  0xa3,
+  der(
+    0x30,
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d13", "hex")),
+      der(0x01, Buffer.from([0xff])),
+      der(0x04, der(0x30)),
+    ),
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d0f", "hex")),
+      der(0x01, Buffer.from([0xff])),
+      der(0x04, der(0x03, Buffer.from([5, 0xa0]))),
+    ),
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d25", "hex")),
+      der(0x04, der(0x30, der(0x06, Buffer.from("2b06010505070301", "hex")))),
+    ),
+    der(
+      0x30,
+      der(0x06, Buffer.from("551d11", "hex")),
+      der(0x04, der(0x30, der(0x87, Buffer.from([127, 0, 0, 1])))),
+    ),
+  ),
+);
+const pem = (label: string, value: Buffer) => {
+  const body = value
+    .toString("base64")
+    .match(/.{1,64}/gu)
+    ?.join("\n");
+  if (body === undefined) throw new Error("fixture PEM encoding failed");
+  return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
+};
+const createSelfSignedTlsFixture = () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const subjectPublicKey = publicKey.export({ format: "der", type: "spki" });
+  const validity = der(
+    0x30,
+    der(0x17, Buffer.from("200101000000Z")),
+    der(0x17, Buffer.from("491231235959Z")),
+  );
+  const certificateBody = der(
+    0x30,
+    der(0xa0, der(0x02, Buffer.from([2]))),
+    der(0x02, Buffer.from([1])),
+    signatureAlgorithm,
+    certificateName,
+    validity,
+    certificateName,
+    subjectPublicKey,
+    certificateExtensions,
+  );
+  const signature = sign("sha256", certificateBody, privateKey);
+  return {
+    key: privateKey.export({ format: "pem", type: "pkcs8" }),
+    certificate: pem(
+      "CERTIFICATE",
+      der(
+        0x30,
+        certificateBody,
+        signatureAlgorithm,
+        der(0x03, Buffer.from([0]), signature),
+      ),
+    ),
+  };
+};
+const selfSignedTls = createSelfSignedTlsFixture();
+const requestTrustedSelfSignedFixture = async (port: number) => {
+  const signal = AbortSignal.timeout(5_000);
+  let request: ReturnType<typeof httpsGet> | undefined;
+  try {
+    await new Promise<void>((resolveRequest, rejectRequest) => {
+      request = httpsGet(
+        {
+          ca: selfSignedTls.certificate,
+          hostname: "127.0.0.1",
+          path: "/",
+          port,
+          rejectUnauthorized: true,
+          signal,
+        },
+        (response) => {
+          response.resume();
+          response.once("end", () => {
+            if (response.statusCode === 200) resolveRequest();
+            else rejectRequest(new Error("fixture TLS response failed"));
+          });
+        },
+      );
+      request.once("error", rejectRequest);
+    });
+  } finally {
+    request?.destroy();
   }
 };
-const proveDescendantAbsent = (root: string) => {
-  const pid = Number(readFileSync(resolve(root, "ready"), "utf8"));
-  expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
-  expect(() => process.kill(pid, 0)).toThrow(
-    expect.objectContaining({ code: "ESRCH" }),
-  );
+
+const sha256 = (value: Buffer | string) =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const configBlob = Buffer.from(
+  JSON.stringify({ architecture: "amd64", os: "linux", rootfs: {} }),
+);
+const configDigest = sha256(configBlob);
+const selectedManifest = Buffer.from(
+  JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    config: {
+      mediaType: "application/vnd.oci.image.config.v1+json",
+      digest: configDigest,
+      size: configBlob.byteLength,
+    },
+    layers: [],
+  }),
+);
+const selectedManifestDigest = sha256(selectedManifest);
+const imageIndex = Buffer.from(
+  JSON.stringify({
+    schemaVersion: 2,
+    mediaType: "application/vnd.oci.image.index.v1+json",
+    manifests: [
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: selectedManifestDigest,
+        size: selectedManifest.byteLength,
+        platform: { os: "linux", architecture: "amd64" },
+      },
+      {
+        mediaType: "application/vnd.oci.image.manifest.v1+json",
+        digest: `sha256:${"c".repeat(64)}`,
+        size: 321,
+        platform: { os: "linux", architecture: "arm64", variant: "v8" },
+      },
+    ],
+  }),
+);
+const image = `fixture@${sha256(imageIndex)}`;
+const manifestIdentity = `sha256-${"f".repeat(64)}`;
+const socket = Object.freeze({
+  path: "/var/run/docker.sock",
+  device: "1",
+  inode: "2",
+  mode: "49663",
+  owner: "0",
+});
+const daemon = Object.freeze({
+  endpoint: socket.path,
+  socketDevice: socket.device,
+  socketInode: socket.inode,
+  id: "fixture-daemon",
+  serverVersion: "fixture-server",
+  apiVersion: "1.50",
+  product: "Docker Engine - Community",
+  operatingSystem: "Ubuntu 24.04 LTS",
+  osType: "linux",
+  architecture: "amd64",
+});
+const version = JSON.stringify({
+  Version: daemon.serverVersion,
+  ApiVersion: daemon.apiVersion,
+  Platform: { Name: daemon.product },
+});
+const local = JSON.stringify({
+  Id: configDigest,
+  Os: "linux",
+  Architecture: "amd64",
+  Variant: "",
+  RepoDigests: [image],
+});
+const roots: string[] = [];
+const root = () => {
+  const value = mkdtempSync(resolve(tmpdir(), "agentscope-image-test-"));
+  roots.push(value);
+  return value;
 };
-const proveProcessGroupAbsent = (processGroup: number | undefined) => {
-  if (
-    processGroup === undefined ||
-    !Number.isSafeInteger(processGroup) ||
-    processGroup < 1
-  )
-    throw new Error("integration.images.fixture");
-  expect(() => process.kill(-processGroup, 0)).toThrow(
-    expect.objectContaining({ code: "ESRCH" }),
-  );
+const executableFixture = (directory = root()) => {
+  const path = resolve(directory, "executable");
+  const executable = realpathSync(process.execPath).replaceAll("'", "'\\''");
+  writeFileSync(path, `#!/bin/sh\nexec '${executable}' "$@"\n`);
+  chmodSync(path, 0o500);
+  return path;
 };
+
+type Request = {
+  body?: Buffer;
+  method: string;
+  origin?: URL;
+  path: string;
+  headers: Record<string, string>;
+  maximumBytes: number;
+  signal?: AbortSignal;
+};
+type Response = {
+  statusCode: number;
+  headers?: Record<string, string>;
+  body: Buffer | string;
+};
+const builderInspection = (
+  name: string,
+  {
+    createdAt,
+    mismatched = false,
+    networkMode = "bridge",
+    networks = ["bridge"],
+    wrongMount = false,
+  }: {
+    createdAt: string;
+    mismatched?: boolean;
+    networkMode?: string;
+    networks?: readonly string[];
+    wrongMount?: boolean;
+  },
+) => ({
+  statusCode: 200,
+  body: JSON.stringify({
+    Id: "c".repeat(64),
+    Created: createdAt,
+    Name: `/${name}`,
+    Image: mismatched ? `sha256:${"f".repeat(64)}` : configDigest,
+    Config: {
+      Image: image,
+    },
+    State: { Running: true },
+    Platform: "linux",
+    HostConfig: { NetworkMode: networkMode },
+    NetworkSettings: {
+      Networks: Object.fromEntries(networks.map((network) => [network, {}])),
+    },
+    Mounts: [
+      {
+        Type: "volume",
+        Name: wrongMount ? "shared-state" : `${name}_state`,
+        Destination: "/var/lib/buildkit",
+        RW: true,
+      },
+    ],
+  }),
+});
+const runFixtureBuildx = async (
+  state: {
+    buildFailure: boolean;
+    builderContainer: string | undefined;
+    builderVolume: string | undefined;
+    built: boolean;
+    calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
+    cleanupLeak: boolean;
+    createFailureCollision: boolean;
+    createTimeoutAfterResources: boolean;
+    diagnosticObservations: boolean;
+    unprovedContainment: boolean;
+  },
+  arguments_: readonly string[],
+  options: {
+    input?: Buffer;
+    observeProcess?: (diagnostic: Readonly<Record<string, unknown>>) => void;
+  },
+) => {
+  await Promise.resolve();
+  state.calls.push({
+    arguments_,
+    ...(options.input === undefined ? {} : { input: options.input }),
+  });
+  const command = arguments_[0];
+  const observe = (stderrClass = "unknown") => {
+    if (!state.diagnosticObservations) return;
+    options.observeProcess?.({
+      observed: true,
+      exited: true,
+      signaled: false,
+      timedOut: false,
+      joined: true,
+      outputBytes: command === "build" ? 23 : 0,
+      outputTruncated: false,
+      stderrClass,
+    });
+  };
+  if (command === "create") {
+    const builder = arguments_[arguments_.indexOf("--name") + 1];
+    if (builder === undefined) throw new Error("missing builder name");
+    state.builderContainer = `buildx_buildkit_${builder}0`;
+    state.builderVolume = `${state.builderContainer}_state`;
+    if (state.unprovedContainment) {
+      const error = new Error("integration.images.containment");
+      Object.assign(error, { code: "ETIMEDOUT", containmentProved: false });
+      throw error;
+    }
+    if (state.createFailureCollision)
+      throw new Error("integration.images.command");
+    if (state.createTimeoutAfterResources) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 310));
+      const error = new Error("integration.images.timeout");
+      Object.assign(error, { code: "ETIMEDOUT" });
+      throw error;
+    }
+    return builder;
+  }
+  if (command === "inspect") {
+    observe();
+    return "fixture builder\n";
+  }
+  if (command === "build") {
+    if (state.buildFailure) {
+      observe("build-failed");
+      throw new Error("integration.images.command");
+    }
+    observe();
+    state.built = true;
+    return "fixture build complete\n";
+  }
+  if (command === "rm") {
+    if (state.createTimeoutAfterResources) {
+      const error = new Error("integration.images.timeout");
+      Object.assign(error, { code: "ETIMEDOUT" });
+      throw error;
+    }
+    state.builderContainer = undefined;
+    if (!state.cleanupLeak) state.builderVolume = undefined;
+    observe("resource-conflict");
+    return "";
+  }
+  throw new Error("unexpected buildx command");
+};
+
+// The simulated daemon keeps one coherent mutable lifecycle across all endpoints.
+const engineFixture = ({
+  builderNetworkMode = "bridge",
+  builderNetworks = ["bridge"],
+  builderMismatch = false,
+  buildFailure = false,
+  buildTag,
+  cleanupLeak = false,
+  createdAt = new Date().toISOString(),
+  createFailureCollision = false,
+  createTimeoutAfterResources = false,
+  diagnosticObservations = false,
+  daemonArchitecture = daemon.architecture,
+  daemonSwitch = false,
+  dockerDesktop = false,
+  lateTagAfterDelete = false,
+  localValue = local,
+  localInitiallyPresent = true,
+  preexistingVolume = false,
+  preexistingTag = false,
+  pullCompletesThenDisconnect = false,
+  pullFailure = false,
+  substituteAfterBuild = false,
+  unprovedContainment = false,
+  wrongMount = false,
+  wrongVolume = false,
+  wrongVolumeLabels = false,
+}: {
+  builderNetworkMode?: string;
+  builderNetworks?: readonly string[];
+  builderMismatch?: boolean;
+  buildFailure?: boolean;
+  buildTag?: string;
+  cleanupLeak?: boolean;
+  createdAt?: string;
+  createFailureCollision?: boolean;
+  createTimeoutAfterResources?: boolean;
+  diagnosticObservations?: boolean;
+  daemonArchitecture?: string;
+  daemonSwitch?: boolean;
+  dockerDesktop?: boolean;
+  lateTagAfterDelete?: boolean;
+  localValue?: string;
+  localInitiallyPresent?: boolean;
+  preexistingVolume?: boolean;
+  preexistingTag?: boolean;
+  pullCompletesThenDisconnect?: boolean;
+  pullFailure?: boolean;
+  substituteAfterBuild?: boolean;
+  unprovedContainment?: boolean;
+  wrongMount?: boolean;
+  wrongVolume?: boolean;
+  wrongVolumeLabels?: boolean;
+  // eslint-disable-next-line max-lines-per-function
+} = {}) => {
+  const requests: Request[] = [];
+  let infoCount = 0;
+  let pulled = localInitiallyPresent;
+  const fixtureCreatedAt = createdAt;
+  const state: {
+    buildFailure: boolean;
+    builderContainer: string | undefined;
+    builderVolume: string | undefined;
+    built: boolean;
+    calls: Array<{ arguments_: readonly string[]; input?: Buffer }>;
+    cleanupLeak: boolean;
+    createFailureCollision: boolean;
+    createTimeoutAfterResources: boolean;
+    diagnosticObservations: boolean;
+    imageDeleted: boolean;
+    tagInspectionCount: number;
+    unprovedContainment: boolean;
+  } = {
+    buildFailure,
+    builderContainer: undefined,
+    builderVolume: undefined,
+    built: false,
+    calls: [],
+    cleanupLeak,
+    createFailureCollision,
+    createTimeoutAfterResources,
+    diagnosticObservations,
+    imageDeleted: false,
+    tagInspectionCount: 0,
+    unprovedContainment,
+  };
+  // One stateful endpoint matrix intentionally models cross-request races.
+  // eslint-disable-next-line complexity, max-lines-per-function -- one stateful daemon lifecycle fixture
+  const request = async (entry: Request): Promise<Response> => {
+    await Promise.resolve();
+    requests.push(entry);
+    if (entry.signal?.aborted)
+      throw new Error("integration.images.interrupted");
+    if (entry.path === "/version")
+      return {
+        statusCode: 200,
+        body: dockerDesktop
+          ? JSON.stringify({
+              Version: daemon.serverVersion,
+              ApiVersion: daemon.apiVersion,
+              Platform: { Name: "Docker Desktop" },
+            })
+          : version,
+      };
+    if (entry.path === "/v1.50/info") {
+      infoCount += 1;
+      return {
+        statusCode: 200,
+        body:
+          daemonSwitch && infoCount > 1
+            ? JSON.stringify({
+                ID: "other-daemon",
+                OperatingSystem: daemon.operatingSystem,
+                OSType: "linux",
+                Architecture: daemonArchitecture,
+              })
+            : dockerDesktop
+              ? JSON.stringify({
+                  ID: daemon.id,
+                  OperatingSystem: "Docker Desktop",
+                  OSType: daemon.osType,
+                  Architecture: daemonArchitecture,
+                })
+              : JSON.stringify({
+                  ID: daemon.id,
+                  OperatingSystem: daemon.operatingSystem,
+                  OSType: daemon.osType,
+                  Architecture: daemonArchitecture,
+                }),
+      };
+    }
+    if (
+      state.builderContainer !== undefined &&
+      entry.path ===
+        `/v1.50/containers/${encodeURIComponent(state.builderContainer)}/json`
+    )
+      return builderInspection(state.builderContainer, {
+        createdAt: fixtureCreatedAt,
+        mismatched: builderMismatch || (state.built && substituteAfterBuild),
+        networkMode: builderNetworkMode,
+        networks: builderNetworks,
+        wrongMount,
+      });
+    if (
+      preexistingVolume &&
+      state.builderVolume === undefined &&
+      entry.method === "GET" &&
+      entry.path.includes("/volumes/buildx_buildkit_agentscope-")
+    )
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          Name: decodeURIComponent(entry.path.split("/volumes/")[1]!),
+          Driver: "local",
+          Scope: "local",
+          Labels: null,
+          CreatedAt: fixtureCreatedAt,
+          Mountpoint: `/var/lib/docker/volumes/${state.builderVolume}/_data`,
+        }),
+      };
+    if (
+      state.builderVolume !== undefined &&
+      entry.path === `/v1.50/volumes/${encodeURIComponent(state.builderVolume)}`
+    )
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          Name: state.builderVolume,
+          Driver: wrongVolume ? "shared" : "local",
+          Scope: "local",
+          Labels: wrongVolumeLabels ? { foreign: "true" } : null,
+          CreatedAt: fixtureCreatedAt,
+          Mountpoint: `/var/lib/docker/volumes/${state.builderVolume}/_data`,
+        }),
+      };
+    if (
+      buildTag !== undefined &&
+      entry.path === `/v1.50/images/${encodeURIComponent(buildTag)}/json`
+    ) {
+      state.tagInspectionCount += 1;
+      if (lateTagAfterDelete && state.tagInspectionCount >= 3)
+        state.built = true;
+      return state.built || preexistingTag
+        ? {
+            statusCode: 200,
+            body: JSON.stringify({
+              Id: configDigest,
+              Created: preexistingTag
+                ? "2000-01-01T00:00:00.000Z"
+                : fixtureCreatedAt,
+              RepoTags: [buildTag],
+              Config: {
+                Labels: { "com.agentscope.integration": "true" },
+              },
+              Os: "linux",
+              Architecture: "amd64",
+              Variant: "",
+            }),
+          }
+        : { statusCode: 404, body: "{}" };
+    }
+    if (entry.method === "DELETE") {
+      if (entry.path.includes("/containers/"))
+        state.builderContainer = undefined;
+      if (entry.path.includes("/volumes/") && !cleanupLeak)
+        state.builderVolume = undefined;
+      if (entry.path.includes("/images/")) {
+        state.built = false;
+        state.imageDeleted = true;
+        return { statusCode: 200, body: "[]" };
+      }
+      return { statusCode: 204, body: "" };
+    }
+    if (
+      entry.method === "GET" &&
+      (entry.path.includes("/containers/") || entry.path.includes("/volumes/"))
+    )
+      return { statusCode: 404, body: "{}" };
+    if (entry.method === "POST") {
+      if (pullCompletesThenDisconnect) {
+        pulled = true;
+        throw new Error("response lost after daemon completion");
+      }
+      if (pullFailure) throw new Error("transport disconnected");
+      pulled = true;
+      return { statusCode: 200, body: '{"status":"pulled"}\n' };
+    }
+    if (entry.path.includes("/images/"))
+      return pulled
+        ? { statusCode: 200, body: localValue }
+        : { statusCode: 404, body: "{}" };
+    throw new Error(`unexpected engine path ${entry.path}`);
+  };
+  return {
+    buildxCalls: state.calls,
+    buildxRun: (
+      arguments_: readonly string[],
+      runOptions: { input?: Buffer },
+    ) => runFixtureBuildx(state, arguments_, runOptions),
+    request,
+    requests,
+  };
+};
+
+const registryFixture = ({
+  config = configBlob,
+  redirectConfig = false,
+  rootManifest = imageIndex,
+  selected = selectedManifest,
+}: {
+  config?: Buffer;
+  redirectConfig?: boolean;
+  rootManifest?: Buffer;
+  selected?: Buffer;
+} = {}) => {
+  const requests: Request[] = [];
+  const request = async (entry: Request): Promise<Response> => {
+    await Promise.resolve();
+    requests.push(entry);
+    expect(entry.origin?.protocol).toBe("https:");
+    expect(entry.origin?.hostname).toMatch(
+      /^(?:(?:registry-1|auth)\.docker\.io|production\.(?:cloudflare|cloudfront)\.docker\.com)$/u,
+    );
+    if (entry.origin?.hostname === "production.cloudfront.docker.com")
+      return {
+        statusCode: 200,
+        headers: { "content-type": "application/octet-stream" },
+        body: config,
+      };
+    if (entry.origin?.hostname === "auth.docker.io")
+      return { statusCode: 200, body: '{"token":"fixture-token"}' };
+    if (entry.headers.Authorization === undefined)
+      return {
+        statusCode: 401,
+        headers: {
+          "www-authenticate":
+            'Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/fixture:pull"',
+        },
+        body: "",
+      };
+    if (entry.path.endsWith(`/manifests/${image.split("@")[1]}`))
+      return {
+        statusCode: 200,
+        headers: {
+          "content-type": "application/vnd.oci.image.index.v1+json",
+          "docker-content-digest": sha256(rootManifest),
+        },
+        body: rootManifest,
+      };
+    if (entry.path.endsWith(`/manifests/${selectedManifestDigest}`))
+      return {
+        statusCode: 200,
+        headers: {
+          "content-type": "application/vnd.oci.image.manifest.v1+json",
+          "docker-content-digest": sha256(selected),
+        },
+        body: selected,
+      };
+    if (entry.path.endsWith(`/blobs/${configDigest}`))
+      if (redirectConfig)
+        return {
+          statusCode: 307,
+          headers: {
+            location:
+              "https://production.cloudfront.docker.com/registry-v2/docker/registry/v2/blobs/config?sig=fixed",
+          },
+          body: "",
+        };
+      else
+        return {
+          statusCode: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "docker-content-digest": sha256(config),
+          },
+          body: config,
+        };
+    throw new Error(`unexpected registry path ${entry.path}`);
+  };
+  return { request, requests };
+};
+
+const options = (engine = engineFixture(), registry = registryFixture()) => ({
+  socketIdentityForTesting: socket,
+  engineRequestForTesting: engine.request,
+  registryRequestForTesting: registry.request,
+  maximumPreparationMilliseconds: 4_000,
+  teardownMilliseconds: 500,
+  afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+});
+const prepared = () => ({
+  imageEvidenceVersion: 2,
+  manifestIdentity,
+  dockerSocket: socket,
+  dockerDaemon: daemon,
+  preparationPolicy: {
+    maximumPreparationMilliseconds: 4_000,
+    teardownMilliseconds: 500,
+    maximumResponseBytes: 1_048_576,
+    maximumManifestBytes: 1_048_576,
+    maximumEvidenceBytes: 8_388_608,
+  },
+  terminalCleanup: {
+    daemon: "stable",
+    handles: "settled",
+    privateState: "retained-for-outer-host-retirement",
+  },
+  images: [
+    {
+      image,
+      platform: { os: "linux", architecture: "amd64" },
+      manifestDigest: selectedManifestDigest,
+      configDigest,
+      rootManifest: imageIndex.toString("base64"),
+      selectedManifest: selectedManifest.toString("base64"),
+      configBlob: configBlob.toString("base64"),
+    },
+  ],
+});
 
 afterEach(() => {
-  for (const root of roots.splice(0))
-    rmSync(root, { force: true, recursive: true });
+  for (const value of roots.splice(0))
+    rmSync(value, { force: true, recursive: true });
 });
+const removeRetainedRoot = (value: string | undefined) => {
+  expect(value).toBeTypeOf("string");
+  if (value === undefined) throw new Error("missing private root");
+  expect(existsSync(value)).toBe(true);
+  rmSync(value, { force: true, recursive: true });
+  roots.splice(roots.indexOf(value), 1);
+};
 
-describe("pinned Docker image preparation", () => {
-  it("uses a private credential-free Docker config and returns exact evidence", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], options(root, "success")),
-    ).resolves.toEqual([
-      { image, localImageDigest: `sha256-${"a".repeat(64)}` },
-    ]);
-    const record = JSON.parse(
-      readFileSync(resolve(root, "record.json"), "utf8"),
-    ) as {
-      dockerAuthConfigPresent: boolean;
-      dockerConfigPath: string;
-      dockerConfig: unknown;
-    };
-    expect(record).toMatchObject({
-      commandArguments: ["image", "inspect", "--format", "{{.Id}}", image],
-      dockerAuthConfigPresent: false,
-      dockerConfig: { auths: {} },
-    });
-    expect(existsSync(record.dockerConfigPath)).toBe(false);
-  });
-
-  it("kills and joins a signal-resistant process group before retry", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang-once"),
-        closeBarrier: () => Promise.resolve(),
-        maximumPreparationMilliseconds: 1_500,
-        teardownMilliseconds: 500,
-      }),
-    ).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
-    proveDescendantAbsent(root);
-    await expect(
-      preparePinnedDockerImages([image], options(root, "hang-once")),
-    ).resolves.toHaveLength(1);
-  });
-
-  it("joins the process group when the owning preparation is interrupted", async () => {
-    const root = createRoot();
-    const controller = new AbortController();
-    const preparation = preparePinnedDockerImages([image], {
-      ...options(root, "hang"),
-      signal: controller.signal,
-    });
-    const settlement = preparation.then(
-      () => ({ state: "resolved" as const, error: undefined }),
-      (error: unknown) => ({ state: "rejected" as const, error }),
+describe("canonical Docker socket authority", () => {
+  it("binds a fixed socket alias to its one canonical physical endpoint", async () => {
+    const directory = root();
+    const physicalDirectory = resolve(directory, "run");
+    const aliasDirectory = resolve(directory, "var-run");
+    mkdirSync(physicalDirectory);
+    symlinkSync(physicalDirectory, aliasDirectory);
+    const physicalSocket = resolve(physicalDirectory, "docker.sock");
+    const canonicalPhysicalSocket = resolve(
+      realpathSync(physicalDirectory),
+      "docker.sock",
     );
-    await waitForFile(resolve(root, "ready"));
-    controller.abort();
-    await expect(settlement).resolves.toMatchObject({
-      state: "rejected",
-      error: { message: "integration.images.interrupted" },
-    });
-    proveDescendantAbsent(root);
-  });
-
-  it("bounds a missing close observation with final group-absence proof", async () => {
-    const root = createRoot();
-    let processGroup: number | undefined;
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang"),
-        closeBarrier: (ownedProcessGroup) => {
-          processGroup = ownedProcessGroup;
-          return new Promise<void>(() => {});
-        },
-        maximumPreparationMilliseconds: 800,
-        teardownMilliseconds: 400,
-      }),
-    ).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
-    proveProcessGroupAbsent(processGroup);
-    const record = JSON.parse(
-      readFileSync(resolve(root, "record.json"), "utf8"),
-    ) as { dockerConfigPath: string };
-    expect(existsSync(record.dockerConfigPath)).toBe(false);
-  });
-
-  it("does not let a throwing observation barrier bypass containment", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang"),
-        closeBarrier: () => {
-          throw new Error("CANARY_OBSERVER");
-        },
-        maximumPreparationMilliseconds: 800,
-        teardownMilliseconds: 400,
-      }),
-    ).rejects.toThrow("integration.images.timeout");
-    proveDescendantAbsent(root);
-  });
-
-  it("fails closed on oversized subprocess diagnostics", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], options(root, "oversized")),
-    ).rejects.toThrow("integration.images.output");
-  });
-});
-
-describe("image preparation scheduling boundaries", () => {
-  it("does not schedule process inspection before an owned group exists", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        processInspectionExecutable: process.execPath,
-        processInspectionArgumentsPrefix: [fixture, "inspect-processes"],
-      }),
-    ).resolves.toHaveLength(1);
-    expect(existsSync(resolve(root, "inspection"))).toBe(false);
-  });
-
-  it("proves the owned group absent when fixture readiness is not published", async () => {
-    const root = createRoot();
-    let processGroup: number | undefined;
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "hang-before-ready"),
-        closeBarrier: (ownedProcessGroup) => {
-          processGroup = ownedProcessGroup;
-          return Promise.resolve();
-        },
-        maximumPreparationMilliseconds: 800,
-        teardownMilliseconds: 400,
-      }),
-    ).rejects.toMatchObject({
-      code: "ETIMEDOUT",
-      message: "integration.images.timeout",
-    });
-    expect(existsSync(resolve(root, "ready"))).toBe(false);
-    proveProcessGroupAbsent(processGroup);
-  });
-});
-
-describe("image preparation failure boundaries", () => {
-  it("classifies only exact-PGID zombie remnants as quiescent", () => {
-    expect(classifyProcessGroupState(" 11 7 Z\n 12 7 Z+\n", 7)).toBe(
-      "zombie-only",
-    );
-    expect(classifyProcessGroupState(" 11 7 Z\n 12 7 R+\n", 7)).toBe("live");
-    expect(classifyProcessGroupState(" 11 8 R\n", 7)).toBe("absent");
-    expect(classifyProcessGroupState("CANARY_PATH\n", 7)).toBe("unavailable");
-  });
-
-  it("fails before spawn where an owned process group is unavailable", async () => {
-    const root = createRoot();
-    const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
-    if (descriptor === undefined) throw new Error("integration.images.fixture");
-    try {
-      Object.defineProperty(process, "platform", {
-        ...descriptor,
-        value: "win32",
+    const policySocket = resolve(aliasDirectory, "docker.sock");
+    const server = createServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(physicalSocket, () => {
+        server.removeListener("error", rejectListen);
+        resolveListen();
       });
-      await expect(
-        preparePinnedDockerImages([image], {
-          ...options(root, "success"),
-          dockerExecutable: "/forbidden/docker",
-        }),
-      ).rejects.toThrow("integration.images.platform");
+    });
+    try {
+      expect(
+        authenticateDockerSocketAliasForTesting(
+          policySocket,
+          canonicalPhysicalSocket,
+        ),
+      ).toMatchObject({ path: canonicalPhysicalSocket });
+      expect(() =>
+        authenticateDockerSocketAliasForTesting(policySocket, policySocket),
+      ).toThrow("integration.images.socket");
     } finally {
-      Object.defineProperty(process, "platform", descriptor);
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => {
+          if (error === undefined) resolveClose();
+          else rejectClose(error);
+        });
+      });
     }
   });
+});
 
-  it("fails before spawn when process inspection is not executable", async () => {
-    const root = createRoot();
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        processInspectionExecutable: resolve(root, "missing-ps"),
-      }),
-    ).rejects.toThrow("integration.images.platform");
-    expect(existsSync(resolve(root, "record.json"))).toBe(false);
-  });
-
-  it("does not publish process-group authority after spawn fails", async () => {
-    const root = createRoot();
-    let barrierCalled = false;
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        closeBarrier: () => {
-          barrierCalled = true;
-          return Promise.resolve();
-        },
-        dockerExecutable: resolve(root, "missing-docker"),
-      }),
-    ).rejects.toThrow("integration.images.containment");
-    expect(barrierCalled).toBe(false);
-  });
-
-  it("removes the private Docker config after a setup prefix fails", async () => {
-    const root = createRoot();
+describe("subprocess-free pinned image preparation", () => {
+  it("uses only the authenticated Engine socket and fixed HTTPS origins", async () => {
+    const engine = engineFixture();
+    const registry = registryFixture();
     const before = new Set(
-      readdirSync(tmpdir()).filter((entry) =>
-        entry.startsWith("agentscope-docker-config-"),
+      readdirSync(realpathSync("/tmp")).filter((entry) =>
+        entry.startsWith("agentscope-image-preparation-"),
       ),
     );
-    const environment = new Proxy(process.env, {
-      ownKeys: () => {
-        throw new Error("CANARY_PATH");
-      },
-    });
-    await expect(
-      preparePinnedDockerImages([image], {
-        ...options(root, "success"),
-        environment,
-      }),
-    ).rejects.toThrow("integration.images.setup");
+    const prior = process.env.HTTPS_PROXY;
+    process.env.HTTPS_PROXY = "http://CANARY.invalid";
+    try {
+      await expect(
+        preparePinnedDockerImages([image], options(engine, registry)),
+      ).resolves.toEqual({
+        dockerSocket: socket,
+        dockerDaemon: daemon,
+        preparationPolicy: prepared().preparationPolicy,
+        terminalCleanup: prepared().terminalCleanup,
+        images: prepared().images,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.HTTPS_PROXY;
+      else process.env.HTTPS_PROXY = prior;
+    }
+    expect(engine.requests.every(({ origin }) => origin === undefined)).toBe(
+      true,
+    );
+    expect(
+      registry.requests.every(
+        ({ origin }) => origin?.hostname !== "CANARY.invalid",
+      ),
+    ).toBe(true);
+    removeRetainedRoot(roots.at(-1));
     expect(
       new Set(
-        readdirSync(tmpdir()).filter((entry) =>
-          entry.startsWith("agentscope-docker-config-"),
+        readdirSync(realpathSync("/tmp")).filter((entry) =>
+          entry.startsWith("agentscope-image-preparation-"),
         ),
       ),
     ).toEqual(before);
   });
 
-  it("removes a failed publication stage and preserves the target", () => {
-    const root = createRoot();
-    const target = resolve(root, "current-images.json");
-    mkdirSync(target);
+  it("admits only the closed disposable-Linux host defaults", () => {
+    expect(IMAGE_PREPARATION_EXECUTION_POLICY).toEqual({
+      platform: { os: "linux", architecture: "amd64", variant: "" },
+      socket: "/var/run/docker.sock",
+      dockerExecutables: ["/usr/bin/docker"],
+      buildxExecutables: [
+        "/usr/lib/docker/cli-plugins/docker-buildx",
+        "/usr/libexec/docker/cli-plugins/docker-buildx",
+      ],
+    });
+    expect(JSON.stringify(IMAGE_PREPARATION_EXECUTION_POLICY)).not.toMatch(
+      /Docker\.app|homebrew|\/usr\/local|\.docker\/run/u,
+    );
     expect(() => {
-      publishPreparedImageEvidence(target, { imageEvidenceVersion: 1 });
+      assertImagePreparationPlatformForTesting("linux");
+    }).not.toThrow();
+    expect(() => {
+      assertImagePreparationPlatformForTesting("darwin");
+    }).toThrow("integration.images.platform");
+  });
+
+  it("rejects Docker Desktop even when it presents the Linux socket shape", async () => {
+    await expect(
+      preparePinnedDockerImages(
+        [image],
+        options(engineFixture({ dockerDesktop: true })),
+      ),
+    ).rejects.toThrow("integration.images.daemon");
+  });
+
+  it("rejects a self-signed registry despite ambient TLS disablement", async () => {
+    let handledRequests = 0;
+    const server = createHttpsServer(
+      { key: selfSignedTls.key, cert: selfSignedTls.certificate },
+      (_request, response) => {
+        handledRequests += 1;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}\n");
+      },
+    );
+    const prior = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    try {
+      await new Promise<void>((resolveListen, rejectListen) => {
+        const failed = (error: Error) => {
+          rejectListen(error);
+        };
+        server.once("error", failed);
+        server.listen(0, "127.0.0.1", () => {
+          server.removeListener("error", failed);
+          resolveListen();
+        });
+      });
+      const address = server.address();
+      if (address === null || typeof address === "string")
+        throw new Error("fixture TLS address unavailable");
+      await expect(
+        requestTrustedSelfSignedFixture(address.port),
+      ).resolves.toBeUndefined();
+      expect(handledRequests).toBe(1);
+      handledRequests = 0;
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+      await expect(
+        probePinnedRegistryTlsForTesting(
+          new URL(`https://127.0.0.1:${address.port}`),
+        ),
+      ).rejects.toThrow();
+      expect(handledRequests).toBe(0);
+    } finally {
+      if (prior === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prior;
+      await new Promise<void>((resolveClose) => {
+        if (!server.listening) resolveClose();
+        else
+          server.close(() => {
+            resolveClose();
+          });
+      });
+    }
+  });
+});
+
+describe("Engine image reconciliation", () => {
+  it("reconciles an exact existing digest without issuing a pull", async () => {
+    const engine = engineFixture({ localInitiallyPresent: true });
+    await preparePinnedDockerImages([image], options(engine));
+    expect(engine.requests.some(({ method }) => method === "POST")).toBe(false);
+  });
+
+  it("pulls only after exact inspection proves the digest absent", async () => {
+    const engine = engineFixture({ localInitiallyPresent: false });
+    await preparePinnedDockerImages([image], options(engine));
+    expect(
+      engine.requests.filter(({ method }) => method === "POST"),
+    ).toHaveLength(1);
+    expect(engine.requests.find(({ method }) => method === "POST")?.path).toBe(
+      `/v1.50/images/create?fromImage=fixture&tag=${encodeURIComponent(image.split("@")[1]!)}&platform=linux%2Famd64`,
+    );
+  });
+
+  it("selects and pulls the canonical platform instead of the daemon architecture", async () => {
+    const engine = engineFixture({
+      daemonArchitecture: "arm64",
+      localInitiallyPresent: false,
+    });
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).resolves.toMatchObject({
+      dockerDaemon: { architecture: "arm64" },
+      images: [{ platform: { os: "linux", architecture: "amd64" } }],
+    });
+    expect(engine.requests.find(({ method }) => method === "POST")?.path).toBe(
+      `/v1.50/images/create?fromImage=fixture&tag=${encodeURIComponent(image.split("@")[1]!)}&platform=linux%2Famd64`,
+    );
+  });
+
+  it("permits one credential-free config redirect to the closed CDN origin", async () => {
+    const registry = registryFixture({ redirectConfig: true });
+    await expect(
+      preparePinnedDockerImages([image], options(engineFixture(), registry)),
+    ).resolves.toMatchObject({ images: [{ configDigest }] });
+    expect(
+      registry.requests.some(
+        ({ origin }) => origin?.hostname === "production.cloudfront.docker.com",
+      ),
+    ).toBe(true);
+  });
+
+  it("fails outcome-unknown after a disconnected pull and never adopts in-run", async () => {
+    const engine = engineFixture({
+      localInitiallyPresent: false,
+      pullFailure: true,
+    });
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).rejects.toThrow("integration.images.daemon-uncertain");
+    expect(
+      engine.requests.filter(
+        ({ method, path }) => method === "GET" && path.includes("/images/"),
+      ),
+    ).toHaveLength(2);
+    expect(
+      imagePreparationFailureRequiresOuterHostRetirement(
+        new Error("integration.images.daemon-uncertain"),
+      ),
+    ).toBe(true);
+    expect(
+      imagePreparationFailureRequiresOuterHostRetirement(
+        new Error("integration.images.timeout"),
+      ),
+    ).toBe(false);
+  });
+
+  it("never adopts a completed pull whose response was lost", async () => {
+    const engine = engineFixture({
+      localInitiallyPresent: false,
+      pullCompletesThenDisconnect: true,
+    });
+    await expect(
+      preparePinnedDockerImages([image], options(engine)),
+    ).rejects.toThrow("integration.images.daemon-uncertain");
+    expect(
+      engine.requests.filter(({ method }) => method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it("rejects daemon replacement before evidence can return", async () => {
+    await expect(
+      preparePinnedDockerImages(
+        [image],
+        options(engineFixture({ daemonSwitch: true })),
+      ),
+    ).rejects.toThrow("integration.images.daemon");
+  });
+});
+
+describe("bounded image preparation request and cleanup handles", () => {
+  it("bounds response bodies before parsing them", async () => {
+    const registry = registryFixture();
+    registry.request = () =>
+      Promise.resolve({
+        statusCode: 200,
+        body: Buffer.alloc(IMAGE_PREPARATION_LIMITS.maximumManifestBytes + 1),
+      });
+    await expect(
+      preparePinnedDockerImages([image], options(engineFixture(), registry)),
+    ).rejects.toThrow("integration.images.output");
+  });
+
+  it("rolls back a deterministic post-mkdtemp setup failure", async () => {
+    let ownedRoot: string | undefined;
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(),
+        afterPrivateRootCreatedForTesting: (value: string) => {
+          ownedRoot = value;
+          roots.push(value);
+          throw new Error("injected setup failure");
+        },
+      }),
+    ).rejects.toThrow("integration.images.setup");
+    expect(existsSync(ownedRoot ?? "")).toBe(true);
+  });
+
+  it("settles a nonresponding Engine socket before timeout rejection", async () => {
+    const directory = root();
+    const socketPath = resolve(directory, "engine.sock");
+    const connections = new Set<Socket>();
+    const server = createServer(() => {
+      // Deliberately never send headers or a body.
+    });
+    server.on("connection", (connection) => {
+      connections.add(connection);
+      connection.once("close", () => connections.delete(connection));
+    });
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(socketPath, resolveListen);
+    });
+    try {
+      await expect(
+        preparePinnedDockerImages([image], {
+          dockerSocketForTesting: socketPath,
+          registryRequestForTesting: registryFixture().request,
+          maximumPreparationMilliseconds: 500,
+          teardownMilliseconds: 100,
+        }),
+      ).rejects.toMatchObject({
+        code: "ETIMEDOUT",
+        message: "integration.images.timeout",
+      });
+      expect(connections.size).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose) => {
+        server.close(() => {
+          resolveClose();
+        });
+      });
+    }
+  });
+
+  it("fails closed and preserves a partial-cleanup root", async () => {
+    let ownedRoot: string | undefined;
+    await expect(
+      preparePinnedDockerImages([image], {
+        ...options(),
+        beforePrivateCleanupForTesting: (value: string) => {
+          ownedRoot = value;
+          mkdirSync(resolve(value, "unexpected"));
+        },
+      }),
+    ).rejects.toThrow("integration.images.cleanup");
+    expect(existsSync(ownedRoot ?? "")).toBe(true);
+    if (ownedRoot !== undefined)
+      rmSync(ownedRoot, { force: true, recursive: true });
+  });
+});
+
+describe("self-authenticating v2 image evidence", () => {
+  it("accepts the exact pinned root, selected manifest, and config bytes", () => {
+    expect(validatePreparedImageEvidence(prepared(), manifestIdentity)).toEqual(
+      prepared(),
+    );
+  });
+
+  it.each([
+    { imageEvidenceVersion: 1 },
+    { dockerSocket: { ...socket, inode: "3" } },
+    { dockerDaemon: { ...daemon, id: "" } },
+    {
+      images: [
+        {
+          ...prepared().images[0],
+          manifestDigest: `sha256:${"b".repeat(64)}`,
+        },
+      ],
+    },
+    {
+      images: [
+        {
+          ...prepared().images[0],
+          configBlob: Buffer.from("substituted").toString("base64"),
+        },
+      ],
+    },
+    {
+      images: [
+        {
+          ...prepared().images[0],
+          rootManifest: Buffer.from("{}").toString("base64"),
+        },
+      ],
+    },
+  ])("rejects caller-claimed or substituted authority %#", (replacement) => {
+    expect(() =>
+      validatePreparedImageEvidence(
+        { ...prepared(), ...replacement },
+        manifestIdentity,
+      ),
+    ).toThrow("integration.images.evidence");
+  });
+
+  it("refuses to publish an unbranded caller-constructed record", () => {
+    const directory = root();
+    expect(() => {
+      publishPreparedImageEvidence(
+        resolve(directory, "current-images.json"),
+        manifestIdentity,
+        prepared() as unknown as PreparedDockerImageSet,
+      );
     }).toThrow("integration.images.publication");
-    expect(readdirSync(root)).toEqual(["current-images.json"]);
+  });
+
+  it("bounds the persisted envelope before JSON proof decoding", () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    writeFileSync(target, JSON.stringify(prepared()));
+    expect(readPreparedImageEvidence(target, manifestIdentity)).toEqual(
+      prepared(),
+    );
+    writeFileSync(
+      target,
+      JSON.stringify({
+        ...prepared(),
+        surplus: "A".repeat(IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes),
+      }),
+    );
+    expect(() => readPreparedImageEvidence(target, manifestIdentity)).toThrow(
+      "integration.images.evidence",
+    );
+  });
+});
+
+describe("prepared image runtime admission and publication", () => {
+  it("fences every consuming Docker call to one executable and daemon", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const engine = engineFixture();
+    const prior = {
+      PATH: process.env.PATH,
+      DOCKER_HOST: process.env.DOCKER_HOST,
+      DOCKER_CONTEXT: process.env.DOCKER_CONTEXT,
+      DOCKER_CONFIG: process.env.DOCKER_CONFIG,
+    };
+    Object.assign(process.env, {
+      PATH: "/private/tmp/CANARY",
+      DOCKER_HOST: "tcp://CANARY.invalid:2375",
+      DOCKER_CONTEXT: "CANARY",
+      DOCKER_CONFIG: "/private/tmp/CANARY-config",
+    });
+    const executable = executableFixture();
+    let client: ReturnType<typeof createPreparedDockerClient> | undefined;
+    let configDirectory: string | undefined;
+    try {
+      client = createPreparedDockerClient(admitted, {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executable,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      });
+      const invocation = await prepareDockerInvocation(
+        client,
+        ["image", "inspect", image],
+        new AbortController().signal,
+      );
+      configDirectory = invocation.arguments[3];
+      expect(invocation).toEqual({
+        executable: realpathSync(executable),
+        arguments: [
+          "--host",
+          `unix://${socket.path}`,
+          "--config",
+          configDirectory,
+          "image",
+          "inspect",
+          image,
+        ],
+        environment: {},
+      });
+      expect(
+        readFileSync(resolve(configDirectory!, "config.json"), "utf8"),
+      ).toBe('{"auths":{}}\n');
+      expect(
+        engine.requests.filter(({ path }) => path === "/version"),
+      ).toHaveLength(2);
+    } finally {
+      if (client !== undefined) closePreparedDockerClient(client);
+      for (const [name, value] of Object.entries(prior)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+    expect(existsSync(configDirectory ?? "")).toBe(true);
+  });
+
+  it("rejects a consuming invocation after daemon identity changes", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const client = createPreparedDockerClient(admitted, {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+      dockerExecutableForTesting: executableFixture(),
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engineFixture({ daemonSwitch: true }).request,
+    });
+    try {
+      await expect(
+        prepareDockerInvocation(client, ["version"]),
+      ).rejects.toThrow("integration.images.docker-client");
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("uses only the controller-supplied closed Docker environment", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const dockerEnvironment = {
+      DOCKER_HOST: "unix:///var/run/docker.sock",
+      LANG: "C.UTF-8",
+      PATH: "/usr/bin:/bin",
+    };
+    const client = createPreparedDockerClient(admitted, {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+      dockerEnvironment,
+      dockerExecutableForTesting: executableFixture(),
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engineFixture().request,
+    });
+    try {
+      await expect(
+        prepareDockerInvocation(client, ["version"]),
+      ).resolves.toMatchObject({ environment: dockerEnvironment });
+    } finally {
+      closePreparedDockerClient(client);
+    }
+    expect(() =>
+      createPreparedDockerClient(admitted, {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerEnvironment: { ...dockerEnvironment, HTTP_PROXY: "CANARY" },
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      }),
+    ).toThrow("integration.images.docker-client");
+  });
+});
+
+describe("prepared Docker client cleanup failure classification", () => {
+  const cleanupClient = (options = {}) =>
+    createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+        ...options,
+      },
+    );
+
+  it("authenticates and retires nested buildx state for outer-host destruction", () => {
+    const client = cleanupClient();
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const instances = resolve(privateRoot, "buildx", "instances");
+    mkdirSync(instances, { recursive: true, mode: 0o700 });
+    writeFileSync(resolve(instances, "builder"), "{}\n", { mode: 0o600 });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).not.toThrow();
+    expect(existsSync(privateRoot)).toBe(true);
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it.each(["symlink", "hardlink", "mode", "oversize"])(
+    "retires without deleting a %s private-state substitution",
+    (kind) => {
+      const client = cleanupClient();
+      const privateRoot = (
+        client as unknown as { privateClient: { root: string } }
+      ).privateClient.root;
+      const canary = resolve(privateRoot, "buildx", "canary");
+      if (kind === "symlink") symlinkSync("../docker/config.json", canary);
+      else if (kind === "hardlink")
+        linkSync(resolve(privateRoot, "docker", "config.json"), canary);
+      else {
+        writeFileSync(canary, "x", { mode: kind === "mode" ? 0o666 : 0o600 });
+        if (kind === "mode") chmodSync(canary, 0o666);
+        if (kind === "oversize")
+          truncateSync(
+            canary,
+            IMAGE_PREPARATION_LIMITS.maximumPrivateStateFileBytes + 1,
+          );
+      }
+      expect(() => {
+        closePreparedDockerClient(client);
+      }).toThrow("integration.images.cleanup");
+      expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(
+        true,
+      );
+      const serialized = JSON.stringify(preparedDockerClientDiagnostic(client));
+      expect(serialized).not.toContain("canary");
+      expect(existsSync(privateRoot)).toBe(true);
+      rmSync(privateRoot, { force: true, recursive: true });
+    },
+  );
+
+  it("retires without deleting a special private-state entry", async () => {
+    const client = cleanupClient();
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const socketPath = resolve(privateRoot, "buildx", "unexpected.sock");
+    const server = createServer();
+    await new Promise<void>((resolveListen) =>
+      server.listen(socketPath, () => {
+        resolveListen();
+      }),
+    );
+    try {
+      expect(() => {
+        closePreparedDockerClient(client);
+      }).toThrow("integration.images.cleanup");
+      expect(existsSync(privateRoot)).toBe(true);
+    } finally {
+      await new Promise<void>((resolveClose) =>
+        server.close(() => {
+          resolveClose();
+        }),
+      );
+      rmSync(privateRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects root substitution and preserves both identities", () => {
+    const client = cleanupClient();
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const original = `${privateRoot}.original`;
+    renameSync(privateRoot, original);
+    mkdirSync(privateRoot, { mode: 0o700 });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(existsSync(privateRoot)).toBe(true);
+    expect(existsSync(original)).toBe(true);
+    rmSync(privateRoot, { force: true, recursive: true });
+    rmSync(original, { force: true, recursive: true });
+  });
+
+  it("detects a late private-state mutation after inventory", () => {
+    let privateRoot: string | undefined;
+    const client = cleanupClient({
+      beforePrivateRemovalForTesting: (root: string) => {
+        privateRoot = root;
+        writeFileSync(resolve(root, "late"), "late\n", { mode: 0o600 });
+      },
+    });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(preparedDockerClientDiagnostic(client)).toMatchObject({
+      reason: "late-mutation",
+    });
+    expect(privateRoot).toBeTypeOf("string");
+    if (privateRoot === undefined) throw new Error("missing private root");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+});
+
+describe("private Docker client retirement substitution", () => {
+  const cleanupClient = (options = {}) =>
+    createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+        ...options,
+      },
+    );
+
+  it("fails closed without following a substituted private-state ancestor", () => {
+    const outside = root();
+    const canary = resolve(outside, "canary");
+    writeFileSync(canary, "outside\n", { mode: 0o600 });
+    let privateRoot: string | undefined;
+    const client = cleanupClient({
+      beforePrivateRemovalForTesting: (root: string) => {
+        privateRoot = root;
+        const buildx = resolve(root, "buildx");
+        renameSync(buildx, `${buildx}.original`);
+        symlinkSync(outside, buildx);
+      },
+    });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(readFileSync(canary, "utf8")).toBe("outside\n");
+    expect(privateRoot).toBeTypeOf("string");
+    if (privateRoot === undefined) throw new Error("missing private root");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("fails closed without deleting a file swapped after inventory", () => {
+    let privateRoot: string | undefined;
+    const client = cleanupClient({
+      beforePrivateRemovalForTesting: (root: string) => {
+        privateRoot = root;
+        const target = resolve(root, "docker", "config.json");
+        rmSync(target);
+        writeFileSync(target, "replacement\n", { mode: 0o600 });
+      },
+    });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(privateRoot).toBeTypeOf("string");
+    if (privateRoot === undefined) throw new Error("missing private root");
+    expect(
+      readFileSync(resolve(privateRoot, "docker", "config.json"), "utf8"),
+    ).toBe("replacement\n");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+});
+
+describe("prepared Docker client cleanup failure propagation", () => {
+  it("retires after timeout even when partial output claims the resource is missing", async () => {
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      },
+    );
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const timeout = Object.assign(new Error("timed out"), {
+      code: null,
+      killed: true,
+      signal: "SIGTERM",
+      stdout: "",
+      stderr: "Error response from daemon: No such container: owned\n",
+    });
+    expect(() => {
+      handlePreparedDockerCleanupFailure(client, timeout);
+    }).toThrow(timeout);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    await expect(prepareDockerInvocation(client, ["version"])).rejects.toThrow(
+      "integration.images.docker-client",
+    );
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("accepts an exact missing-resource response only after an ordinary exit", () => {
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      },
+    );
+    handlePreparedDockerCleanupFailure(
+      client,
+      Object.assign(new Error("missing"), {
+        code: 1,
+        killed: false,
+        signal: null,
+        stdout: "",
+        stderr: "Error response from daemon: No such image: owned\n",
+      }),
+    );
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(false);
+    closePreparedDockerClient(client);
+  });
+});
+
+describe("prepared Docker client terminal authority", () => {
+  it("fences every later invocation after a mutation requires host retirement", async () => {
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      },
+    );
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    markPreparedDockerClientForOuterHostRetirement(client);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    await expect(prepareDockerInvocation(client, ["version"])).rejects.toThrow(
+      "integration.images.docker-client",
+    );
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("rejects executable replacement adjacent to consuming invocation", async () => {
+    const directory = root();
+    const executable = resolve(directory, "docker-fixture");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o700);
+    const engine = engineFixture();
+    let infoCount = 0;
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        dockerExecutableForTesting: executable,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: async (request) => {
+          const response = await engine.request(request);
+          if (request.path === "/v1.50/info") {
+            infoCount += 1;
+            if (infoCount === 2)
+              writeFileSync(executable, "#!/bin/sh\nexit 99\n");
+          }
+          return response;
+        },
+      },
+    );
+    try {
+      await expect(
+        prepareDockerInvocation(client, ["version"]),
+      ).rejects.toThrow("integration.images.docker-client");
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("keeps cleanup authority when a shared prepared image is absent", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const client = createPreparedDockerClient(admitted, {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+      dockerExecutableForTesting: executableFixture(),
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engineFixture({
+        localInitiallyPresent: false,
+      }).request,
+    });
+    const invocation = await prepareDockerInvocation(client, ["rm", "owned"]);
+    const privateRoot = dirname(invocation.arguments[3]!);
+    mkdirSync(resolve(privateRoot, "unexpected"));
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    expect(preparedDockerClientDiagnostic(client)).toMatchObject({
+      diagnosticVersion: 1,
+      stage: "private-client-cleanup",
+      outcome: "retired-failure",
+      reason: "entry-authority",
+    });
+    rmSync(resolve(privateRoot, "unexpected"), { recursive: true });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+});
+
+const buildContext = () => {
+  const directory = root();
+  writeFileSync(resolve(directory, "Dockerfile"), "FROM scratch\n");
+  mkdirSync(resolve(directory, "nested"));
+  writeFileSync(resolve(directory, "nested/input.txt"), "fixture\n");
+  return directory;
+};
+const buildTag = "agentscope-int-fixture:candidate";
+const buildClient = (engine: ReturnType<typeof engineFixture>) => {
+  const executable = executableFixture();
+  return createPreparedDockerClient(
+    validatePreparedImageEvidence(prepared(), manifestIdentity),
+    {
+      afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+      buildkitImageForTesting: image,
+      buildxExecutableForTesting: executable,
+      buildxRunForTesting: engine.buildxRun,
+      dockerExecutableForTesting: executable,
+      socketIdentityForTesting: socket,
+      engineRequestForTesting: engine.request,
+    },
+  );
+};
+
+describe("bounded build-context acquisition", () => {
+  it("rejects symlink and pre-read size authority violations", () => {
+    const context = buildContext();
+    const links = root();
+    const rootLink = resolve(links, "context-link");
+    symlinkSync(context, rootLink);
+    expect(() => createBoundedBuildContext(rootLink)).toThrow(
+      "integration.images.build",
+    );
+    symlinkSync(resolve(context, "nested"), resolve(context, "nested-link"));
+    expect(() => createBoundedBuildContext(context)).toThrow(
+      "integration.images.build",
+    );
+    rmSync(resolve(context, "nested-link"));
+    writeFileSync(resolve(context, "oversized"), "");
+    truncateSync(resolve(context, "oversized"), 64 * 1024 * 1024 + 1);
+    expect(() => createBoundedBuildContext(context)).toThrow(
+      "integration.images.build",
+    );
+  });
+
+  it("rejects same-inode mutation during context acquisition", () => {
+    const context = buildContext();
+    expect(() =>
+      createBoundedBuildContext(context, {
+        afterEntryForTesting: (entryCount) => {
+          if (entryCount === 1)
+            writeFileSync(resolve(context, "Dockerfile"), "FROM invalid\n");
+        },
+      }),
+    ).toThrow("integration.images.build");
+  });
+});
+
+describe("owned buildx process execution", () => {
+  const fixture = resolve(
+    import.meta.dirname,
+    "../fixtures/image-preparation-process.mjs",
+  );
+
+  it.each([
+    ["hang-descendant", "integration.images.timeout"],
+    ["close-descendant", "integration.images.containment"],
+  ])("kills and joins the exact process group for %s", async (mode, code) => {
+    const directory = root();
+    const error = await runOwnedImageCommandForTesting(
+      executableFixture(directory),
+      [fixture],
+      {
+        deadline: performance.now() + 1_000,
+        environment: {
+          AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
+          AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
+        },
+        teardownMilliseconds: 250,
+      },
+    ).catch((failure: unknown) => failure);
+    if (mode === "hang-descendant") {
+      expect(error).toMatchObject({ code: "ETIMEDOUT" });
+      expect([
+        "integration.images.timeout",
+        "integration.images.containment",
+      ]).toContain((error as Error).message);
+    } else expect(error).toEqual(expect.objectContaining({ message: code }));
+    const descendant = Number(
+      readFileSync(resolve(directory, "ready"), "utf8"),
+    );
+    expect(() => process.kill(descendant, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+  });
+
+  it("fails closed when close observation exhausts the teardown reserve", async () => {
+    const directory = root();
+    let processGroup: number | undefined;
+    const error = await runOwnedImageCommandForTesting(
+      executableFixture(directory),
+      [fixture],
+      {
+        closeBarrierForTesting: (ownedProcessGroup) => {
+          processGroup = ownedProcessGroup;
+          return new Promise(() => {});
+        },
+        deadline: performance.now() + 1_000,
+        environment: {
+          AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
+          AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
+        },
+        teardownMilliseconds: 250,
+      },
+    ).catch((failure: unknown) => failure);
+    expect(error).toMatchObject({
+      code: "ETIMEDOUT",
+      message: "integration.images.containment",
+    });
+    expect(processGroup).toEqual(expect.any(Number));
+    expect(() => process.kill(-processGroup!, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+    const descendant = Number(
+      readFileSync(resolve(directory, "ready"), "utf8"),
+    );
+    expect(() => process.kill(descendant, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+  });
+});
+
+describe("content-free buildx failure classification", () => {
+  it.each([
+    ["builder already exists", "resource-conflict"],
+    ["failed to solve build graph", "build-failed"],
+    ["connection refused during bootstrap", "bootstrap-failed"],
+    ["operation not permitted", "permission-denied"],
+    ["provider detail that has no admitted class", "unknown"],
+    ["x".repeat(16_385), "unknown"],
+    [{ malformed: true }, "unknown"],
+  ])(
+    "classifies bounded input without retaining content %#",
+    (input, expected) => {
+      expect(classifyBuildxStderrForTesting(input)).toBe(expected);
+    },
+  );
+});
+
+// These cases share the exact builder fixture and exercise one lifecycle matrix.
+// eslint-disable-next-line max-lines-per-function
+describe("authenticated buildx consumption", () => {
+  it("rejects buildx executable replacement before the first invocation", async () => {
+    const executable = resolve(root(), "buildx");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const engine = engineFixture({ buildTag });
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        afterPrivateRootCreatedForTesting: (value: string) => roots.push(value),
+        buildkitImageForTesting: image,
+        buildxExecutableForTesting: executable,
+        buildxRunForTesting: engine.buildxRun,
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      },
+    );
+    unlinkSync(executable);
+    writeFileSync(executable, "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+    try {
+      await expect(
+        buildPreparedDockerImage(client, {
+          buildArguments: { BASE_IMAGE: image },
+          context: buildContext(),
+          dockerfile: "Dockerfile",
+          labels: { "com.agentscope.integration": "true" },
+          maximumMilliseconds: 4_000,
+          tag: buildTag,
+        }),
+      ).rejects.toThrow("integration.images.executable");
+      expect(engine.buildxCalls).toEqual([]);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it("sends one bounded deterministic context and verifies the built tag", async () => {
+    const context = buildContext();
+    expect(createBoundedBuildContext(context)).toEqual(
+      createBoundedBuildContext(context),
+    );
+    const engine = engineFixture({ buildTag });
+    const client = buildClient(engine);
+    try {
+      await expect(
+        buildPreparedDockerImage(client, {
+          buildArguments: { BASE_IMAGE: image },
+          context,
+          dockerfile: "Dockerfile",
+          labels: { "com.agentscope.integration": "true" },
+          maximumMilliseconds: 4_000,
+          tag: buildTag,
+        }),
+      ).resolves.toBe(configDigest.replace(":", "-"));
+      expect(engine.requests.some(({ path }) => path.includes("/build?"))).toBe(
+        false,
+      );
+      const create = engine.buildxCalls.find(
+        ({ arguments_ }) => arguments_[0] === "create",
+      );
+      expect(create?.arguments_).toEqual([
+        "create",
+        "--name",
+        expect.stringMatching(/^agentscope-[a-f\d]{16}$/u),
+        "--driver",
+        "docker-container",
+        "--driver-opt",
+        `image=${image}`,
+        "--driver-opt",
+        "network=bridge",
+        "--platform",
+        "linux/amd64",
+        "unix:///var/run/docker.sock",
+      ]);
+      expect(
+        create?.arguments_.filter((argument) => argument === "--driver-opt"),
+      ).toHaveLength(2);
+      expect(create?.arguments_).not.toContain(BUILDKIT_IMAGE);
+      const build = engine.buildxCalls.find(
+        ({ arguments_ }) => arguments_[0] === "build",
+      );
+      expect(build?.arguments_).toContain("--platform");
+      expect(build?.arguments_).toContain("linux/amd64");
+      expect(build?.input?.subarray(-1024).equals(Buffer.alloc(1024))).toBe(
+        true,
+      );
+      expect(build?.input?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+
+  it.each(["2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"])(
+    "does not treat the daemon clock %s as controller authority",
+    async (createdAt) => {
+      const engine = engineFixture({ buildTag, createdAt });
+      const client = buildClient(engine);
+      try {
+        await expect(
+          buildPreparedDockerImage(client, {
+            buildArguments: { BASE_IMAGE: image },
+            context: buildContext(),
+            dockerfile: "Dockerfile",
+            labels: { "com.agentscope.integration": "true" },
+            maximumMilliseconds: 4_000,
+            tag: buildTag,
+          }),
+        ).resolves.toBe(configDigest.replace(":", "-"));
+      } finally {
+        closePreparedDockerClient(client);
+      }
+    },
+  );
+
+  it.each([
+    {
+      buildFailure: true,
+      daemonSwitch: false,
+      expected: "integration.images.build",
+      noDestructiveCleanup: false,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: true,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "default",
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "host",
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "none",
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "agentscope-custom",
+      builderNetworks: ["agentscope-custom"],
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworks: [],
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworks: ["bridge", "foreign"],
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderMismatch: true,
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      buildFailure: false,
+      cleanupLeak: true,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: false,
+    },
+    {
+      buildFailure: true,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      lateTagAfterDelete: true,
+      noDestructiveCleanup: false,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+      wrongMount: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+      wrongVolume: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+      wrongVolumeLabels: true,
+    },
+    {
+      buildFailure: false,
+      createFailureCollision: true,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+      wrongVolume: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      preexistingVolume: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+      substituteAfterBuild: true,
+    },
+    {
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      noDestructiveCleanup: true,
+      preexistingTag: true,
+    },
+    {
+      buildFailure: false,
+      createTimeoutAfterResources: true,
+      daemonSwitch: false,
+      expected: "integration.images.timeout",
+      expectRetirement: true,
+      maximumMilliseconds: 400,
+      noDestructiveCleanup: true,
+    },
+  ])(
+    "joins its dedicated builder on command failure or daemon substitution %#",
+    async ({
+      expected,
+      expectRetirement = false,
+      maximumMilliseconds = 4_000,
+      noDestructiveCleanup,
+      ...fixtureOptions
+    }) => {
+      const engine = engineFixture({ buildTag, ...fixtureOptions });
+      const client = buildClient(engine);
+      const privateRoot = (
+        client as unknown as { privateClient: { root: string } }
+      ).privateClient.root;
+      try {
+        await expect(
+          buildPreparedDockerImage(client, {
+            buildArguments: { BASE_IMAGE: image },
+            context: buildContext(),
+            dockerfile: "Dockerfile",
+            labels: { "com.agentscope.integration": "true" },
+            maximumMilliseconds,
+            tag: buildTag,
+          }),
+        ).rejects.toThrow(expected);
+        if (noDestructiveCleanup) {
+          expect(
+            engine.requests.filter(({ method }) => method === "DELETE"),
+          ).toEqual([]);
+          expect(
+            engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+          ).toBe(false);
+        }
+      } finally {
+        if (expectRetirement) {
+          expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(
+            true,
+          );
+          expect(() => {
+            closePreparedDockerClient(client);
+          }).toThrow("integration.images.docker-client");
+          const diagnostic = preparedDockerClientDiagnostic(client);
+          expect(diagnostic).toMatchObject({
+            diagnosticVersion: 1,
+            stage: "builder-reconciliation",
+            outcome: "retired-failure",
+            expectedResourceCount: 2,
+            responseTruncated: false,
+            process: {
+              observed: false,
+              exited: false,
+              signaled: false,
+              timedOut: expected === "integration.images.timeout",
+              joined: false,
+              outputBytes: 0,
+              outputTruncated: false,
+              stderrClass: "unknown",
+            },
+          });
+          expect(diagnostic?.operationKind).toMatch(
+            /^(?:builder-create|builder-bootstrap|image-build)$/u,
+          );
+          expect(Object.values(diagnostic?.identityDigests ?? {})).toHaveLength(
+            5,
+          );
+          for (const digest of Object.values(diagnostic?.identityDigests ?? {}))
+            expect(digest).toMatch(/^sha256:[a-f\d]{64}$/u);
+          expect(diagnostic?.expectedResourceDigest).toMatch(
+            /^sha256:[a-f\d]{64}$/u,
+          );
+          expect(diagnostic?.observedResourceDigest).toMatch(
+            /^sha256:[a-f\d]{64}$/u,
+          );
+          expect(
+            Object.values(diagnostic?.reconciliationReasons ?? {}).every(
+              (reason) =>
+                [
+                  "not-observed",
+                  "absent",
+                  "matched",
+                  "id",
+                  "created",
+                  "name",
+                  "image-id",
+                  "image-reference",
+                  "platform",
+                  "network-mode",
+                  "network-attachment",
+                  "mount",
+                  "running-state",
+                  "driver",
+                  "scope",
+                  "mountpoint",
+                  "labels",
+                  "identity-substitution",
+                  "late-publication",
+                ].includes(reason),
+            ),
+          ).toBe(true);
+          const serialized = JSON.stringify(diagnostic);
+          expect(serialized).toMatch(/^\{"diagnosticVersion":1,/u);
+          expect(serialized).not.toContain(privateRoot);
+          expect(serialized).not.toContain(buildTag);
+          expect(serialized).not.toContain("com.agentscope.integration.run");
+          expect(serialized.length).toBeLessThan(4_096);
+          rmSync(privateRoot, { force: true, recursive: true });
+        } else {
+          closePreparedDockerClient(client);
+        }
+      }
+    },
+  );
+
+  it("preserves the first failed build observation across later reconciliation", async () => {
+    const engine = engineFixture({
+      buildFailure: true,
+      buildTag,
+      cleanupLeak: true,
+      diagnosticObservations: true,
+    });
+    const client = buildClient(engine);
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    await expect(
+      buildPreparedDockerImage(client, {
+        buildArguments: { BASE_IMAGE: image },
+        context: buildContext(),
+        dockerfile: "Dockerfile",
+        labels: {
+          "com.agentscope.integration": "true",
+          "com.agentscope.integration.run": "0123456789abcdef",
+        },
+        maximumMilliseconds: 4_000,
+        tag: buildTag,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientDiagnostic(client)).toMatchObject({
+      operationKind: "image-build",
+      outcome: "retired-failure",
+      process: {
+        observed: true,
+        exited: true,
+        signaled: false,
+        timedOut: false,
+        joined: true,
+        outputBytes: 23,
+        outputTruncated: false,
+        stderrClass: "build-failed",
+      },
+    });
+    expect(
+      engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+    ).toBe(true);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("fences the client and private state when process-set absence is unproved", async () => {
+    const engine = engineFixture({ buildTag, unprovedContainment: true });
+    const client = buildClient(engine);
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    await expect(
+      buildPreparedDockerImage(client, {
+        buildArguments: { BASE_IMAGE: image },
+        context: buildContext(),
+        dockerfile: "Dockerfile",
+        labels: { "com.agentscope.integration": "true" },
+        maximumMilliseconds: 4_000,
+        tag: buildTag,
+      }),
+    ).rejects.toMatchObject({
+      code: "ETIMEDOUT",
+      containmentProved: false,
+      message: "integration.images.containment",
+    });
+    expect(engine.requests.filter(({ method }) => method === "DELETE")).toEqual(
+      [],
+    );
+    expect(
+      engine.buildxCalls.some(({ arguments_ }) => arguments_[0] === "rm"),
+    ).toBe(false);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    expect(existsSync(privateRoot)).toBe(true);
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
+  it("expires during context acquisition before any Engine request", async () => {
+    const engine = engineFixture({ buildTag });
+    const client = buildClient(engine);
+    try {
+      await expect(
+        buildPreparedDockerImage(client, {
+          afterBuildContextEntryForTesting: () => {
+            const releaseAt = performance.now() + 10;
+            while (performance.now() < releaseAt) {
+              // Deterministically expire the one build deadline mid-packing.
+            }
+          },
+          buildArguments: { BASE_IMAGE: image },
+          context: buildContext(),
+          dockerfile: "Dockerfile",
+          labels: { "com.agentscope.integration": "true" },
+          maximumMilliseconds: 4,
+          tag: buildTag,
+        }),
+      ).rejects.toMatchObject({
+        code: "ETIMEDOUT",
+        message: "integration.images.timeout",
+      });
+      expect(engine.requests).toEqual([]);
+    } finally {
+      closePreparedDockerClient(client);
+    }
+  });
+});
+
+describe("prepared image admission and publication", () => {
+  it("recomputes proof and daemon/config identity at runtime admission", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    const engine = engineFixture();
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture({
+          localValue: JSON.stringify({
+            ...JSON.parse(local),
+            Id: `sha256:${"e".repeat(64)}`,
+          }),
+        }).request,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("fails admission after exact socket or daemon rebinding", async () => {
+    const admitted = validatePreparedImageEvidence(
+      prepared(),
+      manifestIdentity,
+    );
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: { ...socket, inode: "999" },
+        engineRequestForTesting: engineFixture().request,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      revalidatePreparedImageAdmission(admitted, image, {
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture({ daemonSwitch: true }).request,
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("removes failed publication staging and preserves the target", async () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    mkdirSync(target);
+    const trusted = await preparePinnedDockerImages([image], options());
+    expect(() => {
+      publishPreparedImageEvidence(target, manifestIdentity, trusted);
+    }).toThrow("integration.images.publication");
+    expect(readdirSync(directory)).toEqual(["current-images.json"]);
     expect(readdirSync(target)).toEqual([]);
   });
 
-  it("publishes the documented fixed preparation ceilings", () => {
+  it("bounds the exact persisted encoding before replacing prior evidence", async () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    writeFileSync(target, "prior-authority\n");
+    const trusted = await preparePinnedDockerImages([image], options());
+    const evidence = {
+      imageEvidenceVersion: 2,
+      manifestIdentity,
+      ...trusted,
+    };
+    const compactBytes = Buffer.byteLength(JSON.stringify(evidence), "utf8");
+    const persistedBytes = Buffer.byteLength(
+      `${JSON.stringify(evidence, undefined, 2)}\n`,
+      "utf8",
+    );
+    expect(persistedBytes).toBeGreaterThan(compactBytes);
+    expect(() => {
+      publishPreparedImageEvidence(target, manifestIdentity, trusted, {
+        maximumEvidenceBytesForTesting: compactBytes,
+      });
+    }).toThrow("integration.images.publication");
+    expect(readFileSync(target, "utf8")).toBe("prior-authority\n");
+    publishPreparedImageEvidence(target, manifestIdentity, trusted);
+    expect(readPreparedImageEvidence(target, manifestIdentity)).toEqual(
+      evidence,
+    );
+    expect(readFileSync(target).byteLength).toBe(persistedBytes);
+  });
+
+  it("retires stale authority before later preparation work can fail", async () => {
+    const directory = root();
+    const target = resolve(directory, "current-images.json");
+    rmSync(target, { force: true });
+    // A missing pointer is already fail-closed and is idempotent.
+    retirePreparedImageEvidence(target);
+    const trusted = await preparePinnedDockerImages([image], options());
+    publishPreparedImageEvidence(target, manifestIdentity, trusted);
+    expect(JSON.parse(readFileSync(target, "utf8"))).toMatchObject({
+      imageEvidenceVersion: 2,
+    });
+    retirePreparedImageEvidence(target);
+    expect(existsSync(target)).toBe(false);
+    retirePreparedImageEvidence(target);
+  });
+
+  it("publishes the fixed request and manifest ceilings", () => {
     expect(IMAGE_PREPARATION_LIMITS).toEqual({
       maximumPreparationMilliseconds: 300_000,
       maximumTeardownMilliseconds: 5_000,
-      maximumCommandOutputBytes: 65_536,
+      maximumResponseBytes: 1_048_576,
+      maximumManifestBytes: 1_048_576,
+      maximumEvidenceBytes: 8_388_608,
+      maximumPrivateStateEntries: 4_096,
+      maximumPrivateStateDepth: 16,
+      maximumPrivateStateFileBytes: 8_388_608,
+      maximumPrivateStateTotalBytes: 67_108_864,
     });
   });
 });

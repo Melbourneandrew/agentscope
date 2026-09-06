@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  failureEvidenceCoverageIsExact,
   runIntegrationStages,
   settleAbortableOperation,
 } from "./controller.js";
@@ -26,6 +27,30 @@ const stages = (events: string[]): IntegrationStageDependencies =>
       }),
     ]),
   ) as unknown as IntegrationStageDependencies;
+
+describe("integration failure evidence coverage", () => {
+  it("requires all and only the current run failure evidence", () => {
+    const first = "0123456789abcdef";
+    const second = "fedcba9876543210";
+    expect(
+      failureEvidenceCoverageIsExact(
+        [first, second],
+        [first, second],
+        [second, first],
+      ),
+    ).toBe(true);
+    expect(
+      failureEvidenceCoverageIsExact([first, second], [first, second], [first]),
+    ).toBe(false);
+    expect(
+      failureEvidenceCoverageIsExact(
+        [first, second],
+        [first],
+        [first, "aaaaaaaaaaaaaaaa"],
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("integration controller", () => {
   it("aborts at the deadline and joins the operation before returning", async () => {

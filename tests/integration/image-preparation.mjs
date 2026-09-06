@@ -1,103 +1,321 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import {
   accessSync,
   chmodSync,
+  closeSync,
   constants,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
   renameSync,
-  rmSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { rootCertificates } from "node:tls";
+
+// eslint-disable-next-line import-x/no-cycle -- private in-process controller capability
+import {
+  integrationPrivateStorageAuthority,
+  registerIntegrationPrivateStorageRetirement,
+} from "./dist/controller.js";
 
 const maximumPreparationMilliseconds = 300_000;
 const preparationTeardownMilliseconds = 5_000;
-const maximumCommandOutputBytes = 65_536;
-const maximumAbsenceProofMilliseconds = 1_000;
-const maximumProcessInspectionMilliseconds = 250;
+const maximumResponseBytes = 1_048_576;
+const maximumManifestBytes = 1_048_576;
+const maximumEvidenceBytes = 8_388_608;
+const maximumTokenBytes = 16_384;
+const maximumHeaderBytes = 16_384;
+const maximumBuildContextBytes = 64 * 1024 * 1024;
+const maximumBuildOutputBytes = 16 * 1024 * 1024;
 const maximumProcessInspectionBytes = 1_048_576;
-const absencePollMilliseconds = 10;
+const maximumPrivateStateEntries = 4_096;
+const maximumPrivateStateDepth = 16;
+const maximumPrivateStateFileBytes = 8 * 1024 * 1024;
+const maximumPrivateStateTotalBytes = 64 * 1024 * 1024;
+const processAbsencePollMilliseconds = 10;
+const digestPattern = /^sha256:[a-f\d]{64}$/u;
+const imagePattern = /^[^\s@]{1,448}@sha256:[a-f\d]{64}$/u;
+const manifestIdentityPattern = /^sha256-[a-f\d]{64}$/u;
+const platformValuePattern = /^[a-z\d][a-z\d._-]{0,63}$/u;
+const apiVersionPattern = /^\d{1,3}\.\d{1,3}$/u;
+const indexMediaTypes = new Set([
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+]);
+const manifestMediaTypes = new Set([
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+]);
+const configMediaTypes = new Set([
+  "application/vnd.oci.image.config.v1+json",
+  "application/vnd.docker.container.image.v1+json",
+]);
+const manifestAccept = [...indexMediaTypes, ...manifestMediaTypes].join(", ");
+export const IMAGE_PREPARATION_EXECUTION_POLICY = Object.freeze({
+  platform: Object.freeze({
+    os: "linux",
+    architecture: "amd64",
+    variant: "",
+  }),
+  socket: "/var/run/docker.sock",
+  dockerExecutables: Object.freeze(["/usr/bin/docker"]),
+  buildxExecutables: Object.freeze([
+    "/usr/lib/docker/cli-plugins/docker-buildx",
+    "/usr/libexec/docker/cli-plugins/docker-buildx",
+  ]),
+});
+export const BUILDKIT_IMAGE =
+  "moby/buildkit@sha256:6eceb8971ce4fceb3daca562832642706238b7eea72941fcf9896c93c3c4a53e";
+const preparedSets = new WeakSet();
+const preparedDockerClients = new WeakSet();
+const closingPreparedDockerClients = new WeakSet();
+const uncertainPreparedDockerClients = new WeakSet();
+const preparedDockerClientDiagnostics = new WeakMap();
+const processDiagnostics = new WeakMap();
 
 const fixedError = (code, timedOut = false) => {
   const error = new Error(code);
   if (timedOut) error.code = "ETIMEDOUT";
   return error;
 };
-
-const killOwnedProcess = (child) => {
+const diagnosticDigest = (value) =>
+  digestBytes(Buffer.from(JSON.stringify(value), "utf8"));
+const buildxStderrClassifiers = Object.freeze([
+  ["resource-conflict", /(?:already exists|existing instance)/iu],
+  ["build-failed", /(?:failed to solve|failed to build)/iu],
+  [
+    "bootstrap-failed",
+    /(?:failed to boot|bootstrap|connection refused|unavailable)/iu,
+  ],
+  ["permission-denied", /(?:permission denied|operation not permitted)/iu],
+]);
+const classifyBuildxStderr = (value) => {
+  if (typeof value !== "string" || value.length > maximumHeaderBytes)
+    return "unknown";
+  return (
+    buildxStderrClassifiers.find(([, pattern]) => pattern.test(value))?.[0] ??
+    "unknown"
+  );
+};
+export const classifyBuildxStderrForTesting = classifyBuildxStderr;
+const boundedText = (value, maximum = 256) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= maximum &&
+  /^[\x20-\x7e]+$/u.test(value);
+const exactKeys = (value, keys) =>
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  JSON.stringify(Object.keys(value).sort()) ===
+    JSON.stringify([...keys].sort());
+const digestBytes = (value) =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const jsonRecord = (value, code) => {
   try {
-    if (process.platform !== "win32" && child.pid !== undefined)
-      process.kill(-child.pid, "SIGKILL");
-    else if (child.exitCode === null && child.signalCode === null)
-      child.kill("SIGKILL");
-  } catch (error) {
-    if (error?.code !== "ESRCH") return false;
-  }
-  return true;
-};
-
-const waitUntil = (deadline) => {
-  const remaining = deadline - performance.now();
-  if (remaining <= 0) return Promise.resolve();
-  return new Promise((resolveWait) => setTimeout(resolveWait, remaining));
-};
-
-const processGroupIsAbsent = (pid) => {
-  if (!Number.isSafeInteger(pid) || pid < 1) return false;
-  try {
-    process.kill(-pid, 0);
-    return false;
-  } catch (error) {
-    return error?.code === "ESRCH";
+    const parsed =
+      Buffer.isBuffer(value) || typeof value === "string"
+        ? JSON.parse(value.toString("utf8"))
+        : value;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      throw new Error(code);
+    return parsed;
+  } catch {
+    throw fixedError(code);
   }
 };
 
-export const classifyProcessGroupState = (output, processGroup) => {
+const canonicalArchitecture = (rawArchitecture, rawVariant) => {
+  let architecture = rawArchitecture.toLowerCase();
+  let variant = rawVariant?.toLowerCase() ?? "";
+  const aliases = new Map([
+    ["aarch64", "arm64"],
+    ["x86_64", "amd64"],
+    ["x86-64", "amd64"],
+    ["i386", "386"],
+  ]);
+  architecture = aliases.get(architecture) ?? architecture;
+  if (architecture === "armhf") {
+    architecture = "arm";
+    variant ||= "v7";
+  } else if (architecture === "armel") {
+    architecture = "arm";
+    variant ||= "v6";
+  }
   if (
-    typeof output !== "string" ||
-    output.length === 0 ||
-    !Number.isSafeInteger(processGroup) ||
-    processGroup < 1
+    (architecture === "arm" || architecture === "arm64") &&
+    /^\d/u.test(variant)
   )
-    return "unavailable";
-  const members = [];
-  for (const line of output.trimEnd().split("\n")) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/u.exec(line);
-    if (match === null) return "unavailable";
-    const pid = Number(match[1]);
-    const pgid = Number(match[2]);
-    if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(pgid))
-      return "unavailable";
-    if (pgid === processGroup) members.push(match[3]);
-  }
-  if (members.length === 0) return "absent";
-  return members.every((state) => state.startsWith("Z"))
-    ? "zombie-only"
-    : "live";
+    variant = `v${variant}`;
+  const commonVariant =
+    (architecture === "arm" && variant === "v7") ||
+    (architecture === "arm64" && variant === "v8") ||
+    (architecture === "amd64" && variant === "v1");
+  return Object.freeze({ architecture, variant: commonVariant ? "" : variant });
 };
+const normalizePlatform = (value) => {
+  const { os, architecture, variant } = value ?? {};
+  if (
+    typeof os !== "string" ||
+    typeof architecture !== "string" ||
+    !platformValuePattern.test(os.toLowerCase()) ||
+    !platformValuePattern.test(architecture.toLowerCase()) ||
+    !(
+      variant === undefined ||
+      variant === "" ||
+      (typeof variant === "string" &&
+        platformValuePattern.test(variant.toLowerCase()))
+    )
+  )
+    throw fixedError("integration.images.platform-identity");
+  const normalizedOs =
+    os.toLowerCase() === "macos" ? "darwin" : os.toLowerCase();
+  const canonical = canonicalArchitecture(architecture, variant);
+  return Object.freeze({
+    os: normalizedOs,
+    architecture: canonical.architecture,
+    ...(canonical.variant === "" ? {} : { variant: canonical.variant }),
+  });
+};
+const samePlatform = (left, right) =>
+  left.os === right.os &&
+  left.architecture === right.architecture &&
+  (left.variant ?? "") === (right.variant ?? "");
 
-const processExecutable = () =>
+const socketRecord = (path) => {
+  if (typeof path !== "string" || !isAbsolute(path))
+    throw fixedError("integration.images.socket");
+  try {
+    const canonicalPath = realpathSync(path);
+    const link = lstatSync(canonicalPath);
+    const status = statSync(canonicalPath, { bigint: true });
+    accessSync(canonicalPath, constants.R_OK | constants.W_OK);
+    if (!link.isSocket() || !status.isSocket())
+      throw fixedError("integration.images.socket");
+    return Object.freeze({
+      path: canonicalPath,
+      device: String(status.dev),
+      inode: String(status.ino),
+      mode: String(status.mode),
+      owner: String(status.uid),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "integration.images.socket")
+      throw error;
+    throw fixedError("integration.images.socket");
+  }
+};
+const sameSocket = (left, right) =>
+  left.path === right.path &&
+  left.device === right.device &&
+  left.inode === right.inode &&
+  left.mode === right.mode &&
+  left.owner === right.owner;
+const executableRecord = (path) => {
+  if (typeof path !== "string" || !isAbsolute(path))
+    throw fixedError("integration.images.executable");
+  try {
+    const canonicalPath = realpathSync(path);
+    const status = statSync(canonicalPath, { bigint: true });
+    accessSync(canonicalPath, constants.X_OK);
+    const currentUser = process.getuid?.();
+    if (
+      !status.isFile() ||
+      (status.mode & 0o22n) !== 0n ||
+      !(
+        status.uid === 0n ||
+        (currentUser !== undefined && status.uid === BigInt(currentUser))
+      )
+    )
+      throw fixedError("integration.images.executable");
+    return Object.freeze({
+      path: canonicalPath,
+      device: String(status.dev),
+      inode: String(status.ino),
+      mode: String(status.mode),
+      owner: String(status.uid),
+      size: String(status.size),
+      ctimeNanoseconds: String(status.ctimeNs),
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "integration.images.executable"
+    )
+      throw error;
+    throw fixedError("integration.images.executable");
+  }
+};
+const sameExecutable = (left, right) =>
+  left.path === right.path &&
+  left.device === right.device &&
+  left.inode === right.inode &&
+  left.mode === right.mode &&
+  left.owner === right.owner &&
+  left.size === right.size &&
+  left.ctimeNanoseconds === right.ctimeNanoseconds;
+const assertProductionPlatform = (platform) => {
+  if (platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os)
+    throw fixedError("integration.images.platform");
+};
+export const assertImagePreparationPlatformForTesting = (platform) =>
+  assertProductionPlatform(platform);
+const resolveDockerExecutable = (requested) => {
+  if (requested !== undefined) return executableRecord(requested);
+  assertProductionPlatform(process.platform);
+  for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables) {
+    try {
+      return executableRecord(candidate);
+    } catch {
+      // The fixed absolute executable list is authoritative.
+    }
+  }
+  throw fixedError("integration.images.executable");
+};
+const productionDockerExecutable = (requested) => {
+  if (!IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables.includes(requested))
+    throw fixedError("integration.images.executable");
+  assertProductionPlatform(process.platform);
+  return executableRecord(requested);
+};
+const resolveBuildxExecutable = (requested) => {
+  if (requested !== undefined) return executableRecord(requested);
+  assertProductionPlatform(process.platform);
+  for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.buildxExecutables) {
+    try {
+      return executableRecord(candidate);
+    } catch {
+      // The fixed absolute executable list is authoritative.
+    }
+  }
+  throw fixedError("integration.images.executable");
+};
+const processInspectionExecutable =
   process.platform === "darwin"
     ? "/bin/ps"
     : process.platform === "linux"
       ? "/usr/bin/ps"
       : undefined;
-
-const inspectProcessGroup = (
-  processGroup,
-  deadline,
-  executable = processExecutable(),
-  argumentsPrefix = [],
-) => {
+const processGroupState = (processGroup, deadline) => {
   const remaining = Math.floor(deadline - performance.now());
-  if (executable === undefined || remaining < 1) return "unavailable";
+  if (processInspectionExecutable === undefined || remaining < 1)
+    return "unavailable";
   try {
     const output = execFileSync(
-      executable,
-      [...argumentsPrefix, "-axo", "pid=,pgid=,state="],
+      processInspectionExecutable,
+      ["-axo", "pid=,pgid=,state="],
       {
         encoding: "utf8",
         maxBuffer: maximumProcessInspectionBytes,
@@ -105,331 +323,3015 @@ const inspectProcessGroup = (
         timeout: remaining,
       },
     );
-    return classifyProcessGroupState(output, processGroup);
+    const states = output
+      .trimEnd()
+      .split("\n")
+      .map((line) => /^\s*(\d+)\s+(\d+)\s+(\S+)\s*$/u.exec(line))
+      .filter((match) => match !== null && Number(match[2]) === processGroup)
+      .map((match) => match[3]);
+    if (states.length === 0) return "absent";
+    return states.every((state) => state.startsWith("Z"))
+      ? "zombie-only"
+      : "live";
   } catch {
     return "unavailable";
   }
 };
-
-const assertProcessInspectionAvailable = (executable) => {
-  const inspectionExecutable = executable ?? processExecutable();
-  if (inspectionExecutable === undefined)
-    throw fixedError("integration.images.platform");
+const killProcessGroup = (processGroup) => {
   try {
-    accessSync(inspectionExecutable, constants.X_OK);
-  } catch {
-    throw fixedError("integration.images.platform");
+    process.kill(-processGroup, "SIGKILL");
+    return true;
+  } catch (error) {
+    return error?.code === "ESRCH";
   }
 };
-
-const proveProcessGroupAbsent = async (pid, deadline) => {
+const processGroupIsAbsent = (processGroup) => {
+  try {
+    process.kill(-processGroup, 0);
+    return false;
+  } catch (error) {
+    return error?.code === "ESRCH";
+  }
+};
+const waitForProcessGroupAbsence = async (processGroup, deadline) => {
   for (;;) {
-    if (processGroupIsAbsent(pid)) return true;
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) return false;
-    await waitUntil(
-      Math.min(deadline, performance.now() + absencePollMilliseconds),
+    if (processGroupIsAbsent(processGroup)) return true;
+    if (performance.now() >= deadline) return false;
+    await new Promise((resolveWait) =>
+      setTimeout(
+        resolveWait,
+        Math.min(
+          processAbsencePollMilliseconds,
+          Math.max(1, deadline - performance.now()),
+        ),
+      ),
     );
   }
 };
-
-const never = () => new Promise(() => {});
-
-const settleTerminatedProcess = async (
-  child,
-  closed,
-  termination,
-  processInspectionExecutable,
-  processInspectionArgumentsPrefix,
-) => {
-  const proofMilliseconds = Math.min(
-    maximumAbsenceProofMilliseconds,
-    Math.floor(termination.teardownMilliseconds / 2),
+const commandPhaseDeadlines = (deadline, teardownMilliseconds) => {
+  const workDeadline = deadline - teardownMilliseconds;
+  const closeDeadline =
+    workDeadline + Math.max(1, Math.floor(teardownMilliseconds / 2));
+  const inspectionReserve = Math.min(
+    250,
+    Math.max(1, Math.floor(teardownMilliseconds / 4)),
   );
-  const inspectionMilliseconds = Math.max(
-    1,
-    Math.min(
-      maximumProcessInspectionMilliseconds,
-      Math.floor(termination.teardownMilliseconds / 2),
-    ),
-  );
-  const inspectionDeadline = termination.deadline;
-  const absenceDeadline = Math.max(
-    performance.now(),
-    inspectionDeadline - inspectionMilliseconds,
-  );
-  const removalDeadline = Math.max(
-    performance.now(),
-    absenceDeadline - proofMilliseconds,
-  );
-  const closeSettlement = closed.then((result) => ({ result }));
-  let closeBeforeProof = await Promise.race([
-    closeSettlement,
-    waitUntil(removalDeadline).then(() => undefined),
-  ]);
-  termination.killConfirmed =
-    killOwnedProcess(child) || termination.killConfirmed;
-  const absent = await proveProcessGroupAbsent(child.pid, absenceDeadline);
-  const groupState = absent
-    ? "absent"
-    : inspectProcessGroup(
-        child.pid,
-        inspectionDeadline,
-        processInspectionExecutable,
-        processInspectionArgumentsPrefix,
-      );
-  if (closeBeforeProof === undefined)
-    closeBeforeProof = await Promise.race([
-      closeSettlement,
-      waitUntil(inspectionDeadline).then(() => undefined),
-    ]);
-  if (
-    !termination.killConfirmed ||
-    closeBeforeProof === undefined ||
-    (groupState !== "absent" && groupState !== "zombie-only")
-  )
-    throw fixedError("integration.images.containment", true);
-  if (groupState === "zombie-only")
-    throw fixedError("integration.images.teardown", true);
-  throw fixedError(
-    termination.code,
-    termination.code === "integration.images.timeout",
-  );
+  return {
+    absenceDeadline: deadline - inspectionReserve,
+    closeDeadline,
+    teardownDeadline: deadline,
+    workDeadline,
+  };
 };
-
-const runUntilDeadline = async (
+// The spawn-through-terminal-join path is one indivisible process authority.
+/* eslint-disable max-lines-per-function */
+const runOwnedCommand = async (
   executable,
   arguments_,
   {
-    closeBarrier,
+    closeBarrierForTesting,
     deadline,
-    teardownMilliseconds,
     environment,
-    processInspectionArgumentsPrefix,
-    processInspectionExecutable,
+    input,
+    observeProcess,
     signal,
+    teardownMilliseconds,
   },
 ) => {
-  if (process.platform === "win32")
+  if (process.platform === "win32" || processInspectionExecutable === undefined)
     throw fixedError("integration.images.platform");
   if (signal?.aborted) throw fixedError("integration.images.interrupted");
-  const workDeadline = deadline - teardownMilliseconds;
-  assertProcessInspectionAvailable(processInspectionExecutable);
-  const remainingWork = workDeadline - performance.now();
-  if (remainingWork <= 0) throw fixedError("integration.images.timeout", true);
-  let child;
-  try {
-    child = spawn(executable, arguments_, {
-      detached: process.platform !== "win32",
-      env: environment,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  } catch {
-    throw fixedError("integration.images.command");
-  }
-  let terminationState;
-  let resolveTermination;
-  const termination = new Promise((resolveTerminated) => {
-    resolveTermination = resolveTerminated;
-  });
-  let outputBytes = 0;
-  const output = [];
-  const terminate = (code) => {
-    if (terminationState !== undefined) return;
-    terminationState = {
-      code,
-      deadline: Math.min(deadline, performance.now() + teardownMilliseconds),
-      killConfirmed: killOwnedProcess(child),
-      teardownMilliseconds,
-    };
-    resolveTermination(terminationState);
-  };
-  const consume = (chunk, retain) => {
-    outputBytes += chunk.byteLength;
-    if (outputBytes > maximumCommandOutputBytes) {
-      terminate("integration.images.output");
-      return;
-    }
-    if (retain) output.push(chunk);
-  };
-  child.stdout?.on("data", (chunk) => consume(chunk, true));
-  child.stderr?.on("data", (chunk) => consume(chunk, false));
-  const onAbort = () => terminate("integration.images.interrupted");
-  signal?.addEventListener("abort", onAbort, { once: true });
-  const timeout = setTimeout(
-    () => terminate("integration.images.timeout"),
-    Math.max(1, remainingWork),
-  );
-  const closed = new Promise((resolveResult) => {
-    child.once("error", () => {
-      terminate("integration.images.command");
-    });
-    child.once("close", (code, childSignal) =>
-      resolveResult({ code, childSignal }),
-    );
+  const executableIdentity = executableRecord(executable.path);
+  if (!sameExecutable(executable, executableIdentity))
+    throw fixedError("integration.images.executable");
+  const { absenceDeadline, closeDeadline, teardownDeadline, workDeadline } =
+    commandPhaseDeadlines(deadline, teardownMilliseconds);
+  if (performance.now() >= workDeadline)
+    throw fixedError("integration.images.timeout", true);
+  const child = spawn(executableIdentity.path, arguments_, {
+    detached: true,
+    env: environment,
+    shell: false,
+    stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
   });
   const processGroup = child.pid;
-  const barrier =
-    Number.isSafeInteger(processGroup) && processGroup > 0
-      ? Promise.resolve()
-          .then(() => closeBarrier?.(processGroup))
-          .catch(never)
-      : Promise.resolve();
-  const observedClose = Promise.all([closed, barrier]).then(
-    ([result]) => result,
+  if (!Number.isSafeInteger(processGroup) || processGroup < 1) {
+    child.kill("SIGKILL");
+    throw fixedError("integration.images.command");
+  }
+  let bytes = 0;
+  const output = [];
+  const diagnosticStderr = [];
+  let diagnosticStderrBytes = 0;
+  let outputTruncated = false;
+  let failure;
+  const fail = (code, timedOut = false) => {
+    failure ??= fixedError(code, timedOut);
+    killProcessGroup(processGroup);
+  };
+  const consume = (chunk, retain) => {
+    bytes += chunk.byteLength;
+    if (bytes > maximumBuildOutputBytes) {
+      outputTruncated = true;
+      fail("integration.images.output");
+    } else if (retain) output.push(chunk);
+    else if (diagnosticStderrBytes < maximumHeaderBytes) {
+      const retained = chunk.subarray(
+        0,
+        Math.max(0, maximumHeaderBytes - diagnosticStderrBytes),
+      );
+      diagnosticStderr.push(retained);
+      diagnosticStderrBytes += retained.byteLength;
+      if (retained.byteLength !== chunk.byteLength) outputTruncated = true;
+    } else outputTruncated = true;
+  };
+  child.stdout.on("data", (chunk) => consume(chunk, true));
+  child.stderr.on("data", (chunk) => consume(chunk, false));
+  const onAbort = () => fail("integration.images.interrupted");
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const timeout = setTimeout(
+    () => fail("integration.images.timeout", true),
+    Math.max(1, workDeadline - performance.now()),
   );
+  const closed = new Promise((resolveClose) => {
+    child.once("error", () => fail("integration.images.command"));
+    child.once("close", (code, childSignal) =>
+      resolveClose({ code, childSignal }),
+    );
+  });
+  const observedClose = closed.then(async (result) => {
+    await closeBarrierForTesting?.(processGroup);
+    return result;
+  });
+  if (input !== undefined) {
+    child.stdin.on("error", () => fail("integration.images.command"));
+    child.stdin.end(input);
+  }
   try {
-    const first = await Promise.race([
-      observedClose.then((result) => ({ result })),
-      termination.then((state) => ({ state })),
+    const result = await Promise.race([
+      observedClose,
+      new Promise((resolveClose) =>
+        setTimeout(
+          () => resolveClose(undefined),
+          Math.max(1, closeDeadline - performance.now()),
+        ).unref(),
+      ),
     ]);
-    if ("state" in first)
-      return await settleTerminatedProcess(
-        child,
-        closed,
-        first.state,
-        processInspectionExecutable,
-        processInspectionArgumentsPrefix,
-      );
-    clearTimeout(timeout);
-    signal?.removeEventListener("abort", onAbort);
-    if (!processGroupIsAbsent(child.pid)) {
-      terminate("integration.images.command");
-      return await settleTerminatedProcess(
-        child,
-        closed,
-        terminationState,
-        processInspectionExecutable,
-        processInspectionArgumentsPrefix,
-      );
+    if (result === undefined) {
+      failure = fixedError("integration.images.containment", true);
+      killProcessGroup(processGroup);
     }
-    const result = first.result;
-    if (result.code !== 0 || result.childSignal !== null)
-      throw fixedError("integration.images.command");
+    if (
+      result !== undefined &&
+      failure === undefined &&
+      (result.code !== 0 || result.childSignal !== null)
+    )
+      failure = fixedError("integration.images.command");
+    if (failure === undefined && !processGroupIsAbsent(processGroup))
+      failure = fixedError("integration.images.containment");
+    if (!killProcessGroup(processGroup))
+      failure = fixedError("integration.images.containment", true);
+    const absent = await waitForProcessGroupAbsence(
+      processGroup,
+      Math.max(performance.now(), absenceDeadline),
+    );
+    const state = absent
+      ? "absent"
+      : processGroupState(processGroup, teardownDeadline);
+    const processDiagnostic = Object.freeze({
+      observed: true,
+      exited: result !== undefined && result.code !== null,
+      signaled: result !== undefined && result.childSignal !== null,
+      timedOut: failure?.code === "ETIMEDOUT",
+      joined: state === "absent",
+      outputBytes: bytes,
+      outputTruncated,
+      stderrClass: classifyBuildxStderr(
+        Buffer.concat(diagnosticStderr).toString("utf8"),
+      ),
+    });
+    observeProcess?.(processDiagnostic);
+    if (failure instanceof Error)
+      processDiagnostics.set(failure, processDiagnostic);
+    if (state !== "absent") {
+      const error = fixedError(
+        state === "zombie-only"
+          ? "integration.images.teardown"
+          : "integration.images.containment",
+        true,
+      );
+      error.containmentProved = false;
+      processDiagnostics.set(error, processDiagnostic);
+      throw error;
+    }
+    if (failure !== undefined) throw failure;
     return Buffer.concat(output).toString("utf8");
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", onAbort);
-    if (child.exitCode === null && child.signalCode === null)
-      killOwnedProcess(child);
+    killProcessGroup(processGroup);
+  }
+};
+/* eslint-enable max-lines-per-function */
+export const runOwnedImageCommandForTesting = (
+  executable,
+  arguments_,
+  options,
+) =>
+  runOwnedCommand(executableRecord(executable), arguments_, {
+    ...options,
+    environment: options.environment ?? {},
+    teardownMilliseconds:
+      options.teardownMilliseconds ?? preparationTeardownMilliseconds,
+  });
+const resolveDockerSocket = (requested) => {
+  if (requested !== undefined) return socketRecord(requested);
+  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os)
+    throw fixedError("integration.images.platform");
+  return socketRecord(IMAGE_PREPARATION_EXECUTION_POLICY.socket);
+};
+const authenticateDockerSocket = (policyPath, requested) => {
+  const policySocket = socketRecord(policyPath);
+  if (requested !== policySocket.path)
+    throw fixedError("integration.images.socket");
+  const socket = socketRecord(requested);
+  if (!sameSocket(socket, policySocket))
+    throw fixedError("integration.images.socket");
+  return socket;
+};
+const productionDockerSocket = (requested) => {
+  assertProductionPlatform(process.platform);
+  return authenticateDockerSocket(
+    IMAGE_PREPARATION_EXECUTION_POLICY.socket,
+    requested,
+  );
+};
+export const authenticateDockerSocketAliasForTesting = authenticateDockerSocket;
+const productionDockerEnvironment = (environment, socket) => {
+  const expected = {
+    DOCKER_HOST: `unix://${socket.path}`,
+    LANG: "C.UTF-8",
+    PATH: "/usr/bin:/bin",
+  };
+  if (
+    typeof environment !== "object" ||
+    environment === null ||
+    JSON.stringify(Object.keys(environment).sort()) !==
+      JSON.stringify(Object.keys(expected).sort()) ||
+    Object.entries(expected).some(
+      ([name, value]) => environment[name] !== value,
+    )
+  )
+    throw fixedError("integration.images.environment");
+  return Object.freeze({ ...expected });
+};
+const assertSocketCurrent = (identity) => {
+  if (!sameSocket(identity, socketRecord(identity.path)))
+    throw fixedError("integration.images.socket");
+};
+const validSocketEvidence = (value) =>
+  exactKeys(value, ["device", "inode", "mode", "owner", "path"]) &&
+  isAbsolute(value.path ?? "") &&
+  boundedText(value.path, 1024) &&
+  ["device", "inode", "mode", "owner"].every((key) =>
+    /^\d{1,32}$/u.test(value[key] ?? ""),
+  );
+
+const normalizedHeaders = (headers) =>
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(headers ?? {}).map(([name, value]) => [
+        name.toLowerCase(),
+        Array.isArray(value) ? value.join(", ") : String(value ?? ""),
+      ]),
+    ),
+  );
+const boundedRequest = ({
+  body,
+  deadline,
+  headers,
+  method,
+  origin,
+  path,
+  signal,
+  socketPath,
+  maximumBytes,
+}) =>
+  new Promise((resolveRequest, rejectRequest) => {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining < 1) {
+      rejectRequest(fixedError("integration.images.timeout", true));
+      return;
+    }
+    let settled = false;
+    let responseEnded = false;
+    let responseValue;
+    let request;
+    let terminalError;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error === undefined) resolveRequest(value);
+      else rejectRequest(error);
+    };
+    const fail = (code, timedOut = false) => {
+      terminalError ??= fixedError(code, timedOut);
+      request?.destroy();
+      if (request === undefined) finish(terminalError);
+    };
+    const onAbort = () => fail("integration.images.interrupted");
+    const timer = setTimeout(
+      () => fail("integration.images.timeout", true),
+      Math.max(1, remaining),
+    );
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    const requestOptions = {
+      agent: false,
+      headers,
+      maxHeaderSize: maximumHeaderBytes,
+      method,
+      path,
+      ...(socketPath === undefined
+        ? {
+            ca: rootCertificates,
+            hostname: origin.hostname,
+            port: origin.port || 443,
+            protocol: "https:",
+            rejectUnauthorized: true,
+            servername: origin.hostname,
+          }
+        : { socketPath }),
+    };
+    const factory = socketPath === undefined ? httpsRequest : httpRequest;
+    request = factory(requestOptions, (response) => {
+      let bytes = 0;
+      const chunks = [];
+      response.on("data", (chunk) => {
+        bytes += chunk.byteLength;
+        if (bytes > maximumBytes) {
+          chunks.length = 0;
+          fail("integration.images.output");
+        } else chunks.push(chunk);
+      });
+      response.once("error", () => fail("integration.images.transport"));
+      response.once("end", () => {
+        responseEnded = true;
+        responseValue = Object.freeze({
+          body: Buffer.concat(chunks),
+          headers: normalizedHeaders(response.headers),
+          statusCode: response.statusCode ?? 0,
+        });
+      });
+    });
+    request.once("error", () => fail("integration.images.transport"));
+    request.once("close", () => {
+      if (terminalError !== undefined) finish(terminalError);
+      else if (!responseEnded)
+        finish(fixedError("integration.images.transport"));
+      else finish(undefined, responseValue);
+    });
+    if (body !== undefined) request.write(body);
+    request.end();
+  });
+const responseRecord = (value) => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !Number.isSafeInteger(value.statusCode) ||
+    value.statusCode < 100 ||
+    value.statusCode > 599 ||
+    !(Buffer.isBuffer(value.body) || typeof value.body === "string")
+  )
+    throw fixedError("integration.images.transport");
+  const body = Buffer.isBuffer(value.body)
+    ? Buffer.from(value.body)
+    : Buffer.from(value.body, "utf8");
+  return Object.freeze({
+    statusCode: value.statusCode,
+    headers: normalizedHeaders(value.headers),
+    body,
+  });
+};
+const requestWith = async (transport, request) => {
+  const response = responseRecord(await transport(request));
+  if (response.body.byteLength > request.maximumBytes)
+    throw fixedError("integration.images.output");
+  return response;
+};
+
+const daemonIdentity = (socket, versionValue, infoValue) => {
+  const version = jsonRecord(versionValue, "integration.images.daemon");
+  const info = jsonRecord(infoValue, "integration.images.daemon");
+  const identity = {
+    endpoint: socket.path,
+    socketDevice: socket.device,
+    socketInode: socket.inode,
+    id: info.ID,
+    serverVersion: version.Version,
+    apiVersion: version.ApiVersion,
+    product: version.Platform?.Name,
+    operatingSystem: info.OperatingSystem,
+    osType: info.OSType,
+    architecture: info.Architecture,
+  };
+  if (
+    !boundedText(identity.endpoint, 1024) ||
+    !boundedText(identity.id, 128) ||
+    !boundedText(identity.serverVersion, 64) ||
+    !apiVersionPattern.test(identity.apiVersion ?? "") ||
+    !boundedText(identity.product, 96) ||
+    !boundedText(identity.operatingSystem, 96) ||
+    /docker desktop/iu.test(
+      `${identity.product} ${identity.operatingSystem}`,
+    ) ||
+    !platformValuePattern.test(identity.osType ?? "") ||
+    !platformValuePattern.test(identity.architecture ?? "")
+  )
+    throw fixedError("integration.images.daemon");
+  return Object.freeze(identity);
+};
+const sameDaemon = (left, right) =>
+  left.endpoint === right.endpoint &&
+  left.socketDevice === right.socketDevice &&
+  left.socketInode === right.socketInode &&
+  left.id === right.id &&
+  left.serverVersion === right.serverVersion &&
+  left.apiVersion === right.apiVersion &&
+  left.product === right.product &&
+  left.operatingSystem === right.operatingSystem &&
+  left.osType === right.osType &&
+  left.architecture === right.architecture;
+const validEvidenceDaemon = (value) =>
+  exactKeys(value, [
+    "apiVersion",
+    "architecture",
+    "endpoint",
+    "id",
+    "operatingSystem",
+    "osType",
+    "product",
+    "serverVersion",
+    "socketDevice",
+    "socketInode",
+  ]) &&
+  isAbsolute(value.endpoint ?? "") &&
+  boundedText(value.endpoint, 1024) &&
+  /^\d{1,32}$/u.test(value.socketDevice ?? "") &&
+  /^\d{1,32}$/u.test(value.socketInode ?? "") &&
+  boundedText(value.id, 128) &&
+  boundedText(value.serverVersion, 64) &&
+  apiVersionPattern.test(value.apiVersion ?? "") &&
+  boundedText(value.product, 96) &&
+  boundedText(value.operatingSystem, 96) &&
+  !/docker desktop/iu.test(`${value.product} ${value.operatingSystem}`) &&
+  platformValuePattern.test(value.osType ?? "") &&
+  platformValuePattern.test(value.architecture ?? "");
+const validPreparationPolicy = (value) =>
+  exactKeys(value, [
+    "maximumManifestBytes",
+    "maximumEvidenceBytes",
+    "maximumPreparationMilliseconds",
+    "maximumResponseBytes",
+    "teardownMilliseconds",
+  ]) &&
+  Number.isSafeInteger(value.maximumPreparationMilliseconds) &&
+  value.maximumPreparationMilliseconds >= 4 &&
+  value.maximumPreparationMilliseconds <= maximumPreparationMilliseconds &&
+  Number.isSafeInteger(value.teardownMilliseconds) &&
+  value.teardownMilliseconds >= 1 &&
+  value.teardownMilliseconds <= preparationTeardownMilliseconds &&
+  value.maximumPreparationMilliseconds > value.teardownMilliseconds * 3 &&
+  value.maximumResponseBytes === maximumResponseBytes &&
+  value.maximumManifestBytes === maximumManifestBytes &&
+  value.maximumEvidenceBytes === maximumEvidenceBytes;
+const validTerminalCleanup = (value) =>
+  exactKeys(value, ["daemon", "handles", "privateState"]) &&
+  value.daemon === "stable" &&
+  value.handles === "settled" &&
+  value.privateState === "retained-for-outer-host-retirement";
+
+const descriptor = (value) => {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !digestPattern.test(value.digest ?? "") ||
+    !Number.isSafeInteger(value.size) ||
+    value.size < 1 ||
+    !boundedText(value.mediaType, 128)
+  )
+    throw fixedError("integration.images.manifest");
+  return value;
+};
+const parseManifest = (raw) => {
+  const value = jsonRecord(raw, "integration.images.manifest");
+  if (
+    value.schemaVersion !== 2 ||
+    !manifestMediaTypes.has(value.mediaType) ||
+    !Array.isArray(value.layers)
+  )
+    throw fixedError("integration.images.manifest");
+  const config = descriptor(value.config);
+  if (!configMediaTypes.has(config.mediaType))
+    throw fixedError("integration.images.manifest");
+  return Object.freeze({ value, config });
+};
+const decodeProof = (encoded) => {
+  if (
+    typeof encoded !== "string" ||
+    encoded.length === 0 ||
+    encoded.length > Math.ceil(maximumManifestBytes / 3) * 4 ||
+    !/^(?:[A-Za-z\d+/]{4})*(?:[A-Za-z\d+/]{2}==|[A-Za-z\d+/]{3}=)?$/u.test(
+      encoded,
+    )
+  )
+    throw fixedError("integration.images.evidence");
+  const raw = Buffer.from(encoded, "base64");
+  if (
+    raw.byteLength < 1 ||
+    raw.byteLength > maximumManifestBytes ||
+    raw.toString("base64") !== encoded
+  )
+    throw fixedError("integration.images.evidence");
+  return raw;
+};
+const deriveManifestProof = ({
+  configRaw,
+  image,
+  platform,
+  rootRaw,
+  selectedRaw,
+}) => {
+  if (!imagePattern.test(image))
+    throw fixedError("integration.images.manifest");
+  const normalizedPlatform = normalizePlatform(platform);
+  const rootDigest = image.slice(image.lastIndexOf("@") + 1);
+  if (digestBytes(rootRaw) !== rootDigest)
+    throw fixedError("integration.images.manifest");
+  const root = jsonRecord(rootRaw, "integration.images.manifest");
+  let manifestDigest = rootDigest;
+  let authoritativeRaw = rootRaw;
+  if (Array.isArray(root.manifests)) {
+    if (root.schemaVersion !== 2 || !indexMediaTypes.has(root.mediaType))
+      throw fixedError("integration.images.manifest");
+    const matches = root.manifests.filter((candidate) => {
+      try {
+        return (
+          manifestMediaTypes.has(descriptor(candidate).mediaType) &&
+          samePlatform(
+            normalizePlatform(candidate.platform),
+            normalizedPlatform,
+          )
+        );
+      } catch {
+        return false;
+      }
+    });
+    if (matches.length !== 1) throw fixedError("integration.images.manifest");
+    const selected = descriptor(matches[0]);
+    if (
+      selectedRaw.byteLength !== selected.size ||
+      digestBytes(selectedRaw) !== selected.digest
+    )
+      throw fixedError("integration.images.manifest");
+    manifestDigest = selected.digest;
+    authoritativeRaw = selectedRaw;
+  } else if (!rootRaw.equals(selectedRaw)) {
+    throw fixedError("integration.images.manifest");
+  }
+  const manifest = parseManifest(authoritativeRaw);
+  if (
+    configRaw.byteLength !== manifest.config.size ||
+    digestBytes(configRaw) !== manifest.config.digest
+  )
+    throw fixedError("integration.images.config");
+  return Object.freeze({
+    platform: normalizedPlatform,
+    manifestDigest,
+    configDigest: manifest.config.digest,
+    configBlob: configRaw.toString("base64"),
+    rootManifest: rootRaw.toString("base64"),
+    selectedManifest: selectedRaw.toString("base64"),
+  });
+};
+
+const evidenceImage = (value) => {
+  if (
+    !exactKeys(value, [
+      "configDigest",
+      "configBlob",
+      "image",
+      "manifestDigest",
+      "platform",
+      "rootManifest",
+      "selectedManifest",
+    ]) ||
+    !imagePattern.test(value.image ?? "") ||
+    !digestPattern.test(value.manifestDigest ?? "") ||
+    !digestPattern.test(value.configDigest ?? "")
+  )
+    throw fixedError("integration.images.evidence");
+  let derived;
+  try {
+    derived = deriveManifestProof({
+      image: value.image,
+      platform: value.platform,
+      configRaw: decodeProof(value.configBlob),
+      rootRaw: decodeProof(value.rootManifest),
+      selectedRaw: decodeProof(value.selectedManifest),
+    });
+  } catch {
+    throw fixedError("integration.images.evidence");
+  }
+  if (
+    value.manifestDigest !== derived.manifestDigest ||
+    value.configDigest !== derived.configDigest ||
+    !samePlatform(value.platform, derived.platform) ||
+    !exactKeys(
+      value.platform,
+      derived.platform.variant === undefined
+        ? ["architecture", "os"]
+        : ["architecture", "os", "variant"],
+    )
+  )
+    throw fixedError("integration.images.evidence");
+  return Object.freeze({ image: value.image, ...derived });
+};
+
+const serializePreparedImageEvidence = (
+  value,
+  maximumBytes = maximumEvidenceBytes,
+) => {
+  let serialized;
+  try {
+    serialized = `${JSON.stringify(value, undefined, 2)}\n`;
+  } catch {
+    throw fixedError("integration.images.evidence");
+  }
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > maximumEvidenceBytes ||
+    Buffer.byteLength(serialized, "utf8") > maximumBytes
+  )
+    throw fixedError("integration.images.evidence");
+  return serialized;
+};
+
+export const validatePreparedImageEvidence = (value, manifestIdentity) => {
+  serializePreparedImageEvidence(value);
+  if (
+    !exactKeys(value, [
+      "dockerDaemon",
+      "dockerSocket",
+      "imageEvidenceVersion",
+      "images",
+      "manifestIdentity",
+      "preparationPolicy",
+      "terminalCleanup",
+    ]) ||
+    value.imageEvidenceVersion !== 2 ||
+    value.manifestIdentity !== manifestIdentity ||
+    !manifestIdentityPattern.test(value.manifestIdentity ?? "") ||
+    !validSocketEvidence(value.dockerSocket) ||
+    !validEvidenceDaemon(value.dockerDaemon) ||
+    !validPreparationPolicy(value.preparationPolicy) ||
+    !validTerminalCleanup(value.terminalCleanup) ||
+    value.dockerDaemon.endpoint !== value.dockerSocket.path ||
+    value.dockerDaemon.socketDevice !== value.dockerSocket.device ||
+    value.dockerDaemon.socketInode !== value.dockerSocket.inode ||
+    !Array.isArray(value.images) ||
+    value.images.length === 0 ||
+    value.images.length > 256
+  )
+    throw fixedError("integration.images.evidence");
+  const images = value.images.map(evidenceImage);
+  const canonicalPlatform = normalizePlatform(
+    IMAGE_PREPARATION_EXECUTION_POLICY.platform,
+  );
+  if (
+    new Set(images.map(({ image }) => image)).size !== images.length ||
+    images.some(({ platform }) => !samePlatform(platform, canonicalPlatform)) ||
+    Buffer.byteLength(JSON.stringify(images), "utf8") > maximumEvidenceBytes
+  )
+    throw fixedError("integration.images.evidence");
+  return Object.freeze({
+    imageEvidenceVersion: 2,
+    manifestIdentity,
+    dockerSocket: Object.freeze({ ...value.dockerSocket }),
+    dockerDaemon: Object.freeze({ ...value.dockerDaemon }),
+    preparationPolicy: Object.freeze({ ...value.preparationPolicy }),
+    terminalCleanup: Object.freeze({ ...value.terminalCleanup }),
+    images: Object.freeze(images),
+  });
+};
+
+export const readPreparedImageEvidence = (path, manifestIdentity) => {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const status = fstatSync(descriptor);
+    if (
+      !status.isFile() ||
+      status.size < 1 ||
+      status.size > maximumEvidenceBytes
+    )
+      throw fixedError("integration.images.evidence");
+    const body = readFileSync(descriptor);
+    if (body.byteLength !== status.size)
+      throw fixedError("integration.images.evidence");
+    return validatePreparedImageEvidence(
+      JSON.parse(body.toString("utf8")),
+      manifestIdentity,
+    );
+  } catch {
+    throw fixedError("integration.images.evidence");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 };
 
-const credentialFreeEnvironment = (environment, dockerConfig) => {
-  const sanitized = { ...environment, DOCKER_CONFIG: dockerConfig };
-  delete sanitized.DOCKER_AUTH_CONFIG;
-  return sanitized;
+const localImageRecord = (value, image) => {
+  const record = jsonRecord(value, "integration.images.digest");
+  if (
+    !digestPattern.test(record.Id ?? "") ||
+    !Array.isArray(record.RepoDigests) ||
+    !record.RepoDigests.includes(image)
+  )
+    throw fixedError("integration.images.digest");
+  return Object.freeze({
+    configDigest: record.Id,
+    platform: normalizePlatform({
+      os: record.Os,
+      architecture: record.Architecture,
+      variant: record.Variant,
+    }),
+  });
 };
 
-export const preparePinnedDockerImages = async (images, options = {}) => {
+const preparationPolicy = (images, options) => {
   const preparationMilliseconds =
     options.maximumPreparationMilliseconds ?? maximumPreparationMilliseconds;
   const teardownMilliseconds =
     options.teardownMilliseconds ?? preparationTeardownMilliseconds;
   if (
     !Number.isSafeInteger(preparationMilliseconds) ||
-    preparationMilliseconds < 2 ||
+    preparationMilliseconds < 4 ||
     preparationMilliseconds > maximumPreparationMilliseconds ||
     !Number.isSafeInteger(teardownMilliseconds) ||
     teardownMilliseconds < 1 ||
-    teardownMilliseconds >= preparationMilliseconds ||
-    teardownMilliseconds > preparationTeardownMilliseconds
+    teardownMilliseconds > preparationTeardownMilliseconds ||
+    preparationMilliseconds <= teardownMilliseconds * 3
   )
     throw fixedError("integration.images.deadline");
+  if (
+    !Array.isArray(images) ||
+    images.length === 0 ||
+    images.some((image) => !imagePattern.test(image)) ||
+    new Set(images).size !== images.length
+  )
+    throw fixedError("integration.images.digest");
   const deadline = performance.now() + preparationMilliseconds;
-  let dockerConfig;
-  let prepared;
-  let failure;
+  return Object.freeze({
+    deadline,
+    workDeadline: deadline - teardownMilliseconds,
+    reconciliationDeadline: deadline - Math.floor(teardownMilliseconds / 2),
+    maximumPreparationMilliseconds: preparationMilliseconds,
+    teardownMilliseconds,
+  });
+};
+
+const createPrivateClientRoot = (options) => {
+  const testing =
+    options.socketIdentityForTesting !== undefined ||
+    options.engineRequestForTesting !== undefined ||
+    options.registryRequestForTesting !== undefined;
+  const authority = testing ? undefined : integrationPrivateStorageAuthority();
+  const parent =
+    authority === undefined ? realpathSync("/tmp") : authority.root;
+  const parentStatus = lstatSync(parent);
+  const outerParentStatus =
+    authority === undefined ? undefined : lstatSync(authority.parent);
+  if (
+    authority !== undefined &&
+    (!/^sha256:[a-f\d]{64}$/u.test(authority.authorityDigest ?? "") ||
+      authority.parent !== realpathSync("/tmp") ||
+      !outerParentStatus.isDirectory() ||
+      outerParentStatus.isSymbolicLink() ||
+      outerParentStatus.dev !== authority.parentDev ||
+      outerParentStatus.ino !== authority.parentIno ||
+      outerParentStatus.uid !== authority.parentUid ||
+      outerParentStatus.gid !== authority.parentGid ||
+      (outerParentStatus.mode & 0o7777) !== authority.parentMode ||
+      authority.root !== realpathSync(authority.root) ||
+      parentStatus.dev !== authority.rootDev ||
+      parentStatus.ino !== authority.rootIno ||
+      parentStatus.uid !== authority.rootUid ||
+      parentStatus.gid !== authority.rootGid ||
+      (parentStatus.mode & 0o7777) !== authority.rootMode ||
+      authority.rootMode !== 0o700)
+  )
+    throw fixedError("integration.images.private-storage");
+  const root = mkdtempSync(
+    resolve(
+      parent,
+      authority === undefined
+        ? "agentscope-image-preparation-"
+        : "docker-client-",
+    ),
+  );
+  const owned = {
+    root,
+    parent,
+    parentIdentity: Object.freeze({
+      dev: parentStatus.dev,
+      ino: parentStatus.ino,
+      mode: parentStatus.mode & 0o7777,
+      uid: parentStatus.uid,
+      gid: parentStatus.gid,
+    }),
+    rootIdentity: undefined,
+    directories: [],
+    files: [],
+    retired: false,
+    beforeRemovalForTesting: options.beforePrivateRemovalForTesting,
+    authorityDigest: authority?.authorityDigest,
+  };
   try {
-    dockerConfig = mkdtempSync(resolve(tmpdir(), "agentscope-docker-config-"));
-  } catch {
-    throw fixedError("integration.images.setup");
-  }
-  try {
-    chmodSync(dockerConfig, 0o700);
-    writeFileSync(resolve(dockerConfig, "config.json"), '{"auths":{}}\n', {
-      mode: 0o600,
+    chmodSync(root, 0o700);
+    const rootStatus = lstatSync(root);
+    owned.rootIdentity = Object.freeze({
+      dev: rootStatus.dev,
+      ino: rootStatus.ino,
+      mode: rootStatus.mode & 0o7777,
+      uid: rootStatus.uid,
+      gid: rootStatus.gid,
     });
-    const environment = credentialFreeEnvironment(
-      options.environment ?? process.env,
-      dockerConfig,
-    );
-    const executable = options.dockerExecutable ?? "docker";
-    const prefix = options.dockerArgumentsPrefix ?? [];
-    prepared = [];
-    for (const image of images) {
-      await runUntilDeadline(executable, [...prefix, "pull", image], {
-        closeBarrier: options.closeBarrier,
-        deadline,
-        teardownMilliseconds,
-        environment,
-        processInspectionArgumentsPrefix:
-          options.processInspectionArgumentsPrefix,
-        processInspectionExecutable: options.processInspectionExecutable,
-        signal: options.signal,
-      });
-      const localImageDigest = (
-        await runUntilDeadline(
-          executable,
-          [...prefix, "image", "inspect", "--format", "{{.Id}}", image],
-          {
-            closeBarrier: options.closeBarrier,
-            deadline,
-            teardownMilliseconds,
-            environment,
-            processInspectionArgumentsPrefix:
-              options.processInspectionArgumentsPrefix,
-            processInspectionExecutable: options.processInspectionExecutable,
-            signal: options.signal,
-          },
-        )
-      ).trim();
-      if (!/^sha256:[a-f\d]{64}$/u.test(localImageDigest))
-        throw fixedError("integration.images.digest");
-      prepared.push({
-        image,
-        localImageDigest: localImageDigest.replace(":", "-"),
-      });
+    options.afterPrivateRootCreatedForTesting?.(root);
+    for (const name of [
+      "buildx",
+      "docker",
+      "home",
+      "tmp",
+      "xdg",
+      "npm-cache",
+    ]) {
+      const path = resolve(root, name);
+      mkdirSync(path, { mode: 0o700 });
+      owned.directories.push(path);
     }
+    for (const [name, content] of [
+      ["docker/config.json", '{"auths":{}}\n'],
+      ["gitconfig", ""],
+      ["npmrc", ""],
+    ]) {
+      const path = resolve(root, name);
+      writeFileSync(path, content, { flag: "wx", mode: 0o600 });
+      owned.files.push(path);
+    }
+    return owned;
+  } catch (error) {
+    cleanupPrivateClient(owned, Number.POSITIVE_INFINITY);
+    throw error;
+  }
+};
+/* eslint-disable complexity, max-depth, max-lines-per-function -- one bounded no-follow inventory and identity-checked retirement state machine */
+const cleanupPrivateClient = (owned, deadline) => {
+  const summary = {
+    entryCount: 0,
+    directoryCount: 0,
+    regularFileCount: 0,
+    totalBytes: 0,
+    entrySetDigest: diagnosticDigest([]),
+  };
+  const cleanupFailure = (reason) => {
+    const error = fixedError("integration.images.cleanup");
+    error.privateCleanupDiagnostic = Object.freeze({
+      diagnosticVersion: 1,
+      stage: "private-client-cleanup",
+      outcome: "retired-failure",
+      reason,
+      ...summary,
+    });
+    return error;
+  };
+  const withinDeadline = () => {
+    if (performance.now() > deadline) throw cleanupFailure("deadline");
+  };
+  const mode = (status) => status.mode & 0o7777;
+  const sameDirectoryIdentity = (status, identity) =>
+    status.isDirectory() &&
+    !status.isSymbolicLink() &&
+    status.dev === identity.dev &&
+    status.ino === identity.ino &&
+    status.uid === identity.uid &&
+    status.gid === identity.gid &&
+    mode(status) === identity.mode;
+  const assertBoundary = () => {
+    withinDeadline();
+    let parentStatus;
+    let rootStatus;
+    try {
+      parentStatus = lstatSync(owned.parent);
+      rootStatus = lstatSync(owned.root);
+    } catch {
+      throw cleanupFailure("identity-substitution");
+    }
+    if (
+      !sameDirectoryIdentity(parentStatus, owned.parentIdentity) ||
+      !sameDirectoryIdentity(rootStatus, owned.rootIdentity)
+    )
+      throw cleanupFailure("identity-substitution");
+  };
+  const snapshotFile = (path, expected) => {
+    let descriptor;
+    try {
+      descriptor = openSync(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const before = fstatSync(descriptor);
+      if (
+        !before.isFile() ||
+        before.dev !== expected.dev ||
+        before.ino !== expected.ino ||
+        before.uid !== expected.uid ||
+        before.gid !== expected.gid ||
+        before.nlink !== 1 ||
+        before.size !== expected.size ||
+        mode(before) !== expected.mode ||
+        ![0o600, 0o644].includes(expected.mode)
+      )
+        throw cleanupFailure("entry-substitution");
+      const content = readFileSync(descriptor);
+      const after = fstatSync(descriptor);
+      if (
+        after.dev !== before.dev ||
+        after.ino !== before.ino ||
+        after.size !== before.size ||
+        after.nlink !== before.nlink ||
+        mode(after) !== mode(before) ||
+        digestBytes(content) !== expected.digest
+      )
+        throw cleanupFailure("entry-substitution");
+    } catch (error) {
+      if (error?.message === "integration.images.cleanup") throw error;
+      throw cleanupFailure("entry-substitution");
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
+    }
+  };
+  try {
+    if (owned.retired) throw cleanupFailure("identity-substitution");
+    assertBoundary();
+    const pending = [
+      {
+        path: owned.root,
+        relative: "",
+        depth: 0,
+        identity: owned.rootIdentity,
+      },
+    ];
+    const directories = [];
+    const directoryInventories = [];
+    const files = [];
+    const diagnosticEntries = [];
+    while (pending.length > 0) {
+      withinDeadline();
+      const current = pending.pop();
+      let entries;
+      try {
+        if (!sameDirectoryIdentity(lstatSync(current.path), current.identity))
+          throw cleanupFailure("entry-substitution");
+        entries = readdirSync(current.path, { withFileTypes: true });
+        if (!sameDirectoryIdentity(lstatSync(current.path), current.identity))
+          throw cleanupFailure("entry-substitution");
+      } catch {
+        throw cleanupFailure("entry-inaccessible");
+      }
+      directoryInventories.push({
+        ...current.identity,
+        path: current.path,
+        childDigest: diagnosticDigest(entries.map(({ name }) => name).sort()),
+      });
+      for (const entry of entries) {
+        summary.entryCount += 1;
+        if (summary.entryCount > maximumPrivateStateEntries)
+          throw cleanupFailure("entry-overflow");
+        const relative = current.relative
+          ? `${current.relative}/${entry.name}`
+          : entry.name;
+        const depth = current.depth + 1;
+        if (depth > maximumPrivateStateDepth)
+          throw cleanupFailure("depth-overflow");
+        const path = resolve(current.path, entry.name);
+        if (!path.startsWith(`${owned.root}/`) || entry.isSymbolicLink())
+          throw cleanupFailure("entry-type");
+        const status = lstatSync(path);
+        if (entry.isDirectory() && status.isDirectory()) {
+          if (
+            status.uid !== owned.rootIdentity.uid ||
+            status.gid !== owned.rootIdentity.gid ||
+            mode(status) !== 0o700
+          )
+            throw cleanupFailure("entry-authority");
+          const identity = Object.freeze({
+            path,
+            relative,
+            depth,
+            dev: status.dev,
+            ino: status.ino,
+            uid: status.uid,
+            gid: status.gid,
+            mode: mode(status),
+          });
+          directories.push(identity);
+          pending.push({ path, relative, depth, identity });
+          summary.directoryCount += 1;
+          diagnosticEntries.push({
+            nameDigest: digestBytes(Buffer.from(relative, "utf8")),
+            type: "directory",
+            size: 0,
+          });
+          continue;
+        }
+        if (!entry.isFile() || !status.isFile())
+          throw cleanupFailure("entry-type");
+        if (
+          status.uid !== owned.rootIdentity.uid ||
+          status.gid !== owned.rootIdentity.gid ||
+          status.nlink !== 1 ||
+          ![0o600, 0o644].includes(mode(status))
+        )
+          throw cleanupFailure("entry-authority");
+        if (status.size > maximumPrivateStateFileBytes)
+          throw cleanupFailure("file-overflow");
+        summary.totalBytes += status.size;
+        if (
+          !Number.isSafeInteger(summary.totalBytes) ||
+          summary.totalBytes > maximumPrivateStateTotalBytes
+        )
+          throw cleanupFailure("total-overflow");
+        const descriptor = openSync(
+          path,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        );
+        let content;
+        try {
+          const before = fstatSync(descriptor);
+          content = readFileSync(descriptor);
+          const after = fstatSync(descriptor);
+          if (
+            before.dev !== status.dev ||
+            before.ino !== status.ino ||
+            before.size !== status.size ||
+            after.dev !== before.dev ||
+            after.ino !== before.ino ||
+            after.size !== before.size ||
+            after.nlink !== 1 ||
+            mode(after) !== mode(before)
+          )
+            throw cleanupFailure("entry-substitution");
+        } finally {
+          closeSync(descriptor);
+        }
+        const identity = Object.freeze({
+          path,
+          relative,
+          depth,
+          dev: status.dev,
+          ino: status.ino,
+          uid: status.uid,
+          gid: status.gid,
+          mode: mode(status),
+          size: status.size,
+          digest: digestBytes(content),
+        });
+        files.push(identity);
+        summary.regularFileCount += 1;
+        diagnosticEntries.push({
+          nameDigest: digestBytes(Buffer.from(relative, "utf8")),
+          type: "regular-file",
+          size: status.size,
+        });
+      }
+    }
+    summary.entrySetDigest = diagnosticDigest(
+      diagnosticEntries.sort((left, right) =>
+        left.nameDigest.localeCompare(right.nameDigest),
+      ),
+    );
+    owned.beforeRemovalForTesting?.(owned.root);
+    // The selected outer host is the destruction boundary. Once every trusted
+    // client/helper has joined, this pass authenticates the closed retained
+    // inventory and revokes its in-process capability. It deliberately performs
+    // no pathname deletion: any unproved writer or identity drift leaves the
+    // bytes for irreversible runner/guest retirement.
+    for (const inventory of directoryInventories) {
+      assertBoundary();
+      if (!sameDirectoryIdentity(lstatSync(inventory.path), inventory))
+        throw cleanupFailure("entry-substitution");
+      const childDigest = diagnosticDigest(readdirSync(inventory.path).sort());
+      if (childDigest !== inventory.childDigest)
+        throw cleanupFailure("late-mutation");
+    }
+    for (const file of files) {
+      assertBoundary();
+      for (const directory of directories) {
+        if (file.path.startsWith(`${directory.path}/`)) {
+          if (!sameDirectoryIdentity(lstatSync(directory.path), directory))
+            throw cleanupFailure("entry-substitution");
+        }
+      }
+      snapshotFile(file.path, file);
+    }
+    assertBoundary();
+    owned.retired = true;
+    const retirement = Object.freeze({
+      authorityDigest: owned.authorityDigest,
+      dev: owned.rootIdentity.dev,
+      entryCount: summary.entryCount,
+      entrySetDigest: summary.entrySetDigest,
+      ino: owned.rootIdentity.ino,
+      path: owned.root,
+      totalBytes: summary.totalBytes,
+    });
+    if (owned.authorityDigest !== undefined)
+      registerIntegrationPrivateStorageRetirement(retirement);
+    return retirement;
+  } catch (error) {
+    if (error?.message === "integration.images.cleanup") throw error;
+    throw cleanupFailure("operation-failed");
+  }
+};
+/* eslint-enable complexity, max-depth, max-lines-per-function */
+
+const writeTarText = (header, offset, length, value) => {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.byteLength > length) throw fixedError("integration.images.build");
+  encoded.copy(header, offset);
+};
+const writeTarOctal = (header, offset, length, value) => {
+  const encoded = value.toString(8).padStart(length - 1, "0");
+  if (encoded.length > length - 1) throw fixedError("integration.images.build");
+  writeTarText(header, offset, length, `${encoded}\0`);
+};
+const tarPath = (relative) => {
+  const bytes = Buffer.byteLength(relative, "utf8");
+  if (bytes <= 100) return { name: relative, prefix: "" };
+  for (let index = relative.lastIndexOf("/"); index > 0;) {
+    const prefix = relative.slice(0, index);
+    const name = relative.slice(index + 1);
+    if (
+      Buffer.byteLength(prefix, "utf8") <= 155 &&
+      Buffer.byteLength(name, "utf8") <= 100
+    )
+      return { name, prefix };
+    index = relative.lastIndexOf("/", index - 1);
+  }
+  throw fixedError("integration.images.build");
+};
+const tarHeader = (relative, status, directory) => {
+  const header = Buffer.alloc(512);
+  const split = tarPath(relative);
+  writeTarText(header, 0, 100, split.name);
+  writeTarOctal(
+    header,
+    100,
+    8,
+    directory ? 0o755 : (status.mode & 0o111) === 0 ? 0o644 : 0o755,
+  );
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, directory ? 0 : status.size);
+  writeTarOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  writeTarText(header, 156, 1, directory ? "5" : "0");
+  writeTarText(header, 257, 6, "ustar\0");
+  writeTarText(header, 263, 2, "00");
+  writeTarText(header, 345, 155, split.prefix);
+  const checksum = header.reduce((total, byte) => total + byte, 0);
+  writeTarText(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
+  return header;
+};
+const sameFileIdentity = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.mode === right.mode &&
+  left.size === right.size &&
+  left.mtimeNs === right.mtimeNs &&
+  left.ctimeNs === right.ctimeNs;
+const assertBuildContextActive = (deadline, signal) => {
+  if (signal?.aborted) throw fixedError("integration.images.interrupted");
+  if (performance.now() > deadline)
+    throw fixedError("integration.images.timeout", true);
+};
+const readBuildContextFile = (path, expected, state) => {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const current = fstatSync(descriptor, { bigint: true });
+    const size = Number(current.size);
+    const padding = (512 - (size % 512)) % 512;
+    if (
+      !current.isFile() ||
+      !sameFileIdentity(expected, current) ||
+      current.size > BigInt(maximumBuildContextBytes) ||
+      state.total() + 512 + size + padding + 1024 > maximumBuildContextBytes
+    )
+      throw fixedError("integration.images.build");
+    const body = readFileSync(descriptor);
+    state.assertActive();
+    if (
+      body.byteLength !== size ||
+      !sameFileIdentity(current, fstatSync(descriptor, { bigint: true }))
+    )
+      throw fixedError("integration.images.build");
+    return body;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+const visitBuildContextDirectory = (
+  directoryDescriptor,
+  directoryPath,
+  prefix,
+  state,
+) => {
+  state.assertActive();
+  const directoryIdentity = fstatSync(directoryDescriptor, { bigint: true });
+  if (
+    !directoryIdentity.isDirectory() ||
+    !sameFileIdentity(
+      directoryIdentity,
+      lstatSync(directoryPath, { bigint: true }),
+    )
+  )
+    throw fixedError("integration.images.build");
+  const entries = readdirSync(directoryPath, { withFileTypes: true }).sort(
+    (left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  for (const entry of entries) {
+    state.observeEntry();
+    const childPath = `${directoryPath}/${entry.name}`;
+    const status = lstatSync(childPath, { bigint: true });
+    if (status.isSymbolicLink()) throw fixedError("integration.images.build");
+    state.afterEntry();
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    const headerStatus = {
+      mode: Number(status.mode),
+      size: Number(status.size),
+    };
+    if (status.isDirectory()) {
+      const descriptor = openSync(
+        childPath,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      try {
+        const current = fstatSync(descriptor, { bigint: true });
+        if (
+          !current.isDirectory() ||
+          !sameFileIdentity(status, current) ||
+          !sameFileIdentity(
+            directoryIdentity,
+            lstatSync(directoryPath, { bigint: true }),
+          )
+        )
+          throw fixedError("integration.images.build");
+        state.append(tarHeader(`${relative}/`, headerStatus, true));
+        visitBuildContextDirectory(descriptor, childPath, relative, state);
+        if (!sameFileIdentity(current, fstatSync(descriptor, { bigint: true })))
+          throw fixedError("integration.images.build");
+      } finally {
+        closeSync(descriptor);
+      }
+    } else if (status.isFile()) {
+      const body = readBuildContextFile(childPath, status, state);
+      state.append(tarHeader(relative, headerStatus, false));
+      state.append(body);
+      const padding = (512 - (body.byteLength % 512)) % 512;
+      if (padding > 0) state.append(Buffer.alloc(padding));
+    } else throw fixedError("integration.images.build");
+    if (
+      !sameFileIdentity(
+        directoryIdentity,
+        lstatSync(directoryPath, { bigint: true }),
+      )
+    )
+      throw fixedError("integration.images.build");
+  }
+};
+const boundedBuildContext = (
+  root,
+  { afterEntryForTesting, deadline = Number.POSITIVE_INFINITY, signal } = {},
+) => {
+  const assertActive = () => assertBuildContextActive(deadline, signal);
+  assertActive();
+  const rootStatus = lstatSync(root, { bigint: true });
+  if (!rootStatus.isDirectory() || rootStatus.isSymbolicLink())
+    throw fixedError("integration.images.build");
+  const chunks = [];
+  let total = 0;
+  let entries = 0;
+  const append = (chunk) => {
+    assertActive();
+    total += chunk.byteLength;
+    if (total > maximumBuildContextBytes)
+      throw fixedError("integration.images.build");
+    chunks.push(chunk);
+  };
+  const state = {
+    afterEntry: () => {
+      afterEntryForTesting?.(entries);
+      assertActive();
+    },
+    append,
+    assertActive,
+    observeEntry: () => {
+      assertActive();
+      entries += 1;
+      if (entries > 8_192) throw fixedError("integration.images.build");
+    },
+    total: () => total,
+  };
+  const rootDescriptor = openSync(
+    root,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const openedRoot = fstatSync(rootDescriptor, { bigint: true });
+    if (!openedRoot.isDirectory() || !sameFileIdentity(rootStatus, openedRoot))
+      throw fixedError("integration.images.build");
+    visitBuildContextDirectory(rootDescriptor, root, "", state);
+    assertActive();
+    if (
+      !sameFileIdentity(openedRoot, fstatSync(rootDescriptor, { bigint: true }))
+    )
+      throw fixedError("integration.images.build");
+    append(Buffer.alloc(1024));
+  } finally {
+    closeSync(rootDescriptor);
+  }
+  return Buffer.concat(chunks);
+};
+export const createBoundedBuildContext = (root, options) => {
+  try {
+    return boundedBuildContext(root, options);
   } catch (error) {
     if (
       error instanceof Error &&
-      /^integration\.images\.[a-z-]+$/u.test(error.message)
+      ["integration.images.interrupted", "integration.images.timeout"].includes(
+        error.message,
+      )
     )
-      failure = error;
-    else failure = fixedError("integration.images.setup");
+      throw error;
+    throw fixedError("integration.images.build");
   }
-  try {
-    rmSync(dockerConfig, { force: true, recursive: true });
-  } catch {
-    failure = fixedError("integration.images.cleanup");
-  }
-  if (failure !== undefined) throw failure;
-  return prepared;
 };
 
-export const publishPreparedImageEvidence = (target, evidence) => {
+const engineTransport = (socket) => {
+  const transport = (request) => {
+    assertSocketCurrent(socket);
+    return boundedRequest({ ...request, socketPath: socket.path });
+  };
+  transport.production = true;
+  return transport;
+};
+const engineCall = async (
+  { policy, signal, transport },
+  { body, expected, headers, method, path, maximumBytes },
+) => {
+  const response = await requestWith(transport, {
+    deadline: policy.workDeadline,
+    headers: Object.freeze({ Accept: "application/json", ...headers }),
+    method,
+    path,
+    signal,
+    maximumBytes: maximumBytes ?? maximumResponseBytes,
+    ...(body === undefined ? {} : { body }),
+  });
+  if (!expected.includes(response.statusCode))
+    throw fixedError("integration.images.daemon");
+  return response;
+};
+const inspectDaemon = async (transport, socket, policy, signal) => {
+  const context = { policy, signal, transport };
+  const versionResponse = await engineCall(context, {
+    expected: [200],
+    method: "GET",
+    path: "/version",
+  });
+  const version = jsonRecord(versionResponse.body, "integration.images.daemon");
+  if (!apiVersionPattern.test(version.ApiVersion ?? ""))
+    throw fixedError("integration.images.daemon");
+  const infoResponse = await engineCall(context, {
+    expected: [200],
+    method: "GET",
+    path: `/v${version.ApiVersion}/info`,
+  });
+  return daemonIdentity(socket, version, infoResponse.body);
+};
+const inspectLocalImage = async ({
+  daemon,
+  image,
+  missingAllowed = false,
+  policy,
+  signal,
+  transport,
+}) => {
+  const response = await engineCall(
+    { policy, signal, transport },
+    {
+      expected: missingAllowed ? [200, 404] : [200],
+      method: "GET",
+      path: `/v${daemon.apiVersion}/images/${encodeURIComponent(image)}/json`,
+    },
+  );
+  return response.statusCode === 404
+    ? undefined
+    : localImageRecord(response.body, image);
+};
+
+const parseImageReference = (image) => {
+  const repository = image.slice(0, image.lastIndexOf("@"));
+  const digest = image.slice(image.lastIndexOf("@") + 1);
+  const parts = repository.split("/");
+  const explicitRegistry =
+    parts.length > 1 && /[.:]/u.test(parts[0]) ? parts.shift() : undefined;
+  if (explicitRegistry !== undefined && explicitRegistry !== "docker.io")
+    throw fixedError("integration.images.registry");
+  let name = parts.join("/");
+  if (!name.includes("/")) name = `library/${name}`;
+  if (
+    !/^[a-z\d]+(?:[._-][a-z\d]+)*(?:\/[a-z\d]+(?:[._-][a-z\d]+)*)+$/u.test(name)
+  )
+    throw fixedError("integration.images.registry");
+  return Object.freeze({
+    digest,
+    name,
+    origin: new URL("https://registry-1.docker.io"),
+  });
+};
+const registryTransport = (request) =>
+  boundedRequest({ ...request, origin: request.origin });
+export const probePinnedRegistryTlsForTesting = async (origin) => {
+  if (
+    !(origin instanceof URL) ||
+    origin.protocol !== "https:" ||
+    !["127.0.0.1", "::1"].includes(origin.hostname)
+  )
+    throw fixedError("integration.images.registry");
+  return registryTransport({
+    deadline: performance.now() + 1_000,
+    headers: Object.freeze({ Accept: "application/json" }),
+    method: "GET",
+    origin,
+    path: "/",
+    maximumBytes: 1_024,
+  });
+};
+const allowedBlobRedirect = (rawLocation) => {
+  if (typeof rawLocation !== "string" || rawLocation.length > 4_096)
+    throw fixedError("integration.images.registry");
+  let location;
+  try {
+    location = new URL(rawLocation);
+  } catch {
+    throw fixedError("integration.images.registry");
+  }
+  const allowedHost =
+    location.hostname === "production.cloudflare.docker.com" ||
+    location.hostname === "production.cloudfront.docker.com" ||
+    location.hostname.endsWith(".r2.cloudflarestorage.com");
+  if (
+    location.protocol !== "https:" ||
+    (location.port !== "" && location.port !== "443") ||
+    location.username !== "" ||
+    location.password !== "" ||
+    !allowedHost
+  )
+    throw fixedError("integration.images.registry");
+  return location;
+};
+const bearerChallenge = (header, name) => {
+  const match =
+    /^Bearer realm="([^"]+)",service="([^"]+)",scope="([^"]+)"$/u.exec(
+      header ?? "",
+    );
+  const expectedScope = `repository:${name}:pull`;
+  if (
+    match === null ||
+    match[1] !== "https://auth.docker.io/token" ||
+    match[2] !== "registry.docker.io" ||
+    match[3] !== expectedScope
+  )
+    throw fixedError("integration.images.registry");
+  return Object.freeze({
+    origin: new URL("https://auth.docker.io"),
+    path: `/token?service=registry.docker.io&scope=${encodeURIComponent(expectedScope)}`,
+  });
+};
+
+const fetchRegistryManifest = async (
+  transport,
+  policy,
+  signal,
+  reference,
+  tokenCache,
+) => {
+  const parsed = parseImageReference(reference);
+  const path = `/v2/${parsed.name}/manifests/${parsed.digest}`;
+  const perform = (token) =>
+    requestWith(transport, {
+      deadline: policy.workDeadline,
+      headers: Object.freeze({
+        Accept: manifestAccept,
+        ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
+      }),
+      method: "GET",
+      origin: parsed.origin,
+      path,
+      signal,
+      maximumBytes: maximumManifestBytes,
+    });
+  let token = tokenCache.get(parsed.name);
+  let response = await perform(token);
+  if (response.statusCode === 401 && token === undefined) {
+    const challenge = bearerChallenge(
+      response.headers["www-authenticate"],
+      parsed.name,
+    );
+    const tokenResponse = await requestWith(transport, {
+      deadline: policy.workDeadline,
+      headers: Object.freeze({ Accept: "application/json" }),
+      method: "GET",
+      origin: challenge.origin,
+      path: challenge.path,
+      signal,
+      maximumBytes: maximumTokenBytes,
+    });
+    if (tokenResponse.statusCode !== 200)
+      throw fixedError("integration.images.registry");
+    const tokenValue = jsonRecord(
+      tokenResponse.body,
+      "integration.images.registry",
+    );
+    token = tokenValue.token ?? tokenValue.access_token;
+    if (!boundedText(token, 8_192))
+      throw fixedError("integration.images.registry");
+    tokenCache.set(parsed.name, token);
+    response = await perform(token);
+  }
+  if (response.statusCode !== 200)
+    throw fixedError("integration.images.registry");
+  const contentType = response.headers["content-type"]?.split(";", 1)[0];
+  if (![...indexMediaTypes, ...manifestMediaTypes].includes(contentType))
+    throw fixedError("integration.images.manifest");
+  if (
+    jsonRecord(response.body, "integration.images.manifest").mediaType !==
+    contentType
+  )
+    throw fixedError("integration.images.manifest");
+  const advertised = response.headers["docker-content-digest"];
+  if (advertised !== undefined && advertised !== digestBytes(response.body))
+    throw fixedError("integration.images.manifest");
+  return response.body;
+};
+
+const fetchRegistryBlob = async ({
+  digest,
+  image,
+  policy,
+  signal,
+  tokenCache,
+  transport,
+}) => {
+  const parsed = parseImageReference(image);
+  const token = tokenCache.get(parsed.name);
+  if (token === undefined) throw fixedError("integration.images.registry");
+  let response = await requestWith(transport, {
+    deadline: policy.workDeadline,
+    headers: Object.freeze({
+      Accept: "application/octet-stream",
+      Authorization: `Bearer ${token}`,
+    }),
+    method: "GET",
+    origin: parsed.origin,
+    path: `/v2/${parsed.name}/blobs/${digest}`,
+    signal,
+    maximumBytes: maximumManifestBytes,
+  });
+  if (response.statusCode === 302 || response.statusCode === 307) {
+    const location = allowedBlobRedirect(response.headers.location);
+    response = await requestWith(transport, {
+      deadline: policy.workDeadline,
+      headers: Object.freeze({ Accept: "application/octet-stream" }),
+      method: "GET",
+      origin: location,
+      path: `${location.pathname}${location.search}`,
+      signal,
+      maximumBytes: maximumManifestBytes,
+    });
+  }
+  if (
+    response.statusCode !== 200 ||
+    response.headers["content-type"]?.split(";", 1)[0] !==
+      "application/octet-stream" ||
+    digestBytes(response.body) !== digest ||
+    (response.headers["docker-content-digest"] !== undefined &&
+      response.headers["docker-content-digest"] !== digest)
+  )
+    throw fixedError("integration.images.config");
+  return response.body;
+};
+
+const acquireManifestProof = async ({
+  image,
+  platform,
+  policy,
+  signal,
+  tokenCache,
+  transport,
+}) => {
+  const rootRaw = await fetchRegistryManifest(
+    transport,
+    policy,
+    signal,
+    image,
+    tokenCache,
+  );
+  const root = jsonRecord(rootRaw, "integration.images.manifest");
+  let selectedRaw = rootRaw;
+  if (Array.isArray(root.manifests)) {
+    const matches = root.manifests.filter((candidate) => {
+      try {
+        return (
+          manifestMediaTypes.has(descriptor(candidate).mediaType) &&
+          samePlatform(normalizePlatform(candidate.platform), platform)
+        );
+      } catch {
+        return false;
+      }
+    });
+    if (matches.length !== 1) throw fixedError("integration.images.manifest");
+    const selected = descriptor(matches[0]);
+    const repository = image.slice(0, image.lastIndexOf("@"));
+    selectedRaw = await fetchRegistryManifest(
+      transport,
+      policy,
+      signal,
+      `${repository}@${selected.digest}`,
+      tokenCache,
+    );
+  }
+  const selectedManifest = parseManifest(selectedRaw);
+  const configRaw = await fetchRegistryBlob({
+    digest: selectedManifest.config.digest,
+    image,
+    policy,
+    signal,
+    tokenCache,
+    transport,
+  });
+  return deriveManifestProof({
+    configRaw,
+    image,
+    platform,
+    rootRaw,
+    selectedRaw,
+  });
+};
+
+const pullImage = async ({
+  daemon,
+  image,
+  platform,
+  policy,
+  signal,
+  transport,
+}) => {
+  const separator = image.lastIndexOf("@");
+  const repository = image.slice(0, separator);
+  const digest = image.slice(separator + 1);
+  try {
+    const response = await engineCall(
+      { policy, signal, transport },
+      {
+        expected: [200],
+        method: "POST",
+        path: `/v${daemon.apiVersion}/images/create?fromImage=${encodeURIComponent(repository)}&tag=${encodeURIComponent(digest)}&platform=${encodeURIComponent(platformText(platform))}`,
+      },
+    );
+    const lines = response.body
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    if (lines.length === 0) throw fixedError("integration.images.daemon");
+    for (const line of lines) {
+      const event = jsonRecord(line, "integration.images.daemon");
+      if (event.error !== undefined || event.errorDetail !== undefined)
+        throw fixedError("integration.images.daemon");
+    }
+  } catch (error) {
+    try {
+      await inspectLocalImage({
+        daemon,
+        image,
+        missingAllowed: true,
+        policy: { ...policy, workDeadline: policy.reconciliationDeadline },
+        signal: undefined,
+        transport,
+      });
+    } catch {
+      // The current attempt remains failed even if exact reconciliation fails.
+    }
+    throw fixedError(
+      error instanceof Error &&
+        error.message === "integration.images.interrupted"
+        ? "integration.images.interrupted-uncertain"
+        : "integration.images.daemon-uncertain",
+      error?.code === "ETIMEDOUT",
+    );
+  }
+};
+
+const assertSocketCurrentFor = (engine, socket) => {
+  if (engine.production === true) assertSocketCurrent(socket);
+};
+const prepareImageSet = async ({
+  engine,
+  images,
+  policy,
+  registry,
+  signal,
+  socket,
+}) => {
+  const initialDaemon = await inspectDaemon(engine, socket, policy, signal);
+  const canonicalPlatform = normalizePlatform(
+    IMAGE_PREPARATION_EXECUTION_POLICY.platform,
+  );
+  const tokenCache = new Map();
+  const preparedImages = [];
+  let evidenceBytes = 2;
+  for (const image of images) {
+    const proof = await acquireManifestProof({
+      image,
+      platform: canonicalPlatform,
+      policy,
+      signal,
+      tokenCache,
+      transport: registry,
+    });
+    let local = await inspectLocalImage({
+      daemon: initialDaemon,
+      image,
+      missingAllowed: true,
+      policy,
+      signal,
+      transport: engine,
+    });
+    if (local === undefined) {
+      await pullImage({
+        daemon: initialDaemon,
+        image,
+        platform: canonicalPlatform,
+        policy,
+        signal,
+        transport: engine,
+      });
+      local = await inspectLocalImage({
+        daemon: initialDaemon,
+        image,
+        policy,
+        signal,
+        transport: engine,
+      });
+    }
+    if (
+      !samePlatform(local.platform, proof.platform) ||
+      local.configDigest !== proof.configDigest
+    )
+      throw fixedError("integration.images.config");
+    const preparedImage = Object.freeze({ image, ...proof });
+    evidenceBytes +=
+      Buffer.byteLength(JSON.stringify(preparedImage), "utf8") + 1;
+    if (evidenceBytes > maximumEvidenceBytes)
+      throw fixedError("integration.images.output");
+    preparedImages.push(preparedImage);
+  }
+  assertSocketCurrentFor(engine, socket);
+  const finalDaemon = await inspectDaemon(engine, socket, policy, signal);
+  if (!sameDaemon(initialDaemon, finalDaemon))
+    throw fixedError("integration.images.daemon");
+  return Object.freeze({
+    dockerSocket: socket,
+    dockerDaemon: initialDaemon,
+    images: Object.freeze(preparedImages),
+  });
+};
+
+const preparationFailure = (error) =>
+  error instanceof Error &&
+  /^integration\.images\.[a-z-]+$/u.test(error.message)
+    ? error
+    : fixedError("integration.images.setup");
+
+export const imagePreparationFailureRequiresOuterHostRetirement = (error) =>
+  error instanceof Error &&
+  [
+    "integration.images.daemon-uncertain",
+    "integration.images.interrupted-uncertain",
+  ].includes(error.message);
+
+export const preparePinnedDockerImages = async (images, options = {}) => {
+  const policy = preparationPolicy(images, options);
+  let privateClient;
+  let prepared;
+  let failure;
+  try {
+    const socket =
+      options.socketIdentityForTesting === undefined
+        ? options.dockerSocket === undefined
+          ? resolveDockerSocket(options.dockerSocketForTesting)
+          : productionDockerSocket(options.dockerSocket)
+        : Object.freeze({ ...options.socketIdentityForTesting });
+    if (!validSocketEvidence(socket))
+      throw fixedError("integration.images.socket");
+    privateClient = createPrivateClientRoot(options);
+    const engine =
+      options.engineRequestForTesting === undefined
+        ? engineTransport(socket)
+        : options.engineRequestForTesting;
+    const registry = options.registryRequestForTesting ?? registryTransport;
+    prepared = await prepareImageSet({
+      engine,
+      images,
+      policy,
+      registry,
+      signal: options.signal,
+      socket,
+    });
+  } catch (error) {
+    failure = preparationFailure(error);
+  }
+  if (privateClient !== undefined) {
+    try {
+      options.beforePrivateCleanupForTesting?.(privateClient.root);
+      cleanupPrivateClient(privateClient, policy.deadline);
+    } catch {
+      failure = fixedError("integration.images.cleanup");
+    }
+  }
+  if (failure !== undefined) throw failure;
+  const completed = Object.freeze({
+    ...prepared,
+    preparationPolicy: Object.freeze({
+      maximumPreparationMilliseconds: policy.maximumPreparationMilliseconds,
+      teardownMilliseconds: policy.teardownMilliseconds,
+      maximumResponseBytes,
+      maximumManifestBytes,
+      maximumEvidenceBytes,
+    }),
+    terminalCleanup: Object.freeze({
+      daemon: "stable",
+      handles: "settled",
+      privateState: "retained-for-outer-host-retirement",
+    }),
+  });
+  preparedSets.add(completed);
+  return completed;
+};
+
+export const revalidatePreparedImageAdmission = async (
+  evidence,
+  image,
+  options = {},
+) => {
+  try {
+    const prepared = evidence.images.find((entry) => entry.image === image);
+    if (prepared === undefined) return false;
+    const proof = evidenceImage(prepared);
+    const policy = preparationPolicy([image], {
+      maximumPreparationMilliseconds:
+        options.maximumPreparationMilliseconds ?? 30_000,
+      teardownMilliseconds: options.teardownMilliseconds ?? 1_000,
+    });
+    const socket =
+      options.socketIdentityForTesting === undefined
+        ? socketRecord(evidence.dockerSocket.path)
+        : Object.freeze({ ...options.socketIdentityForTesting });
+    if (!sameSocket(socket, evidence.dockerSocket)) return false;
+    const engine =
+      options.engineRequestForTesting === undefined
+        ? engineTransport(socket)
+        : options.engineRequestForTesting;
+    const daemon = await inspectDaemon(engine, socket, policy, options.signal);
+    const local = await inspectLocalImage({
+      daemon,
+      image,
+      policy,
+      signal: options.signal,
+      transport: engine,
+    });
+    assertSocketCurrentFor(engine, socket);
+    const finalDaemon = await inspectDaemon(
+      engine,
+      socket,
+      policy,
+      options.signal,
+    );
+    return (
+      sameDaemon(evidence.dockerDaemon, daemon) &&
+      sameDaemon(daemon, finalDaemon) &&
+      samePlatform(proof.platform, local.platform) &&
+      proof.configDigest === local.configDigest
+    );
+  } catch {
+    return false;
+  }
+};
+
+export const createPreparedDockerClient = (evidence, options = {}) => {
+  let privateClient;
+  try {
+    if (
+      typeof evidence !== "object" ||
+      evidence === null ||
+      !validSocketEvidence(evidence.dockerSocket) ||
+      !validEvidenceDaemon(evidence.dockerDaemon) ||
+      !Array.isArray(evidence.images) ||
+      evidence.images.length === 0
+    )
+      throw fixedError("integration.images.docker-client");
+    const socket =
+      options.socketIdentityForTesting === undefined
+        ? socketRecord(evidence.dockerSocket.path)
+        : Object.freeze({ ...options.socketIdentityForTesting });
+    if (!sameSocket(socket, evidence.dockerSocket))
+      throw fixedError("integration.images.docker-client");
+    const executable =
+      options.dockerExecutable === undefined
+        ? resolveDockerExecutable(options.dockerExecutableForTesting)
+        : productionDockerExecutable(options.dockerExecutable);
+    const requestedBuildxExecutable =
+      options.buildxExecutable ?? options.buildxExecutableForTesting;
+    const buildxExecutable =
+      requestedBuildxExecutable === undefined
+        ? undefined
+        : resolveBuildxExecutable(requestedBuildxExecutable);
+    const environment =
+      options.dockerEnvironment === undefined
+        ? Object.freeze({})
+        : productionDockerEnvironment(options.dockerEnvironment, socket);
+    privateClient = createPrivateClientRoot(options);
+    const client = Object.freeze({
+      evidence,
+      buildxExecutable,
+      buildkitImage: options.buildkitImageForTesting ?? BUILDKIT_IMAGE,
+      buildxRunForTesting: options.buildxRunForTesting,
+      executable,
+      environment,
+      privateClient,
+      socket,
+      engineRequestForTesting: options.engineRequestForTesting,
+    });
+    preparedDockerClients.add(client);
+    return client;
+  } catch {
+    if (privateClient !== undefined)
+      cleanupPrivateClient(
+        privateClient,
+        performance.now() + preparationTeardownMilliseconds,
+      );
+    throw fixedError("integration.images.docker-client");
+  }
+};
+
+export const prepareDockerInvocation = async (client, arguments_, signal) => {
+  if (
+    !preparedDockerClients.has(client) ||
+    closingPreparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client) ||
+    !Array.isArray(arguments_) ||
+    arguments_.length === 0 ||
+    arguments_.length > 256 ||
+    arguments_.some(
+      (argument) =>
+        typeof argument !== "string" ||
+        argument.length === 0 ||
+        argument.length > 4_096 ||
+        argument.includes("\0"),
+    )
+  )
+    throw fixedError("integration.images.docker-client");
+  const policy = preparationPolicy([client.evidence.images[0].image], {
+    maximumPreparationMilliseconds: 30_000,
+    teardownMilliseconds: 1_000,
+  });
+  const engine =
+    client.engineRequestForTesting === undefined
+      ? engineTransport(client.socket)
+      : client.engineRequestForTesting;
+  const initialDaemon = await inspectDaemon(
+    engine,
+    client.socket,
+    policy,
+    signal,
+  );
+  assertSocketCurrentFor(engine, client.socket);
+  const finalDaemon = await inspectDaemon(
+    engine,
+    client.socket,
+    policy,
+    signal,
+  );
+  if (
+    !sameDaemon(client.evidence.dockerDaemon, initialDaemon) ||
+    !sameDaemon(initialDaemon, finalDaemon) ||
+    !sameExecutable(client.executable, executableRecord(client.executable.path))
+  )
+    throw fixedError("integration.images.docker-client");
+  return Object.freeze({
+    executable: client.executable.path,
+    arguments: Object.freeze([
+      "--host",
+      `unix://${client.socket.path}`,
+      "--config",
+      resolve(client.privateClient.root, "docker"),
+      ...arguments_,
+    ]),
+    environment: client.environment,
+  });
+};
+const validBuildMap = (value) =>
+  exactKeys(value, Object.keys(value ?? {})) &&
+  Object.entries(value).every(
+    ([name, entry]) => boundedText(name, 128) && boundedText(entry, 1_024),
+  );
+const buildxEnvironment = (client) =>
+  Object.freeze({
+    BUILDX_CONFIG: resolve(client.privateClient.root, "buildx"),
+    DOCKER_CONFIG: resolve(client.privateClient.root, "docker"),
+    DOCKER_HOST: `unix://${client.socket.path}`,
+    HOME: resolve(client.privateClient.root, "home"),
+    TMPDIR: resolve(client.privateClient.root, "tmp"),
+    XDG_CONFIG_HOME: resolve(client.privateClient.root, "xdg"),
+  });
+const platformText = (platform) =>
+  `${platform.os}/${platform.architecture}${
+    platform.variant === undefined ? "" : `/${platform.variant}`
+  }`;
+const builderResources = (builder) =>
+  Object.freeze({
+    container: `buildx_buildkit_${builder}0`,
+    volume: `buildx_buildkit_${builder}0_state`,
+  });
+const inspectEngineObject = async ({
+  daemon,
+  engine,
+  name,
+  policy,
+  signal,
+  type,
+}) => {
+  const response = await engineCall(
+    { policy, signal, transport: engine },
+    {
+      expected: [200, 404],
+      method: "GET",
+      path: `/v${daemon.apiVersion}/${type}/${encodeURIComponent(name)}${
+        type === "volumes" ? "" : "/json"
+      }`,
+    },
+  );
+  return response.statusCode === 404
+    ? undefined
+    : jsonRecord(response.body, "integration.images.build");
+};
+const removeBuilderResources = async ({
+  authority,
+  identity,
+  policy,
+  resources,
+}) => {
+  const { client, daemon, engine } = authority;
+  if (identity.container !== undefined) {
+    const current = await inspectEngineObject({
+      daemon,
+      engine,
+      name: resources.container,
+      policy,
+      type: "containers",
+    });
+    const authenticated = authenticateBuilderResources(
+      authority,
+      resources,
+      current,
+      undefined,
+      false,
+    );
+    if (authenticated.container === undefined)
+      throw fixedError("integration.images.containment");
+    await engineCall(
+      { policy, signal: undefined, transport: engine },
+      {
+        expected: [204, 404],
+        method: "DELETE",
+        path: `/v${daemon.apiVersion}/containers/${authenticated.container.id}?force=1&v=1`,
+      },
+    );
+  }
+  if (identity.volume !== undefined) {
+    const current = await inspectEngineObject({
+      daemon,
+      engine,
+      name: resources.volume,
+      policy,
+      type: "volumes",
+    });
+    const authenticated = authenticateBuilderResources(
+      authority,
+      resources,
+      undefined,
+      current,
+      false,
+    );
+    if (authenticated.volume === undefined)
+      throw fixedError("integration.images.containment");
+    await engineCall(
+      { policy, signal: undefined, transport: engine },
+      {
+        expected: [204, 404],
+        method: "DELETE",
+        path: `/v${daemon.apiVersion}/volumes/${encodeURIComponent(resources.volume)}?force=1`,
+      },
+    );
+  }
+  assertSocketCurrentFor(engine, client.socket);
+  const [container, containerIdentity, volume] = await Promise.all([
+    inspectEngineObject({
+      daemon,
+      engine,
+      name: resources.container,
+      policy,
+      type: "containers",
+    }),
+    identity.container === undefined
+      ? undefined
+      : inspectEngineObject({
+          daemon,
+          engine,
+          name: identity.container.id,
+          policy,
+          type: "containers",
+        }),
+    inspectEngineObject({
+      daemon,
+      engine,
+      name: resources.volume,
+      policy,
+      type: "volumes",
+    }),
+  ]);
+  if (
+    container !== undefined ||
+    containerIdentity !== undefined ||
+    volume !== undefined
+  )
+    throw fixedError("integration.images.containment");
+};
+const validBuilderMount = (container, resources) =>
+  Array.isArray(container?.Mounts) &&
+  container.Mounts.length === 1 &&
+  container.Mounts[0]?.Type === "volume" &&
+  container.Mounts[0]?.Name === resources.volume &&
+  container.Mounts[0]?.Destination === "/var/lib/buildkit" &&
+  container.Mounts[0]?.RW === true;
+const builderContainerFailureReason = (
+  container,
+  { buildkit, buildkitImage, requireRunning, resources },
+) => {
+  if (!/^[a-f\d]{64}$/u.test(container?.Id ?? "")) return "id";
+  if (
+    typeof container?.Created !== "string" ||
+    container.Created.length === 0 ||
+    container.Created.length > 128
+  )
+    return "created";
+  if (container?.Name !== `/${resources.container}`) return "name";
+  if (container.Image !== buildkit.configDigest) return "image-id";
+  if (container.Config?.Image !== buildkitImage) return "image-reference";
+  if (container.Platform !== buildkit.platform.os) return "platform";
+  if (container.HostConfig?.NetworkMode !== "bridge") return "network-mode";
+  if (
+    JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
+    JSON.stringify(["bridge"])
+  )
+    return "network-attachment";
+  if (!validBuilderMount(container, resources)) return "mount";
+  if (
+    (requireRunning && container.State?.Running !== true) ||
+    typeof container.State?.Running !== "boolean"
+  )
+    return "running-state";
+  return "matched";
+};
+const assertBuilderContainer = (
+  container,
+  { buildkit, buildkitImage, requireRunning, resources },
+) => {
+  if (
+    builderContainerFailureReason(container, {
+      buildkit,
+      buildkitImage,
+      requireRunning,
+      resources,
+    }) !== "matched"
+  )
+    throw fixedError("integration.images.build");
+  return Object.freeze({ id: container.Id, createdAt: container.Created });
+};
+const builderVolumeFailureReason = (volume, resources) => {
+  if (
+    typeof volume?.CreatedAt !== "string" ||
+    volume.CreatedAt.length === 0 ||
+    volume.CreatedAt.length > 128
+  )
+    return "created";
+  if (volume?.Name !== resources.volume) return "name";
+  if (volume.Driver !== "local") return "driver";
+  if (volume.Scope !== "local") return "scope";
+  if (typeof volume.Mountpoint !== "string" || !isAbsolute(volume.Mountpoint))
+    return "mountpoint";
+  if (!(
+    volume.Labels === null ||
+    (typeof volume.Labels === "object" &&
+      volume.Labels !== null &&
+      Object.keys(volume.Labels).length === 0)
+  ))
+    return "labels";
+  return "matched";
+};
+const assertBuilderVolume = (volume, resources) => {
+  if (builderVolumeFailureReason(volume, resources) !== "matched")
+    throw fixedError("integration.images.build");
+  return Object.freeze({
+    createdAt: volume.CreatedAt,
+    mountpoint: volume.Mountpoint,
+  });
+};
+const inspectBuilderResources = async (
+  authority,
+  resources,
+  signal,
+  policy = authority.policy,
+) => {
+  const observed = await Promise.all([
+    inspectEngineObject({
+      daemon: authority.daemon,
+      engine: authority.engine,
+      name: resources.container,
+      policy,
+      signal,
+      type: "containers",
+    }),
+    inspectEngineObject({
+      daemon: authority.daemon,
+      engine: authority.engine,
+      name: resources.volume,
+      policy,
+      signal,
+      type: "volumes",
+    }),
+  ]);
+  authority.lastResourceObservation = Object.freeze({
+    responseBytes: observed.reduce(
+      (total, value) =>
+        total +
+        (value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value))),
+      0,
+    ),
+    observedCount: observed.filter((value) => value !== undefined).length,
+    observedDigest: diagnosticDigest(
+      observed.map((value) =>
+        value === undefined ? null : diagnosticDigest(value),
+      ),
+    ),
+  });
+  return observed;
+};
+const authenticateBuilderResources = (
+  authority,
+  resources,
+  container,
+  volume,
+  requireRunning,
+) => {
+  const containerReason =
+    container === undefined
+      ? "absent"
+      : builderContainerFailureReason(container, {
+          buildkit: authority.buildkit,
+          buildkitImage: authority.client.buildkitImage,
+          requireRunning,
+          resources,
+        });
+  const volumeReason =
+    volume === undefined
+      ? "absent"
+      : builderVolumeFailureReason(volume, resources);
+  authority.reconciliationReasons = Object.freeze({
+    builderContainer: containerReason,
+    builderVolume: volumeReason,
+    builtTag: authority.reconciliationReasons?.builtTag ?? "not-observed",
+  });
+  const identity = Object.freeze({
+    container:
+      container === undefined
+        ? undefined
+        : assertBuilderContainer(container, {
+            buildkit: authority.buildkit,
+            buildkitImage: authority.client.buildkitImage,
+            requireRunning,
+            resources,
+          }),
+    volume:
+      volume === undefined ? undefined : assertBuilderVolume(volume, resources),
+  });
+  const prior = authority.resourceIdentity;
+  if (
+    prior !== undefined &&
+    ((identity.container !== undefined &&
+      JSON.stringify(identity.container) !== JSON.stringify(prior.container)) ||
+      (identity.volume !== undefined &&
+        JSON.stringify(identity.volume) !== JSON.stringify(prior.volume)))
+  ) {
+    authority.reconciliationReasons = Object.freeze({
+      builderContainer:
+        identity.container !== undefined &&
+        JSON.stringify(identity.container) !== JSON.stringify(prior.container)
+          ? "identity-substitution"
+          : containerReason,
+      builderVolume:
+        identity.volume !== undefined &&
+        JSON.stringify(identity.volume) !== JSON.stringify(prior.volume)
+          ? "identity-substitution"
+          : volumeReason,
+      builtTag: authority.reconciliationReasons.builtTag,
+    });
+    throw fixedError("integration.images.containment");
+  }
+  return identity;
+};
+const inspectBuiltTag = async (
+  engine,
+  daemon,
+  policy,
+  signal,
+  { labels, platform, tag },
+) => {
+  const built = await inspectEngineObject({
+    daemon,
+    engine,
+    name: tag,
+    policy,
+    signal,
+    type: "images",
+  });
+  if (
+    built === undefined ||
+    !digestPattern.test(built.Id ?? "") ||
+    !Array.isArray(built.RepoTags) ||
+    !built.RepoTags.includes(tag) ||
+    !Object.entries(labels).every(
+      ([name, value]) => built.Config?.Labels?.[name] === value,
+    ) ||
+    !samePlatform(
+      platform,
+      normalizePlatform({
+        os: built.Os,
+        architecture: built.Architecture,
+        variant: built.Variant,
+      }),
+    )
+  )
+    throw fixedError("integration.images.build");
+  return built;
+};
+const buildArgumentsFor = ({
+  buildArguments,
+  builder,
+  dockerfile,
+  labels,
+  platform,
+  tag,
+}) => {
+  const result = [
+    "build",
+    "--builder",
+    builder,
+    "--file",
+    dockerfile,
+    "--load",
+    "--network",
+    "default",
+    "--platform",
+    platformText(platform),
+    "--pull=false",
+    "--tag",
+    tag,
+  ];
+  for (const [name, value] of Object.entries(buildArguments).sort())
+    result.push("--build-arg", `${name}=${value}`);
+  for (const [name, value] of Object.entries(labels).sort())
+    result.push("--label", `${name}=${value}`);
+  result.push("-");
+  return result;
+};
+const createBuildAuthority = async (client, policy, signal) => {
+  const engine =
+    client.engineRequestForTesting ?? engineTransport(client.socket);
+  const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+  if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+    throw fixedError("integration.images.build");
+  const buildkit = client.evidence.images
+    .map(evidenceImage)
+    .find((entry) => entry.image === client.buildkitImage);
+  if (buildkit === undefined) throw fixedError("integration.images.build");
+  const buildxExecutable = client.buildxExecutable ?? resolveBuildxExecutable();
+  const local = await inspectLocalImage({
+    daemon,
+    image: client.buildkitImage,
+    policy,
+    signal,
+    transport: engine,
+  });
+  if (
+    local.configDigest !== buildkit.configDigest ||
+    !samePlatform(local.platform, buildkit.platform)
+  )
+    throw fixedError("integration.images.build");
+  const builder = `agentscope-${randomBytes(8).toString("hex")}`;
+  const run = (arguments_, input, deadline = policy.workDeadline) => {
+    if (
+      !sameExecutable(buildxExecutable, executableRecord(buildxExecutable.path))
+    )
+      throw fixedError("integration.images.executable");
+    const options = {
+      deadline,
+      environment: buildxEnvironment(client),
+      input,
+      observeProcess: (diagnostic) => {
+        authority.lastProcessObservation = Object.freeze({
+          operationKind: authority.currentOperationKind,
+          process: diagnostic,
+        });
+      },
+      signal,
+      teardownMilliseconds: policy.teardownMilliseconds,
+    };
+    return client.buildxRunForTesting === undefined
+      ? runOwnedCommand(buildxExecutable, arguments_, options)
+      : client.buildxRunForTesting(arguments_, options);
+  };
+  const authority = {
+    builder,
+    buildkit,
+    client,
+    daemon,
+    engine,
+    policy,
+    run,
+    signal,
+    currentOperationKind: "preflight",
+    reconciliationReasons: Object.freeze({
+      builderContainer: "not-observed",
+      builderVolume: "not-observed",
+      builtTag: "not-observed",
+    }),
+  };
+  return authority;
+};
+const executeBuilderBuild = async (authority, options, archive) => {
+  const { builder, buildkit, client, daemon, engine, policy, run, signal } =
+    authority;
+  const resources = builderResources(builder);
+  const [priorContainer, priorVolume] = await inspectBuilderResources(
+    authority,
+    resources,
+    signal,
+  );
+  if (priorContainer !== undefined || priorVolume !== undefined)
+    throw fixedError("integration.images.containment");
+  const priorTag = await inspectEngineObject({
+    daemon,
+    engine,
+    name: options.tag,
+    policy,
+    signal,
+    type: "images",
+  });
+  if (priorTag !== undefined)
+    throw fixedError("integration.images.containment");
+  authority.resourcePreflightComplete = true;
+  authority.tagPreflightComplete = true;
+  authority.requestCapable = true;
+  authority.currentOperationKind = "builder-create";
+  await run([
+    "create",
+    "--name",
+    builder,
+    "--driver",
+    "docker-container",
+    "--driver-opt",
+    `image=${client.buildkitImage}`,
+    "--driver-opt",
+    "network=bridge",
+    "--platform",
+    platformText(buildkit.platform),
+    `unix://${client.socket.path}`,
+  ]);
+  authority.currentOperationKind = "builder-bootstrap";
+  await run(["inspect", "--builder", builder, "--bootstrap"]);
+  const [container, volume] = await inspectBuilderResources(
+    authority,
+    resources,
+    signal,
+  );
+  authority.resourceIdentity = authenticateBuilderResources(
+    authority,
+    resources,
+    container,
+    volume,
+    true,
+  );
+  authority.currentOperationKind = "image-build";
+  await run(
+    buildArgumentsFor({
+      ...options,
+      builder,
+      platform: buildkit.platform,
+    }),
+    archive,
+  );
+  const built = await inspectBuiltTag(engine, daemon, policy, signal, {
+    labels: options.labels,
+    platform: buildkit.platform,
+    tag: options.tag,
+  });
+  assertSocketCurrentFor(engine, client.socket);
+  if (
+    !sameDaemon(
+      daemon,
+      await inspectDaemon(engine, client.socket, policy, signal),
+    )
+  )
+    throw fixedError("integration.images.build");
+  return built;
+};
+const settleBuiltTag = async (
+  authority,
+  options,
+  built,
+  failed,
+  reconciliationPolicy,
+) => {
+  const { daemon, engine, policy } = authority;
+  if (!failed) {
+    const terminal = await inspectBuiltTag(
+      engine,
+      daemon,
+      { ...policy, workDeadline: policy.deadline },
+      undefined,
+      {
+        labels: options.labels,
+        platform: authority.buildkit.platform,
+        tag: options.tag,
+      },
+    );
+    if (terminal.Id !== built.Id)
+      throw fixedError("integration.images.containment");
+    authority.reconciliationReasons = Object.freeze({
+      ...authority.reconciliationReasons,
+      builtTag: "matched",
+    });
+    return;
+  }
+  const candidate = await inspectEngineObject({
+    daemon,
+    engine,
+    name: options.tag,
+    policy: reconciliationPolicy,
+    type: "images",
+  });
+  authority.reconciliationReasons = Object.freeze({
+    ...authority.reconciliationReasons,
+    builtTag: candidate === undefined ? "absent" : "matched",
+  });
+  if (candidate !== undefined) {
+    if (!authority.tagPreflightComplete)
+      throw fixedError("integration.images.containment");
+    await inspectBuiltTag(engine, daemon, reconciliationPolicy, undefined, {
+      labels: options.labels,
+      platform: authority.buildkit.platform,
+      tag: options.tag,
+    });
+    await engineCall(
+      { policy: reconciliationPolicy, signal: undefined, transport: engine },
+      {
+        expected: [200, 404],
+        method: "DELETE",
+        path: `/v${daemon.apiVersion}/images/${encodeURIComponent(options.tag)}?force=1&noprune=0`,
+      },
+    );
+  }
+  const late = await inspectEngineObject({
+    daemon,
+    engine,
+    name: options.tag,
+    policy: { ...policy, workDeadline: policy.deadline },
+    type: "images",
+  });
+  if (late !== undefined) {
+    authority.reconciliationReasons = Object.freeze({
+      ...authority.reconciliationReasons,
+      builtTag: "late-publication",
+    });
+    throw fixedError("integration.images.containment");
+  }
+};
+const settleBuilderBuild = async (authority, options, built, failed) => {
+  const { builder, client, daemon, engine, policy, run } = authority;
+  try {
+    const resources = builderResources(builder);
+    const reconciliationPolicy = {
+      ...policy,
+      workDeadline: policy.reconciliationDeadline,
+    };
+    const currentDaemon = await inspectDaemon(
+      engine,
+      client.socket,
+      reconciliationPolicy,
+      undefined,
+    );
+    if (!sameDaemon(daemon, currentDaemon))
+      throw fixedError("integration.images.containment");
+    let [container, volume] = await inspectBuilderResources(
+      authority,
+      resources,
+      undefined,
+      reconciliationPolicy,
+    );
+    let identity;
+    if (container !== undefined || volume !== undefined) {
+      if (!authority.resourcePreflightComplete)
+        throw fixedError("integration.images.containment");
+      identity = authenticateBuilderResources(
+        authority,
+        resources,
+        container,
+        volume,
+        false,
+      );
+      if (
+        authority.resourceIdentity !== undefined &&
+        (identity.container === undefined || identity.volume === undefined)
+      )
+        throw fixedError("integration.images.containment");
+    }
+    if (identity?.container !== undefined && identity.volume !== undefined) {
+      await run(
+        ["rm", "--force", builder],
+        undefined,
+        reconciliationPolicy.workDeadline,
+      ).catch(() => undefined);
+      [container, volume] = await inspectBuilderResources(
+        authority,
+        resources,
+        undefined,
+        reconciliationPolicy,
+      );
+      identity = authenticateBuilderResources(
+        authority,
+        resources,
+        container,
+        volume,
+        false,
+      );
+    }
+    if (identity?.container !== undefined || identity?.volume !== undefined)
+      await removeBuilderResources({
+        authority,
+        identity,
+        policy: reconciliationPolicy,
+        resources,
+      });
+    await settleBuiltTag(
+      authority,
+      options,
+      built,
+      failed,
+      reconciliationPolicy,
+    );
+    const finalDaemon = await inspectDaemon(
+      engine,
+      client.socket,
+      { ...policy, workDeadline: policy.deadline },
+      undefined,
+    );
+    if (!sameDaemon(daemon, finalDaemon))
+      throw fixedError("integration.images.containment");
+  } catch {
+    throw fixedError("integration.images.containment");
+  }
+};
+const unavailableProcessDiagnostic = (failure) =>
+  Object.freeze({
+    observed: false,
+    exited: false,
+    signaled: false,
+    timedOut: failure?.code === "ETIMEDOUT",
+    joined: false,
+    outputBytes: 0,
+    outputTruncated: false,
+    stderrClass: "unknown",
+  });
+const captureFirstBuildFailure = (authority, failure) => {
+  if (authority.firstFailureDiagnostic !== undefined) return;
+  authority.firstFailureDiagnostic = Object.freeze({
+    operationKind: authority.currentOperationKind,
+    process:
+      processDiagnostics.get(failure) ??
+      (authority.lastProcessObservation?.operationKind ===
+      authority.currentOperationKind
+        ? authority.lastProcessObservation.process
+        : undefined) ??
+      unavailableProcessDiagnostic(failure),
+  });
+};
+const recordPreparedDockerDiagnostic = (client, authority, labels, failure) => {
+  if (preparedDockerClientDiagnostics.has(client)) return;
+  const resources = builderResources(authority.builder);
+  const observation = authority.lastResourceObservation ?? {
+    responseBytes: 0,
+    observedCount: 0,
+    observedDigest: diagnosticDigest([]),
+  };
+  captureFirstBuildFailure(authority, failure);
+  const firstFailure = authority.firstFailureDiagnostic;
+  preparedDockerClientDiagnostics.set(
+    client,
+    Object.freeze({
+      diagnosticVersion: 1,
+      stage: "builder-reconciliation",
+      operationKind: firstFailure.operationKind,
+      identityDigests: Object.freeze({
+        daemon: diagnosticDigest(authority.daemon),
+        builder: diagnosticDigest(authority.builder),
+        image: diagnosticDigest({
+          image: authority.buildkit.image,
+          configDigest: authority.buildkit.configDigest,
+        }),
+        platform: diagnosticDigest(authority.buildkit.platform),
+        runGeneration: diagnosticDigest(
+          labels["com.agentscope.integration.run"] ?? "unbound",
+        ),
+      }),
+      process: Object.freeze({ ...firstFailure.process }),
+      responseBytes: observation.responseBytes,
+      responseTruncated: false,
+      expectedResourceCount: 2,
+      observedResourceCount: observation.observedCount,
+      expectedResourceDigest: diagnosticDigest([
+        resources.container,
+        resources.volume,
+      ]),
+      observedResourceDigest: observation.observedDigest,
+      reconciliationReasons: authority.reconciliationReasons,
+      outcome: "retired-failure",
+    }),
+  );
+};
+
+export const preparedDockerClientDiagnostic = (client) =>
+  preparedDockerClientDiagnostics.get(client);
+
+export const buildPreparedDockerImage = async (
+  client,
+  {
+    buildArguments,
+    afterBuildContextEntryForTesting,
+    context,
+    dockerfile,
+    labels,
+    maximumMilliseconds,
+    signal,
+    tag,
+  },
+) => {
+  if (
+    !preparedDockerClients.has(client) ||
+    closingPreparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client) ||
+    typeof context !== "string" ||
+    typeof dockerfile !== "string" ||
+    !/^(?:[A-Za-z\d][A-Za-z\d._-]{0,127}\.Dockerfile|Dockerfile)$/u.test(
+      dockerfile,
+    ) ||
+    typeof tag !== "string" ||
+    !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag) ||
+    !validBuildMap(buildArguments) ||
+    !validBuildMap(labels)
+  )
+    throw fixedError("integration.images.build");
+  const policy = preparationPolicy([client.evidence.images[0].image], {
+    maximumPreparationMilliseconds: maximumMilliseconds,
+    teardownMilliseconds: Math.min(
+      preparationTeardownMilliseconds,
+      Math.floor(maximumMilliseconds / 4),
+    ),
+  });
+  const archive = createBoundedBuildContext(context, {
+    afterEntryForTesting: afterBuildContextEntryForTesting,
+    deadline: policy.workDeadline,
+    signal,
+  });
+  const authority = await createBuildAuthority(client, policy, signal);
+  let built;
+  let failure;
+  try {
+    built = await executeBuilderBuild(
+      authority,
+      { buildArguments, dockerfile, labels, tag },
+      archive,
+    );
+  } catch (error) {
+    failure = error;
+    captureFirstBuildFailure(authority, error);
+  }
+  if (
+    failure?.containmentProved === false ||
+    (authority.requestCapable === true &&
+      (failure?.code === "ETIMEDOUT" ||
+        [
+          "integration.images.interrupted",
+          "integration.images.output",
+        ].includes(failure?.message)))
+  ) {
+    uncertainPreparedDockerClients.add(client);
+    recordPreparedDockerDiagnostic(client, authority, labels, failure);
+    throw failure;
+  }
+  try {
+    await settleBuilderBuild(
+      authority,
+      { labels, tag },
+      built,
+      failure !== undefined,
+    );
+  } catch (error) {
+    if (authority.requestCapable === true) {
+      captureFirstBuildFailure(authority, error);
+      uncertainPreparedDockerClients.add(client);
+      recordPreparedDockerDiagnostic(client, authority, labels, error);
+    }
+    throw error;
+  }
+  if (failure !== undefined)
+    throw [
+      "integration.images.executable",
+      "integration.images.interrupted",
+      "integration.images.output",
+      "integration.images.timeout",
+    ].includes(failure?.message)
+      ? failure
+      : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
+  return built.Id.replace(":", "-");
+};
+
+export const closePreparedDockerClient = (client) => {
+  if (
+    !preparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client)
+  )
+    throw fixedError("integration.images.docker-client");
+  closingPreparedDockerClients.add(client);
+  try {
+    cleanupPrivateClient(
+      client.privateClient,
+      performance.now() + preparationTeardownMilliseconds,
+    );
+    preparedDockerClients.delete(client);
+  } catch (error) {
+    uncertainPreparedDockerClients.add(client);
+    if (error?.privateCleanupDiagnostic !== undefined)
+      preparedDockerClientDiagnostics.set(
+        client,
+        error.privateCleanupDiagnostic,
+      );
+    throw error;
+  } finally {
+    closingPreparedDockerClients.delete(client);
+  }
+};
+
+export const preparedDockerClientRequiresOuterHostRetirement = (client) =>
+  uncertainPreparedDockerClients.has(client);
+
+export const markPreparedDockerClientForOuterHostRetirement = (client) => {
+  if (!preparedDockerClients.has(client))
+    throw fixedError("integration.images.docker-client");
+  uncertainPreparedDockerClients.add(client);
+};
+
+const definiteMissingDockerResource = (error) => {
+  if (
+    !Number.isSafeInteger(error?.code) ||
+    error.code < 1 ||
+    error?.signal != null ||
+    error?.killed === true ||
+    error?.name === "AbortError" ||
+    (error?.stdout ?? "") !== "" ||
+    typeof error?.stderr !== "string"
+  )
+    return false;
+  return /^(?:Error response from daemon: )?(?:No such (?:container|image): [^\r\n]+|network [^\r\n]+ not found)\r?\n?$/u.test(
+    error.stderr,
+  );
+};
+
+export const handlePreparedDockerCleanupFailure = (client, error) => {
+  if (definiteMissingDockerResource(error)) return;
+  markPreparedDockerClientForOuterHostRetirement(client);
+  throw error;
+};
+
+export const publishPreparedImageEvidence = (
+  target,
+  manifestIdentity,
+  prepared,
+  options = {},
+) => {
   const temporary = `${target}.${process.pid}.tmp`;
   try {
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(temporary, `${JSON.stringify(evidence, undefined, 2)}\n`, {
-      flag: "wx",
-      mode: 0o600,
-    });
+    if (!preparedSets.has(prepared))
+      throw fixedError("integration.images.publication");
+    const evidence = {
+      imageEvidenceVersion: 2,
+      manifestIdentity,
+      ...prepared,
+    };
+    validatePreparedImageEvidence(evidence, manifestIdentity);
+    const serialized = serializePreparedImageEvidence(
+      evidence,
+      options.maximumEvidenceBytesForTesting,
+    );
+    const descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    try {
+      writeFileSync(descriptor, serialized);
+    } finally {
+      closeSync(descriptor);
+    }
     renameSync(temporary, target);
   } catch {
     try {
-      rmSync(temporary, { force: true });
-    } catch {
-      throw fixedError("integration.images.cleanup");
+      unlinkSync(temporary);
+    } catch (error) {
+      if (error?.code !== "ENOENT")
+        throw fixedError("integration.images.cleanup");
     }
     throw fixedError("integration.images.publication");
+  }
+};
+
+export const retirePreparedImageEvidence = (target) => {
+  try {
+    unlinkSync(target);
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      throw fixedError("integration.images.retirement");
   }
 };
 
 export const IMAGE_PREPARATION_LIMITS = Object.freeze({
   maximumPreparationMilliseconds,
   maximumTeardownMilliseconds: preparationTeardownMilliseconds,
-  maximumCommandOutputBytes,
+  maximumResponseBytes,
+  maximumManifestBytes,
+  maximumEvidenceBytes,
+  maximumPrivateStateEntries,
+  maximumPrivateStateDepth,
+  maximumPrivateStateFileBytes,
+  maximumPrivateStateTotalBytes,
 });
