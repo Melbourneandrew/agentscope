@@ -25,6 +25,15 @@ import {
   verifyPreparedCandidate,
 } from "./dist/index.js";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
+// eslint-disable-next-line import-x/no-cycle -- private executable capability
+import {
+  integrationStageSignal,
+  registerIntegrationRunIds,
+  remainingIntegrationOperationMilliseconds,
+  requireDisposableOuterHostCapability,
+} from "./dist/controller.js";
+
+const capability = requireDisposableOuterHostCapability();
 
 const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
@@ -120,17 +129,23 @@ if (
   throw new Error("integration.isolation.inputs");
 
 const docker = async (arguments_, options = {}) =>
-  execute("docker", arguments_, {
+  execute(capability.binding.dockerExecutable, arguments_, {
     encoding: "utf8",
+    env: capability.binding.dockerEnvironment,
     maxBuffer: 16 * 1024 * 1024,
-    timeout: scenarioTimeoutMilliseconds,
+    timeout: remainingIntegrationOperationMilliseconds(
+      scenarioTimeoutMilliseconds,
+    ),
     ...options,
   });
 const dockerWithSignal = (arguments_, signal, options = {}) =>
   docker(arguments_, { ...options, signal });
 const ignoreMissing = async (arguments_, signal) => {
   try {
-    await docker(arguments_, { signal, timeout: 30_000 });
+    await docker(arguments_, {
+      signal,
+      timeout: remainingIntegrationOperationMilliseconds(30_000),
+    });
   } catch (error) {
     const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
     if (!/(?:No such (?:container|image)|network .* not found)/u.test(output))
@@ -800,6 +815,7 @@ const plans = scenarios.map((scenario) =>
     scenarioTimeoutMilliseconds,
   }),
 );
+registerIntegrationRunIds(plans.map(({ runId }) => runId));
 const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
@@ -815,6 +831,7 @@ try {
         createDriver(),
         AbortSignal.any([
           controller.signal,
+          integrationStageSignal(),
           AbortSignal.timeout(scenarioTimeoutMilliseconds),
         ]),
       ),

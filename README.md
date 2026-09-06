@@ -72,7 +72,6 @@ Agentscope uses pnpm, Nx, Node.js 22+, and a Fumadocs documentation application.
 ```bash
 pnpm install
 pnpm test:unit
-pnpm test:integration
 pnpm dev:docs
 ```
 

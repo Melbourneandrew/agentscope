@@ -4,6 +4,15 @@ import { arch, platform } from "node:os";
 import { resolve } from "node:path";
 
 import { prepareCandidate } from "./dist/artifacts.js";
+// eslint-disable-next-line import-x/no-cycle -- private executable capability
+import {
+  registerIntegrationArtifactFile,
+  registerIntegrationCandidateIdentity,
+  remainingIntegrationOperationMilliseconds,
+  requireDisposableOuterHostCapability,
+} from "./dist/controller.js";
+
+requireDisposableOuterHostCapability();
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -12,14 +21,19 @@ const cliManifest = JSON.parse(
 );
 if (typeof cliManifest.version !== "string")
   throw new Error("integration.artifact.cli-version");
-const revision = execFileSync("git", ["rev-parse", "HEAD"], {
+const revision = execFileSync("/usr/bin/git", ["rev-parse", "HEAD"], {
   cwd: workspaceRoot,
   encoding: "utf8",
+  timeout: remainingIntegrationOperationMilliseconds(30_000),
 }).trim();
 const worktreeState = execFileSync(
-  "git",
+  "/usr/bin/git",
   ["status", "--porcelain", "--untracked-files=all"],
-  { cwd: workspaceRoot, encoding: "utf8" },
+  {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    timeout: remainingIntegrationOperationMilliseconds(30_000),
+  },
 ).trim();
 if (worktreeState.length > 0)
   throw new Error("integration.artifact.worktree-dirty");
@@ -44,8 +58,10 @@ const prepared = prepareCandidate({
     },
   ],
 });
+registerIntegrationCandidateIdentity(prepared.evidence.bundleIdentity);
 mkdirSync(integrationArtifacts, { recursive: true });
 const pointer = resolve(integrationArtifacts, "current-candidate.json");
+registerIntegrationArtifactFile("current-candidate.json");
 const temporaryPointer = `${pointer}.${process.pid}.tmp`;
 writeFileSync(
   temporaryPointer,

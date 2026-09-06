@@ -3,6 +3,10 @@ import { resolve, sep } from "node:path";
 
 import { planArtifactRetention } from "./dist/operations.js";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
+// eslint-disable-next-line import-x/no-cycle -- private executable capability
+import { requireDisposableOuterHostCapability } from "./dist/controller.js";
+
+requireDisposableOuterHostCapability();
 
 const integrationRoot = import.meta.dirname;
 const artifactsRoot = resolve(integrationRoot, "../../artifacts/integration");

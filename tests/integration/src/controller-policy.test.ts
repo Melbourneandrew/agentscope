@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -43,8 +44,30 @@ describe("integration controller policy", () => {
       "utf8",
     );
     expect(source).not.toMatch(
-      /OIDC|attestation|bootstrap-manifest|dockerExecutable|PNPM_HOME|validation lease/iu,
+      /OIDC|attestation|bootstrap-manifest|PNPM_HOME|validation lease/iu,
     );
+  });
+
+  it("rejects direct execution of every mutation stage", () => {
+    for (const stage of [
+      "clean.mjs",
+      "maintain-artifacts.mjs",
+      "prepare-cli.mjs",
+      "prepare-images.mjs",
+      "prepare-model-routes.mjs",
+      "run-scenarios.mjs",
+      "select.mjs",
+    ]) {
+      const result = spawnSync(process.execPath, [stage], {
+        cwd: resolve(workspaceRoot, "tests/integration"),
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: process.env.PATH },
+      });
+      expect(result.status, stage).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`, stage).toContain(
+        "integration.outer-host.capability-required",
+      );
+    }
   });
 
   it("routes both CI phases through the same command", () => {
@@ -53,6 +76,7 @@ describe("integration controller policy", () => {
       "utf8",
     );
     expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(2);
+    expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,
     );

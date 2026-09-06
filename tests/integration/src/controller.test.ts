@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { runIntegrationStages } from "./controller.js";
+import {
+  runIntegrationStages,
+  settleAbortableOperation,
+} from "./controller.js";
 import type {
   IntegrationControllerFailure,
   IntegrationStageDependencies,
@@ -25,6 +28,22 @@ const stages = (events: string[]): IntegrationStageDependencies =>
   ) as unknown as IntegrationStageDependencies;
 
 describe("integration controller", () => {
+  it("aborts at the deadline and joins the operation before returning", async () => {
+    const events: string[] = [];
+    const operation = settleAbortableOperation(5, async (signal) => {
+      await new Promise<void>((resolveOperation) => {
+        signal.addEventListener("abort", () => {
+          setTimeout(() => {
+            events.push("settled");
+            resolveOperation();
+          }, 5);
+        });
+      });
+    });
+    await expect(operation).rejects.toThrow("integration.controller.deadline");
+    expect(events).toEqual(["settled"]);
+  });
+
   it("runs one private Crabbox lifecycle and cleans last", async () => {
     const events: string[] = [];
     await runIntegrationStages("crabbox", stages(events));
@@ -59,6 +78,19 @@ describe("integration controller", () => {
       retirementRequired: true,
     } satisfies Partial<IntegrationControllerFailure>);
     expect(events.at(-1)).toBe("clean");
+  });
+
+  it("does not run later stages after candidate preparation fails", async () => {
+    const events: string[] = [];
+    const dependencies = stages(events);
+    vi.mocked(dependencies.prepareCandidate).mockRejectedValue(
+      new Error("candidate failed"),
+    );
+    await expect(
+      runIntegrationStages("candidate", dependencies),
+    ).rejects.toMatchObject({ retirementRequired: true });
+    expect(events).toEqual([]);
+    expect(dependencies.maintainArtifacts).not.toHaveBeenCalled();
   });
 
   it("retains both a scenario failure and cleanup failure", async () => {

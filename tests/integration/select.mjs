@@ -7,6 +7,13 @@ import {
   verifyManifestEvidence,
 } from "./dist/manifest.js";
 import { compileLocalSelection } from "./dist/operations.js";
+// eslint-disable-next-line import-x/no-cycle -- private executable capability
+import {
+  registerIntegrationArtifactFile,
+  requireDisposableOuterHostCapability,
+} from "./dist/controller.js";
+
+requireDisposableOuterHostCapability();
 
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
@@ -29,6 +36,7 @@ const selection = {
 const integrationArtifacts = resolve(workspaceRoot, "artifacts/integration");
 mkdirSync(integrationArtifacts, { recursive: true });
 const pointer = resolve(integrationArtifacts, "current-selection.json");
+registerIntegrationArtifactFile("current-selection.json");
 const temporaryPointer = `${pointer}.${process.pid}.tmp`;
 writeFileSync(temporaryPointer, `${JSON.stringify(selection, undefined, 2)}\n`);
 renameSync(temporaryPointer, pointer);
