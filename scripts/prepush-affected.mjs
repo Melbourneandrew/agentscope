@@ -72,18 +72,11 @@ export const executePrepush = () => {
   const plan = selectPrepushMode(changedFiles, affectedProjects, baseAvailable);
   run(["verify:targets"]);
   run(["format:check"]);
-  run(
-    plan.full
-      ? ["nx", "run-many", "-t", "lint,typecheck,test,build", "--all"]
-      : [
-          "nx",
-          "affected",
-          "-t",
-          "lint,typecheck,test,build",
-          `--base=${base}`,
-          "--head=HEAD",
-        ],
-  );
+  const selection = plan.full
+    ? ["run-many", "--all"]
+    : ["affected", `--base=${base}`, "--head=HEAD"];
+  run(["nx", selection[0], "-t", "build", ...selection.slice(1)]);
+  run(["nx", selection[0], "-t", "lint,typecheck,test", ...selection.slice(1)]);
   if (plan.verifyCliArtifact) run(["verify:cli-artifact"]);
 };
 
