@@ -205,10 +205,15 @@ test("path coverage selects docs, packages, CLI closure, and conservative full",
     "pnpm-lock.yaml",
     "package.json",
     "packages/core/package.json",
+    "packages/new/nested/project.json",
+    "packages/a/b/c/package.json",
     "nx.json",
     "scripts/verify-workspace-targets.mjs",
     ".github/workflows/validate.yml",
     "unknown/new-policy.bin",
+    "README.mjs",
+    "SECURITY.bin",
+    "CONTRIBUTING.sh",
   ])
     assert.deepEqual(selectPrepushMode([path], [], true), {
       full: true,
@@ -274,6 +279,7 @@ test("selection uncertainty falls back without using partial observations", () =
     "{}",
     JSON.stringify({ defaultBase: "-hostile" }),
     JSON.stringify({ defaultBase: "main..other" }),
+    JSON.stringify({ defaultBase: "HEAD" }),
   ]) {
     assert.equal(
       createPrepushPlan({

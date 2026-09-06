@@ -12,15 +12,16 @@ const maximumCaptureBytes = 1024 * 1024;
 const maximumNxConfigurationBytes = 64 * 1024;
 const maximumChangedPaths = 4_096;
 const maximumProjects = 256;
+const admittedDefaultBase = "main";
 const objectIdPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const projectNamePattern = /^(?:@[a-z0-9._-]+\/[a-z0-9._-]+|[a-z0-9._-]+)$/u;
 const baseNamePattern = /^(?!-)[A-Za-z0-9._/-]{1,256}$/u;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 const rootPolicyPath =
-  /^(?:\.github\/|\.husky\/|scripts\/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nx\.json$|eslint\.config\.mjs$|tsconfig(?:\.[^/]+)?\.json$|vitest\.config\.ts$|quality-policy\.json$|acceptance-evidence\.json$|(?:apps|packages|tests)\/[^/]+(?:\/[^/]+)?\/package\.json$)/u;
+  /^(?:\.github\/|\.husky\/|scripts\/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nx\.json$|eslint\.config\.mjs$|tsconfig(?:\.[^/]+)?\.json$|vitest\.config\.ts$|quality-policy\.json$|acceptance-evidence\.json$)|(?:^|\/)(?:package|project)\.json$/u;
 const operationalDocumentationPath =
-  /^(?:(?:README|CONTRIBUTING|SECURITY|CODE_OF_CONDUCT)(?:\.[^/]*)?|ops\/(?:[^/]+\/)*[^/]+\.(?:md|mdx))$/u;
+  /^(?:(?:README|CONTRIBUTING|SECURITY|CODE_OF_CONDUCT)\.mdx?|ops\/(?:[^/]+\/)*[^/]+\.mdx?)$/u;
 const requiredTargets = Object.freeze(["build", "lint", "test", "typecheck"]);
 const policyCommands = Object.freeze([
   ["test:workspace-policy"],
@@ -168,6 +169,7 @@ function parseConfiguredBase(contents) {
     Array.isArray(parsed) ||
     typeof parsed.defaultBase !== "string" ||
     !baseNamePattern.test(parsed.defaultBase) ||
+    parsed.defaultBase !== admittedDefaultBase ||
     parsed.defaultBase.includes("..") ||
     parsed.defaultBase.includes("//")
   ) {
