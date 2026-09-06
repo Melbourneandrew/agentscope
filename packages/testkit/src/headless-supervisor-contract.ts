@@ -224,6 +224,37 @@ export type HeadlessSupervisorContractCase = Readonly<{
   ) => HeadlessSupervisorContractRun;
 }>;
 
+export type HostileHeadlessProcessSeed =
+  | "crash-before-lifecycle"
+  | "crash-after-lifecycle"
+  | "partial-output"
+  | "malformed-output"
+  | "oversized-output"
+  | "infinite-output"
+  | "ignored-termination"
+  | "delayed-startup"
+  | "delayed-shutdown"
+  | "surviving-descendant"
+  | "restricted-environment"
+  | "missing-hook-record"
+  | "duplicate-hook-record"
+  | "signal-race"
+  | "observation-race";
+
+export type HostileHeadlessProcessCase = Readonly<{
+  name: string;
+  seed: HostileHeadlessProcessSeed;
+  terminal:
+    | Readonly<{
+        kind: "trace";
+        outcome: HeadlessExecutionOutcome;
+        exitCode: number | null;
+        diagnosticCode: HeadlessExecutionDiagnosticCode | null;
+      }>
+    | Readonly<{ kind: "error"; code: string }>;
+  evidenceAuthority: "component-only";
+}>;
+
 type StrictRecord = Record<string, unknown>;
 
 const encoder = new TextEncoder();
@@ -1405,6 +1436,117 @@ export const createBoundedHeadlessSupervisorContractSuite =
         fixtureSource: fixtures[scenario],
         instantiate: (input: Readonly<{ root: string; fixturePath: string }>) =>
           instantiate(scenario, input),
+      });
+    }
+    return safeFreeze(cases);
+  };
+
+/**
+ * Returns the closed hostile non-PTY process matrix. The matrix owns process
+ * stimuli and their component-level terminal oracle. In particular, the hook
+ * record seeds prove that process output cannot mint harness acceptance:
+ * higher-level real-harness correlation remains outside this contract.
+ */
+export const createHostileHeadlessProcessMatrix =
+  (): readonly HostileHeadlessProcessCase[] => {
+    const trace = (
+      outcome: HeadlessExecutionOutcome,
+      exitCode: number | null,
+      diagnosticCode: HeadlessExecutionDiagnosticCode | null,
+    ) =>
+      safeFreeze({
+        kind: "trace" as const,
+        outcome,
+        exitCode,
+        diagnosticCode,
+      });
+    const error = (code: string) =>
+      safeFreeze({ kind: "error" as const, code });
+    const definitions: readonly (readonly [
+      string,
+      HostileHeadlessProcessSeed,
+      HostileHeadlessProcessCase["terminal"],
+    ])[] = [
+      [
+        "headless:crash-before-lifecycle",
+        "crash-before-lifecycle",
+        error("testkit.headless.kernel.spawn"),
+      ],
+      [
+        "headless:crash-after-lifecycle",
+        "crash-after-lifecycle",
+        trace("exited", 71, null),
+      ],
+      ["headless:partial-output", "partial-output", trace("exited", 70, null)],
+      [
+        "headless:malformed-output",
+        "malformed-output",
+        trace("exited", 0, null),
+      ],
+      [
+        "headless:oversized-output",
+        "oversized-output",
+        trace("output-limit", null, "testkit.headless.output-limit"),
+      ],
+      [
+        "headless:infinite-output",
+        "infinite-output",
+        trace("output-limit", null, "testkit.headless.output-limit"),
+      ],
+      [
+        "headless:ignored-termination",
+        "ignored-termination",
+        trace("timed-out", null, "testkit.headless.timeout"),
+      ],
+      [
+        "headless:delayed-startup",
+        "delayed-startup",
+        error("testkit.headless.startup.deadline"),
+      ],
+      [
+        "headless:delayed-shutdown",
+        "delayed-shutdown",
+        error("testkit.headless.reconciliation.deadline"),
+      ],
+      [
+        "headless:surviving-descendant",
+        "surviving-descendant",
+        trace("exited", 0, null),
+      ],
+      [
+        "headless:restricted-environment",
+        "restricted-environment",
+        trace("exited", 0, null),
+      ],
+      [
+        "headless:missing-hook-record",
+        "missing-hook-record",
+        trace("exited", 0, null),
+      ],
+      [
+        "headless:duplicate-hook-record",
+        "duplicate-hook-record",
+        trace("exited", 0, null),
+      ],
+      [
+        "headless:signal-race",
+        "signal-race",
+        trace("timed-out", null, "testkit.headless.timeout"),
+      ],
+      [
+        "headless:observation-race",
+        "observation-race",
+        error("testkit.headless.observer.identity"),
+      ],
+    ];
+    const cases = new SafeArray<HostileHeadlessProcessCase>(definitions.length);
+    for (let index = 0; index < definitions.length; index += 1) {
+      const [name, seed, terminal] = definitions[index]!;
+      cases[index] = safeFreeze({
+        name,
+        seed,
+        terminal,
+        evidenceAuthority: "component-only",
       });
     }
     return safeFreeze(cases);

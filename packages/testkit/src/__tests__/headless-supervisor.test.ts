@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import * as rootApi from "../index.js";
 import {
   createBoundedHeadlessSupervisorContractSuite,
+  createHostileHeadlessProcessMatrix,
   type HeadlessObserverScenario,
 } from "../headless-supervisor-contract.js";
 import {
@@ -24,11 +25,13 @@ import {
   executeSelectedContainerBackendForTest,
   executeScriptedSelectedHeadlessProcessForTest,
   executeScriptedHeadlessSupervisorForTest,
+  readHeadlessSupervisorKernelErrorCode,
   readScriptedHeadlessCancellationDeliveriesForTest,
   readScriptedHeadlessLaunchCountForTest,
 } from "../internal/headless-supervisor-backend.js";
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
+const hostileCases = createHostileHeadlessProcessMatrix();
 const scenarioFor = (name: string): HeadlessObserverScenario => {
   if (name === "headless:correct-invocation") return "correct";
   if (name === "headless:stdout-limit") return "stdout-limit";
@@ -204,6 +207,138 @@ describe("selected-container lifecycle", () => {
     await expect(
       executeSelectedContainerBackendForTest(request, "startup-delay"),
     ).rejects.toMatchObject({ code: "testkit.headless.startup.deadline" });
+  });
+});
+
+// The closed table keeps its full terminal and evidence oracle together.
+// eslint-disable-next-line max-lines-per-function
+describe("comprehensive hostile selected-container matrix", () => {
+  it.each(hostileCases)("certifies $name", async (candidate) => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs =
+      performance.now() + (candidate.seed === "delayed-startup" ? 5 : 50);
+    request.monotonicExecutionDeadlineMs = performance.now() + 80;
+    request.monotonicShutdownDeadlineMs = performance.now() + 180;
+    let trace: Awaited<
+      ReturnType<typeof executeSelectedContainerBackendForTest>
+    > | null = null;
+    let code: string | undefined;
+    try {
+      trace = await executeSelectedContainerBackendForTest(
+        request,
+        candidate.seed,
+      );
+    } catch (error: unknown) {
+      code = readHeadlessSupervisorKernelErrorCode(error);
+    }
+    if (candidate.terminal.kind === "error") {
+      expect(trace).toBeNull();
+      expect(code).toBe(candidate.terminal.code);
+      return;
+    }
+    expect(code).toBeUndefined();
+    expect(trace).not.toBeNull();
+    expect(trace!.result).toMatchObject({
+      outcome: candidate.terminal.outcome,
+      exitCode: candidate.terminal.exitCode,
+      diagnosticCode: candidate.terminal.diagnosticCode,
+    });
+    expect(trace!.result.cleanup).toBe("clean");
+    expect(trace!.observation).toMatchObject({
+      cleanup: "clean",
+      processJoined: true,
+      stdinJoined: true,
+      stdoutJoined: true,
+      stderrJoined: true,
+    });
+
+    if (candidate.seed === "partial-output") {
+      expect(new TextDecoder().decode(trace!.result.stdout)).toBe("partial");
+      expect(new TextDecoder().decode(trace!.result.stderr)).toBe("fragment");
+    } else if (candidate.seed === "malformed-output") {
+      expect([...trace!.result.stdout]).toEqual([0xc3]);
+    } else if (
+      candidate.seed === "oversized-output" ||
+      candidate.seed === "infinite-output"
+    ) {
+      expect(trace!.result.stdout.byteLength).toBe(request.stdoutLimitBytes);
+      expect(trace!.result.stdoutTruncated).toBe(true);
+    } else if (candidate.seed === "restricted-environment") {
+      expect(
+        JSON.parse(new TextDecoder().decode(trace!.result.stdout)),
+      ).toEqual({ environmentKeys: ["HOME", "LANG"] });
+    } else if (
+      candidate.seed === "missing-hook-record" ||
+      candidate.seed === "duplicate-hook-record"
+    ) {
+      expect(
+        JSON.parse(new TextDecoder().decode(trace!.result.stdout)),
+      ).toEqual({
+        hookDeliveries: candidate.seed === "missing-hook-record" ? 0 : 2,
+      });
+      expect("hookDeliveries" in trace!).toBe(false);
+      expect(candidate.evidenceAuthority).toBe("component-only");
+    } else if (candidate.seed === "signal-race") {
+      expect(trace!.result).toMatchObject({
+        signal: "SIGTERM",
+        termRequested: true,
+        killRequested: false,
+      });
+    } else if (candidate.seed === "surviving-descendant") {
+      expect(trace!.observation.processes.map(({ role }) => role)).toEqual([
+        "root",
+        "descendant",
+      ]);
+      expect(trace!.observation.signals).toHaveLength(1);
+    }
+  });
+
+  it("keeps concurrent sessions isolated and deterministically classified", async () => {
+    const first = genericRequest();
+    const second = genericRequest();
+    second.runId = "fedcba9876543210";
+    second.requestFingerprint = `sha256:${"b".repeat(64)}`;
+    for (const request of [first, second]) {
+      request.monotonicStartupDeadlineMs = performance.now() + 50;
+      request.monotonicExecutionDeadlineMs = performance.now() + 80;
+      request.monotonicShutdownDeadlineMs = performance.now() + 180;
+    }
+    const [firstTrace, secondTrace] = await Promise.all([
+      executeSelectedContainerBackendForTest(first, "partial-output"),
+      executeSelectedContainerBackendForTest(second, "surviving-descendant"),
+    ]);
+    expect(firstTrace.runId).toBe(first.runId);
+    expect(secondTrace.runId).toBe(second.runId);
+    expect(firstTrace.requestFingerprint).toBe(first.requestFingerprint);
+    expect(secondTrace.requestFingerprint).toBe(second.requestFingerprint);
+    expect(firstTrace.observation.processes).toHaveLength(1);
+    expect(secondTrace.observation.processes).toHaveLength(2);
+  });
+
+  it("retains deterministic content-free classifications under repetition", async () => {
+    const projections = [];
+    for (let index = 0; index < 8; index += 1) {
+      const request = genericRequest();
+      request.monotonicStartupDeadlineMs = performance.now() + 50;
+      request.monotonicExecutionDeadlineMs = performance.now() + 80;
+      request.monotonicShutdownDeadlineMs = performance.now() + 180;
+      const trace = await executeSelectedContainerBackendForTest(
+        request,
+        "ignored-termination",
+      );
+      projections.push({
+        outcome: trace.result.outcome,
+        signal: trace.result.signal,
+        cleanup: trace.result.cleanup,
+        processJoined: trace.observation.processJoined,
+        residualProcessCount: trace.result.residualProcessCount,
+        stdoutBytes: trace.result.stdout.byteLength,
+        stderrBytes: trace.result.stderr.byteLength,
+      });
+    }
+    expect(
+      new Set(projections.map((value) => JSON.stringify(value))).size,
+    ).toBe(1);
   });
 });
 
@@ -602,7 +737,8 @@ describe("emitted selected-container lifecycle", () => {
       writeFileSync(
         runner,
         `import { performance } from "node:perf_hooks";
-import { executeSelectedContainerBackendForTest } from "./internal/headless-supervisor-backend.js";
+	import { createHostileHeadlessProcessMatrix } from "./headless-supervisor-contract.js";
+	import { executeSelectedContainerBackendForTest, readHeadlessSupervisorKernelErrorCode } from "./internal/headless-supervisor-backend.js";
 
 const request = () => {
   const now = performance.now();
@@ -632,6 +768,19 @@ for (const seed of ["fast-exit", "identity-substitution", "observer-failure", "s
   try { await executeSelectedContainerBackendForTest(request(), seed); }
   catch { rejected = true; }
   if (!rejected) throw new Error("emitted-negative-admitted:" + seed);
+}
+for (const candidate of createHostileHeadlessProcessMatrix()) {
+  const selected = request();
+  if (candidate.seed === "delayed-startup") selected.monotonicStartupDeadlineMs = performance.now() + 5;
+  let result;
+  let code;
+  try { result = await executeSelectedContainerBackendForTest(selected, candidate.seed); }
+  catch (error) { code = readHeadlessSupervisorKernelErrorCode(error); }
+  if (candidate.terminal.kind === "error") {
+    if (result !== undefined || code !== candidate.terminal.code) throw new Error("emitted-hostile-error:" + candidate.seed);
+  } else if (result?.result.outcome !== candidate.terminal.outcome || result.result.exitCode !== candidate.terminal.exitCode || result.result.diagnosticCode !== candidate.terminal.diagnosticCode || !result.observation.processJoined) {
+    throw new Error("emitted-hostile-trace:" + candidate.seed);
+  }
 }
 `,
         { encoding: "utf8", mode: 0o600 },
