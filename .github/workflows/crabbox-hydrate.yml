@@ -1,0 +1,86 @@
+name: Crabbox hydration
+
+on:
+  workflow_dispatch:
+    inputs:
+      crabbox_id:
+        required: true
+        type: string
+      crabbox_runner_label:
+        required: true
+        type: string
+      crabbox_job:
+        required: false
+        default: hydrate
+        type: string
+      crabbox_keep_alive_minutes:
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  hydrate:
+    name: Hydrate exact Agentscope checkout
+    runs-on: [self-hosted, "${{ inputs.crabbox_runner_label }}"]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.14.0
+      - name: Activate the pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.0 --activate
+          test "$(pnpm --version)" = "9.15.0"
+      - name: Install the frozen workspace
+        run: pnpm install --frozen-lockfile
+      - name: Publish the hydration handoff
+        env:
+          CRABBOX_ID: ${{ inputs.crabbox_id }}
+          CRABBOX_JOB: ${{ inputs.crabbox_job }}
+        run: |
+          case "$CRABBOX_ID" in
+            ""|*[!A-Za-z0-9_-]*) exit 2 ;;
+          esac
+          case "$CRABBOX_JOB" in
+            *$'\n'*|*$'\r'*) exit 2 ;;
+          esac
+          job="$CRABBOX_JOB"
+          test -n "$job" || job=hydrate
+          state_root="$HOME/.crabbox/actions"
+          state="$state_root/${CRABBOX_ID}.env"
+          env_file="$state_root/${CRABBOX_ID}.env.sh"
+          services_file="$state_root/${CRABBOX_ID}.services"
+          mkdir -p "$state_root"
+          chmod 700 "$state_root"
+          env_tmp="${env_file}.tmp"
+          services_tmp="${services_file}.tmp"
+          state_tmp="${state}.tmp"
+          {
+            printf 'export GITHUB_WORKSPACE=%q\n' "$GITHUB_WORKSPACE"
+            printf 'export GITHUB_RUN_ID=%q\n' "$GITHUB_RUN_ID"
+            printf 'export GITHUB_JOB=%q\n' "$GITHUB_JOB"
+            printf 'export RUNNER_TEMP=%q\n' "$RUNNER_TEMP"
+            printf 'export RUNNER_TOOL_CACHE=%q\n' "$RUNNER_TOOL_CACHE"
+          } > "$env_tmp"
+          : > "$services_tmp"
+          chmod 600 "$env_tmp" "$services_tmp"
+          mv "$env_tmp" "$env_file"
+          mv "$services_tmp" "$services_file"
+          {
+            printf 'WORKSPACE=%s\n' "$GITHUB_WORKSPACE"
+            printf 'RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'JOB=%s\n' "$job"
+            printf 'ENV_FILE=%s\n' "$env_file"
+            printf 'SERVICES_FILE=%s\n' "$services_file"
+            printf 'READY_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$state_tmp"
+          chmod 600 "$state_tmp"
+          mv "$state_tmp" "$state"
