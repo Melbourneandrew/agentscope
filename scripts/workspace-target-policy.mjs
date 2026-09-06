@@ -151,6 +151,26 @@ function targetOverride(manifest, target) {
 
 function auditNxConfiguration(nx) {
   assert(
+    exactJson(
+      Object.keys(nx).sort(),
+      [
+        "$schema",
+        "defaultBase",
+        "namedInputs",
+        "targetDefaults",
+        "neverConnectToCloud",
+        "analytics",
+      ].sort(),
+    ),
+    "nx root configuration authority drifted",
+  );
+  assert(
+    nx.$schema === "./node_modules/nx/schemas/nx-schema.json" &&
+      nx.defaultBase === "main" &&
+      nx.analytics === false,
+    "nx root identity settings drifted",
+  );
+  assert(
     nx.neverConnectToCloud === true,
     "nx must permanently disable remote cache connection",
   );

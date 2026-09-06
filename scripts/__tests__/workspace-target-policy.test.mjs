@@ -360,6 +360,9 @@ test("rejects missing cache metadata, remote runners, and unsafe cache widening"
         nx.tasksRunnerOptions = { default: { runner: "seeded-runner" } };
       },
       (nx) => {
+        nx.plugins = ["./seeded-target-plugin.mjs"];
+      },
+      (nx) => {
         nx.targetDefaults.build.cache = true;
       },
       (nx) => {
