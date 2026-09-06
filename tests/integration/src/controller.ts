@@ -134,6 +134,7 @@ export const runIntegrationStages = async (
     });
 };
 
+/* v8 ignore start -- executable-only imports are checked by controller-policy tests */
 const stageDependencies = (): IntegrationStageDependencies => ({
   clean: async () => {
     // @ts-expect-error Private executable stage has no public type API.
@@ -170,3 +171,4 @@ const stageDependencies = (): IntegrationStageDependencies => ({
 export const executeIntegrationController = async (): Promise<void> => {
   await runIntegrationStages(inferMode(process.env), stageDependencies());
 };
+/* v8 ignore stop */
