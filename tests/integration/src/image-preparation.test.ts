@@ -94,10 +94,7 @@ const certificateExtensions = der(
     der(
       0x30,
       der(0x06, Buffer.from("551d25", "hex")),
-      der(
-        0x04,
-        der(0x30, der(0x06, Buffer.from("2b06010505070301", "hex"))),
-      ),
+      der(0x04, der(0x30, der(0x06, Buffer.from("2b06010505070301", "hex")))),
     ),
     der(
       0x30,
@@ -107,7 +104,10 @@ const certificateExtensions = der(
   ),
 );
 const pem = (label: string, value: Buffer) => {
-  const body = value.toString("base64").match(/.{1,64}/gu)?.join("\n");
+  const body = value
+    .toString("base64")
+    .match(/.{1,64}/gu)
+    ?.join("\n");
   if (body === undefined) throw new Error("fixture PEM encoding failed");
   return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----\n`;
 };
@@ -253,6 +253,13 @@ const root = () => {
   const value = mkdtempSync(resolve(tmpdir(), "agentscope-image-test-"));
   roots.push(value);
   return value;
+};
+const executableFixture = (directory = root()) => {
+  const path = resolve(directory, "executable");
+  const executable = realpathSync(process.execPath).replaceAll("'", "'\\''");
+  writeFileSync(path, `#!/bin/sh\nexec '${executable}' "$@"\n`);
+  chmodSync(path, 0o500);
+  return path;
 };
 
 type Request = {
@@ -1111,13 +1118,15 @@ describe("prepared image runtime admission and publication", () => {
       DOCKER_CONTEXT: "CANARY",
       DOCKER_CONFIG: "/private/tmp/CANARY-config",
     });
-    const client = createPreparedDockerClient(admitted, {
-      dockerExecutableForTesting: process.execPath,
-      socketIdentityForTesting: socket,
-      engineRequestForTesting: engine.request,
-    });
+    const executable = executableFixture();
+    let client: ReturnType<typeof createPreparedDockerClient> | undefined;
     let configDirectory: string | undefined;
     try {
+      client = createPreparedDockerClient(admitted, {
+        dockerExecutableForTesting: executable,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engine.request,
+      });
       const invocation = await prepareDockerInvocation(
         client,
         ["image", "inspect", image],
@@ -1125,7 +1134,7 @@ describe("prepared image runtime admission and publication", () => {
       );
       configDirectory = invocation.arguments[3];
       expect(invocation).toEqual({
-        executable: realpathSync(process.execPath),
+        executable: realpathSync(executable),
         arguments: [
           "--host",
           `unix://${socket.path}`,
@@ -1144,7 +1153,7 @@ describe("prepared image runtime admission and publication", () => {
         engine.requests.filter(({ path }) => path === "/version"),
       ).toHaveLength(2);
     } finally {
-      closePreparedDockerClient(client);
+      if (client !== undefined) closePreparedDockerClient(client);
       for (const [name, value] of Object.entries(prior)) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
@@ -1159,7 +1168,7 @@ describe("prepared image runtime admission and publication", () => {
       manifestIdentity,
     );
     const client = createPreparedDockerClient(admitted, {
-      dockerExecutableForTesting: process.execPath,
+      dockerExecutableForTesting: executableFixture(),
       socketIdentityForTesting: socket,
       engineRequestForTesting: engineFixture({ daemonSwitch: true }).request,
     });
@@ -1184,7 +1193,7 @@ describe("prepared image runtime admission and publication", () => {
     };
     const client = createPreparedDockerClient(admitted, {
       dockerEnvironment,
-      dockerExecutableForTesting: process.execPath,
+      dockerExecutableForTesting: executableFixture(),
       socketIdentityForTesting: socket,
       engineRequestForTesting: engineFixture().request,
     });
@@ -1198,7 +1207,7 @@ describe("prepared image runtime admission and publication", () => {
     expect(() =>
       createPreparedDockerClient(admitted, {
         dockerEnvironment: { ...dockerEnvironment, HTTP_PROXY: "CANARY" },
-        dockerExecutableForTesting: process.execPath,
+        dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
       }),
@@ -1211,7 +1220,7 @@ describe("prepared Docker client cleanup failure classification", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
-        dockerExecutableForTesting: process.execPath,
+        dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
       },
@@ -1243,7 +1252,7 @@ describe("prepared Docker client cleanup failure classification", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
-        dockerExecutableForTesting: process.execPath,
+        dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
       },
@@ -1268,7 +1277,7 @@ describe("prepared Docker client terminal authority", () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
       {
-        dockerExecutableForTesting: process.execPath,
+        dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engineFixture().request,
       },
@@ -1325,7 +1334,7 @@ describe("prepared Docker client terminal authority", () => {
       manifestIdentity,
     );
     const client = createPreparedDockerClient(admitted, {
-      dockerExecutableForTesting: process.execPath,
+      dockerExecutableForTesting: executableFixture(),
       socketIdentityForTesting: socket,
       engineRequestForTesting: engineFixture({
         localInitiallyPresent: false,
@@ -1353,18 +1362,20 @@ const buildContext = () => {
   return directory;
 };
 const buildTag = "agentscope-int-fixture:candidate";
-const buildClient = (engine: ReturnType<typeof engineFixture>) =>
-  createPreparedDockerClient(
+const buildClient = (engine: ReturnType<typeof engineFixture>) => {
+  const executable = executableFixture();
+  return createPreparedDockerClient(
     validatePreparedImageEvidence(prepared(), manifestIdentity),
     {
       buildkitImageForTesting: image,
-      buildxExecutableForTesting: process.execPath,
+      buildxExecutableForTesting: executable,
       buildxRunForTesting: engine.buildxRun,
-      dockerExecutableForTesting: process.execPath,
+      dockerExecutableForTesting: executable,
       socketIdentityForTesting: socket,
       engineRequestForTesting: engine.request,
     },
   );
+};
 
 describe("bounded build-context acquisition", () => {
   it("rejects symlink and pre-read size authority violations", () => {
@@ -1412,10 +1423,10 @@ describe("owned buildx process execution", () => {
   ])("kills and joins the exact process group for %s", async (mode, code) => {
     const directory = root();
     const error = await runOwnedImageCommandForTesting(
-      process.execPath,
+      executableFixture(directory),
       [fixture],
       {
-        deadline: performance.now() + 500,
+        deadline: performance.now() + 1_000,
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: mode,
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
@@ -1442,14 +1453,14 @@ describe("owned buildx process execution", () => {
     const directory = root();
     let processGroup: number | undefined;
     const error = await runOwnedImageCommandForTesting(
-      process.execPath,
+      executableFixture(directory),
       [fixture],
       {
         closeBarrierForTesting: (ownedProcessGroup) => {
           processGroup = ownedProcessGroup;
           return new Promise(() => {});
         },
-        deadline: performance.now() + 500,
+        deadline: performance.now() + 1_000,
         environment: {
           AGENTSCOPE_IMAGE_FIXTURE_MODE: "hang-descendant",
           AGENTSCOPE_IMAGE_FIXTURE_ROOT: directory,
@@ -1487,7 +1498,7 @@ describe("authenticated buildx consumption", () => {
         buildkitImageForTesting: image,
         buildxExecutableForTesting: executable,
         buildxRunForTesting: engine.buildxRun,
-        dockerExecutableForTesting: process.execPath,
+        dockerExecutableForTesting: executableFixture(),
         socketIdentityForTesting: socket,
         engineRequestForTesting: engine.request,
       },

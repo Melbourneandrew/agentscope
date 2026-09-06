@@ -49,6 +49,25 @@ describe("integration controller policy", () => {
     expect(source).not.toMatch(
       /OIDC|attestation|bootstrap-manifest|PNPM_HOME|validation lease/iu,
     );
+    expect(source).toMatch(
+      /const dockerEndpoint =\s*`unix:\/\/\$\{realpathSync\("\/var\/run\/docker\.sock"\)\}`/u,
+    );
+  });
+
+  it("retains narrow cleanup ceilings for controller-owned artifacts", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/clean.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      '"current-images.json": IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes',
+    );
+    expect(source).toContain('"current-candidate.json": 16_384');
+    expect(source).toContain('"current-model-routes.json": 16_384');
+    expect(source).toContain('"current-selection.json": 16_384');
+    expect(source).toContain(
+      "const addFile = (targets, relative, maximumBytes = 16_384)",
+    );
   });
 
   it("rejects direct execution of every mutation stage", () => {

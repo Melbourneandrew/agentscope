@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 
@@ -19,7 +19,7 @@ export type IntegrationStageDependencies = Readonly<{
 export type DisposableOuterHostBinding = Readonly<{
   cleanupStartMonotonicMilliseconds: number;
   deadlineMonotonicMilliseconds: number;
-  dockerEndpoint: "unix:///var/run/docker.sock";
+  dockerEndpoint: `unix://${string}`;
   dockerEnvironment: Readonly<NodeJS.ProcessEnv>;
   dockerExecutable: "/usr/bin/docker";
   hostKind: "crabbox" | "github-hosted";
@@ -207,7 +207,8 @@ const createBinding = (
   if (lifecycleMilliseconds < 2 * cleanupReserveMilliseconds)
     throw new Error("integration.controller.outer-deadline");
   const deadlineMonotonicMilliseconds = now + lifecycleMilliseconds;
-  const dockerEndpoint = "unix:///var/run/docker.sock" as const;
+  const dockerEndpoint =
+    `unix://${realpathSync("/var/run/docker.sock")}` as const;
   const dockerEnvironment = Object.freeze({
     LANG: "C.UTF-8",
     PATH: "/usr/bin:/bin",

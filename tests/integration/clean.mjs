@@ -16,6 +16,7 @@ import {
   remainingIntegrationOperationMilliseconds,
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
+import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -114,6 +115,12 @@ const addFile = (targets, relative, maximumBytes = 16_384) => {
     throw new Error("integration.cleanup.path");
   targets.push({ bytes: status.size, path, relative });
 };
+const artifactMaximumBytes = Object.freeze({
+  "current-candidate.json": 16_384,
+  "current-images.json": IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes,
+  "current-model-routes.json": 16_384,
+  "current-selection.json": 16_384,
+});
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;
@@ -126,7 +133,8 @@ const addDirectory = (targets, relative) => {
 const diskTargets = [];
 try {
   assertArtifactsRoot();
-  for (const name of owned.artifactFiles) addFile(diskTargets, name);
+  for (const name of owned.artifactFiles)
+    addFile(diskTargets, name, artifactMaximumBytes[name]);
   for (const identity of owned.candidateIdentities)
     addDirectory(diskTargets, `candidates/${identity}`);
   for (const runId of owned.runIds) {
