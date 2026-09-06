@@ -78,6 +78,10 @@ pnpm dev:docs
 
 Unit tests cover deterministic core, adapter, and reporter contracts. Integration tests are a separate lane: they run real harness executables in isolated homes and Git workspaces against mock model and telemetry endpoints. See the [integration blueprint](https://melbourneandrew.github.io/agentscope/docs/blueprints/testing/real-harness-integration) for the intended matrix.
 
+Mutation-heavy integration is unavailable on workstations and shared Docker
+daemons. GitHub-hosted CI and an already allocated disposable Crabbox guest run
+the same `pnpm test:integration` controller.
+
 ## Contributing
 
 Issues and pull requests are welcome once the initial package contracts settle. Please read [CONTRIBUTING.md](CONTRIBUTING.md) and keep changes scoped; protected branches use PR validation, squash merges, and automatic documentation deployment.

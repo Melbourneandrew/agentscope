@@ -16,12 +16,37 @@ import {
   parseLocalEnvironmentNames,
   scrubLocalEnvironment,
 } from "../prepush.mjs";
+import { selectPrepushMode } from "../prepush-affected.mjs";
 
 const repositoryRoot = resolve(
   fileURLToPath(new URL("../..", import.meta.url)),
 );
 const entrypoint = join(repositoryRoot, "scripts/prepush.mjs");
 const temporaryRoots = [];
+
+test("pre-push selects Nx affected and conservatively falls back", () => {
+  assert.deepEqual(
+    selectPrepushMode(
+      ["packages/core/src/index.ts"],
+      ["@agentscope/core"],
+      true,
+    ),
+    { full: false, verifyCliArtifact: false },
+  );
+  assert.deepEqual(
+    selectPrepushMode(["apps/cli/src/index.ts"], ["agentscope-cli"], true),
+    { full: false, verifyCliArtifact: true },
+  );
+  for (const input of [
+    { base: false, files: [] },
+    { base: true, files: ["nx.json"] },
+    { base: true, files: ["scripts/verify-workspace-targets.mjs"] },
+  ])
+    assert.deepEqual(selectPrepushMode(input.files, [], input.base), {
+      full: true,
+      verifyCliArtifact: true,
+    });
+});
 
 afterEach(() => {
   for (const root of temporaryRoots.splice(0))

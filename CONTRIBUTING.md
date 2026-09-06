@@ -5,8 +5,9 @@ changes use a pull request.
 
 1. Create a focused branch from `main` (for example,
    `codex/andrew/add-codex-fixtures`).
-2. Run the relevant local checks, including `pnpm test:integration` when an
-   adapter, reporter, or hook changes.
+2. Run the relevant deterministic local checks. Mutation-heavy integration uses
+   `pnpm test:integration` only on an allocated disposable Crabbox guest or in
+   GitHub-hosted CI, never on a workstation or shared Docker daemon.
 3. Open a pull request. `Validate` and `Hermetic integration test` must pass;
    resolve all conversations.
 4. Use **Squash and merge**. GitHub deletes the branch after merge.
