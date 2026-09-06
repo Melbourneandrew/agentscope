@@ -284,10 +284,14 @@ const builderInspection = (
   {
     createdAt,
     mismatched = false,
+    networkMode = "bridge",
+    networks = ["bridge"],
     wrongMount = false,
   }: {
     createdAt: string;
     mismatched?: boolean;
+    networkMode?: string;
+    networks?: readonly string[];
     wrongMount?: boolean;
   },
 ) => ({
@@ -302,8 +306,10 @@ const builderInspection = (
     },
     State: { Running: true },
     Platform: "linux",
-    HostConfig: { NetworkMode: "default" },
-    NetworkSettings: { Networks: { bridge: {} } },
+    HostConfig: { NetworkMode: networkMode },
+    NetworkSettings: {
+      Networks: Object.fromEntries(networks.map((network) => [network, {}])),
+    },
     Mounts: [
       {
         Type: "volume",
@@ -401,6 +407,8 @@ const runFixtureBuildx = async (
 
 // The simulated daemon keeps one coherent mutable lifecycle across all endpoints.
 const engineFixture = ({
+  builderNetworkMode = "bridge",
+  builderNetworks = ["bridge"],
   builderMismatch = false,
   buildFailure = false,
   buildTag,
@@ -425,6 +433,8 @@ const engineFixture = ({
   wrongVolume = false,
   wrongVolumeLabels = false,
 }: {
+  builderNetworkMode?: string;
+  builderNetworks?: readonly string[];
   builderMismatch?: boolean;
   buildFailure?: boolean;
   buildTag?: string;
@@ -534,6 +544,8 @@ const engineFixture = ({
       return builderInspection(state.builderContainer, {
         createdAt: fixtureCreatedAt,
         mismatched: builderMismatch || (state.built && substituteAfterBuild),
+        networkMode: builderNetworkMode,
+        networks: builderNetworks,
         wrongMount,
       });
     if (
@@ -1637,7 +1649,23 @@ describe("authenticated buildx consumption", () => {
       const create = engine.buildxCalls.find(
         ({ arguments_ }) => arguments_[0] === "create",
       );
-      expect(create?.arguments_).toContain("docker-container");
+      expect(create?.arguments_).toEqual([
+        "create",
+        "--name",
+        expect.stringMatching(/^agentscope-[a-f\d]{16}$/u),
+        "--driver",
+        "docker-container",
+        "--driver-opt",
+        `image=${image}`,
+        "--driver-opt",
+        "network=bridge",
+        "--platform",
+        "linux/amd64",
+        "unix:///var/run/docker.sock",
+      ]);
+      expect(
+        create?.arguments_.filter((argument) => argument === "--driver-opt"),
+      ).toHaveLength(2);
       expect(create?.arguments_).not.toContain(BUILDKIT_IMAGE);
       const build = engine.buildxCalls.find(
         ({ arguments_ }) => arguments_[0] === "build",
@@ -1685,6 +1713,55 @@ describe("authenticated buildx consumption", () => {
     {
       buildFailure: false,
       daemonSwitch: true,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "default",
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "host",
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "none",
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworkMode: "agentscope-custom",
+      builderNetworks: ["agentscope-custom"],
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworks: [],
+      buildFailure: false,
+      daemonSwitch: false,
+      expected: "integration.images.containment",
+      expectRetirement: true,
+      noDestructiveCleanup: true,
+    },
+    {
+      builderNetworks: ["bridge", "foreign"],
+      buildFailure: false,
+      daemonSwitch: false,
       expected: "integration.images.containment",
       expectRetirement: true,
       noDestructiveCleanup: true,

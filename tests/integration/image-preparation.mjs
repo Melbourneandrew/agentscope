@@ -2219,7 +2219,7 @@ const builderContainerFailureReason = (
   if (container.Image !== buildkit.configDigest) return "image-id";
   if (container.Config?.Image !== buildkitImage) return "image-reference";
   if (container.Platform !== buildkit.platform.os) return "platform";
-  if (container.HostConfig?.NetworkMode !== "default") return "network-mode";
+  if (container.HostConfig?.NetworkMode !== "bridge") return "network-mode";
   if (
     JSON.stringify(Object.keys(container.NetworkSettings?.Networks ?? {})) !==
     JSON.stringify(["bridge"])
@@ -2542,6 +2542,8 @@ const executeBuilderBuild = async (authority, options, archive) => {
     "docker-container",
     "--driver-opt",
     `image=${client.buildkitImage}`,
+    "--driver-opt",
+    "network=bridge",
     "--platform",
     platformText(buildkit.platform),
     `unix://${client.socket.path}`,
