@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -23,7 +24,7 @@ const repositoryRoot = resolve(
 
 function createFixture() {
   const root = mkdtempSync(join(tmpdir(), "agentscope-target-policy-"));
-  mkdirSync(join(root, "packages/example"), { recursive: true });
+  mkdirSync(join(root, "packages/protocol"), { recursive: true });
   for (const file of [
     "eslint.config.mjs",
     ".prettierignore",
@@ -45,13 +46,13 @@ function createFixture() {
     readFileSync(join(repositoryRoot, "nx.json")),
   );
   writeFileSync(
-    join(root, "packages/example/tsconfig.json"),
+    join(root, "packages/protocol/tsconfig.json"),
     '{"extends":"../../tsconfig.base.json","include":["src/**/*.ts"]}',
   );
   writeFileSync(
-    join(root, "packages/example/package.json"),
+    join(root, "packages/protocol/package.json"),
     JSON.stringify({
-      name: "@agentscope/example",
+      name: "@agentscope/protocol",
       scripts: Object.fromEntries(
         ["build", "typecheck", "lint", "test", "coverage", "clean"].map(
           (target) => [target, `example-${target}`],
@@ -65,14 +66,16 @@ function createFixture() {
 test("audits every mandatory target without modifying the fixture", () => {
   const root = createFixture();
   try {
-    const manifestPath = join(root, "packages/example/package.json");
+    const manifestPath = join(root, "packages/protocol/package.json");
     const before = readFileSync(manifestPath, "utf8");
     const result = auditWorkspaceTargets({
       workspaceRoot: root,
-      expectedPackages: new Map([["packages/example", "@agentscope/example"]]),
+      expectedPackages: new Map([
+        ["packages/protocol", "@agentscope/protocol"],
+      ]),
     });
     assert.deepEqual(result, [
-      { name: "@agentscope/example", path: "packages/example" },
+      { name: "@agentscope/protocol", path: "packages/protocol" },
     ]);
     assert.equal(readFileSync(manifestPath, "utf8"), before);
   } finally {
@@ -83,7 +86,7 @@ test("audits every mandatory target without modifying the fixture", () => {
 test("fails deterministically when a workspace target is missing", () => {
   const root = createFixture();
   try {
-    const manifestPath = join(root, "packages/example/package.json");
+    const manifestPath = join(root, "packages/protocol/package.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     delete manifest.scripts.coverage;
     writeFileSync(manifestPath, JSON.stringify(manifest));
@@ -92,7 +95,7 @@ test("fails deterministically when a workspace target is missing", () => {
         auditWorkspaceTargets({
           workspaceRoot: root,
           expectedPackages: new Map([
-            ["packages/example", "@agentscope/example"],
+            ["packages/protocol", "@agentscope/protocol"],
           ]),
         }),
       /missing mandatory Nx\/package target: coverage/,
@@ -115,7 +118,7 @@ for (const target of ["lint", "test", "coverage"]) {
           auditWorkspaceTargets({
             workspaceRoot: root,
             expectedPackages: new Map([
-              ["packages/example", "@agentscope/example"],
+              ["packages/protocol", "@agentscope/protocol"],
             ]),
           }),
         new RegExp(
@@ -131,7 +134,7 @@ for (const target of ["lint", "test", "coverage"]) {
 test("rejects build cleanup that can delete another target's output", () => {
   const root = createFixture();
   try {
-    const manifestPath = join(root, "packages/example/package.json");
+    const manifestPath = join(root, "packages/protocol/package.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     manifest.scripts.build =
       "node ../../scripts/clean-workspace.mjs && tsc -p tsconfig.json";
@@ -141,7 +144,7 @@ test("rejects build cleanup that can delete another target's output", () => {
         auditWorkspaceTargets({
           workspaceRoot: root,
           expectedPackages: new Map([
-            ["packages/example", "@agentscope/example"],
+            ["packages/protocol", "@agentscope/protocol"],
           ]),
         }),
       /build cleanup must preserve other target outputs/,
@@ -154,7 +157,7 @@ test("rejects build cleanup that can delete another target's output", () => {
 test("rejects any unscoped cleaner invocation in a build script", () => {
   const root = createFixture();
   try {
-    const manifestPath = join(root, "packages/example/package.json");
+    const manifestPath = join(root, "packages/protocol/package.json");
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
     manifest.scripts.build =
       "node ../../scripts/clean-workspace.mjs --build-outputs && node ../../scripts/clean-workspace.mjs";
@@ -164,7 +167,7 @@ test("rejects any unscoped cleaner invocation in a build script", () => {
         auditWorkspaceTargets({
           workspaceRoot: root,
           expectedPackages: new Map([
-            ["packages/example", "@agentscope/example"],
+            ["packages/protocol", "@agentscope/protocol"],
           ]),
         }),
       /build cleanup must preserve other target outputs/,
@@ -223,8 +226,8 @@ test("build cleanup preserves coverage while full cleanup owns it", () => {
 
 test("cleanup remains bound to its authenticated directory after parent replacement", () => {
   const root = mkdtempSync(join(tmpdir(), "agentscope-clean-identity-"));
-  const workspaceDirectory = join(root, "packages/example");
-  const movedWorkspaceDirectory = join(root, "packages/example-moved");
+  const workspaceDirectory = join(root, "packages/protocol");
+  const movedWorkspaceDirectory = join(root, "packages/protocol-moved");
   const externalDirectory = join(root, "external");
   const cleaner = join(root, "scripts/clean-workspace.mjs");
   const preload = join(root, "replace-parent.cjs");
@@ -244,7 +247,7 @@ test("cleanup remains bound to its authenticated directory after parent replacem
     );
     writeFileSync(
       join(root, "scripts/workspace-packages.mjs"),
-      'export const expectedWorkspacePackages = new Map([["packages/example", "@agentscope/example"]]);\n',
+      'export const expectedWorkspacePackages = new Map([["packages/protocol", "@agentscope/protocol"]]);\n',
     );
     writeFileSync(
       preload,
@@ -287,14 +290,14 @@ syncBuiltinESMExports();
 test("the shared strict configuration rejects a seeded type error", () => {
   const root = createFixture();
   try {
-    mkdirSync(join(root, "packages/example/src"));
+    mkdirSync(join(root, "packages/protocol/src"));
     writeFileSync(
-      join(root, "packages/example/src/index.ts"),
+      join(root, "packages/protocol/src/index.ts"),
       'const count: number = "not-a-number";\nexport { count };\n',
     );
     const tsc = join(repositoryRoot, "node_modules/typescript/bin/tsc");
     const result = spawnSync(process.execPath, [tsc, "-p", "tsconfig.json"], {
-      cwd: join(root, "packages/example"),
+      cwd: join(root, "packages/protocol"),
       encoding: "utf8",
     });
     assert.notEqual(result.status, 0);
@@ -325,17 +328,25 @@ test("the repository has one exact fail-closed cache eligibility matrix", () => 
 test("rejects missing cache metadata, remote runners, and unsafe cache widening", () => {
   const root = createFixture();
   const nxPath = join(root, "nx.json");
-  const manifestPath = join(root, "packages/example/package.json");
+  const manifestPath = join(root, "packages/protocol/package.json");
   const originalNx = readFileSync(nxPath, "utf8");
   const originalManifest = readFileSync(manifestPath, "utf8");
   const audit = () =>
     auditWorkspaceTargets({
       workspaceRoot: root,
-      expectedPackages: new Map([["packages/example", "@agentscope/example"]]),
+      expectedPackages: new Map([
+        ["packages/protocol", "@agentscope/protocol"],
+      ]),
     });
   try {
     const nxMutations = [
       (nx) => delete nx.namedInputs.runtimeEnvironment,
+      (nx) => {
+        nx.namedInputs.default = [];
+      },
+      (nx) => {
+        nx.namedInputs.production = [];
+      },
       (nx) => {
         nx.neverConnectToCloud = false;
       },
@@ -370,7 +381,37 @@ test("rejects missing cache metadata, remote runners, and unsafe cache widening"
       },
     };
     writeFileSync(manifestPath, JSON.stringify(manifest));
-    assert.throws(audit, /build cache eligibility drifted/);
+    assert.throws(audit, /build target override drifted/);
+
+    for (const target of ["typecheck", "lint", "test"]) {
+      const changed = JSON.parse(originalManifest);
+      changed.nx = { targets: { [target]: { inputs: [], dependsOn: [] } } };
+      writeFileSync(manifestPath, JSON.stringify(changed));
+      assert.throws(audit, new RegExp(`${target} target override drifted`));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a new workspace cannot inherit cache authority without explicit review", () => {
+  const root = createFixture();
+  try {
+    renameSync(join(root, "packages/protocol"), join(root, "packages/future"));
+    const manifestPath = join(root, "packages/future/package.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.name = "@agentscope/future";
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(
+      () =>
+        auditWorkspaceTargets({
+          workspaceRoot: root,
+          expectedPackages: new Map([
+            ["packages/future", "@agentscope/future"],
+          ]),
+        }),
+      /cache eligibility drifted/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

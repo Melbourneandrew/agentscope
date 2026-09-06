@@ -47,6 +47,17 @@ const requiredRuntimeEnvironment = Object.freeze([
   Object.freeze({ runtime: "pnpm --version" }),
 ]);
 
+const requiredDefaultInputs = Object.freeze([
+  "{projectRoot}/**/*",
+  "sharedGlobals",
+]);
+
+const requiredProductionInputs = Object.freeze([
+  "default",
+  "!{projectRoot}/**/*.test.*",
+  "!{projectRoot}/**/__tests__/**",
+]);
+
 const cacheableBuildPaths = new Set([
   "apps/cli",
   "packages/core",
@@ -57,6 +68,35 @@ const cacheableBuildPaths = new Set([
   "packages/harnesses/core",
   "packages/testkit",
 ]);
+
+const cacheableTypecheckPaths = new Set([
+  "apps/cli",
+  "packages/core",
+  "packages/destinations/core",
+  "packages/destinations/langfuse",
+  "packages/destinations/local-sqlite",
+  "packages/harnesses/claude-code",
+  "packages/harnesses/codex",
+  "packages/harnesses/core",
+  "packages/harnesses/gemini-cli",
+  "packages/harnesses/hermes",
+  "packages/harnesses/opencode",
+  "packages/harnesses/openclaw",
+  "packages/harnesses/pi",
+  "packages/protocol",
+  "packages/testkit",
+  "tests/integration",
+]);
+
+const cacheableLintPaths = new Set([
+  "apps/cli",
+  "apps/docs",
+  ...cacheableTypecheckPaths,
+]);
+
+const cacheableTestPaths = new Set(
+  [...cacheableLintPaths].filter((path) => path !== "tests/integration"),
+);
 
 const expectedTargetDefaults = Object.freeze({
   build: Object.freeze({
@@ -134,19 +174,42 @@ function auditNxConfiguration(nx) {
     exactJson(nx.namedInputs?.runtimeEnvironment, requiredRuntimeEnvironment),
     "nx runtime environment fingerprint drifted",
   );
+  assert(
+    exactJson(nx.namedInputs?.default, requiredDefaultInputs),
+    "nx default inputs drifted",
+  );
+  assert(
+    exactJson(nx.namedInputs?.production, requiredProductionInputs),
+    "nx production inputs drifted",
+  );
 }
 
 function auditProjectCache({ manifest, nx, relativePath, expectedName }) {
   const expectedCache = {
     build: cacheableBuildPaths.has(relativePath),
-    typecheck: relativePath !== "apps/docs",
-    lint: true,
-    test: relativePath !== "tests/integration",
+    typecheck: cacheableTypecheckPaths.has(relativePath),
+    lint: cacheableLintPaths.has(relativePath),
+    test: cacheableTestPaths.has(relativePath),
     coverage: false,
     clean: false,
   };
   for (const [target, expected] of Object.entries(expectedCache)) {
     const override = targetOverride(manifest, target);
+    const expectedOverride =
+      target === "build" && expected
+        ? { cache: true, outputs: ["{projectRoot}/dist"] }
+        : target === "build" &&
+            ["apps/docs", "tests/integration"].includes(relativePath)
+          ? { cache: false }
+          : target === "typecheck" && relativePath === "apps/docs"
+            ? { cache: false }
+            : target === "test" && relativePath === "tests/integration"
+              ? { cache: false }
+              : {};
+    assert(
+      exactJson(override, expectedOverride),
+      `${expectedName} ${target} target override drifted`,
+    );
     const actual = override.cache ?? nx.targetDefaults[target].cache;
     assert(
       actual === expected,
