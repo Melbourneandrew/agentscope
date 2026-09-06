@@ -36,6 +36,16 @@ type CapabilityState = {
   active: boolean;
   artifactFiles: Set<string>;
   candidateIdentities: Set<string>;
+  failureEvidence: Map<
+    string,
+    Readonly<{
+      dev: number;
+      digest: `sha256:${string}`;
+      ino: number;
+      runId: string;
+      size: number;
+    }>
+  >;
   signal: AbortSignal;
   runIds: Set<string>;
 };
@@ -299,9 +309,44 @@ export const registerIntegrationArtifactFile = (name: string): void => {
   capabilityStates.get(capability)!.artifactFiles.add(name);
 };
 
+export const registerIntegrationFailureEvidence = (
+  evidence: Readonly<{
+    dev: number;
+    digest: `sha256:${string}`;
+    ino: number;
+    runId: string;
+    size: number;
+  }>,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    !runTokenPattern.test(evidence.runId) ||
+    !state.runIds.has(evidence.runId) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(evidence.digest) ||
+    !Number.isSafeInteger(evidence.dev) ||
+    !Number.isSafeInteger(evidence.ino) ||
+    !Number.isSafeInteger(evidence.size) ||
+    evidence.dev < 0 ||
+    evidence.ino < 1 ||
+    evidence.size < 1 ||
+    evidence.size > 16_384 ||
+    state.failureEvidence.has(evidence.runId)
+  )
+    throw new Error("integration.controller.failure-evidence");
+  state.failureEvidence.set(evidence.runId, Object.freeze({ ...evidence }));
+};
+
 export const ownedIntegrationResources = (): Readonly<{
   artifactFiles: readonly string[];
   candidateIdentities: readonly string[];
+  failureEvidence: readonly Readonly<{
+    dev: number;
+    digest: `sha256:${string}`;
+    ino: number;
+    runId: string;
+    size: number;
+  }>[];
   runIds: readonly string[];
 }> => {
   const capability = requireDisposableOuterHostCapability();
@@ -309,6 +354,11 @@ export const ownedIntegrationResources = (): Readonly<{
   return Object.freeze({
     artifactFiles: Object.freeze([...state.artifactFiles].sort()),
     candidateIdentities: Object.freeze([...state.candidateIdentities].sort()),
+    failureEvidence: Object.freeze(
+      [...state.failureEvidence.values()].sort((left, right) =>
+        left.runId.localeCompare(right.runId),
+      ),
+    ),
     runIds: Object.freeze([...state.runIds].sort()),
   });
 };
@@ -483,6 +533,7 @@ export const executeIntegrationController = async (): Promise<void> => {
     active: true,
     artifactFiles: new Set(),
     candidateIdentities: new Set(),
+    failureEvidence: new Map(),
     runIds: new Set(),
     signal: new AbortController().signal,
   };

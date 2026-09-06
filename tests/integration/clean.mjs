@@ -1,5 +1,6 @@
 /* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -129,17 +130,91 @@ const addDirectory = (targets, relative) => {
     throw new Error("integration.cleanup.path");
   targets.push({ bytes: directoryBytes(path), path, relative });
 };
+const assertFailureEvidence = (identity) => {
+  const directory = resolve(artifactsRoot, "runs", identity.runId);
+  const path = resolve(directory, "controller-failure.json");
+  const status = lstatSync(path);
+  if (
+    !status.isFile() ||
+    status.isSymbolicLink() ||
+    status.nlink !== 1 ||
+    status.dev !== identity.dev ||
+    status.ino !== identity.ino ||
+    status.size !== identity.size ||
+    (status.mode & 0o7777) !== 0o600 ||
+    status.size > 16_384 ||
+    directoryBytes(directory) > 128 * 1024 * 1024
+  )
+    throw new Error("integration.cleanup.failure-evidence");
+  const content = readFileSync(path);
+  if (
+    `sha256:${createHash("sha256").update(content).digest("hex")}` !==
+    identity.digest
+  )
+    throw new Error("integration.cleanup.failure-evidence");
+  const after = lstatSync(path);
+  if (
+    after.dev !== status.dev ||
+    after.ino !== status.ino ||
+    after.size !== status.size ||
+    after.nlink !== status.nlink ||
+    (after.mode & 0o7777) !== (status.mode & 0o7777)
+  )
+    throw new Error("integration.cleanup.failure-evidence");
+  const record = JSON.parse(content.toString("utf8"));
+  if (
+    JSON.stringify(Object.keys(record).sort()) !==
+      JSON.stringify(
+        [
+          "cleanupFailure",
+          "controllerFailureEvidenceVersion",
+          "controllerOutcome",
+          "primaryFailure",
+          "privateCleanup",
+          "runId",
+          "scenarioOutcome",
+        ].sort(),
+      ) ||
+    record.controllerFailureEvidenceVersion !== 1 ||
+    record.runId !== identity.runId ||
+    record.controllerOutcome !== "retired-failure" ||
+    !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
+    !(
+      record.cleanupFailure === null ||
+      /^(?:integration\.[a-z.-]{1,96})$/u.test(record.cleanupFailure)
+    ) ||
+    !["passed", "failed", "not-complete"].includes(record.scenarioOutcome) ||
+    !(
+      record.privateCleanup === null ||
+      (record.privateCleanup?.diagnosticVersion === 1 &&
+        record.privateCleanup?.outcome === "retired-failure")
+    )
+  )
+    throw new Error("integration.cleanup.failure-evidence");
+};
 
 const diskTargets = [];
 try {
   assertArtifactsRoot();
+  const failureEvidenceByRunId = new Map(
+    owned.failureEvidence.map((identity) => [identity.runId, identity]),
+  );
+  if (
+    failureEvidenceByRunId.size !== owned.failureEvidence.length ||
+    [...failureEvidenceByRunId.keys()].some(
+      (runId) => !owned.runIds.includes(runId),
+    )
+  )
+    throw new Error("integration.cleanup.failure-evidence");
   for (const name of owned.artifactFiles)
     addFile(diskTargets, name, artifactMaximumBytes[name]);
   for (const identity of owned.candidateIdentities)
     addDirectory(diskTargets, `candidates/${identity}`);
   for (const runId of owned.runIds) {
     addDirectory(diskTargets, `contexts/${runId}`);
-    addDirectory(diskTargets, `runs/${runId}`);
+    if (failureEvidenceByRunId.has(runId))
+      assertFailureEvidence(failureEvidenceByRunId.get(runId));
+    else addDirectory(diskTargets, `runs/${runId}`);
     const markerPath = resolve(artifactsRoot, "active", `${runId}.json`);
     if (existsSync(markerPath)) {
       const marker = JSON.parse(readFileSync(markerPath, "utf8"));

@@ -2,11 +2,13 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -1302,6 +1304,129 @@ describe("prepared image runtime admission and publication", () => {
 });
 
 describe("prepared Docker client cleanup failure classification", () => {
+  const cleanupClient = (options = {}) =>
+    createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: executableFixture(),
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+        ...options,
+      },
+    );
+
+  it("removes authenticated nested buildx private state leaf-first", () => {
+    const client = cleanupClient();
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const instances = resolve(privateRoot, "buildx", "instances");
+    mkdirSync(instances, { recursive: true, mode: 0o700 });
+    writeFileSync(resolve(instances, "builder"), "{}\n", { mode: 0o600 });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).not.toThrow();
+    expect(existsSync(privateRoot)).toBe(false);
+  });
+
+  it.each(["symlink", "hardlink", "mode", "oversize"])(
+    "retires without deleting a %s private-state substitution",
+    (kind) => {
+      const client = cleanupClient();
+      const privateRoot = (
+        client as unknown as { privateClient: { root: string } }
+      ).privateClient.root;
+      const canary = resolve(privateRoot, "buildx", "canary");
+      if (kind === "symlink") symlinkSync("../docker/config.json", canary);
+      else if (kind === "hardlink")
+        linkSync(resolve(privateRoot, "docker", "config.json"), canary);
+      else {
+        writeFileSync(canary, "x", { mode: kind === "mode" ? 0o666 : 0o600 });
+        if (kind === "mode") chmodSync(canary, 0o666);
+        if (kind === "oversize")
+          truncateSync(
+            canary,
+            IMAGE_PREPARATION_LIMITS.maximumPrivateStateFileBytes + 1,
+          );
+      }
+      expect(() => {
+        closePreparedDockerClient(client);
+      }).toThrow("integration.images.cleanup");
+      expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(
+        true,
+      );
+      const serialized = JSON.stringify(preparedDockerClientDiagnostic(client));
+      expect(serialized).not.toContain("canary");
+      expect(existsSync(privateRoot)).toBe(true);
+      rmSync(privateRoot, { force: true, recursive: true });
+    },
+  );
+
+  it("retires without deleting a special private-state entry", async () => {
+    const client = cleanupClient();
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const socketPath = resolve(privateRoot, "buildx", "unexpected.sock");
+    const server = createServer();
+    await new Promise<void>((resolveListen) =>
+      server.listen(socketPath, () => {
+        resolveListen();
+      }),
+    );
+    try {
+      expect(() => {
+        closePreparedDockerClient(client);
+      }).toThrow("integration.images.cleanup");
+      expect(existsSync(privateRoot)).toBe(true);
+    } finally {
+      await new Promise<void>((resolveClose) =>
+        server.close(() => {
+          resolveClose();
+        }),
+      );
+      rmSync(privateRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("rejects root substitution and preserves both identities", () => {
+    const client = cleanupClient();
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    const original = `${privateRoot}.original`;
+    renameSync(privateRoot, original);
+    mkdirSync(privateRoot, { mode: 0o700 });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(existsSync(privateRoot)).toBe(true);
+    expect(existsSync(original)).toBe(true);
+    rmSync(privateRoot, { force: true, recursive: true });
+    rmSync(original, { force: true, recursive: true });
+  });
+
+  it("detects a late private-state mutation after inventory", () => {
+    let privateRoot: string | undefined;
+    const client = cleanupClient({
+      beforePrivateRemovalForTesting: (root: string) => {
+        privateRoot = root;
+        writeFileSync(resolve(root, "late"), "late\n", { mode: 0o600 });
+      },
+    });
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.cleanup");
+    expect(preparedDockerClientDiagnostic(client)).toMatchObject({
+      reason: "late-mutation",
+    });
+    expect(privateRoot).toBeTypeOf("string");
+    if (privateRoot === undefined) throw new Error("missing private root");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+});
+
+describe("prepared Docker client cleanup failure propagation", () => {
   it("retires after timeout even when partial output claims the resource is missing", async () => {
     const client = createPreparedDockerClient(
       validatePreparedImageEvidence(prepared(), manifestIdentity),
@@ -1432,11 +1557,18 @@ describe("prepared Docker client terminal authority", () => {
     expect(() => {
       closePreparedDockerClient(client);
     }).toThrow("integration.images.cleanup");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    expect(preparedDockerClientDiagnostic(client)).toMatchObject({
+      diagnosticVersion: 1,
+      stage: "private-client-cleanup",
+      outcome: "retired-failure",
+      reason: "entry-authority",
+    });
     rmSync(resolve(privateRoot, "unexpected"), { recursive: true });
     expect(() => {
       closePreparedDockerClient(client);
-    }).not.toThrow();
-    expect(existsSync(privateRoot)).toBe(false);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
   });
 });
 
@@ -2186,6 +2318,10 @@ describe("prepared image admission and publication", () => {
       maximumResponseBytes: 1_048_576,
       maximumManifestBytes: 1_048_576,
       maximumEvidenceBytes: 8_388_608,
+      maximumPrivateStateEntries: 4_096,
+      maximumPrivateStateDepth: 16,
+      maximumPrivateStateFileBytes: 8_388_608,
+      maximumPrivateStateTotalBytes: 67_108_864,
     });
   });
 });

@@ -35,6 +35,10 @@ const maximumHeaderBytes = 16_384;
 const maximumBuildContextBytes = 64 * 1024 * 1024;
 const maximumBuildOutputBytes = 16 * 1024 * 1024;
 const maximumProcessInspectionBytes = 1_048_576;
+const maximumPrivateStateEntries = 4_096;
+const maximumPrivateStateDepth = 16;
+const maximumPrivateStateFileBytes = 8 * 1024 * 1024;
+const maximumPrivateStateTotalBytes = 64 * 1024 * 1024;
 const processAbsencePollMilliseconds = 10;
 const digestPattern = /^sha256:[a-f\d]{64}$/u;
 const imagePattern = /^[^\s@]{1,448}@sha256:[a-f\d]{64}$/u;
@@ -1098,12 +1102,34 @@ const preparationPolicy = (images, options) => {
 };
 
 const createPrivateClientRoot = (options) => {
-  const root = mkdtempSync(
-    resolve(realpathSync("/tmp"), "agentscope-image-preparation-"),
-  );
-  const owned = { root, directories: [], files: [] };
+  const parent = realpathSync("/tmp");
+  const parentStatus = lstatSync(parent);
+  const root = mkdtempSync(resolve(parent, "agentscope-image-preparation-"));
+  const owned = {
+    root,
+    parent,
+    parentIdentity: Object.freeze({
+      dev: parentStatus.dev,
+      ino: parentStatus.ino,
+      mode: parentStatus.mode & 0o7777,
+      uid: parentStatus.uid,
+      gid: parentStatus.gid,
+    }),
+    rootIdentity: undefined,
+    directories: [],
+    files: [],
+    beforeRemovalForTesting: options.beforePrivateRemovalForTesting,
+  };
   try {
     chmodSync(root, 0o700);
+    const rootStatus = lstatSync(root);
+    owned.rootIdentity = Object.freeze({
+      dev: rootStatus.dev,
+      ino: rootStatus.ino,
+      mode: rootStatus.mode & 0o7777,
+      uid: rootStatus.uid,
+      gid: rootStatus.gid,
+    });
     options.afterPrivateRootCreatedForTesting?.(root);
     for (const name of [
       "buildx",
@@ -1132,34 +1158,256 @@ const createPrivateClientRoot = (options) => {
     throw error;
   }
 };
+/* eslint-disable complexity, max-depth, max-lines-per-function -- one bounded no-follow inventory and identity-checked leaf-first retirement state machine */
 const cleanupPrivateClient = (owned, deadline) => {
-  const removeOwned = (operation) => {
+  const summary = {
+    entryCount: 0,
+    directoryCount: 0,
+    regularFileCount: 0,
+    totalBytes: 0,
+    entrySetDigest: diagnosticDigest([]),
+  };
+  const cleanupFailure = (reason) => {
+    const error = fixedError("integration.images.cleanup");
+    error.privateCleanupDiagnostic = Object.freeze({
+      diagnosticVersion: 1,
+      stage: "private-client-cleanup",
+      outcome: "retired-failure",
+      reason,
+      ...summary,
+    });
+    return error;
+  };
+  const withinDeadline = () => {
+    if (performance.now() > deadline) throw cleanupFailure("deadline");
+  };
+  const mode = (status) => status.mode & 0o7777;
+  const sameDirectoryIdentity = (status, identity) =>
+    status.isDirectory() &&
+    !status.isSymbolicLink() &&
+    status.dev === identity.dev &&
+    status.ino === identity.ino &&
+    status.uid === identity.uid &&
+    status.gid === identity.gid &&
+    mode(status) === identity.mode;
+  const assertBoundary = () => {
+    withinDeadline();
+    let parentStatus;
+    let rootStatus;
     try {
-      operation();
+      parentStatus = lstatSync(owned.parent);
+      rootStatus = lstatSync(owned.root);
+    } catch {
+      throw cleanupFailure("identity-substitution");
+    }
+    if (
+      !sameDirectoryIdentity(parentStatus, owned.parentIdentity) ||
+      !sameDirectoryIdentity(rootStatus, owned.rootIdentity)
+    )
+      throw cleanupFailure("identity-substitution");
+  };
+  const snapshotFile = (path, expected) => {
+    let descriptor;
+    try {
+      descriptor = openSync(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const before = fstatSync(descriptor);
+      if (
+        !before.isFile() ||
+        before.dev !== expected.dev ||
+        before.ino !== expected.ino ||
+        before.uid !== expected.uid ||
+        before.gid !== expected.gid ||
+        before.nlink !== 1 ||
+        before.size !== expected.size ||
+        mode(before) !== expected.mode ||
+        ![0o600, 0o644].includes(expected.mode)
+      )
+        throw cleanupFailure("entry-substitution");
+      const content = readFileSync(descriptor);
+      const after = fstatSync(descriptor);
+      if (
+        after.dev !== before.dev ||
+        after.ino !== before.ino ||
+        after.size !== before.size ||
+        after.nlink !== before.nlink ||
+        mode(after) !== mode(before) ||
+        digestBytes(content) !== expected.digest
+      )
+        throw cleanupFailure("entry-substitution");
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.message === "integration.images.cleanup") throw error;
+      throw cleanupFailure("entry-substitution");
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
     }
   };
   try {
-    for (const path of [...owned.files].reverse()) {
-      if (performance.now() > deadline)
-        throw fixedError("integration.images.cleanup", true);
-      removeOwned(() => unlinkSync(path));
+    assertBoundary();
+    const pending = [{ path: owned.root, relative: "", depth: 0 }];
+    const directories = [];
+    const files = [];
+    const diagnosticEntries = [];
+    while (pending.length > 0) {
+      withinDeadline();
+      const current = pending.pop();
+      let entries;
+      try {
+        entries = readdirSync(current.path, { withFileTypes: true });
+      } catch {
+        throw cleanupFailure("entry-inaccessible");
+      }
+      for (const entry of entries) {
+        summary.entryCount += 1;
+        if (summary.entryCount > maximumPrivateStateEntries)
+          throw cleanupFailure("entry-overflow");
+        const relative = current.relative
+          ? `${current.relative}/${entry.name}`
+          : entry.name;
+        const depth = current.depth + 1;
+        if (depth > maximumPrivateStateDepth)
+          throw cleanupFailure("depth-overflow");
+        const path = resolve(current.path, entry.name);
+        if (!path.startsWith(`${owned.root}/`) || entry.isSymbolicLink())
+          throw cleanupFailure("entry-type");
+        const status = lstatSync(path);
+        if (entry.isDirectory() && status.isDirectory()) {
+          if (
+            status.uid !== owned.rootIdentity.uid ||
+            status.gid !== owned.rootIdentity.gid ||
+            mode(status) !== 0o700
+          )
+            throw cleanupFailure("entry-authority");
+          const identity = Object.freeze({
+            path,
+            relative,
+            depth,
+            dev: status.dev,
+            ino: status.ino,
+            uid: status.uid,
+            gid: status.gid,
+            mode: mode(status),
+          });
+          directories.push(identity);
+          pending.push({ path, relative, depth });
+          summary.directoryCount += 1;
+          diagnosticEntries.push({
+            nameDigest: digestBytes(Buffer.from(relative, "utf8")),
+            type: "directory",
+            size: 0,
+          });
+          continue;
+        }
+        if (!entry.isFile() || !status.isFile())
+          throw cleanupFailure("entry-type");
+        if (
+          status.uid !== owned.rootIdentity.uid ||
+          status.gid !== owned.rootIdentity.gid ||
+          status.nlink !== 1 ||
+          ![0o600, 0o644].includes(mode(status))
+        )
+          throw cleanupFailure("entry-authority");
+        if (status.size > maximumPrivateStateFileBytes)
+          throw cleanupFailure("file-overflow");
+        summary.totalBytes += status.size;
+        if (
+          !Number.isSafeInteger(summary.totalBytes) ||
+          summary.totalBytes > maximumPrivateStateTotalBytes
+        )
+          throw cleanupFailure("total-overflow");
+        const descriptor = openSync(
+          path,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        );
+        let content;
+        try {
+          const before = fstatSync(descriptor);
+          content = readFileSync(descriptor);
+          const after = fstatSync(descriptor);
+          if (
+            before.dev !== status.dev ||
+            before.ino !== status.ino ||
+            before.size !== status.size ||
+            after.dev !== before.dev ||
+            after.ino !== before.ino ||
+            after.size !== before.size ||
+            after.nlink !== 1 ||
+            mode(after) !== mode(before)
+          )
+            throw cleanupFailure("entry-substitution");
+        } finally {
+          closeSync(descriptor);
+        }
+        const identity = Object.freeze({
+          path,
+          relative,
+          depth,
+          dev: status.dev,
+          ino: status.ino,
+          uid: status.uid,
+          gid: status.gid,
+          mode: mode(status),
+          size: status.size,
+          digest: digestBytes(content),
+        });
+        files.push(identity);
+        summary.regularFileCount += 1;
+        diagnosticEntries.push({
+          nameDigest: digestBytes(Buffer.from(relative, "utf8")),
+          type: "regular-file",
+          size: status.size,
+        });
+      }
     }
-    for (const path of [...owned.directories].reverse()) {
-      if (performance.now() > deadline)
-        throw fixedError("integration.images.cleanup", true);
-      removeOwned(() => rmdirSync(path));
+    summary.entrySetDigest = diagnosticDigest(
+      diagnosticEntries.sort((left, right) =>
+        left.nameDigest.localeCompare(right.nameDigest),
+      ),
+    );
+    owned.beforeRemovalForTesting?.(owned.root);
+    for (const file of files.sort((left, right) => right.depth - left.depth)) {
+      assertBoundary();
+      snapshotFile(file.path, file);
+      unlinkSync(file.path);
+      try {
+        lstatSync(file.path);
+        throw cleanupFailure("late-mutation");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
-    if (performance.now() > deadline)
-      throw fixedError("integration.images.cleanup", true);
-    removeOwned(() => rmdirSync(owned.root));
-    if (performance.now() > deadline)
-      throw fixedError("integration.images.cleanup", true);
-  } catch {
-    throw fixedError("integration.images.cleanup");
+    for (const directory of directories.sort(
+      (left, right) => right.depth - left.depth,
+    )) {
+      assertBoundary();
+      const status = lstatSync(directory.path);
+      if (!sameDirectoryIdentity(status, directory))
+        throw cleanupFailure("entry-substitution");
+      if (readdirSync(directory.path).length !== 0)
+        throw cleanupFailure("late-mutation");
+      rmdirSync(directory.path);
+    }
+    assertBoundary();
+    if (readdirSync(owned.root).length !== 0)
+      throw cleanupFailure("late-mutation");
+    rmdirSync(owned.root);
+    try {
+      lstatSync(owned.root);
+      throw cleanupFailure("late-mutation");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const parentStatus = lstatSync(owned.parent);
+    if (!sameDirectoryIdentity(parentStatus, owned.parentIdentity))
+      throw cleanupFailure("identity-substitution");
+  } catch (error) {
+    if (error?.message === "integration.images.cleanup") throw error;
+    throw cleanupFailure("operation-failed");
   }
 };
+/* eslint-enable complexity, max-depth, max-lines-per-function */
 
 const writeTarText = (header, offset, length, value) => {
   const encoded = Buffer.from(value, "utf8");
@@ -1980,7 +2228,7 @@ export const createPreparedDockerClient = (evidence, options = {}) => {
       options.dockerEnvironment === undefined
         ? Object.freeze({})
         : productionDockerEnvironment(options.dockerEnvironment, socket);
-    privateClient = createPrivateClientRoot({});
+    privateClient = createPrivateClientRoot(options);
     const client = Object.freeze({
       evidence,
       buildxExecutable,
@@ -2913,12 +3161,23 @@ export const closePreparedDockerClient = (client) => {
   )
     throw fixedError("integration.images.docker-client");
   closingPreparedDockerClients.add(client);
-  cleanupPrivateClient(
-    client.privateClient,
-    performance.now() + preparationTeardownMilliseconds,
-  );
-  preparedDockerClients.delete(client);
-  closingPreparedDockerClients.delete(client);
+  try {
+    cleanupPrivateClient(
+      client.privateClient,
+      performance.now() + preparationTeardownMilliseconds,
+    );
+    preparedDockerClients.delete(client);
+  } catch (error) {
+    uncertainPreparedDockerClients.add(client);
+    if (error?.privateCleanupDiagnostic !== undefined)
+      preparedDockerClientDiagnostics.set(
+        client,
+        error.privateCleanupDiagnostic,
+      );
+    throw error;
+  } finally {
+    closingPreparedDockerClients.delete(client);
+  }
 };
 
 export const preparedDockerClientRequiresOuterHostRetirement = (client) =>
@@ -3009,4 +3268,8 @@ export const IMAGE_PREPARATION_LIMITS = Object.freeze({
   maximumResponseBytes,
   maximumManifestBytes,
   maximumEvidenceBytes,
+  maximumPrivateStateEntries,
+  maximumPrivateStateDepth,
+  maximumPrivateStateFileBytes,
+  maximumPrivateStateTotalBytes,
 });

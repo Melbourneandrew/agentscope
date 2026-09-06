@@ -1,11 +1,16 @@
 /* eslint import-x/no-cycle: "off" -- private executable capability */
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
   cpSync,
+  fsyncSync,
   lstatSync,
+  linkSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -42,6 +47,7 @@ import {
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   integrationStageSignal,
+  registerIntegrationFailureEvidence,
   registerIntegrationRunIds,
   remainingIntegrationOperationMilliseconds,
   requireDisposableOuterHostCapability,
@@ -352,6 +358,7 @@ const assertContainer = async (
 };
 
 const fixtureResults = new Map();
+const scenarioOutcomes = new Map();
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
 const activateRuns = async (plans) => {
@@ -721,6 +728,7 @@ const recordEvidence = async (evidence) => {
     resolve(directory, "evidence.json"),
     `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
   );
+  scenarioOutcomes.set(verifiedEvidence.runId, verifiedEvidence.outcome);
   const diagnostic = preparedDockerClientDiagnostic(preparedDockerClient);
   if (diagnostic !== undefined)
     writeFileSync(
@@ -759,6 +767,79 @@ const recordEvidence = async (evidence) => {
       )}\n`,
     );
     fixtureResults.delete(verifiedEvidence.runId);
+  }
+};
+
+const failureCode = (error) =>
+  error instanceof Error && /^integration\.[a-z.-]{1,96}$/u.test(error.message)
+    ? error.message
+    : "integration.controller.failed";
+const finalizeControllerFailureEvidence = (
+  plan,
+  primaryError,
+  cleanupError,
+) => {
+  const directory = resolve(artifactsRoot, "runs", plan.runId);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const record = {
+    controllerFailureEvidenceVersion: 1,
+    runId: plan.runId,
+    scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
+    controllerOutcome: "retired-failure",
+    primaryFailure: failureCode(primaryError),
+    cleanupFailure:
+      cleanupError === undefined ? null : failureCode(cleanupError),
+    privateCleanup:
+      preparedDockerClientDiagnostic(preparedDockerClient) ?? null,
+  };
+  const serialized = `${JSON.stringify(record, undefined, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > 16_384)
+    throw new Error("integration.controller.failure-evidence");
+  const target = resolve(directory, "controller-failure.json");
+  const temporary = resolve(
+    directory,
+    `.controller-failure.${process.pid}.tmp`,
+  );
+  let descriptor;
+  let directoryDescriptor;
+  try {
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(directory, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.controller.failure-evidence");
+    registerIntegrationFailureEvidence({
+      dev: status.dev,
+      digest: `sha256:${createHash("sha256").update(serialized).digest("hex")}`,
+      ino: status.ino,
+      runId: plan.runId,
+      size: status.size,
+    });
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.controller.failure-evidence", {
+      cause: error,
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
   }
 };
 const countDockerResources = async (kind, plan, signal) => {
@@ -897,6 +978,7 @@ preparedDockerClient = createPreparedDockerClient(preparedImageEvidence, {
   dockerExecutable: capability.binding.dockerExecutable,
 });
 let retirementRequired = false;
+let primaryError;
 try {
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
@@ -920,16 +1002,34 @@ try {
     preparedDockerClientRequiresOuterHostRetirement(preparedDockerClient)
   ) {
     retirementRequired = true;
-    throw new Error("integration.controller.unsettled-operation", {
+    primaryError = new Error("integration.controller.unsettled-operation", {
       cause: error,
     });
+  } else {
+    primaryError = error;
   }
-  throw error;
 } finally {
   for (const plan of plans)
     rmSync(activeMarkerFor(plan.runId), { force: true });
   process.removeListener("SIGINT", abort);
   process.removeListener("SIGTERM", abort);
-  if (preparedDockerClient !== undefined && !retirementRequired)
-    closePreparedDockerClient(preparedDockerClient);
+  let cleanupError;
+  if (preparedDockerClient !== undefined && !retirementRequired) {
+    try {
+      closePreparedDockerClient(preparedDockerClient);
+    } catch (error) {
+      cleanupError = error;
+      primaryError ??= error;
+    }
+  }
+  if (primaryError !== undefined) {
+    try {
+      for (const plan of plans)
+        finalizeControllerFailureEvidence(plan, primaryError, cleanupError);
+    } catch {
+      // The original controller failure remains primary. The workflow's
+      // required artifact upload independently fails if evidence is absent.
+    }
+  }
 }
+if (primaryError !== undefined) throw primaryError;

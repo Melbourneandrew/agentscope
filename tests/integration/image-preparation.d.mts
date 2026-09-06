@@ -54,6 +54,7 @@ export interface PreparePinnedDockerImagesOptions {
   ) => Promise<ImagePreparationResponse>;
   afterPrivateRootCreatedForTesting?: (root: string) => void;
   beforePrivateCleanupForTesting?: (root: string) => void;
+  beforePrivateRemovalForTesting?: (root: string) => void;
   signal?: AbortSignal;
 }
 
@@ -290,4 +291,8 @@ export declare const IMAGE_PREPARATION_LIMITS: Readonly<{
   maximumResponseBytes: number;
   maximumManifestBytes: number;
   maximumEvidenceBytes: number;
+  maximumPrivateStateEntries: number;
+  maximumPrivateStateDepth: number;
+  maximumPrivateStateFileBytes: number;
+  maximumPrivateStateTotalBytes: number;
 }>;

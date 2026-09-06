@@ -134,7 +134,7 @@ jobs:
         with:
           name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
           path: artifacts/integration/runs
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
   hermetic-integration:
     name: hermetic-integration

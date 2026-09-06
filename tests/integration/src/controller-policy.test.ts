@@ -68,6 +68,10 @@ describe("integration controller policy", () => {
     expect(source).toContain(
       "const addFile = (targets, relative, maximumBytes = 16_384)",
     );
+    expect(source).toContain("failureEvidenceByRunId.has(runId)");
+    expect(source).toContain(
+      "assertFailureEvidence(failureEvidenceByRunId.get(runId))",
+    );
   });
 
   it("rejects direct execution of every mutation stage", () => {
@@ -186,5 +190,17 @@ describe("integration workflow policy", () => {
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,
     );
+    expect(workflow).toContain("if-no-files-found: error");
+    expect(workflow).not.toContain("if-no-files-found: ignore");
+    const scenarios = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    const finalized = scenarios.indexOf(
+      "finalizeControllerFailureEvidence(plan",
+    );
+    const propagated = scenarios.indexOf("throw primaryError");
+    expect(finalized).toBeGreaterThanOrEqual(0);
+    expect(propagated).toBeGreaterThan(finalized);
   });
 });
