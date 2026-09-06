@@ -24,6 +24,7 @@ const requiredStrictOptions = Object.freeze({
 const requiredSharedGlobals = Object.freeze([
   "{workspaceRoot}/package.json",
   "{workspaceRoot}/pnpm-lock.yaml",
+  "{workspaceRoot}/pnpm-workspace.yaml",
   "{workspaceRoot}/nx.json",
   "{workspaceRoot}/tsconfig.base.json",
   "{workspaceRoot}/eslint.config.mjs",
@@ -38,12 +39,147 @@ const requiredSharedGlobals = Object.freeze([
   "{workspaceRoot}/scripts/verify-code-quality-policy.mjs",
 ]);
 
+const requiredRuntimeEnvironment = Object.freeze([
+  Object.freeze({
+    runtime:
+      'node -p "JSON.stringify([process.version, process.platform, process.arch])"',
+  }),
+  Object.freeze({ runtime: "pnpm --version" }),
+]);
+
+const cacheableBuildPaths = new Set([
+  "apps/cli",
+  "packages/core",
+  "packages/destinations/langfuse",
+  "packages/destinations/local-sqlite",
+  "packages/harnesses/claude-code",
+  "packages/harnesses/codex",
+  "packages/harnesses/core",
+  "packages/testkit",
+]);
+
+const expectedTargetDefaults = Object.freeze({
+  build: Object.freeze({
+    cache: false,
+    dependsOn: Object.freeze(["^build"]),
+    inputs: Object.freeze(["production", "^production", "runtimeEnvironment"]),
+  }),
+  typecheck: Object.freeze({
+    cache: true,
+    dependsOn: Object.freeze(["^typecheck", "^build"]),
+    inputs: Object.freeze(["default", "^production", "runtimeEnvironment"]),
+  }),
+  lint: Object.freeze({
+    cache: true,
+    dependsOn: Object.freeze(["build"]),
+    inputs: Object.freeze(["default", "^production", "runtimeEnvironment"]),
+  }),
+  test: Object.freeze({
+    cache: true,
+    dependsOn: Object.freeze(["build"]),
+    inputs: Object.freeze(["default", "^production", "runtimeEnvironment"]),
+  }),
+  coverage: Object.freeze({
+    cache: false,
+    dependsOn: Object.freeze(["build"]),
+    inputs: Object.freeze(["default", "^production", "runtimeEnvironment"]),
+    outputs: Object.freeze(["{projectRoot}/coverage"]),
+  }),
+  clean: Object.freeze({ cache: false }),
+});
+
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function exactJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function targetOverride(manifest, target) {
+  const value = manifest.nx?.targets?.[target];
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+}
+
+function auditNxConfiguration(nx) {
+  assert(
+    nx.neverConnectToCloud === true,
+    "nx must permanently disable remote cache connection",
+  );
+  assert(
+    nx.nxCloudId === undefined && nx.tasksRunnerOptions === undefined,
+    "nx remote or custom task runners are forbidden",
+  );
+  const sharedGlobals = new Set(nx.namedInputs?.sharedGlobals ?? []);
+  for (const input of requiredSharedGlobals) {
+    assert(sharedGlobals.has(input), `nx sharedGlobals is missing ${input}`);
+  }
+  for (const target of mandatoryWorkspaceTargets) {
+    assert(
+      nx.targetDefaults?.[target] !== undefined,
+      `nx targetDefaults is missing ${target}`,
+    );
+    assert(
+      exactJson(nx.targetDefaults[target], expectedTargetDefaults[target]),
+      `nx ${target} cache inputs, outputs, or dependencies drifted`,
+    );
+  }
+  assert(
+    exactJson(nx.namedInputs?.runtimeEnvironment, requiredRuntimeEnvironment),
+    "nx runtime environment fingerprint drifted",
+  );
+}
+
+function auditProjectCache({ manifest, nx, relativePath, expectedName }) {
+  const expectedCache = {
+    build: cacheableBuildPaths.has(relativePath),
+    typecheck: relativePath !== "apps/docs",
+    lint: true,
+    test: relativePath !== "tests/integration",
+    coverage: false,
+    clean: false,
+  };
+  for (const [target, expected] of Object.entries(expectedCache)) {
+    const override = targetOverride(manifest, target);
+    const actual = override.cache ?? nx.targetDefaults[target].cache;
+    assert(
+      actual === expected,
+      `${expectedName} ${target} cache eligibility drifted`,
+    );
+    if (["typecheck", "lint", "test"].includes(target)) {
+      assert(
+        override.outputs === undefined &&
+          nx.targetDefaults[target].outputs === undefined,
+        `${expectedName} ${target} must declare no outputs`,
+      );
+    }
+  }
+  const build = targetOverride(manifest, "build");
+  if (expectedCache.build) {
+    assert(
+      exactJson(build.outputs, ["{projectRoot}/dist"]),
+      `${expectedName} cacheable build must replace exactly dist`,
+    );
+    assert(
+      manifest.scripts.build.includes(
+        relativePath === "apps/cli"
+          ? "node build.mjs"
+          : "clean-workspace.mjs --build-outputs",
+      ),
+      `${expectedName} cacheable build lacks exact output settlement`,
+    );
+  } else {
+    assert(
+      build.outputs === undefined,
+      `${expectedName} non-cacheable build must declare no replay output`,
+    );
+  }
 }
 
 export function auditWorkspaceTargets({ workspaceRoot, expectedPackages }) {
@@ -57,26 +193,7 @@ export function auditWorkspaceTargets({ workspaceRoot, expectedPackages }) {
   }
 
   const nx = readJson(resolve(workspaceRoot, "nx.json"));
-  const sharedGlobals = new Set(nx.namedInputs?.sharedGlobals ?? []);
-  for (const input of requiredSharedGlobals) {
-    assert(sharedGlobals.has(input), `nx sharedGlobals is missing ${input}`);
-  }
-  for (const target of mandatoryWorkspaceTargets) {
-    assert(
-      nx.targetDefaults?.[target] !== undefined,
-      `nx targetDefaults is missing ${target}`,
-    );
-  }
-  assert(nx.targetDefaults?.clean?.cache === false, "clean must not be cached");
-  for (const target of ["lint", "test", "coverage"]) {
-    const dependencies = nx.targetDefaults?.[target]?.dependsOn;
-    assert(
-      Array.isArray(dependencies) &&
-        dependencies.length === 1 &&
-        dependencies[0] === "build",
-      `nx ${target} must depend on its own settled build`,
-    );
-  }
+  auditNxConfiguration(nx);
 
   const audited = [];
   for (const [relativePath, expectedName] of expectedPackages) {
@@ -97,6 +214,8 @@ export function auditWorkspaceTargets({ workspaceRoot, expectedPackages }) {
         `${expectedName} is missing mandatory Nx/package target: ${target}`,
       );
     }
+
+    auditProjectCache({ manifest, nx, relativePath, expectedName });
     if (manifest.scripts.build.includes("clean-workspace.mjs")) {
       const cleanerInvocations = [
         ...manifest.scripts.build.matchAll(/clean-workspace\.mjs/gu),

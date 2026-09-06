@@ -16,6 +16,16 @@
   "files": [
     "dist"
   ],
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": true,
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
+  },
   "scripts": {
     "build": "node ../../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node --unhandled-rejections=strict verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

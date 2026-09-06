@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "exports": "./dist/index.js",
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": false
+      },
+      "test": {
+        "cache": false
+      }
+    }
+  },
   "agentscopeInternalProcessEntrypoints": "./dist/controller.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

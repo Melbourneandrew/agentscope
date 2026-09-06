@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "exports": "./dist/index.js",
+  "nx": {
+    "targets": {
+      "build": {
+        "cache": true,
+        "outputs": [
+          "{projectRoot}/dist"
+        ]
+      }
+    }
+  },
   "scripts": {
     "build": "node ../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
