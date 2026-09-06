@@ -235,10 +235,15 @@ const sameExecutable = (left, right) =>
   left.owner === right.owner &&
   left.size === right.size &&
   left.ctimeNanoseconds === right.ctimeNanoseconds;
+const assertProductionPlatform = (platform) => {
+  if (platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os)
+    throw fixedError("integration.images.platform");
+};
+export const assertImagePreparationPlatformForTesting = (platform) =>
+  assertProductionPlatform(platform);
 const resolveDockerExecutable = (requested) => {
   if (requested !== undefined) return executableRecord(requested);
-  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform)
-    throw fixedError("integration.images.platform");
+  assertProductionPlatform(process.platform);
   for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables) {
     try {
       return executableRecord(candidate);
@@ -249,17 +254,14 @@ const resolveDockerExecutable = (requested) => {
   throw fixedError("integration.images.executable");
 };
 const productionDockerExecutable = (requested) => {
-  if (
-    process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os ||
-    !IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables.includes(requested)
-  )
+  if (!IMAGE_PREPARATION_EXECUTION_POLICY.dockerExecutables.includes(requested))
     throw fixedError("integration.images.executable");
+  assertProductionPlatform(process.platform);
   return executableRecord(requested);
 };
 const resolveBuildxExecutable = (requested) => {
   if (requested !== undefined) return executableRecord(requested);
-  if (process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform.os)
-    throw fixedError("integration.images.platform");
+  assertProductionPlatform(process.platform);
   for (const candidate of IMAGE_PREPARATION_EXECUTION_POLICY.buildxExecutables) {
     try {
       return executableRecord(candidate);
@@ -484,11 +486,9 @@ const resolveDockerSocket = (requested) => {
   return socketRecord(IMAGE_PREPARATION_EXECUTION_POLICY.socket);
 };
 const productionDockerSocket = (requested) => {
-  if (
-    process.platform !== IMAGE_PREPARATION_EXECUTION_POLICY.platform ||
-    requested !== IMAGE_PREPARATION_EXECUTION_POLICY.socket
-  )
+  if (requested !== IMAGE_PREPARATION_EXECUTION_POLICY.socket)
     throw fixedError("integration.images.socket");
+  assertProductionPlatform(process.platform);
   return socketRecord(requested);
 };
 const productionDockerEnvironment = (environment, socket) => {
@@ -1766,6 +1766,13 @@ const preparationFailure = (error) =>
     ? error
     : fixedError("integration.images.setup");
 
+export const imagePreparationFailureRequiresOuterHostRetirement = (error) =>
+  error instanceof Error &&
+  [
+    "integration.images.daemon-uncertain",
+    "integration.images.interrupted-uncertain",
+  ].includes(error.message);
+
 export const preparePinnedDockerImages = async (images, options = {}) => {
   const policy = preparationPolicy(images, options);
   let privateClient;
@@ -2667,6 +2674,12 @@ export const closePreparedDockerClient = (client) => {
 
 export const preparedDockerClientRequiresOuterHostRetirement = (client) =>
   uncertainPreparedDockerClients.has(client);
+
+export const markPreparedDockerClientForOuterHostRetirement = (client) => {
+  if (!preparedDockerClients.has(client))
+    throw fixedError("integration.images.docker-client");
+  uncertainPreparedDockerClients.add(client);
+};
 
 export const publishPreparedImageEvidence = (
   target,

@@ -32,6 +32,7 @@ import {
   IMAGE_PREPARATION_EXECUTION_POLICY,
   IMAGE_PREPARATION_LIMITS,
   prepareDockerInvocation,
+  markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientRequiresOuterHostRetirement,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
@@ -146,22 +147,31 @@ if (
   throw new Error("integration.isolation.inputs");
 
 let preparedDockerClient;
-const docker = async (arguments_, options = {}) => {
+const docker = async (
+  arguments_,
+  { mutationCapable = false, ...options } = {},
+) => {
   const invocation = await prepareDockerInvocation(
     preparedDockerClient,
     arguments_,
     options.signal,
   );
-  return execute(invocation.executable, invocation.arguments, {
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: remainingIntegrationOperationMilliseconds(
-      scenarioTimeoutMilliseconds,
-    ),
-    ...options,
-    cwd: integrationRoot,
-    env: invocation.environment,
-  });
+  try {
+    return await execute(invocation.executable, invocation.arguments, {
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: remainingIntegrationOperationMilliseconds(
+        scenarioTimeoutMilliseconds,
+      ),
+      ...options,
+      cwd: integrationRoot,
+      env: invocation.environment,
+    });
+  } catch (error) {
+    if (mutationCapable)
+      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
+    throw error;
+  }
 };
 const dockerWithSignal = (arguments_, signal, options = {}) =>
   docker(arguments_, { ...options, signal });
@@ -173,8 +183,10 @@ const ignoreMissing = async (arguments_, signal) => {
     });
   } catch (error) {
     const output = `${error?.stdout ?? ""}${error?.stderr ?? ""}`;
-    if (!/(?:No such (?:container|image)|network .* not found)/u.test(output))
+    if (!/(?:No such (?:container|image)|network .* not found)/u.test(output)) {
+      markPreparedDockerClientForOuterHostRetirement(preparedDockerClient);
       throw error;
+    }
   }
 };
 const labelArguments = (plan) => [
@@ -495,6 +507,7 @@ const createNetwork = async (plan, signal) => {
       plan.networkName,
     ],
     signal,
+    { mutationCapable: true },
   );
 };
 const startCollector = async (plan, signal) => {
@@ -531,6 +544,7 @@ const startCollector = async (plan, signal) => {
       "ingestion",
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -539,7 +553,9 @@ const startCollector = async (plan, signal) => {
     signal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await dockerWithSignal(["start", plan.collectorName], signal);
+  await dockerWithSignal(["start", plan.collectorName], signal, {
+    mutationCapable: true,
+  });
 };
 const startRetrieval = async (plan, signal) => {
   await dockerWithSignal(
@@ -575,6 +591,7 @@ const startRetrieval = async (plan, signal) => {
       "retrieval",
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -583,7 +600,9 @@ const startRetrieval = async (plan, signal) => {
     signal,
     ISOLATION_EXECUTOR_LIMITS.requests.destinationServerMaximumBytes,
   );
-  await dockerWithSignal(["start", plan.retrievalName], signal);
+  await dockerWithSignal(["start", plan.retrievalName], signal, {
+    mutationCapable: true,
+  });
 };
 const startMockServer = async (plan, signal) => {
   await dockerWithSignal(
@@ -614,6 +633,7 @@ const startMockServer = async (plan, signal) => {
       plan.mockServerImageTag,
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -621,7 +641,9 @@ const startMockServer = async (plan, signal) => {
     ISOLATION_EXECUTOR_LIMITS.containers.mockServer,
     signal,
   );
-  await dockerWithSignal(["start", plan.mockServerName], signal);
+  await dockerWithSignal(["start", plan.mockServerName], signal, {
+    mutationCapable: true,
+  });
 };
 const runScenario = async (plan, signal) => {
   const testModeArguments =
@@ -665,6 +687,7 @@ const runScenario = async (plan, signal) => {
       plan.imageTag,
     ],
     signal,
+    { mutationCapable: true },
   );
   await assertContainer(
     plan,
@@ -673,11 +696,14 @@ const runScenario = async (plan, signal) => {
     signal,
   );
   if (testMode === "sidecar-failure")
-    await dockerWithSignal(["stop", plan.collectorName], signal);
+    await dockerWithSignal(["stop", plan.collectorName], signal, {
+      mutationCapable: true,
+    });
   try {
     const { stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
       signal,
+      { mutationCapable: true },
     );
     if (!captureFixtureResult(stdout, plan))
       throw new Error("integration.isolation.fixture-result");

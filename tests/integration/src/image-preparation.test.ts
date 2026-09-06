@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PreparedDockerImageSet } from "../image-preparation.mjs";
 
 import {
+  assertImagePreparationPlatformForTesting,
   BUILDKIT_IMAGE,
   buildPreparedDockerImage,
   closePreparedDockerClient,
@@ -32,6 +33,8 @@ import {
   createPreparedDockerClient,
   IMAGE_PREPARATION_LIMITS,
   IMAGE_PREPARATION_EXECUTION_POLICY,
+  imagePreparationFailureRequiresOuterHostRetirement,
+  markPreparedDockerClientForOuterHostRetirement,
   prepareDockerInvocation,
   preparedDockerClientRequiresOuterHostRetirement,
   preparePinnedDockerImages,
@@ -769,6 +772,12 @@ describe("subprocess-free pinned image preparation", () => {
     expect(JSON.stringify(IMAGE_PREPARATION_EXECUTION_POLICY)).not.toMatch(
       /Docker\.app|homebrew|\/usr\/local|\.docker\/run/u,
     );
+    expect(() => {
+      assertImagePreparationPlatformForTesting("linux");
+    }).not.toThrow();
+    expect(() => {
+      assertImagePreparationPlatformForTesting("darwin");
+    }).toThrow("integration.images.platform");
   });
 
   it("rejects Docker Desktop even when it presents the Linux socket shape", async () => {
@@ -890,6 +899,16 @@ describe("Engine image reconciliation", () => {
         ({ method, path }) => method === "GET" && path.includes("/images/"),
       ),
     ).toHaveLength(2);
+    expect(
+      imagePreparationFailureRequiresOuterHostRetirement(
+        new Error("integration.images.daemon-uncertain"),
+      ),
+    ).toBe(true);
+    expect(
+      imagePreparationFailureRequiresOuterHostRetirement(
+        new Error("integration.images.timeout"),
+      ),
+    ).toBe(false);
   });
 
   it("never adopts a completed pull whose response was lost", async () => {
@@ -1187,6 +1206,29 @@ describe("prepared image runtime admission and publication", () => {
 });
 
 describe("prepared Docker client terminal authority", () => {
+  it("fences every later invocation after a mutation requires host retirement", async () => {
+    const client = createPreparedDockerClient(
+      validatePreparedImageEvidence(prepared(), manifestIdentity),
+      {
+        dockerExecutableForTesting: process.execPath,
+        socketIdentityForTesting: socket,
+        engineRequestForTesting: engineFixture().request,
+      },
+    );
+    const privateRoot = (
+      client as unknown as { privateClient: { root: string } }
+    ).privateClient.root;
+    markPreparedDockerClientForOuterHostRetirement(client);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    await expect(prepareDockerInvocation(client, ["version"])).rejects.toThrow(
+      "integration.images.docker-client",
+    );
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
+    rmSync(privateRoot, { force: true, recursive: true });
+  });
+
   it("rejects executable replacement adjacent to consuming invocation", async () => {
     const directory = root();
     const executable = resolve(directory, "docker-fixture");

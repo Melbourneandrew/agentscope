@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { compileCapabilityManifest } from "./dist/index.js";
 import {
   BUILDKIT_IMAGE,
+  imagePreparationFailureRequiresOuterHostRetirement,
   preparePinnedDockerImages,
   publishPreparedImageEvidence,
   retirePreparedImageEvidence,
@@ -72,6 +73,10 @@ try {
   );
   process.stdout.write(`${JSON.stringify(prepared.images)}\n`);
 } catch (error) {
+  if (imagePreparationFailureRequiresOuterHostRetirement(error))
+    throw new Error("integration.controller.unsettled-operation", {
+      cause: error,
+    });
   const code =
     error instanceof Error &&
     /^integration\.images\.[a-z-]+$/u.test(error.message)

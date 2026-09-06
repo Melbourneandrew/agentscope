@@ -195,6 +195,18 @@ export declare const preparedDockerClientRequiresOuterHostRetirement: (
   client: PreparedDockerClient,
 ) => boolean;
 
+export declare const markPreparedDockerClientForOuterHostRetirement: (
+  client: PreparedDockerClient,
+) => void;
+
+export declare const assertImagePreparationPlatformForTesting: (
+  platform: string,
+) => void;
+
+export declare const imagePreparationFailureRequiresOuterHostRetirement: (
+  error: unknown,
+) => boolean;
+
 export declare const BUILDKIT_IMAGE: string;
 
 export declare const IMAGE_PREPARATION_EXECUTION_POLICY: Readonly<{
