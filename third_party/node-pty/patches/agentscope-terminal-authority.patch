@@ -1,0 +1,257 @@
+--- a/src/unix/pty.cc
++++ b/src/unix/pty.cc
+@@ -21,6 +21,7 @@
+ #include <napi.h>
+ #include <assert.h>
+ #include <errno.h>
++#include <limits.h>
+ #include <string.h>
+ #include <stdlib.h>
+ #include <unistd.h>
+@@ -144,6 +145,33 @@
+     if (SetCloseOnExec(fd) && fd > 15)
+       break;
+ }
++
++static bool
++pty_close_inherited_fds_except(int preserved_fd) {
++  DIR *directory = opendir("/proc/self/fd");
++  if (directory == nullptr)
++    return false;
++  int directory_fd = dirfd(directory);
++  bool complete = true;
++  struct dirent *entry;
++  errno = 0;
++  while ((entry = readdir(directory)) != nullptr) {
++    char *end = nullptr;
++    long candidate = strtol(entry->d_name, &end, 10);
++    if (end == entry->d_name || *end != '\0' || candidate < 3 ||
++        candidate == preserved_fd || candidate == directory_fd)
++      continue;
++    if (candidate > INT_MAX || SetCloseOnExec(static_cast<int>(candidate)) == -1) {
++      complete = false;
++      break;
++    }
++  }
++  if (errno != 0)
++    complete = false;
++  if (closedir(directory) == -1)
++    complete = false;
++  return complete;
++}
+ #endif
+ 
+ void SetupExitCallback(Napi::Env env, Napi::Function cb, pid_t pid) {
+@@ -257,6 +285,11 @@
+ Napi::Value PtyOpen(const Napi::CallbackInfo& info);
+ Napi::Value PtyResize(const Napi::CallbackInfo& info);
+ Napi::Value PtyGetProc(const Napi::CallbackInfo& info);
++Napi::Value PtyInspect(const Napi::CallbackInfo& info);
++Napi::Value PtyRead(const Napi::CallbackInfo& info);
++Napi::Value PtyWrite(const Napi::CallbackInfo& info);
++Napi::Value PtyEof(const Napi::CallbackInfo& info);
++Napi::Value PtyClose(const Napi::CallbackInfo& info);
+ 
+ /**
+  * Functions
+@@ -300,7 +333,7 @@
+   Napi::HandleScope scope(napiEnv);
+ 
+   if (info.Length() != 11 ||
+-      !info[0].IsString() ||
++      (!info[0].IsString() && !info[0].IsNumber()) ||
+       !info[1].IsArray() ||
+       !info[2].IsArray() ||
+       !info[3].IsString() ||
+@@ -314,8 +347,30 @@
+     throw Napi::Error::New(napiEnv, "Usage: pty.fork(file, args, env, cwd, cols, rows, uid, gid, utf8, helperPath, onexit)");
+   }
+ 
+-  // file
+-  std::string file = info[0].As<Napi::String>();
++  // file. Linux selected execution may instead supply an already-authenticated
++  // executable descriptor. The child consumes that exact object with execveat;
++  // it never reopens a pathname after authentication.
++  bool use_executable_fd = info[0].IsNumber();
++  int executable_fd = use_executable_fd
++      ? info[0].As<Napi::Number>().Int32Value()
++      : -1;
++  std::string file = use_executable_fd
++      ? std::string("agentscope-authenticated-fd")
++      : info[0].As<Napi::String>().Utf8Value();
++#if defined(__linux__)
++  if (use_executable_fd) {
++    struct stat executable_stat;
++    if (executable_fd < 3 || fstat(executable_fd, &executable_stat) == -1 ||
++        !S_ISREG(executable_stat.st_mode) ||
++        (executable_stat.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0) {
++      throw Napi::Error::New(napiEnv, "Authenticated executable fd is invalid");
++    }
++  }
++#else
++  if (use_executable_fd) {
++    throw Napi::Error::New(napiEnv, "Authenticated executable fd is unsupported");
++  }
++#endif
+ 
+   // args
+   Napi::Array argv_ = info[1].As<Napi::Array>();
+@@ -473,15 +528,35 @@
+         }
+       }
+ 
+-      // Close inherited FDs to prevent leaking pty master FDs to child
+-      pty_close_inherited_fds();
++      // Close inherited FDs to prevent leaking pty master FDs to child. The
++      // authenticated executable descriptor remains available only until the
++      // atomic execveat transition and is CLOEXEC on success.
++      if (use_executable_fd) {
++        int descriptor_flags = fcntl(executable_fd, F_GETFD, 0);
++        if (descriptor_flags == -1 ||
++            fcntl(executable_fd, F_SETFD, descriptor_flags | FD_CLOEXEC) == -1) {
++          _exit(1);
++        }
++        if (!pty_close_inherited_fds_except(executable_fd))
++          _exit(1);
++      } else {
++        pty_close_inherited_fds();
++      }
+ 
+       {
+         char **old = environ;
+         environ = env;
+-        execvp(argv[0], argv);
++        if (use_executable_fd) {
++#if defined(SYS_execveat) && defined(AT_EMPTY_PATH)
++          syscall(SYS_execveat, executable_fd, "", argv, env, AT_EMPTY_PATH);
++#else
++          errno = ENOSYS;
++#endif
++        } else {
++          execvp(argv[0], argv);
++        }
+         environ = old;
+-        perror("execvp(3) failed.");
++        perror("exec failed.");
+         _exit(1);
+       }
+     default:
+@@ -579,8 +654,106 @@
+   }
+ 
+   return env.Undefined();
++}
++
++Napi::Value PtyInspect(const Napi::CallbackInfo& info) {
++  Napi::Env env(info.Env());
++  if (info.Length() != 1 || !info[0].IsNumber())
++    throw Napi::Error::New(env, "Usage: pty.inspect(fd)");
++  int fd = info[0].As<Napi::Number>().Int32Value();
++  struct winsize size;
++  struct termios mode;
++  if (isatty(fd) != 1 || ioctl(fd, TIOCGWINSZ, &size) == -1 ||
++      tcgetattr(fd, &mode) == -1)
++    throw Napi::Error::New(env, "PTY terminal inspection failed");
++  Napi::Object result = Napi::Object::New(env);
++  result.Set("isTTY", Napi::Boolean::New(env, true));
++  result.Set("columns", Napi::Number::New(env, size.ws_col));
++  result.Set("rows", Napi::Number::New(env, size.ws_row));
++  result.Set("canonical", Napi::Boolean::New(env, (mode.c_lflag & ICANON) != 0));
++  result.Set("eofByte", Napi::Number::New(env, mode.c_cc[VEOF]));
++  return result;
++}
++
++Napi::Value PtyRead(const Napi::CallbackInfo& info) {
++  Napi::Env env(info.Env());
++  if (info.Length() != 2 || !info[0].IsNumber() || !info[1].IsNumber())
++    throw Napi::Error::New(env, "Usage: pty.read(fd, maximumBytes)");
++  int fd = info[0].As<Napi::Number>().Int32Value();
++  int maximum = info[1].As<Napi::Number>().Int32Value();
++  if (maximum < 1 || maximum > 65536)
++    throw Napi::Error::New(env, "PTY read bound is invalid");
++  std::unique_ptr<unsigned char[]> bytes(new unsigned char[maximum]);
++  ssize_t count = read(fd, bytes.get(), static_cast<size_t>(maximum));
++  Napi::Object result = Napi::Object::New(env);
++  if (count > 0) {
++    result.Set("status", Napi::String::New(env, "data"));
++    result.Set("bytes", Napi::Buffer<unsigned char>::Copy(env, bytes.get(), count));
++  } else if (count == 0) {
++    result.Set("status", Napi::String::New(env, "eof"));
++  } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
++    result.Set("status", Napi::String::New(env, "would-block"));
++  } else if (errno == EIO) {
++    result.Set("status", Napi::String::New(env, "eio"));
++  } else {
++    throw Napi::Error::New(env, "PTY read failed");
++  }
++  return result;
++}
++
++Napi::Value PtyWrite(const Napi::CallbackInfo& info) {
++  Napi::Env env(info.Env());
++  if (info.Length() != 2 || !info[0].IsNumber() || !info[1].IsBuffer())
++    throw Napi::Error::New(env, "Usage: pty.write(fd, bytes)");
++  int fd = info[0].As<Napi::Number>().Int32Value();
++  Napi::Buffer<unsigned char> bytes = info[1].As<Napi::Buffer<unsigned char>>();
++  if (bytes.Length() > 1048576)
++    throw Napi::Error::New(env, "PTY write bound is invalid");
++  ssize_t count = write(fd, bytes.Data(), bytes.Length());
++  Napi::Object result = Napi::Object::New(env);
++  if (count >= 0) {
++    result.Set("status", Napi::String::New(env,
++        static_cast<size_t>(count) == bytes.Length() ? "complete" : "partial"));
++    result.Set("bytesWritten", Napi::Number::New(env, count));
++  } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
++    result.Set("status", Napi::String::New(env, "would-block"));
++    result.Set("bytesWritten", Napi::Number::New(env, 0));
++  } else {
++    throw Napi::Error::New(env, "PTY write failed");
++  }
++  return result;
++}
++
++Napi::Value PtyEof(const Napi::CallbackInfo& info) {
++  Napi::Env env(info.Env());
++  if (info.Length() != 1 || !info[0].IsNumber())
++    throw Napi::Error::New(env, "Usage: pty.eof(fd)");
++  int fd = info[0].As<Napi::Number>().Int32Value();
++  struct termios mode;
++  if (tcgetattr(fd, &mode) == -1 || (mode.c_lflag & ICANON) == 0 ||
++      mode.c_cc[VEOF] == _POSIX_VDISABLE)
++    throw Napi::Error::New(env, "PTY EOF mode is not canonical");
++  unsigned char eof = mode.c_cc[VEOF];
++  ssize_t count = write(fd, &eof, 1);
++  if (count != 1)
++    throw Napi::Error::New(env, "PTY EOF delivery failed");
++  Napi::Object result = Napi::Object::New(env);
++  result.Set("canonical", Napi::Boolean::New(env, true));
++  result.Set("eofByte", Napi::Number::New(env, eof));
++  result.Set("bytesWritten", Napi::Number::New(env, 1));
++  return result;
+ }
+ 
++Napi::Value PtyClose(const Napi::CallbackInfo& info) {
++  Napi::Env env(info.Env());
++  if (info.Length() != 1 || !info[0].IsNumber())
++    throw Napi::Error::New(env, "Usage: pty.close(fd)");
++  int fd = info[0].As<Napi::Number>().Int32Value();
++  if (close(fd) == -1)
++    throw Napi::Error::New(env, "PTY close failed");
++  return Napi::Boolean::New(env, true);
++}
++
+ /**
+  * Foreground Process Name
+  */
+@@ -870,6 +1043,11 @@
+   exports.Set("open",    Napi::Function::New(env, PtyOpen));
+   exports.Set("resize",  Napi::Function::New(env, PtyResize));
+   exports.Set("process", Napi::Function::New(env, PtyGetProc));
++  exports.Set("inspect", Napi::Function::New(env, PtyInspect));
++  exports.Set("read",    Napi::Function::New(env, PtyRead));
++  exports.Set("write",   Napi::Function::New(env, PtyWrite));
++  exports.Set("eof",     Napi::Function::New(env, PtyEof));
++  exports.Set("close",   Napi::Function::New(env, PtyClose));
+   return exports;
+ }
+ 

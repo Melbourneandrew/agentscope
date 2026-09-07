@@ -13,6 +13,7 @@ import {
   readFileSync,
   readdirSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +29,90 @@ const policy = JSON.parse(
   readFileSync(resolve(packageRoot, "pty-runtime-policy.json"), "utf8"),
 );
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const canonicalPatchSource = "a/src/unix/pty.cc";
+const canonicalPatchDestination = "b/src/unix/pty.cc";
+const patchedSourceSha256 =
+  "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84";
+
+// One closed parser keeps every header, position, operation, count and final
+// digest check in the same no-fuzz authority.
+// eslint-disable-next-line complexity
+export const applyExactPtyPatch = (source, patch) => {
+  if (
+    typeof source !== "string" ||
+    typeof patch !== "string" ||
+    !source.endsWith("\n") ||
+    !patch.endsWith("\n")
+  )
+    throw new Error("PTY patch input is malformed.");
+  const sourceLines = source.slice(0, -1).split("\n");
+  const patchLines = patch.slice(0, -1).split("\n");
+  if (
+    patchLines.shift() !== `--- ${canonicalPatchSource}` ||
+    patchLines.shift() !== `+++ ${canonicalPatchDestination}`
+  )
+    throw new Error("PTY patch paths are not exact.");
+  const output = [];
+  let sourceIndex = 0;
+  let hunkCount = 0;
+  while (patchLines.length > 0) {
+    const header = patchLines.shift();
+    const match = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/u.exec(header ?? "");
+    if (match === null) throw new Error("PTY patch hunk header is malformed.");
+    const oldStart = Number(match[1]);
+    const oldCount = Number(match[2]);
+    const newStart = Number(match[3]);
+    const newCount = Number(match[4]);
+    if (
+      !Number.isSafeInteger(oldStart) ||
+      !Number.isSafeInteger(oldCount) ||
+      !Number.isSafeInteger(newStart) ||
+      !Number.isSafeInteger(newCount) ||
+      oldStart < 1 ||
+      newStart !== output.length + 1 + (oldStart - (sourceIndex + 1)) ||
+      oldStart - 1 < sourceIndex ||
+      oldStart - 1 > sourceLines.length
+    )
+      throw new Error("PTY patch hunk position is not exact.");
+    output.push(...sourceLines.slice(sourceIndex, oldStart - 1));
+    sourceIndex = oldStart - 1;
+    let consumed = 0;
+    let produced = 0;
+    while (patchLines.length > 0 && !patchLines[0].startsWith("@@ ")) {
+      const line = patchLines.shift();
+      const operation = line?.[0];
+      const contents = line?.slice(1);
+      if (
+        contents === undefined ||
+        (operation !== " " && operation !== "+" && operation !== "-")
+      )
+        throw new Error("PTY patch operation is unsupported.");
+      if (operation !== "+") {
+        if (sourceLines[sourceIndex] !== contents)
+          throw new Error("PTY patch context does not match exact source.");
+        sourceIndex += 1;
+        consumed += 1;
+      }
+      if (operation !== "-") {
+        output.push(contents);
+        produced += 1;
+      }
+      if (consumed > oldCount || produced > newCount)
+        throw new Error("PTY patch hunk counts are malformed.");
+      if (consumed === oldCount && produced === newCount) break;
+    }
+    if (consumed !== oldCount || produced !== newCount)
+      throw new Error("PTY patch hunk is incomplete.");
+    hunkCount += 1;
+  }
+  if (hunkCount !== 8)
+    throw new Error("PTY patch hunk inventory is not exact.");
+  output.push(...sourceLines.slice(sourceIndex));
+  const result = `${output.join("\n")}\n`;
+  if (sha256(result) !== patchedSourceSha256)
+    throw new Error("PTY patched source identity is not exact.");
+  return result;
+};
 
 const verifyRegularFile = (path, expected, expectedMode = 0o644) => {
   const descriptor = openSync(
@@ -131,6 +216,12 @@ export const createPrivateBuildTemp = (toolchainRoot) => {
 
 export const verifyCanonicalBuildPaths = ({ output, sourceRoot }) => {
   const source = resolve(sourceRoot, "node-pty", "src", "unix", "pty.cc");
+  const patch = resolve(
+    sourceRoot,
+    "node-pty",
+    "patches",
+    "agentscope-terminal-authority.patch",
+  );
   const addonApi = resolve(sourceRoot, "node-addon-api");
   const destination = resolve(output, "pty.node");
   if (
@@ -140,14 +231,17 @@ export const verifyCanonicalBuildPaths = ({ output, sourceRoot }) => {
     throw new Error("PTY runtime sources are not at canonical build paths.");
   if (destination !== "/output/pty.node")
     throw new Error("PTY runtime output is not at the canonical build path.");
-  return Object.freeze({ addonApi, destination, source });
+  if (patch !== "/build/node-pty/patches/agentscope-terminal-authority.patch")
+    throw new Error("PTY runtime patch is not at the canonical build path.");
+  return Object.freeze({ addonApi, destination, patch, source });
 };
 
 const prepareToolchainRoot = ({
   addonApi,
   archiveRoot,
   authorityRoot,
-  source,
+  patch,
+  patchedSource,
   toolchainRoot,
 }) => {
   const packageSets = verifyPackageDirectory({
@@ -170,9 +264,12 @@ const prepareToolchainRoot = ({
     "/usr/local/include/node",
     resolve(toolchainRoot, "usr/local/include/node"),
   );
-  mkdirSync(resolve(toolchainRoot, "build/node-pty"), {
+  mkdirSync(resolve(toolchainRoot, "build/node-pty/src/unix"), {
     mode: 0o755,
     recursive: true,
+  });
+  mkdirSync(resolve(toolchainRoot, "build/node-pty/patches"), {
+    mode: 0o755,
   });
   mkdirSync(resolve(toolchainRoot, "build/node-addon-api"), {
     mode: 0o755,
@@ -180,8 +277,19 @@ const prepareToolchainRoot = ({
   });
   mkdirSync(resolve(toolchainRoot, "output"), { mode: 0o700 });
   createPrivateBuildTemp(toolchainRoot);
+  writeFileSync(
+    resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
+    patchedSource,
+    { flag: "wx", mode: 0o644 },
+  );
   for (const [sourcePath, destinationPath] of [
-    [source, resolve(toolchainRoot, "build/node-pty/pty.cc")],
+    [
+      patch,
+      resolve(
+        toolchainRoot,
+        "build/node-pty/patches/agentscope-terminal-authority.patch",
+      ),
+    ],
     [
       resolve(addonApi, "napi.h"),
       resolve(toolchainRoot, "build/node-addon-api/napi.h"),
@@ -224,13 +332,21 @@ export const buildPtyRuntime = ({
     (outputStat.mode & 0o077) !== 0
   )
     throw new Error("PTY runtime output root is not a directory.");
-  const { addonApi, destination, source } = verifyCanonicalBuildPaths({
+  const { addonApi, destination, patch, source } = verifyCanonicalBuildPaths({
     output,
     sourceRoot,
   });
   verifyRegularFile(
     source,
     "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2",
+  );
+  verifyRegularFile(
+    patch,
+    "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4",
+  );
+  const patchedSource = applyExactPtyPatch(
+    readFileSync(source, "utf8"),
+    readFileSync(patch, "utf8"),
   );
   verifyRegularFile(
     resolve(addonApi, "napi.h"),
@@ -244,9 +360,14 @@ export const buildPtyRuntime = ({
     addonApi,
     archiveRoot,
     authorityRoot,
-    source,
+    patch,
+    patchedSource,
     toolchainRoot,
   });
+  verifyRegularFile(
+    resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
+    "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84",
+  );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
     policy.build.gxxSha256,
@@ -286,7 +407,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const digest = buildPtyRuntime({ output: "/output", sourceRoot: "/build" });
   if (
     digest !==
-    "38966cc64050466dd2b2489cc4e3a94a7c0040361d9ab79115241aeff8eb27de"
+    "a82a5b257b14645b5705211d124300eadb7cb87120e6c7248fe4b6774782d8a3"
   )
     throw new Error("PTY runtime build is not reproducible.");
 }

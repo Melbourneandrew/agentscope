@@ -25,6 +25,15 @@
       "sha256": "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2"
     }
   ],
+  "agentscopePatch": {
+    "path": "patches/agentscope-terminal-authority.patch",
+    "bytes": 9471,
+    "mode": "0644",
+    "sha256": "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4",
+    "patchedSourceBytes": 30387,
+    "patchedSourceSha256": "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84",
+    "purpose": "fd-bound execution and bounded PTY terminal authority"
+  },
   "excludedRuntimeArtifact": {
     "path": "prebuilds/linux-x64/pty.node",
     "sha256": "123792d8f22f36d519b21dfb6f4b716f9b18b9e579085ea2840d0773d88d35fd",

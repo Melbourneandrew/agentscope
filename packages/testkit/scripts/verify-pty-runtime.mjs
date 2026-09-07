@@ -18,10 +18,10 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 594_920,
+  bytes: 616_536,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "38966cc64050466dd2b2489cc4e3a94a7c0040361d9ab79115241aeff8eb27de",
+  sha256: "a82a5b257b14645b5705211d124300eadb7cb87120e6c7248fe4b6774782d8a3",
   tuple: "node127-linux-x64-musl",
 });
 
@@ -180,8 +180,12 @@ const verifySourceAuthority = (sourceRoot) => {
   const addonApiRoot = resolve(sourceRoot, "third_party/node-addon-api");
   verifyClosedSourceDirectory(nodePtyRoot, [
     "LICENSE",
+    "patches",
     "source-manifest.json",
     "src",
+  ]);
+  verifyClosedSourceDirectory(resolve(nodePtyRoot, "patches"), [
+    "agentscope-terminal-authority.patch",
   ]);
   verifyClosedSourceDirectory(resolve(nodePtyRoot, "src"), ["unix"]);
   verifyClosedSourceDirectory(resolve(nodePtyRoot, "src/unix"), ["pty.cc"]);
@@ -201,9 +205,14 @@ const verifySourceAuthority = (sourceRoot) => {
     "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2",
   );
   verifyFileIdentity(
+    resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
+    9_471,
+    "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4",
+  );
+  verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
-    1_276,
-    "a818a4786cad24357107d01ff17cd28098e7e930f540386a4772bbc21b9b66dd",
+    1_683,
+    "c6c191296da1415cdafb8044a56c32afe5cf4c3d75c359db074cade04ad6bb48",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -234,6 +243,12 @@ const verifySourceAuthority = (sourceRoot) => {
       "8f218f6c194be81d98b1eeea344b150e83445824" ||
     nodePtyManifest.upstream?.npmTarballSha256 !==
       "114ac80c3fe075eff76217a4122d135576582695f49c03a5da3835cdfc2f89c5" ||
+    nodePtyManifest.agentscopePatch?.path !==
+      "patches/agentscope-terminal-authority.patch" ||
+    nodePtyManifest.agentscopePatch?.sha256 !==
+      "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4" ||
+    nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
+      "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -248,8 +263,8 @@ const verifySourceAuthority = (sourceRoot) => {
 const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
-    8_319,
-    "03841cea64fe09fcaa73f8e7e0d391fd31712700f67e629d5812f3bce24afafb",
+    8_832,
+    "abcb791a22e4e0d21aefa00ab5209532049ffad5b85b6e30d9204311d24cc09d",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -260,6 +275,22 @@ const verifyPolicy = (root) => {
     policy.target?.nodeAbi !== 127 ||
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
+    policy.build?.patch?.sha256 !==
+      "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4" ||
+    policy.build?.patch?.patchedSourceSha256 !==
+      "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84" ||
+    JSON.stringify(policy.build?.nativeExports) !==
+      JSON.stringify([
+        "close",
+        "eof",
+        "fork",
+        "inspect",
+        "open",
+        "process",
+        "read",
+        "resize",
+        "write",
+      ]) ||
     !Array.isArray(policy.alpineAuthority?.packages) ||
     policy.alpineAuthority.packages.length !== 19
   )
@@ -278,7 +309,10 @@ const verifyManifestAuthority = (authority, policy) => {
       "nodeAddonApiSourceManifestSha256",
       "nodeHeaderInventorySha256",
       "nodePtySourceManifestSha256",
+      "nativeExports",
       "packageClosureSha256",
+      "patchSha256",
+      "patchedSourceSha256",
       "policySha256",
       "signedIndexSha256",
       "signerKeySha256",
@@ -289,7 +323,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "03841cea64fe09fcaa73f8e7e0d391fd31712700f67e629d5812f3bce24afafb" ||
+      "abcb791a22e4e0d21aefa00ab5209532049ffad5b85b6e30d9204311d24cc09d" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -302,7 +336,11 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "a818a4786cad24357107d01ff17cd28098e7e930f540386a4772bbc21b9b66dd" ||
+      "c6c191296da1415cdafb8044a56c32afe5cf4c3d75c359db074cade04ad6bb48" ||
+    authority.patchSha256 !== policy.build.patch.sha256 ||
+    authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
+    JSON.stringify(authority.nativeExports) !==
+      JSON.stringify(policy.build.nativeExports) ||
     authority.nodeAddonApiSourceManifestSha256 !==
       "aff0d41e4e5c77313d51cf6cfd070d43798520b4a8b7734b4acc600ded9e9b6e"
   )
@@ -355,8 +393,8 @@ export const verifyPtyRuntime = ({
   const policy = verifyPolicy(root);
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
-    1_935,
-    "446a77ef8a436afdf253091e5c50858273615d432276012d9aa883feecab0944",
+    2_281,
+    "69a81b83b71d31bd6d630d12fbba0fa21d96bd06803105e1694acd01bda6a25f",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),

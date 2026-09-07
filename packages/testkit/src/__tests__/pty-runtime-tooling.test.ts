@@ -284,6 +284,9 @@ describe("PTY runtime artifact tooling", () => {
   });
 });
 
+// The closed build-material table intentionally keeps every authority
+// substitution next to the exact positive oracle.
+// eslint-disable-next-line max-lines-per-function
 describe("PTY authenticated build-material tooling", () => {
   const inspect = (
     fixture: ReturnType<typeof syntheticPackage>,
@@ -398,6 +401,7 @@ describe("PTY authenticated build-material tooling", () => {
       JSON.stringify({
         addonApi: "/build/node-addon-api",
         destination: "/output/pty.node",
+        patch: "/build/node-pty/patches/agentscope-terminal-authority.patch",
         source: "/build/node-pty/src/unix/pty.cc",
       }),
     );
@@ -407,5 +411,45 @@ describe("PTY authenticated build-material tooling", () => {
         ["/output", "/substituted-build"],
       ),
     ).toThrow(/sources are not at canonical build paths/iu);
+  });
+
+  it("applies only the exact bounded PTY authority patch without fuzz", () => {
+    const source = readFileSync(
+      resolve(packageRoot, "../../third_party/node-pty/src/unix/pty.cc"),
+      "utf8",
+    );
+    const patch = readFileSync(
+      resolve(
+        packageRoot,
+        "../../third_party/node-pty/patches/agentscope-terminal-authority.patch",
+      ),
+      "utf8",
+    );
+    const apply = (candidateSource: string, candidatePatch: string) =>
+      evaluate(
+        `const {createHash}=await import('node:crypto'); const {applyExactPtyPatch}=await import(${JSON.stringify(buildUrl)}); const result=applyExactPtyPatch(Buffer.from(process.argv[1],'base64').toString(),Buffer.from(process.argv[2],'base64').toString()); process.stdout.write(createHash('sha256').update(result).digest('hex'));`,
+        [
+          Buffer.from(candidateSource).toString("base64"),
+          Buffer.from(candidatePatch).toString("base64"),
+        ],
+      );
+    expect(apply(source, patch)).toBe(
+      "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84",
+    );
+    expect(() => apply(source, patch.replace("-21,6", "-22,6"))).toThrow(
+      /position|context/u,
+    );
+    expect(() =>
+      apply(source.replace("#include <napi.h>", "#include <hostile.h>"), patch),
+    ).toThrow(/context/u);
+    expect(() =>
+      apply(source, patch.replace("a/src/unix/pty.cc", "../../hostile/pty.cc")),
+    ).toThrow(/paths/u);
+    expect(() => apply(source, `${patch}--- a/extra\n+++ b/extra\n`)).toThrow(
+      /hunk header|position/u,
+    );
+    expect(() =>
+      apply(source, patch.replace("@@ -21,6", "@@ malformed")),
+    ).toThrow(/hunk header/u);
   });
 });
