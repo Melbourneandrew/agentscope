@@ -454,6 +454,31 @@ describe("bounded headless supervisor trace protocol", () => {
       ),
     ).toBe(true);
   });
+
+  it("constructs every hostile case as an own entry without inherited setters", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+    let setterCalls = 0;
+    let constructed: ReturnType<typeof createHostileHeadlessProcessMatrix>;
+    try {
+      Object.defineProperty(Array.prototype, "0", {
+        configurable: true,
+        set: () => {
+          setterCalls += 1;
+        },
+      });
+      constructed = createHostileHeadlessProcessMatrix();
+    } finally {
+      if (descriptor === undefined)
+        Reflect.deleteProperty(Array.prototype, "0");
+      else Object.defineProperty(Array.prototype, "0", descriptor);
+    }
+    expect(setterCalls).toBe(0);
+    expect(constructed!).toEqual(hostileCases);
+    expect(constructed!).toHaveLength(15);
+    for (let index = 0; index < constructed!.length; index += 1) {
+      expect(Object.hasOwn(constructed!, index)).toBe(true);
+    }
+  });
 });
 
 describe("real-process timeout stimulus causality", () => {
