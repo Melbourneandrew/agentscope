@@ -36,6 +36,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.sha }}
+      - name: Remove inputs certified irrelevant to the native candidate
+        run: node scripts/native-ci-selection.mjs --prune-irrelevant
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: 22, cache: pnpm }
@@ -61,6 +63,12 @@ jobs:
           --job-workflow-sha "$JOB_WORKFLOW_SHA"
           --candidate-manifest-digest "$EXPECTED_MANIFEST_DIGEST"
           --protected-tag v0.1.0
+      - name: Build release-revision workspace
+        run: pnpm nx build agentscope-cli --skip-nx-cache
+      - name: Verify release-revision CLI artifact
+        run: pnpm verify:cli-artifact
+      - name: Run fresh non-admitting native candidate verification
+        run: pnpm verify:native-candidate
       - name: Validate exact candidate without rebuilding
         env:
           CANDIDATE_MANIFEST: ${{ inputs.candidate-manifest-path }}

@@ -459,7 +459,7 @@ test("a project.json cannot override the audited package target authority", () =
 
 function assertWorkflowCacheBypass(workflow) {
   assert.equal(workflow.env?.NX_SKIP_NX_CACHE, "true");
-  for (const job of ["quality", "unit"]) {
+  for (const job of ["quality", "unit", "native"]) {
     assert.equal(workflow.jobs[job].env?.NX_SKIP_NX_CACHE, undefined);
     for (const step of workflow.jobs[job].steps) {
       assert.equal(step.env?.NX_SKIP_NX_CACHE, undefined);
@@ -469,7 +469,10 @@ function assertWorkflowCacheBypass(workflow) {
       .map((step) => step.run)
       .filter((command) => typeof command === "string")
       .join("\n");
-    assert.match(commands, /pnpm (?:lint|test|coverage|build|typecheck)/u);
+    assert.match(
+      commands,
+      /pnpm (?:lint|test|coverage|build|typecheck|verify:native-candidate)/u,
+    );
   }
 }
 
@@ -487,10 +490,10 @@ test("GitHub release checks cannot consume Nx result-cache evidence", () => {
       copy.jobs.quality.env = { NX_SKIP_NX_CACHE: "false" };
     },
     (copy) => {
-      copy.jobs.unit.steps.at(-1).env = { NX_SKIP_NX_CACHE: "false" };
+      copy.jobs.native.steps.at(-1).env = { NX_SKIP_NX_CACHE: "false" };
     },
     (copy) => {
-      copy.jobs.unit.steps.at(-1).run =
+      copy.jobs.native.steps.at(-1).run =
         "NX_SKIP_NX_CACHE=false pnpm verify:native-candidate";
     },
   ]) {
