@@ -9,6 +9,32 @@ import {
   type PtyTerminalSemanticSnapshot,
   validatePtyTerminalSemanticSnapshot,
 } from "./bounded-terminal-emulator.js";
+import type { HeadlessExecutionRequest } from "./headless-supervisor-contract.js";
+
+export type SelectedPtyExecutionRequest = Readonly<{
+  process: HeadlessExecutionRequest;
+  initialGeometry: PtyTerminalGeometry;
+}>;
+
+export type SelectedPtyExecutionReceipt = Readonly<{
+  receiptVersion: 1;
+  runId: string;
+  requestFingerprint: string;
+  isTTY: true;
+  initialGeometry: PtyTerminalGeometry;
+  observedGeometry: PtyTerminalGeometry;
+  outputBytes: number;
+  outputSha256: string;
+  finalSnapshot: PtyTerminalSemanticSnapshot;
+  exitCode: number | null;
+  signal: "SIGTERM" | "SIGKILL" | null;
+  cleanup: "clean" | "residual" | "uncertain";
+  residualProcessCount: number;
+  processJoined: boolean;
+  terminalInputJoined: boolean;
+  terminalOutputJoined: boolean;
+  terminalTransportClosed: boolean;
+}>;
 
 export type PtyModeApplicability =
   | Readonly<{
