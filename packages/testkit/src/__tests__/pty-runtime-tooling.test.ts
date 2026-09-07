@@ -387,4 +387,25 @@ describe("PTY authenticated build-material tooling", () => {
       ),
     ).toThrow(/already exists/iu);
   });
+
+  it("accepts only the exact canonical build paths", () => {
+    expect(
+      evaluate(
+        `const {verifyCanonicalBuildPaths}=await import(${JSON.stringify(buildUrl)}); process.stdout.write(JSON.stringify(verifyCanonicalBuildPaths({output:process.argv[1],sourceRoot:process.argv[2]})));`,
+        ["/output", "/build"],
+      ),
+    ).toBe(
+      JSON.stringify({
+        addonApi: "/build/node-addon-api",
+        destination: "/output/pty.node",
+        source: "/build/node-pty/src/unix/pty.cc",
+      }),
+    );
+    expect(() =>
+      evaluate(
+        `const {verifyCanonicalBuildPaths}=await import(${JSON.stringify(buildUrl)}); verifyCanonicalBuildPaths({output:process.argv[1],sourceRoot:process.argv[2]});`,
+        ["/output", "/substituted-build"],
+      ),
+    ).toThrow(/sources are not at canonical build paths/iu);
+  });
 });

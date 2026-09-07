@@ -129,6 +129,20 @@ export const createPrivateBuildTemp = (toolchainRoot) => {
   return temporary;
 };
 
+export const verifyCanonicalBuildPaths = ({ output, sourceRoot }) => {
+  const source = resolve(sourceRoot, "node-pty", "src", "unix", "pty.cc");
+  const addonApi = resolve(sourceRoot, "node-addon-api");
+  const destination = resolve(output, "pty.node");
+  if (
+    source !== "/build/node-pty/src/unix/pty.cc" ||
+    addonApi !== "/build/node-addon-api"
+  )
+    throw new Error("PTY runtime sources are not at canonical build paths.");
+  if (destination !== "/output/pty.node")
+    throw new Error("PTY runtime output is not at the canonical build path.");
+  return Object.freeze({ addonApi, destination, source });
+};
+
 const prepareToolchainRoot = ({
   addonApi,
   archiveRoot,
@@ -210,15 +224,10 @@ export const buildPtyRuntime = ({
     (outputStat.mode & 0o077) !== 0
   )
     throw new Error("PTY runtime output root is not a directory.");
-  const source = resolve(sourceRoot, "node-pty", "src", "unix", "pty.cc");
-  const addonApi = resolve(sourceRoot, "node-addon-api");
-  const canonicalSource = "/build/node-pty/pty.cc";
-  const canonicalAddonApi = "/build/node-addon-api";
-  if (source !== canonicalSource || addonApi !== canonicalAddonApi)
-    throw new Error("PTY runtime sources are not at canonical build paths.");
-  const destination = resolve(output, "pty.node");
-  if (destination !== "/output/pty.node")
-    throw new Error("PTY runtime output is not at the canonical build path.");
+  const { addonApi, destination, source } = verifyCanonicalBuildPaths({
+    output,
+    sourceRoot,
+  });
   verifyRegularFile(
     source,
     "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2",
