@@ -6,7 +6,9 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -619,6 +621,19 @@ function executionCount(root, name, target = "build") {
     : 0;
 }
 
+function replaceFixtureInput(path, value) {
+  const previous = readFileSync(path, "utf8");
+  const previousMtime = statSync(path).mtimeMs;
+  assert.notEqual(value, previous);
+  assert.equal(Buffer.byteLength(value), Buffer.byteLength(previous));
+  const replacement = `${path}.replacement`;
+  writeFileSync(replacement, value);
+  renameSync(replacement, path);
+  const nextMtimeSeconds = Math.floor(previousMtime / 1_000) + 1;
+  utimesSync(path, nextMtimeSeconds, nextMtimeSeconds);
+  assert.ok(statSync(path).mtimeMs > previousMtime);
+}
+
 function localNxEnvironment(runtime) {
   const environment = { ...process.env };
   for (const name of [
@@ -689,7 +704,7 @@ test("standard Nx cache invalidates exact inputs and restores only declared outp
     assert.equal(executionCount(root, "dependency"), 2);
     assert.equal(executionCount(root, "consumer"), 2);
 
-    writeFileSync(
+    replaceFixtureInput(
       join(root, "packages/dependency/src/value.txt"),
       "substitute-two\n",
     );
