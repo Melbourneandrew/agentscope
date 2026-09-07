@@ -333,11 +333,15 @@ const installedCliContractEvidenceSchema = z
         message: "installed contract evidence drift",
       });
   });
-const installedCliContractAuthoritySchema = z.strictObject({
-  candidateDigest: ociDigest,
-  driverDigest: ociDigest,
-  version: installedCliContractAuthorityFields.version,
-});
+const installedCliContractAuthoritySchema = z
+  .strictObject(installedCliContractAuthorityFields)
+  .superRefine((value, context) => {
+    if (value.receiptCount < value.caseCount + 1)
+      context.addIssue({
+        code: "custom",
+        message: "installed contract authority drift",
+      });
+  });
 
 export interface IsolationPlan {
   readonly runId: string;
@@ -378,7 +382,7 @@ export type InstalledCliContractAuthority = z.infer<
 export interface PreparedImageAuthority {
   readonly baseImageIdentity: PreparedImageIdentity;
   readonly mockServerImageIdentity: PreparedImageIdentity;
-  readonly installedCliContractEvidence: InstalledCliContractAuthority;
+  readonly installedCliContractEvidence: InstalledCliContractEvidence | null;
 }
 
 const isolationEvidenceSchema = z
@@ -502,7 +506,8 @@ export const compileIsolationEvidence = (
           .strictObject({
             baseImageIdentity: preparedImageIdentitySchema,
             mockServerImageIdentity: preparedImageIdentitySchema,
-            installedCliContractEvidence: installedCliContractAuthoritySchema,
+            installedCliContractEvidence:
+              installedCliContractEvidenceSchema.nullable(),
           })
           .safeParse(authority);
   if (
@@ -513,13 +518,8 @@ export const compileIsolationEvidence = (
           JSON.stringify(parsedAuthority.data.baseImageIdentity) ||
         JSON.stringify(parsed.data.mockServerImageIdentity) !==
           JSON.stringify(parsedAuthority.data.mockServerImageIdentity) ||
-        (parsed.data.installedCliContractEvidence !== null &&
-          (parsed.data.installedCliContractEvidence.candidateDigest !==
-            parsedAuthority.data.installedCliContractEvidence.candidateDigest ||
-            parsed.data.installedCliContractEvidence.driverDigest !==
-              parsedAuthority.data.installedCliContractEvidence.driverDigest ||
-            parsed.data.installedCliContractEvidence.version !==
-              parsedAuthority.data.installedCliContractEvidence.version))))
+        JSON.stringify(parsed.data.installedCliContractEvidence) !==
+          JSON.stringify(parsedAuthority.data.installedCliContractEvidence)))
   )
     throw new Error("integration.isolation.evidence");
   return deepFreeze(structuredClone(parsed.data));
@@ -738,7 +738,7 @@ export const executeIsolationPlan = async (
     {
       baseImageIdentity: plan.baseImageIdentity,
       mockServerImageIdentity: plan.mockServerImageIdentity,
-      installedCliContractEvidence: plan.installedCliContractAuthority,
+      installedCliContractEvidence,
     },
   );
   await driver.recordEvidence(evidence);

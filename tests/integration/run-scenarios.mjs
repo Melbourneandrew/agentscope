@@ -20,6 +20,8 @@ import { performance } from "node:perf_hooks";
 import { stripTypeScriptTypes } from "node:module";
 import { promisify } from "node:util";
 
+import { createInstalledCliContractPlan } from "../../apps/cli/scripts/verify-installed-contract.ts";
+
 import {
   compileIsolationEvidence,
   compileCapabilityManifest,
@@ -196,11 +198,45 @@ const cliVersion = readJson(
 ).version;
 if (typeof cliVersion !== "string")
   throw new Error("integration.isolation.candidate-artifact");
+const installedContractPlan = createInstalledCliContractPlan(cliVersion, {
+  architecture: "x64",
+  modules: "127",
+  platform: "linux",
+});
 const installedCliContractAuthority = Object.freeze({
+  aggregateVersion: 1,
   candidateDigest: cliArtifact.sha256.replace("sha256-", "sha256:"),
+  caseCount: installedContractPlan.caseIds.length,
+  caseIdsDigest: installedContractPlan.caseIdsDigest,
   driverDigest: installedContractDriverDigest,
+  inventoryDigest: installedContractPlan.inventoryDigest,
+  package: "agentscope-cli",
+  receiptCaseIdsDigest: installedContractPlan.receiptCaseIdsDigest,
+  receiptCount: installedContractPlan.receiptCaseIds.length,
+  schema: "agentscope.cli.installed-contract-evidence.v2",
   version: cliVersion,
 });
+const installedContractExpectedReceipts = new Map([
+  ["artifact.install", { outcome: "exited", signal: null, status: 0 }],
+  ...installedContractPlan.cases.flatMap((contractCase) => [
+    ...(contractCase.setup === "initialized"
+      ? [
+          [
+            `${contractCase.caseId}.setup`,
+            { outcome: "exited", signal: null, status: 0 },
+          ],
+        ]
+      : []),
+    ...contractCase.steps.map((step, index) => [
+      `${contractCase.caseId}.${index}`,
+      {
+        outcome: step.expectedOutcome,
+        signal: step.expectedSignal,
+        status: step.expectedStatus,
+      },
+    ]),
+  ]),
+]);
 let preparedDockerClient;
 const docker = async (
   arguments_,
@@ -616,16 +652,65 @@ const captureInstalledContractEvidence = (output, plan) => {
     .filter((line) =>
       line.startsWith("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE="),
     );
-  if (lines.length !== 1 || lines[0].length > 64 * 1024)
+  if (lines.length !== 1 || lines[0].length > 128 * 1024)
     throw new Error("integration.isolation.installed-contract-evidence");
   let value;
   try {
-    value = JSON.parse(
+    const wire = JSON.parse(
       Buffer.from(
         lines[0].slice("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=".length),
         "base64url",
       ).toString("utf8"),
     );
+    if (
+      Object.keys(wire).sort().join(",") !== "aggregate,receipts" ||
+      !Array.isArray(wire.receipts)
+    )
+      throw new Error("integration.isolation.installed-contract-evidence");
+    if (
+      wire.receipts.length !== installedContractPlan.receiptCaseIds.length ||
+      JSON.stringify(wire.receipts.map(({ caseId }) => caseId)) !==
+        JSON.stringify(installedContractPlan.receiptCaseIds) ||
+      wire.receipts.some(
+        (receipt) =>
+          Object.keys(receipt).sort().join(",") !==
+            [
+              "caseId",
+              "cleanup",
+              "exitCode",
+              "outcome",
+              "processJoined",
+              "residualProcessCount",
+              "signal",
+              "stderrJoined",
+              "stdinJoined",
+              "stdoutJoined",
+            ]
+              .sort()
+              .join(",") ||
+          receipt.outcome !==
+            installedContractExpectedReceipts.get(receipt.caseId)?.outcome ||
+          receipt.exitCode !==
+            installedContractExpectedReceipts.get(receipt.caseId)?.status ||
+          receipt.signal !==
+            installedContractExpectedReceipts.get(receipt.caseId)?.signal ||
+          receipt.cleanup !== "clean" ||
+          receipt.residualProcessCount !== 0 ||
+          receipt.processJoined !== true ||
+          receipt.stdinJoined !== true ||
+          receipt.stdoutJoined !== true ||
+          receipt.stderrJoined !== true,
+      )
+    )
+      throw new Error("integration.isolation.installed-contract-evidence");
+    value = wire.aggregate;
+    if (
+      value.receiptDigest !==
+      `sha256-${createHash("sha256")
+        .update(JSON.stringify(wire.receipts))
+        .digest("hex")}`
+    )
+      throw new Error("integration.isolation.installed-contract-evidence");
   } catch {
     throw new Error("integration.isolation.installed-contract-evidence");
   }
@@ -1116,6 +1201,10 @@ const runScenario = async (plan, signal) => {
     registerIntegrationInstalledContractEvidence(
       plan.runId,
       installedCliContractEvidence,
+      Object.freeze({
+        ...installedCliContractAuthority,
+        receiptDigest: installedCliContractEvidence.receiptDigest,
+      }),
       performance.now(),
     );
     registerIntegrationHeadlessReceipt(receipt, performance.now());
@@ -1152,6 +1241,10 @@ const runScenario = async (plan, signal) => {
       registerIntegrationInstalledContractEvidence(
         plan.runId,
         installedCliContractEvidence,
+        Object.freeze({
+          ...installedCliContractAuthority,
+          receiptDigest: installedCliContractEvidence.receiptDigest,
+        }),
         performance.now(),
       );
     }
@@ -1172,7 +1265,7 @@ const recordEvidence = async (evidence) => {
   const verifiedEvidence = compileIsolationEvidence(evidence, {
     baseImageIdentity: preparedIdentityFor(evidence.baseImage),
     mockServerImageIdentity: preparedIdentityFor(evidence.mockServerImage),
-    installedCliContractEvidence: plan.installedCliContractAuthority,
+    installedCliContractEvidence: evidence.installedCliContractEvidence,
   });
   const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
   mkdirSync(directory, { recursive: true });

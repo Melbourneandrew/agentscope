@@ -263,6 +263,30 @@ try {
   );
   assert.match(installedContractPlan.caseIdsDigest, /^sha256:[0-9a-f]{64}$/u);
   assert.match(installedContractPlan.inventoryDigest, /^sha256:[0-9a-f]{64}$/u);
+  const executionModes = new Set(
+    installedContractPlan.cases.flatMap(({ steps }) =>
+      steps.map(({ executionMode }) => executionMode),
+    ),
+  );
+  assert.deepEqual(
+    executionModes,
+    new Set([
+      "deadline-child",
+      "direct",
+      "signal-int",
+      "signal-term",
+      "stdout-closed",
+    ]),
+  );
+  for (const requiredCaseId of [
+    "arguments.unicode",
+    "deadline.child-lifecycle",
+    "signals.sigint",
+    "signals.sigterm",
+    "terminal.broken-pipe",
+    "terminal.narrow-help",
+  ])
+    assert.ok(installedContractPlan.caseIds.includes(requiredCaseId));
   assert.throws(() =>
     oracleModule.evaluateInstalledCliContract(
       installedContractPlan,

@@ -344,15 +344,17 @@ const invokeSelected = async ({
   cwd,
   environment,
   executable,
+  executionTimeoutMilliseconds = 15_000,
   input = "",
+  shutdownTimeoutMilliseconds = 20_000,
 }) => {
   const constructedAtMs = performance.now();
   const monotonicShutdownDeadlineMs = Math.min(
-    constructedAtMs + 20_000,
+    constructedAtMs + shutdownTimeoutMilliseconds,
     headlessShutdownDeadline,
   );
   const monotonicExecutionDeadlineMs = Math.min(
-    constructedAtMs + 15_000,
+    constructedAtMs + executionTimeoutMilliseconds,
     monotonicShutdownDeadlineMs - 2_000,
   );
   const monotonicStartupDeadlineMs = Math.min(
@@ -385,7 +387,6 @@ const invokeSelected = async ({
   );
   const receipt = {
     caseId,
-    requestFingerprint: trace.requestFingerprint,
     outcome: trace.result.outcome,
     exitCode: trace.result.exitCode,
     signal: trace.result.signal,
@@ -409,6 +410,7 @@ const invokeSelected = async ({
   const decode = (bytes) =>
     new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   return Object.freeze({
+    outcome: trace.result.outcome,
     signal: trace.result.signal,
     status: trace.result.exitCode,
     stderr: decode(trace.result.stderr),
@@ -471,11 +473,58 @@ const contractPlan = installedContractOracle.createInstalledCliContractPlan(
   },
 );
 const contractObservations = [];
+const selectedInvocationFor = (contractStep, caseRoot) => {
+  if (contractStep.executionMode === "direct")
+    return {
+      arguments: contractStep.args,
+      executable: installedExecutable,
+      input: contractStep.input,
+    };
+  if (contractStep.executionMode === "stdout-closed")
+    return {
+      arguments: [
+        "-c",
+        'exec 1>&-; exec "$@"',
+        "agentscope-broken-pipe",
+        installedExecutable,
+        ...contractStep.args,
+      ],
+      executable: "/bin/sh",
+    };
+  if (
+    contractStep.executionMode === "signal-int" ||
+    contractStep.executionMode === "signal-term"
+  )
+    return {
+      arguments: [
+        "-c",
+        'signal="$1"; cli="$2"; fifo="$3"; shift 3; /usr/bin/mkfifo "$fifo"; /usr/bin/tail -f /dev/null >"$fifo" & feeder=$!; "$cli" "$@" <"$fifo" >/dev/null 2>/dev/null & target=$!; /usr/bin/sleep 0.1; kill "-$signal" "$target"; wait "$target"; result=$?; kill -TERM "$feeder" 2>/dev/null; wait "$feeder" 2>/dev/null; /bin/rm -f "$fifo"; exit "$result"',
+        "agentscope-signal",
+        contractStep.executionMode === "signal-int" ? "INT" : "TERM",
+        installedExecutable,
+        join(caseRoot, "input.pipe"),
+        ...contractStep.args,
+      ],
+      executable: "/bin/sh",
+    };
+  return {
+    arguments: [
+      "-c",
+      'cli="$1"; shift; "$cli" "$@" >/dev/null 2>/dev/null; /usr/bin/sleep 60 & wait',
+      "agentscope-deadline-child",
+      installedExecutable,
+      ...contractStep.args,
+    ],
+    executable: "/bin/sh",
+    executionTimeoutMilliseconds: 250,
+    shutdownTimeoutMilliseconds: 2_000,
+  };
+};
 for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   const contractCase = contractPlan.cases[caseIndex];
   const caseRoot = join(contractRoot, "cases", String(caseIndex));
-  const caseHome = join(caseRoot, "user home with spaces");
-  const caseCwd = join(caseRoot, "workspace with spaces");
+  const caseHome = join(caseRoot, "user home with spaces — 测试");
+  const caseCwd = join(caseRoot, "workspace with spaces — café");
   const temporary = join(caseRoot, "temporary files");
   mkdirSync(caseHome, { recursive: true });
   mkdirSync(caseCwd);
@@ -514,14 +563,13 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     stepIndex += 1
   ) {
     const contractStep = contractCase.steps[stepIndex];
+    const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
     results.push(
       await invokeSelected({
-        arguments: contractStep.args,
+        ...selectedInvocation,
         caseId: `${contractCase.caseId}.${stepIndex}`,
         cwd: caseCwd,
         environment: caseEnvironment,
-        executable: installedExecutable,
-        input: contractStep.input,
       }),
     );
     afterStateDigests.push(stateDigest(stateRoot));
@@ -566,7 +614,10 @@ const installedContractAggregate = Object.freeze({
 });
 console.log(
   `AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=${Buffer.from(
-    JSON.stringify(installedContractAggregate),
+    JSON.stringify({
+      aggregate: installedContractAggregate,
+      receipts: installedContractReceipts,
+    }),
   ).toString("base64url")}`,
 );
 rmSync(contractRoot, { force: true, recursive: true });

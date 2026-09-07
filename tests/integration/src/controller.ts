@@ -527,6 +527,15 @@ export const headlessReceiptFitsOuterAuthority = (
   outerReceivedAtMs >= 0 &&
   outerReceivedAtMs < cleanupStartMonotonicMilliseconds;
 
+const canonicalRecord = (value: Readonly<Record<string, unknown>>): string =>
+  JSON.stringify(
+    Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    ),
+  );
+
 export const installedContractEvidenceFitsOuterAuthority = (
   runId: string,
   evidence: Readonly<{
@@ -543,48 +552,57 @@ export const installedContractEvidenceFitsOuterAuthority = (
     schema: string;
     version: string;
   }>,
-  outerReceivedAtMs: number,
-  cleanupStartMonotonicMilliseconds: number,
-  runIds: ReadonlySet<string>,
-): boolean =>
-  runTokenPattern.test(runId) &&
-  runIds.has(runId) &&
-  Object.keys(evidence).sort().join(",") ===
-    [
-      "aggregateVersion",
-      "candidateDigest",
-      "caseCount",
-      "caseIdsDigest",
-      "driverDigest",
-      "inventoryDigest",
-      "package",
-      "receiptCaseIdsDigest",
-      "receiptCount",
-      "receiptDigest",
-      "schema",
-      "version",
-    ]
-      .sort()
-      .join(",") &&
-  evidence.aggregateVersion === 1 &&
-  /^sha256:[a-f0-9]{64}$/u.test(evidence.candidateDigest) &&
-  Number.isSafeInteger(evidence.caseCount) &&
-  evidence.caseCount > 80 &&
-  evidence.caseCount <= 256 &&
-  /^sha256:[a-f0-9]{64}$/u.test(evidence.caseIdsDigest) &&
-  /^sha256:[a-f0-9]{64}$/u.test(evidence.driverDigest) &&
-  /^sha256:[a-f0-9]{64}$/u.test(evidence.inventoryDigest) &&
-  evidence.package === "agentscope-cli" &&
-  /^sha256:[a-f0-9]{64}$/u.test(evidence.receiptCaseIdsDigest) &&
-  Number.isSafeInteger(evidence.receiptCount) &&
-  evidence.receiptCount >= evidence.caseCount + 1 &&
-  evidence.receiptCount <= 512 &&
-  /^sha256-[a-f0-9]{64}$/u.test(evidence.receiptDigest) &&
-  evidence.schema === "agentscope.cli.installed-contract-evidence.v2" &&
-  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(evidence.version) &&
-  Number.isFinite(outerReceivedAtMs) &&
-  outerReceivedAtMs >= 0 &&
-  outerReceivedAtMs < cleanupStartMonotonicMilliseconds;
+  expectedEvidence: Readonly<Record<string, unknown>>,
+  authority: Readonly<{
+    cleanupStartMonotonicMilliseconds: number;
+    outerReceivedAtMs: number;
+    runIds: ReadonlySet<string>;
+  }>,
+): boolean => {
+  const { cleanupStartMonotonicMilliseconds, outerReceivedAtMs, runIds } =
+    authority;
+  return (
+    runTokenPattern.test(runId) &&
+    runIds.has(runId) &&
+    canonicalRecord(evidence) === canonicalRecord(expectedEvidence) &&
+    Object.keys(evidence).sort().join(",") ===
+      [
+        "aggregateVersion",
+        "candidateDigest",
+        "caseCount",
+        "caseIdsDigest",
+        "driverDigest",
+        "inventoryDigest",
+        "package",
+        "receiptCaseIdsDigest",
+        "receiptCount",
+        "receiptDigest",
+        "schema",
+        "version",
+      ]
+        .sort()
+        .join(",") &&
+    evidence.aggregateVersion === 1 &&
+    /^sha256:[a-f0-9]{64}$/u.test(evidence.candidateDigest) &&
+    Number.isSafeInteger(evidence.caseCount) &&
+    evidence.caseCount > 80 &&
+    evidence.caseCount <= 256 &&
+    /^sha256:[a-f0-9]{64}$/u.test(evidence.caseIdsDigest) &&
+    /^sha256:[a-f0-9]{64}$/u.test(evidence.driverDigest) &&
+    /^sha256:[a-f0-9]{64}$/u.test(evidence.inventoryDigest) &&
+    evidence.package === "agentscope-cli" &&
+    /^sha256:[a-f0-9]{64}$/u.test(evidence.receiptCaseIdsDigest) &&
+    Number.isSafeInteger(evidence.receiptCount) &&
+    evidence.receiptCount >= evidence.caseCount + 1 &&
+    evidence.receiptCount <= 512 &&
+    /^sha256-[a-f0-9]{64}$/u.test(evidence.receiptDigest) &&
+    evidence.schema === "agentscope.cli.installed-contract-evidence.v2" &&
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(evidence.version) &&
+    Number.isFinite(outerReceivedAtMs) &&
+    outerReceivedAtMs >= 0 &&
+    outerReceivedAtMs < cleanupStartMonotonicMilliseconds
+  );
+};
 
 export const registerIntegrationInstalledContractEvidence = (
   runId: string,
@@ -602,6 +620,7 @@ export const registerIntegrationInstalledContractEvidence = (
     schema: "agentscope.cli.installed-contract-evidence.v2";
     version: string;
   }>,
+  expectedEvidence: Readonly<Record<string, unknown>>,
   outerReceivedAtMs: number,
 ): void => {
   const capability = requireDisposableOuterHostCapability();
@@ -610,9 +629,13 @@ export const registerIntegrationInstalledContractEvidence = (
     !installedContractEvidenceFitsOuterAuthority(
       runId,
       evidence,
-      outerReceivedAtMs,
-      capability.binding.cleanupStartMonotonicMilliseconds,
-      state.runIds,
+      expectedEvidence,
+      {
+        cleanupStartMonotonicMilliseconds:
+          capability.binding.cleanupStartMonotonicMilliseconds,
+        outerReceivedAtMs,
+        runIds: state.runIds,
+      },
     ) ||
     state.installedContractEvidence.has(runId)
   )

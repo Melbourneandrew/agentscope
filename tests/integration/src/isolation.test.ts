@@ -170,12 +170,10 @@ function installedContractEvidence() {
   };
 }
 function installedContractAuthority() {
-  const evidence = installedContractEvidence();
-  return {
-    candidateDigest: evidence.candidateDigest,
-    driverDigest: evidence.driverDigest,
-    version: evidence.version,
-  };
+  const { receiptDigest: _receiptDigest, ...authority } =
+    installedContractEvidence();
+  void _receiptDigest;
+  return authority;
 }
 
 const driver = () => {
@@ -646,7 +644,7 @@ const compileWithPreparedAuthority = (
   compileIsolationEvidence(input, {
     baseImageIdentity: authority.baseImageIdentity,
     mockServerImageIdentity: authority.mockServerImageIdentity,
-    installedCliContractEvidence: installedContractAuthority(),
+    installedCliContractEvidence: authority.installedCliContractEvidence,
   });
 
 describe("prepared OCI identity evidence", () => {
@@ -754,11 +752,23 @@ describe("installed CLI contract evidence", () => {
       null,
       {
         ...evidence.installedCliContractEvidence,
-        candidateDigest: `sha256:${"f".repeat(63)}`,
+        candidateDigest: `sha256:${"f".repeat(64)}`,
       },
       {
         ...evidence.installedCliContractEvidence,
-        caseIdsDigest: `sha256:${"f".repeat(63)}`,
+        caseIdsDigest: `sha256:${"f".repeat(64)}`,
+      },
+      {
+        ...evidence.installedCliContractEvidence,
+        inventoryDigest: `sha256:${"f".repeat(64)}`,
+      },
+      {
+        ...evidence.installedCliContractEvidence,
+        receiptCaseIdsDigest: `sha256:${"f".repeat(64)}`,
+      },
+      {
+        ...evidence.installedCliContractEvidence,
+        receiptDigest: `sha256-${"f".repeat(64)}`,
       },
       { ...evidence.installedCliContractEvidence, receiptCount: 81 },
       { ...evidence.installedCliContractEvidence, version: "latest" },

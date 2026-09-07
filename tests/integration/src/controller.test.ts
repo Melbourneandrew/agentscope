@@ -73,18 +73,18 @@ describe("installed CLI contract evidence authority", () => {
 
   it("requires exact run, candidate, inventory, cases, receipts, and timing", () => {
     expect(
-      installedContractEvidenceFitsOuterAuthority(
-        runId,
-        evidence,
-        99,
-        100,
-        new Set([runId]),
-      ),
+      installedContractEvidenceFitsOuterAuthority(runId, evidence, evidence, {
+        outerReceivedAtMs: 99,
+        cleanupStartMonotonicMilliseconds: 100,
+        runIds: new Set([runId]),
+      }),
     ).toBe(true);
     for (const replacement of [
-      { candidateDigest: `sha256:${"a".repeat(63)}` },
+      { candidateDigest: `sha256:${"a".repeat(64)}` },
       { caseCount: 80 },
-      { inventoryDigest: `sha256:${"b".repeat(63)}` },
+      { caseIdsDigest: `sha256:${"a".repeat(64)}` },
+      { inventoryDigest: `sha256:${"b".repeat(64)}` },
+      { receiptCaseIdsDigest: `sha256:${"c".repeat(64)}` },
       { receiptCount: 81 },
       { receiptDigest: `sha256:${"c".repeat(64)}` },
       { version: "latest" },
@@ -93,28 +93,27 @@ describe("installed CLI contract evidence authority", () => {
         installedContractEvidenceFitsOuterAuthority(
           runId,
           { ...evidence, ...replacement },
-          99,
-          100,
-          new Set([runId]),
+          evidence,
+          {
+            outerReceivedAtMs: 99,
+            cleanupStartMonotonicMilliseconds: 100,
+            runIds: new Set([runId]),
+          },
         ),
       ).toBe(false);
     expect(
-      installedContractEvidenceFitsOuterAuthority(
-        runId,
-        evidence,
-        100,
-        100,
-        new Set([runId]),
-      ),
+      installedContractEvidenceFitsOuterAuthority(runId, evidence, evidence, {
+        outerReceivedAtMs: 100,
+        cleanupStartMonotonicMilliseconds: 100,
+        runIds: new Set([runId]),
+      }),
     ).toBe(false);
     expect(
-      installedContractEvidenceFitsOuterAuthority(
-        runId,
-        evidence,
-        99,
-        100,
-        new Set(),
-      ),
+      installedContractEvidenceFitsOuterAuthority(runId, evidence, evidence, {
+        outerReceivedAtMs: 99,
+        cleanupStartMonotonicMilliseconds: 100,
+        runIds: new Set(),
+      }),
     ).toBe(false);
   });
 });

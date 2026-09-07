@@ -12,10 +12,15 @@ type PublicRegistration = Readonly<{
 type Setup = "initialized" | "invalid-configuration" | "none";
 type OutputRule = "confirmation" | "help" | OutputMode | "version";
 type StateRule = "any" | "capture" | "same-as-before" | "same-as-previous";
+export type InstalledCliExecutionMode =
+  "deadline-child" | "direct" | "signal-int" | "signal-term" | "stdout-closed";
 export type InstalledCliContractStep = Readonly<{
   args: readonly string[];
+  executionMode: InstalledCliExecutionMode;
   expectedDiagnostic?: string;
-  expectedStatus: number;
+  expectedOutcome: "exited" | "timed-out";
+  expectedSignal: "SIGKILL" | "SIGTERM" | null;
+  expectedStatus: number | null;
   input: string;
   outputRule: OutputRule;
   stateRule: StateRule;
@@ -36,6 +41,7 @@ export type InstalledCliContractPlan = Readonly<{
   receiptCaseIdsDigest: string;
 }>;
 export type InstalledCliInvocationResult = Readonly<{
+  outcome: "cleanup-failed" | "exited" | "output-limit" | "timed-out";
   signal: "SIGKILL" | "SIGTERM" | null;
   status: number | null;
   stderr: string;
@@ -432,15 +438,21 @@ const contracts = Object.freeze({
 /* eslint-disable max-params -- the closed driver grammar keeps each expected process observation explicit. */
 const makeStep = (
   args: readonly string[],
-  expectedStatus: number,
+  expectedStatus: number | null,
   outputRule: OutputRule,
   stateRule: StateRule,
   expectedDiagnostic?: string,
   input = "",
+  executionMode: InstalledCliExecutionMode = "direct",
+  expectedOutcome: InstalledCliContractStep["expectedOutcome"] = "exited",
+  expectedSignal: InstalledCliContractStep["expectedSignal"] = null,
 ): InstalledCliContractStep =>
   Object.freeze({
     args: Object.freeze([...args]),
+    executionMode,
     expectedStatus,
+    expectedOutcome,
+    expectedSignal,
     ...(expectedDiagnostic === undefined ? {} : { expectedDiagnostic }),
     input,
     outputRule,
@@ -557,6 +569,88 @@ export const createInstalledCliContractPlan = (
       setup: "none",
       steps: Object.freeze([
         makeStep(["--version"], 0, "version", "same-as-before"),
+      ]),
+    }),
+  );
+  cases.push(
+    Object.freeze({
+      caseId: "arguments.unicode",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(
+          ["--does-not-exist-测试-é"],
+          2,
+          "human",
+          "same-as-before",
+          requiredArgumentDiagnostic,
+        ),
+      ]),
+    }),
+    Object.freeze({
+      caseId: "terminal.narrow-help",
+      setup: "none",
+      steps: Object.freeze([makeStep(["--help"], 0, "help", "same-as-before")]),
+    }),
+    Object.freeze({
+      caseId: "terminal.broken-pipe",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(
+          ["--version"],
+          0,
+          "human",
+          "same-as-before",
+          undefined,
+          "",
+          "stdout-closed",
+        ),
+      ]),
+    }),
+    Object.freeze({
+      caseId: "signals.sigint",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(
+          ["init", "--output", "json"],
+          130,
+          "human",
+          "same-as-before",
+          undefined,
+          "",
+          "signal-int",
+        ),
+      ]),
+    }),
+    Object.freeze({
+      caseId: "signals.sigterm",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(
+          ["init", "--output", "json"],
+          143,
+          "human",
+          "same-as-before",
+          undefined,
+          "",
+          "signal-term",
+        ),
+      ]),
+    }),
+    Object.freeze({
+      caseId: "deadline.child-lifecycle",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(
+          ["--version"],
+          null,
+          "human",
+          "same-as-before",
+          undefined,
+          "",
+          "deadline-child",
+          "timed-out",
+          "SIGKILL",
+        ),
       ]),
     }),
   );
@@ -722,7 +816,8 @@ const assertOutput = (
   result: InstalledCliInvocationResult,
   version: string,
 ): void => {
-  assert.equal(result.signal, null);
+  assert.equal(result.outcome, step.expectedOutcome);
+  assert.equal(result.signal, step.expectedSignal);
   assert.equal(result.status, step.expectedStatus);
   assert.ok(Buffer.byteLength(result.stdout) <= MAXIMUM_OUTPUT_BYTES);
   assert.ok(Buffer.byteLength(result.stderr) <= MAXIMUM_OUTPUT_BYTES);
@@ -744,6 +839,14 @@ const assertOutput = (
       (JSON.parse(result.stdout) as { schema?: unknown }).schema,
       "agentscope.cli.result.v1",
     );
+    assert.equal(result.stderr, "");
+  } else if (
+    step.executionMode === "stdout-closed" ||
+    step.executionMode === "signal-int" ||
+    step.executionMode === "signal-term" ||
+    step.executionMode === "deadline-child"
+  ) {
+    assert.equal(result.stdout, "");
     assert.equal(result.stderr, "");
   } else if (step.outputRule === "human") {
     if (result.status === 0) assert.notEqual(result.stdout, "");
