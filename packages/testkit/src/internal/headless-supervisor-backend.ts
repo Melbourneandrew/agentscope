@@ -15,6 +15,7 @@ import {
   type HeadlessObserverScenario,
   type HeadlessProcessIdentity,
   type HeadlessProcessSetObservation,
+  type HostileHeadlessProcessSeed,
 } from "../headless-supervisor-contract.js";
 import {
   HeadlessSupervisorError,
@@ -64,6 +65,8 @@ const SafeUint8Array = Uint8Array;
 const safeReflectApply = Reflect.apply;
 const safeSetTimeout = setTimeout;
 const safeClearTimeout = clearTimeout;
+const safeSetInterval = setInterval;
+const safeClearInterval = clearInterval;
 const isProxy = types.isProxy;
 const arrayIsArray = Array.isArray;
 const numberIsFinite = Number.isFinite;
@@ -1039,7 +1042,7 @@ const selectedContainerBackend = (
           signal: outputLimited
             ? "SIGTERM"
             : timedOut
-              ? "SIGKILL"
+              ? (exit.signal as "SIGTERM" | "SIGKILL" | null)
               : (exit.signal as "SIGTERM" | "SIGKILL" | null),
           stdout: capturedStdout.bytes,
           stderr: capturedStderr.bytes,
@@ -1492,10 +1495,13 @@ type SelectedContainerTestSeed =
   | "startup-delay"
   | "stream-join-failure"
   | "terminal-join-failure"
-  | "timeout";
+  | "timeout"
+  | HostileHeadlessProcessSeed;
 
 const selectedContainerRuntimeForTest = (
   seed: SelectedContainerTestSeed,
+  // The closed synthetic matrix keeps all runtime transitions in one fixture.
+  // eslint-disable-next-line max-lines-per-function
 ): SelectedContainerRuntime => {
   const root: ProcessSnapshot = { pid: 41_001, startIdentity: "41001:1" };
   const descendant: ProcessSnapshot = {
@@ -1508,9 +1514,11 @@ const selectedContainerRuntimeForTest = (
   let fakeStderr: PassThrough | undefined;
   let closed = false;
   let rootReads = 0;
+  let infiniteTimer: NodeJS.Timeout | undefined;
   const finish = (code: number | null, signal: NodeJS.Signals | null) => {
     if (closed || child === undefined) return;
     closed = true;
+    if (infiniteTimer !== undefined) safeClearInterval(infiniteTimer);
     processes.delete(root.pid);
     if (seed !== "stream-join-failure") {
       fakeStdout?.end();
@@ -1522,7 +1530,7 @@ const selectedContainerRuntimeForTest = (
     assertNamespaceIdentity: (expected) => {
       if (expected !== "pid:[synthetic-selected-container]")
         return fail("testkit.headless.observer.identity");
-      if (seed === "startup-delay") {
+      if (seed === "startup-delay" || seed === "delayed-startup") {
         const stopAt = performance.now() + 20;
         while (performance.now() < stopAt) {
           // Deliberately consume the pre-spawn test deadline.
@@ -1538,7 +1546,8 @@ const selectedContainerRuntimeForTest = (
       const selected = processes.get(pid);
       if (selected === undefined) return undefined;
       rootReads += pid === root.pid ? 1 : 0;
-      return seed === "identity-substitution" &&
+      return (seed === "identity-substitution" ||
+        seed === "observation-race") &&
         pid === root.pid &&
         rootReads > 1
         ? { ...selected, startIdentity: `${pid}:2` }
@@ -1547,8 +1556,18 @@ const selectedContainerRuntimeForTest = (
     sendSignal: (pid, signal) => {
       if (seed === "signal-failure")
         return fail("testkit.headless.observer.signal");
-      if (seed === "terminal-join-failure") return;
-      if (seed === "timeout" && signal === "SIGTERM") return;
+      if (seed === "terminal-join-failure" || seed === "delayed-shutdown")
+        return;
+      if (
+        (seed === "timeout" || seed === "ignored-termination") &&
+        signal === "SIGTERM"
+      )
+        return;
+      if (seed === "signal-race" && signal === "SIGTERM") {
+        processes.delete(pid);
+        if (pid === root.pid) finish(null, "SIGTERM");
+        return;
+      }
       processes.delete(pid);
       if (pid === root.pid) finish(null, signal);
     },
@@ -1563,11 +1582,51 @@ const selectedContainerRuntimeForTest = (
           callback();
         },
       });
-      Object.assign(emitter, { pid: root.pid, stderr, stdin, stdout });
+      Object.assign(emitter, {
+        pid: seed === "crash-before-lifecycle" ? undefined : root.pid,
+        stderr,
+        stdin,
+        stdout,
+      });
       child = emitter;
-      if (seed === "fast-exit") processes.delete(root.pid);
+      if (seed === "fast-exit" || seed === "crash-before-lifecycle")
+        processes.delete(root.pid);
       queueMicrotask(() => {
-        if (seed === "descendant") {
+        if (seed === "crash-before-lifecycle") {
+          processes.delete(root.pid);
+          stdout.end();
+          stderr.end();
+          emitter.emit("error", new Error("synthetic-process-error"));
+        } else if (seed === "crash-after-lifecycle") finish(71, null);
+        else if (seed === "partial-output") {
+          stdout.write(Buffer.from("partial"));
+          stderr.write(Buffer.from("fragment"));
+          finish(70, null);
+        } else if (seed === "malformed-output") {
+          stdout.write(Buffer.from([0xc3]));
+          finish(0, null);
+        } else if (seed === "oversized-output") {
+          stdout.write(Buffer.alloc(request.stdoutLimitBytes + 1));
+        } else if (seed === "infinite-output") {
+          infiniteTimer = safeSetInterval(() => {
+            stdout.write(Buffer.alloc(64));
+          }, 1);
+        } else if (
+          seed === "restricted-environment" ||
+          seed === "missing-hook-record" ||
+          seed === "duplicate-hook-record"
+        ) {
+          const output =
+            seed === "restricted-environment"
+              ? jsonStringify({
+                  environmentKeys: objectKeys(request.environment),
+                })
+              : jsonStringify({
+                  hookDeliveries: seed === "missing-hook-record" ? 0 : 2,
+                });
+          stdout.write(Buffer.from(output));
+          finish(0, null);
+        } else if (seed === "descendant" || seed === "surviving-descendant") {
           processes.set(descendant.pid, descendant);
           finish(0, null);
         } else if (seed === "clean" || seed === "fast-exit") finish(0, null);
