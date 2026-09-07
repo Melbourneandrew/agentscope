@@ -308,6 +308,36 @@ const headlessTerminalReceiptSchema = z
     )
       context.addIssue({ code: "custom", message: "headless receipt drift" });
   });
+const installedCliContractAuthorityFields = {
+  aggregateVersion: z.literal(1),
+  candidateDigest: ociDigest,
+  caseCount: z.number().int().min(81).max(256),
+  caseIdsDigest: ociDigest,
+  driverDigest: ociDigest,
+  inventoryDigest: ociDigest,
+  package: z.literal("agentscope-cli"),
+  receiptCaseIdsDigest: ociDigest,
+  receiptCount: z.number().int().min(82).max(512),
+  schema: z.literal("agentscope.cli.installed-contract-evidence.v2"),
+  version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u),
+} as const;
+const installedCliContractEvidenceSchema = z
+  .strictObject({
+    ...installedCliContractAuthorityFields,
+    receiptDigest: digest,
+  })
+  .superRefine((value, context) => {
+    if (value.receiptCount < value.caseCount + 1)
+      context.addIssue({
+        code: "custom",
+        message: "installed contract evidence drift",
+      });
+  });
+const installedCliContractAuthoritySchema = z.strictObject({
+  candidateDigest: ociDigest,
+  driverDigest: ociDigest,
+  version: installedCliContractAuthorityFields.version,
+});
 
 export interface IsolationPlan {
   readonly runId: string;
@@ -330,6 +360,7 @@ export interface IsolationPlan {
   readonly selection: IsolationExecutionPolicy["selection"];
   readonly maximumParallelScenarios: number;
   readonly scenarioTimeoutMilliseconds: number;
+  readonly installedCliContractAuthority: InstalledCliContractAuthority;
 }
 
 export type IsolationExecutionPolicy = z.infer<typeof executionPolicySchema>;
@@ -338,9 +369,16 @@ export type PreparedImageIdentity = z.infer<typeof preparedImageIdentitySchema>;
 export type HeadlessTerminalReceipt = z.infer<
   typeof headlessTerminalReceiptSchema
 >;
+export type InstalledCliContractEvidence = z.infer<
+  typeof installedCliContractEvidenceSchema
+>;
+export type InstalledCliContractAuthority = z.infer<
+  typeof installedCliContractAuthoritySchema
+>;
 export interface PreparedImageAuthority {
   readonly baseImageIdentity: PreparedImageIdentity;
   readonly mockServerImageIdentity: PreparedImageIdentity;
+  readonly installedCliContractEvidence: InstalledCliContractAuthority;
 }
 
 const isolationEvidenceSchema = z
@@ -370,6 +408,7 @@ const isolationEvidenceSchema = z
     executionPolicy: executionPolicySchema,
     cleanup: cleanupEvidenceSchema,
     headlessTerminalReceipt: headlessTerminalReceiptSchema.nullable(),
+    installedCliContractEvidence: installedCliContractEvidenceSchema.nullable(),
     outcome: z.enum(["passed", "failed", "interrupted"]),
   })
   .superRefine((value, context) => {
@@ -391,6 +430,7 @@ const isolationEvidenceSchema = z
         (value.builtImageDigest === null ||
           value.builtMockServerImageDigest === null ||
           value.headlessTerminalReceipt === null ||
+          value.installedCliContractEvidence === null ||
           value.headlessTerminalReceipt.outcome !== "exited" ||
           value.headlessTerminalReceipt.exitCode !== 0 ||
           value.headlessTerminalReceipt.signal !== null ||
@@ -428,7 +468,11 @@ export interface IsolationDriver {
     plan: IsolationPlan,
     signal: AbortSignal,
   ): Promise<
-    Readonly<{ receipt: HeadlessTerminalReceipt; succeeded: boolean }>
+    Readonly<{
+      installedCliContractEvidence: InstalledCliContractEvidence;
+      receipt: HeadlessTerminalReceipt;
+      succeeded: boolean;
+    }>
   >;
   recordEvidence(evidence: IsolationEvidence): Promise<void>;
   removeContainer(name: string): Promise<void>;
@@ -458,6 +502,7 @@ export const compileIsolationEvidence = (
           .strictObject({
             baseImageIdentity: preparedImageIdentitySchema,
             mockServerImageIdentity: preparedImageIdentitySchema,
+            installedCliContractEvidence: installedCliContractAuthoritySchema,
           })
           .safeParse(authority);
   if (
@@ -467,7 +512,14 @@ export const compileIsolationEvidence = (
         JSON.stringify(parsed.data.baseImageIdentity) !==
           JSON.stringify(parsedAuthority.data.baseImageIdentity) ||
         JSON.stringify(parsed.data.mockServerImageIdentity) !==
-          JSON.stringify(parsedAuthority.data.mockServerImageIdentity)))
+          JSON.stringify(parsedAuthority.data.mockServerImageIdentity) ||
+        (parsed.data.installedCliContractEvidence !== null &&
+          (parsed.data.installedCliContractEvidence.candidateDigest !==
+            parsedAuthority.data.installedCliContractEvidence.candidateDigest ||
+            parsed.data.installedCliContractEvidence.driverDigest !==
+              parsedAuthority.data.installedCliContractEvidence.driverDigest ||
+            parsed.data.installedCliContractEvidence.version !==
+              parsedAuthority.data.installedCliContractEvidence.version))))
   )
     throw new Error("integration.isolation.evidence");
   return deepFreeze(structuredClone(parsed.data));
@@ -483,6 +535,7 @@ export const createIsolationPlan = (input: {
   readonly selection: unknown;
   readonly maximumParallelScenarios: number;
   readonly scenarioTimeoutMilliseconds: number;
+  readonly installedCliContractAuthority: unknown;
 }): Readonly<IsolationPlan> => {
   const parsedToken = runToken.safeParse(input.runToken);
   const parsedSelection = selectionPolicySchema.safeParse(input.selection);
@@ -492,11 +545,16 @@ export const createIsolationPlan = (input: {
   const parsedMockServerImageIdentity = preparedImageIdentitySchema.safeParse(
     input.mockServerImageIdentity,
   );
+  const parsedInstalledCliContractAuthority =
+    installedCliContractAuthoritySchema.safeParse(
+      input.installedCliContractAuthority,
+    );
   if (
     !parsedToken.success ||
     !parsedSelection.success ||
     !parsedBaseImageIdentity.success ||
     !parsedMockServerImageIdentity.success ||
+    !parsedInstalledCliContractAuthority.success ||
     !digest.safeParse(input.manifestIdentity).success ||
     !imageReference.safeParse(input.scenario.image).success ||
     !imageReference.safeParse(input.scenario.mockServerImage).success ||
@@ -535,6 +593,7 @@ export const createIsolationPlan = (input: {
     selection: parsedSelection.data,
     maximumParallelScenarios: input.maximumParallelScenarios,
     scenarioTimeoutMilliseconds: input.scenarioTimeoutMilliseconds,
+    installedCliContractAuthority: parsedInstalledCliContractAuthority.data,
   });
 };
 
@@ -587,6 +646,7 @@ export const executeIsolationPlan = async (
   let mockServerImageDigest: string | undefined;
   let failure: unknown;
   let headlessTerminalReceipt: HeadlessTerminalReceipt | null = null;
+  let installedCliContractEvidence: InstalledCliContractEvidence | null = null;
   let workOutcome: IsolationEvidence["outcome"];
   try {
     executionPolicy = compileIsolationExecutionPolicy(
@@ -612,6 +672,9 @@ export const executeIsolationPlan = async (
     const scenarioResult = await driver.runScenario(plan, signal);
     headlessTerminalReceipt = headlessTerminalReceiptSchema.parse(
       scenarioResult.receipt,
+    );
+    installedCliContractEvidence = installedCliContractEvidenceSchema.parse(
+      scenarioResult.installedCliContractEvidence,
     );
     if (!scenarioResult.succeeded)
       throw new Error("integration.isolation.scenario-failed");
@@ -669,11 +732,13 @@ export const executeIsolationPlan = async (
         remaining: cleanupInventory,
       },
       headlessTerminalReceipt,
+      installedCliContractEvidence,
       outcome: workOutcome,
     },
     {
       baseImageIdentity: plan.baseImageIdentity,
       mockServerImageIdentity: plan.mockServerImageIdentity,
+      installedCliContractEvidence: plan.installedCliContractAuthority,
     },
   );
   await driver.recordEvidence(evidence);

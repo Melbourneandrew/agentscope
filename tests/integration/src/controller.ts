@@ -76,6 +76,24 @@ type CapabilityState = {
       outerReceivedAtMs: number;
     }>
   >;
+  installedContractEvidence: Map<
+    string,
+    Readonly<{
+      aggregateVersion: 1;
+      candidateDigest: `sha256:${string}`;
+      caseCount: number;
+      caseIdsDigest: `sha256:${string}`;
+      driverDigest: `sha256:${string}`;
+      inventoryDigest: `sha256:${string}`;
+      outerReceivedAtMs: number;
+      package: "agentscope-cli";
+      receiptCaseIdsDigest: `sha256:${string}`;
+      receiptCount: number;
+      receiptDigest: `sha256-${string}`;
+      schema: "agentscope.cli.installed-contract-evidence.v2";
+      version: string;
+    }>
+  >;
   requiredFailureEvidence: Set<string>;
   privateStorageRetirements: Map<
     number,
@@ -429,6 +447,7 @@ export const registerIntegrationArtifactFile = (name: string): void => {
 
 export const registerIntegrationFailureEvidence = (
   evidence: Readonly<{
+    aggregateVersion: number;
     dev: number;
     digest: `sha256:${string}`;
     ino: number;
@@ -507,6 +526,102 @@ export const headlessReceiptFitsOuterAuthority = (
   receipt.returnedAtMs <= receipt.request.monotonicShutdownDeadlineMs &&
   outerReceivedAtMs >= 0 &&
   outerReceivedAtMs < cleanupStartMonotonicMilliseconds;
+
+export const installedContractEvidenceFitsOuterAuthority = (
+  runId: string,
+  evidence: Readonly<{
+    aggregateVersion: number;
+    candidateDigest: string;
+    caseCount: number;
+    caseIdsDigest: string;
+    driverDigest: string;
+    inventoryDigest: string;
+    package: string;
+    receiptCaseIdsDigest: string;
+    receiptCount: number;
+    receiptDigest: string;
+    schema: string;
+    version: string;
+  }>,
+  outerReceivedAtMs: number,
+  cleanupStartMonotonicMilliseconds: number,
+  runIds: ReadonlySet<string>,
+): boolean =>
+  runTokenPattern.test(runId) &&
+  runIds.has(runId) &&
+  Object.keys(evidence).sort().join(",") ===
+    [
+      "aggregateVersion",
+      "candidateDigest",
+      "caseCount",
+      "caseIdsDigest",
+      "driverDigest",
+      "inventoryDigest",
+      "package",
+      "receiptCaseIdsDigest",
+      "receiptCount",
+      "receiptDigest",
+      "schema",
+      "version",
+    ]
+      .sort()
+      .join(",") &&
+  evidence.aggregateVersion === 1 &&
+  /^sha256:[a-f0-9]{64}$/u.test(evidence.candidateDigest) &&
+  Number.isSafeInteger(evidence.caseCount) &&
+  evidence.caseCount > 80 &&
+  evidence.caseCount <= 256 &&
+  /^sha256:[a-f0-9]{64}$/u.test(evidence.caseIdsDigest) &&
+  /^sha256:[a-f0-9]{64}$/u.test(evidence.driverDigest) &&
+  /^sha256:[a-f0-9]{64}$/u.test(evidence.inventoryDigest) &&
+  evidence.package === "agentscope-cli" &&
+  /^sha256:[a-f0-9]{64}$/u.test(evidence.receiptCaseIdsDigest) &&
+  Number.isSafeInteger(evidence.receiptCount) &&
+  evidence.receiptCount >= evidence.caseCount + 1 &&
+  evidence.receiptCount <= 512 &&
+  /^sha256-[a-f0-9]{64}$/u.test(evidence.receiptDigest) &&
+  evidence.schema === "agentscope.cli.installed-contract-evidence.v2" &&
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(evidence.version) &&
+  Number.isFinite(outerReceivedAtMs) &&
+  outerReceivedAtMs >= 0 &&
+  outerReceivedAtMs < cleanupStartMonotonicMilliseconds;
+
+export const registerIntegrationInstalledContractEvidence = (
+  runId: string,
+  evidence: Readonly<{
+    aggregateVersion: 1;
+    candidateDigest: `sha256:${string}`;
+    caseCount: number;
+    caseIdsDigest: `sha256:${string}`;
+    driverDigest: `sha256:${string}`;
+    inventoryDigest: `sha256:${string}`;
+    package: "agentscope-cli";
+    receiptCaseIdsDigest: `sha256:${string}`;
+    receiptCount: number;
+    receiptDigest: `sha256-${string}`;
+    schema: "agentscope.cli.installed-contract-evidence.v2";
+    version: string;
+  }>,
+  outerReceivedAtMs: number,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    !installedContractEvidenceFitsOuterAuthority(
+      runId,
+      evidence,
+      outerReceivedAtMs,
+      capability.binding.cleanupStartMonotonicMilliseconds,
+      state.runIds,
+    ) ||
+    state.installedContractEvidence.has(runId)
+  )
+    throw new Error("integration.controller.installed-contract-evidence");
+  state.installedContractEvidence.set(
+    runId,
+    Object.freeze({ ...evidence, outerReceivedAtMs }),
+  );
+};
 
 export const registerIntegrationPrivateStorageRetirement = (
   retirement: Readonly<{
@@ -589,6 +704,22 @@ export const ownedIntegrationResources = (): Readonly<{
     runId: string;
     outerReceivedAtMs: number;
   }>[];
+  installedContractEvidence: readonly Readonly<{
+    aggregateVersion: 1;
+    candidateDigest: `sha256:${string}`;
+    caseCount: number;
+    caseIdsDigest: `sha256:${string}`;
+    driverDigest: `sha256:${string}`;
+    inventoryDigest: `sha256:${string}`;
+    outerReceivedAtMs: number;
+    package: "agentscope-cli";
+    receiptCaseIdsDigest: `sha256:${string}`;
+    receiptCount: number;
+    receiptDigest: `sha256-${string}`;
+    runId: string;
+    schema: "agentscope.cli.installed-contract-evidence.v2";
+    version: string;
+  }>[];
   runIds: readonly string[];
 }> => {
   const capability = requireDisposableOuterHostCapability();
@@ -612,6 +743,11 @@ export const ownedIntegrationResources = (): Readonly<{
     headlessReceipts: Object.freeze(
       [...state.headlessReceipts.entries()]
         .map(([runId, receipt]) => Object.freeze({ runId, ...receipt }))
+        .sort((left, right) => left.runId.localeCompare(right.runId)),
+    ),
+    installedContractEvidence: Object.freeze(
+      [...state.installedContractEvidence.entries()]
+        .map(([runId, evidence]) => Object.freeze({ runId, ...evidence }))
         .sort((left, right) => left.runId.localeCompare(right.runId)),
     ),
     runIds: Object.freeze([...state.runIds].sort()),
@@ -790,6 +926,7 @@ export const executeIntegrationController = async (): Promise<void> => {
     candidateIdentities: new Set(),
     failureEvidence: new Map(),
     headlessReceipts: new Map(),
+    installedContractEvidence: new Map(),
     requiredFailureEvidence: new Set(),
     privateStorageRetirements: new Map(),
     runIds: new Set(),

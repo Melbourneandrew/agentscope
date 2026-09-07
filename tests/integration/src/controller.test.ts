@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   failureEvidenceCoverageIsExact,
   headlessReceiptFitsOuterAuthority,
+  installedContractEvidenceFitsOuterAuthority,
   runIntegrationStages,
   settleAbortableOperation,
 } from "./controller.js";
@@ -48,6 +49,71 @@ describe("integration failure evidence coverage", () => {
         [first, second],
         [first],
         [first, "aaaaaaaaaaaaaaaa"],
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("installed CLI contract evidence authority", () => {
+  const runId = "0123456789abcdef";
+  const evidence = {
+    aggregateVersion: 1,
+    candidateDigest: `sha256:${"1".repeat(64)}`,
+    caseCount: 81,
+    caseIdsDigest: `sha256:${"2".repeat(64)}`,
+    driverDigest: `sha256:${"3".repeat(64)}`,
+    inventoryDigest: `sha256:${"4".repeat(64)}`,
+    package: "agentscope-cli",
+    receiptCaseIdsDigest: `sha256:${"5".repeat(64)}`,
+    receiptCount: 82,
+    receiptDigest: `sha256-${"6".repeat(64)}`,
+    schema: "agentscope.cli.installed-contract-evidence.v2",
+    version: "0.1.0",
+  };
+
+  it("requires exact run, candidate, inventory, cases, receipts, and timing", () => {
+    expect(
+      installedContractEvidenceFitsOuterAuthority(
+        runId,
+        evidence,
+        99,
+        100,
+        new Set([runId]),
+      ),
+    ).toBe(true);
+    for (const replacement of [
+      { candidateDigest: `sha256:${"a".repeat(63)}` },
+      { caseCount: 80 },
+      { inventoryDigest: `sha256:${"b".repeat(63)}` },
+      { receiptCount: 81 },
+      { receiptDigest: `sha256:${"c".repeat(64)}` },
+      { version: "latest" },
+    ])
+      expect(
+        installedContractEvidenceFitsOuterAuthority(
+          runId,
+          { ...evidence, ...replacement },
+          99,
+          100,
+          new Set([runId]),
+        ),
+      ).toBe(false);
+    expect(
+      installedContractEvidenceFitsOuterAuthority(
+        runId,
+        evidence,
+        100,
+        100,
+        new Set([runId]),
+      ),
+    ).toBe(false);
+    expect(
+      installedContractEvidenceFitsOuterAuthority(
+        runId,
+        evidence,
+        99,
+        100,
+        new Set(),
       ),
     ).toBe(false);
   });

@@ -199,36 +199,88 @@ try {
     process.platform === "win32" ? "agentscope.cmd" : "agentscope",
   );
   if (process.platform !== "win32") chmodSync(executable, 0o755);
-  const installedContract = run(process.execPath, [
-    "--import",
-    "tsx",
-    resolve(packageRoot, "scripts/verify-installed-contract.ts"),
-    "--executable",
-    executable,
-    "--tarball",
-    tarball,
-    "--installed-package-root",
-    join(installRoot, "node_modules/agentscope-cli"),
-    "--expected-version",
+  const oracleSourcePath = resolve(
+    packageRoot,
+    "scripts/verify-installed-contract.ts",
+  );
+  const oracleSource = readFileSync(oracleSourcePath, "utf8");
+  assert.doesNotMatch(oracleSource, /node:child_process|\bspawn(?:Sync)?\b/u);
+  const oracleBuild = await build({
+    bundle: true,
+    entryPoints: [oracleSourcePath],
+    format: "esm",
+    platform: "node",
+    target: "node22",
+    write: false,
+  });
+  assert.equal(oracleBuild.outputFiles.length, 1);
+  const oracleModule = await import(
+    `data:text/javascript;base64,${Buffer.from(
+      oracleBuild.outputFiles[0].text,
+    ).toString("base64")}`
+  );
+  const registryBuild = await build({
+    bundle: true,
+    format: "esm",
+    platform: "node",
+    stdin: {
+      contents: 'export { commandRegistry } from "./src/command-registry.ts";',
+      loader: "ts",
+      resolveDir: packageRoot,
+      sourcefile: "installed-contract-registry-entry.ts",
+    },
+    target: "node22",
+    write: false,
+  });
+  assert.equal(registryBuild.outputFiles.length, 1);
+  const registryModule = await import(
+    `data:text/javascript;base64,${Buffer.from(
+      registryBuild.outputFiles[0].text,
+    ).toString("base64")}`
+  );
+  const registryProjection = registryModule.commandRegistry
+    .filter(({ visibility }) => visibility === "public")
+    .map(({ id, kind, outputModes, path, visibility }) => ({
+      id,
+      kind,
+      path,
+      outputModes,
+      visibility,
+    }));
+  assert.deepEqual(
+    oracleModule.expectedPublicCommandInventory,
+    registryProjection,
+  );
+  const installedContractPlan = oracleModule.createInstalledCliContractPlan(
     installedManifest.version,
-  ]);
-  const installedContractEvidence = JSON.parse(installedContract.stdout);
+    { architecture: "x64", modules: "127", platform: "linux" },
+  );
+  assert.equal(installedContractPlan.planVersion, 1);
+  assert.ok(installedContractPlan.caseIds.length > 80);
   assert.equal(
-    installedContractEvidence.schema,
-    "agentscope.cli.installed-contract-evidence.v1",
+    new Set(installedContractPlan.caseIds).size,
+    installedContractPlan.caseIds.length,
   );
-  assert.equal(installedContractEvidence.package, "agentscope-cli");
-  assert.equal(installedContractEvidence.version, installedManifest.version);
-  assert.match(
-    installedContractEvidence.candidateDigest,
-    /^sha256:[0-9a-f]{64}$/u,
+  assert.match(installedContractPlan.caseIdsDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(installedContractPlan.inventoryDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.throws(() =>
+    oracleModule.evaluateInstalledCliContract(
+      installedContractPlan,
+      {
+        bin: installedManifest.bin,
+        candidateDigest: `sha256:${createHash("sha256")
+          .update(readFileSync(tarball))
+          .digest("hex")}`,
+        executableRealPath: realpathSync(executable),
+        installedPackageRootRealPath: realpathSync(
+          join(installRoot, "node_modules/agentscope-cli"),
+        ),
+        package: installedManifest.name,
+        version: installedManifest.version,
+      },
+      [],
+    ),
   );
-  assert.match(
-    installedContractEvidence.inventoryDigest,
-    /^sha256:[0-9a-f]{64}$/u,
-  );
-  assert.ok(installedContractEvidence.caseCount > 80);
-  assert.equal(installedContract.stderr, "");
   const executableOptions = {
     cwd: installRoot,
     shell: process.platform === "win32",

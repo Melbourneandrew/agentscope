@@ -70,6 +70,7 @@ const planFor = (token: string) =>
     },
     maximumParallelScenarios: 2,
     scenarioTimeoutMilliseconds: 300_000,
+    installedCliContractAuthority: installedContractAuthority(),
   });
 
 const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
@@ -152,6 +153,30 @@ const headlessReceiptFor = (runId = "0123456789abcdef") => {
     stderrJoined: true as const,
   };
 };
+function installedContractEvidence() {
+  return {
+    aggregateVersion: 1 as const,
+    candidateDigest: `sha256:${"1".repeat(64)}` as const,
+    caseCount: 81,
+    caseIdsDigest: `sha256:${"2".repeat(64)}` as const,
+    driverDigest: `sha256:${"3".repeat(64)}` as const,
+    inventoryDigest: `sha256:${"4".repeat(64)}` as const,
+    package: "agentscope-cli" as const,
+    receiptCaseIdsDigest: `sha256:${"5".repeat(64)}` as const,
+    receiptCount: 82,
+    receiptDigest: `sha256-${"6".repeat(64)}` as const,
+    schema: "agentscope.cli.installed-contract-evidence.v2" as const,
+    version: "0.1.0",
+  };
+}
+function installedContractAuthority() {
+  const evidence = installedContractEvidence();
+  return {
+    candidateDigest: evidence.candidateDigest,
+    driverDigest: evidence.driverDigest,
+    version: evidence.version,
+  };
+}
 
 const driver = () => {
   const calls: string[] = [];
@@ -162,6 +187,7 @@ const driver = () => {
   const runScenario = vi.fn<IsolationDriver["runScenario"]>((plan) => {
     calls.push("scenario");
     return Promise.resolve({
+      installedCliContractEvidence: installedContractEvidence(),
       receipt: headlessReceiptFor(plan.runId),
       succeeded: true,
     });
@@ -275,6 +301,9 @@ describe("scenario isolation", () => {
       remaining: emptyCleanupInventory(),
     });
     expect(evidence.headlessTerminalReceipt).toEqual(headlessReceiptFor());
+    expect(evidence.installedCliContractEvidence).toEqual(
+      installedContractEvidence(),
+    );
     expect(fixture.calls).toEqual([
       "build",
       "build-mockserver",
@@ -316,6 +345,7 @@ describe("scenario isolation outcomes", () => {
       signal: "SIGKILL" as const,
     };
     observedFailure.runScenario.mockResolvedValueOnce({
+      installedCliContractEvidence: installedContractEvidence(),
       receipt: timeoutReceipt,
       succeeded: false,
     });
@@ -604,6 +634,7 @@ const compiledEvidenceFixture = () => {
         remaining: emptyCleanupInventory(),
       },
       headlessTerminalReceipt: headlessReceiptFor(),
+      installedCliContractEvidence: installedContractEvidence(),
       outcome: "passed",
     },
   };
@@ -615,6 +646,7 @@ const compileWithPreparedAuthority = (
   compileIsolationEvidence(input, {
     baseImageIdentity: authority.baseImageIdentity,
     mockServerImageIdentity: authority.mockServerImageIdentity,
+    installedCliContractEvidence: installedContractAuthority(),
   });
 
 describe("prepared OCI identity evidence", () => {
@@ -680,6 +712,61 @@ describe("selected headless backend evidence", () => {
       expect(() =>
         compileWithPreparedAuthority(
           { ...evidence, headlessTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+  });
+});
+
+describe("installed CLI contract evidence", () => {
+  it("keeps the driver separate and leaves process authority with PID 1", () => {
+    const workspaceRoot = resolve(integrationRoot, "../..");
+    const oracle = readFileSync(
+      resolve(workspaceRoot, "apps/cli/scripts/verify-installed-contract.ts"),
+      "utf8",
+    );
+    const runner = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const scenario = readFileSync(
+      resolve(integrationRoot, "run-scenarios.mjs"),
+      "utf8",
+    );
+    const packageManifest = JSON.parse(
+      readFileSync(resolve(workspaceRoot, "apps/cli/package.json"), "utf8"),
+    ) as { files?: unknown };
+    expect(oracle).not.toMatch(/node:child_process|\bspawn(?:Sync)?\b/u);
+    expect(runner).toContain(
+      "composeSelectedContainerHeadlessSupervisorCapability",
+    );
+    expect(runner).toContain("executeSelectedHeadlessProcess");
+    expect(runner).not.toMatch(/node:child_process|\bspawn(?:Sync)?\b/u);
+    expect(scenario).toContain(
+      'resolve(context, "installed-contract-driver.mjs")',
+    );
+    expect(scenario).toContain(
+      "COPY runner.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs",
+    );
+    expect(packageManifest.files).toEqual(["dist"]);
+  });
+
+  it("rejects missing, malformed, substituted, and incomplete aggregates", () => {
+    const { evidence } = compiledEvidenceFixture();
+    for (const installedCliContractEvidence of [
+      null,
+      {
+        ...evidence.installedCliContractEvidence,
+        candidateDigest: `sha256:${"f".repeat(63)}`,
+      },
+      {
+        ...evidence.installedCliContractEvidence,
+        caseIdsDigest: `sha256:${"f".repeat(63)}`,
+      },
+      { ...evidence.installedCliContractEvidence, receiptCount: 81 },
+      { ...evidence.installedCliContractEvidence, version: "latest" },
+      { ...evidence.installedCliContractEvidence, extra: "authority" },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...evidence, installedCliContractEvidence },
           evidence,
         ),
       ).toThrow("integration.isolation.evidence");

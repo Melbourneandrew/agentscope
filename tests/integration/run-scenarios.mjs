@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
+import { stripTypeScriptTypes } from "node:module";
 import { promisify } from "node:util";
 
 import {
@@ -58,6 +59,7 @@ import {
   integrationStageSignal,
   registerIntegrationFailureEvidence,
   registerIntegrationHeadlessReceipt,
+  registerIntegrationInstalledContractEvidence,
   registerIntegrationRunIds,
   requireIntegrationFailureEvidence,
   remainingIntegrationOperationMilliseconds,
@@ -72,6 +74,25 @@ const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
 const installedPtyFailures = new Map();
+const installedContractSourcePath = resolve(
+  workspaceRoot,
+  "apps/cli/scripts/verify-installed-contract.ts",
+);
+const installedContractSource = readFileSync(installedContractSourcePath);
+if (
+  installedContractSource.byteLength < 1 ||
+  installedContractSource.byteLength > 128 * 1024
+)
+  throw new Error("integration.isolation.installed-contract-driver");
+const installedContractDriver = Buffer.from(
+  stripTypeScriptTypes(installedContractSource.toString("utf8"), {
+    mode: "strip",
+    sourceUrl: "installed-contract-driver.mjs",
+  }),
+);
+const installedContractDriverDigest = `sha256:${createHash("sha256")
+  .update(installedContractDriver)
+  .digest("hex")}`;
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const manifest = compileCapabilityManifest(
   readJson(resolve(integrationRoot, "capability-manifest.json")),
@@ -170,6 +191,16 @@ const cliArtifact = candidate.artifacts.find(
 );
 if (cliArtifact === undefined)
   throw new Error("integration.isolation.candidate-artifact");
+const cliVersion = readJson(
+  resolve(workspaceRoot, "apps/cli/package.json"),
+).version;
+if (typeof cliVersion !== "string")
+  throw new Error("integration.isolation.candidate-artifact");
+const installedCliContractAuthority = Object.freeze({
+  candidateDigest: cliArtifact.sha256.replace("sha256-", "sha256:"),
+  driverDigest: installedContractDriverDigest,
+  version: cliVersion,
+});
 let preparedDockerClient;
 const docker = async (
   arguments_,
@@ -337,6 +368,11 @@ const stageBuildContext = (plan) => {
     mkdirSync(dirname(target), { recursive: true });
     cpSync(source, target);
   }
+  writeFileSync(
+    resolve(context, "installed-contract-driver.mjs"),
+    installedContractDriver,
+    { mode: 0o444 },
+  );
   cpSync(
     candidateDirectory,
     resolve(context, "prepared/candidates", candidate.bundleIdentity),
@@ -348,7 +384,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,
@@ -489,6 +525,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const installedContractEvidenceByRun = new Map();
 const scenarioOutcomes = new Map();
 const fingerprintHeadlessRequest = (request) =>
   `sha256:${createHash("sha256")
@@ -508,6 +545,7 @@ const expectedHeadlessEnvironment = (plan) => ({
   AGENTSCOPE_CANDIDATE_ROOT: "/opt/agentscope/prepared",
   AGENTSCOPE_COLLECTOR_URL: "http://collector:4318",
   AGENTSCOPE_INGESTION_URL: "http://collector:4318",
+  AGENTSCOPE_INSTALLED_CONTRACT_DRIVER_DIGEST: installedContractDriverDigest,
   AGENTSCOPE_LEDGER: "/ledger",
   AGENTSCOPE_MODEL_SERVER_URL: "http://mockserver:1080",
   AGENTSCOPE_RETRIEVAL_URL: "http://retrieval:4319",
@@ -571,6 +609,66 @@ const captureFixtureResult = (output, plan) => {
     ),
   );
   return true;
+};
+const captureInstalledContractEvidence = (output, plan) => {
+  const lines = output
+    .split("\n")
+    .filter((line) =>
+      line.startsWith("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE="),
+    );
+  if (lines.length !== 1 || lines[0].length > 64 * 1024)
+    throw new Error("integration.isolation.installed-contract-evidence");
+  let value;
+  try {
+    value = JSON.parse(
+      Buffer.from(
+        lines[0].slice("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=".length),
+        "base64url",
+      ).toString("utf8"),
+    );
+  } catch {
+    throw new Error("integration.isolation.installed-contract-evidence");
+  }
+  if (
+    Object.keys(value).sort().join(",") !==
+      [
+        "aggregateVersion",
+        "candidateDigest",
+        "caseCount",
+        "caseIdsDigest",
+        "driverDigest",
+        "inventoryDigest",
+        "package",
+        "receiptCaseIdsDigest",
+        "receiptCount",
+        "receiptDigest",
+        "schema",
+        "version",
+      ]
+        .sort()
+        .join(",") ||
+    value.aggregateVersion !== 1 ||
+    value.schema !== "agentscope.cli.installed-contract-evidence.v2" ||
+    value.package !== "agentscope-cli" ||
+    value.version !== cliVersion ||
+    value.candidateDigest !==
+      cliArtifact.sha256.replace("sha256-", "sha256:") ||
+    value.driverDigest !== installedContractDriverDigest ||
+    !Number.isSafeInteger(value.caseCount) ||
+    value.caseCount <= 80 ||
+    value.caseCount > 256 ||
+    !Number.isSafeInteger(value.receiptCount) ||
+    value.receiptCount < value.caseCount + 1 ||
+    value.receiptCount > 512 ||
+    !/^sha256:[a-f\d]{64}$/u.test(value.caseIdsDigest) ||
+    !/^sha256:[a-f\d]{64}$/u.test(value.inventoryDigest) ||
+    !/^sha256:[a-f\d]{64}$/u.test(value.receiptCaseIdsDigest) ||
+    !/^sha256-[a-f\d]{64}$/u.test(value.receiptDigest) ||
+    installedContractEvidenceByRun.has(plan.runId)
+  )
+    throw new Error("integration.isolation.installed-contract-evidence");
+  installedContractEvidenceByRun.set(plan.runId, Object.freeze(value));
+  return Object.freeze(value);
 };
 const headlessRequestMatches = (receipt, plan) =>
   receipt.request?.runId === plan.runId &&
@@ -914,6 +1012,59 @@ const startMockServer = async (plan, signal) => {
     mutationCapable: true,
   });
 };
+const scenarioContainerArguments = (
+  plan,
+  outerMonotonicDeadline,
+  immutableCandidate,
+) => {
+  const testModeArguments =
+    testMode === undefined
+      ? []
+      : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
+  return [
+    "create",
+    "--platform",
+    canonicalImagePlatform,
+    "--name",
+    plan.scenarioName,
+    ...labelArguments(plan),
+    ...confinementArguments(plan),
+    "--env",
+    "HOME=/home/agentscope",
+    "--env",
+    "XDG_CONFIG_HOME=/harness-home",
+    "--env",
+    "HARNESS_HOME=/harness-home",
+    "--env",
+    "AGENTSCOPE_HOME=/agentscope-home",
+    "--env",
+    "AGENTSCOPE_WORKTREE=/worktree",
+    "--env",
+    "AGENTSCOPE_LEDGER=/ledger",
+    "--env",
+    "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
+    "--env",
+    "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
+    "--env",
+    "AGENTSCOPE_INGESTION_URL=http://collector:4318",
+    "--env",
+    `AGENTSCOPE_INSTALLED_CONTRACT_DRIVER_DIGEST=${installedContractDriverDigest}`,
+    "--env",
+    "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
+    "--env",
+    "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
+    "--env",
+    `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+    "--env",
+    `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
+    "--env",
+    `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
+    "--env",
+    `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+    ...testModeArguments,
+    plan.imageTag,
+  ];
+};
 const runScenario = async (plan, signal) => {
   const remainingOuterMilliseconds = Math.min(
     scenarioTimeoutMilliseconds,
@@ -923,56 +1074,16 @@ const runScenario = async (plan, signal) => {
     throw new Error("integration.isolation.headless-authority");
   const outerMonotonicDeadline =
     linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
-  const testModeArguments =
-    testMode === undefined
-      ? []
-      : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
   const immutableCandidate = await createImmutableCandidateHandoff(
     plan,
     signal,
   );
   await dockerWithSignal(
-    [
-      "create",
-      "--platform",
-      canonicalImagePlatform,
-      "--name",
-      plan.scenarioName,
-      ...labelArguments(plan),
-      ...confinementArguments(plan),
-      "--env",
-      "HOME=/home/agentscope",
-      "--env",
-      "XDG_CONFIG_HOME=/harness-home",
-      "--env",
-      "HARNESS_HOME=/harness-home",
-      "--env",
-      "AGENTSCOPE_HOME=/agentscope-home",
-      "--env",
-      "AGENTSCOPE_WORKTREE=/worktree",
-      "--env",
-      "AGENTSCOPE_LEDGER=/ledger",
-      "--env",
-      "AGENTSCOPE_CANDIDATE_ROOT=/opt/agentscope/prepared",
-      "--env",
-      "AGENTSCOPE_COLLECTOR_URL=http://collector:4318",
-      "--env",
-      "AGENTSCOPE_INGESTION_URL=http://collector:4318",
-      "--env",
-      "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
-      "--env",
-      "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
-      "--env",
-      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
-      "--env",
-      `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
-      "--env",
-      `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
-      "--env",
-      `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
-      ...testModeArguments,
-      plan.imageTag,
-    ],
+    scenarioContainerArguments(
+      plan,
+      outerMonotonicDeadline,
+      immutableCandidate,
+    ),
     signal,
     { mutationCapable: true },
   );
@@ -998,8 +1109,18 @@ const runScenario = async (plan, signal) => {
       outerMonotonicDeadline,
     });
     const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
+    const installedCliContractEvidence = captureInstalledContractEvidence(
+      stdout,
+      plan,
+    );
+    registerIntegrationInstalledContractEvidence(
+      plan.runId,
+      installedCliContractEvidence,
+      performance.now(),
+    );
     registerIntegrationHeadlessReceipt(receipt, performance.now());
     return {
+      installedCliContractEvidence,
       receipt,
       succeeded:
         receipt.outcome === "exited" &&
@@ -1019,20 +1140,39 @@ const runScenario = async (plan, signal) => {
     captureFixtureResult(output, plan);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
       captureInstalledPtyFailure(output, plan);
+    let installedCliContractEvidence;
+    if (
+      output.includes("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=") &&
+      !installedContractEvidenceByRun.has(plan.runId)
+    ) {
+      installedCliContractEvidence = captureInstalledContractEvidence(
+        output,
+        plan,
+      );
+      registerIntegrationInstalledContractEvidence(
+        plan.runId,
+        installedCliContractEvidence,
+        performance.now(),
+      );
+    }
     if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
       const receipt = captureHeadlessReceipt(output, plan, {
         outerMonotonicDeadline,
       });
       registerIntegrationHeadlessReceipt(receipt, performance.now());
-      return { receipt, succeeded: false };
+      return { installedCliContractEvidence, receipt, succeeded: false };
     }
     throw error;
   }
 };
 const recordEvidence = async (evidence) => {
+  const plan = plans.find(({ runId }) => runId === evidence.runId);
+  if (plan === undefined)
+    throw new Error("integration.isolation.installed-contract-evidence");
   const verifiedEvidence = compileIsolationEvidence(evidence, {
     baseImageIdentity: preparedIdentityFor(evidence.baseImage),
     mockServerImageIdentity: preparedIdentityFor(evidence.mockServerImage),
+    installedCliContractEvidence: plan.installedCliContractAuthority,
   });
   const directory = resolve(artifactsRoot, "runs", verifiedEvidence.runId);
   mkdirSync(directory, { recursive: true });
@@ -1334,6 +1474,7 @@ const plans = scenarios.map((scenario) =>
     selection: executorSelection,
     maximumParallelScenarios: scenarioConcurrency,
     scenarioTimeoutMilliseconds,
+    installedCliContractAuthority,
   }),
 );
 registerIntegrationRunIds(plans.map(({ runId }) => runId));

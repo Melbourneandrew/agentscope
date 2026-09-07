@@ -1,211 +1,269 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
 
-import { commandRegistry } from "../src/command-registry.js";
-import type { CommandRegistration } from "../src/command-registry.js";
+type OutputMode = "human" | "json" | "jsonl";
+type PublicRegistration = Readonly<{
+  id: string;
+  kind: "command" | "group" | "root";
+  outputModes: readonly OutputMode[];
+  path: readonly string[];
+  visibility: "public";
+}>;
+type Setup = "initialized" | "invalid-configuration" | "none";
+type OutputRule = "confirmation" | "help" | OutputMode | "version";
+type StateRule = "any" | "capture" | "same-as-before" | "same-as-previous";
+export type InstalledCliContractStep = Readonly<{
+  args: readonly string[];
+  expectedDiagnostic?: string;
+  expectedStatus: number;
+  input: string;
+  outputRule: OutputRule;
+  stateRule: StateRule;
+}>;
+export type InstalledCliContractCase = Readonly<{
+  caseId: string;
+  setup: Setup;
+  steps: readonly InstalledCliContractStep[];
+}>;
+export type InstalledCliContractPlan = Readonly<{
+  caseIds: readonly string[];
+  caseIdsDigest: string;
+  cases: readonly InstalledCliContractCase[];
+  expectedVersion: string;
+  inventoryDigest: string;
+  planVersion: 1;
+  receiptCaseIds: readonly string[];
+  receiptCaseIdsDigest: string;
+}>;
+export type InstalledCliInvocationResult = Readonly<{
+  signal: "SIGKILL" | "SIGTERM" | null;
+  status: number | null;
+  stderr: string;
+  stdout: string;
+}>;
+export type InstalledCliContractObservation = Readonly<{
+  afterStateDigests: readonly string[];
+  beforeStateDigest: string;
+  caseId: string;
+  results: readonly InstalledCliInvocationResult[];
+  setupResult?: InstalledCliInvocationResult;
+}>;
+export type InstalledCliArtifactIdentity = Readonly<{
+  bin: Readonly<Record<string, string>>;
+  candidateDigest: string;
+  executableRealPath: string;
+  installedPackageRootRealPath: string;
+  package: string;
+  version: string;
+}>;
+export type InstalledCliContractEvidence = Readonly<{
+  candidateDigest: string;
+  caseCount: number;
+  caseIdsDigest: string;
+  inventoryDigest: string;
+  package: "agentscope-cli";
+  receiptCaseIdsDigest: string;
+  receiptCount: number;
+  schema: "agentscope.cli.installed-contract-evidence.v2";
+  version: string;
+}>;
 
 type Invocation = Readonly<{
   args: readonly string[];
   caseId: string;
-  expectedCode?: number;
   expectedDiagnostic?: string;
-  input?: string;
+  expectedStatus?: number;
   mutation?: "allowed";
-  prepare?: "initialized" | "invalid-configuration";
+  prepare?: Exclude<Setup, "none">;
 }>;
-
 type CommandContract = Readonly<{
   invocation: Invocation;
   missing?: readonly string[];
 }>;
 
-type InvocationResult = Readonly<{
-  signal: NodeJS.Signals | null;
-  status: number | null;
-  stderr: string;
-  stdout: string;
-}>;
-
-const MAX_OUTPUT_BYTES = 1024 * 1024;
-const PROCESS_TIMEOUT_MILLISECONDS = 15_000;
 const EXPECTED_PACKAGE = "agentscope-cli";
 const EXPECTED_BIN = "agentscope";
+const MAXIMUM_OUTPUT_BYTES = 1_048_576;
 const requiredArgumentDiagnostic = "cli.input.invalid";
-const localSqliteCandidateAvailable =
-  process.platform === "linux" &&
-  process.arch === "x64" &&
-  process.versions.modules === "127";
+const hash = (value: string): string =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
 
-function parseNamedArgument(name: string): string {
-  const index = process.argv.indexOf(name);
-  const value = index < 0 ? undefined : process.argv[index + 1];
-  assert.ok(value, `missing ${name}`);
-  return value;
-}
-
-const executable = resolve(parseNamedArgument("--executable"));
-const tarball = resolve(parseNamedArgument("--tarball"));
-const installedPackageRoot = resolve(
-  parseNamedArgument("--installed-package-root"),
-);
-const expectedVersion = parseNamedArgument("--expected-version");
-const repositoryRoot = realpathSync(resolve(import.meta.dirname, "../../.."));
-const candidateDigest = `sha256:${createHash("sha256")
-  .update(readFileSync(tarball))
-  .digest("hex")}`;
-
-function fail(caseId: string, message: string): never {
-  throw new Error(`[${candidateDigest} ${caseId}] ${message}`);
-}
-
-function check(caseId: string, operation: () => void): void {
-  try {
-    operation();
-  } catch (error: unknown) {
-    fail(caseId, error instanceof Error ? error.message : "unknown failure");
-  }
-}
-
-function regularFileSnapshot(root: string): readonly string[] {
-  if (!existsSync(root)) return Object.freeze([]);
-  const rootMetadata = lstatSync(root);
-  assert.equal(rootMetadata.isDirectory(), true);
-  const pending = [root];
-  const records: string[] = [`directory:.:${rootMetadata.mode & 0o777}`];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    assert.ok(directory);
-    for (const name of readdirSync(directory).sort()) {
-      const path = join(directory, name);
-      const metadata = lstatSync(path);
-      const relativePath = relative(root, path);
-      if (metadata.isDirectory()) {
-        pending.push(path);
-        records.push(`directory:${relativePath}:${metadata.mode & 0o777}`);
-      } else {
-        assert.equal(metadata.isFile(), true);
-        const digest = createHash("sha256")
-          .update(readFileSync(path))
-          .digest("hex");
-        records.push(
-          `${relativePath}:${metadata.mode & 0o777}:${metadata.size}:${digest}`,
-        );
-      }
-    }
-  }
-  return Object.freeze(records.sort());
-}
-
-function isolatedEnvironment(home: string): NodeJS.ProcessEnv {
-  const nodeDirectory = dirname(process.execPath);
-  return Object.freeze({
-    COLUMNS: "7",
-    HOME: home,
-    LANG: "C.UTF-8",
-    LC_ALL: "C.UTF-8",
-    NO_COLOR: "1",
-    PATH: nodeDirectory,
-    ROWS: "4",
-    TMPDIR: join(home, "temporary files"),
-    USERPROFILE: home,
-  });
-}
-
-function invoke(
-  args: readonly string[],
-  cwd: string,
-  environment: NodeJS.ProcessEnv,
-  input = "",
-): InvocationResult {
-  const result = spawnSync(executable, [...args], {
-    cwd,
-    encoding: "utf8",
-    env: environment,
-    input,
-    killSignal: "SIGKILL",
-    maxBuffer: MAX_OUTPUT_BYTES,
-    shell: process.platform === "win32",
-    timeout: PROCESS_TIMEOUT_MILLISECONDS,
-  });
-  assert.equal(result.error, undefined);
-  assert.ok(Buffer.byteLength(result.stdout ?? "") <= MAX_OUTPUT_BYTES);
-  assert.ok(Buffer.byteLength(result.stderr ?? "") <= MAX_OUTPUT_BYTES);
-  return Object.freeze({
-    signal: result.signal,
-    status: result.status,
-    stderr: result.stderr ?? "",
-    stdout: result.stdout ?? "",
-  });
-}
-
-function parseJsonLines(text: string): readonly Record<string, unknown>[] {
-  return text
-    .trimEnd()
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
-
-function diagnosticCode(result: InvocationResult): string | undefined {
-  const trimmed = result.stderr.trim();
-  if (trimmed.startsWith("error ["))
-    return /^error \[([a-z0-9.-]+)\]$/u.exec(trimmed)?.[1];
-  try {
-    const records = parseJsonLines(result.stderr);
-    if (records.length !== 1) return undefined;
-    return typeof records[0]?.code === "string" ? records[0].code : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function assertMachineOutput(
-  caseId: string,
-  mode: "json" | "jsonl",
-  result: InvocationResult,
-): void {
-  if (result.status === 0) {
-    const records = parseJsonLines(result.stdout);
-    assert.ok(records.length > 0);
-    if (mode === "json") {
-      assert.equal(records.length, 1);
-      assert.equal(records[0]?.schema, "agentscope.cli.result.v1");
-    } else {
-      assert.equal(records.at(-1)?.schema, "agentscope.cli.record.v1");
-      assert.equal(records.at(-1)?.kind, "summary");
-    }
-    for (const record of parseJsonLines(result.stderr))
-      assert.match(
-        String(record.schema),
-        /^agentscope\.cli\.plan(?:-record)?\.v1$/u,
-      );
-  } else {
-    assert.equal(result.stdout, "");
-    const diagnostics = parseJsonLines(result.stderr);
-    assert.equal(diagnostics.length, 1);
-    assert.equal(diagnostics[0]?.schema, "agentscope.cli.diagnostic.v1");
-  }
-  check(caseId, () => {
-    assert.doesNotMatch(
-      `${result.stdout}${result.stderr}`,
-      /node_modules|(?:^|\n)\s*at\s|Error:|CREDENTIAL_CANARY/u,
-    );
-  });
-}
+// This closed projection is development-only oracle input. verify-artifact.mjs
+// independently compares it with the production command registry before pack.
+export const expectedPublicCommandInventory: readonly PublicRegistration[] =
+  Object.freeze(
+    (
+      [
+        {
+          id: "root",
+          kind: "root",
+          path: [],
+          outputModes: ["human"],
+          visibility: "public",
+        },
+        {
+          id: "destination",
+          kind: "group",
+          path: ["destination"],
+          outputModes: ["human"],
+          visibility: "public",
+        },
+        {
+          id: "doctor",
+          kind: "command",
+          path: ["doctor"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "harness",
+          kind: "group",
+          path: ["harness"],
+          outputModes: ["human"],
+          visibility: "public",
+        },
+        {
+          id: "init",
+          kind: "command",
+          path: ["init"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "install",
+          kind: "command",
+          path: ["install"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "routing",
+          kind: "group",
+          path: ["routing"],
+          outputModes: ["human"],
+          visibility: "public",
+        },
+        {
+          id: "traces",
+          kind: "group",
+          path: ["traces"],
+          outputModes: ["human"],
+          visibility: "public",
+        },
+        {
+          id: "uninstall",
+          kind: "command",
+          path: ["uninstall"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.configure",
+          kind: "command",
+          path: ["destination", "configure"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.delete",
+          kind: "command",
+          path: ["destination", "delete"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.inspect",
+          kind: "command",
+          path: ["destination", "inspect"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.list",
+          kind: "command",
+          path: ["destination", "list"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.recover",
+          kind: "command",
+          path: ["destination", "recover"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.rotate",
+          kind: "command",
+          path: ["destination", "rotate"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "destination.unconfigure",
+          kind: "command",
+          path: ["destination", "unconfigure"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "harness.list",
+          kind: "command",
+          path: ["harness", "list"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "harness.migrate",
+          kind: "command",
+          path: ["harness", "migrate"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "harness.status",
+          kind: "command",
+          path: ["harness", "status"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "routing.list",
+          kind: "command",
+          path: ["routing", "list"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "routing.set",
+          kind: "command",
+          path: ["routing", "set"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "traces.get",
+          kind: "command",
+          path: ["traces", "get"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+        {
+          id: "traces.search",
+          kind: "command",
+          path: ["traces", "search"],
+          outputModes: ["human", "json", "jsonl"],
+          visibility: "public",
+        },
+      ] as const satisfies readonly PublicRegistration[]
+    ).map((entry) =>
+      Object.freeze({
+        ...entry,
+        outputModes: Object.freeze(entry.outputModes),
+        path: Object.freeze(entry.path),
+      }),
+    ),
+  );
 
 const contracts = Object.freeze({
   doctor: {
@@ -216,7 +274,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["codex"],
       caseId: "install.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "harness.adapter-missing",
       prepare: "initialized",
     },
@@ -226,7 +284,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["codex"],
       caseId: "uninstall.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "harness.adapter-missing",
       prepare: "initialized",
     },
@@ -243,7 +301,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["codex"],
       caseId: "harness.status.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "harness.adapter-missing",
       prepare: "initialized",
     },
@@ -253,7 +311,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["codex"],
       caseId: "harness.migrate.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "harness.adapter-missing",
       prepare: "initialized",
     },
@@ -263,10 +321,6 @@ const contracts = Object.freeze({
     invocation: {
       args: ["local-sqlite", "--name", "contract-local"],
       caseId: "destination.configure.valid",
-      expectedCode: localSqliteCandidateAvailable ? 0 : 5,
-      ...(localSqliteCandidateAvailable
-        ? {}
-        : { expectedDiagnostic: "destination.lifecycle-unavailable" }),
       prepare: "initialized",
     },
     missing: ["local-sqlite"],
@@ -275,7 +329,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["missing-owned-selector"],
       caseId: "destination.delete.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "destination.connection-missing",
       prepare: "initialized",
     },
@@ -285,7 +339,7 @@ const contracts = Object.freeze({
     invocation: {
       args: [],
       caseId: "destination.recover.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "configuration.missing",
       prepare: "initialized",
     },
@@ -294,7 +348,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["missing-connection"],
       caseId: "destination.inspect.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "destination.connection-missing",
       prepare: "initialized",
     },
@@ -317,7 +371,7 @@ const contracts = Object.freeze({
         "CREDENTIAL_CANARY",
       ],
       caseId: "destination.rotate.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "destination.connection-missing",
       prepare: "initialized",
     },
@@ -327,7 +381,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["missing-connection"],
       caseId: "destination.unconfigure.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "destination.connection-missing",
       prepare: "initialized",
     },
@@ -337,7 +391,7 @@ const contracts = Object.freeze({
     invocation: {
       args: ["--destination", "missing-connection", "--limit", "50"],
       caseId: "traces.search.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "traces.destination-unknown",
       prepare: "initialized",
     },
@@ -352,7 +406,7 @@ const contracts = Object.freeze({
         "0123456789abcdef0123456789abcdef",
       ],
       caseId: "traces.get.valid",
-      expectedCode: 3,
+      expectedStatus: 3,
       expectedDiagnostic: "traces.destination-unknown",
       prepare: "initialized",
     },
@@ -375,404 +429,425 @@ const contracts = Object.freeze({
   },
 } satisfies Readonly<Record<string, CommandContract>>);
 
-function createCaseRoot(caseId: string): Readonly<{
-  cwd: string;
-  environment: NodeJS.ProcessEnv;
-  home: string;
-  stateRoot: string;
-}> {
-  const root = mkdtempSync(join(tmpdir(), "agentscope CLI contract — 测试 "));
-  const home = join(root, "user home with spaces");
-  const cwd = join(root, `workspace ${caseId}`);
-  mkdirSync(home);
-  mkdirSync(cwd);
-  const environment = isolatedEnvironment(home);
-  mkdirSync(environment.TMPDIR as string);
-  return {
-    cwd,
-    environment,
-    home,
-    stateRoot: join(home, ".agentscope"),
-  };
-}
-
-function prepareCase(
-  prepare: Invocation["prepare"],
-  cwd: string,
-  environment: NodeJS.ProcessEnv,
-): void {
-  if (prepare === undefined) return;
-  if (prepare === "invalid-configuration") {
-    assert.ok(environment.HOME);
-    const agentscopeHome = join(environment.HOME, ".agentscope");
-    mkdirSync(agentscopeHome, { recursive: true });
-    writeFileSync(join(agentscopeHome, "config.json"), "{invalid");
-    return;
-  }
-  const initialized = invoke(
-    ["init", "--yes", "--output", "json"],
-    cwd,
-    environment,
-  );
-  assert.equal(initialized.status, 0);
-  assert.equal(initialized.signal, null);
-}
-
-function runInvocation(
-  command: CommandRegistration,
-  invocation: Invocation,
-  mode: "human" | "json" | "jsonl",
-): void {
-  const caseId = `${invocation.caseId}.${mode}`;
-  const fixture = createCaseRoot(caseId);
-  try {
-    prepareCase(invocation.prepare, fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(
-      [...command.path, ...invocation.args, "--output", mode],
-      fixture.cwd,
-      fixture.environment,
-      invocation.input,
-    );
-    check(caseId, () => {
-      assert.equal(result.signal, null);
-      assert.equal(result.status, invocation.expectedCode ?? 0);
-      if (invocation.expectedDiagnostic !== undefined)
-        assert.equal(diagnosticCode(result), invocation.expectedDiagnostic);
-      if (mode === "human") {
-        assert.doesNotMatch(
-          `${result.stdout}${result.stderr}`,
-          /CREDENTIAL_CANARY|node_modules|(?:^|\n)\s*at\s|Error:/u,
-        );
-        if (result.status === 0) assert.notEqual(result.stdout, "");
-        else {
-          assert.equal(result.stdout, "");
-          assert.match(result.stderr, /^error \[[a-z0-9.-]+\]\n$/u);
-        }
-      } else assertMachineOutput(caseId, mode, result);
-      if (invocation.mutation !== "allowed")
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-const publicInventory = commandRegistry.filter(
-  (registration) => registration.visibility === "public",
-);
-const publicCommands = publicInventory.filter(
-  (registration) => registration.kind === "command",
-);
-
-check("artifact.identity", () => {
-  const installedManifest = JSON.parse(
-    readFileSync(join(installedPackageRoot, "package.json"), "utf8"),
-  ) as Record<string, unknown>;
-  assert.equal(installedManifest.name, EXPECTED_PACKAGE);
-  assert.equal(installedManifest.version, expectedVersion);
-  assert.deepEqual(installedManifest.bin, {
-    [EXPECTED_BIN]: "./dist/bin/agentscope.js",
+/* eslint-disable max-params -- the closed driver grammar keeps each expected process observation explicit. */
+const makeStep = (
+  args: readonly string[],
+  expectedStatus: number,
+  outputRule: OutputRule,
+  stateRule: StateRule,
+  expectedDiagnostic?: string,
+  input = "",
+): InstalledCliContractStep =>
+  Object.freeze({
+    args: Object.freeze([...args]),
+    expectedStatus,
+    ...(expectedDiagnostic === undefined ? {} : { expectedDiagnostic }),
+    input,
+    outputRule,
+    stateRule,
   });
-  const realExecutable = realpathSync(executable);
-  assert.equal(realExecutable.startsWith(`${repositoryRoot}${sep}`), false);
-  assert.equal(
-    realExecutable.startsWith(`${realpathSync(installedPackageRoot)}${sep}`),
-    true,
-  );
-  assert.match(candidateDigest, /^sha256:[0-9a-f]{64}$/u);
-});
+/* eslint-enable max-params */
 
-check("inventory.coverage", () => {
+/* eslint-disable max-lines-per-function -- one closed plan keeps every public command and adversarial case in a reviewable order. */
+export const createInstalledCliContractPlan = (
+  expectedVersion: string,
+  runtime: Readonly<{
+    architecture: string;
+    modules: string;
+    platform: string;
+  }>,
+): InstalledCliContractPlan => {
+  assert.match(expectedVersion, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
+  const inventory = expectedPublicCommandInventory;
+  const commands = inventory.filter(({ kind }) => kind === "command");
   assert.deepEqual(
     Object.keys(contracts).sort(),
-    publicCommands.map((registration) => registration.id).sort(),
+    commands.map(({ id }) => id).sort(),
   );
-});
-
-for (const registration of publicInventory) {
-  const caseId = `help.${registration.id}`;
-  const fixture = createCaseRoot(caseId);
-  try {
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(
-      [...registration.path, "--help"],
-      fixture.cwd,
-      fixture.environment,
-    );
-    check(caseId, () => {
-      assert.equal(result.status, 0);
-      assert.equal(result.signal, null);
-      assert.equal(result.stderr, "");
-      assert.match(result.stdout, /^Usage: agentscope/u);
-      assert.match(result.stdout, /Documentation: https:\/\//u);
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-for (const registration of publicCommands) {
-  const contract = contracts[
-    registration.id as keyof typeof contracts
-  ] as CommandContract;
-  assert.ok(contract);
-  for (const mode of registration.outputModes) {
-    assert.notEqual(mode, undefined);
-    runInvocation(registration, contract.invocation, mode);
-  }
-  {
-    const caseId = `${registration.id}.unsupported-output`;
-    const fixture = createCaseRoot(caseId);
-    try {
-      prepareCase(
-        contract.invocation.prepare,
-        fixture.cwd,
-        fixture.environment,
+  const localSqliteCandidateAvailable =
+    runtime.platform === "linux" &&
+    runtime.architecture === "x64" &&
+    runtime.modules === "127";
+  const cases: InstalledCliContractCase[] = inventory.map((registration) =>
+    Object.freeze({
+      caseId: `help.${registration.id}`,
+      setup: "none" as const,
+      steps: Object.freeze([
+        makeStep([...registration.path, "--help"], 0, "help", "same-as-before"),
+      ]),
+    }),
+  );
+  for (const registration of commands) {
+    const contract = contracts[
+      registration.id as keyof typeof contracts
+    ] as CommandContract;
+    const expectedStatus =
+      registration.id === "destination.configure" &&
+      !localSqliteCandidateAvailable
+        ? 5
+        : (contract.invocation.expectedStatus ?? 0);
+    const expectedDiagnostic =
+      registration.id === "destination.configure" &&
+      !localSqliteCandidateAvailable
+        ? "destination.lifecycle-unavailable"
+        : contract.invocation.expectedDiagnostic;
+    for (const mode of registration.outputModes)
+      cases.push(
+        Object.freeze({
+          caseId: `${contract.invocation.caseId}.${mode}`,
+          setup: contract.invocation.prepare ?? "none",
+          steps: Object.freeze([
+            makeStep(
+              [
+                ...registration.path,
+                ...contract.invocation.args,
+                "--output",
+                mode,
+              ],
+              expectedStatus,
+              mode,
+              contract.invocation.mutation === "allowed"
+                ? "any"
+                : "same-as-before",
+              expectedDiagnostic,
+            ),
+          ]),
+        }),
       );
-      const before = regularFileSnapshot(fixture.stateRoot);
-      const result = invoke(
-        [...registration.path, ...contract.invocation.args, "--output", "yaml"],
-        fixture.cwd,
-        fixture.environment,
-      );
-      check(caseId, () => {
-        assert.equal(result.status, 2);
-        assert.equal(diagnosticCode(result), "cli.output.unsupported");
-        assert.equal(result.stdout, "");
-        assert.equal(result.stderr, "error [cli.output.unsupported]\n");
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-      });
-    } finally {
-      rmSync(dirname(fixture.home), { force: true, recursive: true });
-    }
-  }
-  if (contract.missing !== undefined) {
-    const caseId = `${registration.id}.missing-required`;
-    const fixture = createCaseRoot(caseId);
-    try {
-      prepareCase("initialized", fixture.cwd, fixture.environment);
-      const before = regularFileSnapshot(fixture.stateRoot);
-      const result = invoke(
-        [...registration.path, ...contract.missing, "--output", "json"],
-        fixture.cwd,
-        fixture.environment,
-      );
-      check(caseId, () => {
-        assert.equal(result.status, 2);
-        assert.equal(diagnosticCode(result), requiredArgumentDiagnostic);
-        assert.equal(result.stdout, "");
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-      });
-    } finally {
-      rmSync(dirname(fixture.home), { force: true, recursive: true });
-    }
-  }
-}
-
-{
-  const caseId = "root.version";
-  const fixture = createCaseRoot(caseId);
-  try {
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(["--version"], fixture.cwd, fixture.environment);
-    check(caseId, () => {
-      assert.equal(result.status, 0);
-      assert.equal(result.signal, null);
-      assert.equal(result.stdout, `${expectedVersion}\n`);
-      assert.equal(result.stderr, "");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-const hostileCases: readonly Invocation[] = Object.freeze([
-  {
-    args: ["--does-not-exist-CREDENTIAL_CANARY"],
-    caseId: "arguments.unknown",
-    expectedCode: 2,
-    expectedDiagnostic: requiredArgumentDiagnostic,
-  },
-  {
-    args: ["--does-not-exist", "line\nbreak"],
-    caseId: "arguments.control-character",
-    expectedCode: 2,
-    expectedDiagnostic: requiredArgumentDiagnostic,
-  },
-  {
-    args: ["--does-not-exist", "x".repeat(8_193)],
-    caseId: "arguments.oversized",
-    expectedCode: 2,
-    expectedDiagnostic: requiredArgumentDiagnostic,
-  },
-]);
-
-for (const hostile of hostileCases) {
-  const fixture = createCaseRoot(hostile.caseId);
-  try {
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(hostile.args, fixture.cwd, fixture.environment);
-    check(hostile.caseId, () => {
-      assert.equal(result.status, hostile.expectedCode);
-      assert.equal(diagnosticCode(result), hostile.expectedDiagnostic);
-      assert.equal(result.stdout, "");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-      assert.doesNotMatch(result.stderr, /CREDENTIAL_CANARY|line|break/u);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-{
-  const caseId = "arguments.conflicting-trace-identities";
-  const fixture = createCaseRoot(caseId);
-  try {
-    prepareCase("initialized", fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(
-      [
-        "traces",
-        "get",
-        "--destination",
-        "missing",
-        "--trace-id",
-        "0123456789abcdef0123456789abcdef",
-        "--trace-ref",
-        '{"traceId":"fedcba9876543210fedcba9876543210"}',
-        "--output",
-        "json",
-      ],
-      fixture.cwd,
-      fixture.environment,
+    cases.push(
+      Object.freeze({
+        caseId: `${registration.id}.unsupported-output`,
+        setup: contract.invocation.prepare ?? "none",
+        steps: Object.freeze([
+          makeStep(
+            [
+              ...registration.path,
+              ...contract.invocation.args,
+              "--output",
+              "yaml",
+            ],
+            2,
+            "human",
+            "same-as-before",
+            "cli.output.unsupported",
+          ),
+        ]),
+      }),
     );
-    check(caseId, () => {
-      assert.equal(result.status, 2);
-      assert.equal(diagnosticCode(result), requiredArgumentDiagnostic);
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-{
-  const caseId = "arguments.duplicate-connection";
-  const fixture = createCaseRoot(caseId);
-  try {
-    prepareCase("initialized", fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(
-      ["routing", "set", "duplicate", "duplicate", "--output", "json"],
-      fixture.cwd,
-      fixture.environment,
-    );
-    check(caseId, () => {
-      assert.equal(result.status, 2);
-      assert.equal(diagnosticCode(result), "routing.duplicate-connection");
-      assert.equal(result.stdout, "");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-{
-  const caseId = "confirmation.non-tty-eof-cancel";
-  const fixture = createCaseRoot(caseId);
-  try {
-    const before = regularFileSnapshot(fixture.stateRoot);
-    for (const input of ["", "no\n", "yes\n"]) {
-      const result = invoke(
-        ["init", "--output", "json"],
-        fixture.cwd,
-        fixture.environment,
-        input,
+    if (contract.missing !== undefined)
+      cases.push(
+        Object.freeze({
+          caseId: `${registration.id}.missing-required`,
+          setup: "initialized" as const,
+          steps: Object.freeze([
+            makeStep(
+              [...registration.path, ...contract.missing, "--output", "json"],
+              2,
+              "json",
+              "same-as-before",
+              requiredArgumentDiagnostic,
+            ),
+          ]),
+        }),
       );
-      check(caseId, () => {
-        assert.equal(result.status, 0);
-        const output: unknown = JSON.parse(result.stdout);
-        assert.equal(
-          (output as { schema: unknown }).schema,
-          "agentscope.cli.result.v1",
-        );
-        assert.equal(result.stderr, "");
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-      });
-    }
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
   }
-}
-
-{
-  const caseId = "state.idempotent-init";
-  const fixture = createCaseRoot(caseId);
-  try {
-    const args = ["init", "--yes", "--output", "json"];
-    const first = invoke(args, fixture.cwd, fixture.environment);
-    check(caseId, () => {
-      assert.equal(first.status, 0);
-    });
-    const firstState = regularFileSnapshot(fixture.stateRoot);
-    const second = invoke(args, fixture.cwd, fixture.environment);
-    check(caseId, () => {
-      assert.equal(second.status, 0);
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), firstState);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-{
-  const caseId = "state.conflicting-invalid-configuration";
-  const fixture = createCaseRoot(caseId);
-  try {
-    prepareCase("invalid-configuration", fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
-    const result = invoke(
-      ["init", "--yes", "--output", "json"],
-      fixture.cwd,
-      fixture.environment,
+  cases.push(
+    Object.freeze({
+      caseId: "root.version",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(["--version"], 0, "version", "same-as-before"),
+      ]),
+    }),
+  );
+  for (const [caseId, args] of [
+    ["arguments.unknown", ["--does-not-exist-CREDENTIAL_CANARY"]],
+    ["arguments.control-character", ["--does-not-exist", "line\nbreak"]],
+    ["arguments.oversized", ["--does-not-exist", "x".repeat(8_193)]],
+  ] as const)
+    cases.push(
+      Object.freeze({
+        caseId,
+        setup: "none",
+        steps: Object.freeze([
+          makeStep(
+            args,
+            2,
+            "human",
+            "same-as-before",
+            requiredArgumentDiagnostic,
+          ),
+        ]),
+      }),
     );
-    check(caseId, () => {
-      assert.equal(result.status, 5);
-      assert.equal(diagnosticCode(result), "configuration.unavailable");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
-    });
-  } finally {
-    rmSync(dirname(fixture.home), { force: true, recursive: true });
-  }
-}
-
-process.stdout.write(
-  `${JSON.stringify({
-    candidateDigest,
-    caseCount:
-      publicInventory.length +
-      publicCommands.reduce(
-        (count, registration) => {
-          const contract = contracts[
-            registration.id as keyof typeof contracts
-          ] as CommandContract;
-          return (
-            count +
-            registration.outputModes.length +
-            (contract.missing === undefined ? 0 : 1)
-          );
-        },
-        hostileCases.length + publicCommands.length + 6,
+  cases.push(
+    Object.freeze({
+      caseId: "arguments.conflicting-trace-identities",
+      setup: "initialized",
+      steps: Object.freeze([
+        makeStep(
+          [
+            "traces",
+            "get",
+            "--destination",
+            "missing",
+            "--trace-id",
+            "0123456789abcdef0123456789abcdef",
+            "--trace-ref",
+            '{"traceId":"fedcba9876543210fedcba9876543210"}',
+            "--output",
+            "json",
+          ],
+          2,
+          "json",
+          "same-as-before",
+          requiredArgumentDiagnostic,
+        ),
+      ]),
+    }),
+    Object.freeze({
+      caseId: "arguments.duplicate-connection",
+      setup: "initialized",
+      steps: Object.freeze([
+        makeStep(
+          ["routing", "set", "duplicate", "duplicate", "--output", "json"],
+          2,
+          "json",
+          "same-as-before",
+          "routing.duplicate-connection",
+        ),
+      ]),
+    }),
+  );
+  for (const [suffix, input] of [
+    ["eof", ""],
+    ["no", "no\n"],
+    ["yes", "yes\n"],
+  ] as const)
+    cases.push(
+      Object.freeze({
+        caseId: `confirmation.non-tty-${suffix}-cancel`,
+        setup: "none",
+        steps: Object.freeze([
+          makeStep(
+            ["init", "--output", "json"],
+            0,
+            "confirmation",
+            "same-as-before",
+            undefined,
+            input,
+          ),
+        ]),
+      }),
+    );
+  cases.push(
+    Object.freeze({
+      caseId: "state.idempotent-init",
+      setup: "none",
+      steps: Object.freeze([
+        makeStep(["init", "--yes", "--output", "json"], 0, "json", "capture"),
+        makeStep(
+          ["init", "--yes", "--output", "json"],
+          0,
+          "json",
+          "same-as-previous",
+        ),
+      ]),
+    }),
+    Object.freeze({
+      caseId: "state.conflicting-invalid-configuration",
+      setup: "invalid-configuration",
+      steps: Object.freeze([
+        makeStep(
+          ["init", "--yes", "--output", "json"],
+          5,
+          "json",
+          "same-as-before",
+          "configuration.unavailable",
+        ),
+      ]),
+    }),
+  );
+  const caseIds = cases.map(({ caseId }) => caseId);
+  assert.equal(new Set(caseIds).size, caseIds.length);
+  assert.ok(caseIds.length > 80);
+  const receiptCaseIds = [
+    "artifact.install",
+    ...cases.flatMap((contractCase) => [
+      ...(contractCase.setup === "initialized"
+        ? [`${contractCase.caseId}.setup`]
+        : []),
+      ...contractCase.steps.map(
+        (_contractStep, index) => `${contractCase.caseId}.${index}`,
       ),
-    inventoryDigest: `sha256:${createHash("sha256")
-      .update(JSON.stringify(publicInventory))
-      .digest("hex")}`,
+    ]),
+  ];
+  assert.equal(new Set(receiptCaseIds).size, receiptCaseIds.length);
+  return Object.freeze({
+    caseIds: Object.freeze(caseIds),
+    caseIdsDigest: hash(JSON.stringify(caseIds)),
+    cases: Object.freeze(cases),
+    expectedVersion,
+    inventoryDigest: hash(JSON.stringify(inventory)),
+    planVersion: 1,
+    receiptCaseIds: Object.freeze(receiptCaseIds),
+    receiptCaseIdsDigest: hash(JSON.stringify(receiptCaseIds)),
+  });
+};
+/* eslint-enable max-lines-per-function */
+
+const parseJsonLines = (text: string): readonly Record<string, unknown>[] =>
+  text
+    .trimEnd()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+const diagnosticCode = (
+  result: InstalledCliInvocationResult,
+): string | undefined => {
+  const trimmed = result.stderr.trim();
+  if (trimmed.startsWith("error ["))
+    return /^error \[([a-z0-9.-]+)\]$/u.exec(trimmed)?.[1];
+  try {
+    const records = parseJsonLines(result.stderr);
+    return records.length === 1 && typeof records[0]?.code === "string"
+      ? records[0].code
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const assertOutput = (
+  step: InstalledCliContractStep,
+  result: InstalledCliInvocationResult,
+  version: string,
+): void => {
+  assert.equal(result.signal, null);
+  assert.equal(result.status, step.expectedStatus);
+  assert.ok(Buffer.byteLength(result.stdout) <= MAXIMUM_OUTPUT_BYTES);
+  assert.ok(Buffer.byteLength(result.stderr) <= MAXIMUM_OUTPUT_BYTES);
+  assert.doesNotMatch(
+    `${result.stdout}${result.stderr}`,
+    /node_modules|(?:^|\n)\s*at\s|Error:|CREDENTIAL_CANARY/u,
+  );
+  if (step.expectedDiagnostic !== undefined)
+    assert.equal(diagnosticCode(result), step.expectedDiagnostic);
+  if (step.outputRule === "help") {
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /^Usage: agentscope/u);
+    assert.match(result.stdout, /Documentation: https:\/\//u);
+  } else if (step.outputRule === "version") {
+    assert.equal(result.stdout, `${version}\n`);
+    assert.equal(result.stderr, "");
+  } else if (step.outputRule === "confirmation") {
+    assert.equal(
+      (JSON.parse(result.stdout) as { schema?: unknown }).schema,
+      "agentscope.cli.result.v1",
+    );
+    assert.equal(result.stderr, "");
+  } else if (step.outputRule === "human") {
+    if (result.status === 0) assert.notEqual(result.stdout, "");
+    else {
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /^error \[[a-z0-9.-]+\]\n$/u);
+    }
+  } else if (result.status === 0) {
+    const records = parseJsonLines(result.stdout);
+    assert.ok(records.length > 0);
+    if (step.outputRule === "json") {
+      assert.equal(records.length, 1);
+      assert.equal(records[0]?.schema, "agentscope.cli.result.v1");
+    } else {
+      assert.equal(records.at(-1)?.schema, "agentscope.cli.record.v1");
+      assert.equal(records.at(-1)?.kind, "summary");
+    }
+    for (const record of parseJsonLines(result.stderr))
+      assert.match(
+        String(record.schema),
+        /^agentscope\.cli\.plan(?:-record)?\.v1$/u,
+      );
+  } else {
+    assert.equal(result.stdout, "");
+    const diagnostics = parseJsonLines(result.stderr);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0]?.schema, "agentscope.cli.diagnostic.v1");
+  }
+};
+
+export const evaluateInstalledCliContract = (
+  plan: InstalledCliContractPlan,
+  identity: InstalledCliArtifactIdentity,
+  observations: readonly InstalledCliContractObservation[],
+): InstalledCliContractEvidence => {
+  assert.equal(identity.package, EXPECTED_PACKAGE);
+  assert.equal(identity.version, plan.expectedVersion);
+  assert.deepEqual(identity.bin, {
+    [EXPECTED_BIN]: "./dist/bin/agentscope.js",
+  });
+  assert.match(identity.candidateDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.ok(identity.installedPackageRootRealPath.startsWith("/"));
+  assert.ok(
+    identity.executableRealPath.startsWith(
+      `${identity.installedPackageRootRealPath}/`,
+    ),
+  );
+  assert.deepEqual(
+    observations.map(({ caseId }) => caseId),
+    plan.caseIds,
+  );
+  for (let index = 0; index < plan.cases.length; index += 1) {
+    const contractCase = plan.cases[index];
+    const observation = observations[index];
+    if (contractCase === undefined || observation === undefined)
+      throw new Error("agentscope.cli.installed-contract:case-identity");
+    try {
+      assert.equal(observation.results.length, contractCase.steps.length);
+      assert.equal(
+        observation.afterStateDigests.length,
+        contractCase.steps.length,
+      );
+      if (contractCase.setup === "initialized") {
+        assert.equal(observation.setupResult?.status, 0);
+        assert.equal(observation.setupResult.signal, null);
+      } else assert.equal(observation.setupResult, undefined);
+      let previous = observation.beforeStateDigest;
+      for (
+        let stepIndex = 0;
+        stepIndex < contractCase.steps.length;
+        stepIndex += 1
+      ) {
+        const contractStep = contractCase.steps[stepIndex];
+        const afterStateDigest: string | undefined =
+          observation.afterStateDigests[stepIndex];
+        const result = observation.results[stepIndex];
+        if (
+          contractStep === undefined ||
+          afterStateDigest === undefined ||
+          result === undefined
+        )
+          throw new Error("agentscope.cli.installed-contract:step-identity");
+        assertOutput(contractStep, result, plan.expectedVersion);
+        if (contractStep.stateRule === "same-as-before")
+          assert.equal(afterStateDigest, observation.beforeStateDigest);
+        if (contractStep.stateRule === "same-as-previous")
+          assert.equal(afterStateDigest, previous);
+        previous = afterStateDigest;
+      }
+    } catch {
+      throw new Error(
+        `agentscope.cli.installed-contract:${identity.candidateDigest}:${contractCase.caseId}`,
+      );
+    }
+  }
+  return Object.freeze({
+    candidateDigest: identity.candidateDigest,
+    caseCount: plan.caseIds.length,
+    caseIdsDigest: plan.caseIdsDigest,
+    inventoryDigest: plan.inventoryDigest,
     package: EXPECTED_PACKAGE,
-    schema: "agentscope.cli.installed-contract-evidence.v1",
-    version: expectedVersion,
-  })}\n`,
-);
+    receiptCaseIdsDigest: plan.receiptCaseIdsDigest,
+    receiptCount: plan.receiptCaseIds.length,
+    schema: "agentscope.cli.installed-contract-evidence.v2",
+    version: plan.expectedVersion,
+  });
+};

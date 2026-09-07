@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -107,6 +110,20 @@ const headlessShutdownDeadline =
   (headlessOuterDeadline - headlessTranslationBootAt);
 if (headlessShutdownDeadline <= headlessTranslationLocalAt + 6_000)
   throw new Error("integration.runner.headless-authority");
+const installedContractDriverPath =
+  "/opt/agentscope/installed-contract-driver.mjs";
+const installedContractDriverBytes = readFileSync(installedContractDriverPath);
+if (
+  installedContractDriverBytes.byteLength < 1 ||
+  installedContractDriverBytes.byteLength > 128 * 1024 ||
+  `sha256:${createHash("sha256")
+    .update(installedContractDriverBytes)
+    .digest("hex")}` !==
+    requiredEnvironment("AGENTSCOPE_INSTALLED_CONTRACT_DRIVER_DIGEST")
+)
+  throw new Error("integration.runner.installed-contract-driver");
+const installedContractOracle =
+  await import("/opt/agentscope/installed-contract-driver.mjs");
 const digest = (bytes) =>
   `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
 const fingerprintHeadlessRequest = (request) =>
@@ -289,6 +306,270 @@ const cliArtifact = evidence.artifacts.find(
   ({ id }) => id === "agentscope-cli",
 );
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
+
+const stateDigest = (root) => {
+  if (!existsSync(root)) return digest("[]");
+  const records = [];
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    const directoryStatus = lstatSync(directory);
+    if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink())
+      throw new Error("integration.runner.installed-contract-state");
+    records.push(
+      `directory:${directory.slice(root.length) || "."}:${directoryStatus.mode & 0o777}`,
+    );
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      const status = lstatSync(path);
+      if (status.isSymbolicLink())
+        throw new Error("integration.runner.installed-contract-state");
+      if (status.isDirectory()) pending.push(path);
+      else {
+        if (!status.isFile())
+          throw new Error("integration.runner.installed-contract-state");
+        records.push(
+          `file:${path.slice(root.length)}:${status.mode & 0o777}:${status.size}:${digest(readFileSync(path))}`,
+        );
+      }
+    }
+  }
+  return digest(JSON.stringify(records.sort()));
+};
+
+const installedContractReceipts = [];
+const invokeSelected = async ({
+  arguments: arguments_,
+  caseId,
+  cwd,
+  environment,
+  executable,
+  input = "",
+}) => {
+  const constructedAtMs = performance.now();
+  const monotonicShutdownDeadlineMs = Math.min(
+    constructedAtMs + 20_000,
+    headlessShutdownDeadline,
+  );
+  const monotonicExecutionDeadlineMs = Math.min(
+    constructedAtMs + 15_000,
+    monotonicShutdownDeadlineMs - 2_000,
+  );
+  const monotonicStartupDeadlineMs = Math.min(
+    constructedAtMs + 5_000,
+    monotonicExecutionDeadlineMs,
+  );
+  if (
+    monotonicStartupDeadlineMs <= constructedAtMs ||
+    monotonicExecutionDeadlineMs + 1_000 >= monotonicShutdownDeadlineMs
+  )
+    throw new Error("integration.runner.installed-contract-deadline");
+  const request = {
+    runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+    executable,
+    arguments: arguments_,
+    cwd,
+    environment,
+    stdin: new TextEncoder().encode(input),
+    stdoutLimitBytes: 64 * 1024,
+    stderrLimitBytes: 64 * 1024,
+    monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs,
+    terminationGraceMs: 1_000,
+  };
+  request.requestFingerprint = fingerprintHeadlessRequest(request);
+  const trace = await executeSelectedHeadlessProcess(
+    headlessCapability,
+    request,
+  );
+  const receipt = {
+    caseId,
+    requestFingerprint: trace.requestFingerprint,
+    outcome: trace.result.outcome,
+    exitCode: trace.result.exitCode,
+    signal: trace.result.signal,
+    cleanup: trace.result.cleanup,
+    residualProcessCount: trace.result.residualProcessCount,
+    processJoined: trace.observation.processJoined,
+    stdinJoined: trace.observation.stdinJoined,
+    stdoutJoined: trace.observation.stdoutJoined,
+    stderrJoined: trace.observation.stderrJoined,
+  };
+  installedContractReceipts.push(receipt);
+  if (
+    trace.result.cleanup !== "clean" ||
+    trace.result.residualProcessCount !== 0 ||
+    !trace.observation.processJoined ||
+    !trace.observation.stdinJoined ||
+    !trace.observation.stdoutJoined ||
+    !trace.observation.stderrJoined
+  )
+    throw new Error("integration.runner.installed-contract-containment");
+  const decode = (bytes) =>
+    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return Object.freeze({
+    signal: trace.result.signal,
+    status: trace.result.exitCode,
+    stderr: decode(trace.result.stderr),
+    stdout: decode(trace.result.stdout),
+  });
+};
+
+const contractRoot = "/tmp/agentscope-installed-contract";
+rmSync(contractRoot, { force: true, recursive: true });
+mkdirSync(contractRoot, { mode: 0o700 });
+const installRoot = join(contractRoot, "install");
+const installHome = join(contractRoot, "install-home");
+mkdirSync(installRoot);
+mkdirSync(installHome);
+writeFileSync(join(installRoot, "package.json"), '{"private":true}\n');
+writeFileSync(join(installHome, "empty-npmrc"), "");
+const candidateTarball = join(directory, "files", cliArtifact.fileName);
+const npmCli = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
+const npmCliStatus = lstatSync(npmCli);
+if (!npmCliStatus.isFile() || npmCliStatus.isSymbolicLink())
+  throw new Error("integration.runner.installed-contract-toolchain");
+const npmResult = await invokeSelected({
+  arguments: [
+    npmCli,
+    "install",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+    "--offline",
+    candidateTarball,
+  ],
+  caseId: "artifact.install",
+  cwd: installRoot,
+  environment: Object.freeze({
+    HOME: installHome,
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    NO_COLOR: "1",
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    USERPROFILE: installHome,
+    NPM_CONFIG_CACHE: join(installHome, "npm-cache"),
+    NPM_CONFIG_OFFLINE: "true",
+    NPM_CONFIG_USERCONFIG: join(installHome, "empty-npmrc"),
+  }),
+  executable: process.execPath,
+});
+if (npmResult.status !== 0 || npmResult.signal !== null)
+  throw new Error("integration.runner.installed-contract-install");
+const installedPackageRoot = join(installRoot, "node_modules/agentscope-cli");
+const installedManifest = JSON.parse(
+  readFileSync(join(installedPackageRoot, "package.json"), "utf8"),
+);
+const installedExecutable = join(installRoot, "node_modules/.bin/agentscope");
+const contractPlan = installedContractOracle.createInstalledCliContractPlan(
+  installedManifest.version,
+  {
+    architecture: process.arch,
+    modules: process.versions.modules,
+    platform: process.platform,
+  },
+);
+const contractObservations = [];
+for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
+  const contractCase = contractPlan.cases[caseIndex];
+  const caseRoot = join(contractRoot, "cases", String(caseIndex));
+  const caseHome = join(caseRoot, "user home with spaces");
+  const caseCwd = join(caseRoot, "workspace with spaces");
+  const temporary = join(caseRoot, "temporary files");
+  mkdirSync(caseHome, { recursive: true });
+  mkdirSync(caseCwd);
+  mkdirSync(temporary);
+  const caseEnvironment = Object.freeze({
+    COLUMNS: "7",
+    HOME: caseHome,
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    NO_COLOR: "1",
+    PATH: "/usr/local/bin",
+    ROWS: "4",
+    TMPDIR: temporary,
+    USERPROFILE: caseHome,
+  });
+  let setupResult;
+  if (contractCase.setup === "initialized") {
+    setupResult = await invokeSelected({
+      arguments: ["init", "--yes", "--output", "json"],
+      caseId: `${contractCase.caseId}.setup`,
+      cwd: caseCwd,
+      environment: caseEnvironment,
+      executable: installedExecutable,
+    });
+  } else if (contractCase.setup === "invalid-configuration") {
+    mkdirSync(join(caseHome, ".agentscope"));
+    writeFileSync(join(caseHome, ".agentscope/config.json"), "{invalid");
+  }
+  const stateRoot = join(caseHome, ".agentscope");
+  const beforeStateDigest = stateDigest(stateRoot);
+  const results = [];
+  const afterStateDigests = [];
+  for (
+    let stepIndex = 0;
+    stepIndex < contractCase.steps.length;
+    stepIndex += 1
+  ) {
+    const contractStep = contractCase.steps[stepIndex];
+    results.push(
+      await invokeSelected({
+        arguments: contractStep.args,
+        caseId: `${contractCase.caseId}.${stepIndex}`,
+        cwd: caseCwd,
+        environment: caseEnvironment,
+        executable: installedExecutable,
+        input: contractStep.input,
+      }),
+    );
+    afterStateDigests.push(stateDigest(stateRoot));
+  }
+  contractObservations.push({
+    afterStateDigests,
+    beforeStateDigest,
+    caseId: contractCase.caseId,
+    results,
+    ...(setupResult === undefined ? {} : { setupResult }),
+  });
+  rmSync(caseRoot, { force: true, recursive: true });
+}
+const installedContractEvidence =
+  installedContractOracle.evaluateInstalledCliContract(
+    contractPlan,
+    {
+      bin: installedManifest.bin,
+      candidateDigest: `sha256:${createHash("sha256")
+        .update(readFileSync(candidateTarball))
+        .digest("hex")}`,
+      executableRealPath: realpathSync(installedExecutable),
+      installedPackageRootRealPath: realpathSync(installedPackageRoot),
+      package: installedManifest.name,
+      version: installedManifest.version,
+    },
+    contractObservations,
+  );
+const receiptCaseIds = installedContractReceipts.map(({ caseId }) => caseId);
+if (
+  new Set(receiptCaseIds).size !== receiptCaseIds.length ||
+  JSON.stringify(receiptCaseIds) !== JSON.stringify(contractPlan.receiptCaseIds)
+)
+  throw new Error("integration.runner.installed-contract-receipt");
+const installedContractAggregate = Object.freeze({
+  aggregateVersion: 1,
+  ...installedContractEvidence,
+  driverDigest: requiredEnvironment(
+    "AGENTSCOPE_INSTALLED_CONTRACT_DRIVER_DIGEST",
+  ),
+  receiptDigest: digest(JSON.stringify(installedContractReceipts)),
+});
+console.log(
+  `AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=${Buffer.from(
+    JSON.stringify(installedContractAggregate),
+  ).toString("base64url")}`,
+);
+rmSync(contractRoot, { force: true, recursive: true });
 let fixtureOutput;
 let fixtureFailure;
 try {
