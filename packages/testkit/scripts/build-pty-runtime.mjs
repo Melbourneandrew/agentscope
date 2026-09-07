@@ -31,8 +31,13 @@ const policy = JSON.parse(
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const canonicalPatchSource = "a/src/unix/pty.cc";
 const canonicalPatchDestination = "b/src/unix/pty.cc";
+const maximumSourceBytes = 64 * 1024;
+const maximumPatchBytes = 40 * 1024;
+const maximumPatchLines = 2_048;
+const maximumPatchLineBytes = 2_048;
+const maximumPatchOperations = 4_096;
 const patchedSourceSha256 =
-  "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84";
+  "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6";
 
 // One closed parser keeps every header, position, operation, count and final
 // digest check in the same no-fuzz authority.
@@ -41,47 +46,74 @@ export const applyExactPtyPatch = (source, patch) => {
   if (
     typeof source !== "string" ||
     typeof patch !== "string" ||
+    Buffer.byteLength(source) > maximumSourceBytes ||
+    Buffer.byteLength(patch) > maximumPatchBytes ||
     !source.endsWith("\n") ||
     !patch.endsWith("\n")
   )
-    throw new Error("PTY patch input is malformed.");
+    throw new Error("PTY patch input is malformed or exceeds its byte bound.");
   const sourceLines = source.slice(0, -1).split("\n");
   const patchLines = patch.slice(0, -1).split("\n");
   if (
-    patchLines.shift() !== `--- ${canonicalPatchSource}` ||
-    patchLines.shift() !== `+++ ${canonicalPatchDestination}`
+    sourceLines.length > maximumPatchLines ||
+    patchLines.length > maximumPatchLines ||
+    [...sourceLines, ...patchLines].some(
+      (line) => Buffer.byteLength(line) > maximumPatchLineBytes,
+    )
+  )
+    throw new Error("PTY patch line authority is not bounded.");
+  let patchIndex = 0;
+  if (
+    patchLines[patchIndex++] !== `--- ${canonicalPatchSource}` ||
+    patchLines[patchIndex++] !== `+++ ${canonicalPatchDestination}`
   )
     throw new Error("PTY patch paths are not exact.");
   const output = [];
   let sourceIndex = 0;
   let hunkCount = 0;
-  while (patchLines.length > 0) {
-    const header = patchLines.shift();
-    const match = /^@@ -(\d+),(\d+) \+(\d+),(\d+) @@$/u.exec(header ?? "");
+  let operationCount = 0;
+  while (patchIndex < patchLines.length) {
+    const header = patchLines[patchIndex++];
+    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@$/u.exec(
+      header ?? "",
+    );
     if (match === null) throw new Error("PTY patch hunk header is malformed.");
     const oldStart = Number(match[1]);
-    const oldCount = Number(match[2]);
+    const oldCount = Number(match[2] ?? 1);
     const newStart = Number(match[3]);
-    const newCount = Number(match[4]);
+    const newCount = Number(match[4] ?? 1);
+    const targetSourceIndex = oldCount === 0 ? oldStart : oldStart - 1;
     if (
       !Number.isSafeInteger(oldStart) ||
       !Number.isSafeInteger(oldCount) ||
       !Number.isSafeInteger(newStart) ||
       !Number.isSafeInteger(newCount) ||
       oldStart < 1 ||
-      newStart !== output.length + 1 + (oldStart - (sourceIndex + 1)) ||
-      oldStart - 1 < sourceIndex ||
-      oldStart - 1 > sourceLines.length
-    )
+      newStart !==
+        output.length +
+          (newCount === 0 ? 0 : 1) +
+          (targetSourceIndex - sourceIndex) ||
+      targetSourceIndex < sourceIndex ||
+      targetSourceIndex > sourceLines.length
+    ) {
       throw new Error("PTY patch hunk position is not exact.");
-    output.push(...sourceLines.slice(sourceIndex, oldStart - 1));
-    sourceIndex = oldStart - 1;
+    }
+    output.push(...sourceLines.slice(sourceIndex, targetSourceIndex));
+    sourceIndex = targetSourceIndex;
     let consumed = 0;
     let produced = 0;
-    while (patchLines.length > 0 && !patchLines[0].startsWith("@@ ")) {
-      const line = patchLines.shift();
-      const operation = line?.[0];
-      const contents = line?.slice(1);
+    while (
+      patchIndex < patchLines.length &&
+      !patchLines[patchIndex].startsWith("@@ ")
+    ) {
+      const line = patchLines[patchIndex++];
+      operationCount += 1;
+      if (operationCount > maximumPatchOperations)
+        throw new Error("PTY patch operation inventory is not bounded.");
+      // Stored blank context lines omit the otherwise trailing unified-diff
+      // prefix so the repository remains whitespace-clean.
+      const operation = line === "" ? " " : line?.[0];
+      const contents = line === "" ? "" : line?.slice(1);
       if (
         contents === undefined ||
         (operation !== " " && operation !== "+" && operation !== "-")
@@ -105,7 +137,7 @@ export const applyExactPtyPatch = (source, patch) => {
       throw new Error("PTY patch hunk is incomplete.");
     hunkCount += 1;
   }
-  if (hunkCount !== 8)
+  if (hunkCount !== 63 || patchIndex !== patchLines.length)
     throw new Error("PTY patch hunk inventory is not exact.");
   output.push(...sourceLines.slice(sourceIndex));
   const result = `${output.join("\n")}\n`;
@@ -114,20 +146,35 @@ export const applyExactPtyPatch = (source, patch) => {
   return result;
 };
 
-const verifyRegularFile = (path, expected, expectedMode = 0o644) => {
+const verifyRegularFile = (
+  path,
+  expected,
+  expectedMode = 0o644,
+  maximumBytes = 2 * 1024 * 1024,
+) => {
   const descriptor = openSync(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
   try {
     const stat = fstatSync(descriptor);
-    const bytes = readFileSync(descriptor);
     if (
       !stat.isFile() ||
+      stat.size > maximumBytes ||
       (stat.mode & 0o777) !== expectedMode ||
+      stat.size < 1
+    )
+      throw new Error(`PTY build input identity mismatch: ${path}`);
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (
+      after.dev !== stat.dev ||
+      after.ino !== stat.ino ||
+      after.size !== stat.size ||
       sha256(bytes) !== expected
     )
       throw new Error(`PTY build input identity mismatch: ${path}`);
+    return bytes;
   } finally {
     closeSync(descriptor);
   }
@@ -310,8 +357,11 @@ export const buildPtyRuntime = ({
   output,
   packageRoot: archiveRoot = "/packages",
   sourceRoot,
+  testFaults = false,
   toolchainRoot = "/toolchain",
 }) => {
+  if (typeof testFaults !== "boolean")
+    throw new Error("PTY test-fault build selection is invalid.");
   if (
     process.platform !== "linux" ||
     process.arch !== "x64" ||
@@ -336,17 +386,21 @@ export const buildPtyRuntime = ({
     output,
     sourceRoot,
   });
-  verifyRegularFile(
+  const sourceBytes = verifyRegularFile(
     source,
     "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2",
+    0o644,
+    maximumSourceBytes,
   );
-  verifyRegularFile(
+  const patchBytes = verifyRegularFile(
     patch,
-    "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4",
+    "f7ebb2b3dc74e84035b78feaa66263b3a455da499e5f129c8eaa70ede429789e",
+    0o644,
+    maximumPatchBytes,
   );
   const patchedSource = applyExactPtyPatch(
-    readFileSync(source, "utf8"),
-    readFileSync(patch, "utf8"),
+    sourceBytes.toString("utf8"),
+    patchBytes.toString("utf8"),
   );
   verifyRegularFile(
     resolve(addonApi, "napi.h"),
@@ -366,7 +420,7 @@ export const buildPtyRuntime = ({
   });
   verifyRegularFile(
     resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
-    "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84",
+    "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6",
   );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
@@ -387,9 +441,11 @@ export const buildPtyRuntime = ({
     resolve(toolchainRoot, "usr/bin/ld"),
     policy.build.linkerSha256,
   );
+  const arguments_ = [...policy.build.arguments];
+  if (testFaults) arguments_.splice(-5, 0, "-DAGENTSCOPE_PTY_TEST_FAULTS");
   execFileSync(
     "/bin/busybox",
-    ["chroot", toolchainRoot, "/usr/bin/g++", ...policy.build.arguments],
+    ["chroot", toolchainRoot, "/usr/bin/g++", ...arguments_],
     {
       cwd: "/",
       env: { ...policy.build.environment },
@@ -407,7 +463,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const digest = buildPtyRuntime({ output: "/output", sourceRoot: "/build" });
   if (
     digest !==
-    "a82a5b257b14645b5705211d124300eadb7cb87120e6c7248fe4b6774782d8a3"
+    "0f55e9389e47d8d27ba35704c3facdab029cbc5eba3c55540d31fa81cd6604db"
   )
     throw new Error("PTY runtime build is not reproducible.");
 }

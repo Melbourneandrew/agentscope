@@ -11,6 +11,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -52,6 +53,36 @@ const evaluate = (source: string, arguments_: string[] = []) =>
 
 const sha256 = (bytes: Buffer | string) =>
   createHash("sha256").update(bytes).digest("hex");
+
+const runtimeReceipt = (value: unknown) => {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(value) !==
+      '{"deadlineNoLaunch":true,"descriptorClosure":true,"faults":true,"geometry":true,"happy":true,"openRollback":true,"residual":true}'
+  )
+    throw new Error("PTY runtime proof receipt is not exact.");
+};
+
+const runtimeFixture = `import {fstatSync} from "node:fs";
+let extraOpen=true;try{fstatSync(Number(process.env.EXTRA_FD));}catch{extraOpen=false;}
+process.stdout.write(JSON.stringify({columns:process.stdout.columns,extraOpen,isTTY:process.stdin.isTTY===true&&process.stdout.isTTY===true,rows:process.stdout.rows})+"\\n");
+process.stdin.resume();process.stdin.on("end",()=>process.exit(0));\n`;
+
+const runtimeDriver = `import {createRequire} from "node:module";
+import {closeSync,constants,fstatSync,openSync,readdirSync,readFileSync} from "node:fs";
+if(process.versions.modules!=="127"||readFileSync("/etc/alpine-release","utf8").trim()!=="3.24.1")throw new Error("canonical runtime identity mismatch");
+const require=createRequire(import.meta.url);const production=require("/runtime/production.node");const faults=require("/runtime/faults.node");
+const fixture="/fixture/fixture.mjs";const environment=extra=>[\`EXTRA_FD=\${extra}\`,"LANG=C","LC_ALL=C","PATH=/usr/local/bin:/usr/bin:/bin","TZ=UTC"];
+const pair=()=>({interpreter:openSync("/usr/local/bin/node",constants.O_RDONLY|constants.O_NOFOLLOW),script:openSync(fixture,constants.O_RDONLY|constants.O_NOFOLLOW)});
+const invoke=(addon,{fault=0,milliseconds=2000}={})=>{const p=pair();const extra=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);let exit;addon.testFault?.(fault);try{return{extra,p,result:addon.fork(p.interpreter,p.script,[],environment(extra),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+BigInt(milliseconds)*1000000n,(code,signal)=>{exit={code,signal};}),exit:()=>exit};}catch(error){closeSync(p.interpreter);closeSync(p.script);closeSync(extra);throw error;}};
+const fails=(fault,pattern,milliseconds)=>{let message="";try{invoke(faults,{fault,milliseconds});}catch(error){message=String(error);}if(!pattern.test(message))throw new Error("fault receipt mismatch");};
+fails(0,/deadline is invalid or expired/,-1);fails(1<<9,/expired before launch/,20);fails((1<<8)|(1<<7),/stage 5 errno 5.*child joined/,50);for(const bit of [1,2,3,4,7])fails(1<<bit,/failed|invalid|pre-handoff|child joined/);for(const bit of [6,12])fails((1<<bit)|(1<<7),/cleanup uncertain/);
+const beforeOpen=readdirSync("/proc/self/fd").length;for(const bit of [10,11]){faults.testFault(1<<bit);let rejected=false;try{faults.open(80,24,process.hrtime.bigint()+2000000000n);}catch{rejected=true;}if(!rejected)throw new Error("open rollback accepted");}const openRollback=readdirSync("/proc/self/fd").length===beforeOpen;
+const live=invoke(faults);closeSync(live.p.interpreter);closeSync(live.p.script);closeSync(live.extra);const first=faults.inspect(live.result.handle);faults.resize(live.result.handle,91,31,0,0);const resized=faults.inspect(live.result.handle);faults.write(live.result.handle,Buffer.from("hello\\n"));faults.eof(live.result.handle);let output="";const end=Date.now()+2000;while(Date.now()<end){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();if((observed.status==="eof"||observed.status==="eio")&&live.exit())break;await new Promise(resolve=>setTimeout(resolve,10));}faults.close(live.result.handle);
+const happyPair=pair();let happyExit;const happy=production.fork(happyPair.interpreter,happyPair.script,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+2000000000n,(code,signal)=>{happyExit={code,signal};});closeSync(happyPair.interpreter);closeSync(happyPair.script);production.eof(happy.handle);const happyEnd=Date.now()+2000;while(Date.now()<happyEnd&&!happyExit){production.read(happy.handle,4096);await new Promise(resolve=>setTimeout(resolve,10));}production.close(happy.handle);
+const residual=readFileSync("/proc/self/task/1/children","utf8").trim()==="";const receipt={deadlineNoLaunch:true,descriptorClosure:output.includes('"extraOpen":false'),faults:true,geometry:first.isTTY===true&&resized.columns===91&&resized.rows===31,happy:happyExit?.code===0,openRollback,residual};process.stdout.write(JSON.stringify(receipt));\n`;
 const writeTarString = (
   header: Buffer,
   offset: number,
@@ -169,7 +200,107 @@ afterEach(() => {
     rmSync(root, { force: true, recursive: true });
 });
 
+// Runtime authority and its hostile artifact cases stay in one adjacent table.
+// eslint-disable-next-line max-lines-per-function
 describe("PTY runtime artifact tooling", () => {
+  it("replays the closed PTY ABI matrix only on authenticated GitHub CI", () => {
+    const identity = {
+      actions: process.env.GITHUB_ACTIONS,
+      event: process.env.GITHUB_EVENT_NAME,
+      repository: process.env.GITHUB_REPOSITORY,
+      runnerArch: process.env.RUNNER_ARCH,
+      runnerEnvironment: process.env.RUNNER_ENVIRONMENT,
+      runnerOs: process.env.RUNNER_OS,
+      workspace: process.env.GITHUB_WORKSPACE,
+    };
+    const indicators = Object.values(identity).filter(
+      (value) => value !== undefined,
+    );
+    if (indicators.length === 0) {
+      expect(() => {
+        runtimeReceipt({
+          deadlineNoLaunch: true,
+          descriptorClosure: true,
+          faults: true,
+          geometry: true,
+          happy: true,
+          openRollback: true,
+          residual: true,
+        });
+      }).not.toThrow();
+      expect(() => {
+        runtimeReceipt({ happy: true });
+      }).toThrow(/receipt is not exact/u);
+      return;
+    }
+    expect(identity).toEqual({
+      actions: "true",
+      event: "pull_request",
+      repository: "Melbourneandrew/agentscope",
+      runnerArch: "X64",
+      runnerEnvironment: "github-hosted",
+      runnerOs: "Linux",
+      workspace: realpathSync(resolve(packageRoot, "../..")),
+    });
+    const docker = "/usr/bin/docker";
+    const dockerStat = statSync(docker);
+    expect(dockerStat.isFile()).toBe(true);
+    expect(dockerStat.uid).toBe(0);
+    expect(dockerStat.mode & 0o111).not.toBe(0);
+    const socket = statSync("/var/run/docker.sock");
+    expect(socket.isSocket()).toBe(true);
+    const root = temporaryRoot();
+    const configuration = resolve(root, "docker-config");
+    const fixture = resolve(root, "fixture.mjs");
+    const driver = resolve(root, "driver.mjs");
+    mkdirSync(configuration, { mode: 0o700 });
+    chmodSync(configuration, 0o700);
+    writeFileSync(fixture, runtimeFixture, { mode: 0o400 });
+    writeFileSync(driver, runtimeDriver, { mode: 0o400 });
+    const output = execFileSync(
+      docker,
+      [
+        "--config",
+        configuration,
+        "--host",
+        "unix:///var/run/docker.sock",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--platform",
+        "linux/amd64",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec,mode=0700",
+        "--mount",
+        `type=bind,src=${resolve(packageRoot, "pty-runtime/node127-linux-x64-musl/pty.node")},dst=/runtime/production.node,readonly`,
+        "--mount",
+        `type=bind,src=${resolve(packageRoot, "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node")},dst=/runtime/faults.node,readonly`,
+        "--mount",
+        `type=bind,src=${fixture},dst=/fixture/fixture.mjs,readonly`,
+        "--mount",
+        `type=bind,src=${driver},dst=/fixture/driver.mjs,readonly`,
+        "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
+        "node",
+        "--expose-gc",
+        "/fixture/driver.mjs",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          DOCKER_API_VERSION: "1.44",
+          HOME: root,
+          PATH: "/usr/bin:/bin",
+        },
+        maxBuffer: 64 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 30_000,
+      },
+    );
+    runtimeReceipt(JSON.parse(output));
+  });
+
   it("verifies the exact musl artifact without loading it", () => {
     expect(() =>
       execFileSync(
@@ -210,6 +341,37 @@ describe("PTY runtime artifact tooling", () => {
     expect(() => evaluate(verify, [root, sourceRoot])).toThrow(
       /too many levels of symbolic links|symbolic link|ELOOP/iu,
     );
+  });
+
+  it("rejects substitution of the non-staged fault artifact", () => {
+    const root = temporaryRoot();
+    mkdirSync(resolve(root, "pty-runtime/node127-linux-x64-musl"), {
+      recursive: true,
+    });
+    mkdirSync(
+      resolve(root, "fixtures/pty-runtime-faults/node127-linux-x64-musl"),
+      { recursive: true },
+    );
+    for (const file of [
+      "pty-runtime-artifacts.json",
+      "pty-runtime-policy.json",
+    ])
+      copyFileSync(resolve(packageRoot, file), resolve(root, file));
+    copyFileSync(
+      resolve(packageRoot, "pty-runtime/node127-linux-x64-musl/pty.node"),
+      resolve(root, "pty-runtime/node127-linux-x64-musl/pty.node"),
+    );
+    writeFileSync(
+      resolve(
+        root,
+        "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
+      ),
+      "substituted",
+    );
+    const verify = `const {verifyPtyRuntime}=await import(${JSON.stringify(verifierUrl)}); verifyPtyRuntime({root:process.argv[1],sourceRoot:process.argv[2]});`;
+    expect(() =>
+      evaluate(verify, [root, resolve(packageRoot, "../..")]),
+    ).toThrow(/test-fault artifact bytes do not match authority/u);
   });
 
   it("rejects executable-mode and FIFO artifact substitutions without blocking", () => {
@@ -434,14 +596,14 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84",
+      "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6",
     );
-    expect(() => apply(source, patch.replace("-21,6", "-22,6"))).toThrow(
+    expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
     );
     expect(() =>
       apply(source.replace("#include <napi.h>", "#include <hostile.h>"), patch),
-    ).toThrow(/context/u);
+    ).toThrow(/context|identity/u);
     expect(() =>
       apply(source, patch.replace("a/src/unix/pty.cc", "../../hostile/pty.cc")),
     ).toThrow(/paths/u);
@@ -449,7 +611,161 @@ describe("PTY authenticated build-material tooling", () => {
       /hunk header|position/u,
     );
     expect(() =>
-      apply(source, patch.replace("@@ -21,6", "@@ malformed")),
+      apply(source, patch.replace("@@ -22,0", "@@ malformed")),
     ).toThrow(/hunk header/u);
+    expect(() => apply(`${"x".repeat(65_536)}\n`, patch)).toThrow(
+      /byte bound/u,
+    );
+    expect(() => apply(source, `${patch}${"+x\n".repeat(2_049)}`)).toThrow(
+      /byte bound|line authority|operation inventory/u,
+    );
+    expect(() =>
+      apply(
+        source,
+        patch.replace("+#include <atomic>", `+${"x".repeat(2_049)}`),
+      ),
+    ).toThrow(/byte bound|line authority/u);
+    expect(() =>
+      apply(source, patch.replace(",0 +", ",999999999999 +")),
+    ).toThrow(/hunk counts|incomplete|position/u);
+    expect(patch).toContain(
+      "+    errno = 0;\n+    entry = readdir(directory);",
+    );
+    expect(patch).toContain("+    errno = EINVAL;");
+    expect(() =>
+      apply(source, patch.replace("+    errno = 0;", "+    errno = EIO;")),
+    ).toThrow(/identity/u);
+    expect(() =>
+      apply(
+        source,
+        patch.replace("+      if (errno != 0)", "+      if (errno == EIO)"),
+      ),
+    ).toThrow(/identity/u);
+  });
+
+  // All mutation oracles remain adjacent to the one exact positive patch.
+  // eslint-disable-next-line max-lines-per-function
+  it("pins deadline, descriptor, cleanup, and close authority", () => {
+    const source = readFileSync(
+      resolve(packageRoot, "../../third_party/node-pty/src/unix/pty.cc"),
+      "utf8",
+    );
+    const patch = readFileSync(
+      resolve(
+        packageRoot,
+        "../../third_party/node-pty/patches/agentscope-terminal-authority.patch",
+      ),
+      "utf8",
+    );
+    const apply = (candidatePatch: string) =>
+      evaluate(
+        `const {applyExactPtyPatch}=await import(${JSON.stringify(buildUrl)}); applyExactPtyPatch(Buffer.from(process.argv[1],'base64').toString(),Buffer.from(process.argv[2],'base64').toString());`,
+        [
+          Buffer.from(source).toString("base64"),
+          Buffer.from(candidatePatch).toString("base64"),
+        ],
+      );
+    expect(patch).toContain(
+      "+          fcntl(interpreter_fd, F_SETFD, interpreter_flags & ~FD_CLOEXEC) == -1 ||",
+    );
+    expect(patch).toContain(
+      "+          fcntl(script_fd, F_SETFD, script_flags & ~FD_CLOEXEC) == -1)",
+    );
+    expect(patch).toContain(
+      "+      (interpreter_descriptor_flags & FD_CLOEXEC) == 0 ||",
+    );
+    expect(patch).toContain(
+      "+      (script_descriptor_flags & FD_CLOEXEC) == 0 ||",
+    );
+    expect(patch).toContain(
+      "+  uint64_t deadline = info[11].As<Napi::BigInt>().Uint64Value(&deadline_lossless);",
+    );
+    expect(patch).toContain(
+      "+    int remaining = pty_remaining_milliseconds(deadline);",
+    );
+    expect(patch).toContain(
+      "+        bool settled = pty_join_failed_child(pid, &master, &exec_status[0], deadline);",
+    );
+    expect(patch).toContain("+#if defined(AGENTSCOPE_PTY_TEST_FAULTS)");
+    expect(patch).toContain("+  handle->fd = -1;");
+    expect(patch).toContain("+  handle->generation = 0;");
+    expect(patch).toContain("+  uint64_t deadline;");
+    expect(patch).toContain(
+      "+       pty_remaining_milliseconds(handle->deadline) == 0))",
+    );
+    expect(patch).toContain(
+      "+  TerminalHandle *handle = require_terminal_handle(env, info[0], false);",
+    );
+    expect(patch).toContain("+        candidate == exec_status_fd ||");
+    expect(patch).toContain(
+      "+  if (pty_remaining_milliseconds(deadline) == 0) {",
+    );
+    expect(patch).toContain(
+      "+  std::thread **thread_slot = new std::thread *(nullptr);",
+    );
+    expect(patch).toContain(
+      "+    if (tsfn_created && tsfn.Release() != napi_ok)",
+    );
+    expect(patch).toContain("+  TerminalHandle *master_handle = nullptr;");
+    expect(patch).toContain("+  TerminalHandle *slave_handle = nullptr;");
+    expect(() =>
+      apply(
+        patch.replace(
+          "interpreter_flags & ~FD_CLOEXEC",
+          "interpreter_flags | FD_CLOEXEC",
+        ),
+      ),
+    ).toThrow(/identity/u);
+    expect(() =>
+      apply(
+        patch.replace(
+          "candidate == exec_status_fd ||",
+          "candidate == directory_fd ||",
+        ),
+      ),
+    ).toThrow(/identity/u);
+    for (const [needle, replacement] of [
+      [
+        "(interpreter_descriptor_flags & FD_CLOEXEC) == 0",
+        "interpreter_descriptor_flags == -2",
+      ],
+      [
+        "(script_descriptor_flags & FD_CLOEXEC) == 0",
+        "script_descriptor_flags == -2",
+      ],
+      [
+        "pty_exec_succeeded(exec_status[0], deadline, &failure)",
+        "pty_exec_succeeded(exec_status[0], UINT64_MAX, &failure)",
+      ],
+      [
+        "pty_join_failed_child(pid, &master, &exec_status[0], deadline)",
+        "pty_join_failed_child(pid, nullptr, nullptr, deadline)",
+      ],
+      ["handle->fd = -1;", "handle->fd = fd;"],
+      [
+        "pty_remaining_milliseconds(handle->deadline) == 0",
+        "pty_remaining_milliseconds(UINT64_MAX) == 0",
+      ],
+      [
+        "#if defined(AGENTSCOPE_PTY_TEST_FAULTS)",
+        "#if defined(AGENTSCOPE_PTY_FAULTS)",
+      ],
+      [
+        "pty_remaining_milliseconds(deadline) == 0) {",
+        "pty_remaining_milliseconds(UINT64_MAX) == 0) {",
+      ],
+      [
+        "tsfn_created && tsfn.Release() != napi_ok",
+        "tsfn_created && napi_ok != napi_ok",
+      ],
+      [
+        "TerminalHandle *slave_handle = nullptr;",
+        "TerminalHandle *slave_handle = master_handle;",
+      ],
+    ] as const) {
+      expect(() => apply(patch.replace(needle, replacement))).toThrow(
+        /identity/u,
+      );
+    }
   });
 });

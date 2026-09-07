@@ -18,11 +18,18 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 616_536,
+  bytes: 626_728,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "a82a5b257b14645b5705211d124300eadb7cb87120e6c7248fe4b6774782d8a3",
+  sha256: "0f55e9389e47d8d27ba35704c3facdab029cbc5eba3c55540d31fa81cd6604db",
   tuple: "node127-linux-x64-musl",
+});
+const expectedFaultArtifact = Object.freeze({
+  bytes: 626_952,
+  needed: Object.freeze(["libc.musl-x86_64.so.1"]),
+  path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
+  sha256: "7ee04049ab6ad287c143c5ecd879e738c27acb219aae9706655dcb5d1981ec75",
+  tuple: "node127-linux-x64-musl-test-faults",
 });
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -206,13 +213,13 @@ const verifySourceAuthority = (sourceRoot) => {
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
-    9_471,
-    "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4",
+    35_129,
+    "f7ebb2b3dc74e84035b78feaa66263b3a455da499e5f129c8eaa70ede429789e",
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
-    1_683,
-    "c6c191296da1415cdafb8044a56c32afe5cf4c3d75c359db074cade04ad6bb48",
+    1_684,
+    "ac5dc913064257c71b878cb567b6560c4daa79e089ca59686d1d1695487b4f3d",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -246,9 +253,9 @@ const verifySourceAuthority = (sourceRoot) => {
     nodePtyManifest.agentscopePatch?.path !==
       "patches/agentscope-terminal-authority.patch" ||
     nodePtyManifest.agentscopePatch?.sha256 !==
-      "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4" ||
+      "f7ebb2b3dc74e84035b78feaa66263b3a455da499e5f129c8eaa70ede429789e" ||
     nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
-      "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84" ||
+      "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -263,8 +270,8 @@ const verifySourceAuthority = (sourceRoot) => {
 const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
-    8_832,
-    "abcb791a22e4e0d21aefa00ab5209532049ffad5b85b6e30d9204311d24cc09d",
+    8_833,
+    "aef91a35f615d556bcb5fa19b776095e319caaecc7bb4954db58995af7aae12b",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -276,9 +283,9 @@ const verifyPolicy = (root) => {
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
     policy.build?.patch?.sha256 !==
-      "1b87f2a95bf44e2dce53a4a6530bca38a78d45353c9f3dfcec29d9f716ce63d4" ||
+      "f7ebb2b3dc74e84035b78feaa66263b3a455da499e5f129c8eaa70ede429789e" ||
     policy.build?.patch?.patchedSourceSha256 !==
-      "b57b7a2171826869f4d6a299ccad32bd639ed89c4dcda5cd7c6e9a35dd4f9e84" ||
+      "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6" ||
     JSON.stringify(policy.build?.nativeExports) !==
       JSON.stringify([
         "close",
@@ -323,7 +330,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "abcb791a22e4e0d21aefa00ab5209532049ffad5b85b6e30d9204311d24cc09d" ||
+      "aef91a35f615d556bcb5fa19b776095e319caaecc7bb4954db58995af7aae12b" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -336,7 +343,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "c6c191296da1415cdafb8044a56c32afe5cf4c3d75c359db074cade04ad6bb48" ||
+      "ac5dc913064257c71b878cb567b6560c4daa79e089ca59686d1d1695487b4f3d" ||
     authority.patchSha256 !== policy.build.patch.sha256 ||
     authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
     JSON.stringify(authority.nativeExports) !==
@@ -382,6 +389,31 @@ const verifyArtifactRecord = (record) => {
     throw new Error("PTY runtime artifact record is not exact.");
 };
 
+const verifyFaultArtifactRecord = (record) => {
+  if (
+    !exactKeys(record, [
+      "bytes",
+      "format",
+      "mode",
+      "needed",
+      "path",
+      "sha256",
+      "staged",
+      "tuple",
+    ]) ||
+    record.tuple !== expectedFaultArtifact.tuple ||
+    record.path !== expectedFaultArtifact.path ||
+    record.bytes !== expectedFaultArtifact.bytes ||
+    record.mode !== "0644" ||
+    record.format !== "elf64-x86-64" ||
+    record.sha256 !== expectedFaultArtifact.sha256 ||
+    record.staged !== false ||
+    JSON.stringify(record.needed) !==
+      JSON.stringify(expectedFaultArtifact.needed)
+  )
+    throw new Error("PTY test-fault artifact record is not exact.");
+};
+
 // This is the one fail-closed conjunction for provenance, policy, artifact,
 // ELF, and staging authority. Every subordinate check is mandatory.
 export const verifyPtyRuntime = ({
@@ -393,30 +425,68 @@ export const verifyPtyRuntime = ({
   const policy = verifyPolicy(root);
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
-    2_281,
-    "69a81b83b71d31bd6d630d12fbba0fa21d96bd06803105e1694acd01bda6a25f",
+    2_675,
+    "23256357e41eb93f831c173bfe7c1eed682c284969fc170ae5e576972d7935c5",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
   );
   if (
-    !exactKeys(manifest, ["artifacts", "authority", "schemaVersion"]) ||
+    !exactKeys(manifest, [
+      "artifacts",
+      "authority",
+      "schemaVersion",
+      "testArtifacts",
+    ]) ||
     manifest.schemaVersion !== 1 ||
     !Array.isArray(manifest.artifacts) ||
-    manifest.artifacts.length !== 1
+    manifest.artifacts.length !== 1 ||
+    !Array.isArray(manifest.testArtifacts) ||
+    manifest.testArtifacts.length !== 1
   )
     throw new Error("PTY runtime artifact manifest is not closed.");
   verifyManifestAuthority(manifest.authority, policy);
   const record = manifest.artifacts[0];
   verifyArtifactRecord(record);
+  const faultRecord = manifest.testArtifacts[0];
+  verifyFaultArtifactRecord(faultRecord);
 
   const source = resolve(root, record.path);
   const bytes = readBoundedRegular(source, maximumArtifactBytes, 0o644);
   if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256)
     throw new Error("PTY runtime artifact bytes do not match authority.");
+  if (
+    bytes.includes(Buffer.from("AGENTSCOPE_PTY_TEST_FAULTS")) ||
+    bytes.includes(Buffer.from("testFault"))
+  )
+    throw new Error("PTY runtime artifact contains test-fault authority.");
   const needed = inspectElf(bytes);
   if (JSON.stringify(needed) !== JSON.stringify(record.needed))
     throw new Error("PTY runtime dependency closure is not exact.");
+
+  const faultSource = resolve(root, faultRecord.path);
+  const faultBytes = readBoundedRegular(
+    faultSource,
+    maximumArtifactBytes,
+    0o644,
+  );
+  if (
+    faultBytes.length !== faultRecord.bytes ||
+    sha256(faultBytes) !== faultRecord.sha256 ||
+    !faultBytes.includes(Buffer.from("testFault"))
+  )
+    throw new Error("PTY test-fault artifact bytes do not match authority.");
+  if (
+    JSON.stringify(inspectElf(faultBytes)) !==
+    JSON.stringify(faultRecord.needed)
+  )
+    throw new Error("PTY test-fault dependency closure is not exact.");
+  verifyClosedSourceDirectory(resolve(root, "fixtures/pty-runtime-faults"), [
+    "node127-linux-x64-musl",
+  ]);
+  verifyClosedSourceDirectory(resolve(root, dirname(faultRecord.path)), [
+    "pty.node",
+  ]);
 
   verifyClosedSourceDirectory(resolve(root, "pty-runtime"), [
     "node127-linux-x64-musl",
