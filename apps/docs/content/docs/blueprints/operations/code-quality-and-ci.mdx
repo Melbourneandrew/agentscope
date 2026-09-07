@@ -27,7 +27,7 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 ### ADR-003: Give local feedback and CI distinct authority
 
-**Decision:** Pre-commit and pre-push follow [Local Feedback](/docs/blueprints/operations/local-feedback). Local Nx result reuse follows [Nx Task Caching](/docs/blueprints/operations/nx-task-caching). CI does not adopt local affected selection or cached success and follows the independently observable full-gate contract in [Continuous Integration](/docs/blueprints/operations/continuous-integration).
+**Decision:** Pre-commit and pre-push follow [Local Feedback](/docs/blueprints/operations/local-feedback). Local Nx result reuse follows [Nx Task Caching](/docs/blueprints/operations/nx-task-caching). CI never adopts local affected selection or cached success. Quality, unit, documentation, and integration follow the independently observable full-gate contract in [Continuous Integration](/docs/blueprints/operations/continuous-integration); native alone may use that Blueprint's separate exact-revision, fail-closed changed-path decision and otherwise executes its complete gate.
 
 **Context:** Fast commit feedback prevents routine violations, while staged-only checks cannot establish workspace-wide correctness or detect changed public contracts.
 
@@ -39,7 +39,7 @@ Agentscope is an agent-developed TypeScript monorepo and needs mechanical, non-n
 
 **Context:** The integration matrix is materially slower and has different Docker/artifact requirements than code quality. Separating lanes gives actionable failures and allows safe parallelism.
 
-**Consequences:** Pull requests run quality, unit, docs, native, and the defined hermetic compatibility matrix. Native candidate certification does not run inside the unit lane, and integration work is sharded by scenario without sharing scenario containers. Scheduled/manual workflows may run a wider hermetic version matrix. Documentation deployment remains a separate post-merge workflow and never grants publishing credentials to pull-request jobs.
+**Consequences:** Pull requests report quality, unit, docs, native, and the defined hermetic compatibility matrix. Native candidate certification does not run inside the unit lane; its check either records the governed irrelevant-path disposition or runs fresh certification. Integration work is sharded by scenario without sharing scenario containers. Scheduled/manual workflows may run a wider hermetic version matrix. Documentation deployment remains a separate post-merge workflow and never grants publishing credentials to pull-request jobs.
 
 ### ADR-005: Enforce complexity and test posture through reviewed policy
 
