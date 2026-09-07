@@ -1541,7 +1541,10 @@ export const createHostileHeadlessProcessMatrix =
     ];
     const cases = new SafeArray<HostileHeadlessProcessCase>(definitions.length);
     for (let index = 0; index < definitions.length; index += 1) {
-      const [name, seed, terminal] = definitions[index]!;
+      const definition = definitions[index]!;
+      const name = definition[0];
+      const seed = definition[1];
+      const terminal = definition[2];
       cases[index] = safeFreeze({
         name,
         seed,

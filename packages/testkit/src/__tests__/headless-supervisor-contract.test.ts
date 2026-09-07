@@ -423,6 +423,37 @@ describe("bounded headless supervisor trace protocol", () => {
       hostileCases.length,
     );
   });
+
+  it("constructs the hostile inventory without ambient iterator authority", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      Symbol.iterator,
+    )!;
+    let calls = 0;
+    let constructed: ReturnType<typeof createHostileHeadlessProcessMatrix>;
+    try {
+      Object.defineProperty(Array.prototype, Symbol.iterator, {
+        ...descriptor,
+        value: function* () {
+          calls += 1;
+          yield "headless:forged";
+          yield "crash-after-lifecycle";
+          yield { kind: "trace", outcome: "exited" };
+        },
+      });
+      constructed = createHostileHeadlessProcessMatrix();
+    } finally {
+      Object.defineProperty(Array.prototype, Symbol.iterator, descriptor);
+    }
+    expect(calls).toBe(0);
+    expect(constructed!).toEqual(hostileCases);
+    expect(
+      constructed!.every(
+        (candidate) =>
+          Object.isFrozen(candidate) && Object.isFrozen(candidate.terminal),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("real-process timeout stimulus causality", () => {
