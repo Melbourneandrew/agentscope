@@ -1545,12 +1545,21 @@ export const createHostileHeadlessProcessMatrix =
       const name = definition[0];
       const seed = definition[1];
       const terminal = definition[2];
-      cases[index] = safeFreeze({
-        name,
-        seed,
-        terminal,
-        evidenceAuthority: "component-only",
-      });
+      safeReflectApply(safeObjectDefineProperty, Object, [
+        cases,
+        index,
+        {
+          configurable: false,
+          enumerable: true,
+          value: safeFreeze({
+            name,
+            seed,
+            terminal,
+            evidenceAuthority: "component-only",
+          }),
+          writable: false,
+        },
+      ]);
     }
     return safeFreeze(cases);
   };

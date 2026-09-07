@@ -769,7 +769,24 @@ for (const seed of ["fast-exit", "identity-substitution", "observer-failure", "s
   catch { rejected = true; }
   if (!rejected) throw new Error("emitted-negative-admitted:" + seed);
 }
-for (const candidate of createHostileHeadlessProcessMatrix()) {
+const numericDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+let numericSetterCalls = 0;
+let hostileMatrix;
+try {
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true,
+    set: () => { numericSetterCalls += 1; },
+  });
+  hostileMatrix = createHostileHeadlessProcessMatrix();
+} finally {
+  if (numericDescriptor === undefined) Reflect.deleteProperty(Array.prototype, "0");
+  else Object.defineProperty(Array.prototype, "0", numericDescriptor);
+}
+if (numericSetterCalls !== 0 || hostileMatrix.length !== 15) throw new Error("emitted-hostile-numeric-setter");
+for (let index = 0; index < hostileMatrix.length; index += 1) {
+  if (!Object.hasOwn(hostileMatrix, index)) throw new Error("emitted-hostile-own-entry:" + index);
+}
+for (const candidate of hostileMatrix) {
   const selected = request();
   if (candidate.seed === "delayed-startup") selected.monotonicStartupDeadlineMs = performance.now() + 5;
   let result;
