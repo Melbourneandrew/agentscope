@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createBoundedHeadlessSupervisorContractSuite,
+  createHostileHeadlessProcessMatrix,
   encodeCanonicalHeadlessExecutionTrace,
   headlessTraceEnvelopeLimitBytes,
   type HeadlessExecutionResult,
@@ -36,6 +37,7 @@ const descendant = Object.freeze({
 });
 
 const cases = createBoundedHeadlessSupervisorContractSuite();
+const hostileCases = createHostileHeadlessProcessMatrix();
 
 type ProcessSnapshot = Readonly<{
   pid: number;
@@ -388,6 +390,94 @@ describe("bounded headless supervisor trace protocol", () => {
     expect(cases.every(({ fixtureSource }) => fixtureSource.length > 20)).toBe(
       true,
     );
+  });
+
+  it("owns a frozen comprehensive hostile non-PTY inventory", () => {
+    expect(Object.isFrozen(hostileCases)).toBe(true);
+    expect(
+      hostileCases.every(
+        (candidate) =>
+          Object.isFrozen(candidate) &&
+          Object.isFrozen(candidate.terminal) &&
+          candidate.evidenceAuthority === "component-only",
+      ),
+    ).toBe(true);
+    expect(hostileCases.map(({ name }) => name)).toEqual([
+      "headless:crash-before-lifecycle",
+      "headless:crash-after-lifecycle",
+      "headless:partial-output",
+      "headless:malformed-output",
+      "headless:oversized-output",
+      "headless:infinite-output",
+      "headless:ignored-termination",
+      "headless:delayed-startup",
+      "headless:delayed-shutdown",
+      "headless:surviving-descendant",
+      "headless:restricted-environment",
+      "headless:missing-hook-record",
+      "headless:duplicate-hook-record",
+      "headless:signal-race",
+      "headless:observation-race",
+    ]);
+    expect(new Set(hostileCases.map(({ seed }) => seed)).size).toBe(
+      hostileCases.length,
+    );
+  });
+
+  it("constructs the hostile inventory without ambient iterator authority", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Array.prototype,
+      Symbol.iterator,
+    )!;
+    let calls = 0;
+    let constructed: ReturnType<typeof createHostileHeadlessProcessMatrix>;
+    try {
+      Object.defineProperty(Array.prototype, Symbol.iterator, {
+        ...descriptor,
+        value: function* () {
+          calls += 1;
+          yield "headless:forged";
+          yield "crash-after-lifecycle";
+          yield { kind: "trace", outcome: "exited" };
+        },
+      });
+      constructed = createHostileHeadlessProcessMatrix();
+    } finally {
+      Object.defineProperty(Array.prototype, Symbol.iterator, descriptor);
+    }
+    expect(calls).toBe(0);
+    expect(constructed!).toEqual(hostileCases);
+    expect(
+      constructed!.every(
+        (candidate) =>
+          Object.isFrozen(candidate) && Object.isFrozen(candidate.terminal),
+      ),
+    ).toBe(true);
+  });
+
+  it("constructs every hostile case as an own entry without inherited setters", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+    let setterCalls = 0;
+    let constructed: ReturnType<typeof createHostileHeadlessProcessMatrix>;
+    try {
+      Object.defineProperty(Array.prototype, "0", {
+        configurable: true,
+        set: () => {
+          setterCalls += 1;
+        },
+      });
+      constructed = createHostileHeadlessProcessMatrix();
+    } finally {
+      if (descriptor === undefined)
+        Reflect.deleteProperty(Array.prototype, "0");
+      else Object.defineProperty(Array.prototype, "0", descriptor);
+    }
+    expect(setterCalls).toBe(0);
+    expect(constructed!).toEqual(hostileCases);
+    expect(constructed!).toHaveLength(15);
+    for (let index = 0; index < constructed!.length; index += 1) {
+      expect(Object.hasOwn(constructed!, index)).toBe(true);
+    }
   });
 });
 
