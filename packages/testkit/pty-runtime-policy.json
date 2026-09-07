@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "tuple": "node127-linux-x64-musl",
+    "nodeVersion": "22.23.2",
+    "nodeAbi": 127,
+    "os": "linux",
+    "architecture": "x64",
+    "libc": "musl",
+    "alpineVersion": "3.24.1"
+  },
+  "canonicalImage": {
+    "index": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "manifest": "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
+    "config": "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
+    "nodeHeaderInventorySha256": "5b587fb37921c66e1c3fffb48470b85e272dd214a0b0aa81418b38135aa8ca2b"
+  },
+  "alpineAuthority": {
+    "repository": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64",
+    "index": {
+      "description": "v3.24.1-521-g8e133ced273",
+      "bytes": 528409,
+      "sha256": "622b178e9e1e302970f2dbff372a8e1d98316c6cb224189ea656e438fa9da232",
+      "signer": "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub",
+      "signerKeySha256": "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
+    },
+    "maximumArchives": 64,
+    "maximumCompressedBytes": 536870912,
+    "actualArchives": 19,
+    "actualCompressedBytes": 97592935,
+    "roots": ["g++=15.2.0-r5", "linux-headers=7.0.0-r1"],
+    "resolvedClosure": [
+      "binutils=2.45.1-r1",
+      "g++=15.2.0-r5",
+      "gcc=15.2.0-r5",
+      "gmp=6.3.0-r4",
+      "isl26=0.26-r2",
+      "jansson=2.15.0-r0",
+      "libatomic=15.2.0-r5",
+      "libgcc=15.2.0-r5",
+      "libgcc-static=15.2.0-r5",
+      "libgomp=15.2.0-r5",
+      "libstdc++=15.2.0-r5",
+      "libstdc++-dev=15.2.0-r5",
+      "linux-headers=7.0.0-r1",
+      "mpc1=1.3.1-r1",
+      "mpfr4=4.2.2-r0",
+      "musl=1.2.6-r2",
+      "musl-dev=1.2.6-r2",
+      "zlib=1.3.2-r0",
+      "zstd-libs=1.5.7-r2"
+    ],
+    "packages": [
+      [
+        "binutils",
+        "2.45.1-r1",
+        3229647,
+        "Q1PoE7y6LhxU+kQVBIyMWyKRmhhjE=",
+        "15682887459d216585feb438bbfb7ec63e1f33e77c453f44637d2d9d8c35977d",
+        187,
+        "eb843a8e1e542528340b8b2115e463d074c1deff8218c04040c9d88fac7242e1"
+      ],
+      [
+        "g++",
+        "15.2.0-r5",
+        18449957,
+        "Q1gKUtEcA4aYyx0evjHoLk3vRbn8Y=",
+        "35c39e8d3667d8603fe209dbafe67681c64b1cda66bf9c836bfb4d05b19a71fd",
+        13,
+        "34e67d19801dcc54de39dcdd726eb90e4f8c705508081afa25f3cfac1b5fdcc5"
+      ],
+      [
+        "gcc",
+        "15.2.0-r5",
+        60496469,
+        "Q1ReMw7n/rV2Z/hbIV2XSCr/AxfQ0=",
+        "d1d482472ed91240731c60dbae8176bc1e32e1dfb694856da6759f6d32716325",
+        842,
+        "06589d5c3453ee63210bf4fdaf6ab25936982161f1226a152793c3322cb2a545"
+      ],
+      [
+        "gmp",
+        "6.3.0-r4",
+        220074,
+        "Q1ubqhYMW2Z+LZyyQCCZknhvXStOk=",
+        "85323ef5bce8ff234736dc2d6592ea37aebdc6348a531e27430bdfe38364d256",
+        6,
+        "8512defa76f0cef523e6b36288d24e432128dcfdf2f02dd13faaad33ac707db8"
+      ],
+      [
+        "isl26",
+        "0.26-r2",
+        915985,
+        "Q1h2aiavL175vZ/r5IDg4dnzU3m4c=",
+        "30999fb66e296c8ea7aa102cad0d3095519b3022abb622d2951dd29367310ea9",
+        6,
+        "5079ae026f5c1cce846bc80a08f0600804c4e4f34f54a343e82aee917e2f4102"
+      ],
+      [
+        "jansson",
+        "2.15.0-r0",
+        48950,
+        "Q1stvtY3e3CwJPyWQOnjlB9nQqEvU=",
+        "7681b41486e1f2b2efce11875c839533464ae8857d30fc49130f0039c6585fdb",
+        6,
+        "ec26d3c991898b25045d161ed31d99808f9a9d8529c104ab55b2d0cb86461c51"
+      ],
+      [
+        "libatomic",
+        "15.2.0-r5",
+        10241,
+        "Q1CYp9vyHwoo/+1nsRF1KjCO0RLLM=",
+        "c5ec550c73dd7b4e81e206fdff3cf4c46b0ae1b29fec1db5cd4e12d88416abbf",
+        6,
+        "c91f0a6eecf3c082cc57009679a23dd66d5e0f863d8782c36124ecd9f5512821"
+      ],
+      [
+        "libgcc",
+        "15.2.0-r5",
+        80348,
+        "Q1N5wVbFPgzBQOh8ecCj3SK27lFVI=",
+        "393dcd32629f06d7d85409c272d142d0c082772d10b87ef55ee82f47de3be637",
+        5,
+        "6046f520b0e0110e27e66e36dbc25552a00a4c9f6c4caf22b6b42349e88cf562"
+      ],
+      [
+        "libgcc-static",
+        "15.2.0-r5",
+        2249602,
+        "Q1LSywFilrZ7CEu/f6MfIEV5TB+sY=",
+        "563244a562f5c48b921f7f0b4a571e373cfcba65175fe2d4f752c5f975738bcd",
+        10,
+        "02200137c64b52c810037e2424030bd5e48f89919211ead9c98b574a3261210c"
+      ],
+      [
+        "libgomp",
+        "15.2.0-r5",
+        153729,
+        "Q1pQKGM0/KCNQbVAnY4xg2u5d+RbI=",
+        "e7204aad00e31d544e0a34eac5a7eb7d3586d2b7b22afd6e5907189c4e0337cc",
+        6,
+        "bdd67d167ffadc0d24fb6813ea6913baf1ec494b97478add3dcd024440f4be87"
+      ],
+      [
+        "libstdc++",
+        "15.2.0-r5",
+        961295,
+        "Q1X3oq12RhKLoCzA1vuUZytoRWSNU=",
+        "14c987b556f5385a5db18376e788c75f37d85321b8dc1920d926ea7daac1d6f6",
+        6,
+        "1810cdb0264b419a7e2242da345d606391821a172ed0d7722d0fad16a3e65f5e"
+      ],
+      [
+        "libstdc++-dev",
+        "15.2.0-r5",
+        4145023,
+        "Q16OyN4lX+7wXQ0QH7GOJr46LbZ7U=",
+        "62ce308cdbf127dcac6eee1520a4ffec8dc98b30974653908842fe4cc7d90b43",
+        885,
+        "3f27bfdf6abae588105d235c09b3c6b9e09d10b4977a2b834b43d9156315c629"
+      ],
+      [
+        "linux-headers",
+        "7.0.0-r1",
+        2000169,
+        "Q1TvmkpYrpdxlaXC3inH5jhFYWFDA=",
+        "c4535f3f0dc6fd4d80efa7ff2a7a72a2d3f8dae31e2587c0785cc3243889cdf2",
+        1096,
+        "f9c7c0ad1f471f12f57334a9dc5c70b762f5d3d8f8d2235ec9c76f563afa37f8"
+      ],
+      [
+        "mpc1",
+        "1.3.1-r1",
+        48549,
+        "Q1zoHFOiiws36XfRdKmvFr3Q6g86U=",
+        "c2247438e163f1c11646428f07576ceb3cf3167f9a9a5c6526021f778d77adb6",
+        6,
+        "64c6f3ae78b3a1760d60b272178c192c6a72e8b72f31475ccb015496dca25153"
+      ],
+      [
+        "mpfr4",
+        "4.2.2-r0",
+        313348,
+        "Q1WQj5oBtPWCI27xE1p9BXYXu0KnI=",
+        "93620a803d416e8c05150fb14413796df14ea370322dff6bd106455deab15646",
+        6,
+        "8e89223338c44769eaf01a360c389edcb17a2a222638d4cec2d381d6cf86adb0"
+      ],
+      [
+        "musl",
+        "1.2.6-r2",
+        415475,
+        "Q1D35YJ+ThpzYxvtont4QxqLokDgU=",
+        "573712e2f49c15bfc20a2699f204acdfc74c772722b15e7353d768057fae0e71",
+        5,
+        "08544c9a613cdedee0a6a928e68aea7e0cf307a8b4af81c76c345f33097f9a04"
+      ],
+      [
+        "musl-dev",
+        "1.2.6-r2",
+        3421233,
+        "Q1GLxvowsPniwgZS2WwkMNuxSTj0M=",
+        "6831e8b9e4821dae2c9121f0641f81e543f4ac27c03144c4876980ee84e6988f",
+        244,
+        "fe47cb61174b9835a6b507b29525c7268cac04cfa6841ba2a319aa6a0e48502f"
+      ],
+      [
+        "zlib",
+        "1.3.2-r0",
+        56195,
+        "Q13Uw9ECrK7ypxoUlZUdVfq8hoBhM=",
+        "b636306cbf8a0c15493b38de608ba11605fd8f11ade631f5ece6f7fdf5a1e09e",
+        6,
+        "0f442d248850524bc8b294e6b9e98183f2c95865e1a9bb3365d9faac8a292b94"
+      ],
+      [
+        "zstd-libs",
+        "1.5.7-r2",
+        376646,
+        "Q1lWnOOpfEEJ6OU93enz4b0nJhNUA=",
+        "23c6065b0049b2406441564bcf0032515a43f78e80d76fcb85535a3803ef5d4e",
+        6,
+        "2943fb19a6e313f0606429ac2741001ae8d7a754d9e2d74691791cc671aee6d7"
+      ]
+    ]
+  },
+  "build": {
+    "busyboxSha256": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "gxxSha256": "2da3c4d5f7471ea2e64df79a577eb504111a3aa4bd2ab775337c51ee3f85b499",
+    "cc1plusSha256": "5ac46973a5d74747a0fc3f47b59f7f67b0ad4d53d1ba6a0f0614cac8329a2771",
+    "assemblerSha256": "de886b8a70a35803ec72072d716461d14bbb526fc7bc8184f8e463da524bb057",
+    "linkerSha256": "48c952c44302d407c9f8e2944fc2f9291785875494e8fdc5e63b67ad032504af",
+    "environment": {
+      "LANG": "C",
+      "LC_ALL": "C",
+      "PATH": "/usr/bin:/bin",
+      "SOURCE_DATE_EPOCH": "0",
+      "TEMP": "/tmp",
+      "TMP": "/tmp",
+      "TMPDIR": "/tmp",
+      "TZ": "UTC"
+    },
+    "arguments": [
+      "-O2",
+      "-fstack-protector-strong",
+      "-Wall",
+      "-Wextra",
+      "-fPIC",
+      "-std=gnu++17",
+      "-fvisibility=hidden",
+      "-ffile-prefix-map=/build=.",
+      "-fdebug-prefix-map=/build=.",
+      "-I/usr/local/include/node",
+      "-I/build/node-addon-api",
+      "-DNODE_GYP_MODULE_NAME=pty",
+      "-shared",
+      "-Wl,-z,relro,-z,now,--build-id=none",
+      "-static-libstdc++",
+      "-static-libgcc",
+      "/build/node-pty/pty.cc",
+      "-lutil",
+      "-o",
+      "/output/pty.node"
+    ]
+  }
+}

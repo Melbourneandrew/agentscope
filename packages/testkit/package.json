@@ -15,11 +15,12 @@
     }
   },
   "scripts": {
-    "build": "node ../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node verify-artifact.mjs",
+    "build": "node ../../scripts/clean-workspace.mjs --build-outputs && tsc -p tsconfig.build.json && node scripts/verify-pty-runtime.mjs --stage && node verify-artifact.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --config ../../vitest.config.ts",
     "lint": "eslint src --max-warnings=0",
     "coverage": "vitest run --config ../../vitest.config.ts --coverage",
+    "verify:pty-runtime": "node scripts/verify-pty-runtime.mjs",
     "clean": "node ../../scripts/clean-workspace.mjs",
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
