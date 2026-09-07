@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "authority": {
+    "tuple": "node127-linux-x64-musl",
+    "canonicalImageIndex": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
+    "canonicalImageManifest": "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
+    "canonicalImageConfig": "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
+    "policySha256": "03841cea64fe09fcaa73f8e7e0d391fd31712700f67e629d5812f3bce24afafb",
+    "packageClosureSha256": "026fe1abd8cc72a79ff0c9aadacc3ea3a82291e176373908937b6485ad7e64fa",
+    "buildArgumentsSha256": "5300b20e880a65b8698d0446f0f07ef9cb4329e1cc956e939e3ddf8340d56ef7",
+    "buildEnvironmentSha256": "1d1895891c772d08bf8ee3adaa54bba8f3156d0c823a515768f5615b2a2651b3",
+    "nodeHeaderInventorySha256": "5b587fb37921c66e1c3fffb48470b85e272dd214a0b0aa81418b38135aa8ca2b",
+    "signedIndexSha256": "622b178e9e1e302970f2dbff372a8e1d98316c6cb224189ea656e438fa9da232",
+    "signerKeySha256": "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f",
+    "nodePtySourceManifestSha256": "a818a4786cad24357107d01ff17cd28098e7e930f540386a4772bbc21b9b66dd",
+    "nodeAddonApiSourceManifestSha256": "aff0d41e4e5c77313d51cf6cfd070d43798520b4a8b7734b4acc600ded9e9b6e"
+  },
+  "artifacts": [
+    {
+      "tuple": "node127-linux-x64-musl",
+      "path": "pty-runtime/node127-linux-x64-musl/pty.node",
+      "bytes": 594920,
+      "mode": "0644",
+      "sha256": "38966cc64050466dd2b2489cc4e3a94a7c0040361d9ab79115241aeff8eb27de",
+      "format": "elf64-x86-64",
+      "needed": ["libc.musl-x86_64.so.1"],
+      "reproducibility": {
+        "independentCleanRoots": 2,
+        "firstSha256": "38966cc64050466dd2b2489cc4e3a94a7c0040361d9ab79115241aeff8eb27de",
+        "secondSha256": "38966cc64050466dd2b2489cc4e3a94a7c0040361d9ab79115241aeff8eb27de",
+        "byteIdentical": true,
+        "addonExecuted": false
+      }
+    }
+  ]
+}

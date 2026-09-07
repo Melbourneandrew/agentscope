@@ -7,9 +7,12 @@ import {
   readFileSync,
   readdirSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, posix, resolve } from "node:path";
 
 import ts from "typescript";
+
+import { verifyPtyRuntime } from "./scripts/verify-pty-runtime.mjs";
 
 const root = import.meta.dirname;
 const maximumFiles = 256;
@@ -28,6 +31,23 @@ const readBoundedRegularFile = (absolute) => {
         `Testkit artifact input is not bounded regular data: ${absolute}`,
       );
     return readFileSync(descriptor, "utf8");
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const readBoundedRegularBytes = (absolute) => {
+  const descriptor = openSync(
+    absolute,
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > maximumFileBytes)
+      throw new Error(
+        `Testkit artifact input is not bounded regular data: ${absolute}`,
+      );
+    return readFileSync(descriptor);
   } finally {
     closeSync(descriptor);
   }
@@ -114,9 +134,10 @@ const productionSources = sourceFiles
   .filter((file) => file.endsWith(".ts") && !isTestSource(file))
   .map((file) => file.slice(0, -3))
   .sort();
-const expectedArtifacts = productionSources
-  .flatMap((file) => [`${file}.d.ts`, `${file}.js`])
-  .sort();
+const expectedArtifacts = [
+  ...productionSources.flatMap((file) => [`${file}.d.ts`, `${file}.js`]),
+  "pty-runtime/node127-linux-x64-musl/pty.node",
+].sort();
 const artifactAncestorDirectories = (file) => {
   const directories = [];
   for (
@@ -259,6 +280,17 @@ verifyGraph(
   productionSources.map((file) => `${file}.ts`),
   "source",
 );
+
+const ptyRuntime = verifyPtyRuntime();
+const stagedPtyRuntime = readBoundedRegularBytes(
+  resolve(root, "dist", ptyRuntime.path),
+);
+if (
+  stagedPtyRuntime.length !== ptyRuntime.bytes ||
+  createHash("sha256").update(stagedPtyRuntime).digest("hex") !==
+    ptyRuntime.sha256
+)
+  throw new Error("Testkit staged PTY runtime is not exact.");
 verifyGraph(
   resolve(root, "dist"),
   actualArtifacts.filter((file) => file.endsWith(".js")),

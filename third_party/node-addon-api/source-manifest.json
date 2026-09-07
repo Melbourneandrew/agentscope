@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "package": "node-addon-api",
+    "version": "7.1.1",
+    "tarball": "https://registry.npmjs.org/node-addon-api/-/node-addon-api-7.1.1.tgz",
+    "tarballSha256": "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82",
+    "tarballIntegrity": "sha512-5m3bsyrjFWE1xf7nz7YXdN4udnVtXK6/Yfgn5qnahL6bCkf2yKt4k3nuTKAtT4r3IG8JNR2ncsIMdZuAzJjHQQ==",
+    "archiveMemberCount": 19,
+    "archiveInventorySha256": "c68f50fd27af0756b3fa61ed8c4f1b1d26b5f2b3807254789722c0e959b6c79c"
+  },
+  "license": {
+    "path": "LICENSE.md",
+    "bytes": 1150,
+    "mode": "0644",
+    "sha256": "89024017b88a9f2b763f79b941a4f2db3b4428edfcacdc0b23866b2da633ad0c",
+    "text": "The MIT License (MIT)\n\nCopyright (c) 2017 [Node.js API collaborators](https://github.com/nodejs/node-addon-api#collaborators)\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n"
+  },
+  "files": [
+    {
+      "path": "napi-inl.h",
+      "bytes": 219411,
+      "mode": "0644",
+      "sha256": "4b053c184dfed740fbd802fdcf97e85fb8c7b0eb1d83322000d932d31662eda7"
+    },
+    {
+      "path": "napi.h",
+      "bytes": 115423,
+      "mode": "0644",
+      "sha256": "2f2f5d1e4ca96f315c51ad96c292c18294dbb999b98f8b2f33b80816a3189fb0"
+    }
+  ]
+}

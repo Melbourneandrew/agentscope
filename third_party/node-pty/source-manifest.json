@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/microsoft/node-pty.git",
+    "tag": "v1.2.0-beta.15",
+    "commit": "8f218f6c194be81d98b1eeea344b150e83445824",
+    "tree": "de9d9d1479b0a41e0d11a4e9bf01e4eef9f6e554",
+    "npmTarball": "https://registry.npmjs.org/node-pty/-/node-pty-1.2.0-beta.15.tgz",
+    "npmTarballSha256": "114ac80c3fe075eff76217a4122d135576582695f49c03a5da3835cdfc2f89c5",
+    "npmTarballIntegrity": "sha512-vORSzHXi4Ofl7HemVWpuudLqCPdaQb4LfpRCUpE5HPxhp4JYscl8zZwxh11p26v2wvW24WMwnMfLjhRLixrfxA==",
+    "archiveMemberCount": 49,
+    "archiveInventorySha256": "855ce4e6faa3ccc86cd663e03568514f6172237e3d8cb0dace4b557dda3f57e1"
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 3326,
+      "mode": "0644",
+      "sha256": "a3d60eaf32d2fb09c9d82ef39f14bd6e2c0f3ca7de30daa827486c0d6f8b6e9f"
+    },
+    {
+      "path": "src/unix/pty.cc",
+      "bytes": 23090,
+      "mode": "0644",
+      "sha256": "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2"
+    }
+  ],
+  "excludedRuntimeArtifact": {
+    "path": "prebuilds/linux-x64/pty.node",
+    "sha256": "123792d8f22f36d519b21dfb6f4b716f9b18b9e579085ea2840d0773d88d35fd",
+    "reason": "glibc-linked and incompatible with the selected musl runtime"
+  }
+}
