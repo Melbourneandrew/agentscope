@@ -181,6 +181,7 @@ describe("PTY runtime artifact tooling", () => {
         [JSON.stringify(receipt)],
       );
     const receipt = {
+      adoptedZombieReap: true,
       argvEnvAuthority: true,
       closeTerminal: true,
       deadlineNoLaunch: true,
@@ -193,6 +194,7 @@ describe("PTY runtime artifact tooling", () => {
       geometry: true,
       openRollback: true,
       processTerminal: true,
+      reapPidOneOnly: true,
       residual: true,
       termios: true,
     };
@@ -270,9 +272,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 39_951,
+      bytes: 45_492,
       mode: "0644",
-      patchedSourceBytes: 52_834,
+      patchedSourceBytes: 58_228,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -290,8 +292,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 39_951,
-      patchedSourceBytes: 52_834,
+      bytes: 45_492,
+      patchedSourceBytes: 58_228,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -598,7 +600,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916",
+      "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -683,6 +685,28 @@ describe("PTY authenticated build-material tooling", () => {
       "+  uint64_t deadline = info[11].As<Napi::BigInt>().Uint64Value(&deadline_lossless);",
     );
     expect(patch).toContain(
+      "+Napi::Value PtyReapAdoptedZombie(const Napi::CallbackInfo& info) {",
+    );
+    expect(patch).toContain("+  if (getpid() != 1 ||");
+    expect(patch).toContain("+      root_number > INT_MAX ||");
+    expect(patch).toContain(
+      "+      root_number != static_cast<double>(root_value) || pid_value == root_value ||",
+    );
+    expect(patch).toContain(
+      '+  int path_bytes = snprintf(path, sizeof(path), "/proc/%d/stat", pid);',
+    );
+    expect(patch).toContain(
+      "+  if (identity.parent != 1 || observed != expected)",
+    );
+    expect(patch).toContain("+  if (identity.state != 'Z')");
+    expect(patch).toContain(
+      "+      joined = waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG);",
+    );
+    expect(patch).toContain("+    if (pty_take_test_fault(18)) {");
+    expect(patch).toContain(
+      '+  exports.Set("reapAdoptedZombie", Napi::Function::New(env, PtyReapAdoptedZombie));',
+    );
+    expect(patch).toContain(
       "+    int remaining = pty_remaining_milliseconds(deadline);",
     );
     expect(patch).toContain(
@@ -750,6 +774,13 @@ describe("PTY authenticated build-material tooling", () => {
       [
         "pty_exec_succeeded(exec_status[0], deadline, &failure)",
         "pty_exec_succeeded(exec_status[0], UINT64_MAX, &failure)",
+      ],
+      ["getpid() != 1", "getpid() != 2"],
+      ["identity.parent != 1", "identity.parent != 2"],
+      ["identity.state != 'Z'", "identity.state == 'Z'"],
+      [
+        "waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG)",
+        "waitpid(-1, nullptr, WNOHANG)",
       ],
       [
         "pty_join_failed_child(pid, &master, &exec_status[0], deadline)",

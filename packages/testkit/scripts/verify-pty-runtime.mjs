@@ -13,8 +13,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,20 +24,21 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 631_128,
+  bytes: 643_744,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "56492947271ec88ae2191c4e1f2ad3623caaab0175f198f43710c441a7b19ca6",
+  sha256: "da453a5cee938514e7d13960410eb7224e530132a05d8730b6bf7fdf307a9866",
   tuple: "node127-linux-x64-musl",
 });
 const expectedFaultArtifact = Object.freeze({
-  bytes: 635_792,
+  bytes: 643_976,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-  sha256: "21d1889899f0d3f76962891cce7b797b329c4e94caeb7450907810facd1bd49c",
+  sha256: "883b14c0fcd9e898be307742c485a35e9b895b3e8c47aff6970da0cd3ff1a7ed",
   tuple: "node127-linux-x64-musl-test-faults",
 });
 const runtimeReceiptKeys = Object.freeze([
+  "adoptedZombieReap",
   "argvEnvAuthority",
   "closeTerminal",
   "deadlineNoLaunch",
@@ -49,6 +51,7 @@ const runtimeReceiptKeys = Object.freeze([
   "geometry",
   "openRollback",
   "processTerminal",
+  "reapPidOneOnly",
   "residual",
   "termios",
 ]);
@@ -79,6 +82,7 @@ const pair=()=>({interpreter:openSync("/usr/local/bin/node",constants.O_RDONLY|c
 const invoke=(addon,{args=[],env,milliseconds=2000}={})=>{const p=pair();const extra=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);let terminal;try{return{extra,p,result:addon.fork(p.interpreter,p.script,args,env??environment(extra),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+BigInt(milliseconds)*1000000n,(code,signal)=>{terminal={code,signal};}),terminal:()=>terminal};}catch(error){for(const fd of [p.interpreter,p.script,extra])try{closeSync(fd);}catch{}throw error;}};
 const rejects=(action,pattern)=>{let message="";try{action();}catch(error){message=String(error);}if(!pattern.test(message))throw new Error(\`rejection mismatch: \${message}\`);return message;};
 const initialPidOneChildren=pidOneChildren();if(initialPidOneChildren!==String(process.pid))throw new Error("runtime PID namespace containment is not exact");const initialChildren=children();const initialFds=fds();rejects(()=>invoke(production,{milliseconds:-1}),/deadline is invalid or expired/);const deadlineNoLaunch=pidOneChildren()===initialPidOneChildren&&children()===initialChildren&&fds()===initialFds;
+const reapPidOneOnly=/authority is invalid/.test(rejects(()=>production.reapAdoptedZombie(2,"2:1",3,process.hrtime.bigint()+1000000000n),/authority is invalid/));
 const wrong=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);const valid=pair();rejects(()=>production.fork(wrong,valid.script,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);rejects(()=>production.fork(valid.interpreter,wrong,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);rejects(()=>production.fork(valid.interpreter,valid.interpreter,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);const reused=valid.script;closeSync(valid.script);const replacement=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);if(replacement!==reused)throw new Error("descriptor reuse setup failed");rejects(()=>production.fork(valid.interpreter,replacement,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);faults.testFault(1<<13);rejects(()=>invoke(faults),/authority is invalid/);faults.testFault(0);for(const fd of [wrong,valid.interpreter,replacement])closeSync(fd);const descriptorAuthority=children()===initialChildren;
 const hostile=(args,env)=>rejects(()=>invoke(production,{args,env}),/inventory|value is not a string|admission exceeded/);const sparse=[];sparse.length=0xffffffff;hostile([],sparse);hostile(sparse,[]);hostile(["bad\\0tail"],[]);hostile([], ["BAD=bad\\0tail"]);hostile([7],[]);const throwingArg=[];Object.defineProperty(throwingArg,0,{get(){throw new Error("argv getter rejected");}});throwingArg.length=1;rejects(()=>invoke(production,{args:throwingArg}),/argv getter rejected/);const throwingEnv=[];Object.defineProperty(throwingEnv,0,{get(){throw new Error("env getter rejected");}});throwingEnv.length=1;rejects(()=>invoke(production,{env:throwingEnv}),/env getter rejected/);const argvEnvAuthority=fds()===initialFds&&children()===initialChildren;
 const faultResults=[];for(const bit of [1,2,3,4,7,8,9]){faults.testFault((1<<bit)|(bit===8?(1<<7):0));const before=children();const message=rejects(()=>invoke(faults,{milliseconds:bit===9?20:250}),/failed|invalid|expired|child joined/);faultResults.push(before===children()&&!message.includes("uncertain"));}for(const bit of [6,12]){faults.testFault((1<<bit)|(1<<7));const message=rejects(()=>invoke(faults,{milliseconds:80}),/cleanup uncertain/);faultResults.push(message.includes("uncertain"));}faults.testFault(0);const faultCleanup=faultResults.every(Boolean)&&children()===initialChildren;
@@ -89,7 +93,7 @@ const closeFinalizerToken=Symbol("agentscope-pty-close-finalizer");let closeFina
 const finalizerToken=Symbol("agentscope-pty-finalizer");let finalizerState="pending";let finalizerCount=0;let finalizerDropped=false;const registry=new FinalizationRegistry(value=>{finalizerCount+=1;finalizerState=finalizerDropped&&value===finalizerToken&&finalizerCount===1?"exact":"invalid";});let abandoned=invoke(faults);for(const fd of [abandoned.p.interpreter,abandoned.p.script,abandoned.extra])closeSync(fd);const abandonedTerminal=abandoned.terminal;registry.register(abandoned.result.handle,finalizerToken);if(finalizerState!=="pending"||finalizerCount!==0)throw new Error("finalizer receipt arrived before authority release");abandoned.result.handle=undefined;abandoned.result=undefined;abandoned=null;finalizerDropped=true;const finalizerEnd=Date.now()+1000;while(Date.now()<finalizerEnd&&(finalizerState==="pending"||abandonedTerminal()===undefined)){global.gc?.();await new Promise(resolve=>setTimeout(resolve,10));}const finalizerSafe=reuseLive&&finalizerState==="exact"&&finalizerCount===1&&abandonedTerminal()!==undefined;
 const semanticFaults=[];for(const [bit,method,argument,pattern] of [[14,"inspect",undefined,/inspection failed/],[16,"write",Buffer.from("x"),/write failed/],[17,"eof",undefined,/EOF mode/]]){const opened=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<bit);const action=()=>argument===undefined?faults[method](opened.master):faults[method](opened.master,argument);semanticFaults.push(pattern.test(rejects(action,pattern)));faults.testFault(0);faults.close(opened.slave);faults.close(opened.master);}const readFault=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<15);const readFaultReceipt=faults.read(readFault.master,16);const readFaultDescriptor=Object.getOwnPropertyDescriptor(readFaultReceipt,"status");semanticFaults.push(Object.getPrototypeOf(readFaultReceipt)===Object.prototype&&Object.keys(readFaultReceipt).length===1&&Object.hasOwn(readFaultReceipt,"status")&&!Object.hasOwn(readFaultReceipt,"bytes")&&!("bytes" in readFaultReceipt)&&readFaultDescriptor!==undefined&&Object.hasOwn(readFaultDescriptor,"value")&&readFaultDescriptor.value==="eio"&&readFaultDescriptor.get===undefined&&readFaultDescriptor.set===undefined);faults.testFault(0);faults.close(readFault.slave);faults.close(readFault.master);if(!semanticFaults.every(Boolean))throw new Error("semantic fault matrix failed");
 const happy=invoke(production);for(const fd of [happy.p.interpreter,happy.p.script,happy.extra])closeSync(fd);production.eof(happy.result.handle);const happyEnd=Date.now()+2000;while(Date.now()<happyEnd&&!happy.terminal()){production.read(happy.result.handle,4096);await new Promise(resolve=>setTimeout(resolve,10));}production.close(happy.result.handle);const residual=pidOneChildren()===initialPidOneChildren&&children()===initialChildren&&fds()===initialFds;
-process.stdout.write(JSON.stringify({argvEnvAuthority,closeTerminal,deadlineNoLaunch,descriptorAuthority,descriptorClosure,drainTerminal,eofByteWritten,faultCleanup,finalizerSafe,geometry,openRollback,processTerminal,residual,termios}));\n`;
+process.stdout.write(JSON.stringify({argvEnvAuthority,closeTerminal,deadlineNoLaunch,descriptorAuthority,descriptorClosure,drainTerminal,eofByteWritten,faultCleanup,finalizerSafe,geometry,openRollback,processTerminal,reapPidOneOnly,residual,termios}));\n`;
 
 const readBoundedRegular = (
   path,
@@ -270,13 +274,13 @@ export const verifySourceAuthority = (sourceRoot) => {
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
-    39_951,
-    "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107",
+    45_492,
+    "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da",
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
-    1_684,
-    "7727f77b87dc20bb00c489ca85d096a9b28d14f373a873fbd08ee828c584adba",
+    1_719,
+    "fa160d75a89b764ccab62ee0d348e3ff43599d379f0241faed56ecd7f71bfb6a",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -310,12 +314,12 @@ export const verifySourceAuthority = (sourceRoot) => {
     nodePtyManifest.agentscopePatch?.path !==
       "patches/agentscope-terminal-authority.patch" ||
     nodePtyManifest.agentscopePatch?.sha256 !==
-      "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107" ||
-    nodePtyManifest.agentscopePatch?.bytes !== 39_951 ||
+      "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da" ||
+    nodePtyManifest.agentscopePatch?.bytes !== 45_492 ||
     nodePtyManifest.agentscopePatch?.mode !== "0644" ||
-    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 52_834 ||
+    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 58_228 ||
     nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
-      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916" ||
+      "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -332,8 +336,8 @@ export const verifySourceAuthority = (sourceRoot) => {
 export const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
-    8_833,
-    "861dea0c20d8bace86a1d0f2a998d69ba2ebce22c27377a6cc1a4b69a6e8e086",
+    8_860,
+    "e8d29d5b9007ee477f5cac0e660030811e01c43d82172e950005f415d1837ae1",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -345,13 +349,13 @@ export const verifyPolicy = (root) => {
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
     policy.build?.patch?.sha256 !==
-      "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107" ||
+      "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da" ||
     policy.build?.patch?.path !==
       "third_party/node-pty/patches/agentscope-terminal-authority.patch" ||
-    policy.build?.patch?.bytes !== 39_951 ||
-    policy.build?.patch?.patchedSourceBytes !== 52_834 ||
+    policy.build?.patch?.bytes !== 45_492 ||
+    policy.build?.patch?.patchedSourceBytes !== 58_228 ||
     policy.build?.patch?.patchedSourceSha256 !==
-      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916" ||
+      "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5" ||
     JSON.stringify(policy.build?.nativeExports) !==
       JSON.stringify([
         "close",
@@ -361,6 +365,7 @@ export const verifyPolicy = (root) => {
         "open",
         "process",
         "read",
+        "reapAdoptedZombie",
         "resize",
         "write",
       ]) ||
@@ -396,7 +401,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "861dea0c20d8bace86a1d0f2a998d69ba2ebce22c27377a6cc1a4b69a6e8e086" ||
+      "e8d29d5b9007ee477f5cac0e660030811e01c43d82172e950005f415d1837ae1" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -409,7 +414,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "7727f77b87dc20bb00c489ca85d096a9b28d14f373a873fbd08ee828c584adba" ||
+      "fa160d75a89b764ccab62ee0d348e3ff43599d379f0241faed56ecd7f71bfb6a" ||
     authority.patchSha256 !== policy.build.patch.sha256 ||
     authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
     JSON.stringify(authority.nativeExports) !==
@@ -491,8 +496,8 @@ export const verifyPtyRuntime = ({
   const policy = verifyPolicy(root);
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
-    2_675,
-    "abc1ac4ddf0da4756cae6126127c75487079ae904b3ed2e1b42a0fe97327d5b5",
+    2_702,
+    "e7d272b46b932c70b238de99b2992f70f655b4c0bdd3cb375829fb93d710bed1",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
@@ -523,9 +528,10 @@ export const verifyPtyRuntime = ({
     throw new Error("PTY runtime artifact bytes do not match authority.");
   if (
     bytes.includes(Buffer.from("AGENTSCOPE_PTY_TEST_FAULTS")) ||
-    bytes.includes(Buffer.from("testFault"))
+    bytes.includes(Buffer.from("testFault")) ||
+    !bytes.includes(Buffer.from("reapAdoptedZombie"))
   )
-    throw new Error("PTY runtime artifact contains test-fault authority.");
+    throw new Error("PTY runtime artifact export authority is not exact.");
   const needed = inspectElf(bytes);
   if (JSON.stringify(needed) !== JSON.stringify(record.needed))
     throw new Error("PTY runtime dependency closure is not exact.");
@@ -538,10 +544,14 @@ export const verifyPtyRuntime = ({
   );
   if (
     faultBytes.length !== faultRecord.bytes ||
-    sha256(faultBytes) !== faultRecord.sha256 ||
-    !faultBytes.includes(Buffer.from("testFault"))
+    sha256(faultBytes) !== faultRecord.sha256
   )
     throw new Error("PTY test-fault artifact bytes do not match authority.");
+  if (
+    !faultBytes.includes(Buffer.from("testFault")) ||
+    !faultBytes.includes(Buffer.from("reapAdoptedZombie"))
+  )
+    throw new Error("PTY test-fault artifact exports do not match authority.");
   if (
     JSON.stringify(inspectElf(faultBytes)) !==
     JSON.stringify(faultRecord.needed)
@@ -571,6 +581,171 @@ export const verifyPtyRuntime = ({
     ...record,
     needed: Object.freeze([...record.needed]),
   });
+};
+
+const sleepSynchronous = (milliseconds) => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+};
+
+const readProcessIdentity = (pid) => {
+  const bytes = readFileSync(`/proc/${pid}/stat`);
+  if (bytes.length === 0 || bytes.length > 4_096)
+    throw new Error("PTY adopted process identity is not bounded.");
+  const record = bytes.toString("utf8");
+  const commandEnd = record.lastIndexOf(")");
+  if (commandEnd < 0 || record.slice(commandEnd + 1, commandEnd + 3) !== " ")
+    throw new Error("PTY adopted process identity is malformed.");
+  const fields = record
+    .slice(commandEnd + 2)
+    .trim()
+    .split(" ");
+  if (
+    fields.length < 20 ||
+    !/^[A-Z]$/u.test(fields[0]) ||
+    !/^[1-9][0-9]*$/u.test(fields[1]) ||
+    !/^[1-9][0-9]*$/u.test(fields[19])
+  )
+    throw new Error("PTY adopted process identity is malformed.");
+  return Object.freeze({
+    parent: Number(fields[1]),
+    startIdentity: `${pid}:${fields[19]}`,
+    state: fields[0],
+  });
+};
+
+const exactReapReceipt = (value, pid, startIdentity, status) =>
+  exactKeys(value, ["pid", "startIdentity", "status"]) &&
+  value.pid === pid &&
+  value.startIdentity === startIdentity &&
+  value.status === status;
+
+const proveAdoptedZombieReap = (deadline) => {
+  if (process.pid !== 1)
+    throw new Error("PTY adopted-zombie proof requires PID 1.");
+  const require = createRequire(import.meta.url);
+  const production = require("/runtime/production.node");
+  const faults = require("/runtime/faults.node");
+  let rootPid;
+  let target;
+  let startIdentity;
+  let reaped = false;
+  try {
+    const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+    if (remaining <= 0)
+      throw new Error("PTY adopted-zombie proof exceeded its deadline.");
+    const launch = spawnSync(
+      "/bin/sh",
+      [
+        "-c",
+        "/bin/sleep 30 </dev/null >/dev/null 2>/dev/null & printf '%s' \"$!\"",
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin", TZ: "UTC" },
+        maxBuffer: 64,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: remaining,
+      },
+    );
+    if (
+      launch.error !== undefined ||
+      launch.status !== 0 ||
+      launch.signal !== null ||
+      launch.stderr !== "" ||
+      !/^[1-9][0-9]{0,9}$/u.test(launch.stdout) ||
+      !Number.isSafeInteger(launch.pid)
+    )
+      throw new Error("PTY adopted process fixture did not launch exactly.");
+    target = Number(launch.stdout);
+    rootPid = launch.pid;
+    const identity = readProcessIdentity(target);
+    startIdentity = identity.startIdentity;
+    if (identity.parent !== 1 || identity.state === "Z")
+      throw new Error("PTY adopted process fixture identity is not exact.");
+    let rejectedRoot = false;
+    try {
+      production.reapAdoptedZombie(target, startIdentity, target, deadline);
+    } catch (error) {
+      rejectedRoot = /authority is invalid/u.test(String(error));
+    }
+    let rejectedIdentity = false;
+    try {
+      production.reapAdoptedZombie(
+        target,
+        `${target}:${BigInt(startIdentity.split(":")[1]) + 1n}`,
+        rootPid,
+        deadline,
+      );
+    } catch (error) {
+      rejectedIdentity = /identity changed/u.test(String(error));
+    }
+    const notReady = production.reapAdoptedZombie(
+      target,
+      startIdentity,
+      rootPid,
+      deadline,
+    );
+    if (
+      !rejectedRoot ||
+      !rejectedIdentity ||
+      !exactReapReceipt(notReady, target, startIdentity, "not-ready")
+    )
+      throw new Error("PTY adopted process admission proof failed.");
+    process.kill(target, "SIGKILL");
+    while (process.hrtime.bigint() < deadline) {
+      const observed = readProcessIdentity(target);
+      if (observed.parent !== 1 || observed.startIdentity !== startIdentity)
+        throw new Error("PTY adopted process identity changed before reap.");
+      if (observed.state === "Z") break;
+      sleepSynchronous(10);
+    }
+    if (readProcessIdentity(target).state !== "Z")
+      throw new Error("PTY adopted process did not become a zombie.");
+    faults.testFault(1 << 18);
+    let rejectedEchild = false;
+    try {
+      faults.reapAdoptedZombie(target, startIdentity, rootPid, deadline);
+    } catch (error) {
+      rejectedEchild = /reap is uncertain/u.test(String(error));
+    } finally {
+      faults.testFault(0);
+    }
+    if (!rejectedEchild)
+      throw new Error("PTY adopted process ambiguity was admitted.");
+    const receipt = production.reapAdoptedZombie(
+      target,
+      startIdentity,
+      rootPid,
+      deadline,
+    );
+    if (!exactReapReceipt(receipt, target, startIdentity, "reaped"))
+      throw new Error("PTY adopted process reap receipt is not exact.");
+    reaped = true;
+    try {
+      readProcessIdentity(target);
+      throw new Error("PTY adopted process remains after reap.");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    return true;
+  } finally {
+    faults.testFault(0);
+    if (target !== undefined && !reaped) {
+      try {
+        process.kill(target, "SIGKILL");
+      } catch {}
+      if (startIdentity !== undefined) {
+        try {
+          production.reapAdoptedZombie(
+            target,
+            startIdentity,
+            rootPid,
+            deadline,
+          );
+        } catch {}
+      }
+    }
+  }
 };
 
 // This is the inner, network-off receipt verifier. The explicit GitHub-hosted
@@ -620,7 +795,9 @@ export const runPtyRuntimeProof = () => {
     );
     if (process.hrtime.bigint() > deadline)
       throw new Error("PTY runtime proof exceeded its absolute deadline.");
-    verifyRuntimeReceipt(JSON.parse(output.trim()));
+    const driverReceipt = JSON.parse(output.trim());
+    const adoptedZombieReap = proveAdoptedZombieReap(deadline);
+    verifyRuntimeReceipt({ ...driverReceipt, adoptedZombieReap });
     process.stdout.write('{"version":1,"status":"passed"}\n');
   } catch (error) {
     primaryFailure = error;

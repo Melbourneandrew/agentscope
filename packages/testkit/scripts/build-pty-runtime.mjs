@@ -37,7 +37,7 @@ const maximumPatchLines = 2_048;
 const maximumPatchLineBytes = 2_048;
 const maximumPatchOperations = 4_096;
 const patchedSourceSha256 =
-  "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916";
+  "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5";
 
 // One closed parser keeps every header, position, operation, count and final
 // digest check in the same no-fuzz authority.
@@ -394,7 +394,7 @@ export const buildPtyRuntime = ({
   );
   const patchBytes = verifyRegularFile(
     patch,
-    "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107",
+    "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da",
     0o644,
     maximumPatchBytes,
   );
@@ -420,7 +420,7 @@ export const buildPtyRuntime = ({
   });
   verifyRegularFile(
     resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
-    "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916",
+    "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5",
   );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
