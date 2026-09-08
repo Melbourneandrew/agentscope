@@ -482,6 +482,31 @@ describe("PTY runtime artifact tooling", () => {
 // substitution next to the exact positive oracle.
 // eslint-disable-next-line max-lines-per-function
 describe("PTY authenticated build-material tooling", () => {
+  it("keeps the selected backend bound to the governed production artifact", () => {
+    const artifacts = JSON.parse(
+      readFileSync(resolve(packageRoot, "pty-runtime-artifacts.json"), "utf8"),
+    ) as { artifacts: Array<{ sha256: string }> };
+    const production = artifacts.artifacts;
+    expect(production).toHaveLength(1);
+    const backend = readFileSync(
+      resolve(packageRoot, "src/internal/headless-supervisor-backend.ts"),
+      "utf8",
+    );
+    const verify = (source: string) => {
+      const match = /const ptyRuntimeDigest =\n\s+"([0-9a-f]{64})";/u.exec(
+        source,
+      );
+      if (match?.[1] !== production[0]?.sha256)
+        throw new Error("selected PTY artifact authority is not exact");
+    };
+    expect(() => {
+      verify(backend);
+    }).not.toThrow();
+    expect(() => {
+      verify(backend.replace(production[0]!.sha256, "0".repeat(64)));
+    }).toThrow(/authority is not exact/u);
+  });
+
   const inspect = (
     fixture: ReturnType<typeof syntheticPackage>,
     record = fixture.record,

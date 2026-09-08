@@ -1255,7 +1255,7 @@ type NativePtyBinding = Readonly<{
   write: (handle: PtyTerminalHandle, bytes: Buffer) => PtyWriteObservation;
 }>;
 const ptyRuntimeDigest =
-  "56492947271ec88ae2191c4e1f2ad3623caaab0175f198f43710c441a7b19ca6";
+  "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab";
 // Linux O_CLOEXEC is not exposed by every supported @types/node version.
 const linuxCloseOnExec = 0x8_0000;
 const assertAuthenticatedRegularFileDescriptor = (
