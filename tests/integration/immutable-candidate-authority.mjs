@@ -455,14 +455,16 @@ export const validateInstalledCliBoundary = (facts) => {
       "expectedDigest",
     ]) ||
     facts.binIsSymlink !== true ||
-    facts.binTarget !==
-      "../node_modules/agentscope-cli/dist/bin/agentscope.js" ||
+    facts.binTarget !== "../agentscope-cli/dist/bin/agentscope.js" ||
     facts.cliMode !== 0o755 ||
     facts.cliPrefix !== "#!/usr/bin/env node\n" ||
     !/^[a-f0-9]{64}$/u.test(facts.expectedDigest) ||
     facts.cliDigest !== facts.expectedDigest ||
     JSON.stringify(facts.argv) !==
-      JSON.stringify(["/opt/agentscope/installed/bin/agentscope", "--version"])
+      JSON.stringify([
+        "/opt/agentscope/installed/node_modules/.bin/agentscope",
+        "--version",
+      ])
   )
     return fail();
   return true;

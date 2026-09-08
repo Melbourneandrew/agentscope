@@ -137,9 +137,12 @@ const executionReceipt = () => ({
 // eslint-disable-next-line max-lines-per-function
 describe("immutable candidate authority", () => {
   const installedCliFacts = () => ({
-    argv: ["/opt/agentscope/installed/bin/agentscope", "--version"],
+    argv: [
+      "/opt/agentscope/installed/node_modules/.bin/agentscope",
+      "--version",
+    ],
     binIsSymlink: true,
-    binTarget: "../node_modules/agentscope-cli/dist/bin/agentscope.js",
+    binTarget: "../agentscope-cli/dist/bin/agentscope.js",
     cliDigest: hex("f"),
     cliMode: 0o755,
     cliPrefix: "#!/usr/bin/env node\n",
@@ -151,12 +154,28 @@ describe("immutable candidate authority", () => {
   });
 
   it.each([
+    [
+      "global-install link",
+      { binTarget: "../node_modules/agentscope-cli/dist/bin/agentscope.js" },
+    ],
+    [
+      "global-install argv",
+      { argv: ["/opt/agentscope/installed/bin/agentscope", "--version"] },
+    ],
     ["link", { binTarget: "../substituted.js" }],
     ["type", { binIsSymlink: false }],
     ["mode", { cliMode: 0o644 }],
     ["shebang", { cliPrefix: "#!/bin/sh\n" }],
     ["digest", { cliDigest: hex("e") }],
-    ["argv", { argv: ["/opt/agentscope/installed/bin/agentscope", "help"] }],
+    [
+      "argv",
+      {
+        argv: [
+          "/opt/agentscope/installed/node_modules/.bin/agentscope",
+          "help",
+        ],
+      },
+    ],
   ] as const)(
     "rejects installed CLI %s substitution",
     (_seed, substitution) => {

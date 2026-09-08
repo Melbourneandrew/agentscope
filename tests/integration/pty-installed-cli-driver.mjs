@@ -13,7 +13,7 @@ import { performance } from "node:perf_hooks";
 import { executeSelectedPtyProcess } from "./testkit/headless-supervisor-kernel.js";
 import { validateInstalledCliBoundary } from "./immutable-candidate-authority.mjs";
 
-const installedBin = "/opt/agentscope/installed/bin/agentscope";
+const installedBin = "/opt/agentscope/installed/node_modules/.bin/agentscope";
 const installedCli =
   "/opt/agentscope/installed/node_modules/agentscope-cli/dist/bin/agentscope.js";
 const installedPackage =
