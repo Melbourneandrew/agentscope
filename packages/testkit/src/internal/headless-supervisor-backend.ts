@@ -3097,6 +3097,7 @@ type SelectedPtyTestSeed =
   | "immutable-principal"
   | "immutable-symlink"
   | "late-tail"
+  | "kill-escalation"
   | "credential-prompt"
   | "malformed-control"
   | "malformed-exit"
@@ -3162,6 +3163,12 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       if (seed === "signal-failure")
         return fail("testkit.headless.observer.signal");
       if (seed === "residual" && pid === descendant.pid) return;
+      if (
+        seed === "kill-escalation" &&
+        pid === root.pid &&
+        signal === "SIGTERM"
+      )
+        return;
       processes.delete(pid);
       if (pid === root.pid) {
         terminal = true;
@@ -3224,6 +3231,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           seed !== "output-limit" &&
           seed !== "partial-input-output-limit" &&
           seed !== "partial-input-timeout" &&
+          seed !== "kill-escalation" &&
           seed !== "signal-failure"
         )
           safeSetTimeout(

@@ -374,6 +374,29 @@ describe("selected PTY transport", () => {
     });
   });
 
+  it("escalates a TERM-resistant PTY process to KILL and joins it", async () => {
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      request({
+        monotonicStartupDeadlineMs: now + 20,
+        monotonicExecutionDeadlineMs: now + 40,
+        monotonicShutdownDeadlineMs: now + 300,
+        terminationGraceMs: 20,
+      }),
+      "kill-escalation",
+    );
+    expect(receipt).toMatchObject({
+      cleanup: "clean",
+      exitCode: null,
+      outcome: "timeout",
+      processJoined: true,
+      residualProcessCount: 0,
+      signal: "SIGKILL",
+      terminalOutputJoined: true,
+      terminalTransportClosed: true,
+    });
+  });
+
   it("rejects a child admitted after the absolute startup deadline", async () => {
     const now = performance.now();
     await expect(
