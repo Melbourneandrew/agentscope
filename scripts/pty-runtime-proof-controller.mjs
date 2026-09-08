@@ -747,24 +747,26 @@ export const publishTerminalResult = async (
     process.exitCode = signalExit(afterPublication);
     published = { ...published, exitCode: process.exitCode };
   }
+  await nextTurn();
   return published;
 };
 
 const main = async () => {
   let terminalSignal = null;
+  let publicationActive = false;
   const latch = (signal) => {
     terminalSignal ??= signal;
+    if (publicationActive) process.exitCode = signalExit(terminalSignal);
   };
   const interrupt = () => latch("SIGINT");
   const terminate = () => latch("SIGTERM");
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", terminate);
-  const result = await publishTerminalResult(await executeController(), {
+  const result = await executeController();
+  publicationActive = true;
+  await publishTerminalResult(result, {
     getSignal: () => terminalSignal,
   });
-  process.off("SIGINT", interrupt);
-  process.off("SIGTERM", terminate);
-  process.exitCode = result.exitCode;
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

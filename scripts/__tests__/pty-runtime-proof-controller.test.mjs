@@ -520,3 +520,52 @@ test("pre-publication signal rewrites the sole receipt to failure", async () => 
   ]);
   process.exitCode = priorExitCode;
 });
+
+test("a signal at the final observation remains owned through process exit", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "agentscope-final-signal."));
+  roots.push(root);
+  const fixture = resolve(root, "fixture.mjs");
+  writeFileSync(
+    fixture,
+    `import {publishTerminalResult} from ${JSON.stringify(
+      new URL("../pty-runtime-proof-controller.mjs", import.meta.url).href,
+    )};
+let signal=null;
+let calls=0;
+process.on('SIGTERM',()=>{signal??='SIGTERM';process.exitCode=143});
+await publishTerminalResult({exitCode:0,receipt:{status:'passed'}},{
+  getSignal:()=>{
+    calls+=1;
+    if(calls===2){
+      process.kill(process.pid,'SIGTERM');
+      const until=performance.now()+50;
+      while(performance.now()<until){}
+    }
+    return signal;
+  },
+  writeReceipt:(receipt)=>process.stdout.write(JSON.stringify(receipt)+'\\n')
+});`,
+  );
+  const result = await new Promise((resolveChild) => {
+    const child = spawn(process.execPath, [fixture], {
+      env: { PATH: "/usr/bin:/bin" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.once("close", (status, signal) =>
+      resolveChild({
+        signal,
+        status,
+        stderr: Buffer.concat(stderr),
+        stdout: Buffer.concat(stdout),
+      }),
+    );
+  });
+  assert.equal(result.status, 143);
+  assert.equal(result.signal, null);
+  assert.equal(result.stderr.length, 0);
+  assert.deepEqual(JSON.parse(result.stdout.toString()), { status: "passed" });
+});
