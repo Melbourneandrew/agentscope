@@ -225,7 +225,10 @@ function auditProjectCache({ manifest, nx, relativePath, expectedName }) {
       ? {
           targets: {
             build: { cache: false },
-            typecheck: { cache: false },
+            typecheck: {
+              cache: false,
+              dependsOn: ["build", "^typecheck", "^build"],
+            },
           },
         }
       : relativePath === "tests/integration"
@@ -249,7 +252,10 @@ function auditProjectCache({ manifest, nx, relativePath, expectedName }) {
             ["apps/docs", "tests/integration"].includes(relativePath)
           ? { cache: false }
           : target === "typecheck" && relativePath === "apps/docs"
-            ? { cache: false }
+            ? {
+                cache: false,
+                dependsOn: ["build", "^typecheck", "^build"],
+              }
             : target === "test" && relativePath === "tests/integration"
               ? { cache: false }
               : {};
