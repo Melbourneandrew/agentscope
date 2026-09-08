@@ -73,48 +73,57 @@ jobs:
             trap - EXIT INT TERM
             if [[ "$created" == true && "$container_id" =~ ^[0-9a-f]{64}$ ]]; then
               local remaining=$((deadline - SECONDS))
-              (( remaining > 0 )) || remaining=1
-              "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
-                "$docker" --config "$root/config" --host "unix://$socket" rm --force "$container_id" >/dev/null || status=1
-              if "$docker" --config "$root/config" --host "unix://$socket" container inspect "$container_id" >/dev/null 2>&1; then
+              if (( remaining > 0 )); then
+                "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+                  "$docker" --config "$root/config" --host "unix://$socket" rm --force "$container_id" >/dev/null || status=1
+              else
+                status=1
+              fi
+              remaining=$((deadline - SECONDS))
+              if (( remaining > 0 )); then
+                survivor=$("$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+                  "$docker" --config "$root/config" --host "unix://$socket" container ls --all --no-trunc --quiet --filter "id=$container_id") || status=1
+                [[ -z "${survivor:-uncertain}" ]] || status=1
+              else
                 status=1
               fi
             fi
             /bin/rm -rf -- "$root" || status=1
+            (( SECONDS <= deadline )) || status=1
             exit "$status"
           }
           trap cleanup EXIT INT TERM
           [[ -x "$docker" && -x "$timeout" && -S "$socket" && ! -L "$socket" ]]
           [[ "$repository_root" == /home/runner/work/agentscope/agentscope ]]
           /bin/mkdir -m 0700 "$root/config"
-          [[ -z "$("$docker" --config "$root/config" --host "unix://$socket" container ls --all --quiet --filter "name=^/${name}$")" ]]
-          remaining=$((deadline - SECONDS)); (( remaining > 0 ))
-          "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
-            "$docker" --config "$root/config" --host "unix://$socket" pull --quiet --platform linux/amd64 "$image" >/dev/null
-          identity=$("$docker" --config "$root/config" --host "unix://$socket" image inspect --format '{{.Id}}|{{.Os}}|{{.Architecture}}' "$config_id")
+          docker_call() {
+            local remaining=$((deadline - SECONDS - 10))
+            (( remaining > 0 ))
+            "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+              "$docker" --config "$root/config" --host "unix://$socket" "$@"
+          }
+          [[ -z "$(docker_call container ls --all --quiet --filter "name=^/${name}$")" ]]
+          docker_call pull --quiet --platform linux/amd64 "$image" >/dev/null
+          identity=$(docker_call image inspect --format '{{.Id}}|{{.Os}}|{{.Architecture}}' "$config_id")
           [[ "$identity" == "$config_id|linux|amd64" ]]
-          remaining=$((deadline - SECONDS)); (( remaining > 0 ))
           create_status=0
-          reported_id=$("$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
-            "$docker" --config "$root/config" --host "unix://$socket" create \
+          reported_id=$(docker_call create \
               --name "$name" --network none --platform linux/amd64 --read-only \
               --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=0700,size=16m \
               --mount "type=bind,src=$repository_root/packages/testkit/pty-runtime/node127-linux-x64-musl/pty.node,dst=/runtime/production.node,readonly" \
               --mount "type=bind,src=$repository_root/packages/testkit/fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node,dst=/runtime/faults.node,readonly" \
               --mount "type=bind,src=$repository_root,dst=/workspace,readonly" \
               "$image" /usr/local/bin/node /workspace/packages/testkit/scripts/verify-pty-runtime.mjs --runtime-proof) || create_status=$?
-          container_id=$("$docker" --config "$root/config" --host "unix://$socket" container ls --all --no-trunc --quiet --filter "name=^/${name}$")
+          container_id=$(docker_call container ls --all --no-trunc --quiet --filter "name=^/${name}$")
           [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]
           created=true
           (( create_status == 0 ))
           [[ "$reported_id" == "$container_id" ]]
-          authority=$("$docker" --config "$root/config" --host "unix://$socket" inspect --format '{{.Id}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}' "$container_id")
+          authority=$(docker_call inspect --format '{{.Id}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}' "$container_id")
           [[ "$authority" == "$container_id|$config_id|none|true|created" ]]
-          remaining=$((deadline - SECONDS)); (( remaining > 0 ))
-          "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
-            "$docker" --config "$root/config" --host "unix://$socket" start --attach "$container_id" >"$root/receipt.json"
+          docker_call start --attach "$container_id" >"$root/receipt.json"
           [[ $(/usr/bin/stat -c %s "$root/receipt.json") -le 65536 ]]
-          terminal=$("$docker" --config "$root/config" --host "unix://$socket" inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Running}}|{{.State.Pid}}' "$container_id")
+          terminal=$(docker_call inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Running}}|{{.State.Pid}}' "$container_id")
           [[ "$terminal" == 'exited|0|false|0' ]]
 
   docs:

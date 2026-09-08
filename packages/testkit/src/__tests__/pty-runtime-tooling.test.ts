@@ -197,9 +197,10 @@ describe("PTY runtime artifact tooling", () => {
       termios: true,
     };
     expect(() => verify(receipt)).not.toThrow();
-    expect(() => verify({ ...receipt, geometry: false })).toThrow(
-      /did not establish geometry/u,
-    );
+    for (const key of Object.keys(receipt))
+      expect(() => verify({ ...receipt, [key]: false })).toThrow(
+        new RegExp(`did not establish ${key}`, "u"),
+      );
     expect(() => verify({ ...receipt, unproved: true })).toThrow(
       /receipt is not closed/u,
     );
@@ -222,6 +223,25 @@ describe("PTY runtime artifact tooling", () => {
     ).toHaveLength(1);
     expect(verifier).not.toContain("execFileSync(docker");
     expect(verifier).toContain('process.versions.modules !== "127"');
+    expect(verifier).toContain(
+      "Object.getPrototypeOf(readFaultReceipt)===Object.prototype",
+    );
+    expect(verifier).toContain(
+      'Object.hasOwn(readFaultReceipt,"status")&&!Object.hasOwn(readFaultReceipt,"bytes")&&!("bytes" in readFaultReceipt)',
+    );
+    expect(verifier).toContain(
+      'Object.hasOwn(readFaultDescriptor,"value")&&readFaultDescriptor.value==="eio"&&readFaultDescriptor.get===undefined&&readFaultDescriptor.set===undefined',
+    );
+    expect(verifier).toContain(
+      'const finalizerToken=Symbol("agentscope-pty-finalizer")',
+    );
+    expect(verifier).toContain(
+      'finalizerState=finalizerDropped&&value===finalizerToken&&finalizerCount===1?"exact":"invalid"',
+    );
+    expect(verifier).toContain(
+      'if(finalizerState!=="pending"||finalizerCount!==0)throw new Error("finalizer receipt arrived before authority release")',
+    );
+    expect(verifier).not.toContain("new WeakRef(");
     expect(workflow).toContain("--network none --platform linux/amd64");
     expect(workflow).toContain("--read-only");
     expect(workflow).toContain(
@@ -260,9 +280,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 38_785,
+      bytes: 39_951,
       mode: "0644",
-      patchedSourceBytes: 51_812,
+      patchedSourceBytes: 52_834,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -280,8 +300,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 38_785,
-      patchedSourceBytes: 51_812,
+      bytes: 39_951,
+      patchedSourceBytes: 52_834,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -588,7 +608,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "e467e81bd4ac25a0eff52155bb11770e158e87a009d92bf2182b693a631e6eb8",
+      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -617,9 +637,9 @@ describe("PTY authenticated build-material tooling", () => {
         patch.replace("+#include <atomic>", `+${"x".repeat(2_049)}`),
       ),
     ).toThrow(/byte bound|line authority/u);
-    expect(() =>
-      apply(source, patch.replace(",0 +", ",999999999999 +")),
-    ).toThrow(/hunk counts|incomplete|position/u);
+    expect(() => apply(source, patch.replace("+23", "+999999999999"))).toThrow(
+      /hunk counts|incomplete|position/u,
+    );
     expect(patch).toContain(
       "+    errno = 0;\n+    entry = readdir(directory);",
     );
@@ -704,10 +724,10 @@ describe("PTY authenticated build-material tooling", () => {
     expect(patch).toContain("+  uint32_t argc_unsigned = argv_.Length();");
     expect(patch).toContain("+    if (!value.IsString())");
     expect(patch).toContain(
-      "+    if (napi_get_value_string_utf8(napiEnv, value, nullptr, 0, &pair_bytes)",
+      "+    if (!pty_string_code_units_within(napiEnv, value, 4096) ||",
     );
     expect(patch).toContain(
-      "+    if (napi_get_value_string_utf8(napiEnv, value, nullptr, 0,",
+      "+        napi_get_value_string_utf8(napiEnv, value, nullptr, 0,",
     );
     expect(patch.indexOf("+  int exec_status[2]")).toBeGreaterThan(
       patch.indexOf("+    argument_values.push_back(std::move(argument));"),

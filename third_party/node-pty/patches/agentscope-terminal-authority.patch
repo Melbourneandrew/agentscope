@@ -8,7 +8,7 @@
 +#include <time.h>
 @@ -27,0 +32 @@
 +#include <vector>
-@@ -38,0 +44,37 @@
+@@ -38,0 +44,46 @@
 +
 +#if defined(AGENTSCOPE_PTY_TEST_FAULTS)
 +static std::atomic<int> pty_test_fault(0);
@@ -35,6 +35,15 @@
 +  return true;
 +}
 +
++static bool
++pty_string_code_units_within(napi_env env, napi_value value,
++                             size_t maximum) {
++  size_t code_units = 0;
++  return napi_get_value_string_utf16(env, value, nullptr, 0, &code_units) ==
++             napi_ok &&
++         code_units <= maximum;
++}
++
 +static int
 +pty_remaining_milliseconds(uint64_t deadline) {
 +  uint64_t now;
@@ -46,7 +55,8 @@
 +      ? INT_MAX
 +      : static_cast<int>(milliseconds);
 +}
-@@ -146,0 +189,148 @@
+@@ -145,0 +197,103 @@
++}
 +
 +static bool
 +pty_close_inherited_fds_except(int interpreter_fd, int script_fd,
@@ -149,7 +159,7 @@
 +    }
 +  }
 +  return false;
-+}
+@@ -146,0 +301,45 @@
 +
 +static bool
 +pty_close_once(int *fd) {
@@ -195,10 +205,10 @@
 +    poll(nullptr, 0, remaining < 10 ? remaining : 10);
 +  }
 +}
-@@ -150 +340 @@
+@@ -150 +349 @@
 -  std::thread *th = new std::thread;
 +  std::thread **thread_slot = new std::thread *(nullptr);
-@@ -152,11 +342,22 @@
+@@ -152,11 +351,22 @@
 -  auto tsfn = Napi::ThreadSafeFunction::New(
 -      env,
 -      cb,                           // JavaScript function called asynchronously
@@ -232,7 +242,7 @@
 +      throw Napi::Error::New(env, "PTY exit callback authority failed");
 +#endif
 +    *thread_slot = new std::thread([tsfn, pid] {
-@@ -249 +450,8 @@
+@@ -249 +459,8 @@
 -  });
 +    });
 +  } catch (...) {
@@ -242,13 +252,13 @@
 +      delete thread_slot;
 +    throw;
 +  }
-@@ -259,0 +468,78 @@
+@@ -259,0 +477,5 @@
 +Napi::Value PtyInspect(const Napi::CallbackInfo& info);
 +Napi::Value PtyRead(const Napi::CallbackInfo& info);
 +Napi::Value PtyWrite(const Napi::CallbackInfo& info);
 +Napi::Value PtyEof(const Napi::CallbackInfo& info);
 +Napi::Value PtyClose(const Napi::CallbackInfo& info);
-+
+@@ -260,0 +483,73 @@
 +struct TerminalHandle {
 +  int fd;
 +  dev_t device;
@@ -321,19 +331,20 @@
 +    throw Napi::Error::New(env, "PTY terminal handle identity changed");
 +  return handle;
 +}
-@@ -302,3 +588,3 @@
++
+@@ -302,3 +597,3 @@
 -  if (info.Length() != 11 ||
 -      !info[0].IsString() ||
 -      !info[1].IsArray() ||
 +  if (info.Length() != 13 ||
 +      !info[0].IsNumber() ||
 +      !info[1].IsNumber() ||
-@@ -306,2 +592,2 @@
+@@ -306,2 +601,2 @@
 -      !info[3].IsString() ||
 -      !info[4].IsNumber() ||
 +      !info[3].IsArray() ||
 +      !info[4].IsString() ||
-@@ -311,4 +597,6 @@
+@@ -311,4 +606,6 @@
 -      !info[8].IsBoolean() ||
 -      !info[9].IsString() ||
 -      !info[10].IsFunction()) {
@@ -344,7 +355,7 @@
 +      !info[11].IsBigInt() ||
 +      !info[12].IsFunction()) {
 +    throw Napi::Error::New(napiEnv, "Usage: pty.fork(interpreterFd, scriptFd, args, env, cwd, cols, rows, uid, gid, utf8, helperPath, monotonicDeadlineNs, onexit)");
-@@ -317,2 +605,50 @@
+@@ -317,2 +614,7 @@
 -  // file
 -  std::string file = info[0].As<Napi::String>();
 +#if defined(__linux__)
@@ -354,7 +365,7 @@
 +      pty_remaining_milliseconds(deadline) == 0)
 +    throw Napi::Error::New(napiEnv, "PTY admission deadline is invalid or expired");
 +#endif
-+
+@@ -319,0 +622,44 @@
 +  // The selected backend authenticates both exact objects before calling this
 +  // ABI. Linux executes the interpreter object atomically and gives it only a
 +  // read-only procfs alias for the exact packed CLI script object.
@@ -384,7 +395,8 @@
 +      stat(script_alias, &proc_script_stat) == -1 ||
 +      !S_ISREG(interpreter_stat.st_mode) || !S_ISREG(script_stat.st_mode) ||
 +      (interpreter_stat.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0 ||
-+      interpreter_descriptor_flags == -1 || script_descriptor_flags == -1 ||
++      pty_take_test_fault(13) || interpreter_descriptor_flags == -1 ||
++      script_descriptor_flags == -1 ||
 +      (interpreter_descriptor_flags & FD_CLOEXEC) == 0 ||
 +      (script_descriptor_flags & FD_CLOEXEC) == 0 ||
 +      (fcntl(interpreter_fd, F_GETFL, 0) & O_ACCMODE) != O_RDONLY ||
@@ -397,13 +409,14 @@
 +#else
 +  throw Napi::Error::New(napiEnv, "Authenticated interpreter execution is unsupported");
 +#endif
-@@ -321 +657,4 @@
++
+@@ -321 +667,4 @@
 -  Napi::Array argv_ = info[1].As<Napi::Array>();
 +  Napi::Array argv_ = info[2].As<Napi::Array>();
 +  uint32_t argc_unsigned = argv_.Length();
 +  if (argc_unsigned > 256)
 +    throw Napi::Error::New(napiEnv, "PTY argument inventory exceeds its bound");
-@@ -324,3 +663,55 @@
+@@ -324,3 +673,59 @@
 -  Napi::Array env_ = info[2].As<Napi::Array>();
 -  int envc = env_.Length();
 -  std::unique_ptr<char *, DelBuf> env_unique_ptr(new char *[envc + 1], DelBuf(envc + 1));
@@ -423,7 +436,9 @@
 +    if (!value.IsString())
 +      throw Napi::Error::New(napiEnv, "PTY environment value is not a string");
 +    size_t pair_bytes = 0;
-+    if (napi_get_value_string_utf8(napiEnv, value, nullptr, 0, &pair_bytes) !=
++    if (!pty_string_code_units_within(napiEnv, value, 4096) ||
++        pty_remaining_milliseconds(deadline) == 0 ||
++        napi_get_value_string_utf8(napiEnv, value, nullptr, 0, &pair_bytes) !=
 +            napi_ok ||
 +        pair_bytes > 4096 || admission_bytes > 65536 - pair_bytes)
 +      throw Napi::Error::New(napiEnv, "PTY environment admission exceeded its authority");
@@ -444,7 +459,9 @@
 +    if (!value.IsString())
 +      throw Napi::Error::New(napiEnv, "PTY argument value is not a string");
 +    size_t argument_bytes = 0;
-+    if (napi_get_value_string_utf8(napiEnv, value, nullptr, 0,
++    if (!pty_string_code_units_within(napiEnv, value, 4096) ||
++        pty_remaining_milliseconds(deadline) == 0 ||
++        napi_get_value_string_utf8(napiEnv, value, nullptr, 0,
 +                                   &argument_bytes) != napi_ok ||
 +        argument_bytes > 4096 || admission_bytes > 65536 - argument_bytes)
 +      throw Napi::Error::New(napiEnv, "PTY argument admission exceeded its authority");
@@ -462,16 +479,18 @@
 +    argument_values.emplace_back(argument_buffer, argument_bytes);
 +  }
 +  std::unique_ptr<char *, DelBuf> env_unique_ptr(new char *[envc + 1](), DelBuf(envc + 1));
-@@ -330,2 +721,3 @@
+@@ -330,2 +735,3 @@
 -    std::string pair = env_.Get(i).As<Napi::String>();
 -    env[i] = strdup(pair.c_str());
 +    env[i] = strdup(environment_values[static_cast<size_t>(i)].c_str());
 +    if (env[i] == nullptr)
 +      throw Napi::Error::New(napiEnv, "PTY environment allocation failed");
-@@ -335 +727,13 @@
+@@ -335 +741,15 @@
 -  std::string cwd_ = info[3].As<Napi::String>();
 +  size_t cwd_bytes = 0;
-+  if (napi_get_value_string_utf8(napiEnv, info[4], nullptr, 0, &cwd_bytes) !=
++  if (!pty_string_code_units_within(napiEnv, info[4], 4096) ||
++      pty_remaining_milliseconds(deadline) == 0 ||
++      napi_get_value_string_utf8(napiEnv, info[4], nullptr, 0, &cwd_bytes) !=
 +          napi_ok ||
 +      cwd_bytes > 4096)
 +    throw Napi::Error::New(napiEnv, "PTY working directory admission exceeded its authority");
@@ -483,23 +502,25 @@
 +      pty_remaining_milliseconds(deadline) == 0)
 +    throw Napi::Error::New(napiEnv, "PTY working directory admission exceeded its authority");
 +  std::string cwd_(cwd_buffer, cwd_bytes);
-@@ -339,2 +743,2 @@
+@@ -339,2 +759,2 @@
 -  winp.ws_col = info[4].As<Napi::Number>().Int32Value();
 -  winp.ws_row = info[5].As<Napi::Number>().Int32Value();
 +  winp.ws_col = info[5].As<Napi::Number>().Int32Value();
 +  winp.ws_row = info[6].As<Napi::Number>().Int32Value();
-@@ -346,2 +750,2 @@
+@@ -346,2 +766,2 @@
 -  int uid = info[6].As<Napi::Number>().Int32Value();
 -  int gid = info[7].As<Napi::Number>().Int32Value();
 +  int uid = info[7].As<Napi::Number>().Int32Value();
 +  int gid = info[8].As<Napi::Number>().Int32Value();
-@@ -354 +758 @@
+@@ -354 +774 @@
 -  if (info[8].As<Napi::Boolean>().Value()) {
 +  if (info[9].As<Napi::Boolean>().Value()) {
-@@ -389 +793,14 @@
+@@ -389 +809,16 @@
 -  std::string helper_path = info[9].As<Napi::String>();
 +  size_t helper_bytes = 0;
-+  if (napi_get_value_string_utf8(napiEnv, info[10], nullptr, 0,
++  if (!pty_string_code_units_within(napiEnv, info[10], 4096) ||
++      pty_remaining_milliseconds(deadline) == 0 ||
++      napi_get_value_string_utf8(napiEnv, info[10], nullptr, 0,
 +                                 &helper_bytes) != napi_ok ||
 +      helper_bytes > 4096)
 +    throw Napi::Error::New(napiEnv, "PTY helper admission exceeded its authority");
@@ -512,16 +533,16 @@
 +      pty_remaining_milliseconds(deadline) == 0)
 +    throw Napi::Error::New(napiEnv, "PTY helper admission exceeded its authority");
 +  std::string helper_path(helper_buffer, helper_bytes);
-@@ -394 +810,0 @@
+@@ -394 +828,0 @@
 -  int argc = argv_.Length();
-@@ -396 +812 @@
+@@ -396 +830 @@
 -  std::unique_ptr<char *, DelBuf> argv_unique_ptr(new char *[argl], DelBuf(argl));
 +  std::unique_ptr<char *, DelBuf> argv_unique_ptr(new char *[argl](), DelBuf(argl));
-@@ -403,2 +819 @@
+@@ -403,2 +837 @@
 -    std::string arg = argv_.Get(i).As<Napi::String>();
 -    argv[i + 3] = strdup(arg.c_str());
 +    argv[i + 3] = strdup(argument_values[static_cast<size_t>(i)].c_str());
-@@ -419,3 +834,5 @@
+@@ -419,3 +852,5 @@
 -  int argc = argv_.Length();
 -  int argl = argc + 2;
 -  std::unique_ptr<char *, DelBuf> argv_unique_ptr(new char *[argl], DelBuf(argl));
@@ -530,7 +551,7 @@
 +    throw Napi::Error::New(napiEnv, "PTY exec status authority failed");
 +  int argl = argc + 3;
 +  std::unique_ptr<char *, DelBuf> argv_unique_ptr(new char *[argl](), DelBuf(argl));
-@@ -423 +840,7 @@
+@@ -423 +858,7 @@
 -  argv[0] = strdup(file.c_str());
 +  argv[0] = strdup("node");
 +  argv[1] = strdup(script_alias);
@@ -539,7 +560,7 @@
 +    close(exec_status[1]);
 +    throw Napi::Error::New(napiEnv, "PTY argument allocation failed");
 +  }
-@@ -426,2 +849,17 @@
+@@ -426,2 +867,6 @@
 -    std::string arg = argv_.Get(i).As<Napi::String>();
 -    argv[i + 1] = strdup(arg.c_str());
 +    argv[i + 2] = strdup(argument_values[static_cast<size_t>(i)].c_str());
@@ -548,8 +569,7 @@
 +      close(exec_status[1]);
 +      throw Napi::Error::New(napiEnv, "PTY argument allocation failed");
 +    }
-+  }
-+
+@@ -429,0 +875,11 @@
 +#if defined(AGENTSCOPE_PTY_TEST_FAULTS)
 +  if (pty_take_test_fault(9))
 +    while (pty_remaining_milliseconds(deadline) > 0)
@@ -559,7 +579,9 @@
 +    close(exec_status[0]);
 +    close(exec_status[1]);
 +    throw Napi::Error::New(napiEnv, "PTY admission expired before launch");
-@@ -438,0 +877,7 @@
++  }
++
+@@ -438,0 +895,7 @@
 +  if (pty_remaining_milliseconds(deadline) == 0) {
 +    pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
 +    close(exec_status[0]);
@@ -567,26 +589,26 @@
 +    throw Napi::Error::New(napiEnv, "PTY admission expired adjacent to launch");
 +  }
 +
-@@ -455,0 +901,2 @@
+@@ -455,0 +919,2 @@
 +      close(exec_status[0]);
 +      close(exec_status[1]);
-@@ -457 +904,2 @@
+@@ -457 +922,2 @@
 -    case 0:
 +    case 0: {
 +      close(exec_status[0]);
-@@ -460,2 +908 @@
+@@ -460,2 +926 @@
 -          perror("chdir(2) failed.");
 -          _exit(1);
 +          pty_exec_fail(exec_status[1], 1, errno);
-@@ -467,2 +914 @@
+@@ -467,2 +932 @@
 -          perror("setgid(2) failed.");
 -          _exit(1);
 +          pty_exec_fail(exec_status[1], 2, errno);
-@@ -471,2 +917 @@
+@@ -471,2 +935 @@
 -          perror("setuid(2) failed.");
 -          _exit(1);
 +          pty_exec_fail(exec_status[1], 3, errno);
-@@ -476,2 +921,36 @@
+@@ -476,2 +939,36 @@
 -      // Close inherited FDs to prevent leaking pty master FDs to child
 -      pty_close_inherited_fds();
 +      // Mark every inherited descriptor outside the exact interpreter/script
@@ -625,7 +647,7 @@
 +          fcntl(interpreter_fd, F_SETFD, interpreter_flags & ~FD_CLOEXEC) == -1 ||
 +          fcntl(script_fd, F_SETFD, script_flags & ~FD_CLOEXEC) == -1)
 +        pty_exec_fail(exec_status[1], 4, errno);
-@@ -482 +961,7 @@
+@@ -482 +979,7 @@
 -        execvp(argv[0], argv);
 +#if defined(SYS_execveat) && defined(AT_EMPTY_PATH)
 +          if (pty_take_test_fault(7))
@@ -634,13 +656,13 @@
 +#else
 +          errno = ENOSYS;
 +#endif
-@@ -484,2 +969 @@
+@@ -484,2 +987 @@
 -        perror("execvp(3) failed.");
 -        _exit(1);
 +        pty_exec_fail(exec_status[1], 5, errno);
-@@ -486,0 +971 @@
+@@ -486,0 +989 @@
 +    }
-@@ -488,2 +973,24 @@
+@@ -488,2 +991,6 @@
 -      if (pty_nonblock(master) == -1) {
 -        throw Napi::Error::New(napiEnv, "Could not set master fd to nonblocking.");
 +      close(exec_status[1]);
@@ -649,7 +671,7 @@
 +        throw Napi::Error::New(napiEnv, settled
 +          ? "PTY nonblocking admission failed and child joined"
 +          : "PTY nonblocking admission cleanup is uncertain");
-+      }
+@@ -490,0 +998,18 @@
 +      ExecFailureReceipt failure{0, 0};
 +      if (pty_take_test_fault(4) ||
 +          !pty_exec_succeeded(exec_status[0], deadline, &failure)) {
@@ -667,16 +689,12 @@
 +        throw Napi::Error::New(napiEnv, settled
 +          ? "PTY exec status close was uncertain and child joined"
 +          : "PTY exec status close and child cleanup are uncertain");
-@@ -494,9 +1001,32 @@
++      }
+@@ -494,4 +1019,10 @@
 -  Napi::Object obj = Napi::Object::New(napiEnv);
 -  obj.Set("fd", Napi::Number::New(napiEnv, master));
 -  obj.Set("pid", Napi::Number::New(napiEnv, pid));
 -  obj.Set("pty", Napi::String::New(napiEnv, ptsname(master)));
--
--  // Set up process exit callback.
--  Napi::Function cb = info[10].As<Napi::Function>();
--  SetupExitCallback(napiEnv, cb, pid);
--  return obj;
 +  TerminalHandle *published_handle = nullptr;
 +  try {
 +    Napi::Object obj = Napi::Object::New(napiEnv);
@@ -687,7 +705,11 @@
 +    if (terminal_name == nullptr)
 +      throw Napi::Error::New(napiEnv, "PTY terminal name authority failed");
 +    obj.Set("pty", Napi::String::New(napiEnv, terminal_name));
-+
+@@ -499,4 +1030,21 @@
+-  // Set up process exit callback.
+-  Napi::Function cb = info[10].As<Napi::Function>();
+-  SetupExitCallback(napiEnv, cb, pid);
+-  return obj;
 +    // Exit callback setup is the final ownership transfer. Until it succeeds,
 +    // this frame alone owns the exact child, PTY, and callback publication.
 +    Napi::Function cb = info[12].As<Napi::Function>();
@@ -709,34 +731,30 @@
 +#endif
 +    throw;
 +  }
-@@ -509 +1039 @@
+@@ -509 +1057 @@
 -  if (info.Length() != 2 ||
 +  if (info.Length() != 3 ||
-@@ -511,2 +1041,3 @@
+@@ -511,2 +1059,3 @@
 -      !info[1].IsNumber()) {
 -    throw Napi::Error::New(env, "Usage: pty.open(cols, rows)");
 +      !info[1].IsNumber() ||
 +      !info[2].IsBigInt()) {
 +    throw Napi::Error::New(env, "Usage: pty.open(cols, rows, monotonicDeadlineNs)");
-@@ -514,0 +1046,6 @@
+@@ -513,0 +1063,6 @@
++
 +  bool deadline_lossless = false;
 +  uint64_t deadline = info[2].As<Napi::BigInt>().Uint64Value(&deadline_lossless);
 +  if (!deadline_lossless || deadline == 0 ||
 +      pty_remaining_milliseconds(deadline) == 0)
 +    throw Napi::Error::New(env, "PTY open deadline is invalid or expired");
-+
-@@ -523 +1060,3 @@
+@@ -523 +1078,3 @@
 -  int master, slave;
 +  int master = -1, slave = -1;
 +  TerminalHandle *master_handle = nullptr;
 +  TerminalHandle *slave_handle = nullptr;
-@@ -530,6 +1069,43 @@
+@@ -530,2 +1087,43 @@
 -  if (pty_nonblock(master) == -1) {
 -    throw Napi::Error::New(env, "Could not set master fd to nonblocking.");
--  }
--
--  if (pty_nonblock(slave) == -1) {
--    throw Napi::Error::New(env, "Could not set slave fd to nonblocking.");
 +  try {
 +    if (pty_nonblock(master) == -1 || pty_nonblock(slave) == -1)
 +      throw Napi::Error::New(env, "Could not set PTY descriptors to nonblocking.");
@@ -780,7 +798,11 @@
 +    if (!certain)
 +      throw Napi::Error::New(env, "PTY open cleanup is uncertain");
 +    throw;
-@@ -537,7 +1112,0 @@
+@@ -533,11 +1130,0 @@
+-
+-  if (pty_nonblock(slave) == -1) {
+-    throw Napi::Error::New(env, "Could not set slave fd to nonblocking.");
+-  }
 -
 -  Napi::Object obj = Napi::Object::New(env);
 -  obj.Set("master", Napi::Number::New(env, master));
@@ -788,15 +810,17 @@
 -  obj.Set("pty", Napi::String::New(env, ptsname(master)));
 -
 -  return obj;
-@@ -551 +1119,0 @@
+@@ -551 +1137,0 @@
 -      !info[0].IsNumber() ||
-@@ -556 +1124 @@
+@@ -556 +1142 @@
 -    throw Napi::Error::New(env, "Usage: pty.resize(fd, cols, rows, xPixel, yPixel)");
 +    throw Napi::Error::New(env, "Usage: pty.resize(handle, cols, rows, xPixel, yPixel)");
-@@ -559 +1127 @@
+@@ -559 +1145 @@
 -  int fd = info[0].As<Napi::Number>().Int32Value();
 +  int fd = require_terminal_handle(env, info[0])->fd;
-@@ -583,0 +1152,120 @@
+@@ -581,0 +1168,126 @@
++}
++
 +Napi::Value PtyInspect(const Napi::CallbackInfo& info) {
 +  Napi::Env env(info.Env());
 +  if (info.Length() != 1)
@@ -805,7 +829,8 @@
 +  int fd = handle->fd;
 +  struct winsize size;
 +  struct termios mode;
-+  if (isatty(fd) != 1 || ioctl(fd, TIOCGWINSZ, &size) == -1 ||
++  if (pty_take_test_fault(14) || isatty(fd) != 1 ||
++      ioctl(fd, TIOCGWINSZ, &size) == -1 ||
 +      tcgetattr(fd, &mode) == -1)
 +    throw Napi::Error::New(env, "PTY terminal inspection failed");
 +  Napi::Object result = Napi::Object::New(env);
@@ -827,7 +852,9 @@
 +  if (maximum < 1 || maximum > 65536)
 +    throw Napi::Error::New(env, "PTY read bound is invalid");
 +  std::unique_ptr<unsigned char[]> bytes(new unsigned char[maximum]);
-+  ssize_t count = read(fd, bytes.get(), static_cast<size_t>(maximum));
++  ssize_t count = pty_take_test_fault(15)
++                      ? (errno = EIO, -1)
++                      : read(fd, bytes.get(), static_cast<size_t>(maximum));
 +  Napi::Object result = Napi::Object::New(env);
 +  if (count > 0) {
 +    result.Set("status", Napi::String::New(env, "data"));
@@ -853,7 +880,9 @@
 +  Napi::Buffer<unsigned char> bytes = info[1].As<Napi::Buffer<unsigned char>>();
 +  if (bytes.Length() > 1048576)
 +    throw Napi::Error::New(env, "PTY write bound is invalid");
-+  ssize_t count = write(fd, bytes.Data(), bytes.Length());
++  ssize_t count = pty_take_test_fault(16)
++                      ? (errno = EIO, -1)
++                      : write(fd, bytes.Data(), bytes.Length());
 +  Napi::Object result = Napi::Object::New(env);
 +  if (count >= 0) {
 +    result.Set("status", Napi::String::New(env,
@@ -875,7 +904,8 @@
 +  TerminalHandle *handle = require_terminal_handle(env, info[0]);
 +  int fd = handle->fd;
 +  struct termios mode;
-+  if (tcgetattr(fd, &mode) == -1 || (mode.c_lflag & ICANON) == 0 ||
++  if (pty_take_test_fault(17) || tcgetattr(fd, &mode) == -1 ||
++      (mode.c_lflag & ICANON) == 0 ||
 +      mode.c_cc[VEOF] == _POSIX_VDISABLE)
 +    throw Napi::Error::New(env, "PTY EOF mode is not canonical");
 +  unsigned char eof = mode.c_cc[VEOF];
@@ -915,40 +945,38 @@
 +    throw Napi::Error::New(env, "PTY close exceeded its deadline");
 +  }
 +  return Napi::Boolean::New(env, true);
-+}
-+
-@@ -592,3 +1280,2 @@
+@@ -592,3 +1304,2 @@
 -  if (info.Length() != 1 ||
 -      !info[0].IsNumber()) {
 -    throw Napi::Error::New(env, "Usage: pty.process(pid)");
 +  if (info.Length() != 1) {
 +    throw Napi::Error::New(env, "Usage: pty.process(handle)");
-@@ -597 +1284 @@
+@@ -597 +1308 @@
 -  int fd = info[0].As<Napi::Number>().Int32Value();
 +  int fd = require_terminal_handle(env, info[0])->fd;
-@@ -601 +1287,0 @@
+@@ -601 +1311,0 @@
 -      !info[0].IsNumber() ||
-@@ -603 +1289 @@
+@@ -603 +1313 @@
 -    throw Napi::Error::New(env, "Usage: pty.process(fd, tty)");
 +    throw Napi::Error::New(env, "Usage: pty.process(handle, tty)");
-@@ -606 +1292 @@
+@@ -606 +1316 @@
 -  int fd = info[0].As<Napi::Number>().Int32Value();
 +  int fd = require_terminal_handle(env, info[0])->fd;
-@@ -867,0 +1554,13 @@
+@@ -867,0 +1578,13 @@
 +#if defined(AGENTSCOPE_PTY_TEST_FAULTS)
 +Napi::Value PtySetTestFault(const Napi::CallbackInfo& info) {
 +  Napi::Env env(info.Env());
 +  if (info.Length() != 1 || !info[0].IsNumber())
 +    throw Napi::Error::New(env, "Usage: pty.testFault(fault)");
 +  int fault = info[0].As<Napi::Number>().Int32Value();
-+  if (fault < 0 || fault > 0x1fff)
++  if (fault < 0 || fault > 0x3ffff)
 +    throw Napi::Error::New(env, "PTY test fault is invalid");
 +  pty_test_fault.store(fault);
 +  return env.Undefined();
 +}
 +#endif
 +
-@@ -872,0 +1572,8 @@
+@@ -872,0 +1596,8 @@
 +  exports.Set("inspect", Napi::Function::New(env, PtyInspect));
 +  exports.Set("read",    Napi::Function::New(env, PtyRead));
 +  exports.Set("write",   Napi::Function::New(env, PtyWrite));

@@ -227,10 +227,10 @@
   "build": {
     "patch": {
       "path": "third_party/node-pty/patches/agentscope-terminal-authority.patch",
-      "bytes": 38785,
-      "sha256": "77acf682848a7d2f66bf0c6c41a4ad3b78f32e328244797f6b56604be7b7f697",
-      "patchedSourceBytes": 51812,
-      "patchedSourceSha256": "e467e81bd4ac25a0eff52155bb11770e158e87a009d92bf2182b693a631e6eb8"
+      "bytes": 39951,
+      "sha256": "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107",
+      "patchedSourceBytes": 52834,
+      "patchedSourceSha256": "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916"
     },
     "nativeExports": [
       "close",
