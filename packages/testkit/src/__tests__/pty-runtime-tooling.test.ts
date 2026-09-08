@@ -285,8 +285,8 @@ describe("PTY runtime artifact tooling", () => {
     expect(workflow.indexOf(`trap 'cleanup "$?"' EXIT`)).toBeLessThan(
       workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
-    expect(workflow).toContain("trap 'cleanup 130' INT");
-    expect(workflow).toContain("trap 'cleanup 143' TERM");
+    expect(workflow).toContain(`trap 'interrupt 130 "$?"' INT`);
+    expect(workflow).toContain(`trap 'interrupt 143 "$?"' TERM`);
     expect(workflow).toContain(
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );
@@ -305,8 +305,8 @@ describe("PTY runtime artifact tooling", () => {
     const cleanupStart = workflow.indexOf("          cleanup() {");
     expect(workflow.slice(cleanupStart).split("\n").slice(0, 3)).toEqual([
       "          cleanup() {",
-      "            local incoming_status=$1 prior_cleanup_active=$cleanup_active cleanup_active=true",
-      '            if [[ "$prior_cleanup_active" == true ]]; then',
+      "            local incoming_status=$1 preclaimed=${2:-false} prior_cleanup_active=$cleanup_active cleanup_active=true",
+      '            if [[ "$prior_cleanup_active" == true && "$preclaimed" != true ]]; then',
     ]);
     const terminalReceipt = workflow.indexOf(
       '            printf \'{"version":1',
@@ -319,7 +319,7 @@ describe("PTY runtime artifact tooling", () => {
       workflow.indexOf("            trap '' INT TERM", cleanupStart),
     ).toBeLessThan(terminalReceipt);
     expect(workflow.slice(cleanupStart, terminalReceipt)).not.toContain(
-      "trap 'cleanup 130'",
+      "trap 'interrupt 130'",
     );
     expect(workflow).toContain(
       "setup|input-identity|image-identity|create|runtime-receipt|terminal-join|cleanup|final-assertion",
@@ -497,6 +497,54 @@ describe("PTY runtime artifact tooling", () => {
           version: 1,
         });
         expect(statSync(ownedRoot).isDirectory()).toBe(true);
+      }
+    }
+  });
+
+  it("preserves the primary status across atomic cleanup-entry signals", () => {
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    const job = workflow.indexOf("name: Replay the bounded PTY ABI");
+    const start = workflow.indexOf("          set -euo pipefail\n", job);
+    const end = workflow.indexOf("          host_call() {", start);
+    const prefix = workflow.slice(start, end).replaceAll(/^ {10}/gmu, "");
+    const atomicClaim =
+      "local incoming_status=$1 preclaimed=${2:-false} prior_cleanup_active=$cleanup_active cleanup_active=true";
+    expect(prefix.split(atomicClaim)).toHaveLength(2);
+    for (const [signal, signalStatus] of [
+      ["INT", 130],
+      ["TERM", 143],
+    ] as const) {
+      const injected = prefix.replace(
+        atomicClaim,
+        () => `${atomicClaim}\nkill -${signal} $$`,
+      );
+      for (const primaryStatus of [0, 7]) {
+        const stage = primaryStatus === 0 ? "final-assertion" : "create";
+        const authenticated = primaryStatus === 0 ? "true" : "false";
+        const result = spawnSync(
+          "/bin/bash",
+          [
+            "-c",
+            `${injected}\nstage=${stage}\nruntime_receipt_authenticated=${authenticated}\nexit ${primaryStatus}\n`,
+          ],
+          { encoding: "utf8" },
+        );
+        expect(result.status).toBe(
+          primaryStatus === 0 ? signalStatus : primaryStatus,
+        );
+        expect(result.stdout).toBe("");
+        const lines = result.stderr.trim().split("\n");
+        expect(lines).toHaveLength(1);
+        expect(JSON.parse(lines[0] ?? "null")).toEqual({
+          cleanupProved: false,
+          runtimeReceiptAuthenticated: primaryStatus === 0,
+          stage: primaryStatus === 0 ? "cleanup" : "create",
+          status: "failed",
+          version: 1,
+        });
       }
     }
   });

@@ -81,11 +81,15 @@ jobs:
             fi
           }
           cleanup() {
-            local incoming_status=$1 prior_cleanup_active=$cleanup_active cleanup_active=true
-            if [[ "$prior_cleanup_active" == true ]]; then
+            local incoming_status=$1 preclaimed=${2:-false} prior_cleanup_active=$cleanup_active cleanup_active=true
+            if [[ "$prior_cleanup_active" == true && "$preclaimed" != true ]]; then
               cleanup_signal_status=$incoming_status
               cleanup_proved=false
               return
+            fi
+            if [[ "$prior_cleanup_active" != true && "$preclaimed" == true ]]; then
+              incoming_status=1
+              cleanup_proved=false
             fi
             local primary_status=$incoming_status
             local failure_stage=$stage
@@ -133,9 +137,22 @@ jobs:
             trap - EXIT
             exit "$primary_status"
           }
+          interrupt() {
+            local signal_status=$1 interrupted_status=$2 primary_status=$1
+            if [[ "$cleanup_active" == true ]]; then
+              cleanup_signal_status=$signal_status
+              cleanup_proved=false
+              return
+            fi
+            if (( interrupted_status != 0 )); then
+              primary_status=$interrupted_status
+            fi
+            cleanup_active=true
+            cleanup "$primary_status" true
+          }
           trap 'cleanup "$?"' EXIT
-          trap 'cleanup 130' INT
-          trap 'cleanup 143' TERM
+          trap 'interrupt 130 "$?"' INT
+          trap 'interrupt 143 "$?"' TERM
           host_call() {
             local remaining=$((deadline - SECONDS - 10))
             (( remaining > 0 ))
