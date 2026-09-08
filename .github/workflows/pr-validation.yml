@@ -94,12 +94,13 @@ jobs:
               cleanup_proved=false
             fi
             (( SECONDS <= deadline )) || cleanup_proved=false
-            if (( primary_status == 0 )) && [[ "$cleanup_proved" == true ]]; then
+            if (( primary_status == 0 )) && [[ "$failure_stage" == final-assertion && "$runtime_receipt_authenticated" == true && "$cleanup_proved" == true ]]; then
               terminal_status=passed
-              failure_stage=final-assertion
             elif (( primary_status == 0 )); then
               primary_status=1
-              failure_stage=cleanup
+              if [[ "$cleanup_proved" != true ]]; then
+                failure_stage=cleanup
+              fi
             fi
             case "$failure_stage" in
               setup|input-identity|image-identity|create|runtime-receipt|terminal-join|cleanup|final-assertion) ;;
@@ -109,7 +110,12 @@ jobs:
               "$failure_stage" "$terminal_status" "$runtime_receipt_authenticated" "$cleanup_proved" >&2
             exit "$primary_status"
           }
-          trap cleanup EXIT INT TERM
+          interrupt() {
+            exit "$1"
+          }
+          trap cleanup EXIT
+          trap 'interrupt 130' INT
+          trap 'interrupt 143' TERM
           host_call() {
             local remaining=$((deadline - SECONDS - 10))
             (( remaining > 0 ))

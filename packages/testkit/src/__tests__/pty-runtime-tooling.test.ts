@@ -282,9 +282,11 @@ describe("PTY runtime artifact tooling", () => {
     expect(workflow.indexOf("deadline=$((SECONDS + 90))")).toBeLessThan(
       workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
-    expect(workflow.indexOf("trap cleanup EXIT INT TERM")).toBeLessThan(
+    expect(workflow.indexOf("trap cleanup EXIT")).toBeLessThan(
       workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
+    expect(workflow).toContain("trap 'interrupt 130' INT");
+    expect(workflow).toContain("trap 'interrupt 143' TERM");
     expect(workflow).toContain(
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );
@@ -347,6 +349,27 @@ describe("PTY runtime artifact tooling", () => {
         status: "failed",
         version: 1,
       });
+      for (const [signal, status] of [
+        ["INT", 130],
+        ["TERM", 143],
+      ] as const) {
+        const interrupted = spawnSync(
+          "/bin/bash",
+          ["-c", `${prefix}\nstage=${stage}\nkill -${signal} $$\n`],
+          { encoding: "utf8" },
+        );
+        expect(interrupted.status).toBe(status);
+        expect(interrupted.stdout).toBe("");
+        const interruptedLines = interrupted.stderr.trim().split("\n");
+        expect(interruptedLines).toHaveLength(1);
+        expect(JSON.parse(interruptedLines[0] ?? "null")).toEqual({
+          cleanupProved: true,
+          runtimeReceiptAuthenticated: false,
+          stage,
+          status: "failed",
+          version: 1,
+        });
+      }
     }
     const uncertain = spawnSync(
       "/bin/bash",
@@ -375,6 +398,22 @@ describe("PTY runtime artifact tooling", () => {
       runtimeReceiptAuthenticated: false,
       stage: "cleanup",
       status: "failed",
+      version: 1,
+    });
+    const passed = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        `${prefix}\nstage=final-assertion\nruntime_receipt_authenticated=true\nexit 0\n`,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(passed.status).toBe(0);
+    expect(JSON.parse(passed.stderr.trim())).toEqual({
+      cleanupProved: true,
+      runtimeReceiptAuthenticated: true,
+      stage: "final-assertion",
+      status: "passed",
       version: 1,
     });
   });
