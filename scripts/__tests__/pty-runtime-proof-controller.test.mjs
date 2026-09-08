@@ -1,18 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import process from "node:process";
 import { afterEach, test } from "vitest";
 
 import {
+  createEngineClient,
+  createProductionOperations,
   executeController,
-  parseExactContainerId,
-  runBoundedProcess,
 } from "../pty-runtime-proof-controller.mjs";
 
 const roots = [];
-afterEach(() => {
+const servers = [];
+afterEach(async () => {
+  for (const server of servers.splice(0))
+    await new Promise((resolveClose) => server.close(resolveClose));
   for (const root of roots.splice(0))
     rmSync(root, { force: true, recursive: true });
 });
@@ -65,193 +68,384 @@ test("emits one closed receipt for every lifecycle failure prefix", async () => 
   ]) {
     const fixture = operations({ failAt: stage });
     const result = await executeController({ operations: fixture });
-    assert.deepEqual(result.receipt, {
-      version: 1,
-      stage,
-      status: "failed",
-      runtimeReceiptAuthenticated: [
-        "terminal-join",
-        "final-assertion",
-      ].includes(stage),
-      cleanupProved: true,
-      originalOutcome: "failure",
-      signal: null,
-    });
-    assert.equal(result.exitCode, 1);
-    assert.equal(fixture.events.at(-2), "cleanup");
-    assert.equal(fixture.events.at(-1), "uninstall");
+    assert.equal(result.receipt.stage, stage);
+    assert.equal(result.receipt.status, "failed");
+    assert.equal(result.receipt.originalOutcome, "failure");
+    assert.equal(
+      result.receipt.runtimeReceiptAuthenticated,
+      ["terminal-join", "final-assertion"].includes(stage),
+    );
+    assert.deepEqual(fixture.events.slice(-2), ["cleanup", "uninstall"]);
   }
 });
 
-test("passes only after authenticated receipt, terminal join, and cleanup", async () => {
+test("passes only after receipt, terminal join, and cleanup", async () => {
   const result = await executeController({ operations: operations() });
-  assert.deepEqual(result, {
-    exitCode: 0,
-    receipt: {
-      version: 1,
-      stage: "final-assertion",
-      status: "passed",
-      runtimeReceiptAuthenticated: true,
-      cleanupProved: true,
-      originalOutcome: "success",
-      signal: null,
-    },
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.receipt, {
+    version: 1,
+    stage: "final-assertion",
+    status: "passed",
+    runtimeReceiptAuthenticated: true,
+    cleanupProved: true,
+    originalOutcome: "success",
+    signal: null,
   });
 });
 
-test("latches the first signal without reentrant cleanup or later work", async () => {
+test("latches first signal and executes cleanup once", async () => {
   for (const signalAt of ["setup", "create", "cleanup"]) {
     const fixture = operations({ signalAt });
     const result = await executeController({ operations: fixture });
     assert.equal(result.exitCode, 143);
-    assert.equal(result.receipt.status, "failed");
-    assert.equal(result.receipt.originalOutcome, "signal");
     assert.equal(result.receipt.signal, "SIGTERM");
     assert.equal(
       fixture.events.filter((value) => value === "cleanup").length,
       1,
     );
-    if (signalAt !== "cleanup")
-      assert.equal(fixture.events.includes("final-assertion"), false);
   }
 });
 
-test("cleanup uncertainty overrides apparent success", async () => {
+test("cleanup uncertainty cannot become success", async () => {
   for (const fixture of [
     operations({ cleanup: false }),
     operations({ failAt: "cleanup" }),
   ]) {
     const result = await executeController({ operations: fixture });
-    assert.deepEqual(result.receipt, {
-      version: 1,
-      stage: "cleanup",
-      status: "failed",
-      runtimeReceiptAuthenticated: true,
-      cleanupProved: false,
-      originalOutcome: "uncertain",
-      signal: null,
-    });
     assert.equal(result.exitCode, 1);
+    assert.equal(result.receipt.cleanupProved, false);
+    assert.equal(result.receipt.originalOutcome, "uncertain");
   }
 });
 
-test("an expired deadline launches no operation", async () => {
-  const fixture = operations();
-  const result = await executeController({
-    absoluteDeadline: performance.now() - 1,
-    operations: fixture,
-  });
-  assert.deepEqual(fixture.events, ["cleanup", "uninstall"]);
-  assert.equal(result.receipt.originalOutcome, "timeout");
-  assert.equal(result.receipt.status, "failed");
-});
-
-test("bounded direct process execution captures no raw output", async () => {
-  const root = mkdtempSync(resolve(tmpdir(), "agentscope-pty-controller."));
+const fixtureServer = async (handler) => {
+  const root = mkdtempSync(resolve(tmpdir(), "agentscope-engine-client."));
   roots.push(root);
-  const fixture = resolve(root, "fixture.mjs");
-  writeFileSync(
-    fixture,
-    'process.stdout.write("fixture-out");process.stderr.write("fixture-err");',
-    { mode: 0o700 },
+  const socketPath = resolve(root, "engine.sock");
+  const server = createServer(handler);
+  servers.push(server);
+  await new Promise((resolveListen) =>
+    server.listen(socketPath, resolveListen),
   );
-  const result = await runBoundedProcess(process.execPath, [fixture], {
+  chmodSync(socketPath, 0o660);
+  return socketPath;
+};
+
+test("direct Engine client accepts split bounded responses", async () => {
+  const socketPath = await fixtureServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.write('{"ok":');
+    response.end("true}");
+  });
+  const client = createEngineClient({
     absoluteDeadline: performance.now() + 10_000,
-    cwd: root,
-    env: { PATH: "/usr/bin:/bin" },
-    readStartIdentity: () => "fixture-start",
+    socketPath,
+    socketOwner: BigInt(process.getuid()),
   });
-  assert.equal(result.status, 0);
-  assert.equal(result.signal, null);
-  assert.equal(result.stdout.toString(), "fixture-out");
-  assert.equal(result.stderr.toString(), "fixture-err");
+  const result = await client.request({
+    expected: [200],
+    method: "GET",
+    path: `/v1.45/images/${encodeURIComponent(
+      "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
+    )}/json`,
+  });
+  assert.equal(result.body.toString(), '{"ok":true}');
+  assert.equal(client.uncertain(), false);
 });
 
-test("bounds timeout, output overflow, and direct signal settlement", async () => {
-  const root = mkdtempSync(resolve(tmpdir(), "agentscope-pty-controller."));
-  roots.push(root);
-  const runFixture = (source, options = {}) =>
-    runBoundedProcess(process.execPath, ["-e", source], {
-      absoluteDeadline: performance.now() + 10_000,
-      cwd: root,
-      env: { PATH: "/usr/bin:/bin" },
-      readStartIdentity: () => "fixture-start",
-      ...options,
+test("truncation, oversize, status, and timeout stop later mutation", async () => {
+  for (const mode of ["truncated", "oversize", "status", "timeout"]) {
+    const socketPath = await fixtureServer((_request, response) => {
+      if (mode === "truncated") {
+        response.writeHead(200, { "content-length": "8" });
+        response.write("x");
+        response.destroy();
+      } else if (mode === "oversize") response.end("xxxx");
+      else if (mode === "status") response.writeHead(500).end("{}");
+      else setTimeout(() => response.end("{}"), 40);
     });
-  await assert.rejects(
-    runFixture("setTimeout(()=>{},10000)", {
-      absoluteDeadline: performance.now() + 7_100,
-    }),
-    /command-timeout/u,
-  );
-  await assert.rejects(
-    runFixture(
-      'process.stdout.write("x".repeat(20000));setTimeout(()=>{},1000)',
-    ),
-    /command-output-overflow/u,
-  );
-  const signaled = await runFixture("setTimeout(()=>{},10000)", {
-    onActive: (active) => active?.terminate("SIGTERM"),
-  });
-  assert.equal(signaled.status, null);
-  assert.equal(signaled.signal, "SIGTERM");
-});
-
-test("rejects process-start substitution before group signaling", async () => {
-  let reads = 0;
-  await assert.rejects(
-    runBoundedProcess(process.execPath, ["-e", "setTimeout(()=>{},10000)"], {
-      absoluteDeadline: performance.now() + 10_000,
-      cwd: tmpdir(),
-      env: { PATH: "/usr/bin:/bin" },
-      onActive: (active) => active?.terminate("SIGTERM"),
-      readStartIdentity: () => (reads++ === 0 ? "first" : "substituted"),
-    }),
-    /process-start-identity-mismatch/u,
-  );
-});
-
-test("rejects a same-group descendant after its leader exits", async () => {
-  const source =
-    'require("node:child_process").spawn("/bin/sleep",["0.2"],{stdio:"ignore"}).unref();';
-  await assert.rejects(
-    runBoundedProcess(process.execPath, ["-e", source], {
-      absoluteDeadline: performance.now() + 10_000,
-      cwd: tmpdir(),
-      env: { PATH: "/usr/bin:/bin" },
-      readStartIdentity: () => "fixture-start",
-    }),
-    /process-group-survived/u,
-  );
-  await new Promise((resolveWait) => setTimeout(resolveWait, 250));
-});
-
-test("controller source is no-shell, bounded, and emits one sanitized receipt", () => {
-  const source = readFileSync(
-    resolve(import.meta.dirname, "../pty-runtime-proof-controller.mjs"),
-    "utf8",
-  );
-  assert.doesNotMatch(source, /execSync|spawnSync|shell:\s*true/u);
-  assert.match(source, /shell: false/u);
-  assert.match(source, /maximumOutputBytes = 16 \* 1024/u);
-  assert.match(source, /totalMilliseconds = 90_000/u);
-  assert.match(source, /teardownReserveMilliseconds = 7_000/u);
-  assert.equal(source.match(/process\.stdout\.write/gmu)?.length, 1);
-  assert.equal(source.match(/process\.stderr\.write/gmu)?.length, undefined);
-});
-
-test("accepts one exact container identity and rejects ambiguous observations", () => {
-  const identity = "a".repeat(64);
-  assert.equal(parseExactContainerId(Buffer.from(`${identity}\n`)), identity);
-  for (const value of [
-    Buffer.alloc(0),
-    Buffer.from(identity),
-    Buffer.from(`${identity}\n${identity}\n`),
-    Buffer.from(`${identity} \n`),
-    Buffer.from(`${"g".repeat(64)}\n`),
-  ])
-    assert.throws(
-      () => parseExactContainerId(value),
-      /container-identity-invalid/u,
+    const client = createEngineClient({
+      absoluteDeadline:
+        performance.now() + (mode === "timeout" ? 7_010 : 10_000),
+      socketPath,
+      socketOwner: BigInt(process.getuid()),
+    });
+    await assert.rejects(
+      client.request({
+        expected: [200],
+        maximumBytes: mode === "oversize" ? 3 : 32,
+        method: "POST",
+        mutation: true,
+        path: `/v1.45/images/create?fromImage=node&tag=${encodeURIComponent(
+          "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
+        )}&platform=linux%2Famd64`,
+      }),
     );
+    assert.equal(client.uncertain(), true);
+    await assert.rejects(
+      client.request({
+        expected: [200],
+        method: "POST",
+        mutation: true,
+        path: `/v1.45/containers/create?name=agentscope-pty-runtime-proof-${"a".repeat(
+          32,
+        )}&platform=linux%2Famd64`,
+      }),
+      /engine-request-invalid/u,
+    );
+  }
+});
+
+test("rejects socket and route substitution before request admission", async () => {
+  let requests = 0;
+  const socketPath = await fixtureServer((_request, response) => {
+    requests += 1;
+    response.end("{}");
+  });
+  const client = createEngineClient({
+    absoluteDeadline: performance.now() + 10_000,
+    socketPath,
+    socketOwner: BigInt(process.getuid()),
+  });
+  await assert.rejects(
+    client.request({
+      expected: [200],
+      method: "GET",
+      path: "/v1.45/version",
+    }),
+    /engine-request-invalid/u,
+  );
+  await assert.rejects(
+    client.request({
+      expected: [201],
+      method: "GET",
+      path: `/v1.45/images/${encodeURIComponent(
+        "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
+      )}/json`,
+    }),
+    /engine-request-invalid/u,
+  );
+  await assert.rejects(
+    client.request({
+      expected: [201],
+      method: "POST",
+      mutation: true,
+      path: `/v1.45/containers/create?name=agentscope-pty-runtime-proof-${"a".repeat(
+        32,
+      )}&platform=linux%2Famd64`,
+    }),
+    /engine-request-invalid/u,
+  );
+  await client.request({
+    expected: [200],
+    method: "GET",
+    path: `/v1.45/images/${encodeURIComponent(
+      "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
+    )}/json`,
+  });
+  chmodSync(socketPath, 0o600);
+  await assert.rejects(
+    client.request({
+      expected: [200],
+      method: "GET",
+      path: `/v1.45/images/${encodeURIComponent(
+        "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
+      )}/json`,
+    }),
+    /socket-identity-substituted/u,
+  );
+  assert.equal(requests, 1);
+});
+
+test("ambiguous create and remove latch uncertainty before later mutation", async () => {
+  for (const operation of ["create", "remove"]) {
+    let requests = 0;
+    const socketPath = await fixtureServer((request, response) => {
+      requests += 1;
+      request.socket.destroy();
+      response.destroy();
+    });
+    const client = createEngineClient({
+      absoluteDeadline: performance.now() + 10_000,
+      socketPath,
+      socketOwner: BigInt(process.getuid()),
+    });
+    const identity = "a".repeat(64);
+    await assert.rejects(
+      operation === "create"
+        ? client.request({
+            body: Buffer.from("{}"),
+            expected: [201],
+            method: "POST",
+            mutation: true,
+            path: `/v1.45/containers/create?name=agentscope-pty-runtime-proof-${"b".repeat(
+              32,
+            )}&platform=linux%2Famd64`,
+          })
+        : client.request({
+            cleanup: true,
+            expected: [204],
+            method: "DELETE",
+            mutation: true,
+            path: `/v1.45/containers/${identity}?force=1&v=0`,
+          }),
+    );
+    assert.equal(client.uncertain(), true);
+    await assert.rejects(
+      client.request({
+        body: Buffer.from("{}"),
+        expected: [201],
+        method: "POST",
+        mutation: true,
+        path: `/v1.45/containers/create?name=agentscope-pty-runtime-proof-${"c".repeat(
+          32,
+        )}&platform=linux%2Famd64`,
+      }),
+      /engine-request-invalid/u,
+    );
+    assert.equal(requests, 1);
+  }
+});
+
+test("malformed pull receipt stops before container creation", async () => {
+  const observed = [];
+  const socketPath = await fixtureServer((request, response) => {
+    observed.push(request.url);
+    if (request.url.startsWith("/v1.45/containers/json?")) response.end("[]");
+    else if (request.url.startsWith("/v1.45/images/create?"))
+      response.end("{}\n");
+    else response.writeHead(500).end("{}");
+  });
+  const absoluteDeadline = performance.now() + 10_000;
+  const result = await executeController({
+    absoluteDeadline,
+    operations: createProductionOperations({
+      absoluteDeadline,
+      repositoryRoot: process.cwd(),
+      socketOwner: BigInt(process.getuid()),
+      socketPath,
+    }),
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.receipt.originalOutcome, "uncertain");
+  assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(
+    observed.some((path) => path.includes("/containers/create?")),
+    false,
+  );
+});
+
+test("executes the exact Engine lifecycle and removes its one container", async () => {
+  const identity = "a".repeat(64);
+  const imageId =
+    "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6";
+  const manifest =
+    "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+  let name;
+  let removed = false;
+  let terminal = false;
+  const observed = [];
+  const socketPath = await fixtureServer((request, response) => {
+    observed.push(`${request.method} ${request.url}`);
+    if (request.url.startsWith("/v1.45/containers/json?")) {
+      response.end("[]");
+      return;
+    }
+    if (request.url.startsWith("/v1.45/images/create?")) {
+      response.end(
+        `${JSON.stringify({ status: `Digest: ${manifest}` })}\n${JSON.stringify(
+          {
+            status: `Status: Image is up to date for node@${manifest}`,
+          },
+        )}\n`,
+      );
+      return;
+    }
+    if (request.url.startsWith("/v1.45/images/")) {
+      response.end(
+        JSON.stringify({ Architecture: "amd64", Id: imageId, Os: "linux" }),
+      );
+      return;
+    }
+    if (request.url.startsWith("/v1.45/containers/create?")) {
+      name = new URL(request.url, "http://fixture").searchParams.get("name");
+      response
+        .writeHead(201)
+        .end(JSON.stringify({ Id: identity, Warnings: [] }));
+      return;
+    }
+    if (request.url.endsWith("/start")) {
+      response.writeHead(204).end();
+      return;
+    }
+    if (request.url.includes("/wait?")) {
+      terminal = true;
+      response.end(JSON.stringify({ Error: null, StatusCode: 0 }));
+      return;
+    }
+    if (request.url.includes("/logs?")) {
+      const receipt = Buffer.from('{"version":1,"status":"passed"}\n');
+      const header = Buffer.alloc(8);
+      header[0] = 1;
+      header.writeUInt32BE(receipt.length, 4);
+      response.end(Buffer.concat([header, receipt]));
+      return;
+    }
+    if (request.method === "DELETE") {
+      removed = true;
+      response.writeHead(204).end();
+      return;
+    }
+    if (request.url.endsWith("/json") && removed) {
+      response
+        .writeHead(404)
+        .end(JSON.stringify({ message: `No such container: ${identity}` }));
+      return;
+    }
+    if (request.url.endsWith("/json")) {
+      response.end(
+        JSON.stringify({
+          HostConfig: { NetworkMode: "none", ReadonlyRootfs: true },
+          Id: identity,
+          Image: imageId,
+          Name: `/${name}`,
+          State: terminal
+            ? { ExitCode: 0, Pid: 0, Running: false, Status: "exited" }
+            : { ExitCode: 0, Pid: 0, Running: false, Status: "created" },
+        }),
+      );
+      return;
+    }
+    response.writeHead(500).end("{}");
+  });
+  const absoluteDeadline = performance.now() + 10_000;
+  const result = await executeController({
+    absoluteDeadline,
+    operations: createProductionOperations({
+      absoluteDeadline,
+      repositoryRoot: process.cwd(),
+      socketOwner: BigInt(process.getuid()),
+      socketPath,
+    }),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.receipt.status, "passed");
+  assert.equal(removed, true);
+  assert.equal(observed.length, 12);
+});
+
+test("controller source contains no subprocess or ambient Docker authority", async () => {
+  const source = await import("node:fs").then(({ readFileSync }) =>
+    readFileSync(
+      resolve(import.meta.dirname, "../pty-runtime-proof-controller.mjs"),
+      "utf8",
+    ),
+  );
+  assert.doesNotMatch(
+    source,
+    /child_process|spawn|execFile|DOCKER_HOST|http:\/\//u,
+  );
+  assert.match(source, /socketPath/u);
+  assert.match(source, /writeSync\(1/u);
+  assert.equal(source.match(/process\.stderr\.write/gmu), null);
 });

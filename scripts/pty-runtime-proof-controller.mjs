@@ -1,42 +1,28 @@
-import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { lstatSync, writeSync } from "node:fs";
+import { request as httpRequest } from "node:http";
 import process from "node:process";
+import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
-const dockerPath = "/usr/bin/docker";
 const dockerSocket = "/var/run/docker.sock";
 const repositoryPath = "/home/runner/work/agentscope/agentscope";
-const image =
-  "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+const api = "/v1.45";
+const imageRepository = "node";
+const imageManifest =
+  "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+const image = `${imageRepository}@${imageManifest}`;
 const imageId =
   "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6";
 const innerReceipt = Buffer.from('{"version":1,"status":"passed"}\n');
 const innerReceiptDigest =
   "709d35b6bbb00dad49454715be8809fda10f96a50219caca8fbed53594b488d1";
-const maximumOutputBytes = 16 * 1024;
+const maximumBodyBytes = 256 * 1024;
+const maximumRequestBytes = 32 * 1024;
 const totalMilliseconds = 90_000;
 const teardownReserveMilliseconds = 7_000;
-const stages = Object.freeze([
-  "setup",
-  "input-identity",
-  "image-identity",
-  "create",
-  "runtime-receipt",
-  "terminal-join",
-  "cleanup",
-  "final-assertion",
-]);
+const decoder = new TextDecoder("utf-8", { fatal: true });
+const encoded = (value) => encodeURIComponent(value);
 
 class ControllerFailure extends Error {
   constructor(code, outcome = "failure") {
@@ -48,282 +34,322 @@ class ControllerFailure extends Error {
 
 const remainingMilliseconds = (deadline) =>
   Math.max(0, Math.floor(deadline - performance.now()));
-
-const groupExists = (pid) => {
+const exactObject = (value) =>
+  value !== null &&
+  typeof value === "object" &&
+  !Array.isArray(value) &&
+  Object.getPrototypeOf(value) === Object.prototype;
+const parseJson = (body, code) => {
+  if (!Buffer.isBuffer(body) || body.length === 0)
+    throw new ControllerFailure(code);
   try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    throw new ControllerFailure("process-group-uncertain", "uncertain");
+    return JSON.parse(decoder.decode(body));
+  } catch {
+    throw new ControllerFailure(code);
   }
 };
-
-const readProcessStartIdentity = (pid) => {
-  const value = readFileSync(`/proc/${pid}/stat`, "utf8");
-  const close = value.lastIndexOf(")");
-  const fields = value
-    .slice(close + 2)
-    .trim()
-    .split(/\s+/u);
-  const start = fields[19];
-  if (close < 2 || start === undefined || !/^[0-9]+$/u.test(start))
-    throw new ControllerFailure("process-start-identity-invalid", "uncertain");
-  return start;
+const socketRecord = (path, owner) => {
+  const value = lstatSync(path, { bigint: true });
+  if (
+    !value.isSocket() ||
+    value.isSymbolicLink() ||
+    value.uid !== owner ||
+    ![0o600n, 0o660n].includes(value.mode & 0o777n)
+  )
+    throw new ControllerFailure("socket-identity-invalid", "uncertain");
+  return Object.freeze({
+    dev: value.dev,
+    ino: value.ino,
+    mode: value.mode,
+    uid: value.uid,
+  });
 };
+const sameSocket = (left, right) =>
+  ["dev", "ino", "mode", "uid"].every((key) => left[key] === right[key]);
+const exactHeaders = (headers) => {
+  const result = {};
+  for (const [name, raw] of Object.entries(headers)) {
+    const value = Array.isArray(raw) ? raw.join(",") : raw;
+    if (typeof value !== "string" || value.length > 1024)
+      throw new ControllerFailure("engine-response-invalid", "uncertain");
+    result[name.toLowerCase()] = value;
+  }
+  return Object.freeze(result);
+};
+const containerIdPattern = "[0-9a-f]{64}";
+const containerNamePattern = "agentscope-pty-runtime-proof-[0-9a-f]{32}";
+const exactListPath = `${api}/containers/json?all=1&filters=${encoded(
+  JSON.stringify({ name: ["^/agentscope-pty-runtime-proof-"] }),
+)}`;
+const validEngineRoute = (method, path) =>
+  (method === "POST" &&
+    path ===
+      `${api}/images/create?fromImage=node&tag=${encoded(imageManifest)}&platform=linux%2Famd64`) ||
+  (method === "GET" && path === `${api}/images/${encoded(imageId)}/json`) ||
+  (method === "GET" && path === exactListPath) ||
+  (method === "POST" &&
+    new RegExp(
+      `^${api}/containers/create\\?name=${containerNamePattern}&platform=linux%2Famd64$`,
+      "u",
+    ).test(path)) ||
+  (method === "POST" &&
+    new RegExp(`^${api}/containers/${containerIdPattern}/start$`, "u").test(
+      path,
+    )) ||
+  (method === "POST" &&
+    new RegExp(
+      `^${api}/containers/${containerIdPattern}/wait\\?condition=not-running$`,
+      "u",
+    ).test(path)) ||
+  (method === "GET" &&
+    new RegExp(
+      `^${api}/containers/${containerIdPattern}/logs\\?stdout=1&stderr=1$`,
+      "u",
+    ).test(path)) ||
+  (method === "GET" &&
+    new RegExp(`^${api}/containers/${containerIdPattern}/json$`, "u").test(
+      path,
+    )) ||
+  (method === "DELETE" &&
+    new RegExp(
+      `^${api}/containers/${containerIdPattern}\\?force=1&v=0$`,
+      "u",
+    ).test(path));
+const validExpectedStatus = (method, path, expected) => {
+  if (!Array.isArray(expected) || expected.length !== 1) return false;
+  if (
+    method === "GET" &&
+    new RegExp(`^${api}/containers/${containerIdPattern}/json$`, "u").test(path)
+  )
+    return [200, 404].includes(expected[0]);
+  const required =
+    method === "POST" && path.includes("/containers/create?")
+      ? 201
+      : (method === "POST" && path.endsWith("/start")) || method === "DELETE"
+        ? 204
+        : 200;
+  return expected[0] === required;
+};
+const isMutationRoute = (method, path) =>
+  method === "DELETE" ||
+  (method === "POST" &&
+    (path.includes("/images/create?") ||
+      path.includes("/containers/create?") ||
+      path.endsWith("/start")));
 
-/* eslint-disable max-lines-per-function -- Process identity, output, deadline, signal, and join authority must settle in one closure. */
-export const runBoundedProcess = (
-  file,
-  args,
-  {
-    absoluteDeadline,
-    cwd,
-    env,
-    onActive = () => {},
-    readStartIdentity = readProcessStartIdentity,
-  },
-) =>
-  new Promise((resolveRun, rejectRun) => {
-    if (
-      typeof file !== "string" ||
-      !file.startsWith("/") ||
-      !Array.isArray(args) ||
-      args.some((value) => typeof value !== "string" || value.includes("\0")) ||
-      remainingMilliseconds(absoluteDeadline) <= teardownReserveMilliseconds
-    ) {
-      rejectRun(new ControllerFailure("command-invalid"));
-      return;
-    }
-    const commandDeadline =
-      absoluteDeadline - teardownReserveMilliseconds - performance.now();
-    const child = spawn(file, args, {
-      cwd,
-      detached: true,
-      env,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout = [];
-    const stderr = [];
-    let outputBytes = 0;
-    let settled = false;
-    let forcedOutcome;
-    let startIdentity;
-    let timer;
-    let killTimer;
-    let hardTimer;
-    const terminate = (signal = "SIGTERM") => {
-      if (child.pid === undefined || child.exitCode !== null) return;
+/* eslint-disable max-lines-per-function -- The client keeps one request, uncertainty latch, socket identity, and deadline in a single closure. */
+export const createEngineClient = ({
+  absoluteDeadline,
+  socketPath = dockerSocket,
+  requestFactory = httpRequest,
+  socketOwner = 0n,
+}) => {
+  let socketIdentity;
+  let uncertain = false;
+  let activeRequest;
+  const interrupt = () => {
+    uncertain = true;
+    activeRequest?.destroy();
+  };
+  const request = ({
+    body,
+    cleanup = false,
+    expected,
+    method,
+    path,
+    maximumBytes = maximumBodyBytes,
+    mutation = false,
+  }) =>
+    new Promise((resolveRequest, rejectRequest) => {
+      if (
+        uncertain ||
+        !["GET", "POST", "DELETE"].includes(method) ||
+        typeof path !== "string" ||
+        !validEngineRoute(method, path) ||
+        !validExpectedStatus(method, path, expected) ||
+        mutation !== isMutationRoute(method, path) ||
+        path.includes("\0") ||
+        path.includes("/containers/create?") !== Buffer.isBuffer(body) ||
+        (body !== undefined &&
+          (!Buffer.isBuffer(body) || body.length > maximumRequestBytes))
+      ) {
+        rejectRequest(
+          new ControllerFailure("engine-request-invalid", "uncertain"),
+        );
+        return;
+      }
+      const remaining = remainingMilliseconds(absoluteDeadline);
+      const budget = cleanup
+        ? remaining
+        : remaining - teardownReserveMilliseconds;
+      if (budget < 1) {
+        uncertain = true;
+        rejectRequest(new ControllerFailure("engine-timeout", "uncertain"));
+        return;
+      }
       try {
-        if (readStartIdentity(child.pid) !== startIdentity)
+        const currentSocket = socketRecord(socketPath, socketOwner);
+        if (
+          socketIdentity !== undefined &&
+          !sameSocket(socketIdentity, currentSocket)
+        )
           throw new ControllerFailure(
-            "process-start-identity-mismatch",
+            "socket-identity-substituted",
             "uncertain",
           );
-        process.kill(-child.pid, signal);
+        socketIdentity ??= currentSocket;
       } catch (error) {
-        if (error?.code !== "ESRCH")
-          settle(
-            error instanceof ControllerFailure
-              ? error
-              : new ControllerFailure("process-signal-uncertain", "uncertain"),
-          );
-      }
-    };
-    const settle = (error, result) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      clearTimeout(killTimer);
-      clearTimeout(hardTimer);
-      child.stdout.destroy();
-      child.stderr.destroy();
-      onActive(undefined);
-      if (error !== undefined) rejectRun(error);
-      else resolveRun(result);
-    };
-    const collect = (target) => (chunk) => {
-      outputBytes += chunk.length;
-      if (outputBytes > maximumOutputBytes) {
-        forcedOutcome = "overflow";
-        terminate();
-        killTimer = setTimeout(
-          () => terminate("SIGKILL"),
-          Math.min(1_000, remainingMilliseconds(absoluteDeadline)),
-        );
-        return;
-      }
-      target.push(chunk);
-    };
-    child.once("spawn", () => {
-      if (child.pid === undefined) {
-        settle(new ControllerFailure("spawn-identity-missing"));
-        return;
-      }
-      try {
-        startIdentity = readStartIdentity(child.pid);
-      } catch (error) {
-        settle(
+        uncertain = true;
+        rejectRequest(
           error instanceof ControllerFailure
             ? error
-            : new ControllerFailure(
-                "process-start-identity-unavailable",
-                "uncertain",
-              ),
+            : new ControllerFailure("socket-identity-invalid", "uncertain"),
         );
         return;
       }
-      onActive(Object.freeze({ pid: child.pid, terminate }));
-      timer = setTimeout(
-        () => {
-          forcedOutcome = "timeout";
-          terminate();
-          killTimer = setTimeout(
-            () => terminate("SIGKILL"),
-            Math.min(1_000, remainingMilliseconds(absoluteDeadline)),
-          );
-        },
-        Math.max(1, commandDeadline),
-      );
-      hardTimer = setTimeout(
-        () => {
-          forcedOutcome = "uncertain";
-          terminate("SIGKILL");
-          settle(
-            new ControllerFailure("process-terminal-unproved", "uncertain"),
-          );
-        },
-        Math.max(1, remainingMilliseconds(absoluteDeadline)),
-      );
-    });
-    child.stdout.on("data", collect(stdout));
-    child.stderr.on("data", collect(stderr));
-    child.once("error", () => settle(new ControllerFailure("spawn-failed")));
-    child.once("close", (status, signal) => {
-      if (child.pid === undefined) {
-        settle(new ControllerFailure("spawn-identity-missing"));
-        return;
-      }
-      let survivor;
+      let settled = false;
+      let ended = false;
+      let bytes = 0;
+      const chunks = [];
+      let responseValue;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        activeRequest = undefined;
+        if (error !== undefined) {
+          if (mutation) uncertain = true;
+          rejectRequest(error);
+        } else resolveRequest(value);
+      };
+      const fail = (code) => {
+        uncertain = true;
+        activeRequest?.destroy();
+        finish(new ControllerFailure(code, "uncertain"));
+      };
+      const timer = setTimeout(() => fail("engine-timeout"), budget);
       try {
-        survivor = groupExists(child.pid);
-      } catch (error) {
-        settle(error);
+        activeRequest = requestFactory(
+          {
+            agent: false,
+            headers: {
+              Accept: "application/json",
+              "Content-Length": body?.length ?? 0,
+              ...(body === undefined
+                ? {}
+                : { "Content-Type": "application/json" }),
+            },
+            maxHeaderSize: 8 * 1024,
+            method,
+            path,
+            socketPath,
+          },
+          (response) => {
+            response.on("data", (chunk) => {
+              bytes += chunk.length;
+              if (bytes > maximumBytes) {
+                chunks.length = 0;
+                fail("engine-response-oversize");
+              } else chunks.push(chunk);
+            });
+            response.once("error", () => fail("engine-response-error"));
+            response.once("aborted", () => fail("engine-response-truncated"));
+            response.once("end", () => {
+              ended = true;
+              try {
+                if (
+                  !sameSocket(
+                    socketIdentity,
+                    socketRecord(socketPath, socketOwner),
+                  )
+                )
+                  throw new ControllerFailure(
+                    "socket-identity-substituted",
+                    "uncertain",
+                  );
+                responseValue = Object.freeze({
+                  body: Buffer.concat(chunks),
+                  headers: exactHeaders(response.headers),
+                  status: response.statusCode ?? 0,
+                });
+              } catch (error) {
+                fail(
+                  error instanceof ControllerFailure
+                    ? error.code
+                    : "socket-identity-invalid",
+                );
+              }
+            });
+          },
+        );
+      } catch {
+        fail("engine-connect-failed");
         return;
       }
-      if (survivor) {
-        settle(new ControllerFailure("process-group-survived", "uncertain"));
-        return;
-      }
-      if (forcedOutcome === "timeout") {
-        settle(new ControllerFailure("command-timeout", "timeout"));
-        return;
-      }
-      if (forcedOutcome === "overflow") {
-        settle(new ControllerFailure("command-output-overflow"));
-        return;
-      }
-      if (forcedOutcome === "uncertain") {
-        settle(new ControllerFailure("process-terminal-unproved", "uncertain"));
-        return;
-      }
-      if (outputBytes > maximumOutputBytes) {
-        settle(new ControllerFailure("command-output-overflow"));
-        return;
-      }
-      if (remainingMilliseconds(absoluteDeadline) === 0) {
-        settle(new ControllerFailure("command-timeout", "timeout"));
-        return;
-      }
-      settle(undefined, {
-        signal,
-        status,
-        stderr: Buffer.concat(stderr),
-        stdout: Buffer.concat(stdout),
+      activeRequest.once("error", () => fail("engine-transport-error"));
+      activeRequest.once("close", () => {
+        if (!ended || responseValue === undefined) {
+          fail("engine-response-truncated");
+          return;
+        }
+        if (!expected.includes(responseValue.status)) {
+          finish(
+            new ControllerFailure(
+              "engine-status-invalid",
+              mutation ? "uncertain" : "failure",
+            ),
+          );
+          return;
+        }
+        finish(undefined, responseValue);
       });
+      if (body !== undefined) activeRequest.write(body);
+      activeRequest.end();
     });
-  });
+  return Object.freeze({ interrupt, request, uncertain: () => uncertain });
+};
 /* eslint-enable max-lines-per-function */
 
-const exactRegularFile = (path, executable = false) => {
-  const value = lstatSync(path);
-  return (
-    value.isFile() &&
-    !value.isSymbolicLink() &&
-    (!executable || (value.mode & 0o111) !== 0)
-  );
-};
-
-const exactSocket = (path) => {
-  const value = lstatSync(path);
-  return value.isSocket() && !value.isSymbolicLink();
-};
-
-const exactOutput = (result) => {
-  if (result.status !== 0 || result.signal !== null)
-    throw new ControllerFailure("command-failed");
-  return result.stdout;
-};
-
-export const parseExactContainerId = (value) => {
-  if (!Buffer.isBuffer(value))
+const exactContainerId = (value) => {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value))
     throw new ControllerFailure("container-identity-invalid");
-  const match = /^([0-9a-f]{64})\n$/u.exec(value.toString("utf8"));
-  if (match === null) throw new ControllerFailure("container-identity-invalid");
-  return match[1];
+  return value;
 };
-
-// eslint-disable-next-line max-lines-per-function -- This closed adapter keeps the Docker lifecycle in one authority object.
-export const createProductionOperations = ({ absoluteDeadline }) => {
-  let root;
-  let rootIdentity;
+const exactArray = (body, code) => {
+  const value = parseJson(body, code);
+  if (!Array.isArray(value)) throw new ControllerFailure(code);
+  return value;
+};
+/* eslint-disable max-lines-per-function -- One object owns the exact Engine lifecycle and uncertainty latch. */
+export const createProductionOperations = ({
+  absoluteDeadline,
+  repositoryRoot = repositoryPath,
+  socketOwner = 0n,
+  socketPath = dockerSocket,
+}) => {
+  const engine = createEngineClient({
+    absoluteDeadline,
+    socketOwner,
+    socketPath,
+  });
   let containerId;
   let containerName;
-  let created = false;
-  let activeCommand;
-  let processUncertain = false;
+  let createAttempted = false;
   let signalLatch = () => false;
-  const closedEnvironment = () => ({
-    DOCKER_CONFIG: resolve(root, "config"),
-    HOME: root,
-    LANG: "C",
-    LC_ALL: "C",
-    PATH: "/usr/bin:/bin",
-  });
-  const command = async (args) => {
-    if (processUncertain)
-      throw new ControllerFailure("process-authority-uncertain", "uncertain");
+  const call = (request) => engine.request(request);
+  const jsonCall = async (request, code) => {
+    const response = await call(request);
     try {
-      return await runBoundedProcess(
-        dockerPath,
-        [
-          "--config",
-          resolve(root, "config"),
-          "--host",
-          `unix://${dockerSocket}`,
-          ...args,
-        ],
-        {
-          absoluteDeadline,
-          cwd: repositoryPath,
-          env: closedEnvironment(),
-          onActive: (value) => {
-            activeCommand = value;
-          },
-        },
-      );
+      return parseJson(response.body, code);
     } catch (error) {
-      if (error instanceof ControllerFailure && error.outcome === "uncertain")
-        processUncertain = true;
+      if (request.mutation) engine.interrupt();
       throw error;
     }
   };
-  const requireOutput = async (args) => exactOutput(await command(args));
   const installSignalHandlers = (latch) => {
     signalLatch = latch;
     const handler = (signal) => {
-      if (signalLatch(signal)) activeCommand?.terminate(signal);
+      if (signalLatch(signal)) engine.interrupt();
     };
     const interrupt = () => handler("SIGINT");
     const terminate = () => handler("SIGTERM");
@@ -334,194 +360,260 @@ export const createProductionOperations = ({ absoluteDeadline }) => {
       process.off("SIGTERM", terminate);
     };
   };
+  const inspectContainer = async (id) => {
+    const value = await jsonCall(
+      { expected: [200], method: "GET", path: `${api}/containers/${id}/json` },
+      "container-inspect-invalid",
+    );
+    if (!exactObject(value))
+      throw new ControllerFailure("container-inspect-invalid");
+    return value;
+  };
+  const exactOwnedContainer = (value, id) =>
+    value.Id === id &&
+    value.Name === `/${containerName}` &&
+    value.Image === imageId &&
+    exactObject(value.HostConfig) &&
+    value.HostConfig.NetworkMode === "none" &&
+    value.HostConfig.ReadonlyRootfs === true;
   return {
     installSignalHandlers,
-    async setup() {
-      root = mkdtempSync(resolve(tmpdir(), "agentscope-pty-runtime."));
-      chmodSync(root, 0o700);
-      rootIdentity = lstatSync(root);
-      mkdirSync(resolve(root, "config"), { mode: 0o700 });
-    },
+    async setup() {},
     async inputIdentity() {
-      if (
-        !exactRegularFile(dockerPath, true) ||
-        !exactSocket(dockerSocket) ||
-        realpathSync(".") !== repositoryPath ||
-        !exactRegularFile(
-          resolve(
-            repositoryPath,
-            "packages/testkit/pty-runtime/node127-linux-x64-musl/pty.node",
-          ),
-        ) ||
-        !exactRegularFile(
-          resolve(
-            repositoryPath,
-            "packages/testkit/fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-          ),
-        )
-      )
-        throw new ControllerFailure("input-identity-invalid");
-      const existing = await requireOutput([
-        "container",
-        "ls",
-        "--all",
-        "--no-trunc",
-        "--quiet",
-        "--filter",
-        "name=^/agentscope-pty-runtime-proof-",
-      ]);
+      if (process.cwd() !== repositoryRoot)
+        throw new ControllerFailure("repository-identity-invalid");
+      const existing = exactArray(
+        (
+          await call({
+            expected: [200],
+            method: "GET",
+            path: exactListPath,
+          })
+        ).body,
+        "container-list-invalid",
+      );
       if (existing.length !== 0)
         throw new ControllerFailure("preexisting-container");
     },
     async imageIdentity() {
-      exactOutput(
-        await command(["pull", "--quiet", "--platform", "linux/amd64", image]),
+      const pull = await call({
+        expected: [200],
+        method: "POST",
+        mutation: true,
+        path: `${api}/images/create?fromImage=${encoded(imageRepository)}&tag=${encoded(imageManifest)}&platform=linux%2Famd64`,
+      });
+      const lines = decoder.decode(pull.body).trimEnd().split("\n");
+      if (lines.length === 0 || lines.length > 4096) {
+        engine.interrupt();
+        throw new ControllerFailure("image-pull-invalid", "uncertain");
+      }
+      let digestAuthenticated = false;
+      let terminalAuthenticated = false;
+      for (const line of lines) {
+        let value;
+        try {
+          value = parseJson(Buffer.from(line), "image-pull-invalid");
+        } catch (error) {
+          engine.interrupt();
+          throw error;
+        }
+        if (
+          !exactObject(value) ||
+          Object.keys(value).some(
+            (key) =>
+              !["id", "progress", "progressDetail", "status"].includes(key),
+          ) ||
+          typeof value.status !== "string" ||
+          value.status.length > 512 ||
+          (value.id !== undefined && typeof value.id !== "string") ||
+          (value.progress !== undefined &&
+            typeof value.progress !== "string") ||
+          (value.progressDetail !== undefined &&
+            !exactObject(value.progressDetail))
+        ) {
+          engine.interrupt();
+          throw new ControllerFailure("image-pull-invalid", "uncertain");
+        }
+        if (value.status === `Digest: ${imageManifest}`)
+          digestAuthenticated = true;
+        if (
+          [
+            `Status: Downloaded newer image for ${image}`,
+            `Status: Image is up to date for ${image}`,
+          ].includes(value.status)
+        )
+          terminalAuthenticated = true;
+      }
+      if (
+        lines.length === 0 ||
+        lines.length > 4096 ||
+        !digestAuthenticated ||
+        !terminalAuthenticated ||
+        !pull.body.subarray(-1).equals(Buffer.from("\n"))
+      ) {
+        engine.interrupt();
+        throw new ControllerFailure("image-pull-invalid", "uncertain");
+      }
+      const value = await jsonCall(
+        {
+          expected: [200],
+          method: "GET",
+          path: `${api}/images/${encoded(imageId)}/json`,
+        },
+        "image-inspect-invalid",
       );
-      const identity = await requireOutput([
-        "image",
-        "inspect",
-        "--format",
-        "{{.Id}}|{{.Os}}|{{.Architecture}}",
-        imageId,
-      ]);
-      if (identity.toString("utf8").trimEnd() !== `${imageId}|linux|amd64`)
+      if (
+        !exactObject(value) ||
+        value.Id !== imageId ||
+        value.Os !== "linux" ||
+        value.Architecture !== "amd64"
+      )
         throw new ControllerFailure("image-identity-invalid");
     },
     async create() {
       containerName = `agentscope-pty-runtime-proof-${randomBytes(16).toString("hex")}`;
-      const reported = await requireOutput([
-        "create",
-        "--name",
-        containerName,
-        "--network",
-        "none",
-        "--platform",
-        "linux/amd64",
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,nosuid,nodev,noexec,mode=0700,size=16m",
-        "--mount",
-        `type=bind,src=${repositoryPath}/packages/testkit/pty-runtime/node127-linux-x64-musl/pty.node,dst=/runtime/production.node,readonly`,
-        "--mount",
-        `type=bind,src=${repositoryPath}/packages/testkit/fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node,dst=/runtime/faults.node,readonly`,
-        "--mount",
-        `type=bind,src=${repositoryPath},dst=/workspace,readonly`,
-        image,
-        "/usr/local/bin/node",
-        "/workspace/packages/testkit/scripts/verify-pty-runtime.mjs",
-        "--runtime-proof",
-      ]);
-      containerId = parseExactContainerId(reported);
-      created = true;
-      const authority = await requireOutput([
-        "inspect",
-        "--format",
-        "{{.Id}}|{{.Name}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}",
-        containerId,
-      ]);
+      const body = Buffer.from(
+        JSON.stringify({
+          AttachStderr: true,
+          AttachStdout: true,
+          Cmd: [
+            "/usr/local/bin/node",
+            "/workspace/packages/testkit/scripts/verify-pty-runtime.mjs",
+            "--runtime-proof",
+          ],
+          HostConfig: {
+            Binds: [
+              `${repositoryRoot}/packages/testkit/pty-runtime/node127-linux-x64-musl/pty.node:/runtime/production.node:ro`,
+              `${repositoryRoot}/packages/testkit/fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node:/runtime/faults.node:ro`,
+              `${repositoryRoot}:/workspace:ro`,
+            ],
+            NetworkMode: "none",
+            ReadonlyRootfs: true,
+            Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,mode=0700,size=16m" },
+          },
+          Image: imageId,
+          OpenStdin: false,
+          StdinOnce: false,
+          Tty: false,
+        }),
+      );
+      createAttempted = true;
+      const value = await jsonCall(
+        {
+          body,
+          expected: [201],
+          method: "POST",
+          mutation: true,
+          path: `${api}/containers/create?name=${encoded(containerName)}&platform=linux%2Famd64`,
+        },
+        "container-create-invalid",
+      );
       if (
-        authority.toString("utf8").trimEnd() !==
-        `${containerId}|/${containerName}|${imageId}|none|true|created`
-      )
-        throw new ControllerFailure("container-authority-invalid");
+        !exactObject(value) ||
+        Object.keys(value).sort().join(",") !== "Id,Warnings" ||
+        !Array.isArray(value.Warnings) ||
+        value.Warnings.length !== 0
+      ) {
+        engine.interrupt();
+        throw new ControllerFailure("container-create-invalid", "uncertain");
+      }
+      try {
+        containerId = exactContainerId(value.Id);
+      } catch (error) {
+        engine.interrupt();
+        throw error;
+      }
+      const authority = await inspectContainer(containerId);
+      if (!exactOwnedContainer(authority, containerId))
+        throw new ControllerFailure("container-authority-invalid", "uncertain");
     },
     async runtimeReceipt() {
-      const receipt = await requireOutput(["start", "--attach", containerId]);
+      await call({
+        expected: [204],
+        method: "POST",
+        mutation: true,
+        path: `${api}/containers/${containerId}/start`,
+      });
+      const terminal = await jsonCall(
+        {
+          expected: [200],
+          method: "POST",
+          path: `${api}/containers/${containerId}/wait?condition=not-running`,
+        },
+        "container-wait-invalid",
+      );
       if (
-        receipt.length !== innerReceipt.length ||
-        createHash("sha256").update(receipt).digest("hex") !==
+        !exactObject(terminal) ||
+        terminal.StatusCode !== 0 ||
+        ![null, undefined].includes(terminal.Error)
+      )
+        throw new ControllerFailure("container-wait-invalid");
+      const logs = (
+        await call({
+          expected: [200],
+          maximumBytes: innerReceipt.length + 8,
+          method: "GET",
+          path: `${api}/containers/${containerId}/logs?stdout=1&stderr=1`,
+        })
+      ).body;
+      if (
+        logs.length !== innerReceipt.length + 8 ||
+        logs[0] !== 1 ||
+        !logs.subarray(1, 4).equals(Buffer.alloc(3)) ||
+        logs.readUInt32BE(4) !== innerReceipt.length ||
+        createHash("sha256").update(logs.subarray(8)).digest("hex") !==
           innerReceiptDigest ||
-        !receipt.equals(innerReceipt)
+        !logs.subarray(8).equals(innerReceipt)
       )
         throw new ControllerFailure("runtime-receipt-invalid");
     },
     async terminalJoin() {
-      const terminal = await requireOutput([
-        "inspect",
-        "--format",
-        "{{.State.Status}}|{{.State.ExitCode}}|{{.State.Running}}|{{.State.Pid}}",
-        containerId,
-      ]);
-      if (terminal.toString("utf8").trimEnd() !== "exited|0|false|0")
+      const value = await inspectContainer(containerId);
+      if (
+        !exactOwnedContainer(value, containerId) ||
+        !exactObject(value.State) ||
+        value.State.Status !== "exited" ||
+        value.State.ExitCode !== 0 ||
+        value.State.Running !== false ||
+        value.State.Pid !== 0
+      )
         throw new ControllerFailure("terminal-join-invalid");
     },
     async finalAssertion() {},
     async cleanup() {
-      let proved = true;
-      if (processUncertain) proved = false;
-      if (!processUncertain && !created && containerName !== undefined) {
-        try {
-          const observed = await requireOutput([
-            "container",
-            "ls",
-            "--all",
-            "--no-trunc",
-            "--quiet",
-            "--filter",
-            `name=^/${containerName}$`,
-          ]);
-          if (observed.length !== 0) {
-            containerId = parseExactContainerId(observed);
-            const authority = await requireOutput([
-              "inspect",
-              "--format",
-              "{{.Id}}|{{.Name}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}",
-              containerId,
-            ]);
-            if (
-              authority.toString("utf8").trimEnd() !==
-              `${containerId}|/${containerName}|${imageId}|none|true`
-            ) {
-              proved = false;
-            } else {
-              created = true;
-            }
-          }
-        } catch {
-          proved = false;
-        }
-      }
-      if (!processUncertain && created && /^[0-9a-f]{64}$/u.test(containerId)) {
-        try {
-          exactOutput(await command(["rm", "--force", containerId]));
-          const survivor = await requireOutput([
-            "container",
-            "ls",
-            "--all",
-            "--no-trunc",
-            "--quiet",
-            "--filter",
-            `id=${containerId}`,
-          ]);
-          if (survivor.length !== 0) proved = false;
-        } catch {
-          proved = false;
-        }
-      }
+      if (engine.uncertain()) return false;
+      if (!createAttempted) return true;
+      if (containerId === undefined) return false;
       try {
-        const current = lstatSync(root);
-        if (
-          current.dev !== rootIdentity.dev ||
-          current.ino !== rootIdentity.ino ||
-          !current.isDirectory() ||
-          current.isSymbolicLink()
-        ) {
-          proved = false;
-        } else {
-          rmSync(root, { recursive: true, force: false });
-        }
+        const authority = await inspectContainer(containerId);
+        if (!exactOwnedContainer(authority, containerId)) return false;
+        await call({
+          cleanup: true,
+          expected: [204],
+          method: "DELETE",
+          mutation: true,
+          path: `${api}/containers/${containerId}?force=1&v=0`,
+        });
+        const absent = await call({
+          cleanup: true,
+          expected: [404],
+          method: "GET",
+          path: `${api}/containers/${containerId}/json`,
+        });
+        const error = parseJson(absent.body, "container-absence-invalid");
+        return (
+          exactObject(error) &&
+          Object.keys(error).join(",") === "message" &&
+          error.message === `No such container: ${containerId}` &&
+          remainingMilliseconds(absoluteDeadline) > 0
+        );
       } catch {
-        proved = false;
+        return false;
       }
-      if (
-        activeCommand !== undefined ||
-        remainingMilliseconds(absoluteDeadline) === 0
-      )
-        proved = false;
-      return proved;
     },
   };
 };
+/* eslint-enable max-lines-per-function */
 
 export const executeController = async ({
   absoluteDeadline = performance.now() + totalMilliseconds,
@@ -530,6 +622,7 @@ export const executeController = async ({
   let stage = "setup";
   let originalOutcome = "success";
   let runtimeReceiptAuthenticated = false;
+  let failureStage;
   let signal = null;
   let cleanupProved;
   let settled = false;
@@ -559,7 +652,8 @@ export const executeController = async ({
       if (nextStage === "runtime-receipt") runtimeReceiptAuthenticated = true;
     }
   } catch (error) {
-    if (originalOutcome === "success")
+    failureStage = stage;
+    if (originalOutcome !== "signal")
       originalOutcome =
         error instanceof ControllerFailure ? error.outcome : "failure";
   } finally {
@@ -568,46 +662,70 @@ export const executeController = async ({
     } catch {
       cleanupProved = false;
     }
-    uninstall();
+    if (!cleanupProved && originalOutcome === "success")
+      originalOutcome = "uncertain";
+    stage = cleanupProved
+      ? originalOutcome === "success"
+        ? "final-assertion"
+        : (failureStage ?? "cleanup")
+      : "cleanup";
     settled = true;
+    uninstall();
   }
-  const passed =
+  const status =
     originalOutcome === "success" &&
-    signal === null &&
-    stage === "final-assertion" &&
     runtimeReceiptAuthenticated &&
-    cleanupProved;
-  if (!passed && originalOutcome === "success") originalOutcome = "uncertain";
-  if (!cleanupProved) stage = "cleanup";
-  if (!stages.includes(stage)) stage = "cleanup";
+    cleanupProved === true
+      ? "passed"
+      : "failed";
   return Object.freeze({
+    exitCode:
+      originalOutcome === "signal"
+        ? signal === "SIGINT"
+          ? 130
+          : 143
+        : status === "passed"
+          ? 0
+          : 1,
     receipt: Object.freeze({
       version: 1,
       stage,
-      status: passed ? "passed" : "failed",
+      status,
       runtimeReceiptAuthenticated,
-      cleanupProved,
+      cleanupProved: cleanupProved === true,
       originalOutcome,
       signal,
     }),
-    exitCode: passed
-      ? 0
-      : signal === "SIGINT"
-        ? 130
-        : signal === "SIGTERM"
-          ? 143
-          : 1,
   });
 };
 
-export const main = async () => {
-  const { exitCode, receipt } = await executeController();
-  process.stdout.write(`${JSON.stringify(receipt)}\n`);
-  process.exitCode = exitCode;
+const main = async () => {
+  let terminalSignal = null;
+  const latch = (signal) => {
+    terminalSignal ??= signal;
+  };
+  const interrupt = () => latch("SIGINT");
+  const terminate = () => latch("SIGTERM");
+  process.on("SIGINT", interrupt);
+  process.on("SIGTERM", terminate);
+  let result = await executeController();
+  if (terminalSignal !== null && result.exitCode === 0) {
+    result = {
+      exitCode: terminalSignal === "SIGINT" ? 130 : 143,
+      receipt: {
+        ...result.receipt,
+        originalOutcome: "signal",
+        signal: terminalSignal,
+        status: "failed",
+      },
+    };
+  }
+  writeSync(1, Buffer.from(`${JSON.stringify(result.receipt)}\n`));
+  process.off("SIGINT", interrupt);
+  process.off("SIGTERM", terminate);
+  process.exitCode = result.exitCode;
 };
 
-if (
-  process.argv[1] !== undefined &&
-  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
-)
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   await main();
+}
