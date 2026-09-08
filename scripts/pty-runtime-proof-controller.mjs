@@ -54,7 +54,21 @@ const controllerErrorCodes = new Set([
   "engine-transport-error",
   "image-identity-invalid",
   "image-inspect-invalid",
-  "image-pull-invalid",
+  "image-pull-count-invalid",
+  "image-pull-daemon-error",
+  "image-pull-digest-duplicate",
+  "image-pull-digest-mismatch",
+  "image-pull-digest-missing",
+  "image-pull-encoding-invalid",
+  "image-pull-framing-invalid",
+  "image-pull-json-duplicate-key",
+  "image-pull-json-invalid",
+  "image-pull-record-shape-invalid",
+  "image-pull-order-invalid",
+  "image-pull-terminal-duplicate",
+  "image-pull-terminal-mismatch",
+  "image-pull-terminal-missing",
+  "image-pull-trailing-record",
   "preexisting-container",
   "repository-identity-invalid",
   "runtime-receipt-invalid",
@@ -82,13 +96,96 @@ const exactObject = (value) =>
   typeof value === "object" &&
   !Array.isArray(value) &&
   Object.getPrototypeOf(value) === Object.prototype;
-const parseJson = (body, code) => {
+const assertClosedJsonGrammar = (text, code, duplicateCode = code) => {
+  let cursor = 0;
+  const skipWhitespace = () => {
+    while (/[\t\n\r ]/u.test(text[cursor] ?? "")) cursor += 1;
+  };
+  const readString = () => {
+    const start = cursor;
+    if (text[cursor++] !== '"') throw new ControllerFailure(code);
+    while (cursor < text.length) {
+      const character = text[cursor++];
+      if (character === '"') {
+        try {
+          return JSON.parse(text.slice(start, cursor));
+        } catch {
+          throw new ControllerFailure(code);
+        }
+      }
+      if (character === "\\") cursor += 1;
+      else if (character.charCodeAt(0) < 0x20)
+        throw new ControllerFailure(code);
+    }
+    throw new ControllerFailure(code);
+  };
+  const readValue = (depth = 0) => {
+    if (depth > 64) throw new ControllerFailure(code);
+    skipWhitespace();
+    if (text[cursor] === '"') {
+      readString();
+      return;
+    }
+    if (text[cursor] === "{") {
+      cursor += 1;
+      skipWhitespace();
+      const keys = new Set();
+      if (text[cursor] === "}") {
+        cursor += 1;
+        return;
+      }
+      for (;;) {
+        const key = readString();
+        if (keys.has(key)) throw new ControllerFailure(duplicateCode);
+        keys.add(key);
+        skipWhitespace();
+        if (text[cursor++] !== ":") throw new ControllerFailure(code);
+        readValue(depth + 1);
+        skipWhitespace();
+        const separator = text[cursor++];
+        if (separator === "}") return;
+        if (separator !== ",") throw new ControllerFailure(code);
+        skipWhitespace();
+      }
+    }
+    if (text[cursor] === "[") {
+      cursor += 1;
+      skipWhitespace();
+      if (text[cursor] === "]") {
+        cursor += 1;
+        return;
+      }
+      for (;;) {
+        readValue(depth + 1);
+        skipWhitespace();
+        const separator = text[cursor++];
+        if (separator === "]") return;
+        if (separator !== ",") throw new ControllerFailure(code);
+      }
+    }
+    const remainder = text.slice(cursor);
+    const token =
+      /^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/u.exec(
+        remainder,
+      )?.[0];
+    if (token === undefined) throw new ControllerFailure(code);
+    cursor += token.length;
+  };
+  readValue();
+  skipWhitespace();
+  if (cursor !== text.length) throw new ControllerFailure(code);
+};
+const parseJson = (body, code, duplicateCode = code) => {
   if (!Buffer.isBuffer(body) || body.length === 0)
     throw new ControllerFailure(code);
   try {
-    return JSON.parse(decoder.decode(body));
-  } catch {
-    throw new ControllerFailure(code);
+    const text = decoder.decode(body);
+    assertClosedJsonGrammar(text, code, duplicateCode);
+    return JSON.parse(text);
+  } catch (error) {
+    throw error instanceof ControllerFailure
+      ? error
+      : new ControllerFailure(code);
   }
 };
 const socketRecord = (path, owner) => {
@@ -364,6 +461,90 @@ const exactArray = (body, code) => {
   if (!Array.isArray(value)) throw new ControllerFailure(code);
   return value;
 };
+const assertPullRecordShape = (value) => {
+  if (
+    !exactObject(value) ||
+    Object.keys(value).some(
+      (key) => !["id", "progress", "progressDetail", "status"].includes(key),
+    ) ||
+    typeof value.status !== "string" ||
+    value.status.length > 512 ||
+    (value.id !== undefined && typeof value.id !== "string") ||
+    (value.progress !== undefined && typeof value.progress !== "string") ||
+    (value.progressDetail !== undefined &&
+      (!exactObject(value.progressDetail) ||
+        Object.keys(value.progressDetail).some(
+          (key) => !["current", "total"].includes(key),
+        ) ||
+        Object.values(value.progressDetail).some(
+          (number) => !Number.isSafeInteger(number) || number < 0,
+        )))
+  )
+    throw new ControllerFailure("image-pull-record-shape-invalid");
+};
+export const parseImagePullReceipt = (body) => {
+  let text;
+  try {
+    text = decoder.decode(body);
+  } catch {
+    throw new ControllerFailure("image-pull-encoding-invalid");
+  }
+  if (!text.endsWith("\n") || text.includes("\r"))
+    throw new ControllerFailure("image-pull-framing-invalid");
+  const lines = text.slice(0, -1).split("\n");
+  if (lines.length === 0 || lines.length > 4096)
+    throw new ControllerFailure("image-pull-count-invalid");
+  let digestAuthenticated = false;
+  let terminalAuthenticated = false;
+  let terminalIndex = -1;
+  for (const [index, line] of lines.entries()) {
+    const value = parseJson(
+      Buffer.from(line),
+      "image-pull-json-invalid",
+      "image-pull-json-duplicate-key",
+    );
+    if (
+      exactObject(value) &&
+      (Object.hasOwn(value, "error") || Object.hasOwn(value, "errorDetail"))
+    )
+      throw new ControllerFailure("image-pull-daemon-error");
+    assertPullRecordShape(value);
+    if (value.status.startsWith("Digest: ")) {
+      if (terminalAuthenticated)
+        throw new ControllerFailure("image-pull-order-invalid");
+      if (digestAuthenticated)
+        throw new ControllerFailure("image-pull-digest-duplicate");
+      if (value.status !== `Digest: ${imageManifest}`)
+        throw new ControllerFailure("image-pull-digest-mismatch");
+      digestAuthenticated = true;
+    }
+    if (
+      value.status.startsWith("Status: Downloaded newer image for ") ||
+      value.status.startsWith("Status: Image is up to date for ")
+    ) {
+      if (!digestAuthenticated)
+        throw new ControllerFailure("image-pull-order-invalid");
+      if (terminalAuthenticated)
+        throw new ControllerFailure("image-pull-terminal-duplicate");
+      if (
+        ![
+          `Status: Downloaded newer image for ${image}`,
+          `Status: Image is up to date for ${image}`,
+        ].includes(value.status)
+      )
+        throw new ControllerFailure("image-pull-terminal-mismatch");
+      terminalAuthenticated = true;
+      terminalIndex = index;
+    }
+  }
+  if (!digestAuthenticated)
+    throw new ControllerFailure("image-pull-digest-missing");
+  if (!terminalAuthenticated)
+    throw new ControllerFailure("image-pull-terminal-missing");
+  if (terminalIndex !== lines.length - 1)
+    throw new ControllerFailure("image-pull-trailing-record");
+  return Object.freeze({ digestAuthenticated, terminalAuthenticated });
+};
 /* eslint-disable max-lines-per-function -- One object owns the exact Engine lifecycle and uncertainty latch. */
 export const createProductionOperations = ({
   absoluteDeadline,
@@ -381,12 +562,16 @@ export const createProductionOperations = ({
   let createAttempted = false;
   let signalLatch = () => false;
   const call = (request) => engine.request(request);
-  const jsonCall = async (request, code) => {
-    const response = await call(request);
+  const uncertainFailure = (code) => {
+    engine.interrupt();
+    throw new ControllerFailure(code, "uncertain");
+  };
+  const jsonCall = async (request, code, uncertainOnInvalid = false) => {
     try {
+      const response = await call(request);
       return parseJson(response.body, code);
     } catch (error) {
-      if (request.mutation) {
+      if (request.mutation || uncertainOnInvalid) {
         engine.interrupt();
         throw new ControllerFailure(
           controllerFailureCode(error, code),
@@ -411,13 +596,22 @@ export const createProductionOperations = ({
     };
   };
   const inspectContainer = async (id) => {
-    const value = await jsonCall(
-      { expected: [200], method: "GET", path: `${api}/containers/${id}/json` },
-      "container-inspect-invalid",
-    );
-    if (!exactObject(value))
-      throw new ControllerFailure("container-inspect-invalid");
-    return value;
+    try {
+      const value = await jsonCall(
+        {
+          expected: [200],
+          method: "GET",
+          path: `${api}/containers/${id}/json`,
+        },
+        "container-inspect-invalid",
+      );
+      if (!exactObject(value)) uncertainFailure("container-inspect-invalid");
+      return value;
+    } catch (error) {
+      uncertainFailure(
+        controllerFailureCode(error, "container-inspect-invalid"),
+      );
+    }
   };
   const exactOwnedContainer = (value, id) =>
     value.Id === id &&
@@ -452,76 +646,14 @@ export const createProductionOperations = ({
         mutation: true,
         path: `${api}/images/create?fromImage=${encoded(imageRepository)}&tag=${encoded(imageManifest)}&platform=linux%2Famd64`,
       });
-      let pullText;
       try {
-        pullText = decoder.decode(pull.body);
-      } catch {
+        parseImagePullReceipt(pull.body);
+      } catch (error) {
         engine.interrupt();
-        throw new ControllerFailure("image-pull-invalid", "uncertain");
-      }
-      if (!pullText.endsWith("\n") || pullText.includes("\r")) {
-        engine.interrupt();
-        throw new ControllerFailure("image-pull-invalid", "uncertain");
-      }
-      const lines = pullText.slice(0, -1).split("\n");
-      if (lines.length === 0 || lines.length > 4096) {
-        engine.interrupt();
-        throw new ControllerFailure("image-pull-invalid", "uncertain");
-      }
-      let digestAuthenticated = false;
-      let terminalAuthenticated = false;
-      for (const line of lines) {
-        let value;
-        try {
-          value = parseJson(Buffer.from(line), "image-pull-invalid");
-        } catch (error) {
-          engine.interrupt();
-          throw new ControllerFailure(
-            controllerFailureCode(error, "image-pull-invalid"),
-            "uncertain",
-          );
-        }
-        if (
-          !exactObject(value) ||
-          Object.keys(value).some(
-            (key) =>
-              !["id", "progress", "progressDetail", "status"].includes(key),
-          ) ||
-          typeof value.status !== "string" ||
-          value.status.length > 512 ||
-          (value.id !== undefined && typeof value.id !== "string") ||
-          (value.progress !== undefined &&
-            typeof value.progress !== "string") ||
-          (value.progressDetail !== undefined &&
-            (!exactObject(value.progressDetail) ||
-              Object.keys(value.progressDetail).some(
-                (key) => !["current", "total"].includes(key),
-              ) ||
-              Object.values(value.progressDetail).some(
-                (number) => !Number.isSafeInteger(number) || number < 0,
-              )))
-        ) {
-          engine.interrupt();
-          throw new ControllerFailure("image-pull-invalid", "uncertain");
-        }
-        if (value.status === `Digest: ${imageManifest}`)
-          digestAuthenticated = true;
-        if (
-          [
-            `Status: Downloaded newer image for ${image}`,
-            `Status: Image is up to date for ${image}`,
-          ].includes(value.status)
-        )
-          terminalAuthenticated = true;
-      }
-      if (
-        lines.length === 0 ||
-        lines.length > 4096 ||
-        !digestAuthenticated ||
-        !terminalAuthenticated
-      ) {
-        engine.interrupt();
-        throw new ControllerFailure("image-pull-invalid", "uncertain");
+        throw new ControllerFailure(
+          controllerFailureCode(error, "image-pull-json-invalid"),
+          "uncertain",
+        );
       }
       const value = await jsonCall(
         {
@@ -530,6 +662,7 @@ export const createProductionOperations = ({
           path: `${api}/images/${encoded(imageId)}/json`,
         },
         "image-inspect-invalid",
+        true,
       );
       if (
         !exactObject(value) ||
@@ -537,7 +670,7 @@ export const createProductionOperations = ({
         value.Os !== "linux" ||
         value.Architecture !== "amd64"
       )
-        throw new ControllerFailure("image-identity-invalid");
+        uncertainFailure("image-identity-invalid");
     },
     async create() {
       containerName = `agentscope-pty-runtime-proof-${randomBytes(16).toString("hex")}`;
@@ -590,7 +723,10 @@ export const createProductionOperations = ({
         containerId = exactContainerId(value.Id);
       } catch (error) {
         engine.interrupt();
-        throw error;
+        throw new ControllerFailure(
+          controllerFailureCode(error, "container-identity-invalid"),
+          "uncertain",
+        );
       }
       const authority = await inspectContainer(containerId);
       if (!exactOwnedContainer(authority, containerId)) {
@@ -612,13 +748,14 @@ export const createProductionOperations = ({
           path: `${api}/containers/${containerId}/wait?condition=not-running`,
         },
         "container-wait-invalid",
+        true,
       );
       if (
         !exactObject(terminal) ||
         terminal.StatusCode !== 0 ||
         ![null, undefined].includes(terminal.Error)
       )
-        throw new ControllerFailure("container-wait-invalid");
+        uncertainFailure("container-wait-invalid");
       const logs = (
         await call({
           expected: [200],
@@ -648,7 +785,7 @@ export const createProductionOperations = ({
         value.State.Running !== false ||
         value.State.Pid !== 0
       )
-        throw new ControllerFailure("terminal-join-invalid");
+        uncertainFailure("terminal-join-invalid");
     },
     async finalAssertion() {},
     async cleanup() {
@@ -686,109 +823,6 @@ export const createProductionOperations = ({
 };
 /* eslint-enable max-lines-per-function */
 
-export const executeController = async ({
-  absoluteDeadline = performance.now() + totalMilliseconds,
-  operations = createProductionOperations({ absoluteDeadline }),
-} = {}) => {
-  let stage = "setup";
-  let originalOutcome = "success";
-  let runtimeReceiptAuthenticated = false;
-  let failureStage;
-  let errorCode = null;
-  let signal = null;
-  let cleanupProved;
-  let settled = false;
-  const latchSignal = (value) => {
-    if (settled || signal !== null) return false;
-    signal = value === "SIGINT" ? "SIGINT" : "SIGTERM";
-    if (failureStage === undefined && originalOutcome === "success")
-      originalOutcome = "signal";
-    return true;
-  };
-  const uninstall =
-    operations.installSignalHandlers?.(latchSignal) ?? (() => {});
-  try {
-    for (const [nextStage, action] of [
-      ["setup", "setup"],
-      ["input-identity", "inputIdentity"],
-      ["image-identity", "imageIdentity"],
-      ["create", "create"],
-      ["runtime-receipt", "runtimeReceipt"],
-      ["terminal-join", "terminalJoin"],
-      ["final-assertion", "finalAssertion"],
-    ]) {
-      stage = nextStage;
-      if (signal !== null) throw new ControllerFailure("signal", "signal");
-      if (remainingMilliseconds(absoluteDeadline) === 0)
-        throw new ControllerFailure("deadline", "timeout");
-      await operations[action]();
-      if (nextStage === "runtime-receipt") runtimeReceiptAuthenticated = true;
-    }
-  } catch (error) {
-    failureStage = stage;
-    if (originalOutcome === "signal") errorCode = "signal";
-    else {
-      originalOutcome =
-        error instanceof ControllerFailure ? error.outcome : "failure";
-      errorCode =
-        error instanceof ControllerFailure &&
-        controllerErrorCodes.has(error.code)
-          ? error.code
-          : "unexpected-failure";
-    }
-  } finally {
-    try {
-      cleanupProved = (await operations.cleanup()) === true;
-    } catch {
-      cleanupProved = false;
-    }
-    if (signal !== null) cleanupProved = false;
-    if (signal !== null && originalOutcome === "success") {
-      originalOutcome = "signal";
-      errorCode = "signal";
-      failureStage ??= "cleanup";
-    } else if (!cleanupProved && originalOutcome === "success") {
-      originalOutcome = "uncertain";
-      errorCode = "cleanup-unproved";
-      failureStage = "cleanup";
-    }
-    stage =
-      originalOutcome === "success"
-        ? "final-assertion"
-        : (failureStage ?? "cleanup");
-    settled = true;
-    uninstall();
-  }
-  const status =
-    originalOutcome === "success" &&
-    runtimeReceiptAuthenticated &&
-    cleanupProved === true
-      ? "passed"
-      : "failed";
-  return Object.freeze({
-    exitCode:
-      originalOutcome === "signal"
-        ? signal === "SIGINT"
-          ? 130
-          : 143
-        : status === "passed"
-          ? 0
-          : 1,
-    receipt: Object.freeze({
-      version: 1,
-      stage,
-      status,
-      errorCode,
-      runtimeReceiptAuthenticated,
-      cleanupProved: cleanupProved === true,
-      originalOutcome,
-      signal,
-    }),
-  });
-};
-
-const nextTurn = () => new Promise((resolveTurn) => setImmediate(resolveTurn));
-const signalExit = (signal) => (signal === "SIGINT" ? 130 : 143);
 const engineStages = Object.freeze([
   "input-identity",
   "image-identity",
@@ -810,11 +844,11 @@ const receiptErrorAuthorities = Object.freeze({
     stages: ["create"],
   }),
   "container-identity-invalid": Object.freeze({
-    outcomes: ["failure"],
+    outcomes: ["uncertain"],
     stages: ["create"],
   }),
   "container-inspect-invalid": Object.freeze({
-    outcomes: ["failure"],
+    outcomes: ["uncertain"],
     stages: ["create", "terminal-join"],
   }),
   "container-list-invalid": Object.freeze({
@@ -822,7 +856,7 @@ const receiptErrorAuthorities = Object.freeze({
     stages: ["input-identity"],
   }),
   "container-wait-invalid": Object.freeze({
-    outcomes: ["failure"],
+    outcomes: ["uncertain"],
     stages: ["runtime-receipt"],
   }),
   deadline: Object.freeze({
@@ -856,13 +890,10 @@ const receiptErrorAuthorities = Object.freeze({
   "engine-status-invalid": Object.freeze({
     tuples: Object.freeze([
       ["input-identity", "failure"],
-      ["image-identity", "failure"],
       ["image-identity", "uncertain"],
-      ["create", "failure"],
       ["create", "uncertain"],
-      ["runtime-receipt", "failure"],
       ["runtime-receipt", "uncertain"],
-      ["terminal-join", "failure"],
+      ["terminal-join", "uncertain"],
     ]),
   }),
   "engine-timeout": Object.freeze({
@@ -874,14 +905,70 @@ const receiptErrorAuthorities = Object.freeze({
     stages: engineStages,
   }),
   "image-identity-invalid": Object.freeze({
-    outcomes: ["failure"],
+    outcomes: ["uncertain"],
     stages: ["image-identity"],
   }),
   "image-inspect-invalid": Object.freeze({
-    outcomes: ["failure"],
+    outcomes: ["uncertain"],
     stages: ["image-identity"],
   }),
-  "image-pull-invalid": Object.freeze({
+  "image-pull-count-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-daemon-error": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-digest-duplicate": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-digest-mismatch": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-digest-missing": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-encoding-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-framing-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-json-duplicate-key": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-json-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-record-shape-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-order-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-terminal-duplicate": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-terminal-mismatch": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-terminal-missing": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-trailing-record": Object.freeze({
     outcomes: ["uncertain"],
     stages: ["image-identity"],
   }),
@@ -910,7 +997,7 @@ const receiptErrorAuthorities = Object.freeze({
     stages: engineStages,
   }),
   "terminal-join-invalid": Object.freeze({
-    outcomes: ["failure"],
+    outcomes: ["uncertain"],
     stages: ["terminal-join"],
   }),
   "unexpected-failure": Object.freeze({
@@ -918,50 +1005,6 @@ const receiptErrorAuthorities = Object.freeze({
     stages: lifecycleStages.filter((stage) => stage !== "cleanup"),
   }),
 });
-const validReceiptEnvelope = (receipt) =>
-  exactObject(receipt) &&
-  Object.keys(receipt).sort().join(",") ===
-    "cleanupProved,errorCode,originalOutcome,runtimeReceiptAuthenticated,signal,stage,status,version" &&
-  receipt.version === 1 &&
-  lifecycleStages.includes(receipt.stage) &&
-  ["passed", "failed"].includes(receipt.status) &&
-  typeof receipt.runtimeReceiptAuthenticated === "boolean" &&
-  typeof receipt.cleanupProved === "boolean" &&
-  ["success", "failure", "uncertain", "timeout", "signal"].includes(
-    receipt.originalOutcome,
-  ) &&
-  [null, "SIGINT", "SIGTERM"].includes(receipt.signal) &&
-  (receipt.errorCode === null ||
-    (typeof receipt.errorCode === "string" &&
-      controllerErrorCodes.has(receipt.errorCode)));
-const isSuccessReceipt = (receipt) =>
-  receipt?.status === "passed" &&
-  receipt?.stage === "final-assertion" &&
-  receipt?.originalOutcome === "success" &&
-  receipt?.errorCode === null &&
-  receipt?.signal === null &&
-  receipt?.runtimeReceiptAuthenticated === true &&
-  receipt?.cleanupProved === true;
-const isCausalFailureReceipt = (receipt) => {
-  const authority = receiptErrorAuthorities[receipt?.errorCode];
-  const tupleAdmitted = authority?.tuples?.some(
-    ([stage, outcome]) =>
-      stage === receipt?.stage && outcome === receipt?.originalOutcome,
-  );
-  const productAdmitted =
-    authority?.stages?.includes(receipt?.stage) &&
-    authority?.outcomes?.includes(receipt?.originalOutcome);
-  return (
-    receipt?.status === "failed" &&
-    authority !== undefined &&
-    (tupleAdmitted === true || productAdmitted === true) &&
-    cleanupEvidenceMatches(receipt) &&
-    (receipt.errorCode !== "cleanup-unproved" ||
-      receipt.cleanupProved === false) &&
-    (receipt.errorCode !== "signal" ||
-      ["SIGINT", "SIGTERM"].includes(receipt.signal))
-  );
-};
 const cleanupFalseErrorCodes = new Set([
   "container-authority-invalid",
   "container-create-invalid",
@@ -974,7 +1017,21 @@ const cleanupFalseErrorCodes = new Set([
   "engine-response-truncated",
   "engine-timeout",
   "engine-transport-error",
-  "image-pull-invalid",
+  "image-pull-count-invalid",
+  "image-pull-daemon-error",
+  "image-pull-digest-duplicate",
+  "image-pull-digest-mismatch",
+  "image-pull-digest-missing",
+  "image-pull-encoding-invalid",
+  "image-pull-framing-invalid",
+  "image-pull-json-duplicate-key",
+  "image-pull-json-invalid",
+  "image-pull-record-shape-invalid",
+  "image-pull-order-invalid",
+  "image-pull-terminal-duplicate",
+  "image-pull-terminal-mismatch",
+  "image-pull-terminal-missing",
+  "image-pull-trailing-record",
   "socket-identity-invalid",
   "socket-identity-substituted",
 ]);
@@ -991,44 +1048,301 @@ const preCreateStages = new Set([
   "image-identity",
   "create",
 ]);
-function cleanupEvidenceMatches(receipt) {
-  if (
-    receipt.signal !== null &&
-    receipt.errorCode !== "signal" &&
-    receipt.cleanupProved
-  )
-    return false;
-  if (receipt.errorCode === "cleanup-unproved")
-    return receipt.cleanupProved === false && receipt.signal === null;
-  if (receipt.errorCode === "signal")
-    return !receipt.cleanupProved || receipt.stage === "final-assertion";
-  if (cleanupFalseErrorCodes.has(receipt.errorCode))
-    return receipt.cleanupProved === false;
-  if (cleanupTrueErrorCodes.has(receipt.errorCode))
-    return receipt.cleanupProved === true;
-  if (receipt.errorCode === "engine-status-invalid") {
-    if (receipt.originalOutcome === "uncertain")
-      return receipt.cleanupProved === false;
-    if (["input-identity", "image-identity"].includes(receipt.stage))
-      return receipt.cleanupProved === true;
+const receiptKey = ({
+  cleanupProved,
+  errorCode,
+  originalOutcome,
+  signal,
+  stage,
+}) =>
+  JSON.stringify([stage, errorCode, originalOutcome, cleanupProved, signal]);
+const terminalReceiptTable = new Map();
+const addTerminalReceipt = ({
+  cleanupProved,
+  errorCode,
+  originalOutcome,
+  signal,
+  stage,
+}) => {
+  const receipt = Object.freeze({
+    version: 1,
+    stage,
+    status: errorCode === null ? "passed" : "failed",
+    errorCode,
+    runtimeReceiptAuthenticated: [
+      "terminal-join",
+      "final-assertion",
+      "cleanup",
+    ].includes(stage),
+    cleanupProved,
+    originalOutcome,
+    signal,
+  });
+  terminalReceiptTable.set(receiptKey(receipt), receipt);
+};
+const addSignalTerminalReceipts = ({ errorCode, originalOutcome, stage }) => {
+  for (const signal of ["SIGINT", "SIGTERM"])
+    for (const cleanupProved of stage === "final-assertion"
+      ? [false, true]
+      : [false])
+      addTerminalReceipt({
+        cleanupProved,
+        errorCode,
+        originalOutcome,
+        signal,
+        stage,
+      });
+};
+addTerminalReceipt({
+  cleanupProved: true,
+  errorCode: null,
+  originalOutcome: "success",
+  signal: null,
+  stage: "final-assertion",
+});
+for (const [errorCode, authority] of Object.entries(receiptErrorAuthorities)) {
+  const tuples =
+    authority.tuples ??
+    authority.stages.flatMap((stage) =>
+      authority.outcomes.map((outcome) => [stage, outcome]),
+    );
+  for (const [stage, originalOutcome] of tuples) {
+    let cleanupStates = [true, false];
+    if (
+      errorCode === "cleanup-unproved" ||
+      cleanupFalseErrorCodes.has(errorCode) ||
+      originalOutcome === "uncertain"
+    )
+      cleanupStates = [false];
+    else if (
+      cleanupTrueErrorCodes.has(errorCode) ||
+      (errorCode === "engine-status-invalid" && preCreateStages.has(stage))
+    )
+      cleanupStates = [true];
+    if (errorCode === "signal") {
+      addSignalTerminalReceipts({ errorCode, originalOutcome, stage });
+      continue;
+    }
+    for (const cleanupProved of cleanupStates)
+      addTerminalReceipt({
+        cleanupProved,
+        errorCode,
+        originalOutcome,
+        signal: null,
+        stage,
+      });
+    if (errorCode !== "cleanup-unproved")
+      for (const signal of ["SIGINT", "SIGTERM"])
+        addTerminalReceipt({
+          cleanupProved: false,
+          errorCode,
+          originalOutcome,
+          signal,
+          stage,
+        });
   }
-  if (
-    ["deadline", "unexpected-failure"].includes(receipt.errorCode) &&
-    preCreateStages.has(receipt.stage)
-  )
-    return receipt.cleanupProved === true;
-  return true;
 }
-export const validateTerminalReceipt = (receipt) => {
-  const stageHasRuntimeReceipt = [
-    "terminal-join",
-    "final-assertion",
-    "cleanup",
-  ].includes(receipt?.stage);
+export const canonicalTerminalReceipts = Object.freeze([
+  ...terminalReceiptTable.values(),
+]);
+export const createLifecycleState = () =>
+  Object.freeze({
+    cause: null,
+    cleanupProved: null,
+    phase: "running",
+    runtimeReceiptAuthenticated: false,
+    signal: null,
+    stage: "setup",
+  });
+const canAuthenticateRuntime = (state) =>
+  state.phase === "running" &&
+  state.stage === "runtime-receipt" &&
+  state.cause === null &&
+  state.signal === null;
+export const reduceLifecycleState = (state, event) => {
+  if (!exactObject(state) || !exactObject(event) || state.phase === "terminal")
+    throw new ControllerFailure("unexpected-failure");
+  if (event.type === "enter") {
+    const current = lifecycleStages.indexOf(state.stage);
+    const next = lifecycleStages.indexOf(event.stage);
+    if (
+      state.phase !== "running" ||
+      next < 0 ||
+      next > lifecycleStages.length - 2 ||
+      ![current, current + 1].includes(next)
+    )
+      throw new ControllerFailure("unexpected-failure");
+    return Object.freeze({ ...state, stage: event.stage });
+  }
+  if (event.type === "runtime-authenticated") {
+    if (!canAuthenticateRuntime(state))
+      throw new ControllerFailure("unexpected-failure");
+    return Object.freeze({ ...state, runtimeReceiptAuthenticated: true });
+  }
+  if (event.type === "failure") {
+    if (
+      state.phase !== "running" ||
+      state.cause !== null ||
+      !controllerErrorCodes.has(event.errorCode) ||
+      !["failure", "uncertain", "timeout"].includes(event.originalOutcome)
+    )
+      throw new ControllerFailure("unexpected-failure");
+    return Object.freeze({
+      ...state,
+      cause: Object.freeze({
+        errorCode: event.errorCode,
+        originalOutcome: event.originalOutcome,
+        stage: state.stage,
+      }),
+    });
+  }
+  if (event.type === "signal") {
+    if (!["SIGINT", "SIGTERM"].includes(event.signal))
+      throw new ControllerFailure("unexpected-failure");
+    if (state.signal !== null) return state;
+    return Object.freeze({
+      ...state,
+      cause:
+        state.cause ??
+        Object.freeze({
+          errorCode: "signal",
+          originalOutcome: "signal",
+          stage: state.phase === "cleanup" ? "cleanup" : state.stage,
+        }),
+      signal: event.signal,
+    });
+  }
+  if (event.type === "begin-cleanup") {
+    if (state.phase !== "running")
+      throw new ControllerFailure("unexpected-failure");
+    return Object.freeze({ ...state, phase: "cleanup" });
+  }
+  if (event.type === "finish-cleanup") {
+    if (state.phase !== "cleanup" || typeof event.proved !== "boolean")
+      throw new ControllerFailure("unexpected-failure");
+    const cleanupProved = state.signal === null && event.proved;
+    return Object.freeze({
+      ...state,
+      cause:
+        state.cause ??
+        (cleanupProved
+          ? null
+          : Object.freeze({
+              errorCode: "cleanup-unproved",
+              originalOutcome: "uncertain",
+              stage: "cleanup",
+            })),
+      cleanupProved,
+      phase: "terminal",
+    });
+  }
+  throw new ControllerFailure("unexpected-failure");
+};
+export const serializeLifecycleState = (state) => {
+  if (state.phase !== "terminal" || typeof state.cleanupProved !== "boolean")
+    throw new ControllerFailure("unexpected-failure");
+  const tuple =
+    state.cause ??
+    Object.freeze({
+      errorCode: null,
+      originalOutcome: "success",
+      stage: "final-assertion",
+    });
+  const receipt = terminalReceiptTable.get(
+    receiptKey({
+      ...tuple,
+      cleanupProved: state.cleanupProved,
+      signal: state.signal,
+    }),
+  );
   if (
-    !validReceiptEnvelope(receipt) ||
-    stageHasRuntimeReceipt !== receipt.runtimeReceiptAuthenticated ||
-    !(isSuccessReceipt(receipt) || isCausalFailureReceipt(receipt))
+    receipt === undefined ||
+    receipt.runtimeReceiptAuthenticated !== state.runtimeReceiptAuthenticated
+  )
+    throw new ControllerFailure("unexpected-failure");
+  return receipt;
+};
+export const executeController = async ({
+  absoluteDeadline = performance.now() + totalMilliseconds,
+  operations = createProductionOperations({ absoluteDeadline }),
+} = {}) => {
+  let state = createLifecycleState();
+  const latchSignal = (value) => {
+    if (state.phase === "terminal" || state.signal !== null) return false;
+    state = reduceLifecycleState(state, {
+      signal: value === "SIGINT" ? "SIGINT" : "SIGTERM",
+      type: "signal",
+    });
+    return true;
+  };
+  const uninstall =
+    operations.installSignalHandlers?.(latchSignal) ?? (() => {});
+  try {
+    for (const [stage, action] of [
+      ["setup", "setup"],
+      ["input-identity", "inputIdentity"],
+      ["image-identity", "imageIdentity"],
+      ["create", "create"],
+      ["runtime-receipt", "runtimeReceipt"],
+      ["terminal-join", "terminalJoin"],
+      ["final-assertion", "finalAssertion"],
+    ]) {
+      state = reduceLifecycleState(state, { stage, type: "enter" });
+      if (state.signal !== null)
+        throw new ControllerFailure("signal", "signal");
+      if (remainingMilliseconds(absoluteDeadline) === 0)
+        throw new ControllerFailure("deadline", "timeout");
+      await operations[action]();
+      if (state.signal !== null)
+        throw new ControllerFailure("signal", "signal");
+      if (stage === "runtime-receipt")
+        state = reduceLifecycleState(state, { type: "runtime-authenticated" });
+    }
+  } catch (error) {
+    if (state.cause === null)
+      state = reduceLifecycleState(state, {
+        errorCode:
+          error instanceof ControllerFailure &&
+          controllerErrorCodes.has(error.code)
+            ? error.code
+            : "unexpected-failure",
+        originalOutcome:
+          error instanceof ControllerFailure ? error.outcome : "failure",
+        type: "failure",
+      });
+  } finally {
+    state = reduceLifecycleState(state, { type: "begin-cleanup" });
+    let proved = false;
+    try {
+      proved = (await operations.cleanup()) === true;
+    } catch {
+      // The initialized false value is the closed cleanup-uncertainty result.
+    }
+    state = reduceLifecycleState(state, { proved, type: "finish-cleanup" });
+    uninstall();
+  }
+  const receipt = serializeLifecycleState(state);
+  return Object.freeze({
+    exitCode:
+      receipt.originalOutcome === "signal"
+        ? receipt.signal === "SIGINT"
+          ? 130
+          : 143
+        : receipt.status === "passed"
+          ? 0
+          : 1,
+    receipt,
+  });
+};
+
+const nextTurn = () => new Promise((resolveTurn) => setImmediate(resolveTurn));
+const signalExit = (signal) => (signal === "SIGINT" ? 130 : 143);
+export const validateTerminalReceipt = (receipt) => {
+  if (!exactObject(receipt)) throw new ControllerFailure("unexpected-failure");
+  const canonical = terminalReceiptTable.get(receiptKey(receipt));
+  if (
+    canonical === undefined ||
+    JSON.stringify(canonical) !== JSON.stringify(receipt)
   )
     throw new ControllerFailure("unexpected-failure");
   return receipt;

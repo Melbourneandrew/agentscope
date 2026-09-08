@@ -7,11 +7,16 @@ import { resolve } from "node:path";
 import { afterEach, test } from "vitest";
 
 import {
+  canonicalTerminalReceipts,
   createEngineClient,
+  createLifecycleState,
   createProductionOperations,
   executeController,
+  parseImagePullReceipt,
   parseTerminalReceipt,
   publishTerminalResult,
+  reduceLifecycleState,
+  serializeLifecycleState,
   validateTerminalReceipt,
 } from "../pty-runtime-proof-controller.mjs";
 
@@ -113,16 +118,66 @@ test("passes only after receipt, terminal join, and cleanup", async () => {
 });
 
 test("latches first signal and executes cleanup once", async () => {
-  for (const signalAt of ["setup", "create", "cleanup"]) {
+  for (const signalAt of ["setup", "create", "runtime-receipt", "cleanup"]) {
     const fixture = operations({ signalAt });
     const result = await executeController({ operations: fixture });
     assert.equal(result.exitCode, 143);
     assert.equal(result.receipt.signal, "SIGTERM");
     assert.equal(
+      result.receipt.stage,
+      signalAt === "cleanup" ? "cleanup" : signalAt,
+    );
+    assert.equal(
       fixture.events.filter((value) => value === "cleanup").length,
       1,
     );
   }
+});
+
+test("every reachable failure, signal, and cleanup event sequence serializes canonically", async () => {
+  const stages = [
+    "setup",
+    "input-identity",
+    "image-identity",
+    "create",
+    "runtime-receipt",
+    "terminal-join",
+    "final-assertion",
+    "cleanup",
+  ];
+  for (const [failAt, signalAt, cleanup] of [undefined, ...stages].flatMap(
+    (failAt) =>
+      [undefined, ...stages].flatMap((signalAt) =>
+        [false, true].map((cleanup) => [failAt, signalAt, cleanup]),
+      ),
+  )) {
+    const result = await executeController({
+      operations: operations({ cleanup, failAt, signalAt }),
+    });
+    assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+    assert.deepEqual(
+      parseTerminalReceipt(Buffer.from(`${JSON.stringify(result.receipt)}\n`)),
+      result.receipt,
+    );
+  }
+});
+
+test("cleanup-time primary signal cannot masquerade as final-assertion signal", async () => {
+  const result = await executeController({
+    operations: operations({ signalAt: "cleanup" }),
+  });
+  assert.equal(result.receipt.stage, "cleanup");
+  assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+  const finalAssertionSignal = {
+    ...result.receipt,
+    stage: "final-assertion",
+  };
+  assert.equal(
+    validateTerminalReceipt(finalAssertionSignal),
+    finalAssertionSignal,
+  );
+  assert.notDeepEqual(result.receipt, finalAssertionSignal);
+  assertRejectedReceipts([{ ...result.receipt, cleanupProved: true }]);
 });
 
 test("cleanup uncertainty cannot become success", async () => {
@@ -162,6 +217,128 @@ test("a cleanup-time signal cannot overwrite an earlier causal failure", async (
   assert.equal(result.receipt.originalOutcome, "failure");
   assert.equal(result.receipt.signal, "SIGTERM");
   assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+  assert.deepEqual(
+    parseTerminalReceipt(Buffer.from(`${JSON.stringify(result.receipt)}\n`)),
+    result.receipt,
+  );
+  const priorExitCode = process.exitCode;
+  const receipts = [];
+  const published = await publishTerminalResult(result, {
+    getSignal: () => result.receipt.signal,
+    writeReceipt: (receipt) => receipts.push(receipt),
+  });
+  assert.equal(published.exitCode, 1);
+  assert.deepEqual(receipts, [result.receipt]);
+  process.exitCode = priorExitCode;
+});
+
+test("the lifecycle reducer is monotonic and terminalizes exactly once", () => {
+  let state = createLifecycleState();
+  state = reduceLifecycleState(state, {
+    stage: "input-identity",
+    type: "enter",
+  });
+  assert.throws(
+    () => reduceLifecycleState(state, { stage: "setup", type: "enter" }),
+    /unexpected-failure/u,
+  );
+  state = reduceLifecycleState(state, {
+    errorCode: "repository-identity-invalid",
+    originalOutcome: "failure",
+    type: "failure",
+  });
+  state = reduceLifecycleState(state, {
+    signal: "SIGTERM",
+    type: "signal",
+  });
+  state = reduceLifecycleState(state, { type: "begin-cleanup" });
+  state = reduceLifecycleState(state, {
+    proved: true,
+    type: "finish-cleanup",
+  });
+  const receipt = serializeLifecycleState(state);
+  assert.deepEqual(receipt, {
+    version: 1,
+    stage: "input-identity",
+    status: "failed",
+    errorCode: "repository-identity-invalid",
+    runtimeReceiptAuthenticated: false,
+    cleanupProved: false,
+    originalOutcome: "failure",
+    signal: "SIGTERM",
+  });
+  assert.throws(
+    () => reduceLifecycleState(state, { signal: "SIGINT", type: "signal" }),
+    /unexpected-failure/u,
+  );
+  assert.deepEqual(
+    parseTerminalReceipt(Buffer.from(`${JSON.stringify(receipt)}\n`)),
+    receipt,
+  );
+});
+
+test("the closed terminal table exhaustively decides every receipt cross-product", () => {
+  const stages = [
+    "setup",
+    "input-identity",
+    "image-identity",
+    "create",
+    "runtime-receipt",
+    "terminal-join",
+    "final-assertion",
+    "cleanup",
+  ];
+  const outcomes = ["success", "failure", "uncertain", "timeout", "signal"];
+  const signals = [null, "SIGINT", "SIGTERM"];
+  const errorCodes = [
+    null,
+    ...new Set(canonicalTerminalReceipts.map((receipt) => receipt.errorCode)),
+  ];
+  const canonical = new Set(
+    canonicalTerminalReceipts.map((receipt) => JSON.stringify(receipt)),
+  );
+  const crossProduct = (dimensions) =>
+    dimensions.reduce(
+      (rows, dimension) =>
+        rows.flatMap((row) => dimension.map((value) => [...row, value])),
+      [[]],
+    );
+  for (const [
+    stage,
+    originalOutcome,
+    cleanupProved,
+    signal,
+    errorCode,
+  ] of crossProduct([stages, outcomes, [false, true], signals, errorCodes])) {
+    const receipt = {
+      version: 1,
+      stage,
+      status: errorCode === null ? "passed" : "failed",
+      errorCode,
+      runtimeReceiptAuthenticated: [
+        "terminal-join",
+        "final-assertion",
+        "cleanup",
+      ].includes(stage),
+      cleanupProved,
+      originalOutcome,
+      signal,
+    };
+    const expected = canonical.has(JSON.stringify(receipt));
+    let accepted = true;
+    try {
+      validateTerminalReceipt(receipt);
+    } catch {
+      accepted = false;
+    }
+    assert.equal(accepted, expected);
+  }
+  for (const receipt of canonicalTerminalReceipts)
+    assert.deepEqual(
+      parseTerminalReceipt(Buffer.from(`${JSON.stringify(receipt)}\n`)),
+      receipt,
+    );
 });
 
 const assertRejectedReceipts = (receipts) => {
@@ -229,7 +406,8 @@ test("terminal receipts reject substituted causal dimensions", () => {
       status: "failed",
       errorCode: "image-identity-invalid",
       runtimeReceiptAuthenticated: false,
-      originalOutcome: "failure",
+      cleanupProved: false,
+      originalOutcome: "uncertain",
     },
     {
       ...valid,
@@ -576,7 +754,7 @@ test("malformed pull receipt stops before container creation", async () => {
   });
   assert.equal(result.exitCode, 1);
   assert.equal(result.receipt.originalOutcome, "uncertain");
-  assert.equal(result.receipt.errorCode, "image-pull-invalid");
+  assert.equal(result.receipt.errorCode, "image-pull-record-shape-invalid");
   assert.equal(result.receipt.cleanupProved, false);
   assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
   const priorExitCode = process.exitCode;
@@ -592,6 +770,98 @@ test("malformed pull receipt stops before container creation", async () => {
     observed.some((path) => path.includes("/containers/create?")),
     false,
   );
+});
+
+test("pull receipt predicates emit only fixed causal codes and stop later mutation", async () => {
+  const manifest =
+    "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+  const image = `node@${manifest}`;
+  const digest = JSON.stringify({ status: `Digest: ${manifest}` });
+  const terminal = JSON.stringify({
+    status: `Status: Image is up to date for ${image}`,
+  });
+  const cases = [
+    ["image-pull-encoding-invalid", Buffer.from([0xff, 0x0a])],
+    ["image-pull-framing-invalid", Buffer.from("{}")],
+    [
+      "image-pull-count-invalid",
+      Buffer.from(
+        `${Array.from({ length: 4097 }, () => '{"status":"x"}').join("\n")}\n`,
+      ),
+    ],
+    ["image-pull-json-invalid", Buffer.from("not-json\n")],
+    [
+      "image-pull-json-duplicate-key",
+      Buffer.from('{"status":"one","status":"two"}\n'),
+    ],
+    [
+      "image-pull-record-shape-invalid",
+      Buffer.from('{"status":"working","future":true}\n'),
+    ],
+    ["image-pull-daemon-error", Buffer.from('{"error":"suppressed"}\n')],
+    [
+      "image-pull-digest-duplicate",
+      Buffer.from(`${digest}\n${digest}\n${terminal}\n`),
+    ],
+    [
+      "image-pull-digest-mismatch",
+      Buffer.from(
+        `${JSON.stringify({ status: `Digest: sha256:${"0".repeat(64)}` })}\n${terminal}\n`,
+      ),
+    ],
+    ["image-pull-digest-missing", Buffer.from('{"status":"working"}\n')],
+    ["image-pull-order-invalid", Buffer.from(`${terminal}\n${digest}\n`)],
+    [
+      "image-pull-terminal-duplicate",
+      Buffer.from(`${digest}\n${terminal}\n${terminal}\n`),
+    ],
+    [
+      "image-pull-terminal-mismatch",
+      Buffer.from(
+        `${digest}\n${JSON.stringify({ status: "Status: Image is up to date for node@sha256:wrong" })}\n`,
+      ),
+    ],
+    ["image-pull-terminal-missing", Buffer.from(`${digest}\n`)],
+    [
+      "image-pull-trailing-record",
+      Buffer.from(`${digest}\n${terminal}\n{"status":"late"}\n`),
+    ],
+  ];
+  for (const [errorCode, body] of cases) {
+    assert.throws(
+      () => parseImagePullReceipt(body),
+      new RegExp(errorCode, "u"),
+    );
+    const observed = [];
+    const socketPath = await fixtureServer((request, response) => {
+      observed.push(`${request.method} ${request.url}`);
+      if (request.url.startsWith("/v1.45/containers/json?")) response.end("[]");
+      else if (request.url.startsWith("/v1.45/images/create?")) {
+        const midpoint = Math.floor(body.length / 2);
+        response.write(body.subarray(0, midpoint));
+        response.end(body.subarray(midpoint));
+      } else response.writeHead(500).end("{}");
+    });
+    const absoluteDeadline = performance.now() + 10_000;
+    const result = await executeController({
+      absoluteDeadline,
+      operations: createProductionOperations({
+        absoluteDeadline,
+        repositoryRoot: process.cwd(),
+        socketOwner: BigInt(process.getuid()),
+        socketPath,
+      }),
+    });
+    assert.equal(result.receipt.stage, "image-identity");
+    assert.equal(result.receipt.errorCode, errorCode);
+    assert.equal(result.receipt.originalOutcome, "uncertain");
+    assert.equal(result.receipt.cleanupProved, false);
+    assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+    assert.equal(
+      observed.some((entry) => entry.includes("/containers/create?")),
+      false,
+    );
+  }
 });
 
 test("malformed create receipt preserves uncertainty and publishes once", async () => {
@@ -640,6 +910,58 @@ test("malformed create receipt preserves uncertainty and publishes once", async 
   assert.equal(published.exitCode, 1);
   assert.deepEqual(receipts, [result.receipt]);
   process.exitCode = priorExitCode;
+});
+
+test("duplicate-key post-create inspection latches uncertainty and permits no delete", async () => {
+  const containerId = "a".repeat(64);
+  const identity =
+    "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6";
+  const manifest =
+    "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+  const observed = [];
+  const socketPath = await fixtureServer((request, response) => {
+    observed.push(`${request.method} ${request.url}`);
+    if (request.url.startsWith("/v1.45/containers/json?")) response.end("[]");
+    else if (request.url.startsWith("/v1.45/images/create?"))
+      response.end(
+        `${JSON.stringify({ status: `Digest: ${manifest}` })}\n${JSON.stringify(
+          { status: `Status: Image is up to date for node@${manifest}` },
+        )}\n`,
+      );
+    else if (request.url.startsWith("/v1.45/images/"))
+      response.end(
+        JSON.stringify({ Architecture: "amd64", Id: identity, Os: "linux" }),
+      );
+    else if (request.url.startsWith("/v1.45/containers/create?"))
+      response
+        .writeHead(201)
+        .end(JSON.stringify({ Id: containerId, Warnings: [] }));
+    else if (
+      request.method === "GET" &&
+      request.url === `/v1.45/containers/${containerId}/json`
+    )
+      response.end(`{"Id":"${containerId}","Id":"${"b".repeat(64)}"}`);
+    else response.writeHead(500).end("{}");
+  });
+  const absoluteDeadline = performance.now() + 10_000;
+  const result = await executeController({
+    absoluteDeadline,
+    operations: createProductionOperations({
+      absoluteDeadline,
+      repositoryRoot: process.cwd(),
+      socketOwner: BigInt(process.getuid()),
+      socketPath,
+    }),
+  });
+  assert.equal(result.receipt.stage, "create");
+  assert.equal(result.receipt.errorCode, "container-inspect-invalid");
+  assert.equal(result.receipt.originalOutcome, "uncertain");
+  assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+  assert.equal(
+    observed.some((entry) => entry.startsWith("DELETE ")),
+    false,
+  );
 });
 
 test("contradictory created-container authority permits no cleanup mutation", async () => {
