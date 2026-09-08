@@ -10,7 +10,10 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { executeSelectedHeadlessProcess } from "./testkit/headless-supervisor-kernel.js";
-import { composeSelectedContainerHeadlessSupervisorCapability } from "./testkit/internal/headless-supervisor-backend.js";
+import {
+  composeSelectedContainerHeadlessSupervisorCapability,
+  createSelectedContainerImmutableCandidateAuthority,
+} from "./testkit/internal/headless-supervisor-backend.js";
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
@@ -45,10 +48,6 @@ const headlessShutdownDeadline =
   (headlessOuterDeadline - headlessTranslationBootAt);
 if (headlessShutdownDeadline <= headlessTranslationLocalAt + 6_000)
   throw new Error("integration.runner.headless-authority");
-const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
-  headlessShutdownDeadline,
-);
-
 const digest = (bytes) =>
   `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
 const fingerprintHeadlessRequest = (request) =>
@@ -169,6 +168,58 @@ for (const file of declared) {
   )
     throw new Error("integration.runner.candidate-file");
 }
+const candidateInventorySha256 = createHash("sha256")
+  .update(
+    JSON.stringify({
+      bundleIdentity: evidence.bundleIdentity,
+      candidateRevision: evidence.candidateRevision,
+      files: declared
+        .map(({ fileName, bytes, sha256 }) => ({ fileName, bytes, sha256 }))
+        .sort((left, right) =>
+          left.fileName < right.fileName
+            ? -1
+            : left.fileName > right.fileName
+              ? 1
+              : 0,
+        ),
+    }),
+  )
+  .digest("hex");
+const encodedImmutableCandidate = requiredEnvironment(
+  "AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY",
+);
+if (
+  encodedImmutableCandidate.length > 4_096 ||
+  !/^[A-Za-z0-9_-]+$/u.test(encodedImmutableCandidate)
+)
+  throw new Error("integration.runner.immutable-candidate");
+let immutableCandidateRecord;
+try {
+  const bytes = Buffer.from(encodedImmutableCandidate, "base64url");
+  if (bytes.toString("base64url") !== encodedImmutableCandidate)
+    throw new Error();
+  immutableCandidateRecord = JSON.parse(bytes.toString("utf8"));
+} catch {
+  throw new Error("integration.runner.immutable-candidate");
+}
+if (
+  immutableCandidateRecord?.candidateBundleIdentity !==
+    evidence.bundleIdentity ||
+  immutableCandidateRecord?.candidateInventorySha256 !==
+    candidateInventorySha256 ||
+  immutableCandidateRecord?.candidateRoot !== candidateRoot ||
+  immutableCandidateRecord?.runId !==
+    requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID") ||
+  immutableCandidateRecord?.scenarioId !== scenarioId
+)
+  throw new Error("integration.runner.immutable-candidate");
+const immutableCandidate = createSelectedContainerImmutableCandidateAuthority(
+  immutableCandidateRecord,
+);
+const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
+  headlessShutdownDeadline,
+  immutableCandidate,
+);
 
 for (const publicEndpoint of [
   "https://registry.npmjs.org/",

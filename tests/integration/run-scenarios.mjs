@@ -161,6 +161,22 @@ const cliArtifact = candidate.artifacts.find(
 );
 if (cliArtifact === undefined)
   throw new Error("integration.isolation.candidate-artifact");
+const immutableCandidateInventory = () => ({
+  bundleIdentity: candidate.bundleIdentity,
+  candidateRevision: candidate.candidateRevision,
+  files: [candidate.lockfile, ...candidate.artifacts]
+    .map(({ fileName, bytes, sha256 }) => ({ fileName, bytes, sha256 }))
+    .sort((left, right) =>
+      left.fileName < right.fileName
+        ? -1
+        : left.fileName > right.fileName
+          ? 1
+          : 0,
+    ),
+});
+const candidateInventorySha256 = createHash("sha256")
+  .update(JSON.stringify(immutableCandidateInventory()))
+  .digest("hex");
 
 let preparedDockerClient;
 const docker = async (
@@ -349,6 +365,8 @@ const assertContainer = async (
   limits,
   signal,
   expectedRequestBytes,
+  immutableCandidate,
+  // eslint-disable-next-line complexity,max-params
 ) => {
   const { stdout } = await dockerWithSignal(
     ["container", "inspect", name],
@@ -376,6 +394,36 @@ const assertContainer = async (
     environment.includes(
       `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${expectedRequestBytes}`,
     );
+  const immutableCandidateMatches =
+    immutableCandidate === undefined ||
+    (container?.Image === immutableCandidate.imageId &&
+      container?.Config?.User === "1000:1000" &&
+      environment.includes(
+        `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+      ) &&
+      JSON.stringify(container?.HostConfig?.CapDrop) ===
+        JSON.stringify(["ALL"]) &&
+      Array.isArray(container?.HostConfig?.SecurityOpt) &&
+      container.HostConfig.SecurityOpt.includes("no-new-privileges"));
+  let imageConfigMatches = immutableCandidate === undefined;
+  if (immutableCandidate !== undefined) {
+    const inspected = await dockerWithSignal(
+      ["image", "inspect", immutableCandidate.imageId],
+      signal,
+    );
+    try {
+      const records = JSON.parse(inspected.stdout);
+      imageConfigMatches =
+        Array.isArray(records) &&
+        records.length === 1 &&
+        records[0]?.Id === immutableCandidate.imageId &&
+        createHash("sha256")
+          .update(JSON.stringify(records[0]?.Config))
+          .digest("hex") === immutableCandidate.imageConfigSha256;
+    } catch {
+      imageConfigMatches = false;
+    }
+  }
   if (
     container?.HostConfig?.ReadonlyRootfs !== true ||
     container?.HostConfig?.NetworkMode !== plan.networkName ||
@@ -385,9 +433,48 @@ const assertContainer = async (
     container.Mounts.length !== 0 ||
     JSON.stringify(tmpfsPaths) !== JSON.stringify(expectedPaths) ||
     !tmpfsMatches ||
-    !requestLimitMatches
+    !requestLimitMatches ||
+    !immutableCandidateMatches ||
+    !imageConfigMatches
   )
     throw new Error("integration.isolation.container");
+};
+
+const createImmutableCandidateHandoff = async (plan, signal) => {
+  const { stdout } = await dockerWithSignal(
+    ["image", "inspect", plan.imageTag],
+    signal,
+  );
+  let image;
+  try {
+    const records = JSON.parse(stdout);
+    if (!Array.isArray(records) || records.length !== 1) throw new Error();
+    [image] = records;
+  } catch {
+    throw new Error("integration.isolation.immutable-candidate");
+  }
+  if (
+    !/^sha256:[a-f0-9]{64}$/u.test(image?.Id) ||
+    typeof image?.Config !== "object" ||
+    image.Config === null
+  )
+    throw new Error("integration.isolation.immutable-candidate");
+  const record = {
+    authorityVersion: 1,
+    candidateBundleIdentity: candidate.bundleIdentity,
+    candidateInventorySha256,
+    candidateRoot: "/opt/agentscope/prepared",
+    imageConfigSha256: createHash("sha256")
+      .update(JSON.stringify(image.Config))
+      .digest("hex"),
+    imageId: image.Id,
+    runId: plan.runId,
+    scenarioId: plan.scenarioId,
+  };
+  return {
+    ...record,
+    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
+  };
 };
 
 const fixtureResults = new Map();
@@ -815,6 +902,10 @@ const runScenario = async (plan, signal) => {
     testMode === undefined
       ? []
       : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
+  const immutableCandidate = await createImmutableCandidateHandoff(
+    plan,
+    signal,
+  );
   await dockerWithSignal(
     [
       "create",
@@ -852,6 +943,8 @@ const runScenario = async (plan, signal) => {
       `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
       "--env",
       `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
+      "--env",
+      `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
       ...testModeArguments,
       plan.imageTag,
     ],
@@ -863,6 +956,8 @@ const runScenario = async (plan, signal) => {
     plan.scenarioName,
     ISOLATION_EXECUTOR_LIMITS.containers.scenario,
     signal,
+    undefined,
+    immutableCandidate,
   );
   if (testMode === "sidecar-failure")
     await dockerWithSignal(["stop", plan.collectorName], signal, {

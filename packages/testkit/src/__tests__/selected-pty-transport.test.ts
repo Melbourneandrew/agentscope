@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 
 import { describe, expect, it } from "vitest";
@@ -18,6 +19,10 @@ const request = (
   const now = performance.now();
   return {
     initialGeometry: { columns: 40, rows: 12 },
+    interpreter: {
+      path: "/usr/local/bin/node",
+      sha256: createHash("sha256").update("node-interpreter").digest("hex"),
+    },
     process: {
       runId: "0123456789abcdef",
       requestFingerprint: sha256("selected-pty-request"),
@@ -34,9 +39,13 @@ const request = (
       terminationGraceMs: 50,
       ...overrides,
     },
+    scriptSha256: createHash("sha256")
+      .update("installed-cli-driver")
+      .digest("hex"),
   };
 };
 
+// eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
   it("binds real PTY geometry and returns only bounded semantic evidence", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
@@ -48,6 +57,11 @@ describe("selected PTY transport", () => {
       isTTY: true,
       initialGeometry: { columns: 40, rows: 12 },
       observedGeometry: { columns: 40, rows: 12 },
+      observedCanonicalMode: true,
+      eofByte: 4,
+      eofByteWritten: true,
+      inputBytesWritten: 4,
+      outcome: "completed",
       cleanup: "clean",
       processJoined: true,
       residualProcessCount: 0,
@@ -62,15 +76,123 @@ describe("selected PTY transport", () => {
 
   it.each([
     ["geometry-substitution", "testkit.pty.geometry"],
-    ["missing-witness", "testkit.pty.geometry"],
-    ["identity-substitution", "testkit.headless.observer.identity"],
+    ["mode-substitution", "testkit.pty.geometry"],
+    ["identity-substitution", "testkit.headless.reconciliation.deadline"],
+    ["observer-failure", "testkit.headless.reconciliation.deadline"],
     ["residual", "testkit.headless.reconciliation.deadline"],
     ["root-missing", "testkit.headless.observer.root"],
+    ["signal-failure", "testkit.headless.reconciliation.deadline"],
   ] as const)("fails closed for %s", async (seed, code) => {
     await expect(
       executeSelectedPtyTransportForTest(request(), seed),
     ).rejects.toMatchObject({ code });
   });
+
+  it.each([
+    "immutable-capability",
+    "immutable-device-inode",
+    "immutable-mount-id",
+    "immutable-mount-rw",
+    "immutable-no-new-privileges",
+    "immutable-principal",
+    "immutable-symlink",
+  ] as const)(
+    "rejects immutable-candidate authority substitution %s",
+    async (seed) => {
+      await expect(
+        executeSelectedPtyTransportForTest(request(), seed),
+      ).rejects.toMatchObject({ code: "testkit.pty.immutable-candidate" });
+    },
+  );
+
+  it("drains fragmented terminal output through the exact EIO witness", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      request(),
+      "fragmented-output",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      outputBytes: 5,
+      terminalOutputJoined: true,
+      terminalTransportClosed: true,
+    });
+  });
+
+  it("drains output that becomes readable only after child terminal", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      request(),
+      "late-tail",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      outputBytes: 5,
+      terminalOutputJoined: true,
+    });
+  });
+
+  it("does not let a late abort rewrite an authenticated child terminal", async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, 15);
+    try {
+      const receipt = await executeSelectedPtyTransportForTest(
+        request(),
+        "late-tail",
+        { signal: controller.signal },
+      );
+      expect(receipt).toMatchObject({ outcome: "completed", signal: null });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  it("orders partial input completion before its authenticated EOF byte", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      request(),
+      "partial-input",
+    );
+    expect(receipt).toMatchObject({
+      eofByteWritten: true,
+      inputBytesWritten: 4,
+      outcome: "completed",
+      terminalInputJoined: true,
+    });
+  });
+
+  it.each([
+    "descriptor-closure",
+    "descriptor-reuse",
+    "descriptor-substitution",
+  ] as const)("rejects authenticated descriptor %s", async (seed) => {
+    await expect(
+      executeSelectedPtyTransportForTest(request(), seed),
+    ).rejects.toMatchObject({ code: "testkit.pty.runtime.identity" });
+  });
+
+  it("does not claim completion when the EOF byte cannot be written", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      request(),
+      "eof-failure",
+    );
+    expect(receipt).toMatchObject({
+      cleanup: "clean",
+      eofByteWritten: false,
+      outcome: "transport-failed",
+      terminalInputJoined: false,
+    });
+  });
+
+  it.each(["transport-failure", "close-failure"] as const)(
+    "returns no evidence when %s prevents terminal proof",
+    async (seed) => {
+      await expect(
+        executeSelectedPtyTransportForTest(request(), seed),
+      ).rejects.toMatchObject({
+        code: "testkit.headless.reconciliation.deadline",
+      });
+    },
+  );
 
   it("bounds terminal output and joins the selected process authority", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
@@ -80,8 +202,43 @@ describe("selected PTY transport", () => {
     expect(receipt).toMatchObject({
       cleanup: "clean",
       exitCode: null,
+      finalSnapshot: { semanticState: "output-limit" },
+      outcome: "output-limit",
       processJoined: true,
       signal: "SIGTERM",
+    });
+  });
+
+  it("stops input and EOF writes after output-limit authority triggers", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      request({ stdoutLimitBytes: 16 }),
+      "partial-input-output-limit",
+    );
+    expect(receipt).toMatchObject({
+      eofByteWritten: false,
+      finalSnapshot: { semanticState: "output-limit" },
+      inputBytesWritten: 2,
+      outcome: "output-limit",
+      terminalInputJoined: false,
+    });
+  });
+
+  it("stops input and EOF writes after the execution deadline triggers", async () => {
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      request({
+        monotonicStartupDeadlineMs: now + 20,
+        monotonicExecutionDeadlineMs: now + 40,
+        monotonicShutdownDeadlineMs: now + 300,
+        terminationGraceMs: 20,
+      }),
+      "partial-input-timeout",
+    );
+    expect(receipt).toMatchObject({
+      eofByteWritten: false,
+      inputBytesWritten: 2,
+      outcome: "timeout",
+      terminalInputJoined: false,
     });
   });
 
@@ -99,6 +256,60 @@ describe("selected PTY transport", () => {
     expect(receipt).toMatchObject({
       cleanup: "clean",
       exitCode: null,
+      outcome: "timeout",
+      processJoined: true,
+      signal: "SIGTERM",
+    });
+  });
+
+  it("rejects a child admitted after the absolute startup deadline", async () => {
+    const now = performance.now();
+    await expect(
+      executeSelectedPtyTransportForTest(
+        request({
+          monotonicStartupDeadlineMs: now + 10,
+          monotonicExecutionDeadlineMs: now + 100,
+          monotonicShutdownDeadlineMs: now + 400,
+        }),
+        "startup-delay",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.headless.startup.deadline" });
+  });
+
+  it("distinguishes a represented nonzero child exit", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      request(),
+      "nonzero-exit",
+    );
+    expect(receipt).toMatchObject({
+      exitCode: 7,
+      outcome: "exited-nonzero",
+      signal: null,
+    });
+  });
+
+  it.each(["malformed-exit", "unsupported-signal"] as const)(
+    "returns no completion receipt for %s",
+    async (seed) => {
+      await expect(
+        executeSelectedPtyTransportForTest(request(), seed),
+      ).rejects.toMatchObject({ code: "testkit.pty.transport" });
+    },
+  );
+
+  it("aborts and joins the same selected PTY authority", async () => {
+    const controller = new AbortController();
+    queueMicrotask(() => {
+      controller.abort();
+    });
+    const receipt = await executeSelectedPtyTransportForTest(
+      request(),
+      "timeout",
+      { signal: controller.signal },
+    );
+    expect(receipt).toMatchObject({
+      cleanup: "clean",
+      outcome: "aborted",
       processJoined: true,
       signal: "SIGTERM",
     });
@@ -124,5 +335,30 @@ describe("selected PTY transport", () => {
         "clean",
       ),
     ).rejects.toMatchObject({ code: "testkit.pty.geometry" });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        { ...valid, scriptSha256: "0" },
+        "clean",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.pty.runtime.identity" });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...valid,
+          interpreter: { ...valid.interpreter, extra: true },
+        } as SelectedPtyExecutionRequest,
+        "clean",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.pty.runtime.identity" });
+  });
+
+  it("loads the authenticated native object through its held procfs descriptor", () => {
+    const source = readFileSync(
+      new URL("../internal/headless-supervisor-backend.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("safeReflectApply(processDlopen, process");
+    expect(source).toContain("`/proc/self/fd/${descriptor}`");
+    expect(source).not.toContain("requireAuthority(path)");
   });
 });
