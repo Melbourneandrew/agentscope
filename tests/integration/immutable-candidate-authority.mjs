@@ -444,6 +444,11 @@ export const decodeInstalledCliPtyReceipt = (output, expected) => {
 };
 
 export const validateInstalledCliBoundary = (facts) => {
+  const installedBin = "/opt/agentscope/installed/node_modules/.bin/agentscope";
+  const admittedArgv = [
+    [installedBin, "--version"],
+    [installedBin, "--help"],
+  ];
   if (
     !exactKeys(facts, [
       "argv",
@@ -460,11 +465,9 @@ export const validateInstalledCliBoundary = (facts) => {
     facts.cliPrefix !== "#!/usr/bin/env node\n" ||
     !/^[a-f0-9]{64}$/u.test(facts.expectedDigest) ||
     facts.cliDigest !== facts.expectedDigest ||
-    JSON.stringify(facts.argv) !==
-      JSON.stringify([
-        "/opt/agentscope/installed/node_modules/.bin/agentscope",
-        "--version",
-      ])
+    !admittedArgv.some(
+      (argv) => JSON.stringify(facts.argv) === JSON.stringify(argv),
+    )
   )
     return fail();
   return true;

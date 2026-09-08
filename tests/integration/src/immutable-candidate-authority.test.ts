@@ -151,6 +151,15 @@ describe("immutable candidate authority", () => {
 
   it("causally validates the exact installed CLI command boundary", () => {
     expect(validateInstalledCliBoundary(installedCliFacts())).toBe(true);
+    expect(
+      validateInstalledCliBoundary({
+        ...installedCliFacts(),
+        argv: [
+          "/opt/agentscope/installed/node_modules/.bin/agentscope",
+          "--help",
+        ],
+      }),
+    ).toBe(true);
   });
 
   it.each([
@@ -167,12 +176,23 @@ describe("immutable candidate authority", () => {
     ["mode", { cliMode: 0o644 }],
     ["shebang", { cliPrefix: "#!/bin/sh\n" }],
     ["digest", { cliDigest: hex("e") }],
+    ["missing argv", { argv: [] }],
     [
-      "argv",
+      "unknown argv",
       {
         argv: [
           "/opt/agentscope/installed/node_modules/.bin/agentscope",
           "help",
+        ],
+      },
+    ],
+    [
+      "extra argv",
+      {
+        argv: [
+          "/opt/agentscope/installed/node_modules/.bin/agentscope",
+          "--help",
+          "--version",
         ],
       },
     ],
