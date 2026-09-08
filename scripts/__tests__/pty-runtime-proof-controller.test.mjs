@@ -10,11 +10,23 @@ import {
   createEngineClient,
   createProductionOperations,
   executeController,
+  parseTerminalReceipt,
   publishTerminalResult,
+  validateTerminalReceipt,
 } from "../pty-runtime-proof-controller.mjs";
 
 const roots = [];
 const servers = [];
+const passingReceipt = Object.freeze({
+  version: 1,
+  stage: "final-assertion",
+  status: "passed",
+  errorCode: null,
+  runtimeReceiptAuthenticated: true,
+  cleanupProved: true,
+  originalOutcome: "success",
+  signal: null,
+});
 afterEach(async () => {
   for (const server of servers.splice(0))
     await new Promise((resolveClose) => server.close(resolveClose));
@@ -68,16 +80,20 @@ test("emits one closed receipt for every lifecycle failure prefix", async () => 
     "terminal-join",
     "final-assertion",
   ]) {
-    const fixture = operations({ failAt: stage });
-    const result = await executeController({ operations: fixture });
-    assert.equal(result.receipt.stage, stage);
-    assert.equal(result.receipt.status, "failed");
-    assert.equal(result.receipt.originalOutcome, "failure");
-    assert.equal(
-      result.receipt.runtimeReceiptAuthenticated,
-      ["terminal-join", "final-assertion"].includes(stage),
-    );
-    assert.deepEqual(fixture.events.slice(-2), ["cleanup", "uninstall"]);
+    for (const cleanup of [true, false]) {
+      const fixture = operations({ failAt: stage, cleanup });
+      const result = await executeController({ operations: fixture });
+      assert.equal(result.receipt.stage, stage);
+      assert.equal(result.receipt.status, "failed");
+      assert.equal(result.receipt.originalOutcome, "failure");
+      assert.equal(result.receipt.errorCode, "unexpected-failure");
+      assert.equal(result.receipt.cleanupProved, cleanup);
+      assert.equal(
+        result.receipt.runtimeReceiptAuthenticated,
+        ["terminal-join", "final-assertion"].includes(stage),
+      );
+      assert.deepEqual(fixture.events.slice(-2), ["cleanup", "uninstall"]);
+    }
   }
 });
 
@@ -88,6 +104,7 @@ test("passes only after receipt, terminal join, and cleanup", async () => {
     version: 1,
     stage: "final-assertion",
     status: "passed",
+    errorCode: null,
     runtimeReceiptAuthenticated: true,
     cleanupProved: true,
     originalOutcome: "success",
@@ -117,7 +134,232 @@ test("cleanup uncertainty cannot become success", async () => {
     assert.equal(result.exitCode, 1);
     assert.equal(result.receipt.cleanupProved, false);
     assert.equal(result.receipt.originalOutcome, "uncertain");
+    assert.equal(result.receipt.stage, "cleanup");
+    assert.equal(result.receipt.errorCode, "cleanup-unproved");
   }
+});
+
+test("cleanup uncertainty preserves an earlier causal failure", async () => {
+  const result = await executeController({
+    operations: operations({ failAt: "image-identity", cleanup: false }),
+  });
+  assert.equal(result.receipt.stage, "image-identity");
+  assert.equal(result.receipt.errorCode, "unexpected-failure");
+  assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(result.receipt.originalOutcome, "failure");
+});
+
+test("a cleanup-time signal cannot overwrite an earlier causal failure", async () => {
+  const result = await executeController({
+    operations: operations({
+      failAt: "image-identity",
+      signalAt: "cleanup",
+    }),
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.receipt.stage, "image-identity");
+  assert.equal(result.receipt.errorCode, "unexpected-failure");
+  assert.equal(result.receipt.originalOutcome, "failure");
+  assert.equal(result.receipt.signal, "SIGTERM");
+  assert.equal(result.receipt.cleanupProved, false);
+});
+
+const assertRejectedReceipts = (receipts) => {
+  for (const receipt of receipts) {
+    assert.throws(
+      () => validateTerminalReceipt(receipt),
+      /unexpected-failure/u,
+    );
+    assert.throws(
+      () => parseTerminalReceipt(Buffer.from(`${JSON.stringify(receipt)}\n`)),
+      /unexpected-failure/u,
+    );
+  }
+};
+
+test("terminal receipts reject unknown, missing, duplicate, malformed, and extra state", () => {
+  const valid = { ...passingReceipt };
+  assert.equal(validateTerminalReceipt(valid), valid);
+  assertRejectedReceipts([
+    { ...valid, errorCode: "future-code", status: "failed" },
+    Object.fromEntries(
+      Object.entries(valid).filter(([key]) => key !== "stage"),
+    ),
+    { ...valid, stage: ["final-assertion"] },
+    {
+      ...valid,
+      status: "failed",
+      errorCode: "cleanup-unproved",
+      originalOutcome: "failure",
+    },
+    { ...valid, extra: false },
+    null,
+  ]);
+  for (const receipt of [
+    `${JSON.stringify(valid)}\n${JSON.stringify(valid)}\n`,
+    '{"version":1,"version":1,"stage":"final-assertion","status":"passed","errorCode":null,"runtimeReceiptAuthenticated":true,"cleanupProved":true,"originalOutcome":"success","signal":null}\n',
+    '{"version":2,"\\u0076ersion":1,"stage":"final-assertion","status":"passed","errorCode":null,"runtimeReceiptAuthenticated":true,"cleanupProved":true,"originalOutcome":"success","signal":null}\n',
+    `${JSON.stringify({ ...valid, extra: false })}\n`,
+    "not-json\n",
+  ])
+    assert.throws(
+      () => parseTerminalReceipt(Buffer.from(receipt)),
+      /unexpected-failure/u,
+    );
+  assert.deepEqual(
+    parseTerminalReceipt(Buffer.from(`${JSON.stringify(valid)}\n`)),
+    valid,
+  );
+});
+
+test("terminal receipts reject substituted causal dimensions", () => {
+  const valid = { ...passingReceipt };
+  for (const receipt of [
+    {
+      ...valid,
+      stage: "input-identity",
+      status: "failed",
+      errorCode: "repository-identity-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      stage: "image-identity",
+      status: "failed",
+      errorCode: "image-identity-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      status: "failed",
+      errorCode: "signal",
+      originalOutcome: "signal",
+      signal: "SIGTERM",
+    },
+  ]) {
+    assert.equal(validateTerminalReceipt(receipt), receipt);
+    assert.deepEqual(
+      parseTerminalReceipt(Buffer.from(`${JSON.stringify(receipt)}\n`)),
+      receipt,
+    );
+  }
+  assertRejectedReceipts([
+    {
+      ...valid,
+      stage: "setup",
+      status: "failed",
+      errorCode: "terminal-join-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      stage: "input-identity",
+      status: "failed",
+      errorCode: "runtime-receipt-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "uncertain",
+    },
+    {
+      ...valid,
+      stage: "cleanup",
+      status: "failed",
+      errorCode: "unexpected-failure",
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      stage: "input-identity",
+      status: "failed",
+      errorCode: "engine-status-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "uncertain",
+    },
+    {
+      ...valid,
+      stage: "terminal-join",
+      status: "failed",
+      errorCode: "engine-status-invalid",
+      originalOutcome: "uncertain",
+    },
+    {
+      ...valid,
+      stage: "create",
+      status: "failed",
+      errorCode: "container-identity-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "failure",
+    },
+  ]);
+});
+
+test("terminal receipts bind cleanup and signal dimensions", () => {
+  const valid = { ...passingReceipt };
+  assertRejectedReceipts([
+    {
+      ...valid,
+      stage: "input-identity",
+      status: "failed",
+      errorCode: "repository-identity-invalid",
+      runtimeReceiptAuthenticated: false,
+      cleanupProved: false,
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      stage: "input-identity",
+      status: "failed",
+      errorCode: "preexisting-container",
+      runtimeReceiptAuthenticated: false,
+      cleanupProved: false,
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      stage: "image-identity",
+      status: "failed",
+      errorCode: "image-identity-invalid",
+      runtimeReceiptAuthenticated: false,
+      cleanupProved: false,
+      originalOutcome: "failure",
+    },
+    {
+      ...valid,
+      stage: "cleanup",
+      status: "failed",
+      errorCode: "cleanup-unproved",
+      cleanupProved: false,
+      originalOutcome: "uncertain",
+      signal: "SIGTERM",
+    },
+    {
+      ...valid,
+      stage: "create",
+      status: "failed",
+      errorCode: "container-authority-invalid",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "uncertain",
+    },
+    {
+      ...valid,
+      stage: "setup",
+      status: "failed",
+      errorCode: "signal",
+      runtimeReceiptAuthenticated: false,
+      originalOutcome: "signal",
+      signal: "SIGTERM",
+    },
+    {
+      ...valid,
+      stage: "terminal-join",
+      status: "failed",
+      errorCode: "signal",
+      originalOutcome: "signal",
+      signal: "SIGTERM",
+    },
+  ]);
 });
 
 const fixtureServer = async (handler) => {
@@ -204,41 +446,45 @@ test("rejects socket and route substitution before request admission", async () 
     requests += 1;
     response.end("{}");
   });
-  const client = createEngineClient({
-    absoluteDeadline: performance.now() + 10_000,
-    socketPath,
-    socketOwner: BigInt(process.getuid()),
-  });
-  await assert.rejects(
-    client.request({
+  for (const invalidRequest of [
+    {
       expected: [200],
       method: "GET",
       path: "/v1.45/version",
-    }),
-    /engine-request-invalid/u,
-  );
-  await assert.rejects(
-    client.request({
+    },
+    {
       expected: [201],
       method: "GET",
       path: `/v1.45/images/${encodeURIComponent(
         "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
       )}/json`,
-    }),
-    /engine-request-invalid/u,
-  );
-  await assert.rejects(
-    client.request({
+    },
+    {
       expected: [201],
       method: "POST",
       mutation: true,
       path: `/v1.45/containers/create?name=agentscope-pty-runtime-proof-${"a".repeat(
         32,
       )}&platform=linux%2Famd64`,
-    }),
-    /engine-request-invalid/u,
-  );
-  await client.request({
+    },
+  ]) {
+    const invalidClient = createEngineClient({
+      absoluteDeadline: performance.now() + 10_000,
+      socketPath,
+      socketOwner: BigInt(process.getuid()),
+    });
+    await assert.rejects(
+      invalidClient.request(invalidRequest),
+      /engine-request-invalid/u,
+    );
+    assert.equal(invalidClient.uncertain(), true);
+  }
+  const socketClient = createEngineClient({
+    absoluteDeadline: performance.now() + 10_000,
+    socketPath,
+    socketOwner: BigInt(process.getuid()),
+  });
+  await socketClient.request({
     expected: [200],
     method: "GET",
     path: `/v1.45/images/${encodeURIComponent(
@@ -247,7 +493,7 @@ test("rejects socket and route substitution before request admission", async () 
   });
   chmodSync(socketPath, 0o600);
   await assert.rejects(
-    client.request({
+    socketClient.request({
       expected: [200],
       method: "GET",
       path: `/v1.45/images/${encodeURIComponent(
@@ -330,9 +576,124 @@ test("malformed pull receipt stops before container creation", async () => {
   });
   assert.equal(result.exitCode, 1);
   assert.equal(result.receipt.originalOutcome, "uncertain");
+  assert.equal(result.receipt.errorCode, "image-pull-invalid");
   assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+  const priorExitCode = process.exitCode;
+  const receipts = [];
+  const published = await publishTerminalResult(result, {
+    getSignal: () => null,
+    writeReceipt: (receipt) => receipts.push(receipt),
+  });
+  assert.equal(published.exitCode, 1);
+  assert.deepEqual(receipts, [result.receipt]);
+  process.exitCode = priorExitCode;
   assert.equal(
     observed.some((path) => path.includes("/containers/create?")),
+    false,
+  );
+});
+
+test("malformed create receipt preserves uncertainty and publishes once", async () => {
+  const identity =
+    "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6";
+  const manifest =
+    "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+  const socketPath = await fixtureServer((request, response) => {
+    if (request.url.startsWith("/v1.45/containers/json?")) response.end("[]");
+    else if (request.url.startsWith("/v1.45/images/create?"))
+      response.end(
+        `${JSON.stringify({ status: `Digest: ${manifest}` })}\n${JSON.stringify(
+          { status: `Status: Image is up to date for node@${manifest}` },
+        )}\n`,
+      );
+    else if (request.url.startsWith("/v1.45/images/"))
+      response.end(
+        JSON.stringify({ Architecture: "amd64", Id: identity, Os: "linux" }),
+      );
+    else if (request.url.startsWith("/v1.45/containers/create?"))
+      response.writeHead(201).end("not-json");
+    else response.writeHead(500).end("{}");
+  });
+  const absoluteDeadline = performance.now() + 10_000;
+  const result = await executeController({
+    absoluteDeadline,
+    operations: createProductionOperations({
+      absoluteDeadline,
+      repositoryRoot: process.cwd(),
+      socketOwner: BigInt(process.getuid()),
+      socketPath,
+    }),
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.receipt.stage, "create");
+  assert.equal(result.receipt.errorCode, "container-create-invalid");
+  assert.equal(result.receipt.originalOutcome, "uncertain");
+  assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+  const priorExitCode = process.exitCode;
+  const receipts = [];
+  const published = await publishTerminalResult(result, {
+    getSignal: () => null,
+    writeReceipt: (receipt) => receipts.push(receipt),
+  });
+  assert.equal(published.exitCode, 1);
+  assert.deepEqual(receipts, [result.receipt]);
+  process.exitCode = priorExitCode;
+});
+
+test("contradictory created-container authority permits no cleanup mutation", async () => {
+  const containerId = "a".repeat(64);
+  const imageId =
+    "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6";
+  const manifest =
+    "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+  const observed = [];
+  const socketPath = await fixtureServer((request, response) => {
+    observed.push(`${request.method} ${request.url}`);
+    if (request.url.startsWith("/v1.45/containers/json?")) response.end("[]");
+    else if (request.url.startsWith("/v1.45/images/create?"))
+      response.end(
+        `${JSON.stringify({ status: `Digest: ${manifest}` })}\n${JSON.stringify(
+          { status: `Status: Image is up to date for node@${manifest}` },
+        )}\n`,
+      );
+    else if (request.url.startsWith("/v1.45/images/"))
+      response.end(
+        JSON.stringify({ Architecture: "amd64", Id: imageId, Os: "linux" }),
+      );
+    else if (request.url.startsWith("/v1.45/containers/create?"))
+      response
+        .writeHead(201)
+        .end(JSON.stringify({ Id: containerId, Warnings: [] }));
+    else if (request.url.endsWith("/json"))
+      response.end(
+        JSON.stringify({
+          HostConfig: { NetworkMode: "bridge", ReadonlyRootfs: true },
+          Id: containerId,
+          Image: imageId,
+          Name: "/substituted",
+        }),
+      );
+    else response.writeHead(500).end("{}");
+  });
+  const absoluteDeadline = performance.now() + 10_000;
+  const result = await executeController({
+    absoluteDeadline,
+    operations: createProductionOperations({
+      absoluteDeadline,
+      repositoryRoot: process.cwd(),
+      socketOwner: BigInt(process.getuid()),
+      socketPath,
+    }),
+  });
+  assert.equal(result.receipt.stage, "create");
+  assert.equal(result.receipt.errorCode, "container-authority-invalid");
+  assert.equal(result.receipt.cleanupProved, false);
+  assert.equal(validateTerminalReceipt(result.receipt), result.receipt);
+  assert.equal(observed.length, 5);
+  assert.equal(
+    observed.some((entry) => entry.startsWith("DELETE ")),
     false,
   );
 });
@@ -463,7 +824,7 @@ test("a signal delivered during receipt write cannot leave terminal success", as
     )};
 let signal=null;
 process.on('SIGTERM',()=>{signal??='SIGTERM'});
-const result=await publishTerminalResult({exitCode:0,receipt:{status:'passed'}},{
+const result=await publishTerminalResult({exitCode:0,receipt:${JSON.stringify(passingReceipt)}},{
   getSignal:()=>signal,
   writeReceipt:(receipt)=>{
     process.kill(process.pid,'SIGTERM');
@@ -495,7 +856,7 @@ process.exitCode=result.exitCode;`,
   assert.equal(result.status, 143);
   assert.equal(result.signal, null);
   assert.equal(result.stderr.length, 0);
-  assert.deepEqual(JSON.parse(result.stdout.toString()), { status: "passed" });
+  assert.deepEqual(JSON.parse(result.stdout.toString()), passingReceipt);
 });
 
 test("pre-publication signal rewrites the sole receipt to failure", async () => {
@@ -503,7 +864,7 @@ test("pre-publication signal rewrites the sole receipt to failure", async () => 
   let signal = "SIGINT";
   const receipts = [];
   const result = await publishTerminalResult(
-    { exitCode: 0, receipt: { status: "passed" } },
+    { exitCode: 0, receipt: passingReceipt },
     {
       getSignal: () => signal,
       writeReceipt: (receipt) => receipts.push(receipt),
@@ -513,6 +874,8 @@ test("pre-publication signal rewrites the sole receipt to failure", async () => 
   assert.equal(result.exitCode, 130);
   assert.deepEqual(receipts, [
     {
+      ...passingReceipt,
+      errorCode: "signal",
       status: "failed",
       originalOutcome: "signal",
       signal: "SIGINT",
@@ -533,7 +896,7 @@ test("a signal at the final observation remains owned through process exit", asy
 let signal=null;
 let calls=0;
 process.on('SIGTERM',()=>{signal??='SIGTERM';process.exitCode=143});
-await publishTerminalResult({exitCode:0,receipt:{status:'passed'}},{
+await publishTerminalResult({exitCode:0,receipt:${JSON.stringify(passingReceipt)}},{
   getSignal:()=>{
     calls+=1;
     if(calls===2){
@@ -567,5 +930,5 @@ await publishTerminalResult({exitCode:0,receipt:{status:'passed'}},{
   assert.equal(result.status, 143);
   assert.equal(result.signal, null);
   assert.equal(result.stderr.length, 0);
-  assert.deepEqual(JSON.parse(result.stdout.toString()), { status: "passed" });
+  assert.deepEqual(JSON.parse(result.stdout.toString()), passingReceipt);
 });

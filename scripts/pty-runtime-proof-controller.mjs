@@ -23,6 +23,47 @@ const totalMilliseconds = 90_000;
 const teardownReserveMilliseconds = 7_000;
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const encoded = (value) => encodeURIComponent(value);
+const lifecycleStages = Object.freeze([
+  "setup",
+  "input-identity",
+  "image-identity",
+  "create",
+  "runtime-receipt",
+  "terminal-join",
+  "final-assertion",
+  "cleanup",
+]);
+const controllerErrorCodes = new Set([
+  "cleanup-unproved",
+  "container-absence-invalid",
+  "container-authority-invalid",
+  "container-create-invalid",
+  "container-identity-invalid",
+  "container-inspect-invalid",
+  "container-list-invalid",
+  "container-wait-invalid",
+  "deadline",
+  "engine-connect-failed",
+  "engine-request-invalid",
+  "engine-response-error",
+  "engine-response-invalid",
+  "engine-response-oversize",
+  "engine-response-truncated",
+  "engine-status-invalid",
+  "engine-timeout",
+  "engine-transport-error",
+  "image-identity-invalid",
+  "image-inspect-invalid",
+  "image-pull-invalid",
+  "preexisting-container",
+  "repository-identity-invalid",
+  "runtime-receipt-invalid",
+  "signal",
+  "socket-identity-invalid",
+  "socket-identity-substituted",
+  "terminal-join-invalid",
+  "unexpected-failure",
+]);
 
 class ControllerFailure extends Error {
   constructor(code, outcome = "failure") {
@@ -31,6 +72,8 @@ class ControllerFailure extends Error {
     this.outcome = outcome;
   }
 }
+const controllerFailureCode = (error, fallback) =>
+  error instanceof ControllerFailure ? error.code : fallback;
 
 const remainingMilliseconds = (deadline) =>
   Math.max(0, Math.floor(deadline - performance.now()));
@@ -173,6 +216,7 @@ export const createEngineClient = ({
         (body !== undefined &&
           (!Buffer.isBuffer(body) || body.length > maximumRequestBytes))
       ) {
+        uncertain = true;
         rejectRequest(
           new ControllerFailure("engine-request-invalid", "uncertain"),
         );
@@ -342,7 +386,13 @@ export const createProductionOperations = ({
     try {
       return parseJson(response.body, code);
     } catch (error) {
-      if (request.mutation) engine.interrupt();
+      if (request.mutation) {
+        engine.interrupt();
+        throw new ControllerFailure(
+          controllerFailureCode(error, code),
+          "uncertain",
+        );
+      }
       throw error;
     }
   };
@@ -426,7 +476,10 @@ export const createProductionOperations = ({
           value = parseJson(Buffer.from(line), "image-pull-invalid");
         } catch (error) {
           engine.interrupt();
-          throw error;
+          throw new ControllerFailure(
+            controllerFailureCode(error, "image-pull-invalid"),
+            "uncertain",
+          );
         }
         if (
           !exactObject(value) ||
@@ -540,8 +593,10 @@ export const createProductionOperations = ({
         throw error;
       }
       const authority = await inspectContainer(containerId);
-      if (!exactOwnedContainer(authority, containerId))
+      if (!exactOwnedContainer(authority, containerId)) {
+        engine.interrupt();
         throw new ControllerFailure("container-authority-invalid", "uncertain");
+      }
     },
     async runtimeReceipt() {
       await call({
@@ -639,13 +694,15 @@ export const executeController = async ({
   let originalOutcome = "success";
   let runtimeReceiptAuthenticated = false;
   let failureStage;
+  let errorCode = null;
   let signal = null;
   let cleanupProved;
   let settled = false;
   const latchSignal = (value) => {
     if (settled || signal !== null) return false;
     signal = value === "SIGINT" ? "SIGINT" : "SIGTERM";
-    originalOutcome = "signal";
+    if (failureStage === undefined && originalOutcome === "success")
+      originalOutcome = "signal";
     return true;
   };
   const uninstall =
@@ -669,22 +726,36 @@ export const executeController = async ({
     }
   } catch (error) {
     failureStage = stage;
-    if (originalOutcome !== "signal")
+    if (originalOutcome === "signal") errorCode = "signal";
+    else {
       originalOutcome =
         error instanceof ControllerFailure ? error.outcome : "failure";
+      errorCode =
+        error instanceof ControllerFailure &&
+        controllerErrorCodes.has(error.code)
+          ? error.code
+          : "unexpected-failure";
+    }
   } finally {
     try {
       cleanupProved = (await operations.cleanup()) === true;
     } catch {
       cleanupProved = false;
     }
-    if (!cleanupProved && originalOutcome === "success")
+    if (signal !== null) cleanupProved = false;
+    if (signal !== null && originalOutcome === "success") {
+      originalOutcome = "signal";
+      errorCode = "signal";
+      failureStage ??= "cleanup";
+    } else if (!cleanupProved && originalOutcome === "success") {
       originalOutcome = "uncertain";
-    stage = cleanupProved
-      ? originalOutcome === "success"
+      errorCode = "cleanup-unproved";
+      failureStage = "cleanup";
+    }
+    stage =
+      originalOutcome === "success"
         ? "final-assertion"
-        : (failureStage ?? "cleanup")
-      : "cleanup";
+        : (failureStage ?? "cleanup");
     settled = true;
     uninstall();
   }
@@ -707,6 +778,7 @@ export const executeController = async ({
       version: 1,
       stage,
       status,
+      errorCode,
       runtimeReceiptAuthenticated,
       cleanupProved: cleanupProved === true,
       originalOutcome,
@@ -717,6 +789,271 @@ export const executeController = async ({
 
 const nextTurn = () => new Promise((resolveTurn) => setImmediate(resolveTurn));
 const signalExit = (signal) => (signal === "SIGINT" ? 130 : 143);
+const engineStages = Object.freeze([
+  "input-identity",
+  "image-identity",
+  "create",
+  "runtime-receipt",
+  "terminal-join",
+]);
+const receiptErrorAuthorities = Object.freeze({
+  "cleanup-unproved": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["cleanup"],
+  }),
+  "container-authority-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["create"],
+  }),
+  "container-create-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["create"],
+  }),
+  "container-identity-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["create"],
+  }),
+  "container-inspect-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["create", "terminal-join"],
+  }),
+  "container-list-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["input-identity"],
+  }),
+  "container-wait-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["runtime-receipt"],
+  }),
+  deadline: Object.freeze({
+    outcomes: ["timeout"],
+    stages: lifecycleStages.filter((stage) => stage !== "cleanup"),
+  }),
+  "engine-connect-failed": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-request-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-response-error": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-response-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-response-oversize": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-response-truncated": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-status-invalid": Object.freeze({
+    tuples: Object.freeze([
+      ["input-identity", "failure"],
+      ["image-identity", "failure"],
+      ["image-identity", "uncertain"],
+      ["create", "failure"],
+      ["create", "uncertain"],
+      ["runtime-receipt", "failure"],
+      ["runtime-receipt", "uncertain"],
+      ["terminal-join", "failure"],
+    ]),
+  }),
+  "engine-timeout": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "engine-transport-error": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "image-identity-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["image-identity"],
+  }),
+  "image-inspect-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["image-identity"],
+  }),
+  "image-pull-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: ["image-identity"],
+  }),
+  "preexisting-container": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["input-identity"],
+  }),
+  "repository-identity-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["input-identity"],
+  }),
+  "runtime-receipt-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["runtime-receipt"],
+  }),
+  signal: Object.freeze({
+    outcomes: ["signal"],
+    stages: lifecycleStages,
+  }),
+  "socket-identity-invalid": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "socket-identity-substituted": Object.freeze({
+    outcomes: ["uncertain"],
+    stages: engineStages,
+  }),
+  "terminal-join-invalid": Object.freeze({
+    outcomes: ["failure"],
+    stages: ["terminal-join"],
+  }),
+  "unexpected-failure": Object.freeze({
+    outcomes: ["failure"],
+    stages: lifecycleStages.filter((stage) => stage !== "cleanup"),
+  }),
+});
+const validReceiptEnvelope = (receipt) =>
+  exactObject(receipt) &&
+  Object.keys(receipt).sort().join(",") ===
+    "cleanupProved,errorCode,originalOutcome,runtimeReceiptAuthenticated,signal,stage,status,version" &&
+  receipt.version === 1 &&
+  lifecycleStages.includes(receipt.stage) &&
+  ["passed", "failed"].includes(receipt.status) &&
+  typeof receipt.runtimeReceiptAuthenticated === "boolean" &&
+  typeof receipt.cleanupProved === "boolean" &&
+  ["success", "failure", "uncertain", "timeout", "signal"].includes(
+    receipt.originalOutcome,
+  ) &&
+  [null, "SIGINT", "SIGTERM"].includes(receipt.signal) &&
+  (receipt.errorCode === null ||
+    (typeof receipt.errorCode === "string" &&
+      controllerErrorCodes.has(receipt.errorCode)));
+const isSuccessReceipt = (receipt) =>
+  receipt?.status === "passed" &&
+  receipt?.stage === "final-assertion" &&
+  receipt?.originalOutcome === "success" &&
+  receipt?.errorCode === null &&
+  receipt?.signal === null &&
+  receipt?.runtimeReceiptAuthenticated === true &&
+  receipt?.cleanupProved === true;
+const isCausalFailureReceipt = (receipt) => {
+  const authority = receiptErrorAuthorities[receipt?.errorCode];
+  const tupleAdmitted = authority?.tuples?.some(
+    ([stage, outcome]) =>
+      stage === receipt?.stage && outcome === receipt?.originalOutcome,
+  );
+  const productAdmitted =
+    authority?.stages?.includes(receipt?.stage) &&
+    authority?.outcomes?.includes(receipt?.originalOutcome);
+  return (
+    receipt?.status === "failed" &&
+    authority !== undefined &&
+    (tupleAdmitted === true || productAdmitted === true) &&
+    cleanupEvidenceMatches(receipt) &&
+    (receipt.errorCode !== "cleanup-unproved" ||
+      receipt.cleanupProved === false) &&
+    (receipt.errorCode !== "signal" ||
+      ["SIGINT", "SIGTERM"].includes(receipt.signal))
+  );
+};
+const cleanupFalseErrorCodes = new Set([
+  "container-authority-invalid",
+  "container-create-invalid",
+  "container-identity-invalid",
+  "engine-connect-failed",
+  "engine-request-invalid",
+  "engine-response-error",
+  "engine-response-invalid",
+  "engine-response-oversize",
+  "engine-response-truncated",
+  "engine-timeout",
+  "engine-transport-error",
+  "image-pull-invalid",
+  "socket-identity-invalid",
+  "socket-identity-substituted",
+]);
+const cleanupTrueErrorCodes = new Set([
+  "container-list-invalid",
+  "image-identity-invalid",
+  "image-inspect-invalid",
+  "preexisting-container",
+  "repository-identity-invalid",
+]);
+const preCreateStages = new Set([
+  "setup",
+  "input-identity",
+  "image-identity",
+  "create",
+]);
+function cleanupEvidenceMatches(receipt) {
+  if (
+    receipt.signal !== null &&
+    receipt.errorCode !== "signal" &&
+    receipt.cleanupProved
+  )
+    return false;
+  if (receipt.errorCode === "cleanup-unproved")
+    return receipt.cleanupProved === false && receipt.signal === null;
+  if (receipt.errorCode === "signal")
+    return !receipt.cleanupProved || receipt.stage === "final-assertion";
+  if (cleanupFalseErrorCodes.has(receipt.errorCode))
+    return receipt.cleanupProved === false;
+  if (cleanupTrueErrorCodes.has(receipt.errorCode))
+    return receipt.cleanupProved === true;
+  if (receipt.errorCode === "engine-status-invalid") {
+    if (receipt.originalOutcome === "uncertain")
+      return receipt.cleanupProved === false;
+    if (["input-identity", "image-identity"].includes(receipt.stage))
+      return receipt.cleanupProved === true;
+  }
+  if (
+    ["deadline", "unexpected-failure"].includes(receipt.errorCode) &&
+    preCreateStages.has(receipt.stage)
+  )
+    return receipt.cleanupProved === true;
+  return true;
+}
+export const validateTerminalReceipt = (receipt) => {
+  const stageHasRuntimeReceipt = [
+    "terminal-join",
+    "final-assertion",
+    "cleanup",
+  ].includes(receipt?.stage);
+  if (
+    !validReceiptEnvelope(receipt) ||
+    stageHasRuntimeReceipt !== receipt.runtimeReceiptAuthenticated ||
+    !(isSuccessReceipt(receipt) || isCausalFailureReceipt(receipt))
+  )
+    throw new ControllerFailure("unexpected-failure");
+  return receipt;
+};
+export const parseTerminalReceipt = (bytes) => {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 2048)
+    throw new ControllerFailure("unexpected-failure");
+  let text;
+  try {
+    text = decoder.decode(bytes);
+  } catch {
+    throw new ControllerFailure("unexpected-failure");
+  }
+  if (!text.endsWith("\n") || text.slice(0, -1).includes("\n"))
+    throw new ControllerFailure("unexpected-failure");
+  const body = text.slice(0, -1);
+  try {
+    const receipt = JSON.parse(body);
+    if (body !== JSON.stringify(receipt))
+      throw new ControllerFailure("unexpected-failure");
+    return validateTerminalReceipt(receipt);
+  } catch {
+    throw new ControllerFailure("unexpected-failure");
+  }
+};
 export const publishTerminalResult = async (
   result,
   {
@@ -734,11 +1071,13 @@ export const publishTerminalResult = async (
           exitCode: signalExit(beforePublication),
           receipt: {
             ...result.receipt,
+            errorCode: "signal",
             originalOutcome: "signal",
             signal: beforePublication,
             status: "failed",
           },
         };
+  validateTerminalReceipt(published.receipt);
   process.exitCode = published.exitCode;
   writeReceipt(published.receipt);
   await nextTurn();

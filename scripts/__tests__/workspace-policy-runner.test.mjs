@@ -269,6 +269,12 @@ test("the checked-in inventory is classified exactly once", () => {
       assert.ok(!plan.pure.includes(name));
     }
   }
+  assert.equal(
+    plan.authority.filter(
+      (name) => name === "pty-runtime-proof-controller.test.mjs",
+    ).length,
+    1,
+  );
 });
 
 test("the checked-in inventory rejects omissions and unreviewed growth", () => {
