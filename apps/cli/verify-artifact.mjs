@@ -251,6 +251,32 @@ try {
     oracleModule.expectedPublicCommandInventory,
     registryProjection,
   );
+  for (const registration of registryProjection) {
+    const help = runRaw(executable, [...registration.path, "--help"], {
+      cwd: installRoot,
+      shell: process.platform === "win32",
+    });
+    assert.equal(help.status, 0);
+    assert.equal(help.stderr, "");
+    assert.doesNotThrow(() =>
+      oracleModule.validateInstalledCliHelpOutput(registration.id, help.stdout),
+    );
+    assert.throws(() =>
+      oracleModule.validateInstalledCliHelpOutput(
+        registration.id,
+        "Usage: agentscope\nDocumentation: https://invalid.example/\n",
+      ),
+    );
+    assert.throws(() =>
+      oracleModule.validateInstalledCliHelpOutput(
+        registration.id,
+        help.stdout.replace(
+          /\n(?:Arguments|Options|Commands):[\s\S]*?(?=\nDocumentation:)/u,
+          "",
+        ),
+      ),
+    );
+  }
   const installedContractPlan = oracleModule.createInstalledCliContractPlan(
     installedManifest.version,
     { architecture: "x64", modules: "127", platform: "linux" },
@@ -273,6 +299,7 @@ try {
     new Set([
       "deadline-child",
       "direct",
+      "pty-narrow",
       "signal-int",
       "signal-term",
       "stdout-closed",

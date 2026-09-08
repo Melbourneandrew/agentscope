@@ -417,6 +417,47 @@ const invokeSelected = async ({
     stdout: decode(trace.result.stdout),
   });
 };
+const invokeSelectedNarrowPty = async ({ caseId, home }) => {
+  const { receipt } = await runInstalledCliPtyProof({
+    capability: headlessCapability,
+    home,
+    proof: "narrow-help",
+    runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+    shutdownDeadline: headlessShutdownDeadline,
+  });
+  installedContractReceipts.push({
+    caseId,
+    outcome: "exited",
+    exitCode: receipt.exitCode,
+    signal: receipt.signal,
+    cleanup: receipt.cleanup,
+    residualProcessCount: receipt.residualProcessCount,
+    processJoined: receipt.processJoined,
+    stdinJoined: receipt.terminalInputJoined,
+    stdoutJoined: receipt.terminalOutputJoined,
+    stderrJoined: receipt.terminalTransportClosed,
+  });
+  return Object.freeze({
+    outcome: "exited",
+    signal: receipt.signal,
+    status: receipt.exitCode,
+    stderr: "",
+    stdout: "",
+    pty: Object.freeze({
+      cleanup: receipt.cleanup,
+      initialGeometry: receipt.initialGeometry,
+      isTTY: receipt.isTTY,
+      observedGeometry: receipt.observedGeometry,
+      outputBytes: receipt.outputBytes,
+      outputSha256: `sha256:${receipt.outputSha256}`,
+      processJoined: receipt.processJoined,
+      residualProcessCount: receipt.residualProcessCount,
+      terminalInputJoined: receipt.terminalInputJoined,
+      terminalOutputJoined: receipt.terminalOutputJoined,
+      terminalTransportClosed: receipt.terminalTransportClosed,
+    }),
+  });
+};
 
 const contractRoot = "/tmp/agentscope-installed-contract";
 rmSync(contractRoot, { force: true, recursive: true });
@@ -459,11 +500,24 @@ const npmResult = await invokeSelected({
 });
 if (npmResult.status !== 0 || npmResult.signal !== null)
   throw new Error("integration.runner.installed-contract-install");
-const installedPackageRoot = join(installRoot, "node_modules/agentscope-cli");
+const runtimeInstalledPackageRoot = join(
+  installRoot,
+  "node_modules/agentscope-cli",
+);
+const runtimeInstalledManifest = JSON.parse(
+  readFileSync(join(runtimeInstalledPackageRoot, "package.json"), "utf8"),
+);
+const installedPackageRoot =
+  "/opt/agentscope/installed/node_modules/agentscope-cli";
 const installedManifest = JSON.parse(
   readFileSync(join(installedPackageRoot, "package.json"), "utf8"),
 );
-const installedExecutable = join(installRoot, "node_modules/.bin/agentscope");
+if (
+  JSON.stringify(runtimeInstalledManifest) !== JSON.stringify(installedManifest)
+)
+  throw new Error("integration.runner.installed-contract-install");
+const installedExecutable =
+  "/opt/agentscope/installed/node_modules/.bin/agentscope";
 const contractPlan = installedContractOracle.createInstalledCliContractPlan(
   installedManifest.version,
   {
@@ -563,15 +617,20 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     stepIndex += 1
   ) {
     const contractStep = contractCase.steps[stepIndex];
-    const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
-    results.push(
-      await invokeSelected({
-        ...selectedInvocation,
-        caseId: `${contractCase.caseId}.${stepIndex}`,
-        cwd: caseCwd,
-        environment: caseEnvironment,
-      }),
-    );
+    const caseId = `${contractCase.caseId}.${stepIndex}`;
+    if (contractStep.executionMode === "pty-narrow")
+      results.push(await invokeSelectedNarrowPty({ caseId, home: caseHome }));
+    else {
+      const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
+      results.push(
+        await invokeSelected({
+          ...selectedInvocation,
+          caseId,
+          cwd: caseCwd,
+          environment: caseEnvironment,
+        }),
+      );
+    }
     afterStateDigests.push(stateDigest(stateRoot));
   }
   contractObservations.push({

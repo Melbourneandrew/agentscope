@@ -29,6 +29,7 @@ const predicates = new Set([
   "package-manifest",
   "receipt-rejected",
 ]);
+const proofs = new Set(["narrow-help", "version"]);
 const fail = (predicate) => {
   if (!predicates.has(predicate))
     throw new Error("integration.pty-installed-cli-driver.driver-input");
@@ -79,10 +80,46 @@ const fingerprint = (request) =>
       terminationGraceMs: request.terminationGraceMs,
     }),
   )}`;
+const proofConfiguration = (proof, version) => {
+  if (proof === "version") {
+    const bytes = Buffer.from(`${version}\r\n`);
+    return Object.freeze({
+      arguments: Object.freeze(["--version"]),
+      outputBytes: bytes.length,
+      outputSha256: sha256(bytes),
+    });
+  }
+  if (proof === "narrow-help")
+    return Object.freeze({
+      arguments: Object.freeze(["--help"]),
+      outputBytes: 1_182,
+      outputSha256:
+        "dd9b8aae571f7f55ead503a37bf6ebfe43848f96c2f91396ee19b50d98578639",
+    });
+  return fail("driver-input");
+};
+const validReceipt = (receipt, proof) =>
+  receipt.outcome === "completed" &&
+  receipt.exitCode === 0 &&
+  receipt.signal === null &&
+  receipt.isTTY === true &&
+  JSON.stringify(receipt.initialGeometry) ===
+    JSON.stringify({ columns: 40, rows: 12 }) &&
+  JSON.stringify(receipt.observedGeometry) ===
+    JSON.stringify({ columns: 40, rows: 12 }) &&
+  receipt.outputBytes === proof.outputBytes &&
+  receipt.outputSha256 === proof.outputSha256 &&
+  receipt.cleanup === "clean" &&
+  receipt.residualProcessCount === 0 &&
+  receipt.processJoined === true &&
+  receipt.terminalInputJoined === true &&
+  receipt.terminalOutputJoined === true &&
+  receipt.terminalTransportClosed === true;
 
 export const runInstalledCliPtyProof = async ({
   capability,
   home,
+  proof = "version",
   runId,
   shutdownDeadline,
 }) => {
@@ -91,6 +128,7 @@ export const runInstalledCliPtyProof = async ({
     capability === null ||
     typeof home !== "string" ||
     !home.startsWith("/") ||
+    !proofs.has(proof) ||
     !/^[a-f0-9]{16}$/u.test(runId) ||
     !Number.isFinite(shutdownDeadline)
   )
@@ -114,8 +152,12 @@ export const runInstalledCliPtyProof = async ({
     return fail("cli-authority");
   }
   try {
+    const { arguments: arguments_ } = proofConfiguration(
+      proof,
+      "0.0.0-unverified",
+    );
     validateInstalledCliBoundary({
-      argv: [installedBin, "--version"],
+      argv: [installedBin, ...arguments_],
       binIsSymlink: bin.isSymbolicLink(),
       binTarget: readlinkSync(installedBin),
       cliDigest: cli.sha256,
@@ -144,12 +186,12 @@ export const runInstalledCliPtyProof = async ({
     manifest?.bin?.agentscope !== "./dist/bin/agentscope.js"
   )
     return fail("package-manifest");
-  const expectedOutput = Buffer.from(`${manifest.version}\r\n`);
+  const expected = proofConfiguration(proof, manifest.version);
   const now = performance.now();
   const processRequest = {
     runId,
     executable: installedCli,
-    arguments: ["--version"],
+    arguments: expected.arguments,
     cwd: "/opt/agentscope",
     environment: Object.freeze({ HOME: home, LANG: "C.UTF-8", NO_COLOR: "1" }),
     stdin: new Uint8Array(),
@@ -169,8 +211,8 @@ export const runInstalledCliPtyProof = async ({
     receipt = await executeSelectedPtyProcess(capability, {
       completion: {
         kind: "exact-output",
-        outputBytes: expectedOutput.length,
-        outputSha256: sha256(expectedOutput),
+        outputBytes: expected.outputBytes,
+        outputSha256: expected.outputSha256,
       },
       process: processRequest,
       initialGeometry: { columns: 40, rows: 12 },
@@ -180,17 +222,6 @@ export const runInstalledCliPtyProof = async ({
   } catch {
     return fail("execution-rejected");
   }
-  if (
-    receipt.outcome !== "completed" ||
-    receipt.outputBytes !== expectedOutput.length ||
-    receipt.outputSha256 !== sha256(expectedOutput) ||
-    receipt.cleanup !== "clean" ||
-    receipt.residualProcessCount !== 0 ||
-    receipt.processJoined !== true ||
-    receipt.terminalInputJoined !== true ||
-    receipt.terminalOutputJoined !== true ||
-    receipt.terminalTransportClosed !== true
-  )
-    return fail("receipt-rejected");
-  return Object.freeze({ receipt, version: manifest.version });
+  if (!validReceipt(receipt, expected)) return fail("receipt-rejected");
+  return Object.freeze({ proof, receipt, version: manifest.version });
 };

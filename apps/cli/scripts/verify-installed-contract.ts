@@ -13,11 +13,18 @@ type Setup = "initialized" | "invalid-configuration" | "none";
 type OutputRule = "confirmation" | "help" | OutputMode | "version";
 type StateRule = "any" | "capture" | "same-as-before" | "same-as-previous";
 export type InstalledCliExecutionMode =
-  "deadline-child" | "direct" | "signal-int" | "signal-term" | "stdout-closed";
+  | "deadline-child"
+  | "direct"
+  | "pty-narrow"
+  | "signal-int"
+  | "signal-term"
+  | "stdout-closed";
 export type InstalledCliContractStep = Readonly<{
   args: readonly string[];
   executionMode: InstalledCliExecutionMode;
   expectedDiagnostic?: string;
+  expectedOutputBytes?: number;
+  expectedOutputSha256?: string;
   expectedOutcome: "exited" | "timed-out";
   expectedSignal: "SIGKILL" | "SIGTERM" | null;
   expectedStatus: number | null;
@@ -46,6 +53,19 @@ export type InstalledCliInvocationResult = Readonly<{
   status: number | null;
   stderr: string;
   stdout: string;
+  pty?: Readonly<{
+    cleanup: "clean" | "residual" | "uncertain";
+    initialGeometry: Readonly<{ columns: number; rows: number }>;
+    isTTY: true;
+    observedGeometry: Readonly<{ columns: number; rows: number }>;
+    outputBytes: number;
+    outputSha256: string;
+    processJoined: boolean;
+    residualProcessCount: number;
+    terminalInputJoined: boolean;
+    terminalOutputJoined: boolean;
+    terminalTransportClosed: boolean;
+  }>;
 }>;
 export type InstalledCliContractObservation = Readonly<{
   afterStateDigests: readonly string[];
@@ -93,6 +113,74 @@ const MAXIMUM_OUTPUT_BYTES = 1_048_576;
 const requiredArgumentDiagnostic = "cli.input.invalid";
 const hash = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
+const helpOutputSha256: Readonly<Record<string, string>> = Object.freeze({
+  root: "sha256:8fcbbfc67bf775d99259cb1270ab792f85de96bffc6c36c1364f7770624ccdb8",
+  destination:
+    "sha256:1bd5ccfc129547fb896bf0a354abcb2bb45efe67cafdd66a83fec176c1a40e2a",
+  doctor:
+    "sha256:defeabae71411adbf59381696cf36df8848e305bfb2cba0606351274722dbfc5",
+  harness:
+    "sha256:faf0119dc935e00e9efd0718f248f5ad9b2791730b5ef3035c21285a1a7b5823",
+  init: "sha256:d1d2199fd188799889209dbf44713f6f252c7ec25d1b91fd71d17e2d8ea2b2ff",
+  install:
+    "sha256:61ea97306951cd84868fd689a95de90d7819f6dbc5d142dde40d73e947225451",
+  routing:
+    "sha256:901821414f8a421486af7f162d1cd775cd8cc51d2901e3d7ad5f3fe79ca783c2",
+  traces:
+    "sha256:a73ee0c89ee85050d7a3cbc03a6bf145517b6025ac7808858d6982b6e804a318",
+  uninstall:
+    "sha256:8d71c41cec15b9968827c0b5a6b0f90bf9ba34a40c13430df4c9f8a7e0656a89",
+  "destination.configure":
+    "sha256:76fcdef61348679aa22852d3685b0a49fec030ec8628c7c59223e61809a7ce7f",
+  "destination.delete":
+    "sha256:3aab6441b24b33eb6e8c2db67c80a37b7d81a89ecada1702cee30dace1e66934",
+  "destination.inspect":
+    "sha256:ef9b8ecaa25900a1eb3da3613abcca9ff72f103abf537d498421193814e91973",
+  "destination.list":
+    "sha256:7dac30c397a598834ed0a01aa4b629649f294c8bc2a41d52dc43c78f183b472e",
+  "destination.recover":
+    "sha256:205c9570c327e69a9b6b2454f58d7dd8f3a56fe27959aa1af583fda7c7c1b838",
+  "destination.rotate":
+    "sha256:5fabbdfe1eab64ae4bae061c00d62c75387107a8fc8ff241315d5c9df8e79674",
+  "destination.unconfigure":
+    "sha256:ce0f1204caf7aef1e0427bbbe914615846f0aae9e2411e6ebfa400df1182edac",
+  "harness.list":
+    "sha256:703ef6fb8af2f7133aed09e759750206154649704daaa60c11e7b6416c03a9bd",
+  "harness.migrate":
+    "sha256:25405b5218594e4883f9cc26957f6197789d2fce55392cf04e639e4834473f77",
+  "harness.status":
+    "sha256:1122fb4e0337ecdae728b3011446707e632a601d36695539b0ce687fc17cb368",
+  "routing.list":
+    "sha256:9d44991035520d4ccf06bd64b9ad5b706274af7c4e9c4cfbd691a46136c00d54",
+  "routing.set":
+    "sha256:5b255d1357d310bc5f8130827860d37b088c046b66aaa997a7538c64470730e0",
+  "traces.get":
+    "sha256:da7b817cb3d13eeea80eeb27884bb078715b37d4461892fae38a9b1f1328ebe0",
+  "traces.search":
+    "sha256:e45194440569386d57fea521e74d17d999732802cab9d1552969a959c32746bd",
+} satisfies Readonly<Record<string, string>>);
+const narrowPtyHelp = Object.freeze({
+  bytes: 1_182,
+  sha256:
+    "sha256:dd9b8aae571f7f55ead503a37bf6ebfe43848f96c2f91396ee19b50d98578639",
+});
+const helpDigestFor = (registrationId: string): string => {
+  const expected = helpOutputSha256[registrationId];
+  assert.match(expected ?? "", /^sha256:[0-9a-f]{64}$/u);
+  return expected as string;
+};
+export const validateInstalledCliHelpOutput = (
+  registrationId: string,
+  output: string,
+): void => {
+  assert.equal(typeof registrationId, "string");
+  assert.equal(typeof output, "string");
+  assert.deepEqual(
+    Object.keys(helpOutputSha256).sort(),
+    expectedPublicCommandInventory.map(({ id }) => id).sort(),
+  );
+  assert.equal(hash(output), helpDigestFor(registrationId));
+};
 
 // This closed projection is development-only oracle input. verify-artifact.mjs
 // independently compares it with the production command registry before pack.
@@ -485,7 +573,15 @@ export const createInstalledCliContractPlan = (
       caseId: `help.${registration.id}`,
       setup: "none" as const,
       steps: Object.freeze([
-        makeStep([...registration.path, "--help"], 0, "help", "same-as-before"),
+        Object.freeze({
+          ...makeStep(
+            [...registration.path, "--help"],
+            0,
+            "help",
+            "same-as-before",
+          ),
+          expectedOutputSha256: helpDigestFor(registration.id),
+        }),
       ]),
     }),
   );
@@ -589,7 +685,21 @@ export const createInstalledCliContractPlan = (
     Object.freeze({
       caseId: "terminal.narrow-help",
       setup: "none",
-      steps: Object.freeze([makeStep(["--help"], 0, "help", "same-as-before")]),
+      steps: Object.freeze([
+        Object.freeze({
+          ...makeStep(
+            ["--help"],
+            0,
+            "help",
+            "same-as-before",
+            undefined,
+            "",
+            "pty-narrow",
+          ),
+          expectedOutputBytes: narrowPtyHelp.bytes,
+          expectedOutputSha256: narrowPtyHelp.sha256,
+        }),
+      ]),
     }),
     Object.freeze({
       caseId: "terminal.broken-pipe",
@@ -827,10 +937,25 @@ const assertOutput = (
   );
   if (step.expectedDiagnostic !== undefined)
     assert.equal(diagnosticCode(result), step.expectedDiagnostic);
-  if (step.outputRule === "help") {
+  if (step.executionMode === "pty-narrow") {
+    assert.equal(result.stdout, "");
     assert.equal(result.stderr, "");
-    assert.match(result.stdout, /^Usage: agentscope/u);
-    assert.match(result.stdout, /Documentation: https:\/\//u);
+    assert.deepEqual(result.pty, {
+      cleanup: "clean",
+      initialGeometry: { columns: 40, rows: 12 },
+      isTTY: true,
+      observedGeometry: { columns: 40, rows: 12 },
+      outputBytes: step.expectedOutputBytes,
+      outputSha256: step.expectedOutputSha256,
+      processJoined: true,
+      residualProcessCount: 0,
+      terminalInputJoined: true,
+      terminalOutputJoined: true,
+      terminalTransportClosed: true,
+    });
+  } else if (step.outputRule === "help") {
+    assert.equal(result.stderr, "");
+    assert.equal(hash(result.stdout), step.expectedOutputSha256);
   } else if (step.outputRule === "version") {
     assert.equal(result.stdout, `${version}\n`);
     assert.equal(result.stderr, "");

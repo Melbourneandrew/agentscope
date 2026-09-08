@@ -724,6 +724,10 @@ describe("installed CLI contract evidence", () => {
       "utf8",
     );
     const runner = readFileSync(resolve(integrationRoot, "runner.mjs"), "utf8");
+    const ptyDriver = readFileSync(
+      resolve(integrationRoot, "pty-installed-cli-driver.mjs"),
+      "utf8",
+    );
     const scenario = readFileSync(
       resolve(integrationRoot, "run-scenarios.mjs"),
       "utf8",
@@ -737,6 +741,17 @@ describe("installed CLI contract evidence", () => {
     );
     expect(runner).toContain("executeSelectedHeadlessProcess");
     expect(runner).not.toMatch(/node:child_process|\bspawn(?:Sync)?\b/u);
+    expect(runner).toContain(
+      '"/opt/agentscope/installed/node_modules/.bin/agentscope"',
+    );
+    expect(runner).not.toContain(
+      'const installedPackageRoot = join(installRoot, "node_modules/agentscope-cli")',
+    );
+    expect(runner).toContain('proof: "narrow-help"');
+    expect(ptyDriver).toContain('new Set(["narrow-help", "version"])');
+    expect(ptyDriver).toContain('Object.freeze(["--version"])');
+    expect(ptyDriver).toContain('Object.freeze(["--help"])');
+    expect(ptyDriver).toContain("initialGeometry: { columns: 40, rows: 12 }");
     expect(scenario).toContain(
       'resolve(context, "installed-contract-driver.mjs")',
     );
