@@ -1383,16 +1383,34 @@ const loadNativePtyBinding = (
   nativePtyBinding = candidate as NativePtyBinding;
   return nativePtyBinding;
 };
-const monotonicDeadlineNanoseconds = (deadlineMs: number): bigint => {
-  const remainingMilliseconds =
-    deadlineMs - safeReflectApply(performanceNow, performance, []);
+const deriveNativeMonotonicDeadline = (
+  deadlineMs: number,
+  nativeNowNs: bigint,
+  performanceNowMs: number,
+): bigint => {
+  const remainingMilliseconds = deadlineMs - performanceNowMs;
   if (remainingMilliseconds <= 0)
     return fail("testkit.headless.reconciliation.deadline");
-  return (
-    safeReflectApply(processHrtimeBigint, process.hrtime, []) +
-    BigInt(Math.floor(remainingMilliseconds * 1e6))
+  return nativeNowNs + BigInt(Math.floor(remainingMilliseconds * 1e6));
+};
+const captureNativeMonotonicDeadline = (deadlineMs: number): bigint => {
+  // Native time is sampled first, so preemption before the performance-clock
+  // sample can only shorten this authority; it can never renew the deadline.
+  const nativeNowNs = safeReflectApply(processHrtimeBigint, process.hrtime, []);
+  const performanceNowMs = safeReflectApply(performanceNow, performance, []);
+  return deriveNativeMonotonicDeadline(
+    deadlineMs,
+    nativeNowNs,
+    performanceNowMs,
   );
 };
+/** Package-private clock-bridge oracle; it conveys no execution authority. */
+export const deriveNativeMonotonicDeadlineForTest = (
+  deadlineMs: number,
+  nativeNowNs: bigint,
+  performanceNowMs: number,
+): bigint =>
+  deriveNativeMonotonicDeadline(deadlineMs, nativeNowNs, performanceNowMs);
 const exactAdoptedZombieReapReceipt = (
   value: AdoptedZombieReapReceipt,
   identity: ProcessSnapshot,
@@ -1447,7 +1465,7 @@ const processesDescendantsFirst = (
 const reapAdoptedZombies = (
   processes: readonly ProcessSnapshot[],
   rootPid: number,
-  deadlineMs: number,
+  nativeDeadlineNs: bigint,
   namespaceIdentity: string,
   runtime: ProcessAuthorityRuntime,
 ): void => {
@@ -1472,7 +1490,7 @@ const reapAdoptedZombies = (
         identity.pid,
         identity.startIdentity,
         rootPid,
-        monotonicDeadlineNanoseconds(deadlineMs),
+        nativeDeadlineNs,
       ),
       identity,
     );
@@ -1825,6 +1843,9 @@ const armSelectedPty = (
       processRequest.monotonicStartupDeadlineMs
     )
       return fail("testkit.headless.startup.deadline");
+    const nativeShutdownDeadlineNs = captureNativeMonotonicDeadline(
+      processRequest.monotonicShutdownDeadlineMs,
+    );
     runtime.assertImmutableCandidateRuntime();
     const child = runtime.spawnPty(
       processRequest,
@@ -2088,7 +2109,7 @@ const armSelectedPty = (
         reapAdoptedZombies(
           currentProcessSet(),
           child.pid,
-          processRequest.monotonicShutdownDeadlineMs,
+          nativeShutdownDeadlineNs,
           composition.namespaceIdentity,
           runtime,
         );
@@ -2130,7 +2151,7 @@ const armSelectedPty = (
         reapAdoptedZombies(
           currentProcessSet(),
           child.pid,
-          processRequest.monotonicShutdownDeadlineMs,
+          nativeShutdownDeadlineNs,
           composition.namespaceIdentity,
           runtime,
         );
@@ -2147,7 +2168,7 @@ const armSelectedPty = (
       reapAdoptedZombies(
         currentProcessSet(),
         child.pid,
-        processRequest.monotonicShutdownDeadlineMs,
+        nativeShutdownDeadlineNs,
         composition.namespaceIdentity,
         runtime,
       );
@@ -2322,6 +2343,9 @@ const selectedContainerBackend = (
         request.monotonicStartupDeadlineMs
       )
         return fail("testkit.headless.startup.deadline");
+      const nativeShutdownDeadlineNs = captureNativeMonotonicDeadline(
+        request.monotonicShutdownDeadlineMs,
+      );
       const spawnedAtMs = safeReflectApply(performanceNow, performance, []);
       const child = runtime.spawnProcess(request);
       // Observe spawn failure before reading pid so a no-exec child cannot emit
@@ -2428,7 +2452,7 @@ const selectedContainerBackend = (
         reapAdoptedZombies(
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
-          request.monotonicShutdownDeadlineMs,
+          nativeShutdownDeadlineNs,
           composition.namespaceIdentity,
           runtime,
         );
@@ -2456,7 +2480,7 @@ const selectedContainerBackend = (
         reapAdoptedZombies(
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
-          request.monotonicShutdownDeadlineMs,
+          nativeShutdownDeadlineNs,
           composition.namespaceIdentity,
           runtime,
         );
@@ -2465,7 +2489,7 @@ const selectedContainerBackend = (
       reapAdoptedZombies(
         runtime.listProcesses(composition.namespaceIdentity),
         childPid,
-        request.monotonicShutdownDeadlineMs,
+        nativeShutdownDeadlineNs,
         composition.namespaceIdentity,
         runtime,
       );
@@ -3181,6 +3205,7 @@ const selectedContainerRuntimeForTest = (
   let closed = false;
   let rootReads = 0;
   let descendantReads = 0;
+  let reapDeadline: bigint | undefined;
   let infiniteTimer: NodeJS.Timeout | undefined;
   const finish = (code: number | null, signal: NodeJS.Signals | null) => {
     if (closed || child === undefined) return;
@@ -3223,7 +3248,10 @@ const selectedContainerRuntimeForTest = (
         ? { ...selected, startIdentity: `${pid}:2` }
         : selected;
     },
-    reapAdoptedZombie: (pid, startIdentity, rootPid) => {
+    reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
+      if (reapDeadline === undefined) reapDeadline = deadline;
+      else if (deadline !== reapDeadline)
+        return fail("testkit.headless.reconciliation.deadline");
       if (seed === "adopted-zombie-reap-failure")
         return fail("testkit.headless.observer.reap");
       const selected = processes.get(pid);
@@ -3237,6 +3265,12 @@ const selectedContainerRuntimeForTest = (
       if (selected.state !== "Z")
         return { pid, startIdentity, status: "not-ready" };
       descendantReads += 1;
+      if (seed === "nested-adopted-zombie" && descendantReads === 1) {
+        const stopAt = performance.now() + 10;
+        while (performance.now() < stopAt) {
+          // Simulate preemption between two native reap attempts.
+        }
+      }
       if (
         seed === "adopted-zombie-state-substitution" &&
         descendantReads === 1

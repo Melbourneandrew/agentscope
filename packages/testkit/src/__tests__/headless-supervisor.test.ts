@@ -22,6 +22,7 @@ import {
 } from "../headless-supervisor.js";
 import {
   composeSelectedContainerHeadlessSupervisorCapability,
+  deriveNativeMonotonicDeadlineForTest,
   executeSelectedContainerBackendForTest,
   executeSelectedPtyTransportForTest,
   executeScriptedSelectedHeadlessProcessForTest,
@@ -165,7 +166,28 @@ describe("selected headless supervisor protocol", () => {
   });
 });
 
+// The selected lifecycle keeps its deadline, process-set, and receipt oracle together.
+// eslint-disable-next-line max-lines-per-function
 describe("selected-container lifecycle", () => {
+  it("derives a conservative native deadline across clock-sample preemption", () => {
+    const nativeBeforePreemption = 5_000_000_000n;
+    const performanceAfterPreemption = 250;
+    expect(
+      deriveNativeMonotonicDeadlineForTest(
+        1_000,
+        nativeBeforePreemption,
+        performanceAfterPreemption,
+      ),
+    ).toBe(5_750_000_000n);
+    expect(() =>
+      deriveNativeMonotonicDeadlineForTest(
+        1_000,
+        nativeBeforePreemption,
+        1_000,
+      ),
+    ).toThrow("testkit.headless.reconciliation.deadline");
+  });
+
   it.each([
     ["clean", "exited"],
     ["descendant", "exited"],
