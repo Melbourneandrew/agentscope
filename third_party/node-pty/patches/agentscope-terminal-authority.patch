@@ -962,7 +962,7 @@
 @@ -606 +1316 @@
 -  int fd = info[0].As<Napi::Number>().Int32Value();
 +  int fd = require_terminal_handle(env, info[0])->fd;
-@@ -867,0 +1578,175 @@
+@@ -867,0 +1578,181 @@
 +struct PtyProcessIdentity {
 +  char state;
 +  pid_t parent;
@@ -1066,6 +1066,12 @@
 +  double root_number = info[2].As<Napi::Number>().DoubleValue();
 +  bool deadline_lossless = false;
 +  uint64_t deadline = info[3].As<Napi::BigInt>().Uint64Value(&deadline_lossless);
++  size_t expected_bytes = 0;
++  if (!pty_string_code_units_within(env, info[1], 64) ||
++      napi_get_value_string_utf8(env, info[1], nullptr, 0, &expected_bytes) !=
++          napi_ok ||
++      expected_bytes > 64)
++    throw Napi::Error::New(env, "PTY reap authority is invalid");
 +  std::string expected = info[1].As<Napi::String>().Utf8Value();
 +  if (getpid() != 1 || pid_number != pid_number || root_number != root_number ||
 +      pid_number < 2 || pid_number > INT_MAX || root_number < 2 ||
@@ -1138,7 +1144,7 @@
 +}
 +#endif
 +
-@@ -872,0 +1758,9 @@
+@@ -872,0 +1764,9 @@
 +  exports.Set("inspect", Napi::Function::New(env, PtyInspect));
 +  exports.Set("read",    Napi::Function::New(env, PtyRead));
 +  exports.Set("reapAdoptedZombie", Napi::Function::New(env, PtyReapAdoptedZombie));

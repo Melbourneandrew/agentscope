@@ -300,9 +300,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 46_222,
+      bytes: 46_507,
       mode: "0644",
-      patchedSourceBytes: 58_941,
+      patchedSourceBytes: 59_220,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -320,8 +320,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 46_222,
-      patchedSourceBytes: 58_941,
+      bytes: 46_507,
+      patchedSourceBytes: 59_220,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -628,7 +628,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "002fba5f50a5f98e406c58a0489e2fdc642cf3ffbaa32feb9ada5728f7f982cb",
+      "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -779,6 +779,18 @@ describe("PTY authenticated build-material tooling", () => {
       "+    if (!pty_string_code_units_within(napiEnv, value, 4096) ||",
     );
     expect(patch).toContain(
+      "+  if (!pty_string_code_units_within(env, info[1], 64) ||",
+    );
+    expect(
+      patch.indexOf(
+        "+  if (!pty_string_code_units_within(env, info[1], 64) ||",
+      ),
+    ).toBeLessThan(
+      patch.indexOf(
+        "+  std::string expected = info[1].As<Napi::String>().Utf8Value();",
+      ),
+    );
+    expect(patch).toContain(
       "+        napi_get_value_string_utf8(napiEnv, value, nullptr, 0,",
     );
     expect(patch.indexOf("+  int exec_status[2]")).toBeGreaterThan(
@@ -868,7 +880,7 @@ describe("PTY authenticated build-material tooling", () => {
       "utf8",
     );
     expect(build).toContain(
-      'digest !==\n    "e90ebd85ee351ca0085b1d73176fb2f83be932c3d5464a7c3648ce7e739b138e"',
+      'digest !==\n    "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab"',
     );
   });
 });
