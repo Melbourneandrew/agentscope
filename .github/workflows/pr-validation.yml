@@ -80,6 +80,11 @@ jobs:
               cleanup_signal_status=$command_status
             fi
           }
+          verify_empty_cleanup_output() {
+            [[ ${1+x} == x ]] || return 1
+            local output_path=$1
+            [[ -n "$output_path" && -f "$output_path" && ! -L "$output_path" && ! -s "$output_path" ]]
+          }
           cleanup() {
             local incoming_status=$1 preclaimed=${2:-false} prior_cleanup_active=$cleanup_active cleanup_active=true
             if [[ "$prior_cleanup_active" == true && "$preclaimed" != true ]]; then
@@ -102,8 +107,10 @@ jobs:
             }
             if [[ "$created" == true && "$container_id" =~ ^[0-9a-f]{64}$ ]]; then
               cleanup_docker_call rm --force "$container_id" >/dev/null || record_cleanup_failure "$?"
-              survivor=$(cleanup_docker_call container ls --all --no-trunc --quiet --filter "id=$container_id") || record_cleanup_failure "$?"
-              [[ -z "${survivor:-uncertain}" ]] || cleanup_proved=false
+              local survivor_path="$root/survivor.txt" survivor_status=0
+              cleanup_docker_call container ls --all --no-trunc --quiet --filter "id=$container_id" >"$survivor_path" || survivor_status=$?
+              (( survivor_status == 0 )) || record_cleanup_failure "$survivor_status"
+              (( survivor_status == 0 )) && verify_empty_cleanup_output "$survivor_path" || cleanup_proved=false
             fi
             remaining=$((deadline - SECONDS))
             if [[ -n "$root" && "$root" =~ ^/tmp/agentscope-pty-runtime\.[A-Za-z0-9]{8}$ && -d "$root" && ! -L "$root" ]] && (( remaining >= 3 )); then

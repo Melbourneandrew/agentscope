@@ -342,6 +342,111 @@ describe("PTY runtime artifact tooling", () => {
     );
   });
 
+  it("accepts only an authenticated empty cleanup listing", () => {
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    const helperStart = workflow.indexOf(
+      "          verify_empty_cleanup_output() {",
+    );
+    const helperEnd = workflow.indexOf("          cleanup() {", helperStart);
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    const helper = workflow
+      .slice(helperStart, helperEnd)
+      .replaceAll(/^ {10}/gmu, "");
+    const fixtureRoot = temporaryRoot();
+    const empty = resolve(fixtureRoot, "empty");
+    const whitespace = resolve(fixtureRoot, "whitespace");
+    const duplicate = resolve(fixtureRoot, "duplicate");
+    const nonempty = resolve(fixtureRoot, "nonempty");
+    writeFileSync(empty, "");
+    writeFileSync(whitespace, " ");
+    writeFileSync(duplicate, `${"a".repeat(64)}\n${"a".repeat(64)}\n`);
+    writeFileSync(nonempty, `${"a".repeat(64)}\n`);
+    const check = (argument: string | undefined) =>
+      spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          `${helper}\nverify_empty_cleanup_output${argument === undefined ? "" : ' "$1"'}`,
+          "cleanup-output-test",
+          ...(argument === undefined ? [] : [argument]),
+        ],
+        { encoding: "utf8" },
+      ).status;
+    expect(check(empty)).toBe(0);
+    expect(check(undefined)).not.toBe(0);
+    expect(check(resolve(fixtureRoot, "missing"))).not.toBe(0);
+    expect(check(whitespace)).not.toBe(0);
+    expect(check(duplicate)).not.toBe(0);
+    expect(check(nonempty)).not.toBe(0);
+
+    const observationStart = workflow.indexOf(
+      '              local survivor_path="$root/survivor.txt" survivor_status=0',
+    );
+    const observationEnd = workflow.indexOf(
+      "            fi\n",
+      observationStart,
+    );
+    expect(observationStart).toBeGreaterThanOrEqual(0);
+    expect(observationEnd).toBeGreaterThan(observationStart);
+    const observation = workflow
+      .slice(observationStart, observationEnd)
+      .replaceAll(/^ {14}/gmu, "");
+    const exerciseObservation = (payload: string, status: number) => {
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          `${helper}
+record_cleanup_failure() { cleanup_proved=false; }
+cleanup_docker_call() { printf '%s' "$PAYLOAD"; return "$LIST_STATUS"; }
+exercise() {
+  local root=$1 container_id=${"a".repeat(64)} cleanup_proved=true
+${observation}
+  printf '%s' "$cleanup_proved"
+}
+exercise "$1"`,
+          "cleanup-observation-test",
+          fixtureRoot,
+        ],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            LIST_STATUS: String(status),
+            PAYLOAD: payload,
+          },
+        },
+      );
+      expect(result.status).toBe(0);
+      return result.stdout;
+    };
+    expect(exerciseObservation("", 0)).toBe("true");
+    expect(exerciseObservation(" ", 0)).toBe("false");
+    expect(exerciseObservation(`${"a".repeat(64)}\n`, 0)).toBe("false");
+    expect(
+      exerciseObservation(`${"a".repeat(64)}\n${"b".repeat(64)}\n`, 0),
+    ).toBe("false");
+    expect(exerciseObservation("", 9)).toBe("false");
+
+    expect(workflow).toContain(
+      'local survivor_path="$root/survivor.txt" survivor_status=0',
+    );
+    expect(workflow).toContain(
+      'cleanup_docker_call container ls --all --no-trunc --quiet --filter "id=$container_id" >"$survivor_path" || survivor_status=$?',
+    );
+    expect(workflow).toContain(
+      '(( survivor_status == 0 )) || record_cleanup_failure "$survivor_status"',
+    );
+    expect(workflow).toContain(
+      '(( survivor_status == 0 )) && verify_empty_cleanup_output "$survivor_path" || cleanup_proved=false',
+    );
+    expect(workflow).not.toContain("${survivor:-uncertain}");
+  });
+
   it("emits one closed terminal receipt for every workflow failure prefix", () => {
     const workflow = readFileSync(
       resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
