@@ -70,12 +70,26 @@ jobs:
           created=false
           stage=setup
           runtime_receipt_authenticated=false
+          cleanup_interrupt() {
+            cleanup_signal_status=$1
+            cleanup_proved=false
+          }
+          record_cleanup_failure() {
+            local command_status=$1
+            cleanup_proved=false
+            if (( command_status == 130 || command_status == 143 )); then
+              cleanup_signal_status=$command_status
+            fi
+          }
           cleanup() {
             local primary_status=$?
             local failure_stage=$stage
             local cleanup_proved=true
+            local cleanup_signal_status=0
             local terminal_status=failed
-            trap - EXIT INT TERM
+            trap - EXIT
+            trap 'cleanup_interrupt 130' INT
+            trap 'cleanup_interrupt 143' TERM
             cleanup_docker_call() {
               local remaining=$((deadline - SECONDS))
               (( remaining >= 7 ))
@@ -83,17 +97,25 @@ jobs:
                 "$docker" --config "$root/config" --host "unix://$socket" "$@" 2>/dev/null
             }
             if [[ "$created" == true && "$container_id" =~ ^[0-9a-f]{64}$ ]]; then
-              cleanup_docker_call rm --force "$container_id" >/dev/null || cleanup_proved=false
-              survivor=$(cleanup_docker_call container ls --all --no-trunc --quiet --filter "id=$container_id") || cleanup_proved=false
+              cleanup_docker_call rm --force "$container_id" >/dev/null || record_cleanup_failure "$?"
+              survivor=$(cleanup_docker_call container ls --all --no-trunc --quiet --filter "id=$container_id") || record_cleanup_failure "$?"
               [[ -z "${survivor:-uncertain}" ]] || cleanup_proved=false
             fi
             remaining=$((deadline - SECONDS))
             if [[ -n "$root" && "$root" =~ ^/tmp/agentscope-pty-runtime\.[A-Za-z0-9]{8}$ && -d "$root" && ! -L "$root" ]] && (( remaining >= 3 )); then
-              "$timeout" --foreground --signal=TERM --kill-after=1 1s /bin/rm -rf -- "$root" 2>/dev/null || cleanup_proved=false
+              "$timeout" --foreground --signal=TERM --kill-after=1 1s /bin/rm -rf -- "$root" 2>/dev/null || record_cleanup_failure "$?"
             elif [[ -n "$root" ]]; then
               cleanup_proved=false
             fi
             (( SECONDS <= deadline )) || cleanup_proved=false
+            trap '' INT TERM
+            if (( cleanup_signal_status != 0 )); then
+              cleanup_proved=false
+              if (( primary_status == 0 )); then
+                primary_status=$cleanup_signal_status
+                failure_stage=cleanup
+              fi
+            fi
             if (( primary_status == 0 )) && [[ "$failure_stage" == final-assertion && "$runtime_receipt_authenticated" == true && "$cleanup_proved" == true ]]; then
               terminal_status=passed
             elif (( primary_status == 0 )); then

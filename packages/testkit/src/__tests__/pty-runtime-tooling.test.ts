@@ -330,6 +330,7 @@ describe("PTY runtime artifact tooling", () => {
       "create",
       "runtime-receipt",
       "terminal-join",
+      "cleanup",
       "final-assertion",
     ];
     for (const stage of stages) {
@@ -416,6 +417,58 @@ describe("PTY runtime artifact tooling", () => {
       status: "passed",
       version: 1,
     });
+  });
+
+  it("defers signals during cleanup through one uncertain terminal receipt", () => {
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    const job = workflow.indexOf("name: Replay the bounded PTY ABI");
+    const start = workflow.indexOf("          set -euo pipefail\n", job);
+    const end = workflow.indexOf("          host_call() {", start);
+    const prefix = workflow.slice(start, end).replaceAll(/^ {10}/gmu, "");
+    for (const [signal, status] of [
+      ["INT", 130],
+      ["TERM", 143],
+    ] as const) {
+      for (const withContainer of [false, true]) {
+        const fixtureRoot = temporaryRoot();
+        const timeoutShim = resolve(fixtureRoot, "timeout-shim");
+        writeFileSync(
+          timeoutShim,
+          `#!/bin/sh\nkill -${signal} "$PPID"\n/bin/sleep 0.05\nexit ${status}\n`,
+          { mode: 0o700 },
+        );
+        const suffix = createHash("sha256")
+          .update(`${fixtureRoot}:${signal}:${withContainer}`)
+          .digest("hex")
+          .slice(0, 8);
+        const ownedRoot = resolve(tmpdir(), `agentscope-pty-runtime.${suffix}`);
+        mkdirSync(ownedRoot, { mode: 0o700 });
+        roots.push(ownedRoot);
+        mkdirSync(resolve(ownedRoot, "config"), { mode: 0o700 });
+        const script = `${prefix.replace(
+          "timeout=/usr/bin/timeout",
+          `timeout=${timeoutShim}`,
+        )}\nroot=${ownedRoot}\nstage=final-assertion\nruntime_receipt_authenticated=true\ncreated=${withContainer ? "true" : "false"}\ncontainer_id=${withContainer ? "a".repeat(64) : ""}\nexit 0\n`;
+        const result = spawnSync("/bin/bash", ["-c", script], {
+          encoding: "utf8",
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stdout).toBe("");
+        const lines = result.stderr.trim().split("\n");
+        expect(lines).toHaveLength(1);
+        expect(JSON.parse(lines[0] ?? "null")).toEqual({
+          cleanupProved: false,
+          runtimeReceiptAuthenticated: true,
+          stage: "cleanup",
+          status: "failed",
+          version: 1,
+        });
+        expect(statSync(ownedRoot).isDirectory()).toBe(true);
+      }
+    }
   });
 
   it("binds the inner runtime receipt against missing or extra bytes", () => {
