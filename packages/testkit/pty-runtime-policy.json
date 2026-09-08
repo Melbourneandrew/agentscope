@@ -225,6 +225,24 @@
     ]
   },
   "build": {
+    "patch": {
+      "path": "third_party/node-pty/patches/agentscope-terminal-authority.patch",
+      "bytes": 39951,
+      "sha256": "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107",
+      "patchedSourceBytes": 52834,
+      "patchedSourceSha256": "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916"
+    },
+    "nativeExports": [
+      "close",
+      "eof",
+      "fork",
+      "inspect",
+      "open",
+      "process",
+      "read",
+      "resize",
+      "write"
+    ],
     "busyboxSha256": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
     "gxxSha256": "2da3c4d5f7471ea2e64df79a577eb504111a3aa4bd2ab775337c51ee3f85b499",
     "cc1plusSha256": "5ac46973a5d74747a0fc3f47b59f7f67b0ad4d53d1ba6a0f0614cac8329a2771",
@@ -257,7 +275,7 @@
       "-Wl,-z,relro,-z,now,--build-id=none",
       "-static-libstdc++",
       "-static-libgcc",
-      "/build/node-pty/pty.cc",
+      "/build/node-pty/src/unix/pty.cc",
       "-lutil",
       "-o",
       "/output/pty.node"

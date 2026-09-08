@@ -5,12 +5,17 @@ import {
   copyFileSync,
   fstatSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,14 +23,73 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 594_920,
+  bytes: 631_128,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "38966cc64050466dd2b2489cc4e3a94a7c0040361d9ab79115241aeff8eb27de",
+  sha256: "56492947271ec88ae2191c4e1f2ad3623caaab0175f198f43710c441a7b19ca6",
   tuple: "node127-linux-x64-musl",
 });
+const expectedFaultArtifact = Object.freeze({
+  bytes: 635_792,
+  needed: Object.freeze(["libc.musl-x86_64.so.1"]),
+  path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
+  sha256: "21d1889899f0d3f76962891cce7b797b329c4e94caeb7450907810facd1bd49c",
+  tuple: "node127-linux-x64-musl-test-faults",
+});
+const runtimeReceiptKeys = Object.freeze([
+  "argvEnvAuthority",
+  "closeTerminal",
+  "deadlineNoLaunch",
+  "descriptorAuthority",
+  "descriptorClosure",
+  "drainTerminal",
+  "eofByteWritten",
+  "faultCleanup",
+  "finalizerSafe",
+  "geometry",
+  "openRollback",
+  "processTerminal",
+  "residual",
+  "termios",
+]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+export const verifyRuntimeReceipt = (value) => {
+  if (!exactKeys(value, runtimeReceiptKeys))
+    throw new Error("PTY runtime proof receipt is not closed.");
+  for (const key of runtimeReceiptKeys)
+    if (value[key] !== true)
+      throw new Error(`PTY runtime proof did not establish ${key}.`);
+  return Object.freeze({ ...value });
+};
+
+const runtimeFixture = `import {fstatSync} from "node:fs";
+let extraOpen=true;try{fstatSync(Number(process.env.EXTRA_FD));}catch{extraOpen=false;}
+process.stdout.write(JSON.stringify({canonical:process.stdin.isRaw!==true,columns:process.stdout.columns,extraOpen,isTTY:process.stdin.isTTY===true&&process.stdout.isTTY===true,rows:process.stdout.rows})+"\\n");
+process.stdin.resume();process.stdin.on("end",()=>process.exit(0));\n`;
+
+const runtimeDriver = `import {createRequire} from "node:module";
+import {closeSync,constants,fstatSync,openSync,readdirSync,readFileSync} from "node:fs";
+import {isatty} from "node:tty";
+if(process.versions.modules!=="127"||readFileSync("/etc/alpine-release","utf8").trim()!=="3.24.1")throw new Error("canonical runtime identity mismatch");
+const require=createRequire(import.meta.url);const production=require(process.env.AGENTSCOPE_PTY_PRODUCTION);const faults=require(process.env.AGENTSCOPE_PTY_FAULTS);const fixture=process.env.AGENTSCOPE_PTY_FIXTURE;
+const pidOneChildren=()=>readFileSync("/proc/1/task/1/children","utf8").trim();const children=()=>readFileSync(\`/proc/\${process.pid}/task/\${process.pid}/children\`,"utf8").trim();const fdInventory=()=>{const entries=readdirSync("/proc/self/fd");if(entries.length>256||entries.some(entry=>!/^(0|[1-9][0-9]{0,5})$/.test(entry)))throw new Error("descriptor inventory is not bounded");return entries.map(Number);};const fds=()=>fdInventory().length;const terminalFds=()=>fdInventory().filter(fd=>isatty(fd));const environment=extra=>[\`EXTRA_FD=\${extra}\`,"LANG=C","LC_ALL=C","PATH=/usr/local/bin:/usr/bin:/bin","TZ=UTC"];
+const pair=()=>({interpreter:openSync("/usr/local/bin/node",constants.O_RDONLY|constants.O_NOFOLLOW),script:openSync(fixture,constants.O_RDONLY|constants.O_NOFOLLOW)});
+const invoke=(addon,{args=[],env,milliseconds=2000}={})=>{const p=pair();const extra=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);let terminal;try{return{extra,p,result:addon.fork(p.interpreter,p.script,args,env??environment(extra),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+BigInt(milliseconds)*1000000n,(code,signal)=>{terminal={code,signal};}),terminal:()=>terminal};}catch(error){for(const fd of [p.interpreter,p.script,extra])try{closeSync(fd);}catch{}throw error;}};
+const rejects=(action,pattern)=>{let message="";try{action();}catch(error){message=String(error);}if(!pattern.test(message))throw new Error(\`rejection mismatch: \${message}\`);return message;};
+const initialPidOneChildren=pidOneChildren();if(initialPidOneChildren!==String(process.pid))throw new Error("runtime PID namespace containment is not exact");const initialChildren=children();const initialFds=fds();rejects(()=>invoke(production,{milliseconds:-1}),/deadline is invalid or expired/);const deadlineNoLaunch=pidOneChildren()===initialPidOneChildren&&children()===initialChildren&&fds()===initialFds;
+const wrong=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);const valid=pair();rejects(()=>production.fork(wrong,valid.script,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);rejects(()=>production.fork(valid.interpreter,wrong,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);rejects(()=>production.fork(valid.interpreter,valid.interpreter,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);const reused=valid.script;closeSync(valid.script);const replacement=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);if(replacement!==reused)throw new Error("descriptor reuse setup failed");rejects(()=>production.fork(valid.interpreter,replacement,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+1000000000n,()=>{}),/authority is invalid/);faults.testFault(1<<13);rejects(()=>invoke(faults),/authority is invalid/);faults.testFault(0);for(const fd of [wrong,valid.interpreter,replacement])closeSync(fd);const descriptorAuthority=children()===initialChildren;
+const hostile=(args,env)=>rejects(()=>invoke(production,{args,env}),/inventory|value is not a string|admission exceeded/);const sparse=[];sparse.length=0xffffffff;hostile([],sparse);hostile(sparse,[]);hostile(["bad\\0tail"],[]);hostile([], ["BAD=bad\\0tail"]);hostile([7],[]);const throwingArg=[];Object.defineProperty(throwingArg,0,{get(){throw new Error("argv getter rejected");}});throwingArg.length=1;rejects(()=>invoke(production,{args:throwingArg}),/argv getter rejected/);const throwingEnv=[];Object.defineProperty(throwingEnv,0,{get(){throw new Error("env getter rejected");}});throwingEnv.length=1;rejects(()=>invoke(production,{env:throwingEnv}),/env getter rejected/);const argvEnvAuthority=fds()===initialFds&&children()===initialChildren;
+const faultResults=[];for(const bit of [1,2,3,4,7,8,9]){faults.testFault((1<<bit)|(bit===8?(1<<7):0));const before=children();const message=rejects(()=>invoke(faults,{milliseconds:bit===9?20:250}),/failed|invalid|expired|child joined/);faultResults.push(before===children()&&!message.includes("uncertain"));}for(const bit of [6,12]){faults.testFault((1<<bit)|(1<<7));const message=rejects(()=>invoke(faults,{milliseconds:80}),/cleanup uncertain/);faultResults.push(message.includes("uncertain"));}faults.testFault(0);const faultCleanup=faultResults.every(Boolean)&&children()===initialChildren;
+const beforeOpen=fds();for(const bit of [10,11]){faults.testFault(1<<bit);rejects(()=>faults.open(80,24,process.hrtime.bigint()+1000000000n),/publication failed/);}const openRollback=fds()===beforeOpen;
+const live=invoke(faults);for(const fd of [live.p.interpreter,live.p.script,live.extra])closeSync(fd);const first=faults.inspect(live.result.handle);faults.resize(live.result.handle,91,31,0,0);const resized=faults.inspect(live.result.handle);rejects(()=>faults.read(live.result.handle,0),/read bound/);rejects(()=>faults.write(live.result.handle,"not-bytes"),/Usage/);const write=faults.write(live.result.handle,Buffer.from("hello\\n"));const eof=faults.eof(live.result.handle);let output="";let observedTerminal=false;const end=Date.now()+2000;while(Date.now()<end){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();if((observed.status==="eof"||observed.status==="eio")&&live.terminal()){observedTerminal=true;break;}await new Promise(resolve=>setTimeout(resolve,10));}faults.close(live.result.handle);rejects(()=>faults.inspect(live.result.handle),/identity changed/);
+const parsed=JSON.parse(output.trim().split("\\n").find(line=>line.startsWith("{"))??"null");const descriptorClosure=parsed.extraOpen===false;const geometry=first.isTTY===true&&first.columns===80&&first.rows===24&&resized.columns===91&&resized.rows===31&&parsed.isTTY===true&&parsed.columns===91&&parsed.rows===31;const termios=first.canonical===true&&parsed.canonical===true&&Number.isInteger(first.eofByte);const eofByteWritten=eof.status==="eof-byte-written"&&eof.bytesWritten===1&&eof.eofByte===first.eofByte;const drainTerminal=write.status==="complete"&&write.bytesWritten===6&&output.includes("hello\\r\\n")&&observedTerminal&&live.terminal()!==undefined;const processTerminal=live.terminal()?.code===0&&live.terminal()?.signal===0;
+const closeFinalizerToken=Symbol("agentscope-pty-close-finalizer");let closeFinalizerState="pending";let closeFinalizerCount=0;let closeFinalizerDropped=false;const closeRegistry=new FinalizationRegistry(value=>{closeFinalizerCount+=1;closeFinalizerState=closeFinalizerDropped&&value===closeFinalizerToken&&closeFinalizerCount===1?"exact":"invalid";});const terminalBeforeClose=new Set(terminalFds());let closeLive=invoke(faults);for(const fd of [closeLive.p.interpreter,closeLive.p.script,closeLive.extra])closeSync(fd);const ownedTerminalFds=terminalFds().filter(fd=>!terminalBeforeClose.has(fd));if(ownedTerminalFds.length!==1)throw new Error("owned PTY descriptor inventory is not exact");const detachedPtyFd=ownedTerminalFds[0];if(detachedPtyFd<3||detachedPtyFd>255)throw new Error("detached PTY descriptor exceeds the reuse bound");faults.testFault(1<<5);const closeMessage=rejects(()=>faults.close(closeLive.result.handle),/close is uncertain/);rejects(()=>faults.inspect(closeLive.result.handle),/identity changed/);closeRegistry.register(closeLive.result.handle,closeFinalizerToken);const closeTerminalReceipt=closeLive.terminal;closeLive.result.handle=undefined;closeLive.result=undefined;closeLive=null;closeFinalizerDropped=true;const reuseFds=[];const reuseSet=new Set();for(let count=0;count<64&&reuseFds.at(-1)!==detachedPtyFd;count+=1){const candidate=openSync("/dev/null",constants.O_RDONLY);if(reuseSet.has(candidate))throw new Error("descriptor reuse filler was duplicated");if(candidate>detachedPtyFd)throw new Error("exact detached PTY descriptor reuse was skipped");reuseSet.add(candidate);reuseFds.push(candidate);}const reuse=reuseFds.at(-1);if(reuse!==detachedPtyFd)throw new Error("exact detached PTY descriptor was not reused");const reuseIdentity=fstatSync(reuse);const closeEnd=Date.now()+1000;while(Date.now()<closeEnd&&(closeFinalizerState==="pending"||closeTerminalReceipt()===undefined)){global.gc?.();await new Promise(resolve=>setTimeout(resolve,10));}let reuseLive=true;try{const after=fstatSync(reuse);reuseLive=after.dev===reuseIdentity.dev&&after.ino===reuseIdentity.ino&&after.mode===reuseIdentity.mode;}catch{reuseLive=false;}for(const fd of reuseFds.reverse())closeSync(fd);const closeTerminal=closeMessage.includes("uncertain")&&closeFinalizerState==="exact"&&closeFinalizerCount===1&&reuseLive&&closeTerminalReceipt()!==undefined;
+const finalizerToken=Symbol("agentscope-pty-finalizer");let finalizerState="pending";let finalizerCount=0;let finalizerDropped=false;const registry=new FinalizationRegistry(value=>{finalizerCount+=1;finalizerState=finalizerDropped&&value===finalizerToken&&finalizerCount===1?"exact":"invalid";});let abandoned=invoke(faults);for(const fd of [abandoned.p.interpreter,abandoned.p.script,abandoned.extra])closeSync(fd);const abandonedTerminal=abandoned.terminal;registry.register(abandoned.result.handle,finalizerToken);if(finalizerState!=="pending"||finalizerCount!==0)throw new Error("finalizer receipt arrived before authority release");abandoned.result.handle=undefined;abandoned.result=undefined;abandoned=null;finalizerDropped=true;const finalizerEnd=Date.now()+1000;while(Date.now()<finalizerEnd&&(finalizerState==="pending"||abandonedTerminal()===undefined)){global.gc?.();await new Promise(resolve=>setTimeout(resolve,10));}const finalizerSafe=reuseLive&&finalizerState==="exact"&&finalizerCount===1&&abandonedTerminal()!==undefined;
+const semanticFaults=[];for(const [bit,method,argument,pattern] of [[14,"inspect",undefined,/inspection failed/],[16,"write",Buffer.from("x"),/write failed/],[17,"eof",undefined,/EOF mode/]]){const opened=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<bit);const action=()=>argument===undefined?faults[method](opened.master):faults[method](opened.master,argument);semanticFaults.push(pattern.test(rejects(action,pattern)));faults.testFault(0);faults.close(opened.slave);faults.close(opened.master);}const readFault=faults.open(80,24,process.hrtime.bigint()+1000000000n);faults.testFault(1<<15);const readFaultReceipt=faults.read(readFault.master,16);const readFaultDescriptor=Object.getOwnPropertyDescriptor(readFaultReceipt,"status");semanticFaults.push(Object.getPrototypeOf(readFaultReceipt)===Object.prototype&&Object.keys(readFaultReceipt).length===1&&Object.hasOwn(readFaultReceipt,"status")&&!Object.hasOwn(readFaultReceipt,"bytes")&&!("bytes" in readFaultReceipt)&&readFaultDescriptor!==undefined&&Object.hasOwn(readFaultDescriptor,"value")&&readFaultDescriptor.value==="eio"&&readFaultDescriptor.get===undefined&&readFaultDescriptor.set===undefined);faults.testFault(0);faults.close(readFault.slave);faults.close(readFault.master);if(!semanticFaults.every(Boolean))throw new Error("semantic fault matrix failed");
+const happy=invoke(production);for(const fd of [happy.p.interpreter,happy.p.script,happy.extra])closeSync(fd);production.eof(happy.result.handle);const happyEnd=Date.now()+2000;while(Date.now()<happyEnd&&!happy.terminal()){production.read(happy.result.handle,4096);await new Promise(resolve=>setTimeout(resolve,10));}production.close(happy.result.handle);const residual=pidOneChildren()===initialPidOneChildren&&children()===initialChildren&&fds()===initialFds;
+process.stdout.write(JSON.stringify({argvEnvAuthority,closeTerminal,deadlineNoLaunch,descriptorAuthority,descriptorClosure,drainTerminal,eofByteWritten,faultCleanup,finalizerSafe,geometry,openRollback,processTerminal,residual,termios}));\n`;
 
 const readBoundedRegular = (
   path,
@@ -175,13 +239,17 @@ const verifyFileIdentity = (path, bytes, digest, mode = 0o644) => {
     throw new Error(`PTY source identity does not match authority: ${path}`);
 };
 
-const verifySourceAuthority = (sourceRoot) => {
+export const verifySourceAuthority = (sourceRoot) => {
   const nodePtyRoot = resolve(sourceRoot, "third_party/node-pty");
   const addonApiRoot = resolve(sourceRoot, "third_party/node-addon-api");
   verifyClosedSourceDirectory(nodePtyRoot, [
     "LICENSE",
+    "patches",
     "source-manifest.json",
     "src",
+  ]);
+  verifyClosedSourceDirectory(resolve(nodePtyRoot, "patches"), [
+    "agentscope-terminal-authority.patch",
   ]);
   verifyClosedSourceDirectory(resolve(nodePtyRoot, "src"), ["unix"]);
   verifyClosedSourceDirectory(resolve(nodePtyRoot, "src/unix"), ["pty.cc"]);
@@ -201,9 +269,14 @@ const verifySourceAuthority = (sourceRoot) => {
     "5809f87b15122f335017b0b3020071df4c6205c7827186a2c5a9e0edc9ef59b2",
   );
   verifyFileIdentity(
+    resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
+    39_951,
+    "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107",
+  );
+  verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
-    1_276,
-    "a818a4786cad24357107d01ff17cd28098e7e930f540386a4772bbc21b9b66dd",
+    1_684,
+    "7727f77b87dc20bb00c489ca85d096a9b28d14f373a873fbd08ee828c584adba",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -234,6 +307,15 @@ const verifySourceAuthority = (sourceRoot) => {
       "8f218f6c194be81d98b1eeea344b150e83445824" ||
     nodePtyManifest.upstream?.npmTarballSha256 !==
       "114ac80c3fe075eff76217a4122d135576582695f49c03a5da3835cdfc2f89c5" ||
+    nodePtyManifest.agentscopePatch?.path !==
+      "patches/agentscope-terminal-authority.patch" ||
+    nodePtyManifest.agentscopePatch?.sha256 !==
+      "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107" ||
+    nodePtyManifest.agentscopePatch?.bytes !== 39_951 ||
+    nodePtyManifest.agentscopePatch?.mode !== "0644" ||
+    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 52_834 ||
+    nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
+      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -245,11 +327,13 @@ const verifySourceAuthority = (sourceRoot) => {
     throw new Error("PTY source provenance is not exact.");
 };
 
-const verifyPolicy = (root) => {
+// The closed policy conjunction is deliberately one fail-closed predicate.
+// eslint-disable-next-line complexity
+export const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
-    8_319,
-    "03841cea64fe09fcaa73f8e7e0d391fd31712700f67e629d5812f3bce24afafb",
+    8_833,
+    "861dea0c20d8bace86a1d0f2a998d69ba2ebce22c27377a6cc1a4b69a6e8e086",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -260,6 +344,26 @@ const verifyPolicy = (root) => {
     policy.target?.nodeAbi !== 127 ||
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
+    policy.build?.patch?.sha256 !==
+      "249902f249b4f58c43902f9d305321225c7e8b0b92ab2edd50c661f27222b107" ||
+    policy.build?.patch?.path !==
+      "third_party/node-pty/patches/agentscope-terminal-authority.patch" ||
+    policy.build?.patch?.bytes !== 39_951 ||
+    policy.build?.patch?.patchedSourceBytes !== 52_834 ||
+    policy.build?.patch?.patchedSourceSha256 !==
+      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916" ||
+    JSON.stringify(policy.build?.nativeExports) !==
+      JSON.stringify([
+        "close",
+        "eof",
+        "fork",
+        "inspect",
+        "open",
+        "process",
+        "read",
+        "resize",
+        "write",
+      ]) ||
     !Array.isArray(policy.alpineAuthority?.packages) ||
     policy.alpineAuthority.packages.length !== 19
   )
@@ -278,7 +382,10 @@ const verifyManifestAuthority = (authority, policy) => {
       "nodeAddonApiSourceManifestSha256",
       "nodeHeaderInventorySha256",
       "nodePtySourceManifestSha256",
+      "nativeExports",
       "packageClosureSha256",
+      "patchSha256",
+      "patchedSourceSha256",
       "policySha256",
       "signedIndexSha256",
       "signerKeySha256",
@@ -289,7 +396,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "03841cea64fe09fcaa73f8e7e0d391fd31712700f67e629d5812f3bce24afafb" ||
+      "861dea0c20d8bace86a1d0f2a998d69ba2ebce22c27377a6cc1a4b69a6e8e086" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -302,7 +409,11 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "a818a4786cad24357107d01ff17cd28098e7e930f540386a4772bbc21b9b66dd" ||
+      "7727f77b87dc20bb00c489ca85d096a9b28d14f373a873fbd08ee828c584adba" ||
+    authority.patchSha256 !== policy.build.patch.sha256 ||
+    authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
+    JSON.stringify(authority.nativeExports) !==
+      JSON.stringify(policy.build.nativeExports) ||
     authority.nodeAddonApiSourceManifestSha256 !==
       "aff0d41e4e5c77313d51cf6cfd070d43798520b4a8b7734b4acc600ded9e9b6e"
   )
@@ -344,6 +455,31 @@ const verifyArtifactRecord = (record) => {
     throw new Error("PTY runtime artifact record is not exact.");
 };
 
+const verifyFaultArtifactRecord = (record) => {
+  if (
+    !exactKeys(record, [
+      "bytes",
+      "format",
+      "mode",
+      "needed",
+      "path",
+      "sha256",
+      "staged",
+      "tuple",
+    ]) ||
+    record.tuple !== expectedFaultArtifact.tuple ||
+    record.path !== expectedFaultArtifact.path ||
+    record.bytes !== expectedFaultArtifact.bytes ||
+    record.mode !== "0644" ||
+    record.format !== "elf64-x86-64" ||
+    record.sha256 !== expectedFaultArtifact.sha256 ||
+    record.staged !== false ||
+    JSON.stringify(record.needed) !==
+      JSON.stringify(expectedFaultArtifact.needed)
+  )
+    throw new Error("PTY test-fault artifact record is not exact.");
+};
+
 // This is the one fail-closed conjunction for provenance, policy, artifact,
 // ELF, and staging authority. Every subordinate check is mandatory.
 export const verifyPtyRuntime = ({
@@ -355,30 +491,68 @@ export const verifyPtyRuntime = ({
   const policy = verifyPolicy(root);
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
-    1_935,
-    "446a77ef8a436afdf253091e5c50858273615d432276012d9aa883feecab0944",
+    2_675,
+    "abc1ac4ddf0da4756cae6126127c75487079ae904b3ed2e1b42a0fe97327d5b5",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
   );
   if (
-    !exactKeys(manifest, ["artifacts", "authority", "schemaVersion"]) ||
+    !exactKeys(manifest, [
+      "artifacts",
+      "authority",
+      "schemaVersion",
+      "testArtifacts",
+    ]) ||
     manifest.schemaVersion !== 1 ||
     !Array.isArray(manifest.artifacts) ||
-    manifest.artifacts.length !== 1
+    manifest.artifacts.length !== 1 ||
+    !Array.isArray(manifest.testArtifacts) ||
+    manifest.testArtifacts.length !== 1
   )
     throw new Error("PTY runtime artifact manifest is not closed.");
   verifyManifestAuthority(manifest.authority, policy);
   const record = manifest.artifacts[0];
   verifyArtifactRecord(record);
+  const faultRecord = manifest.testArtifacts[0];
+  verifyFaultArtifactRecord(faultRecord);
 
   const source = resolve(root, record.path);
   const bytes = readBoundedRegular(source, maximumArtifactBytes, 0o644);
   if (bytes.length !== record.bytes || sha256(bytes) !== record.sha256)
     throw new Error("PTY runtime artifact bytes do not match authority.");
+  if (
+    bytes.includes(Buffer.from("AGENTSCOPE_PTY_TEST_FAULTS")) ||
+    bytes.includes(Buffer.from("testFault"))
+  )
+    throw new Error("PTY runtime artifact contains test-fault authority.");
   const needed = inspectElf(bytes);
   if (JSON.stringify(needed) !== JSON.stringify(record.needed))
     throw new Error("PTY runtime dependency closure is not exact.");
+
+  const faultSource = resolve(root, faultRecord.path);
+  const faultBytes = readBoundedRegular(
+    faultSource,
+    maximumArtifactBytes,
+    0o644,
+  );
+  if (
+    faultBytes.length !== faultRecord.bytes ||
+    sha256(faultBytes) !== faultRecord.sha256 ||
+    !faultBytes.includes(Buffer.from("testFault"))
+  )
+    throw new Error("PTY test-fault artifact bytes do not match authority.");
+  if (
+    JSON.stringify(inspectElf(faultBytes)) !==
+    JSON.stringify(faultRecord.needed)
+  )
+    throw new Error("PTY test-fault dependency closure is not exact.");
+  verifyClosedSourceDirectory(resolve(root, "fixtures/pty-runtime-faults"), [
+    "node127-linux-x64-musl",
+  ]);
+  verifyClosedSourceDirectory(resolve(root, dirname(faultRecord.path)), [
+    "pty.node",
+  ]);
 
   verifyClosedSourceDirectory(resolve(root, "pty-runtime"), [
     "node127-linux-x64-musl",
@@ -399,12 +573,82 @@ export const verifyPtyRuntime = ({
   });
 };
 
+// This is the inner, network-off receipt verifier. The explicit GitHub-hosted
+// CI workflow owns the disposable-host Docker lifecycle and mounts the exact
+// two authenticated artifacts read-only.
+export const runPtyRuntimeProof = () => {
+  verifyPtyRuntime();
+  if (
+    process.platform !== "linux" ||
+    process.arch !== "x64" ||
+    process.versions.modules !== "127" ||
+    readFileSync("/etc/alpine-release", "utf8").trim() !== "3.24.1"
+  )
+    throw new Error("PTY runtime proof requires the canonical inner runtime.");
+  const root = mkdtempSync(resolve(tmpdir(), "agentscope-pty-proof-"));
+  chmodSync(root, 0o700);
+  const fixture = resolve(root, "fixture.mjs");
+  const driver = resolve(root, "driver.mjs");
+  writeFileSync(fixture, runtimeFixture, { flag: "wx", mode: 0o400 });
+  writeFileSync(driver, runtimeDriver, { flag: "wx", mode: 0o400 });
+  const deadline = process.hrtime.bigint() + 30_000_000_000n;
+  let primaryFailure;
+  let cleanupFailure;
+  try {
+    const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
+    if (remaining <= 0)
+      throw new Error("PTY runtime proof exceeded its absolute deadline.");
+    const output = execFileSync(
+      "/usr/local/bin/node",
+      ["--expose-gc", driver],
+      {
+        encoding: "utf8",
+        env: {
+          AGENTSCOPE_PTY_FAULTS: "/runtime/faults.node",
+          AGENTSCOPE_PTY_FIXTURE: fixture,
+          AGENTSCOPE_PTY_PRODUCTION: "/runtime/production.node",
+          HOME: root,
+          LANG: "C",
+          LC_ALL: "C",
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          TZ: "UTC",
+        },
+        maxBuffer: 64 * 1024,
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: remaining,
+      },
+    );
+    if (process.hrtime.bigint() > deadline)
+      throw new Error("PTY runtime proof exceeded its absolute deadline.");
+    verifyRuntimeReceipt(JSON.parse(output.trim()));
+    process.stdout.write('{"version":1,"status":"passed"}\n');
+  } catch (error) {
+    primaryFailure = error;
+  } finally {
+    try {
+      rmSync(root, { force: true, recursive: true });
+    } catch (error) {
+      cleanupFailure = error;
+    }
+  }
+  if (cleanupFailure !== undefined)
+    throw new AggregateError(
+      [primaryFailure, cleanupFailure].filter(Boolean),
+      "PTY runtime proof cleanup is uncertain.",
+      { cause: cleanupFailure },
+    );
+  if (primaryFailure !== undefined) throw primaryFailure;
+};
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const arguments_ = process.argv.slice(2);
   if (
     arguments_.length > 1 ||
-    (arguments_.length === 1 && arguments_[0] !== "--stage")
+    (arguments_.length === 1 &&
+      arguments_[0] !== "--stage" &&
+      arguments_[0] !== "--runtime-proof")
   )
-    throw new Error("Usage: verify-pty-runtime.mjs [--stage]");
-  verifyPtyRuntime({ stage: arguments_[0] === "--stage" });
+    throw new Error("Usage: verify-pty-runtime.mjs [--stage|--runtime-proof]");
+  if (arguments_[0] === "--runtime-proof") runPtyRuntimeProof();
+  else verifyPtyRuntime({ stage: arguments_[0] === "--stage" });
 }
