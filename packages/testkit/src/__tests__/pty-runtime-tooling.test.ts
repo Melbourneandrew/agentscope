@@ -300,9 +300,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 46_507,
+      bytes: 47_812,
       mode: "0644",
-      patchedSourceBytes: 59_220,
+      patchedSourceBytes: 60_514,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -320,8 +320,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 46_507,
-      patchedSourceBytes: 59_220,
+      bytes: 47_812,
+      patchedSourceBytes: 60_514,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -653,7 +653,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1",
+      "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -714,6 +714,10 @@ describe("PTY authenticated build-material tooling", () => {
       ),
       "utf8",
     );
+    const verifier = readFileSync(
+      resolve(packageRoot, "scripts/verify-pty-runtime.mjs"),
+      "utf8",
+    );
     const apply = (candidatePatch: string) =>
       evaluate(
         `const {applyExactPtyPatch}=await import(${JSON.stringify(buildUrl)}); applyExactPtyPatch(Buffer.from(process.argv[1],'base64').toString(),Buffer.from(process.argv[2],'base64').toString());`,
@@ -765,7 +769,24 @@ describe("PTY authenticated build-material tooling", () => {
       "+      joined = waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG);",
     );
     expect(patch).toContain("+    if (pty_take_test_fault(18)) {");
-    expect(patch).toContain("+  if (fault < 0 || fault > 0x3fffff)");
+    expect(patch).toContain("+    if (errno == ECHILD) {");
+    expect(patch).toContain(
+      "+      bool observed_after = pty_read_process_identity(",
+    );
+    expect(patch).toContain(
+      '+        throw Napi::Error::New(env, "PTY adopted-zombie reap persisted");',
+    );
+    expect(verifier).toContain(
+      "rejectedEchild = /reap persisted/u.test(String(error));",
+    );
+    expect(patch).toContain(
+      '+                              "already-absent");',
+    );
+    expect(patch).toContain("+      if (pty_take_test_fault(22)) {");
+    expect(patch).toContain(
+      "+      } else if (observed_after && pty_take_test_fault(23)) {",
+    );
+    expect(patch).toContain("+  if (fault < 0 || fault > 0xffffff)");
     expect(patch).toContain(
       '+  exports.Set("reapAdoptedZombie", Napi::Function::New(env, PtyReapAdoptedZombie));',
     );
@@ -905,7 +926,7 @@ describe("PTY authenticated build-material tooling", () => {
       "utf8",
     );
     expect(build).toContain(
-      'digest !==\n    "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab"',
+      'digest !==\n    "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff"',
     );
   });
 });

@@ -24,17 +24,17 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 643_744,
+  bytes: 647_840,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab",
+  sha256: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
   tuple: "node127-linux-x64-musl",
 });
 const expectedFaultArtifact = Object.freeze({
-  bytes: 644_072,
+  bytes: 648_176,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-  sha256: "d4fcfb86202c50a1e33edf3cf6c696bc9bc11d7d28c05d1a7f320adceffd34f6",
+  sha256: "7a5468057ae55ba587e66ccef1858e59586a05039019c88d4bd196650a47faaa",
   tuple: "node127-linux-x64-musl-test-faults",
 });
 const runtimeReceiptKeys = Object.freeze([
@@ -274,13 +274,13 @@ export const verifySourceAuthority = (sourceRoot) => {
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
-    46_507,
-    "2ebf2082692c42d032999a7d1d870d03e88dc9f753bed01843429bb433915ac7",
+    47_812,
+    "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
     1_719,
-    "4f4e918cdfeb7abb65a398d293533726b9b49694b9f7c9c32b60122b75c9f8fc",
+    "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -314,12 +314,12 @@ export const verifySourceAuthority = (sourceRoot) => {
     nodePtyManifest.agentscopePatch?.path !==
       "patches/agentscope-terminal-authority.patch" ||
     nodePtyManifest.agentscopePatch?.sha256 !==
-      "2ebf2082692c42d032999a7d1d870d03e88dc9f753bed01843429bb433915ac7" ||
-    nodePtyManifest.agentscopePatch?.bytes !== 46_507 ||
+      "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9" ||
+    nodePtyManifest.agentscopePatch?.bytes !== 47_812 ||
     nodePtyManifest.agentscopePatch?.mode !== "0644" ||
-    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 59_220 ||
+    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 60_514 ||
     nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
-      "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1" ||
+      "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -337,7 +337,7 @@ export const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
     8_860,
-    "ecc1b0f7de6e8e7ca2df04a2864005b3413c66cbf6773836750f4bff0019b5fd",
+    "7887af4db8a33cbbb7dcb1480765a67791501794d8764197901359163cf9f09d",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -349,13 +349,13 @@ export const verifyPolicy = (root) => {
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
     policy.build?.patch?.sha256 !==
-      "2ebf2082692c42d032999a7d1d870d03e88dc9f753bed01843429bb433915ac7" ||
+      "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9" ||
     policy.build?.patch?.path !==
       "third_party/node-pty/patches/agentscope-terminal-authority.patch" ||
-    policy.build?.patch?.bytes !== 46_507 ||
-    policy.build?.patch?.patchedSourceBytes !== 59_220 ||
+    policy.build?.patch?.bytes !== 47_812 ||
+    policy.build?.patch?.patchedSourceBytes !== 60_514 ||
     policy.build?.patch?.patchedSourceSha256 !==
-      "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1" ||
+      "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b" ||
     JSON.stringify(policy.build?.nativeExports) !==
       JSON.stringify([
         "close",
@@ -401,7 +401,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "ecc1b0f7de6e8e7ca2df04a2864005b3413c66cbf6773836750f4bff0019b5fd" ||
+      "7887af4db8a33cbbb7dcb1480765a67791501794d8764197901359163cf9f09d" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -414,7 +414,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "4f4e918cdfeb7abb65a398d293533726b9b49694b9f7c9c32b60122b75c9f8fc" ||
+      "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4" ||
     authority.patchSha256 !== policy.build.patch.sha256 ||
     authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
     JSON.stringify(authority.nativeExports) !==
@@ -497,7 +497,7 @@ export const verifyPtyRuntime = ({
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
     2_702,
-    "9ca1c59a89f2fbdc27cc9b9f1dfb2b6a2e869fd714cb578ad0d9bdab4a23ad6d",
+    "d7ab6f5c9227143ea43574a4f8d2122c087190a8164a7a8d69f690688613421d",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
@@ -631,6 +631,9 @@ const exactReapReceipt = (value, pid, startIdentity, status) =>
   value.startIdentity === startIdentity &&
   value.status === status;
 
+// The bounded runtime matrix deliberately keeps admission, mutation, and
+// terminal reconciliation in one authority scope.
+// eslint-disable-next-line max-lines-per-function, complexity
 const proveAdoptedZombieReap = (deadline) => {
   if (process.pid !== 1)
     throw new Error("PTY adopted-zombie proof requires PID 1.");
@@ -859,11 +862,42 @@ const proveAdoptedZombieReap = (deadline) => {
         deadline,
       );
     } catch (error) {
-      rejectedEchild = /reap is uncertain/u.test(String(error));
+      rejectedEchild = /reap persisted/u.test(String(error));
     } finally {
       faults.testFault(0);
     }
-    if (!rejectedEchild)
+    faults.testFault((1 << 18) | (1 << 23));
+    let rejectedEchildReuse = false;
+    try {
+      faults.reapAdoptedZombie(
+        second.pid,
+        second.startIdentity,
+        rootPid,
+        deadline,
+      );
+    } catch (error) {
+      rejectedEchildReuse = /identity changed/u.test(String(error));
+    } finally {
+      faults.testFault(0);
+    }
+    faults.testFault((1 << 18) | (1 << 22));
+    const alreadyAbsent = faults.reapAdoptedZombie(
+      second.pid,
+      second.startIdentity,
+      rootPid,
+      deadline,
+    );
+    faults.testFault(0);
+    if (
+      !rejectedEchild ||
+      !rejectedEchildReuse ||
+      !exactReapReceipt(
+        alreadyAbsent,
+        second.pid,
+        second.startIdentity,
+        "already-absent",
+      )
+    )
       throw new Error("PTY adopted process ambiguity was admitted.");
     const receipt = production.reapAdoptedZombie(
       second.pid,
@@ -889,7 +923,9 @@ const proveAdoptedZombieReap = (deadline) => {
       if (reaped.has(target.pid)) continue;
       try {
         process.kill(target.pid, "SIGKILL");
-      } catch {}
+      } catch {
+        // The subsequent authenticated reap remains the terminal authority.
+      }
       try {
         production.reapAdoptedZombie(
           target.pid,
@@ -897,7 +933,9 @@ const proveAdoptedZombieReap = (deadline) => {
           rootPid,
           deadline,
         );
-      } catch {}
+      } catch {
+        // A failed best-effort reap cannot turn the proof into success.
+      }
     }
   }
 };

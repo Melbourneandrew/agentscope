@@ -190,6 +190,7 @@ describe("selected-container lifecycle", () => {
 
   it.each([
     ["clean", "exited"],
+    ["adopted-zombie-already-absent", "exited"],
     ["descendant", "exited"],
     ["output-limit", "output-limit"],
     ["timeout", "timed-out"],
@@ -216,7 +217,14 @@ describe("selected-container lifecycle", () => {
     ["identity-substitution", "testkit.headless.observer.identity"],
     ["observer-failure", "testkit.headless.observer.read"],
     ["signal-failure", "testkit.headless.observer.signal"],
+    [
+      "adopted-zombie-already-absent-persistence",
+      "testkit.headless.observer.reap",
+    ],
+    ["adopted-zombie-not-ready", "testkit.headless.observer.reap"],
+    ["adopted-zombie-reaped-persistence", "testkit.headless.observer.reap"],
     ["adopted-zombie-reap-failure", "testkit.headless.observer.reap"],
+    ["adopted-zombie-receipt-malformed", "testkit.headless.observer.reap"],
     ["adopted-zombie-receipt-substitution", "testkit.headless.observer.reap"],
     ["adopted-zombie-state-substitution", "testkit.headless.observer.identity"],
     ["stream-join-failure", "testkit.headless.reconciliation.deadline"],

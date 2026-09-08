@@ -5,16 +5,16 @@
     "canonicalImageIndex": "node@sha256:3266bc9e8bee1acc8a77386eefaf574987d2729b8c5ec35b0dbd6ddbc40b0ce2",
     "canonicalImageManifest": "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     "canonicalImageConfig": "sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6",
-    "policySha256": "ecc1b0f7de6e8e7ca2df04a2864005b3413c66cbf6773836750f4bff0019b5fd",
+    "policySha256": "7887af4db8a33cbbb7dcb1480765a67791501794d8764197901359163cf9f09d",
     "packageClosureSha256": "026fe1abd8cc72a79ff0c9aadacc3ea3a82291e176373908937b6485ad7e64fa",
     "buildArgumentsSha256": "8ba3b84cac1914ed028c54501e6eb8bd89513321e63257a0573218e835c173b8",
     "buildEnvironmentSha256": "1d1895891c772d08bf8ee3adaa54bba8f3156d0c823a515768f5615b2a2651b3",
     "nodeHeaderInventorySha256": "5b587fb37921c66e1c3fffb48470b85e272dd214a0b0aa81418b38135aa8ca2b",
     "signedIndexSha256": "622b178e9e1e302970f2dbff372a8e1d98316c6cb224189ea656e438fa9da232",
     "signerKeySha256": "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f",
-    "nodePtySourceManifestSha256": "4f4e918cdfeb7abb65a398d293533726b9b49694b9f7c9c32b60122b75c9f8fc",
-    "patchSha256": "2ebf2082692c42d032999a7d1d870d03e88dc9f753bed01843429bb433915ac7",
-    "patchedSourceSha256": "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1",
+    "nodePtySourceManifestSha256": "faa566edd6ed7be7de77ab1fc9e921e6b53c0109baa90ac85a96317bae2953f4",
+    "patchSha256": "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
+    "patchedSourceSha256": "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b",
     "nativeExports": [
       "close",
       "eof",
@@ -33,15 +33,15 @@
     {
       "tuple": "node127-linux-x64-musl",
       "path": "pty-runtime/node127-linux-x64-musl/pty.node",
-      "bytes": 643744,
+      "bytes": 647840,
       "mode": "0644",
-      "sha256": "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab",
+      "sha256": "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
       "format": "elf64-x86-64",
       "needed": ["libc.musl-x86_64.so.1"],
       "reproducibility": {
         "independentCleanRoots": 2,
-        "firstSha256": "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab",
-        "secondSha256": "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab",
+        "firstSha256": "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
+        "secondSha256": "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
         "byteIdentical": true,
         "addonExecuted": false
       }
@@ -51,9 +51,9 @@
     {
       "tuple": "node127-linux-x64-musl-test-faults",
       "path": "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-      "bytes": 644072,
+      "bytes": 648176,
       "mode": "0644",
-      "sha256": "d4fcfb86202c50a1e33edf3cf6c696bc9bc11d7d28c05d1a7f320adceffd34f6",
+      "sha256": "7a5468057ae55ba587e66ccef1858e59586a05039019c88d4bd196650a47faaa",
       "format": "elf64-x86-64",
       "needed": ["libc.musl-x86_64.so.1"],
       "staged": false
