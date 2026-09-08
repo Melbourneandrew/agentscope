@@ -252,12 +252,39 @@ describe("PTY runtime artifact tooling", () => {
       "closeRegistry.register(closeLive.result.handle,closeFinalizerToken)",
     );
     expect(verifier).toContain(
-      "closeLive.result.handle=undefined;closeLive.result=undefined;closeLive=null;closeFinalizerDropped=true;const reuse=",
+      "closeLive.result.handle=undefined;closeLive.result=undefined;closeLive=null;closeFinalizerDropped=true;const reuseFds=",
+    );
+    expect(verifier).toContain(
+      'if(ownedTerminalFds.length!==1)throw new Error("owned PTY descriptor inventory is not exact")',
+    );
+    expect(verifier).toContain(
+      'if(reuse!==detachedPtyFd)throw new Error("exact detached PTY descriptor was not reused")',
+    );
+    expect(verifier).toContain(
+      "for(let count=0;count<64&&reuseFds.at(-1)!==detachedPtyFd;count+=1)",
+    );
+    expect(verifier).toContain(
+      'if(candidate>detachedPtyFd)throw new Error("exact detached PTY descriptor reuse was skipped")',
+    );
+    expect(verifier).toContain(
+      'if(detachedPtyFd<3||detachedPtyFd>255)throw new Error("detached PTY descriptor exceeds the reuse bound")',
+    );
+    expect(verifier).toContain(
+      'if(reuseSet.has(candidate))throw new Error("descriptor reuse filler was duplicated")',
+    );
+    expect(verifier).toContain(
+      "reuseLive=after.dev===reuseIdentity.dev&&after.ino===reuseIdentity.ino&&after.mode===reuseIdentity.mode",
     );
     expect(workflow).toContain("--network none --platform linux/amd64");
     expect(workflow).toContain("--read-only");
     expect(workflow).toContain("--kill-after=1 2s");
     expect(workflow).toContain("(( remaining >= 7 ))");
+    expect(workflow.indexOf("deadline=$((SECONDS + 90))")).toBeLessThan(
+      workflow.indexOf("root=$(/usr/bin/mktemp"),
+    );
+    expect(workflow.indexOf("trap cleanup EXIT INT TERM")).toBeLessThan(
+      workflow.indexOf("root=$(/usr/bin/mktemp"),
+    );
     expect(workflow).toContain(
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );
