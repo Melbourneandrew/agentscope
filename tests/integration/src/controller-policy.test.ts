@@ -41,6 +41,16 @@ const failureVerifierSource = (workflow: string) => {
     throw new Error("malformed failure verifier");
   return lines.join("\n");
 };
+const cleanupFailureValidatorSource = () => {
+  const source = readFileSync(
+    resolve(workspaceRoot, "tests/integration/clean.mjs"),
+    "utf8",
+  );
+  const start = source.indexOf("const installedPtyFailurePredicates =");
+  const end = source.indexOf("const addDirectory =", start);
+  if (start < 0 || end < 0) throw new Error("missing cleanup validator");
+  return source.slice(start, end);
+};
 
 describe("integration controller policy", () => {
   it("exposes one integration command and no public stage aliases", () => {
@@ -424,5 +434,60 @@ describe("installed-contract workflow failure evidence", () => {
       { receiptVersion: 1, phase: "artifact-install", predicate: 1 },
     ])
       expect(executeVerifier(rejected)).not.toBe(0);
+  });
+});
+
+describe("installed-contract cleanup failure evidence", () => {
+  it("accepts every closed predicate and rejects substitutions", () => {
+    const source = cleanupFailureValidatorSource();
+    const validate = (value: unknown) =>
+      spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `${source}\nprocess.exit(validInstalledPtyFailure(JSON.parse(process.argv[1])) ? 0 : 1);`,
+          JSON.stringify(value),
+        ],
+        { encoding: "utf8" },
+      ).status;
+    const admitted = {
+      "aggregate-evaluation": ["evaluation-rejected"],
+      "artifact-install": [
+        "candidate-rejected",
+        "egress-rejected",
+        "install-rejected",
+        "manifest-rejected",
+        "plan-rejected",
+        "toolchain-rejected",
+      ],
+      "case-execution": [
+        "execution-rejected",
+        "narrow-help-rejected",
+        "setup-rejected",
+        "state-rejected",
+      ],
+      "receipt-finalization": ["receipt-rejected"],
+    } as const;
+    for (const [phase, predicates] of Object.entries(admitted))
+      for (const predicate of predicates)
+        expect(validate({ receiptVersion: 1, phase, predicate })).toBe(0);
+    for (const rejected of [
+      {},
+      { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
+      {
+        receiptVersion: 1,
+        phase: "artifact-install",
+        predicate: "setup-rejected",
+      },
+      {
+        receiptVersion: 1,
+        phase: "case-execution",
+        predicate: "setup-rejected",
+        extra: true,
+      },
+      { receiptVersion: "1", phase: "case-execution", predicate: 1 },
+    ])
+      expect(validate(rejected)).not.toBe(0);
   });
 });

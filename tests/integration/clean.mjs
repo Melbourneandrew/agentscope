@@ -196,6 +196,24 @@ const installedPtyFailurePredicates = Object.freeze({
   "pty-receipt": Object.freeze(["receipt-rejected"]),
   "runner-bootstrap": Object.freeze(["runner-rejected"]),
 });
+const installedContractFailurePredicates = Object.freeze({
+  "aggregate-evaluation": Object.freeze(["evaluation-rejected"]),
+  "artifact-install": Object.freeze([
+    "candidate-rejected",
+    "egress-rejected",
+    "install-rejected",
+    "manifest-rejected",
+    "plan-rejected",
+    "toolchain-rejected",
+  ]),
+  "case-execution": Object.freeze([
+    "execution-rejected",
+    "narrow-help-rejected",
+    "setup-rejected",
+    "state-rejected",
+  ]),
+  "receipt-finalization": Object.freeze(["receipt-rejected"]),
+});
 const validInstalledPtyFailure = (value) =>
   value === null ||
   (typeof value === "object" &&
@@ -204,8 +222,12 @@ const validInstalledPtyFailure = (value) =>
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(["phase", "predicate", "receiptVersion"].sort()) &&
     value.receiptVersion === 1 &&
-    Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
-    installedPtyFailurePredicates[value.phase].includes(value.predicate));
+    ((Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
+      installedPtyFailurePredicates[value.phase].includes(value.predicate)) ||
+      (Object.hasOwn(installedContractFailurePredicates, value.phase) &&
+        installedContractFailurePredicates[value.phase].includes(
+          value.predicate,
+        ))));
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;
