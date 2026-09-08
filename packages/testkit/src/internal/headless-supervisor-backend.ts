@@ -3164,7 +3164,9 @@ type SelectedContainerTestSeed =
   | "adopted-zombie-already-absent"
   | "adopted-zombie-already-absent-persistence"
   | "adopted-zombie-not-ready"
+  | "adopted-zombie-reaped-persistence"
   | "adopted-zombie-reap-failure"
+  | "adopted-zombie-receipt-malformed"
   | "adopted-zombie-receipt-substitution"
   | "adopted-zombie-state-substitution"
   | "abort"
@@ -3289,9 +3291,16 @@ const selectedContainerRuntimeForTest = (
         return { pid, startIdentity, status: "not-ready" };
       if (seed === "adopted-zombie-already-absent-persistence")
         return { pid, startIdentity, status: "already-absent" };
+      if (seed === "adopted-zombie-reaped-persistence")
+        return { pid, startIdentity, status: "reaped" };
       processes.delete(pid);
       if (seed === "adopted-zombie-already-absent")
         return { pid, startIdentity, status: "already-absent" };
+      if (seed === "adopted-zombie-receipt-malformed")
+        return Object.assign(
+          { pid, startIdentity, status: "reaped" as const },
+          { extra: true },
+        );
       if (seed === "adopted-zombie-receipt-substitution")
         return { pid, startIdentity: `${pid}:2`, status: "reaped" };
       return { pid, startIdentity, status: "reaped" };
@@ -3384,7 +3393,9 @@ const selectedContainerRuntimeForTest = (
           seed === "adopted-zombie-already-absent" ||
           seed === "adopted-zombie-already-absent-persistence" ||
           seed === "adopted-zombie-not-ready" ||
+          seed === "adopted-zombie-reaped-persistence" ||
           seed === "adopted-zombie-reap-failure" ||
+          seed === "adopted-zombie-receipt-malformed" ||
           seed === "adopted-zombie-receipt-substitution" ||
           seed === "adopted-zombie-state-substitution" ||
           seed === "nested-adopted-zombie"
