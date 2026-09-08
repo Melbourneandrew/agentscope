@@ -29,7 +29,7 @@ When the affected graph includes the packed CLI production closure, pre-push als
 
 ### ADR-003: Keep environmental certification out of workstation hooks
 
-**Decision:** Mandatory workstation pre-push runs no live native certification and no mutation-heavy integration scenario. Contributors run mutation-heavy development integration through the Crabbox path governed by [Workstation, CI, and Crabbox Execution](/docs/blueprints/testing/integration/ci-execution). GitHub CI independently applies the fail-closed native selection and complete hermetic integration certification governed by [Continuous Integration](/docs/blueprints/operations/continuous-integration); every selected native run remains complete and every protected `main` revision is selected.
+**Decision:** Mandatory workstation pre-push runs no live native candidate verification and no mutation-heavy integration scenario. Contributors run mutation-heavy development integration through the Crabbox path governed by [Workstation, CI, and Crabbox Execution](/docs/blueprints/testing/integration/ci-execution). GitHub CI independently applies the fail-closed native candidate selection and complete hermetic integration certification governed by [Continuous Integration](/docs/blueprints/operations/continuous-integration); every selected candidate run remains complete and every protected `main` revision is selected.
 
 **Context:** Live native and integration checks are materially slower and require disposable environmental authority that an ordinary workstation hook does not provide.
 
