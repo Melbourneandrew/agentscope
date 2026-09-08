@@ -47,6 +47,14 @@ jobs:
       - run: pnpm build
       - run: pnpm verify:cli-artifact
 
+  pty-runtime:
+    name: PTY runtime proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replay the bounded PTY ABI in the canonical network-off image
+        run: node packages/testkit/scripts/verify-pty-runtime.mjs --runtime-proof
+
   docs:
     if: github.event_name == 'pull_request'
     name: Documentation

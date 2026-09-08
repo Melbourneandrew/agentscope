@@ -7,11 +7,11 @@ import {
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -54,35 +54,6 @@ const evaluate = (source: string, arguments_: string[] = []) =>
 const sha256 = (bytes: Buffer | string) =>
   createHash("sha256").update(bytes).digest("hex");
 
-const runtimeReceipt = (value: unknown) => {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    JSON.stringify(value) !==
-      '{"deadlineNoLaunch":true,"descriptorClosure":true,"faults":true,"geometry":true,"happy":true,"openRollback":true,"residual":true}'
-  )
-    throw new Error("PTY runtime proof receipt is not exact.");
-};
-
-const runtimeFixture = `import {fstatSync} from "node:fs";
-let extraOpen=true;try{fstatSync(Number(process.env.EXTRA_FD));}catch{extraOpen=false;}
-process.stdout.write(JSON.stringify({columns:process.stdout.columns,extraOpen,isTTY:process.stdin.isTTY===true&&process.stdout.isTTY===true,rows:process.stdout.rows})+"\\n");
-process.stdin.resume();process.stdin.on("end",()=>process.exit(0));\n`;
-
-const runtimeDriver = `import {createRequire} from "node:module";
-import {closeSync,constants,fstatSync,openSync,readdirSync,readFileSync} from "node:fs";
-if(process.versions.modules!=="127"||readFileSync("/etc/alpine-release","utf8").trim()!=="3.24.1")throw new Error("canonical runtime identity mismatch");
-const require=createRequire(import.meta.url);const production=require("/runtime/production.node");const faults=require("/runtime/faults.node");
-const fixture="/fixture/fixture.mjs";const environment=extra=>[\`EXTRA_FD=\${extra}\`,"LANG=C","LC_ALL=C","PATH=/usr/local/bin:/usr/bin:/bin","TZ=UTC"];
-const pair=()=>({interpreter:openSync("/usr/local/bin/node",constants.O_RDONLY|constants.O_NOFOLLOW),script:openSync(fixture,constants.O_RDONLY|constants.O_NOFOLLOW)});
-const invoke=(addon,{fault=0,milliseconds=2000}={})=>{const p=pair();const extra=openSync("/dev/null",constants.O_RDONLY|constants.O_NOFOLLOW);let exit;addon.testFault?.(fault);try{return{extra,p,result:addon.fork(p.interpreter,p.script,[],environment(extra),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+BigInt(milliseconds)*1000000n,(code,signal)=>{exit={code,signal};}),exit:()=>exit};}catch(error){closeSync(p.interpreter);closeSync(p.script);closeSync(extra);throw error;}};
-const fails=(fault,pattern,milliseconds)=>{let message="";try{invoke(faults,{fault,milliseconds});}catch(error){message=String(error);}if(!pattern.test(message))throw new Error("fault receipt mismatch");};
-fails(0,/deadline is invalid or expired/,-1);fails(1<<9,/expired before launch/,20);fails((1<<8)|(1<<7),/stage 5 errno 5.*child joined/,50);for(const bit of [1,2,3,4,7])fails(1<<bit,/failed|invalid|pre-handoff|child joined/);for(const bit of [6,12])fails((1<<bit)|(1<<7),/cleanup uncertain/);
-const beforeOpen=readdirSync("/proc/self/fd").length;for(const bit of [10,11]){faults.testFault(1<<bit);let rejected=false;try{faults.open(80,24,process.hrtime.bigint()+2000000000n);}catch{rejected=true;}if(!rejected)throw new Error("open rollback accepted");}const openRollback=readdirSync("/proc/self/fd").length===beforeOpen;
-const live=invoke(faults);closeSync(live.p.interpreter);closeSync(live.p.script);closeSync(live.extra);const first=faults.inspect(live.result.handle);faults.resize(live.result.handle,91,31,0,0);const resized=faults.inspect(live.result.handle);faults.write(live.result.handle,Buffer.from("hello\\n"));faults.eof(live.result.handle);let output="";const end=Date.now()+2000;while(Date.now()<end){const observed=faults.read(live.result.handle,4096);if(observed.status==="data")output+=observed.bytes.toString();if((observed.status==="eof"||observed.status==="eio")&&live.exit())break;await new Promise(resolve=>setTimeout(resolve,10));}faults.close(live.result.handle);
-const happyPair=pair();let happyExit;const happy=production.fork(happyPair.interpreter,happyPair.script,[],environment(-1),"/",80,24,-1,-1,true,"",process.hrtime.bigint()+2000000000n,(code,signal)=>{happyExit={code,signal};});closeSync(happyPair.interpreter);closeSync(happyPair.script);production.eof(happy.handle);const happyEnd=Date.now()+2000;while(Date.now()<happyEnd&&!happyExit){production.read(happy.handle,4096);await new Promise(resolve=>setTimeout(resolve,10));}production.close(happy.handle);
-const residual=readFileSync("/proc/self/task/1/children","utf8").trim()==="";const receipt={deadlineNoLaunch:true,descriptorClosure:output.includes('"extraOpen":false'),faults:true,geometry:first.isTTY===true&&resized.columns===91&&resized.rows===31,happy:happyExit?.code===0,openRollback,residual};process.stdout.write(JSON.stringify(receipt));\n`;
 const writeTarString = (
   header: Buffer,
   offset: number,
@@ -203,102 +174,119 @@ afterEach(() => {
 // Runtime authority and its hostile artifact cases stay in one adjacent table.
 // eslint-disable-next-line max-lines-per-function
 describe("PTY runtime artifact tooling", () => {
-  it("replays the closed PTY ABI matrix only on authenticated GitHub CI", () => {
-    const identity = {
-      actions: process.env.GITHUB_ACTIONS,
-      event: process.env.GITHUB_EVENT_NAME,
-      repository: process.env.GITHUB_REPOSITORY,
-      runnerArch: process.env.RUNNER_ARCH,
-      runnerEnvironment: process.env.RUNNER_ENVIRONMENT,
-      runnerOs: process.env.RUNNER_OS,
-      workspace: process.env.GITHUB_WORKSPACE,
+  it("accepts only a complete causal runtime receipt", () => {
+    const verify = (receipt: unknown) =>
+      evaluate(
+        `const {verifyRuntimeReceipt}=await import(${JSON.stringify(verifierUrl)}); verifyRuntimeReceipt(JSON.parse(process.argv[1]));`,
+        [JSON.stringify(receipt)],
+      );
+    const receipt = {
+      argvEnvAuthority: true,
+      closeTerminal: true,
+      deadlineNoLaunch: true,
+      descriptorAuthority: true,
+      descriptorClosure: true,
+      drainTerminal: true,
+      eofByteWritten: true,
+      faultCleanup: true,
+      finalizerSafe: true,
+      geometry: true,
+      openRollback: true,
+      processTerminal: true,
+      residual: true,
+      termios: true,
     };
-    const indicators = Object.values(identity).filter(
-      (value) => value !== undefined,
+    expect(() => verify(receipt)).not.toThrow();
+    expect(() => verify({ ...receipt, geometry: false })).toThrow(
+      /did not establish geometry/u,
     );
-    if (indicators.length === 0) {
-      expect(() => {
-        runtimeReceipt({
-          deadlineNoLaunch: true,
-          descriptorClosure: true,
-          faults: true,
-          geometry: true,
-          happy: true,
-          openRollback: true,
-          residual: true,
-        });
-      }).not.toThrow();
-      expect(() => {
-        runtimeReceipt({ happy: true });
-      }).toThrow(/receipt is not exact/u);
-      return;
-    }
-    expect(identity).toEqual({
-      actions: "true",
-      event: "pull_request",
-      repository: "Melbourneandrew/agentscope",
-      runnerArch: "X64",
-      runnerEnvironment: "github-hosted",
-      runnerOs: "Linux",
-      workspace: realpathSync(resolve(packageRoot, "../..")),
-    });
-    const docker = "/usr/bin/docker";
-    const dockerStat = statSync(docker);
-    expect(dockerStat.isFile()).toBe(true);
-    expect(dockerStat.uid).toBe(0);
-    expect(dockerStat.mode & 0o111).not.toBe(0);
-    const socket = statSync("/var/run/docker.sock");
-    expect(socket.isSocket()).toBe(true);
+    expect(() => verify({ ...receipt, unproved: true })).toThrow(
+      /receipt is not closed/u,
+    );
+  });
+
+  it("keeps runtime process replay out of unit tests and in one CI step", () => {
+    const thisTest = readFileSync(new URL(import.meta.url), "utf8");
+    const verifier = readFileSync(
+      resolve(packageRoot, "scripts/verify-pty-runtime.mjs"),
+      "utf8",
+    );
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    expect(thisTest).not.toContain(["docker", "run"].join(" "));
+    expect(thisTest).not.toContain(["GITHUB", "ACTIONS"].join("_"));
+    expect(
+      workflow.match(/verify-pty-runtime\.mjs --runtime-proof/gu),
+    ).toHaveLength(1);
+    expect(verifier).toContain('"--network",\n      "none"');
+    expect(verifier).toContain('"--read-only"');
+    expect(verifier).toContain("canonicalImageManifest");
+    expect(verifier).toContain("canonicalImageConfig");
+  });
+
+  it("rejects stale patch byte authorities in source and build policy", () => {
     const root = temporaryRoot();
-    const configuration = resolve(root, "docker-config");
-    const fixture = resolve(root, "fixture.mjs");
-    const driver = resolve(root, "driver.mjs");
-    mkdirSync(configuration, { mode: 0o700 });
-    chmodSync(configuration, 0o700);
-    writeFileSync(fixture, runtimeFixture, { mode: 0o400 });
-    writeFileSync(driver, runtimeDriver, { mode: 0o400 });
-    const output = execFileSync(
-      docker,
-      [
-        "--config",
-        configuration,
-        "--host",
-        "unix:///var/run/docker.sock",
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--platform",
-        "linux/amd64",
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,nosuid,nodev,noexec,mode=0700",
-        "--mount",
-        `type=bind,src=${resolve(packageRoot, "pty-runtime/node127-linux-x64-musl/pty.node")},dst=/runtime/production.node,readonly`,
-        "--mount",
-        `type=bind,src=${resolve(packageRoot, "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node")},dst=/runtime/faults.node,readonly`,
-        "--mount",
-        `type=bind,src=${fixture},dst=/fixture/fixture.mjs,readonly`,
-        "--mount",
-        `type=bind,src=${driver},dst=/fixture/driver.mjs,readonly`,
-        "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
-        "node",
-        "--expose-gc",
-        "/fixture/driver.mjs",
-      ],
+    const sourceRoot = resolve(root, "source");
+    const packageFixture = resolve(root, "package");
+    cpSync(
+      resolve(packageRoot, "../../third_party"),
+      resolve(sourceRoot, "third_party"),
       {
-        encoding: "utf8",
-        env: {
-          DOCKER_API_VERSION: "1.44",
-          HOME: root,
-          PATH: "/usr/bin:/bin",
-        },
-        maxBuffer: 64 * 1024,
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 30_000,
+        recursive: true,
       },
     );
-    runtimeReceipt(JSON.parse(output));
+    mkdirSync(packageFixture);
+    copyFileSync(
+      resolve(packageRoot, "pty-runtime-policy.json"),
+      resolve(packageFixture, "pty-runtime-policy.json"),
+    );
+    const sourceManifest = resolve(
+      sourceRoot,
+      "third_party/node-pty/source-manifest.json",
+    );
+    const sourceAuthority = JSON.parse(
+      readFileSync(sourceManifest, "utf8"),
+    ) as {
+      agentscopePatch: {
+        bytes: number;
+        mode: string;
+        patchedSourceBytes: number;
+      };
+    };
+    expect(sourceAuthority.agentscopePatch).toMatchObject({
+      bytes: 36_667,
+      mode: "0644",
+      patchedSourceBytes: 49_734,
+    });
+    sourceAuthority.agentscopePatch.bytes = 35_129;
+    writeFileSync(
+      sourceManifest,
+      `${JSON.stringify(sourceAuthority, null, 2)}\n`,
+    );
+    expect(() =>
+      evaluate(
+        `const {verifySourceAuthority}=await import(${JSON.stringify(verifierUrl)}); verifySourceAuthority(process.argv[1]);`,
+        [sourceRoot],
+      ),
+    ).toThrow(/source identity does not match authority/u);
+    const policyPath = resolve(packageFixture, "pty-runtime-policy.json");
+    const policy = JSON.parse(readFileSync(policyPath, "utf8")) as {
+      build: { patch: { bytes: number; patchedSourceBytes: number } };
+    };
+    expect(policy.build.patch).toMatchObject({
+      bytes: 36_667,
+      patchedSourceBytes: 49_734,
+    });
+    policy.build.patch.patchedSourceBytes = 48_748;
+    writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
+    expect(() =>
+      evaluate(
+        `const {verifyPolicy}=await import(${JSON.stringify(verifierUrl)}); verifyPolicy(process.argv[1]);`,
+        [packageFixture],
+      ),
+    ).toThrow(/source identity does not match authority/u);
   });
 
   it("verifies the exact musl artifact without loading it", () => {
@@ -596,7 +584,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6",
+      "5e33f1ffe3d02fcf0346c088bb2f7a44093045ec7632b40e9f0187b692b5da44",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -708,6 +696,16 @@ describe("PTY authenticated build-material tooling", () => {
     );
     expect(patch).toContain("+  TerminalHandle *master_handle = nullptr;");
     expect(patch).toContain("+  TerminalHandle *slave_handle = nullptr;");
+    expect(patch).toContain("+  uint32_t envc_unsigned = env_.Length();");
+    expect(patch).toContain("+  uint32_t argc_unsigned = argv_.Length();");
+    expect(patch).toContain("+    if (!value.IsString())");
+    expect(patch).toContain("+    if (pair.find('\\0') != std::string::npos");
+    expect(patch).toContain(
+      "+    if (argument.find('\\0') != std::string::npos",
+    );
+    expect(patch.indexOf("+  int exec_status[2]")).toBeGreaterThan(
+      patch.indexOf("+    argument_values.push_back(std::move(argument));"),
+    );
     expect(() =>
       apply(
         patch.replace(
@@ -762,6 +760,9 @@ describe("PTY authenticated build-material tooling", () => {
         "TerminalHandle *slave_handle = nullptr;",
         "TerminalHandle *slave_handle = master_handle;",
       ],
+      ["uint32_t envc_unsigned", "int envc_unsigned"],
+      ["pair.find('\\0')", "pair.find('x')"],
+      ["argument.find('\\0')", "argument.find('x')"],
     ] as const) {
       expect(() => apply(patch.replace(needle, replacement))).toThrow(
         /identity/u,

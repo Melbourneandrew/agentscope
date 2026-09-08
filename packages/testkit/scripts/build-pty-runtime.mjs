@@ -37,7 +37,7 @@ const maximumPatchLines = 2_048;
 const maximumPatchLineBytes = 2_048;
 const maximumPatchOperations = 4_096;
 const patchedSourceSha256 =
-  "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6";
+  "5e33f1ffe3d02fcf0346c088bb2f7a44093045ec7632b40e9f0187b692b5da44";
 
 // One closed parser keeps every header, position, operation, count and final
 // digest check in the same no-fuzz authority.
@@ -137,7 +137,7 @@ export const applyExactPtyPatch = (source, patch) => {
       throw new Error("PTY patch hunk is incomplete.");
     hunkCount += 1;
   }
-  if (hunkCount !== 63 || patchIndex !== patchLines.length)
+  if (hunkCount !== 56 || patchIndex !== patchLines.length)
     throw new Error("PTY patch hunk inventory is not exact.");
   output.push(...sourceLines.slice(sourceIndex));
   const result = `${output.join("\n")}\n`;
@@ -394,7 +394,7 @@ export const buildPtyRuntime = ({
   );
   const patchBytes = verifyRegularFile(
     patch,
-    "f7ebb2b3dc74e84035b78feaa66263b3a455da499e5f129c8eaa70ede429789e",
+    "af8f66bb1ad73ee87d89faf1538ffe4ce001eb5a4cd17f117f7dff3a2e8bfd96",
     0o644,
     maximumPatchBytes,
   );
@@ -420,7 +420,7 @@ export const buildPtyRuntime = ({
   });
   verifyRegularFile(
     resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
-    "7f0a15d54a4fdcc1e2fab2663e6cad0fac1011e331a1df998141560b5a9be4d6",
+    "5e33f1ffe3d02fcf0346c088bb2f7a44093045ec7632b40e9f0187b692b5da44",
   );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
@@ -463,7 +463,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const digest = buildPtyRuntime({ output: "/output", sourceRoot: "/build" });
   if (
     digest !==
-    "0f55e9389e47d8d27ba35704c3facdab029cbc5eba3c55540d31fa81cd6604db"
+    "2107ba433a6e0a82f51247ea4e954fed197d41cbd1295b9ca29a0caed248d084"
   )
     throw new Error("PTY runtime build is not reproducible.");
 }
