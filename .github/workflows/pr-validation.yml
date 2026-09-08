@@ -3,6 +3,8 @@ name: PR validation
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,13 +14,14 @@ env:
 
 jobs:
   quality:
+    if: github.event_name == 'pull_request'
     name: Quality
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { fetch-depth: 0, persist-credentials: false }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm verify:workspace
@@ -29,27 +32,69 @@ jobs:
       - run: pnpm typecheck
 
   unit:
+    if: github.event_name == 'pull_request'
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: pnpm coverage
       - run: pnpm build
       - run: pnpm verify:cli-artifact
-      - run: pnpm verify:native-candidate
 
   docs:
+    if: github.event_name == 'pull_request'
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @agentscope/docs build
+
+  native:
+    name: Native candidate verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Select native candidate verification
+        id: selection
+        env:
+          NATIVE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          NATIVE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$NATIVE_HEAD_SHA"
+          node scripts/native-ci-selection.mjs
+      - name: Report native candidate verification skip
+        if: steps.selection.outputs.required != 'true'
+        run: echo "Native candidate verification skipped — ${{ steps.selection.outputs.reason }}"
+      - name: Remove inputs certified irrelevant to the native candidate
+        if: steps.selection.outputs.required == 'true'
+        run: node scripts/native-ci-selection.mjs --prune-irrelevant
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: steps.selection.outputs.required == 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.selection.outputs.required == 'true'
+        with: { node-version: 22, cache: pnpm }
+      - if: steps.selection.outputs.required == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.selection.outputs.required == 'true'
+        run: pnpm nx build agentscope-cli --skip-nx-cache
+      - if: steps.selection.outputs.required == 'true'
+        run: pnpm verify:cli-artifact
+      - name: Run fresh non-admitting native candidate verification
+        if: steps.selection.outputs.required == 'true'
+        run: pnpm verify:native-candidate
