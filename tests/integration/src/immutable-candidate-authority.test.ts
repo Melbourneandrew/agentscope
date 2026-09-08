@@ -686,6 +686,25 @@ describe("immutable candidate authority", () => {
     expect(deadlineChild).toContain("shutdownTimeoutMilliseconds: 5_000");
   });
 
+  it("reports only an exact trusted selected-headless failure code", () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    expect(installedContractFailurePredicates["case-execution"]).not.toContain(
+      "execution-rejected",
+    );
+    expect(runner).toContain("error instanceof HeadlessSupervisorError");
+    expect(runner).toContain(
+      '!installedContractFailurePredicates["case-execution"].includes(error.code)',
+    );
+    expect(runner).toContain("installedContractFailurePredicate = error.code");
+    expect(runner).toContain("selectedHeadlessExecutionPending = true");
+    expect(runner).toContain("selectedHeadlessExecutionPending = false");
+    expect(runner).not.toContain(
+      '"case-execution",\n        "execution-rejected"',
+    );
+  });
+
   it.each([
     "image",
     "config",

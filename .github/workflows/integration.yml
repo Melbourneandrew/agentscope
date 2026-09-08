@@ -171,8 +171,16 @@ jobs:
               "manifest-rejected", "plan-rejected", "toolchain-rejected",
             ],
             "case-execution": [
-              "execution-rejected", "narrow-help-rejected", "setup-rejected",
-              "state-rejected",
+              "narrow-help-rejected", "setup-rejected", "state-rejected",
+              "testkit.headless.aborted", "testkit.headless.backend.receipt",
+              "testkit.headless.capability", "testkit.headless.kernel.failure",
+              "testkit.headless.kernel.options", "testkit.headless.kernel.request",
+              "testkit.headless.kernel.spawn", "testkit.headless.observer.identity",
+              "testkit.headless.observer.read", "testkit.headless.observer.root",
+              "testkit.headless.observer.signal",
+              "testkit.headless.reconciliation.deadline",
+              "testkit.headless.startup.deadline",
+              "testkit.pty.immutable-candidate",
             ],
             "receipt-finalization": ["receipt-rejected"],
           };

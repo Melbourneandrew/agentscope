@@ -51,6 +51,37 @@ const cleanupFailureValidatorSource = () => {
   if (start < 0 || end < 0) throw new Error("missing cleanup validator");
   return source.slice(start, end);
 };
+const installedContractAdmitted = {
+  "aggregate-evaluation": ["evaluation-rejected"],
+  "artifact-install": [
+    "candidate-rejected",
+    "egress-rejected",
+    "install-rejected",
+    "manifest-rejected",
+    "plan-rejected",
+    "toolchain-rejected",
+  ],
+  "case-execution": [
+    "narrow-help-rejected",
+    "setup-rejected",
+    "state-rejected",
+    "testkit.headless.aborted",
+    "testkit.headless.backend.receipt",
+    "testkit.headless.capability",
+    "testkit.headless.kernel.failure",
+    "testkit.headless.kernel.options",
+    "testkit.headless.kernel.request",
+    "testkit.headless.kernel.spawn",
+    "testkit.headless.observer.identity",
+    "testkit.headless.observer.read",
+    "testkit.headless.observer.root",
+    "testkit.headless.observer.signal",
+    "testkit.headless.reconciliation.deadline",
+    "testkit.headless.startup.deadline",
+    "testkit.pty.immutable-candidate",
+  ],
+  "receipt-finalization": ["receipt-rejected"],
+} as const;
 
 describe("integration controller policy", () => {
   it("exposes one integration command and no public stage aliases", () => {
@@ -394,24 +425,7 @@ describe("installed-contract workflow failure evidence", () => {
         rmSync(directory, { force: true, recursive: true });
       }
     };
-    const admitted = {
-      "aggregate-evaluation": ["evaluation-rejected"],
-      "artifact-install": [
-        "candidate-rejected",
-        "egress-rejected",
-        "install-rejected",
-        "manifest-rejected",
-        "plan-rejected",
-        "toolchain-rejected",
-      ],
-      "case-execution": [
-        "execution-rejected",
-        "narrow-help-rejected",
-        "setup-rejected",
-        "state-rejected",
-      ],
-      "receipt-finalization": ["receipt-rejected"],
-    } as const;
+    const admitted = installedContractAdmitted;
     const receiptFor = (phase: string, predicate: string) => ({
       ...(phase === "case-execution"
         ? {
@@ -467,24 +481,7 @@ describe("installed-contract cleanup failure evidence", () => {
         ],
         { encoding: "utf8" },
       ).status;
-    const admitted = {
-      "aggregate-evaluation": ["evaluation-rejected"],
-      "artifact-install": [
-        "candidate-rejected",
-        "egress-rejected",
-        "install-rejected",
-        "manifest-rejected",
-        "plan-rejected",
-        "toolchain-rejected",
-      ],
-      "case-execution": [
-        "execution-rejected",
-        "narrow-help-rejected",
-        "setup-rejected",
-        "state-rejected",
-      ],
-      "receipt-finalization": ["receipt-rejected"],
-    } as const;
+    const admitted = installedContractAdmitted;
     const receiptFor = (phase: string, predicate: string) => ({
       ...(phase === "case-execution"
         ? {

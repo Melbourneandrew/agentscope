@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { executeSelectedHeadlessProcess } from "./testkit/headless-supervisor-kernel.js";
+import { HeadlessSupervisorError } from "./testkit/headless-supervisor.js";
 import {
   composeSelectedContainerHeadlessSupervisorCapability,
   createSelectedContainerImmutableCandidateAuthority,
@@ -303,6 +304,7 @@ let installedContractFailurePhase = installedContractFailurePhases[0];
 let installedContractFailurePredicate = "egress-rejected";
 let installedContractFailureCase;
 let installedContractFailureTerminal = false;
+let selectedHeadlessExecutionPending = false;
 const setInstalledContractFailureBoundary = (phase, predicate, caseFailure) => {
   const current = installedContractFailurePhases.indexOf(
     installedContractFailurePhase,
@@ -325,9 +327,19 @@ const setInstalledContractFailureBoundary = (phase, predicate, caseFailure) => {
   installedContractFailurePredicate = predicate;
   installedContractFailureCase = caseFailure;
 };
-const emitInstalledContractFailureReceipt = () => {
+const emitInstalledContractFailureReceipt = (error) => {
   if (installedContractFailureTerminal) return;
   installedContractFailureTerminal = true;
+  if (selectedHeadlessExecutionPending) {
+    if (
+      !(error instanceof HeadlessSupervisorError) ||
+      !installedContractFailurePredicates["case-execution"].includes(error.code)
+    ) {
+      process.exitCode = 1;
+      return;
+    }
+    installedContractFailurePredicate = error.code;
+  }
   const encoded = compileInstalledContractFailureReceipt({
     receiptVersion: 1,
     phase: installedContractFailurePhase,
@@ -711,12 +723,8 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
       );
       results.push(await invokeSelectedNarrowPty({ caseId, home: caseHome }));
     } else {
-      setInstalledContractFailureBoundary(
-        "case-execution",
-        "execution-rejected",
-        caseFailure,
-      );
       const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
+      selectedHeadlessExecutionPending = true;
       results.push(
         await invokeSelected({
           ...selectedInvocation,
@@ -725,6 +733,7 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
           environment: caseEnvironment,
         }),
       );
+      selectedHeadlessExecutionPending = false;
     }
     setInstalledContractFailureBoundary(
       "case-execution",
