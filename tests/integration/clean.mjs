@@ -179,6 +179,33 @@ const artifactMaximumBytes = Object.freeze({
   "current-model-routes.json": 16_384,
   "current-selection.json": 16_384,
 });
+const installedPtyFailurePredicates = Object.freeze({
+  "candidate-inventory": Object.freeze(["candidate-rejected"]),
+  "immutable-candidate": Object.freeze(["authority-rejected"]),
+  "installed-cli": Object.freeze([
+    "bin-authority",
+    "cli-authority",
+    "cli-boundary",
+    "driver-input",
+    "execution-rejected",
+    "interpreter-authority",
+    "package-authority",
+    "package-manifest",
+    "receipt-rejected",
+  ]),
+  "pty-receipt": Object.freeze(["receipt-rejected"]),
+  "runner-bootstrap": Object.freeze(["runner-rejected"]),
+});
+const validInstalledPtyFailure = (value) =>
+  value === null ||
+  (typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify(["phase", "predicate", "receiptVersion"].sort()) &&
+    value.receiptVersion === 1 &&
+    Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
+    installedPtyFailurePredicates[value.phase].includes(value.predicate));
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;
@@ -226,15 +253,17 @@ const assertFailureEvidence = (identity) => {
           "cleanupFailure",
           "controllerFailureEvidenceVersion",
           "controllerOutcome",
+          "installedPtyFailure",
           "primaryFailure",
           "privateCleanup",
           "runId",
           "scenarioOutcome",
         ].sort(),
       ) ||
-    record.controllerFailureEvidenceVersion !== 1 ||
+    record.controllerFailureEvidenceVersion !== 2 ||
     record.runId !== identity.runId ||
     record.controllerOutcome !== "retired-failure" ||
+    !validInstalledPtyFailure(record.installedPtyFailure) ||
     !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
     !(
       record.cleanupFailure === null ||

@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 // The authority is deliberately private integration JavaScript, not a package API.
@@ -8,10 +11,13 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  compileInstalledPtyFailureReceipt,
   compileInstalledCliPtyReceipt,
   compileInstalledCliPtyReceiptFromExecution,
   decodeInstalledCliPtyReceipt,
+  decodeInstalledPtyFailureReceipt,
   decodeImmutableCandidateHandoff,
+  installedPtyFailurePredicates,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
   validateInstalledCliBoundary,
@@ -318,6 +324,106 @@ describe("immutable candidate authority", () => {
     expect(() => decodeInstalledCliPtyReceipt(output, receiptExpected)).toThrow(
       "integration.immutable-candidate.authority",
     );
+  });
+
+  it("round-trips every admitted content-free installed-PTY failure", () => {
+    const admitted = installedPtyFailurePredicates as Record<
+      string,
+      readonly string[]
+    >;
+    for (const [phase, predicates] of Object.entries(admitted)) {
+      for (const predicate of predicates) {
+        const compiledFailure = compileInstalledPtyFailureReceipt({
+          receiptVersion: 1,
+          phase,
+          predicate,
+        });
+        expect(
+          decodeInstalledPtyFailureReceipt(
+            `AGENTSCOPE_PTY_FAILURE=${compiledFailure.encoded}\n`,
+          ),
+        ).toEqual(compiledFailure.record);
+        expect(
+          Object.keys(compiledFailure.record as Record<string, unknown>).sort(),
+        ).toEqual(["phase", "predicate", "receiptVersion"]);
+      }
+    }
+  });
+
+  it.each([
+    "missing",
+    "unknown",
+    "duplicate",
+    "substituted",
+    "malformed",
+    "extra",
+    "late",
+  ] as const)("rejects %s installed-PTY failure evidence", (seed) => {
+    const value: Record<string, unknown> = {
+      receiptVersion: 1,
+      phase: "installed-cli",
+      predicate: "execution-rejected",
+    };
+    if (seed === "unknown") value.predicate = "unknown";
+    if (seed === "substituted") value.phase = "candidate-inventory";
+    if (seed === "extra") value.detail = "forbidden";
+    const encoded =
+      seed === "malformed"
+        ? "not+base64"
+        : Buffer.from(JSON.stringify(value)).toString("base64url");
+    const line = `AGENTSCOPE_PTY_FAILURE=${encoded}`;
+    const output =
+      seed === "missing"
+        ? ""
+        : seed === "duplicate"
+          ? `${line}\n${line}`
+          : seed === "late"
+            ? `AGENTSCOPE_PTY_RECEIPT=x\n${line}`
+            : line;
+    expect(() => decodeInstalledPtyFailureReceipt(output)).toThrow(
+      "integration.immutable-candidate.authority",
+    );
+  });
+
+  it.each([
+    [
+      "duplicate key",
+      '{"receiptVersion":1,"phase":"installed-cli","phase":"installed-cli","predicate":"execution-rejected"}',
+    ],
+    [
+      "shadow substitution",
+      '{"receiptVersion":1,"phase":"candidate-inventory","phase":"installed-cli","predicate":"execution-rejected"}',
+    ],
+    [
+      "alternate key order",
+      '{"phase":"installed-cli","receiptVersion":1,"predicate":"execution-rejected"}',
+    ],
+    [
+      "whitespace-expanded JSON",
+      '{ "receiptVersion": 1, "phase": "installed-cli", "predicate": "execution-rejected" }',
+    ],
+  ])("rejects noncanonical %s failure bytes", (_label, serialized) => {
+    const encoded = Buffer.from(serialized).toString("base64url");
+    expect(() =>
+      decodeInstalledPtyFailureReceipt(`AGENTSCOPE_PTY_FAILURE=${encoded}`),
+    ).toThrow("integration.immutable-candidate.authority");
+  });
+
+  it("advances each production failure phase before its owned boundary", () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    for (const [phase, boundary] of [
+      ["candidate-inventory", "const pointer = JSON.parse("],
+      ["immutable-candidate", "const encodedImmutableCandidate ="],
+      ["installed-cli", "await runInstalledCliPtyProof("],
+      ["pty-receipt", "compileInstalledCliPtyReceiptFromExecution("],
+    ] as const) {
+      const transition = runner.indexOf(`advancePtyFailurePhase("${phase}")`);
+      const operation = runner.indexOf(boundary);
+      expect(transition).toBeGreaterThanOrEqual(0);
+      expect(operation).toBeGreaterThan(transition);
+    }
   });
 
   it.each([

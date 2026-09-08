@@ -153,6 +153,23 @@ jobs:
             value !== null &&
             JSON.stringify(Object.keys(value).sort()) ===
               JSON.stringify([...keys].sort());
+          const ptyFailurePredicates = {
+            "candidate-inventory": ["candidate-rejected"],
+            "immutable-candidate": ["authority-rejected"],
+            "installed-cli": [
+              "bin-authority", "cli-authority", "cli-boundary", "driver-input",
+              "execution-rejected", "interpreter-authority", "package-authority",
+              "package-manifest", "receipt-rejected",
+            ],
+            "pty-receipt": ["receipt-rejected"],
+            "runner-bootstrap": ["runner-rejected"],
+          };
+          const validPtyFailure = (value) =>
+            value === null ||
+            (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
+              value.receiptVersion === 1 &&
+              Object.hasOwn(ptyFailurePredicates, value.phase) &&
+              ptyFailurePredicates[value.phase].includes(value.predicate));
           const readBounded = (path, maximumBytes) => {
             let descriptor;
             try {
@@ -229,14 +246,16 @@ jobs:
                 "cleanupFailure",
                 "controllerFailureEvidenceVersion",
                 "controllerOutcome",
+                "installedPtyFailure",
                 "primaryFailure",
                 "privateCleanup",
                 "runId",
                 "scenarioOutcome",
               ]) ||
-              record.controllerFailureEvidenceVersion !== 1 ||
+              record.controllerFailureEvidenceVersion !== 2 ||
               record.runId !== identity.runId ||
               record.controllerOutcome !== "retired-failure" ||
+              !validPtyFailure(record.installedPtyFailure) ||
               !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
               !(
                 record.cleanupFailure === null ||

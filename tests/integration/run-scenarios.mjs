@@ -49,6 +49,7 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  decodeInstalledPtyFailureReceipt,
   decodeInstalledCliPtyReceipt,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
@@ -70,6 +71,7 @@ const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
+const installedPtyFailures = new Map();
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const manifest = compileCapabilityManifest(
   readJson(resolve(integrationRoot, "capability-manifest.json")),
@@ -663,6 +665,13 @@ const captureInstalledCliPtyReceipt = (output, plan) =>
     runId: plan.runId,
     scenarioId: plan.scenarioId,
   });
+const captureInstalledPtyFailure = (output, plan) => {
+  const receipt = decodeInstalledPtyFailureReceipt(output);
+  if (installedPtyFailures.has(plan.runId))
+    throw new Error("integration.isolation.pty-failure-receipt");
+  installedPtyFailures.set(plan.runId, receipt);
+  return receipt;
+};
 const preparedImageFor = async (image, signal) => {
   if (
     !(await revalidatePreparedImageAdmission(preparedImageEvidence, image, {
@@ -1008,6 +1017,8 @@ const runScenario = async (plan, signal) => {
   } catch (error) {
     const output = `${error?.stdout ?? ""}`;
     captureFixtureResult(output, plan);
+    if (output.includes("AGENTSCOPE_PTY_FAILURE="))
+      captureInstalledPtyFailure(output, plan);
     if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
       const receipt = captureHeadlessReceipt(output, plan, {
         outerMonotonicDeadline,
@@ -1083,13 +1094,14 @@ const finalizeControllerFailureEvidence = (
   const directory = resolve(artifactsRoot, "runs", plan.runId);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const record = {
-    controllerFailureEvidenceVersion: 1,
+    controllerFailureEvidenceVersion: 2,
     runId: plan.runId,
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
+    installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
     privateCleanup:
       preparedDockerClientDiagnostic(preparedDockerClient) ?? null,
   };

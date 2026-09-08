@@ -280,12 +280,13 @@ describe("integration workflow policy", () => {
         mkdirSync(run, { recursive: true, mode: 0o700 });
         const path = resolve(run, "controller-failure.json");
         const content = `${JSON.stringify({
-          controllerFailureEvidenceVersion: 1,
+          controllerFailureEvidenceVersion: 2,
           runId,
           scenarioOutcome: "not-complete",
           controllerOutcome: "retired-failure",
           primaryFailure: "integration.controller.failed",
           cleanupFailure: null,
+          installedPtyFailure: null,
           privateCleanup: null,
         })}\n`;
         writeFileSync(path, content, { mode: 0o600 });

@@ -13,6 +13,65 @@ const exactKeys = (value, expected) =>
     JSON.stringify([...expected].sort());
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
+export const installedPtyFailurePredicates = Object.freeze({
+  "candidate-inventory": Object.freeze(["candidate-rejected"]),
+  "immutable-candidate": Object.freeze(["authority-rejected"]),
+  "installed-cli": Object.freeze([
+    "bin-authority",
+    "cli-authority",
+    "cli-boundary",
+    "driver-input",
+    "execution-rejected",
+    "interpreter-authority",
+    "package-authority",
+    "package-manifest",
+    "receipt-rejected",
+  ]),
+  "pty-receipt": Object.freeze(["receipt-rejected"]),
+  "runner-bootstrap": Object.freeze(["runner-rejected"]),
+});
+const installedPtyFailureKeys = ["phase", "predicate", "receiptVersion"];
+
+export const compileInstalledPtyFailureReceipt = (value) => {
+  if (
+    !exactKeys(value, installedPtyFailureKeys) ||
+    value.receiptVersion !== 1 ||
+    !Object.hasOwn(installedPtyFailurePredicates, value.phase) ||
+    !installedPtyFailurePredicates[value.phase].includes(value.predicate)
+  )
+    return fail();
+  const record = Object.freeze({
+    receiptVersion: value.receiptVersion,
+    phase: value.phase,
+    predicate: value.predicate,
+  });
+  return Object.freeze({
+    record,
+    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
+  });
+};
+
+export const decodeInstalledPtyFailureReceipt = (output) => {
+  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
+    return fail();
+  const prefix = "AGENTSCOPE_PTY_FAILURE=";
+  if (output.includes("AGENTSCOPE_PTY_RECEIPT=")) return fail();
+  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+  if (lines.length !== 1 || lines[0].length > 1_024) return fail();
+  try {
+    const encoded = lines[0].slice(prefix.length);
+    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
+    const bytes = Buffer.from(encoded, "base64url");
+    if (bytes.toString("base64url") !== encoded) return fail();
+    const serialized = bytes.toString("utf8");
+    const compiled = compileInstalledPtyFailureReceipt(JSON.parse(serialized));
+    if (JSON.stringify(compiled.record) !== serialized) return fail();
+    return compiled.record;
+  } catch {
+    return fail();
+  }
+};
+
 export const selectedRuntimeFiles = Object.freeze([
   "testkit/bounded-terminal-emulator.js",
   "testkit/headless-supervisor-contract.js",

@@ -18,8 +18,21 @@ const installedCli =
   "/opt/agentscope/installed/node_modules/agentscope-cli/dist/bin/agentscope.js";
 const installedPackage =
   "/opt/agentscope/installed/node_modules/agentscope-cli/package.json";
-const fail = () => {
-  throw new Error("integration.pty-installed-cli-driver");
+const predicates = new Set([
+  "bin-authority",
+  "cli-authority",
+  "cli-boundary",
+  "driver-input",
+  "execution-rejected",
+  "interpreter-authority",
+  "package-authority",
+  "package-manifest",
+  "receipt-rejected",
+]);
+const fail = (predicate) => {
+  if (!predicates.has(predicate))
+    throw new Error("integration.pty-installed-cli-driver.driver-input");
+  throw new Error(`integration.pty-installed-cli-driver.${predicate}`);
 };
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const authenticate = (path, maximumBytes, mode) => {
@@ -35,7 +48,7 @@ const authenticate = (path, maximumBytes, mode) => {
       before.size > maximumBytes ||
       (before.mode & 0o777) !== mode
     )
-      return fail();
+      return fail("cli-authority");
     const bytes = readFileSync(`/proc/self/fd/${descriptor}`);
     const after = fstatSync(descriptor);
     if (
@@ -43,7 +56,7 @@ const authenticate = (path, maximumBytes, mode) => {
       before.ino !== after.ino ||
       before.size !== after.size
     )
-      return fail();
+      return fail("cli-authority");
     return Object.freeze({ bytes, sha256: sha256(bytes) });
   } finally {
     closeSync(descriptor);
@@ -81,32 +94,56 @@ export const runInstalledCliPtyProof = async ({
     !/^[a-f0-9]{16}$/u.test(runId) ||
     !Number.isFinite(shutdownDeadline)
   )
-    return fail();
-  const bin = lstatSync(installedBin);
-  const interpreter = authenticate(process.execPath, 256 * 1024 * 1024, 0o755);
-  const cli = authenticate(installedCli, 16 * 1024 * 1024, 0o755);
-  validateInstalledCliBoundary({
-    argv: [installedBin, "--version"],
-    binIsSymlink: bin.isSymbolicLink(),
-    binTarget: readlinkSync(installedBin),
-    cliDigest: cli.sha256,
-    cliMode: lstatSync(installedCli).mode & 0o777,
-    cliPrefix: cli.bytes.subarray(0, 20).toString("utf8"),
-    expectedDigest: cli.sha256,
-  });
-  const packageAuthority = authenticate(installedPackage, 1024 * 1024, 0o644);
+    return fail("driver-input");
+  let bin;
+  let interpreter;
+  let cli;
+  try {
+    bin = lstatSync(installedBin);
+  } catch {
+    return fail("bin-authority");
+  }
+  try {
+    interpreter = authenticate(process.execPath, 256 * 1024 * 1024, 0o755);
+  } catch {
+    return fail("interpreter-authority");
+  }
+  try {
+    cli = authenticate(installedCli, 16 * 1024 * 1024, 0o755);
+  } catch {
+    return fail("cli-authority");
+  }
+  try {
+    validateInstalledCliBoundary({
+      argv: [installedBin, "--version"],
+      binIsSymlink: bin.isSymbolicLink(),
+      binTarget: readlinkSync(installedBin),
+      cliDigest: cli.sha256,
+      cliMode: lstatSync(installedCli).mode & 0o777,
+      cliPrefix: cli.bytes.subarray(0, 20).toString("utf8"),
+      expectedDigest: cli.sha256,
+    });
+  } catch {
+    return fail("cli-boundary");
+  }
+  let packageAuthority;
+  try {
+    packageAuthority = authenticate(installedPackage, 1024 * 1024, 0o644);
+  } catch {
+    return fail("package-authority");
+  }
   let manifest;
   try {
     manifest = JSON.parse(packageAuthority.bytes.toString("utf8"));
   } catch {
-    return fail();
+    return fail("package-manifest");
   }
   if (
     manifest?.name !== "agentscope-cli" ||
     !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(manifest?.version) ||
     manifest?.bin?.agentscope !== "./dist/bin/agentscope.js"
   )
-    return fail();
+    return fail("package-manifest");
   const expectedOutput = Buffer.from(`${manifest.version}\r\n`);
   const now = performance.now();
   const processRequest = {
@@ -127,17 +164,22 @@ export const runInstalledCliPtyProof = async ({
     terminationGraceMs: 1_000,
   };
   processRequest.requestFingerprint = fingerprint(processRequest);
-  const receipt = await executeSelectedPtyProcess(capability, {
-    completion: {
-      kind: "exact-output",
-      outputBytes: expectedOutput.length,
-      outputSha256: sha256(expectedOutput),
-    },
-    process: processRequest,
-    initialGeometry: { columns: 40, rows: 12 },
-    interpreter: { path: process.execPath, sha256: interpreter.sha256 },
-    scriptSha256: cli.sha256,
-  });
+  let receipt;
+  try {
+    receipt = await executeSelectedPtyProcess(capability, {
+      completion: {
+        kind: "exact-output",
+        outputBytes: expectedOutput.length,
+        outputSha256: sha256(expectedOutput),
+      },
+      process: processRequest,
+      initialGeometry: { columns: 40, rows: 12 },
+      interpreter: { path: process.execPath, sha256: interpreter.sha256 },
+      scriptSha256: cli.sha256,
+    });
+  } catch {
+    return fail("execution-rejected");
+  }
   if (
     receipt.outcome !== "completed" ||
     receipt.outputBytes !== expectedOutput.length ||
@@ -149,6 +191,6 @@ export const runInstalledCliPtyProof = async ({
     receipt.terminalOutputJoined !== true ||
     receipt.terminalTransportClosed !== true
   )
-    return fail();
+    return fail("receipt-rejected");
   return Object.freeze({ receipt, version: manifest.version });
 };
