@@ -962,7 +962,7 @@
 @@ -606 +1316 @@
 -  int fd = info[0].As<Napi::Number>().Int32Value();
 +  int fd = require_terminal_handle(env, info[0])->fd;
-@@ -867,0 +1578,158 @@
+@@ -867,0 +1578,175 @@
 +struct PtyProcessIdentity {
 +  char state;
 +  pid_t parent;
@@ -1081,6 +1081,8 @@
 +  PtyProcessIdentity identity;
 +  if (!pty_read_process_identity(static_cast<pid_t>(pid_value), &identity))
 +    throw Napi::Error::New(env, "PTY reap process identity is unavailable");
++  if (pty_take_test_fault(20))
++    identity.parent = 2;
 +  std::string observed = std::to_string(pid_value) + ":" +
 +                         std::to_string(identity.start);
 +  if (identity.parent != 1 || observed != expected)
@@ -1088,10 +1090,23 @@
 +  if (identity.state != 'Z')
 +    return pty_reap_receipt(env, static_cast<pid_t>(pid_value), expected,
 +                            "not-ready");
++  bool interrupted = false;
 +  while (pty_remaining_milliseconds(deadline) > 0) {
++    PtyProcessIdentity adjacent;
++    if (!pty_read_process_identity(static_cast<pid_t>(pid_value), &adjacent))
++      throw Napi::Error::New(env, "PTY reap process identity is unavailable");
++    if (interrupted && pty_take_test_fault(21))
++      adjacent.start += 1;
++    observed = std::to_string(pid_value) + ":" +
++               std::to_string(adjacent.start);
++    if (adjacent.parent != 1 || adjacent.state != 'Z' || observed != expected)
++      throw Napi::Error::New(env, "PTY reap process identity changed");
 +    pid_t joined;
 +    if (pty_take_test_fault(18)) {
 +      errno = ECHILD;
++      joined = -1;
++    } else if (pty_take_test_fault(19)) {
++      errno = EINTR;
 +      joined = -1;
 +    } else {
 +      joined = waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG);
@@ -1101,8 +1116,10 @@
 +    if (joined == 0)
 +      return pty_reap_receipt(env, static_cast<pid_t>(pid_value), expected,
 +                              "not-ready");
-+    if (errno == EINTR)
++    if (errno == EINTR) {
++      interrupted = true;
 +      continue;
++    }
 +    throw Napi::Error::New(env, "PTY adopted-zombie reap is uncertain");
 +  }
 +  throw Napi::Error::New(env, "PTY adopted-zombie reap exceeded its deadline");
@@ -1114,14 +1131,14 @@
 +  if (info.Length() != 1 || !info[0].IsNumber())
 +    throw Napi::Error::New(env, "Usage: pty.testFault(fault)");
 +  int fault = info[0].As<Napi::Number>().Int32Value();
-+  if (fault < 0 || fault > 0x7ffff)
++  if (fault < 0 || fault > 0x3fffff)
 +    throw Napi::Error::New(env, "PTY test fault is invalid");
 +  pty_test_fault.store(fault);
 +  return env.Undefined();
 +}
 +#endif
 +
-@@ -872,0 +1741,9 @@
+@@ -872,0 +1758,9 @@
 +  exports.Set("inspect", Napi::Function::New(env, PtyInspect));
 +  exports.Set("read",    Napi::Function::New(env, PtyRead));
 +  exports.Set("reapAdoptedZombie", Napi::Function::New(env, PtyReapAdoptedZombie));

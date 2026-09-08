@@ -27,14 +27,14 @@ const expectedArtifact = Object.freeze({
   bytes: 643_744,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "da453a5cee938514e7d13960410eb7224e530132a05d8730b6bf7fdf307a9866",
+  sha256: "e90ebd85ee351ca0085b1d73176fb2f83be932c3d5464a7c3648ce7e739b138e",
   tuple: "node127-linux-x64-musl",
 });
 const expectedFaultArtifact = Object.freeze({
-  bytes: 643_976,
+  bytes: 644_072,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-  sha256: "883b14c0fcd9e898be307742c485a35e9b895b3e8c47aff6970da0cd3ff1a7ed",
+  sha256: "edfd86aa542fade8adb71d8d56fcb200d923193c8e1b3c48fd0792c20def574c",
   tuple: "node127-linux-x64-musl-test-faults",
 });
 const runtimeReceiptKeys = Object.freeze([
@@ -274,13 +274,13 @@ export const verifySourceAuthority = (sourceRoot) => {
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "patches/agentscope-terminal-authority.patch"),
-    45_492,
-    "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da",
+    46_222,
+    "047cab9c60845933f63006ec4a5f339aff68bce36bd8cc456a67d9a22df8e2a8",
   );
   verifyFileIdentity(
     resolve(nodePtyRoot, "source-manifest.json"),
     1_719,
-    "fa160d75a89b764ccab62ee0d348e3ff43599d379f0241faed56ecd7f71bfb6a",
+    "ce5faccae08ce0afc85c02abfb1ad23f23ba363af041080fb21e232c82315830",
   );
   verifyFileIdentity(
     resolve(addonApiRoot, "napi.h"),
@@ -314,12 +314,12 @@ export const verifySourceAuthority = (sourceRoot) => {
     nodePtyManifest.agentscopePatch?.path !==
       "patches/agentscope-terminal-authority.patch" ||
     nodePtyManifest.agentscopePatch?.sha256 !==
-      "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da" ||
-    nodePtyManifest.agentscopePatch?.bytes !== 45_492 ||
+      "047cab9c60845933f63006ec4a5f339aff68bce36bd8cc456a67d9a22df8e2a8" ||
+    nodePtyManifest.agentscopePatch?.bytes !== 46_222 ||
     nodePtyManifest.agentscopePatch?.mode !== "0644" ||
-    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 58_228 ||
+    nodePtyManifest.agentscopePatch?.patchedSourceBytes !== 58_941 ||
     nodePtyManifest.agentscopePatch?.patchedSourceSha256 !==
-      "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5" ||
+      "002fba5f50a5f98e406c58a0489e2fdc642cf3ffbaa32feb9ada5728f7f982cb" ||
     addonApiManifest.upstream?.version !== "7.1.1" ||
     addonApiManifest.upstream?.tarballSha256 !==
       "b10455d15a977c0cd17a1cb0eb679e03d939f8ef8d4302eb33e1f78dacc71f82" ||
@@ -337,7 +337,7 @@ export const verifyPolicy = (root) => {
   verifyFileIdentity(
     resolve(root, "pty-runtime-policy.json"),
     8_860,
-    "e8d29d5b9007ee477f5cac0e660030811e01c43d82172e950005f415d1837ae1",
+    "296007d29447d8e765e86ac6c610f6ba39cfe468cd97e0a9998f5fd942946f7e",
   );
   const policy = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-policy.json"), 256 * 1024),
@@ -349,13 +349,13 @@ export const verifyPolicy = (root) => {
     policy.alpineAuthority?.actualArchives !== 19 ||
     policy.alpineAuthority?.actualCompressedBytes !== 97_592_935 ||
     policy.build?.patch?.sha256 !==
-      "7ffa938865a2f1d04221cd08abe7163125d145ba94563ed5be66550b572e83da" ||
+      "047cab9c60845933f63006ec4a5f339aff68bce36bd8cc456a67d9a22df8e2a8" ||
     policy.build?.patch?.path !==
       "third_party/node-pty/patches/agentscope-terminal-authority.patch" ||
-    policy.build?.patch?.bytes !== 45_492 ||
-    policy.build?.patch?.patchedSourceBytes !== 58_228 ||
+    policy.build?.patch?.bytes !== 46_222 ||
+    policy.build?.patch?.patchedSourceBytes !== 58_941 ||
     policy.build?.patch?.patchedSourceSha256 !==
-      "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5" ||
+      "002fba5f50a5f98e406c58a0489e2fdc642cf3ffbaa32feb9ada5728f7f982cb" ||
     JSON.stringify(policy.build?.nativeExports) !==
       JSON.stringify([
         "close",
@@ -401,7 +401,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.canonicalImageManifest !== policy.canonicalImage.manifest ||
     authority.canonicalImageConfig !== policy.canonicalImage.config ||
     authority.policySha256 !==
-      "e8d29d5b9007ee477f5cac0e660030811e01c43d82172e950005f415d1837ae1" ||
+      "296007d29447d8e765e86ac6c610f6ba39cfe468cd97e0a9998f5fd942946f7e" ||
     authority.packageClosureSha256 !==
       sha256(JSON.stringify(policy.alpineAuthority.packages)) ||
     authority.buildArgumentsSha256 !==
@@ -414,7 +414,7 @@ const verifyManifestAuthority = (authority, policy) => {
     authority.signerKeySha256 !==
       policy.alpineAuthority.index.signerKeySha256 ||
     authority.nodePtySourceManifestSha256 !==
-      "fa160d75a89b764ccab62ee0d348e3ff43599d379f0241faed56ecd7f71bfb6a" ||
+      "ce5faccae08ce0afc85c02abfb1ad23f23ba363af041080fb21e232c82315830" ||
     authority.patchSha256 !== policy.build.patch.sha256 ||
     authority.patchedSourceSha256 !== policy.build.patch.patchedSourceSha256 ||
     JSON.stringify(authority.nativeExports) !==
@@ -497,7 +497,7 @@ export const verifyPtyRuntime = ({
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
     2_702,
-    "e7d272b46b932c70b238de99b2992f70f655b4c0bdd3cb375829fb93d710bed1",
+    "76751f59d09db82db7a25191c261f8c71afc00c08b6eb7d3c2272173dfc605af",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
@@ -587,13 +587,22 @@ const sleepSynchronous = (milliseconds) => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 };
 
-const readProcessIdentity = (pid) => {
-  const bytes = readFileSync(`/proc/${pid}/stat`);
-  if (bytes.length === 0 || bytes.length > 4_096)
+export const parseProcessStatIdentity = (pid, bytes) => {
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid < 2 ||
+    !Buffer.isBuffer(bytes) ||
+    bytes.length === 0 ||
+    bytes.length > 4_096
+  )
     throw new Error("PTY adopted process identity is not bounded.");
   const record = bytes.toString("utf8");
   const commandEnd = record.lastIndexOf(")");
-  if (commandEnd < 0 || record.slice(commandEnd + 1, commandEnd + 3) !== " ")
+  if (
+    commandEnd < 0 ||
+    record[commandEnd + 1] !== " " ||
+    commandEnd + 2 >= record.length
+  )
     throw new Error("PTY adopted process identity is malformed.");
   const fields = record
     .slice(commandEnd + 2)
@@ -613,6 +622,9 @@ const readProcessIdentity = (pid) => {
   });
 };
 
+const readProcessIdentity = (pid) =>
+  parseProcessStatIdentity(pid, readFileSync(`/proc/${pid}/stat`));
+
 const exactReapReceipt = (value, pid, startIdentity, status) =>
   exactKeys(value, ["pid", "startIdentity", "status"]) &&
   value.pid === pid &&
@@ -626,9 +638,8 @@ const proveAdoptedZombieReap = (deadline) => {
   const production = require("/runtime/production.node");
   const faults = require("/runtime/faults.node");
   let rootPid;
-  let target;
-  let startIdentity;
-  let reaped = false;
+  const targets = [];
+  const reaped = new Set();
   try {
     const remaining = Number((deadline - process.hrtime.bigint()) / 1_000_000n);
     if (remaining <= 0)
@@ -637,7 +648,7 @@ const proveAdoptedZombieReap = (deadline) => {
       "/bin/sh",
       [
         "-c",
-        "/bin/sleep 30 </dev/null >/dev/null 2>/dev/null & printf '%s' \"$!\"",
+        '/bin/sleep 30 </dev/null >/dev/null 2>/dev/null & first=$!; /bin/sleep 30 </dev/null >/dev/null 2>/dev/null & second=$!; printf \'%s,%s\' "$first" "$second"',
       ],
       {
         encoding: "utf8",
@@ -652,59 +663,177 @@ const proveAdoptedZombieReap = (deadline) => {
       launch.status !== 0 ||
       launch.signal !== null ||
       launch.stderr !== "" ||
-      !/^[1-9][0-9]{0,9}$/u.test(launch.stdout) ||
+      !/^[1-9][0-9]{0,9},[1-9][0-9]{0,9}$/u.test(launch.stdout) ||
       !Number.isSafeInteger(launch.pid)
     )
       throw new Error("PTY adopted process fixture did not launch exactly.");
-    target = Number(launch.stdout);
     rootPid = launch.pid;
-    const identity = readProcessIdentity(target);
-    startIdentity = identity.startIdentity;
-    if (identity.parent !== 1 || identity.state === "Z")
-      throw new Error("PTY adopted process fixture identity is not exact.");
+    for (const encodedPid of launch.stdout.split(",")) {
+      const pid = Number(encodedPid);
+      const identity = readProcessIdentity(pid);
+      if (
+        !Number.isSafeInteger(pid) ||
+        pid < 2 ||
+        identity.parent !== 1 ||
+        identity.state === "Z"
+      )
+        throw new Error("PTY adopted process fixture identity is not exact.");
+      targets.push(
+        Object.freeze({ pid, startIdentity: identity.startIdentity }),
+      );
+    }
+    if (targets.length !== 2 || targets[0].pid === targets[1].pid)
+      throw new Error("PTY adopted process fixture inventory is not exact.");
+    const [first, second] = targets;
     let rejectedRoot = false;
     try {
-      production.reapAdoptedZombie(target, startIdentity, target, deadline);
+      production.reapAdoptedZombie(
+        first.pid,
+        first.startIdentity,
+        first.pid,
+        deadline,
+      );
     } catch (error) {
       rejectedRoot = /authority is invalid/u.test(String(error));
+    }
+    const malformedAuthorities = [
+      () =>
+        production.reapAdoptedZombie(0, first.startIdentity, rootPid, deadline),
+      () =>
+        production.reapAdoptedZombie(
+          first.pid + 0.5,
+          first.startIdentity,
+          rootPid,
+          deadline,
+        ),
+      () => production.reapAdoptedZombie(first.pid, "", rootPid, deadline),
+      () =>
+        production.reapAdoptedZombie(
+          String(first.pid),
+          first.startIdentity,
+          rootPid,
+          deadline,
+        ),
+    ];
+    let rejectedMalformed = true;
+    for (const action of malformedAuthorities) {
+      try {
+        action();
+        rejectedMalformed = false;
+      } catch (error) {
+        rejectedMalformed &&= /authority is invalid|Usage:/u.test(
+          String(error),
+        );
+      }
     }
     let rejectedIdentity = false;
     try {
       production.reapAdoptedZombie(
-        target,
-        `${target}:${BigInt(startIdentity.split(":")[1]) + 1n}`,
+        first.pid,
+        `${first.pid}:${BigInt(first.startIdentity.split(":")[1]) + 1n}`,
         rootPid,
         deadline,
       );
     } catch (error) {
       rejectedIdentity = /identity changed/u.test(String(error));
     }
+    faults.testFault(1 << 20);
+    let rejectedParent = false;
+    try {
+      faults.reapAdoptedZombie(
+        second.pid,
+        second.startIdentity,
+        rootPid,
+        deadline,
+      );
+    } catch (error) {
+      rejectedParent = /identity changed/u.test(String(error));
+    } finally {
+      faults.testFault(0);
+    }
     const notReady = production.reapAdoptedZombie(
-      target,
-      startIdentity,
+      first.pid,
+      first.startIdentity,
       rootPid,
       deadline,
     );
     if (
       !rejectedRoot ||
+      !rejectedMalformed ||
       !rejectedIdentity ||
-      !exactReapReceipt(notReady, target, startIdentity, "not-ready")
+      !rejectedParent ||
+      !exactReapReceipt(notReady, first.pid, first.startIdentity, "not-ready")
     )
       throw new Error("PTY adopted process admission proof failed.");
-    process.kill(target, "SIGKILL");
-    while (process.hrtime.bigint() < deadline) {
-      const observed = readProcessIdentity(target);
-      if (observed.parent !== 1 || observed.startIdentity !== startIdentity)
-        throw new Error("PTY adopted process identity changed before reap.");
-      if (observed.state === "Z") break;
-      sleepSynchronous(10);
+    for (const target of targets) {
+      process.kill(target.pid, "SIGKILL");
+      while (process.hrtime.bigint() < deadline) {
+        const observed = readProcessIdentity(target.pid);
+        if (
+          observed.parent !== 1 ||
+          observed.startIdentity !== target.startIdentity
+        )
+          throw new Error("PTY adopted process identity changed before reap.");
+        if (observed.state === "Z") break;
+        sleepSynchronous(10);
+      }
+      if (readProcessIdentity(target.pid).state !== "Z")
+        throw new Error("PTY adopted process did not become a zombie.");
     }
-    if (readProcessIdentity(target).state !== "Z")
-      throw new Error("PTY adopted process did not become a zombie.");
+    let rejectedDeadline = false;
+    try {
+      production.reapAdoptedZombie(
+        first.pid,
+        first.startIdentity,
+        rootPid,
+        process.hrtime.bigint() - 1n,
+      );
+    } catch (error) {
+      rejectedDeadline = /authority is invalid/u.test(String(error));
+    }
+    faults.testFault((1 << 19) | (1 << 21));
+    let rejectedInterruptedDrift = false;
+    try {
+      faults.reapAdoptedZombie(
+        first.pid,
+        first.startIdentity,
+        rootPid,
+        deadline,
+      );
+    } catch (error) {
+      rejectedInterruptedDrift = /identity changed/u.test(String(error));
+    } finally {
+      faults.testFault(0);
+    }
+    if (!rejectedDeadline || !rejectedInterruptedDrift)
+      throw new Error("PTY adopted process deadline or drift was admitted.");
+    faults.testFault(1 << 19);
+    const interruptedReceipt = faults.reapAdoptedZombie(
+      first.pid,
+      first.startIdentity,
+      rootPid,
+      deadline,
+    );
+    faults.testFault(0);
+    if (
+      !exactReapReceipt(
+        interruptedReceipt,
+        first.pid,
+        first.startIdentity,
+        "reaped",
+      )
+    )
+      throw new Error("PTY interrupted adopted process reap was not exact.");
+    reaped.add(first.pid);
     faults.testFault(1 << 18);
     let rejectedEchild = false;
     try {
-      faults.reapAdoptedZombie(target, startIdentity, rootPid, deadline);
+      faults.reapAdoptedZombie(
+        second.pid,
+        second.startIdentity,
+        rootPid,
+        deadline,
+      );
     } catch (error) {
       rejectedEchild = /reap is uncertain/u.test(String(error));
     } finally {
@@ -713,37 +842,38 @@ const proveAdoptedZombieReap = (deadline) => {
     if (!rejectedEchild)
       throw new Error("PTY adopted process ambiguity was admitted.");
     const receipt = production.reapAdoptedZombie(
-      target,
-      startIdentity,
+      second.pid,
+      second.startIdentity,
       rootPid,
       deadline,
     );
-    if (!exactReapReceipt(receipt, target, startIdentity, "reaped"))
+    if (!exactReapReceipt(receipt, second.pid, second.startIdentity, "reaped"))
       throw new Error("PTY adopted process reap receipt is not exact.");
-    reaped = true;
-    try {
-      readProcessIdentity(target);
-      throw new Error("PTY adopted process remains after reap.");
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+    reaped.add(second.pid);
+    for (const target of targets) {
+      try {
+        readProcessIdentity(target.pid);
+        throw new Error("PTY adopted process remains after reap.");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
     }
     return true;
   } finally {
     faults.testFault(0);
-    if (target !== undefined && !reaped) {
+    for (const target of targets) {
+      if (reaped.has(target.pid)) continue;
       try {
-        process.kill(target, "SIGKILL");
+        process.kill(target.pid, "SIGKILL");
       } catch {}
-      if (startIdentity !== undefined) {
-        try {
-          production.reapAdoptedZombie(
-            target,
-            startIdentity,
-            rootPid,
-            deadline,
-          );
-        } catch {}
-      }
+      try {
+        production.reapAdoptedZombie(
+          target.pid,
+          target.startIdentity,
+          rootPid,
+          deadline,
+        );
+      } catch {}
     }
   }
 };

@@ -208,6 +208,34 @@ describe("PTY runtime artifact tooling", () => {
     );
   });
 
+  it("parses only a bounded exact proc stat identity", () => {
+    const parse = (pid: unknown, record: string) =>
+      evaluate(
+        `const {parseProcessStatIdentity}=await import(${JSON.stringify(verifierUrl)}); process.stdout.write(JSON.stringify(parseProcessStatIdentity(JSON.parse(process.argv[1]),Buffer.from(process.argv[2],'base64'))));`,
+        [JSON.stringify(pid), Buffer.from(record).toString("base64")],
+      );
+    const fields: string[] = [
+      "S",
+      "1",
+      ...Array.from({ length: 18 }, () => "0"),
+    ];
+    fields[19] = "4242";
+    const valid = `27 (fixture) ${fields.join(" ")}\n`;
+    expect(parse(27, valid)).toBe(
+      JSON.stringify({ parent: 1, startIdentity: "27:4242", state: "S" }),
+    );
+    for (const [pid, record] of [
+      [1, valid],
+      [27.5, valid],
+      [27, valid.replace(") ", ")\t")],
+      [27, valid.replace(" S ", " s ")],
+      [27, valid.replace(" S 1 ", " S 0 ")],
+      [27, valid.replace(" 4242\n", " 0\n")],
+      [27, `27 (${"x".repeat(4_097)}) S 1\n`],
+    ] as const)
+      expect(() => parse(pid, record)).toThrow(/bounded|malformed/u);
+  });
+
   it("delegates the sole CI runtime lifecycle to the bounded host controller", () => {
     const workflow = readFileSync(
       resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
@@ -272,9 +300,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 45_492,
+      bytes: 46_222,
       mode: "0644",
-      patchedSourceBytes: 58_228,
+      patchedSourceBytes: 58_941,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -292,8 +320,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 45_492,
-      patchedSourceBytes: 58_228,
+      bytes: 46_222,
+      patchedSourceBytes: 58_941,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -600,7 +628,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "9020dbd7cc01734730c1bfc1d581f1e0f983fc6d9d77de57f3c1e81386a728d5",
+      "002fba5f50a5f98e406c58a0489e2fdc642cf3ffbaa32feb9ada5728f7f982cb",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -699,10 +727,20 @@ describe("PTY authenticated build-material tooling", () => {
       "+  if (identity.parent != 1 || observed != expected)",
     );
     expect(patch).toContain("+  if (identity.state != 'Z')");
+    expect(patch).toContain("+  bool interrupted = false;");
+    expect(patch).toContain(
+      "+    if (!pty_read_process_identity(static_cast<pid_t>(pid_value), &adjacent))",
+    );
+    expect(patch).toContain(
+      "+    if (adjacent.parent != 1 || adjacent.state != 'Z' || observed != expected)",
+    );
+    expect(patch).toContain("+    } else if (pty_take_test_fault(19)) {");
+    expect(patch).toContain("+    if (interrupted && pty_take_test_fault(21))");
     expect(patch).toContain(
       "+      joined = waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG);",
     );
     expect(patch).toContain("+    if (pty_take_test_fault(18)) {");
+    expect(patch).toContain("+  if (fault < 0 || fault > 0x3fffff)");
     expect(patch).toContain(
       '+  exports.Set("reapAdoptedZombie", Napi::Function::New(env, PtyReapAdoptedZombie));',
     );
@@ -778,6 +816,10 @@ describe("PTY authenticated build-material tooling", () => {
       ["getpid() != 1", "getpid() != 2"],
       ["identity.parent != 1", "identity.parent != 2"],
       ["identity.state != 'Z'", "identity.state == 'Z'"],
+      ["adjacent.parent != 1", "adjacent.parent != 2"],
+      ["adjacent.state != 'Z'", "adjacent.state == 'Z'"],
+      ["pty_take_test_fault(19)", "pty_take_test_fault(18)"],
+      ["pty_take_test_fault(21)", "pty_take_test_fault(20)"],
       [
         "waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG)",
         "waitpid(-1, nullptr, WNOHANG)",
@@ -821,5 +863,12 @@ describe("PTY authenticated build-material tooling", () => {
         /identity/u,
       );
     }
+    const build = readFileSync(
+      resolve(packageRoot, "scripts/build-pty-runtime.mjs"),
+      "utf8",
+    );
+    expect(build).toContain(
+      'digest !==\n    "e90ebd85ee351ca0085b1d73176fb2f83be932c3d5464a7c3648ce7e739b138e"',
+    );
   });
 });
