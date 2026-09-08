@@ -741,7 +741,7 @@ describe("installed CLI contract evidence", () => {
       'resolve(context, "installed-contract-driver.mjs")',
     );
     expect(scenario).toContain(
-      "COPY runner.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs",
     );
     expect(packageManifest.files).toEqual(["dist"]);
   });
