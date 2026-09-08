@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -9,6 +10,7 @@ import {
   createEngineClient,
   createProductionOperations,
   executeController,
+  publishTerminalResult,
 } from "../pty-runtime-proof-controller.mjs";
 
 const roots = [];
@@ -448,4 +450,73 @@ test("controller source contains no subprocess or ambient Docker authority", asy
   assert.match(source, /socketPath/u);
   assert.match(source, /writeSync\(1/u);
   assert.equal(source.match(/process\.stderr\.write/gmu), null);
+});
+
+test("a signal delivered during receipt write cannot leave terminal success", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "agentscope-publication."));
+  roots.push(root);
+  const fixture = resolve(root, "fixture.mjs");
+  writeFileSync(
+    fixture,
+    `import {publishTerminalResult} from ${JSON.stringify(
+      new URL("../pty-runtime-proof-controller.mjs", import.meta.url).href,
+    )};
+let signal=null;
+process.on('SIGTERM',()=>{signal??='SIGTERM'});
+const result=await publishTerminalResult({exitCode:0,receipt:{status:'passed'}},{
+  getSignal:()=>signal,
+  writeReceipt:(receipt)=>{
+    process.kill(process.pid,'SIGTERM');
+    const until=performance.now()+50;
+    while(performance.now()<until){}
+    process.stdout.write(JSON.stringify(receipt)+'\\n');
+  }
+});
+process.exitCode=result.exitCode;`,
+  );
+  const result = await new Promise((resolveChild) => {
+    const child = spawn(process.execPath, [fixture], {
+      env: { PATH: "/usr/bin:/bin" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout = [];
+    const stderr = [];
+    child.stdout.on("data", (chunk) => stdout.push(chunk));
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.once("close", (status, signal) =>
+      resolveChild({
+        signal,
+        status,
+        stderr: Buffer.concat(stderr),
+        stdout: Buffer.concat(stdout),
+      }),
+    );
+  });
+  assert.equal(result.status, 143);
+  assert.equal(result.signal, null);
+  assert.equal(result.stderr.length, 0);
+  assert.deepEqual(JSON.parse(result.stdout.toString()), { status: "passed" });
+});
+
+test("pre-publication signal rewrites the sole receipt to failure", async () => {
+  const priorExitCode = process.exitCode;
+  let signal = "SIGINT";
+  const receipts = [];
+  const result = await publishTerminalResult(
+    { exitCode: 0, receipt: { status: "passed" } },
+    {
+      getSignal: () => signal,
+      writeReceipt: (receipt) => receipts.push(receipt),
+    },
+  );
+  signal = null;
+  assert.equal(result.exitCode, 130);
+  assert.deepEqual(receipts, [
+    {
+      status: "failed",
+      originalOutcome: "signal",
+      signal: "SIGINT",
+    },
+  ]);
+  process.exitCode = priorExitCode;
 });

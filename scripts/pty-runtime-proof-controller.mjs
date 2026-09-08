@@ -715,6 +715,41 @@ export const executeController = async ({
   });
 };
 
+const nextTurn = () => new Promise((resolveTurn) => setImmediate(resolveTurn));
+const signalExit = (signal) => (signal === "SIGINT" ? 130 : 143);
+export const publishTerminalResult = async (
+  result,
+  {
+    getSignal,
+    writeReceipt = (receipt) =>
+      writeSync(1, Buffer.from(`${JSON.stringify(receipt)}\n`)),
+  },
+) => {
+  await nextTurn();
+  const beforePublication = getSignal();
+  let published =
+    beforePublication === null || result.exitCode !== 0
+      ? result
+      : {
+          exitCode: signalExit(beforePublication),
+          receipt: {
+            ...result.receipt,
+            originalOutcome: "signal",
+            signal: beforePublication,
+            status: "failed",
+          },
+        };
+  process.exitCode = published.exitCode;
+  writeReceipt(published.receipt);
+  await nextTurn();
+  const afterPublication = getSignal();
+  if (afterPublication !== null && published.exitCode === 0) {
+    process.exitCode = signalExit(afterPublication);
+    published = { ...published, exitCode: process.exitCode };
+  }
+  return published;
+};
+
 const main = async () => {
   let terminalSignal = null;
   const latch = (signal) => {
@@ -724,19 +759,9 @@ const main = async () => {
   const terminate = () => latch("SIGTERM");
   process.on("SIGINT", interrupt);
   process.on("SIGTERM", terminate);
-  let result = await executeController();
-  if (terminalSignal !== null && result.exitCode === 0) {
-    result = {
-      exitCode: terminalSignal === "SIGINT" ? 130 : 143,
-      receipt: {
-        ...result.receipt,
-        originalOutcome: "signal",
-        signal: terminalSignal,
-        status: "failed",
-      },
-    };
-  }
-  writeSync(1, Buffer.from(`${JSON.stringify(result.receipt)}\n`));
+  const result = await publishTerminalResult(await executeController(), {
+    getSignal: () => terminalSignal,
+  });
   process.off("SIGINT", interrupt);
   process.off("SIGTERM", terminate);
   process.exitCode = result.exitCode;
