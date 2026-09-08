@@ -92,12 +92,17 @@ jobs:
             exit "$status"
           }
           trap cleanup EXIT INT TERM
-          root=$(/usr/bin/mktemp -d /tmp/agentscope-pty-runtime.XXXXXXXX)
+          host_call() {
+            local remaining=$((deadline - SECONDS - 10))
+            (( remaining > 0 ))
+            "$timeout" --foreground --signal=TERM --kill-after=2 "${remaining}s" "$@"
+          }
+          root=$(host_call /usr/bin/mktemp -d /tmp/agentscope-pty-runtime.XXXXXXXX)
           [[ -d "$root" && ! -L "$root" ]]
-          repository_root=$(/usr/bin/realpath .)
+          repository_root=$(host_call /usr/bin/realpath .)
           [[ -x "$docker" && -x "$timeout" && -S "$socket" && ! -L "$socket" ]]
           [[ "$repository_root" == /home/runner/work/agentscope/agentscope ]]
-          /bin/mkdir -m 0700 "$root/config"
+          host_call /bin/mkdir -m 0700 "$root/config"
           docker_call() {
             local remaining=$((deadline - SECONDS - 10))
             (( remaining > 0 ))
@@ -124,7 +129,7 @@ jobs:
           authority=$(docker_call inspect --format '{{.Id}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}' "$container_id")
           [[ "$authority" == "$container_id|$config_id|none|true|created" ]]
           docker_call start --attach "$container_id" >"$root/receipt.json"
-          [[ $(/usr/bin/stat -c %s "$root/receipt.json") -le 65536 ]]
+          [[ $(host_call /usr/bin/stat -c %s "$root/receipt.json") -le 65536 ]]
           terminal=$(docker_call inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Running}}|{{.State.Pid}}' "$container_id")
           [[ "$terminal" == 'exited|0|false|0' ]]
 

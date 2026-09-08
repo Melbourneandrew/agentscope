@@ -280,15 +280,59 @@ describe("PTY runtime artifact tooling", () => {
     expect(workflow).toContain("--kill-after=1 2s");
     expect(workflow).toContain("(( remaining >= 7 ))");
     expect(workflow.indexOf("deadline=$((SECONDS + 90))")).toBeLessThan(
-      workflow.indexOf("root=$(/usr/bin/mktemp"),
+      workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
     expect(workflow.indexOf("trap cleanup EXIT INT TERM")).toBeLessThan(
-      workflow.indexOf("root=$(/usr/bin/mktemp"),
+      workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
     expect(workflow).toContain(
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );
     expect(workflow).not.toContain("image rm");
+  });
+
+  it("bounds a hung workflow setup command and removes its exact root", () => {
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    const job = workflow.indexOf("name: Replay the bounded PTY ABI");
+    const start = workflow.indexOf("          set -euo pipefail\n", job);
+    const end = workflow.indexOf(
+      "          root=$(host_call /usr/bin/mktemp",
+      start,
+    );
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const prefix = workflow
+      .slice(start, end)
+      .replaceAll(/^ {10}/gmu, "")
+      .replace("deadline=$((SECONDS + 90))", "deadline=$((SECONDS + 11))");
+    const testRoot = temporaryRoot();
+    const receipt = resolve(testRoot, "owned-root.txt");
+    const timeoutShim = resolve(testRoot, "timeout.mjs");
+    writeFileSync(
+      timeoutShim,
+      `#!/usr/bin/env node
+import {spawn} from "node:child_process";
+const args=process.argv.slice(2);const seconds=Number(args[3].replace(/s$/u,""));const child=spawn(args[4],args.slice(5),{stdio:"ignore"});const term=setTimeout(()=>child.kill("SIGTERM"),seconds*1000);const kill=setTimeout(()=>child.kill("SIGKILL"),(seconds+2)*1000);child.on("close",code=>{clearTimeout(term);clearTimeout(kill);process.exit(code??124);});\n`,
+      { mode: 0o700 },
+    );
+    const executablePrefix = prefix.replace(
+      "timeout=/usr/bin/timeout",
+      `timeout=${timeoutShim}`,
+    );
+    const script = `${executablePrefix}root=$(host_call /usr/bin/mktemp -d /tmp/agentscope-pty-runtime.XXXXXXXX)\nprintf '%s' "$root" >${JSON.stringify(receipt)}\nhost_call /bin/sh -c 'trap "" TERM; while :; do :; done'\n`;
+    const started = Date.now();
+    expect(() =>
+      execFileSync("/bin/bash", ["-c", script], {
+        stdio: "pipe",
+        timeout: 6_000,
+      }),
+    ).toThrow();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const ownedRoot = readFileSync(receipt, "utf8");
+    expect(() => statSync(ownedRoot)).toThrow();
   });
 
   it("rejects stale patch byte authorities in source and build policy", () => {
