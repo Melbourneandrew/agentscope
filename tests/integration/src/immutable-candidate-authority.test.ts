@@ -13,6 +13,7 @@ const {
   decodeImmutableCandidateHandoff,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
+  validateInstalledCliBoundary,
 } = immutableAuthority;
 
 const hex = (character: string): string => character.repeat(64);
@@ -96,6 +97,38 @@ const ptyReceipt = () => ({
 
 // eslint-disable-next-line max-lines-per-function
 describe("immutable candidate authority", () => {
+  const installedCliFacts = () => ({
+    argv: ["/opt/agentscope/installed/bin/agentscope", "--version"],
+    binIsSymlink: true,
+    binTarget: "../node_modules/agentscope-cli/dist/bin/agentscope.js",
+    cliDigest: hex("f"),
+    cliMode: 0o755,
+    cliPrefix: "#!/usr/bin/env node\n",
+    expectedDigest: hex("f"),
+  });
+
+  it("causally validates the exact installed CLI command boundary", () => {
+    expect(validateInstalledCliBoundary(installedCliFacts())).toBe(true);
+  });
+
+  it.each([
+    ["link", { binTarget: "../substituted.js" }],
+    ["type", { binIsSymlink: false }],
+    ["mode", { cliMode: 0o644 }],
+    ["shebang", { cliPrefix: "#!/bin/sh\n" }],
+    ["digest", { cliDigest: hex("e") }],
+    ["argv", { argv: ["/opt/agentscope/installed/bin/agentscope", "help"] }],
+  ] as const)(
+    "rejects installed CLI %s substitution",
+    (_seed, substitution) => {
+      expect(() =>
+        validateInstalledCliBoundary({
+          ...installedCliFacts(),
+          ...substitution,
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+    },
+  );
   it("binds a canonical candidate inventory and closed handoff", () => {
     const handoff = compiled();
     expect(
@@ -162,6 +195,30 @@ describe("immutable candidate authority", () => {
       compileCandidateInventory({ ...candidate(), extra: true }),
     ).toThrow("integration.immutable-candidate.authority");
   });
+
+  it.each(["duplicate-id", "count", "bytes", "id", "kind"] as const)(
+    "rejects production candidate artifact %s substitution",
+    (seed) => {
+      const value = candidate();
+      if (seed === "duplicate-id")
+        value.artifacts.push({
+          ...value.artifacts[0]!,
+          fileName: "other.tgz",
+        });
+      if (seed === "count")
+        value.artifacts = Array.from({ length: 33 }, (_, index) => ({
+          ...value.artifacts[0]!,
+          id: `artifact-${index}`,
+          fileName: `artifact-${index}.tgz`,
+        }));
+      if (seed === "bytes") value.artifacts[0]!.bytes = 256 * 1024 * 1024 + 1;
+      if (seed === "id") value.artifacts[0]!.id = "other";
+      if (seed === "kind") value.artifacts[0]!.kind = "runtime-binary";
+      expect(() => compileCandidateInventory(value)).toThrow(
+        "integration.immutable-candidate.authority",
+      );
+    },
+  );
 
   it("accepts exactly one closed installed-CLI PTY completion", () => {
     const compiledReceipt = compileInstalledCliPtyReceipt(ptyReceipt());

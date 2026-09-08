@@ -47,10 +47,13 @@ export const compileCandidateInventory = (candidate) => {
     candidate.lockfile.fileName !== "pnpm-lock.yaml" ||
     !Number.isSafeInteger(candidate.lockfile.bytes) ||
     candidate.lockfile.bytes < 1 ||
+    candidate.lockfile.bytes > 256 * 1024 * 1024 ||
     !/^sha256-[a-f0-9]{64}$/u.test(candidate.lockfile.sha256) ||
     candidate.scenarioNetworkPolicy !==
       "offline-no-package-or-registry-download" ||
-    !Array.isArray(candidate.artifacts)
+    !Array.isArray(candidate.artifacts) ||
+    candidate.artifacts.length < 1 ||
+    candidate.artifacts.length > 32
   )
     return fail();
   const artifacts = candidate.artifacts
@@ -66,6 +69,7 @@ export const compileCandidateInventory = (candidate) => {
         !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(file.fileName) ||
         !Number.isSafeInteger(file.bytes) ||
         file.bytes < 1 ||
+        file.bytes > 256 * 1024 * 1024 ||
         !/^sha256-[a-f0-9]{64}$/u.test(file.sha256)
       )
         return fail();
@@ -99,6 +103,13 @@ export const compileCandidateInventory = (candidate) => {
         : 0,
   );
   if (new Set(files.map(({ fileName }) => fileName)).size !== files.length)
+    return fail();
+  if (
+    new Set(artifacts.map(({ id }) => id)).size !== artifacts.length ||
+    artifacts.filter(
+      ({ id, kind }) => id === "agentscope-cli" && kind === "npm-tarball",
+    ).length !== 1
+  )
     return fail();
   const inventory = {
     evidenceVersion: candidate.evidenceVersion,
@@ -308,4 +319,29 @@ export const decodeInstalledCliPtyReceipt = (output, expected) => {
   )
     return fail();
   return receipt;
+};
+
+export const validateInstalledCliBoundary = (facts) => {
+  if (
+    !exactKeys(facts, [
+      "argv",
+      "binIsSymlink",
+      "binTarget",
+      "cliDigest",
+      "cliMode",
+      "cliPrefix",
+      "expectedDigest",
+    ]) ||
+    facts.binIsSymlink !== true ||
+    facts.binTarget !==
+      "../node_modules/agentscope-cli/dist/bin/agentscope.js" ||
+    facts.cliMode !== 0o755 ||
+    facts.cliPrefix !== "#!/usr/bin/env node\n" ||
+    !/^[a-f0-9]{64}$/u.test(facts.expectedDigest) ||
+    facts.cliDigest !== facts.expectedDigest ||
+    JSON.stringify(facts.argv) !==
+      JSON.stringify(["/opt/agentscope/installed/bin/agentscope", "--version"])
+  )
+    return fail();
+  return true;
 };

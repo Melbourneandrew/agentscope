@@ -22,6 +22,7 @@ const request = (
 ): SelectedPtyExecutionRequest => {
   const now = performance.now();
   return {
+    completion: { kind: "semantic-marker" },
     initialGeometry: { columns: 40, rows: 12 },
     interpreter: {
       path: "/usr/local/bin/node",
@@ -182,6 +183,26 @@ describe("selected PTY transport", () => {
       ).rejects.toMatchObject({ code: "testkit.pty.immutable-candidate" });
     },
   );
+
+  it("admits exact output as completion without a fabricated marker", async () => {
+    const output = Buffer.from("ready");
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request(),
+        completion: {
+          kind: "exact-output",
+          outputBytes: output.length,
+          outputSha256: createHash("sha256").update(output).digest("hex"),
+        },
+      },
+      "active-terminal",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      finalSnapshot: { semanticState: "active" },
+      outputBytes: output.length,
+    });
+  });
 
   it("drains fragmented terminal output through the exact EIO witness", async () => {
     const receipt = await executeSelectedPtyTransportForTest(

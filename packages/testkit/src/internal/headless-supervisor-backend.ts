@@ -966,23 +966,32 @@ const createImmutableCandidateAuthority = (
     )
       return fail("testkit.pty.immutable-candidate");
   };
+  const expectedFileDigests = new Map<string, string>();
   const authority = safeReflectApply(freeze, Object, [
     {
       assertFile: (descriptor: number, path: string): void => {
         assertRuntime();
-        const status = fstatSync(descriptor);
+        const before = fstatSync(descriptor);
+        if (before.size < 1 || before.size > 256 * 1024 * 1024)
+          return fail("testkit.pty.immutable-candidate");
+        const digest = createHash("sha256")
+          .update(readFileSync(`/proc/self/fd/${descriptor}`))
+          .digest("hex");
+        const after = fstatSync(descriptor);
         const mountId = fdMountId(descriptor);
+        const expectedDigest = expectedFileDigests.get(path) ?? digest;
         validateImmutableFileFacts({
-          after: status,
-          before: status,
-          digest: "bound",
-          expectedDigest: "bound",
+          after,
+          before,
+          digest,
+          expectedDigest,
           expectedPath: path,
-          isFile: status.isFile(),
+          isFile: before.isFile() && after.isFile(),
           linkPath: readlinkSync(`/proc/self/fd/${descriptor}`),
           mountId,
           mountTable: initial.mountTable,
         });
+        expectedFileDigests.set(path, expectedDigest);
       },
       assertRuntime,
     },
@@ -1016,7 +1025,9 @@ const createImmutableCandidateAuthority = (
         bytes += before.size;
         if (before.size < 1 || bytes > 64 * 1024 * 1024)
           return fail("testkit.pty.immutable-candidate");
-        createHash("sha256").update(readFileSync(descriptor)).digest();
+        const digest = createHash("sha256")
+          .update(readFileSync(`/proc/self/fd/${descriptor}`))
+          .digest("hex");
         const after = fstatSync(descriptor);
         if (
           before.dev !== after.dev ||
@@ -1024,6 +1035,7 @@ const createImmutableCandidateAuthority = (
           before.size !== after.size
         )
           return fail("testkit.pty.immutable-candidate");
+        expectedFileDigests.set(path, digest);
         authority.assertFile(descriptor, path);
       } finally {
         closeSync(descriptor);
@@ -1451,17 +1463,20 @@ const productionPtyRuntime = (
   },
 });
 
+// The closed request schema intentionally validates every nested authority field.
 const snapshotPtyRequest = (
   candidate: SelectedPtyExecutionRequest,
+  // eslint-disable-next-line complexity
 ): SelectedPtyExecutionRequest => {
   if (!plainRecord(candidate)) return fail("testkit.pty.request");
   const keys = safeReflectApply(objectKeys, Object, [candidate]).sort();
   if (
-    keys.length !== 4 ||
-    keys[0] !== "initialGeometry" ||
-    keys[1] !== "interpreter" ||
-    keys[2] !== "process" ||
-    keys[3] !== "scriptSha256"
+    keys.length !== 5 ||
+    keys[0] !== "completion" ||
+    keys[1] !== "initialGeometry" ||
+    keys[2] !== "interpreter" ||
+    keys[3] !== "process" ||
+    keys[4] !== "scriptSha256"
   )
     return fail("testkit.pty.request");
   const process_ = snapshotSelectedRequest(
@@ -1482,6 +1497,7 @@ const snapshotPtyRequest = (
   )
     return fail("testkit.pty.geometry");
   const interpreter = ownData(candidate, "interpreter");
+  const completion = ownData(candidate, "completion");
   const scriptSha256 = ownData(candidate, "scriptSha256");
   if (!plainRecord(interpreter)) return fail("testkit.pty.runtime.identity");
   const interpreterKeys = safeReflectApply(objectKeys, Object, [
@@ -1501,9 +1517,28 @@ const snapshotPtyRequest = (
     !/^[a-f0-9]{64}$/u.test(scriptSha256)
   )
     return fail("testkit.pty.runtime.identity");
+  if (!plainRecord(completion)) return fail("testkit.pty.request");
+  const completionKeys = safeReflectApply(objectKeys, Object, [
+    completion,
+  ]).sort();
+  const completionKind = ownData(completion, "kind");
+  if (
+    (completionKind === "semantic-marker" &&
+      completionKeys.join("\0") !== "kind") ||
+    (completionKind === "exact-output" &&
+      (completionKeys.join("\0") !== "kind\0outputBytes\0outputSha256" ||
+        !boundedInteger(ownData(completion, "outputBytes"), 4_096) ||
+        ownData(completion, "outputBytes") === 0 ||
+        !/^[a-f0-9]{64}$/u.test(
+          ownData(completion, "outputSha256") as string,
+        ))) ||
+    (completionKind !== "semantic-marker" && completionKind !== "exact-output")
+  )
+    return fail("testkit.pty.request");
   return safeReflectApply(freeze, Object, [
     {
       process: process_,
+      completion: safeReflectApply(freeze, Object, [{ ...completion }]),
       initialGeometry: safeReflectApply(freeze, Object, [{ columns, rows }]),
       interpreter: safeReflectApply(freeze, Object, [
         { path: interpreterPath, sha256: interpreterSha256 },
@@ -1955,13 +1990,20 @@ const armSelectedPty = (
       return fail("testkit.pty.transport");
     const inputJoined = inputOffset === input.length && eofByteWritten;
     const clean = residual.length === 0 && outputTerminal && transportClosed;
+    const output = safeBufferConcat(chunks, outputBytes);
+    const outputSha256 = createHash("sha256").update(output).digest("hex");
     const finalSnapshot = terminal.end();
+    const exactOutputCompleted =
+      request.completion.kind === "exact-output" &&
+      request.completion.outputBytes === outputBytes &&
+      request.completion.outputSha256 === outputSha256;
     if (
       !outputLimited &&
       (finalSnapshot.semanticState === "credential-prompt" ||
         finalSnapshot.semanticState === "malformed-control" ||
         ((trigger === "closed" || trigger === undefined) &&
-          finalSnapshot.semanticState !== "completed"))
+          finalSnapshot.semanticState !== "completed" &&
+          !exactOutputCompleted))
     )
       return fail("testkit.pty.transport");
     const outcome =
@@ -1978,7 +2020,6 @@ const armSelectedPty = (
                 : exit.code === 0
                   ? "completed"
                   : "exited-nonzero";
-    const output = safeBufferConcat(chunks, outputBytes);
     const receipt: SelectedPtyExecutionReceipt = safeReflectApply(
       freeze,
       Object,
@@ -1999,7 +2040,7 @@ const armSelectedPty = (
           inputBytesWritten: inputOffset,
           outcome,
           outputBytes,
-          outputSha256: createHash("sha256").update(output).digest("hex"),
+          outputSha256,
           finalSnapshot,
           exitCode:
             outcome === "completed" || outcome === "exited-nonzero"
@@ -2472,6 +2513,14 @@ const assertPtyReceiptBinding = (
   if (
     (outcome === "output-limit") !==
     (finalSnapshot.semanticState === "output-limit")
+  )
+    return fail("testkit.pty.receipt");
+  if (
+    outcome === "completed" &&
+    finalSnapshot.semanticState !== "completed" &&
+    (request.completion.kind !== "exact-output" ||
+      request.completion.outputBytes !== receipt.outputBytes ||
+      request.completion.outputSha256 !== receipt.outputSha256)
   )
     return fail("testkit.pty.receipt");
   if (

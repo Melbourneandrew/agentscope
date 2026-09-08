@@ -12,6 +12,13 @@ import {
 import type { HeadlessExecutionRequest } from "./headless-supervisor-contract.js";
 
 export type SelectedPtyExecutionRequest = Readonly<{
+  completion:
+    | Readonly<{ kind: "semantic-marker" }>
+    | Readonly<{
+        kind: "exact-output";
+        outputBytes: number;
+        outputSha256: string;
+      }>;
   process: HeadlessExecutionRequest;
   initialGeometry: PtyTerminalGeometry;
   interpreter: Readonly<{ path: string; sha256: string }>;
