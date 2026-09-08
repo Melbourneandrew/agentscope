@@ -22,7 +22,9 @@ import {
 } from "../headless-supervisor.js";
 import {
   composeSelectedContainerHeadlessSupervisorCapability,
+  deriveNativeMonotonicDeadlineForTest,
   executeSelectedContainerBackendForTest,
+  executeSelectedPtyTransportForTest,
   executeScriptedSelectedHeadlessProcessForTest,
   executeScriptedHeadlessSupervisorForTest,
   readHeadlessSupervisorKernelErrorCode,
@@ -56,6 +58,29 @@ const genericRequest = () => {
     monotonicExecutionDeadlineMs: now + 200,
     monotonicShutdownDeadlineMs: now + 400,
     terminationGraceMs: 10,
+  };
+};
+const selectedPtyRequest = () => {
+  const now = performance.now();
+  return {
+    completion: { kind: "semantic-marker" as const },
+    initialGeometry: { columns: 40, rows: 12 },
+    interpreter: {
+      path: "/usr/local/bin/node",
+      sha256: "a".repeat(64),
+    },
+    process: {
+      ...genericRequest(),
+      executable: "/scenario/installed-cli-driver",
+      arguments: ["narrow-terminal"],
+      cwd: "/scenario",
+      stdin: new Uint8Array([121, 101, 115, 10]),
+      monotonicStartupDeadlineMs: now + 100,
+      monotonicExecutionDeadlineMs: now + 200,
+      monotonicShutdownDeadlineMs: now + 500,
+      terminationGraceMs: 50,
+    },
+    scriptSha256: "b".repeat(64),
   };
 };
 
@@ -141,7 +166,28 @@ describe("selected headless supervisor protocol", () => {
   });
 });
 
+// The selected lifecycle keeps its deadline, process-set, and receipt oracle together.
+// eslint-disable-next-line max-lines-per-function
 describe("selected-container lifecycle", () => {
+  it("derives a conservative native deadline across clock-sample preemption", () => {
+    const nativeBeforePreemption = 5_000_000_000n;
+    const performanceAfterPreemption = 250;
+    expect(
+      deriveNativeMonotonicDeadlineForTest(
+        1_000,
+        nativeBeforePreemption,
+        performanceAfterPreemption,
+      ),
+    ).toBe(5_750_000_000n);
+    expect(() =>
+      deriveNativeMonotonicDeadlineForTest(
+        1_000,
+        nativeBeforePreemption,
+        1_000,
+      ),
+    ).toThrow("testkit.headless.reconciliation.deadline");
+  });
+
   it.each([
     ["clean", "exited"],
     ["descendant", "exited"],
@@ -170,6 +216,9 @@ describe("selected-container lifecycle", () => {
     ["identity-substitution", "testkit.headless.observer.identity"],
     ["observer-failure", "testkit.headless.observer.read"],
     ["signal-failure", "testkit.headless.observer.signal"],
+    ["adopted-zombie-reap-failure", "testkit.headless.observer.reap"],
+    ["adopted-zombie-receipt-substitution", "testkit.headless.observer.reap"],
+    ["adopted-zombie-state-substitution", "testkit.headless.observer.identity"],
     ["stream-join-failure", "testkit.headless.reconciliation.deadline"],
     ["terminal-join-failure", "testkit.headless.reconciliation.deadline"],
   ] as const)("fails closed for selected-container %s", async (seed, code) => {
@@ -197,6 +246,60 @@ describe("selected-container lifecycle", () => {
       signal: "SIGTERM",
     });
     expect(trace.observation.processJoined).toBe(true);
+  });
+
+  it("joins an adopted zombie through the authenticated PID-1 reaper", async () => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 30;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 120;
+    const trace = await executeSelectedContainerBackendForTest(
+      request,
+      "descendant",
+    );
+    expect(trace.result).toMatchObject({ cleanup: "clean", outcome: "exited" });
+    expect(trace.observation).toMatchObject({
+      processJoined: true,
+      residualStartIdentities: [],
+    });
+    expect(trace.observation.processes).toEqual([
+      { pid: 41_001, startIdentity: "41001:1", role: "root" },
+      { pid: 41_002, startIdentity: "41002:1", role: "descendant" },
+    ]);
+  });
+
+  it("terminates a reparented process tree deepest-first and reaps every zombie", async () => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 30;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 120;
+    const trace = await executeSelectedContainerBackendForTest(
+      request,
+      "nested-adopted-zombie",
+    );
+    expect(trace.result).toMatchObject({ cleanup: "clean", outcome: "exited" });
+    expect(
+      trace.observation.signals.map((value) => value.targetStartIdentity),
+    ).toEqual(["41003:1", "41002:1"]);
+    expect(trace.observation).toMatchObject({
+      processJoined: true,
+      residualStartIdentities: [],
+    });
+  });
+
+  it("reaps an adopted PTY descendant before semantic terminal success", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      selectedPtyRequest(),
+      "adopted-zombie",
+    );
+    expect(receipt).toMatchObject({
+      cleanup: "clean",
+      outcome: "completed",
+      processJoined: true,
+      residualProcessCount: 0,
+      terminalOutputJoined: true,
+      terminalTransportClosed: true,
+    });
   });
 
   it("rechecks startup authority adjacent to selected-container spawn", async () => {

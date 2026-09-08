@@ -709,8 +709,15 @@ const execute = async (
 type CapturedOutput = Readonly<{ bytes: Uint8Array; truncated: boolean }>;
 type MutableOutput = { chunks: Buffer[]; length: number; truncated: boolean };
 type ProcessSnapshot = Readonly<{
+  parentPid: number;
   pid: number;
   startIdentity: string;
+  state: string;
+}>;
+type AdoptedZombieReapReceipt = Readonly<{
+  pid: number;
+  startIdentity: string;
+  status: "not-ready" | "reaped";
 }>;
 type ContainerComposition = Readonly<{
   immutableCandidate?: ImmutableCandidateAuthority;
@@ -737,26 +744,49 @@ type SelectedContainerRuntime = Readonly<{
   assertNamespaceIdentity: (expected: string) => void;
   listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
   readProcess: (pid: number) => ProcessSnapshot | undefined;
+  reapAdoptedZombie: (
+    pid: number,
+    startIdentity: string,
+    rootPid: number,
+    monotonicDeadlineNs: bigint,
+  ) => AdoptedZombieReapReceipt;
   sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   spawnProcess: (request: HeadlessExecutionRequest) => ChildProcess;
 }>;
 type ProcessAuthorityRuntime = Pick<
   SelectedContainerRuntime,
-  "assertNamespaceIdentity" | "listProcesses" | "readProcess" | "sendSignal"
+  | "assertNamespaceIdentity"
+  | "listProcesses"
+  | "readProcess"
+  | "reapAdoptedZombie"
+  | "sendSignal"
 >;
 
 const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
   try {
     const value = readFileSync(`/proc/${pid}/stat`, "utf8");
     const close = value.lastIndexOf(")");
-    if (close < 1) return undefined;
+    if (close < 1) return fail("testkit.headless.observer.read");
     const fields = value
       .slice(close + 2)
       .trim()
       .split(/\s+/u);
+    const state = fields[0];
+    const encodedParent = fields[1];
     const start = fields[19];
-    if (start === undefined || !/^\d+$/u.test(start)) return undefined;
-    return { pid, startIdentity: `${pid}:${start}` };
+    if (
+      state === undefined ||
+      !/^[DIKPRSTWXYZtx]$/u.test(state) ||
+      encodedParent === undefined ||
+      !/^\d+$/u.test(encodedParent) ||
+      start === undefined ||
+      !/^\d+$/u.test(start)
+    )
+      return fail("testkit.headless.observer.read");
+    const parentPid = Number(encodedParent);
+    if (!numberIsSafeInteger(parentPid) || parentPid < 0)
+      return fail("testkit.headless.observer.read");
+    return { parentPid, pid, startIdentity: `${pid}:${start}`, state };
   } catch (error: unknown) {
     if (
       typeof error === "object" &&
@@ -1159,20 +1189,6 @@ const signalExactProcess = (
   return true;
 };
 
-const productionContainerRuntime: SelectedContainerRuntime = {
-  assertNamespaceIdentity,
-  listProcesses: listContainerProcesses,
-  readProcess: readProcessSnapshot,
-  sendSignal: (pid, signal) => process.kill(pid, signal),
-  spawnProcess: (request) =>
-    spawn(request.executable, [...request.arguments], {
-      cwd: request.cwd,
-      env: request.environment,
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-    }),
-};
-
 type PtyExit = Readonly<{ code: number; signal: number }>;
 type PtyTerminalHandle = object;
 type PtyTerminalObservation = Readonly<{
@@ -1210,6 +1226,12 @@ type PtyRuntime = Readonly<{
   assertNamespaceIdentity: (expected: string) => void;
   listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
   readProcess: (pid: number) => ProcessSnapshot | undefined;
+  reapAdoptedZombie: (
+    pid: number,
+    startIdentity: string,
+    rootPid: number,
+    monotonicDeadlineNs: bigint,
+  ) => AdoptedZombieReapReceipt;
   sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   spawnPty: (
     request: HeadlessExecutionRequest,
@@ -1245,6 +1267,12 @@ type NativePtyBinding = Readonly<{
   }>;
   inspect: (handle: PtyTerminalHandle) => PtyTerminalObservation;
   read: (handle: PtyTerminalHandle, maximumBytes: number) => PtyReadObservation;
+  reapAdoptedZombie: (
+    pid: number,
+    startIdentity: string,
+    rootPid: number,
+    monotonicDeadlineNs: bigint,
+  ) => AdoptedZombieReapReceipt;
   resize: (
     handle: PtyTerminalHandle,
     columns: number,
@@ -1347,12 +1375,153 @@ const loadNativePtyBinding = (
     typeof ownData(candidate, "inspect") !== "function" ||
     typeof ownData(candidate, "read") !== "function" ||
     typeof ownData(candidate, "write") !== "function" ||
+    typeof ownData(candidate, "reapAdoptedZombie") !== "function" ||
     typeof ownData(candidate, "eof") !== "function" ||
     typeof ownData(candidate, "close") !== "function"
   )
     return fail("testkit.pty.runtime.identity");
   nativePtyBinding = candidate as NativePtyBinding;
   return nativePtyBinding;
+};
+const deriveNativeMonotonicDeadline = (
+  deadlineMs: number,
+  nativeNowNs: bigint,
+  performanceNowMs: number,
+): bigint => {
+  const remainingMilliseconds = deadlineMs - performanceNowMs;
+  if (remainingMilliseconds <= 0)
+    return fail("testkit.headless.reconciliation.deadline");
+  return nativeNowNs + BigInt(Math.floor(remainingMilliseconds * 1e6));
+};
+const captureNativeMonotonicDeadline = (deadlineMs: number): bigint => {
+  // Native time is sampled first, so preemption before the performance-clock
+  // sample can only shorten this authority; it can never renew the deadline.
+  const nativeNowNs = safeReflectApply(processHrtimeBigint, process.hrtime, []);
+  const performanceNowMs = safeReflectApply(performanceNow, performance, []);
+  return deriveNativeMonotonicDeadline(
+    deadlineMs,
+    nativeNowNs,
+    performanceNowMs,
+  );
+};
+/** Package-private clock-bridge oracle; it conveys no execution authority. */
+export const deriveNativeMonotonicDeadlineForTest = (
+  deadlineMs: number,
+  nativeNowNs: bigint,
+  performanceNowMs: number,
+): bigint =>
+  deriveNativeMonotonicDeadline(deadlineMs, nativeNowNs, performanceNowMs);
+const exactAdoptedZombieReapReceipt = (
+  value: AdoptedZombieReapReceipt,
+  identity: ProcessSnapshot,
+): AdoptedZombieReapReceipt => {
+  if (
+    !plainRecord(value) ||
+    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
+      "pid\0startIdentity\0status" ||
+    ownData(value, "pid") !== identity.pid ||
+    ownData(value, "startIdentity") !== identity.startIdentity ||
+    (ownData(value, "status") !== "not-ready" &&
+      ownData(value, "status") !== "reaped")
+  )
+    return fail("testkit.headless.observer.reap");
+  return value;
+};
+const processesDescendantsFirst = (
+  processes: readonly ProcessSnapshot[],
+  rootPid: number,
+): readonly ProcessSnapshot[] => {
+  const byPid = new Map<number, ProcessSnapshot>();
+  const identities = new Set<string>();
+  for (const identity of processes) {
+    if (byPid.has(identity.pid) || identities.has(identity.startIdentity))
+      return fail("testkit.headless.observer.identity");
+    byPid.set(identity.pid, identity);
+    identities.add(identity.startIdentity);
+  }
+  const depths = new Map<number, number>();
+  const depth = (identity: ProcessSnapshot, visiting: Set<number>): number => {
+    const cached = depths.get(identity.pid);
+    if (cached !== undefined) return cached;
+    if (visiting.has(identity.pid))
+      return fail("testkit.headless.observer.identity");
+    visiting.add(identity.pid);
+    const parent = byPid.get(identity.parentPid);
+    if (parent === undefined && identity.parentPid !== 1)
+      return fail("testkit.headless.observer.identity");
+    const value = parent === undefined ? 0 : depth(parent, visiting) + 1;
+    visiting.delete(identity.pid);
+    depths.set(identity.pid, value);
+    return value;
+  };
+  return [...processes].sort((left, right) => {
+    if (left.pid === rootPid) return 1;
+    if (right.pid === rootPid) return -1;
+    const depthDifference = depth(right, new Set()) - depth(left, new Set());
+    if (depthDifference !== 0) return depthDifference;
+    return right.pid - left.pid;
+  });
+};
+const reapAdoptedZombies = (
+  processes: readonly ProcessSnapshot[],
+  rootPid: number,
+  nativeDeadlineNs: bigint,
+  namespaceIdentity: string,
+  runtime: ProcessAuthorityRuntime,
+): void => {
+  for (const identity of processesDescendantsFirst(processes, rootPid)) {
+    if (
+      identity.pid === rootPid ||
+      identity.parentPid !== 1 ||
+      identity.state !== "Z"
+    )
+      continue;
+    runtime.assertNamespaceIdentity(namespaceIdentity);
+    const current = runtime.readProcess(identity.pid);
+    if (
+      current === undefined ||
+      current.startIdentity !== identity.startIdentity ||
+      current.parentPid !== 1 ||
+      current.state !== "Z"
+    )
+      return fail("testkit.headless.observer.identity");
+    const receipt = exactAdoptedZombieReapReceipt(
+      runtime.reapAdoptedZombie(
+        identity.pid,
+        identity.startIdentity,
+        rootPid,
+        nativeDeadlineNs,
+      ),
+      identity,
+    );
+    const after = runtime.readProcess(identity.pid);
+    if (after !== undefined && after.startIdentity !== identity.startIdentity)
+      return fail("testkit.headless.observer.identity");
+    if (receipt.status !== "reaped" || after !== undefined)
+      return fail("testkit.headless.observer.reap");
+  }
+};
+const productionContainerRuntime = (
+  authority: ImmutableCandidateAuthority,
+): SelectedContainerRuntime => {
+  const binding = loadNativePtyBinding(authority);
+  return {
+    assertNamespaceIdentity,
+    listProcesses: listContainerProcesses,
+    readProcess: readProcessSnapshot,
+    reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
+      authority.assertRuntime();
+      return binding.reapAdoptedZombie(pid, startIdentity, rootPid, deadline);
+    },
+    sendSignal: (pid, signal) => process.kill(pid, signal),
+    spawnProcess: (request) =>
+      spawn(request.executable, [...request.arguments], {
+        cwd: request.cwd,
+        env: request.environment,
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+      }),
+  };
 };
 const productionPtyRuntime = (
   authority: ImmutableCandidateAuthority,
@@ -1362,6 +1531,15 @@ const productionPtyRuntime = (
   assertNamespaceIdentity,
   listProcesses: listContainerProcesses,
   readProcess: readProcessSnapshot,
+  reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
+    authority.assertRuntime();
+    return loadNativePtyBinding(authority).reapAdoptedZombie(
+      pid,
+      startIdentity,
+      rootPid,
+      deadline,
+    );
+  },
   sendSignal: (pid, signal) => process.kill(pid, signal),
   spawnPty: (request, geometry, interpreter, scriptSha256) => {
     authority.assertRuntime();
@@ -1665,6 +1843,9 @@ const armSelectedPty = (
       processRequest.monotonicStartupDeadlineMs
     )
       return fail("testkit.headless.startup.deadline");
+    const nativeShutdownDeadlineNs = captureNativeMonotonicDeadline(
+      processRequest.monotonicShutdownDeadlineMs,
+    );
     runtime.assertImmutableCandidateRuntime();
     const child = runtime.spawnPty(
       processRequest,
@@ -1882,15 +2063,18 @@ const armSelectedPty = (
       )
         trigger = "timeout";
     }
-    const termTargets = currentProcessSet().filter((identity) => {
-      try {
-        return runtime.readProcess(identity.pid) !== undefined;
-      } catch (error) {
-        authorityFailure =
-          trustedErrorCode(error) ?? "testkit.headless.observer.read";
-        return false;
-      }
-    });
+    const termTargets = processesDescendantsFirst(
+      currentProcessSet().filter((identity) => {
+        try {
+          return runtime.readProcess(identity.pid) !== undefined;
+        } catch (error) {
+          authorityFailure =
+            trustedErrorCode(error) ?? "testkit.headless.observer.read";
+          return false;
+        }
+      }),
+      child.pid,
+    );
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     if (
       trigger !== "closed" ||
@@ -1921,12 +2105,29 @@ const armSelectedPty = (
       safeReflectApply(performanceNow, performance, []) < graceDeadline &&
       currentProcessSet().length > 0
     ) {
+      try {
+        reapAdoptedZombies(
+          currentProcessSet(),
+          child.pid,
+          nativeShutdownDeadlineNs,
+          composition.namespaceIdentity,
+          runtime,
+        );
+      } catch (error) {
+        authorityFailure =
+          trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+        break;
+      }
       pumpTransport(false);
       await delay(containerPollMilliseconds);
     }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
-    for (const identity of currentProcessSet())
+    for (const identity of processesDescendantsFirst(
+      currentProcessSet(),
+      child.pid,
+    ))
       try {
+        if (identity.state === "Z") continue;
         signalExactProcess(
           identity,
           "SIGKILL",
@@ -1946,8 +2147,34 @@ const armSelectedPty = (
           containerPollMilliseconds * 2 &&
       currentProcessSet().length > 0
     ) {
+      try {
+        reapAdoptedZombies(
+          currentProcessSet(),
+          child.pid,
+          nativeShutdownDeadlineNs,
+          composition.namespaceIdentity,
+          runtime,
+        );
+      } catch (error) {
+        authorityFailure =
+          trustedErrorCode(error) ?? "testkit.headless.observer.reap";
+        break;
+      }
       pumpTransport(false);
       await delay(containerPollMilliseconds);
+    }
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    try {
+      reapAdoptedZombies(
+        currentProcessSet(),
+        child.pid,
+        nativeShutdownDeadlineNs,
+        composition.namespaceIdentity,
+        runtime,
+      );
+    } catch (error) {
+      authorityFailure =
+        trustedErrorCode(error) ?? "testkit.headless.observer.reap";
     }
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     const residual = currentProcessSet();
@@ -2072,7 +2299,10 @@ const armSelectedPty = (
 
 const selectedContainerBackend = (
   composition: ContainerComposition,
-  runtime: SelectedContainerRuntime = productionContainerRuntime,
+  runtime: SelectedContainerRuntime = composition.immutableCandidate ===
+  undefined
+    ? fail("testkit.pty.immutable-candidate")
+    : productionContainerRuntime(composition.immutableCandidate),
   // The backend closes one lifecycle across launch, streams, signals and join.
   // eslint-disable-next-line max-lines-per-function
 ): SelectedIsolationBackendAuthority => ({
@@ -2113,6 +2343,9 @@ const selectedContainerBackend = (
         request.monotonicStartupDeadlineMs
       )
         return fail("testkit.headless.startup.deadline");
+      const nativeShutdownDeadlineNs = captureNativeMonotonicDeadline(
+        request.monotonicShutdownDeadlineMs,
+      );
       const spawnedAtMs = safeReflectApply(performanceNow, performance, []);
       const child = runtime.spawnProcess(request);
       // Observe spawn failure before reading pid so a no-exec child cannot emit
@@ -2186,8 +2419,14 @@ const selectedContainerBackend = (
         )
           trigger = "timeout";
       }
-      const termTargets = [...observed.values()].filter(
-        (identity) => runtime.readProcess(identity.pid) !== undefined,
+      const termTargets = processesDescendantsFirst(
+        runtime
+          .listProcesses(composition.namespaceIdentity)
+          .filter((identity) => {
+            observed.set(identity.startIdentity, identity);
+            return runtime.readProcess(identity.pid) !== undefined;
+          }),
+        childPid,
       );
       if (
         trigger !== "closed" ||
@@ -2209,12 +2448,22 @@ const selectedContainerBackend = (
       while (
         safeReflectApply(performanceNow, performance, []) < graceDeadline &&
         runtime.listProcesses(composition.namespaceIdentity).length > 0
-      )
+      ) {
+        reapAdoptedZombies(
+          runtime.listProcesses(composition.namespaceIdentity),
+          childPid,
+          nativeShutdownDeadlineNs,
+          composition.namespaceIdentity,
+          runtime,
+        );
         await delay(containerPollMilliseconds);
-      for (const identity of runtime.listProcesses(
-        composition.namespaceIdentity,
+      }
+      for (const identity of processesDescendantsFirst(
+        runtime.listProcesses(composition.namespaceIdentity),
+        childPid,
       )) {
         observed.set(identity.startIdentity, identity);
+        if (identity.state === "Z") continue;
         signalExactProcess(
           identity,
           "SIGKILL",
@@ -2227,8 +2476,23 @@ const selectedContainerBackend = (
         safeReflectApply(performanceNow, performance, []) <
           request.monotonicShutdownDeadlineMs &&
         runtime.listProcesses(composition.namespaceIdentity).length > 0
-      )
+      ) {
+        reapAdoptedZombies(
+          runtime.listProcesses(composition.namespaceIdentity),
+          childPid,
+          nativeShutdownDeadlineNs,
+          composition.namespaceIdentity,
+          runtime,
+        );
         await delay(containerPollMilliseconds);
+      }
+      reapAdoptedZombies(
+        runtime.listProcesses(composition.namespaceIdentity),
+        childPid,
+        nativeShutdownDeadlineNs,
+        composition.namespaceIdentity,
+        runtime,
+      );
       const residual = runtime.listProcesses(composition.namespaceIdentity);
       if (exit === undefined) {
         const terminal = await boundedInvoke(
@@ -2300,7 +2564,8 @@ const selectedContainerBackend = (
           runId: request.runId,
           requestFingerprint: request.requestFingerprint,
           processes: [...observed.values()].map((identity, index) => ({
-            ...identity,
+            pid: identity.pid,
+            startIdentity: identity.startIdentity,
             role: index === 0 ? "root" : "descendant",
           })),
           signals,
@@ -2892,11 +3157,15 @@ export const executeScriptedSelectedHeadlessProcessForTest = async (
 };
 
 type SelectedContainerTestSeed =
+  | "adopted-zombie-reap-failure"
+  | "adopted-zombie-receipt-substitution"
+  | "adopted-zombie-state-substitution"
   | "abort"
   | "clean"
   | "descendant"
   | "fast-exit"
   | "identity-substitution"
+  | "nested-adopted-zombie"
   | "observer-failure"
   | "output-limit"
   | "signal-failure"
@@ -2911,10 +3180,23 @@ const selectedContainerRuntimeForTest = (
   // The closed synthetic matrix keeps all runtime transitions in one fixture.
   // eslint-disable-next-line max-lines-per-function
 ): SelectedContainerRuntime => {
-  const root: ProcessSnapshot = { pid: 41_001, startIdentity: "41001:1" };
+  const root: ProcessSnapshot = {
+    parentPid: 1,
+    pid: 41_001,
+    startIdentity: "41001:1",
+    state: "R",
+  };
   const descendant: ProcessSnapshot = {
+    parentPid: root.pid,
     pid: 41_002,
     startIdentity: "41002:1",
+    state: "R",
+  };
+  const grandchild: ProcessSnapshot = {
+    parentPid: descendant.pid,
+    pid: 41_003,
+    startIdentity: "41003:1",
+    state: "R",
   };
   const processes = new Map<number, ProcessSnapshot>([[root.pid, root]]);
   let child: (ChildProcess & EventEmitter) | undefined;
@@ -2922,12 +3204,17 @@ const selectedContainerRuntimeForTest = (
   let fakeStderr: PassThrough | undefined;
   let closed = false;
   let rootReads = 0;
+  let descendantReads = 0;
+  let reapDeadline: bigint | undefined;
   let infiniteTimer: NodeJS.Timeout | undefined;
   const finish = (code: number | null, signal: NodeJS.Signals | null) => {
     if (closed || child === undefined) return;
     closed = true;
     if (infiniteTimer !== undefined) safeClearInterval(infiniteTimer);
     processes.delete(root.pid);
+    const currentDescendant = processes.get(descendant.pid);
+    if (currentDescendant !== undefined)
+      processes.set(descendant.pid, { ...currentDescendant, parentPid: 1 });
     if (seed !== "stream-join-failure") {
       fakeStdout?.end();
       fakeStderr?.end();
@@ -2961,6 +3248,41 @@ const selectedContainerRuntimeForTest = (
         ? { ...selected, startIdentity: `${pid}:2` }
         : selected;
     },
+    reapAdoptedZombie: (pid, startIdentity, rootPid, deadline) => {
+      if (reapDeadline === undefined) reapDeadline = deadline;
+      else if (deadline !== reapDeadline)
+        return fail("testkit.headless.reconciliation.deadline");
+      if (seed === "adopted-zombie-reap-failure")
+        return fail("testkit.headless.observer.reap");
+      const selected = processes.get(pid);
+      if (
+        selected === undefined ||
+        selected.startIdentity !== startIdentity ||
+        selected.parentPid !== 1 ||
+        pid === rootPid
+      )
+        return fail("testkit.headless.observer.identity");
+      if (selected.state !== "Z")
+        return { pid, startIdentity, status: "not-ready" };
+      descendantReads += 1;
+      if (seed === "nested-adopted-zombie" && descendantReads === 1) {
+        const stopAt = performance.now() + 10;
+        while (performance.now() < stopAt) {
+          // Simulate preemption between two native reap attempts.
+        }
+      }
+      if (
+        seed === "adopted-zombie-state-substitution" &&
+        descendantReads === 1
+      ) {
+        processes.set(pid, { ...selected, state: "R" });
+        return fail("testkit.headless.observer.identity");
+      }
+      processes.delete(pid);
+      if (seed === "adopted-zombie-receipt-substitution")
+        return { pid, startIdentity: `${pid}:2`, status: "reaped" };
+      return { pid, startIdentity, status: "reaped" };
+    },
     sendSignal: (pid, signal) => {
       if (seed === "signal-failure")
         return fail("testkit.headless.observer.signal");
@@ -2974,6 +3296,15 @@ const selectedContainerRuntimeForTest = (
       if (seed === "signal-race" && signal === "SIGTERM") {
         processes.delete(pid);
         if (pid === root.pid) finish(null, "SIGTERM");
+        return;
+      }
+      if (pid === descendant.pid || pid === grandchild.pid) {
+        const selected = processes.get(pid);
+        if (selected === undefined) return;
+        processes.set(pid, { ...selected, state: "Z" });
+        for (const [candidatePid, candidate] of processes)
+          if (candidate.parentPid === pid)
+            processes.set(candidatePid, { ...candidate, parentPid: 1 });
         return;
       }
       processes.delete(pid);
@@ -3034,8 +3365,17 @@ const selectedContainerRuntimeForTest = (
                 });
           stdout.write(Buffer.from(output));
           finish(0, null);
-        } else if (seed === "descendant" || seed === "surviving-descendant") {
+        } else if (
+          seed === "descendant" ||
+          seed === "surviving-descendant" ||
+          seed === "adopted-zombie-reap-failure" ||
+          seed === "adopted-zombie-receipt-substitution" ||
+          seed === "adopted-zombie-state-substitution" ||
+          seed === "nested-adopted-zombie"
+        ) {
           processes.set(descendant.pid, descendant);
+          if (seed === "nested-adopted-zombie")
+            processes.set(grandchild.pid, grandchild);
           finish(0, null);
         } else if (seed === "clean" || seed === "fast-exit") finish(0, null);
         else if (seed === "output-limit")
@@ -3080,6 +3420,7 @@ export const executeSelectedContainerBackendForTest = async (
 
 type SelectedPtyTestSeed =
   | "active-terminal"
+  | "adopted-zombie"
   | "clean"
   | "close-failure"
   | "descriptor-closure"
@@ -3118,10 +3459,17 @@ type SelectedPtyTestSeed =
 
 // eslint-disable-next-line max-lines-per-function
 const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
-  const root: ProcessSnapshot = { pid: 42_001, startIdentity: "42001:1" };
+  const root: ProcessSnapshot = {
+    parentPid: 1,
+    pid: 42_001,
+    startIdentity: "42001:1",
+    state: "R",
+  };
   const descendant: ProcessSnapshot = {
+    parentPid: 1,
     pid: 42_002,
     startIdentity: "42002:1",
+    state: "R",
   };
   const processes = new Map<number, ProcessSnapshot>([[root.pid, root]]);
   let reads = 0;
@@ -3159,6 +3507,20 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         ? { ...value, startIdentity: "42001:2" }
         : value;
     },
+    reapAdoptedZombie: (pid, startIdentity, rootPid) => {
+      const selected = processes.get(pid);
+      if (
+        selected === undefined ||
+        selected.startIdentity !== startIdentity ||
+        selected.parentPid !== 1 ||
+        pid === rootPid
+      )
+        return fail("testkit.headless.observer.identity");
+      if (selected.state !== "Z")
+        return { pid, startIdentity, status: "not-ready" };
+      processes.delete(pid);
+      return { pid, startIdentity, status: "reaped" };
+    },
     sendSignal: (pid, signal) => {
       if (seed === "signal-failure")
         return fail("testkit.headless.observer.signal");
@@ -3169,6 +3531,10 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         signal === "SIGTERM"
       )
         return;
+      if (seed === "adopted-zombie" && pid === descendant.pid) {
+        processes.set(pid, { ...descendant, parentPid: 1, state: "Z" });
+        return;
+      }
       processes.delete(pid);
       if (pid === root.pid) {
         terminal = true;
@@ -3224,7 +3590,8 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       let chunkIndex = 0;
       let inputCalls = 0;
       queueMicrotask(() => {
-        if (seed === "residual") processes.set(descendant.pid, descendant);
+        if (seed === "residual" || seed === "adopted-zombie")
+          processes.set(descendant.pid, descendant);
         if (
           seed !== "timeout" &&
           seed !== "identity-substitution" &&
@@ -3237,6 +3604,11 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           safeSetTimeout(
             () => {
               processes.delete(root.pid);
+              if (seed === "adopted-zombie")
+                processes.set(descendant.pid, {
+                  ...descendant,
+                  parentPid: 1,
+                });
               terminal = true;
               if (seed === "late-tail") tailReadyAt = performance.now() + 30;
               close(
@@ -3339,8 +3711,16 @@ export const executeSelectedPtyTransportForTest = async (
     namespaceIdentity: "pid:[synthetic-selected-pty]",
   };
   const runtime = selectedPtyRuntimeForTest(seed);
+  const genericRuntime: SelectedContainerRuntime = {
+    assertNamespaceIdentity: runtime.assertNamespaceIdentity,
+    listProcesses: runtime.listProcesses,
+    readProcess: runtime.readProcess,
+    reapAdoptedZombie: runtime.reapAdoptedZombie,
+    sendSignal: runtime.sendSignal,
+    spawnProcess: () => fail("testkit.headless.kernel.spawn"),
+  };
   writeWeakMap(selectedBackendAuthorities, capability, {
-    arm: selectedContainerBackend(composition).arm,
+    arm: selectedContainerBackend(composition, genericRuntime).arm,
     armPty: (candidate, whenAborted) =>
       armSelectedPty(composition, runtime, candidate, whenAborted),
     kind: "selected-isolation-backend",
