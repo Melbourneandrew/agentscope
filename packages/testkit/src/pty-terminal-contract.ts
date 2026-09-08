@@ -9,6 +9,55 @@ import {
   type PtyTerminalSemanticSnapshot,
   validatePtyTerminalSemanticSnapshot,
 } from "./bounded-terminal-emulator.js";
+import type { HeadlessExecutionRequest } from "./headless-supervisor-contract.js";
+
+export type SelectedPtyExecutionRequest = Readonly<{
+  completion:
+    | Readonly<{ kind: "semantic-marker" }>
+    | Readonly<{
+        kind: "exact-output";
+        outputBytes: number;
+        outputSha256: string;
+      }>;
+  process: HeadlessExecutionRequest;
+  initialGeometry: PtyTerminalGeometry;
+  interpreter: Readonly<{ path: string; sha256: string }>;
+  scriptSha256: string;
+}>;
+
+export type SelectedPtyExecutionOutcome =
+  | "completed"
+  | "exited-nonzero"
+  | "aborted"
+  | "timeout"
+  | "output-limit"
+  | "transport-failed"
+  | "input-incomplete";
+
+export type SelectedPtyExecutionReceipt = Readonly<{
+  receiptVersion: 1;
+  runId: string;
+  requestFingerprint: string;
+  isTTY: true;
+  initialGeometry: PtyTerminalGeometry;
+  observedGeometry: PtyTerminalGeometry;
+  observedCanonicalMode: boolean;
+  eofByte: number;
+  eofByteWritten: boolean;
+  inputBytesWritten: number;
+  outcome: SelectedPtyExecutionOutcome;
+  outputBytes: number;
+  outputSha256: string;
+  finalSnapshot: PtyTerminalSemanticSnapshot;
+  exitCode: number | null;
+  signal: "SIGTERM" | "SIGKILL" | null;
+  cleanup: "clean" | "residual" | "uncertain";
+  residualProcessCount: number;
+  processJoined: boolean;
+  terminalInputJoined: boolean;
+  terminalOutputJoined: boolean;
+  terminalTransportClosed: boolean;
+}>;
 
 export type PtyModeApplicability =
   | Readonly<{

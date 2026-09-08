@@ -1,8 +1,18 @@
+import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { types } from "node:util";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { readFileSync, readlinkSync, readdirSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  readdirSync,
+} from "node:fs";
+import { resolve } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 
 import {
@@ -22,6 +32,15 @@ import {
   type HeadlessSupervisorCapability,
   type HeadlessSupervisorExecutionOptions,
 } from "../headless-supervisor.js";
+import {
+  BoundedTerminalEmulator,
+  defaultPtyTerminalEmulatorLimits,
+  validatePtyTerminalSemanticSnapshot,
+} from "../bounded-terminal-emulator.js";
+import type {
+  SelectedPtyExecutionReceipt,
+  SelectedPtyExecutionRequest,
+} from "../pty-terminal-contract.js";
 
 type BackendTerminalReceipt = Readonly<{
   cleanup: "clean" | "uncertain";
@@ -34,11 +53,19 @@ type ArmedBackendAuthority = Readonly<{
   expiryReceipt: Promise<BackendTerminalReceipt>;
   launch: () => Promise<BackendTerminalReceipt>;
 }>;
+type ArmedPtyBackendAuthority = Readonly<{
+  expiryReceipt: Promise<SelectedPtyExecutionReceipt>;
+  launch: () => Promise<SelectedPtyExecutionReceipt>;
+}>;
 type SelectedIsolationBackendAuthority = Readonly<{
   arm: (
     request: HeadlessExecutionRequest,
     whenAborted: Promise<void>,
   ) => Promise<ArmedBackendAuthority>;
+  armPty?: (
+    request: SelectedPtyExecutionRequest,
+    whenAborted: Promise<void>,
+  ) => Promise<ArmedPtyBackendAuthority>;
   kind: "selected-isolation-backend";
 }>;
 type ScriptedBackendAuthority = Readonly<{
@@ -83,6 +110,10 @@ const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const freeze = Object.freeze;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const performanceNow = performance.now;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const processHrtimeBigint = process.hrtime.bigint;
+// eslint-disable-next-line @typescript-eslint/unbound-method
+const processDlopen = process.dlopen;
 // eslint-disable-next-line @typescript-eslint/unbound-method
 const textEncoderEncode = TextEncoder.prototype.encode;
 // eslint-disable-next-line @typescript-eslint/unbound-method
@@ -317,6 +348,14 @@ const boundedInteger = (
   typeof value === "number" &&
   numberIsSafeInteger(value) &&
   value >= 1 &&
+  value <= maximumValue;
+const boundedNonnegativeInteger = (
+  value: unknown,
+  maximumValue: number,
+): value is number =>
+  typeof value === "number" &&
+  numberIsSafeInteger(value) &&
+  value >= 0 &&
   value <= maximumValue;
 const snapshotArguments = (
   value: unknown,
@@ -674,9 +713,26 @@ type ProcessSnapshot = Readonly<{
   startIdentity: string;
 }>;
 type ContainerComposition = Readonly<{
+  immutableCandidate?: ImmutableCandidateAuthority;
   maximumShutdownDeadlineMs: number;
   namespaceIdentity: string;
 }>;
+type ImmutableCandidateRecord = Readonly<{
+  authorityVersion: 1;
+  candidateBundleIdentity: string;
+  candidateInventorySha256: string;
+  candidateRoot: "/opt/agentscope/prepared";
+  imageConfigSha256: string;
+  imageId: string;
+  runId: string;
+  scenarioId: string;
+}>;
+type ImmutableCandidateAuthority = Readonly<{
+  assertFile: (descriptor: number, path: string) => void;
+  assertRuntime: () => void;
+}>;
+const immutableCandidateAuthorities = new WeakSet<object>();
+let immutableCandidateAuthorityCreated = false;
 type SelectedContainerRuntime = Readonly<{
   assertNamespaceIdentity: (expected: string) => void;
   listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
@@ -684,6 +740,10 @@ type SelectedContainerRuntime = Readonly<{
   sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   spawnProcess: (request: HeadlessExecutionRequest) => ChildProcess;
 }>;
+type ProcessAuthorityRuntime = Pick<
+  SelectedContainerRuntime,
+  "assertNamespaceIdentity" | "listProcesses" | "readProcess" | "sendSignal"
+>;
 
 const readProcessSnapshot = (pid: number): ProcessSnapshot | undefined => {
   try {
@@ -720,6 +780,270 @@ const assertNamespaceIdentity = (expected: string): void => {
     if (trustedErrorCode(error) !== undefined) throw error;
     return fail("testkit.headless.observer.read");
   }
+};
+
+const boundedProcFile = (path: string, maximumBytes = 256 * 1024): string => {
+  const value = readFileSync(path, "utf8");
+  if (value.length < 1 || value.length > maximumBytes)
+    return fail("testkit.pty.immutable-candidate");
+  return value;
+};
+
+const exactImmutableCandidateRecord = (
+  value: unknown,
+): ImmutableCandidateRecord => {
+  if (
+    !plainRecord(value) ||
+    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
+      "authorityVersion\0candidateBundleIdentity\0candidateInventorySha256\0candidateRoot\0imageConfigSha256\0imageId\0runId\0scenarioId" ||
+    ownData(value, "authorityVersion") !== 1 ||
+    !/^sha256-[a-f0-9]{64}$/u.test(
+      ownData(value, "candidateBundleIdentity") as string,
+    ) ||
+    !/^[a-f0-9]{64}$/u.test(
+      ownData(value, "candidateInventorySha256") as string,
+    ) ||
+    ownData(value, "candidateRoot") !== "/opt/agentscope/prepared" ||
+    !/^[a-f0-9]{64}$/u.test(ownData(value, "imageConfigSha256") as string) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(ownData(value, "imageId") as string) ||
+    !/^[a-f0-9]{16}$/u.test(ownData(value, "runId") as string) ||
+    typeof ownData(value, "scenarioId") !== "string" ||
+    !/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(
+      ownData(value, "scenarioId") as string,
+    )
+  )
+    return fail("testkit.pty.immutable-candidate");
+  return safeReflectApply(freeze, Object, [
+    { ...value },
+  ]) as ImmutableCandidateRecord;
+};
+
+const validatePrincipalFacts = (facts: {
+  uid: number | undefined;
+  euid: number | undefined;
+  gid: number | undefined;
+  egid: number | undefined;
+  groups: readonly number[] | undefined;
+  status: string;
+}): void => {
+  if (
+    facts.uid !== 1000 ||
+    facts.euid !== 1000 ||
+    facts.gid !== 1000 ||
+    facts.egid !== 1000 ||
+    facts.groups === undefined ||
+    facts.groups.length < 1 ||
+    facts.groups.some((group) => group !== 1000)
+  )
+    return fail("testkit.pty.immutable-candidate");
+  const field = (name: string): string => {
+    const values = facts.status
+      .split("\n")
+      .filter((line) => line.startsWith(`${name}:`));
+    if (values.length !== 1) return fail("testkit.pty.immutable-candidate");
+    return values[0]!.slice(name.length + 1).trim();
+  };
+  if (
+    field("Uid") !== "1000\t1000\t1000\t1000" ||
+    field("Gid") !== "1000\t1000\t1000\t1000" ||
+    field("CapEff") !== "0000000000000000" ||
+    field("CapPrm") !== "0000000000000000" ||
+    field("CapInh") !== "0000000000000000" ||
+    field("CapAmb") !== "0000000000000000" ||
+    field("CapBnd") !== "0000000000000000" ||
+    field("NoNewPrivs") !== "1"
+  )
+    return fail("testkit.pty.immutable-candidate");
+};
+
+const parseImmutableMountTable = (
+  mountinfo: string,
+): ReadonlyMap<number, ReadonlySet<string>> => {
+  const mountTable = new Map<number, ReadonlySet<string>>();
+  const lines = mountinfo.trimEnd().split("\n");
+  if (lines.length < 1 || lines.some((line) => line.length < 1))
+    return fail("testkit.pty.immutable-candidate");
+  for (const line of lines) {
+    const fields = line.split(" ");
+    const mountId = Number(fields[0]);
+    const separator = fields.indexOf("-");
+    if (
+      !numberIsSafeInteger(mountId) ||
+      mountId < 1 ||
+      separator < 6 ||
+      fields[5] === undefined
+    )
+      return fail("testkit.pty.immutable-candidate");
+    const options = new Set(fields[5].split(","));
+    if (mountTable.has(mountId) || options.has("rw") === options.has("ro"))
+      return fail("testkit.pty.immutable-candidate");
+    mountTable.set(mountId, options);
+  }
+  return mountTable;
+};
+
+const parseImmutableFdMountId = (source: string): number => {
+  const values = source
+    .split("\n")
+    .filter((line) => line.startsWith("mnt_id:"));
+  if (values.length !== 1) return fail("testkit.pty.immutable-candidate");
+  const value = Number(values[0]!.slice("mnt_id:".length).trim());
+  if (!numberIsSafeInteger(value) || value < 1)
+    return fail("testkit.pty.immutable-candidate");
+  return value;
+};
+
+const validateImmutableFileFacts = (facts: {
+  after: { dev: number | bigint; ino: number | bigint; size: number };
+  before: { dev: number | bigint; ino: number | bigint; size: number };
+  digest: string;
+  expectedDigest: string;
+  expectedPath: string;
+  isFile: boolean;
+  linkPath: string;
+  mountId: number;
+  mountTable: ReadonlyMap<number, ReadonlySet<string>>;
+}): void => {
+  const options = facts.mountTable.get(facts.mountId);
+  if (
+    !facts.isFile ||
+    facts.before.dev !== facts.after.dev ||
+    facts.before.ino !== facts.after.ino ||
+    facts.before.size !== facts.after.size ||
+    facts.before.size < 1 ||
+    facts.digest !== facts.expectedDigest ||
+    options === undefined ||
+    !options.has("ro") ||
+    options.has("rw") ||
+    facts.linkPath !== facts.expectedPath
+  )
+    return fail("testkit.pty.immutable-candidate");
+};
+
+const readPrincipalAuthority = (): Readonly<{
+  mountIdentity: string;
+  mountNamespace: string;
+  mountTable: ReadonlyMap<number, ReadonlySet<string>>;
+}> => {
+  const groups = process.getgroups?.();
+  const status = boundedProcFile("/proc/self/status", 64 * 1024);
+  validatePrincipalFacts({
+    uid: process.getuid?.(),
+    euid: process.geteuid?.(),
+    gid: process.getgid?.(),
+    egid: process.getegid?.(),
+    groups,
+    status,
+  });
+  const mountNamespace = readlinkSync("/proc/self/ns/mnt");
+  const mountinfo = boundedProcFile("/proc/self/mountinfo");
+  const mountTable = parseImmutableMountTable(mountinfo);
+  return {
+    mountIdentity: createHash("sha256").update(mountinfo).digest("hex"),
+    mountNamespace,
+    mountTable,
+  };
+};
+
+const fdMountId = (descriptor: number): number => {
+  const source = boundedProcFile(`/proc/self/fdinfo/${descriptor}`, 4 * 1024);
+  return parseImmutableFdMountId(source);
+};
+
+const createImmutableCandidateAuthority = (
+  candidate: unknown,
+): ImmutableCandidateAuthority => {
+  if (immutableCandidateAuthorityCreated)
+    return fail("testkit.pty.immutable-candidate");
+  immutableCandidateAuthorityCreated = true;
+  exactImmutableCandidateRecord(candidate);
+  const initial = readPrincipalAuthority();
+  const assertRuntime = (): void => {
+    const current = readPrincipalAuthority();
+    if (
+      current.mountNamespace !== initial.mountNamespace ||
+      current.mountIdentity !== initial.mountIdentity
+    )
+      return fail("testkit.pty.immutable-candidate");
+  };
+  const expectedFileDigests = new Map<string, string>();
+  const authority = safeReflectApply(freeze, Object, [
+    {
+      assertFile: (descriptor: number, path: string): void => {
+        assertRuntime();
+        const before = fstatSync(descriptor);
+        if (before.size < 1 || before.size > 256 * 1024 * 1024)
+          return fail("testkit.pty.immutable-candidate");
+        const digest = createHash("sha256")
+          .update(readFileSync(`/proc/self/fd/${descriptor}`))
+          .digest("hex");
+        const after = fstatSync(descriptor);
+        const mountId = fdMountId(descriptor);
+        const expectedDigest = expectedFileDigests.get(path) ?? digest;
+        validateImmutableFileFacts({
+          after,
+          before,
+          digest,
+          expectedDigest,
+          expectedPath: path,
+          isFile: before.isFile() && after.isFile(),
+          linkPath: readlinkSync(`/proc/self/fd/${descriptor}`),
+          mountId,
+          mountTable: initial.mountTable,
+        });
+        expectedFileDigests.set(path, expectedDigest);
+      },
+      assertRuntime,
+    },
+  ]) as ImmutableCandidateAuthority;
+  const pending = [resolve(import.meta.dirname, "..")];
+  let entries = 0;
+  let bytes = 0;
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    if (directory === undefined) break;
+    const children = readdirSync(directory, { withFileTypes: true });
+    for (const child of children) {
+      entries += 1;
+      if (entries > 1_024 || child.isSymbolicLink())
+        return fail("testkit.pty.immutable-candidate");
+      const path = resolve(directory, child.name);
+      if (child.isDirectory()) {
+        pending.push(path);
+        continue;
+      }
+      if (!child.isFile()) return fail("testkit.pty.immutable-candidate");
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY |
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK |
+          linuxCloseOnExec,
+      );
+      try {
+        const before = fstatSync(descriptor);
+        bytes += before.size;
+        if (before.size < 1 || bytes > 64 * 1024 * 1024)
+          return fail("testkit.pty.immutable-candidate");
+        const digest = createHash("sha256")
+          .update(readFileSync(`/proc/self/fd/${descriptor}`))
+          .digest("hex");
+        const after = fstatSync(descriptor);
+        if (
+          before.dev !== after.dev ||
+          before.ino !== after.ino ||
+          before.size !== after.size
+        )
+          return fail("testkit.pty.immutable-candidate");
+        expectedFileDigests.set(path, digest);
+        authority.assertFile(descriptor, path);
+      } finally {
+        closeSync(descriptor);
+      }
+    }
+  }
+  immutableCandidateAuthorities.add(authority);
+  return authority;
 };
 
 const listContainerProcesses = (
@@ -808,7 +1132,7 @@ const signalExactProcess = (
   signal: "SIGTERM" | "SIGKILL",
   ledger: HeadlessObservedSignal[],
   namespaceIdentity: string,
-  runtime: SelectedContainerRuntime,
+  runtime: ProcessAuthorityRuntime,
 ): boolean => {
   runtime.assertNamespaceIdentity(namespaceIdentity);
   const current = runtime.readProcess(identity.pid);
@@ -849,6 +1173,903 @@ const productionContainerRuntime: SelectedContainerRuntime = {
     }),
 };
 
+type PtyExit = Readonly<{ code: number; signal: number }>;
+type PtyTerminalHandle = object;
+type PtyTerminalObservation = Readonly<{
+  canonical: boolean;
+  columns: number;
+  eofByte: number;
+  isTTY: boolean;
+  rows: number;
+}>;
+type PtyReadObservation =
+  | Readonly<{ status: "data"; bytes: Buffer }>
+  | Readonly<{ status: "eof" | "eio" | "would-block" }>;
+type PtyWriteObservation = Readonly<{
+  status: "complete" | "partial" | "would-block";
+  bytesWritten: number;
+}>;
+type PtyProcess = Readonly<{
+  pid: number;
+  closed: Promise<PtyExit>;
+  close: () => void;
+  eof: () => Readonly<{
+    canonical: true;
+    eofByte: number;
+    bytesWritten: 1;
+    status: "eof-byte-written";
+  }>;
+  inspect: () => PtyTerminalObservation;
+  read: (maximumBytes: number) => PtyReadObservation;
+  resize: (columns: number, rows: number) => void;
+  write: (bytes: Buffer) => PtyWriteObservation;
+}>;
+type PtyRuntime = Readonly<{
+  assertImmutableCandidateFile: (descriptor: number, path: string) => void;
+  assertImmutableCandidateRuntime: () => void;
+  assertNamespaceIdentity: (expected: string) => void;
+  listProcesses: (namespaceIdentity: string) => readonly ProcessSnapshot[];
+  readProcess: (pid: number) => ProcessSnapshot | undefined;
+  sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+  spawnPty: (
+    request: HeadlessExecutionRequest,
+    geometry: Readonly<{ columns: number; rows: number }>,
+    interpreter: Readonly<{ path: string; sha256: string }>,
+    scriptSha256: string,
+  ) => PtyProcess;
+}>;
+type NativePtyBinding = Readonly<{
+  // Mirrors the fixed upstream N-API entry point; callers cannot vary it.
+  // eslint-disable-next-line max-params
+  fork: (
+    interpreterFd: number,
+    scriptFd: number,
+    arguments_: readonly string[],
+    environment: readonly string[],
+    cwd: string,
+    columns: number,
+    rows: number,
+    uid: number,
+    gid: number,
+    utf8: boolean,
+    helperPath: string,
+    monotonicDeadlineNs: bigint,
+    onExit: (code: number, signal: number) => void,
+  ) => Readonly<{ handle: PtyTerminalHandle; pid: number }>;
+  close: (handle: PtyTerminalHandle) => void;
+  eof: (handle: PtyTerminalHandle) => Readonly<{
+    canonical: true;
+    eofByte: number;
+    bytesWritten: 1;
+    status: "eof-byte-written";
+  }>;
+  inspect: (handle: PtyTerminalHandle) => PtyTerminalObservation;
+  read: (handle: PtyTerminalHandle, maximumBytes: number) => PtyReadObservation;
+  resize: (
+    handle: PtyTerminalHandle,
+    columns: number,
+    rows: number,
+    xPixel: number,
+    yPixel: number,
+  ) => void;
+  write: (handle: PtyTerminalHandle, bytes: Buffer) => PtyWriteObservation;
+}>;
+const ptyRuntimeDigest =
+  "56492947271ec88ae2191c4e1f2ad3623caaab0175f198f43710c441a7b19ca6";
+// Linux O_CLOEXEC is not exposed by every supported @types/node version.
+const linuxCloseOnExec = 0x8_0000;
+const assertAuthenticatedRegularFileDescriptor = (
+  descriptor: number,
+  path: string,
+  expected: string,
+  maximumBytes: number,
+  assertImmutable?: (descriptor: number, path: string) => void,
+): void => {
+  const before = fstatSync(descriptor);
+  if (!before.isFile() || before.size < 1 || before.size > maximumBytes)
+    return fail("testkit.pty.runtime.identity");
+  const bytes_ = readFileSync(`/proc/self/fd/${descriptor}`);
+  const after = fstatSync(descriptor);
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    createHash("sha256").update(bytes_).digest("hex") !== expected
+  )
+    return fail("testkit.pty.runtime.identity");
+  assertImmutable?.(descriptor, path);
+};
+const openAuthenticatedRegularFile = (
+  path: string,
+  expected: string,
+  maximumBytes: number,
+  assertImmutable?: (descriptor: number, path: string) => void,
+): number => {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK |
+      linuxCloseOnExec,
+  );
+  try {
+    assertAuthenticatedRegularFileDescriptor(
+      descriptor,
+      path,
+      expected,
+      maximumBytes,
+      assertImmutable,
+    );
+    return descriptor;
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
+};
+let nativePtyBinding: NativePtyBinding | undefined;
+const loadNativePtyBinding = (
+  authority: ImmutableCandidateAuthority,
+): NativePtyBinding => {
+  if (nativePtyBinding !== undefined) return nativePtyBinding;
+  const path = resolve(
+    import.meta.dirname,
+    "../pty-runtime/node127-linux-x64-musl/pty.node",
+  );
+  const descriptor = openAuthenticatedRegularFile(
+    path,
+    ptyRuntimeDigest,
+    1024 * 1024,
+    authority.assertFile,
+  );
+  let candidate: unknown;
+  try {
+    authority.assertRuntime();
+    assertAuthenticatedRegularFileDescriptor(
+      descriptor,
+      path,
+      ptyRuntimeDigest,
+      1024 * 1024,
+      authority.assertFile,
+    );
+    const moduleAuthority: { exports: unknown } = { exports: {} };
+    safeReflectApply(processDlopen, process, [
+      moduleAuthority,
+      `/proc/self/fd/${descriptor}`,
+    ]);
+    candidate = moduleAuthority.exports;
+  } finally {
+    closeSync(descriptor);
+  }
+  if (
+    !plainRecord(candidate) ||
+    typeof ownData(candidate, "fork") !== "function" ||
+    typeof ownData(candidate, "resize") !== "function" ||
+    typeof ownData(candidate, "inspect") !== "function" ||
+    typeof ownData(candidate, "read") !== "function" ||
+    typeof ownData(candidate, "write") !== "function" ||
+    typeof ownData(candidate, "eof") !== "function" ||
+    typeof ownData(candidate, "close") !== "function"
+  )
+    return fail("testkit.pty.runtime.identity");
+  nativePtyBinding = candidate as NativePtyBinding;
+  return nativePtyBinding;
+};
+const productionPtyRuntime = (
+  authority: ImmutableCandidateAuthority,
+): PtyRuntime => ({
+  assertImmutableCandidateFile: authority.assertFile,
+  assertImmutableCandidateRuntime: authority.assertRuntime,
+  assertNamespaceIdentity,
+  listProcesses: listContainerProcesses,
+  readProcess: readProcessSnapshot,
+  sendSignal: (pid, signal) => process.kill(pid, signal),
+  spawnPty: (request, geometry, interpreter, scriptSha256) => {
+    authority.assertRuntime();
+    const binding = loadNativePtyBinding(authority);
+    let resolveClose!: (exit: PtyExit) => void;
+    const closed = observeAtCreation(
+      new SafePromise<PtyExit>((resolve_) => {
+        resolveClose = resolve_;
+      }),
+    );
+    const environment = safeReflectApply(objectKeys, Object, [
+      request.environment,
+    ]).map((key) => `${key}=${request.environment[key]}`);
+    const interpreterFd = openAuthenticatedRegularFile(
+      interpreter.path,
+      interpreter.sha256,
+      256 * 1024 * 1024,
+      authority.assertFile,
+    );
+    let scriptFd: number | undefined;
+    let result: Readonly<{ handle: PtyTerminalHandle; pid: number }>;
+    try {
+      scriptFd = openAuthenticatedRegularFile(
+        request.executable,
+        scriptSha256,
+        16 * 1024 * 1024,
+        authority.assertFile,
+      );
+      const remainingMilliseconds = maximum(
+        0,
+        request.monotonicShutdownDeadlineMs -
+          safeReflectApply(performanceNow, performance, []),
+      );
+      authority.assertRuntime();
+      assertAuthenticatedRegularFileDescriptor(
+        interpreterFd,
+        interpreter.path,
+        interpreter.sha256,
+        256 * 1024 * 1024,
+        authority.assertFile,
+      );
+      assertAuthenticatedRegularFileDescriptor(
+        scriptFd,
+        request.executable,
+        scriptSha256,
+        16 * 1024 * 1024,
+        authority.assertFile,
+      );
+      result = binding.fork(
+        interpreterFd,
+        scriptFd,
+        request.arguments,
+        environment,
+        request.cwd,
+        geometry.columns,
+        geometry.rows,
+        -1,
+        -1,
+        true,
+        "",
+        safeReflectApply(processHrtimeBigint, process.hrtime, []) +
+          BigInt(Math.floor(remainingMilliseconds * 1e6)),
+        (code, signal) => {
+          resolveClose({ code, signal });
+        },
+      );
+    } finally {
+      if (scriptFd !== undefined) closeSync(scriptFd);
+      closeSync(interpreterFd);
+    }
+    if (
+      !numberIsSafeInteger(result.pid) ||
+      result.pid < 2 ||
+      typeof result.handle !== "object" ||
+      result.handle === null
+    ) {
+      if (typeof result.handle === "object" && result.handle !== null)
+        try {
+          binding.close(result.handle);
+        } catch {
+          // The caller receives uncertainty regardless of close behavior.
+        }
+      return fail("testkit.headless.reconciliation.deadline");
+    }
+    return {
+      pid: result.pid,
+      closed,
+      close: () => {
+        binding.close(result.handle);
+      },
+      eof: () => binding.eof(result.handle),
+      inspect: () => binding.inspect(result.handle),
+      read: (maximumBytes) => binding.read(result.handle, maximumBytes),
+      resize: (columns, rows) => {
+        binding.resize(result.handle, columns, rows, 0, 0);
+      },
+      write: (bytes) => binding.write(result.handle, bytes),
+    };
+  },
+});
+
+// The closed request schema intentionally validates every nested authority field.
+const snapshotPtyRequest = (
+  candidate: SelectedPtyExecutionRequest,
+  // eslint-disable-next-line complexity
+): SelectedPtyExecutionRequest => {
+  if (!plainRecord(candidate)) return fail("testkit.pty.request");
+  const keys = safeReflectApply(objectKeys, Object, [candidate]).sort();
+  if (
+    keys.length !== 5 ||
+    keys[0] !== "completion" ||
+    keys[1] !== "initialGeometry" ||
+    keys[2] !== "interpreter" ||
+    keys[3] !== "process" ||
+    keys[4] !== "scriptSha256"
+  )
+    return fail("testkit.pty.request");
+  const process_ = snapshotSelectedRequest(
+    ownData(candidate, "process") as HeadlessExecutionRequest,
+  );
+  const geometry = ownData(candidate, "initialGeometry");
+  if (!plainRecord(geometry)) return fail("testkit.pty.geometry");
+  const geometryKeys = safeReflectApply(objectKeys, Object, [geometry]).sort();
+  const columns = ownData(geometry, "columns");
+  const rows = ownData(geometry, "rows");
+  if (
+    geometryKeys.length !== 2 ||
+    geometryKeys[0] !== "columns" ||
+    geometryKeys[1] !== "rows" ||
+    !boundedInteger(columns, 512) ||
+    !boundedInteger(rows, 512) ||
+    columns * rows > 65_536
+  )
+    return fail("testkit.pty.geometry");
+  const interpreter = ownData(candidate, "interpreter");
+  const completion = ownData(candidate, "completion");
+  const scriptSha256 = ownData(candidate, "scriptSha256");
+  if (!plainRecord(interpreter)) return fail("testkit.pty.runtime.identity");
+  const interpreterKeys = safeReflectApply(objectKeys, Object, [
+    interpreter,
+  ]).sort();
+  const interpreterPath = ownData(interpreter, "path");
+  const interpreterSha256 = ownData(interpreter, "sha256");
+  if (
+    interpreterKeys.length !== 2 ||
+    interpreterKeys[0] !== "path" ||
+    interpreterKeys[1] !== "sha256" ||
+    typeof interpreterPath !== "string" ||
+    !interpreterPath.startsWith("/") ||
+    typeof interpreterSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(interpreterSha256) ||
+    typeof scriptSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(scriptSha256)
+  )
+    return fail("testkit.pty.runtime.identity");
+  if (!plainRecord(completion)) return fail("testkit.pty.request");
+  const completionKeys = safeReflectApply(objectKeys, Object, [
+    completion,
+  ]).sort();
+  const completionKind = ownData(completion, "kind");
+  if (
+    (completionKind === "semantic-marker" &&
+      completionKeys.join("\0") !== "kind") ||
+    (completionKind === "exact-output" &&
+      (completionKeys.join("\0") !== "kind\0outputBytes\0outputSha256" ||
+        !boundedInteger(ownData(completion, "outputBytes"), 4_096) ||
+        ownData(completion, "outputBytes") === 0 ||
+        !/^[a-f0-9]{64}$/u.test(
+          ownData(completion, "outputSha256") as string,
+        ))) ||
+    (completionKind !== "semantic-marker" && completionKind !== "exact-output")
+  )
+    return fail("testkit.pty.request");
+  return safeReflectApply(freeze, Object, [
+    {
+      process: process_,
+      completion: safeReflectApply(freeze, Object, [{ ...completion }]),
+      initialGeometry: safeReflectApply(freeze, Object, [{ columns, rows }]),
+      interpreter: safeReflectApply(freeze, Object, [
+        { path: interpreterPath, sha256: interpreterSha256 },
+      ]),
+      scriptSha256,
+    },
+  ]) as SelectedPtyExecutionRequest;
+};
+
+const ptySignal = (signal: number): "SIGTERM" | "SIGKILL" | null =>
+  signal === 15 ? "SIGTERM" : signal === 9 ? "SIGKILL" : null;
+
+const exactPtyExit = (value: PtyExit): PtyExit => {
+  if (
+    !plainRecord(value) ||
+    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
+      "code\0signal" ||
+    !boundedNonnegativeInteger(ownData(value, "signal"), 64) ||
+    !(
+      boundedNonnegativeInteger(ownData(value, "code"), 255) &&
+      (ownData(value, "signal") === 0 || ownData(value, "code") === 0)
+    )
+  )
+    return fail("testkit.pty.transport");
+  return value;
+};
+
+const exactPtyObservation = (
+  value: PtyTerminalObservation,
+  geometry: Readonly<{ columns: number; rows: number }>,
+): PtyTerminalObservation => {
+  if (
+    !plainRecord(value) ||
+    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
+      "canonical\0columns\0eofByte\0isTTY\0rows" ||
+    ownData(value, "isTTY") !== true ||
+    ownData(value, "canonical") !== true ||
+    ownData(value, "columns") !== geometry.columns ||
+    ownData(value, "rows") !== geometry.rows ||
+    !boundedNonnegativeInteger(ownData(value, "eofByte"), 255)
+  )
+    return fail("testkit.pty.geometry");
+  return value;
+};
+
+const exactPtyRead = (value: PtyReadObservation): PtyReadObservation => {
+  if (!plainRecord(value)) return fail("testkit.pty.transport");
+  const status = ownData(value, "status");
+  const keys = safeReflectApply(objectKeys, Object, [value]).sort();
+  if (status === "data") {
+    const bytes = ownData(value, "bytes");
+    if (
+      keys.join("\0") !== "bytes\0status" ||
+      !Buffer.isBuffer(bytes) ||
+      bytes.length < 1 ||
+      bytes.length > 4_096
+    )
+      return fail("testkit.pty.transport");
+  } else if (
+    (status !== "eof" && status !== "eio" && status !== "would-block") ||
+    keys.length !== 1 ||
+    keys[0] !== "status"
+  )
+    return fail("testkit.pty.transport");
+  return value;
+};
+
+const exactPtyWrite = (
+  value: PtyWriteObservation,
+  maximumBytes: number,
+): PtyWriteObservation => {
+  if (
+    !plainRecord(value) ||
+    safeReflectApply(objectKeys, Object, [value]).sort().join("\0") !==
+      "bytesWritten\0status" ||
+    (ownData(value, "status") !== "complete" &&
+      ownData(value, "status") !== "partial" &&
+      ownData(value, "status") !== "would-block") ||
+    !boundedNonnegativeInteger(ownData(value, "bytesWritten"), maximumBytes) ||
+    (ownData(value, "status") === "would-block" &&
+      ownData(value, "bytesWritten") !== 0) ||
+    (ownData(value, "status") === "complete" &&
+      ownData(value, "bytesWritten") !== maximumBytes) ||
+    (ownData(value, "status") === "partial" &&
+      (ownData(value, "bytesWritten") === 0 ||
+        ownData(value, "bytesWritten") === maximumBytes))
+  )
+    return fail("testkit.pty.transport");
+  return value;
+};
+
+const armSelectedPty = (
+  composition: ContainerComposition,
+  runtime: PtyRuntime,
+  request: SelectedPtyExecutionRequest,
+  whenAborted: Promise<void>,
+  // The lifecycle deliberately keeps launch, transport and teardown together.
+  // eslint-disable-next-line max-lines-per-function
+): Promise<ArmedPtyBackendAuthority> => {
+  const processRequest = request.process;
+  if (
+    processRequest.monotonicShutdownDeadlineMs >
+      composition.maximumShutdownDeadlineMs ||
+    safeReflectApply(performanceNow, performance, []) >=
+      processRequest.monotonicStartupDeadlineMs
+  )
+    return fail("testkit.headless.startup.deadline");
+  let resolveExpiry!: (receipt: SelectedPtyExecutionReceipt) => void;
+  const expiryReceipt = observeAtCreation(
+    new SafePromise<SelectedPtyExecutionReceipt>((resolve_) => {
+      resolveExpiry = resolve_;
+    }),
+  );
+  let launched = false;
+  // One selected lifecycle owns the PTY, process set, deadlines and teardown.
+  // eslint-disable-next-line complexity,max-lines-per-function
+  const launch = async (): Promise<SelectedPtyExecutionReceipt> => {
+    if (launched) return fail("testkit.headless.backend.replay");
+    launched = true;
+    runtime.assertImmutableCandidateRuntime();
+    runtime.assertNamespaceIdentity(composition.namespaceIdentity);
+    if (
+      safeReflectApply(performanceNow, performance, []) >=
+      processRequest.monotonicStartupDeadlineMs
+    )
+      return fail("testkit.headless.startup.deadline");
+    runtime.assertImmutableCandidateRuntime();
+    const child = runtime.spawnPty(
+      processRequest,
+      request.initialGeometry,
+      request.interpreter,
+      request.scriptSha256,
+    );
+    let primaryFailure: string | undefined;
+    if (
+      safeReflectApply(performanceNow, performance, []) >=
+      processRequest.monotonicStartupDeadlineMs
+    )
+      primaryFailure = "testkit.headless.startup.deadline";
+    let terminalObservation: PtyTerminalObservation = {
+      canonical: false,
+      columns: request.initialGeometry.columns,
+      eofByte: 0,
+      isTTY: false,
+      rows: request.initialGeometry.rows,
+    };
+    try {
+      if (primaryFailure === undefined) {
+        child.resize(
+          request.initialGeometry.columns,
+          request.initialGeometry.rows,
+        );
+        terminalObservation = exactPtyObservation(
+          child.inspect(),
+          request.initialGeometry,
+        );
+      }
+    } catch (error) {
+      primaryFailure = trustedErrorCode(error) ?? "testkit.pty.transport";
+    }
+    let root: ProcessSnapshot | undefined;
+    try {
+      root = runtime.readProcess(child.pid);
+      if (root === undefined)
+        primaryFailure ??= "testkit.headless.observer.root";
+    } catch (error) {
+      primaryFailure ??=
+        trustedErrorCode(error) ?? "testkit.headless.observer.read";
+    }
+    const observed = new Map<string, ProcessSnapshot>();
+    if (root !== undefined) observed.set(root.startIdentity, root);
+    let authorityFailure: string | undefined;
+    const currentProcessSet = (): readonly ProcessSnapshot[] => {
+      if (authorityFailure !== undefined) return [];
+      try {
+        const current = runtime.listProcesses(composition.namespaceIdentity);
+        for (const identity of current)
+          if (
+            root !== undefined &&
+            identity.pid === root.pid &&
+            identity.startIdentity !== root.startIdentity
+          )
+            return fail("testkit.headless.observer.identity");
+        return current;
+      } catch (error) {
+        authorityFailure =
+          trustedErrorCode(error) ?? "testkit.headless.observer.read";
+        return [];
+      }
+    };
+    const failAfterHandleSettlement = async (): Promise<never> => {
+      try {
+        child.close();
+      } catch {
+        return fail("testkit.headless.reconciliation.deadline");
+      }
+      await boundedInvoke(
+        () => child.closed,
+        processRequest.monotonicShutdownDeadlineMs,
+        "testkit.headless.reconciliation.deadline",
+      );
+      return fail("testkit.headless.reconciliation.deadline");
+    };
+    const signals: HeadlessObservedSignal[] = [];
+    const chunks: Buffer[] = [];
+    let outputBytes = 0;
+    const outputLimitBytes = minimum(
+      processRequest.stdoutLimitBytes,
+      processRequest.stderrLimitBytes,
+    );
+    let outputLimited = false;
+    let transportError = false;
+    let inputOffset = 0;
+    let eofAttempted = false;
+    let eofByteWritten = false;
+    let outputTerminal = false;
+    let transportClosed: boolean;
+    let aborted = false;
+    const terminal = new BoundedTerminalEmulator(request.initialGeometry, {
+      ...defaultPtyTerminalEmulatorLimits,
+      maximumOutputBytes: outputLimitBytes,
+    });
+    const input = safeBufferFrom(processRequest.stdin);
+    const pumpTransport = (allowInput: boolean): void => {
+      try {
+        if (
+          allowInput &&
+          primaryFailure === undefined &&
+          !eofByteWritten &&
+          inputOffset < input.length
+        ) {
+          const pending = input.subarray(inputOffset);
+          const written = exactPtyWrite(child.write(pending), pending.length);
+          inputOffset += written.bytesWritten;
+        }
+        if (
+          allowInput &&
+          primaryFailure === undefined &&
+          !eofAttempted &&
+          inputOffset === input.length
+        ) {
+          eofAttempted = true;
+          const eof = child.eof();
+          if (
+            !plainRecord(eof) ||
+            safeReflectApply(objectKeys, Object, [eof]).sort().join("\0") !==
+              "bytesWritten\0canonical\0eofByte\0status" ||
+            eof.status !== "eof-byte-written" ||
+            eof.canonical !== true ||
+            eof.bytesWritten !== 1 ||
+            eof.eofByte !== terminalObservation.eofByte
+          )
+            return fail("testkit.pty.transport");
+          eofByteWritten = true;
+        }
+        for (let index = 0; index < 64 && !outputTerminal; index += 1) {
+          const observation = exactPtyRead(child.read(4_096));
+          if (observation.status === "would-block") break;
+          if (observation.status === "eof" || observation.status === "eio") {
+            outputTerminal = true;
+            break;
+          }
+          if (observation.status !== "data")
+            return fail("testkit.pty.transport");
+          const available = maximum(0, outputLimitBytes - outputBytes);
+          const captured = safeBufferFrom(
+            observation.bytes.subarray(
+              0,
+              minimum(available, observation.bytes.length),
+            ),
+          );
+          if (captured.length > 0) {
+            outputBytes += captured.length;
+            chunks.push(captured);
+            terminal.write(new SafeUint8Array(captured));
+          }
+          if (observation.bytes.length > captured.length) {
+            outputLimited = true;
+            try {
+              terminal.write(
+                new SafeUint8Array(
+                  observation.bytes.subarray(
+                    captured.length,
+                    captured.length + 1,
+                  ),
+                ),
+              );
+            } catch {
+              // The canonical emulator records the output-limit state first.
+            }
+            break;
+          }
+        }
+      } catch {
+        transportError = true;
+      }
+    };
+    void safeReflectApply(promiseThen, whenAborted, [
+      () => {
+        aborted = true;
+      },
+    ]);
+    let exit: PtyExit | undefined;
+    let trigger: "closed" | "failure" | "timeout" | "aborted" | undefined =
+      primaryFailure === undefined ? undefined : "failure";
+    while (trigger === undefined) {
+      for (const process_ of currentProcessSet())
+        observed.set(process_.startIdentity, process_);
+      if (authorityFailure !== undefined) trigger = "failure";
+      else if (aborted) trigger = "aborted";
+      else if (
+        safeReflectApply(performanceNow, performance, []) >=
+        processRequest.monotonicExecutionDeadlineMs
+      )
+        trigger = "timeout";
+      if (trigger === undefined) pumpTransport(true);
+      if (transportError || outputLimited) trigger = "failure";
+      if (trigger !== undefined) break;
+      const closed = await SafePromise.race([
+        terminalOf(child.closed),
+        delay(containerPollMilliseconds).then(() => undefined),
+      ]);
+      if (closed !== undefined) {
+        if (!closed.ok) {
+          primaryFailure ??= "testkit.headless.kernel.spawn";
+          trigger = "failure";
+        } else
+          try {
+            exit = exactPtyExit(closed.value);
+            trigger = "closed";
+          } catch (error) {
+            primaryFailure ??=
+              trustedErrorCode(error) ?? "testkit.pty.transport";
+            exit = { code: 0, signal: 15 };
+            trigger = "failure";
+          }
+      } else if (aborted) trigger = "aborted";
+      else if (
+        safeReflectApply(performanceNow, performance, []) >=
+        processRequest.monotonicExecutionDeadlineMs
+      )
+        trigger = "timeout";
+    }
+    const termTargets = currentProcessSet().filter((identity) => {
+      try {
+        return runtime.readProcess(identity.pid) !== undefined;
+      } catch (error) {
+        authorityFailure =
+          trustedErrorCode(error) ?? "testkit.headless.observer.read";
+        return false;
+      }
+    });
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    if (
+      trigger !== "closed" ||
+      termTargets.some(({ pid }) => pid !== child.pid)
+    )
+      for (const identity of termTargets)
+        try {
+          signalExactProcess(
+            identity,
+            "SIGTERM",
+            signals,
+            composition.namespaceIdentity,
+            runtime,
+          );
+        } catch (error) {
+          authorityFailure =
+            trustedErrorCode(error) ?? "testkit.headless.observer.signal";
+          break;
+        }
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    const graceDeadline = minimum(
+      processRequest.monotonicShutdownDeadlineMs -
+        containerPollMilliseconds * 2,
+      safeReflectApply(performanceNow, performance, []) +
+        processRequest.terminationGraceMs,
+    );
+    while (
+      safeReflectApply(performanceNow, performance, []) < graceDeadline &&
+      currentProcessSet().length > 0
+    ) {
+      pumpTransport(false);
+      await delay(containerPollMilliseconds);
+    }
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    for (const identity of currentProcessSet())
+      try {
+        signalExactProcess(
+          identity,
+          "SIGKILL",
+          signals,
+          composition.namespaceIdentity,
+          runtime,
+        );
+      } catch (error) {
+        authorityFailure =
+          trustedErrorCode(error) ?? "testkit.headless.observer.signal";
+        break;
+      }
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    while (
+      safeReflectApply(performanceNow, performance, []) <
+        processRequest.monotonicShutdownDeadlineMs -
+          containerPollMilliseconds * 2 &&
+      currentProcessSet().length > 0
+    ) {
+      pumpTransport(false);
+      await delay(containerPollMilliseconds);
+    }
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    const residual = currentProcessSet();
+    if (authorityFailure !== undefined) return failAfterHandleSettlement();
+    if (residual.length > 0) {
+      try {
+        child.close();
+      } catch {
+        // The terminal classification remains reconciliation uncertainty.
+      }
+      return fail("testkit.headless.reconciliation.deadline");
+    }
+    if (exit === undefined)
+      exit = exactPtyExit(
+        await boundedInvoke(
+          () => child.closed,
+          processRequest.monotonicShutdownDeadlineMs,
+          "testkit.headless.reconciliation.deadline",
+        ),
+      );
+    while (
+      !outputTerminal &&
+      safeReflectApply(performanceNow, performance, []) <
+        processRequest.monotonicShutdownDeadlineMs -
+          containerPollMilliseconds * 2
+    ) {
+      pumpTransport(false);
+      if (!outputTerminal) await delay(containerPollMilliseconds);
+    }
+    try {
+      child.close();
+      transportClosed = true;
+    } catch {
+      transportClosed = false;
+    }
+    if (!outputTerminal || !transportClosed)
+      return fail("testkit.headless.reconciliation.deadline");
+    if (primaryFailure !== undefined) return fail(primaryFailure);
+    if (exit.signal !== 0 && exit.signal !== 9 && exit.signal !== 15)
+      return fail("testkit.pty.transport");
+    const inputJoined = inputOffset === input.length && eofByteWritten;
+    const clean = residual.length === 0 && outputTerminal && transportClosed;
+    const output = safeBufferConcat(chunks, outputBytes);
+    const outputSha256 = createHash("sha256").update(output).digest("hex");
+    const finalSnapshot = terminal.end();
+    const exactOutputCompleted =
+      request.completion.kind === "exact-output" &&
+      request.completion.outputBytes === outputBytes &&
+      request.completion.outputSha256 === outputSha256;
+    if (
+      !outputLimited &&
+      (finalSnapshot.semanticState === "credential-prompt" ||
+        finalSnapshot.semanticState === "malformed-control" ||
+        ((trigger === "closed" || trigger === undefined) &&
+          finalSnapshot.semanticState !== "completed" &&
+          !exactOutputCompleted))
+    )
+      return fail("testkit.pty.transport");
+    const outcome =
+      trigger === "aborted"
+        ? "aborted"
+        : trigger === "timeout"
+          ? "timeout"
+          : outputLimited
+            ? "output-limit"
+            : transportError
+              ? "transport-failed"
+              : !inputJoined
+                ? "input-incomplete"
+                : exit.code === 0
+                  ? "completed"
+                  : "exited-nonzero";
+    const receipt: SelectedPtyExecutionReceipt = safeReflectApply(
+      freeze,
+      Object,
+      [
+        {
+          receiptVersion: 1,
+          runId: processRequest.runId,
+          requestFingerprint: processRequest.requestFingerprint,
+          isTTY: true,
+          initialGeometry: request.initialGeometry,
+          observedGeometry: {
+            columns: terminalObservation.columns,
+            rows: terminalObservation.rows,
+          },
+          observedCanonicalMode: terminalObservation.canonical,
+          eofByte: terminalObservation.eofByte,
+          eofByteWritten,
+          inputBytesWritten: inputOffset,
+          outcome,
+          outputBytes,
+          outputSha256,
+          finalSnapshot,
+          exitCode:
+            outcome === "completed" || outcome === "exited-nonzero"
+              ? exit.code
+              : null,
+          signal: ptySignal(exit.signal),
+          cleanup: clean
+            ? "clean"
+            : residual.length > 0
+              ? "residual"
+              : "uncertain",
+          residualProcessCount: residual.length,
+          processJoined: residual.length === 0,
+          terminalInputJoined: inputJoined,
+          terminalOutputJoined: outputTerminal,
+          terminalTransportClosed: transportClosed,
+        },
+      ],
+    ) as SelectedPtyExecutionReceipt;
+    resolveExpiry(receipt);
+    return receipt;
+  };
+  return observeAtCreation(
+    new SafePromise((resolve_) => {
+      resolve_({ expiryReceipt, launch });
+    }),
+  );
+};
+
 const selectedContainerBackend = (
   composition: ContainerComposition,
   runtime: SelectedContainerRuntime = productionContainerRuntime,
@@ -856,6 +2077,15 @@ const selectedContainerBackend = (
   // eslint-disable-next-line max-lines-per-function
 ): SelectedIsolationBackendAuthority => ({
   kind: "selected-isolation-backend",
+  armPty: (request, whenAborted) =>
+    composition.immutableCandidate === undefined
+      ? fail("testkit.pty.immutable-candidate")
+      : armSelectedPty(
+          composition,
+          productionPtyRuntime(composition.immutableCandidate),
+          request,
+          whenAborted,
+        ),
   // eslint-disable-next-line max-lines-per-function
   arm: async (request, whenAborted) => {
     if (
@@ -876,6 +2106,7 @@ const selectedContainerBackend = (
     const launch = async (): Promise<BackendTerminalReceipt> => {
       if (launched) return fail("testkit.headless.backend.replay");
       launched = true;
+      composition.immutableCandidate?.assertRuntime();
       runtime.assertNamespaceIdentity(composition.namespaceIdentity);
       if (
         safeReflectApply(performanceNow, performance, []) >=
@@ -1110,6 +2341,7 @@ const selectedContainerBackend = (
  */
 export const composeSelectedContainerHeadlessSupervisorCapability = (
   maximumShutdownDeadlineMs: number,
+  immutableCandidate?: ImmutableCandidateAuthority,
 ): HeadlessSupervisorCapability => {
   if (
     selectedContainerCompositionConsumed ||
@@ -1118,20 +2350,65 @@ export const composeSelectedContainerHeadlessSupervisorCapability = (
     !finiteNumber(maximumShutdownDeadlineMs) ||
     maximumShutdownDeadlineMs <=
       safeReflectApply(performanceNow, performance, []) ||
+    typeof immutableCandidate !== "object" ||
+    immutableCandidate === null ||
+    !immutableCandidateAuthorities.has(immutableCandidate) ||
+    typeof immutableCandidate.assertRuntime !== "function" ||
     readlinkSync("/proc/self/ns/pid") !== readlinkSync("/proc/1/ns/pid")
   )
     return fail("testkit.headless.capability");
+  immutableCandidate.assertRuntime();
   selectedContainerCompositionConsumed = true;
   const capability = safeReflectApply(freeze, Object, [{}]) as object;
   writeWeakMap(
     selectedBackendAuthorities,
     capability,
     selectedContainerBackend({
+      immutableCandidate,
       maximumShutdownDeadlineMs,
       namespaceIdentity: readlinkSync("/proc/self/ns/pid"),
     }),
   );
   return capability as HeadlessSupervisorCapability;
+};
+/** Package-private one-shot input hardening; the returned authority is not serializable. */
+export const createSelectedContainerImmutableCandidateAuthority = (
+  record: unknown,
+): ImmutableCandidateAuthority => createImmutableCandidateAuthority(record);
+/** Package-private causal parser oracle; it conveys no execution authority. */
+export const validateSelectedContainerPrincipalFactsForTest = (
+  facts: Parameters<typeof validatePrincipalFacts>[0],
+): true => {
+  validatePrincipalFacts(facts);
+  return true;
+};
+/** Package-private causal filesystem parser oracle; it conveys no authority. */
+export const validateSelectedContainerFilesystemFactsForTest = (facts: {
+  after?: { dev: number; ino: number; size: number };
+  before?: { dev: number; ino: number; size: number };
+  digest?: string;
+  expectedDigest?: string;
+  expectedPath?: string;
+  fdinfo?: string;
+  isFile?: boolean;
+  linkPath?: string;
+  mountinfo?: string;
+}): true => {
+  const before = facts.before ?? { dev: 1, ino: 2, size: 3 };
+  validateImmutableFileFacts({
+    after: facts.after ?? before,
+    before,
+    digest: facts.digest ?? "a".repeat(64),
+    expectedDigest: facts.expectedDigest ?? "a".repeat(64),
+    expectedPath: facts.expectedPath ?? "/selected/file",
+    isFile: facts.isFile ?? true,
+    linkPath: facts.linkPath ?? "/selected/file",
+    mountId: parseImmutableFdMountId(facts.fdinfo ?? "mnt_id:\t7\n"),
+    mountTable: parseImmutableMountTable(
+      facts.mountinfo ?? "7 1 0:1 / /selected ro - overlay overlay ro\n",
+    ),
+  });
+  return true;
 };
 export const executeSelectedHeadlessProcessWithCapability = async (
   capability: HeadlessSupervisorCapability,
@@ -1175,6 +2452,137 @@ export const executeSelectedHeadlessProcessWithCapability = async (
     }
     assertReceiptBinding(receipt, stableRequest);
     return receipt.trace;
+  } finally {
+    cancellation.close();
+  }
+};
+
+const assertPtyReceiptBinding = (
+  receipt: SelectedPtyExecutionReceipt,
+  request: SelectedPtyExecutionRequest,
+  // eslint-disable-next-line complexity
+): void => {
+  const outcome = receipt.outcome;
+  if (
+    receipt.receiptVersion !== 1 ||
+    receipt.runId !== request.process.runId ||
+    receipt.requestFingerprint !== request.process.requestFingerprint ||
+    receipt.initialGeometry.columns !== request.initialGeometry.columns ||
+    receipt.initialGeometry.rows !== request.initialGeometry.rows ||
+    receipt.observedGeometry.columns !== request.initialGeometry.columns ||
+    receipt.observedGeometry.rows !== request.initialGeometry.rows ||
+    receipt.isTTY !== true ||
+    receipt.observedCanonicalMode !== true ||
+    !boundedNonnegativeInteger(receipt.eofByte, 255) ||
+    typeof receipt.eofByteWritten !== "boolean" ||
+    !boundedNonnegativeInteger(
+      receipt.inputBytesWritten,
+      request.process.stdin.byteLength,
+    ) ||
+    (outcome !== "completed" &&
+      outcome !== "exited-nonzero" &&
+      outcome !== "aborted" &&
+      outcome !== "timeout" &&
+      outcome !== "output-limit" &&
+      outcome !== "transport-failed" &&
+      outcome !== "input-incomplete") ||
+    !boundedNonnegativeInteger(
+      receipt.outputBytes,
+      minimum(
+        request.process.stdoutLimitBytes,
+        request.process.stderrLimitBytes,
+      ),
+    ) ||
+    !/^[a-f0-9]{64}$/u.test(receipt.outputSha256) ||
+    receipt.cleanup !== "clean" ||
+    !receipt.processJoined ||
+    !receipt.terminalOutputJoined ||
+    !receipt.terminalTransportClosed ||
+    (receipt.signal !== null &&
+      receipt.signal !== "SIGTERM" &&
+      receipt.signal !== "SIGKILL") ||
+    receipt.residualProcessCount !== 0
+  )
+    return fail("testkit.pty.receipt");
+  let finalSnapshot;
+  try {
+    finalSnapshot = validatePtyTerminalSemanticSnapshot(receipt.finalSnapshot);
+  } catch {
+    return fail("testkit.pty.receipt");
+  }
+  if (
+    (outcome === "output-limit") !==
+    (finalSnapshot.semanticState === "output-limit")
+  )
+    return fail("testkit.pty.receipt");
+  if (
+    outcome === "completed" &&
+    finalSnapshot.semanticState !== "completed" &&
+    (request.completion.kind !== "exact-output" ||
+      request.completion.outputBytes !== receipt.outputBytes ||
+      request.completion.outputSha256 !== receipt.outputSha256)
+  )
+    return fail("testkit.pty.receipt");
+  if (
+    (receipt.outcome === "completed" || receipt.outcome === "exited-nonzero") &&
+    (!receipt.eofByteWritten ||
+      receipt.inputBytesWritten !== request.process.stdin.byteLength ||
+      !receipt.terminalInputJoined)
+  )
+    return fail("testkit.pty.receipt");
+  if (
+    (receipt.outcome === "completed" &&
+      (receipt.exitCode !== 0 || receipt.signal !== null)) ||
+    (receipt.outcome === "exited-nonzero" &&
+      (!boundedInteger(receipt.exitCode, 255) || receipt.signal !== null)) ||
+    (receipt.outcome !== "completed" &&
+      receipt.outcome !== "exited-nonzero" &&
+      receipt.exitCode !== null)
+  )
+    return fail("testkit.pty.receipt");
+};
+
+export const executeSelectedPtyProcessWithCapability = async (
+  capability: HeadlessSupervisorCapability,
+  request: SelectedPtyExecutionRequest,
+  options: HeadlessSupervisorExecutionOptions,
+): Promise<SelectedPtyExecutionReceipt> => {
+  const backend =
+    typeof capability === "object" && capability !== null
+      ? readWeakMap(selectedBackendAuthorities, capability)
+      : undefined;
+  if (backend?.armPty === undefined) return fail("testkit.headless.capability");
+  const stableRequest = snapshotPtyRequest(request);
+  const cancellation = cancellationAuthority(readOptionsSignal(options));
+  try {
+    if (cancellation.abortedAtCreation) return fail("testkit.headless.aborted");
+    const armed = await boundedInvoke(
+      () => backend.armPty!(stableRequest, cancellation.whenAborted),
+      stableRequest.process.monotonicStartupDeadlineMs,
+      "testkit.headless.startup.deadline",
+    );
+    const readExpiryReceipt = terminalSnapshot(armed.expiryReceipt);
+    let receipt: SelectedPtyExecutionReceipt;
+    try {
+      receipt = await boundedInvoke(
+        armed.launch,
+        stableRequest.process.monotonicShutdownDeadlineMs,
+        "testkit.headless.shutdown.deadline",
+      );
+    } catch (error: unknown) {
+      if (
+        trustedErrorCode(error) === "testkit.headless.shutdown.deadline" ||
+        remaining(stableRequest.process.monotonicShutdownDeadlineMs) <= 0
+      ) {
+        const expiry = readExpiryReceipt();
+        if (expiry?.ok === true && expiry.value.cleanup === "clean")
+          assertPtyReceiptBinding(expiry.value, stableRequest);
+        return fail("testkit.headless.reconciliation.deadline");
+      }
+      return fail(trustedErrorCode(error) ?? "testkit.headless.kernel.failure");
+    }
+    assertPtyReceiptBinding(receipt, stableRequest);
+    return receipt;
   } finally {
     cancellation.close();
   }
@@ -1666,6 +3074,280 @@ export const executeSelectedContainerBackendForTest = async (
   return executeSelectedHeadlessProcessWithCapability(
     capability as HeadlessSupervisorCapability,
     request,
+    options,
+  );
+};
+
+type SelectedPtyTestSeed =
+  | "active-terminal"
+  | "clean"
+  | "close-failure"
+  | "descriptor-closure"
+  | "descriptor-reuse"
+  | "descriptor-substitution"
+  | "eof-failure"
+  | "fragmented-output"
+  | "geometry-substitution"
+  | "identity-substitution"
+  | "immutable-capability"
+  | "immutable-device-inode"
+  | "immutable-mount-id"
+  | "immutable-mount-rw"
+  | "immutable-no-new-privileges"
+  | "immutable-principal"
+  | "immutable-symlink"
+  | "late-tail"
+  | "kill-escalation"
+  | "credential-prompt"
+  | "malformed-control"
+  | "malformed-exit"
+  | "mode-substitution"
+  | "nonzero-exit"
+  | "observer-failure"
+  | "output-limit"
+  | "partial-input"
+  | "partial-input-output-limit"
+  | "partial-input-timeout"
+  | "residual"
+  | "root-missing"
+  | "signal-failure"
+  | "startup-delay"
+  | "transport-failure"
+  | "timeout"
+  | "unsupported-signal";
+
+// eslint-disable-next-line max-lines-per-function
+const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
+  const root: ProcessSnapshot = { pid: 42_001, startIdentity: "42001:1" };
+  const descendant: ProcessSnapshot = {
+    pid: 42_002,
+    startIdentity: "42002:1",
+  };
+  const processes = new Map<number, ProcessSnapshot>([[root.pid, root]]);
+  let reads = 0;
+  let resolveClose: ((value: PtyExit) => void) | undefined;
+  let terminal = false;
+  let tailReadyAt = 0;
+  return {
+    assertImmutableCandidateFile: () => {
+      if (seed === "immutable-mount-id" || seed === "immutable-mount-rw")
+        return fail("testkit.pty.immutable-candidate");
+    },
+    assertImmutableCandidateRuntime: () => {
+      if (
+        seed === "immutable-capability" ||
+        seed === "immutable-no-new-privileges" ||
+        seed === "immutable-principal"
+      )
+        return fail("testkit.pty.immutable-candidate");
+    },
+    assertNamespaceIdentity: (expected) => {
+      if (expected !== "pid:[synthetic-selected-pty]")
+        return fail("testkit.headless.observer.identity");
+    },
+    listProcesses: () => {
+      if (seed === "observer-failure")
+        return fail("testkit.headless.observer.read");
+      return [...processes.values()];
+    },
+    readProcess: (pid) => {
+      if (seed === "root-missing") return undefined;
+      const value = processes.get(pid);
+      if (value === undefined) return undefined;
+      reads += pid === root.pid ? 1 : 0;
+      return seed === "identity-substitution" && reads > 1
+        ? { ...value, startIdentity: "42001:2" }
+        : value;
+    },
+    sendSignal: (pid, signal) => {
+      if (seed === "signal-failure")
+        return fail("testkit.headless.observer.signal");
+      if (seed === "residual" && pid === descendant.pid) return;
+      if (
+        seed === "kill-escalation" &&
+        pid === root.pid &&
+        signal === "SIGTERM"
+      )
+        return;
+      processes.delete(pid);
+      if (pid === root.pid) {
+        terminal = true;
+        resolveClose?.({ code: 0, signal: signal === "SIGKILL" ? 9 : 15 });
+      }
+    },
+    // eslint-disable-next-line max-lines-per-function
+    spawnPty: (request, geometry, interpreter, scriptSha256) => {
+      if (
+        seed === "immutable-mount-id" ||
+        seed === "immutable-mount-rw" ||
+        seed === "immutable-device-inode" ||
+        seed === "immutable-symlink"
+      )
+        return fail("testkit.pty.immutable-candidate");
+      if (
+        (seed === "descriptor-substitution" &&
+          interpreter.sha256 !== "0".repeat(64)) ||
+        seed === "descriptor-closure" ||
+        seed === "descriptor-reuse" ||
+        scriptSha256.length !== 64
+      )
+        return fail("testkit.pty.runtime.identity");
+      if (seed === "startup-delay") {
+        const stopAt = performance.now() + 30;
+        while (performance.now() < stopAt) {
+          // Deliberately cross the admitted startup deadline before returning.
+        }
+      }
+      let close!: (value: PtyExit) => void;
+      const closed = observeAtCreation(
+        new SafePromise<PtyExit>((resolve_) => {
+          close = resolve_;
+          resolveClose = resolve_;
+        }),
+      );
+      const output =
+        seed === "output-limit" || seed === "partial-input-output-limit"
+          ? safeBufferFrom("x".repeat(request.stdoutLimitBytes + 1))
+          : seed === "active-terminal"
+            ? safeBufferFrom("ready")
+            : seed === "credential-prompt"
+              ? safeBufferFrom("Password:")
+              : seed === "malformed-control"
+                ? safeBufferFrom("\u001b[")
+                : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+      const chunks =
+        seed === "fragmented-output"
+          ? [output.subarray(0, 2), output.subarray(2)]
+          : seed === "output-limit" || seed === "partial-input-output-limit"
+            ? [output.subarray(0, 4_096), output.subarray(4_096)]
+            : [output];
+      let chunkIndex = 0;
+      let inputCalls = 0;
+      queueMicrotask(() => {
+        if (seed === "residual") processes.set(descendant.pid, descendant);
+        if (
+          seed !== "timeout" &&
+          seed !== "identity-substitution" &&
+          seed !== "output-limit" &&
+          seed !== "partial-input-output-limit" &&
+          seed !== "partial-input-timeout" &&
+          seed !== "kill-escalation" &&
+          seed !== "signal-failure"
+        )
+          safeSetTimeout(
+            () => {
+              processes.delete(root.pid);
+              terminal = true;
+              if (seed === "late-tail") tailReadyAt = performance.now() + 30;
+              close(
+                seed === "malformed-exit"
+                  ? { code: -1, signal: 0 }
+                  : seed === "unsupported-signal"
+                    ? { code: 0, signal: 2 }
+                    : {
+                        code: seed === "nonzero-exit" ? 7 : 0,
+                        signal: 0,
+                      },
+              );
+            },
+            seed === "partial-input" ? 25 : 5,
+          );
+      });
+      return {
+        closed,
+        pid: root.pid,
+        close: () => {
+          if (seed === "close-failure") return fail("testkit.pty.transport");
+          if (processes.has(root.pid)) {
+            processes.delete(root.pid);
+            terminal = true;
+            close({ code: 0, signal: 15 });
+          }
+        },
+        eof: () => {
+          if (seed === "eof-failure") return fail("testkit.pty.transport");
+          return {
+            status: "eof-byte-written" as const,
+            canonical: true as const,
+            eofByte: 4,
+            bytesWritten: 1 as const,
+          };
+        },
+        inspect: () => ({
+          isTTY: true,
+          canonical: seed !== "mode-substitution",
+          columns: geometry.columns,
+          rows:
+            seed === "geometry-substitution"
+              ? geometry.rows + 1
+              : geometry.rows,
+          eofByte: 4,
+        }),
+        read: () => {
+          if (seed === "transport-failure")
+            return fail("testkit.pty.transport");
+          if (
+            seed === "late-tail" &&
+            (!terminal || performance.now() < tailReadyAt)
+          )
+            return { status: "would-block" as const };
+          const chunk = chunks[chunkIndex];
+          if (chunk !== undefined) {
+            chunkIndex += 1;
+            return { status: "data" as const, bytes: chunk };
+          }
+          return terminal
+            ? { status: "eio" as const }
+            : { status: "would-block" as const };
+        },
+        resize: () => undefined,
+        write: (bytes) => {
+          inputCalls += 1;
+          if (seed === "partial-input-timeout" && inputCalls === 1) {
+            const stopAt = request.monotonicExecutionDeadlineMs + 1;
+            while (performance.now() < stopAt) {
+              // Deliberately expire the one execution deadline after one write.
+            }
+          }
+          const partial =
+            (seed === "partial-input" ||
+              seed === "partial-input-output-limit" ||
+              seed === "partial-input-timeout") &&
+            inputCalls === 1;
+          return {
+            status: partial ? ("partial" as const) : ("complete" as const),
+            bytesWritten: partial
+              ? Math.max(1, Math.floor(bytes.length / 2))
+              : bytes.length,
+          };
+        },
+      };
+    },
+  };
+};
+
+/** Package-private PTY lifecycle evidence; never a capability mint. */
+export const executeSelectedPtyTransportForTest = async (
+  request: SelectedPtyExecutionRequest,
+  seed: SelectedPtyTestSeed,
+  options: HeadlessSupervisorExecutionOptions = {},
+): Promise<SelectedPtyExecutionReceipt> => {
+  const stable = snapshotPtyRequest(request);
+  const capability = safeReflectApply(freeze, Object, [{}]) as object;
+  const composition = {
+    maximumShutdownDeadlineMs: stable.process.monotonicShutdownDeadlineMs,
+    namespaceIdentity: "pid:[synthetic-selected-pty]",
+  };
+  const runtime = selectedPtyRuntimeForTest(seed);
+  writeWeakMap(selectedBackendAuthorities, capability, {
+    arm: selectedContainerBackend(composition).arm,
+    armPty: (candidate, whenAborted) =>
+      armSelectedPty(composition, runtime, candidate, whenAborted),
+    kind: "selected-isolation-backend",
+  });
+  return executeSelectedPtyProcessWithCapability(
+    capability as HeadlessSupervisorCapability,
+    stable,
     options,
   );
 };

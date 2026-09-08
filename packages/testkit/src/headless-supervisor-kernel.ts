@@ -11,9 +11,14 @@ import {
 } from "./headless-supervisor.js";
 import {
   executeWithHeadlessSupervisorCapability,
+  executeSelectedPtyProcessWithCapability,
   executeSelectedHeadlessProcessWithCapability,
   readHeadlessSupervisorKernelErrorCode,
 } from "./internal/headless-supervisor-backend.js";
+import type {
+  SelectedPtyExecutionReceipt,
+  SelectedPtyExecutionRequest,
+} from "./pty-terminal-contract.js";
 
 /**
  * Executes one family-owned non-PTY scenario through the package-authenticated
@@ -54,6 +59,30 @@ export const executeSelectedHeadlessProcess = async (
 ): Promise<HeadlessExecutionTrace> => {
   try {
     return await executeSelectedHeadlessProcessWithCapability(
+      capability,
+      request,
+      options,
+    );
+  } catch (error: unknown) {
+    throw new HeadlessSupervisorError(
+      readHeadlessSupervisorKernelErrorCode(error) ??
+        "testkit.headless.kernel.failure",
+    );
+  }
+};
+
+/**
+ * Executes one PTY request through the same capability and selected isolation
+ * backend as headless execution. The caller cannot supply or mint transport or
+ * process authority.
+ */
+export const executeSelectedPtyProcess = async (
+  capability: HeadlessSupervisorCapability,
+  request: SelectedPtyExecutionRequest,
+  options: HeadlessSupervisorExecutionOptions = {},
+): Promise<SelectedPtyExecutionReceipt> => {
+  try {
+    return await executeSelectedPtyProcessWithCapability(
       capability,
       request,
       options,

@@ -47,6 +47,14 @@ import {
 } from "./image-preparation.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
+  compileCandidateInventory,
+  compileImmutableCandidateHandoff,
+  decodeInstalledPtyFailureReceipt,
+  decodeInstalledCliPtyReceipt,
+  selectedRuntimeFiles,
+  validateImmutableScenarioContainer,
+} from "./immutable-candidate-authority.mjs";
+import {
   integrationStageSignal,
   registerIntegrationFailureEvidence,
   registerIntegrationHeadlessReceipt,
@@ -63,6 +71,7 @@ const execute = promisify(execFile);
 const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
+const installedPtyFailures = new Map();
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const manifest = compileCapabilityManifest(
   readJson(resolve(integrationRoot, "capability-manifest.json")),
@@ -161,7 +170,6 @@ const cliArtifact = candidate.artifacts.find(
 );
 if (cliArtifact === undefined)
   throw new Error("integration.isolation.candidate-artifact");
-
 let preparedDockerClient;
 const docker = async (
   arguments_,
@@ -235,6 +243,8 @@ const sidecarResourceArguments = (limits) => [
   String(limits.memoryBytes),
 ];
 
+// The exact staged inventory and Dockerfile are reviewed as one authority.
+// eslint-disable-next-line max-lines-per-function
 const stageBuildContext = (plan) => {
   const context = resolve(artifactsRoot, "contexts", plan.runId);
   rmSync(context, { force: true, recursive: true });
@@ -245,6 +255,14 @@ const stageBuildContext = (plan) => {
   if (scenario === undefined) throw new Error("integration.isolation.context");
   const sources = [
     ["runner.mjs", resolve(integrationRoot, "runner.mjs")],
+    [
+      "immutable-candidate-authority.mjs",
+      resolve(integrationRoot, "immutable-candidate-authority.mjs"),
+    ],
+    [
+      "pty-installed-cli-driver.mjs",
+      resolve(integrationRoot, "pty-installed-cli-driver.mjs"),
+    ],
     [
       "destination-server.mjs",
       resolve(integrationRoot, "destination-server.mjs"),
@@ -300,6 +318,17 @@ const stageBuildContext = (plan) => {
       resolve(artifactsRoot, "current-candidate.json"),
     ],
   ];
+  for (const file of selectedRuntimeFiles) {
+    if (sources.some(([destination]) => destination === file)) continue;
+    sources.push([
+      file,
+      resolve(
+        workspaceRoot,
+        "packages/testkit/dist",
+        file.slice("testkit/".length),
+      ),
+    ]);
+  }
   for (const [destination, source] of sources) {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
@@ -319,9 +348,10 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
+      `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,
       "USER node",
       'CMD ["node", "/opt/agentscope/runner.mjs"]',
       "",
@@ -349,6 +379,8 @@ const assertContainer = async (
   limits,
   signal,
   expectedRequestBytes,
+  immutableCandidate,
+  // eslint-disable-next-line complexity,max-params
 ) => {
   const { stdout } = await dockerWithSignal(
     ["container", "inspect", name],
@@ -376,6 +408,44 @@ const assertContainer = async (
     environment.includes(
       `AGENTSCOPE_MAXIMUM_REQUEST_BYTES=${expectedRequestBytes}`,
     );
+  const immutableCandidateMatches =
+    immutableCandidate === undefined ||
+    (container?.Image === immutableCandidate.imageId &&
+      container?.Config?.User === "1000:1000" &&
+      environment.includes(
+        `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
+      ) &&
+      JSON.stringify(container?.HostConfig?.CapDrop) ===
+        JSON.stringify(["ALL"]) &&
+      Array.isArray(container?.HostConfig?.SecurityOpt) &&
+      container.HostConfig.SecurityOpt.includes("no-new-privileges"));
+  let imageConfigMatches = immutableCandidate === undefined;
+  if (immutableCandidate !== undefined) {
+    const inspected = await dockerWithSignal(
+      ["image", "inspect", immutableCandidate.imageId],
+      signal,
+    );
+    try {
+      const records = JSON.parse(inspected.stdout);
+      imageConfigMatches =
+        Array.isArray(records) &&
+        records.length === 1 &&
+        records[0]?.Id === immutableCandidate.imageId &&
+        createHash("sha256")
+          .update(JSON.stringify(records[0]?.Config))
+          .digest("hex") === immutableCandidate.imageConfigSha256;
+      if (imageConfigMatches)
+        validateImmutableScenarioContainer({
+          container,
+          handoff: immutableCandidate,
+          image: records[0],
+          networkName: plan.networkName,
+          tmpfs,
+        });
+    } catch {
+      imageConfigMatches = false;
+    }
+  }
   if (
     container?.HostConfig?.ReadonlyRootfs !== true ||
     container?.HostConfig?.NetworkMode !== plan.networkName ||
@@ -385,9 +455,37 @@ const assertContainer = async (
     container.Mounts.length !== 0 ||
     JSON.stringify(tmpfsPaths) !== JSON.stringify(expectedPaths) ||
     !tmpfsMatches ||
-    !requestLimitMatches
+    !requestLimitMatches ||
+    !immutableCandidateMatches ||
+    !imageConfigMatches
   )
     throw new Error("integration.isolation.container");
+};
+
+const createImmutableCandidateHandoff = async (plan, signal) => {
+  const { stdout } = await dockerWithSignal(
+    ["image", "inspect", plan.imageTag],
+    signal,
+  );
+  let image;
+  try {
+    const records = JSON.parse(stdout);
+    if (!Array.isArray(records) || records.length !== 1) throw new Error();
+    [image] = records;
+  } catch {
+    throw new Error("integration.isolation.immutable-candidate");
+  }
+  if (
+    !/^sha256:[a-f0-9]{64}$/u.test(image?.Id) ||
+    typeof image?.Config !== "object" ||
+    image.Config === null
+  )
+    throw new Error("integration.isolation.immutable-candidate");
+  return compileImmutableCandidateHandoff({
+    candidate,
+    image,
+    plan: { runId: plan.runId, scenarioId: plan.scenarioId },
+  });
 };
 
 const fixtureResults = new Map();
@@ -559,6 +657,20 @@ const captureHeadlessReceipt = (output, plan, expected) => {
   )
     throw new Error("integration.isolation.headless-receipt");
   return Object.freeze(receipt);
+};
+const captureInstalledCliPtyReceipt = (output, plan) =>
+  decodeInstalledCliPtyReceipt(output, {
+    candidateBundleIdentity: candidate.bundleIdentity,
+    candidateInventorySha256: compileCandidateInventory(candidate).sha256,
+    runId: plan.runId,
+    scenarioId: plan.scenarioId,
+  });
+const captureInstalledPtyFailure = (output, plan) => {
+  const receipt = decodeInstalledPtyFailureReceipt(output);
+  if (installedPtyFailures.has(plan.runId))
+    throw new Error("integration.isolation.pty-failure-receipt");
+  installedPtyFailures.set(plan.runId, receipt);
+  return receipt;
 };
 const preparedImageFor = async (image, signal) => {
   if (
@@ -815,6 +927,10 @@ const runScenario = async (plan, signal) => {
     testMode === undefined
       ? []
       : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
+  const immutableCandidate = await createImmutableCandidateHandoff(
+    plan,
+    signal,
+  );
   await dockerWithSignal(
     [
       "create",
@@ -852,6 +968,8 @@ const runScenario = async (plan, signal) => {
       `AGENTSCOPE_INTEGRATION_RUN_ID=${plan.runId}`,
       "--env",
       `AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS=${outerMonotonicDeadline}`,
+      "--env",
+      `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
       ...testModeArguments,
       plan.imageTag,
     ],
@@ -863,6 +981,8 @@ const runScenario = async (plan, signal) => {
     plan.scenarioName,
     ISOLATION_EXECUTOR_LIMITS.containers.scenario,
     signal,
+    undefined,
+    immutableCandidate,
   );
   if (testMode === "sidecar-failure")
     await dockerWithSignal(["stop", plan.collectorName], signal, {
@@ -877,6 +997,7 @@ const runScenario = async (plan, signal) => {
     const receipt = captureHeadlessReceipt(stdout, plan, {
       outerMonotonicDeadline,
     });
+    const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
     registerIntegrationHeadlessReceipt(receipt, performance.now());
     return {
       receipt,
@@ -890,11 +1011,14 @@ const runScenario = async (plan, signal) => {
         receipt.stdinJoined === true &&
         receipt.stdoutJoined === true &&
         receipt.stderrJoined === true &&
+        ptyReceipt.outcome === "completed" &&
         captureFixtureResult(stdout, plan),
     };
   } catch (error) {
     const output = `${error?.stdout ?? ""}`;
     captureFixtureResult(output, plan);
+    if (output.includes("AGENTSCOPE_PTY_FAILURE="))
+      captureInstalledPtyFailure(output, plan);
     if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
       const receipt = captureHeadlessReceipt(output, plan, {
         outerMonotonicDeadline,
@@ -970,13 +1094,14 @@ const finalizeControllerFailureEvidence = (
   const directory = resolve(artifactsRoot, "runs", plan.runId);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const record = {
-    controllerFailureEvidenceVersion: 1,
+    controllerFailureEvidenceVersion: 2,
     runId: plan.runId,
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
+    installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
     privateCleanup:
       preparedDockerClientDiagnostic(preparedDockerClient) ?? null,
   };
