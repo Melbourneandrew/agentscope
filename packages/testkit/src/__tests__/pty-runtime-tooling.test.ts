@@ -282,11 +282,25 @@ describe("PTY runtime artifact tooling", () => {
     expect(workflow.indexOf("deadline=$((SECONDS + 90))")).toBeLessThan(
       workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
-    expect(workflow.indexOf("trap cleanup EXIT")).toBeLessThan(
+    expect(workflow.indexOf(`trap 'cleanup "$?"' EXIT`)).toBeLessThan(
       workflow.indexOf("root=$(host_call /usr/bin/mktemp"),
     );
-    expect(workflow).toContain("trap 'interrupt 130' INT");
-    expect(workflow).toContain("trap 'interrupt 143' TERM");
+    expect(workflow).toContain("trap 'cleanup 130' INT");
+    expect(workflow).toContain("trap 'cleanup 143' TERM");
+    const cleanupStart = workflow.indexOf("          cleanup() {");
+    const terminalReceipt = workflow.indexOf(
+      '            printf \'{"version":1',
+      cleanupStart,
+    );
+    expect(
+      workflow.indexOf("            trap - EXIT", cleanupStart),
+    ).toBeGreaterThan(terminalReceipt);
+    expect(
+      workflow.indexOf("            trap '' INT TERM", cleanupStart),
+    ).toBeLessThan(terminalReceipt);
+    expect(workflow.slice(cleanupStart, terminalReceipt)).not.toContain(
+      "trap 'cleanup 130'",
+    );
     expect(workflow).toContain(
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );

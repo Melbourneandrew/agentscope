@@ -70,10 +70,9 @@ jobs:
           created=false
           stage=setup
           runtime_receipt_authenticated=false
-          cleanup_interrupt() {
-            cleanup_signal_status=$1
-            cleanup_proved=false
-          }
+          cleanup_active=false
+          cleanup_signal_status=0
+          cleanup_proved=true
           record_cleanup_failure() {
             local command_status=$1
             cleanup_proved=false
@@ -82,14 +81,16 @@ jobs:
             fi
           }
           cleanup() {
-            local primary_status=$?
+            local incoming_status=$1
+            if [[ "$cleanup_active" == true ]]; then
+              cleanup_signal_status=$incoming_status
+              cleanup_proved=false
+              return
+            fi
+            cleanup_active=true
+            local primary_status=$incoming_status
             local failure_stage=$stage
-            local cleanup_proved=true
-            local cleanup_signal_status=0
             local terminal_status=failed
-            trap - EXIT
-            trap 'cleanup_interrupt 130' INT
-            trap 'cleanup_interrupt 143' TERM
             cleanup_docker_call() {
               local remaining=$((deadline - SECONDS))
               (( remaining >= 7 ))
@@ -130,14 +131,12 @@ jobs:
             esac
             printf '{"version":1,"stage":"%s","status":"%s","runtimeReceiptAuthenticated":%s,"cleanupProved":%s}\n' \
               "$failure_stage" "$terminal_status" "$runtime_receipt_authenticated" "$cleanup_proved" >&2
+            trap - EXIT
             exit "$primary_status"
           }
-          interrupt() {
-            exit "$1"
-          }
-          trap cleanup EXIT
-          trap 'interrupt 130' INT
-          trap 'interrupt 143' TERM
+          trap 'cleanup "$?"' EXIT
+          trap 'cleanup 130' INT
+          trap 'cleanup 143' TERM
           host_call() {
             local remaining=$((deadline - SECONDS - 10))
             (( remaining > 0 ))
