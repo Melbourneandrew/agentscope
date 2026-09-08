@@ -53,7 +53,69 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Replay the bounded PTY ABI in the canonical network-off image
-        run: node packages/testkit/scripts/verify-pty-runtime.mjs --runtime-proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          docker=/usr/bin/docker
+          timeout=/usr/bin/timeout
+          socket=/var/run/docker.sock
+          image=node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c
+          config_id=sha256:395425e54d98ebbd748d388685a0c2de151a30fa92fffc10ba30fa63f3db64d6
+          name=agentscope-pty-runtime-proof-v1
+          root=$(/usr/bin/mktemp -d /tmp/agentscope-pty-runtime.XXXXXXXX)
+          repository_root=$(/usr/bin/realpath .)
+          container_id=
+          created=false
+          deadline=$((SECONDS + 90))
+          cleanup() {
+            local status=$?
+            trap - EXIT INT TERM
+            if [[ "$created" == true && "$container_id" =~ ^[0-9a-f]{64}$ ]]; then
+              local remaining=$((deadline - SECONDS))
+              (( remaining > 0 )) || remaining=1
+              "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+                "$docker" --config "$root/config" --host "unix://$socket" rm --force "$container_id" >/dev/null || status=1
+              if "$docker" --config "$root/config" --host "unix://$socket" container inspect "$container_id" >/dev/null 2>&1; then
+                status=1
+              fi
+            fi
+            /bin/rm -rf -- "$root" || status=1
+            exit "$status"
+          }
+          trap cleanup EXIT INT TERM
+          [[ -x "$docker" && -x "$timeout" && -S "$socket" && ! -L "$socket" ]]
+          [[ "$repository_root" == /home/runner/work/agentscope/agentscope ]]
+          /bin/mkdir -m 0700 "$root/config"
+          [[ -z "$("$docker" --config "$root/config" --host "unix://$socket" container ls --all --quiet --filter "name=^/${name}$")" ]]
+          remaining=$((deadline - SECONDS)); (( remaining > 0 ))
+          "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+            "$docker" --config "$root/config" --host "unix://$socket" pull --quiet --platform linux/amd64 "$image" >/dev/null
+          identity=$("$docker" --config "$root/config" --host "unix://$socket" image inspect --format '{{.Id}}|{{.Os}}|{{.Architecture}}' "$config_id")
+          [[ "$identity" == "$config_id|linux|amd64" ]]
+          remaining=$((deadline - SECONDS)); (( remaining > 0 ))
+          create_status=0
+          reported_id=$("$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+            "$docker" --config "$root/config" --host "unix://$socket" create \
+              --name "$name" --network none --platform linux/amd64 --read-only \
+              --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=0700,size=16m \
+              --mount "type=bind,src=$repository_root/packages/testkit/pty-runtime/node127-linux-x64-musl/pty.node,dst=/runtime/production.node,readonly" \
+              --mount "type=bind,src=$repository_root/packages/testkit/fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node,dst=/runtime/faults.node,readonly" \
+              --mount "type=bind,src=$repository_root,dst=/workspace,readonly" \
+              "$image" /usr/local/bin/node /workspace/packages/testkit/scripts/verify-pty-runtime.mjs --runtime-proof) || create_status=$?
+          container_id=$("$docker" --config "$root/config" --host "unix://$socket" container ls --all --no-trunc --quiet --filter "name=^/${name}$")
+          [[ "$container_id" =~ ^[0-9a-f]{64}$ ]]
+          created=true
+          (( create_status == 0 ))
+          [[ "$reported_id" == "$container_id" ]]
+          authority=$("$docker" --config "$root/config" --host "unix://$socket" inspect --format '{{.Id}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}' "$container_id")
+          [[ "$authority" == "$container_id|$config_id|none|true|created" ]]
+          remaining=$((deadline - SECONDS)); (( remaining > 0 ))
+          "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
+            "$docker" --config "$root/config" --host "unix://$socket" start --attach "$container_id" >"$root/receipt.json"
+          [[ $(/usr/bin/stat -c %s "$root/receipt.json") -le 65536 ]]
+          terminal=$("$docker" --config "$root/config" --host "unix://$socket" inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.Running}}|{{.State.Pid}}' "$container_id")
+          [[ "$terminal" == 'exited|0|false|0' ]]
 
   docs:
     if: github.event_name == 'pull_request'

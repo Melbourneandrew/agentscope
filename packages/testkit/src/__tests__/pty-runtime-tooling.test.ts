@@ -220,10 +220,14 @@ describe("PTY runtime artifact tooling", () => {
     expect(
       workflow.match(/verify-pty-runtime\.mjs --runtime-proof/gu),
     ).toHaveLength(1);
-    expect(verifier).toContain('"--network",\n      "none"');
-    expect(verifier).toContain('"--read-only"');
-    expect(verifier).toContain("canonicalImageManifest");
-    expect(verifier).toContain("canonicalImageConfig");
+    expect(verifier).not.toContain("execFileSync(docker");
+    expect(verifier).toContain('process.versions.modules !== "127"');
+    expect(workflow).toContain("--network none --platform linux/amd64");
+    expect(workflow).toContain("--read-only");
+    expect(workflow).toContain(
+      "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
+    );
+    expect(workflow).not.toContain("image rm");
   });
 
   it("rejects stale patch byte authorities in source and build policy", () => {
@@ -256,9 +260,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 36_667,
+      bytes: 38_785,
       mode: "0644",
-      patchedSourceBytes: 49_734,
+      patchedSourceBytes: 51_812,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -276,8 +280,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 36_667,
-      patchedSourceBytes: 49_734,
+      bytes: 38_785,
+      patchedSourceBytes: 51_812,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -584,7 +588,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "5e33f1ffe3d02fcf0346c088bb2f7a44093045ec7632b40e9f0187b692b5da44",
+      "e467e81bd4ac25a0eff52155bb11770e158e87a009d92bf2182b693a631e6eb8",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -699,9 +703,11 @@ describe("PTY authenticated build-material tooling", () => {
     expect(patch).toContain("+  uint32_t envc_unsigned = env_.Length();");
     expect(patch).toContain("+  uint32_t argc_unsigned = argv_.Length();");
     expect(patch).toContain("+    if (!value.IsString())");
-    expect(patch).toContain("+    if (pair.find('\\0') != std::string::npos");
     expect(patch).toContain(
-      "+    if (argument.find('\\0') != std::string::npos",
+      "+    if (napi_get_value_string_utf8(napiEnv, value, nullptr, 0, &pair_bytes)",
+    );
+    expect(patch).toContain(
+      "+    if (napi_get_value_string_utf8(napiEnv, value, nullptr, 0,",
     );
     expect(patch.indexOf("+  int exec_status[2]")).toBeGreaterThan(
       patch.indexOf("+    argument_values.push_back(std::move(argument));"),
@@ -761,8 +767,14 @@ describe("PTY authenticated build-material tooling", () => {
         "TerminalHandle *slave_handle = master_handle;",
       ],
       ["uint32_t envc_unsigned", "int envc_unsigned"],
-      ["pair.find('\\0')", "pair.find('x')"],
-      ["argument.find('\\0')", "argument.find('x')"],
+      [
+        "memchr(pair_buffer, '\\0', pair_bytes)",
+        "memchr(pair_buffer, 'x', pair_bytes)",
+      ],
+      [
+        "memchr(argument_buffer, '\\0', argument_bytes)",
+        "memchr(argument_buffer, 'x', argument_bytes)",
+      ],
     ] as const) {
       expect(() => apply(patch.replace(needle, replacement))).toThrow(
         /identity/u,

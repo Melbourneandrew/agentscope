@@ -37,7 +37,7 @@ const maximumPatchLines = 2_048;
 const maximumPatchLineBytes = 2_048;
 const maximumPatchOperations = 4_096;
 const patchedSourceSha256 =
-  "5e33f1ffe3d02fcf0346c088bb2f7a44093045ec7632b40e9f0187b692b5da44";
+  "e467e81bd4ac25a0eff52155bb11770e158e87a009d92bf2182b693a631e6eb8";
 
 // One closed parser keeps every header, position, operation, count and final
 // digest check in the same no-fuzz authority.
@@ -394,7 +394,7 @@ export const buildPtyRuntime = ({
   );
   const patchBytes = verifyRegularFile(
     patch,
-    "af8f66bb1ad73ee87d89faf1538ffe4ce001eb5a4cd17f117f7dff3a2e8bfd96",
+    "77acf682848a7d2f66bf0c6c41a4ad3b78f32e328244797f6b56604be7b7f697",
     0o644,
     maximumPatchBytes,
   );
@@ -420,7 +420,7 @@ export const buildPtyRuntime = ({
   });
   verifyRegularFile(
     resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
-    "5e33f1ffe3d02fcf0346c088bb2f7a44093045ec7632b40e9f0187b692b5da44",
+    "e467e81bd4ac25a0eff52155bb11770e158e87a009d92bf2182b693a631e6eb8",
   );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
@@ -463,7 +463,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const digest = buildPtyRuntime({ output: "/output", sourceRoot: "/build" });
   if (
     digest !==
-    "2107ba433a6e0a82f51247ea4e954fed197d41cbd1295b9ca29a0caed248d084"
+    "89d525ea5785fd8dcdcc3e925b91bb6e1484108a21153f2005daaf1a74ca8f2c"
   )
     throw new Error("PTY runtime build is not reproducible.");
 }
