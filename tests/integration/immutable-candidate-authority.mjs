@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 const fail = () => {
   throw new Error("integration.immutable-candidate.authority");
@@ -12,6 +14,78 @@ const exactKeys = (value, expected) =>
   JSON.stringify(Object.keys(value).sort()) ===
     JSON.stringify([...expected].sort());
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const maximumWritableAuthorityEntries = 16_384;
+const maximumWritableAuthorityFileBytes = 8 * 1024 * 1024;
+const maximumWritableAuthorityTotalBytes = 64 * 1024 * 1024;
+
+export const digestInstalledContractWritableAuthority = (input) => {
+  if (
+    !exactKeys(input, ["excludedPaths", "roots"]) ||
+    !Array.isArray(input.roots) ||
+    input.roots.length < 1 ||
+    input.roots.length > 8 ||
+    !Array.isArray(input.excludedPaths) ||
+    input.excludedPaths.length > 8 ||
+    [...input.roots, ...input.excludedPaths].some(
+      (path) => typeof path !== "string" || path !== resolve(path),
+    ) ||
+    new Set(input.roots).size !== input.roots.length ||
+    new Set(input.excludedPaths).size !== input.excludedPaths.length ||
+    input.excludedPaths.some(
+      (excluded) =>
+        !input.roots.some(
+          (root) => excluded === root || excluded.startsWith(`${root}/`),
+        ),
+    )
+  )
+    return fail();
+  const excluded = new Set(input.excludedPaths);
+  const records = [];
+  const pending = input.roots.map((root, index) => ({
+    index,
+    path: root,
+    root,
+  }));
+  let totalBytes = 0n;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined) return fail();
+    const { index, path: directory, root } = current;
+    if (excluded.has(directory)) continue;
+    if (!existsSync(directory)) {
+      records.push(`absent:${index}`);
+      continue;
+    }
+    const directoryStatus = lstatSync(directory, { bigint: true });
+    if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink())
+      return fail();
+    records.push(
+      `directory:${index}:${directory.slice(root.length) || "."}:${directoryStatus.dev}:${directoryStatus.ino}:${directoryStatus.nlink}:${directoryStatus.uid}:${directoryStatus.gid}:${directoryStatus.mode & 0o7777n}:${directoryStatus.mtimeNs}:${directoryStatus.ctimeNs}`,
+    );
+    if (records.length > maximumWritableAuthorityEntries) return fail();
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name);
+      if (excluded.has(path)) continue;
+      const status = lstatSync(path, { bigint: true });
+      if (status.isSymbolicLink()) return fail();
+      if (status.isDirectory()) pending.push({ index, path, root });
+      else {
+        if (
+          !status.isFile() ||
+          status.size > BigInt(maximumWritableAuthorityFileBytes) ||
+          totalBytes + status.size > BigInt(maximumWritableAuthorityTotalBytes)
+        )
+          return fail();
+        totalBytes += status.size;
+        records.push(
+          `file:${index}:${path.slice(root.length)}:${status.dev}:${status.ino}:${status.nlink}:${status.uid}:${status.gid}:${status.mode & 0o7777n}:${status.size}:${status.mtimeNs}:${status.ctimeNs}:sha256-${sha256(readFileSync(path))}`,
+        );
+        if (records.length > maximumWritableAuthorityEntries) return fail();
+      }
+    }
+  }
+  return `sha256-${sha256(JSON.stringify(records.sort()))}`;
+};
 
 export const installedPtyFailurePredicates = Object.freeze({
   "candidate-inventory": Object.freeze(["candidate-rejected"]),
@@ -583,5 +657,17 @@ export const validateInstalledCliBoundary = (facts) => {
     )
   )
     return fail();
+  return true;
+};
+
+export const assertExactFixtureLedger = (expected, declared, observed) => {
+  const canonical = JSON.stringify(expected);
+  if (
+    expected === null ||
+    typeof expected !== "object" ||
+    canonical !== JSON.stringify(declared) ||
+    canonical !== JSON.stringify(observed)
+  )
+    throw new Error("integration.immutable-candidate.fixture-ledger");
   return true;
 };

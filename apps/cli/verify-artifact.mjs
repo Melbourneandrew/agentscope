@@ -289,6 +289,508 @@ try {
   );
   assert.match(installedContractPlan.caseIdsDigest, /^sha256:[0-9a-f]{64}$/u);
   assert.match(installedContractPlan.inventoryDigest, /^sha256:[0-9a-f]{64}$/u);
+  const directResult = {
+    outcome: "exited",
+    signal: null,
+    status: 0,
+    stderr: "",
+    stdout:
+      '{"command":"agentscope harness list","completion":"complete","dataSchema":"agentscope.cli.harness-list.v1","records":[],"schema":"agentscope.cli.result.v1"}\n',
+  };
+  const directStep = {
+    args: ["harness", "list", "--output", "json"],
+    executionMode: "direct",
+    expectedOutcome: "exited",
+    expectedSignal: null,
+    expectedStatus: 0,
+    input: "",
+    outputRule: "json",
+    stateRule: "same-as-before",
+  };
+  assert.doesNotThrow(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      directStep,
+      directResult,
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  for (const stdout of [
+    directResult.stdout.replace(
+      '"schema":"agentscope.cli.result.v1"',
+      '"schema":"agentscope.cli.result.v1","unexpected":true',
+    ),
+    directResult.stdout.replace('"records":[]', '"records":[],"records":[]'),
+    directResult.stdout.replace("}\n", "} \n"),
+    directResult.stdout.replace(
+      '"command":"agentscope harness list"',
+      '"command":"agentscope doctor"',
+    ),
+    directResult.stdout.replace(
+      '"dataSchema":"agentscope.cli.harness-list.v1"',
+      '"dataSchema":"agentscope.cli.forged.v1"',
+    ),
+    directResult.stdout.replace('"records":[]', '"records":[{"forged":true}]'),
+    directResult.stdout.replace(
+      '"completion":"complete"',
+      '"completion":"partial"',
+    ),
+  ])
+    assert.throws(() =>
+      oracleModule.validateInstalledCliInvocationOutputForTest(
+        directStep,
+        { ...directResult, stdout },
+        installedManifest.version,
+        { caseOrdinal: 1 },
+      ),
+    );
+  const forgedDoctorStep = {
+    ...directStep,
+    args: ["doctor", "--output", "json"],
+  };
+  const forgedDoctorResult = {
+    ...directResult,
+    stdout: `${JSON.stringify({
+      command: "agentscope doctor",
+      completion: "complete",
+      dataSchema: "agentscope.cli.doctor.v1",
+      records: [
+        {
+          findings: [
+            {
+              code: "doctor.forged.value",
+              evidence: {
+                count: null,
+                freshness: "current",
+                localResource: { arbitrary: "forged.value" },
+                lossCount: null,
+                scope: "forged",
+                state: "forged",
+                subject: "/private/forged",
+                version: "forged",
+              },
+              severity: "info",
+              suggestedAction: "forged-action",
+            },
+          ],
+          fixed: false,
+          repairs: [],
+          summary: { errors: 0, information: 1, warnings: 0 },
+        },
+      ],
+      schema: "agentscope.cli.result.v1",
+    })}\n`,
+  };
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      forgedDoctorStep,
+      forgedDoctorResult,
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  const deterministicDoctor = {
+    findings: [
+      [
+        "doctor.configuration.valid",
+        null,
+        "current",
+        null,
+        "configuration",
+        "valid",
+        "info",
+        "none",
+      ],
+      [
+        "doctor.transaction.clean",
+        null,
+        "current",
+        null,
+        "transaction",
+        "clean",
+        "info",
+        "none",
+      ],
+      [
+        "doctor.credential-mutation.clean",
+        null,
+        "current",
+        null,
+        "credential-mutation",
+        "clean",
+        "info",
+        "none",
+      ],
+      [
+        "doctor.operational-state.available",
+        null,
+        "current",
+        null,
+        "operational-state",
+        "available",
+        "info",
+        "none",
+      ],
+      [
+        "doctor.pipeline-health.absent",
+        0,
+        "retained",
+        0,
+        "pipeline-health",
+        "absent",
+        "warning",
+        "none",
+      ],
+      [
+        "doctor.harness.unavailable",
+        0,
+        "unavailable",
+        null,
+        "harness",
+        "unavailable",
+        "warning",
+        "retry",
+      ],
+      [
+        "doctor.destination.unavailable",
+        0,
+        "unavailable",
+        null,
+        "destination",
+        "unavailable",
+        "warning",
+        "inspect-destination",
+      ],
+      [
+        "doctor.git.repository-unavailable",
+        null,
+        "current",
+        null,
+        "git",
+        "repository-unavailable",
+        "warning",
+        "retry",
+      ],
+    ].map(
+      ([
+        code,
+        count,
+        freshness,
+        lossCount,
+        scope,
+        state,
+        severity,
+        suggestedAction,
+      ]) => ({
+        code,
+        evidence: {
+          count,
+          freshness,
+          lossCount,
+          scope,
+          state,
+          subject: null,
+          version: null,
+        },
+        severity,
+        suggestedAction,
+      }),
+    ),
+    fixed: false,
+    repairs: [],
+    summary: { errors: 0, information: 4, warnings: 4 },
+  };
+  for (const mutate of [
+    (record) => {
+      record.findings[0].severity = "warning";
+    },
+    (record) => {
+      record.findings[1].suggestedAction = "retry";
+    },
+    (record) => {
+      record.findings[2].code = "doctor.credential-mutation.active";
+      record.findings[2].evidence.state = "active";
+    },
+  ]) {
+    const record = structuredClone(deterministicDoctor);
+    mutate(record);
+    assert.throws(() =>
+      oracleModule.validateInstalledCliInvocationOutputForTest(
+        forgedDoctorStep,
+        {
+          ...directResult,
+          stdout: `${JSON.stringify({
+            command: "agentscope doctor",
+            completion: "complete",
+            dataSchema: "agentscope.cli.doctor.v1",
+            records: [record],
+            schema: "agentscope.cli.result.v1",
+          })}\n`,
+        },
+        installedManifest.version,
+        { caseOrdinal: 1 },
+      ),
+    );
+  }
+  const emptyDoctorRecord = {
+    findings: [],
+    fixed: false,
+    repairs: [],
+    summary: { errors: 0, information: 0, warnings: 0 },
+  };
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      forgedDoctorStep,
+      {
+        ...directResult,
+        stdout: `${JSON.stringify({
+          command: "agentscope doctor",
+          completion: "complete",
+          dataSchema: "agentscope.cli.doctor.v1",
+          records: [emptyDoctorRecord],
+          schema: "agentscope.cli.result.v1",
+        })}\n`,
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      {
+        ...forgedDoctorStep,
+        args: ["doctor", "--output", "human"],
+        outputRule: "human",
+      },
+      {
+        ...directResult,
+        stdout:
+          "Doctor: 0 error(s), 0 warning(s), 1 informational finding(s).\nINFO [forged.code] forged.state; action=forged.action\n",
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      {
+        ...forgedDoctorStep,
+        args: ["doctor", "--output", "human"],
+        outputRule: "human",
+      },
+      {
+        ...directResult,
+        stdout:
+          "Doctor: 0 error(s), 0 warning(s), 0 informational finding(s).\n",
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  const humanStep = {
+    ...directStep,
+    args: ["harness", "list", "--output", "human"],
+    outputRule: "human",
+  };
+  assert.doesNotThrow(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      humanStep,
+      {
+        ...directResult,
+        stdout: "No first-party harness adapters are registered.\n",
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      humanStep,
+      {
+        ...directResult,
+        stdout: "No first-party harness adapters are registered.\nunexpected\n",
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  const configureStep = {
+    ...directStep,
+    args: [
+      "destination",
+      "configure",
+      "local-sqlite",
+      "--name",
+      "contract-local",
+      "--output",
+      "json",
+    ],
+  };
+  const configureResult = {
+    ...directResult,
+    stdout: `${JSON.stringify({
+      command: "agentscope destination configure",
+      completion: "complete",
+      dataSchema: "agentscope.cli.destination-configure.v1",
+      records: [
+        {
+          applied: false,
+          connection: null,
+          generation: null,
+          plan: {
+            destinationType: "@agentscope/destination-local-sqlite",
+            displayPath: `/tmp/agentscope-installed-contract/cases/1/user home with spaces — 测试/.agentscope/destinations/local-sqlite/sha256-${"a".repeat(64)}`,
+            operation: "configure",
+            persistentDataNotice: true,
+            retentionPolicy: {
+              maximumAgeNanoseconds: "2592000000000000",
+              maximumPayloadBytes: 1_073_741_824,
+              maximumTraceCount: 100_000,
+              physicalCleanupTrigger: "next-authorized-mutation",
+            },
+          },
+          state: "planned",
+        },
+      ],
+      schema: "agentscope.cli.result.v1",
+    })}\n`,
+  };
+  assert.doesNotThrow(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      configureStep,
+      configureResult,
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      configureStep,
+      {
+        ...configureResult,
+        stdout: configureResult.stdout.replace("/cases/1/", "/cases/999/"),
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  for (const [expected, replacement] of [
+    ["2592000000000000", "1"],
+    ["1073741824", "-9007199254740991"],
+    ["100000", "-9007199254740991"],
+  ])
+    assert.throws(() =>
+      oracleModule.validateInstalledCliInvocationOutputForTest(
+        configureStep,
+        {
+          ...configureResult,
+          stdout: configureResult.stdout.replace(expected, replacement),
+        },
+        installedManifest.version,
+        { caseOrdinal: 1 },
+      ),
+    );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      {
+        ...humanStep,
+        args: [
+          "destination",
+          "configure",
+          "local-sqlite",
+          "--name",
+          "contract-local",
+          "--output",
+          "human",
+        ],
+      },
+      {
+        ...directResult,
+        stdout:
+          "Local persistence plan: /tmp/agentscope-installed-contract/cases/1/user home with spaces — 测试/.agentscope/destinations/local-sqlite/wrong-name\nNo changes applied; rerun with --yes after reviewing the plan.\n",
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  const diagnosticStep = {
+    ...directStep,
+    args: ["destination", "inspect", "missing", "--output", "json"],
+    expectedDiagnostic: "destination.connection-missing",
+    expectedStatus: 3,
+    outputRule: "json",
+  };
+  const diagnosticResult = {
+    ...directResult,
+    status: 3,
+    stdout: "",
+    stderr:
+      '{"category":"not-found","code":"destination.connection-missing","command":"agentscope destination inspect","schema":"agentscope.cli.diagnostic.v1"}\n',
+  };
+  assert.doesNotThrow(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      diagnosticStep,
+      diagnosticResult,
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      diagnosticStep,
+      {
+        ...diagnosticResult,
+        stderr: diagnosticResult.stderr.replace(
+          '"category":"not-found"',
+          '"category":"usage"',
+        ),
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      diagnosticStep,
+      {
+        ...diagnosticResult,
+        stderr: diagnosticResult.stderr.replace(
+          '"schema":"agentscope.cli.diagnostic.v1"',
+          '"facts":{"path":"/private/forged","providerBody":"forged"},"schema":"agentscope.cli.diagnostic.v1"',
+        ),
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      diagnosticStep,
+      {
+        ...diagnosticResult,
+        stderr: diagnosticResult.stderr.replace(
+          '"schema":"agentscope.cli.diagnostic.v1"',
+          '"schema":"agentscope.cli.diagnostic.v1","unexpected":true',
+        ),
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      diagnosticStep,
+      {
+        ...diagnosticResult,
+        stderr: diagnosticResult.stderr.replace(
+          '"command":"agentscope destination inspect"',
+          '"command":"agentscope harness list"',
+        ),
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
   const executionModes = new Set(
     installedContractPlan.cases.flatMap(({ steps }) =>
       steps.map(({ executionMode }) => executionMode),

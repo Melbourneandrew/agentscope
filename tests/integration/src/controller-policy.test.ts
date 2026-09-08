@@ -523,3 +523,57 @@ describe("installed-contract cleanup failure evidence", () => {
       expect(validate(rejected)).not.toBe(0);
   });
 });
+
+describe("model control-plane isolation", () => {
+  it("binds disjoint candidate/control networks and the one-shot proxy", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(source).toContain(
+      "for (const network of [plan.networkName, plan.controlNetworkName])",
+    );
+    expect(source).toContain('"mockserver-control"');
+    expect(source).toContain('"model-proxy"');
+    expect(source).toContain(
+      '"AGENTSCOPE_MODEL_CONTROL_URL=http://mockserver-control:1080"',
+    );
+    expect(source).toContain(
+      '"AGENTSCOPE_MODEL_SERVER_URL=http://model-proxy:4320"',
+    );
+    expect(source).not.toContain(
+      '"AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080"',
+    );
+    expect(source).toContain('"/opt/agentscope/model-server-proxy.mjs"');
+    expect(source).toContain('"--read-control"');
+    expect(source).toContain("authenticateModelProxyLedger");
+    const proxy = readFileSync(
+      resolve(workspaceRoot, "tests/integration/model-server-proxy.mjs"),
+      "utf8",
+    );
+    expect(proxy).toContain('.listen(4321, "127.0.0.1")');
+    expect(proxy).toContain("const controlHandler = async");
+    const adapter = readFileSync(
+      resolve(
+        workspaceRoot,
+        "tests/integration/fixtures/process-platform-adapter.mjs",
+      ),
+      "utf8",
+    );
+    expect(adapter).not.toContain("/mockserver/retrieve");
+    expect(adapter).not.toContain("/ledger");
+    const platformFixture = readFileSync(
+      resolve(workspaceRoot, "tests/integration/platform-fixture.mjs"),
+      "utf8",
+    );
+    expect(platformFixture).toContain("/agentscope/ready");
+    expect(platformFixture).not.toContain("ACTIVE_EXPECTATIONS");
+    const cleanup = readFileSync(
+      resolve(workspaceRoot, "tests/integration/clean.mjs"),
+      "utf8",
+    );
+    expect(cleanup).toContain("mockserver|model-proxy");
+    expect(cleanup).toContain("network|control-network");
+    expect(source).toContain("authenticateDestinationLedgers");
+  });
+});

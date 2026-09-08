@@ -1,3 +1,6 @@
+/* eslint-disable max-lines-per-function -- the adapter declares one exact cross-checked fixture ledger */
+import { createHash } from "node:crypto";
+
 const representativeEventKinds = [
   "hook",
   "canonical",
@@ -7,6 +10,14 @@ const representativeEventKinds = [
   "tool",
   "destination",
 ];
+const destinationEntry = (operation, method, path, body, outcome) => ({
+  operation,
+  method,
+  path,
+  bodyBytes: Buffer.byteLength(body),
+  bodySha256: createHash("sha256").update(body).digest("hex"),
+  outcome,
+});
 
 const runModels = async ({
   modelEndpoint,
@@ -52,21 +63,6 @@ const runModels = async ({
     path: unmatchedPath,
     bodyBytes: 0,
   });
-  const recorded = await requestJson(
-    `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
-    {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    },
-    200,
-  );
-  const requests = await recorded.json();
-  if (
-    JSON.stringify(requests.map(({ method, path }) => ({ method, path }))) !==
-    JSON.stringify(entries.map(({ method, path }) => ({ method, path })))
-  )
-    throw new Error("integration.fixture.model-recording");
   return { ledgerVersion: 1, scenarioId, entries };
 };
 
@@ -167,19 +163,45 @@ const runDestinations = async ({
     },
     503,
   );
-  const [ingestionLedger, retrievalLedger] = await Promise.all([
-    requestJson(`${ingestionEndpoint}/ledger`, {}, 200).then((response) =>
-      response.json(),
+  const ingestion = [
+    destinationEntry("health", "GET", "/health", "", "accepted"),
+    destinationEntry("otlp-ingest", "POST", "/v1/traces", body, "accepted"),
+    destinationEntry(
+      "langfuse-ingest",
+      "POST",
+      "/api/public/ingestion",
+      body,
+      "accepted",
     ),
-    requestJson(`${retrievalEndpoint}/ledger`, {}, 200).then((response) =>
-      response.json(),
+    ...[
+      "auth-rejected",
+      "rate-limited",
+      "unavailable",
+      "malformed-response",
+    ].map((outcome) =>
+      destinationEntry("otlp-ingest", "POST", "/v1/traces", body, outcome),
     ),
-  ]);
+    destinationEntry("oversize", "POST", "/v1/traces", "", "rejected"),
+  ];
+  const representativeBody = JSON.stringify(representative);
+  const retrieval = [
+    destinationEntry("health", "GET", "/health", "", "accepted"),
+    destinationEntry("seed", "POST", "/seed", representativeBody, "accepted"),
+    destinationEntry(
+      "search",
+      "POST",
+      "/search",
+      JSON.stringify({ branch: "main" }),
+      "accepted",
+    ),
+    destinationEntry("get", "GET", `/trace/${traceId}`, "", "accepted"),
+    destinationEntry("search", "POST", "/search", "{}", "unavailable"),
+  ];
   return {
     ledgerVersion: 1,
     scenarioId,
-    ingestion: ingestionLedger.entries,
-    retrieval: retrievalLedger.entries,
+    ingestion,
+    retrieval,
   };
 };
 

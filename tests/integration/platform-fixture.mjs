@@ -102,11 +102,7 @@ const waitFor = async (url, options) => {
 for (const path of [harnessHome, agentscopeHome, worktree, ledgerHome])
   mkdirSync(path, { recursive: true });
 await Promise.all([
-  waitFor(`${modelEndpoint}/mockserver/retrieve?type=ACTIVE_EXPECTATIONS`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }),
+  waitFor(`${modelEndpoint}/agentscope/ready`),
   waitFor(`${ingestionEndpoint}/health`),
   waitFor(`${retrievalEndpoint}/health`),
 ]);

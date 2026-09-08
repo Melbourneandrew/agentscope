@@ -227,6 +227,10 @@ const driver = () => {
       calls.push("mockserver");
       return Promise.resolve();
     }),
+    startModelProxy: vi.fn(() => {
+      calls.push("model-proxy");
+      return Promise.resolve();
+    }),
     runScenario,
     recordEvidence,
     removeContainer,
@@ -262,9 +266,12 @@ describe("scenario isolation", () => {
     const second = planFor("fedcba9876543210");
     expect(Object.isFrozen(first)).toBe(true);
     expect(first.networkName).not.toBe(second.networkName);
+    expect(first.controlNetworkName).not.toBe(first.networkName);
+    expect(first.controlNetworkName).not.toBe(second.controlNetworkName);
     expect(first.collectorName).not.toBe(second.collectorName);
     expect(first.retrievalName).not.toBe(second.retrievalName);
     expect(first.mockServerName).not.toBe(second.mockServerName);
+    expect(first.modelProxyName).not.toBe(second.modelProxyName);
     expect(first.scenarioName).not.toBe(second.scenarioName);
     expect(first.tmpfsMounts).toEqual([
       "/home/agentscope",
@@ -309,12 +316,15 @@ describe("scenario isolation", () => {
       "collector",
       "retrieval",
       "mockserver",
+      "model-proxy",
       "scenario",
       "container:agentscope-int-0123456789abcdef-scenario",
       "container:agentscope-int-0123456789abcdef-collector",
       "container:agentscope-int-0123456789abcdef-retrieval",
       "container:agentscope-int-0123456789abcdef-mockserver",
+      "container:agentscope-int-0123456789abcdef-model-proxy",
       "remove-network:agentscope-int-0123456789abcdef-network",
+      "remove-network:agentscope-int-0123456789abcdef-control-network",
       "image:agentscope-int-0123456789abcdef:candidate",
       "image:agentscope-int-0123456789abcdef:mockserver",
       "context:0123456789abcdef",
@@ -756,7 +766,7 @@ describe("installed CLI contract evidence", () => {
       'resolve(context, "installed-contract-driver.mjs")',
     );
     expect(scenario).toContain(
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs model-server-proxy.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs",
     );
     expect(packageManifest.files).toEqual(["dist"]);
   });

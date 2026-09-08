@@ -1,14 +1,27 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 // The authority is deliberately private integration JavaScript, not a package API.
 // @ts-expect-error no declaration file is published for this private module
 import * as immutableAuthority from "../immutable-candidate-authority.mjs";
+// @ts-expect-error the private fixture adapter has no published declaration
+import { runPlatformAdapter } from "../fixtures/process-platform-adapter.mjs";
 
 const {
+  assertExactFixtureLedger,
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
   compileInstalledContractFailureReceipt,
@@ -19,6 +32,7 @@ const {
   decodeInstalledContractFailureReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeImmutableCandidateHandoff,
+  digestInstalledContractWritableAuthority,
   installedPtyFailurePredicates,
   installedContractFailurePredicates,
   selectedRuntimeFiles,
@@ -27,6 +41,80 @@ const {
 } = immutableAuthority;
 
 const hex = (character: string): string => character.repeat(64);
+describe("fixture ledger oracle", () => {
+  it("executes the adapter through exact zero-byte destination evidence", async () => {
+    const traceId = "0123456789abcdef0123456789abcdef";
+    const requestJson = vi.fn(
+      (input: string, init: { headers?: Record<string, string> } = {}) => {
+        const path = new URL(input).pathname;
+        const fault = init.headers?.["x-agentscope-fault"];
+        return Promise.resolve({
+          json: () => {
+            if (fault === "malformed")
+              return Promise.reject(new Error("fixture malformed"));
+            if (path === "/search")
+              return Promise.resolve({ traces: [{ traceId }] });
+            if (path === `/trace/${traceId}`)
+              return Promise.resolve({ traceId });
+            return Promise.resolve({});
+          },
+        });
+      },
+    );
+    const result = await runPlatformAdapter({
+      ingestionEndpoint: "http://ingestion",
+      modelEndpoint: "http://model",
+      publishCheckpoint: vi.fn(),
+      requestJson,
+      retrievalEndpoint: "http://retrieval",
+      routeFixture: { routes: [] },
+      scenario: { modelRoutes: [] },
+      scenarioId: "fixture-process-smoke",
+    });
+    expect(result.destinationLedger.retrieval[0]).toMatchObject({
+      bodyBytes: 0,
+      bodySha256:
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      operation: "health",
+    });
+    expect(
+      result.assertions.every(
+        ({ evaluate }: { evaluate: (value: unknown) => boolean }) =>
+          evaluate(result),
+      ),
+    ).toBe(true);
+  });
+
+  it("requires independent expected, declared, and observed sequences", () => {
+    const expected = [{ method: "POST", routeId: "first" }];
+    expect(
+      assertExactFixtureLedger(
+        expected,
+        structuredClone(expected),
+        structuredClone(expected),
+      ),
+    ).toBe(true);
+    for (const [declared, observed] of [
+      [[], expected],
+      [expected, []],
+      [
+        [{ method: "POST", routeId: "second" }],
+        [{ method: "POST", routeId: "second" }],
+      ],
+      [
+        [{ bodyBytes: 4, bodySha256: hex("b"), method: "POST" }],
+        [{ bodyBytes: 4, bodySha256: hex("b"), method: "POST" }],
+      ],
+      [
+        [...expected, ...expected],
+        [...expected, ...expected],
+      ],
+    ])
+      expect(() =>
+        assertExactFixtureLedger(expected, declared, observed),
+      ).toThrow("integration.immutable-candidate.fixture-ledger");
+  });
+});
 const candidate = () => ({
   evidenceVersion: 1,
   bundleIdentity: `sha256-${hex("a")}`,
@@ -684,6 +772,122 @@ describe("immutable candidate authority", () => {
     );
     expect(deadlineChild).toContain("executionTimeoutMilliseconds: 250");
     expect(deadlineChild).toContain("shutdownTimeoutMilliseconds: 5_000");
+  });
+
+  it("binds the complete installed-contract writable case authority", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "agentscope-contract-state-"));
+    try {
+      for (const name of ["home", "temporary", "workspace"])
+        mkdirSync(resolve(root, name));
+      const input = { excludedPaths: [], roots: [root] };
+      const baseline = digestInstalledContractWritableAuthority(input);
+      writeFileSync(resolve(root, "workspace/mutation"), "cwd");
+      expect(digestInstalledContractWritableAuthority(input)).not.toBe(
+        baseline,
+      );
+      rmSync(resolve(root, "workspace/mutation"));
+      const restoredBaseline = digestInstalledContractWritableAuthority(input);
+      writeFileSync(resolve(root, "temporary/mutation"), "tmp");
+      expect(digestInstalledContractWritableAuthority(input)).not.toBe(
+        restoredBaseline,
+      );
+      rmSync(resolve(root, "temporary/mutation"));
+      const identityTarget = resolve(root, "home/identity");
+      writeFileSync(identityTarget, "same bytes");
+      const identityBaseline = digestInstalledContractWritableAuthority(input);
+      const replacement = resolve(root, "home/replacement");
+      writeFileSync(replacement, "same bytes");
+      renameSync(replacement, identityTarget);
+      expect(digestInstalledContractWritableAuthority(input)).not.toBe(
+        identityBaseline,
+      );
+      const metadataBaseline = digestInstalledContractWritableAuthority(input);
+      utimesSync(identityTarget, new Date(1_000), new Date(1_000));
+      expect(digestInstalledContractWritableAuthority(input)).not.toBe(
+        metadataBaseline,
+      );
+      const sibling = resolve(root, "sibling");
+      mkdirSync(sibling);
+      const excludingSibling = {
+        excludedPaths: [sibling],
+        roots: [root],
+      };
+      const excludedBaseline =
+        digestInstalledContractWritableAuthority(excludingSibling);
+      writeFileSync(resolve(sibling, "allowed"), "case mutation");
+      expect(digestInstalledContractWritableAuthority(excludingSibling)).toBe(
+        excludedBaseline,
+      );
+      writeFileSync(resolve(root, "external-mutation"), "sibling authority");
+      expect(
+        digestInstalledContractWritableAuthority(excludingSibling),
+      ).not.toBe(excludedBaseline);
+      rmSync(resolve(root, "external-mutation"));
+      const secondRoot = resolve(root, "second-root");
+      mkdirSync(secondRoot);
+      const completeAuthority = {
+        excludedPaths: [],
+        roots: [resolve(root, "home"), secondRoot],
+      };
+      const completeBaseline =
+        digestInstalledContractWritableAuthority(completeAuthority);
+      writeFileSync(resolve(secondRoot, "sibling-mutation"), "outside case");
+      expect(
+        digestInstalledContractWritableAuthority(completeAuthority),
+      ).not.toBe(completeBaseline);
+      symlinkSync(resolve(root, "home"), resolve(root, "workspace/alias"));
+      expect(() => digestInstalledContractWritableAuthority(input)).toThrow(
+        "integration.immutable-candidate.authority",
+      );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    expect(runner).toContain("const stateRoots = writableAuthorityRoots;");
+    expect(runner).toContain("excludedPaths: [caseRoot]");
+    expect(runner).toContain("/agentscope/admit");
+    expect(runner).toContain('requiredEnvironment("AGENTSCOPE_INGESTION_URL")');
+    expect(runner).toContain('requiredEnvironment("AGENTSCOPE_RETRIEVAL_URL")');
+    expect(runner).toContain(
+      'requiredEnvironment("AGENTSCOPE_MODEL_SERVER_URL")',
+    );
+    const destinationServer = readFileSync(
+      resolve(import.meta.dirname, "../destination-server.mjs"),
+      "utf8",
+    );
+    expect(destinationServer).toContain(
+      'record(request, Buffer.alloc(0), "health", "accepted")',
+    );
+    expect(destinationServer).toContain(
+      'record(request, Buffer.alloc(0), "oversize", "rejected")',
+    );
+    expect(destinationServer).toContain('server.on("clientError"');
+    expect(destinationServer).toContain("pendingConnectionCount:");
+    expect(destinationServer).toContain("pendingSockets.delete(socket)");
+    expect(destinationServer).toContain('socket.once("close"');
+    expect(destinationServer).not.toContain("settleSocket(request.socket)");
+    expect(destinationServer).toContain("if (overflow)");
+    expect(destinationServer).toContain("if (!requireRecorded(response");
+    expect(destinationServer).toContain('bodySha256: createHash("sha256")');
+    expect(destinationServer).toContain('.listen(4321, "127.0.0.1")');
+    const runScenarios = readFileSync(
+      resolve(import.meta.dirname, "../run-scenarios.mjs"),
+      "utf8",
+    );
+    expect(runScenarios).toContain(
+      "captureFailureFixtureLedgerObservations(plan, signal)",
+    );
+    expect(runScenarios).toContain("fixtureLedgerObservations.get(");
+    expect(runScenarios).toContain('{ status: "uncertain" }');
+    expect(runScenarios).not.toContain(
+      "JSON.stringify(result.modelLedger, undefined, 2)",
+    );
+    expect(runner).not.toContain("/ledger");
+    expect(runner).not.toContain(
+      'const stateRoot = join(caseHome, ".agentscope");',
+    );
   });
 
   it("reports only an exact trusted selected-headless failure code", () => {

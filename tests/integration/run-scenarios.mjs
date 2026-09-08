@@ -52,6 +52,7 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  assertExactFixtureLedger,
   decodeInstalledContractFailureReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeInstalledCliPtyReceipt,
@@ -335,6 +336,10 @@ const stageBuildContext = (plan) => {
       "destination-server.mjs",
       resolve(integrationRoot, "destination-server.mjs"),
     ],
+    [
+      "model-server-proxy.mjs",
+      resolve(integrationRoot, "model-server-proxy.mjs"),
+    ],
     ["platform-fixture.mjs", resolve(integrationRoot, "platform-fixture.mjs")],
     [
       "scenario-adapter.mjs",
@@ -421,7 +426,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs model-server-proxy.mjs platform-fixture.mjs scenario-adapter.mjs installed-contract-driver.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,
@@ -519,9 +524,23 @@ const assertContainer = async (
       imageConfigMatches = false;
     }
   }
+  const expectedNetworks =
+    name === plan.modelProxyName
+      ? [plan.controlNetworkName, plan.networkName].sort()
+      : [
+          name === plan.mockServerName
+            ? plan.controlNetworkName
+            : plan.networkName,
+        ];
+  const attachedNetworks = Object.keys(
+    container?.NetworkSettings?.Networks ?? {},
+  ).sort();
+  const primaryNetwork =
+    name === plan.mockServerName ? plan.controlNetworkName : plan.networkName;
   if (
     container?.HostConfig?.ReadonlyRootfs !== true ||
-    container?.HostConfig?.NetworkMode !== plan.networkName ||
+    container?.HostConfig?.NetworkMode !== primaryNetwork ||
+    JSON.stringify(attachedNetworks) !== JSON.stringify(expectedNetworks) ||
     container?.HostConfig?.Memory !== limits.memoryBytes ||
     container?.HostConfig?.PidsLimit !== limits.pidsLimit ||
     !Array.isArray(container?.Mounts) ||
@@ -562,6 +581,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 };
 
 const fixtureResults = new Map();
+const fixtureLedgerObservations = new Map();
 const installedContractEvidenceByRun = new Map();
 const scenarioOutcomes = new Map();
 const fingerprintHeadlessRequest = (request) =>
@@ -584,7 +604,7 @@ const expectedHeadlessEnvironment = (plan) => ({
   AGENTSCOPE_INGESTION_URL: "http://collector:4318",
   AGENTSCOPE_INSTALLED_CONTRACT_DRIVER_DIGEST: installedContractDriverDigest,
   AGENTSCOPE_LEDGER: "/ledger",
-  AGENTSCOPE_MODEL_SERVER_URL: "http://mockserver:1080",
+  AGENTSCOPE_MODEL_SERVER_URL: "http://model-proxy:4320",
   AGENTSCOPE_RETRIEVAL_URL: "http://retrieval:4319",
   AGENTSCOPE_SCENARIO_ID: plan.scenarioId,
   AGENTSCOPE_WORKTREE: "/worktree",
@@ -647,6 +667,350 @@ const captureFixtureResult = (output, plan) => {
   );
   return true;
 };
+const expectedFixtureLedgers = (plan) => {
+  const scenario = manifest.scenarios.find(
+    ({ scenarioId }) => scenarioId === plan.scenarioId,
+  );
+  if (scenario === undefined)
+    throw new Error("integration.isolation.fixture-oracle");
+  const model = scenario.modelRoutes.map((routeId) => {
+    const route = modelRoutes.routes.find(
+      (candidate) => candidate.routeId === routeId,
+    );
+    if (route === undefined)
+      throw new Error("integration.isolation.fixture-oracle");
+    return {
+      routeId,
+      provider: route.provider,
+      method: route.method,
+      path: route.path,
+      bodyBytes: Buffer.byteLength(JSON.stringify(route.requestBody)),
+    };
+  });
+  model.push({
+    routeId: "unmatched",
+    provider: "none",
+    method: "GET",
+    path: "/agentscope-unmatched",
+    bodyBytes: 0,
+  });
+  const representative = {
+    traceId: "0123456789abcdef0123456789abcdef",
+    branch: "main",
+    model: "fixture-model",
+    tool: "fixture_tool",
+    redaction: "content-removed",
+    events: [
+      "hook",
+      "canonical",
+      "redaction",
+      "git",
+      "model",
+      "tool",
+      "destination",
+    ],
+  };
+  const body = JSON.stringify({
+    resourceSpans: [{ scopeSpans: [{ spans: [representative] }] }],
+  });
+  const entry = (operation, method, path, value, outcome) => ({
+    operation,
+    method,
+    path,
+    bodyBytes: Buffer.byteLength(value),
+    bodySha256: createHash("sha256").update(value).digest("hex"),
+    outcome,
+  });
+  return Object.freeze({
+    model: Object.freeze(model),
+    destination: Object.freeze({
+      ingestion: Object.freeze([
+        entry("health", "GET", "/health", "", "accepted"),
+        entry("otlp-ingest", "POST", "/v1/traces", body, "accepted"),
+        entry(
+          "langfuse-ingest",
+          "POST",
+          "/api/public/ingestion",
+          body,
+          "accepted",
+        ),
+        ...[
+          "auth-rejected",
+          "rate-limited",
+          "unavailable",
+          "malformed-response",
+        ].map((outcome) =>
+          entry("otlp-ingest", "POST", "/v1/traces", body, outcome),
+        ),
+        entry("oversize", "POST", "/v1/traces", "", "rejected"),
+      ]),
+      retrieval: Object.freeze([
+        entry("health", "GET", "/health", "", "accepted"),
+        entry(
+          "seed",
+          "POST",
+          "/seed",
+          JSON.stringify(representative),
+          "accepted",
+        ),
+        entry(
+          "search",
+          "POST",
+          "/search",
+          JSON.stringify({ branch: "main" }),
+          "accepted",
+        ),
+        entry("get", "GET", `/trace/${representative.traceId}`, "", "accepted"),
+        entry("search", "POST", "/search", "{}", "unavailable"),
+      ]),
+    }),
+  });
+};
+const uncertainLedgerObservation = () => Object.freeze({ status: "uncertain" });
+const authenticatedLedgerObservation = (ledger) =>
+  Object.freeze({ ledger, status: "authenticated" });
+const currentFixtureLedgerObservations = (runId) =>
+  fixtureLedgerObservations.get(runId) ?? {
+    destination: {
+      ingestion: uncertainLedgerObservation(),
+      retrieval: uncertainLedgerObservation(),
+    },
+    model: uncertainLedgerObservation(),
+  };
+const recordModelLedgerObservation = (plan, ledger) => {
+  const current = currentFixtureLedgerObservations(plan.runId);
+  fixtureLedgerObservations.set(
+    plan.runId,
+    Object.freeze({
+      destination: current.destination,
+      model: authenticatedLedgerObservation(ledger),
+    }),
+  );
+};
+const recordDestinationLedgerObservations = (plan, ingestion, retrieval) => {
+  const current = currentFixtureLedgerObservations(plan.runId);
+  fixtureLedgerObservations.set(
+    plan.runId,
+    Object.freeze({
+      destination: Object.freeze({
+        ingestion: authenticatedLedgerObservation(ingestion),
+        retrieval: authenticatedLedgerObservation(retrieval),
+      }),
+      model: current.model,
+    }),
+  );
+};
+const readModelProxyLedger = async (plan, signal) => {
+  const { stdout } = await dockerWithSignal(
+    [
+      "exec",
+      plan.modelProxyName,
+      "node",
+      "/opt/agentscope/model-server-proxy.mjs",
+      "--read-control",
+    ],
+    signal,
+    { mutationCapable: true },
+  );
+  if (
+    Buffer.byteLength(stdout) < 3 ||
+    Buffer.byteLength(stdout) > 1024 * 1024 ||
+    !stdout.endsWith("\n") ||
+    stdout.slice(0, -1).includes("\n")
+  )
+    throw new Error("integration.isolation.model-proxy-ledger");
+  let ledger;
+  try {
+    ledger = JSON.parse(stdout);
+  } catch {
+    throw new Error("integration.isolation.model-proxy-ledger");
+  }
+  if (
+    Object.keys(ledger).sort().join(",") !==
+      "activeBodyCount,entries,inFlightRequestCount,ledgerVersion,overflow,pendingConnectionCount,scenarioId" ||
+    ledger.ledgerVersion !== 1 ||
+    ledger.scenarioId !== plan.scenarioId ||
+    typeof ledger.overflow !== "boolean" ||
+    ledger.activeBodyCount !== 0 ||
+    ledger.inFlightRequestCount !== 0 ||
+    ledger.pendingConnectionCount !== 0 ||
+    !Array.isArray(ledger.entries) ||
+    ledger.entries.length > 4_096
+  )
+    throw new Error("integration.isolation.model-proxy-ledger");
+  return ledger;
+};
+const authenticateModelProxyLedger = async (plan, signal) => {
+  const ledger = await readModelProxyLedger(plan, signal);
+  recordModelLedgerObservation(plan, ledger);
+  const result = fixtureResults.get(plan.runId);
+  const expected = expectedFixtureLedgers(plan).model;
+  if (
+    result === undefined ||
+    ledger.overflow !== false ||
+    !assertExactFixtureLedger(
+      expected,
+      result.modelLedger.entries,
+      ledger.entries,
+    )
+  )
+    throw new Error("integration.isolation.model-proxy-ledger");
+  return ledger;
+};
+const readDestinationLedger = async (plan, name, signal) => {
+  const { stdout } = await dockerWithSignal(
+    [
+      "exec",
+      name,
+      "node",
+      "/opt/agentscope/destination-server.mjs",
+      "--read-control",
+    ],
+    signal,
+    { mutationCapable: true },
+  );
+  if (
+    Buffer.byteLength(stdout) < 3 ||
+    Buffer.byteLength(stdout) > 1024 * 1024 ||
+    !stdout.endsWith("\n") ||
+    stdout.slice(0, -1).includes("\n")
+  )
+    throw new Error("integration.isolation.destination-ledger");
+  let ledger;
+  try {
+    ledger = JSON.parse(stdout);
+  } catch {
+    throw new Error("integration.isolation.destination-ledger");
+  }
+  if (
+    Object.keys(ledger).sort().join(",") !==
+      "activeBodyCount,entries,ledgerVersion,overflow,pendingConnectionCount,scenarioId" ||
+    ledger.ledgerVersion !== 1 ||
+    ledger.scenarioId !== plan.scenarioId ||
+    typeof ledger.overflow !== "boolean" ||
+    ledger.activeBodyCount !== 0 ||
+    ledger.pendingConnectionCount !== 0 ||
+    !Array.isArray(ledger.entries) ||
+    ledger.entries.length > 4_096
+  )
+    throw new Error("integration.isolation.destination-ledger");
+  return ledger;
+};
+const readDestinationLedgers = async (plan, signal) => {
+  const [ingestion, retrieval] = await Promise.all([
+    readDestinationLedger(plan, plan.collectorName, signal),
+    readDestinationLedger(plan, plan.retrievalName, signal),
+  ]);
+  return { ingestion, retrieval };
+};
+const authenticateDestinationLedgers = async (plan, signal) => {
+  const { ingestion, retrieval } = await readDestinationLedgers(plan, signal);
+  recordDestinationLedgerObservations(plan, ingestion, retrieval);
+  const declared = fixtureResults.get(plan.runId)?.destinationLedger;
+  const expected = expectedFixtureLedgers(plan).destination;
+  for (const [kind, ledger] of [
+    ["ingestion", ingestion],
+    ["retrieval", retrieval],
+  ])
+    if (
+      declared === undefined ||
+      ledger.overflow !== false ||
+      !assertExactFixtureLedger(expected[kind], declared[kind], ledger.entries)
+    )
+      throw new Error("integration.isolation.destination-ledger");
+  return { ingestion, retrieval };
+};
+const ledgerObservation = (result) =>
+  result.status === "fulfilled"
+    ? authenticatedLedgerObservation(result.value)
+    : uncertainLedgerObservation();
+const settleLedgerObservation = async (read) => {
+  try {
+    return { status: "fulfilled", value: await read() };
+  } catch {
+    return { status: "rejected" };
+  }
+};
+const captureFailureFixtureLedgerObservations = async (plan, signal) => {
+  const current = currentFixtureLedgerObservations(plan.runId);
+  const model =
+    current.model.status === "authenticated"
+      ? { status: "fulfilled", value: current.model.ledger }
+      : await settleLedgerObservation(() => readModelProxyLedger(plan, signal));
+  const retrieval =
+    current.destination.retrieval.status === "authenticated"
+      ? {
+          status: "fulfilled",
+          value: current.destination.retrieval.ledger,
+        }
+      : await settleLedgerObservation(() =>
+          readDestinationLedger(plan, plan.retrievalName, signal),
+        );
+  const ingestion =
+    current.destination.ingestion.status === "authenticated"
+      ? {
+          status: "fulfilled",
+          value: current.destination.ingestion.ledger,
+        }
+      : await settleLedgerObservation(() =>
+          readDestinationLedger(plan, plan.collectorName, signal),
+        );
+  fixtureLedgerObservations.set(
+    plan.runId,
+    Object.freeze({
+      destination: Object.freeze({
+        ingestion: ledgerObservation(ingestion),
+        retrieval: ledgerObservation(retrieval),
+      }),
+      model: ledgerObservation(model),
+    }),
+  );
+};
+const recordSuccessfulFixtureLedgerObservations = (
+  plan,
+  modelLedger,
+  destinationLedgers,
+) => {
+  fixtureLedgerObservations.set(
+    plan.runId,
+    Object.freeze({
+      destination: Object.freeze({
+        ingestion: Object.freeze({
+          ledger: destinationLedgers.ingestion,
+          status: "authenticated",
+        }),
+        retrieval: Object.freeze({
+          ledger: destinationLedgers.retrieval,
+          status: "authenticated",
+        }),
+      }),
+      model: Object.freeze({
+        ledger: modelLedger,
+        status: "authenticated",
+      }),
+    }),
+  );
+};
+const scenarioEvidenceSucceeded = (
+  receipt,
+  ptyReceipt,
+  fixtureCaptured,
+  modelLedger,
+  destinationLedgers,
+) =>
+  receipt.outcome === "exited" &&
+  receipt.exitCode === 0 &&
+  receipt.signal === null &&
+  receipt.cleanup === "clean" &&
+  receipt.residualProcessCount === 0 &&
+  receipt.processJoined === true &&
+  receipt.stdinJoined === true &&
+  receipt.stdoutJoined === true &&
+  receipt.stderrJoined === true &&
+  ptyReceipt.outcome === "completed" &&
+  fixtureCaptured &&
+  modelLedger !== undefined &&
+  destinationLedgers !== undefined;
 const captureInstalledContractEvidence = (output, plan) => {
   const lines = output
     .split("\n")
@@ -964,17 +1328,12 @@ const buildMockServerImage = async (plan, signal) => {
   });
 };
 const createNetwork = async (plan, signal) => {
-  await dockerWithSignal(
-    [
-      "network",
-      "create",
-      "--internal",
-      ...labelArguments(plan),
-      plan.networkName,
-    ],
-    signal,
-    { mutationCapable: true },
-  );
+  for (const network of [plan.networkName, plan.controlNetworkName])
+    await dockerWithSignal(
+      ["network", "create", "--internal", ...labelArguments(plan), network],
+      signal,
+      { mutationCapable: true },
+    );
 };
 const startCollector = async (plan, signal) => {
   await dockerWithSignal(
@@ -1080,9 +1439,9 @@ const startMockServer = async (plan, signal) => {
       plan.mockServerName,
       ...labelArguments(plan),
       "--network",
-      plan.networkName,
+      plan.controlNetworkName,
       "--network-alias",
-      "mockserver",
+      "mockserver-control",
       "--read-only",
       "--cap-drop",
       "ALL",
@@ -1108,6 +1467,63 @@ const startMockServer = async (plan, signal) => {
     signal,
   );
   await dockerWithSignal(["start", plan.mockServerName], signal, {
+    mutationCapable: true,
+  });
+};
+const startModelProxy = async (plan, signal) => {
+  await dockerWithSignal(
+    [
+      "create",
+      "--platform",
+      canonicalImagePlatform,
+      "--name",
+      plan.modelProxyName,
+      ...labelArguments(plan),
+      "--network",
+      plan.networkName,
+      "--network-alias",
+      "model-proxy",
+      "--read-only",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
+      ...sidecarResourceArguments(
+        ISOLATION_EXECUTOR_LIMITS.containers.modelProxy,
+      ),
+      "--user",
+      "1000:1000",
+      ...tmpfsArguments(ISOLATION_EXECUTOR_LIMITS.containers.modelProxy),
+      "--env",
+      `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
+      "--env",
+      "AGENTSCOPE_MODEL_CONTROL_URL=http://mockserver-control:1080",
+      plan.imageTag,
+      "node",
+      "/opt/agentscope/model-server-proxy.mjs",
+    ],
+    signal,
+    { mutationCapable: true },
+  );
+  await dockerWithSignal(
+    [
+      "network",
+      "connect",
+      "--alias",
+      "model-proxy-control",
+      plan.controlNetworkName,
+      plan.modelProxyName,
+    ],
+    signal,
+    { mutationCapable: true },
+  );
+  await assertContainer(
+    plan,
+    plan.modelProxyName,
+    ISOLATION_EXECUTOR_LIMITS.containers.modelProxy,
+    signal,
+  );
+  await dockerWithSignal(["start", plan.modelProxyName], signal, {
     mutationCapable: true,
   });
 };
@@ -1151,7 +1567,7 @@ const scenarioContainerArguments = (
     "--env",
     "AGENTSCOPE_RETRIEVAL_URL=http://retrieval:4319",
     "--env",
-    "AGENTSCOPE_MODEL_SERVER_URL=http://mockserver:1080",
+    "AGENTSCOPE_MODEL_SERVER_URL=http://model-proxy:4320",
     "--env",
     `AGENTSCOPE_SCENARIO_ID=${plan.scenarioId}`,
     "--env",
@@ -1222,25 +1638,34 @@ const runScenario = async (plan, signal) => {
       performance.now(),
     );
     registerIntegrationHeadlessReceipt(receipt, performance.now());
+    const fixtureCaptured = captureFixtureResult(stdout, plan);
+    const modelLedger = fixtureCaptured
+      ? await authenticateModelProxyLedger(plan, signal)
+      : undefined;
+    const destinationLedgers = fixtureCaptured
+      ? await authenticateDestinationLedgers(plan, signal)
+      : undefined;
+    if (modelLedger !== undefined && destinationLedgers !== undefined)
+      recordSuccessfulFixtureLedgerObservations(
+        plan,
+        modelLedger,
+        destinationLedgers,
+      );
     return {
       installedCliContractEvidence,
       receipt,
-      succeeded:
-        receipt.outcome === "exited" &&
-        receipt.exitCode === 0 &&
-        receipt.signal === null &&
-        receipt.cleanup === "clean" &&
-        receipt.residualProcessCount === 0 &&
-        receipt.processJoined === true &&
-        receipt.stdinJoined === true &&
-        receipt.stdoutJoined === true &&
-        receipt.stderrJoined === true &&
-        ptyReceipt.outcome === "completed" &&
-        captureFixtureResult(stdout, plan),
+      succeeded: scenarioEvidenceSucceeded(
+        receipt,
+        ptyReceipt,
+        fixtureCaptured,
+        modelLedger,
+        destinationLedgers,
+      ),
     };
   } catch (error) {
     const output = `${error?.stdout ?? ""}`;
     captureFixtureResult(output, plan);
+    await captureFailureFixtureLedgerObservations(plan, signal);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
       captureInstalledPtyFailure(output, plan);
     if (output.includes("AGENTSCOPE_INSTALLED_CONTRACT_FAILURE="))
@@ -1298,20 +1723,36 @@ const recordEvidence = async (evidence) => {
       { flag: "wx", mode: 0o600 },
     );
   const result = fixtureResults.get(verifiedEvidence.runId);
+  const observed = fixtureLedgerObservations.get(verifiedEvidence.runId);
   if (
     verifiedEvidence.outcome === "passed" &&
     (result === undefined || result.resultStatus !== "complete")
   )
     throw new Error("integration.isolation.fixture-result");
-  if (result !== undefined) {
+  if (observed !== undefined) {
+    const modelLedgerArtifact =
+      observed.model.status === "authenticated"
+        ? observed.model.ledger
+        : observed.model;
+    const destinationLedgerArtifact =
+      observed.destination.ingestion.status === "authenticated" &&
+      observed.destination.retrieval.status === "authenticated"
+        ? {
+            ingestion: observed.destination.ingestion.ledger,
+            retrieval: observed.destination.retrieval.ledger,
+          }
+        : observed.destination;
     writeFileSync(
       resolve(directory, "model-ledger.json"),
-      `${JSON.stringify(result.modelLedger, undefined, 2)}\n`,
+      `${JSON.stringify(modelLedgerArtifact, undefined, 2)}\n`,
     );
     writeFileSync(
       resolve(directory, "destination-ledger.json"),
-      `${JSON.stringify(result.destinationLedger, undefined, 2)}\n`,
+      `${JSON.stringify(destinationLedgerArtifact, undefined, 2)}\n`,
     );
+    fixtureLedgerObservations.delete(verifiedEvidence.runId);
+  }
+  if (result !== undefined) {
     writeFileSync(
       resolve(directory, "fixture-lifecycle.json"),
       `${JSON.stringify(
@@ -1322,6 +1763,11 @@ const recordEvidence = async (evidence) => {
           artifactFileName: result.artifactFileName,
           lifecycle: result.lifecycle,
           eventKinds: result.eventKinds,
+          ledgerObservation: {
+            model: observed?.model.status ?? "uncertain",
+            ingestion: observed?.destination.ingestion.status ?? "uncertain",
+            retrieval: observed?.destination.retrieval.status ?? "uncertain",
+          },
         },
         undefined,
         2,
@@ -1508,6 +1954,7 @@ const createDriver = () => {
     startCollector,
     startRetrieval,
     startMockServer,
+    startModelProxy,
     runScenario,
     recordEvidence,
     removeContainer: (name) =>

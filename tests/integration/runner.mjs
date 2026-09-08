@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -24,6 +23,7 @@ import {
   compileInstalledPtyFailureReceipt,
   compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
+  digestInstalledContractWritableAuthority,
   installedContractFailurePredicates,
 } from "./immutable-candidate-authority.mjs";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
@@ -92,6 +92,14 @@ const harnessHome = requiredEnvironment("HARNESS_HOME");
 const agentscopeHome = requiredEnvironment("AGENTSCOPE_HOME");
 const worktree = requiredEnvironment("AGENTSCOPE_WORKTREE");
 const ledger = requiredEnvironment("AGENTSCOPE_LEDGER");
+const writableAuthorityRoots = Object.freeze([
+  home,
+  harnessHome,
+  agentscopeHome,
+  worktree,
+  ledger,
+  "/tmp",
+]);
 const headlessOuterDeadline = Number(
   requiredEnvironment("AGENTSCOPE_HEADLESS_OUTER_MONOTONIC_DEADLINE_MS"),
 );
@@ -377,36 +385,6 @@ const cliArtifact = evidence.artifacts.find(
 );
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 
-const stateDigest = (root) => {
-  if (!existsSync(root)) return digest("[]");
-  const records = [];
-  const pending = [root];
-  while (pending.length > 0) {
-    const directory = pending.pop();
-    const directoryStatus = lstatSync(directory);
-    if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink())
-      throw new Error("integration.runner.installed-contract-state");
-    records.push(
-      `directory:${directory.slice(root.length) || "."}:${directoryStatus.mode & 0o777}`,
-    );
-    for (const name of readdirSync(directory).sort()) {
-      const path = join(directory, name);
-      const status = lstatSync(path);
-      if (status.isSymbolicLink())
-        throw new Error("integration.runner.installed-contract-state");
-      if (status.isDirectory()) pending.push(path);
-      else {
-        if (!status.isFile())
-          throw new Error("integration.runner.installed-contract-state");
-        records.push(
-          `file:${path.slice(root.length)}:${status.mode & 0o777}:${status.size}:${digest(readFileSync(path))}`,
-        );
-      }
-    }
-  }
-  return digest(JSON.stringify(records.sort()));
-};
-
 const installedContractReceipts = [];
 const invokeSelected = async ({
   arguments: arguments_,
@@ -675,6 +653,10 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   mkdirSync(caseHome, { recursive: true });
   mkdirSync(caseCwd);
   mkdirSync(temporary);
+  const externalWritableAuthority = {
+    excludedPaths: [caseRoot],
+    roots: writableAuthorityRoots,
+  };
   const caseEnvironment = Object.freeze({
     COLUMNS: "7",
     HOME: caseHome,
@@ -687,6 +669,9 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     USERPROFILE: caseHome,
   });
   let setupResult;
+  const externalBeforeSetup = digestInstalledContractWritableAuthority(
+    externalWritableAuthority,
+  );
   if (contractCase.setup === "initialized") {
     setupResult = await invokeSelected({
       arguments: ["init", "--yes", "--output", "json"],
@@ -699,13 +684,20 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     mkdirSync(join(caseHome, ".agentscope"));
     writeFileSync(join(caseHome, ".agentscope/config.json"), "{invalid");
   }
-  const stateRoot = join(caseHome, ".agentscope");
+  if (
+    digestInstalledContractWritableAuthority(externalWritableAuthority) !==
+    externalBeforeSetup
+  )
+    throw new Error("integration.runner.installed-contract-side-effect");
+  const stateRoots = writableAuthorityRoots;
+  const stateAuthority = { excludedPaths: [], roots: [caseRoot] };
   setInstalledContractFailureBoundary(
     "case-execution",
     "state-rejected",
     caseFailure,
   );
-  const beforeStateDigest = stateDigest(stateRoot);
+  const beforeStateDigest =
+    digestInstalledContractWritableAuthority(stateAuthority);
   const results = [];
   const afterStateDigests = [];
   for (
@@ -715,6 +707,10 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   ) {
     const contractStep = contractCase.steps[stepIndex];
     const caseId = `${contractCase.caseId}.${stepIndex}`;
+    const externalBeforeStep = digestInstalledContractWritableAuthority({
+      excludedPaths: [caseRoot],
+      roots: stateRoots,
+    });
     if (contractStep.executionMode === "pty-narrow") {
       setInstalledContractFailureBoundary(
         "case-execution",
@@ -735,12 +731,21 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
       );
       selectedHeadlessExecutionPending = false;
     }
+    if (
+      digestInstalledContractWritableAuthority({
+        excludedPaths: [caseRoot],
+        roots: stateRoots,
+      }) !== externalBeforeStep
+    )
+      throw new Error("integration.runner.installed-contract-side-effect");
     setInstalledContractFailureBoundary(
       "case-execution",
       "state-rejected",
       caseFailure,
     );
-    afterStateDigests.push(stateDigest(stateRoot));
+    afterStateDigests.push(
+      digestInstalledContractWritableAuthority(stateAuthority),
+    );
   }
   contractObservations.push({
     afterStateDigests,
@@ -796,6 +801,24 @@ console.log(
 installedContractFailureTerminal = true;
 process.setUncaughtExceptionCaptureCallback(null);
 rmSync(contractRoot, { force: true, recursive: true });
+const admissionResponses = await Promise.all(
+  [
+    requiredEnvironment("AGENTSCOPE_MODEL_SERVER_URL"),
+    requiredEnvironment("AGENTSCOPE_INGESTION_URL"),
+    requiredEnvironment("AGENTSCOPE_RETRIEVAL_URL"),
+  ].map((endpoint) =>
+    fetch(`${endpoint}/agentscope/admit`, {
+      headers: { connection: "close" },
+      method: "POST",
+      redirect: "error",
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.floor(headlessShutdownDeadline - performance.now())),
+      ),
+    }),
+  ),
+);
+if (admissionResponses.some(({ status }) => status !== 204))
+  throw new Error("integration.runner.egress-authority");
 let fixtureOutput;
 let fixtureFailure;
 try {

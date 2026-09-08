@@ -60,6 +60,11 @@ export const ISOLATION_EXECUTOR_LIMITS = deepFreeze({
       pidsLimit: 128,
       tmpfs: [{ path: "/tmp", bytes: mebibytes(16) }],
     },
+    modelProxy: {
+      memoryBytes: mebibytes(256),
+      pidsLimit: 64,
+      tmpfs: [{ path: "/tmp", bytes: mebibytes(16) }],
+    },
     mockServer: {
       memoryBytes: mebibytes(512),
       pidsLimit: 128,
@@ -172,6 +177,7 @@ const executionPolicySchema = z
       scenario: containerLimitSchema,
       collector: containerLimitSchema,
       retrieval: containerLimitSchema,
+      modelProxy: containerLimitSchema,
       mockServer: containerLimitSchema,
     }),
     requests: z.strictObject({
@@ -356,9 +362,11 @@ export interface IsolationPlan {
   readonly imageTag: string;
   readonly mockServerImageTag: string;
   readonly networkName: string;
+  readonly controlNetworkName: string;
   readonly collectorName: string;
   readonly retrievalName: string;
   readonly mockServerName: string;
+  readonly modelProxyName: string;
   readonly scenarioName: string;
   readonly tmpfsMounts: readonly string[];
   readonly selection: IsolationExecutionPolicy["selection"];
@@ -468,6 +476,7 @@ export interface IsolationDriver {
   startCollector(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startRetrieval(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   startMockServer(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
+  startModelProxy(plan: IsolationPlan, signal: AbortSignal): Promise<void>;
   runScenario(
     plan: IsolationPlan,
     signal: AbortSignal,
@@ -585,9 +594,11 @@ export const createIsolationPlan = (input: {
     imageTag: `${prefix}:candidate`,
     mockServerImageTag: `${prefix}:mockserver`,
     networkName: `${prefix}-network`,
+    controlNetworkName: `${prefix}-control-network`,
     collectorName: `${prefix}-collector`,
     retrievalName: `${prefix}-retrieval`,
     mockServerName: `${prefix}-mockserver`,
+    modelProxyName: `${prefix}-model-proxy`,
     scenarioName: `${prefix}-scenario`,
     tmpfsMounts: SCENARIO_TMPFS_MOUNTS,
     selection: parsedSelection.data,
@@ -620,7 +631,9 @@ const cleanup = async (
     () => driver.removeContainer(plan.collectorName),
     () => driver.removeContainer(plan.retrievalName),
     () => driver.removeContainer(plan.mockServerName),
+    () => driver.removeContainer(plan.modelProxyName),
     () => driver.removeNetwork(plan.networkName),
+    () => driver.removeNetwork(plan.controlNetworkName),
     () => driver.removeImage(plan.imageTag),
     () => driver.removeImage(plan.mockServerImageTag),
     () => driver.removeContext(plan.runId),
@@ -669,6 +682,7 @@ export const executeIsolationPlan = async (
     await driver.startCollector(plan, signal);
     await driver.startRetrieval(plan, signal);
     await driver.startMockServer(plan, signal);
+    await driver.startModelProxy(plan, signal);
     const scenarioResult = await driver.runScenario(plan, signal);
     headlessTerminalReceipt = headlessTerminalReceiptSchema.parse(
       scenarioResult.receipt,

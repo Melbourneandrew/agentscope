@@ -32,14 +32,17 @@ const integrationLabel = "com.agentscope.integration=true";
 const resourcePattern = (kind, runId) =>
   ({
     container: new RegExp(
-      `^agentscope-int-${runId}-(?:scenario|collector|retrieval|mockserver)$`,
+      `^agentscope-int-${runId}-(?:scenario|collector|retrieval|mockserver|model-proxy)$`,
       "u",
     ),
     image: new RegExp(
       `^agentscope-int-${runId}:(?:candidate|mockserver)$`,
       "u",
     ),
-    network: new RegExp(`^agentscope-int-${runId}-network$`, "u"),
+    network: new RegExp(
+      `^agentscope-int-${runId}-(?:network|control-network)$`,
+      "u",
+    ),
   })[kind];
 const docker = (arguments_, options = {}) =>
   execFileSync(capability.binding.dockerExecutable, arguments_, {
