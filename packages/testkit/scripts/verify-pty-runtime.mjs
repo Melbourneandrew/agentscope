@@ -621,6 +621,7 @@ export const runPtyRuntimeProof = () => {
     if (process.hrtime.bigint() > deadline)
       throw new Error("PTY runtime proof exceeded its absolute deadline.");
     verifyRuntimeReceipt(JSON.parse(output.trim()));
+    process.stdout.write('{"version":1,"status":"passed"}\n');
   } catch (error) {
     primaryFailure = error;
   } finally {

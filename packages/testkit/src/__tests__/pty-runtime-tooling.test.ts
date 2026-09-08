@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   createHash,
   generateKeyPairSync,
@@ -289,6 +289,114 @@ describe("PTY runtime artifact tooling", () => {
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );
     expect(workflow).not.toContain("image rm");
+    expect(workflow).toContain(
+      "setup|input-identity|image-identity|create|runtime-receipt|terminal-join|cleanup|final-assertion",
+    );
+    expect(workflow).toContain(
+      'runtimeReceiptAuthenticated":%s,"cleanupProved":%s',
+    );
+    expect(workflow).toContain(
+      "runtime_receipt_authenticated=true\n          stage=terminal-join",
+    );
+    expect(workflow).toContain(`== '{"version":1,"status":"passed"}'`);
+    expect(workflow).toContain(
+      "709d35b6bbb00dad49454715be8809fda10f96a50219caca8fbed53594b488d1",
+    );
+    expect(workflow).toContain(
+      '[[ $(host_call /usr/bin/stat -c %s "$root/receipt.json") == 32 ]]',
+    );
+    expect(verifier).toContain(
+      `process.stdout.write('{"version":1,"status":"passed"}\\n')`,
+    );
+  });
+
+  it("emits one closed terminal receipt for every workflow failure prefix", () => {
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    const job = workflow.indexOf("name: Replay the bounded PTY ABI");
+    const start = workflow.indexOf("          set -euo pipefail\n", job);
+    const end = workflow.indexOf("          host_call() {", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const prefix = workflow.slice(start, end).replaceAll(/^ {10}/gmu, "");
+    const stages = [
+      "setup",
+      "input-identity",
+      "image-identity",
+      "create",
+      "runtime-receipt",
+      "terminal-join",
+      "final-assertion",
+    ];
+    for (const stage of stages) {
+      const result = spawnSync(
+        "/bin/bash",
+        ["-c", `${prefix}\nstage=${stage}\nexit 7\n`],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(7);
+      expect(result.stdout).toBe("");
+      const lines = result.stderr.trim().split("\n");
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0] ?? "null")).toEqual({
+        cleanupProved: true,
+        runtimeReceiptAuthenticated: false,
+        stage,
+        status: "failed",
+        version: 1,
+      });
+    }
+    const uncertain = spawnSync(
+      "/bin/bash",
+      ["-c", `${prefix}\nstage=create\nroot=/not-an-owned-root\nexit 7\n`],
+      { encoding: "utf8" },
+    );
+    expect(uncertain.status).toBe(7);
+    expect(JSON.parse(uncertain.stderr.trim())).toEqual({
+      cleanupProved: false,
+      runtimeReceiptAuthenticated: false,
+      stage: "create",
+      status: "failed",
+      version: 1,
+    });
+    const cleanupOnly = spawnSync(
+      "/bin/bash",
+      [
+        "-c",
+        `${prefix}\nstage=final-assertion\nroot=/not-an-owned-root\nexit 0\n`,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(cleanupOnly.status).toBe(1);
+    expect(JSON.parse(cleanupOnly.stderr.trim())).toEqual({
+      cleanupProved: false,
+      runtimeReceiptAuthenticated: false,
+      stage: "cleanup",
+      status: "failed",
+      version: 1,
+    });
+  });
+
+  it("binds the inner runtime receipt against missing or extra bytes", () => {
+    const expected = Buffer.from('{"version":1,"status":"passed"}\n');
+    expect(expected).toHaveLength(32);
+    expect(createHash("sha256").update(expected).digest("hex")).toBe(
+      "709d35b6bbb00dad49454715be8809fda10f96a50219caca8fbed53594b488d1",
+    );
+    for (const replacement of [
+      Buffer.alloc(0),
+      Buffer.from('{"version":1,"status":"passed"}'),
+      Buffer.concat([expected, expected]),
+      Buffer.from('{"version":1,"status":"failed"}\n'),
+      Buffer.concat([expected, Buffer.from("\n")]),
+    ])
+      expect(
+        replacement.length === expected.length &&
+          createHash("sha256").update(replacement).digest("hex") ===
+            "709d35b6bbb00dad49454715be8809fda10f96a50219caca8fbed53594b488d1",
+      ).toBe(false);
   });
 
   it("bounds a hung workflow setup command and removes its exact root", () => {
