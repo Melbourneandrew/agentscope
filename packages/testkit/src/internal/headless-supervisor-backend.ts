@@ -818,40 +818,59 @@ const exactImmutableCandidateRecord = (
   ]) as ImmutableCandidateRecord;
 };
 
+const validatePrincipalFacts = (facts: {
+  uid: number | undefined;
+  euid: number | undefined;
+  gid: number | undefined;
+  egid: number | undefined;
+  groups: readonly number[] | undefined;
+  status: string;
+}): void => {
+  if (
+    facts.uid !== 1000 ||
+    facts.euid !== 1000 ||
+    facts.gid !== 1000 ||
+    facts.egid !== 1000 ||
+    facts.groups === undefined ||
+    facts.groups.length < 1 ||
+    facts.groups.some((group) => group !== 1000)
+  )
+    return fail("testkit.pty.immutable-candidate");
+  const field = (name: string): string => {
+    const values = facts.status
+      .split("\n")
+      .filter((line) => line.startsWith(`${name}:`));
+    if (values.length !== 1) return fail("testkit.pty.immutable-candidate");
+    return values[0]!.slice(name.length + 1).trim();
+  };
+  if (
+    field("Uid") !== "1000\t1000\t1000\t1000" ||
+    field("Gid") !== "1000\t1000\t1000\t1000" ||
+    field("CapEff") !== "0000000000000000" ||
+    field("CapPrm") !== "0000000000000000" ||
+    field("CapInh") !== "0000000000000000" ||
+    field("CapAmb") !== "0000000000000000" ||
+    field("CapBnd") !== "0000000000000000" ||
+    field("NoNewPrivs") !== "1"
+  )
+    return fail("testkit.pty.immutable-candidate");
+};
+
 const readPrincipalAuthority = (): Readonly<{
   mountIdentity: string;
   mountNamespace: string;
   mountTable: ReadonlyMap<number, ReadonlySet<string>>;
 }> => {
-  if (
-    process.getuid?.() !== 1000 ||
-    process.geteuid?.() !== 1000 ||
-    process.getgid?.() !== 1000 ||
-    process.getegid?.() !== 1000
-  )
-    return fail("testkit.pty.immutable-candidate");
   const groups = process.getgroups?.();
-  if (
-    groups === undefined ||
-    groups.length < 1 ||
-    groups.some((group) => group !== 1000)
-  )
-    return fail("testkit.pty.immutable-candidate");
   const status = boundedProcFile("/proc/self/status", 64 * 1024);
-  const field = (name: string): string | undefined =>
-    status
-      .split("\n")
-      .find((line) => line.startsWith(`${name}:`))
-      ?.slice(name.length + 1)
-      .trim();
-  if (
-    field("CapEff") !== "0000000000000000" ||
-    field("CapPrm") !== "0000000000000000" ||
-    field("CapInh") !== "0000000000000000" ||
-    field("CapAmb") !== "0000000000000000" ||
-    field("NoNewPrivs") !== "1"
-  )
-    return fail("testkit.pty.immutable-candidate");
+  validatePrincipalFacts({
+    uid: process.getuid?.(),
+    euid: process.geteuid?.(),
+    gid: process.getgid?.(),
+    egid: process.getegid?.(),
+    groups,
+    status,
+  });
   const mountNamespace = readlinkSync("/proc/self/ns/mnt");
   const mountTable = new Map<number, ReadonlySet<string>>();
   const mountinfo = boundedProcFile("/proc/self/mountinfo");
@@ -1891,6 +1910,15 @@ const armSelectedPty = (
       return fail("testkit.pty.transport");
     const inputJoined = inputOffset === input.length && eofByteWritten;
     const clean = residual.length === 0 && outputTerminal && transportClosed;
+    const finalSnapshot = terminal.end();
+    if (
+      !outputLimited &&
+      (finalSnapshot.semanticState === "credential-prompt" ||
+        finalSnapshot.semanticState === "malformed-control" ||
+        ((trigger === "closed" || trigger === undefined) &&
+          finalSnapshot.semanticState !== "completed"))
+    )
+      return fail("testkit.pty.transport");
     const outcome =
       trigger === "aborted"
         ? "aborted"
@@ -1927,7 +1955,7 @@ const armSelectedPty = (
           outcome,
           outputBytes,
           outputSha256: createHash("sha256").update(output).digest("hex"),
-          finalSnapshot: terminal.end(),
+          finalSnapshot,
           exitCode:
             outcome === "completed" || outcome === "exited-nonzero"
               ? exit.code
@@ -2261,6 +2289,13 @@ export const composeSelectedContainerHeadlessSupervisorCapability = (
 export const createSelectedContainerImmutableCandidateAuthority = (
   record: unknown,
 ): ImmutableCandidateAuthority => createImmutableCandidateAuthority(record);
+/** Package-private causal parser oracle; it conveys no execution authority. */
+export const validateSelectedContainerPrincipalFactsForTest = (
+  facts: Parameters<typeof validatePrincipalFacts>[0],
+): true => {
+  validatePrincipalFacts(facts);
+  return true;
+};
 export const executeSelectedHeadlessProcessWithCapability = async (
   capability: HeadlessSupervisorCapability,
   request: HeadlessExecutionRequest,
@@ -2922,6 +2957,7 @@ export const executeSelectedContainerBackendForTest = async (
 };
 
 type SelectedPtyTestSeed =
+  | "active-terminal"
   | "clean"
   | "close-failure"
   | "descriptor-closure"
@@ -2939,6 +2975,8 @@ type SelectedPtyTestSeed =
   | "immutable-principal"
   | "immutable-symlink"
   | "late-tail"
+  | "credential-prompt"
+  | "malformed-control"
   | "malformed-exit"
   | "mode-substitution"
   | "nonzero-exit"
@@ -3041,7 +3079,13 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       const output =
         seed === "output-limit" || seed === "partial-input-output-limit"
           ? safeBufferFrom("x".repeat(request.stdoutLimitBytes + 1))
-          : safeBufferFrom("ready");
+          : seed === "active-terminal"
+            ? safeBufferFrom("ready")
+            : seed === "credential-prompt"
+              ? safeBufferFrom("Password:")
+              : seed === "malformed-control"
+                ? safeBufferFrom("\u001b[")
+                : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
       const chunks =
         seed === "fragmented-output"
           ? [output.subarray(0, 2), output.subarray(2)]

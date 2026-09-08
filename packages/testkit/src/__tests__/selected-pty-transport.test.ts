@@ -8,7 +8,10 @@ import type { HeadlessExecutionRequest } from "../headless-supervisor-contract.j
 import { executeSelectedPtyProcess } from "../headless-supervisor-kernel.js";
 import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
 import type { SelectedPtyExecutionRequest } from "../pty-terminal-contract.js";
-import { executeSelectedPtyTransportForTest } from "../internal/headless-supervisor-backend.js";
+import {
+  executeSelectedPtyTransportForTest,
+  validateSelectedContainerPrincipalFactsForTest,
+} from "../internal/headless-supervisor-backend.js";
 
 const sha256 = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -47,6 +50,48 @@ const request = (
 
 // eslint-disable-next-line max-lines-per-function
 describe("selected PTY transport", () => {
+  const principalFacts = () => ({
+    uid: 1000,
+    euid: 1000,
+    gid: 1000,
+    egid: 1000,
+    groups: [1000],
+    status: [
+      "Uid:\t1000\t1000\t1000\t1000",
+      "Gid:\t1000\t1000\t1000\t1000",
+      "CapEff:\t0000000000000000",
+      "CapPrm:\t0000000000000000",
+      "CapInh:\t0000000000000000",
+      "CapAmb:\t0000000000000000",
+      "CapBnd:\t0000000000000000",
+      "NoNewPrivs:\t1",
+      "",
+    ].join("\n"),
+  });
+
+  it("causally validates the selected immutable principal record", () => {
+    expect(
+      validateSelectedContainerPrincipalFactsForTest(principalFacts()),
+    ).toBe(true);
+  });
+
+  it.each(["uid", "gid", "groups", "status"] as const)(
+    "rejects causal immutable principal %s substitution",
+    (seed) => {
+      const facts = principalFacts();
+      if (seed === "uid") facts.uid = 0;
+      if (seed === "gid") facts.gid = 0;
+      if (seed === "groups") facts.groups = [1000, 1001];
+      if (seed === "status")
+        facts.status = facts.status.replace(
+          "CapBnd:\t0000000000000000",
+          "CapBnd:\t0000000000000001",
+        );
+      expect(() =>
+        validateSelectedContainerPrincipalFactsForTest(facts),
+      ).toThrow("testkit.pty.immutable-candidate");
+    },
+  );
   it("binds real PTY geometry and returns only bounded semantic evidence", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       request(),
@@ -69,7 +114,7 @@ describe("selected PTY transport", () => {
       terminalOutputJoined: true,
       terminalTransportClosed: true,
     });
-    expect(receipt.outputBytes).toBe(5);
+    expect(receipt.outputBytes).toBe(23);
     expect(receipt.outputSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(JSON.stringify(receipt)).not.toContain("ready");
   });
@@ -112,7 +157,7 @@ describe("selected PTY transport", () => {
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
-      outputBytes: 5,
+      outputBytes: 23,
       terminalOutputJoined: true,
       terminalTransportClosed: true,
     });
@@ -125,7 +170,7 @@ describe("selected PTY transport", () => {
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
-      outputBytes: 5,
+      outputBytes: 23,
       terminalOutputJoined: true,
     });
   });
@@ -146,6 +191,19 @@ describe("selected PTY transport", () => {
       clearTimeout(timer);
     }
   });
+
+  it.each([
+    "active-terminal",
+    "credential-prompt",
+    "malformed-control",
+  ] as const)(
+    "rejects terminal semantic state %s as completion",
+    async (seed) => {
+      await expect(
+        executeSelectedPtyTransportForTest(request(), seed),
+      ).rejects.toMatchObject({ code: "testkit.pty.transport" });
+    },
+  );
 
   it("orders partial input completion before its authenticated EOF byte", async () => {
     const receipt = await executeSelectedPtyTransportForTest(

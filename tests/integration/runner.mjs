@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   writeFileSync,
@@ -9,11 +13,19 @@ import {
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { executeSelectedHeadlessProcess } from "./testkit/headless-supervisor-kernel.js";
+import {
+  executeSelectedHeadlessProcess,
+  executeSelectedPtyProcess,
+} from "./testkit/headless-supervisor-kernel.js";
 import {
   composeSelectedContainerHeadlessSupervisorCapability,
   createSelectedContainerImmutableCandidateAuthority,
 } from "./testkit/internal/headless-supervisor-backend.js";
+import {
+  compileCandidateInventory,
+  compileInstalledCliPtyReceipt,
+  decodeImmutableCandidateHandoff,
+} from "./immutable-candidate-authority.mjs";
 
 const requiredEnvironment = (name) => {
   const value = process.env[name];
@@ -69,6 +81,29 @@ const fingerprintHeadlessRequest = (request) =>
       }),
     )
     .digest("hex")}`;
+const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const authenticateRegularFile = (path, maximumBytes) => {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size < 1 || before.size > maximumBytes)
+      throw new Error("integration.runner.pty-authority");
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size
+    )
+      throw new Error("integration.runner.pty-authority");
+    return Object.freeze({ bytes, sha256: sha256Hex(bytes) });
+  } finally {
+    closeSync(descriptor);
+  }
+};
 const assertEmptyDirectory = (path) => {
   if (readdirSync(path).length !== 0)
     throw new Error("integration.runner.home-not-empty");
@@ -168,23 +203,7 @@ for (const file of declared) {
   )
     throw new Error("integration.runner.candidate-file");
 }
-const candidateInventorySha256 = createHash("sha256")
-  .update(
-    JSON.stringify({
-      bundleIdentity: evidence.bundleIdentity,
-      candidateRevision: evidence.candidateRevision,
-      files: declared
-        .map(({ fileName, bytes, sha256 }) => ({ fileName, bytes, sha256 }))
-        .sort((left, right) =>
-          left.fileName < right.fileName
-            ? -1
-            : left.fileName > right.fileName
-              ? 1
-              : 0,
-        ),
-    }),
-  )
-  .digest("hex");
+const candidateInventorySha256 = compileCandidateInventory(evidence).sha256;
 const encodedImmutableCandidate = requiredEnvironment(
   "AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY",
 );
@@ -193,26 +212,16 @@ if (
   !/^[A-Za-z0-9_-]+$/u.test(encodedImmutableCandidate)
 )
   throw new Error("integration.runner.immutable-candidate");
-let immutableCandidateRecord;
-try {
-  const bytes = Buffer.from(encodedImmutableCandidate, "base64url");
-  if (bytes.toString("base64url") !== encodedImmutableCandidate)
-    throw new Error();
-  immutableCandidateRecord = JSON.parse(bytes.toString("utf8"));
-} catch {
-  throw new Error("integration.runner.immutable-candidate");
-}
-if (
-  immutableCandidateRecord?.candidateBundleIdentity !==
-    evidence.bundleIdentity ||
-  immutableCandidateRecord?.candidateInventorySha256 !==
-    candidateInventorySha256 ||
-  immutableCandidateRecord?.candidateRoot !== candidateRoot ||
-  immutableCandidateRecord?.runId !==
-    requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID") ||
-  immutableCandidateRecord?.scenarioId !== scenarioId
-)
-  throw new Error("integration.runner.immutable-candidate");
+const immutableCandidateRecord = decodeImmutableCandidateHandoff(
+  encodedImmutableCandidate,
+  {
+    candidateBundleIdentity: evidence.bundleIdentity,
+    candidateInventorySha256,
+    candidateRoot,
+    runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+    scenarioId,
+  },
+);
 const immutableCandidate = createSelectedContainerImmutableCandidateAuthority(
   immutableCandidateRecord,
 );
@@ -220,6 +229,102 @@ const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
   headlessShutdownDeadline,
   immutableCandidate,
 );
+
+const installedCliDriver = "/opt/agentscope/pty-installed-cli-driver.mjs";
+const installedPackage =
+  "/opt/agentscope/installed/node_modules/agentscope-cli/package.json";
+const installedCli =
+  "/opt/agentscope/installed/node_modules/agentscope-cli/dist/bin/agentscope.js";
+const interpreterAuthority = authenticateRegularFile(
+  process.execPath,
+  256 * 1024 * 1024,
+);
+const driverAuthority = authenticateRegularFile(
+  installedCliDriver,
+  16 * 1024 * 1024,
+);
+const cliAuthority = authenticateRegularFile(installedCli, 16 * 1024 * 1024);
+const packageAuthority = authenticateRegularFile(installedPackage, 1024 * 1024);
+let installedManifest;
+try {
+  installedManifest = JSON.parse(packageAuthority.bytes.toString("utf8"));
+} catch {
+  throw new Error("integration.runner.pty-authority");
+}
+if (
+  installedManifest?.name !== "agentscope-cli" ||
+  !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(installedManifest?.version) ||
+  installedManifest?.bin?.agentscope !== "./dist/bin/agentscope.js"
+)
+  throw new Error("integration.runner.pty-authority");
+
+const ptyNow = performance.now();
+const ptyProcessRequest = {
+  runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
+  executable: installedCliDriver,
+  arguments: [installedCli, cliAuthority.sha256],
+  cwd: "/opt/agentscope",
+  environment: Object.freeze({ HOME: home, LANG: "C.UTF-8", NO_COLOR: "1" }),
+  stdin: new Uint8Array(),
+  stdoutLimitBytes: 4_096,
+  stderrLimitBytes: 4_096,
+  monotonicStartupDeadlineMs: Math.min(
+    ptyNow + 10_000,
+    headlessShutdownDeadline - 5_000,
+  ),
+  monotonicExecutionDeadlineMs: headlessShutdownDeadline - 5_000,
+  monotonicShutdownDeadlineMs: headlessShutdownDeadline,
+  terminationGraceMs: 1_000,
+};
+ptyProcessRequest.requestFingerprint =
+  fingerprintHeadlessRequest(ptyProcessRequest);
+const ptyReceipt = await executeSelectedPtyProcess(headlessCapability, {
+  process: ptyProcessRequest,
+  initialGeometry: { columns: 40, rows: 12 },
+  interpreter: {
+    path: process.execPath,
+    sha256: interpreterAuthority.sha256,
+  },
+  scriptSha256: driverAuthority.sha256,
+});
+const expectedPtyOutput = Buffer.from(
+  `${installedManifest.version}\r\nAGENTSCOPE_PTY_COMPLETE\r\n`,
+);
+if (
+  ptyReceipt.outcome !== "completed" ||
+  ptyReceipt.finalSnapshot.semanticState !== "completed" ||
+  ptyReceipt.outputBytes !== expectedPtyOutput.length ||
+  ptyReceipt.outputSha256 !== sha256Hex(expectedPtyOutput) ||
+  ptyReceipt.cleanup !== "clean" ||
+  ptyReceipt.residualProcessCount !== 0 ||
+  ptyReceipt.processJoined !== true ||
+  ptyReceipt.terminalInputJoined !== true ||
+  ptyReceipt.terminalOutputJoined !== true ||
+  ptyReceipt.terminalTransportClosed !== true
+)
+  throw new Error("integration.runner.pty-completion");
+const installedCliPtyReceipt = compileInstalledCliPtyReceipt({
+  receiptVersion: 1,
+  runId: ptyReceipt.runId,
+  scenarioId,
+  candidateBundleIdentity: evidence.bundleIdentity,
+  candidateInventorySha256,
+  caseId: "installed-cli-version",
+  outcome: ptyReceipt.outcome,
+  semanticState: ptyReceipt.finalSnapshot.semanticState,
+  cleanup: ptyReceipt.cleanup,
+  isTTY: ptyReceipt.isTTY,
+  eofByteWritten: ptyReceipt.eofByteWritten,
+  processJoined: ptyReceipt.processJoined,
+  terminalInputJoined: ptyReceipt.terminalInputJoined,
+  terminalOutputJoined: ptyReceipt.terminalOutputJoined,
+  terminalTransportClosed: ptyReceipt.terminalTransportClosed,
+  residualProcessCount: ptyReceipt.residualProcessCount,
+  initialGeometry: ptyReceipt.initialGeometry,
+  outputBytes: ptyReceipt.outputBytes,
+  outputSha256: ptyReceipt.outputSha256,
+});
+console.log(`AGENTSCOPE_PTY_RECEIPT=${installedCliPtyReceipt.encoded}`);
 
 for (const publicEndpoint of [
   "https://registry.npmjs.org/",

@@ -47,6 +47,13 @@ import {
 } from "./image-preparation.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
+  compileCandidateInventory,
+  compileImmutableCandidateHandoff,
+  decodeInstalledCliPtyReceipt,
+  selectedRuntimeFiles,
+  validateImmutableScenarioContainer,
+} from "./immutable-candidate-authority.mjs";
+import {
   integrationStageSignal,
   registerIntegrationFailureEvidence,
   registerIntegrationHeadlessReceipt,
@@ -161,23 +168,6 @@ const cliArtifact = candidate.artifacts.find(
 );
 if (cliArtifact === undefined)
   throw new Error("integration.isolation.candidate-artifact");
-const immutableCandidateInventory = () => ({
-  bundleIdentity: candidate.bundleIdentity,
-  candidateRevision: candidate.candidateRevision,
-  files: [candidate.lockfile, ...candidate.artifacts]
-    .map(({ fileName, bytes, sha256 }) => ({ fileName, bytes, sha256 }))
-    .sort((left, right) =>
-      left.fileName < right.fileName
-        ? -1
-        : left.fileName > right.fileName
-          ? 1
-          : 0,
-    ),
-});
-const candidateInventorySha256 = createHash("sha256")
-  .update(JSON.stringify(immutableCandidateInventory()))
-  .digest("hex");
-
 let preparedDockerClient;
 const docker = async (
   arguments_,
@@ -251,6 +241,8 @@ const sidecarResourceArguments = (limits) => [
   String(limits.memoryBytes),
 ];
 
+// The exact staged inventory and Dockerfile are reviewed as one authority.
+// eslint-disable-next-line max-lines-per-function
 const stageBuildContext = (plan) => {
   const context = resolve(artifactsRoot, "contexts", plan.runId);
   rmSync(context, { force: true, recursive: true });
@@ -261,6 +253,14 @@ const stageBuildContext = (plan) => {
   if (scenario === undefined) throw new Error("integration.isolation.context");
   const sources = [
     ["runner.mjs", resolve(integrationRoot, "runner.mjs")],
+    [
+      "immutable-candidate-authority.mjs",
+      resolve(integrationRoot, "immutable-candidate-authority.mjs"),
+    ],
+    [
+      "pty-installed-cli-driver.mjs",
+      resolve(integrationRoot, "pty-installed-cli-driver.mjs"),
+    ],
     [
       "destination-server.mjs",
       resolve(integrationRoot, "destination-server.mjs"),
@@ -316,6 +316,17 @@ const stageBuildContext = (plan) => {
       resolve(artifactsRoot, "current-candidate.json"),
     ],
   ];
+  for (const file of selectedRuntimeFiles) {
+    if (sources.some(([destination]) => destination === file)) continue;
+    sources.push([
+      file,
+      resolve(
+        workspaceRoot,
+        "packages/testkit/dist",
+        file.slice("testkit/".length),
+      ),
+    ]);
+  }
   for (const [destination, source] of sources) {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
@@ -335,9 +346,10 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
+      `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,
       "USER node",
       'CMD ["node", "/opt/agentscope/runner.mjs"]',
       "",
@@ -420,6 +432,14 @@ const assertContainer = async (
         createHash("sha256")
           .update(JSON.stringify(records[0]?.Config))
           .digest("hex") === immutableCandidate.imageConfigSha256;
+      if (imageConfigMatches)
+        validateImmutableScenarioContainer({
+          container,
+          handoff: immutableCandidate,
+          image: records[0],
+          networkName: plan.networkName,
+          tmpfs,
+        });
     } catch {
       imageConfigMatches = false;
     }
@@ -459,22 +479,11 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
     image.Config === null
   )
     throw new Error("integration.isolation.immutable-candidate");
-  const record = {
-    authorityVersion: 1,
-    candidateBundleIdentity: candidate.bundleIdentity,
-    candidateInventorySha256,
-    candidateRoot: "/opt/agentscope/prepared",
-    imageConfigSha256: createHash("sha256")
-      .update(JSON.stringify(image.Config))
-      .digest("hex"),
-    imageId: image.Id,
-    runId: plan.runId,
-    scenarioId: plan.scenarioId,
-  };
-  return {
-    ...record,
-    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
-  };
+  return compileImmutableCandidateHandoff({
+    candidate,
+    image,
+    plan: { runId: plan.runId, scenarioId: plan.scenarioId },
+  });
 };
 
 const fixtureResults = new Map();
@@ -647,6 +656,13 @@ const captureHeadlessReceipt = (output, plan, expected) => {
     throw new Error("integration.isolation.headless-receipt");
   return Object.freeze(receipt);
 };
+const captureInstalledCliPtyReceipt = (output, plan) =>
+  decodeInstalledCliPtyReceipt(output, {
+    candidateBundleIdentity: candidate.bundleIdentity,
+    candidateInventorySha256: compileCandidateInventory(candidate).sha256,
+    runId: plan.runId,
+    scenarioId: plan.scenarioId,
+  });
 const preparedImageFor = async (image, signal) => {
   if (
     !(await revalidatePreparedImageAdmission(preparedImageEvidence, image, {
@@ -972,6 +988,7 @@ const runScenario = async (plan, signal) => {
     const receipt = captureHeadlessReceipt(stdout, plan, {
       outerMonotonicDeadline,
     });
+    const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
     registerIntegrationHeadlessReceipt(receipt, performance.now());
     return {
       receipt,
@@ -985,6 +1002,7 @@ const runScenario = async (plan, signal) => {
         receipt.stdinJoined === true &&
         receipt.stdoutJoined === true &&
         receipt.stderrJoined === true &&
+        ptyReceipt.outcome === "completed" &&
         captureFixtureResult(stdout, plan),
     };
   } catch (error) {
