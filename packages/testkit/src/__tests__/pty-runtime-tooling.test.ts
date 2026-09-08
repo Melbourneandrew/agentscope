@@ -242,8 +242,22 @@ describe("PTY runtime artifact tooling", () => {
       'if(finalizerState!=="pending"||finalizerCount!==0)throw new Error("finalizer receipt arrived before authority release")',
     );
     expect(verifier).not.toContain("new WeakRef(");
+    expect(verifier).toContain(
+      "/proc/\\${process.pid}/task/\\${process.pid}/children",
+    );
+    expect(verifier).toContain(
+      'if(initialPidOneChildren!==String(process.pid))throw new Error("runtime PID namespace containment is not exact")',
+    );
+    expect(verifier).toContain(
+      "closeRegistry.register(closeLive.result.handle,closeFinalizerToken)",
+    );
+    expect(verifier).toContain(
+      "closeLive.result.handle=undefined;closeLive.result=undefined;closeLive=null;closeFinalizerDropped=true;const reuse=",
+    );
     expect(workflow).toContain("--network none --platform linux/amd64");
     expect(workflow).toContain("--read-only");
+    expect(workflow).toContain("--kill-after=1 2s");
+    expect(workflow).toContain("(( remaining >= 7 ))");
     expect(workflow).toContain(
       "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
     );

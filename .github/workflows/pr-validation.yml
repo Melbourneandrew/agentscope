@@ -71,24 +71,24 @@ jobs:
           cleanup() {
             local status=$?
             trap - EXIT INT TERM
-            if [[ "$created" == true && "$container_id" =~ ^[0-9a-f]{64}$ ]]; then
+            cleanup_docker_call() {
               local remaining=$((deadline - SECONDS))
-              if (( remaining > 0 )); then
-                "$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
-                  "$docker" --config "$root/config" --host "unix://$socket" rm --force "$container_id" >/dev/null || status=1
-              else
-                status=1
-              fi
-              remaining=$((deadline - SECONDS))
-              if (( remaining > 0 )); then
-                survivor=$("$timeout" --foreground --signal=TERM --kill-after=5 "${remaining}s" \
-                  "$docker" --config "$root/config" --host "unix://$socket" container ls --all --no-trunc --quiet --filter "id=$container_id") || status=1
-                [[ -z "${survivor:-uncertain}" ]] || status=1
-              else
-                status=1
-              fi
+              (( remaining >= 7 ))
+              "$timeout" --foreground --signal=TERM --kill-after=1 2s \
+                "$docker" --config "$root/config" --host "unix://$socket" "$@"
+            }
+            if [[ "$created" == true && "$container_id" =~ ^[0-9a-f]{64}$ ]]; then
+              cleanup_docker_call rm --force "$container_id" >/dev/null || status=1
+              survivor=$(cleanup_docker_call container ls --all --no-trunc --quiet --filter "id=$container_id") || status=1
+              [[ -z "${survivor:-uncertain}" ]] || status=1
             fi
-            /bin/rm -rf -- "$root" || status=1
+            remaining=$((deadline - SECONDS))
+            if (( remaining >= 3 )); then
+              "$timeout" --foreground --signal=TERM --kill-after=1 1s \
+                /bin/rm -rf -- "$root" || status=1
+            else
+              status=1
+            fi
             (( SECONDS <= deadline )) || status=1
             exit "$status"
           }
