@@ -871,13 +871,18 @@ describe("immutable candidate authority", () => {
     expect(destinationServer).toContain("if (overflow)");
     expect(destinationServer).toContain("if (!requireRecorded(response");
     expect(destinationServer).toContain('bodySha256: createHash("sha256")');
+    expect(destinationServer).toContain(
+      '"branch,events,model,redaction,tool,traceId"',
+    );
     expect(destinationServer).toContain('.listen(4321, "127.0.0.1")');
     const runScenarios = readFileSync(
       resolve(import.meta.dirname, "../run-scenarios.mjs"),
       "utf8",
     );
-    expect(runScenarios).toContain(
-      "captureFailureFixtureLedgerObservations(plan, signal)",
+    expect(runScenarios).toContain("failureLedgerCaptureSignal()");
+    expect(runScenarios).toContain("entriesSha256:");
+    expect(runScenarios).not.toContain(
+      "modelLedgerArtifact = observed.model.ledger",
     );
     expect(runScenarios).toContain("fixtureLedgerObservations.get(");
     expect(runScenarios).toContain('{ status: "uncertain" }');

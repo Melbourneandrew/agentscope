@@ -45,8 +45,8 @@ import {
   markPreparedDockerClientForOuterHostRetirement,
   preparedDockerClientDiagnostic,
   preparedDockerClientRequiresOuterHostRetirement,
-  readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
+  validatePreparedImageEvidence,
 } from "./image-preparation.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
@@ -97,15 +97,71 @@ const installedContractDriver = Buffer.from(
 const installedContractDriverDigest = `sha256:${createHash("sha256")
   .update(installedContractDriver)
   .digest("hex")}`;
+const captureFileIdentity = (path, maximumBytes, expectedMode) => {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = lstatSync(path);
+    const content = readFileSync(descriptor);
+    const after = lstatSync(path);
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1 ||
+      before.size < 1 ||
+      before.size > maximumBytes ||
+      (before.mode & 0o7777) !== expectedMode ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size
+    )
+      throw new Error("integration.controller.failure-evidence");
+    return Object.freeze({
+      content,
+      dev: before.dev,
+      ino: before.ino,
+      size: before.size,
+      digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+};
+const revalidateFileIdentity = (path, identity, maximumBytes, expectedMode) => {
+  const current = captureFileIdentity(path, maximumBytes, expectedMode);
+  if (
+    current.dev !== identity.dev ||
+    current.ino !== identity.ino ||
+    current.size !== identity.size ||
+    current.digest !== identity.digest
+  )
+    throw new Error("integration.controller.failure-evidence");
+  return identity.digest;
+};
+const retainedInputIdentities = new Map();
+const readRetainedJson = (path, name) => {
+  const identity = captureFileIdentity(path, 1024 * 1024, 0o644);
+  retainedInputIdentities.set(name, identity);
+  return JSON.parse(identity.content.toString("utf8"));
+};
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const manifest = compileCapabilityManifest(
-  readJson(resolve(integrationRoot, "capability-manifest.json")),
+  readRetainedJson(
+    resolve(integrationRoot, "capability-manifest.json"),
+    "capability-manifest.json",
+  ),
 );
 verifyManifestEvidence(manifest, integrationRoot);
-const selection = readJson(resolve(artifactsRoot, "current-selection.json"));
-const pointer = readJson(resolve(artifactsRoot, "current-candidate.json"));
-const modelRoutes = readJson(
+const selection = readRetainedJson(
+  resolve(artifactsRoot, "current-selection.json"),
+  "current-selection.json",
+);
+const pointer = readRetainedJson(
+  resolve(artifactsRoot, "current-candidate.json"),
+  "current-candidate.json",
+);
+const modelRoutes = readRetainedJson(
   resolve(artifactsRoot, "current-model-routes.json"),
+  "current-model-routes.json",
 );
 const testMode = process.env.AGENTSCOPE_INTEGRATION_TEST_MODE;
 const boundedInteger = (name, fallback, maximum) => {
@@ -129,8 +185,15 @@ const scenarioTimeoutMilliseconds = boundedInteger(
 );
 let preparedImageEvidence;
 try {
-  preparedImageEvidence = readPreparedImageEvidence(
-    resolve(artifactsRoot, "current-images.json"),
+  const imageEvidencePath = resolve(artifactsRoot, "current-images.json");
+  const imageIdentity = captureFileIdentity(
+    imageEvidencePath,
+    1024 * 1024,
+    0o644,
+  );
+  retainedInputIdentities.set("current-images.json", imageIdentity);
+  preparedImageEvidence = validatePreparedImageEvidence(
+    JSON.parse(imageIdentity.content.toString("utf8")),
     manifest.manifestIdentity,
   );
 } catch {
@@ -582,6 +645,7 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 
 const fixtureResults = new Map();
 const fixtureLedgerObservations = new Map();
+const retainedRunIdentities = new Map();
 const installedContractEvidenceByRun = new Map();
 const scenarioOutcomes = new Map();
 const fingerprintHeadlessRequest = (request) =>
@@ -1011,6 +1075,14 @@ const scenarioEvidenceSucceeded = (
   fixtureCaptured &&
   modelLedger !== undefined &&
   destinationLedgers !== undefined;
+const failureLedgerCaptureSignal = () => {
+  const remaining = Math.floor(
+    capability.binding.cleanupStartMonotonicMilliseconds - performance.now(),
+  );
+  return remaining > 0
+    ? AbortSignal.timeout(Math.min(10_000, remaining))
+    : AbortSignal.abort();
+};
 const captureInstalledContractEvidence = (output, plan) => {
   const lines = output
     .split("\n")
@@ -1580,6 +1652,43 @@ const scenarioContainerArguments = (
     plan.imageTag,
   ];
 };
+const handleScenarioFailure = async (plan, error, outerMonotonicDeadline) => {
+  const output = `${error?.stdout ?? ""}`;
+  await captureFailureFixtureLedgerObservations(
+    plan,
+    failureLedgerCaptureSignal(),
+  );
+  captureFixtureResult(output, plan);
+  if (output.includes("AGENTSCOPE_PTY_FAILURE="))
+    captureInstalledPtyFailure(output, plan);
+  if (output.includes("AGENTSCOPE_INSTALLED_CONTRACT_FAILURE="))
+    captureInstalledContractFailure(output, plan);
+  let installedCliContractEvidence;
+  if (
+    output.includes("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=") &&
+    !installedContractEvidenceByRun.has(plan.runId)
+  ) {
+    installedCliContractEvidence = captureInstalledContractEvidence(
+      output,
+      plan,
+    );
+    registerIntegrationInstalledContractEvidence(
+      plan.runId,
+      installedCliContractEvidence,
+      Object.freeze({
+        ...installedCliContractAuthority,
+        receiptDigest: installedCliContractEvidence.receiptDigest,
+      }),
+      performance.now(),
+    );
+  }
+  if (!output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) throw error;
+  const receipt = captureHeadlessReceipt(output, plan, {
+    outerMonotonicDeadline,
+  });
+  registerIntegrationHeadlessReceipt(receipt, performance.now());
+  return { installedCliContractEvidence, receipt, succeeded: false };
+};
 const runScenario = async (plan, signal) => {
   const remainingOuterMilliseconds = Math.min(
     scenarioTimeoutMilliseconds,
@@ -1663,40 +1772,7 @@ const runScenario = async (plan, signal) => {
       ),
     };
   } catch (error) {
-    const output = `${error?.stdout ?? ""}`;
-    captureFixtureResult(output, plan);
-    await captureFailureFixtureLedgerObservations(plan, signal);
-    if (output.includes("AGENTSCOPE_PTY_FAILURE="))
-      captureInstalledPtyFailure(output, plan);
-    if (output.includes("AGENTSCOPE_INSTALLED_CONTRACT_FAILURE="))
-      captureInstalledContractFailure(output, plan);
-    let installedCliContractEvidence;
-    if (
-      output.includes("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=") &&
-      !installedContractEvidenceByRun.has(plan.runId)
-    ) {
-      installedCliContractEvidence = captureInstalledContractEvidence(
-        output,
-        plan,
-      );
-      registerIntegrationInstalledContractEvidence(
-        plan.runId,
-        installedCliContractEvidence,
-        Object.freeze({
-          ...installedCliContractAuthority,
-          receiptDigest: installedCliContractEvidence.receiptDigest,
-        }),
-        performance.now(),
-      );
-    }
-    if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
-      const receipt = captureHeadlessReceipt(output, plan, {
-        outerMonotonicDeadline,
-      });
-      registerIntegrationHeadlessReceipt(receipt, performance.now());
-      return { installedCliContractEvidence, receipt, succeeded: false };
-    }
-    throw error;
+    return handleScenarioFailure(plan, error, outerMonotonicDeadline);
   }
 };
 const recordEvidence = async (evidence) => {
@@ -1713,6 +1789,7 @@ const recordEvidence = async (evidence) => {
   writeFileSync(
     resolve(directory, "evidence.json"),
     `${JSON.stringify(verifiedEvidence, undefined, 2)}\n`,
+    { mode: 0o600 },
   );
   scenarioOutcomes.set(verifiedEvidence.runId, verifiedEvidence.outcome);
   const diagnostic = preparedDockerClientDiagnostic(preparedDockerClient);
@@ -1723,64 +1800,163 @@ const recordEvidence = async (evidence) => {
       { flag: "wx", mode: 0o600 },
     );
   const result = fixtureResults.get(verifiedEvidence.runId);
-  const observed = fixtureLedgerObservations.get(verifiedEvidence.runId);
+  const observed =
+    fixtureLedgerObservations.get(verifiedEvidence.runId) ??
+    currentFixtureLedgerObservations(verifiedEvidence.runId);
   if (
     verifiedEvidence.outcome === "passed" &&
     (result === undefined || result.resultStatus !== "complete")
   )
     throw new Error("integration.isolation.fixture-result");
-  if (observed !== undefined) {
-    const modelLedgerArtifact =
-      observed.model.status === "authenticated"
-        ? observed.model.ledger
-        : observed.model;
-    const destinationLedgerArtifact =
-      observed.destination.ingestion.status === "authenticated" &&
-      observed.destination.retrieval.status === "authenticated"
+  const sanitizeLedgerObservation = (observation) =>
+    observation.status === "authenticated"
+      ? {
+          entryCount: observation.ledger.entries.length,
+          entriesSha256: `sha256:${createHash("sha256")
+            .update(JSON.stringify(observation.ledger.entries))
+            .digest("hex")}`,
+          overflow: observation.ledger.overflow,
+          status: "authenticated",
+        }
+      : observation;
+  const modelLedgerArtifact =
+    observed.model.status === "authenticated"
+      ? sanitizeLedgerObservation(observed.model)
+      : observed.model;
+  const destinationLedgerArtifact = {
+    ingestion: sanitizeLedgerObservation(observed.destination.ingestion),
+    retrieval: sanitizeLedgerObservation(observed.destination.retrieval),
+  };
+  writeFileSync(
+    resolve(directory, "model-ledger.json"),
+    `${JSON.stringify(modelLedgerArtifact, undefined, 2)}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    resolve(directory, "destination-ledger.json"),
+    `${JSON.stringify(destinationLedgerArtifact, undefined, 2)}\n`,
+    { mode: 0o600 },
+  );
+  fixtureLedgerObservations.delete(verifiedEvidence.runId);
+  writeFileSync(
+    resolve(directory, "fixture-lifecycle.json"),
+    `${JSON.stringify(
+      result === undefined
         ? {
-            ingestion: observed.destination.ingestion.ledger,
-            retrieval: observed.destination.retrieval.ledger,
+            evidenceVersion: 1,
+            resultStatus: "unavailable",
+            scenarioId: plan.scenarioId,
+            ledgerObservation: {
+              model: observed.model.status,
+              ingestion: observed.destination.ingestion.status,
+              retrieval: observed.destination.retrieval.status,
+            },
           }
-        : observed.destination;
-    writeFileSync(
-      resolve(directory, "model-ledger.json"),
-      `${JSON.stringify(modelLedgerArtifact, undefined, 2)}\n`,
-    );
-    writeFileSync(
-      resolve(directory, "destination-ledger.json"),
-      `${JSON.stringify(destinationLedgerArtifact, undefined, 2)}\n`,
-    );
-    fixtureLedgerObservations.delete(verifiedEvidence.runId);
-  }
-  if (result !== undefined) {
-    writeFileSync(
-      resolve(directory, "fixture-lifecycle.json"),
-      `${JSON.stringify(
-        {
-          evidenceVersion: 1,
-          resultStatus: result.resultStatus,
-          scenarioId: result.scenarioId,
-          artifactFileName: result.artifactFileName,
-          lifecycle: result.lifecycle,
-          eventKinds: result.eventKinds,
-          ledgerObservation: {
-            model: observed?.model.status ?? "uncertain",
-            ingestion: observed?.destination.ingestion.status ?? "uncertain",
-            retrieval: observed?.destination.retrieval.status ?? "uncertain",
+        : {
+            evidenceVersion: 1,
+            resultStatus: result.resultStatus,
+            scenarioId: result.scenarioId,
+            artifactFileName: result.artifactFileName,
+            lifecycle: result.lifecycle,
+            eventKinds: result.eventKinds,
+            ledgerObservation: {
+              model: observed.model.status,
+              ingestion: observed.destination.ingestion.status,
+              retrieval: observed.destination.retrieval.status,
+            },
           },
-        },
-        undefined,
-        2,
-      )}\n`,
-    );
-    fixtureResults.delete(verifiedEvidence.runId);
-  }
+      undefined,
+      2,
+    )}\n`,
+    { mode: 0o600 },
+  );
+  fixtureResults.delete(verifiedEvidence.runId);
+  retainedRunIdentities.set(
+    verifiedEvidence.runId,
+    Object.fromEntries(
+      [
+        "destination-ledger.json",
+        "evidence.json",
+        "fixture-lifecycle.json",
+        "model-ledger.json",
+      ].map((name) => [
+        name,
+        captureFileIdentity(resolve(directory, name), 1024 * 1024, 0o600),
+      ]),
+    ),
+  );
 };
 
 const failureCode = (error) =>
   error instanceof Error && /^integration\.[a-z.-]{1,96}$/u.test(error.message)
     ? error.message
     : "integration.controller.failed";
+const isolationSecondaryFailures = (error) => {
+  const failures = error?.secondaryFailures;
+  if (
+    !Array.isArray(failures) ||
+    failures.length > 2 ||
+    new Set(failures).size !== failures.length ||
+    failures.some(
+      (failure) =>
+        typeof failure !== "string" ||
+        !/^integration\.isolation\.(?:cleanup|evidence)$/u.test(failure),
+    )
+  )
+    return [];
+  return failures;
+};
+const retainedRunEvidence = (directory, runId) => {
+  const identities = retainedRunIdentities.get(runId);
+  if (identities === undefined)
+    throw new Error("integration.controller.failure-evidence");
+  return Object.fromEntries(
+    [
+      ["destination-ledger.json", 1024 * 1024],
+      ["evidence.json", 1024 * 1024],
+      ["fixture-lifecycle.json", 1024 * 1024],
+      ["model-ledger.json", 1024 * 1024],
+    ].map(([name, maximum]) => [
+      name,
+      revalidateFileIdentity(
+        resolve(directory, name),
+        identities[name],
+        maximum,
+        0o600,
+      ),
+    ]),
+  );
+};
+const retainedControllerInputs = () =>
+  Object.fromEntries(
+    [
+      [
+        resolve(artifactsRoot, "current-candidate.json"),
+        "current-candidate.json",
+      ],
+      [resolve(artifactsRoot, "current-images.json"), "current-images.json"],
+      [
+        resolve(artifactsRoot, "current-model-routes.json"),
+        "current-model-routes.json",
+      ],
+      [
+        resolve(artifactsRoot, "current-selection.json"),
+        "current-selection.json",
+      ],
+      [
+        resolve(integrationRoot, "capability-manifest.json"),
+        "capability-manifest.json",
+      ],
+    ].map(([path, name]) => [
+      name,
+      revalidateFileIdentity(
+        path,
+        retainedInputIdentities.get(name),
+        1024 * 1024,
+        0o644,
+      ),
+    ]),
+  );
 const finalizeControllerFailureEvidence = (
   plan,
   primaryError,
@@ -1794,9 +1970,15 @@ const finalizeControllerFailureEvidence = (
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),
+    scenarioFailure:
+      typeof primaryError?.scenarioFailure === "string"
+        ? primaryError.scenarioFailure
+        : null,
+    scenarioSecondaryFailures: isolationSecondaryFailures(primaryError),
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
     installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
+    retainedEvidence: retainedRunEvidence(directory, plan.runId),
     privateCleanup:
       preparedDockerClientDiagnostic(preparedDockerClient) ?? null,
   };
@@ -1858,6 +2040,7 @@ const publishControllerFailureManifest = (identities) => {
     controllerAuthorityDigest:
       capability.binding.privateStorage.authorityDigest,
     runIds: identities.map(({ runId }) => runId).sort(),
+    retainedInputs: retainedControllerInputs(),
     failureEvidence: [...identities].sort((left, right) =>
       left.runId.localeCompare(right.runId),
     ),
@@ -2070,6 +2253,8 @@ try {
     primaryError = new Error("integration.controller.unsettled-operation", {
       cause: error,
     });
+    primaryError.scenarioFailure = failureCode(error);
+    primaryError.secondaryFailures = isolationSecondaryFailures(error);
   } else {
     primaryError = error;
   }

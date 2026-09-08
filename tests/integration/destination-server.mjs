@@ -171,7 +171,44 @@ const retrieval = async (request, response, path, body) => {
     path === "/seed" ? "seed" : path === "/search" ? "search" : "get";
   if (handleFault(request, response, body, operation)) return;
   if (path === "/seed" && request.method === "POST") {
-    const value = JSON.parse(body.toString("utf8"));
+    let value;
+    try {
+      value = JSON.parse(body.toString("utf8"));
+    } catch {
+      if (
+        !requireRecorded(
+          response,
+          record(request, body, operation, "malformed-request"),
+        )
+      )
+        return;
+      sendJson(response, 400, {});
+      return;
+    }
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      Object.keys(value).sort().join(",") !==
+        "branch,events,model,redaction,tool,traceId" ||
+      !/^[a-f\d]{32}$/u.test(value.traceId) ||
+      typeof value.branch !== "string" ||
+      typeof value.model !== "string" ||
+      typeof value.tool !== "string" ||
+      value.redaction !== "content-removed" ||
+      !Array.isArray(value.events) ||
+      value.events.some((event) => typeof event !== "string")
+    ) {
+      if (
+        !requireRecorded(
+          response,
+          record(request, body, operation, "malformed-request"),
+        )
+      )
+        return;
+      sendJson(response, 400, {});
+      return;
+    }
     if (
       !requireRecorded(response, record(request, body, operation, "accepted"))
     )

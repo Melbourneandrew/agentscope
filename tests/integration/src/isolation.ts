@@ -649,6 +649,68 @@ const cleanup = async (
   return failureCount;
 };
 
+class IsolationPlanFailure extends Error {
+  readonly secondaryFailures: readonly string[];
+
+  constructor(primary: unknown, secondaryFailures: readonly string[]) {
+    super(
+      primary instanceof Error
+        ? primary.message
+        : "integration.isolation.failed",
+      { cause: primary },
+    );
+    this.name = "IsolationPlanFailure";
+    this.secondaryFailures = Object.freeze([...secondaryFailures]);
+  }
+}
+
+const compileAndRecordIsolationEvidence = async (
+  plan: IsolationPlan,
+  driver: IsolationDriver,
+  values: Parameters<typeof compileIsolationEvidence>[0],
+  installedCliContractEvidence: InstalledCliContractEvidence | null,
+) => {
+  const evidence = compileIsolationEvidence(values, {
+    baseImageIdentity: plan.baseImageIdentity,
+    mockServerImageIdentity: plan.mockServerImageIdentity,
+    installedCliContractEvidence,
+  });
+  await driver.recordEvidence(evidence);
+  return evidence;
+};
+
+const settleIsolationEvidence = (
+  evidence: Readonly<IsolationEvidence> | undefined,
+  failure: unknown,
+  workOutcome: IsolationEvidence["outcome"],
+  cleanupOutcome: "complete" | "failed" | "verification-failed",
+  evidenceFailure: unknown,
+) => {
+  const secondaryFailures = [
+    ...(cleanupOutcome === "complete" ? [] : ["integration.isolation.cleanup"]),
+    ...(evidenceFailure === undefined
+      ? []
+      : ["integration.isolation.evidence"]),
+  ];
+  if (failure !== undefined) {
+    if (workOutcome === "interrupted")
+      throw new IsolationPlanFailure(
+        new Error("integration.isolation.interrupted"),
+        secondaryFailures,
+      );
+    throw new IsolationPlanFailure(failure, secondaryFailures);
+  }
+  if (cleanupOutcome !== "complete")
+    throw new IsolationPlanFailure(
+      new Error("integration.isolation.cleanup"),
+      evidenceFailure === undefined ? [] : ["integration.isolation.evidence"],
+    );
+  if (evidenceFailure !== undefined)
+    throw new IsolationPlanFailure(evidenceFailure, []);
+  if (evidence === undefined) throw new Error("integration.isolation.evidence");
+  return evidence;
+};
+
 export const executeIsolationPlan = async (
   plan: IsolationPlan,
   driver: IsolationDriver,
@@ -721,49 +783,49 @@ export const executeIsolationPlan = async (
     : removalFailureCount === 0 && remainingCount === 0
       ? ("complete" as const)
       : ("failed" as const);
-  const evidence = compileIsolationEvidence(
-    {
-      evidenceVersion: 2,
-      runId: plan.runId,
-      scenarioId: plan.scenarioId,
-      manifestIdentity: plan.manifestIdentity,
-      candidateBundleIdentity: plan.candidateBundleIdentity,
-      candidateRevision: plan.candidateRevision,
-      baseImage: plan.baseImage,
-      mockServerImage: plan.mockServerImage,
-      baseImageIdentity: plan.baseImageIdentity,
-      mockServerImageIdentity: plan.mockServerImageIdentity,
-      builtImageDigest: imageDigest ?? null,
-      builtMockServerImageDigest: mockServerImageDigest ?? null,
-      networkMode: "internal-only" as const,
-      hostMountCount: 0 as const,
-      readOnlyRootFilesystem: true as const,
-      tmpfsMounts: plan.tmpfsMounts,
-      executionPolicy,
-      cleanup: {
-        outcome: cleanupOutcome,
-        removalFailureCount,
-        remaining: cleanupInventory,
+  let evidence: Readonly<IsolationEvidence> | undefined;
+  let evidenceFailure: unknown;
+  try {
+    evidence = await compileAndRecordIsolationEvidence(
+      plan,
+      driver,
+      {
+        evidenceVersion: 2,
+        runId: plan.runId,
+        scenarioId: plan.scenarioId,
+        manifestIdentity: plan.manifestIdentity,
+        candidateBundleIdentity: plan.candidateBundleIdentity,
+        candidateRevision: plan.candidateRevision,
+        baseImage: plan.baseImage,
+        mockServerImage: plan.mockServerImage,
+        baseImageIdentity: plan.baseImageIdentity,
+        mockServerImageIdentity: plan.mockServerImageIdentity,
+        builtImageDigest: imageDigest ?? null,
+        builtMockServerImageDigest: mockServerImageDigest ?? null,
+        networkMode: "internal-only" as const,
+        hostMountCount: 0 as const,
+        readOnlyRootFilesystem: true as const,
+        tmpfsMounts: plan.tmpfsMounts,
+        executionPolicy,
+        cleanup: {
+          outcome: cleanupOutcome,
+          removalFailureCount,
+          remaining: cleanupInventory,
+        },
+        headlessTerminalReceipt,
+        installedCliContractEvidence,
+        outcome: workOutcome,
       },
-      headlessTerminalReceipt,
       installedCliContractEvidence,
-      outcome: workOutcome,
-    },
-    {
-      baseImageIdentity: plan.baseImageIdentity,
-      mockServerImageIdentity: plan.mockServerImageIdentity,
-      installedCliContractEvidence,
-    },
+    );
+  } catch (error) {
+    evidenceFailure = error;
+  }
+  return settleIsolationEvidence(
+    evidence,
+    failure,
+    workOutcome,
+    cleanupOutcome,
+    evidenceFailure,
   );
-  await driver.recordEvidence(evidence);
-  if (cleanupOutcome !== "complete") {
-    throw new Error("integration.isolation.cleanup");
-  }
-  if (failure !== undefined) {
-    if (workOutcome === "interrupted")
-      throw new Error("integration.isolation.interrupted");
-    if (failure instanceof Error) throw failure;
-    throw new Error("integration.isolation.failed");
-  }
-  return evidence;
 };

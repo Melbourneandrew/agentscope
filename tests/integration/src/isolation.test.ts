@@ -413,6 +413,44 @@ describe("scenario isolation outcomes", () => {
     ).rejects.toThrow("scenario failed");
     expect(failed.recordEvidence.mock.calls[0]?.[0].outcome).toBe("failed");
   });
+
+  it("preserves the scenario cause across cleanup and evidence failures", async () => {
+    const cleanupFailed = driver();
+    cleanupFailed.runScenario.mockRejectedValueOnce(
+      new Error("scenario failed"),
+    );
+    cleanupFailed.removeContainer.mockRejectedValueOnce(
+      new Error("cleanup failed"),
+    );
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        cleanupFailed.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      message: "scenario failed",
+      secondaryFailures: ["integration.isolation.cleanup"],
+    });
+
+    const evidenceFailed = driver();
+    evidenceFailed.runScenario.mockRejectedValueOnce(
+      new Error("scenario failed"),
+    );
+    evidenceFailed.recordEvidence.mockRejectedValueOnce(
+      new Error("evidence failed"),
+    );
+    await expect(
+      executeIsolationPlan(
+        planFor("fedcba9876543210"),
+        evidenceFailed.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      message: "scenario failed",
+      secondaryFailures: ["integration.isolation.evidence"],
+    });
+  });
 });
 
 describe("scenario cleanup evidence", () => {

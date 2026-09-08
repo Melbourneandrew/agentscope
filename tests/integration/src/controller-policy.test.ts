@@ -51,6 +51,144 @@ const cleanupFailureValidatorSource = () => {
   if (start < 0 || end < 0) throw new Error("missing cleanup validator");
   return source.slice(start, end);
 };
+const writeRetainedFailureInputs = (directory: string) => {
+  const artifacts = resolve(directory, "artifacts/integration");
+  mkdirSync(artifacts, { recursive: true, mode: 0o700 });
+  const manifestIdentity = `sha256-${"a".repeat(64)}`;
+  const bundleIdentity = `sha256-${"b".repeat(64)}`;
+  const candidateRevision = "c".repeat(40);
+  const baseImage = "node@sha256:" + "d".repeat(64);
+  const mockImage = "mock@sha256:" + "e".repeat(64);
+  const imageIdentity = (image: string, seed: string) => ({
+    configDigest: `sha256:${seed.repeat(64)}`,
+    image,
+    manifestDigest: `sha256:${seed.repeat(64)}`,
+    platform: { architecture: "amd64", os: "linux", variant: "" },
+  });
+  const inputs = {
+    "current-candidate.json": {
+      bundleIdentity,
+      candidateRevision,
+      pointerVersion: 1,
+    },
+    "current-images.json": {
+      dockerDaemon: {},
+      dockerSocket: {},
+      imageEvidenceVersion: 2,
+      images: [imageIdentity(baseImage, "1"), imageIdentity(mockImage, "2")],
+      manifestIdentity,
+      preparationPolicy: {},
+      terminalCleanup: {},
+    },
+    "current-model-routes.json": {
+      mockServerInitialization: [],
+      routeFixtureVersion: 1,
+      routeIds: [],
+      routes: [],
+    },
+    "current-selection.json": {
+      manifestIdentity,
+      scenarioIds: ["scenario"],
+      selectionMode: "full",
+      selectionVersion: 2,
+      selector: {},
+    },
+  };
+  for (const [fileName, value] of Object.entries(inputs))
+    writeFileSync(resolve(artifacts, fileName), `${JSON.stringify(value)}\n`, {
+      mode: 0o644,
+    });
+  const integration = resolve(directory, "tests/integration");
+  mkdirSync(integration, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    resolve(integration, "capability-manifest.json"),
+    `${JSON.stringify({ evidence: [], manifestIdentity, manifestVersion: 1, requiredRepresentativeIds: [], scenarios: [{ image: baseImage, mockServerImage: mockImage, modelRoutes: [], scenarioId: "scenario" }] })}\n`,
+    { mode: 0o644 },
+  );
+  const digest = (path: string) =>
+    `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  return {
+    "capability-manifest.json": digest(
+      resolve(integration, "capability-manifest.json"),
+    ),
+    "current-candidate.json": digest(
+      resolve(artifacts, "current-candidate.json"),
+    ),
+    "current-images.json": digest(resolve(artifacts, "current-images.json")),
+    "current-model-routes.json": digest(
+      resolve(artifacts, "current-model-routes.json"),
+    ),
+    "current-selection.json": digest(
+      resolve(artifacts, "current-selection.json"),
+    ),
+  };
+};
+const writeRetainedRunEvidence = (
+  run: string,
+  runId: string,
+  outcome: string,
+) => {
+  const files = {
+    "destination-ledger.json": {
+      ingestion: { status: "uncertain" },
+      retrieval: { status: "uncertain" },
+    },
+    "evidence.json": {
+      baseImage: "node@sha256:" + "d".repeat(64),
+      baseImageIdentity: {
+        configDigest: `sha256:${"1".repeat(64)}`,
+        image: "node@sha256:" + "d".repeat(64),
+        manifestDigest: `sha256:${"1".repeat(64)}`,
+        platform: { architecture: "amd64", os: "linux", variant: "" },
+      },
+      builtImageDigest: null,
+      builtMockServerImageDigest: null,
+      candidateBundleIdentity: `sha256-${"b".repeat(64)}`,
+      candidateRevision: "c".repeat(40),
+      cleanup: {},
+      evidenceVersion: 2,
+      executionPolicy: {},
+      headlessTerminalReceipt: null,
+      hostMountCount: 0,
+      installedCliContractEvidence: null,
+      manifestIdentity: `sha256-${"a".repeat(64)}`,
+      mockServerImage: "mock@sha256:" + "e".repeat(64),
+      mockServerImageIdentity: {
+        configDigest: `sha256:${"2".repeat(64)}`,
+        image: "mock@sha256:" + "e".repeat(64),
+        manifestDigest: `sha256:${"2".repeat(64)}`,
+        platform: { architecture: "amd64", os: "linux", variant: "" },
+      },
+      networkMode: "internal-only",
+      outcome,
+      readOnlyRootFilesystem: true,
+      runId,
+      scenarioId: "scenario",
+      tmpfsMounts: [],
+    },
+    "fixture-lifecycle.json": {
+      evidenceVersion: 1,
+      ledgerObservation: {
+        ingestion: "uncertain",
+        model: "uncertain",
+        retrieval: "uncertain",
+      },
+      resultStatus: "unavailable",
+      scenarioId: "scenario",
+    },
+    "model-ledger.json": { status: "uncertain" },
+  };
+  return Object.fromEntries(
+    Object.entries(files).map(([name, value]) => {
+      const content = `${JSON.stringify(value)}\n`;
+      writeFileSync(resolve(run, name), content, { mode: 0o600 });
+      return [
+        name,
+        `sha256:${createHash("sha256").update(content).digest("hex")}`,
+      ];
+    }),
+  );
+};
 const installedContractAdmitted = {
   "aggregate-evaluation": ["evaluation-rejected"],
   "artifact-install": [
@@ -250,7 +388,7 @@ describe("integration controller supervision", () => {
   });
 });
 
-describe("integration workflow policy", () => {
+describe("integration workflow routing policy", () => {
   it("routes both CI phases through the same command", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -306,7 +444,9 @@ describe("integration workflow policy", () => {
     expect(finalized).toBeGreaterThanOrEqual(0);
     expect(propagated).toBeGreaterThan(finalized);
   });
+});
 
+describe("integration workflow failure artifact policy", () => {
   it("rejects partial current-run failure evidence before upload", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
@@ -317,6 +457,7 @@ describe("integration workflow policy", () => {
     const artifacts = resolve(directory, "artifacts/integration");
     const runIds = ["0123456789abcdef", "fedcba9876543210"].sort();
     try {
+      const retainedInputs = writeRetainedFailureInputs(directory);
       const failureEvidence = runIds.map((runId) => {
         const run = resolve(artifacts, "runs", runId);
         mkdirSync(run, { recursive: true, mode: 0o700 });
@@ -324,12 +465,15 @@ describe("integration workflow policy", () => {
         const content = `${JSON.stringify({
           controllerFailureEvidenceVersion: 2,
           runId,
-          scenarioOutcome: "not-complete",
+          scenarioOutcome: "failed",
+          scenarioFailure: null,
           controllerOutcome: "retired-failure",
           primaryFailure: "integration.controller.failed",
           cleanupFailure: null,
+          scenarioSecondaryFailures: [],
           installedPtyFailure: null,
           privateCleanup: null,
+          retainedEvidence: writeRetainedRunEvidence(run, runId, "failed"),
         })}\n`;
         writeFileSync(path, content, { mode: 0o600 });
         const status = lstatSync(path);
@@ -348,6 +492,7 @@ describe("integration workflow policy", () => {
           controllerAuthorityDigest: `sha256:${"a".repeat(64)}`,
           runIds,
           failureEvidence,
+          retainedInputs,
         })}\n`,
         { mode: 0o600 },
       );
@@ -356,6 +501,16 @@ describe("integration workflow policy", () => {
           cwd: directory,
         }).status,
       ).toBe(0);
+      writeFileSync(
+        resolve(artifacts, "runs", runIds[0]!, "model-ledger.json"),
+        '{"substituted":true}\n',
+        { mode: 0o600 },
+      );
+      expect(
+        spawnSync(process.execPath, ["--input-type=module", "--eval", source], {
+          cwd: directory,
+        }).status,
+      ).not.toBe(0);
       rmSync(resolve(artifacts, "runs", runIds[1]!), {
         recursive: true,
       });
@@ -384,16 +539,20 @@ describe("installed-contract workflow failure evidence", () => {
       const run = resolve(artifacts, "runs", runId);
       mkdirSync(run, { recursive: true, mode: 0o700 });
       try {
+        const retainedInputs = writeRetainedFailureInputs(directory);
         const path = resolve(run, "controller-failure.json");
         const content = `${JSON.stringify({
           controllerFailureEvidenceVersion: 2,
           runId,
           scenarioOutcome: "failed",
+          scenarioFailure: "integration.isolation.scenario-failed",
           controllerOutcome: "retired-failure",
           primaryFailure: "integration.controller.unsettled-operation",
           cleanupFailure: null,
+          scenarioSecondaryFailures: [],
           installedPtyFailure,
           privateCleanup: null,
+          retainedEvidence: writeRetainedRunEvidence(run, runId, "failed"),
         })}\n`;
         writeFileSync(path, content, { mode: 0o600 });
         const status = lstatSync(path);
@@ -414,6 +573,7 @@ describe("installed-contract workflow failure evidence", () => {
                 size: status.size,
               },
             ],
+            retainedInputs,
           })}\n`,
           { mode: 0o600 },
         );

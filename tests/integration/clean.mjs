@@ -276,6 +276,58 @@ const addDirectory = (targets, relative) => {
     throw new Error("integration.cleanup.path");
   targets.push({ bytes: directoryBytes(path), path, relative });
 };
+const validSecondaryFailures = (failures) =>
+  Array.isArray(failures) &&
+  failures.length <= 2 &&
+  new Set(failures).size === failures.length &&
+  failures.every((failure) =>
+    /^integration\.isolation\.(?:cleanup|evidence)$/u.test(failure),
+  );
+const validRetainedEvidence = (value) =>
+  typeof value === "object" &&
+  value !== null &&
+  JSON.stringify(Object.keys(value).sort()) ===
+    JSON.stringify([
+      "destination-ledger.json",
+      "evidence.json",
+      "fixture-lifecycle.json",
+      "model-ledger.json",
+    ]) &&
+  Object.values(value).every((digest) => /^sha256:[a-f0-9]{64}$/u.test(digest));
+const validFailureRecord = (record, runId) =>
+  JSON.stringify(Object.keys(record).sort()) ===
+    JSON.stringify(
+      [
+        "cleanupFailure",
+        "controllerFailureEvidenceVersion",
+        "controllerOutcome",
+        "installedPtyFailure",
+        "primaryFailure",
+        "privateCleanup",
+        "retainedEvidence",
+        "runId",
+        "scenarioOutcome",
+        "scenarioFailure",
+        "scenarioSecondaryFailures",
+      ].sort(),
+    ) &&
+  record.controllerFailureEvidenceVersion === 2 &&
+  record.runId === runId &&
+  record.controllerOutcome === "retired-failure" &&
+  validInstalledPtyFailure(record.installedPtyFailure) &&
+  /^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) &&
+  (record.scenarioFailure === null ||
+    /^(?:integration\.[a-z.-]{1,96})$/u.test(record.scenarioFailure)) &&
+  validRetainedEvidence(record.retainedEvidence) &&
+  validSecondaryFailures(record.scenarioSecondaryFailures) &&
+  (record.cleanupFailure === null ||
+    /^(?:integration\.[a-z.-]{1,96})$/u.test(record.cleanupFailure)) &&
+  ["passed", "failed", "interrupted", "not-complete"].includes(
+    record.scenarioOutcome,
+  ) &&
+  (record.privateCleanup === null ||
+    (record.privateCleanup?.diagnosticVersion === 1 &&
+      record.privateCleanup?.outcome === "retired-failure"));
 const assertFailureEvidence = (identity) => {
   const directory = resolve(artifactsRoot, "runs", identity.runId);
   const path = resolve(directory, "controller-failure.json");
@@ -308,36 +360,7 @@ const assertFailureEvidence = (identity) => {
   )
     throw new Error("integration.cleanup.failure-evidence");
   const record = JSON.parse(content.toString("utf8"));
-  if (
-    JSON.stringify(Object.keys(record).sort()) !==
-      JSON.stringify(
-        [
-          "cleanupFailure",
-          "controllerFailureEvidenceVersion",
-          "controllerOutcome",
-          "installedPtyFailure",
-          "primaryFailure",
-          "privateCleanup",
-          "runId",
-          "scenarioOutcome",
-        ].sort(),
-      ) ||
-    record.controllerFailureEvidenceVersion !== 2 ||
-    record.runId !== identity.runId ||
-    record.controllerOutcome !== "retired-failure" ||
-    !validInstalledPtyFailure(record.installedPtyFailure) ||
-    !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
-    !(
-      record.cleanupFailure === null ||
-      /^(?:integration\.[a-z.-]{1,96})$/u.test(record.cleanupFailure)
-    ) ||
-    !["passed", "failed", "not-complete"].includes(record.scenarioOutcome) ||
-    !(
-      record.privateCleanup === null ||
-      (record.privateCleanup?.diagnosticVersion === 1 &&
-        record.privateCleanup?.outcome === "retired-failure")
-    )
-  )
+  if (!validFailureRecord(record, identity.runId))
     throw new Error("integration.cleanup.failure-evidence");
 };
 

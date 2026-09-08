@@ -211,7 +211,7 @@ jobs:
                   value.caseOrdinal < installedContractCaseCount &&
                   value.contractInventorySha256 ===
                     installedContractInventorySha256)));
-          const readBounded = (path, maximumBytes) => {
+          const readBounded = (path, maximumBytes, expectedMode = 0o600) => {
             let descriptor;
             try {
               descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -221,7 +221,7 @@ jobs:
                 before.nlink !== 1 ||
                 before.size < 1 ||
                 before.size > maximumBytes ||
-                (before.mode & 0o7777) !== 0o600
+                (before.mode & 0o7777) !== expectedMode
               ) fail();
               const content = readFileSync(descriptor);
               const after = fstatSync(descriptor);
@@ -249,6 +249,7 @@ jobs:
               "controllerAuthorityDigest",
               "controllerFailureManifestVersion",
               "failureEvidence",
+              "retainedInputs",
               "runIds",
             ]) ||
             manifest.controllerFailureManifestVersion !== 1 ||
@@ -262,6 +263,70 @@ jobs:
               JSON.stringify([...manifest.runIds].sort()) ||
             manifest.failureEvidence.length !== manifest.runIds.length
           ) fail();
+          const verifyDigests = (value, expectedNames, root, mode) => {
+            if (!exactKeys(value, expectedNames)) fail();
+            const parsed = {};
+            for (const name of expectedNames) {
+              if (!/^sha256:[a-f0-9]{64}$/u.test(value[name])) fail();
+              const retained = readBounded(resolve(root, name), 1024 * 1024, mode);
+              if (`sha256:${createHash("sha256").update(retained.content).digest("hex")}` !== value[name]) fail();
+              parsed[name] = JSON.parse(retained.content.toString("utf8"));
+            }
+            return parsed;
+          };
+          if (!exactKeys(manifest.retainedInputs, [
+            "capability-manifest.json",
+            "current-candidate.json",
+            "current-images.json",
+            "current-model-routes.json",
+            "current-selection.json",
+          ])) fail();
+          const retainedInputs = verifyDigests(
+            Object.fromEntries(Object.entries(manifest.retainedInputs).filter(([name]) => name !== "capability-manifest.json")),
+            ["current-candidate.json", "current-images.json", "current-model-routes.json", "current-selection.json"],
+            artifactsRoot,
+            0o644,
+          );
+          const retainedManifest = verifyDigests(
+            { "capability-manifest.json": manifest.retainedInputs["capability-manifest.json"] },
+            ["capability-manifest.json"],
+            "tests/integration",
+            0o644,
+          );
+          const candidate = retainedInputs["current-candidate.json"];
+          const images = retainedInputs["current-images.json"];
+          const routes = retainedInputs["current-model-routes.json"];
+          const selection = retainedInputs["current-selection.json"];
+          const capability = retainedManifest["capability-manifest.json"];
+          if (
+            !exactKeys(candidate, ["bundleIdentity", "candidateRevision", "pointerVersion"]) ||
+            candidate.pointerVersion !== 1 ||
+            !/^sha256-[a-f0-9]{64}$/u.test(candidate.bundleIdentity) ||
+            !/^[a-f0-9]{40,64}$/u.test(candidate.candidateRevision) ||
+            !exactKeys(capability, ["evidence", "manifestIdentity", "manifestVersion", "requiredRepresentativeIds", "scenarios"]) ||
+            capability.manifestVersion !== 1 ||
+            !/^sha256-[a-f0-9]{64}$/u.test(capability.manifestIdentity) ||
+            !Array.isArray(capability.evidence) || !Array.isArray(capability.scenarios) ||
+            !exactKeys(selection, ["manifestIdentity", "scenarioIds", "selectionMode", "selectionVersion", "selector"]) ||
+            selection.selectionVersion !== 2 || selection.manifestIdentity !== capability.manifestIdentity ||
+            !Array.isArray(selection.scenarioIds) ||
+            !exactKeys(routes, ["mockServerInitialization", "routeFixtureVersion", "routeIds", "routes"]) ||
+            routes.routeFixtureVersion !== 1 || !Array.isArray(routes.routeIds) || !Array.isArray(routes.routes) || !Array.isArray(routes.mockServerInitialization) ||
+            !exactKeys(images, ["dockerDaemon", "dockerSocket", "imageEvidenceVersion", "images", "manifestIdentity", "preparationPolicy", "terminalCleanup"]) ||
+            images.imageEvidenceVersion !== 2 || images.manifestIdentity !== capability.manifestIdentity || !Array.isArray(images.images)
+          ) fail();
+          const validLedger = (value) =>
+            (exactKeys(value, ["status"]) && value.status === "uncertain") ||
+            (exactKeys(value, ["entriesSha256", "entryCount", "overflow", "status"]) &&
+              value.status === "authenticated" && Number.isSafeInteger(value.entryCount) &&
+              value.entryCount >= 0 && value.entryCount <= 4096 && typeof value.overflow === "boolean" &&
+              /^sha256:[a-f0-9]{64}$/u.test(value.entriesSha256));
+          const samePreparedIdentity = (prepared, retained) =>
+            prepared !== undefined &&
+            exactKeys(retained, ["configDigest", "image", "manifestDigest", "platform"]) &&
+            retained.image === prepared.image && retained.configDigest === prepared.configDigest &&
+            retained.manifestDigest === prepared.manifestDigest &&
+            JSON.stringify(retained.platform) === JSON.stringify(prepared.platform);
           const expected = new Set(manifest.runIds);
           const observed = [];
           for (const identity of manifest.failureEvidence) {
@@ -290,7 +355,10 @@ jobs:
                 "installedPtyFailure",
                 "primaryFailure",
                 "privateCleanup",
+                "retainedEvidence",
                 "runId",
+                "scenarioFailure",
+                "scenarioSecondaryFailures",
                 "scenarioOutcome",
               ]) ||
               record.controllerFailureEvidenceVersion !== 2 ||
@@ -298,13 +366,86 @@ jobs:
               record.controllerOutcome !== "retired-failure" ||
               !validPtyFailure(record.installedPtyFailure) ||
               !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
+              !(record.scenarioFailure === null || /^integration\.[a-z.-]{1,96}$/u.test(record.scenarioFailure)) ||
+              !Array.isArray(record.scenarioSecondaryFailures) ||
+              record.scenarioSecondaryFailures.length > 2 ||
+              new Set(record.scenarioSecondaryFailures).size !==
+                record.scenarioSecondaryFailures.length ||
+              record.scenarioSecondaryFailures.some(
+                (failure) =>
+                  !/^integration\.isolation\.(?:cleanup|evidence)$/u.test(
+                    failure,
+                  ),
+              ) ||
               !(
                 record.cleanupFailure === null ||
                 /^integration\.[a-z.-]{1,96}$/u.test(record.cleanupFailure)
               ) ||
-              !["passed", "failed", "not-complete"].includes(
+              !["passed", "failed", "interrupted", "not-complete"].includes(
                 record.scenarioOutcome,
               )
+            ) fail();
+            const retained = verifyDigests(
+              record.retainedEvidence,
+              ["destination-ledger.json", "evidence.json", "fixture-lifecycle.json", "model-ledger.json"],
+              resolve(runsRoot, identity.runId),
+              0o600,
+            );
+            const evidence = retained["evidence.json"];
+            const lifecycle = retained["fixture-lifecycle.json"];
+            const modelLedger = retained["model-ledger.json"];
+            const destinationLedger = retained["destination-ledger.json"];
+            if (
+              !exactKeys(evidence, ["baseImage", "baseImageIdentity", "builtImageDigest", "builtMockServerImageDigest", "candidateBundleIdentity", "candidateRevision", "cleanup", "evidenceVersion", "executionPolicy", "headlessTerminalReceipt", "hostMountCount", "installedCliContractEvidence", "manifestIdentity", "mockServerImage", "mockServerImageIdentity", "networkMode", "outcome", "readOnlyRootFilesystem", "runId", "scenarioId", "tmpfsMounts"]) ||
+              evidence.evidenceVersion !== 2 || evidence.runId !== record.runId ||
+              evidence.manifestIdentity !== capability.manifestIdentity || evidence.candidateBundleIdentity !== candidate.bundleIdentity ||
+              evidence.candidateRevision !== candidate.candidateRevision || evidence.outcome !== record.scenarioOutcome ||
+              !validLedger(modelLedger) || !exactKeys(destinationLedger, ["ingestion", "retrieval"]) ||
+              !validLedger(destinationLedger.ingestion) || !validLedger(destinationLedger.retrieval) ||
+              !exactKeys(lifecycle, lifecycle.resultStatus === "unavailable"
+                ? ["evidenceVersion", "ledgerObservation", "resultStatus", "scenarioId"]
+                : ["artifactFileName", "eventKinds", "evidenceVersion", "ledgerObservation", "lifecycle", "resultStatus", "scenarioId"]) ||
+              lifecycle.evidenceVersion !== 1 || lifecycle.scenarioId !== evidence.scenarioId ||
+              !exactKeys(lifecycle.ledgerObservation, ["ingestion", "model", "retrieval"]) ||
+              !["authenticated", "uncertain"].includes(lifecycle.ledgerObservation.model) ||
+              !["authenticated", "uncertain"].includes(lifecycle.ledgerObservation.ingestion) ||
+              !["authenticated", "uncertain"].includes(lifecycle.ledgerObservation.retrieval)
+            ) fail();
+            const preparedBase = images.images.find((image) => image.image === evidence.baseImage);
+            const preparedMock = images.images.find((image) => image.image === evidence.mockServerImage);
+            const declaredScenario = capability.scenarios.find(
+              (scenario) => scenario.scenarioId === evidence.scenarioId,
+            );
+            const cleanupComplete =
+              exactKeys(evidence.cleanup, ["outcome", "remaining", "removalFailureCount"]) &&
+              evidence.cleanup.outcome === "complete" && evidence.cleanup.removalFailureCount === 0 &&
+              exactKeys(evidence.cleanup.remaining, ["activeRunMarkers", "buildContexts", "containers", "images", "networks", "volumes"]) &&
+              Object.values(evidence.cleanup.remaining).every((count) => count === 0);
+            const terminalComplete = evidence.headlessTerminalReceipt !== null &&
+              evidence.headlessTerminalReceipt.outcome === "exited" && evidence.headlessTerminalReceipt.exitCode === 0 &&
+              evidence.headlessTerminalReceipt.signal === null && evidence.headlessTerminalReceipt.cleanup === "clean" &&
+              evidence.headlessTerminalReceipt.residualProcessCount === 0 && evidence.headlessTerminalReceipt.processJoined === true &&
+              evidence.headlessTerminalReceipt.stdinJoined === true && evidence.headlessTerminalReceipt.stdoutJoined === true &&
+              evidence.headlessTerminalReceipt.stderrJoined === true;
+            const lifecycleComplete = lifecycle.resultStatus === "complete" &&
+              /^agentscope-cli(?:-[0-9.]+)?\.tgz$/u.test(lifecycle.artifactFileName) &&
+              JSON.stringify(lifecycle.lifecycle) === JSON.stringify(["install", "configure", "hook", "execute", "export", "retrieve", "uninstall"]) &&
+              Array.isArray(lifecycle.eventKinds) && lifecycle.eventKinds.length > 0 && lifecycle.eventKinds.length <= 32 &&
+              new Set(lifecycle.eventKinds).size === lifecycle.eventKinds.length &&
+              lifecycle.eventKinds.every((kind) => /^[a-z][a-z0-9-]{0,63}$/u.test(kind));
+            if (
+              !selection.scenarioIds.includes(evidence.scenarioId) ||
+              declaredScenario === undefined || declaredScenario.image !== evidence.baseImage ||
+              declaredScenario.mockServerImage !== evidence.mockServerImage ||
+              !Array.isArray(declaredScenario.modelRoutes) || declaredScenario.modelRoutes.some((route) => !routes.routeIds.includes(route)) ||
+              !samePreparedIdentity(preparedBase, evidence.baseImageIdentity) ||
+              !samePreparedIdentity(preparedMock, evidence.mockServerImageIdentity) ||
+              (lifecycle.ledgerObservation.model === "authenticated") !== (modelLedger.status === "authenticated") ||
+              (lifecycle.ledgerObservation.ingestion === "authenticated") !== (destinationLedger.ingestion.status === "authenticated") ||
+              (lifecycle.ledgerObservation.retrieval === "authenticated") !== (destinationLedger.retrieval.status === "authenticated") ||
+              record.scenarioOutcome === "not-complete" ||
+              (evidence.outcome === "interrupted" && record.primaryFailure !== "integration.isolation.interrupted" && record.scenarioFailure !== "integration.isolation.interrupted") ||
+              (evidence.outcome === "passed" && (!cleanupComplete || !terminalComplete || evidence.installedCliContractEvidence === null || evidence.builtImageDigest === null || evidence.builtMockServerImageDigest === null || !lifecycleComplete || modelLedger.status !== "authenticated" || modelLedger.overflow !== false || destinationLedger.ingestion.status !== "authenticated" || destinationLedger.ingestion.overflow !== false || destinationLedger.retrieval.status !== "authenticated" || destinationLedger.retrieval.overflow !== false))
             ) fail();
             observed.push(identity.runId);
           }
@@ -330,6 +471,15 @@ jobs:
           path: |
             artifacts/integration/controller-failure-manifest.json
             artifacts/integration/runs/*/controller-failure.json
+            artifacts/integration/runs/*/evidence.json
+            artifacts/integration/runs/*/fixture-lifecycle.json
+            artifacts/integration/runs/*/model-ledger.json
+            artifacts/integration/runs/*/destination-ledger.json
+            artifacts/integration/current-candidate.json
+            artifacts/integration/current-images.json
+            artifacts/integration/current-model-routes.json
+            artifacts/integration/current-selection.json
+            tests/integration/capability-manifest.json
           if-no-files-found: error
           retention-days: 7
   hermetic-integration:
