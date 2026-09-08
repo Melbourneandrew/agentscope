@@ -717,7 +717,7 @@ type ProcessSnapshot = Readonly<{
 type AdoptedZombieReapReceipt = Readonly<{
   pid: number;
   startIdentity: string;
-  status: "not-ready" | "reaped";
+  status: "already-absent" | "not-ready" | "reaped";
 }>;
 type ContainerComposition = Readonly<{
   immutableCandidate?: ImmutableCandidateAuthority;
@@ -1421,7 +1421,8 @@ const exactAdoptedZombieReapReceipt = (
       "pid\0startIdentity\0status" ||
     ownData(value, "pid") !== identity.pid ||
     ownData(value, "startIdentity") !== identity.startIdentity ||
-    (ownData(value, "status") !== "not-ready" &&
+    (ownData(value, "status") !== "already-absent" &&
+      ownData(value, "status") !== "not-ready" &&
       ownData(value, "status") !== "reaped")
   )
     return fail("testkit.headless.observer.reap");
@@ -1497,7 +1498,10 @@ const reapAdoptedZombies = (
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
       return fail("testkit.headless.observer.identity");
-    if (receipt.status !== "reaped" || after !== undefined)
+    if (
+      (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
+      after !== undefined
+    )
       return fail("testkit.headless.observer.reap");
   }
 };
@@ -3157,6 +3161,9 @@ export const executeScriptedSelectedHeadlessProcessForTest = async (
 };
 
 type SelectedContainerTestSeed =
+  | "adopted-zombie-already-absent"
+  | "adopted-zombie-already-absent-persistence"
+  | "adopted-zombie-not-ready"
   | "adopted-zombie-reap-failure"
   | "adopted-zombie-receipt-substitution"
   | "adopted-zombie-state-substitution"
@@ -3278,7 +3285,13 @@ const selectedContainerRuntimeForTest = (
         processes.set(pid, { ...selected, state: "R" });
         return fail("testkit.headless.observer.identity");
       }
+      if (seed === "adopted-zombie-not-ready")
+        return { pid, startIdentity, status: "not-ready" };
+      if (seed === "adopted-zombie-already-absent-persistence")
+        return { pid, startIdentity, status: "already-absent" };
       processes.delete(pid);
+      if (seed === "adopted-zombie-already-absent")
+        return { pid, startIdentity, status: "already-absent" };
       if (seed === "adopted-zombie-receipt-substitution")
         return { pid, startIdentity: `${pid}:2`, status: "reaped" };
       return { pid, startIdentity, status: "reaped" };
@@ -3368,6 +3381,9 @@ const selectedContainerRuntimeForTest = (
         } else if (
           seed === "descendant" ||
           seed === "surviving-descendant" ||
+          seed === "adopted-zombie-already-absent" ||
+          seed === "adopted-zombie-already-absent-persistence" ||
+          seed === "adopted-zombie-not-ready" ||
           seed === "adopted-zombie-reap-failure" ||
           seed === "adopted-zombie-receipt-substitution" ||
           seed === "adopted-zombie-state-substitution" ||

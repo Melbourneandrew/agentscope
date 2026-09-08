@@ -37,7 +37,7 @@ const maximumPatchLines = 2_048;
 const maximumPatchLineBytes = 2_048;
 const maximumPatchOperations = 4_096;
 const patchedSourceSha256 =
-  "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1";
+  "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b";
 
 // One closed parser keeps every header, position, operation, count and final
 // digest check in the same no-fuzz authority.
@@ -137,7 +137,7 @@ export const applyExactPtyPatch = (source, patch) => {
       throw new Error("PTY patch hunk is incomplete.");
     hunkCount += 1;
   }
-  if (hunkCount !== 62 || patchIndex !== patchLines.length)
+  if (hunkCount !== 61 || patchIndex !== patchLines.length)
     throw new Error("PTY patch hunk inventory is not exact.");
   output.push(...sourceLines.slice(sourceIndex));
   const result = `${output.join("\n")}\n`;
@@ -394,7 +394,7 @@ export const buildPtyRuntime = ({
   );
   const patchBytes = verifyRegularFile(
     patch,
-    "2ebf2082692c42d032999a7d1d870d03e88dc9f753bed01843429bb433915ac7",
+    "64bc27e6cca43197a8537acd12b6406a80390c5144bde228690c267a9245fcf9",
     0o644,
     maximumPatchBytes,
   );
@@ -420,7 +420,7 @@ export const buildPtyRuntime = ({
   });
   verifyRegularFile(
     resolve(toolchainRoot, "build/node-pty/src/unix/pty.cc"),
-    "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1",
+    "7b1400517bb83a9b9888828b0a9b75966d53436f2fda1027e2d9a06239223d0b",
   );
   verifyExecutable(
     resolve(toolchainRoot, "usr/bin/g++"),
