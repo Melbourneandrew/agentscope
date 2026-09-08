@@ -24,17 +24,17 @@ const packageRoot = resolve(import.meta.dirname, "..");
 const repositoryRoot = resolve(packageRoot, "../..");
 const maximumArtifactBytes = 2 * 1024 * 1024;
 const expectedArtifact = Object.freeze({
-  bytes: 643_744,
+  bytes: 647_840,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "pty-runtime/node127-linux-x64-musl/pty.node",
-  sha256: "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab",
+  sha256: "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff",
   tuple: "node127-linux-x64-musl",
 });
 const expectedFaultArtifact = Object.freeze({
-  bytes: 644_072,
+  bytes: 648_176,
   needed: Object.freeze(["libc.musl-x86_64.so.1"]),
   path: "fixtures/pty-runtime-faults/node127-linux-x64-musl/pty.node",
-  sha256: "d4fcfb86202c50a1e33edf3cf6c696bc9bc11d7d28c05d1a7f320adceffd34f6",
+  sha256: "7a5468057ae55ba587e66ccef1858e59586a05039019c88d4bd196650a47faaa",
   tuple: "node127-linux-x64-musl-test-faults",
 });
 const runtimeReceiptKeys = Object.freeze([
@@ -497,7 +497,7 @@ export const verifyPtyRuntime = ({
   verifyFileIdentity(
     resolve(root, "pty-runtime-artifacts.json"),
     2_702,
-    "440f0f2f9cf271673f2914a21c16522c29f49460c976b45aeefe70c8afa4ff56",
+    "d7ab6f5c9227143ea43574a4f8d2122c087190a8164a7a8d69f690688613421d",
   );
   const manifest = JSON.parse(
     readBoundedRegular(resolve(root, "pty-runtime-artifacts.json"), 64 * 1024),
@@ -862,7 +862,7 @@ const proveAdoptedZombieReap = (deadline) => {
         deadline,
       );
     } catch (error) {
-      rejectedEchild = /reap is uncertain/u.test(String(error));
+      rejectedEchild = /reap persisted/u.test(String(error));
     } finally {
       faults.testFault(0);
     }

@@ -714,6 +714,10 @@ describe("PTY authenticated build-material tooling", () => {
       ),
       "utf8",
     );
+    const verifier = readFileSync(
+      resolve(packageRoot, "scripts/verify-pty-runtime.mjs"),
+      "utf8",
+    );
     const apply = (candidatePatch: string) =>
       evaluate(
         `const {applyExactPtyPatch}=await import(${JSON.stringify(buildUrl)}); applyExactPtyPatch(Buffer.from(process.argv[1],'base64').toString(),Buffer.from(process.argv[2],'base64').toString());`,
@@ -771,6 +775,9 @@ describe("PTY authenticated build-material tooling", () => {
     );
     expect(patch).toContain(
       '+        throw Napi::Error::New(env, "PTY adopted-zombie reap persisted");',
+    );
+    expect(verifier).toContain(
+      "rejectedEchild = /reap persisted/u.test(String(error));",
     );
     expect(patch).toContain(
       '+                              "already-absent");',
@@ -919,7 +926,7 @@ describe("PTY authenticated build-material tooling", () => {
       "utf8",
     );
     expect(build).toContain(
-      'digest !==\n    "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab"',
+      'digest !==\n    "00c2d70427923ec598dd105a78d5eb099e7ad52accfa98ef65cc9f2195c3a8ff"',
     );
   });
 });
