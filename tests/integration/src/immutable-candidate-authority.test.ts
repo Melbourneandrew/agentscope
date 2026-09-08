@@ -9,6 +9,7 @@ const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
   compileInstalledCliPtyReceipt,
+  compileInstalledCliPtyReceiptFromExecution,
   decodeInstalledCliPtyReceipt,
   decodeImmutableCandidateHandoff,
   selectedRuntimeFiles,
@@ -80,8 +81,9 @@ const ptyReceipt = () => ({
   candidateBundleIdentity: candidate().bundleIdentity,
   candidateInventorySha256: compileCandidateInventory(candidate()).sha256,
   caseId: "installed-cli-version",
+  completionKind: "exact-output",
   outcome: "completed",
-  semanticState: "completed",
+  semanticState: "active",
   cleanup: "clean",
   isTTY: true,
   eofByteWritten: true,
@@ -93,6 +95,37 @@ const ptyReceipt = () => ({
   initialGeometry: { columns: 40, rows: 12 },
   outputBytes: 42,
   outputSha256: hex("e"),
+});
+const executionReceipt = () => ({
+  receiptVersion: 1,
+  runId: plan().runId,
+  requestFingerprint: `sha256:${hex("1")}`,
+  isTTY: true,
+  initialGeometry: { columns: 40, rows: 12 },
+  observedGeometry: { columns: 40, rows: 12 },
+  observedCanonicalMode: true,
+  eofByte: 4,
+  eofByteWritten: true,
+  inputBytesWritten: 0,
+  outcome: "completed",
+  outputBytes: 42,
+  outputSha256: hex("e"),
+  finalSnapshot: {
+    semanticState: "active",
+    rows: [],
+    cursor: { column: 0, row: 0 },
+    alternateScreen: false,
+    bracketedPaste: false,
+    title: "",
+  },
+  exitCode: 0,
+  signal: null,
+  cleanup: "clean",
+  residualProcessCount: 0,
+  processJoined: true,
+  terminalInputJoined: true,
+  terminalOutputJoined: true,
+  terminalTransportClosed: true,
 });
 
 // eslint-disable-next-line max-lines-per-function
@@ -226,6 +259,35 @@ describe("immutable candidate authority", () => {
     expect(decodeInstalledCliPtyReceipt(output, ptyExpected())).toEqual(
       compiledReceipt.record,
     );
+  });
+
+  it("preserves observed emulator state beside exact-output completion", () => {
+    const compiledReceipt = compileInstalledCliPtyReceiptFromExecution({
+      receipt: executionReceipt(),
+      candidateBundleIdentity: candidate().bundleIdentity,
+      candidateInventorySha256: compileCandidateInventory(candidate()).sha256,
+      scenarioId: plan().scenarioId,
+    });
+    expect(compiledReceipt.record).toMatchObject({
+      completionKind: "exact-output",
+      outcome: "completed",
+      semanticState: "active",
+    });
+    expect(
+      decodeInstalledCliPtyReceipt(
+        `AGENTSCOPE_PTY_RECEIPT=${compiledReceipt.encoded}`,
+        ptyExpected(),
+      ),
+    ).toEqual(compiledReceipt.record);
+  });
+
+  it.each([
+    ["completion authority", { completionKind: "semantic-marker" }],
+    ["observed semantic state", { semanticState: "completed" }],
+  ])("rejects substituted %s", (_label, replacement) => {
+    expect(() =>
+      compileInstalledCliPtyReceipt({ ...ptyReceipt(), ...replacement }),
+    ).toThrow("integration.immutable-candidate.authority");
   });
 
   it.each([

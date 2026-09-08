@@ -237,6 +237,7 @@ const ptyReceiptKeys = [
   "candidateInventorySha256",
   "caseId",
   "cleanup",
+  "completionKind",
   "eofByteWritten",
   "initialGeometry",
   "isTTY",
@@ -263,8 +264,9 @@ export const compileInstalledCliPtyReceipt = (value) => {
     !/^sha256-[a-f0-9]{64}$/u.test(value.candidateBundleIdentity) ||
     !/^[a-f0-9]{64}$/u.test(value.candidateInventorySha256) ||
     value.caseId !== "installed-cli-version" ||
+    value.completionKind !== "exact-output" ||
     value.outcome !== "completed" ||
-    value.semanticState !== "completed" ||
+    value.semanticState !== "active" ||
     value.cleanup !== "clean" ||
     value.isTTY !== true ||
     value.eofByteWritten !== true ||
@@ -286,6 +288,67 @@ export const compileInstalledCliPtyReceipt = (value) => {
   return Object.freeze({
     record,
     encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
+  });
+};
+
+const selectedPtyExecutionReceiptKeys = [
+  "cleanup",
+  "eofByte",
+  "eofByteWritten",
+  "exitCode",
+  "finalSnapshot",
+  "initialGeometry",
+  "inputBytesWritten",
+  "isTTY",
+  "observedCanonicalMode",
+  "observedGeometry",
+  "outcome",
+  "outputBytes",
+  "outputSha256",
+  "processJoined",
+  "receiptVersion",
+  "requestFingerprint",
+  "residualProcessCount",
+  "runId",
+  "signal",
+  "terminalInputJoined",
+  "terminalOutputJoined",
+  "terminalTransportClosed",
+];
+
+export const compileInstalledCliPtyReceiptFromExecution = (value) => {
+  if (
+    !exactKeys(value, [
+      "candidateBundleIdentity",
+      "candidateInventorySha256",
+      "receipt",
+      "scenarioId",
+    ]) ||
+    !exactKeys(value.receipt, selectedPtyExecutionReceiptKeys) ||
+    !plainRecord(value.receipt.finalSnapshot)
+  )
+    return fail();
+  return compileInstalledCliPtyReceipt({
+    receiptVersion: 1,
+    runId: value.receipt.runId,
+    scenarioId: value.scenarioId,
+    candidateBundleIdentity: value.candidateBundleIdentity,
+    candidateInventorySha256: value.candidateInventorySha256,
+    caseId: "installed-cli-version",
+    completionKind: "exact-output",
+    outcome: value.receipt.outcome,
+    semanticState: value.receipt.finalSnapshot.semanticState,
+    cleanup: value.receipt.cleanup,
+    isTTY: value.receipt.isTTY,
+    eofByteWritten: value.receipt.eofByteWritten,
+    processJoined: value.receipt.processJoined,
+    terminalInputJoined: value.receipt.terminalInputJoined,
+    terminalOutputJoined: value.receipt.terminalOutputJoined,
+    terminalTransportClosed: value.receipt.terminalTransportClosed,
+    residualProcessCount: value.receipt.residualProcessCount,
+    initialGeometry: value.receipt.initialGeometry,
+    outputBytes: value.receipt.outputBytes,
+    outputSha256: value.receipt.outputSha256,
   });
 };
 

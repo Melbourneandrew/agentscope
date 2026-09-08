@@ -16,7 +16,7 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
-  compileInstalledCliPtyReceipt,
+  compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
@@ -207,26 +207,11 @@ const { receipt: ptyReceipt } = await runInstalledCliPtyProof({
   runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
   shutdownDeadline: headlessShutdownDeadline,
 });
-const installedCliPtyReceipt = compileInstalledCliPtyReceipt({
-  receiptVersion: 1,
-  runId: ptyReceipt.runId,
+const installedCliPtyReceipt = compileInstalledCliPtyReceiptFromExecution({
+  receipt: ptyReceipt,
   scenarioId,
   candidateBundleIdentity: evidence.bundleIdentity,
   candidateInventorySha256,
-  caseId: "installed-cli-version",
-  outcome: ptyReceipt.outcome,
-  semanticState: "completed",
-  cleanup: ptyReceipt.cleanup,
-  isTTY: ptyReceipt.isTTY,
-  eofByteWritten: ptyReceipt.eofByteWritten,
-  processJoined: ptyReceipt.processJoined,
-  terminalInputJoined: ptyReceipt.terminalInputJoined,
-  terminalOutputJoined: ptyReceipt.terminalOutputJoined,
-  terminalTransportClosed: ptyReceipt.terminalTransportClosed,
-  residualProcessCount: ptyReceipt.residualProcessCount,
-  initialGeometry: ptyReceipt.initialGeometry,
-  outputBytes: ptyReceipt.outputBytes,
-  outputSha256: ptyReceipt.outputSha256,
 });
 console.log(`AGENTSCOPE_PTY_RECEIPT=${installedCliPtyReceipt.encoded}`);
 
