@@ -634,7 +634,7 @@ const selectedInvocationFor = (contractStep, caseRoot) => {
     ],
     executable: "/bin/sh",
     executionTimeoutMilliseconds: 250,
-    shutdownTimeoutMilliseconds: 2_000,
+    shutdownTimeoutMilliseconds: 5_000,
   };
 };
 const contractFailureCase = (caseOrdinal) =>

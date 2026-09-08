@@ -659,6 +659,33 @@ describe("immutable candidate authority", () => {
     expect(cleanup).toBeGreaterThan(terminal);
   });
 
+  it("keeps the deadline-child execution timeout separate from one bounded teardown deadline", () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    const invocationStart = runner.indexOf("const invokeSelected = async");
+    const invocationEnd = runner.indexOf(
+      "const invokeSelectedNarrowPty",
+      invocationStart,
+    );
+    const invocation = runner.slice(invocationStart, invocationEnd);
+    expect(invocation).toContain(
+      "constructedAtMs + shutdownTimeoutMilliseconds",
+    );
+    expect(invocation).toContain(
+      "constructedAtMs + executionTimeoutMilliseconds",
+    );
+    expect(invocation).toContain("monotonicShutdownDeadlineMs - 2_000");
+    expect(invocation).toContain("terminationGraceMs: 1_000");
+    expect(invocation).not.toContain("setTimeout(");
+    const deadlineChild = runner.slice(
+      runner.indexOf('"agentscope-deadline-child"'),
+      runner.indexOf("};\n};", runner.indexOf('"agentscope-deadline-child"')),
+    );
+    expect(deadlineChild).toContain("executionTimeoutMilliseconds: 250");
+    expect(deadlineChild).toContain("shutdownTimeoutMilliseconds: 5_000");
+  });
+
   it.each([
     "image",
     "config",
