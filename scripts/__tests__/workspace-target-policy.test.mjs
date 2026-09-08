@@ -65,6 +65,26 @@ function createFixture() {
   return root;
 }
 
+function createDocsFixture() {
+  const root = createFixture();
+  mkdirSync(join(root, "apps"));
+  renameSync(join(root, "packages/protocol"), join(root, "apps/docs"));
+  const manifestPath = join(root, "apps/docs/package.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.name = "@agentscope/docs";
+  manifest.nx = {
+    targets: {
+      build: { cache: false },
+      typecheck: {
+        cache: false,
+        dependsOn: ["build", "^typecheck", "^build"],
+      },
+    },
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest));
+  return root;
+}
+
 test("audits every mandatory target without modifying the fixture", () => {
   const root = createFixture();
   try {
@@ -325,6 +345,32 @@ test("the repository has one exact fail-closed cache eligibility matrix", () => 
     expectedPackages: expectedWorkspacePackages,
   });
   assert.equal(audited.length, 17);
+});
+
+test("Docs typecheck waits for its own generated route types", () => {
+  const root = createDocsFixture();
+  const manifestPath = join(root, "apps/docs/package.json");
+  const audit = () =>
+    auditWorkspaceTargets({
+      workspaceRoot: root,
+      expectedPackages: new Map([["apps/docs", "@agentscope/docs"]]),
+    });
+  try {
+    assert.deepEqual(audit(), [
+      { name: "@agentscope/docs", path: "apps/docs" },
+    ]);
+    for (const dependsOn of [
+      ["^typecheck", "^build"],
+      ["build", "^build", "^typecheck"],
+    ]) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest.nx.targets.typecheck.dependsOn = dependsOn;
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+      assert.throws(audit, /project Nx configuration drifted/);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("rejects missing cache metadata, remote runners, and unsafe cache widening", () => {

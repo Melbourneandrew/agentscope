@@ -8,7 +8,12 @@
         "cache": false
       },
       "typecheck": {
-        "cache": false
+        "cache": false,
+        "dependsOn": [
+          "build",
+          "^typecheck",
+          "^build"
+        ]
       }
     }
   },
