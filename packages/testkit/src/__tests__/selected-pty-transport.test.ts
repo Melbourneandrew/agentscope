@@ -10,6 +10,7 @@ import type { HeadlessSupervisorCapability } from "../headless-supervisor.js";
 import type { SelectedPtyExecutionRequest } from "../pty-terminal-contract.js";
 import {
   executeSelectedPtyTransportForTest,
+  validateSelectedContainerFilesystemFactsForTest,
   validateSelectedContainerPrincipalFactsForTest,
 } from "../internal/headless-supervisor-backend.js";
 
@@ -92,6 +93,38 @@ describe("selected PTY transport", () => {
       ).toThrow("testkit.pty.immutable-candidate");
     },
   );
+
+  it("causally validates selected immutable file and procfs facts", () => {
+    expect(validateSelectedContainerFilesystemFactsForTest({})).toBe(true);
+  });
+
+  it.each([
+    [
+      "mount-rw",
+      { mountinfo: "7 1 0:1 / /selected rw - overlay overlay rw\n" },
+    ],
+    [
+      "mount-duplicate",
+      {
+        mountinfo:
+          "7 1 0:1 / /a ro - overlay overlay ro\n7 1 0:1 / /b ro - overlay overlay ro\n",
+      },
+    ],
+    ["mount-malformed", { mountinfo: "invalid\n" }],
+    ["fd-missing", { fdinfo: "flags:\t0\n" }],
+    ["fd-duplicate", { fdinfo: "mnt_id:\t7\nmnt_id:\t7\n" }],
+    ["fd-mismatch", { fdinfo: "mnt_id:\t8\n" }],
+    ["symlink", { isFile: false }],
+    ["link-substitution", { linkPath: "/selected/other" }],
+    ["device-substitution", { after: { dev: 2, ino: 2, size: 3 } }],
+    ["inode-substitution", { after: { dev: 1, ino: 3, size: 3 } }],
+    ["size-substitution", { after: { dev: 1, ino: 2, size: 4 } }],
+    ["same-inode-mutation", { digest: "b".repeat(64) }],
+  ] as const)("rejects causal immutable filesystem %s", (_seed, facts) => {
+    expect(() =>
+      validateSelectedContainerFilesystemFactsForTest(facts),
+    ).toThrow("testkit.pty.immutable-candidate");
+  });
   it("binds real PTY geometry and returns only bounded semantic evidence", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       request(),

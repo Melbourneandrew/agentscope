@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
   writeFileSync,
 } from "node:fs";
@@ -231,6 +232,7 @@ const headlessCapability = composeSelectedContainerHeadlessSupervisorCapability(
 );
 
 const installedCliDriver = "/opt/agentscope/pty-installed-cli-driver.mjs";
+const installedBin = "/opt/agentscope/installed/bin/agentscope";
 const installedPackage =
   "/opt/agentscope/installed/node_modules/agentscope-cli/package.json";
 const installedCli =
@@ -257,12 +259,23 @@ if (
   installedManifest?.bin?.agentscope !== "./dist/bin/agentscope.js"
 )
   throw new Error("integration.runner.pty-authority");
+const installedBinStatus = lstatSync(installedBin);
+if (
+  !installedBinStatus.isSymbolicLink() ||
+  readlinkSync(installedBin) !==
+    "../node_modules/agentscope-cli/dist/bin/agentscope.js" ||
+  !cliAuthority.bytes
+    .subarray(0, 20)
+    .toString("utf8")
+    .startsWith("#!/usr/bin/env node")
+)
+  throw new Error("integration.runner.pty-authority");
 
 const ptyNow = performance.now();
 const ptyProcessRequest = {
   runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
   executable: installedCliDriver,
-  arguments: [installedCli, cliAuthority.sha256],
+  arguments: [installedBin, cliAuthority.sha256],
   cwd: "/opt/agentscope",
   environment: Object.freeze({ HOME: home, LANG: "C.UTF-8", NO_COLOR: "1" }),
   stdin: new Uint8Array(),

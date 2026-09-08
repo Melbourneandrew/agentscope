@@ -30,19 +30,38 @@ export const compileCandidateInventory = (candidate) => {
       "artifacts",
       "bundleIdentity",
       "candidateRevision",
+      "evidenceVersion",
       "lockfile",
+      "platform",
+      "scenarioNetworkPolicy",
     ]) ||
+    candidate.evidenceVersion !== 1 ||
     !/^sha256-[a-f0-9]{64}$/u.test(candidate.bundleIdentity) ||
-    typeof candidate.candidateRevision !== "string" ||
+    !/^[a-f0-9]{40,64}$/u.test(candidate.candidateRevision) ||
+    !exactKeys(candidate.platform, ["architecture", "nodeVersion", "os"]) ||
+    !/^[a-z0-9-]{1,32}$/u.test(candidate.platform.os) ||
+    !/^[a-z0-9-]{1,32}$/u.test(candidate.platform.architecture) ||
+    !/^\d+\.\d+\.\d+$/u.test(candidate.platform.nodeVersion) ||
     !plainRecord(candidate.lockfile) ||
+    !exactKeys(candidate.lockfile, ["bytes", "fileName", "sha256"]) ||
+    candidate.lockfile.fileName !== "pnpm-lock.yaml" ||
+    !Number.isSafeInteger(candidate.lockfile.bytes) ||
+    candidate.lockfile.bytes < 1 ||
+    !/^sha256-[a-f0-9]{64}$/u.test(candidate.lockfile.sha256) ||
+    candidate.scenarioNetworkPolicy !==
+      "offline-no-package-or-registry-download" ||
     !Array.isArray(candidate.artifacts)
   )
     return fail();
-  const files = [candidate.lockfile, ...candidate.artifacts]
+  const artifacts = candidate.artifacts
     .map((file) => {
       if (
         !plainRecord(file) ||
-        !exactKeys(file, ["bytes", "fileName", "sha256"]) ||
+        !exactKeys(file, ["bytes", "fileName", "id", "kind", "sha256"]) ||
+        !/^[a-z][a-z0-9-]{0,63}$/u.test(file.id) ||
+        !["npm-tarball", "runtime-archive", "runtime-binary"].includes(
+          file.kind,
+        ) ||
         typeof file.fileName !== "string" ||
         !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u.test(file.fileName) ||
         !Number.isSafeInteger(file.bytes) ||
@@ -51,6 +70,8 @@ export const compileCandidateInventory = (candidate) => {
       )
         return fail();
       return {
+        id: file.id,
+        kind: file.kind,
         fileName: file.fileName,
         bytes: file.bytes,
         sha256: file.sha256,
@@ -63,12 +84,29 @@ export const compileCandidateInventory = (candidate) => {
           ? 1
           : 0,
     );
+  const files = [
+    {
+      fileName: candidate.lockfile.fileName,
+      bytes: candidate.lockfile.bytes,
+      sha256: candidate.lockfile.sha256,
+    },
+    ...artifacts,
+  ].sort((left, right) =>
+    left.fileName < right.fileName
+      ? -1
+      : left.fileName > right.fileName
+        ? 1
+        : 0,
+  );
   if (new Set(files.map(({ fileName }) => fileName)).size !== files.length)
     return fail();
   const inventory = {
+    evidenceVersion: candidate.evidenceVersion,
     bundleIdentity: candidate.bundleIdentity,
     candidateRevision: candidate.candidateRevision,
+    platform: { ...candidate.platform },
     files,
+    scenarioNetworkPolicy: candidate.scenarioNetworkPolicy,
   };
   return Object.freeze({
     inventory,

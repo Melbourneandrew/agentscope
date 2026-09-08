@@ -856,6 +856,70 @@ const validatePrincipalFacts = (facts: {
     return fail("testkit.pty.immutable-candidate");
 };
 
+const parseImmutableMountTable = (
+  mountinfo: string,
+): ReadonlyMap<number, ReadonlySet<string>> => {
+  const mountTable = new Map<number, ReadonlySet<string>>();
+  const lines = mountinfo.trimEnd().split("\n");
+  if (lines.length < 1 || lines.some((line) => line.length < 1))
+    return fail("testkit.pty.immutable-candidate");
+  for (const line of lines) {
+    const fields = line.split(" ");
+    const mountId = Number(fields[0]);
+    const separator = fields.indexOf("-");
+    if (
+      !numberIsSafeInteger(mountId) ||
+      mountId < 1 ||
+      separator < 6 ||
+      fields[5] === undefined
+    )
+      return fail("testkit.pty.immutable-candidate");
+    const options = new Set(fields[5].split(","));
+    if (mountTable.has(mountId) || options.has("rw") === options.has("ro"))
+      return fail("testkit.pty.immutable-candidate");
+    mountTable.set(mountId, options);
+  }
+  return mountTable;
+};
+
+const parseImmutableFdMountId = (source: string): number => {
+  const values = source
+    .split("\n")
+    .filter((line) => line.startsWith("mnt_id:"));
+  if (values.length !== 1) return fail("testkit.pty.immutable-candidate");
+  const value = Number(values[0]!.slice("mnt_id:".length).trim());
+  if (!numberIsSafeInteger(value) || value < 1)
+    return fail("testkit.pty.immutable-candidate");
+  return value;
+};
+
+const validateImmutableFileFacts = (facts: {
+  after: { dev: number | bigint; ino: number | bigint; size: number };
+  before: { dev: number | bigint; ino: number | bigint; size: number };
+  digest: string;
+  expectedDigest: string;
+  expectedPath: string;
+  isFile: boolean;
+  linkPath: string;
+  mountId: number;
+  mountTable: ReadonlyMap<number, ReadonlySet<string>>;
+}): void => {
+  const options = facts.mountTable.get(facts.mountId);
+  if (
+    !facts.isFile ||
+    facts.before.dev !== facts.after.dev ||
+    facts.before.ino !== facts.after.ino ||
+    facts.before.size !== facts.after.size ||
+    facts.before.size < 1 ||
+    facts.digest !== facts.expectedDigest ||
+    options === undefined ||
+    !options.has("ro") ||
+    options.has("rw") ||
+    facts.linkPath !== facts.expectedPath
+  )
+    return fail("testkit.pty.immutable-candidate");
+};
+
 const readPrincipalAuthority = (): Readonly<{
   mountIdentity: string;
   mountNamespace: string;
@@ -872,23 +936,8 @@ const readPrincipalAuthority = (): Readonly<{
     status,
   });
   const mountNamespace = readlinkSync("/proc/self/ns/mnt");
-  const mountTable = new Map<number, ReadonlySet<string>>();
   const mountinfo = boundedProcFile("/proc/self/mountinfo");
-  for (const line of mountinfo.trimEnd().split("\n")) {
-    const fields = line.split(" ");
-    const mountId = Number(fields[0]);
-    const separator = fields.indexOf("-");
-    if (
-      !numberIsSafeInteger(mountId) ||
-      mountId < 1 ||
-      separator < 6 ||
-      fields[5] === undefined
-    )
-      return fail("testkit.pty.immutable-candidate");
-    const options = new Set(fields[5].split(","));
-    if (mountTable.has(mountId)) return fail("testkit.pty.immutable-candidate");
-    mountTable.set(mountId, options);
-  }
+  const mountTable = parseImmutableMountTable(mountinfo);
   return {
     mountIdentity: createHash("sha256").update(mountinfo).digest("hex"),
     mountNamespace,
@@ -898,14 +947,7 @@ const readPrincipalAuthority = (): Readonly<{
 
 const fdMountId = (descriptor: number): number => {
   const source = boundedProcFile(`/proc/self/fdinfo/${descriptor}`, 4 * 1024);
-  const values = source
-    .split("\n")
-    .filter((line) => line.startsWith("mnt_id:"));
-  if (values.length !== 1) return fail("testkit.pty.immutable-candidate");
-  const value = Number(values[0]!.slice("mnt_id:".length).trim());
-  if (!numberIsSafeInteger(value) || value < 1)
-    return fail("testkit.pty.immutable-candidate");
-  return value;
+  return parseImmutableFdMountId(source);
 };
 
 const createImmutableCandidateAuthority = (
@@ -930,14 +972,17 @@ const createImmutableCandidateAuthority = (
         assertRuntime();
         const status = fstatSync(descriptor);
         const mountId = fdMountId(descriptor);
-        const options = initial.mountTable.get(mountId);
-        if (
-          !status.isFile() ||
-          options === undefined ||
-          !options.has("ro") ||
-          readlinkSync(`/proc/self/fd/${descriptor}`) !== path
-        )
-          return fail("testkit.pty.immutable-candidate");
+        validateImmutableFileFacts({
+          after: status,
+          before: status,
+          digest: "bound",
+          expectedDigest: "bound",
+          expectedPath: path,
+          isFile: status.isFile(),
+          linkPath: readlinkSync(`/proc/self/fd/${descriptor}`),
+          mountId,
+          mountTable: initial.mountTable,
+        });
       },
       assertRuntime,
     },
@@ -2294,6 +2339,34 @@ export const validateSelectedContainerPrincipalFactsForTest = (
   facts: Parameters<typeof validatePrincipalFacts>[0],
 ): true => {
   validatePrincipalFacts(facts);
+  return true;
+};
+/** Package-private causal filesystem parser oracle; it conveys no authority. */
+export const validateSelectedContainerFilesystemFactsForTest = (facts: {
+  after?: { dev: number; ino: number; size: number };
+  before?: { dev: number; ino: number; size: number };
+  digest?: string;
+  expectedDigest?: string;
+  expectedPath?: string;
+  fdinfo?: string;
+  isFile?: boolean;
+  linkPath?: string;
+  mountinfo?: string;
+}): true => {
+  const before = facts.before ?? { dev: 1, ino: 2, size: 3 };
+  validateImmutableFileFacts({
+    after: facts.after ?? before,
+    before,
+    digest: facts.digest ?? "a".repeat(64),
+    expectedDigest: facts.expectedDigest ?? "a".repeat(64),
+    expectedPath: facts.expectedPath ?? "/selected/file",
+    isFile: facts.isFile ?? true,
+    linkPath: facts.linkPath ?? "/selected/file",
+    mountId: parseImmutableFdMountId(facts.fdinfo ?? "mnt_id:\t7\n"),
+    mountTable: parseImmutableMountTable(
+      facts.mountinfo ?? "7 1 0:1 / /selected ro - overlay overlay ro\n",
+    ),
+  });
   return true;
 };
 export const executeSelectedHeadlessProcessWithCapability = async (

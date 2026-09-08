@@ -17,16 +17,25 @@ const {
 
 const hex = (character: string): string => character.repeat(64);
 const candidate = () => ({
+  evidenceVersion: 1,
   bundleIdentity: `sha256-${hex("a")}`,
-  candidateRevision: "candidate-1",
+  candidateRevision: "1".repeat(40),
+  platform: { os: "linux", architecture: "x64", nodeVersion: "22.23.2" },
   lockfile: {
     fileName: "pnpm-lock.yaml",
     bytes: 3,
     sha256: `sha256-${hex("b")}`,
   },
   artifacts: [
-    { fileName: "agentscope-cli.tgz", bytes: 7, sha256: `sha256-${hex("c")}` },
+    {
+      id: "agentscope-cli",
+      kind: "npm-tarball",
+      fileName: "agentscope-cli.tgz",
+      bytes: 7,
+      sha256: `sha256-${hex("c")}`,
+    },
   ],
+  scenarioNetworkPolicy: "offline-no-package-or-registry-download",
 });
 const image = () => ({ Id: `sha256:${hex("d")}`, Config: { User: "node" } });
 const plan = () => ({ runId: "0123456789abcdef", scenarioId: "codex-smoke" });
@@ -140,6 +149,8 @@ describe("immutable candidate authority", () => {
   it("rejects duplicate and non-closed candidate inventory entries", () => {
     const duplicate = candidate();
     duplicate.artifacts.push({
+      id: duplicate.artifacts[0]!.id,
+      kind: duplicate.artifacts[0]!.kind,
       fileName: duplicate.artifacts[0]!.fileName,
       bytes: duplicate.artifacts[0]!.bytes,
       sha256: duplicate.artifacts[0]!.sha256,
