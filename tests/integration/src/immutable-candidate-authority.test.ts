@@ -11,13 +11,16 @@ import * as immutableAuthority from "../immutable-candidate-authority.mjs";
 const {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  compileInstalledContractFailureReceipt,
   compileInstalledPtyFailureReceipt,
   compileInstalledCliPtyReceipt,
   compileInstalledCliPtyReceiptFromExecution,
   decodeInstalledCliPtyReceipt,
+  decodeInstalledContractFailureReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeImmutableCandidateHandoff,
   installedPtyFailurePredicates,
+  installedContractFailurePredicates,
   selectedRuntimeFiles,
   validateImmutableScenarioContainer,
   validateInstalledCliBoundary,
@@ -389,6 +392,94 @@ describe("immutable candidate authority", () => {
     }
   });
 
+  it("round-trips every admitted content-free remaining-contract failure", () => {
+    const admitted = installedContractFailurePredicates as Record<
+      string,
+      readonly string[]
+    >;
+    for (const [phase, predicates] of Object.entries(admitted)) {
+      for (const predicate of predicates) {
+        const compiledFailure = compileInstalledContractFailureReceipt({
+          receiptVersion: 1,
+          phase,
+          predicate,
+        });
+        expect(
+          decodeInstalledContractFailureReceipt(
+            `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${compiledFailure.encoded}\n`,
+          ),
+        ).toEqual(compiledFailure.record);
+        expect(
+          Object.keys(compiledFailure.record as Record<string, unknown>).sort(),
+        ).toEqual(["phase", "predicate", "receiptVersion"]);
+      }
+    }
+  });
+
+  it.each([
+    "missing",
+    "unknown",
+    "duplicate",
+    "substituted",
+    "malformed",
+    "extra",
+    "late",
+  ] as const)("rejects %s remaining-contract failure evidence", (seed) => {
+    const value: Record<string, unknown> = {
+      receiptVersion: 1,
+      phase: "case-execution",
+      predicate: "execution-rejected",
+    };
+    if (seed === "unknown") value.predicate = "unknown";
+    if (seed === "substituted") value.phase = "artifact-install";
+    if (seed === "extra") value.detail = "forbidden";
+    const encoded =
+      seed === "malformed"
+        ? "not+base64"
+        : Buffer.from(JSON.stringify(value)).toString("base64url");
+    const line = `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${encoded}`;
+    const output =
+      seed === "missing"
+        ? ""
+        : seed === "duplicate"
+          ? `${line}\n${line}`
+          : seed === "late"
+            ? `AGENTSCOPE_PTY_FAILURE=x\n${line}`
+            : line;
+    expect(() => decodeInstalledContractFailureReceipt(output)).toThrow(
+      "integration.immutable-candidate.authority",
+    );
+  });
+
+  it.each([
+    [
+      "duplicate key",
+      '{"receiptVersion":1,"phase":"case-execution","phase":"case-execution","predicate":"execution-rejected"}',
+    ],
+    [
+      "shadow substitution",
+      '{"receiptVersion":1,"phase":"artifact-install","phase":"case-execution","predicate":"execution-rejected"}',
+    ],
+    [
+      "alternate key order",
+      '{"phase":"case-execution","receiptVersion":1,"predicate":"execution-rejected"}',
+    ],
+    [
+      "whitespace-expanded JSON",
+      '{ "receiptVersion": 1, "phase": "case-execution", "predicate": "execution-rejected" }',
+    ],
+  ])(
+    "rejects noncanonical %s remaining-contract bytes",
+    (_label, serialized) => {
+      const encoded = Buffer.from(serialized).toString("base64url");
+      expect(() =>
+        decodeInstalledContractFailureReceipt(
+          `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${encoded}`,
+        ),
+      ).toThrow("integration.immutable-candidate.authority");
+    },
+  );
+
   it.each([
     "missing",
     "unknown",
@@ -463,6 +554,38 @@ describe("immutable candidate authority", () => {
       expect(transition).toBeGreaterThanOrEqual(0);
       expect(operation).toBeGreaterThan(transition);
     }
+  });
+
+  it("advances remaining-contract phases before their owned boundaries", () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    for (const [phase, boundary] of [
+      ["artifact-install", "rmSync(contractRoot"],
+      ["case-execution", "for (let caseIndex = 0;"],
+      ["aggregate-evaluation", "evaluateInstalledCliContract("],
+      ["receipt-finalization", "const receiptCaseIds ="],
+    ] as const) {
+      const transition = runner.indexOf(
+        `setInstalledContractFailureBoundary(\n  "${phase}"`,
+      );
+      const compactTransition = runner.indexOf(
+        `setInstalledContractFailureBoundary("${phase}"`,
+      );
+      const operation = runner.indexOf(boundary);
+      expect(Math.max(transition, compactTransition)).toBeGreaterThanOrEqual(0);
+      expect(operation).toBeGreaterThan(
+        Math.max(transition, compactTransition),
+      );
+    }
+    const evidence = runner.indexOf("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=");
+    const terminal = runner.indexOf(
+      "installedContractFailureTerminal = true",
+      evidence,
+    );
+    const cleanup = runner.indexOf("rmSync(contractRoot", terminal);
+    expect(terminal).toBeGreaterThan(evidence);
+    expect(cleanup).toBeGreaterThan(terminal);
   });
 
   it.each([

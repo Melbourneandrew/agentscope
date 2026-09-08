@@ -19,9 +19,11 @@ import {
 } from "./testkit/internal/headless-supervisor-backend.js";
 import {
   compileCandidateInventory,
+  compileInstalledContractFailureReceipt,
   compileInstalledPtyFailureReceipt,
   compileInstalledCliPtyReceiptFromExecution,
   decodeImmutableCandidateHandoff,
+  installedContractFailurePredicates,
 } from "./immutable-candidate-authority.mjs";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
 
@@ -291,6 +293,47 @@ console.log(`AGENTSCOPE_PTY_RECEIPT=${installedCliPtyReceipt.encoded}`);
 ptyFailureTerminal = true;
 process.setUncaughtExceptionCaptureCallback(null);
 
+const installedContractFailurePhases = Object.freeze([
+  "artifact-install",
+  "case-execution",
+  "aggregate-evaluation",
+  "receipt-finalization",
+]);
+let installedContractFailurePhase = installedContractFailurePhases[0];
+let installedContractFailurePredicate = "egress-rejected";
+let installedContractFailureTerminal = false;
+const setInstalledContractFailureBoundary = (phase, predicate) => {
+  const current = installedContractFailurePhases.indexOf(
+    installedContractFailurePhase,
+  );
+  const next = installedContractFailurePhases.indexOf(phase);
+  if (
+    next < current ||
+    next > current + 1 ||
+    !Object.hasOwn(installedContractFailurePredicates, phase) ||
+    !installedContractFailurePredicates[phase].includes(predicate)
+  )
+    throw new Error("integration.runner.installed-contract-failure-phase");
+  installedContractFailurePhase = phase;
+  installedContractFailurePredicate = predicate;
+};
+const emitInstalledContractFailureReceipt = () => {
+  if (installedContractFailureTerminal) return;
+  installedContractFailureTerminal = true;
+  const encoded = compileInstalledContractFailureReceipt({
+    receiptVersion: 1,
+    phase: installedContractFailurePhase,
+    predicate: installedContractFailurePredicate,
+  }).encoded;
+  process.stdout.write(`AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${encoded}\n`);
+  process.exitCode = 1;
+};
+if (process.hasUncaughtExceptionCaptureCallback())
+  throw new Error("integration.runner.installed-contract-failure-capture");
+process.setUncaughtExceptionCaptureCallback(
+  emitInstalledContractFailureReceipt,
+);
+
 for (const publicEndpoint of [
   "https://registry.npmjs.org/",
   "https://api.openai.com/",
@@ -302,6 +345,7 @@ for (const publicEndpoint of [
     if (error?.message === "integration.runner.public-egress") throw error;
   }
 }
+setInstalledContractFailureBoundary("artifact-install", "candidate-rejected");
 const cliArtifact = evidence.artifacts.find(
   ({ id }) => id === "agentscope-cli",
 );
@@ -460,6 +504,7 @@ const invokeSelectedNarrowPty = async ({ caseId, home }) => {
 };
 
 const contractRoot = "/tmp/agentscope-installed-contract";
+setInstalledContractFailureBoundary("artifact-install", "install-rejected");
 rmSync(contractRoot, { force: true, recursive: true });
 mkdirSync(contractRoot, { mode: 0o700 });
 const installRoot = join(contractRoot, "install");
@@ -470,9 +515,11 @@ writeFileSync(join(installRoot, "package.json"), '{"private":true}\n');
 writeFileSync(join(installHome, "empty-npmrc"), "");
 const candidateTarball = join(directory, "files", cliArtifact.fileName);
 const npmCli = "/usr/local/lib/node_modules/npm/bin/npm-cli.js";
+setInstalledContractFailureBoundary("artifact-install", "toolchain-rejected");
 const npmCliStatus = lstatSync(npmCli);
 if (!npmCliStatus.isFile() || npmCliStatus.isSymbolicLink())
   throw new Error("integration.runner.installed-contract-toolchain");
+setInstalledContractFailureBoundary("artifact-install", "install-rejected");
 const npmResult = await invokeSelected({
   arguments: [
     npmCli,
@@ -504,6 +551,7 @@ const runtimeInstalledPackageRoot = join(
   installRoot,
   "node_modules/agentscope-cli",
 );
+setInstalledContractFailureBoundary("artifact-install", "manifest-rejected");
 const runtimeInstalledManifest = JSON.parse(
   readFileSync(join(runtimeInstalledPackageRoot, "package.json"), "utf8"),
 );
@@ -518,6 +566,7 @@ if (
   throw new Error("integration.runner.installed-contract-install");
 const installedExecutable =
   "/opt/agentscope/installed/node_modules/.bin/agentscope";
+setInstalledContractFailureBoundary("artifact-install", "plan-rejected");
 const contractPlan = installedContractOracle.createInstalledCliContractPlan(
   installedManifest.version,
   {
@@ -574,7 +623,9 @@ const selectedInvocationFor = (contractStep, caseRoot) => {
     shutdownTimeoutMilliseconds: 2_000,
   };
 };
+setInstalledContractFailureBoundary("case-execution", "setup-rejected");
 for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
+  setInstalledContractFailureBoundary("case-execution", "setup-rejected");
   const contractCase = contractPlan.cases[caseIndex];
   const caseRoot = join(contractRoot, "cases", String(caseIndex));
   const caseHome = join(caseRoot, "user home with spaces — 测试");
@@ -608,6 +659,7 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     writeFileSync(join(caseHome, ".agentscope/config.json"), "{invalid");
   }
   const stateRoot = join(caseHome, ".agentscope");
+  setInstalledContractFailureBoundary("case-execution", "state-rejected");
   const beforeStateDigest = stateDigest(stateRoot);
   const results = [];
   const afterStateDigests = [];
@@ -618,9 +670,17 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   ) {
     const contractStep = contractCase.steps[stepIndex];
     const caseId = `${contractCase.caseId}.${stepIndex}`;
-    if (contractStep.executionMode === "pty-narrow")
+    if (contractStep.executionMode === "pty-narrow") {
+      setInstalledContractFailureBoundary(
+        "case-execution",
+        "narrow-help-rejected",
+      );
       results.push(await invokeSelectedNarrowPty({ caseId, home: caseHome }));
-    else {
+    } else {
+      setInstalledContractFailureBoundary(
+        "case-execution",
+        "execution-rejected",
+      );
       const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
       results.push(
         await invokeSelected({
@@ -631,6 +691,7 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
         }),
       );
     }
+    setInstalledContractFailureBoundary("case-execution", "state-rejected");
     afterStateDigests.push(stateDigest(stateRoot));
   }
   contractObservations.push({
@@ -642,6 +703,10 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   });
   rmSync(caseRoot, { force: true, recursive: true });
 }
+setInstalledContractFailureBoundary(
+  "aggregate-evaluation",
+  "evaluation-rejected",
+);
 const installedContractEvidence =
   installedContractOracle.evaluateInstalledCliContract(
     contractPlan,
@@ -657,6 +722,7 @@ const installedContractEvidence =
     },
     contractObservations,
   );
+setInstalledContractFailureBoundary("receipt-finalization", "receipt-rejected");
 const receiptCaseIds = installedContractReceipts.map(({ caseId }) => caseId);
 if (
   new Set(receiptCaseIds).size !== receiptCaseIds.length ||
@@ -679,6 +745,8 @@ console.log(
     }),
   ).toString("base64url")}`,
 );
+installedContractFailureTerminal = true;
+process.setUncaughtExceptionCaptureCallback(null);
 rmSync(contractRoot, { force: true, recursive: true });
 let fixtureOutput;
 let fixtureFailure;

@@ -32,6 +32,26 @@ export const installedPtyFailurePredicates = Object.freeze({
 });
 const installedPtyFailureKeys = ["phase", "predicate", "receiptVersion"];
 
+export const installedContractFailurePredicates = Object.freeze({
+  "artifact-install": Object.freeze([
+    "candidate-rejected",
+    "egress-rejected",
+    "install-rejected",
+    "manifest-rejected",
+    "plan-rejected",
+    "toolchain-rejected",
+  ]),
+  "case-execution": Object.freeze([
+    "execution-rejected",
+    "narrow-help-rejected",
+    "setup-rejected",
+    "state-rejected",
+  ]),
+  "aggregate-evaluation": Object.freeze(["evaluation-rejected"]),
+  "receipt-finalization": Object.freeze(["receipt-rejected"]),
+});
+const installedContractFailureKeys = ["phase", "predicate", "receiptVersion"];
+
 export const compileInstalledPtyFailureReceipt = (value) => {
   if (
     !exactKeys(value, installedPtyFailureKeys) ||
@@ -65,6 +85,52 @@ export const decodeInstalledPtyFailureReceipt = (output) => {
     if (bytes.toString("base64url") !== encoded) return fail();
     const serialized = bytes.toString("utf8");
     const compiled = compileInstalledPtyFailureReceipt(JSON.parse(serialized));
+    if (JSON.stringify(compiled.record) !== serialized) return fail();
+    return compiled.record;
+  } catch {
+    return fail();
+  }
+};
+
+export const compileInstalledContractFailureReceipt = (value) => {
+  if (
+    !exactKeys(value, installedContractFailureKeys) ||
+    value.receiptVersion !== 1 ||
+    !Object.hasOwn(installedContractFailurePredicates, value.phase) ||
+    !installedContractFailurePredicates[value.phase].includes(value.predicate)
+  )
+    return fail();
+  const record = Object.freeze({
+    receiptVersion: value.receiptVersion,
+    phase: value.phase,
+    predicate: value.predicate,
+  });
+  return Object.freeze({
+    record,
+    encoded: Buffer.from(JSON.stringify(record)).toString("base64url"),
+  });
+};
+
+export const decodeInstalledContractFailureReceipt = (output) => {
+  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
+    return fail();
+  const prefix = "AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=";
+  if (
+    output.includes("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=") ||
+    output.includes("AGENTSCOPE_PTY_FAILURE=")
+  )
+    return fail();
+  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+  if (lines.length !== 1 || lines[0].length > 1_024) return fail();
+  try {
+    const encoded = lines[0].slice(prefix.length);
+    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
+    const bytes = Buffer.from(encoded, "base64url");
+    if (bytes.toString("base64url") !== encoded) return fail();
+    const serialized = bytes.toString("utf8");
+    const compiled = compileInstalledContractFailureReceipt(
+      JSON.parse(serialized),
+    );
     if (JSON.stringify(compiled.record) !== serialized) return fail();
     return compiled.record;
   } catch {

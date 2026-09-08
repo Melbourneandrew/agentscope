@@ -52,6 +52,7 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  decodeInstalledContractFailureReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeInstalledCliPtyReceipt,
   selectedRuntimeFiles,
@@ -855,6 +856,16 @@ const captureInstalledPtyFailure = (output, plan) => {
   installedPtyFailures.set(plan.runId, receipt);
   return receipt;
 };
+const captureInstalledContractFailure = (output, plan) => {
+  if (output.includes("AGENTSCOPE_PTY_FAILURE="))
+    throw new Error("integration.isolation.pty-failure-receipt");
+  captureInstalledCliPtyReceipt(output, plan);
+  const receipt = decodeInstalledContractFailureReceipt(output);
+  if (installedPtyFailures.has(plan.runId))
+    throw new Error("integration.isolation.pty-failure-receipt");
+  installedPtyFailures.set(plan.runId, receipt);
+  return receipt;
+};
 const preparedImageFor = async (image, signal) => {
   if (
     !(await revalidatePreparedImageAdmission(preparedImageEvidence, image, {
@@ -1229,6 +1240,8 @@ const runScenario = async (plan, signal) => {
     captureFixtureResult(output, plan);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
       captureInstalledPtyFailure(output, plan);
+    if (output.includes("AGENTSCOPE_INSTALLED_CONTRACT_FAILURE="))
+      captureInstalledContractFailure(output, plan);
     let installedCliContractEvidence;
     if (
       output.includes("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=") &&

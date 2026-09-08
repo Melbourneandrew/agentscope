@@ -164,12 +164,31 @@ jobs:
             "pty-receipt": ["receipt-rejected"],
             "runner-bootstrap": ["runner-rejected"],
           };
+          const installedContractFailurePredicates = {
+            "aggregate-evaluation": ["evaluation-rejected"],
+            "artifact-install": [
+              "candidate-rejected", "egress-rejected", "install-rejected",
+              "manifest-rejected", "plan-rejected", "toolchain-rejected",
+            ],
+            "case-execution": [
+              "execution-rejected", "narrow-help-rejected", "setup-rejected",
+              "state-rejected",
+            ],
+            "receipt-finalization": ["receipt-rejected"],
+          };
           const validPtyFailure = (value) =>
             value === null ||
             (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
               value.receiptVersion === 1 &&
-              Object.hasOwn(ptyFailurePredicates, value.phase) &&
-              ptyFailurePredicates[value.phase].includes(value.predicate));
+              ((Object.hasOwn(ptyFailurePredicates, value.phase) &&
+                ptyFailurePredicates[value.phase].includes(value.predicate)) ||
+                (Object.hasOwn(
+                  installedContractFailurePredicates,
+                  value.phase,
+                ) &&
+                  installedContractFailurePredicates[value.phase].includes(
+                    value.predicate,
+                  ))));
           const readBounded = (path, maximumBytes) => {
             let descriptor;
             try {

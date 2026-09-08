@@ -327,3 +327,102 @@ describe("integration workflow policy", () => {
     }
   });
 });
+
+describe("installed-contract workflow failure evidence", () => {
+  it("accepts only the closed remaining-contract failure predicates", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const source = failureVerifierSource(workflow);
+    const executeVerifier = (installedPtyFailure: unknown) => {
+      const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
+      const artifacts = resolve(directory, "artifacts/integration");
+      const runId = "0123456789abcdef";
+      const run = resolve(artifacts, "runs", runId);
+      mkdirSync(run, { recursive: true, mode: 0o700 });
+      try {
+        const path = resolve(run, "controller-failure.json");
+        const content = `${JSON.stringify({
+          controllerFailureEvidenceVersion: 2,
+          runId,
+          scenarioOutcome: "failed",
+          controllerOutcome: "retired-failure",
+          primaryFailure: "integration.controller.unsettled-operation",
+          cleanupFailure: null,
+          installedPtyFailure,
+          privateCleanup: null,
+        })}\n`;
+        writeFileSync(path, content, { mode: 0o600 });
+        const status = lstatSync(path);
+        writeFileSync(
+          resolve(artifacts, "controller-failure-manifest.json"),
+          `${JSON.stringify({
+            controllerFailureManifestVersion: 1,
+            controllerAuthorityDigest: `sha256:${"a".repeat(64)}`,
+            runIds: [runId],
+            failureEvidence: [
+              {
+                dev: status.dev,
+                digest: `sha256:${createHash("sha256")
+                  .update(content)
+                  .digest("hex")}`,
+                ino: status.ino,
+                runId,
+                size: status.size,
+              },
+            ],
+          })}\n`,
+          { mode: 0o600 },
+        );
+        return spawnSync(
+          process.execPath,
+          ["--input-type=module", "--eval", source],
+          { cwd: directory },
+        ).status;
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    };
+    const admitted = {
+      "aggregate-evaluation": ["evaluation-rejected"],
+      "artifact-install": [
+        "candidate-rejected",
+        "egress-rejected",
+        "install-rejected",
+        "manifest-rejected",
+        "plan-rejected",
+        "toolchain-rejected",
+      ],
+      "case-execution": [
+        "execution-rejected",
+        "narrow-help-rejected",
+        "setup-rejected",
+        "state-rejected",
+      ],
+      "receipt-finalization": ["receipt-rejected"],
+    } as const;
+    for (const [phase, predicates] of Object.entries(admitted))
+      for (const predicate of predicates)
+        expect(executeVerifier({ receiptVersion: 1, phase, predicate })).toBe(
+          0,
+        );
+    for (const rejected of [
+      {},
+      { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
+      {
+        receiptVersion: 1,
+        phase: "case-execution",
+        predicate: "unknown",
+      },
+      {
+        receiptVersion: 1,
+        phase: "case-execution",
+        predicate: "setup-rejected",
+        detail: "forbidden",
+      },
+      { receiptVersion: 1, phase: "artifact-install", predicate: 1 },
+    ])
+      expect(executeVerifier(rejected)).not.toBe(0);
+  });
+});
