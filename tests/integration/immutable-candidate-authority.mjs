@@ -51,6 +51,11 @@ export const installedContractFailurePredicates = Object.freeze({
   "receipt-finalization": Object.freeze(["receipt-rejected"]),
 });
 const installedContractFailureKeys = ["phase", "predicate", "receiptVersion"];
+const installedContractCaseFailureKeys = [
+  "caseOrdinal",
+  "contractInventorySha256",
+  ...installedContractFailureKeys,
+];
 
 export const compileInstalledPtyFailureReceipt = (value) => {
   if (
@@ -93,17 +98,35 @@ export const decodeInstalledPtyFailureReceipt = (output) => {
 };
 
 export const compileInstalledContractFailureReceipt = (value) => {
+  const caseFailure = value?.phase === "case-execution";
   if (
-    !exactKeys(value, installedContractFailureKeys) ||
+    !exactKeys(
+      value,
+      caseFailure
+        ? installedContractCaseFailureKeys
+        : installedContractFailureKeys,
+    ) ||
     value.receiptVersion !== 1 ||
     !Object.hasOwn(installedContractFailurePredicates, value.phase) ||
-    !installedContractFailurePredicates[value.phase].includes(value.predicate)
+    !installedContractFailurePredicates[value.phase].includes(
+      value.predicate,
+    ) ||
+    (caseFailure &&
+      (!Number.isSafeInteger(value.caseOrdinal) ||
+        value.caseOrdinal < 0 ||
+        !/^sha256:[a-f0-9]{64}$/u.test(value.contractInventorySha256)))
   )
     return fail();
   const record = Object.freeze({
     receiptVersion: value.receiptVersion,
     phase: value.phase,
     predicate: value.predicate,
+    ...(caseFailure
+      ? {
+          caseOrdinal: value.caseOrdinal,
+          contractInventorySha256: value.contractInventorySha256,
+        }
+      : {}),
   });
   return Object.freeze({
     record,
@@ -111,7 +134,7 @@ export const compileInstalledContractFailureReceipt = (value) => {
   });
 };
 
-export const decodeInstalledContractFailureReceipt = (output) => {
+export const decodeInstalledContractFailureReceipt = (output, authority) => {
   if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
     return fail();
   const prefix = "AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=";
@@ -131,6 +154,16 @@ export const decodeInstalledContractFailureReceipt = (output) => {
     const compiled = compileInstalledContractFailureReceipt(
       JSON.parse(serialized),
     );
+    if (
+      compiled.record.phase === "case-execution" &&
+      (!exactKeys(authority, ["caseCount", "caseIdsDigest"]) ||
+        !Number.isSafeInteger(authority.caseCount) ||
+        authority.caseCount < 1 ||
+        authority.caseCount > 1_024 ||
+        compiled.record.caseOrdinal >= authority.caseCount ||
+        compiled.record.contractInventorySha256 !== authority.caseIdsDigest)
+    )
+      return fail();
     if (JSON.stringify(compiled.record) !== serialized) return fail();
     return compiled.record;
   } catch {

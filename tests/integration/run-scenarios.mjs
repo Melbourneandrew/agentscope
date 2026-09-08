@@ -860,7 +860,10 @@ const captureInstalledContractFailure = (output, plan) => {
   if (output.includes("AGENTSCOPE_PTY_FAILURE="))
     throw new Error("integration.isolation.pty-failure-receipt");
   captureInstalledCliPtyReceipt(output, plan);
-  const receipt = decodeInstalledContractFailureReceipt(output);
+  const receipt = decodeInstalledContractFailureReceipt(output, {
+    caseCount: installedContractPlan.caseIds.length,
+    caseIdsDigest: installedContractPlan.caseIdsDigest,
+  });
   if (installedPtyFailures.has(plan.runId))
     throw new Error("integration.isolation.pty-failure-receipt");
   installedPtyFailures.set(plan.runId, receipt);

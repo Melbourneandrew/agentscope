@@ -214,6 +214,9 @@ const installedContractFailurePredicates = Object.freeze({
   ]),
   "receipt-finalization": Object.freeze(["receipt-rejected"]),
 });
+const installedContractCaseCount = 123;
+const installedContractInventorySha256 =
+  "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a";
 const validInstalledPtyFailure = (value) =>
   value === null ||
   (typeof value === "object" &&
@@ -222,12 +225,32 @@ const validInstalledPtyFailure = (value) =>
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(["phase", "predicate", "receiptVersion"].sort()) &&
     value.receiptVersion === 1 &&
-    ((Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
-      installedPtyFailurePredicates[value.phase].includes(value.predicate)) ||
-      (Object.hasOwn(installedContractFailurePredicates, value.phase) &&
-        installedContractFailurePredicates[value.phase].includes(
-          value.predicate,
-        ))));
+    Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
+    installedPtyFailurePredicates[value.phase].includes(value.predicate)) ||
+  (typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify(
+        (value.phase === "case-execution"
+          ? [
+              "caseOrdinal",
+              "contractInventorySha256",
+              "phase",
+              "predicate",
+              "receiptVersion",
+            ]
+          : ["phase", "predicate", "receiptVersion"]
+        ).sort(),
+      ) &&
+    value.receiptVersion === 1 &&
+    Object.hasOwn(installedContractFailurePredicates, value.phase) &&
+    installedContractFailurePredicates[value.phase].includes(value.predicate) &&
+    (value.phase !== "case-execution" ||
+      (Number.isSafeInteger(value.caseOrdinal) &&
+        value.caseOrdinal >= 0 &&
+        value.caseOrdinal < installedContractCaseCount &&
+        value.contractInventorySha256 === installedContractInventorySha256)));
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;

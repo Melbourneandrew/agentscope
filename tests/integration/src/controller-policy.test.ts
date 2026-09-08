@@ -412,20 +412,36 @@ describe("installed-contract workflow failure evidence", () => {
       ],
       "receipt-finalization": ["receipt-rejected"],
     } as const;
+    const receiptFor = (phase: string, predicate: string) => ({
+      ...(phase === "case-execution"
+        ? {
+            caseOrdinal: 122,
+            contractInventorySha256:
+              "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          }
+        : {}),
+      receiptVersion: 1,
+      phase,
+      predicate,
+    });
     for (const [phase, predicates] of Object.entries(admitted))
       for (const predicate of predicates)
-        expect(executeVerifier({ receiptVersion: 1, phase, predicate })).toBe(
-          0,
-        );
+        expect(executeVerifier(receiptFor(phase, predicate))).toBe(0);
     for (const rejected of [
       {},
       { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
       {
+        caseOrdinal: 0,
+        contractInventorySha256:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "case-execution",
         predicate: "unknown",
       },
       {
+        caseOrdinal: 0,
+        contractInventorySha256:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "case-execution",
         predicate: "setup-rejected",
@@ -469,18 +485,36 @@ describe("installed-contract cleanup failure evidence", () => {
       ],
       "receipt-finalization": ["receipt-rejected"],
     } as const;
+    const receiptFor = (phase: string, predicate: string) => ({
+      ...(phase === "case-execution"
+        ? {
+            caseOrdinal: 0,
+            contractInventorySha256:
+              "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          }
+        : {}),
+      receiptVersion: 1,
+      phase,
+      predicate,
+    });
     for (const [phase, predicates] of Object.entries(admitted))
       for (const predicate of predicates)
-        expect(validate({ receiptVersion: 1, phase, predicate })).toBe(0);
+        expect(validate(receiptFor(phase, predicate))).toBe(0);
     for (const rejected of [
       {},
       { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
       {
+        caseOrdinal: 0,
+        contractInventorySha256:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "artifact-install",
         predicate: "setup-rejected",
       },
       {
+        caseOrdinal: 0,
+        contractInventorySha256:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "case-execution",
         predicate: "setup-rejected",

@@ -176,19 +176,32 @@ jobs:
             ],
             "receipt-finalization": ["receipt-rejected"],
           };
+          const installedContractCaseCount = 123;
+          const installedContractInventorySha256 =
+            "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a";
           const validPtyFailure = (value) =>
             value === null ||
             (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
               value.receiptVersion === 1 &&
-              ((Object.hasOwn(ptyFailurePredicates, value.phase) &&
-                ptyFailurePredicates[value.phase].includes(value.predicate)) ||
-                (Object.hasOwn(
-                  installedContractFailurePredicates,
-                  value.phase,
-                ) &&
-                  installedContractFailurePredicates[value.phase].includes(
-                    value.predicate,
-                  ))));
+              Object.hasOwn(ptyFailurePredicates, value.phase) &&
+              ptyFailurePredicates[value.phase].includes(value.predicate)) ||
+            (exactKeys(
+              value,
+              value?.phase === "case-execution"
+                ? ["caseOrdinal", "contractInventorySha256", "phase", "predicate", "receiptVersion"]
+                : ["phase", "predicate", "receiptVersion"],
+            ) &&
+              value.receiptVersion === 1 &&
+              Object.hasOwn(installedContractFailurePredicates, value.phase) &&
+              installedContractFailurePredicates[value.phase].includes(
+                value.predicate,
+              ) &&
+              (value.phase !== "case-execution" ||
+                (Number.isSafeInteger(value.caseOrdinal) &&
+                  value.caseOrdinal >= 0 &&
+                  value.caseOrdinal < installedContractCaseCount &&
+                  value.contractInventorySha256 ===
+                    installedContractInventorySha256)));
           const readBounded = (path, maximumBytes) => {
             let descriptor;
             try {

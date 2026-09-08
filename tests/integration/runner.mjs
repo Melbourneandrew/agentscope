@@ -301,8 +301,9 @@ const installedContractFailurePhases = Object.freeze([
 ]);
 let installedContractFailurePhase = installedContractFailurePhases[0];
 let installedContractFailurePredicate = "egress-rejected";
+let installedContractFailureCase;
 let installedContractFailureTerminal = false;
-const setInstalledContractFailureBoundary = (phase, predicate) => {
+const setInstalledContractFailureBoundary = (phase, predicate, caseFailure) => {
   const current = installedContractFailurePhases.indexOf(
     installedContractFailurePhase,
   );
@@ -311,11 +312,18 @@ const setInstalledContractFailureBoundary = (phase, predicate) => {
     next < current ||
     next > current + 1 ||
     !Object.hasOwn(installedContractFailurePredicates, phase) ||
-    !installedContractFailurePredicates[phase].includes(predicate)
+    !installedContractFailurePredicates[phase].includes(predicate) ||
+    (phase === "case-execution") !== (caseFailure !== undefined) ||
+    (caseFailure !== undefined &&
+      (!Number.isSafeInteger(caseFailure.caseOrdinal) ||
+        caseFailure.caseOrdinal < 0 ||
+        caseFailure.caseOrdinal >= caseFailure.caseCount ||
+        !/^sha256:[a-f0-9]{64}$/u.test(caseFailure.caseIdsDigest)))
   )
     throw new Error("integration.runner.installed-contract-failure-phase");
   installedContractFailurePhase = phase;
   installedContractFailurePredicate = predicate;
+  installedContractFailureCase = caseFailure;
 };
 const emitInstalledContractFailureReceipt = () => {
   if (installedContractFailureTerminal) return;
@@ -324,6 +332,12 @@ const emitInstalledContractFailureReceipt = () => {
     receiptVersion: 1,
     phase: installedContractFailurePhase,
     predicate: installedContractFailurePredicate,
+    ...(installedContractFailureCase === undefined
+      ? {}
+      : {
+          caseOrdinal: installedContractFailureCase.caseOrdinal,
+          contractInventorySha256: installedContractFailureCase.caseIdsDigest,
+        }),
   }).encoded;
   process.stdout.write(`AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${encoded}\n`);
   process.exitCode = 1;
@@ -623,9 +637,24 @@ const selectedInvocationFor = (contractStep, caseRoot) => {
     shutdownTimeoutMilliseconds: 2_000,
   };
 };
-setInstalledContractFailureBoundary("case-execution", "setup-rejected");
+const contractFailureCase = (caseOrdinal) =>
+  Object.freeze({
+    caseCount: contractPlan.cases.length,
+    caseIdsDigest: contractPlan.caseIdsDigest,
+    caseOrdinal,
+  });
+setInstalledContractFailureBoundary(
+  "case-execution",
+  "setup-rejected",
+  contractFailureCase(0),
+);
 for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
-  setInstalledContractFailureBoundary("case-execution", "setup-rejected");
+  const caseFailure = contractFailureCase(caseIndex);
+  setInstalledContractFailureBoundary(
+    "case-execution",
+    "setup-rejected",
+    caseFailure,
+  );
   const contractCase = contractPlan.cases[caseIndex];
   const caseRoot = join(contractRoot, "cases", String(caseIndex));
   const caseHome = join(caseRoot, "user home with spaces — 测试");
@@ -659,7 +688,11 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     writeFileSync(join(caseHome, ".agentscope/config.json"), "{invalid");
   }
   const stateRoot = join(caseHome, ".agentscope");
-  setInstalledContractFailureBoundary("case-execution", "state-rejected");
+  setInstalledContractFailureBoundary(
+    "case-execution",
+    "state-rejected",
+    caseFailure,
+  );
   const beforeStateDigest = stateDigest(stateRoot);
   const results = [];
   const afterStateDigests = [];
@@ -674,12 +707,14 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
       setInstalledContractFailureBoundary(
         "case-execution",
         "narrow-help-rejected",
+        caseFailure,
       );
       results.push(await invokeSelectedNarrowPty({ caseId, home: caseHome }));
     } else {
       setInstalledContractFailureBoundary(
         "case-execution",
         "execution-rejected",
+        caseFailure,
       );
       const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
       results.push(
@@ -691,7 +726,11 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
         }),
       );
     }
-    setInstalledContractFailureBoundary("case-execution", "state-rejected");
+    setInstalledContractFailureBoundary(
+      "case-execution",
+      "state-rejected",
+      caseFailure,
+    );
     afterStateDigests.push(stateDigest(stateRoot));
   }
   contractObservations.push({

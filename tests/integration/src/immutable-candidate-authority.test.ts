@@ -393,6 +393,11 @@ describe("immutable candidate authority", () => {
   });
 
   it("round-trips every admitted content-free remaining-contract failure", () => {
+    const caseAuthority = {
+      caseCount: 123,
+      caseIdsDigest:
+        "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+    };
     const admitted = installedContractFailurePredicates as Record<
       string,
       readonly string[]
@@ -403,15 +408,32 @@ describe("immutable candidate authority", () => {
           receiptVersion: 1,
           phase,
           predicate,
+          ...(phase === "case-execution"
+            ? {
+                caseOrdinal: 0,
+                contractInventorySha256: caseAuthority.caseIdsDigest,
+              }
+            : {}),
         });
         expect(
           decodeInstalledContractFailureReceipt(
             `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${compiledFailure.encoded}\n`,
+            caseAuthority,
           ),
         ).toEqual(compiledFailure.record);
         expect(
           Object.keys(compiledFailure.record as Record<string, unknown>).sort(),
-        ).toEqual(["phase", "predicate", "receiptVersion"]);
+        ).toEqual(
+          phase === "case-execution"
+            ? [
+                "caseOrdinal",
+                "contractInventorySha256",
+                "phase",
+                "predicate",
+                "receiptVersion",
+              ]
+            : ["phase", "predicate", "receiptVersion"],
+        );
       }
     }
   });
@@ -426,6 +448,9 @@ describe("immutable candidate authority", () => {
     "late",
   ] as const)("rejects %s remaining-contract failure evidence", (seed) => {
     const value: Record<string, unknown> = {
+      caseOrdinal: 0,
+      contractInventorySha256:
+        "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
       receiptVersion: 1,
       phase: "case-execution",
       predicate: "execution-rejected",
@@ -446,10 +471,56 @@ describe("immutable candidate authority", () => {
           : seed === "late"
             ? `AGENTSCOPE_PTY_FAILURE=x\n${line}`
             : line;
-    expect(() => decodeInstalledContractFailureReceipt(output)).toThrow(
-      "integration.immutable-candidate.authority",
-    );
+    expect(() =>
+      decodeInstalledContractFailureReceipt(output, {
+        caseCount: 123,
+        caseIdsDigest:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+      }),
+    ).toThrow("integration.immutable-candidate.authority");
   });
+
+  it.each([
+    [
+      "negative ordinal",
+      -1,
+      "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+    ],
+    [
+      "fractional ordinal",
+      1.5,
+      "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+    ],
+    [
+      "out-of-range ordinal",
+      123,
+      "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+    ],
+    ["substituted inventory", 0, `sha256:${"0".repeat(64)}`],
+  ])(
+    "rejects %s remaining-contract case authority",
+    (_label, caseOrdinal, contractInventorySha256) => {
+      const encoded = Buffer.from(
+        JSON.stringify({
+          caseOrdinal,
+          contractInventorySha256,
+          receiptVersion: 1,
+          phase: "case-execution",
+          predicate: "execution-rejected",
+        }),
+      ).toString("base64url");
+      expect(() =>
+        decodeInstalledContractFailureReceipt(
+          `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${encoded}`,
+          {
+            caseCount: 123,
+            caseIdsDigest:
+              "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          },
+        ),
+      ).toThrow("integration.immutable-candidate.authority");
+    },
+  );
 
   it.each([
     [
