@@ -138,7 +138,6 @@ jobs:
           import {
             closeSync,
             constants,
-            existsSync,
             fstatSync,
             lstatSync,
             openSync,
@@ -146,7 +145,7 @@ jobs:
             readdirSync,
             writeFileSync,
           } from "node:fs";
-          import { isAbsolute, resolve } from "node:path";
+          import { resolve } from "node:path";
           import {
             compileCapabilityManifest,
             compileIsolationEvidence,
@@ -516,45 +515,47 @@ jobs:
           const bundle = Buffer.from(`${JSON.stringify({
             bundleVersion: 1,
             controllerAuthorityDigest: manifest.controllerAuthorityDigest,
+            preparedInput: {
+              candidate,
+              images: {
+                imageEvidenceVersion: images.imageEvidenceVersion,
+                images: images.images,
+                manifestIdentity: images.manifestIdentity,
+              },
+              manifest: capability,
+              routes: {
+                routeFixtureVersion: routes.routeFixtureVersion,
+                routeIds: routes.routeIds,
+              },
+              selection,
+            },
             retainedInputs: manifest.retainedInputs,
             runs: sanitizedRuns.sort((left, right) => left.runId.localeCompare(right.runId)),
           })}\n`);
           if (bundle.byteLength < 1 || bundle.byteLength > 1024 * 1024) fail();
-          const runnerTemp = process.env.RUNNER_TEMP;
           const outputFile = process.env.GITHUB_OUTPUT;
-          if (typeof runnerTemp !== "string" || !isAbsolute(runnerTemp) || typeof outputFile !== "string" || !isAbsolute(outputFile)) fail();
-          const sealedRoot = resolve(runnerTemp, "agentscope-sanitized-failure-evidence");
-          const sealedPath = resolve(sealedRoot, "controller-failure-bundle.json");
-          const sealedOwner = 0;
-          const sealedGroup = 0;
-          const rootHelper = (arguments_, input) => {
-            const result = spawnSync("/usr/bin/sudo", ["-n", ...arguments_], {
-              env: {}, input, maxBuffer: 1024 * 1024 + 1, stdio: ["pipe", "pipe", "pipe"], timeout: 10_000,
-            });
-            if (result.error !== undefined || result.status !== 0 || result.signal !== null || result.stderr.length !== 0 || result.stdout.length > 1024 * 1024) fail();
-            return result.stdout;
-          };
-          if (existsSync(sealedRoot)) fail();
-          rootHelper(["/usr/bin/mkdir", "-m", "0700", "--", sealedRoot]);
-          const initialRootStatus = lstatSync(sealedRoot);
-          if (!initialRootStatus.isDirectory() || initialRootStatus.isSymbolicLink() || initialRootStatus.uid !== sealedOwner || initialRootStatus.gid !== sealedGroup || (initialRootStatus.mode & 0o7777) !== 0o700) fail();
           const bundleDigest = `sha256:${createHash("sha256").update(bundle).digest("hex")}`;
-          const echoed = rootHelper(["/usr/bin/tee", sealedPath], bundle);
-          const echoedDigest = `sha256:${createHash("sha256").update(echoed).digest("hex")}`;
-          if (!Buffer.from(echoed).equals(bundle) || echoedDigest !== bundleDigest) fail();
-          rootHelper(["/usr/bin/chmod", "0444", sealedPath]);
-          rootHelper(["/usr/bin/chmod", "0555", sealedRoot]);
-          const sealed = readBounded(sealedPath, 1024 * 1024, 0o444);
-          const rootStatus = lstatSync(sealedRoot);
-          const namedStatus = lstatSync(sealedPath);
-          const sealedDigest = `sha256:${createHash("sha256").update(sealed.content).digest("hex")}`;
-          if (!sealed.content.equals(bundle) || !rootStatus.isDirectory() || rootStatus.isSymbolicLink() || rootStatus.uid !== sealedOwner || rootStatus.gid !== sealedGroup || (rootStatus.mode & 0o7777) !== 0o555 || namedStatus.uid !== sealedOwner || namedStatus.gid !== sealedGroup || namedStatus.dev !== sealed.status.dev || namedStatus.ino !== sealed.status.ino || namedStatus.size !== bundle.byteLength || namedStatus.nlink !== 1 || sealedDigest !== bundleDigest) fail();
+          const deadline = process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
+          if (!/^[1-9]\d{0,15}$/u.test(deadline ?? "") || typeof outputFile !== "string" || !outputFile.startsWith("/")) fail();
+          const deadlineNanoseconds = (BigInt(deadline) * 1_000_000n).toString();
+          const keeperPath = resolve("tests/integration/failure-evidence-keeper.py");
+          const keeper = spawnSync("/usr/bin/python3", [keeperPath, "hold", deadlineNanoseconds], {
+            env: {}, input: bundle, maxBuffer: 4096, stdio: ["pipe", "pipe", "pipe"], timeout: 10_000,
+          });
+          if (keeper.error !== undefined || keeper.status !== 0 || keeper.signal !== null || keeper.stderr.length !== 0 || keeper.stdout.length < 1 || keeper.stdout.length > 1024) fail();
+          const receipt = JSON.parse(keeper.stdout.toString("utf8"));
+          if (!exactKeys(receipt, ["digest", "fd", "keeperReceiptVersion", "pid", "size", "startTimeTicks"]) || receipt.keeperReceiptVersion !== 1 || !Number.isSafeInteger(receipt.pid) || receipt.pid < 1 || !Number.isSafeInteger(receipt.fd) || receipt.fd < 0 || !Number.isSafeInteger(receipt.size) || receipt.size !== bundle.byteLength || !/^[1-9]\d*$/u.test(receipt.startTimeTicks) || receipt.digest !== bundleDigest) fail();
+          const canonicalReceipt = `${JSON.stringify({ digest: receipt.digest, fd: receipt.fd, keeperReceiptVersion: 1, pid: receipt.pid, size: receipt.size, startTimeTicks: receipt.startTimeTicks })}\n`;
+          if (keeper.stdout.toString("utf8") !== canonicalReceipt) fail();
+          const identity = [String(receipt.pid), receipt.startTimeTicks, String(receipt.fd), String(receipt.size), receipt.digest];
+          const inspection = spawnSync("/usr/bin/python3", [keeperPath, "inspect", ...identity], { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
+          if (inspection.error !== undefined || inspection.status !== 0 || inspection.signal !== null || inspection.stderr.length !== 0 || inspection.stdout.toString("utf8") !== '{"status":"authenticated"}\n') fail();
           let outputDescriptor;
           try {
             outputDescriptor = openSync(outputFile, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
             const outputStatus = fstatSync(outputDescriptor);
             if (!outputStatus.isFile() || outputStatus.nlink !== 1) fail();
-            writeFileSync(outputDescriptor, `bundle_dev=${namedStatus.dev}\nbundle_digest=${sealedDigest}\nbundle_ino=${namedStatus.ino}\nbundle_size=${namedStatus.size}\n`);
+            writeFileSync(outputDescriptor, `bundle_deadline=${deadlineNanoseconds}\nbundle_digest=${receipt.digest}\nbundle_fd=${receipt.fd}\nbundle_keeper_pid=${receipt.pid}\nbundle_keeper_start=${receipt.startTimeTicks}\nbundle_size=${receipt.size}\n`);
           } finally { if (outputDescriptor !== undefined) closeSync(outputDescriptor); }
           for (const descriptor of authenticatedDescriptors.splice(0)) closeSync(descriptor);
           NODE
@@ -564,46 +565,20 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
-          path: ${{ runner.temp }}/agentscope-sanitized-failure-evidence/controller-failure-bundle.json
+          path: /proc/${{ steps.failure_evidence.outputs.bundle_keeper_pid }}/fd/${{ steps.failure_evidence.outputs.bundle_fd }}
           if-no-files-found: error
           retention-days: 7
       - name: Retire sealed sanitized failure evidence
         if: always() && steps.failure_evidence.outcome == 'success'
         env:
-          BUNDLE_DEV: ${{ steps.failure_evidence.outputs.bundle_dev }}
+          BUNDLE_DEADLINE: ${{ steps.failure_evidence.outputs.bundle_deadline }}
           BUNDLE_DIGEST: ${{ steps.failure_evidence.outputs.bundle_digest }}
-          BUNDLE_INO: ${{ steps.failure_evidence.outputs.bundle_ino }}
+          BUNDLE_FD: ${{ steps.failure_evidence.outputs.bundle_fd }}
+          BUNDLE_KEEPER_PID: ${{ steps.failure_evidence.outputs.bundle_keeper_pid }}
+          BUNDLE_KEEPER_START: ${{ steps.failure_evidence.outputs.bundle_keeper_start }}
           BUNDLE_SIZE: ${{ steps.failure_evidence.outputs.bundle_size }}
         run: |
-          node --input-type=module <<'NODE'
-          import { spawnSync } from "node:child_process";
-          import { createHash } from "node:crypto";
-          import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-          import { isAbsolute, resolve } from "node:path";
-          const fail = () => { throw new Error("integration.controller.failure-evidence-cleanup"); };
-          const root = process.env.RUNNER_TEMP;
-          if (typeof root !== "string" || !isAbsolute(root) || !/^\d+$/u.test(process.env.BUNDLE_DEV ?? "") || !/^\d+$/u.test(process.env.BUNDLE_INO ?? "") || !/^\d+$/u.test(process.env.BUNDLE_SIZE ?? "") || !/^sha256:[a-f0-9]{64}$/u.test(process.env.BUNDLE_DIGEST ?? "")) fail();
-          const directory = resolve(root, "agentscope-sanitized-failure-evidence");
-          const path = resolve(directory, "controller-failure-bundle.json");
-          const directoryStatus = lstatSync(directory);
-          if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink() || directoryStatus.uid !== 0 || directoryStatus.gid !== 0 || (directoryStatus.mode & 0o7777) !== 0o555) fail();
-          let descriptor;
-          try {
-            descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-            const before = fstatSync(descriptor);
-            const content = readFileSync(descriptor);
-            const after = fstatSync(descriptor);
-            const named = lstatSync(path);
-            if (!before.isFile() || before.nlink !== 1 || before.uid !== 0 || before.gid !== 0 || (before.mode & 0o7777) !== 0o444 || String(before.dev) !== process.env.BUNDLE_DEV || String(before.ino) !== process.env.BUNDLE_INO || String(before.size) !== process.env.BUNDLE_SIZE || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || named.dev !== before.dev || named.ino !== before.ino || `sha256:${createHash("sha256").update(content).digest("hex")}` !== process.env.BUNDLE_DIGEST) fail();
-          } finally { if (descriptor !== undefined) closeSync(descriptor); }
-          const remove = (arguments_) => {
-            const result = spawnSync("/usr/bin/sudo", ["-n", ...arguments_], { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
-            if (result.error !== undefined || result.status !== 0 || result.signal !== null || result.stdout.length !== 0 || result.stderr.length !== 0) fail();
-          };
-          remove(["/usr/bin/rm", "--", path]);
-          remove(["/usr/bin/rmdir", "--", directory]);
-          if (existsSync(path) || existsSync(directory)) fail();
-          NODE
+          /usr/bin/python3 tests/integration/failure-evidence-keeper.py retire "$BUNDLE_KEEPER_PID" "$BUNDLE_KEEPER_START" "$BUNDLE_FD" "$BUNDLE_SIZE" "$BUNDLE_DIGEST" "$BUNDLE_DEADLINE"
   hermetic-integration:
     name: hermetic-integration
     if: always()

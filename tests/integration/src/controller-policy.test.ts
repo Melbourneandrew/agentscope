@@ -1,17 +1,13 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,25 +68,6 @@ const failureVerifierSource = (workflow: string) => {
           .href,
       ),
     );
-};
-const failureCleanupSource = (workflow: string) => {
-  const step = workflow.indexOf(
-    "      - name: Retire sealed sanitized failure evidence",
-  );
-  const start = workflow.indexOf("        run: |\n", step);
-  const end = workflow.indexOf("  hermetic-integration:", start);
-  if (step < 0 || start < 0 || end < 0)
-    throw new Error("missing failure cleanup");
-  const lines = workflow
-    .slice(start + "        run: |\n".length, end)
-    .split("\n")
-    .map((line) => line.replace(/^ {10}/u, ""));
-  if (
-    lines[0] !== "node --input-type=module <<'NODE'" ||
-    lines.at(-2) !== "NODE"
-  )
-    throw new Error("invalid failure cleanup");
-  return lines.slice(1, -2).join("\n");
 };
 const cleanupFailureValidatorSource = () => {
   const source = readFileSync(
@@ -264,58 +241,43 @@ const writeRetainedRunEvidence = (
 const runFailureVerifier = (
   source: string,
   directory: string,
-  fault?: "digest" | "helper" | "mode" | "partial",
+  fault?: "digest" | "early" | "helper" | "identity" | "receipt",
 ) => {
   const runnerTemp = mkdtempSync(resolve(directory, "runner-temp-"));
   const githubOutput = resolve(runnerTemp, "github-output");
+  const bundleOutput = resolve(runnerTemp, "fixture-bundle.json");
   writeFileSync(githubOutput, "", { mode: 0o600 });
-  const helperStart = source.indexOf("const rootHelper =");
-  const helperEnd = source.indexOf("if (existsSync(sealedRoot))", helperStart);
-  const fixtureHelper = `const rootHelper = (arguments_, input) => {
-            const [command, ...commandArguments] = arguments_;
-            if (command === "/usr/bin/mkdir") fixtureMkdirSync(commandArguments.at(-1), { mode: 0o700 });
-            else if (command === "/usr/bin/tee") { fixtureWriteFileSync(commandArguments[0], input, { mode: 0o644 }); return Buffer.from(input); }
-            else if (command === "/usr/bin/chmod") fixtureChmodSync(commandArguments[1], Number.parseInt(commandArguments[0], 8));
-            else throw new Error("fixture root helper");
-            return Buffer.alloc(0);
-};
-`;
-  let fixtureSource = source;
-  if (helperStart >= 0 && helperEnd >= 0)
-    fixtureSource =
-      `${source.slice(0, helperStart)}${fixtureHelper}${source.slice(helperEnd)}`
-        .replace(
-          'import { spawnSync } from "node:child_process";',
-          'import { chmodSync as fixtureChmodSync, mkdirSync as fixtureMkdirSync, writeFileSync as fixtureWriteFileSync } from "node:fs";',
-        )
-        .replace(
-          "const sealedOwner = 0;",
-          `const sealedOwner = ${process.getuid?.() ?? 0};`,
-        )
-        .replace(
-          "const sealedGroup = 0;",
-          `const sealedGroup = ${process.getgid?.() ?? 0};`,
-        );
-  else if (fault !== undefined) throw new Error("missing sealed helper");
-  if (fault === "partial")
-    fixtureSource = fixtureSource.replace(
-      "return Buffer.from(input);",
-      "return Buffer.from(input).subarray(0, -1);",
-    );
+  const fixtureSpawn = `const spawnSync = (_executable, arguments_, options) => {
+            if (arguments_[1] === "hold") {
+              writeFileSync(process.env.FIXTURE_BUNDLE, options.input);
+              const digest = "sha256:" + createHash("sha256").update(options.input).digest("hex");
+              const receipt = { digest, fd: 3, keeperReceiptVersion: 1, pid: 123, size: options.input.length, startTimeTicks: "456" };
+              return { error: undefined, signal: null, status: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify(receipt) + "\\n") };
+            }
+            return { error: undefined, signal: null, status: 0, stderr: Buffer.alloc(0), stdout: Buffer.from('{"status":"authenticated"}\\n') };
+          };`;
+  let fixtureSource = source.replace(
+    'import { spawnSync } from "node:child_process";',
+    fixtureSpawn,
+  );
   if (fault === "helper")
+    fixtureSource = fixtureSource.replace("status: 0", "status: 1");
+  if (fault === "early")
+    fixtureSource = fixtureSource.replace("pid: 123", "pid: 0");
+  if (fault === "identity")
     fixtureSource = fixtureSource.replace(
-      "fixtureMkdirSync(commandArguments.at(-1), { mode: 0o700 });",
-      '(() => { throw new Error("fixture helper failure"); })();',
-    );
-  if (fault === "mode")
-    fixtureSource = fixtureSource.replace(
-      "fixtureChmodSync(commandArguments[1], Number.parseInt(commandArguments[0], 8));",
-      "fixtureChmodSync(commandArguments[1], 0o600);",
+      'startTimeTicks: "456"',
+      'startTimeTicks: "invalid"',
     );
   if (fault === "digest")
     fixtureSource = fixtureSource.replace(
-      "fixtureWriteFileSync(commandArguments[0], input, { mode: 0o644 });",
-      'fixtureWriteFileSync(commandArguments[0], Buffer.concat([input, Buffer.from("x")]), { mode: 0o644 });',
+      "const receipt = { digest,",
+      'const receipt = { digest: "sha256:" + "0".repeat(64),',
+    );
+  if (fault === "receipt")
+    fixtureSource = fixtureSource.replace(
+      'Buffer.from(JSON.stringify(receipt) + "\\n")',
+      'Buffer.from(JSON.stringify(receipt) + " \\n")',
     );
   const result = spawnSync(
     process.execPath,
@@ -323,89 +285,15 @@ const runFailureVerifier = (
     {
       cwd: directory,
       env: {
+        AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: "999999999999",
+        FIXTURE_BUNDLE: bundleOutput,
         GITHUB_OUTPUT: githubOutput,
-        RUNNER_TEMP: runnerTemp,
       },
     },
   );
-  return { githubOutput, runnerTemp, status: result.status };
-};
-const runFailureCleanup = (
-  source: string,
-  runnerTemp: string,
-  githubOutput: string,
-) => {
-  const removeStart = source.indexOf("const remove =");
-  const removeEnd = source.indexOf(
-    'remove(["/usr/bin/rm", "--", path]);',
-    removeStart,
-  );
-  if (removeStart < 0 || removeEnd < 0)
-    throw new Error("missing sealed cleanup helper");
-  const fixtureRemove = `const remove = (arguments_) => {
-            const [command, , target] = arguments_;
-            if (command === "/usr/bin/rm") { fixtureChmodSync(directory, 0o700); fixtureChmodSync(target, 0o600); fixtureUnlinkSync(target); }
-            else if (command === "/usr/bin/rmdir") fixtureRmdirSync(target);
-            else throw new Error("fixture cleanup helper");
-          };
-          `;
-  const fixtureSource =
-    `${source.slice(0, removeStart)}${fixtureRemove}${source.slice(removeEnd)}`
-      .replace(
-        'import { spawnSync } from "node:child_process";',
-        'import { chmodSync as fixtureChmodSync, rmdirSync as fixtureRmdirSync, unlinkSync as fixtureUnlinkSync } from "node:fs";',
-      )
-      .replaceAll(
-        "directoryStatus.uid !== 0",
-        `directoryStatus.uid !== ${process.getuid?.() ?? 0}`,
-      )
-      .replaceAll(
-        "directoryStatus.gid !== 0",
-        `directoryStatus.gid !== ${process.getgid?.() ?? 0}`,
-      )
-      .replaceAll(
-        "before.uid !== 0",
-        `before.uid !== ${process.getuid?.() ?? 0}`,
-      )
-      .replaceAll(
-        "before.gid !== 0",
-        `before.gid !== ${process.getgid?.() ?? 0}`,
-      );
-  const outputs = Object.fromEntries(
-    readFileSync(githubOutput, "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => {
-        const separator = line.indexOf("=");
-        return [line.slice(0, separator), line.slice(separator + 1)];
-      }),
-  );
-  return spawnSync(
-    process.execPath,
-    ["--input-type=module", "--eval", fixtureSource],
-    {
-      env: {
-        BUNDLE_DEV: outputs.bundle_dev,
-        BUNDLE_DIGEST: outputs.bundle_digest,
-        BUNDLE_INO: outputs.bundle_ino,
-        BUNDLE_SIZE: outputs.bundle_size,
-        RUNNER_TEMP: runnerTemp,
-      },
-    },
-  ).status;
+  return { bundleOutput, githubOutput, runnerTemp, status: result.status };
 };
 const removeFailureVerifierFixture = (directory: string) => {
-  for (const entry of readdirSync(directory)) {
-    if (!entry.startsWith("runner-temp-")) continue;
-    const sealedRoot = resolve(
-      directory,
-      entry,
-      "agentscope-sanitized-failure-evidence",
-    );
-    const sealedPath = resolve(sealedRoot, "controller-failure-bundle.json");
-    if (existsSync(sealedPath)) chmodSync(sealedPath, 0o600);
-    if (existsSync(sealedRoot)) chmodSync(sealedRoot, 0o700);
-  }
   rmSync(directory, { force: true, recursive: true });
 };
 const writeFailureManifestFixture = (directory: string, runIds: string[]) => {
@@ -455,7 +343,7 @@ const executeFailureVerifier = (
   source: string,
   installedPtyFailure: unknown,
   mutateEvidence?: (evidence: Record<string, unknown>) => void,
-  fault?: "digest" | "helper" | "mode" | "partial",
+  fault?: "digest" | "early" | "helper" | "identity" | "receipt",
 ) => {
   const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
   const artifacts = resolve(directory, "artifacts/integration");
@@ -742,10 +630,10 @@ describe("integration workflow routing policy", () => {
     expect(
       workflow.match(/Initialize closed npm configuration/gu),
     ).toHaveLength(2);
-    expect(workflow.match(/\$\{\{ runner\.temp \}\}/gu)).toHaveLength(1);
+    expect(workflow.match(/\$\{\{ runner\.temp \}\}/gu) ?? []).toHaveLength(0);
     expect(
       workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,
     );
@@ -763,7 +651,7 @@ describe("integration workflow routing policy", () => {
     expect(upload).toContain("actions/upload-artifact@v4");
     expect(upload).toContain("retention-days: 7");
     expect(upload).toContain(
-      "${{ runner.temp }}/agentscope-sanitized-failure-evidence/controller-failure-bundle.json",
+      "/proc/${{ steps.failure_evidence.outputs.bundle_keeper_pid }}/fd/${{ steps.failure_evidence.outputs.bundle_fd }}",
     );
     expect(upload).not.toMatch(
       /controller-failure-manifest|runs\/\*|current-(?:candidate|images|model-routes|selection)|capability-manifest/gu,
@@ -792,8 +680,8 @@ describe("integration workflow routing policy", () => {
   });
 });
 
-describe("integration workflow sealed failure artifact policy", () => {
-  it("seals only complete current-run failure evidence before upload", () => {
+describe("integration workflow anonymous failure artifact policy", () => {
+  it("hands only a complete canonical sanitized bundle to the keeper", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
       "utf8",
@@ -805,34 +693,28 @@ describe("integration workflow sealed failure artifact policy", () => {
       const artifacts = writeFailureManifestFixture(directory, runIds);
       const sealedRun = runFailureVerifier(source, directory);
       expect(sealedRun.status).toBe(0);
-      const sealedRoots = readdirSync(directory).filter((name) =>
-        name.startsWith("runner-temp-"),
-      );
-      expect(sealedRoots).toHaveLength(1);
-      const bundlePath = resolve(
-        directory,
-        sealedRoots[0]!,
-        "agentscope-sanitized-failure-evidence/controller-failure-bundle.json",
-      );
-      expect(lstatSync(bundlePath).mode & 0o7777).toBe(0o444);
-      expect(readFileSync(bundlePath, "utf8")).not.toMatch(
+      const bundle = readFileSync(sealedRun.bundleOutput, "utf8");
+      expect(bundle).not.toMatch(
         /executionPolicy|headlessTerminalReceipt|privateCleanup|dockerSocket|dockerDaemon/gu,
       );
-      const sealedRoot = resolve(bundlePath, "..");
-      const replacement = resolve(directory, "replacement.json");
-      writeFileSync(replacement, "{}\n", { mode: 0o600 });
-      expect(() => {
-        writeFileSync(bundlePath, "{}\n");
-      }).toThrow();
-      expect(() => {
-        renameSync(replacement, bundlePath);
-      }).toThrow();
-      expect(() => {
-        linkSync(replacement, resolve(sealedRoot, "linked"));
-      }).toThrow();
-      expect(() => {
-        symlinkSync(replacement, resolve(sealedRoot, "symlinked"));
-      }).toThrow();
+      const parsed = JSON.parse(bundle) as Record<string, unknown>;
+      expect(Object.keys(parsed).sort()).toEqual([
+        "bundleVersion",
+        "controllerAuthorityDigest",
+        "preparedInput",
+        "retainedInputs",
+        "runs",
+      ]);
+      expect(parsed.preparedInput).toBeTypeOf("object");
+      expect(
+        Object.keys(parsed.preparedInput as Record<string, unknown>).sort(),
+      ).toEqual(["candidate", "images", "manifest", "routes", "selection"]);
+      for (const value of Object.values(
+        parsed.preparedInput as Record<string, unknown>,
+      )) {
+        expect(value).toBeTypeOf("object");
+        expect(value).not.toBeNull();
+      }
       writeFileSync(
         resolve(artifacts, "runs", runIds[0]!, "model-ledger.json"),
         '{"substituted":true}\n',
@@ -843,49 +725,6 @@ describe("integration workflow sealed failure artifact policy", () => {
         recursive: true,
       });
       expect(runFailureVerifier(source, directory).status).not.toBe(0);
-      expect(
-        runFailureCleanup(
-          failureCleanupSource(workflow),
-          sealedRun.runnerTemp,
-          sealedRun.githubOutput,
-        ),
-      ).toBe(0);
-      expect(existsSync(bundlePath)).toBe(false);
-      expect(existsSync(sealedRoot)).toBe(false);
-    } finally {
-      removeFailureVerifierFixture(directory);
-    }
-  });
-
-  it("rejects a substituted sealed identity during retirement", () => {
-    const workflow = readFileSync(
-      resolve(workspaceRoot, ".github/workflows/integration.yml"),
-      "utf8",
-    );
-    const source = failureVerifierSource(workflow);
-    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
-    const runId = "0123456789abcdef";
-    try {
-      writeFailureManifestFixture(directory, [runId]);
-      const sealedRun = runFailureVerifier(source, directory);
-      expect(sealedRun.status).toBe(0);
-      const sealedRoot = resolve(
-        sealedRun.runnerTemp,
-        "agentscope-sanitized-failure-evidence",
-      );
-      const bundlePath = resolve(sealedRoot, "controller-failure-bundle.json");
-      chmodSync(sealedRoot, 0o700);
-      chmodSync(bundlePath, 0o600);
-      writeFileSync(bundlePath, "{}\n");
-      chmodSync(bundlePath, 0o444);
-      chmodSync(sealedRoot, 0o555);
-      expect(
-        runFailureCleanup(
-          failureCleanupSource(workflow),
-          sealedRun.runnerTemp,
-          sealedRun.githubOutput,
-        ),
-      ).not.toBe(0);
     } finally {
       removeFailureVerifierFixture(directory);
     }
@@ -959,8 +798,8 @@ describe("installed-contract workflow failure evidence", () => {
     ).not.toBe(0);
   });
 
-  it.each(["digest", "helper", "mode", "partial"] as const)(
-    "fails closed on sealed helper %s authority",
+  it.each(["digest", "early", "helper", "identity", "receipt"] as const)(
+    "fails closed on keeper %s authority",
     (fault) => {
       const workflow = readFileSync(
         resolve(workspaceRoot, ".github/workflows/integration.yml"),
