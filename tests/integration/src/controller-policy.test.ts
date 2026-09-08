@@ -12,11 +12,28 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { runSupervisedProcess } from "../supervisor.mjs";
+import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
+const fixtureCapabilityManifest = JSON.parse(
+  readFileSync(
+    resolve(workspaceRoot, "tests/integration/capability-manifest.json"),
+    "utf8",
+  ),
+) as {
+  manifestIdentity: string;
+  scenarios: Array<{
+    image: string;
+    mockServerImage: string;
+    modelRoutes: string[];
+    scenarioId: string;
+  }>;
+};
+const fixtureScenario = fixtureCapabilityManifest.scenarios[0]!;
 const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
@@ -39,7 +56,15 @@ const failureVerifierSource = (workflow: string) => {
     lines.pop() !== "NODE"
   )
     throw new Error("malformed failure verifier");
-  return lines.join("\n");
+  return lines
+    .join("\n")
+    .replace(
+      '"./tests/integration/dist/index.js"',
+      JSON.stringify(
+        pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
+          .href,
+      ),
+    );
 };
 const cleanupFailureValidatorSource = () => {
   const source = readFileSync(
@@ -54,16 +79,16 @@ const cleanupFailureValidatorSource = () => {
 const writeRetainedFailureInputs = (directory: string) => {
   const artifacts = resolve(directory, "artifacts/integration");
   mkdirSync(artifacts, { recursive: true, mode: 0o700 });
-  const manifestIdentity = `sha256-${"a".repeat(64)}`;
+  const manifestIdentity = fixtureCapabilityManifest.manifestIdentity;
   const bundleIdentity = `sha256-${"b".repeat(64)}`;
   const candidateRevision = "c".repeat(40);
-  const baseImage = "node@sha256:" + "d".repeat(64);
-  const mockImage = "mock@sha256:" + "e".repeat(64);
+  const baseImage = fixtureScenario.image;
+  const mockImage = fixtureScenario.mockServerImage;
   const imageIdentity = (image: string, seed: string) => ({
     configDigest: `sha256:${seed.repeat(64)}`,
     image,
     manifestDigest: `sha256:${seed.repeat(64)}`,
-    platform: { architecture: "amd64", os: "linux", variant: "" },
+    platform: { architecture: "amd64", os: "linux" },
   });
   const inputs = {
     "current-candidate.json": {
@@ -83,12 +108,12 @@ const writeRetainedFailureInputs = (directory: string) => {
     "current-model-routes.json": {
       mockServerInitialization: [],
       routeFixtureVersion: 1,
-      routeIds: [],
+      routeIds: fixtureScenario.modelRoutes,
       routes: [],
     },
     "current-selection.json": {
       manifestIdentity,
-      scenarioIds: ["scenario"],
+      scenarioIds: [fixtureScenario.scenarioId],
       selectionMode: "full",
       selectionVersion: 2,
       selector: {},
@@ -102,7 +127,7 @@ const writeRetainedFailureInputs = (directory: string) => {
   mkdirSync(integration, { recursive: true, mode: 0o700 });
   writeFileSync(
     resolve(integration, "capability-manifest.json"),
-    `${JSON.stringify({ evidence: [], manifestIdentity, manifestVersion: 1, requiredRepresentativeIds: [], scenarios: [{ image: baseImage, mockServerImage: mockImage, modelRoutes: [], scenarioId: "scenario" }] })}\n`,
+    `${JSON.stringify(fixtureCapabilityManifest)}\n`,
     { mode: 0o644 },
   );
   const digest = (path: string) =>
@@ -134,37 +159,58 @@ const writeRetainedRunEvidence = (
       retrieval: { status: "uncertain" },
     },
     "evidence.json": {
-      baseImage: "node@sha256:" + "d".repeat(64),
+      baseImage: fixtureScenario.image,
       baseImageIdentity: {
         configDigest: `sha256:${"1".repeat(64)}`,
-        image: "node@sha256:" + "d".repeat(64),
+        image: fixtureScenario.image,
         manifestDigest: `sha256:${"1".repeat(64)}`,
-        platform: { architecture: "amd64", os: "linux", variant: "" },
+        platform: { architecture: "amd64", os: "linux" },
       },
       builtImageDigest: null,
       builtMockServerImageDigest: null,
       candidateBundleIdentity: `sha256-${"b".repeat(64)}`,
       candidateRevision: "c".repeat(40),
-      cleanup: {},
+      cleanup: {
+        outcome: "verification-failed",
+        removalFailureCount: 0,
+        remaining: null,
+      },
       evidenceVersion: 2,
-      executionPolicy: {},
+      executionPolicy: {
+        policyVersion: 1,
+        runtimeInspection: { outcome: "unavailable", identity: null },
+        selection: {
+          selectionVersion: 2,
+          manifestIdentity: fixtureCapabilityManifest.manifestIdentity,
+          mode: "full",
+          selector: {},
+          scenarioIds: [fixtureScenario.scenarioId],
+        },
+        maximumParallelScenarios: 2,
+        scenarioTimeoutMilliseconds: 300_000,
+        cleanupTimeouts: ISOLATION_EXECUTOR_LIMITS.cleanup,
+        containers: ISOLATION_EXECUTOR_LIMITS.containers,
+        requests: ISOLATION_EXECUTOR_LIMITS.requests,
+      },
       headlessTerminalReceipt: null,
       hostMountCount: 0,
       installedCliContractEvidence: null,
-      manifestIdentity: `sha256-${"a".repeat(64)}`,
-      mockServerImage: "mock@sha256:" + "e".repeat(64),
+      manifestIdentity: fixtureCapabilityManifest.manifestIdentity,
+      mockServerImage: fixtureScenario.mockServerImage,
       mockServerImageIdentity: {
         configDigest: `sha256:${"2".repeat(64)}`,
-        image: "mock@sha256:" + "e".repeat(64),
+        image: fixtureScenario.mockServerImage,
         manifestDigest: `sha256:${"2".repeat(64)}`,
-        platform: { architecture: "amd64", os: "linux", variant: "" },
+        platform: { architecture: "amd64", os: "linux" },
       },
       networkMode: "internal-only",
       outcome,
       readOnlyRootFilesystem: true,
       runId,
-      scenarioId: "scenario",
-      tmpfsMounts: [],
+      scenarioId: fixtureScenario.scenarioId,
+      tmpfsMounts: ISOLATION_EXECUTOR_LIMITS.containers.scenario.tmpfs.map(
+        ({ path }) => path,
+      ),
     },
     "fixture-lifecycle.json": {
       evidenceVersion: 1,
@@ -174,7 +220,7 @@ const writeRetainedRunEvidence = (
         retrieval: "uncertain",
       },
       resultStatus: "unavailable",
-      scenarioId: "scenario",
+      scenarioId: fixtureScenario.scenarioId,
     },
     "model-ledger.json": { status: "uncertain" },
   };
@@ -188,6 +234,78 @@ const writeRetainedRunEvidence = (
       ];
     }),
   );
+};
+const executeFailureVerifier = (
+  source: string,
+  installedPtyFailure: unknown,
+  mutateEvidence?: (evidence: Record<string, unknown>) => void,
+) => {
+  const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
+  const artifacts = resolve(directory, "artifacts/integration");
+  const runId = "0123456789abcdef";
+  const run = resolve(artifacts, "runs", runId);
+  mkdirSync(run, { recursive: true, mode: 0o700 });
+  try {
+    const retainedInputs = writeRetainedFailureInputs(directory);
+    const path = resolve(run, "controller-failure.json");
+    const retainedEvidence = writeRetainedRunEvidence(run, runId, "failed");
+    if (mutateEvidence !== undefined) {
+      const evidencePath = resolve(run, "evidence.json");
+      const evidence = JSON.parse(readFileSync(evidencePath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      mutateEvidence(evidence);
+      const evidenceContent = `${JSON.stringify(evidence)}\n`;
+      writeFileSync(evidencePath, evidenceContent, { mode: 0o600 });
+      retainedEvidence["evidence.json"] = `sha256:${createHash("sha256")
+        .update(evidenceContent)
+        .digest("hex")}`;
+    }
+    const content = `${JSON.stringify({
+      controllerFailureEvidenceVersion: 2,
+      runId,
+      scenarioOutcome: "failed",
+      scenarioFailure: "integration.isolation.scenario-failed",
+      controllerOutcome: "retired-failure",
+      primaryFailure: "integration.controller.unsettled-operation",
+      cleanupFailure: null,
+      scenarioSecondaryFailures: [],
+      installedPtyFailure,
+      privateCleanup: null,
+      retainedEvidence,
+    })}\n`;
+    writeFileSync(path, content, { mode: 0o600 });
+    const status = lstatSync(path);
+    writeFileSync(
+      resolve(artifacts, "controller-failure-manifest.json"),
+      `${JSON.stringify({
+        controllerFailureManifestVersion: 1,
+        controllerAuthorityDigest: `sha256:${"a".repeat(64)}`,
+        runIds: [runId],
+        failureEvidence: [
+          {
+            dev: status.dev,
+            digest: `sha256:${createHash("sha256")
+              .update(content)
+              .digest("hex")}`,
+            ino: status.ino,
+            runId,
+            size: status.size,
+          },
+        ],
+        retainedInputs,
+      })}\n`,
+      { mode: 0o600 },
+    );
+    return spawnSync(
+      process.execPath,
+      ["--input-type=module", "--eval", source],
+      { cwd: directory },
+    ).status;
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 };
 const installedContractAdmitted = {
   "aggregate-evaluation": ["evaluation-rejected"],
@@ -419,11 +537,16 @@ describe("integration workflow routing policy", () => {
     expect(workflow).toContain(
       "if: failure() && steps.failure_evidence.outcome == 'success'",
     );
+    expect(workflow).toContain('"controller-failure-manifest.json"');
     expect(workflow).toContain(
-      "artifacts/integration/controller-failure-manifest.json",
+      "artifacts/integration/controller-failure-bundle.json",
     );
-    expect(workflow).toContain(
-      "artifacts/integration/runs/*/controller-failure.json",
+    const upload = workflow.slice(
+      workflow.indexOf("- name: Upload sanitized failure evidence"),
+      workflow.indexOf("  hermetic-integration:"),
+    );
+    expect(upload).not.toMatch(
+      /controller-failure-manifest|runs\/\*|current-(?:candidate|images|model-routes|selection)|capability-manifest/gu,
     );
     expect(workflow).toContain("runDirectories.length !== expected.size");
     const scenarios = readFileSync(
@@ -443,6 +566,9 @@ describe("integration workflow routing policy", () => {
     expect(manifest).toBeGreaterThan(finalized);
     expect(finalized).toBeGreaterThanOrEqual(0);
     expect(propagated).toBeGreaterThan(finalized);
+    expect(scenarios).toContain("const before = fstatSync(descriptor)");
+    expect(scenarios).toContain("const after = fstatSync(descriptor)");
+    expect(scenarios).toContain("JSON.parse(identity.content.toString");
   });
 });
 
@@ -501,6 +627,25 @@ describe("integration workflow failure artifact policy", () => {
           cwd: directory,
         }).status,
       ).toBe(0);
+      const bundlePath = resolve(artifacts, "controller-failure-bundle.json");
+      const bundleStatus = lstatSync(bundlePath);
+      const bundle = JSON.parse(readFileSync(bundlePath, "utf8")) as {
+        bundleVersion: number;
+        runs: unknown[];
+      };
+      expect(bundleStatus.isFile()).toBe(true);
+      expect(bundleStatus.mode & 0o7777).toBe(0o400);
+      expect(Object.keys(bundle).sort()).toEqual([
+        "bundleVersion",
+        "controllerAuthorityDigest",
+        "retainedInputs",
+        "runs",
+      ]);
+      expect(bundle.bundleVersion).toBe(1);
+      expect(bundle.runs).toHaveLength(2);
+      expect(readFileSync(bundlePath, "utf8")).not.toMatch(
+        /executionPolicy|headlessTerminalReceipt|privateCleanup|dockerSocket|dockerDaemon/gu,
+      );
       writeFileSync(
         resolve(artifacts, "runs", runIds[0]!, "model-ledger.json"),
         '{"substituted":true}\n',
@@ -532,60 +677,10 @@ describe("installed-contract workflow failure evidence", () => {
       "utf8",
     );
     const source = failureVerifierSource(workflow);
-    const executeVerifier = (installedPtyFailure: unknown) => {
-      const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
-      const artifacts = resolve(directory, "artifacts/integration");
-      const runId = "0123456789abcdef";
-      const run = resolve(artifacts, "runs", runId);
-      mkdirSync(run, { recursive: true, mode: 0o700 });
-      try {
-        const retainedInputs = writeRetainedFailureInputs(directory);
-        const path = resolve(run, "controller-failure.json");
-        const content = `${JSON.stringify({
-          controllerFailureEvidenceVersion: 2,
-          runId,
-          scenarioOutcome: "failed",
-          scenarioFailure: "integration.isolation.scenario-failed",
-          controllerOutcome: "retired-failure",
-          primaryFailure: "integration.controller.unsettled-operation",
-          cleanupFailure: null,
-          scenarioSecondaryFailures: [],
-          installedPtyFailure,
-          privateCleanup: null,
-          retainedEvidence: writeRetainedRunEvidence(run, runId, "failed"),
-        })}\n`;
-        writeFileSync(path, content, { mode: 0o600 });
-        const status = lstatSync(path);
-        writeFileSync(
-          resolve(artifacts, "controller-failure-manifest.json"),
-          `${JSON.stringify({
-            controllerFailureManifestVersion: 1,
-            controllerAuthorityDigest: `sha256:${"a".repeat(64)}`,
-            runIds: [runId],
-            failureEvidence: [
-              {
-                dev: status.dev,
-                digest: `sha256:${createHash("sha256")
-                  .update(content)
-                  .digest("hex")}`,
-                ino: status.ino,
-                runId,
-                size: status.size,
-              },
-            ],
-            retainedInputs,
-          })}\n`,
-          { mode: 0o600 },
-        );
-        return spawnSync(
-          process.execPath,
-          ["--input-type=module", "--eval", source],
-          { cwd: directory },
-        ).status;
-      } finally {
-        rmSync(directory, { force: true, recursive: true });
-      }
-    };
+    const executeVerifier = (
+      installedPtyFailure: unknown,
+      mutateEvidence?: (evidence: Record<string, unknown>) => void,
+    ) => executeFailureVerifier(source, installedPtyFailure, mutateEvidence);
     const admitted = installedContractAdmitted;
     const receiptFor = (phase: string, predicate: string) => ({
       ...(phase === "case-execution"
@@ -625,6 +720,21 @@ describe("installed-contract workflow failure evidence", () => {
       { receiptVersion: 1, phase: "artifact-install", predicate: 1 },
     ])
       expect(executeVerifier(rejected)).not.toBe(0);
+    expect(
+      executeVerifier(null, (evidence) => {
+        evidence.cleanup = {};
+      }),
+    ).not.toBe(0);
+    expect(
+      executeVerifier(null, (evidence) => {
+        evidence.executionPolicy = {};
+      }),
+    ).not.toBe(0);
+    expect(
+      executeVerifier(null, (evidence) => {
+        evidence.tmpfsMounts = [];
+      }),
+    ).not.toBe(0);
   });
 });
 

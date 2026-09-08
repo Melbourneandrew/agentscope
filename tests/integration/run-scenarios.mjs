@@ -7,6 +7,7 @@ import {
   existsSync,
   cpSync,
   fsyncSync,
+  fstatSync,
   lstatSync,
   linkSync,
   mkdirSync,
@@ -100,9 +101,10 @@ const installedContractDriverDigest = `sha256:${createHash("sha256")
 const captureFileIdentity = (path, maximumBytes, expectedMode) => {
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const before = lstatSync(path);
+    const before = fstatSync(descriptor);
     const content = readFileSync(descriptor);
-    const after = lstatSync(path);
+    const after = fstatSync(descriptor);
+    const named = lstatSync(path);
     if (
       !before.isFile() ||
       before.isSymbolicLink() ||
@@ -112,7 +114,10 @@ const captureFileIdentity = (path, maximumBytes, expectedMode) => {
       (before.mode & 0o7777) !== expectedMode ||
       before.dev !== after.dev ||
       before.ino !== after.ino ||
-      before.size !== after.size
+      before.size !== after.size ||
+      named.isSymbolicLink() ||
+      named.dev !== before.dev ||
+      named.ino !== before.ino
     )
       throw new Error("integration.controller.failure-evidence");
     return Object.freeze({
