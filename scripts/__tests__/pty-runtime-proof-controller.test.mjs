@@ -7,6 +7,7 @@ import { afterEach, test } from "vitest";
 
 import {
   executeController,
+  parseExactContainerId,
   runBoundedProcess,
 } from "../pty-runtime-proof-controller.mjs";
 
@@ -237,4 +238,20 @@ test("controller source is no-shell, bounded, and emits one sanitized receipt", 
   assert.match(source, /teardownReserveMilliseconds = 7_000/u);
   assert.equal(source.match(/process\.stdout\.write/gmu)?.length, 1);
   assert.equal(source.match(/process\.stderr\.write/gmu)?.length, undefined);
+});
+
+test("accepts one exact container identity and rejects ambiguous observations", () => {
+  const identity = "a".repeat(64);
+  assert.equal(parseExactContainerId(Buffer.from(`${identity}\n`)), identity);
+  for (const value of [
+    Buffer.alloc(0),
+    Buffer.from(identity),
+    Buffer.from(`${identity}\n${identity}\n`),
+    Buffer.from(`${identity} \n`),
+    Buffer.from(`${"g".repeat(64)}\n`),
+  ])
+    assert.throws(
+      () => parseExactContainerId(value),
+      /container-identity-invalid/u,
+    );
 });

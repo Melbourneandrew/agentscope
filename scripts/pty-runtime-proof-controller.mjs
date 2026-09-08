@@ -266,11 +266,20 @@ const exactOutput = (result) => {
   return result.stdout;
 };
 
+export const parseExactContainerId = (value) => {
+  if (!Buffer.isBuffer(value))
+    throw new ControllerFailure("container-identity-invalid");
+  const match = /^([0-9a-f]{64})\n$/u.exec(value.toString("utf8"));
+  if (match === null) throw new ControllerFailure("container-identity-invalid");
+  return match[1];
+};
+
 // eslint-disable-next-line max-lines-per-function -- This closed adapter keeps the Docker lifecycle in one authority object.
 export const createProductionOperations = ({ absoluteDeadline }) => {
   let root;
   let rootIdentity;
   let containerId;
+  let containerName;
   let created = false;
   let activeCommand;
   let processUncertain = false;
@@ -379,11 +388,11 @@ export const createProductionOperations = ({ absoluteDeadline }) => {
         throw new ControllerFailure("image-identity-invalid");
     },
     async create() {
-      const name = `agentscope-pty-runtime-proof-${randomBytes(16).toString("hex")}`;
+      containerName = `agentscope-pty-runtime-proof-${randomBytes(16).toString("hex")}`;
       const reported = await requireOutput([
         "create",
         "--name",
-        name,
+        containerName,
         "--network",
         "none",
         "--platform",
@@ -402,20 +411,17 @@ export const createProductionOperations = ({ absoluteDeadline }) => {
         "/workspace/packages/testkit/scripts/verify-pty-runtime.mjs",
         "--runtime-proof",
       ]);
-      const value = reported.toString("utf8").trimEnd();
-      if (!/^[0-9a-f]{64}$/u.test(value))
-        throw new ControllerFailure("container-identity-invalid");
-      containerId = value;
+      containerId = parseExactContainerId(reported);
       created = true;
       const authority = await requireOutput([
         "inspect",
         "--format",
-        "{{.Id}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}",
+        "{{.Id}}|{{.Name}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}|{{.State.Status}}",
         containerId,
       ]);
       if (
         authority.toString("utf8").trimEnd() !==
-        `${containerId}|${imageId}|none|true|created`
+        `${containerId}|/${containerName}|${imageId}|none|true|created`
       )
         throw new ControllerFailure("container-authority-invalid");
     },
@@ -443,6 +449,38 @@ export const createProductionOperations = ({ absoluteDeadline }) => {
     async cleanup() {
       let proved = true;
       if (processUncertain) proved = false;
+      if (!processUncertain && !created && containerName !== undefined) {
+        try {
+          const observed = await requireOutput([
+            "container",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--quiet",
+            "--filter",
+            `name=^/${containerName}$`,
+          ]);
+          if (observed.length !== 0) {
+            containerId = parseExactContainerId(observed);
+            const authority = await requireOutput([
+              "inspect",
+              "--format",
+              "{{.Id}}|{{.Name}}|{{.Image}}|{{.HostConfig.NetworkMode}}|{{.HostConfig.ReadonlyRootfs}}",
+              containerId,
+            ]);
+            if (
+              authority.toString("utf8").trimEnd() !==
+              `${containerId}|/${containerName}|${imageId}|none|true`
+            ) {
+              proved = false;
+            } else {
+              created = true;
+            }
+          }
+        } catch {
+          proved = false;
+        }
+      }
       if (!processUncertain && created && /^[0-9a-f]{64}$/u.test(containerId)) {
         try {
           exactOutput(await command(["rm", "--force", containerId]));
