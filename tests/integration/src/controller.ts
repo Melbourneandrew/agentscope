@@ -447,7 +447,6 @@ export const registerIntegrationArtifactFile = (name: string): void => {
 
 export const registerIntegrationFailureEvidence = (
   evidence: Readonly<{
-    aggregateVersion: number;
     dev: number;
     digest: `sha256:${string}`;
     ino: number;

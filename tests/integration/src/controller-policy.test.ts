@@ -43,7 +43,7 @@ const failureVerifierSource = (workflow: string) => {
     "- name: Verify complete sanitized failure evidence",
   );
   const start = workflow.indexOf("        run: |\n", step);
-  const end = workflow.indexOf("      - name: Upload sanitized", start);
+  const end = workflow.indexOf("  hermetic-integration:", start);
   if (step < 0 || start < 0 || end < 0)
     throw new Error("missing failure verifier");
   const lines = workflow
@@ -534,19 +534,13 @@ describe("integration workflow routing policy", () => {
     expect(workflow).not.toContain("if-no-files-found: ignore");
     expect(workflow).toContain("Verify complete sanitized failure evidence");
     expect(workflow).toContain("id: failure_evidence");
-    expect(workflow).toContain(
-      "if: failure() && steps.failure_evidence.outcome == 'success'",
-    );
     expect(workflow).toContain('"controller-failure-manifest.json"');
-    expect(workflow).toContain(
-      "artifacts/integration/controller-failure-bundle.json",
-    );
-    const upload = workflow.slice(
-      workflow.indexOf("- name: Upload sanitized failure evidence"),
+    const failureSteps = workflow.slice(
+      workflow.indexOf("- name: Verify complete sanitized failure evidence"),
       workflow.indexOf("  hermetic-integration:"),
     );
-    expect(upload).not.toMatch(
-      /controller-failure-manifest|runs\/\*|current-(?:candidate|images|model-routes|selection)|capability-manifest/gu,
+    expect(failureSteps).not.toMatch(
+      /actions\/upload-artifact|Upload sanitized failure evidence|controller-failure-bundle|retention-days/gu,
     );
     expect(workflow).toContain("runDirectories.length !== expected.size");
     const scenarios = readFileSync(
@@ -627,25 +621,9 @@ describe("integration workflow failure artifact policy", () => {
           cwd: directory,
         }).status,
       ).toBe(0);
-      const bundlePath = resolve(artifacts, "controller-failure-bundle.json");
-      const bundleStatus = lstatSync(bundlePath);
-      const bundle = JSON.parse(readFileSync(bundlePath, "utf8")) as {
-        bundleVersion: number;
-        runs: unknown[];
-      };
-      expect(bundleStatus.isFile()).toBe(true);
-      expect(bundleStatus.mode & 0o7777).toBe(0o400);
-      expect(Object.keys(bundle).sort()).toEqual([
-        "bundleVersion",
-        "controllerAuthorityDigest",
-        "retainedInputs",
-        "runs",
-      ]);
-      expect(bundle.bundleVersion).toBe(1);
-      expect(bundle.runs).toHaveLength(2);
-      expect(readFileSync(bundlePath, "utf8")).not.toMatch(
-        /executionPolicy|headlessTerminalReceipt|privateCleanup|dockerSocket|dockerDaemon/gu,
-      );
+      expect(
+        existsSync(resolve(artifacts, "controller-failure-bundle.json")),
+      ).toBe(false);
       writeFileSync(
         resolve(artifacts, "runs", runIds[0]!, "model-ledger.json"),
         '{"substituted":true}\n',

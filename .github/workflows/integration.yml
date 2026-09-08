@@ -137,15 +137,11 @@ jobs:
           import {
             closeSync,
             constants,
-            fchmodSync,
             fstatSync,
-            fsyncSync,
             lstatSync,
             openSync,
             readFileSync,
             readdirSync,
-            renameSync,
-            writeFileSync,
           } from "node:fs";
           import { resolve } from "node:path";
           import {
@@ -342,7 +338,6 @@ jobs:
             JSON.stringify(retained.platform) === JSON.stringify(prepared.platform);
           const expected = new Set(manifest.runIds);
           const observed = [];
-          const sanitizedRuns = [];
           for (const identity of manifest.failureEvidence) {
             if (
               !exactKeys(identity, ["dev", "digest", "ino", "runId", "size"]) ||
@@ -471,62 +466,12 @@ jobs:
               (evidence.outcome === "interrupted" && record.primaryFailure !== "integration.isolation.interrupted" && record.scenarioFailure !== "integration.isolation.interrupted") ||
               (evidence.outcome === "passed" && (!cleanupComplete || !terminalComplete || evidence.installedCliContractEvidence === null || evidence.builtImageDigest === null || evidence.builtMockServerImageDigest === null || !lifecycleComplete || modelLedger.status !== "authenticated" || modelLedger.overflow !== false || destinationLedger.ingestion.status !== "authenticated" || destinationLedger.ingestion.overflow !== false || destinationLedger.retrieval.status !== "authenticated" || destinationLedger.retrieval.overflow !== false))
             ) fail();
-            sanitizedRuns.push({
-              cleanupFailure: record.cleanupFailure,
-              controllerOutcome: record.controllerOutcome,
-              evidence: {
-                baseImageIdentityDigest: `sha256:${createHash("sha256").update(JSON.stringify(evidence.baseImageIdentity)).digest("hex")}`,
-                candidateBundleIdentity: evidence.candidateBundleIdentity,
-                candidateRevision: evidence.candidateRevision,
-                cleanupOutcome: evidence.cleanup.outcome,
-                manifestIdentity: evidence.manifestIdentity,
-                mockServerImageIdentityDigest: `sha256:${createHash("sha256").update(JSON.stringify(evidence.mockServerImageIdentity)).digest("hex")}`,
-                outcome: evidence.outcome,
-                runId: evidence.runId,
-                scenarioId: evidence.scenarioId,
-              },
-              installedPtyFailure: record.installedPtyFailure,
-              ledger: {
-                destination: destinationLedger,
-                model: modelLedger,
-              },
-              lifecycle: {
-                ledgerObservation: lifecycle.ledgerObservation,
-                resultStatus: lifecycle.resultStatus,
-              },
-              primaryFailure: record.primaryFailure,
-              runId: record.runId,
-              scenarioFailure: record.scenarioFailure,
-              scenarioSecondaryFailures: record.scenarioSecondaryFailures,
-            });
             observed.push(identity.runId);
           }
           if (
             new Set(observed).size !== expected.size ||
             observed.some((runId) => !expected.has(runId))
           ) fail();
-          const bundle = `${JSON.stringify({
-            bundleVersion: 1,
-            controllerAuthorityDigest: manifest.controllerAuthorityDigest,
-            retainedInputs: manifest.retainedInputs,
-            runs: sanitizedRuns.sort((left, right) => left.runId.localeCompare(right.runId)),
-          })}\n`;
-          if (Buffer.byteLength(bundle) > 1024 * 1024) fail();
-          const bundlePath = resolve(artifactsRoot, "controller-failure-bundle.json");
-          const temporaryBundle = `${bundlePath}.${process.pid}.tmp`;
-          let bundleDescriptor;
-          try {
-            bundleDescriptor = openSync(temporaryBundle, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
-            writeFileSync(bundleDescriptor, bundle);
-            fsyncSync(bundleDescriptor);
-            fchmodSync(bundleDescriptor, 0o400);
-            const descriptorStatus = fstatSync(bundleDescriptor);
-            renameSync(temporaryBundle, bundlePath);
-            const status = lstatSync(bundlePath);
-            if (!descriptorStatus.isFile() || descriptorStatus.nlink !== 1 || descriptorStatus.size !== Buffer.byteLength(bundle) || (descriptorStatus.mode & 0o7777) !== 0o400 || !status.isFile() || status.isSymbolicLink() || status.dev !== descriptorStatus.dev || status.ino !== descriptorStatus.ino || status.nlink !== descriptorStatus.nlink || status.size !== descriptorStatus.size || (status.mode & 0o7777) !== 0o400) fail();
-          } finally {
-            if (bundleDescriptor !== undefined) closeSync(bundleDescriptor);
-          }
           const runDirectories = readdirSync(runsRoot, { withFileTypes: true });
           if (
             runDirectories.length !== expected.size ||
@@ -537,15 +482,6 @@ jobs:
             })
           ) fail();
           NODE
-      - name: Upload sanitized failure evidence
-        if: failure() && steps.failure_evidence.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
-          path: |
-            artifacts/integration/controller-failure-bundle.json
-          if-no-files-found: error
-          retention-days: 7
   hermetic-integration:
     name: hermetic-integration
     if: always()

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   failureEvidenceCoverageIsExact,
@@ -31,6 +34,26 @@ const stages = (events: string[]): IntegrationStageDependencies =>
   ) as unknown as IntegrationStageDependencies;
 
 describe("integration failure evidence coverage", () => {
+  it("emits the exact closed failure-evidence registration shape", () => {
+    const declaration = readFileSync(
+      resolve(import.meta.dirname, "../dist/controller.d.ts"),
+      "utf8",
+    );
+    const start = declaration.indexOf(
+      "export declare const registerIntegrationFailureEvidence:",
+    );
+    const end = declaration.indexOf(
+      "export declare const registerIntegrationHeadlessReceipt:",
+      start,
+    );
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(declaration.slice(start, end)).toContain(
+      "dev: number;\n    digest: `sha256:${string}`;\n    ino: number;\n    runId: string;\n    size: number;",
+    );
+    expect(declaration.slice(start, end)).not.toContain("aggregateVersion");
+  });
+
   it("requires all and only the current run failure evidence", () => {
     const first = "0123456789abcdef";
     const second = "fedcba9876543210";
