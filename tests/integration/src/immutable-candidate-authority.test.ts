@@ -693,6 +693,9 @@ describe("immutable candidate authority", () => {
     expect(installedContractFailurePredicates["case-execution"]).not.toContain(
       "execution-rejected",
     );
+    expect(installedContractFailurePredicates["case-execution"]).toContain(
+      "testkit.headless.observer.reap",
+    );
     expect(runner).toContain("error instanceof HeadlessSupervisorError");
     expect(runner).toContain(
       '!installedContractFailurePredicates["case-execution"].includes(error.code)',

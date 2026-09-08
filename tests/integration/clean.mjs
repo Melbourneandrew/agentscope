@@ -219,6 +219,7 @@ const installedContractFailurePredicates = Object.freeze({
     "testkit.headless.kernel.spawn",
     "testkit.headless.observer.identity",
     "testkit.headless.observer.read",
+    "testkit.headless.observer.reap",
     "testkit.headless.observer.root",
     "testkit.headless.observer.signal",
     "testkit.headless.reconciliation.deadline",
