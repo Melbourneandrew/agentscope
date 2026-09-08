@@ -489,9 +489,26 @@ export const parseImagePullReceipt = (body) => {
   } catch {
     throw new ControllerFailure("image-pull-encoding-invalid");
   }
-  if (!text.endsWith("\n") || text.includes("\r"))
+  if (text.length === 0)
     throw new ControllerFailure("image-pull-framing-invalid");
-  const lines = text.slice(0, -1).split("\n");
+  const firstLineFeed = text.indexOf("\n");
+  const delimiter =
+    firstLineFeed > 0 && text[firstLineFeed - 1] === "\r" ? "\r\n" : "\n";
+  const framingRemainder = text.replaceAll(delimiter, "");
+  if (framingRemainder.includes("\r") || framingRemainder.includes("\n"))
+    throw new ControllerFailure("image-pull-framing-invalid");
+  const recordStream = text.endsWith(delimiter)
+    ? text.slice(0, -delimiter.length)
+    : text;
+  if (
+    recordStream.length === 0 ||
+    recordStream.startsWith(delimiter) ||
+    recordStream.endsWith(delimiter)
+  )
+    throw new ControllerFailure("image-pull-framing-invalid");
+  const lines = recordStream.split(delimiter);
+  if (lines.some((line) => line.trim().length === 0))
+    throw new ControllerFailure("image-pull-framing-invalid");
   if (lines.length === 0 || lines.length > 4096)
     throw new ControllerFailure("image-pull-count-invalid");
   let digestAuthenticated = false;

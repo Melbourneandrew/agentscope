@@ -782,7 +782,7 @@ test("pull receipt predicates emit only fixed causal codes and stop later mutati
   });
   const cases = [
     ["image-pull-encoding-invalid", Buffer.from([0xff, 0x0a])],
-    ["image-pull-framing-invalid", Buffer.from("{}")],
+    ["image-pull-framing-invalid", Buffer.from("")],
     [
       "image-pull-count-invalid",
       Buffer.from(
@@ -862,6 +862,50 @@ test("pull receipt predicates emit only fixed causal codes and stop later mutati
       false,
     );
   }
+});
+
+test("pull receipt admits only one uniform LF or CRLF delimiter mode", () => {
+  const manifest =
+    "sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c";
+  const image = `node@${manifest}`;
+  const digest = JSON.stringify({ status: `Digest: ${manifest}` });
+  const terminal = JSON.stringify({
+    status: `Status: Image is up to date for ${image}`,
+  });
+  for (const delimiter of ["\n", "\r\n"])
+    for (const ending of ["", delimiter]) {
+      assert.deepEqual(
+        parseImagePullReceipt(
+          Buffer.from(`${digest}${delimiter}${terminal}${ending}`),
+        ),
+        { digestAuthenticated: true, terminalAuthenticated: true },
+      );
+    }
+  for (const body of [
+    "",
+    `\n${digest}\n${terminal}`,
+    `\r\n${digest}\r\n${terminal}`,
+    `${digest}\n\n${terminal}`,
+    `${digest}\r\n\r\n${terminal}`,
+    `${digest}\n \n${terminal}`,
+    `${digest}\r\n \r\n${terminal}`,
+    `${digest}\n${terminal}\n\n`,
+    `${digest}\r\n${terminal}\r\n\r\n`,
+    `${digest}\n${terminal}\r\n`,
+    `${digest}\r\n${terminal}\n`,
+    `${digest}\r${terminal}`,
+    `${digest}\r\r\n${terminal}`,
+    `${digest}\r\n{"status":"bad\rvalue"}\r\n${terminal}`,
+  ]) {
+    assert.throws(
+      () => parseImagePullReceipt(Buffer.from(body)),
+      /image-pull-framing-invalid/u,
+    );
+  }
+  assert.throws(
+    () => parseImagePullReceipt(Buffer.from(`${digest}\n${terminal}{}`)),
+    /image-pull-json-invalid/u,
+  );
 });
 
 test("malformed create receipt preserves uncertainty and publishes once", async () => {
