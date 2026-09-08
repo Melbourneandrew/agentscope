@@ -181,6 +181,7 @@ describe("PTY runtime artifact tooling", () => {
         [JSON.stringify(receipt)],
       );
     const receipt = {
+      adoptedZombieReap: true,
       argvEnvAuthority: true,
       closeTerminal: true,
       deadlineNoLaunch: true,
@@ -193,6 +194,7 @@ describe("PTY runtime artifact tooling", () => {
       geometry: true,
       openRollback: true,
       processTerminal: true,
+      reapPidOneOnly: true,
       residual: true,
       termios: true,
     };
@@ -204,6 +206,34 @@ describe("PTY runtime artifact tooling", () => {
     expect(() => verify({ ...receipt, unproved: true })).toThrow(
       /receipt is not closed/u,
     );
+  });
+
+  it("parses only a bounded exact proc stat identity", () => {
+    const parse = (pid: unknown, record: string) =>
+      evaluate(
+        `const {parseProcessStatIdentity}=await import(${JSON.stringify(verifierUrl)}); process.stdout.write(JSON.stringify(parseProcessStatIdentity(JSON.parse(process.argv[1]),Buffer.from(process.argv[2],'base64'))));`,
+        [JSON.stringify(pid), Buffer.from(record).toString("base64")],
+      );
+    const fields: string[] = [
+      "S",
+      "1",
+      ...Array.from({ length: 18 }, () => "0"),
+    ];
+    fields[19] = "4242";
+    const valid = `27 (fixture) ${fields.join(" ")}\n`;
+    expect(parse(27, valid)).toBe(
+      JSON.stringify({ parent: 1, startIdentity: "27:4242", state: "S" }),
+    );
+    for (const [pid, record] of [
+      [1, valid],
+      [27.5, valid],
+      [27, valid.replace(") ", ")\t")],
+      [27, valid.replace(" S ", " s ")],
+      [27, valid.replace(" S 1 ", " S 0 ")],
+      [27, valid.replace(" 4242\n", " 0\n")],
+      [27, `27 (${"x".repeat(4_097)}) S 1\n`],
+    ] as const)
+      expect(() => parse(pid, record)).toThrow(/bounded|malformed/u);
   });
 
   it("delegates the sole CI runtime lifecycle to the bounded host controller", () => {
@@ -270,9 +300,9 @@ describe("PTY runtime artifact tooling", () => {
       };
     };
     expect(sourceAuthority.agentscopePatch).toMatchObject({
-      bytes: 39_951,
+      bytes: 46_507,
       mode: "0644",
-      patchedSourceBytes: 52_834,
+      patchedSourceBytes: 59_220,
     });
     sourceAuthority.agentscopePatch.bytes = 35_129;
     writeFileSync(
@@ -290,8 +320,8 @@ describe("PTY runtime artifact tooling", () => {
       build: { patch: { bytes: number; patchedSourceBytes: number } };
     };
     expect(policy.build.patch).toMatchObject({
-      bytes: 39_951,
-      patchedSourceBytes: 52_834,
+      bytes: 46_507,
+      patchedSourceBytes: 59_220,
     });
     policy.build.patch.patchedSourceBytes = 48_748;
     writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`);
@@ -452,6 +482,31 @@ describe("PTY runtime artifact tooling", () => {
 // substitution next to the exact positive oracle.
 // eslint-disable-next-line max-lines-per-function
 describe("PTY authenticated build-material tooling", () => {
+  it("keeps the selected backend bound to the governed production artifact", () => {
+    const artifacts = JSON.parse(
+      readFileSync(resolve(packageRoot, "pty-runtime-artifacts.json"), "utf8"),
+    ) as { artifacts: Array<{ sha256: string }> };
+    const production = artifacts.artifacts;
+    expect(production).toHaveLength(1);
+    const backend = readFileSync(
+      resolve(packageRoot, "src/internal/headless-supervisor-backend.ts"),
+      "utf8",
+    );
+    const verify = (source: string) => {
+      const match = /const ptyRuntimeDigest =\n\s+"([0-9a-f]{64})";/u.exec(
+        source,
+      );
+      if (match?.[1] !== production[0]?.sha256)
+        throw new Error("selected PTY artifact authority is not exact");
+    };
+    expect(() => {
+      verify(backend);
+    }).not.toThrow();
+    expect(() => {
+      verify(backend.replace(production[0]!.sha256, "0".repeat(64)));
+    }).toThrow(/authority is not exact/u);
+  });
+
   const inspect = (
     fixture: ReturnType<typeof syntheticPackage>,
     record = fixture.record,
@@ -598,7 +653,7 @@ describe("PTY authenticated build-material tooling", () => {
         ],
       );
     expect(apply(source, patch)).toBe(
-      "f8d4ee937abb7b6a22d1373b19f6ecb1dab559549ef5290afdccef10154ce916",
+      "6605a88f132c8e6f24398dc96409c5698ac91eefb6b6acd1c8856c80d23161a1",
     );
     expect(() => apply(source, patch.replace("-22,0", "-23,0"))).toThrow(
       /position|context/u,
@@ -683,6 +738,38 @@ describe("PTY authenticated build-material tooling", () => {
       "+  uint64_t deadline = info[11].As<Napi::BigInt>().Uint64Value(&deadline_lossless);",
     );
     expect(patch).toContain(
+      "+Napi::Value PtyReapAdoptedZombie(const Napi::CallbackInfo& info) {",
+    );
+    expect(patch).toContain("+  if (getpid() != 1 ||");
+    expect(patch).toContain("+      root_number > INT_MAX ||");
+    expect(patch).toContain(
+      "+      root_number != static_cast<double>(root_value) || pid_value == root_value ||",
+    );
+    expect(patch).toContain(
+      '+  int path_bytes = snprintf(path, sizeof(path), "/proc/%d/stat", pid);',
+    );
+    expect(patch).toContain(
+      "+  if (identity.parent != 1 || observed != expected)",
+    );
+    expect(patch).toContain("+  if (identity.state != 'Z')");
+    expect(patch).toContain("+  bool interrupted = false;");
+    expect(patch).toContain(
+      "+    if (!pty_read_process_identity(static_cast<pid_t>(pid_value), &adjacent))",
+    );
+    expect(patch).toContain(
+      "+    if (adjacent.parent != 1 || adjacent.state != 'Z' || observed != expected)",
+    );
+    expect(patch).toContain("+    } else if (pty_take_test_fault(19)) {");
+    expect(patch).toContain("+    if (interrupted && pty_take_test_fault(21))");
+    expect(patch).toContain(
+      "+      joined = waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG);",
+    );
+    expect(patch).toContain("+    if (pty_take_test_fault(18)) {");
+    expect(patch).toContain("+  if (fault < 0 || fault > 0x3fffff)");
+    expect(patch).toContain(
+      '+  exports.Set("reapAdoptedZombie", Napi::Function::New(env, PtyReapAdoptedZombie));',
+    );
+    expect(patch).toContain(
       "+    int remaining = pty_remaining_milliseconds(deadline);",
     );
     expect(patch).toContain(
@@ -715,6 +802,18 @@ describe("PTY authenticated build-material tooling", () => {
     expect(patch).toContain("+    if (!value.IsString())");
     expect(patch).toContain(
       "+    if (!pty_string_code_units_within(napiEnv, value, 4096) ||",
+    );
+    expect(patch).toContain(
+      "+  if (!pty_string_code_units_within(env, info[1], 64) ||",
+    );
+    expect(
+      patch.indexOf(
+        "+  if (!pty_string_code_units_within(env, info[1], 64) ||",
+      ),
+    ).toBeLessThan(
+      patch.indexOf(
+        "+  std::string expected = info[1].As<Napi::String>().Utf8Value();",
+      ),
     );
     expect(patch).toContain(
       "+        napi_get_value_string_utf8(napiEnv, value, nullptr, 0,",
@@ -750,6 +849,17 @@ describe("PTY authenticated build-material tooling", () => {
       [
         "pty_exec_succeeded(exec_status[0], deadline, &failure)",
         "pty_exec_succeeded(exec_status[0], UINT64_MAX, &failure)",
+      ],
+      ["getpid() != 1", "getpid() != 2"],
+      ["identity.parent != 1", "identity.parent != 2"],
+      ["identity.state != 'Z'", "identity.state == 'Z'"],
+      ["adjacent.parent != 1", "adjacent.parent != 2"],
+      ["adjacent.state != 'Z'", "adjacent.state == 'Z'"],
+      ["pty_take_test_fault(19)", "pty_take_test_fault(18)"],
+      ["pty_take_test_fault(21)", "pty_take_test_fault(20)"],
+      [
+        "waitpid(static_cast<pid_t>(pid_value), nullptr, WNOHANG)",
+        "waitpid(-1, nullptr, WNOHANG)",
       ],
       [
         "pty_join_failed_child(pid, &master, &exec_status[0], deadline)",
@@ -790,5 +900,12 @@ describe("PTY authenticated build-material tooling", () => {
         /identity/u,
       );
     }
+    const build = readFileSync(
+      resolve(packageRoot, "scripts/build-pty-runtime.mjs"),
+      "utf8",
+    );
+    expect(build).toContain(
+      'digest !==\n    "e9890723d24f4fd4480faf2dbc83cf6809f66e6a5cdf9ba19eade1ca9c7e94ab"',
+    );
   });
 });
