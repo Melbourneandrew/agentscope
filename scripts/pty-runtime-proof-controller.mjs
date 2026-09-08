@@ -402,7 +402,18 @@ export const createProductionOperations = ({
         mutation: true,
         path: `${api}/images/create?fromImage=${encoded(imageRepository)}&tag=${encoded(imageManifest)}&platform=linux%2Famd64`,
       });
-      const lines = decoder.decode(pull.body).trimEnd().split("\n");
+      let pullText;
+      try {
+        pullText = decoder.decode(pull.body);
+      } catch {
+        engine.interrupt();
+        throw new ControllerFailure("image-pull-invalid", "uncertain");
+      }
+      if (!pullText.endsWith("\n") || pullText.includes("\r")) {
+        engine.interrupt();
+        throw new ControllerFailure("image-pull-invalid", "uncertain");
+      }
+      const lines = pullText.slice(0, -1).split("\n");
       if (lines.length === 0 || lines.length > 4096) {
         engine.interrupt();
         throw new ControllerFailure("image-pull-invalid", "uncertain");
@@ -429,7 +440,13 @@ export const createProductionOperations = ({
           (value.progress !== undefined &&
             typeof value.progress !== "string") ||
           (value.progressDetail !== undefined &&
-            !exactObject(value.progressDetail))
+            (!exactObject(value.progressDetail) ||
+              Object.keys(value.progressDetail).some(
+                (key) => !["current", "total"].includes(key),
+              ) ||
+              Object.values(value.progressDetail).some(
+                (number) => !Number.isSafeInteger(number) || number < 0,
+              )))
         ) {
           engine.interrupt();
           throw new ControllerFailure("image-pull-invalid", "uncertain");
@@ -448,8 +465,7 @@ export const createProductionOperations = ({
         lines.length === 0 ||
         lines.length > 4096 ||
         !digestAuthenticated ||
-        !terminalAuthenticated ||
-        !pull.body.subarray(-1).equals(Buffer.from("\n"))
+        !terminalAuthenticated
       ) {
         engine.interrupt();
         throw new ControllerFailure("image-pull-invalid", "uncertain");
