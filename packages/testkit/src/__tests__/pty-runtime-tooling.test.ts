@@ -287,7 +287,27 @@ describe("PTY runtime artifact tooling", () => {
     );
     expect(workflow).toContain("trap 'cleanup 130' INT");
     expect(workflow).toContain("trap 'cleanup 143' TERM");
+    expect(workflow).toContain(
+      "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
+    );
+    expect(workflow).not.toContain("image rm");
+  });
+
+  it("pins atomic cleanup ownership and the closed CI receipt", () => {
+    const workflow = readFileSync(
+      resolve(packageRoot, "../../.github/workflows/pr-validation.yml"),
+      "utf8",
+    );
+    const verifier = readFileSync(
+      resolve(packageRoot, "scripts/verify-pty-runtime.mjs"),
+      "utf8",
+    );
     const cleanupStart = workflow.indexOf("          cleanup() {");
+    expect(workflow.slice(cleanupStart).split("\n").slice(0, 3)).toEqual([
+      "          cleanup() {",
+      "            local incoming_status=$1 prior_cleanup_active=$cleanup_active cleanup_active=true",
+      '            if [[ "$prior_cleanup_active" == true ]]; then',
+    ]);
     const terminalReceipt = workflow.indexOf(
       '            printf \'{"version":1',
       cleanupStart,
@@ -301,10 +321,6 @@ describe("PTY runtime artifact tooling", () => {
     expect(workflow.slice(cleanupStart, terminalReceipt)).not.toContain(
       "trap 'cleanup 130'",
     );
-    expect(workflow).toContain(
-      "node@sha256:76789712cd1ae89a1225eac9077010d68987a423588042dac30446f502f1858c",
-    );
-    expect(workflow).not.toContain("image rm");
     expect(workflow).toContain(
       "setup|input-identity|image-identity|create|runtime-receipt|terminal-join|cleanup|final-assertion",
     );

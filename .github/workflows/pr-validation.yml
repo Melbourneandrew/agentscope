@@ -81,13 +81,12 @@ jobs:
             fi
           }
           cleanup() {
-            local incoming_status=$1
-            if [[ "$cleanup_active" == true ]]; then
+            local incoming_status=$1 prior_cleanup_active=$cleanup_active cleanup_active=true
+            if [[ "$prior_cleanup_active" == true ]]; then
               cleanup_signal_status=$incoming_status
               cleanup_proved=false
               return
             fi
-            cleanup_active=true
             local primary_status=$incoming_status
             local failure_stage=$stage
             local terminal_status=failed
