@@ -730,7 +730,7 @@ it("pins the credentialed lifecycle to a nondelegated whole-unit authority", () 
     '"--property=CapabilityBoundingSet="',
     '"--property=AmbientCapabilities="',
     '"--property=ProtectControlGroups=yes"',
-    '"/run/systemd/private /run/user"',
+    '"/run/dbus/system_bus_socket /run/systemd/private /run/user /var/run/dbus/system_bus_socket"',
     '"--property=RemainAfterExit=yes"',
     '"/usr/bin/sudo"',
     '"/usr/bin/systemctl"',
@@ -826,6 +826,7 @@ it.runIf(
     });
     expect(JSON.parse(readFileSync(escapeEvidence, "utf8"))).toEqual({
       cgroupMigration: false,
+      directSystemUnit: false,
       systemUnit: false,
       userUnit: false,
     });

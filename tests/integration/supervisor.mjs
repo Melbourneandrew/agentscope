@@ -22,7 +22,8 @@ const systemctlPath = "/usr/bin/systemctl";
 const systemdRunPath = "/usr/bin/systemd-run";
 const cgroupRoot = "/sys/fs/cgroup";
 const systemdPath = "/usr/lib/systemd/systemd";
-const systemdInaccessiblePaths = "/run/systemd/private /run/user";
+const systemdInaccessiblePaths =
+  "/run/dbus/system_bus_socket /run/systemd/private /run/user /var/run/dbus/system_bus_socket";
 const forbiddenLifecycleEnvironment = new Set([
   "ACTIONS_RESULTS_URL",
   "ACTIONS_RUNTIME_TOKEN",

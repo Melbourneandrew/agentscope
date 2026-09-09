@@ -39,6 +39,20 @@ if (escapeUnit !== undefined) {
     ],
     { env: closedEnvironment, stdio: "ignore", timeout: 5_000 },
   );
+  const directSystemUnit = spawnSync(
+    "/usr/bin/systemd-run",
+    [
+      "--system",
+      `--unit=${escapeUnit}`,
+      "--service-type=exec",
+      "--property=RemainAfterExit=yes",
+      "--",
+      "/bin/sh",
+      "-c",
+      'trap "" TERM; while :; do sleep 1; done',
+    ],
+    { env: closedEnvironment, stdio: "ignore", timeout: 5_000 },
+  );
   const cgroupMigration = spawnSync(
     "/bin/sh",
     ["-c", 'printf "%s" "$$" > /sys/fs/cgroup/cgroup.procs'],
@@ -48,6 +62,7 @@ if (escapeUnit !== undefined) {
     escapeEvidence,
     JSON.stringify({
       cgroupMigration: cgroupMigration.status === 0,
+      directSystemUnit: directSystemUnit.status === 0,
       systemUnit: systemUnit.status === 0,
       userUnit: userUnit.status === 0,
     }),
