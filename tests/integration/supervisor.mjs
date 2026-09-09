@@ -912,19 +912,22 @@ export const validateToolLeaderSnapshot = (expected, observed) =>
 
 export const classifyToolSettlement = ({
   deadline,
+  forceAttempted,
   groupAbsent,
   now,
   terminalObserved,
 }) => {
   if (
+    typeof forceAttempted !== "boolean" ||
     typeof groupAbsent !== "boolean" ||
     typeof terminalObserved !== "boolean" ||
     !Number.isFinite(now) ||
     !Number.isFinite(deadline)
   )
     failSystemd();
-  if (groupAbsent && terminalObserved) return "terminal";
-  return now >= deadline ? "failure" : "wait";
+  if (now >= deadline) return "failure";
+  if (!(groupAbsent && terminalObserved)) return "wait";
+  return forceAttempted ? "failure" : "terminal";
 };
 
 const executableMetadata = (status) =>
@@ -1411,11 +1414,12 @@ const runTool = (
       const now = performance.now();
       if (!forced && now >= boundedForceDeadline) {
         forced = true;
+        authorityUncertain = true;
         try {
           if (leader === undefined) failSystemd();
           const observed = readProcessSnapshot(child.pid);
           if (!validateToolLeaderSnapshot(leader, observed)) failSystemd();
-          if (signalGroup(child.pid, "SIGKILL")) authorityUncertain = true;
+          signalGroup(child.pid, "SIGKILL");
         } catch {
           // A disappeared group is proved below. Every other identity or signal
           // ambiguity remains terminal uncertainty and can never authorize a
@@ -1431,6 +1435,7 @@ const runTool = (
       }
       const decision = classifyToolSettlement({
         deadline,
+        forceAttempted: forced,
         groupAbsent: absent,
         now,
         terminalObserved: terminal !== undefined,

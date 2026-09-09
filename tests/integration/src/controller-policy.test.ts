@@ -1248,12 +1248,10 @@ it("bounds root-wrapper force and group settlement inside the join reserve", () 
   expect(tool).toContain(
     "if (!validateToolLeaderSnapshot(leader, observed)) failSystemd();",
   );
-  expect(tool).toContain(
-    'if (signalGroup(child.pid, "SIGKILL")) authorityUncertain = true;',
-  );
+  expect(tool).toContain("forced = true;\n        authorityUncertain = true;");
   expect(tool).toContain("absent = groupIsAbsent(child.pid);");
   expect(tool).toContain('if (decision === "terminal") {');
-  expect(tool.indexOf('if (signalGroup(child.pid, "SIGKILL"))')).toBeLessThan(
+  expect(tool.indexOf('signalGroup(child.pid, "SIGKILL");')).toBeLessThan(
     tool.indexOf('if (decision === "failure")'),
   );
   expect(tool.indexOf('child.once("close",')).toBeLessThan(
@@ -1267,6 +1265,7 @@ it("bounds root-wrapper force and group settlement inside the join reserve", () 
 it("observes root-wrapper close and group absence in either order", () => {
   const initial = {
     deadline: 1_500,
+    forceAttempted: false,
     groupAbsent: false,
     now: 1_000,
     terminalObserved: false,
@@ -1285,6 +1284,31 @@ it("observes root-wrapper close and group absence in either order", () => {
       terminalObserved: true,
     }),
   ).toBe("terminal");
+  expect(
+    classifyToolSettlement({
+      ...initial,
+      forceAttempted: true,
+      groupAbsent: true,
+      now: 1_499,
+      terminalObserved: true,
+    }),
+  ).toBe("failure");
+  expect(
+    classifyToolSettlement({
+      ...initial,
+      groupAbsent: true,
+      now: 1_500,
+      terminalObserved: true,
+    }),
+  ).toBe("failure");
+  expect(
+    classifyToolSettlement({
+      ...initial,
+      groupAbsent: true,
+      now: 1_501,
+      terminalObserved: true,
+    }),
+  ).toBe("failure");
   expect(
     classifyToolSettlement({
       ...initial,

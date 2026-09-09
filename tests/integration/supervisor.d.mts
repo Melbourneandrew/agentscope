@@ -172,6 +172,7 @@ export function validateToolLeaderSnapshot(
 export function classifyToolSettlement(
   input: Readonly<{
     deadline: number;
+    forceAttempted: boolean;
     groupAbsent: boolean;
     now: number;
     terminalObserved: boolean;
