@@ -61,6 +61,7 @@ const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
   ["synthetic-cleanup-failure", pythonPath],
   ["synthetic-delayed-sentinel", pythonPath],
+  ["synthetic-sentinel-cleanup-failure", pythonPath],
   ["pid1-readlink-1", readlinkPath],
   ["pid1-stat", statPath],
   ["pid1-digest", sha256sumPath],
@@ -93,7 +94,7 @@ TEST_FAIL_CODE='import sys; sys.exit(17)'
 TEST_FAIL_ARGS=["-I","-S","-c",TEST_FAIL_CODE]
 TEST_DELAY_CODE='import sys; sys.exit(0)'
 TEST_DELAY_ARGS=["-I","-S","-c",TEST_DELAY_CODE]
-OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
+OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
 SENTINEL_REASONS={"child-exit","start-identity","inherited-group","transition-timeout","kill","reap-join","residual","internal-unknown"}
 STAGE="startup"
@@ -137,7 +138,7 @@ def create_group():
  if leader==0:
   try:
    os.close(control_write)
-   if OPERATION=="synthetic-delayed-sentinel": time.sleep(0.35)
+   if OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"}: time.sleep(0.35)
    os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)
    while os.read(control_read,1): pass
   finally: os._exit(0)
@@ -158,7 +159,7 @@ def create_group():
    expected_start=observed[0]
   if expected_start is None:
    REASON="transition-timeout"; raise RuntimeError("sentinel")
-  if OPERATION=="synthetic-delayed-sentinel": time.sleep(0.35)
+  if OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"}: time.sleep(0.35)
   if now()>=boundary:
    REASON="transition-timeout"; raise RuntimeError("sentinel")
   try: os.setpgid(leader,leader)
@@ -189,16 +190,18 @@ def create_group():
    try: os.kill(leader,signal.SIGKILL)
    except ProcessLookupError: pass
    except OSError:
-    REASON="kill"; raise RuntimeError("sentinel")
+    REASON=failure_reason; raise CleanupUncertain()
   reaped=False
   while now()<DEADLINE:
    waited=os.waitpid(leader,os.WNOHANG)
    if waited[0]==leader: reaped=True; break
    time.sleep(0.005)
   if not reaped:
-   REASON="reap-join"; raise RuntimeError("sentinel")
+   REASON=failure_reason; raise CleanupUncertain()
   if group_present(leader):
-   REASON="residual"; raise RuntimeError("sentinel")
+   REASON=failure_reason; raise CleanupUncertain()
+  if OPERATION=="synthetic-sentinel-cleanup-failure":
+   REASON=failure_reason; raise CleanupUncertain()
   REASON=failure_reason
   raise RuntimeError("sentinel")
  REASON=""
@@ -314,7 +317,7 @@ try:
  if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
- if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION=="synthetic-delayed-sentinel" and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
  if tool=="/usr/bin/systemd-run":
   if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
  elif tool=="/usr/bin/systemctl":
@@ -326,10 +329,12 @@ try:
  emit("ok",output)
 except Exception as original:
  failed_stage=STAGE
+ failed_reason=REASON
  uncertain=isinstance(original,CleanupUncertain)
  if "tool" in globals() and tool=="/usr/bin/systemd-run" and "unit" in globals() and unit:
   if not reconcile(unit): uncertain=True
  STAGE=failed_stage
+ REASON=failed_reason
  emit("uncertain" if uncertain else "error"); sys.exit(1)
 `;
 const cgroupRoot = "/sys/fs/cgroup";

@@ -1190,6 +1190,13 @@ it("binds root helpers to one absolute boottime authority", () => {
     ),
   );
   expect(rootHelper).toContain("if not reconcile(unit): uncertain=True");
+  expect(rootHelper).toContain("failed_reason=REASON");
+  expect(rootHelper.indexOf("failed_reason=REASON")).toBeLessThan(
+    rootHelper.indexOf("if not reconcile(unit): uncertain=True"),
+  );
+  expect(
+    rootHelper.indexOf("if not reconcile(unit): uncertain=True"),
+  ).toBeLessThan(rootHelper.lastIndexOf("REASON=failed_reason"));
   expect(preparation).toContain('operation: "systemd-submit"');
   expect(preparation).toContain('executionDeadline,\n      "unit-admission",');
   expect(lifecycle).toContain('executionDeadline,\n      "unit-admission",');
@@ -1412,6 +1419,74 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       reason: "transition-timeout",
       stage: "sentinel",
       status: "error",
+    });
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "retains the primary sentinel reason when cleanup is uncertain",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
+    ).toString("base64url");
+    const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+    if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+      throw new Error("invalid synthetic boottime authority");
+    const [seconds, fraction] = uptime.split(".");
+    if (seconds === undefined || fraction === undefined)
+      throw new Error("invalid synthetic boottime authority");
+    const now =
+      BigInt(seconds) * 1_000_000_000n +
+      BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+    const deadline = String(now + 3_000_000_000n);
+    const cutoff = String(now + 200_000_000n);
+    const key = "e".repeat(64);
+    const terminal = spawnSync(
+      "/usr/bin/python3",
+      [
+        "-I",
+        "-S",
+        "-c",
+        helper,
+        deadline,
+        cutoff,
+        "synthetic-sentinel-cleanup-failure",
+        "/usr/bin/python3",
+        encodedArguments,
+        "",
+        key,
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+        timeout: 4_000,
+      },
+    );
+    expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+    expect(
+      validateRootToolReceipt({
+        identity: {
+          cutoff,
+          deadline,
+          operation: "synthetic-sentinel-cleanup-failure",
+          unit: "",
+        },
+        key,
+        receipt: terminal.stdout,
+      }),
+    ).toEqual({
+      output: "",
+      reason: "transition-timeout",
+      stage: "sentinel",
+      status: "uncertain",
     });
   },
 );
