@@ -2,14 +2,20 @@ import { spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
+  rmdirSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -876,6 +882,84 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
   expect(retirement.indexOf("await retireUnit(")).toBeLessThan(
     retirement.indexOf("await proveCollected("),
   );
+});
+
+it("classifies exact cgroup disappearance before touching retired event descriptors", () => {
+  const parent = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-retained-"));
+  const cgroup = resolve(parent, "unit.service");
+  const procs = resolve(cgroup, "cgroup.procs");
+  const events = resolve(cgroup, "cgroup.events");
+  mkdirSync(cgroup);
+  writeFileSync(procs, "");
+  writeFileSync(events, "populated 0\n");
+  const paths = [parent, cgroup, procs, events];
+  const openedDescriptors = paths.map((path, index) =>
+    openSync(
+      path,
+      constants.O_RDONLY |
+        constants.O_NOFOLLOW |
+        (index < 2 ? constants.O_DIRECTORY : 0),
+    ),
+  );
+  const [
+    parentDescriptor,
+    cgroupDescriptor,
+    procsDescriptor,
+    eventsDescriptor,
+  ] = openedDescriptors;
+  if (
+    parentDescriptor === undefined ||
+    cgroupDescriptor === undefined ||
+    procsDescriptor === undefined ||
+    eventsDescriptor === undefined
+  )
+    throw new Error("missing fixture descriptor");
+  const descriptors = [
+    parentDescriptor,
+    cgroupDescriptor,
+    procsDescriptor,
+    eventsDescriptor,
+  ] as const;
+  const identityFor = (descriptor: number) => {
+    const status = fstatSync(descriptor);
+    return {
+      dev: status.dev,
+      gid: status.gid,
+      ino: status.ino,
+      mode: status.mode,
+      uid: status.uid,
+    };
+  };
+  const identities = [
+    identityFor(parentDescriptor),
+    identityFor(cgroupDescriptor),
+    identityFor(procsDescriptor),
+    identityFor(eventsDescriptor),
+  ] as const;
+  const authority = { descriptors, identities };
+  try {
+    expect(cgroupObservationSettled(cgroup, authority)).toBe(true);
+    unlinkSync(events);
+    unlinkSync(procs);
+    rmdirSync(cgroup);
+    closeSync(descriptors[3]);
+    closeSync(descriptors[2]);
+    expect(cgroupObservationSettled(cgroup, authority)).toBe(true);
+
+    mkdirSync(cgroup);
+    writeFileSync(procs, "");
+    expect(() => cgroupObservationSettled(cgroup, authority)).toThrow(
+      "integration.controller.systemd-containment",
+    );
+    writeFileSync(events, "populated 0\n");
+    expect(() => cgroupObservationSettled(cgroup, authority)).toThrow(
+      "integration.controller.systemd-containment",
+    );
+  } finally {
+    closeSync(descriptors[1]);
+    closeSync(descriptors[0]);
+    rmSync(parent, { force: true, recursive: true });
+  }
 });
 
 it("attempts every retained cgroup descriptor close exactly once", () => {

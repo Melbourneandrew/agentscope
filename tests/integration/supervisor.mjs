@@ -2012,13 +2012,6 @@ const retainedCgroupIsEmpty = (authority, markDiagnostic = undefined) => {
   return entries.populated === "0";
 };
 
-const cgroupIsEmpty = (cgroupPath, authority) => {
-  recheckCgroupAuthority(cgroupPath, authority);
-  const empty = retainedCgroupIsEmpty(authority);
-  recheckCgroupAuthority(cgroupPath, authority);
-  return empty;
-};
-
 export const exactPathIsAbsent = (path) => {
   try {
     lstatSync(path);
@@ -2049,7 +2042,7 @@ export const closeDescriptorSet = (descriptors, close = closeSync) => {
   return closed;
 };
 
-const authenticatedCgroupIsAbsent = (
+const observeAuthenticatedCgroup = (
   cgroupPath,
   authority,
   markDiagnostic = undefined,
@@ -2060,7 +2053,7 @@ const authenticatedCgroupIsAbsent = (
     resolve(cgroupPath, "cgroup.procs"),
     resolve(cgroupPath, "cgroup.events"),
   ];
-  const recheckParent = () => {
+  const recheckParentAndRetainedRoot = () => {
     const status = lstatSync(parentPath);
     const identity = authority.identities[0];
     if (
@@ -2072,18 +2065,74 @@ const authenticatedCgroupIsAbsent = (
       status.gid !== identity.gid
     )
       failSystemd();
-    recheckRetainedCgroupDescriptors(authority);
+    for (const index of [0, 1]) {
+      const retainedStatus = fstatSync(authority.descriptors[index]);
+      const retainedIdentity = authority.identities[index];
+      if (
+        retainedStatus.dev !== retainedIdentity.dev ||
+        retainedStatus.ino !== retainedIdentity.ino ||
+        retainedStatus.mode !== retainedIdentity.mode ||
+        retainedStatus.uid !== retainedIdentity.uid ||
+        retainedStatus.gid !== retainedIdentity.gid
+      )
+        failSystemd();
+    }
   };
-  markDiagnostic?.("cgroup-retained");
-  recheckParent();
-  if (!retainedCgroupIsEmpty(authority, markDiagnostic)) return false;
-  markDiagnostic?.("cgroup-path");
-  if (!childPaths.every(exactPathIsAbsent)) return false;
-  markDiagnostic?.("cgroup-retained");
-  recheckParent();
-  markDiagnostic?.("cgroup-path");
-  return childPaths.every(exactPathIsAbsent);
+  const observePaths = () =>
+    childPaths.map((path, index) => {
+      try {
+        const status = lstatSync(path);
+        const identity = authority.identities[index + 1];
+        if (
+          status.dev !== identity.dev ||
+          status.ino !== identity.ino ||
+          status.mode !== identity.mode ||
+          status.uid !== identity.uid ||
+          status.gid !== identity.gid
+        )
+          failSystemd();
+        return "present";
+      } catch (error) {
+        if (error?.code === "ENOENT") return "absent";
+        throw error;
+      }
+    });
+  const classifyPaths = () => {
+    markDiagnostic?.("cgroup-retained");
+    recheckParentAndRetainedRoot();
+    markDiagnostic?.("cgroup-path");
+    const first = observePaths();
+    if (new Set(first).size !== 1) failSystemd();
+    markDiagnostic?.("cgroup-retained");
+    recheckParentAndRetainedRoot();
+    markDiagnostic?.("cgroup-path");
+    const second = observePaths();
+    if (new Set(second).size !== 1) failSystemd();
+    if (second[0] !== first[0]) {
+      if (first[0] === "present" && second[0] === "absent") return "transition";
+      failSystemd();
+    }
+    markDiagnostic?.("cgroup-retained");
+    recheckParentAndRetainedRoot();
+    return first[0];
+  };
+  const initial = classifyPaths();
+  if (initial === "absent") return Object.freeze({ absent: true, empty: true });
+  if (initial === "transition")
+    return Object.freeze({ absent: false, empty: false });
+  const empty = retainedCgroupIsEmpty(authority, markDiagnostic);
+  const afterRead = classifyPaths();
+  return Object.freeze({
+    absent: afterRead === "absent",
+    empty: afterRead === "absent" || (afterRead === "present" && empty),
+  });
 };
+
+const authenticatedCgroupIsAbsent = (
+  cgroupPath,
+  authority,
+  markDiagnostic = undefined,
+) => observeAuthenticatedCgroup(cgroupPath, authority, markDiagnostic).absent;
 
 const observeCgroupSettlement = (
   cgroupPath,
@@ -2092,21 +2141,12 @@ const observeCgroupSettlement = (
 ) => {
   markDiagnostic?.("cgroup-retained");
   if (!sameCgroupIdentity(identity, identity)) failSystemd();
-  markDiagnostic?.("cgroup-path");
-  if (exactPathIsAbsent(cgroupPath)) {
-    return authenticatedCgroupIsAbsent(cgroupPath, identity, markDiagnostic);
-  }
-  try {
-    markDiagnostic?.("cgroup-retained");
-    return cgroupIsEmpty(cgroupPath, identity);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      markDiagnostic?.("cgroup-path");
-      if (authenticatedCgroupIsAbsent(cgroupPath, identity, markDiagnostic))
-        return true;
-    }
-    throw error;
-  }
+  const observation = observeAuthenticatedCgroup(
+    cgroupPath,
+    identity,
+    markDiagnostic,
+  );
+  return observation.absent || observation.empty;
 };
 
 export const cgroupObservationSettled = (cgroupPath, identity) =>
