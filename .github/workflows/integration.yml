@@ -30,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GIT_CONFIG_GLOBAL: ${{ runner.temp }}/agentscope-global.gitconfig
       GIT_CONFIG_NOSYSTEM: "1"
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
     steps:
@@ -38,9 +37,10 @@ jobs:
         run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
       - name: Initialize closed npm configuration
         run: |
-          install -m 600 /dev/null "$GIT_CONFIG_GLOBAL"
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.gitconfig"
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.npmrc"
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/agentscope-global.gitconfig" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
@@ -77,7 +77,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      GIT_CONFIG_GLOBAL: ${{ runner.temp }}/agentscope-global.gitconfig
       GIT_CONFIG_NOSYSTEM: "1"
       NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
     strategy:
@@ -92,9 +91,10 @@ jobs:
         run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
       - name: Initialize closed npm configuration
         run: |
-          install -m 600 /dev/null "$GIT_CONFIG_GLOBAL"
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.gitconfig"
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.npmrc"
           install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/agentscope-global.gitconfig" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
           echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4

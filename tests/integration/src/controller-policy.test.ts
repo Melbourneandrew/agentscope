@@ -2163,12 +2163,15 @@ describe("integration controller supervision", () => {
 function expectClosedOuterGitConfiguration(workflow: string) {
   expect(
     workflow.match(
-      /GIT_CONFIG_GLOBAL: \$\{\{ runner\.temp \}\}\/agentscope-global\.gitconfig/gu,
+      /install -m 600 \/dev\/null "\$RUNNER_TEMP\/agentscope-global\.gitconfig"/gu,
     ),
   ).toHaveLength(2);
   expect(
-    workflow.match(/install -m 600 \/dev\/null "\$GIT_CONFIG_GLOBAL"/gu),
+    workflow.match(
+      /echo "GIT_CONFIG_GLOBAL=\$RUNNER_TEMP\/agentscope-global\.gitconfig" >> "\$GITHUB_ENV"/gu,
+    ),
   ).toHaveLength(2);
+  expect(workflow).not.toContain("${{ runner.temp }}");
   expect(workflow).not.toMatch(/GIT_CONFIG_GLOBAL: \/dev\/null/gu);
   expect(workflow).not.toMatch(/(?:rm|unlink).*agentscope-global\.gitconfig/gu);
   const controller = readFileSync(
