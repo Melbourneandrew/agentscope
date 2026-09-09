@@ -869,6 +869,38 @@ it("binds the live Node mapping across systemd admission", () => {
   ).toBe(false);
 });
 
+it("digests one retained Node descriptor under the original deadline", () => {
+  const supervisorSource = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const start = supervisorSource.indexOf("const runSystemdSupervised = async");
+  const end = supervisorSource.indexOf(
+    "export const runSupervisedProcess",
+    start,
+  );
+  const lifecycle = supervisorSource.slice(start, end);
+  expect(lifecycle).toContain(
+    "const deadline = performance.now() + maximumMilliseconds;",
+  );
+  expect(lifecycle.match(/captureLiveMappedExecutable\(/gu)).toHaveLength(1);
+  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
+  expect(
+    lifecycle.match(
+      /const deadline = performance\.now\(\) \+ maximumMilliseconds;/gu,
+    ),
+  ).toHaveLength(1);
+  expect(lifecycle).toContain(
+    "const grace = Math.min(\n        deadline,\n        performance.now() + systemdTerminationGraceMilliseconds,",
+  );
+  expect(lifecycle).toContain("closeSync(mappedExecutable.descriptor)");
+  const capture = supervisorSource.slice(
+    supervisorSource.indexOf("const captureLiveMappedExecutable ="),
+    supervisorSource.indexOf("const recheckLiveMappedExecutable ="),
+  );
+  expect(capture.match(/digestRetainedExecutable\(/gu)).toHaveLength(1);
+});
+
 it.runIf(
   process.platform === "linux" &&
     process.env.GITHUB_ACTIONS === "true" &&

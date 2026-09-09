@@ -266,50 +266,35 @@ const readProcessSnapshot = (pid) => {
   return Object.freeze({ bootId, pid, startTime });
 };
 
-const digestMappedExecutable = (pid, deadline) => {
-  const descriptor = openSync(`/proc/${pid}/exe`, constants.O_RDONLY);
-  try {
-    const status = fstatSync(descriptor);
-    if (
-      !status.isFile() ||
-      (status.mode & 0o111) === 0 ||
-      status.size < 1 ||
-      status.size > maximumNodeBytes
-    )
-      failSystemd();
-    const hash = createHash("sha256");
-    const content = Buffer.alloc(64 * 1024);
-    let total = 0;
-    while (total < status.size) {
-      remainingMilliseconds(deadline);
-      const count = readSync(descriptor, content, 0, content.length, null);
-      if (count === 0) failSystemd();
-      total += count;
-      if (total > status.size) failSystemd();
-      hash.update(content.subarray(0, count));
-    }
-    const after = fstatSync(descriptor);
-    if (
-      after.dev !== status.dev ||
-      after.ino !== status.ino ||
-      after.mode !== status.mode ||
-      after.uid !== status.uid ||
-      after.gid !== status.gid ||
-      after.size !== status.size
-    )
-      failSystemd();
-    return Object.freeze({
-      dev: status.dev,
-      digest: hash.digest("hex"),
-      gid: status.gid,
-      ino: status.ino,
-      mode: status.mode,
-      size: status.size,
-      uid: status.uid,
-    });
-  } finally {
-    closeSync(descriptor);
+const executableMetadata = (status) =>
+  Object.freeze({
+    dev: status.dev,
+    gid: status.gid,
+    ino: status.ino,
+    mode: status.mode,
+    size: status.size,
+    uid: status.uid,
+  });
+
+const validMappedExecutable = (status) =>
+  status.isFile() &&
+  (status.mode & 0o111) !== 0 &&
+  status.size > 0 &&
+  status.size <= maximumNodeBytes;
+
+const digestRetainedExecutable = (descriptor, status, deadline) => {
+  const hash = createHash("sha256");
+  const content = Buffer.alloc(1024 * 1024);
+  let total = 0;
+  while (total < status.size) {
+    remainingMilliseconds(deadline);
+    const count = readSync(descriptor, content, 0, content.length, null);
+    if (count === 0) failSystemd();
+    total += count;
+    if (total > status.size) failSystemd();
+    hash.update(content.subarray(0, count));
   }
+  return hash.digest("hex");
 };
 
 const sameExecutableIdentity = (left, right) =>
@@ -331,28 +316,67 @@ export const validateLiveMappedExecutable = ({ after, before }) => {
   );
 };
 
-const readLiveMappedExecutable = (pid, deadline) =>
-  Object.freeze({
-    ...readProcessSnapshot(pid),
-    executable: digestMappedExecutable(pid, deadline),
-  });
-
 const captureLiveMappedExecutable = (executable, deadline) => {
   if (executable !== process.execPath) failSystemd();
-  const mapped = readLiveMappedExecutable(process.pid, deadline);
-  const named = statSync(executable);
-  if (
-    !named.isFile() ||
-    named.dev !== mapped.executable.dev ||
-    named.ino !== mapped.executable.ino
-  )
+  const descriptor = openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY);
+  const before = fstatSync(descriptor);
+  if (!validMappedExecutable(before)) {
+    closeSync(descriptor);
     failSystemd();
-  return mapped;
+  }
+  const named = statSync(executable);
+  if (!named.isFile() || named.dev !== before.dev || named.ino !== before.ino) {
+    closeSync(descriptor);
+    failSystemd();
+  }
+  const digest = digestRetainedExecutable(descriptor, before, deadline);
+  const after = fstatSync(descriptor);
+  const executableIdentity = {
+    ...executableMetadata(before),
+    digest,
+  };
+  if (
+    !sameExecutableIdentity(executableIdentity, {
+      ...executableMetadata(after),
+      digest,
+    })
+  ) {
+    closeSync(descriptor);
+    failSystemd();
+  }
+  return Object.freeze({
+    ...readProcessSnapshot(process.pid),
+    descriptor,
+    executable: Object.freeze(executableIdentity),
+  });
 };
 
-const recheckLiveMappedExecutable = (expected, deadline) => {
-  const after = readLiveMappedExecutable(expected.pid, deadline);
-  if (!validateLiveMappedExecutable({ after, before: expected })) failSystemd();
+const recheckLiveMappedExecutable = (expected) => {
+  const descriptorStatus = fstatSync(expected.descriptor);
+  const descriptorPath = `/proc/${expected.pid}/fd/${expected.descriptor}`;
+  const descriptorPathStatus = statSync(descriptorPath);
+  const processMappingStatus = statSync(`/proc/${expected.pid}/exe`);
+  const snapshot = readProcessSnapshot(expected.pid);
+  const observed = Object.freeze({
+    ...snapshot,
+    executable: Object.freeze({
+      ...executableMetadata(descriptorStatus),
+      digest: expected.executable.digest,
+    }),
+  });
+  if (
+    !validMappedExecutable(descriptorStatus) ||
+    descriptorPathStatus.dev !== descriptorStatus.dev ||
+    descriptorPathStatus.ino !== descriptorStatus.ino ||
+    processMappingStatus.dev !== descriptorStatus.dev ||
+    processMappingStatus.ino !== descriptorStatus.ino ||
+    !validateLiveMappedExecutable({
+      after: observed,
+      before: expected,
+    })
+  )
+    failSystemd();
+  return descriptorPath;
 };
 
 export const validateRootPid1Probe = ({
@@ -725,13 +749,13 @@ const runSystemdSupervised = async ({
   )
     failSystemd();
   const deadline = performance.now() + maximumMilliseconds;
-  const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
   await authenticateSystemdHost(deadline);
   const executionDeadline = deadline - containmentProofMilliseconds;
   if (executionDeadline <= performance.now()) failSystemd();
   const authority = systemdIdentity(environment);
   const cgroupPath = resolve(cgroupRoot, authority.cgroup.slice(1));
   if (existsSync(cgroupPath)) failSystemd();
+  const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
   const interrupted = { value: false };
   const forwardSignal = () => {
     interrupted.value = true;
@@ -741,8 +765,7 @@ const runSystemdSupervised = async ({
   let terminal;
   let residualWorkObserved;
   try {
-    recheckLiveMappedExecutable(mappedExecutable, deadline);
-    const mappedExecutablePath = `/proc/${mappedExecutable.pid}/exe`;
+    const mappedExecutablePath = recheckLiveMappedExecutable(mappedExecutable);
     await rootTool(
       systemdRunPath,
       systemdStartArguments({
@@ -753,7 +776,7 @@ const runSystemdSupervised = async ({
       }),
       deadline,
     );
-    recheckLiveMappedExecutable(mappedExecutable, deadline);
+    recheckLiveMappedExecutable(mappedExecutable);
     terminal = await waitForTerminal(authority, executionDeadline, interrupted);
     const authoritative = await showUnit(authority.unit, deadline);
     assertUnitAuthority(authoritative, authority);
@@ -810,6 +833,7 @@ const runSystemdSupervised = async ({
   } finally {
     process.removeListener("SIGINT", forwardSignal);
     process.removeListener("SIGTERM", forwardSignal);
+    closeSync(mappedExecutable.descriptor);
   }
 };
 
