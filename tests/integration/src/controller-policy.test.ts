@@ -25,6 +25,7 @@ import {
   exactPathIsAbsent,
   classifySystemdUnitAuthority,
   classifyToolSettlement,
+  closeDescriptorSet,
   closePreparedGithubSystemdSupervision,
   parseSystemdMainExitStatus,
   parseSystemdTerminalExit,
@@ -830,7 +831,7 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
   } finally {
     rmSync(directory, { force: true, recursive: true });
   }
-  expect(
+  expect(() =>
     cgroupObservationSettled(directory, {
       descriptors: [96, 97, 98, 99],
       identities: [
@@ -840,7 +841,7 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
         { dev: 1, gid: 0, ino: 5, mode: 0o100444, uid: 0 },
       ],
     }),
-  ).toBe(true);
+  ).toThrow();
 
   const deniedRoot = mkdtempSync(
     resolve(tmpdir(), "agentscope-cgroup-denied-"),
@@ -876,6 +877,45 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
   );
   expect(retirement.indexOf("await retireUnit(")).toBeLessThan(
     retirement.indexOf("await proveCollected("),
+  );
+});
+
+it("attempts every retained cgroup descriptor close exactly once", () => {
+  for (const failing of [13, 12, 10]) {
+    const attempted: number[] = [];
+    expect(
+      closeDescriptorSet([10, 11, 12, 13], (descriptor) => {
+        attempted.push(descriptor);
+        if (descriptor === failing) throw new Error("close");
+      }),
+    ).toBe(false);
+    expect(attempted).toEqual([13, 12, 11, 10]);
+  }
+  const attempted: number[] = [];
+  expect(
+    closeDescriptorSet([10, 11, 12, 13], (descriptor) => {
+      attempted.push(descriptor);
+    }),
+  ).toBe(true);
+  expect(attempted).toEqual([13, 12, 11, 10]);
+  expect(() => closeDescriptorSet([10, 11, 10], () => undefined)).toThrow(
+    "integration.controller.systemd-containment",
+  );
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const lifecycle = supervisor.slice(
+    supervisor.indexOf("const runSystemdSupervised ="),
+    supervisor.indexOf("export const runSupervisedProcess ="),
+  );
+  expect(lifecycle).toContain("if (!closed && !lifecycleFailed)");
+  expect(lifecycle.indexOf("result = {")).toBeLessThan(
+    lifecycle.indexOf("const closed = await closePrepared"),
+  );
+  expect(lifecycle.indexOf("const closed = await closePrepared")).toBeLessThan(
+    lifecycle.indexOf("return result;"),
   );
 });
 

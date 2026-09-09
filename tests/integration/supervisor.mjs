@@ -1959,8 +1959,23 @@ const recheckCgroupAuthority = (cgroupPath, authority) => {
   }
 };
 
-const cgroupIsEmpty = (cgroupPath, authority) => {
-  recheckCgroupAuthority(cgroupPath, authority);
+const recheckRetainedCgroupDescriptors = (authority) => {
+  for (const [index, descriptor] of authority.descriptors.entries()) {
+    const status = fstatSync(descriptor);
+    const identity = authority.identities[index];
+    if (
+      status.dev !== identity.dev ||
+      status.ino !== identity.ino ||
+      status.mode !== identity.mode ||
+      status.uid !== identity.uid ||
+      status.gid !== identity.gid
+    )
+      failSystemd();
+  }
+};
+
+const retainedCgroupIsEmpty = (authority) => {
+  recheckRetainedCgroupDescriptors(authority);
   const content = Buffer.alloc(4097);
   let size = 0;
   while (size < content.length) {
@@ -1975,7 +1990,7 @@ const cgroupIsEmpty = (cgroupPath, authority) => {
     size += count;
   }
   if (size > 4096) failSystemd();
-  recheckCgroupAuthority(cgroupPath, authority);
+  recheckRetainedCgroupDescriptors(authority);
   const events = content.subarray(0, size).toString("utf8");
   const entries = Object.fromEntries(
     events
@@ -1984,6 +1999,13 @@ const cgroupIsEmpty = (cgroupPath, authority) => {
       .map((line) => line.split(" ")),
   );
   return entries.populated === "0";
+};
+
+const cgroupIsEmpty = (cgroupPath, authority) => {
+  recheckCgroupAuthority(cgroupPath, authority);
+  const empty = retainedCgroupIsEmpty(authority);
+  recheckCgroupAuthority(cgroupPath, authority);
+  return empty;
 };
 
 export const exactPathIsAbsent = (path) => {
@@ -1996,19 +2018,65 @@ export const exactPathIsAbsent = (path) => {
   }
 };
 
+export const closeDescriptorSet = (descriptors, close = closeSync) => {
+  if (
+    !Array.isArray(descriptors) ||
+    descriptors.length === 0 ||
+    new Set(descriptors).size !== descriptors.length ||
+    !descriptors.every(Number.isSafeInteger) ||
+    typeof close !== "function"
+  )
+    failSystemd();
+  let closed = true;
+  for (const descriptor of [...descriptors].reverse()) {
+    try {
+      close(descriptor);
+    } catch {
+      closed = false;
+    }
+  }
+  return closed;
+};
+
+const authenticatedCgroupIsAbsent = (cgroupPath, authority) => {
+  const parentPath = dirname(cgroupPath);
+  const childPaths = [
+    cgroupPath,
+    resolve(cgroupPath, "cgroup.procs"),
+    resolve(cgroupPath, "cgroup.events"),
+  ];
+  const recheckParent = () => {
+    const status = lstatSync(parentPath);
+    const identity = authority.identities[0];
+    if (
+      !status.isDirectory() ||
+      status.dev !== identity.dev ||
+      status.ino !== identity.ino ||
+      status.mode !== identity.mode ||
+      status.uid !== identity.uid ||
+      status.gid !== identity.gid
+    )
+      failSystemd();
+    recheckRetainedCgroupDescriptors(authority);
+  };
+  recheckParent();
+  if (!retainedCgroupIsEmpty(authority)) return false;
+  if (!childPaths.every(exactPathIsAbsent)) return false;
+  recheckParent();
+  return childPaths.every(exactPathIsAbsent);
+};
+
 export const cgroupObservationSettled = (cgroupPath, identity) => {
   if (!sameCgroupIdentity(identity, identity)) failSystemd();
   if (exactPathIsAbsent(cgroupPath)) {
-    if (!exactPathIsAbsent(resolve(cgroupPath, "cgroup.procs"))) failSystemd();
-    return true;
+    return authenticatedCgroupIsAbsent(cgroupPath, identity);
   }
   try {
     return cgroupIsEmpty(cgroupPath, identity);
   } catch (error) {
     if (
       error?.code === "ENOENT" &&
-      exactPathIsAbsent(cgroupPath) &&
-      exactPathIsAbsent(resolve(cgroupPath, "cgroup.procs"))
+      authenticatedCgroupIsAbsent(cgroupPath, identity)
     )
       return true;
     throw error;
@@ -2039,10 +2107,18 @@ const systemdSignal = (unit, signal, deadline) =>
     },
   );
 
-const proveCollected = async (authority, cgroupPath, deadline) => {
+const proveCollected = async (
+  authority,
+  cgroupPath,
+  cgroupIdentity,
+  deadline,
+) => {
   while (performance.now() < deadline) {
     const facts = await showUnit(authority.unit, deadline, "unit-collection");
-    if (facts.LoadState === "not-found" && exactPathIsAbsent(cgroupPath))
+    if (
+      facts.LoadState === "not-found" &&
+      authenticatedCgroupIsAbsent(cgroupPath, cgroupIdentity)
+    )
       return true;
     await delay(Math.min(50, remainingMilliseconds(deadline)));
   }
@@ -2249,6 +2325,7 @@ const closePreparedSystemdState = async (state) => {
       contained = await proveCollected(
         state.authority,
         state.cgroupPath,
+        state.cgroupIdentity,
         state.deadline,
       );
     }
@@ -2258,17 +2335,15 @@ const closePreparedSystemdState = async (state) => {
     process.removeListener("SIGINT", state.forwardSignal);
     process.removeListener("SIGTERM", state.forwardSignal);
     if (state.cgroupIdentity !== undefined) {
-      try {
-        for (const descriptor of [
-          ...state.cgroupIdentity.descriptors,
-        ].reverse())
-          closeSync(descriptor);
-      } catch {
+      if (!closeDescriptorSet(state.cgroupIdentity.descriptors))
         contained = false;
-      }
       state.cgroupIdentity = undefined;
     }
-    closeSync(state.mappedExecutable.descriptor);
+    try {
+      closeSync(state.mappedExecutable.descriptor);
+    } catch {
+      contained = false;
+    }
   }
   return contained;
 };
@@ -2397,6 +2472,7 @@ const retireAndCollectSystemdUnit = async (state) => {
     contained = await proveCollected(
       state.authority,
       state.cgroupPath,
+      state.cgroupIdentity,
       state.deadline,
     );
   } catch (error) {
@@ -2450,6 +2526,8 @@ const runSystemdSupervised = async ({
   }
   let terminal;
   let residualWorkObserved;
+  let lifecycleFailed = false;
+  let result;
   try {
     const mappedExecutablePath = mappedExecutableForSystemd(state);
     state.unitMayExist = true;
@@ -2477,13 +2555,17 @@ const runSystemdSupervised = async ({
     const code = parseSystemdMainExitStatus(terminal);
     if (code === undefined)
       failSystemdLifecycle(state, "unit-authoritative", "malformed");
-    return { code, contained: true, residualWorkObserved, signal: null };
+    result = { code, contained: true, residualWorkObserved, signal: null };
   } catch (error) {
+    lifecycleFailed = true;
     if (systemdToolFailureStage(error) !== undefined) throw error;
     rethrowSystemdLifecycle(state, error, "internal");
   } finally {
-    await closePreparedGithubSystemdSupervision(prepared);
+    const closed = await closePreparedGithubSystemdSupervision(prepared);
+    if (!closed && !lifecycleFailed)
+      failSystemdLifecycle(state, "collection", "authority");
   }
+  return result;
 };
 
 export const runSupervisedProcess = async (options) => {

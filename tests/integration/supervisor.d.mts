@@ -32,6 +32,10 @@ export type CgroupIdentity = Readonly<{
 }>;
 export function authenticateCgroup(cgroupPath: string): CgroupIdentity;
 export function exactPathIsAbsent(path: string): boolean;
+export function closeDescriptorSet(
+  descriptors: readonly number[],
+  close?: (descriptor: number) => void,
+): boolean;
 export function cgroupObservationSettled(
   cgroupPath: string,
   identity: CgroupIdentity,
