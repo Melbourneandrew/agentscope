@@ -282,6 +282,18 @@ const validMappedExecutable = (status) =>
   status.size > 0 &&
   status.size <= maximumNodeBytes;
 
+export const transferDescriptorAuthority = ({ close, construct, open }) => {
+  const descriptor = open();
+  let transferred = false;
+  try {
+    const authority = construct(descriptor);
+    transferred = true;
+    return authority;
+  } finally {
+    if (!transferred) close(descriptor);
+  }
+};
+
 const digestRetainedExecutable = (descriptor, status, deadline) => {
   const hash = createHash("sha256");
   const content = Buffer.alloc(1024 * 1024);
@@ -318,36 +330,38 @@ export const validateLiveMappedExecutable = ({ after, before }) => {
 
 const captureLiveMappedExecutable = (executable, deadline) => {
   if (executable !== process.execPath) failSystemd();
-  const descriptor = openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY);
-  const before = fstatSync(descriptor);
-  if (!validMappedExecutable(before)) {
-    closeSync(descriptor);
-    failSystemd();
-  }
-  const named = statSync(executable);
-  if (!named.isFile() || named.dev !== before.dev || named.ino !== before.ino) {
-    closeSync(descriptor);
-    failSystemd();
-  }
-  const digest = digestRetainedExecutable(descriptor, before, deadline);
-  const after = fstatSync(descriptor);
-  const executableIdentity = {
-    ...executableMetadata(before),
-    digest,
-  };
-  if (
-    !sameExecutableIdentity(executableIdentity, {
-      ...executableMetadata(after),
-      digest,
-    })
-  ) {
-    closeSync(descriptor);
-    failSystemd();
-  }
-  return Object.freeze({
-    ...readProcessSnapshot(process.pid),
-    descriptor,
-    executable: Object.freeze(executableIdentity),
+  return transferDescriptorAuthority({
+    close: closeSync,
+    construct: (descriptor) => {
+      const before = fstatSync(descriptor);
+      if (!validMappedExecutable(before)) failSystemd();
+      const named = statSync(executable);
+      if (
+        !named.isFile() ||
+        named.dev !== before.dev ||
+        named.ino !== before.ino
+      )
+        failSystemd();
+      const digest = digestRetainedExecutable(descriptor, before, deadline);
+      const after = fstatSync(descriptor);
+      const executableIdentity = {
+        ...executableMetadata(before),
+        digest,
+      };
+      if (
+        !sameExecutableIdentity(executableIdentity, {
+          ...executableMetadata(after),
+          digest,
+        })
+      )
+        failSystemd();
+      return Object.freeze({
+        ...readProcessSnapshot(process.pid),
+        descriptor,
+        executable: Object.freeze(executableIdentity),
+      });
+    },
+    open: () => openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY),
   });
 };
 

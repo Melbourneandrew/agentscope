@@ -64,6 +64,14 @@ export function validateLiveMappedExecutable(
   }>,
 ): boolean;
 
+export function transferDescriptorAuthority<T>(
+  input: Readonly<{
+    close(descriptor: number): void;
+    construct(descriptor: number): T;
+    open(): number;
+  }>,
+): T;
+
 export function runSupervisedProcess(input: {
   arguments_?: readonly string[];
   containment?: "github-systemd";

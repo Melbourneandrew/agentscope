@@ -20,6 +20,7 @@ import {
   parseSystemdTerminalExit,
   rootPid1ProbeRequired,
   runSupervisedProcess,
+  transferDescriptorAuthority,
   validateLiveMappedExecutable,
   validateRootPid1Probe,
 } from "../supervisor.mjs";
@@ -899,6 +900,33 @@ it("digests one retained Node descriptor under the original deadline", () => {
     supervisorSource.indexOf("const recheckLiveMappedExecutable ="),
   );
   expect(capture.match(/digestRetainedExecutable\(/gu)).toHaveLength(1);
+});
+
+it("closes retained descriptor authority exactly once on capture failure", () => {
+  const closed: number[] = [];
+  for (const [index, phase] of ["digest", "fstat", "snapshot"].entries()) {
+    const descriptor = 42 + index;
+    expect(() =>
+      transferDescriptorAuthority({
+        close: (owned) => closed.push(owned),
+        construct: () => {
+          throw new Error(`synthetic ${phase} failure`);
+        },
+        open: () => descriptor,
+      }),
+    ).toThrow(`synthetic ${phase} failure`);
+    expect(closed).toEqual(
+      Array.from({ length: index + 1 }, (_, offset) => 42 + offset),
+    );
+  }
+
+  const authority = transferDescriptorAuthority({
+    close: (descriptor) => closed.push(descriptor),
+    construct: (descriptor) => ({ descriptor }),
+    open: () => 45,
+  });
+  expect(authority).toEqual({ descriptor: 45 });
+  expect(closed).toEqual([42, 43, 44]);
 });
 
 it.runIf(
