@@ -2190,7 +2190,7 @@ function expectClosedOuterGitConfiguration(workflow: string) {
   for (const [job, followingJob] of [
     ["prepare-candidate:", "  hermetic-platform:"],
     ["hermetic-platform:", "  hermetic-integration:"],
-  ]) {
+  ] as const) {
     const start = workflow.indexOf(job);
     const body = workflow.slice(start, workflow.indexOf(followingJob, start));
     expect(body.indexOf("Initialize closed npm configuration")).toBeLessThan(
