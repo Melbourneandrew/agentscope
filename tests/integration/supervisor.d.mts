@@ -64,6 +64,25 @@ export function validateLiveMappedExecutable(
   }>,
 ): boolean;
 
+type PythonAuthority = Readonly<{
+  canonical: string;
+  dev: number;
+  digest: string;
+  gid: number;
+  ino: number;
+  mode: number;
+  size: number;
+  uid: number;
+}>;
+
+export function validatePythonAuthority(
+  input: Readonly<{
+    after: PythonAuthority;
+    before: PythonAuthority;
+    probe: string;
+  }>,
+): boolean;
+
 export function transferDescriptorAuthority<T>(
   input: Readonly<{
     close(descriptor: number): void;

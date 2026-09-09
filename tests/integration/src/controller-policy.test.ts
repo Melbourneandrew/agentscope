@@ -28,6 +28,7 @@ import {
   snapshotSystemdEnvironment,
   transferDescriptorAuthority,
   validateLiveMappedExecutable,
+  validatePythonAuthority,
   validateRootPid1Probe,
 } from "../supervisor.mjs";
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
@@ -876,6 +877,64 @@ it("binds the live Node mapping across systemd admission", () => {
   ).toBe(false);
 });
 
+it("binds the canonical hosted Python identity and exact helper capabilities", () => {
+  const source = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const executable = {
+    canonical: "/usr/bin/python3.12",
+    dev: 42,
+    digest: "a".repeat(64),
+    gid: 0,
+    ino: 84,
+    mode: 0o100755,
+    size: 6_000_000,
+    uid: 0,
+  };
+  const receipt = "agentscope-python-helper-v1\n";
+  expect(
+    validatePythonAuthority({
+      after: executable,
+      before: executable,
+      probe: receipt,
+    }),
+  ).toBe(true);
+  const nextRunnerExecutable = {
+    ...executable,
+    canonical: "/usr/bin/python3.13",
+    digest: "b".repeat(64),
+    ino: 85,
+  };
+  expect(
+    validatePythonAuthority({
+      after: nextRunnerExecutable,
+      before: nextRunnerExecutable,
+      probe: receipt,
+    }),
+  ).toBe(true);
+  for (const [after, probe] of [
+    [{ ...executable, canonical: "/tmp/python3" }, receipt],
+    [{ ...executable, dev: 43 }, receipt],
+    [{ ...executable, ino: 85 }, receipt],
+    [{ ...executable, mode: 0o100777 }, receipt],
+    [{ ...executable, uid: 1001 }, receipt],
+    [{ ...executable, gid: 1001 }, receipt],
+    [{ ...executable, size: executable.size + 1 }, receipt],
+    [{ ...executable, digest: "b".repeat(64) }, receipt],
+    [executable, ""],
+    [executable, `${receipt}extra`],
+  ] as const)
+    expect(validatePythonAuthority({ after, before: executable, probe })).toBe(
+      false,
+    );
+  expect(source).toContain('const pythonPath = "/usr/bin/python3";');
+  expect(source).not.toContain('readlinkSync(pythonPath) !== "python3.12"');
+  expect(source).toContain("authenticateRootOwnedComponents(current)");
+  expect(source).toContain("await authenticatePython(deadline)");
+  expect(source).toContain("pythonCapabilitySource");
+});
+
 it("snapshots a closed systemd environment and rejects valid-form drift", () => {
   const environment = {
     AGENTSCOPE_INTEGRATION_REPLAY: "1",
@@ -1095,6 +1154,10 @@ it("binds root helpers to one absolute boottime authority", () => {
     'if tool not in TOOLS or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")',
   );
   expect(rootHelper).toContain("leader,expected,control=create_group()");
+  expect(rootHelper).toContain("inherited_group=os.getpgrp()");
+  expect(rootHelper).toContain("expected_start=observed[0]");
+  expect(rootHelper).toContain("observed[1]!=inherited_group");
+  expect(rootHelper).toContain('def emit(status,output=b""):');
   expect(rootHelper).toContain(
     'if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")',
   );

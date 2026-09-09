@@ -13,7 +13,7 @@ import {
   statSync,
 } from "node:fs";
 import { performance } from "node:perf_hooks";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 const containmentProofMilliseconds = 5_000;
 const containmentPollMilliseconds = 10;
@@ -31,6 +31,14 @@ const systemdRunPath = "/usr/bin/systemd-run";
 const timeoutPath = "/usr/bin/timeout";
 const rootToolKillAfterMilliseconds = 250;
 const rootToolJoinReserveMilliseconds = 500;
+const pythonCapabilityReceipt = "agentscope-python-helper-v1\n";
+const pythonCapabilitySource = String.raw`
+import base64,json,os,signal,subprocess,sys,time
+required=(base64.urlsafe_b64decode,base64.urlsafe_b64encode,json.dumps,json.loads,os.write,os.killpg,os.listdir,os.pipe2,os.fork,os.close,os.setpgid,os.read,os._exit,os.kill,os.waitpid,os.set_blocking,signal.signal,subprocess.Popen,time.clock_gettime_ns,time.sleep)
+constants=(os.O_CLOEXEC,os.WNOHANG,signal.SIGTERM,signal.SIGKILL,signal.SIG_IGN,subprocess.DEVNULL,subprocess.PIPE,time.CLOCK_BOOTTIME,sys.executable)
+if len(required)!=20 or not all(callable(value) for value in required) or len(constants)!=9: raise SystemExit(71)
+os.write(1,b"agentscope-python-helper-v1\n")
+`;
 const rootHelperSource = String.raw`
 import base64,json,os,signal,subprocess,sys,time
 MAX=65536
@@ -38,19 +46,19 @@ TEST_CODE='import signal,subprocess,sys,time; subprocess.Popen([sys.executable,"
 TEST_ARGS=["-I","-S","-c",TEST_CODE]
 TOOLS={"/usr/bin/python3","/usr/bin/readlink","/usr/bin/sha256sum","/usr/bin/stat","/usr/bin/systemctl","/usr/bin/systemd-run"}
 def now(): return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-def emit(status,output=""):
+def emit(status,output=b""):
  data=json.dumps({"output":base64.urlsafe_b64encode(output).decode("ascii").rstrip("="),"status":status},sort_keys=True,separators=(",",":"))
  os.write(1,data.encode("ascii"))
 def group_present(pid):
  try: os.killpg(pid,0); return True
  except ProcessLookupError: return False
-def process_identity(pid,require_leader=False):
+def process_identity(pid):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4096)
  except FileNotFoundError: return None
  end=data.rfind(b") ")
  if end<1 or b"\x00" in data or b"\n" in data: raise RuntimeError("identity")
  fields=data[end+2:].split()
- if len(fields)<20 or (require_leader and int(fields[2])!=pid): raise RuntimeError("identity")
+ if len(fields)<20: raise RuntimeError("identity")
  return (fields[19],int(fields[2]))
 def group_members(group):
  entries=os.listdir("/proc")
@@ -62,6 +70,7 @@ def group_members(group):
    if observed is not None and observed[1]==group: members.append(int(entry))
  return sorted(members)
 def create_group():
+ inherited_group=os.getpgrp()
  control_read,control_write=os.pipe2(os.O_CLOEXEC)
  leader=os.fork()
  if leader==0:
@@ -70,39 +79,54 @@ def create_group():
    while os.read(control_read,1): pass
   finally: os._exit(0)
  os.close(control_read)
- cutoff=now()+250000000
+ cutoff=min(DEADLINE,now()+250000000)
  expected=None
- while now()<cutoff:
-  expected=process_identity(leader,True)
-  if expected is not None: break
-  time.sleep(0.001)
+ expected_start=None
+ failure=None
+ try:
+  while now()<cutoff:
+   observed=process_identity(leader)
+   if observed is None:
+    waited=os.waitpid(leader,os.WNOHANG)
+    if waited[0]==leader: raise RuntimeError("exit")
+    time.sleep(0.001); continue
+   if expected_start is None: expected_start=observed[0]
+   elif observed[0]!=expected_start: raise RuntimeError("identity")
+   if observed[1]==leader:
+    expected=(expected_start,leader); break
+   if observed[1]!=inherited_group: raise RuntimeError("group")
+   time.sleep(0.001)
+ except Exception as error: failure=error
  if expected is None:
   os.close(control_write)
-  try: os.kill(leader,signal.SIGKILL)
-  except ProcessLookupError: pass
+  observed=process_identity(leader)
+  if expected_start is not None and observed is not None and observed[0]==expected_start:
+   try: os.kill(leader,signal.SIGKILL)
+   except ProcessLookupError: pass
   reaped=False
   while now()<DEADLINE:
    waited=os.waitpid(leader,os.WNOHANG)
    if waited[0]==leader: reaped=True; break
    time.sleep(0.005)
   if not reaped: raise RuntimeError("join")
+  if failure is not None: raise failure
   raise RuntimeError("group")
  return leader,expected,control_write
 def close_group(leader,expected,control):
- if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+ if process_identity(leader)!=expected: raise RuntimeError("identity")
  if group_members(leader)!=[leader]: raise RuntimeError("residual")
  os.close(control)
  reaped=False
  while now()<DEADLINE:
   waited=os.waitpid(leader,os.WNOHANG)
   if waited[0]==leader: reaped=True; break
-  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  if process_identity(leader)!=expected: raise RuntimeError("identity")
   time.sleep(0.005)
  if not reaped: raise RuntimeError("join")
  if group_present(leader): raise RuntimeError("residual")
 def terminate(child,leader,expected,control):
  child.poll()
- observed=process_identity(leader,True)
+ observed=process_identity(leader)
  if observed is None: raise RuntimeError("identity")
  if observed!=expected: raise RuntimeError("identity")
  try: os.killpg(leader,signal.SIGTERM)
@@ -110,7 +134,7 @@ def terminate(child,leader,expected,control):
  grace=min(DEADLINE,now()+250000000)
  while child.poll() is None and now()<grace: time.sleep(0.005)
  if child.poll() is None or group_present(leader):
-  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  if process_identity(leader)!=expected: raise RuntimeError("identity")
   try: os.killpg(leader,signal.SIGKILL)
   except ProcessLookupError: pass
  leader_reaped=False
@@ -134,9 +158,9 @@ def run(argv,cutoff):
  output=bytearray()
  try:
   if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")
-  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  if process_identity(leader)!=expected: raise RuntimeError("identity")
   child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)
-  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  if process_identity(leader)!=expected: raise RuntimeError("identity")
   os.set_blocking(child.stdout.fileno(),False)
   while child.poll() is None:
    if now()>=cutoff: terminate(child,leader,expected,control)
@@ -712,22 +736,71 @@ const authenticateExecutable = (path, mode) => {
     failSystemd();
 };
 
-const authenticatePython = () => {
-  const lexical = lstatSync(pythonPath);
-  if (lexical.isFile()) {
-    authenticateExecutable(pythonPath, 0o111);
-    return;
-  }
+const authenticateRootOwnedComponents = (path) => {
+  if (!isAbsolute(path)) failSystemd();
+  const root = lstatSync("/");
   if (
-    !lexical.isSymbolicLink() ||
-    lexical.uid !== 0 ||
-    lexical.gid !== 0 ||
-    (lexical.mode & 0o022) !== 0 ||
-    readlinkSync(pythonPath) !== "python3.12" ||
-    realpathSync(pythonPath) !== "/usr/bin/python3.12"
+    !root.isDirectory() ||
+    root.uid !== 0 ||
+    root.gid !== 0 ||
+    (root.mode & 0o022) !== 0
   )
     failSystemd();
-  authenticateExecutable("/usr/bin/python3.12", 0o111);
+  const components = path.split("/").filter(Boolean);
+  let current = "/";
+  for (const component of components.slice(0, -1)) {
+    current = resolve(current, component);
+    const status = lstatSync(current);
+    if (
+      !status.isDirectory() ||
+      status.uid !== 0 ||
+      status.gid !== 0 ||
+      (status.mode & 0o022) !== 0
+    )
+      failSystemd();
+  }
+};
+
+const pythonAuthority = () => {
+  let current = pythonPath;
+  const visited = new Set();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (visited.has(current)) failSystemd();
+    visited.add(current);
+    authenticateRootOwnedComponents(current);
+    const lexical = lstatSync(current);
+    if (!lexical.isSymbolicLink()) {
+      if (realpathSync(pythonPath) !== current) failSystemd();
+      return Object.freeze({
+        canonical: current,
+        ...digestRegularFile(current),
+      });
+    }
+    if (lexical.uid !== 0 || lexical.gid !== 0) failSystemd();
+    const target = readlinkSync(current);
+    if (target.length < 1 || target.length > 4096 || /[\0\r\n]/u.test(target))
+      failSystemd();
+    current = isAbsolute(target)
+      ? resolve(target)
+      : resolve(dirname(current), target);
+  }
+  failSystemd();
+};
+
+export const validatePythonAuthority = ({ after, before, probe }) =>
+  probe === pythonCapabilityReceipt &&
+  before?.canonical === after?.canonical &&
+  sameExecutableIdentity(before, after);
+
+const authenticatePython = async (deadline) => {
+  const before = pythonAuthority();
+  const probe = await runTool(
+    pythonPath,
+    ["-I", "-S", "-c", pythonCapabilitySource],
+    deadline,
+  );
+  const after = pythonAuthority();
+  if (!validatePythonAuthority({ after, before, probe })) failSystemd();
 };
 
 const authenticateSystemdHost = async (deadline) => {
@@ -739,7 +812,7 @@ const authenticateSystemdHost = async (deadline) => {
   )
     failSystemd();
   authenticateExecutable(sudoPath, 0o4000);
-  authenticatePython();
+  await authenticatePython(deadline);
   authenticateExecutable(systemctlPath, 0o111);
   authenticateExecutable(systemdRunPath, 0o111);
   authenticateExecutable(timeoutPath, 0o111);
