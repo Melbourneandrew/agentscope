@@ -22,6 +22,14 @@ const systemctlPath = "/usr/bin/systemctl";
 const systemdRunPath = "/usr/bin/systemd-run";
 const cgroupRoot = "/sys/fs/cgroup";
 const systemdPath = "/usr/lib/systemd/systemd";
+const systemdInaccessiblePaths = "/run/systemd/private /run/user";
+const forbiddenLifecycleEnvironment = new Set([
+  "ACTIONS_RESULTS_URL",
+  "ACTIONS_RUNTIME_TOKEN",
+  "ACTIONS_RUNTIME_URL",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XDG_RUNTIME_DIR",
+]);
 
 export const parseSystemdTerminalExit = (facts) => {
   if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(facts.ExecMainStatus ?? ""))
@@ -258,15 +266,21 @@ const exactUnitFacts = (output) => {
 
 const unitProperties = [
   "ActiveState",
+  "AmbientCapabilities",
+  "CapabilityBoundingSet",
   "ControlGroup",
   "Delegate",
   "ExecMainCode",
   "ExecMainStatus",
   "Group",
   "Id",
+  "InaccessiblePaths",
   "KillMode",
   "LoadState",
+  "NoNewPrivileges",
+  "ProtectControlGroups",
   "RemainAfterExit",
+  "RestrictSUIDSGID",
   "Result",
   "SubState",
   "SupplementaryGroups",
@@ -294,6 +308,12 @@ const assertUnitAuthority = (facts, authority) => {
     facts.ControlGroup !== authority.cgroup ||
     facts.Delegate !== "no" ||
     facts.KillMode !== "control-group" ||
+    facts.NoNewPrivileges !== "yes" ||
+    facts.RestrictSUIDSGID !== "yes" ||
+    facts.CapabilityBoundingSet !== "" ||
+    facts.AmbientCapabilities !== "" ||
+    facts.ProtectControlGroups !== "yes" ||
+    facts.InaccessiblePaths !== systemdInaccessiblePaths ||
     facts.RemainAfterExit !== "yes" ||
     facts.User !== String(authority.uid) ||
     facts.Group !== String(authority.gid) ||
@@ -366,6 +386,7 @@ const systemdEnvironmentArguments = (environment) =>
     .map(([name, value]) => {
       if (
         !/^[A-Z][A-Z0-9_]{0,63}$/u.test(name) ||
+        forbiddenLifecycleEnvironment.has(name) ||
         typeof value !== "string" ||
         value.length > 4096 ||
         /[\0\r\n]/u.test(value)
@@ -452,6 +473,12 @@ const runSystemdSupervised = async ({
         "--service-type=exec",
         "--property=Delegate=no",
         "--property=KillMode=control-group",
+        "--property=NoNewPrivileges=yes",
+        "--property=RestrictSUIDSGID=yes",
+        "--property=CapabilityBoundingSet=",
+        "--property=AmbientCapabilities=",
+        "--property=ProtectControlGroups=yes",
+        `--property=InaccessiblePaths=${systemdInaccessiblePaths}`,
         "--property=RemainAfterExit=yes",
         `--property=User=${authority.uid}`,
         `--property=Group=${authority.gid}`,

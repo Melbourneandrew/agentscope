@@ -725,6 +725,12 @@ it("pins the credentialed lifecycle to a nondelegated whole-unit authority", () 
   for (const authority of [
     '"--property=Delegate=no"',
     '"--property=KillMode=control-group"',
+    '"--property=NoNewPrivileges=yes"',
+    '"--property=RestrictSUIDSGID=yes"',
+    '"--property=CapabilityBoundingSet="',
+    '"--property=AmbientCapabilities="',
+    '"--property=ProtectControlGroups=yes"',
+    '"/run/systemd/private /run/user"',
     '"--property=RemainAfterExit=yes"',
     '"/usr/bin/sudo"',
     '"/usr/bin/systemctl"',
@@ -771,59 +777,90 @@ it("accepts only exact numeric systemd exit terminal facts", () => {
     expect(parseSystemdTerminalExit(substituted)).toBeUndefined();
 });
 
-describe("integration controller supervision", () => {
-  it.runIf(
-    process.platform === "linux" &&
-      process.env.GITHUB_ACTIONS === "true" &&
-      process.env.RUNNER_ENVIRONMENT === "github-hosted",
-  )(
-    "contains a detached session in the authenticated systemd unit",
-    async () => {
-      const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
-      const evidence = resolve(directory, "descendant.pid");
-      try {
-        const result = await runSupervisedProcess({
-          arguments_: [
-            resolve(
-              workspaceRoot,
-              "tests/integration/fixtures/stubborn-controller-child.mjs",
-            ),
-          ],
-          containment: "github-systemd",
-          environment: {
-            AGENTSCOPE_INTEGRATION_SHARD: "0/1",
-            AGENTSCOPE_INTEGRATION_REPLAY: "1",
-            AGENTSCOPE_SUPERVISOR_DETACHED: "true",
-            AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
-            GITHUB_ACTIONS: "true",
-            GITHUB_JOB: "hermetic-platform",
-            GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
-            GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
-            GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
-            GITHUB_SHA: process.env.GITHUB_SHA,
-            LANG: "C.UTF-8",
-            PATH: "/usr/bin:/bin",
-            RUNNER_ENVIRONMENT: "github-hosted",
-          },
-          executable: process.execPath,
-          maximumMilliseconds: 15_000,
-          stdio: "ignore",
-        });
-        expect(result).toMatchObject({
-          code: 1,
-          contained: true,
-          residualWorkObserved: true,
-        });
-        const descendant = Number(readFileSync(evidence, "utf8"));
-        expect(() => process.kill(descendant, 0)).toThrow(
-          expect.objectContaining({ code: "ESRCH" }),
-        );
-      } finally {
-        rmSync(directory, { force: true, recursive: true });
-      }
-    },
-  );
+it.runIf(
+  process.platform === "linux" &&
+    process.env.GITHUB_ACTIONS === "true" &&
+    process.env.RUNNER_ENVIRONMENT === "github-hosted",
+)("contains a detached session in the authenticated systemd unit", async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
+  const evidence = resolve(directory, "descendant.pid");
+  const escapeEvidence = resolve(directory, "escape.json");
+  const escapeUnit = `agentscope-escape-${createHash("sha256")
+    .update(directory)
+    .digest("hex")
+    .slice(0, 32)}.service`;
+  try {
+    const result = await runSupervisedProcess({
+      arguments_: [
+        resolve(
+          workspaceRoot,
+          "tests/integration/fixtures/stubborn-controller-child.mjs",
+        ),
+      ],
+      containment: "github-systemd",
+      environment: {
+        AGENTSCOPE_INTEGRATION_SHARD: "0/1",
+        AGENTSCOPE_INTEGRATION_REPLAY: "1",
+        AGENTSCOPE_SUPERVISOR_DETACHED: "true",
+        AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
+        AGENTSCOPE_SUPERVISOR_ESCAPE_EVIDENCE: escapeEvidence,
+        AGENTSCOPE_SUPERVISOR_ESCAPE_UNIT: escapeUnit,
+        GITHUB_ACTIONS: "true",
+        GITHUB_JOB: "hermetic-platform",
+        GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
+        GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
+        GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
+        GITHUB_SHA: process.env.GITHUB_SHA,
+        LANG: "C.UTF-8",
+        PATH: "/usr/bin:/bin",
+        RUNNER_ENVIRONMENT: "github-hosted",
+      },
+      executable: process.execPath,
+      maximumMilliseconds: 15_000,
+      stdio: "ignore",
+    });
+    expect(result).toMatchObject({
+      code: 1,
+      contained: true,
+      residualWorkObserved: true,
+    });
+    expect(JSON.parse(readFileSync(escapeEvidence, "utf8"))).toEqual({
+      cgroupMigration: false,
+      systemUnit: false,
+      userUnit: false,
+    });
+    const descendant = Number(readFileSync(evidence, "utf8"));
+    expect(() => process.kill(descendant, 0)).toThrow(
+      expect.objectContaining({ code: "ESRCH" }),
+    );
+    const escapedUnit = spawnSync(
+      "/usr/bin/sudo",
+      [
+        "-n",
+        "--",
+        "/usr/bin/systemctl",
+        "show",
+        "--no-pager",
+        "--property=LoadState",
+        escapeUnit,
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+        timeout: 5_000,
+      },
+    );
+    expect(escapedUnit).toMatchObject({
+      signal: null,
+      status: 0,
+      stdout: "LoadState=not-found\n",
+    });
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
 
+describe("integration controller supervision", () => {
   it("kills and proves absence of descendants after the leader exits", async () => {
     if (process.platform === "win32") return;
     const directory = mkdtempSync(resolve(tmpdir(), "agentscope-supervisor-"));
