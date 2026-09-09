@@ -113,14 +113,25 @@ def emit(status,output=b""):
 def group_present(pid):
  try: os.killpg(pid,0); return True
  except ProcessLookupError: return False
-def process_identity(pid):
- try: data=open("/proc/%d/stat"%pid,"rb").read(4096)
- except FileNotFoundError: return None
- end=data.rfind(b") ")
- if end<1 or b"\x00" in data or b"\n" in data: raise RuntimeError("identity")
- fields=data[end+2:].split()
- if len(fields)<20: raise RuntimeError("identity")
+def parse_process_identity(data,pid):
+ if not isinstance(data,bytes) or len(data)<4 or len(data)>4096 or not data.endswith(b"\n"):
+  raise RuntimeError("identity")
+ record=data[:-1]
+ if not record or b"\n" in record or b"\r" in record or b"\x00" in record:
+  raise RuntimeError("identity")
+ prefix=(str(pid)+" (").encode("ascii")
+ if not record.startswith(prefix): raise RuntimeError("identity")
+ end=record.rfind(b") ")
+ if end<=len(prefix): raise RuntimeError("identity")
+ fields=record[end+2:].split()
+ if len(fields)<20 or len(fields[0])!=1 or not fields[0].isascii(): raise RuntimeError("identity")
+ if not fields[2].isascii() or not fields[2].isdigit() or int(fields[2])<1: raise RuntimeError("identity")
+ if not fields[19].isascii() or not fields[19].isdigit() or int(fields[19])<1: raise RuntimeError("identity")
  return (fields[19],int(fields[2]))
+def process_identity(pid):
+ try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
+ except FileNotFoundError: return None
+ return parse_process_identity(data,pid)
 def group_members(group):
  entries=os.listdir("/proc")
  if len(entries)>65536: raise RuntimeError("inventory")

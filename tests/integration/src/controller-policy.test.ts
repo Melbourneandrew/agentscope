@@ -1208,6 +1208,75 @@ it("binds root helpers to one absolute boottime authority", () => {
   );
 });
 
+it.runIf(existsSync("/usr/bin/python3"))(
+  "accepts only the canonical bounded proc stat record framing",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const helperPrefix = "const rootHelperSource = String.raw`";
+    const helperStart =
+      supervisorSource.indexOf(helperPrefix) + helperPrefix.length;
+    const helperEnd = supervisorSource.indexOf(
+      "`;\nconst cgroupRoot =",
+      helperStart,
+    );
+    const helper = supervisorSource.slice(helperStart, helperEnd);
+    const parserStart = helper.indexOf("def parse_process_identity(data,pid):");
+    const parserEnd = helper.indexOf("def group_members(group):", parserStart);
+    expect(parserStart).toBeGreaterThanOrEqual(0);
+    expect(parserEnd).toBeGreaterThan(parserStart);
+    const parser = helper.slice(parserStart, parserEnd);
+    const invoke = (record: Buffer) =>
+      spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          `import base64,sys\n${parser}\ntry:\n result=parse_process_identity(base64.urlsafe_b64decode(sys.argv[1]),123)\nexcept Exception:\n sys.exit(17)\nif result!=(b"456",123): sys.exit(18)`,
+          record.toString("base64url"),
+        ],
+        { encoding: "utf8", env: {}, timeout: 3_000 },
+      );
+    const fields = [
+      "S",
+      "1",
+      "123",
+      ...Array.from({ length: 16 }, () => "0"),
+      "456",
+    ];
+    const canonical = Buffer.from(`123 (fixture comm) ${fields.join(" ")}\n`);
+    expect(invoke(canonical)).toMatchObject({
+      status: 0,
+      signal: null,
+      stderr: "",
+    });
+    for (const rejected of [
+      canonical.subarray(0, -1),
+      Buffer.concat([canonical, Buffer.from("\n")]),
+      Buffer.concat([canonical.subarray(0, -2), Buffer.from("\n0\n")]),
+      Buffer.from(canonical.toString("utf8").replace("fixture", "fix\rture")),
+      Buffer.concat([
+        canonical.subarray(0, 8),
+        Buffer.from([0]),
+        canonical.subarray(8),
+      ]),
+      Buffer.concat([
+        Buffer.from("123 ("),
+        Buffer.alloc(4090, 97),
+        Buffer.from(") S 1 123 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 456\n"),
+      ]),
+    ])
+      expect(invoke(rejected)).toMatchObject({
+        status: 17,
+        signal: null,
+        stderr: "",
+      });
+  },
+);
+
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "retains the helper group leader until a fast leader descendant is joined",
   () => {
