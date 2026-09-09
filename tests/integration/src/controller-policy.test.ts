@@ -67,6 +67,14 @@ const failureVerifierSource = (workflow: string) => {
       ),
     );
 };
+const failureReceiptValidatorSource = (workflow: string) => {
+  const source = failureVerifierSource(workflow);
+  const start = source.indexOf("const ptyFailurePredicates =");
+  const end = source.indexOf("const readBounded =", start);
+  if (start < 0 || end < 0)
+    throw new Error("missing failure receipt validator");
+  return `const exactKeys = (value, keys) => typeof value === "object" && value !== null && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());\n${source.slice(start, end)}`;
+};
 const cleanupFailureValidatorSource = () => {
   const source = readFileSync(
     resolve(workspaceRoot, "tests/integration/clean.mjs"),
@@ -338,6 +346,18 @@ const writeFailureManifestFixture = (directory: string, runIds: string[]) => {
     { mode: 0o600 },
   );
   return artifacts;
+};
+const writeFailureTerminalFixture = (
+  directory: string,
+  terminal: Record<string, unknown>,
+) => {
+  const artifacts = resolve(directory, "artifacts/integration");
+  mkdirSync(artifacts, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    resolve(artifacts, "controller-failure-terminal.json"),
+    `${JSON.stringify(terminal)}\n`,
+    { mode: 0o600 },
+  );
 };
 const executeFailureVerifier = (
   source: string,
@@ -678,6 +698,135 @@ describe("integration workflow routing policy", () => {
     expect(scenarios).toContain(
       'name === "current-images.json" ? 0o600 : 0o644',
     );
+    const receiptCapture = scenarios.indexOf("captureInstalledPtyFailure(");
+    const ledgerObservation = scenarios.indexOf(
+      "await captureFailureFixtureLedgerObservations(",
+    );
+    expect(receiptCapture).toBeGreaterThanOrEqual(0);
+    expect(ledgerObservation).toBeGreaterThan(receiptCapture);
+    expect(scenarios).toContain(
+      '"require-evidence": Object.freeze(["authority-rejected"])',
+    );
+    expect(scenarios).toContain('"retained-evidence-unavailable"');
+    expect(scenarios).toContain('"run-finalization-rejected"');
+    expect(scenarios).toContain('"manifest-publication-rejected"');
+    expect(scenarios).not.toContain(
+      "always-run exact verifier independently fails if evidence is absent",
+    );
+  });
+});
+
+describe("integration workflow terminal failure evidence", () => {
+  const canonicalTerminal = {
+    controllerFailureTerminalVersion: 1,
+    predicate: "authority-rejected",
+    stage: "require-evidence",
+  };
+  const admitted = [
+    ["require-evidence", "authority-rejected"],
+    ["finalize-run", "retained-evidence-unavailable"],
+    ["finalize-run", "run-finalization-rejected"],
+    ["publish-manifest", "manifest-publication-rejected"],
+  ] as const;
+
+  it.each(admitted)(
+    "authenticates %s/%s while preserving the failed job",
+    (stage, predicate) => {
+      const workflow = readFileSync(
+        resolve(workspaceRoot, ".github/workflows/integration.yml"),
+        "utf8",
+      );
+      const source = failureVerifierSource(workflow).replace(
+        "process.exit(1);",
+        "process.exit(42);",
+      );
+      const directory = mkdtempSync(resolve(tmpdir(), "agentscope-terminal-"));
+      try {
+        writeFailureTerminalFixture(directory, {
+          ...canonicalTerminal,
+          predicate,
+          stage,
+        });
+        expect(runFailureVerifier(source, directory).status).toBe(42);
+      } finally {
+        removeFailureVerifierFixture(directory);
+      }
+    },
+  );
+
+  it.each([
+    {},
+    { ...canonicalTerminal, stage: "unknown" },
+    { ...canonicalTerminal, predicate: "unknown" },
+    { ...canonicalTerminal, extra: true },
+    { ...canonicalTerminal, stage: 1 },
+    { ...canonicalTerminal, predicate: ["authority-rejected"] },
+  ])(
+    "rejects a missing, unknown, substituted, or malformed terminal %#",
+    (terminal) => {
+      const workflow = readFileSync(
+        resolve(workspaceRoot, ".github/workflows/integration.yml"),
+        "utf8",
+      );
+      const source = failureVerifierSource(workflow).replace(
+        "process.exit(1);",
+        "process.exit(42);",
+      );
+      const directory = mkdtempSync(resolve(tmpdir(), "agentscope-terminal-"));
+      try {
+        writeFailureTerminalFixture(directory, terminal);
+        expect(runFailureVerifier(source, directory).status).not.toBe(42);
+      } finally {
+        removeFailureVerifierFixture(directory);
+      }
+    },
+  );
+
+  it("rejects missing, duplicate, and substituted evidence authorities", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const source = failureVerifierSource(workflow).replace(
+      "process.exit(1);",
+      "process.exit(42);",
+    );
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-terminal-"));
+    try {
+      expect(runFailureVerifier(source, directory).status).not.toBe(42);
+      writeFailureTerminalFixture(directory, canonicalTerminal);
+      writeFailureManifestFixture(directory, ["0123456789abcdef"]);
+      expect(runFailureVerifier(source, directory).status).not.toBe(42);
+      writeFileSync(
+        resolve(
+          directory,
+          "artifacts/integration/controller-failure-terminal.json",
+        ),
+        `${JSON.stringify({
+          ...canonicalTerminal,
+          predicate: "manifest-publication-rejected",
+          stage: "publish-manifest",
+        })}\n`,
+        { mode: 0o600 },
+      );
+      expect(runFailureVerifier(source, directory).status).toBe(42);
+      rmSync(
+        resolve(
+          directory,
+          "artifacts/integration/controller-failure-manifest.json",
+        ),
+      );
+      chmodSync(
+        resolve(
+          directory,
+          "artifacts/integration/controller-failure-terminal.json",
+        ),
+        0o644,
+      );
+      expect(runFailureVerifier(source, directory).status).not.toBe(42);
+    } finally {
+      removeFailureVerifierFixture(directory);
+    }
   });
 });
 
@@ -759,10 +908,11 @@ describe("installed-contract workflow failure evidence", () => {
       phase,
       predicate,
     });
-    for (const [phase, predicates] of Object.entries(admitted))
-      for (const predicate of predicates)
-        expect(executeVerifier(receiptFor(phase, predicate))).toBe(0);
-    for (const rejected of [
+    const admittedReceipts = Object.entries(admitted).flatMap(
+      ([phase, predicates]) =>
+        predicates.map((predicate) => receiptFor(phase, predicate)),
+    );
+    const rejected = [
       {},
       { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
       {
@@ -783,8 +933,20 @@ describe("installed-contract workflow failure evidence", () => {
         detail: "forbidden",
       },
       { receiptVersion: 1, phase: "artifact-install", predicate: 1 },
-    ])
-      expect(executeVerifier(rejected)).not.toBe(0);
+    ];
+    const validation = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `${failureReceiptValidatorSource(workflow)}\nconst admitted = JSON.parse(process.argv[1]); const rejected = JSON.parse(process.argv[2]); process.exit(admitted.every(validPtyFailure) && rejected.every((value) => !validPtyFailure(value)) ? 0 : 1);`,
+        JSON.stringify(admittedReceipts),
+        JSON.stringify(rejected),
+      ],
+      { stdio: "ignore" },
+    );
+    expect(validation.status).toBe(0);
+    expect(executeVerifier(admittedReceipts.at(-1))).toBe(0);
     expect(
       executeVerifier(null, (evidence) => {
         evidence.cleanup = {};

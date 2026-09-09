@@ -79,6 +79,7 @@ const integrationRoot = import.meta.dirname;
 const workspaceRoot = resolve(integrationRoot, "../..");
 const artifactsRoot = resolve(workspaceRoot, "artifacts/integration");
 const installedPtyFailures = new Map();
+const failureObservationSecondaryByRun = new Map();
 const installedContractSourcePath = resolve(
   workspaceRoot,
   "apps/cli/scripts/verify-installed-contract.ts",
@@ -1665,10 +1666,6 @@ const scenarioContainerArguments = (
 };
 const handleScenarioFailure = async (plan, error, outerMonotonicDeadline) => {
   const output = `${error?.stdout ?? ""}`;
-  await captureFailureFixtureLedgerObservations(
-    plan,
-    failureLedgerCaptureSignal(),
-  );
   captureFixtureResult(output, plan);
   if (output.includes("AGENTSCOPE_PTY_FAILURE="))
     captureInstalledPtyFailure(output, plan);
@@ -1693,11 +1690,25 @@ const handleScenarioFailure = async (plan, error, outerMonotonicDeadline) => {
       performance.now(),
     );
   }
-  if (!output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) throw error;
-  const receipt = captureHeadlessReceipt(output, plan, {
-    outerMonotonicDeadline,
-  });
-  registerIntegrationHeadlessReceipt(receipt, performance.now());
+  let receipt;
+  if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
+    receipt = captureHeadlessReceipt(output, plan, {
+      outerMonotonicDeadline,
+    });
+    registerIntegrationHeadlessReceipt(receipt, performance.now());
+  }
+  try {
+    await captureFailureFixtureLedgerObservations(
+      plan,
+      failureLedgerCaptureSignal(),
+    );
+  } catch {
+    failureObservationSecondaryByRun.set(
+      plan.runId,
+      "integration.isolation.evidence",
+    );
+  }
+  if (receipt === undefined) throw error;
   return { installedCliContractEvidence, receipt, succeeded: false };
 };
 const runScenario = async (plan, signal) => {
@@ -1985,7 +1996,14 @@ const finalizeControllerFailureEvidence = (
       typeof primaryError?.scenarioFailure === "string"
         ? primaryError.scenarioFailure
         : null,
-    scenarioSecondaryFailures: isolationSecondaryFailures(primaryError),
+    scenarioSecondaryFailures: [
+      ...new Set([
+        ...isolationSecondaryFailures(primaryError),
+        ...(failureObservationSecondaryByRun.has(plan.runId)
+          ? [failureObservationSecondaryByRun.get(plan.runId)]
+          : []),
+      ]),
+    ],
     cleanupFailure:
       cleanupError === undefined ? null : failureCode(cleanupError),
     installedPtyFailure: installedPtyFailures.get(plan.runId) ?? null,
@@ -2063,6 +2081,65 @@ const publishControllerFailureManifest = (identities) => {
   const temporary = resolve(
     artifactsRoot,
     `.controller-failure-manifest.${process.pid}.tmp`,
+  );
+  let descriptor;
+  let directoryDescriptor;
+  try {
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(artifactsRoot, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.controller.failure-evidence");
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.controller.failure-evidence", {
+      cause: error,
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
+};
+const controllerFailureTerminalPredicates = Object.freeze({
+  "require-evidence": Object.freeze(["authority-rejected"]),
+  "finalize-run": Object.freeze([
+    "retained-evidence-unavailable",
+    "run-finalization-rejected",
+  ]),
+  "publish-manifest": Object.freeze(["manifest-publication-rejected"]),
+});
+const publishControllerFailureTerminal = (stage, predicate) => {
+  if (!controllerFailureTerminalPredicates[stage]?.includes(predicate))
+    throw new Error("integration.controller.failure-evidence");
+  const record = {
+    controllerFailureTerminalVersion: 1,
+    stage,
+    predicate,
+  };
+  const serialized = `${JSON.stringify(record)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > 4096)
+    throw new Error("integration.controller.failure-evidence");
+  const target = resolve(artifactsRoot, "controller-failure-terminal.json");
+  const temporary = resolve(
+    artifactsRoot,
+    `.controller-failure-terminal.${process.pid}.tmp`,
   );
   let descriptor;
   let directoryDescriptor;
@@ -2284,15 +2361,30 @@ try {
     }
   }
   if (primaryError !== undefined) {
+    let terminalStage = "require-evidence";
+    let terminalPredicate = "authority-rejected";
     try {
       requireIntegrationFailureEvidence(plans.map(({ runId }) => runId));
+      terminalStage = "finalize-run";
+      terminalPredicate = plans.some(
+        ({ runId }) => !retainedRunIdentities.has(runId),
+      )
+        ? "retained-evidence-unavailable"
+        : "run-finalization-rejected";
       const identities = plans.map((plan) =>
         finalizeControllerFailureEvidence(plan, primaryError, cleanupError),
       );
+      terminalStage = "publish-manifest";
+      terminalPredicate = "manifest-publication-rejected";
       publishControllerFailureManifest(identities);
     } catch {
-      // The original controller failure remains primary. The workflow's
-      // always-run exact verifier independently fails if evidence is absent.
+      try {
+        publishControllerFailureTerminal(terminalStage, terminalPredicate);
+      } catch {
+        process.stderr.write(
+          `${JSON.stringify({ predicate: terminalPredicate, stage: terminalStage })}\n`,
+        );
+      }
     }
   }
 }

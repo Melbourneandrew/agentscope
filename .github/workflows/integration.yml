@@ -140,6 +140,7 @@ jobs:
           import {
             closeSync,
             constants,
+            existsSync,
             fstatSync,
             lstatSync,
             openSync,
@@ -252,6 +253,44 @@ jobs:
             artifactsRoot,
             "controller-failure-manifest.json",
           );
+          const terminalPath = resolve(
+            artifactsRoot,
+            "controller-failure-terminal.json",
+          );
+          const manifestPresent = existsSync(manifestPath);
+          const terminalPresent = existsSync(terminalPath);
+          if (!manifestPresent && !terminalPresent) fail();
+          if (terminalPresent) {
+            const terminal = JSON.parse(
+              readBounded(terminalPath, 4096).content.toString("utf8"),
+            );
+            const terminalPredicates = {
+              "require-evidence": ["authority-rejected"],
+              "finalize-run": [
+                "retained-evidence-unavailable",
+                "run-finalization-rejected",
+              ],
+              "publish-manifest": ["manifest-publication-rejected"],
+            };
+            if (
+              !exactKeys(terminal, [
+                "controllerFailureTerminalVersion",
+                "predicate",
+                "stage",
+              ]) ||
+              terminal.controllerFailureTerminalVersion !== 1 ||
+              !Object.hasOwn(terminalPredicates, terminal.stage) ||
+              !terminalPredicates[terminal.stage].includes(terminal.predicate) ||
+              (manifestPresent && terminal.stage !== "publish-manifest")
+            ) fail();
+            for (const descriptor of authenticatedDescriptors.splice(0))
+              closeSync(descriptor);
+            process.stdout.write(`${JSON.stringify({
+              predicate: terminal.predicate,
+              stage: terminal.stage,
+            })}\n`);
+            process.exit(1);
+          }
           const manifestBytes = readBounded(manifestPath, 65_536).content;
           const manifest = JSON.parse(manifestBytes.toString("utf8"));
           if (
