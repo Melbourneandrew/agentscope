@@ -513,7 +513,7 @@ def run(argv,cutoff,operation_stage):
   if now()>=DEADLINE:
    REASON="deadline" if operation_stage=="client-terminal" else ""
    raise RuntimeError("terminal")
-  if child.returncode!=0:
+  if child.returncode!=0 and not (OPERATION=="unit-collection" and child.returncode==4):
    REASON="nonzero-terminal" if operation_stage=="client-terminal" else ""
    raise RuntimeError("terminal")
   close_group(leader,expected,control,expected_members)
@@ -2229,6 +2229,12 @@ const proveCollected = async (state) => {
     let facts;
     try {
       facts = exactUnitFacts(output);
+      const keys = Object.keys(facts);
+      if (
+        !Object.hasOwn(facts, "LoadState") ||
+        keys.some((key) => !unitProperties.includes(key))
+      )
+        failSystemd();
     } catch {
       failSystemdLifecycle(state, "collection", "unit-facts");
     }

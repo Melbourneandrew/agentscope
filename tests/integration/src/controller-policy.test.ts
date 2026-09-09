@@ -3016,6 +3016,16 @@ it("preserves authenticated root-tool failure authority during collection", () =
       new Error("integration.controller.systemd-tool:client-terminal:deadline"),
     ),
   ).toBeUndefined();
+  expect(supervisor).toContain(
+    'if child.returncode!=0 and not (OPERATION=="unit-collection" and child.returncode==4):',
+  );
+  expect(supervisor).not.toContain(
+    'if child.returncode!=0 and not (OPERATION=="unit-retirement" and child.returncode==4):',
+  );
+  expect(collection).toContain('!Object.hasOwn(facts, "LoadState")');
+  expect(collection).toContain(
+    "keys.some((key) => !unitProperties.includes(key))",
+  );
 });
 
 it("authenticates only the closed sentinel reason inventory", () => {
