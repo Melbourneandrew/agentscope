@@ -51,9 +51,31 @@ export type SystemdToolSentinelReason =
   | "residual"
   | "internal-unknown";
 
+export type SystemdToolJoinReason =
+  | "leader-identity"
+  | "preclose-residual"
+  | "control-close"
+  | "reap-timeout"
+  | "identity-drift"
+  | "postreap-residual"
+  | "internal-unknown";
+
+export type SystemdToolClientTerminalReason =
+  | "cutoff"
+  | "deadline"
+  | "leader-identity"
+  | "child-admission"
+  | "member-identity"
+  | "output-read"
+  | "output-bound"
+  | "nonzero-terminal"
+  | "internal-unknown";
+
 export type SystemdToolFailurePredicate =
-  | Exclude<SystemdToolFailureStage, "sentinel">
-  | `sentinel:${SystemdToolSentinelReason}`;
+  | Exclude<SystemdToolFailureStage, "sentinel" | "join" | "client-terminal">
+  | `sentinel:${SystemdToolSentinelReason}`
+  | `join:${SystemdToolJoinReason}`
+  | `client-terminal:${SystemdToolClientTerminalReason}`;
 
 export function systemdToolFailureStage(
   error: unknown,
@@ -73,7 +95,11 @@ export function validateRootToolReceipt(
 ):
   | Readonly<{
       output: string;
-      reason: "" | SystemdToolSentinelReason;
+      reason:
+        | ""
+        | SystemdToolSentinelReason
+        | SystemdToolJoinReason
+        | SystemdToolClientTerminalReason;
       stage: SystemdToolFailureStage;
       status: "error" | "ok" | "uncertain";
     }>

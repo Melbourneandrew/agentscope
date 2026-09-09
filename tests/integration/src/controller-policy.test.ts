@@ -1996,7 +1996,6 @@ it("authenticates a closed root-helper stage receipt against its operation ident
     "cutoff",
     "sentinel",
     "tool-spawn",
-    "client-terminal",
     "unit-admission",
     "retirement",
     "join",
@@ -2255,6 +2254,169 @@ it("authenticates only the closed join reason inventory", () => {
   expect(supervisor).toContain("if leader_reaped and not records: break");
   expect(supervisor).toContain("STAGE=failed_stage\n   REASON=failed_reason");
 });
+
+it("authenticates only the closed client-terminal reason inventory", () => {
+  const key = "9".repeat(64);
+  const identity = {
+    cutoff: "100",
+    deadline: "200",
+    operation: "synthetic-client-internal",
+    unit: "",
+  };
+  const receiptFor = (reason: string) => {
+    const fields = {
+      cutoff: identity.cutoff,
+      deadline: identity.deadline,
+      operation: identity.operation,
+      output: "",
+      reason,
+      stage: "client-terminal",
+      status: "error",
+      unit: identity.unit,
+    };
+    const mac = createHmac("sha256", Buffer.from(key, "hex"))
+      .update(JSON.stringify(fields))
+      .digest("hex");
+    return JSON.stringify({
+      mac,
+      output: "",
+      reason,
+      stage: "client-terminal",
+      status: "error",
+    });
+  };
+  for (const reason of [
+    "cutoff",
+    "deadline",
+    "leader-identity",
+    "child-admission",
+    "member-identity",
+    "output-read",
+    "output-bound",
+    "nonzero-terminal",
+    "internal-unknown",
+  ])
+    expect(
+      validateRootToolReceipt({ identity, key, receipt: receiptFor(reason) }),
+    ).toEqual({
+      output: "",
+      reason,
+      stage: "client-terminal",
+      status: "error",
+    });
+  for (const receipt of [
+    receiptFor("unknown"),
+    receiptFor("cutoff").slice(0, -1),
+    receiptFor("cutoff").replace(
+      '"reason":"cutoff"',
+      '"reason":"cutoff","reason":"cutoff"',
+    ),
+  ])
+    expect(validateRootToolReceipt({ identity, key, receipt })).toBeUndefined();
+  expect(
+    validateRootToolReceipt({
+      identity: { ...identity, operation: "synthetic-client-nonzero" },
+      key,
+      receipt: receiptFor("cutoff"),
+    }),
+  ).toBeUndefined();
+});
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "executes every closed client-terminal failure branch without raw diagnostics",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
+    const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
+    const cases = [
+      ["synthetic-client-cutoff", "cutoff", sleepArguments],
+      ["synthetic-client-deadline", "deadline", sleepArguments],
+      ["synthetic-client-leader-identity", "leader-identity", delayArguments],
+      ["synthetic-client-child-admission", "child-admission", delayArguments],
+      ["synthetic-client-member-identity", "member-identity", sleepArguments],
+      ["synthetic-client-output-read", "output-read", sleepArguments],
+      [
+        "synthetic-client-output-bound",
+        "output-bound",
+        ["-I", "-S", "-c", 'import os; os.write(1,b"x"*65537)'],
+      ],
+      [
+        "synthetic-client-nonzero",
+        "nonzero-terminal",
+        ["-I", "-S", "-c", "import sys; sys.exit(17)"],
+      ],
+      ["synthetic-client-internal", "internal-unknown", delayArguments],
+    ] as const;
+    for (const [operation, reason, arguments_] of cases) {
+      const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+      if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+        throw new Error("invalid synthetic boottime authority");
+      const [seconds, fraction] = uptime.split(".");
+      if (seconds === undefined || fraction === undefined)
+        throw new Error("invalid synthetic boottime authority");
+      const now =
+        BigInt(seconds) * 1_000_000_000n +
+        BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+      const deadline = String(
+        now +
+          (operation === "synthetic-client-deadline"
+            ? 1_300_000_000n
+            : 2_000_000_000n),
+      );
+      const cutoff = String(
+        now +
+          (operation === "synthetic-client-cutoff"
+            ? 1_000_000_000n
+            : operation === "synthetic-client-deadline"
+              ? 2_000_000_000n
+              : 1_200_000_000n),
+      );
+      const key = createHash("sha256").update(operation).digest("hex");
+      const terminal = spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          helper,
+          deadline,
+          cutoff,
+          operation,
+          "/usr/bin/python3",
+          Buffer.from(JSON.stringify(arguments_)).toString("base64url"),
+          "",
+          key,
+        ],
+        {
+          encoding: "utf8",
+          env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+          timeout: 3_000,
+        },
+      );
+      expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+      const receipt = validateRootToolReceipt({
+        identity: { cutoff, deadline, operation, unit: "" },
+        key,
+        receipt: terminal.stdout,
+      });
+      expect(receipt).toMatchObject({
+        output: "",
+        reason,
+        stage: "client-terminal",
+      });
+      expect(["error", "uncertain"]).toContain(receipt?.status);
+      expect(terminal.stdout).not.toContain("Traceback");
+    }
+  },
+  30_000,
+);
 
 it("emits only an authenticated closed systemd-tool stage annotation", () => {
   const action = readFileSync(
