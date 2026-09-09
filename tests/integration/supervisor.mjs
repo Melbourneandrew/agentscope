@@ -103,6 +103,13 @@ const systemdRetirementAuthorityReasons = new Set([
   "authority-hardening",
   "authority-principal",
 ]);
+const systemdRetirementDiagnosticReasons = new Set([
+  "cgroup-retained",
+  "cgroup-path",
+  "unit-show",
+  "unit-command",
+  "descriptor-close",
+]);
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
@@ -729,7 +736,9 @@ const failSystemdLifecycle = (state, phase, reason) => {
     !systemdLifecyclePhases.has(phase) ||
     !(
       systemdLifecycleReasons.has(reason) ||
-      (phase === "retirement" && systemdRetirementAuthorityReasons.has(reason))
+      (phase === "retirement" &&
+        (systemdRetirementAuthorityReasons.has(reason) ||
+          systemdRetirementDiagnosticReasons.has(reason)))
     ) ||
     typeof state.authority?.unit !== "string" ||
     !Number.isFinite(state.deadline) ||
@@ -759,7 +768,8 @@ export const validSystemdLifecyclePredicate = (predicate) => {
     systemdLifecyclePhases.has(match[1]) &&
     (systemdLifecycleReasons.has(match[2]) ||
       (match[1] === "retirement" &&
-        systemdRetirementAuthorityReasons.has(match[2])))
+        (systemdRetirementAuthorityReasons.has(match[2]) ||
+          systemdRetirementDiagnosticReasons.has(match[2]))))
   );
 };
 
@@ -1974,7 +1984,8 @@ const recheckRetainedCgroupDescriptors = (authority) => {
   }
 };
 
-const retainedCgroupIsEmpty = (authority) => {
+const retainedCgroupIsEmpty = (authority, markDiagnostic = undefined) => {
+  markDiagnostic?.("cgroup-retained");
   recheckRetainedCgroupDescriptors(authority);
   const content = Buffer.alloc(4097);
   let size = 0;
@@ -2038,7 +2049,11 @@ export const closeDescriptorSet = (descriptors, close = closeSync) => {
   return closed;
 };
 
-const authenticatedCgroupIsAbsent = (cgroupPath, authority) => {
+const authenticatedCgroupIsAbsent = (
+  cgroupPath,
+  authority,
+  markDiagnostic = undefined,
+) => {
   const parentPath = dirname(cgroupPath);
   const childPaths = [
     cgroupPath,
@@ -2059,29 +2074,43 @@ const authenticatedCgroupIsAbsent = (cgroupPath, authority) => {
       failSystemd();
     recheckRetainedCgroupDescriptors(authority);
   };
+  markDiagnostic?.("cgroup-retained");
   recheckParent();
-  if (!retainedCgroupIsEmpty(authority)) return false;
+  if (!retainedCgroupIsEmpty(authority, markDiagnostic)) return false;
+  markDiagnostic?.("cgroup-path");
   if (!childPaths.every(exactPathIsAbsent)) return false;
+  markDiagnostic?.("cgroup-retained");
   recheckParent();
+  markDiagnostic?.("cgroup-path");
   return childPaths.every(exactPathIsAbsent);
 };
 
-export const cgroupObservationSettled = (cgroupPath, identity) => {
+const observeCgroupSettlement = (
+  cgroupPath,
+  identity,
+  markDiagnostic = undefined,
+) => {
+  markDiagnostic?.("cgroup-retained");
   if (!sameCgroupIdentity(identity, identity)) failSystemd();
+  markDiagnostic?.("cgroup-path");
   if (exactPathIsAbsent(cgroupPath)) {
-    return authenticatedCgroupIsAbsent(cgroupPath, identity);
+    return authenticatedCgroupIsAbsent(cgroupPath, identity, markDiagnostic);
   }
   try {
+    markDiagnostic?.("cgroup-retained");
     return cgroupIsEmpty(cgroupPath, identity);
   } catch (error) {
-    if (
-      error?.code === "ENOENT" &&
-      authenticatedCgroupIsAbsent(cgroupPath, identity)
-    )
-      return true;
+    if (error?.code === "ENOENT") {
+      markDiagnostic?.("cgroup-path");
+      if (authenticatedCgroupIsAbsent(cgroupPath, identity, markDiagnostic))
+        return true;
+    }
     throw error;
   }
 };
+
+export const cgroupObservationSettled = (cgroupPath, identity) =>
+  observeCgroupSettlement(cgroupPath, identity);
 
 const waitForTerminal = async (authority, deadline, interrupted) => {
   while (
@@ -2128,10 +2157,12 @@ const proveCollected = async (
 const retireUnit = async (authority, deadline, lifecycleState) => {
   let facts;
   try {
+    if (lifecycleState !== undefined)
+      lifecycleState.retirementDiagnosticReason = "unit-show";
     facts = await showUnit(authority.unit, deadline, "unit-retirement");
   } catch (error) {
     if (lifecycleState === undefined) throw error;
-    rethrowSystemdLifecycle(lifecycleState, error, "malformed");
+    rethrowSystemdLifecycle(lifecycleState, error, "unit-show");
   }
   if (facts.LoadState === "not-found") return;
   const mismatch = classifySystemdUnitAuthority(facts, authority);
@@ -2139,6 +2170,8 @@ const retireUnit = async (authority, deadline, lifecycleState) => {
     if (lifecycleState === undefined) failSystemd();
     failSystemdLifecycle(lifecycleState, "retirement", `authority-${mismatch}`);
   }
+  if (lifecycleState !== undefined)
+    lifecycleState.retirementDiagnosticReason = "unit-command";
   if (facts.ActiveState === "failed")
     await rootTool(systemctlPath, ["reset-failed", authority.unit], deadline, {
       operation: "unit-reset",
@@ -2281,6 +2314,7 @@ export const prepareGithubSystemdSupervision = async ({
     mappedExecutable,
     maximumMilliseconds,
     preparationDeadline,
+    retirementDiagnosticReason: undefined,
     stdio: suppliedStdio,
     cgroupIdentity: undefined,
     unitMayExist: false,
@@ -2335,13 +2369,16 @@ const closePreparedSystemdState = async (state) => {
     process.removeListener("SIGINT", state.forwardSignal);
     process.removeListener("SIGTERM", state.forwardSignal);
     if (state.cgroupIdentity !== undefined) {
-      if (!closeDescriptorSet(state.cgroupIdentity.descriptors))
+      if (!closeDescriptorSet(state.cgroupIdentity.descriptors)) {
+        state.retirementDiagnosticReason = "descriptor-close";
         contained = false;
+      }
       state.cgroupIdentity = undefined;
     }
     try {
       closeSync(state.mappedExecutable.descriptor);
     } catch {
+      state.retirementDiagnosticReason = "descriptor-close";
       contained = false;
     }
   }
@@ -2360,10 +2397,16 @@ const systemdLifecycleReason = (state, fallback = "authority") => {
 
 const rethrowSystemdLifecycle = (state, error, fallback) => {
   if (systemdToolFailureStage(error) !== undefined) throw error;
+  const diagnosticReason =
+    state.lifecyclePhase === "retirement" &&
+    fallback === "authority" &&
+    systemdRetirementDiagnosticReasons.has(state.retirementDiagnosticReason)
+      ? state.retirementDiagnosticReason
+      : fallback;
   failSystemdLifecycle(
     state,
     state.lifecyclePhase,
-    systemdLifecycleReason(state, fallback),
+    systemdLifecycleReason(state, diagnosticReason),
   );
 };
 
@@ -2460,7 +2503,17 @@ const terminateSystemdCgroup = async (state) => {
 const retireAndCollectSystemdUnit = async (state) => {
   state.lifecyclePhase = "retirement";
   try {
-    while (!cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity))
+    const markDiagnostic = (reason) => {
+      if (!systemdRetirementDiagnosticReasons.has(reason)) failSystemd();
+      state.retirementDiagnosticReason = reason;
+    };
+    while (
+      !observeCgroupSettlement(
+        state.cgroupPath,
+        state.cgroupIdentity,
+        markDiagnostic,
+      )
+    )
       await delay(Math.min(50, remainingMilliseconds(state.deadline)));
     await retireUnit(state.authority, state.deadline, state);
   } catch (error) {
@@ -2563,7 +2616,15 @@ const runSystemdSupervised = async ({
   } finally {
     const closed = await closePreparedGithubSystemdSupervision(prepared);
     if (!closed && !lifecycleFailed)
-      failSystemdLifecycle(state, "collection", "authority");
+      failSystemdLifecycle(
+        state,
+        state.retirementDiagnosticReason === "descriptor-close"
+          ? "retirement"
+          : "collection",
+        state.retirementDiagnosticReason === "descriptor-close"
+          ? "descriptor-close"
+          : "authority",
+      );
   }
   return result;
 };

@@ -133,9 +133,17 @@ export type SystemdRetirementAuthorityReason =
   | "authority-hardening"
   | "authority-principal";
 
+export type SystemdRetirementDiagnosticReason =
+  | "cgroup-retained"
+  | "cgroup-path"
+  | "unit-show"
+  | "unit-command"
+  | "descriptor-close";
+
 export type SystemdLifecycleFailurePredicate =
   | `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`
-  | `lifecycle:retirement:${SystemdRetirementAuthorityReason}`;
+  | `lifecycle:retirement:${
+      SystemdRetirementAuthorityReason | SystemdRetirementDiagnosticReason}`;
 
 export type SystemdToolFailurePredicate =
   | Exclude<SystemdToolFailureStage, "sentinel" | "join" | "client-terminal">

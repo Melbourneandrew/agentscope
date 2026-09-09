@@ -872,9 +872,7 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
     supervisor.indexOf("const retireAndCollectSystemdUnit ="),
     supervisor.indexOf("const runSystemdSupervised ="),
   );
-  expect(retirement).toContain(
-    "cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity)",
-  );
+  expect(retirement).toContain("!observeCgroupSettlement(");
   expect(retirement.indexOf("await retireUnit(")).toBeLessThan(
     retirement.indexOf("await proveCollected("),
   );
@@ -2776,6 +2774,11 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     "authority-cgroup",
     "authority-hardening",
     "authority-principal",
+    "cgroup-retained",
+    "cgroup-path",
+    "unit-show",
+    "unit-command",
+    "descriptor-close",
   ]) {
     expect(
       validSystemdLifecyclePredicate(`lifecycle:retirement:${reason}`),
@@ -2790,6 +2793,8 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     "lifecycle:unknown:deadline",
     "lifecycle:terminal-wait:unknown",
     "lifecycle:terminal-wait:deadline:extra",
+    "lifecycle:retirement:cgroup-retained:extra",
+    "lifecycle:retirement:unknown",
     "lifecycle::deadline",
     "lifecycle:terminal-wait:",
     "lifecycle:terminal-wait:deadline\nlifecycle:collection:deadline",
@@ -2807,6 +2812,28 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
     "utf8",
   );
+  const retirement = supervisor.slice(
+    supervisor.indexOf("const retireAndCollectSystemdUnit ="),
+    supervisor.indexOf("const runSystemdSupervised ="),
+  );
+  expect(retirement).toContain("state.retirementDiagnosticReason = reason;");
+  expect(retirement.indexOf("markDiagnostic,")).toBeLessThan(
+    retirement.indexOf("await retireUnit("),
+  );
+  const retireUnit = supervisor.slice(
+    supervisor.indexOf("const retireUnit ="),
+    supervisor.indexOf("const systemdEnvironmentArguments ="),
+  );
+  expect(retireUnit.indexOf('"unit-show"')).toBeLessThan(
+    retireUnit.indexOf("await showUnit("),
+  );
+  expect(retireUnit.indexOf('"unit-command"')).toBeLessThan(
+    retireUnit.indexOf('if (facts.ActiveState === "failed")'),
+  );
+  expect(supervisor).toContain(
+    'state.retirementDiagnosticReason = "descriptor-close";',
+  );
+
   for (const phase of phases)
     expect(supervisor).toContain(`state.lifecyclePhase = "${phase}"`);
   expect(supervisor).toContain(
