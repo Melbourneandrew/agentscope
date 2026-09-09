@@ -1152,22 +1152,29 @@ export const revalidateCredentialedSource = (authority) => {
 };
 
 export const buildLifecycleEnvironment = (sourceEnvironment) => {
-  const environment = { ...sourceEnvironment };
-  for (const name of [
-    "ACTIONS_RESULTS_URL",
-    "ACTIONS_RUNTIME_TOKEN",
-    "AGENTSCOPE_FAILURE_ARTIFACT_NAME",
-    "GITHUB_ACTION_PATH",
-    "GITHUB_ACTION_REPOSITORY",
-    "REPLAY_SCENARIO",
-    "REPLAY_SHARD",
-  ])
-    delete environment[name];
+  const environment = Object.fromEntries(
+    [
+      "AGENTSCOPE_INTEGRATION_CONCURRENCY",
+      "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS",
+      "AGENTSCOPE_INTEGRATION_TIMEOUT_MS",
+      "GITHUB_ACTIONS",
+      "GITHUB_JOB",
+      "GITHUB_REPOSITORY",
+      "GITHUB_RUN_ATTEMPT",
+      "GITHUB_RUN_ID",
+      "GITHUB_SHA",
+      "RUNNER_ENVIRONMENT",
+      "RUNNER_NAME",
+    ].flatMap((name) =>
+      typeof sourceEnvironment[name] === "string"
+        ? [[name, sourceEnvironment[name]]]
+        : [],
+    ),
+  );
+  environment.AGENTSCOPE_INTEGRATION_SHARD = sourceEnvironment.REPLAY_SHARD;
   if ((sourceEnvironment.REPLAY_SCENARIO ?? "") !== "")
     environment.AGENTSCOPE_INTEGRATION_SCENARIO =
       sourceEnvironment.REPLAY_SCENARIO;
-  else
-    environment.AGENTSCOPE_INTEGRATION_SHARD = sourceEnvironment.REPLAY_SHARD;
   return environment;
 };
 
@@ -1208,8 +1215,11 @@ const outerControllerMain = async () => {
     Number(suppliedDeadline) - hostMilliseconds,
   );
   if (maximumMilliseconds < 2 * 60 * 1000) fail();
+  const lifecycleEnvironment = buildLifecycleEnvironment(process.env);
+  lifecycleEnvironment.AGENTSCOPE_INTEGRATION_REPLAY =
+    process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME.endsWith("-1") ? "1" : "2";
   const result = await runSupervisedProcess({
-    environment: buildLifecycleEnvironment(process.env),
+    environment: lifecycleEnvironment,
     executable: process.execPath,
     arguments_: [
       resolve(
@@ -1218,6 +1228,7 @@ const outerControllerMain = async () => {
       ),
     ],
     maximumMilliseconds,
+    containment: "github-systemd",
   });
   let succeeded;
   try {

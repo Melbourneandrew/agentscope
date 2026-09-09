@@ -7,6 +7,7 @@ export type SupervisedProcessResult = Readonly<{
 
 export function runSupervisedProcess(input: {
   arguments_?: readonly string[];
+  containment?: "github-systemd";
   environment: NodeJS.ProcessEnv;
   executable: string;
   maximumMilliseconds: number;

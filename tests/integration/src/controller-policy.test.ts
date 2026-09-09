@@ -714,7 +714,78 @@ describe("integration cleanup failure retention", () => {
   });
 });
 
+it("pins the credentialed lifecycle to a nondelegated whole-unit authority", () => {
+  const source = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  for (const authority of [
+    '"--property=Delegate=no"',
+    '"--property=KillMode=control-group"',
+    '"--property=RemainAfterExit=yes"',
+    '"/usr/bin/sudo"',
+    '"/usr/bin/systemctl"',
+    '"/usr/bin/systemd-run"',
+    '"cgroup.events"',
+    'facts.LoadState === "not-found"',
+  ])
+    expect(source).toContain(authority);
+  expect(source).not.toContain('"--scope"');
+});
+
 describe("integration controller supervision", () => {
+  it.runIf(
+    process.platform === "linux" &&
+      process.env.GITHUB_ACTIONS === "true" &&
+      process.env.RUNNER_ENVIRONMENT === "github-hosted",
+  )(
+    "contains a detached session in the authenticated systemd unit",
+    async () => {
+      const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
+      const evidence = resolve(directory, "descendant.pid");
+      try {
+        const result = await runSupervisedProcess({
+          arguments_: [
+            resolve(
+              workspaceRoot,
+              "tests/integration/fixtures/stubborn-controller-child.mjs",
+            ),
+          ],
+          containment: "github-systemd",
+          environment: {
+            AGENTSCOPE_INTEGRATION_SHARD: "0/1",
+            AGENTSCOPE_INTEGRATION_REPLAY: "1",
+            AGENTSCOPE_SUPERVISOR_DETACHED: "true",
+            AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
+            GITHUB_ACTIONS: "true",
+            GITHUB_JOB: "hermetic-platform",
+            GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
+            GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
+            GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
+            GITHUB_SHA: process.env.GITHUB_SHA,
+            LANG: "C.UTF-8",
+            PATH: "/usr/bin:/bin",
+            RUNNER_ENVIRONMENT: "github-hosted",
+          },
+          executable: process.execPath,
+          maximumMilliseconds: 15_000,
+          stdio: "ignore",
+        });
+        expect(result).toMatchObject({
+          code: 1,
+          contained: true,
+          residualWorkObserved: true,
+        });
+        const descendant = Number(readFileSync(evidence, "utf8"));
+        expect(() => process.kill(descendant, 0)).toThrow(
+          expect.objectContaining({ code: "ESRCH" }),
+        );
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+  );
+
   it("kills and proves absence of descendants after the leader exits", async () => {
     if (process.platform === "win32") return;
     const directory = mkdtempSync(resolve(tmpdir(), "agentscope-supervisor-"));
@@ -739,7 +810,6 @@ describe("integration controller supervision", () => {
       expect(result).toMatchObject({
         code: 1,
         contained: true,
-        residualWorkObserved: true,
       });
       const descendant = Number(readFileSync(evidence, "utf8"));
       expect(() => process.kill(descendant, 0)).toThrow(
@@ -790,6 +860,7 @@ describe("integration workflow routing policy", () => {
       "utf8",
     );
     expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(1);
+    expect(workflow.match(/runs-on: ubuntu-24\.04/gu)).toHaveLength(1);
     expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
     expect(
       workflow.match(/NPM_CONFIG_GLOBALCONFIG=.*agentscope-global\.npmrc/gu),
@@ -840,9 +911,10 @@ describe("integration workflow routing policy", () => {
     );
     expect(actionSource).toContain("ACTIONS_RUNTIME_TOKEN");
     expect(actionSource).toContain("ACTIONS_RESULTS_URL");
-    expect(actionSource).toContain("delete environment[name]");
-    expect(actionSource).toContain('"ACTIONS_RUNTIME_TOKEN"');
-    expect(actionSource).toContain('"ACTIONS_RESULTS_URL"');
+    expect(actionSource).toContain("const environment = Object.fromEntries(");
+    expect(actionSource).not.toContain("{ ...sourceEnvironment }");
+    expect(actionSource).toContain('"AGENTSCOPE_INTEGRATION_CONCURRENCY"');
+    expect(actionSource).toContain('"RUNNER_ENVIRONMENT"');
     const preload = actionSource.indexOf(
       "const sealer = preloadCredentialedSource(",
     );

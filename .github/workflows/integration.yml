@@ -73,7 +73,7 @@ jobs:
   hermetic-platform:
     name: Hermetic shard ${{ matrix.shard.name }} replay ${{ matrix.replay }}
     needs: prepare-candidate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       GIT_CONFIG_GLOBAL: /dev/null

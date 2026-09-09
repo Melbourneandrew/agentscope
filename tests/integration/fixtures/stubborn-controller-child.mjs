@@ -7,7 +7,10 @@ if (evidencePath === undefined)
 const descendant = spawn(
   "/bin/sh",
   ["-c", 'trap "" TERM; while :; do sleep 1; done'],
-  { stdio: "ignore" },
+  {
+    detached: process.env.AGENTSCOPE_SUPERVISOR_DETACHED === "true",
+    stdio: "ignore",
+  },
 );
 if (!Number.isSafeInteger(descendant.pid) || descendant.pid < 1)
   throw new Error("integration.supervisor.fixture");
