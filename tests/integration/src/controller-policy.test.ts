@@ -1502,6 +1502,9 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const start = supervisorSource.indexOf(prefix) + prefix.length;
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
+    expect(
+      helper.match(/terminate\(child,leader,expected,control\)/gu),
+    ).toHaveLength(1);
     const encodedArguments = Buffer.from(
       JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
     ).toString("base64url");
