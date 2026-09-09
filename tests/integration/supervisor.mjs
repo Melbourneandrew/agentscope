@@ -603,8 +603,8 @@ export const parseSystemdMainExitStatus = (facts) => {
   if (terminal !== undefined) return terminal;
   const code = parseNumericSystemdExitStatus(facts);
   if (
-    code === 0 &&
-    facts.Result === "success" &&
+    code !== undefined &&
+    facts.Result === (code === 0 ? "success" : "exit-code") &&
     ((facts.ActiveState === "active" && facts.SubState === "running") ||
       (facts.ActiveState === "deactivating" &&
         facts.SubState === "stop-sigterm"))

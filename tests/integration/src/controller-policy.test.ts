@@ -815,8 +815,21 @@ it("observes exact main exit facts before retiring retained descendants", () => 
     ActiveState: "deactivating",
     SubState: "stop-sigterm",
   };
+  const failedMainWithRetainedDescendant = {
+    ...retainedDescendant,
+    ExecMainStatus: "17",
+    Result: "exit-code",
+  };
   expect(parseSystemdMainExitStatus(retainedDescendant)).toBe(0);
   expect(parseSystemdMainExitStatus(deactivatingDescendant)).toBe(0);
+  expect(parseSystemdMainExitStatus(failedMainWithRetainedDescendant)).toBe(17);
+  expect(
+    parseSystemdMainExitStatus({
+      ...failedMainWithRetainedDescendant,
+      ActiveState: "deactivating",
+      SubState: "stop-sigterm",
+    }),
+  ).toBe(17);
   expect(systemdMainProcessIsTerminal(retainedDescendant)).toBe(true);
   expect(systemdMainProcessIsTerminal(deactivatingDescendant)).toBe(true);
   for (const substituted of [
@@ -826,6 +839,7 @@ it("observes exact main exit facts before retiring retained descendants", () => 
     { ...retainedDescendant, ExecMainStatus: "256" },
     { ...retainedDescendant, ExecMainStatus: "" },
     { ...retainedDescendant, ExecMainStatus: "17" },
+    { ...retainedDescendant, Result: "exit-code" },
     { ...retainedDescendant, ActiveState: "inactive" },
     { ...retainedDescendant, ActiveState: "deactivating" },
     { ...retainedDescendant, SubState: "stop-sigterm" },
@@ -835,6 +849,8 @@ it("observes exact main exit facts before retiring retained descendants", () => 
     { ...deactivatingDescendant, SubState: "running" },
     { ...deactivatingDescendant, Result: "timeout" },
     { ...deactivatingDescendant, ExecMainStatus: "17" },
+    { ...failedMainWithRetainedDescendant, Result: "success" },
+    { ...failedMainWithRetainedDescendant, Result: "timeout" },
   ]) {
     expect(parseSystemdMainExitStatus(substituted)).toBeUndefined();
     expect(systemdMainProcessIsTerminal(substituted)).toBe(false);
