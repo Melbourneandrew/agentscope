@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -24,6 +25,7 @@ import {
   prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
   rootToolHasPreparationBudget,
+  systemdConsumptionDeadlines,
   runSupervisedProcess,
   sameSystemdArguments,
   sameSystemdEnvironment,
@@ -1036,7 +1038,7 @@ it("snapshots systemd arguments from one closed descriptor inventory", () => {
   expect(descriptorReads).toBe(2);
 });
 
-it("digests one retained Node descriptor under the original deadline", () => {
+it("separates bounded preparation from the consumed execution deadline", () => {
   const supervisorSource = readFileSync(
     resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
     "utf8",
@@ -1055,36 +1057,37 @@ it("digests one retained Node descriptor under the original deadline", () => {
     "const containmentProofMilliseconds = 5_000;",
   );
   expect(preparation).toContain(
-    "const deadline = performance.now() + maximumMilliseconds;",
+    "const preparationDeadline =\n    performance.now() + systemdPreparationMilliseconds;",
+  );
+  expect(supervisorSource).toContain(
+    "const systemdPreparationMilliseconds = 15_000;",
   );
   expect(preparation.match(/captureLiveMappedExecutable\(/gu)).toHaveLength(1);
-  expect(preparation.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
-  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(1);
-  expect(preparation).toContain("systemdStartArguments({");
-  expect(lifecycle).not.toContain("systemdStartArguments({");
-  expect(preparation.indexOf("systemdStartArguments({")).toBeLessThan(
-    preparation.indexOf("systemdPreparations.set(preparation, state)"),
-  );
+  expect(preparation.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(1);
+  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
+  expect(preparation).not.toContain("systemdStartArguments({");
+  expect(lifecycle).toContain("systemdStartArguments({");
   expect(preparation).toContain("await closePreparedSystemdState(state)");
-  expect(preparation).toContain("state.unitMayExist = true;");
-  expect(preparation).toContain(
+  expect(preparation).not.toContain("state.unitMayExist = true;");
+  expect(lifecycle).toContain("state.unitMayExist = true;");
+  expect(lifecycle).toContain(
     'mutationDeadline: executionDeadline,\n        operation: "systemd-submit",\n        unit: authority.unit,',
   );
-  expect(preparation).toContain('executionDeadline,\n      "unit-admission",');
+  expect(preparation).not.toContain('operation: "systemd-submit"');
+  expect(preparation).not.toContain('"unit-admission"');
+  expect(preparation).toContain("preparationDeadline,");
   expect(preparation).toContain(
     "const arguments_ = snapshotSystemdArguments(suppliedArguments);",
   );
   expect(lifecycle).toContain(
     "!sameSystemdArguments(state.arguments_, suppliedArguments)",
   );
-  expect(
-    supervisorSource.match(
-      /const deadline = performance\.now\(\) \+ maximumMilliseconds;/gu,
-    ),
-  ).toHaveLength(1);
-  expect(lifecycle).not.toContain(
-    "const deadline = performance.now() + maximumMilliseconds;",
+  expect(lifecycle).toContain(
+    "({ deadline, executionDeadline } = systemdConsumptionDeadlines(\n      maximumMilliseconds,\n      performance.now(),\n    ));",
   );
+  expect(
+    lifecycle.indexOf("state.preparationDeadline <= performance.now()"),
+  ).toBeLessThan(lifecycle.indexOf("systemdConsumptionDeadlines("));
   expect(lifecycle).toContain(
     "const grace = Math.min(\n        deadline,\n        performance.now() + systemdTerminationGraceMilliseconds,",
   );
@@ -1102,6 +1105,65 @@ it("digests one retained Node descriptor under the original deadline", () => {
   expect(capture).toContain(
     "openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY)",
   );
+});
+
+it("starts the full execution budget only when preparation is consumed", () => {
+  const maximumMilliseconds = 15_000;
+  const preparationStarted = 1_000;
+  const consumedAfterDelayedPreparation = 14_750;
+  const deadlines = systemdConsumptionDeadlines(
+    maximumMilliseconds,
+    consumedAfterDelayedPreparation,
+  );
+  expect(deadlines).toEqual({
+    deadline: 29_750,
+    executionDeadline: 24_750,
+  });
+  expect(deadlines.deadline - consumedAfterDelayedPreparation).toBe(
+    maximumMilliseconds,
+  );
+  expect(deadlines.deadline).not.toBe(preparationStarted + maximumMilliseconds);
+  const productionNow = performance.now();
+  expect(
+    systemdConsumptionDeadlines(maximumMilliseconds, productionNow),
+  ).toEqual({
+    deadline: Math.floor(productionNow) + maximumMilliseconds,
+    executionDeadline: Math.floor(productionNow) + maximumMilliseconds - 5_000,
+  });
+  expect(systemdConsumptionDeadlines(maximumMilliseconds, 0.25)).toEqual({
+    deadline: 15_000,
+    executionDeadline: 10_000,
+  });
+  expect(systemdConsumptionDeadlines(maximumMilliseconds, 12_345.6789)).toEqual(
+    {
+      deadline: 27_345,
+      executionDeadline: 22_345,
+    },
+  );
+  expect(systemdConsumptionDeadlines(maximumMilliseconds, 123_456.789)).toEqual(
+    {
+      deadline: 138_456,
+      executionDeadline: 133_456,
+    },
+  );
+  const shortened = systemdConsumptionDeadlines(maximumMilliseconds, 0.999);
+  expect(shortened.deadline).toBeLessThan(0.999 + maximumMilliseconds);
+  expect(shortened.deadline).toBe(Math.floor(0.999) + maximumMilliseconds);
+  expect(shortened.deadline - Math.floor(0.999)).toBe(maximumMilliseconds);
+  expect(() => systemdConsumptionDeadlines(5_000, 1_000)).toThrow(
+    "integration.controller.systemd-containment",
+  );
+  for (const invalidNow of [
+    Number.NaN,
+    Number.NEGATIVE_INFINITY,
+    Number.POSITIVE_INFINITY,
+    -0.001,
+    Number.MAX_SAFE_INTEGER - maximumMilliseconds + 1,
+    Number.MAX_SAFE_INTEGER,
+  ])
+    expect(() =>
+      systemdConsumptionDeadlines(maximumMilliseconds, invalidNow),
+    ).toThrow("integration.controller.systemd-containment");
 });
 
 it("binds root helpers to one absolute boottime authority", () => {
@@ -1210,8 +1272,9 @@ it("binds root helpers to one absolute boottime authority", () => {
   expect(
     rootHelper.indexOf("if not reconcile(unit): uncertain=True"),
   ).toBeLessThan(rootHelper.lastIndexOf("REASON=failed_reason"));
-  expect(preparation).toContain('operation: "systemd-submit"');
-  expect(preparation).toContain('executionDeadline,\n      "unit-admission",');
+  expect(preparation).not.toContain('operation: "systemd-submit"');
+  expect(preparation).not.toContain('"unit-admission"');
+  expect(lifecycle).toContain('operation: "systemd-submit"');
   expect(lifecycle).toContain('executionDeadline,\n      "unit-admission",');
   expect(lifecycle).toContain(
     'executionDeadline,\n      "unit-authoritative",',
@@ -2967,6 +3030,7 @@ describe.runIf(
     expect(() =>
       Object.assign(current.preparation, { deadline: Number.MAX_SAFE_INTEGER }),
     ).toThrow();
+    expect(existsSync(current.evidence)).toBe(false);
     const losingRoute = {
       arguments_: [
         "--input-type=module",
@@ -2988,6 +3052,7 @@ describe.runIf(
       await closePreparedGithubSystemdSupervision(current.preparation),
     ).toBe(false);
     expect(existsSync(current.losingEvidence)).toBe(false);
+    expect(existsSync(current.evidence)).toBe(false);
   });
 
   it.each(["arguments", "environment"] as const)(

@@ -230,6 +230,11 @@ export function sameSystemdArguments(
   observed: readonly string[],
 ): boolean;
 
+export function systemdConsumptionDeadlines(
+  maximumMilliseconds: number,
+  now: number,
+): Readonly<{ deadline: number; executionDeadline: number }>;
+
 export function prepareGithubSystemdSupervision(input: {
   arguments_?: readonly string[];
   environment: NodeJS.ProcessEnv;

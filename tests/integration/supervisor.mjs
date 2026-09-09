@@ -38,6 +38,7 @@ const rootToolKillAfterMilliseconds = 250;
 const rootToolJoinReserveMilliseconds = 500;
 const rootToolSentinelPreparationMilliseconds = 500;
 const rootToolHelperTeardownReserveMilliseconds = 750;
+const systemdPreparationMilliseconds = 15_000;
 const rootHelperStages = new Set([
   "startup",
   "cutoff",
@@ -1406,6 +1407,30 @@ export const rootToolHasPreparationBudget = (deadline, now) =>
     rootToolSentinelPreparationMilliseconds +
       rootToolHelperTeardownReserveMilliseconds;
 
+export const systemdConsumptionDeadlines = (maximumMilliseconds, now) => {
+  if (
+    !Number.isSafeInteger(maximumMilliseconds) ||
+    maximumMilliseconds < 1 ||
+    !Number.isFinite(now) ||
+    now < 0
+  )
+    failSystemd();
+  const deadlineAnchor = Math.floor(now);
+  const deadline = deadlineAnchor + maximumMilliseconds;
+  const executionDeadline = deadline - containmentProofMilliseconds;
+  if (
+    !Number.isSafeInteger(deadlineAnchor) ||
+    !Number.isSafeInteger(deadline) ||
+    deadline <= now ||
+    deadline - deadlineAnchor !== maximumMilliseconds ||
+    executionDeadline <= now ||
+    executionDeadline >= deadline ||
+    deadline - executionDeadline !== containmentProofMilliseconds
+  )
+    failSystemd();
+  return Object.freeze({ deadline, executionDeadline });
+};
+
 const clockBoottimeNanoseconds = () => {
   const uptime = readBounded("/proc/uptime", 128).trimEnd().split(" ")[0];
   if (!/^(?:0|[1-9][0-9]*)\.[0-9]{2}$/u.test(uptime ?? "")) failSystemd();
@@ -1888,16 +1913,18 @@ export const prepareGithubSystemdSupervision = async ({
     !["ignore", "inherit"].includes(suppliedStdio)
   )
     failSystemd();
-  const deadline = performance.now() + maximumMilliseconds;
+  const preparationDeadline =
+    performance.now() + systemdPreparationMilliseconds;
   const arguments_ = snapshotSystemdArguments(suppliedArguments);
   const environmentSnapshot = snapshotSystemdEnvironment(environment);
-  await authenticateSystemdHost(deadline);
-  const executionDeadline = deadline - containmentProofMilliseconds;
-  if (executionDeadline <= performance.now()) failSystemd();
+  await authenticateSystemdHost(preparationDeadline);
   const authority = systemdIdentity(environmentSnapshot);
   const cgroupPath = resolve(cgroupRoot, authority.cgroup.slice(1));
   if (existsSync(cgroupPath)) failSystemd();
-  const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
+  const mappedExecutable = captureLiveMappedExecutable(
+    executable,
+    preparationDeadline,
+  );
   const interrupted = { value: false };
   const forwardSignal = () => {
     interrupted.value = true;
@@ -1910,45 +1937,22 @@ export const prepareGithubSystemdSupervision = async ({
     cgroupPath,
     closed: false,
     consumed: false,
-    deadline,
+    deadline: undefined,
     environment: environmentSnapshot,
     executable,
-    executionDeadline,
+    executionDeadline: undefined,
     forwardSignal,
     interrupted,
     mappedExecutable,
     maximumMilliseconds,
+    preparationDeadline,
     stdio: suppliedStdio,
     unitMayExist: false,
   };
   try {
-    const mappedExecutablePath = recheckLiveMappedExecutable(mappedExecutable);
-    state.unitMayExist = true;
-    await rootTool(
-      systemdRunPath,
-      systemdStartArguments({
-        arguments_,
-        authority,
-        environment: environmentSnapshot,
-        executable: mappedExecutablePath,
-      }),
-      deadline,
-      {
-        mutationDeadline: executionDeadline,
-        operation: "systemd-submit",
-        unit: authority.unit,
-      },
-    );
     recheckLiveMappedExecutable(mappedExecutable);
-    const admitted = await showUnit(
-      authority.unit,
-      executionDeadline,
-      "unit-admission",
-    );
-    assertUnitAuthority(admitted, authority);
-    if (executionDeadline <= performance.now() || !existsSync(cgroupPath))
+    if (preparationDeadline <= performance.now() || existsSync(cgroupPath))
       failSystemd();
-    authenticateCgroup(cgroupPath);
     const preparation = Object.freeze({});
     systemdPreparations.set(preparation, state);
     return preparation;
@@ -1965,6 +1969,11 @@ const closePreparedSystemdState = async (state) => {
   let contained = !state.unitMayExist;
   try {
     if (state.unitMayExist) {
+      if (
+        !Number.isFinite(state.deadline) ||
+        !Number.isFinite(state.executionDeadline)
+      )
+        failSystemd();
       if (existsSync(state.cgroupPath)) {
         authenticateCgroup(state.cgroupPath);
         await systemdSignal(state.authority.unit, "SIGKILL", state.deadline);
@@ -1988,6 +1997,13 @@ const closePreparedSystemdState = async (state) => {
   return contained;
 };
 
+const uncertainSystemdResult = (residualWorkObserved = true) => ({
+  code: null,
+  contained: false,
+  residualWorkObserved,
+  signal: null,
+});
+
 const runSystemdSupervised = async ({
   arguments_: suppliedArguments = [],
   environment: suppliedEnvironment,
@@ -2009,21 +2025,48 @@ const runSystemdSupervised = async ({
     failSystemd();
   }
   state.consumed = true;
-  const {
-    authority,
-    cgroupPath,
-    deadline,
-    executionDeadline,
-    interrupted,
-    mappedExecutable,
-  } = state;
-  if (executionDeadline <= performance.now() || !existsSync(cgroupPath)) {
+  const { authority, cgroupPath, interrupted, mappedExecutable } = state;
+  if (state.preparationDeadline <= performance.now()) {
+    await closePreparedGithubSystemdSupervision(prepared);
+    failSystemd();
+  }
+  let deadline;
+  let executionDeadline;
+  try {
+    ({ deadline, executionDeadline } = systemdConsumptionDeadlines(
+      maximumMilliseconds,
+      performance.now(),
+    ));
+  } catch (error) {
+    await closePreparedGithubSystemdSupervision(prepared);
+    throw error;
+  }
+  state.deadline = deadline;
+  state.executionDeadline = executionDeadline;
+  if (existsSync(cgroupPath)) {
     await closePreparedGithubSystemdSupervision(prepared);
     failSystemd();
   }
   let terminal;
   let residualWorkObserved;
   try {
+    const mappedExecutablePath = recheckLiveMappedExecutable(mappedExecutable);
+    state.unitMayExist = true;
+    await rootTool(
+      systemdRunPath,
+      systemdStartArguments({
+        arguments_: state.arguments_,
+        authority,
+        environment: state.environment,
+        executable: mappedExecutablePath,
+      }),
+      deadline,
+      {
+        mutationDeadline: executionDeadline,
+        operation: "systemd-submit",
+        unit: authority.unit,
+      },
+    );
     recheckLiveMappedExecutable(mappedExecutable);
     const admitted = await showUnit(
       authority.unit,
@@ -2057,39 +2100,13 @@ const runSystemdSupervised = async ({
     await retireUnit(authority, deadline);
     const contained = await proveCollected(authority, cgroupPath, deadline);
     if (!contained || terminal === undefined)
-      return {
-        code: null,
-        contained: false,
-        residualWorkObserved,
-        signal: null,
-      };
+      return uncertainSystemdResult(residualWorkObserved);
     const code = parseSystemdTerminalExit(terminal);
-    if (code === undefined)
-      return {
-        code: null,
-        contained: false,
-        residualWorkObserved,
-        signal: null,
-      };
+    if (code === undefined) return uncertainSystemdResult(residualWorkObserved);
     return { code, contained: true, residualWorkObserved, signal: null };
   } catch (error) {
-    try {
-      if (existsSync(cgroupPath)) {
-        await systemdSignal(authority.unit, "SIGKILL", deadline);
-        while (!cgroupIsEmpty(cgroupPath))
-          await delay(Math.min(50, remainingMilliseconds(deadline)));
-        await retireUnit(authority, deadline);
-      }
-    } catch {
-      // The caller receives terminal uncertainty below.
-    }
     if (systemdToolFailureStage(error) !== undefined) throw error;
-    return {
-      code: null,
-      contained: false,
-      residualWorkObserved: true,
-      signal: null,
-    };
+    return uncertainSystemdResult();
   } finally {
     await closePreparedGithubSystemdSupervision(prepared);
   }
