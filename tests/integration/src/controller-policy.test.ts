@@ -1278,6 +1278,76 @@ it.runIf(existsSync("/usr/bin/python3"))(
 );
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "preserves an originating join reason across successful and uncertain cleanup",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
+    ).toString("base64url");
+    for (const [operation, status] of [
+      ["synthetic-join-failure", "error"],
+      ["synthetic-join-cleanup-failure", "uncertain"],
+    ] as const) {
+      const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+      if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+        throw new Error("invalid synthetic boottime authority");
+      const [seconds, fraction] = uptime.split(".");
+      if (seconds === undefined || fraction === undefined)
+        throw new Error("invalid synthetic boottime authority");
+      const now =
+        BigInt(seconds) * 1_000_000_000n +
+        BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+      const deadline = String(now + 2_000_000_000n);
+      const cutoff = String(now + 1_000_000_000n);
+      const key = operation.endsWith("cleanup-failure")
+        ? "8".repeat(64)
+        : "7".repeat(64);
+      const terminal = spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          helper,
+          deadline,
+          cutoff,
+          operation,
+          "/usr/bin/python3",
+          encodedArguments,
+          "",
+          key,
+        ],
+        {
+          encoding: "utf8",
+          env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+          timeout: 3_000,
+        },
+      );
+      expect(terminal).toMatchObject({ status: 1, signal: null, stderr: "" });
+      expect(
+        validateRootToolReceipt({
+          identity: { cutoff, deadline, operation, unit: "" },
+          key,
+          receipt: terminal.stdout,
+        }),
+      ).toEqual({
+        output: "",
+        reason: "preclose-residual",
+        stage: "join",
+        status,
+      });
+    }
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "retains the helper group leader until a fast leader descendant is joined",
   () => {
     const supervisorSource = readFileSync(
@@ -1954,13 +2024,16 @@ it("authenticates only the closed join reason inventory", () => {
   );
   for (const boundary of [
     'REASON="leader-identity"\n if process_identity(leader)!=expected',
-    'REASON="preclose-residual"\n if group_members(leader)!=[leader]',
+    'REASON="preclose-residual"',
     'REASON="control-close"\n try: os.close(control)',
     'REASON="reap-timeout"\n while now()<DEADLINE',
     'REASON="identity-drift"\n  if process_identity(leader)!=expected',
     'REASON="postreap-residual"\n if group_present(leader)',
   ])
     expect(supervisor).toContain(boundary);
+  expect(supervisor).toContain(
+    'if group_members(leader)!=[leader]: raise RuntimeError("residual")',
+  );
   expect(supervisor).toContain("STAGE=failed_stage\n   REASON=failed_reason");
 });
 
