@@ -3019,6 +3019,12 @@ it("preserves authenticated root-tool failure authority during collection", () =
   expect(supervisor).toContain(
     'if child.returncode!=0 and not (OPERATION=="unit-collection" and child.returncode==4):',
   );
+  expect(supervisor).toContain(
+    'operation_stage="unit-admission" if OPERATION=="unit-admission" else "retirement" if OPERATION in {"unit-retirement","unit-kill-term","unit-kill-kill","unit-stop","unit-reset"} else "client-terminal"',
+  );
+  expect(supervisor).not.toContain(
+    'else "join" if OPERATION=="unit-collection"',
+  );
   expect(supervisor).not.toContain(
     'if child.returncode!=0 and not (OPERATION=="unit-retirement" and child.returncode==4):',
   );

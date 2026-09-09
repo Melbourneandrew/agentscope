@@ -563,7 +563,7 @@ try:
   if not unit or not args or args[-1]!=unit: raise RuntimeError("unit")
  else:
   if unit: raise RuntimeError("unit")
- operation_stage="unit-admission" if OPERATION=="unit-admission" else "retirement" if OPERATION in {"unit-retirement","unit-kill-term","unit-kill-kill","unit-stop","unit-reset"} else "join" if OPERATION=="unit-collection" else "client-terminal"
+ operation_stage="unit-admission" if OPERATION=="unit-admission" else "retirement" if OPERATION in {"unit-retirement","unit-kill-term","unit-kill-kill","unit-stop","unit-reset"} else "client-terminal"
  output=run([tool,*args],CUTOFF,operation_stage)
  emit("ok",output)
 except Exception as original:
