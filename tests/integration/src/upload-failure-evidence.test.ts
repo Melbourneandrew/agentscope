@@ -18,7 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapStage } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -60,6 +60,9 @@ const settleLifecycle = settleLifecycleResult as unknown as (
   },
   finalize: () => Promise<void>,
 ) => Promise<boolean>;
+const validBootstrapStage = validFailureEvidenceBootstrapStage as unknown as (
+  value: unknown,
+) => boolean;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -354,6 +357,47 @@ describe("failure evidence upload provenance", () => {
     expect(source).not.toContain("UPLOADER_SHA256");
     expect(source).not.toMatch(/mkstemp|NamedTemporaryFile|\/tmp\/|sudo|tee/gu);
     expect(source).toContain('elif sys.argv[1] == "seal-existing"');
+  });
+});
+
+it("admits only the exact closed action-bootstrap stage inventory", () => {
+  for (const stage of [
+    "invocation",
+    "artifact-provenance",
+    "preload-source",
+    "preload-sealer",
+    "spawn",
+    "child-terminal",
+  ])
+    expect(validBootstrapStage(stage)).toBe(true);
+  for (const rejected of [
+    undefined,
+    null,
+    "",
+    "unknown",
+    "invocation:extra",
+    "invocation\n",
+    ["invocation"],
+    { stage: "invocation" },
+  ])
+    expect(validBootstrapStage(rejected)).toBe(false);
+
+  const entry = resolve(
+    workspaceRoot,
+    "tests/integration/upload-failure-evidence.mjs",
+  );
+  const terminal = spawnSync(process.execPath, [entry], {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    env: {},
+    timeout: 10_000,
+  });
+  expect(terminal).toMatchObject({
+    signal: null,
+    status: 1,
+    stderr: "",
+    stdout:
+      "::error::integration.controller.failure-evidence-bootstrap:invocation\n",
   });
 });
 

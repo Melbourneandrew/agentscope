@@ -46,6 +46,17 @@ const ARTIFACT_ENTRY_SHA256 =
   "767d73362f34cc323231b614434fa93967110fdd7a7aa807b1a1d2b03a572cd0";
 const ARTIFACT_PACKAGE_SHA256 =
   "e21bb31fa8424754cd03c72278d78a76e50429895a9cb2babf69b4a7ba8f533a";
+const actionBootstrapStages = new Set([
+  "invocation",
+  "artifact-provenance",
+  "preload-source",
+  "preload-sealer",
+  "spawn",
+  "child-terminal",
+]);
+let actionBootstrapStage = "invocation";
+export const validFailureEvidenceBootstrapStage = (value) =>
+  typeof value === "string" && actionBootstrapStages.has(value);
 const fail = () => {
   throw new Error("integration.controller.failure-evidence-upload");
 };
@@ -1262,16 +1273,21 @@ const outerControllerMain = async () => {
 };
 
 const bootstrapMain = () => {
+  actionBootstrapStage = "invocation";
   authenticateActionInvocation();
+  actionBootstrapStage = "artifact-provenance";
   verifyArtifactClientProvenance();
+  actionBootstrapStage = "preload-source";
   const source = preloadCredentialedSource(
     resolve(import.meta.dirname, "upload-failure-evidence.mjs"),
     64 * 1024,
   );
+  actionBootstrapStage = "preload-sealer";
   const sealer = preloadCredentialedSource(
     resolve(import.meta.dirname, "seal-failure-evidence.py"),
     64 * 1024,
   );
+  actionBootstrapStage = "spawn";
   const result = spawnSync(
     "/usr/bin/python3",
     [
@@ -1291,6 +1307,7 @@ const bootstrapMain = () => {
       timeout: 20 * 60 * 1000,
     },
   );
+  actionBootstrapStage = "child-terminal";
   revalidateCredentialedSource(source);
   revalidateCredentialedSource(sealer);
   closeSync(source.descriptor);
@@ -1319,6 +1336,10 @@ if (process.argv[1] === "--outer-controller") {
   try {
     bootstrapMain();
   } catch {
+    if (validFailureEvidenceBootstrapStage(actionBootstrapStage))
+      process.stdout.write(
+        `::error::integration.controller.failure-evidence-bootstrap:${actionBootstrapStage}\n`,
+      );
     process.exitCode = 1;
   }
 }
