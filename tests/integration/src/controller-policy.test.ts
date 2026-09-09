@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  advanceToolForceState,
   classifyToolSettlement,
   closePreparedGithubSystemdSupervision,
   parseSystemdTerminalExit,
@@ -1248,7 +1249,9 @@ it("bounds root-wrapper force and group settlement inside the join reserve", () 
   expect(tool).toContain(
     "if (!validateToolLeaderSnapshot(leader, observed)) failSystemd();",
   );
-  expect(tool).toContain("forced = true;\n        authorityUncertain = true;");
+  expect(tool).toContain(
+    "forced = forceState.forceAttempted;\n      if (forceState.reappeared) authorityUncertain = true;\n      if (forceState.shouldForce) {\n        authorityUncertain = true;",
+  );
   expect(tool).toContain("absent = groupIsAbsent(child.pid);");
   expect(tool).toContain('if (decision === "terminal") {');
   expect(tool.indexOf('signalGroup(child.pid, "SIGKILL");')).toBeLessThan(
@@ -1316,6 +1319,51 @@ it("observes root-wrapper close and group absence in either order", () => {
       now: 1_500,
     }),
   ).toBe("failure");
+});
+
+it("retains pre-force absence through bounded receipt drain", () => {
+  const initial = {
+    absenceProved: false,
+    forceAttempted: false,
+    forceDeadline: 1_250,
+    groupAbsent: true,
+    now: 1_200,
+  };
+  const absentBeforeForce = advanceToolForceState(initial);
+  expect(absentBeforeForce).toEqual({
+    absenceProved: true,
+    forceAttempted: false,
+    reappeared: false,
+    shouldForce: false,
+  });
+  const stillAbsentAtForce = advanceToolForceState({
+    ...initial,
+    ...absentBeforeForce,
+    now: 1_250,
+  });
+  expect(stillAbsentAtForce.forceAttempted).toBe(false);
+  expect(
+    classifyToolSettlement({
+      deadline: 1_500,
+      forceAttempted: stillAbsentAtForce.forceAttempted,
+      groupAbsent: true,
+      now: 1_300,
+      terminalObserved: true,
+    }),
+  ).toBe("terminal");
+  expect(
+    advanceToolForceState({
+      ...initial,
+      ...absentBeforeForce,
+      groupAbsent: false,
+      now: 1_250,
+    }),
+  ).toMatchObject({ forceAttempted: true, reappeared: true });
+  expect(advanceToolForceState({ ...initial, now: 1_250 })).toMatchObject({
+    absenceProved: false,
+    forceAttempted: true,
+    shouldForce: true,
+  });
 });
 
 it("rejects root-wrapper leader reuse and group substitution", () => {

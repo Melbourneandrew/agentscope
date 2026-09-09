@@ -179,6 +179,21 @@ export function classifyToolSettlement(
   }>,
 ): "failure" | "terminal" | "wait";
 
+export function advanceToolForceState(
+  input: Readonly<{
+    absenceProved: boolean;
+    forceAttempted: boolean;
+    forceDeadline: number;
+    groupAbsent: boolean;
+    now: number;
+  }>,
+): Readonly<{
+  absenceProved: boolean;
+  forceAttempted: boolean;
+  reappeared: boolean;
+  shouldForce: boolean;
+}>;
+
 export function transferDescriptorAuthority<T>(
   input: Readonly<{
     close(descriptor: number): void;

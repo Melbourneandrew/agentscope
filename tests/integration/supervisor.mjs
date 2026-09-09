@@ -930,6 +930,36 @@ export const classifyToolSettlement = ({
   return forceAttempted ? "failure" : "terminal";
 };
 
+export const advanceToolForceState = ({
+  absenceProved,
+  forceAttempted,
+  forceDeadline,
+  groupAbsent,
+  now,
+}) => {
+  if (
+    typeof absenceProved !== "boolean" ||
+    typeof forceAttempted !== "boolean" ||
+    typeof groupAbsent !== "boolean" ||
+    !Number.isFinite(forceDeadline) ||
+    !Number.isFinite(now)
+  )
+    failSystemd();
+  const reappeared = absenceProved && !groupAbsent;
+  const nextAbsenceProved =
+    absenceProved || (groupAbsent && now < forceDeadline);
+  const shouldForce =
+    !forceAttempted &&
+    now >= forceDeadline &&
+    (!nextAbsenceProved || reappeared);
+  return Object.freeze({
+    absenceProved: nextAbsenceProved,
+    forceAttempted: forceAttempted || shouldForce,
+    reappeared,
+    shouldForce,
+  });
+};
+
 const executableMetadata = (status) =>
   Object.freeze({
     dev: status.dev,
@@ -1372,6 +1402,31 @@ const absoluteBoottimeDeadline = (deadline) => {
   return clockBoottimeNanoseconds() + BigInt(remaining) * 1_000_000n;
 };
 
+const toolTerminalOutcome = ({
+  acceptClosedFailure,
+  authorityUncertain,
+  childError,
+  chunks,
+  size,
+  terminal: { code, signal },
+}) => {
+  const error =
+    childError !== undefined ||
+    authorityUncertain ||
+    (!acceptClosedFailure && code !== 0) ||
+    (acceptClosedFailure && code !== 0 && code !== 1) ||
+    signal !== null ||
+    size > maximumToolOutputBytes;
+  if (error)
+    return Object.freeze({
+      error: new Error("integration.controller.systemd-tool"),
+    });
+  const output = Buffer.concat(chunks).toString("utf8");
+  return Object.freeze({
+    value: acceptClosedFailure ? Object.freeze({ code, output }) : output,
+  });
+};
+
 const runTool = (
   executable,
   arguments_,
@@ -1391,6 +1446,7 @@ const runTool = (
     let childError;
     let terminal;
     let forced = false;
+    let absenceProved = false;
     let authorityUncertain = false;
     let size = 0;
     const chunks = [];
@@ -1412,8 +1468,23 @@ const runTool = (
     const checkSettlement = () => {
       if (settled) return;
       const now = performance.now();
-      if (!forced && now >= boundedForceDeadline) {
-        forced = true;
+      let absent = false;
+      try {
+        absent = groupIsAbsent(child.pid);
+      } catch {
+        authorityUncertain = true;
+      }
+      const forceState = advanceToolForceState({
+        absenceProved,
+        forceAttempted: forced,
+        forceDeadline: boundedForceDeadline,
+        groupAbsent: absent,
+        now,
+      });
+      absenceProved = forceState.absenceProved;
+      forced = forceState.forceAttempted;
+      if (forceState.reappeared) authorityUncertain = true;
+      if (forceState.shouldForce) {
         authorityUncertain = true;
         try {
           if (leader === undefined) failSystemd();
@@ -1427,12 +1498,6 @@ const runTool = (
           authorityUncertain = true;
         }
       }
-      let absent = false;
-      try {
-        absent = groupIsAbsent(child.pid);
-      } catch {
-        authorityUncertain = true;
-      }
       const decision = classifyToolSettlement({
         deadline,
         forceAttempted: forced,
@@ -1441,26 +1506,15 @@ const runTool = (
         terminalObserved: terminal !== undefined,
       });
       if (decision === "terminal") {
-        const { code, signal } = terminal;
-        if (
-          childError !== undefined ||
-          authorityUncertain ||
-          (!acceptClosedFailure && code !== 0) ||
-          (acceptClosedFailure && code !== 0 && code !== 1) ||
-          signal !== null ||
-          size > maximumToolOutputBytes
-        )
-          finish(new Error("integration.controller.systemd-tool"));
-        else
-          finish(
-            undefined,
-            acceptClosedFailure
-              ? Object.freeze({
-                  code,
-                  output: Buffer.concat(chunks).toString("utf8"),
-                })
-              : Buffer.concat(chunks).toString("utf8"),
-          );
+        const outcome = toolTerminalOutcome({
+          acceptClosedFailure,
+          authorityUncertain,
+          childError,
+          chunks,
+          size,
+          terminal,
+        });
+        finish(outcome.error, outcome.value);
         return;
       }
       if (decision === "failure") {
