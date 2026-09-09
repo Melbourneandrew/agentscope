@@ -15,6 +15,8 @@ MEMFD_NAME = "agentscope-sanitized-failure-evidence"
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 )
+BOOTSTRAP_STAGES = {"invocation", "source", "mapping", "memfd", "exec"}
+bootstrap_stage = "invocation"
 
 
 def fail() -> None:
@@ -68,16 +70,46 @@ def same_identity(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
+def process_start_ticks(pid: int) -> str:
+    descriptor = os.open(
+        f"/proc/{pid}/stat", os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+    try:
+        data = os.read(descriptor, 4097)
+        if not data or len(data) > 4096 or not data.endswith(b"\n"):
+            fail()
+        data = data[:-1]
+        if not data or b"\n" in data or b"\r" in data or b"\0" in data:
+            fail()
+        close = data.rfind(b") ")
+        fields = data[close + 2 :].split(b" ")
+        if close < 2 or len(fields) < 20 or any(not field for field in fields):
+            fail()
+        start = fields[19]
+        if not start.isascii() or not start.isdigit():
+            fail()
+        return start.decode("ascii")
+    finally:
+        os.close(descriptor)
+
+
 def bootstrap(arguments: list[str]) -> None:
-    if len(arguments) != 3 or sys.platform != "linux":
+    global bootstrap_stage
+    bootstrap_stage = "invocation"
+    if len(arguments) != 5 or sys.platform != "linux":
         fail()
-    node, integration_root, expected_digest = arguments
+    node, integration_root, expected_digest, action_pid_value, expected_start = arguments
     verify_digest(expected_digest)
     if not os.path.isabs(node) or not os.path.isabs(integration_root):
         fail()
+    action_pid = parse_unsigned(action_pid_value, 2**31 - 1)
+    if not expected_start.isascii() or not expected_start.isdecimal():
+        fail()
+    bootstrap_stage = "source"
     source = read_input()
     if f"sha256:{hashlib.sha256(source).hexdigest()}" != expected_digest:
         fail()
+    bootstrap_stage = "memfd"
     source_descriptor = os.memfd_create(
         "agentscope-preloaded-failure-action",
         os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
@@ -86,8 +118,16 @@ def bootstrap(arguments: list[str]) -> None:
         MEMFD_NAME,
         os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
     )
-    node_status = os.lstat(node)
-    node_descriptor = os.open(node, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
+    bootstrap_stage = "mapping"
+    if process_start_ticks(action_pid) != expected_start:
+        fail()
+    process_root = f"/proc/{action_pid}"
+    process_root_status = os.lstat(process_root)
+    process_root_descriptor = os.open(
+        process_root,
+        os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
+    )
+    node_descriptor = os.open("exe", os.O_PATH | os.O_CLOEXEC, dir_fd=process_root_descriptor)
     try:
         if source_descriptor != 3 or bundle_descriptor != 4:
             fail()
@@ -112,10 +152,23 @@ def bootstrap(arguments: list[str]) -> None:
             os.fchdir(root_descriptor)
         finally:
             os.close(root_descriptor)
+        mapped_status = os.fstat(node_descriptor)
+        selected_status = os.stat(node, follow_symlinks=True)
+        if not same_identity(os.fstat(process_root_descriptor), process_root_status):
+            fail()
+        if process_start_ticks(action_pid) != expected_start:
+            fail()
         if (
-            not stat.S_ISREG(node_status.st_mode)
-            or not same_identity(os.fstat(node_descriptor), node_status)
+            not stat.S_ISREG(mapped_status.st_mode)
+            or not same_identity(mapped_status, selected_status)
             or os.execve not in os.supports_fd
+        ):
+            fail()
+        bootstrap_stage = "exec"
+        if (
+            process_start_ticks(action_pid) != expected_start
+            or not same_identity(os.fstat(node_descriptor), mapped_status)
+            or not same_identity(os.stat(node, follow_symlinks=True), mapped_status)
         ):
             fail()
         os.execve(
@@ -140,6 +193,7 @@ def bootstrap(arguments: list[str]) -> None:
         os.close(source_descriptor)
         os.close(bundle_descriptor)
         os.close(node_descriptor)
+        os.close(process_root_descriptor)
 
 
 def seal_existing(arguments: list[str]) -> None:
@@ -225,5 +279,10 @@ if __name__ == "__main__":
     try:
         main()
     except BaseException:
-        sys.stderr.write("integration.controller.failure-evidence-seal\n")
+        if len(sys.argv) > 1 and sys.argv[1] == "bootstrap" and bootstrap_stage in BOOTSTRAP_STAGES:
+            sys.stderr.write(
+                f"integration.controller.failure-evidence-bootstrap:{bootstrap_stage}\n"
+            )
+        else:
+            sys.stderr.write("integration.controller.failure-evidence-seal\n")
         raise SystemExit(1)

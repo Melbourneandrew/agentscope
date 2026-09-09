@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -344,6 +345,11 @@ describe("failure evidence upload provenance", () => {
     expect(source).toContain("os.set_inheritable(bundle_descriptor, True)");
     expect(source).toContain("os.fchdir(root_descriptor)");
     expect(source).toContain("os.execve(");
+    expect(source).toContain('os.open("exe", os.O_PATH | os.O_CLOEXEC');
+    expect(source).toContain("process_start_ticks(action_pid)");
+    expect(source).toContain(
+      "same_identity(os.fstat(node_descriptor), mapped_status)",
+    );
     expect(source).toContain('"--input-type=module"');
     expect(source).not.toContain("UPLOADER_SHA256");
     expect(source).not.toMatch(/mkstemp|NamedTemporaryFile|\/tmp\/|sudo|tee/gu);
@@ -352,6 +358,76 @@ describe("failure evidence upload provenance", () => {
 });
 
 describe("Linux sealed failure evidence upload", () => {
+  it.skipIf(process.platform !== "linux")(
+    "executes bootstrap only through the retained live action mapping",
+    () => {
+      const root = mkdtempSync(resolve(tmpdir(), "agentscope-bootstrap-"));
+      try {
+        const nodeAlias = resolve(root, "writable-node-alias");
+        symlinkSync(process.execPath, nodeAlias);
+        const source = Buffer.from(
+          'process.stdout.write("{\\"status\\":\\"mapped\\"}\\n")',
+        );
+        const expectedDigest = digest(source);
+        const processRecord = readFileSync(
+          `/proc/${process.pid}/stat`,
+          "ascii",
+        );
+        const close = processRecord.lastIndexOf(") ");
+        const fields = processRecord
+          .slice(close + 2)
+          .trim()
+          .split(" ");
+        const start = fields[19];
+        expect(close).toBeGreaterThan(1);
+        expect(start).toMatch(/^[1-9]\d*$/u);
+        const invoke = (node: string, pid: string, expectedStart: string) =>
+          spawnSync(
+            "/usr/bin/python3",
+            [
+              resolve(
+                workspaceRoot,
+                "tests/integration/seal-failure-evidence.py",
+              ),
+              "bootstrap",
+              node,
+              resolve(workspaceRoot, "tests/integration"),
+              expectedDigest,
+              pid,
+              expectedStart,
+            ],
+            {
+              cwd: workspaceRoot,
+              encoding: "utf8",
+              env: {},
+              input: source,
+              timeout: 10_000,
+            },
+          );
+        expect(invoke(nodeAlias, String(process.pid), start!)).toMatchObject({
+          signal: null,
+          status: 0,
+          stderr: "",
+          stdout: '{"status":"mapped"}\n',
+        });
+        for (const rejected of [
+          invoke("/usr/bin/python3", String(process.pid), start!),
+          invoke(nodeAlias, String(process.pid), `${start}0`),
+          invoke(nodeAlias, "2147483647", start!),
+        ]) {
+          expect(rejected.signal).toBeNull();
+          expect(rejected.status).toBe(1);
+          expect(rejected.stdout).toBe("");
+          expect(rejected.stderr).toMatch(
+            /^integration\.controller\.failure-evidence-bootstrap:(?:mapping|exec)\n$/u,
+          );
+        }
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    },
+  );
+
   it.skipIf(process.platform !== "linux")(
     "resolves the integration client after a repository-root descriptor chdir",
     () => {
