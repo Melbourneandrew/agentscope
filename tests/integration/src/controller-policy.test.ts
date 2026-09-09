@@ -17,6 +17,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  classifyToolSettlement,
   closePreparedGithubSystemdSupervision,
   parseSystemdTerminalExit,
   prepareGithubSystemdSupervision,
@@ -1251,10 +1252,46 @@ it("bounds root-wrapper force and group settlement inside the join reserve", () 
     'if (signalGroup(child.pid, "SIGKILL")) authorityUncertain = true;',
   );
   expect(tool).toContain("absent = groupIsAbsent(child.pid);");
-  expect(tool).toContain("if (absent && terminal !== undefined) {");
+  expect(tool).toContain('if (decision === "terminal") {');
   expect(tool.indexOf('if (signalGroup(child.pid, "SIGKILL"))')).toBeLessThan(
-    tool.indexOf("if (absent || now >= deadline)"),
+    tool.indexOf('if (decision === "failure")'),
   );
+  expect(tool.indexOf('child.once("close",')).toBeLessThan(
+    tool.lastIndexOf("const observed = readProcessSnapshot(child.pid);"),
+  );
+  expect(tool).toContain(
+    "initial identity uncertainty must use\n      // the same bounded close/absence envelope rather than rejecting early.",
+  );
+});
+
+it("observes root-wrapper close and group absence in either order", () => {
+  const initial = {
+    deadline: 1_500,
+    groupAbsent: false,
+    now: 1_000,
+    terminalObserved: false,
+  };
+  expect(classifyToolSettlement({ ...initial, groupAbsent: true })).toBe(
+    "wait",
+  );
+  expect(classifyToolSettlement({ ...initial, terminalObserved: true })).toBe(
+    "wait",
+  );
+  expect(
+    classifyToolSettlement({
+      ...initial,
+      groupAbsent: true,
+      now: 1_499,
+      terminalObserved: true,
+    }),
+  ).toBe("terminal");
+  expect(
+    classifyToolSettlement({
+      ...initial,
+      groupAbsent: true,
+      now: 1_500,
+    }),
+  ).toBe("failure");
 });
 
 it("rejects root-wrapper leader reuse and group substitution", () => {

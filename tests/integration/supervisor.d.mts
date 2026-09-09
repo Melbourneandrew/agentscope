@@ -169,6 +169,15 @@ export function validateToolLeaderSnapshot(
   observed: ToolLeaderSnapshot,
 ): boolean;
 
+export function classifyToolSettlement(
+  input: Readonly<{
+    deadline: number;
+    groupAbsent: boolean;
+    now: number;
+    terminalObserved: boolean;
+  }>,
+): "failure" | "terminal" | "wait";
+
 export function transferDescriptorAuthority<T>(
   input: Readonly<{
     close(descriptor: number): void;

@@ -910,6 +910,23 @@ export const validateToolLeaderSnapshot = (expected, observed) =>
   expected.bootId === observed.bootId &&
   expected.startTime === observed.startTime;
 
+export const classifyToolSettlement = ({
+  deadline,
+  groupAbsent,
+  now,
+  terminalObserved,
+}) => {
+  if (
+    typeof groupAbsent !== "boolean" ||
+    typeof terminalObserved !== "boolean" ||
+    !Number.isFinite(now) ||
+    !Number.isFinite(deadline)
+  )
+    failSystemd();
+  if (groupAbsent && terminalObserved) return "terminal";
+  return now >= deadline ? "failure" : "wait";
+};
+
 const executableMetadata = (status) =>
   Object.freeze({
     dev: status.dev,
@@ -1380,8 +1397,7 @@ const runTool = (
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (!Number.isSafeInteger(child.pid) || child.pid < 1) failSystemd();
-    const leader = readProcessSnapshot(child.pid);
-    if (leader.processGroup !== child.pid) failSystemd();
+    let leader;
     let timer;
     const finish = (error, value) => {
       if (settled) return;
@@ -1396,6 +1412,7 @@ const runTool = (
       if (!forced && now >= boundedForceDeadline) {
         forced = true;
         try {
+          if (leader === undefined) failSystemd();
           const observed = readProcessSnapshot(child.pid);
           if (!validateToolLeaderSnapshot(leader, observed)) failSystemd();
           if (signalGroup(child.pid, "SIGKILL")) authorityUncertain = true;
@@ -1412,7 +1429,13 @@ const runTool = (
       } catch {
         authorityUncertain = true;
       }
-      if (absent && terminal !== undefined) {
+      const decision = classifyToolSettlement({
+        deadline,
+        groupAbsent: absent,
+        now,
+        terminalObserved: terminal !== undefined,
+      });
+      if (decision === "terminal") {
         const { code, signal } = terminal;
         if (
           childError !== undefined ||
@@ -1435,7 +1458,7 @@ const runTool = (
           );
         return;
       }
-      if (absent || now >= deadline) {
+      if (decision === "failure") {
         finish(new Error("integration.controller.systemd-tool"));
         return;
       }
@@ -1457,6 +1480,15 @@ const runTool = (
       terminal = Object.freeze({ code, signal });
       checkSettlement();
     });
+    try {
+      const observed = readProcessSnapshot(child.pid);
+      if (observed.processGroup !== child.pid) failSystemd();
+      leader = observed;
+    } catch {
+      // The wrapper already exists, so initial identity uncertainty must use
+      // the same bounded close/absence envelope rather than rejecting early.
+      authorityUncertain = true;
+    }
     checkSettlement();
   });
 
