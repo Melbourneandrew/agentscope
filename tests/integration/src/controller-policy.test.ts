@@ -9,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   advanceToolForceState,
+  authenticateCgroup,
+  cgroupObservationSettled,
   classifySystemdUnitAuthority,
   classifyToolSettlement,
   closePreparedGithubSystemdSupervision,
@@ -805,6 +808,51 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
     expect(
       classifySystemdUnitAuthority({ ...facts, [field]: value }, authority),
     ).toBe(reason);
+});
+
+it("treats a retired cgroup disappearance only as input to collection proof", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-race-"));
+  try {
+    const identity = [
+      { dev: 1, gid: 0, ino: 2, mode: 0o040755, uid: 0 },
+      { dev: 1, gid: 0, ino: 3, mode: 0o100444, uid: 0 },
+    ] as const;
+    writeFileSync(resolve(directory, "cgroup.events"), "populated 1\n");
+    writeFileSync(resolve(directory, "cgroup.procs"), "");
+    expect(() => cgroupObservationSettled(directory, identity)).toThrow();
+    expect(() => authenticateCgroup(directory)).toThrow();
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+  expect(
+    cgroupObservationSettled(directory, [
+      { dev: 1, gid: 0, ino: 2, mode: 0o040755, uid: 0 },
+      { dev: 1, gid: 0, ino: 3, mode: 0o100444, uid: 0 },
+    ]),
+  ).toBe(true);
+
+  const symlinkRoot = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-link-"));
+  try {
+    symlinkSync(symlinkRoot, resolve(symlinkRoot, "linked"));
+    expect(() => authenticateCgroup(resolve(symlinkRoot, "linked"))).toThrow();
+  } finally {
+    rmSync(symlinkRoot, { force: true, recursive: true });
+  }
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const retirement = supervisor.slice(
+    supervisor.indexOf("const retireAndCollectSystemdUnit ="),
+    supervisor.indexOf("const runSystemdSupervised ="),
+  );
+  expect(retirement).toContain(
+    "cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity)",
+  );
+  expect(retirement.indexOf("await retireUnit(")).toBeLessThan(
+    retirement.indexOf("await proveCollected("),
+  );
 });
 
 it("accepts only exact numeric systemd exit terminal facts", () => {

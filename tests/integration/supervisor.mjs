@@ -1841,13 +1841,46 @@ const assertUnitAuthority = (facts, authority) => {
     failSystemd();
 };
 
-const authenticateCgroup = (cgroupPath) => {
-  for (const path of [cgroupPath, resolve(cgroupPath, "cgroup.procs")]) {
-    const status = statSync(path);
-    if (status.uid !== 0 || status.gid !== 0 || (status.mode & 0o022) !== 0)
+export const authenticateCgroup = (cgroupPath) => {
+  const identities = [];
+  for (const [index, path] of [
+    cgroupPath,
+    resolve(cgroupPath, "cgroup.procs"),
+  ].entries()) {
+    const status = lstatSync(path);
+    if (
+      (index === 0 ? !status.isDirectory() : !status.isFile()) ||
+      status.uid !== 0 ||
+      status.gid !== 0 ||
+      (status.mode & 0o022) !== 0
+    )
       failSystemd();
+    identities.push(
+      Object.freeze({
+        dev: status.dev,
+        gid: status.gid,
+        ino: status.ino,
+        mode: status.mode,
+        uid: status.uid,
+      }),
+    );
   }
+  return Object.freeze(identities);
 };
+
+const sameCgroupIdentity = (left, right) =>
+  Array.isArray(left) &&
+  Array.isArray(right) &&
+  left.length === 2 &&
+  right.length === 2 &&
+  left.every(
+    (identity, index) =>
+      identity.dev === right[index]?.dev &&
+      identity.gid === right[index]?.gid &&
+      identity.ino === right[index]?.ino &&
+      identity.mode === right[index]?.mode &&
+      identity.uid === right[index]?.uid,
+  );
 
 const cgroupIsEmpty = (cgroupPath) => {
   const events = readBounded(resolve(cgroupPath, "cgroup.events"), 4096);
@@ -1858,6 +1891,27 @@ const cgroupIsEmpty = (cgroupPath) => {
       .map((line) => line.split(" ")),
   );
   return entries.populated === "0";
+};
+
+export const cgroupObservationSettled = (cgroupPath, identity) => {
+  if (!sameCgroupIdentity(identity, identity)) failSystemd();
+  if (!existsSync(cgroupPath)) {
+    if (existsSync(resolve(cgroupPath, "cgroup.procs"))) failSystemd();
+    return true;
+  }
+  try {
+    if (!sameCgroupIdentity(authenticateCgroup(cgroupPath), identity))
+      failSystemd();
+    return cgroupIsEmpty(cgroupPath);
+  } catch (error) {
+    if (
+      error?.code === "ENOENT" &&
+      !existsSync(cgroupPath) &&
+      !existsSync(resolve(cgroupPath, "cgroup.procs"))
+    )
+      return true;
+    throw error;
+  }
 };
 
 const waitForTerminal = async (authority, deadline, interrupted) => {
@@ -2050,6 +2104,7 @@ export const prepareGithubSystemdSupervision = async ({
     maximumMilliseconds,
     preparationDeadline,
     stdio: suppliedStdio,
+    cgroupIdentity: undefined,
     unitMayExist: false,
   };
   try {
@@ -2078,9 +2133,9 @@ const closePreparedSystemdState = async (state) => {
       )
         failSystemd();
       if (existsSync(state.cgroupPath)) {
-        authenticateCgroup(state.cgroupPath);
+        const cgroupIdentity = authenticateCgroup(state.cgroupPath);
         await systemdSignal(state.authority.unit, "SIGKILL", state.deadline);
-        while (!cgroupIsEmpty(state.cgroupPath))
+        while (!cgroupObservationSettled(state.cgroupPath, cgroupIdentity))
           await delay(Math.min(50, remainingMilliseconds(state.deadline)));
       }
       await retireUnit(state.authority, state.deadline);
@@ -2138,7 +2193,7 @@ const admitSystemdUnit = async (state) => {
       "unit-admission",
     );
     assertUnitAuthority(admitted, state.authority);
-    authenticateCgroup(state.cgroupPath);
+    state.cgroupIdentity = authenticateCgroup(state.cgroupPath);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }
@@ -2174,7 +2229,9 @@ const authenticateTerminalSystemdUnit = async (state) => {
       "unit-authoritative",
     );
     assertUnitAuthority(authoritative, state.authority);
-    authenticateCgroup(state.cgroupPath);
+    const currentCgroupIdentity = authenticateCgroup(state.cgroupPath);
+    if (!sameCgroupIdentity(currentCgroupIdentity, state.cgroupIdentity))
+      failSystemd();
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }
@@ -2183,7 +2240,7 @@ const authenticateTerminalSystemdUnit = async (state) => {
 const observeSystemdCgroup = (state) => {
   state.lifecyclePhase = "cgroup-observation";
   try {
-    return !cgroupIsEmpty(state.cgroupPath);
+    return !cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "malformed");
   }
@@ -2197,9 +2254,12 @@ const terminateSystemdCgroup = async (state) => {
       state.deadline,
       performance.now() + systemdTerminationGraceMilliseconds,
     );
-    while (performance.now() < grace && !cgroupIsEmpty(state.cgroupPath))
+    while (
+      performance.now() < grace &&
+      !cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity)
+    )
       await delay(Math.min(50, remainingMilliseconds(state.deadline)));
-    if (!cgroupIsEmpty(state.cgroupPath))
+    if (!cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity))
       await systemdSignal(state.authority.unit, "SIGKILL", state.deadline);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
@@ -2209,7 +2269,7 @@ const terminateSystemdCgroup = async (state) => {
 const retireAndCollectSystemdUnit = async (state) => {
   state.lifecyclePhase = "retirement";
   try {
-    while (!cgroupIsEmpty(state.cgroupPath))
+    while (!cgroupObservationSettled(state.cgroupPath, state.cgroupIdentity))
       await delay(Math.min(50, remainingMilliseconds(state.deadline)));
     await retireUnit(state.authority, state.deadline, state);
   } catch (error) {
