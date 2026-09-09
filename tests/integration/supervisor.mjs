@@ -1855,7 +1855,13 @@ export const classifyRetirementSystemdUnitAuthority = (
   if (
     typeof before?.absent !== "boolean" ||
     typeof after?.absent !== "boolean" ||
-    before.absent !== after.absent
+    typeof before?.empty !== "boolean" ||
+    typeof after?.empty !== "boolean" ||
+    (before.absent && !before.empty) ||
+    (after.absent && !after.empty) ||
+    before.absent !== after.absent ||
+    !before.empty ||
+    !after.empty
   )
     return "cgroup";
   const immutableMismatch = classifySystemdUnitAuthority(

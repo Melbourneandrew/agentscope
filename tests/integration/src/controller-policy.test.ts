@@ -836,6 +836,10 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
     [absent, absent, authority.cgroup],
     [present, absent, ""],
     [absent, present, ""],
+    [present, { absent: false, empty: false }, authority.cgroup],
+    [{ absent: false, empty: false }, present, authority.cgroup],
+    [{ absent: true, empty: false }, absent, ""],
+    [absent, { absent: true, empty: false }, ""],
     [absent, absent, "/system.slice/agentscope-other.service"],
   ] as const)
     expect(
