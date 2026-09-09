@@ -145,15 +145,43 @@ def process_identity(pid):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
  except FileNotFoundError: return None
  return parse_process_identity(data,pid)
-def group_members(group):
+def process_record(pid):
+ try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
+ except FileNotFoundError: return None
+ identity=parse_process_identity(data,pid)
+ record=data[:-1]
+ end=record.rfind(b") ")
+ fields=record[end+2:].split()
+ if not fields[1].isascii() or not fields[1].isdigit() or int(fields[1])<1: raise RuntimeError("identity")
+ return (identity[0],identity[1],int(fields[1]))
+def group_records(group):
  entries=os.listdir("/proc")
  if len(entries)>65536: raise RuntimeError("inventory")
- members=[]
+ records={}
  for entry in entries:
   if entry.isdigit():
-   observed=process_identity(int(entry))
-   if observed is not None and observed[1]==group: members.append(int(entry))
- return sorted(members)
+   observed=process_record(int(entry))
+   if observed is not None and observed[1]==group: records[int(entry)]=observed
+ return records
+def group_members(group):
+ return sorted(group_records(group))
+def admit_group_members(group,expected_members):
+ records=group_records(group)
+ pending=dict(records)
+ while pending:
+  progressed=False
+  for pid,record in list(pending.items()):
+   expected=expected_members.get(pid)
+   if expected is not None:
+    if record[:2]!=expected: raise RuntimeError("identity")
+    del pending[pid]; progressed=True; continue
+   parent=expected_members.get(record[2])
+   parent_record=records.get(record[2])
+   if parent is not None and parent_record is not None and parent_record[:2]==parent:
+    expected_members[pid]=record[:2]
+    del pending[pid]; progressed=True
+  if not progressed: raise RuntimeError("residual")
+ return records
 def create_group():
  global STAGE,REASON
  STAGE="sentinel"
@@ -237,7 +265,7 @@ def create_group():
   raise RuntimeError("sentinel")
  REASON=""
  return leader,expected,control_write
-def close_group(leader,expected,control):
+def close_group(leader,expected,control,expected_members):
  global STAGE,REASON,JOIN_CALLS
  JOIN_CALLS+=1
  STAGE="join"
@@ -247,20 +275,32 @@ def close_group(leader,expected,control):
  REASON="preclose-residual"
  if OPERATION in {"synthetic-join-failure","synthetic-join-cleanup-failure"} and JOIN_CALLS==1:
   raise RuntimeError("synthetic-join")
- if group_members(leader)!=[leader]: raise RuntimeError("residual")
+ admit_group_members(leader,expected_members)
  REASON="control-close"
  try: os.close(control)
  except OSError: raise RuntimeError("control-close")
- reaped=False
+ leader_reaped=False
  REASON="reap-timeout"
  while now()<DEADLINE:
-  waited=os.waitpid(leader,os.WNOHANG)
-  if waited[0]==leader: reaped=True; break
-  REASON="identity-drift"
-  if process_identity(leader)!=expected: raise RuntimeError("identity")
+  records=group_records(leader)
+  for pid,record in records.items():
+   member=expected_members.get(pid)
+   if member is None or record[:2]!=member:
+    REASON="identity-drift"; raise RuntimeError("identity")
+  if not leader_reaped:
+   observed=process_identity(leader)
+   if observed is None:
+    waited=os.waitpid(leader,os.WNOHANG)
+    if waited[0]==leader: leader_reaped=True
+   elif observed!=expected:
+    REASON="identity-drift"; raise RuntimeError("identity")
+   else:
+    waited=os.waitpid(leader,os.WNOHANG)
+    if waited[0]==leader: leader_reaped=True
+  if leader_reaped and not records: break
   REASON="reap-timeout"
   time.sleep(0.005)
- if not reaped: raise RuntimeError("join")
+ if not leader_reaped: raise RuntimeError("join")
  REASON="postreap-residual"
  if group_present(leader): raise RuntimeError("residual")
  REASON=""
@@ -305,10 +345,14 @@ def run(argv,cutoff,operation_stage):
   if process_identity(leader)!=expected: raise RuntimeError("identity")
   STAGE="tool-spawn"
   child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)
+  child_record=process_record(child.pid)
+  if child_record is None or child_record[1]!=leader or child_record[2]!=os.getpid(): raise RuntimeError("identity")
+  expected_members={leader:expected,child.pid:child_record[:2]}
   STAGE=operation_stage
   if process_identity(leader)!=expected: raise RuntimeError("identity")
   os.set_blocking(child.stdout.fileno(),False)
   while child.poll() is None:
+   admit_group_members(leader,expected_members)
    if now()>=cutoff: terminate(child,leader,expected,control)
    try:
     part=os.read(child.stdout.fileno(),4096)
@@ -326,7 +370,7 @@ def run(argv,cutoff,operation_stage):
    if len(output)>MAX: raise RuntimeError("oversize")
   STAGE=operation_stage
   if now()>=DEADLINE or child.returncode!=0: raise RuntimeError("terminal")
-  close_group(leader,expected,control)
+  close_group(leader,expected,control,expected_members)
   STAGE=operation_stage
   return bytes(output)
  except Exception as original:
@@ -334,7 +378,7 @@ def run(argv,cutoff,operation_stage):
   failed_reason=REASON
   try:
    if child is None:
-    close_group(leader,expected,control)
+    close_group(leader,expected,control,{leader:expected})
    else:
     terminate(child,leader,expected,control)
     if OPERATION=="synthetic-cleanup-failure": raise RuntimeError("synthetic-cleanup")

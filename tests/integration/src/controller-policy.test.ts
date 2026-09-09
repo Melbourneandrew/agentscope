@@ -1179,7 +1179,6 @@ it("binds root helpers to one absolute boottime authority", () => {
   ).toBeLessThan(rootHelper.indexOf("child=subprocess.Popen("));
   expect(rootHelper).toContain("process_group=leader,close_fds=True");
   expect(rootHelper).toContain("signal.signal(signal.SIGTERM,signal.SIG_IGN)");
-  expect(rootHelper).toContain("if group_members(leader)!=[leader]");
   expect(rootHelper).toContain("os.killpg(leader,signal.SIGTERM)");
   expect(rootHelper).toContain("os.killpg(leader,signal.SIGKILL)");
   expect(rootHelper).toContain("os.waitpid(leader,os.WNOHANG)");
@@ -1205,6 +1204,43 @@ it("binds root helpers to one absolute boottime authority", () => {
   );
   expect(lifecycle).not.toContain(
     "const authoritative = await showUnit(authority.unit, deadline);",
+  );
+});
+
+it("revokes helper control before joining only its authenticated process set", () => {
+  const supervisorSource = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const rootHelper = supervisorSource.slice(
+    supervisorSource.indexOf("const rootHelperSource ="),
+    supervisorSource.indexOf("const cgroupRoot ="),
+  );
+  expect(rootHelper).toContain(
+    'if not progressed: raise RuntimeError("residual")',
+  );
+  expect(rootHelper).toContain(
+    "if child_record is None or child_record[1]!=leader or child_record[2]!=os.getpid()",
+  );
+  expect(rootHelper).toContain(
+    "expected_members={leader:expected,child.pid:child_record[:2]}",
+  );
+  expect(rootHelper).toContain(
+    "parent is not None and parent_record is not None and parent_record[:2]==parent",
+  );
+  expect(rootHelper).toContain("admit_group_members(leader,expected_members)");
+  expect(
+    rootHelper.indexOf("admit_group_members(leader,expected_members)"),
+  ).toBeLessThan(
+    rootHelper.indexOf('REASON="control-close"\n try: os.close(control)'),
+  );
+  expect(
+    rootHelper.indexOf('REASON="control-close"\n try: os.close(control)'),
+  ).toBeLessThan(
+    rootHelper.indexOf(
+      "while now()<DEADLINE:",
+      rootHelper.indexOf("def close_group"),
+    ),
   );
 });
 
@@ -1269,6 +1305,71 @@ it.runIf(existsSync("/usr/bin/python3"))(
         Buffer.from(") S 1 123 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 456\n"),
       ]),
     ])
+      expect(invoke(rejected)).toMatchObject({
+        status: 17,
+        signal: null,
+        stderr: "",
+      });
+  },
+);
+
+it.runIf(existsSync("/usr/bin/python3"))(
+  "admits only identity-bound live descendants into the helper process set",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const helperPrefix = "const rootHelperSource = String.raw`";
+    const helperStart =
+      supervisorSource.indexOf(helperPrefix) + helperPrefix.length;
+    const helperEnd = supervisorSource.indexOf(
+      "`;\nconst cgroupRoot =",
+      helperStart,
+    );
+    const helper = supervisorSource.slice(helperStart, helperEnd);
+    const admissionStart = helper.indexOf(
+      "def admit_group_members(group,expected_members):",
+    );
+    const admissionEnd = helper.indexOf("def create_group():", admissionStart);
+    expect(admissionStart).toBeGreaterThanOrEqual(0);
+    expect(admissionEnd).toBeGreaterThan(admissionStart);
+    const admission = helper.slice(admissionStart, admissionEnd);
+    const invoke = (records: Record<string, [string, number, number]>) =>
+      spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          `import json,sys\nrecords={int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in json.loads(sys.argv[1]).items()}\ndef group_records(group): return records\n${admission}\nexpected={10:(b"100",10),11:(b"110",10)}\ntry:\n admit_group_members(10,expected)\nexcept Exception:\n sys.exit(17)\nif expected!={10:(b"100",10),11:(b"110",10),12:(b"120",10)}: sys.exit(18)`,
+          JSON.stringify(records),
+        ],
+        { encoding: "utf8", env: {}, timeout: 3_000 },
+      );
+    expect(
+      invoke({
+        10: ["100", 10, 1],
+        11: ["110", 10, 1],
+        12: ["120", 10, 11],
+      }),
+    ).toMatchObject({ status: 0, signal: null, stderr: "" });
+    for (const rejected of [
+      {
+        10: ["100", 10, 1],
+        12: ["120", 10, 11],
+      },
+      {
+        10: ["100", 10, 1],
+        11: ["substituted", 10, 1],
+        12: ["120", 10, 11],
+      },
+      {
+        10: ["100", 10, 1],
+        11: ["110", 10, 1],
+        12: ["120", 10, 99],
+      },
+    ] as Array<Record<string, [string, number, number]>>)
       expect(invoke(rejected)).toMatchObject({
         status: 17,
         signal: null,
@@ -2027,13 +2128,17 @@ it("authenticates only the closed join reason inventory", () => {
     'REASON="preclose-residual"',
     'REASON="control-close"\n try: os.close(control)',
     'REASON="reap-timeout"\n while now()<DEADLINE',
-    'REASON="identity-drift"\n  if process_identity(leader)!=expected',
+    'REASON="identity-drift"; raise RuntimeError("identity")',
     'REASON="postreap-residual"\n if group_present(leader)',
   ])
     expect(supervisor).toContain(boundary);
   expect(supervisor).toContain(
-    'if group_members(leader)!=[leader]: raise RuntimeError("residual")',
+    'if not progressed: raise RuntimeError("residual")',
   );
+  expect(supervisor).toContain(
+    "member=expected_members.get(pid)\n   if member is None or record[:2]!=member",
+  );
+  expect(supervisor).toContain("if leader_reaped and not records: break");
   expect(supervisor).toContain("STAGE=failed_stage\n   REASON=failed_reason");
 });
 
