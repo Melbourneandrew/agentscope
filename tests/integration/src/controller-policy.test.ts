@@ -14,10 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  closePreparedGithubSystemdSupervision,
   parseSystemdTerminalExit,
+  prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
   runSupervisedProcess,
   transferDescriptorAuthority,
@@ -875,31 +877,46 @@ it("digests one retained Node descriptor under the original deadline", () => {
     resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
     "utf8",
   );
+  const preparationStart = supervisorSource.indexOf(
+    "export const prepareGithubSystemdSupervision = async",
+  );
   const start = supervisorSource.indexOf("const runSystemdSupervised = async");
   const end = supervisorSource.indexOf(
     "export const runSupervisedProcess",
     start,
   );
   const lifecycle = supervisorSource.slice(start, end);
-  expect(lifecycle).toContain(
+  const preparation = supervisorSource.slice(preparationStart, start);
+  expect(preparation).toContain(
     "const deadline = performance.now() + maximumMilliseconds;",
   );
-  expect(lifecycle.match(/captureLiveMappedExecutable\(/gu)).toHaveLength(1);
+  expect(preparation.match(/captureLiveMappedExecutable\(/gu)).toHaveLength(1);
   expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
   expect(
-    lifecycle.match(
+    supervisorSource.match(
       /const deadline = performance\.now\(\) \+ maximumMilliseconds;/gu,
     ),
   ).toHaveLength(1);
+  expect(lifecycle).not.toContain(
+    "const deadline = performance.now() + maximumMilliseconds;",
+  );
   expect(lifecycle).toContain(
     "const grace = Math.min(\n        deadline,\n        performance.now() + systemdTerminationGraceMilliseconds,",
   );
-  expect(lifecycle).toContain("closeSync(mappedExecutable.descriptor)");
+  expect(lifecycle).toContain(
+    "closePreparedGithubSystemdSupervision(prepared)",
+  );
   const capture = supervisorSource.slice(
     supervisorSource.indexOf("const captureLiveMappedExecutable ="),
     supervisorSource.indexOf("const recheckLiveMappedExecutable ="),
   );
   expect(capture.match(/digestRetainedExecutable\(/gu)).toHaveLength(1);
+  expect(capture).toContain(
+    "Linux binds an open file description to the mapped executable inode",
+  );
+  expect(capture).toContain(
+    "openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY)",
+  );
 });
 
 it("closes retained descriptor authority exactly once on capture failure", () => {
@@ -929,19 +946,72 @@ it("closes retained descriptor authority exactly once on capture failure", () =>
   expect(closed).toEqual([42, 43, 44]);
 });
 
-it.runIf(
+describe.runIf(
   process.platform === "linux" &&
     process.env.GITHUB_ACTIONS === "true" &&
     process.env.RUNNER_ENVIRONMENT === "github-hosted",
-)("contains a detached session in the authenticated systemd unit", async () => {
-  const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
-  const evidence = resolve(directory, "descendant.pid");
-  const escapeEvidence = resolve(directory, "escape.json");
-  const escapeUnit = `agentscope-escape-${createHash("sha256")
-    .update(directory)
-    .digest("hex")
-    .slice(0, 32)}.service`;
-  try {
+)("GitHub systemd containment", () => {
+  let setup:
+    | {
+        directory: string;
+        environment: NodeJS.ProcessEnv;
+        escapeEvidence: string;
+        escapeUnit: string;
+        evidence: string;
+        preparation: Awaited<
+          ReturnType<typeof prepareGithubSystemdSupervision>
+        >;
+      }
+    | undefined;
+
+  beforeAll(async () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
+    const evidence = resolve(directory, "descendant.pid");
+    const escapeEvidence = resolve(directory, "escape.json");
+    const escapeUnit = `agentscope-escape-${createHash("sha256")
+      .update(directory)
+      .digest("hex")
+      .slice(0, 32)}.service`;
+    const environment = {
+      AGENTSCOPE_INTEGRATION_SHARD: "0/1",
+      AGENTSCOPE_INTEGRATION_REPLAY: "1",
+      AGENTSCOPE_SUPERVISOR_DETACHED: "true",
+      AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
+      AGENTSCOPE_SUPERVISOR_ESCAPE_EVIDENCE: escapeEvidence,
+      AGENTSCOPE_SUPERVISOR_ESCAPE_UNIT: escapeUnit,
+      GITHUB_ACTIONS: "true",
+      GITHUB_JOB: "hermetic-platform",
+      GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
+      GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
+      GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
+      GITHUB_SHA: process.env.GITHUB_SHA,
+      LANG: "C.UTF-8",
+      PATH: "/usr/bin:/bin",
+      RUNNER_ENVIRONMENT: "github-hosted",
+    };
+    const preparation = await prepareGithubSystemdSupervision({
+      environment,
+      executable: process.execPath,
+      maximumMilliseconds: 15_000,
+    });
+    setup = {
+      directory,
+      environment,
+      escapeEvidence,
+      escapeUnit,
+      evidence,
+      preparation,
+    };
+  }, 15_000);
+
+  afterAll(() => {
+    if (setup === undefined) return;
+    closePreparedGithubSystemdSupervision(setup.preparation);
+    rmSync(setup.directory, { force: true, recursive: true });
+  });
+
+  it("contains a detached session in the authenticated systemd unit", async () => {
+    if (setup === undefined) throw new Error("missing systemd preparation");
     const result = await runSupervisedProcess({
       arguments_: [
         resolve(
@@ -950,25 +1020,10 @@ it.runIf(
         ),
       ],
       containment: "github-systemd",
-      environment: {
-        AGENTSCOPE_INTEGRATION_SHARD: "0/1",
-        AGENTSCOPE_INTEGRATION_REPLAY: "1",
-        AGENTSCOPE_SUPERVISOR_DETACHED: "true",
-        AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
-        AGENTSCOPE_SUPERVISOR_ESCAPE_EVIDENCE: escapeEvidence,
-        AGENTSCOPE_SUPERVISOR_ESCAPE_UNIT: escapeUnit,
-        GITHUB_ACTIONS: "true",
-        GITHUB_JOB: "hermetic-platform",
-        GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
-        GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
-        GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
-        GITHUB_SHA: process.env.GITHUB_SHA,
-        LANG: "C.UTF-8",
-        PATH: "/usr/bin:/bin",
-        RUNNER_ENVIRONMENT: "github-hosted",
-      },
+      environment: setup.environment,
       executable: process.execPath,
       maximumMilliseconds: 15_000,
+      preparation: setup.preparation,
       stdio: "ignore",
     });
     expect(result).toMatchObject({
@@ -976,13 +1031,13 @@ it.runIf(
       contained: true,
       residualWorkObserved: true,
     });
-    expect(JSON.parse(readFileSync(escapeEvidence, "utf8"))).toEqual({
+    expect(JSON.parse(readFileSync(setup.escapeEvidence, "utf8"))).toEqual({
       cgroupMigration: false,
       directSystemUnit: false,
       systemUnit: false,
       userUnit: false,
     });
-    const descendant = Number(readFileSync(evidence, "utf8"));
+    const descendant = Number(readFileSync(setup.evidence, "utf8"));
     expect(() => process.kill(descendant, 0)).toThrow(
       expect.objectContaining({ code: "ESRCH" }),
     );
@@ -995,7 +1050,7 @@ it.runIf(
         "show",
         "--no-pager",
         "--property=LoadState",
-        escapeUnit,
+        setup.escapeUnit,
       ],
       {
         encoding: "utf8",
@@ -1008,9 +1063,7 @@ it.runIf(
       status: 0,
       stdout: "LoadState=not-found\n",
     });
-  } finally {
-    rmSync(directory, { force: true, recursive: true });
-  }
+  });
 });
 
 describe("integration controller supervision", () => {
@@ -1146,9 +1199,14 @@ describe("integration workflow routing policy", () => {
     const preload = actionSource.indexOf(
       "const sealer = preloadCredentialedSource(",
     );
+    const preparation = actionSource.indexOf(
+      "await prepareGithubSystemdSupervision({",
+    );
     const lifecycle = actionSource.indexOf("await runSupervisedProcess({");
     const finalize = actionSource.indexOf("finalizeFailureEvidence({");
     expect(preload).toBeGreaterThanOrEqual(0);
+    expect(preparation).toBeGreaterThan(preload);
+    expect(lifecycle).toBeGreaterThan(preparation);
     expect(lifecycle).toBeGreaterThan(preload);
     expect(finalize).toBeGreaterThan(lifecycle);
     expect(actionSource).not.toContain('await import("@actions/artifact")');

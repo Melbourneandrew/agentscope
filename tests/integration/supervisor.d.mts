@@ -72,11 +72,26 @@ export function transferDescriptorAuthority<T>(
   }>,
 ): T;
 
+export type PreparedGithubSystemdSupervision = Readonly<
+  Record<symbol, unknown>
+>;
+
+export function prepareGithubSystemdSupervision(input: {
+  environment: NodeJS.ProcessEnv;
+  executable: string;
+  maximumMilliseconds: number;
+}): Promise<PreparedGithubSystemdSupervision>;
+
+export function closePreparedGithubSystemdSupervision(
+  preparation: PreparedGithubSystemdSupervision,
+): void;
+
 export function runSupervisedProcess(input: {
   arguments_?: readonly string[];
   containment?: "github-systemd";
   environment: NodeJS.ProcessEnv;
   executable: string;
   maximumMilliseconds: number;
+  preparation?: PreparedGithubSystemdSupervision;
   stdio?: "ignore" | "inherit";
 }): Promise<SupervisedProcessResult>;

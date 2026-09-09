@@ -36,6 +36,7 @@ const forbiddenLifecycleEnvironment = new Set([
   "DBUS_SESSION_BUS_ADDRESS",
   "XDG_RUNTIME_DIR",
 ]);
+const systemdPreparationBrand = Symbol("agentscope.systemd-preparation");
 
 export const parseSystemdTerminalExit = (facts) => {
   if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(facts.ExecMainStatus ?? ""))
@@ -361,6 +362,9 @@ const captureLiveMappedExecutable = (executable, deadline) => {
         executable: Object.freeze(executableIdentity),
       });
     },
+    // Linux binds an open file description to the mapped executable inode;
+    // O_RDONLY retains that immutable execution authority without granting a
+    // pathname or write channel to later lifecycle code.
     open: () => openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY),
   });
 };
@@ -391,6 +395,21 @@ const recheckLiveMappedExecutable = (expected) => {
   )
     failSystemd();
   return descriptorPath;
+};
+
+const preparedSystemdState = (preparation) => {
+  const state = preparation?.[systemdPreparationBrand];
+  if (state?.preparation !== preparation || state.closed || state.consumed)
+    failSystemd();
+  return state;
+};
+
+export const closePreparedGithubSystemdSupervision = (preparation) => {
+  const state = preparation?.[systemdPreparationBrand];
+  if (state?.preparation !== preparation) failSystemd();
+  if (state.closed) return;
+  state.closed = true;
+  closeSync(state.mappedExecutable.descriptor);
 };
 
 export const validateRootPid1Probe = ({
@@ -749,8 +768,7 @@ const systemdStartArguments = ({
   ...arguments_,
 ];
 
-const runSystemdSupervised = async ({
-  arguments_: arguments_ = [],
+export const prepareGithubSystemdSupervision = async ({
   environment,
   executable,
   maximumMilliseconds,
@@ -770,6 +788,65 @@ const runSystemdSupervised = async ({
   const cgroupPath = resolve(cgroupRoot, authority.cgroup.slice(1));
   if (existsSync(cgroupPath)) failSystemd();
   const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
+  let transferred = false;
+  try {
+    const state = {
+      authority,
+      cgroupPath,
+      closed: false,
+      consumed: false,
+      deadline,
+      environment,
+      executable,
+      executionDeadline,
+      mappedExecutable,
+      maximumMilliseconds,
+      preparation: undefined,
+    };
+    const preparation = Object.freeze({ [systemdPreparationBrand]: state });
+    state.preparation = preparation;
+    transferred = true;
+    return preparation;
+  } finally {
+    if (!transferred) closeSync(mappedExecutable.descriptor);
+  }
+};
+
+const runSystemdSupervised = async ({
+  arguments_: arguments_ = [],
+  environment,
+  executable,
+  maximumMilliseconds,
+  preparation,
+}) => {
+  const prepared =
+    preparation ??
+    (await prepareGithubSystemdSupervision({
+      environment,
+      executable,
+      maximumMilliseconds,
+    }));
+  const state = preparedSystemdState(prepared);
+  if (
+    state.environment !== environment ||
+    state.executable !== executable ||
+    state.maximumMilliseconds !== maximumMilliseconds
+  ) {
+    closePreparedGithubSystemdSupervision(prepared);
+    failSystemd();
+  }
+  state.consumed = true;
+  const {
+    authority,
+    cgroupPath,
+    deadline,
+    executionDeadline,
+    mappedExecutable,
+  } = state;
+  if (executionDeadline <= performance.now() || existsSync(cgroupPath)) {
+    closePreparedGithubSystemdSupervision(prepared);
+    failSystemd();
+  }
   const interrupted = { value: false };
   const forwardSignal = () => {
     interrupted.value = true;
@@ -847,7 +924,7 @@ const runSystemdSupervised = async ({
   } finally {
     process.removeListener("SIGINT", forwardSignal);
     process.removeListener("SIGTERM", forwardSignal);
-    closeSync(mappedExecutable.descriptor);
+    closePreparedGithubSystemdSupervision(prepared);
   }
 };
 

@@ -23,7 +23,10 @@ import {
   compileCapabilityManifest,
   compileIsolationEvidence,
 } from "./dist/index.js";
-import { runSupervisedProcess } from "./supervisor.mjs";
+import {
+  prepareGithubSystemdSupervision,
+  runSupervisedProcess,
+} from "./supervisor.mjs";
 import { DefaultArtifactClient } from "@actions/artifact";
 
 const MAXIMUM_BYTES = 1024 * 1024;
@@ -1218,6 +1221,11 @@ const outerControllerMain = async () => {
   const lifecycleEnvironment = buildLifecycleEnvironment(process.env);
   lifecycleEnvironment.AGENTSCOPE_INTEGRATION_REPLAY =
     process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME.endsWith("-1") ? "1" : "2";
+  const preparation = await prepareGithubSystemdSupervision({
+    environment: lifecycleEnvironment,
+    executable: process.execPath,
+    maximumMilliseconds,
+  });
   const result = await runSupervisedProcess({
     environment: lifecycleEnvironment,
     executable: process.execPath,
@@ -1229,6 +1237,7 @@ const outerControllerMain = async () => {
     ],
     maximumMilliseconds,
     containment: "github-systemd",
+    preparation,
   });
   let succeeded;
   try {
