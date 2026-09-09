@@ -18,6 +18,7 @@ const containmentPollMilliseconds = 10;
 const systemdTerminationGraceMilliseconds = 1_000;
 const maximumToolOutputBytes = 64 * 1024;
 const maximumManagerBytes = 16 * 1024 * 1024;
+const maximumNodeBytes = 256 * 1024 * 1024;
 const readlinkPath = "/usr/bin/readlink";
 const sha256sumPath = "/usr/bin/sha256sum";
 const statPath = "/usr/bin/stat";
@@ -241,6 +242,117 @@ const readPid1Snapshot = () => {
   )
     failSystemd();
   return Object.freeze({ bootId, startTime });
+};
+
+const readProcessSnapshot = (pid) => {
+  if (!Number.isSafeInteger(pid) || pid < 1) failSystemd();
+  const processStat = readBounded(`/proc/${pid}/stat`, 4096).trimEnd();
+  if (!processStat.startsWith(`${pid} (`) || /[\0\r\n]/u.test(processStat))
+    failSystemd();
+  const commandEnd = processStat.lastIndexOf(") ");
+  if (commandEnd < String(pid).length + 3) failSystemd();
+  const fields = processStat.slice(commandEnd + 2).split(" ");
+  const startTime = fields[19];
+  const bootId = readBounded("/proc/sys/kernel/random/boot_id", 128).trimEnd();
+  if (
+    fields.length < 20 ||
+    !/^[A-Z]$/u.test(fields[0] ?? "") ||
+    !/^[1-9][0-9]*$/u.test(startTime ?? "") ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
+      bootId,
+    )
+  )
+    failSystemd();
+  return Object.freeze({ bootId, pid, startTime });
+};
+
+const digestMappedExecutable = (pid, deadline) => {
+  const descriptor = openSync(`/proc/${pid}/exe`, constants.O_RDONLY);
+  try {
+    const status = fstatSync(descriptor);
+    if (
+      !status.isFile() ||
+      (status.mode & 0o111) === 0 ||
+      status.size < 1 ||
+      status.size > maximumNodeBytes
+    )
+      failSystemd();
+    const hash = createHash("sha256");
+    const content = Buffer.alloc(64 * 1024);
+    let total = 0;
+    while (total < status.size) {
+      remainingMilliseconds(deadline);
+      const count = readSync(descriptor, content, 0, content.length, null);
+      if (count === 0) failSystemd();
+      total += count;
+      if (total > status.size) failSystemd();
+      hash.update(content.subarray(0, count));
+    }
+    const after = fstatSync(descriptor);
+    if (
+      after.dev !== status.dev ||
+      after.ino !== status.ino ||
+      after.mode !== status.mode ||
+      after.uid !== status.uid ||
+      after.gid !== status.gid ||
+      after.size !== status.size
+    )
+      failSystemd();
+    return Object.freeze({
+      dev: status.dev,
+      digest: hash.digest("hex"),
+      gid: status.gid,
+      ino: status.ino,
+      mode: status.mode,
+      size: status.size,
+      uid: status.uid,
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const sameExecutableIdentity = (left, right) =>
+  left?.dev === right?.dev &&
+  left?.ino === right?.ino &&
+  left?.mode === right?.mode &&
+  left?.uid === right?.uid &&
+  left?.gid === right?.gid &&
+  left?.size === right?.size &&
+  left?.digest === right?.digest;
+
+export const validateLiveMappedExecutable = ({ after, before }) => {
+  if (!Number.isSafeInteger(before?.pid) || before.pid <= 1) return false;
+  return (
+    before.pid === after?.pid &&
+    before.bootId === after?.bootId &&
+    before.startTime === after?.startTime &&
+    sameExecutableIdentity(before.executable, after?.executable)
+  );
+};
+
+const readLiveMappedExecutable = (pid, deadline) =>
+  Object.freeze({
+    ...readProcessSnapshot(pid),
+    executable: digestMappedExecutable(pid, deadline),
+  });
+
+const captureLiveMappedExecutable = (executable, deadline) => {
+  if (executable !== process.execPath) failSystemd();
+  const mapped = readLiveMappedExecutable(process.pid, deadline);
+  const named = statSync(executable);
+  if (
+    !named.isFile() ||
+    named.dev !== mapped.executable.dev ||
+    named.ino !== mapped.executable.ino
+  )
+    failSystemd();
+  return mapped;
+};
+
+const recheckLiveMappedExecutable = (expected, deadline) => {
+  const after = readLiveMappedExecutable(expected.pid, deadline);
+  if (!validateLiveMappedExecutable({ after, before: expected })) failSystemd();
 };
 
 export const validateRootPid1Probe = ({
@@ -571,6 +683,34 @@ const systemdIdentity = (environment) => {
   });
 };
 
+const systemdStartArguments = ({
+  arguments_,
+  authority,
+  environment,
+  executable,
+}) => [
+  `--unit=${authority.unit}`,
+  "--service-type=exec",
+  "--property=Delegate=no",
+  "--property=KillMode=control-group",
+  "--property=NoNewPrivileges=yes",
+  "--property=RestrictSUIDSGID=yes",
+  "--property=CapabilityBoundingSet=",
+  "--property=AmbientCapabilities=",
+  "--property=ProtectControlGroups=yes",
+  `--property=InaccessiblePaths=${systemdInaccessiblePaths}`,
+  "--property=RemainAfterExit=yes",
+  `--property=User=${authority.uid}`,
+  `--property=Group=${authority.gid}`,
+  `--property=SupplementaryGroups=${authority.groups.join(" ")}`,
+  "--expand-environment=no",
+  `--working-directory=${process.cwd()}`,
+  ...systemdEnvironmentArguments(environment),
+  "--",
+  executable,
+  ...arguments_,
+];
+
 const runSystemdSupervised = async ({
   arguments_: arguments_ = [],
   environment,
@@ -584,10 +724,8 @@ const runSystemdSupervised = async ({
     realpathSync(executable) !== executable
   )
     failSystemd();
-  const executableStatus = statSync(executable);
-  if (!executableStatus.isFile() || (executableStatus.mode & 0o022) !== 0)
-    failSystemd();
   const deadline = performance.now() + maximumMilliseconds;
+  const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
   await authenticateSystemdHost(deadline);
   const executionDeadline = deadline - containmentProofMilliseconds;
   if (executionDeadline <= performance.now()) failSystemd();
@@ -603,32 +741,19 @@ const runSystemdSupervised = async ({
   let terminal;
   let residualWorkObserved;
   try {
+    recheckLiveMappedExecutable(mappedExecutable, deadline);
+    const mappedExecutablePath = `/proc/${mappedExecutable.pid}/exe`;
     await rootTool(
       systemdRunPath,
-      [
-        `--unit=${authority.unit}`,
-        "--service-type=exec",
-        "--property=Delegate=no",
-        "--property=KillMode=control-group",
-        "--property=NoNewPrivileges=yes",
-        "--property=RestrictSUIDSGID=yes",
-        "--property=CapabilityBoundingSet=",
-        "--property=AmbientCapabilities=",
-        "--property=ProtectControlGroups=yes",
-        `--property=InaccessiblePaths=${systemdInaccessiblePaths}`,
-        "--property=RemainAfterExit=yes",
-        `--property=User=${authority.uid}`,
-        `--property=Group=${authority.gid}`,
-        `--property=SupplementaryGroups=${authority.groups.join(" ")}`,
-        "--expand-environment=no",
-        `--working-directory=${process.cwd()}`,
-        ...systemdEnvironmentArguments(environment),
-        "--",
-        executable,
-        ...arguments_,
-      ],
+      systemdStartArguments({
+        arguments_,
+        authority,
+        environment,
+        executable: mappedExecutablePath,
+      }),
       deadline,
     );
+    recheckLiveMappedExecutable(mappedExecutable, deadline);
     terminal = await waitForTerminal(authority, executionDeadline, interrupted);
     const authoritative = await showUnit(authority.unit, deadline);
     assertUnitAuthority(authoritative, authority);

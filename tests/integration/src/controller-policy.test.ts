@@ -20,6 +20,7 @@ import {
   parseSystemdTerminalExit,
   rootPid1ProbeRequired,
   runSupervisedProcess,
+  validateLiveMappedExecutable,
   validateRootPid1Probe,
 } from "../supervisor.mjs";
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
@@ -828,6 +829,44 @@ it("binds the root-mediated PID 1 probe to one stable manager identity", () => {
   expect(rootPid1ProbeRequired({ code: "EPERM" })).toBe(true);
   for (const error of [undefined, null, {}, { code: "ENOENT" }, "EACCES"])
     expect(rootPid1ProbeRequired(error)).toBe(false);
+});
+
+it("binds the live Node mapping across systemd admission", () => {
+  const executable = {
+    dev: 42,
+    digest: "a".repeat(64),
+    gid: 1001,
+    ino: 84,
+    mode: 0o100777,
+    size: 125_000_000,
+    uid: 1001,
+  };
+  const before = {
+    bootId: "01234567-89ab-cdef-0123-456789abcdef",
+    executable,
+    pid: 1234,
+    startTime: "5678",
+  };
+  expect(validateLiveMappedExecutable({ after: before, before })).toBe(true);
+  for (const after of [
+    { ...before, pid: 1235 },
+    { ...before, startTime: "5679" },
+    { ...before, bootId: before.bootId.replace("0", "1") },
+    { ...before, executable: { ...executable, dev: 43 } },
+    { ...before, executable: { ...executable, ino: 85 } },
+    { ...before, executable: { ...executable, mode: 0o100755 } },
+    { ...before, executable: { ...executable, uid: 1002 } },
+    { ...before, executable: { ...executable, gid: 1002 } },
+    { ...before, executable: { ...executable, size: executable.size + 1 } },
+    { ...before, executable: { ...executable, digest: "b".repeat(64) } },
+  ])
+    expect(validateLiveMappedExecutable({ after, before })).toBe(false);
+  expect(
+    validateLiveMappedExecutable({
+      after: before,
+      before: { ...before, pid: 1 },
+    }),
+  ).toBe(false);
 });
 
 it.runIf(

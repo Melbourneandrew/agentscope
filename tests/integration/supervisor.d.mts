@@ -31,6 +31,39 @@ export function validateRootPid1Probe(
 
 export function rootPid1ProbeRequired(error: unknown): boolean;
 
+export function validateLiveMappedExecutable(
+  input: Readonly<{
+    after: Readonly<{
+      bootId: string;
+      executable: Readonly<{
+        dev: number;
+        digest: string;
+        gid: number;
+        ino: number;
+        mode: number;
+        size: number;
+        uid: number;
+      }>;
+      pid: number;
+      startTime: string;
+    }>;
+    before: Readonly<{
+      bootId: string;
+      executable: Readonly<{
+        dev: number;
+        digest: string;
+        gid: number;
+        ino: number;
+        mode: number;
+        size: number;
+        uid: number;
+      }>;
+      pid: number;
+      startTime: string;
+    }>;
+  }>,
+): boolean;
+
 export function runSupervisedProcess(input: {
   arguments_?: readonly string[];
   containment?: "github-systemd";
