@@ -12,7 +12,7 @@ import sys
 
 MAXIMUM_BYTES = 1024 * 1024
 MAXIMUM_UPLOADER_BYTES = 64 * 1024
-UPLOADER_SHA256 = "f6eaa60a18c974b2a0c9c5ff6052614eadec335b8a3b688355e3663835888221"
+UPLOADER_SHA256 = "2a82505eb7f8d5acbe2634b5822861ab2e606187dc610548574fffbbeb57b41b"
 MEMFD_NAME = "agentscope-sanitized-failure-evidence"
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -146,6 +146,26 @@ def seal(arguments: list[str]) -> None:
             fail()
     finally:
         os.close(uploader_descriptor)
+    integration_root = os.path.join(
+        os.environ["GITHUB_WORKSPACE"], "tests", "integration"
+    )
+    integration_status = os.lstat(integration_root)
+    if not stat.S_ISDIR(integration_status.st_mode) or stat.S_ISLNK(
+        integration_status.st_mode
+    ):
+        fail()
+    integration_descriptor = os.open(
+        integration_root,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
+    )
+    try:
+        if not same_identity(os.fstat(integration_descriptor), integration_status):
+            fail()
+        os.fchdir(integration_descriptor)
+        if not same_identity(os.stat("."), integration_status):
+            fail()
+    finally:
+        os.close(integration_descriptor)
     descriptor = os.memfd_create(MEMFD_NAME, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
     node_descriptor = os.open(node, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:

@@ -244,10 +244,11 @@ describe("failure evidence upload provenance", () => {
     expect(source).toContain("os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING");
     expect(source).toContain("fcntl.F_ADD_SEALS, REQUIRED_SEALS");
     expect(source).toContain("inheritable_inventory() != {1, 2, descriptor}");
+    expect(source).toContain("os.fchdir(integration_descriptor)");
     expect(source).toContain("os.execve(");
     expect(source).toContain('"--input-type=module"');
     expect(source).toContain(
-      'UPLOADER_SHA256 = "f6eaa60a18c974b2a0c9c5ff6052614eadec335b8a3b688355e3663835888221"',
+      'UPLOADER_SHA256 = "2a82505eb7f8d5acbe2634b5822861ab2e606187dc610548574fffbbeb57b41b"',
     );
     expect(source).not.toMatch(/mkstemp|NamedTemporaryFile|\/tmp\/|sudo|tee/gu);
     expect(source.indexOf("os.fsync(descriptor)")).toBeLessThan(
@@ -267,7 +268,10 @@ describe("Linux sealed failure evidence upload", () => {
       const fixtureUploader = resolve(owned.root, "fixture-uploader.mjs");
       writeFileSync(
         fixtureUploader,
-        `import { closeSync, fstatSync, ftruncateSync, writeSync } from "node:fs";
+        `import { DefaultArtifactClient } from "@actions/artifact";
+import { closeSync, fstatSync, ftruncateSync, writeSync } from "node:fs";
+if (typeof DefaultArtifactClient !== "function") process.exit(1);
+if (process.cwd() !== ${JSON.stringify(resolve(workspaceRoot, "tests/integration"))}) process.exit(1);
 const values = Object.fromEntries(Array.from({ length: process.argv.slice(1).length / 2 }, (_, index) => [process.argv[index * 2 + 1], process.argv[index * 2 + 2]]));
 const fd = Number(values["--fd"]);
 const status = fstatSync(fd);
@@ -293,6 +297,7 @@ process.stdout.write(JSON.stringify({ pid: process.pid, status: "sealed" }) + "\
           digest(owned.content),
         ],
         {
+          cwd: workspaceRoot,
           encoding: "utf8",
           env: {
             ACTIONS_RESULTS_URL:
@@ -318,7 +323,9 @@ process.stdout.write(JSON.stringify({ pid: process.pid, status: "sealed" }) + "\
       }
     },
   );
+});
 
+describe("Linux retained failure evidence descriptor", () => {
   it.skipIf(process.platform !== "linux")(
     "streams only one exact retained self memfd and rejects aliases",
     () => {
