@@ -14,23 +14,24 @@ export function parseSystemdMainExitStatus(
 export function systemdMainProcessIsTerminal(
   facts: Readonly<Record<string, string>>,
 ): boolean;
-export type CgroupIdentity = readonly [
-  Readonly<{
-    dev: number;
-    gid: number;
-    ino: number;
-    mode: number;
-    uid: number;
-  }>,
-  Readonly<{
-    dev: number;
-    gid: number;
-    ino: number;
-    mode: number;
-    uid: number;
-  }>,
-];
+type CgroupObjectIdentity = Readonly<{
+  dev: number;
+  gid: number;
+  ino: number;
+  mode: number;
+  uid: number;
+}>;
+export type CgroupIdentity = Readonly<{
+  descriptors: readonly [number, number, number, number];
+  identities: readonly [
+    CgroupObjectIdentity,
+    CgroupObjectIdentity,
+    CgroupObjectIdentity,
+    CgroupObjectIdentity,
+  ];
+}>;
 export function authenticateCgroup(cgroupPath: string): CgroupIdentity;
+export function exactPathIsAbsent(path: string): boolean;
 export function cgroupObservationSettled(
   cgroupPath: string,
   identity: CgroupIdentity,

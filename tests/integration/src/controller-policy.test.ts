@@ -22,6 +22,7 @@ import {
   advanceToolForceState,
   authenticateCgroup,
   cgroupObservationSettled,
+  exactPathIsAbsent,
   classifySystemdUnitAuthority,
   classifyToolSettlement,
   closePreparedGithubSystemdSupervision,
@@ -813,10 +814,15 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
 it("treats a retired cgroup disappearance only as input to collection proof", () => {
   const directory = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-race-"));
   try {
-    const identity = [
-      { dev: 1, gid: 0, ino: 2, mode: 0o040755, uid: 0 },
-      { dev: 1, gid: 0, ino: 3, mode: 0o100444, uid: 0 },
-    ] as const;
+    const identity = {
+      descriptors: [96, 97, 98, 99],
+      identities: [
+        { dev: 1, gid: 0, ino: 2, mode: 0o040755, uid: 0 },
+        { dev: 1, gid: 0, ino: 3, mode: 0o040755, uid: 0 },
+        { dev: 1, gid: 0, ino: 4, mode: 0o100444, uid: 0 },
+        { dev: 1, gid: 0, ino: 5, mode: 0o100444, uid: 0 },
+      ],
+    } as const;
     writeFileSync(resolve(directory, "cgroup.events"), "populated 1\n");
     writeFileSync(resolve(directory, "cgroup.procs"), "");
     expect(() => cgroupObservationSettled(directory, identity)).toThrow();
@@ -825,11 +831,29 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
     rmSync(directory, { force: true, recursive: true });
   }
   expect(
-    cgroupObservationSettled(directory, [
-      { dev: 1, gid: 0, ino: 2, mode: 0o040755, uid: 0 },
-      { dev: 1, gid: 0, ino: 3, mode: 0o100444, uid: 0 },
-    ]),
+    cgroupObservationSettled(directory, {
+      descriptors: [96, 97, 98, 99],
+      identities: [
+        { dev: 1, gid: 0, ino: 2, mode: 0o040755, uid: 0 },
+        { dev: 1, gid: 0, ino: 3, mode: 0o040755, uid: 0 },
+        { dev: 1, gid: 0, ino: 4, mode: 0o100444, uid: 0 },
+        { dev: 1, gid: 0, ino: 5, mode: 0o100444, uid: 0 },
+      ],
+    }),
   ).toBe(true);
+
+  const deniedRoot = mkdtempSync(
+    resolve(tmpdir(), "agentscope-cgroup-denied-"),
+  );
+  const deniedChild = resolve(deniedRoot, "child");
+  mkdirSync(deniedChild);
+  chmodSync(deniedRoot, 0o000);
+  try {
+    expect(() => exactPathIsAbsent(resolve(deniedChild, "missing"))).toThrow();
+  } finally {
+    chmodSync(deniedRoot, 0o700);
+    rmSync(deniedRoot, { force: true, recursive: true });
+  }
 
   const symlinkRoot = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-link-"));
   try {

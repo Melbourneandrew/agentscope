@@ -1842,14 +1842,17 @@ const assertUnitAuthority = (facts, authority) => {
 };
 
 export const authenticateCgroup = (cgroupPath) => {
+  const descriptors = [];
   const identities = [];
   for (const [index, path] of [
+    dirname(cgroupPath),
     cgroupPath,
     resolve(cgroupPath, "cgroup.procs"),
+    resolve(cgroupPath, "cgroup.events"),
   ].entries()) {
     const status = lstatSync(path);
     if (
-      (index === 0 ? !status.isDirectory() : !status.isFile()) ||
+      (index < 2 ? !status.isDirectory() : !status.isFile()) ||
       status.uid !== 0 ||
       status.gid !== 0 ||
       (status.mode & 0o022) !== 0
@@ -1865,25 +1868,115 @@ export const authenticateCgroup = (cgroupPath) => {
       }),
     );
   }
-  return Object.freeze(identities);
+  const paths = [
+    dirname(cgroupPath),
+    cgroupPath,
+    resolve(cgroupPath, "cgroup.procs"),
+    resolve(cgroupPath, "cgroup.events"),
+  ];
+  try {
+    for (const [index, path] of paths.entries()) {
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY |
+          constants.O_NOFOLLOW |
+          constants.O_CLOEXEC |
+          (index < 2 ? constants.O_DIRECTORY : 0),
+      );
+      descriptors.push(descriptor);
+      const status = fstatSync(descriptor);
+      const identity = identities[index];
+      if (
+        status.dev !== identity.dev ||
+        status.ino !== identity.ino ||
+        status.mode !== identity.mode ||
+        status.uid !== identity.uid ||
+        status.gid !== identity.gid
+      )
+        failSystemd();
+    }
+    return Object.freeze({
+      descriptors: Object.freeze(descriptors),
+      identities: Object.freeze(identities),
+    });
+  } catch (error) {
+    for (const descriptor of descriptors.reverse()) closeSync(descriptor);
+    throw error;
+  }
 };
 
 const sameCgroupIdentity = (left, right) =>
-  Array.isArray(left) &&
-  Array.isArray(right) &&
-  left.length === 2 &&
-  right.length === 2 &&
-  left.every(
+  Array.isArray(left?.descriptors) &&
+  Array.isArray(right?.descriptors) &&
+  left.descriptors.length === 4 &&
+  right.descriptors.length === 4 &&
+  left.descriptors.every(
+    (descriptor, index) => descriptor === right.descriptors[index],
+  ) &&
+  Array.isArray(left.identities) &&
+  Array.isArray(right.identities) &&
+  left.identities.length === 4 &&
+  right.identities.length === 4 &&
+  left.identities.every(
     (identity, index) =>
-      identity.dev === right[index]?.dev &&
-      identity.gid === right[index]?.gid &&
-      identity.ino === right[index]?.ino &&
-      identity.mode === right[index]?.mode &&
-      identity.uid === right[index]?.uid,
+      identity.dev === right.identities[index]?.dev &&
+      identity.gid === right.identities[index]?.gid &&
+      identity.ino === right.identities[index]?.ino &&
+      identity.mode === right.identities[index]?.mode &&
+      identity.uid === right.identities[index]?.uid,
   );
 
-const cgroupIsEmpty = (cgroupPath) => {
-  const events = readBounded(resolve(cgroupPath, "cgroup.events"), 4096);
+const recheckCgroupAuthority = (cgroupPath, authority) => {
+  const paths = [
+    dirname(cgroupPath),
+    cgroupPath,
+    resolve(cgroupPath, "cgroup.procs"),
+    resolve(cgroupPath, "cgroup.events"),
+  ];
+  const identities = paths.map((path) => {
+    const status = lstatSync(path);
+    return {
+      dev: status.dev,
+      gid: status.gid,
+      ino: status.ino,
+      mode: status.mode,
+      uid: status.uid,
+    };
+  });
+  const observed = { descriptors: authority.descriptors, identities };
+  if (!sameCgroupIdentity(observed, authority)) failSystemd();
+  for (const [index, descriptor] of authority.descriptors.entries()) {
+    const status = fstatSync(descriptor);
+    const identity = authority.identities[index];
+    if (
+      status.dev !== identity.dev ||
+      status.ino !== identity.ino ||
+      status.mode !== identity.mode ||
+      status.uid !== identity.uid ||
+      status.gid !== identity.gid
+    )
+      failSystemd();
+  }
+};
+
+const cgroupIsEmpty = (cgroupPath, authority) => {
+  recheckCgroupAuthority(cgroupPath, authority);
+  const content = Buffer.alloc(4097);
+  let size = 0;
+  while (size < content.length) {
+    const count = readSync(
+      authority.descriptors[3],
+      content,
+      size,
+      content.length - size,
+      size,
+    );
+    if (count === 0) break;
+    size += count;
+  }
+  if (size > 4096) failSystemd();
+  recheckCgroupAuthority(cgroupPath, authority);
+  const events = content.subarray(0, size).toString("utf8");
   const entries = Object.fromEntries(
     events
       .trimEnd()
@@ -1893,21 +1986,29 @@ const cgroupIsEmpty = (cgroupPath) => {
   return entries.populated === "0";
 };
 
+export const exactPathIsAbsent = (path) => {
+  try {
+    lstatSync(path);
+    return false;
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+};
+
 export const cgroupObservationSettled = (cgroupPath, identity) => {
   if (!sameCgroupIdentity(identity, identity)) failSystemd();
-  if (!existsSync(cgroupPath)) {
-    if (existsSync(resolve(cgroupPath, "cgroup.procs"))) failSystemd();
+  if (exactPathIsAbsent(cgroupPath)) {
+    if (!exactPathIsAbsent(resolve(cgroupPath, "cgroup.procs"))) failSystemd();
     return true;
   }
   try {
-    if (!sameCgroupIdentity(authenticateCgroup(cgroupPath), identity))
-      failSystemd();
-    return cgroupIsEmpty(cgroupPath);
+    return cgroupIsEmpty(cgroupPath, identity);
   } catch (error) {
     if (
       error?.code === "ENOENT" &&
-      !existsSync(cgroupPath) &&
-      !existsSync(resolve(cgroupPath, "cgroup.procs"))
+      exactPathIsAbsent(cgroupPath) &&
+      exactPathIsAbsent(resolve(cgroupPath, "cgroup.procs"))
     )
       return true;
     throw error;
@@ -1941,7 +2042,8 @@ const systemdSignal = (unit, signal, deadline) =>
 const proveCollected = async (authority, cgroupPath, deadline) => {
   while (performance.now() < deadline) {
     const facts = await showUnit(authority.unit, deadline, "unit-collection");
-    if (facts.LoadState === "not-found" && !existsSync(cgroupPath)) return true;
+    if (facts.LoadState === "not-found" && exactPathIsAbsent(cgroupPath))
+      return true;
     await delay(Math.min(50, remainingMilliseconds(deadline)));
   }
   return false;
@@ -2109,7 +2211,10 @@ export const prepareGithubSystemdSupervision = async ({
   };
   try {
     recheckLiveMappedExecutable(mappedExecutable);
-    if (preparationDeadline <= performance.now() || existsSync(cgroupPath))
+    if (
+      preparationDeadline <= performance.now() ||
+      !exactPathIsAbsent(cgroupPath)
+    )
       failSystemd();
     const preparation = Object.freeze({});
     systemdPreparations.set(preparation, state);
@@ -2132,8 +2237,10 @@ const closePreparedSystemdState = async (state) => {
         !Number.isFinite(state.executionDeadline)
       )
         failSystemd();
-      if (existsSync(state.cgroupPath)) {
-        const cgroupIdentity = authenticateCgroup(state.cgroupPath);
+      if (!exactPathIsAbsent(state.cgroupPath)) {
+        const cgroupIdentity =
+          state.cgroupIdentity ?? authenticateCgroup(state.cgroupPath);
+        state.cgroupIdentity = cgroupIdentity;
         await systemdSignal(state.authority.unit, "SIGKILL", state.deadline);
         while (!cgroupObservationSettled(state.cgroupPath, cgroupIdentity))
           await delay(Math.min(50, remainingMilliseconds(state.deadline)));
@@ -2150,6 +2257,17 @@ const closePreparedSystemdState = async (state) => {
   } finally {
     process.removeListener("SIGINT", state.forwardSignal);
     process.removeListener("SIGTERM", state.forwardSignal);
+    if (state.cgroupIdentity !== undefined) {
+      try {
+        for (const descriptor of [
+          ...state.cgroupIdentity.descriptors,
+        ].reverse())
+          closeSync(descriptor);
+      } catch {
+        contained = false;
+      }
+      state.cgroupIdentity = undefined;
+    }
     closeSync(state.mappedExecutable.descriptor);
   }
   return contained;
@@ -2229,9 +2347,7 @@ const authenticateTerminalSystemdUnit = async (state) => {
       "unit-authoritative",
     );
     assertUnitAuthority(authoritative, state.authority);
-    const currentCgroupIdentity = authenticateCgroup(state.cgroupPath);
-    if (!sameCgroupIdentity(currentCgroupIdentity, state.cgroupIdentity))
-      failSystemd();
+    recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }
@@ -2328,7 +2444,7 @@ const runSystemdSupervised = async ({
   }
   state.deadline = deadline;
   state.executionDeadline = executionDeadline;
-  if (existsSync(state.cgroupPath)) {
+  if (!exactPathIsAbsent(state.cgroupPath)) {
     await closePreparedGithubSystemdSupervision(prepared);
     failSystemd();
   }
