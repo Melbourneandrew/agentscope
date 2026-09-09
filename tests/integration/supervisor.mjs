@@ -569,12 +569,18 @@ const forbiddenLifecycleEnvironment = new Set([
 ]);
 const systemdPreparations = new WeakMap();
 
-export const parseSystemdTerminalExit = (facts) => {
+export const parseSystemdMainExitStatus = (facts) => {
   if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(facts.ExecMainStatus ?? ""))
     return undefined;
   const code = Number(facts.ExecMainStatus);
-  if (facts.ExecMainCode !== "1" || !Number.isSafeInteger(code) || code > 255)
-    return undefined;
+  return facts.ExecMainCode === "1" && Number.isSafeInteger(code) && code <= 255
+    ? code
+    : undefined;
+};
+
+export const parseSystemdTerminalExit = (facts) => {
+  const code = parseSystemdMainExitStatus(facts);
+  if (code === undefined) return undefined;
   if (
     code === 0 &&
     facts.ActiveState === "active" &&
@@ -591,6 +597,10 @@ export const parseSystemdTerminalExit = (facts) => {
     return code;
   return undefined;
 };
+
+export const systemdMainProcessIsTerminal = (facts) =>
+  parseSystemdMainExitStatus(facts) !== undefined ||
+  facts.ActiveState === "failed";
 
 const delay = (milliseconds) =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
@@ -1821,11 +1831,7 @@ const waitForTerminal = async (authority, deadline, interrupted) => {
   ) {
     const facts = await showUnit(authority.unit, deadline, "unit-monitor");
     assertUnitAuthority(facts, authority);
-    if (
-      (facts.ActiveState === "active" && facts.SubState === "exited") ||
-      facts.ActiveState === "failed"
-    )
-      return facts;
+    if (systemdMainProcessIsTerminal(facts)) return facts;
     await delay(Math.min(50, remainingMilliseconds(deadline)));
   }
   return undefined;
@@ -2246,7 +2252,7 @@ const runSystemdSupervised = async ({
     residualWorkObserved = observeSystemdCgroup(state);
     if (residualWorkObserved) await terminateSystemdCgroup(state);
     await retireAndCollectSystemdUnit(state);
-    const code = parseSystemdTerminalExit(terminal);
+    const code = parseSystemdMainExitStatus(terminal);
     if (code === undefined)
       failSystemdLifecycle(state, "unit-authoritative", "malformed");
     return { code, contained: true, residualWorkObserved, signal: null };

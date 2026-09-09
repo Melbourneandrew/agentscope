@@ -21,10 +21,12 @@ import {
   advanceToolForceState,
   classifyToolSettlement,
   closePreparedGithubSystemdSupervision,
+  parseSystemdMainExitStatus,
   parseSystemdTerminalExit,
   prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
   rootToolHasPreparationBudget,
+  systemdMainProcessIsTerminal,
   systemdConsumptionDeadlines,
   runSupervisedProcess,
   sameSystemdArguments,
@@ -798,6 +800,49 @@ it("accepts only exact numeric systemd exit terminal facts", () => {
     { ...failed, SubState: "exited" },
   ])
     expect(parseSystemdTerminalExit(substituted)).toBeUndefined();
+});
+
+it("observes exact main exit facts before retiring retained descendants", () => {
+  const retainedDescendant = {
+    ActiveState: "active",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
+    Result: "success",
+    SubState: "running",
+  };
+  const deactivatingDescendant = {
+    ...retainedDescendant,
+    ActiveState: "deactivating",
+    ExecMainStatus: "17",
+    Result: "exit-code",
+  };
+  expect(parseSystemdMainExitStatus(retainedDescendant)).toBe(0);
+  expect(parseSystemdMainExitStatus(deactivatingDescendant)).toBe(17);
+  expect(systemdMainProcessIsTerminal(retainedDescendant)).toBe(true);
+  expect(systemdMainProcessIsTerminal(deactivatingDescendant)).toBe(true);
+  for (const substituted of [
+    { ...retainedDescendant, ExecMainCode: "0" },
+    { ...retainedDescendant, ExecMainCode: "2" },
+    { ...retainedDescendant, ExecMainStatus: "00" },
+    { ...retainedDescendant, ExecMainStatus: "256" },
+    { ...retainedDescendant, ExecMainStatus: "" },
+  ]) {
+    expect(parseSystemdMainExitStatus(substituted)).toBeUndefined();
+    expect(systemdMainProcessIsTerminal(substituted)).toBe(false);
+  }
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const terminalWait = supervisor.slice(
+    supervisor.indexOf("const waitForTerminal ="),
+    supervisor.indexOf("const systemdSignal ="),
+  );
+  expect(terminalWait).toContain("systemdMainProcessIsTerminal(facts)");
+  expect(terminalWait).not.toContain(
+    'facts.ActiveState === "active" && facts.SubState === "exited"',
+  );
 });
 
 it("binds the root-mediated PID 1 probe to one stable manager identity", () => {

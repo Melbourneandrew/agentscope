@@ -8,6 +8,12 @@ export type SupervisedProcessResult = Readonly<{
 export function parseSystemdTerminalExit(
   facts: Readonly<Record<string, string>>,
 ): number | undefined;
+export function parseSystemdMainExitStatus(
+  facts: Readonly<Record<string, string>>,
+): number | undefined;
+export function systemdMainProcessIsTerminal(
+  facts: Readonly<Record<string, string>>,
+): boolean;
 
 export function validateRootPid1Probe(
   input: Readonly<{
