@@ -26,6 +26,7 @@ import {
 import {
   prepareGithubSystemdSupervision,
   runSupervisedProcess,
+  systemdToolFailureStage,
 } from "./supervisor.mjs";
 import { DefaultArtifactClient } from "@actions/artifact";
 
@@ -1301,7 +1302,12 @@ const bootstrapMain = () => {
 };
 
 if (process.argv[1] === "--outer-controller") {
-  outerControllerMain().catch(() => {
+  outerControllerMain().catch((error) => {
+    const stage = systemdToolFailureStage(error);
+    if (stage !== undefined)
+      process.stdout.write(
+        `::error::integration.controller.systemd-tool:${stage}\n`,
+      );
     process.exitCode = 1;
   });
 } else if (

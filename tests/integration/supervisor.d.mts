@@ -31,6 +31,39 @@ export function validateRootPid1Probe(
 
 export function rootPid1ProbeRequired(error: unknown): boolean;
 
+export type SystemdToolFailureStage =
+  | "startup"
+  | "cutoff"
+  | "sentinel"
+  | "tool-spawn"
+  | "client-terminal"
+  | "unit-admission"
+  | "retirement"
+  | "join";
+
+export function systemdToolFailureStage(
+  error: unknown,
+): SystemdToolFailureStage | undefined;
+
+export function validateRootToolReceipt(
+  input: Readonly<{
+    identity: Readonly<{
+      cutoff: string;
+      deadline: string;
+      operation: string;
+      unit: string;
+    }>;
+    key: string;
+    receipt: string;
+  }>,
+):
+  | Readonly<{
+      output: string;
+      stage: SystemdToolFailureStage;
+      status: "error" | "ok" | "uncertain";
+    }>
+  | undefined;
+
 export function validateLiveMappedExecutable(
   input: Readonly<{
     after: Readonly<{

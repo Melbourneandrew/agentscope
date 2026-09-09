@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -26,10 +26,12 @@ import {
   sameSystemdEnvironment,
   snapshotSystemdArguments,
   snapshotSystemdEnvironment,
+  systemdToolFailureStage,
   transferDescriptorAuthority,
   validateLiveMappedExecutable,
   validatePythonAuthority,
   validateRootPid1Probe,
+  validateRootToolReceipt,
 } from "../supervisor.mjs";
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
 
@@ -1062,11 +1064,9 @@ it("digests one retained Node descriptor under the original deadline", () => {
   expect(preparation).toContain("await closePreparedSystemdState(state)");
   expect(preparation).toContain("state.unitMayExist = true;");
   expect(preparation).toContain(
-    "systemdStartArguments({\n        arguments_,\n        authority,\n        environment: environmentSnapshot,\n        executable: mappedExecutablePath,\n      }),\n      deadline,\n      { mutationDeadline: executionDeadline, unit: authority.unit },",
+    'mutationDeadline: executionDeadline,\n        operation: "systemd-submit",\n        unit: authority.unit,',
   );
-  expect(preparation).toContain(
-    "const admitted = await showUnit(authority.unit, executionDeadline);",
-  );
+  expect(preparation).toContain('executionDeadline,\n      "unit-admission",');
   expect(preparation).toContain(
     "const arguments_ = snapshotSystemdArguments(suppliedArguments);",
   );
@@ -1151,7 +1151,7 @@ it("binds root helpers to one absolute boottime authority", () => {
     supervisorSource.indexOf("const cgroupRoot ="),
   );
   expect(rootHelper).toContain(
-    'if tool not in TOOLS or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")',
+    "if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION]",
   );
   expect(rootHelper).toContain("leader,expected,control=create_group()");
   expect(rootHelper).toContain("inherited_group=os.getpgrp()");
@@ -1185,18 +1185,14 @@ it("binds root helpers to one absolute boottime authority", () => {
       "if not leader_reaped or group_present(leader) or child.returncode is None",
     ),
   );
-  expect(rootHelper).toContain('if not reconcile(unit): emit("uncertain")');
-  expect(preparation).toContain(
-    "{ mutationDeadline: executionDeadline, unit: authority.unit }",
+  expect(rootHelper).toContain(
+    'if not reconcile(unit): STAGE=failed_stage; emit("uncertain")',
   );
-  expect(preparation).toContain(
-    "const admitted = await showUnit(authority.unit, executionDeadline);",
-  );
+  expect(preparation).toContain('operation: "systemd-submit"');
+  expect(preparation).toContain('executionDeadline,\n      "unit-admission",');
+  expect(lifecycle).toContain('executionDeadline,\n      "unit-admission",');
   expect(lifecycle).toContain(
-    "const admitted = await showUnit(authority.unit, executionDeadline);",
-  );
-  expect(lifecycle).toContain(
-    "const authoritative = await showUnit(authority.unit, executionDeadline);",
+    'executionDeadline,\n      "unit-authoritative",',
   );
   expect(lifecycle).not.toContain(
     "const authoritative = await showUnit(authority.unit, deadline);",
@@ -1230,6 +1226,9 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const now =
       BigInt(seconds) * 1_000_000_000n +
       BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+    const deadline = String(now + 2_000_000_000n);
+    const cutoff = String(now + 500_000_000n);
+    const key = "a".repeat(64);
     const terminal = spawnSync(
       "/usr/bin/python3",
       [
@@ -1237,11 +1236,13 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         "-S",
         "-c",
         helper,
-        String(now + 2_000_000_000n),
-        String(now + 500_000_000n),
+        deadline,
+        cutoff,
+        "synthetic-descendant",
         "/usr/bin/python3",
         encodedArguments,
         "",
+        key,
       ],
       {
         encoding: "utf8",
@@ -1249,12 +1250,19 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         timeout: 3_000,
       },
     );
-    expect(terminal).toMatchObject({
-      signal: null,
-      status: 1,
-      stderr: "",
-      stdout: '{"output":"","status":"error"}',
-    });
+    expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+    expect(
+      validateRootToolReceipt({
+        identity: {
+          cutoff,
+          deadline,
+          operation: "synthetic-descendant",
+          unit: "",
+        },
+        key,
+        receipt: terminal.stdout,
+      }),
+    ).toMatchObject({ output: "", status: "error" });
     const survivors = readdirSync("/proc").filter((entry) => {
       if (!/^\d+$/u.test(entry)) return false;
       try {
@@ -1268,6 +1276,145 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     expect(survivors).toEqual([]);
   },
 );
+
+it("authenticates a closed root-helper stage receipt against its operation identity", () => {
+  const stages = [
+    "startup",
+    "cutoff",
+    "sentinel",
+    "tool-spawn",
+    "client-terminal",
+    "unit-admission",
+    "retirement",
+    "join",
+  ] as const;
+  const key = "1".repeat(64);
+  const identity = {
+    cutoff: "100",
+    deadline: "200",
+    operation: "unit-admission",
+    unit: "agentscope-test.service",
+  };
+  const receiptFor = (stage: string, status = "error", output = "") => {
+    const mac = createHmac("sha256", Buffer.from(key, "hex"))
+      .update(
+        JSON.stringify({
+          cutoff: identity.cutoff,
+          deadline: identity.deadline,
+          operation: identity.operation,
+          output,
+          stage,
+          status,
+          unit: identity.unit,
+        }),
+      )
+      .digest("hex");
+    return JSON.stringify({ mac, output, stage, status });
+  };
+  for (const stage of stages)
+    expect(
+      validateRootToolReceipt({
+        identity,
+        key,
+        receipt: receiptFor(stage),
+      }),
+    ).toEqual({ output: "", stage, status: "error" });
+
+  expect(
+    validateRootToolReceipt({
+      identity,
+      key,
+      receipt: receiptFor("unknown"),
+    }),
+  ).toBeUndefined();
+  const valid = receiptFor("unit-admission");
+  for (const substitutedIdentity of [
+    { ...identity, operation: "unit-monitor" },
+    { ...identity, unit: "agentscope-other.service" },
+    { ...identity, deadline: "201" },
+    { ...identity, cutoff: "101" },
+  ])
+    expect(
+      validateRootToolReceipt({
+        identity: substitutedIdentity,
+        key,
+        receipt: valid,
+      }),
+    ).toBeUndefined();
+  expect(
+    validateRootToolReceipt({ identity, key, receipt: valid.slice(0, -1) }),
+  ).toBeUndefined();
+  expect(
+    validateRootToolReceipt({
+      identity,
+      key,
+      receipt: valid.replace('"output":""', '"output":"","output":""'),
+    }),
+  ).toBeUndefined();
+  for (const substituted of [
+    valid.replace('"status":"error"', '"status":"unknown"'),
+    valid.replace('"output":""', '"output":"YQ"'),
+    valid.replace('"stage":"unit-admission"', '"stage":"join"'),
+    valid.replace(/\}$/u, ',"extra":false}'),
+  ])
+    expect(
+      validateRootToolReceipt({ identity, key, receipt: substituted }),
+    ).toBeUndefined();
+  expect(
+    validateRootToolReceipt({
+      identity: { ...identity, operation: "unknown" },
+      key,
+      receipt: valid,
+    }),
+  ).toBeUndefined();
+  expect(
+    validateRootToolReceipt({
+      identity,
+      key: "2".repeat(64),
+      receipt: valid,
+    }),
+  ).toBeUndefined();
+  expect(
+    systemdToolFailureStage(
+      new Error("integration.controller.systemd-tool:unit-admission"),
+    ),
+  ).toBeUndefined();
+});
+
+it("emits only an authenticated closed systemd-tool stage annotation", () => {
+  const action = readFileSync(
+    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+    "utf8",
+  );
+  expect(action).toContain("systemdToolFailureStage(error)");
+  expect(action).toContain(
+    "`::error::integration.controller.systemd-tool:${stage}\\n`",
+  );
+  expect(action).not.toContain("error.message");
+  expect(action).not.toContain("error.stack");
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  for (const operation of [
+    "pid1-readlink-1",
+    "pid1-stat",
+    "pid1-digest",
+    "pid1-readlink-2",
+    "systemd-submit",
+    "unit-admission",
+    "unit-monitor",
+    "unit-authoritative",
+    "unit-collection",
+    "unit-retirement",
+    "unit-kill-term",
+    "unit-kill-kill",
+    "unit-stop",
+    "unit-reset",
+  ])
+    expect(supervisor).toContain(`"${operation}"`);
+  expect(supervisor).toContain("systemdToolFailures.set(error, stage)");
+});
 
 it("closes retained descriptor authority exactly once on capture failure", () => {
   const closed: number[] = [];
