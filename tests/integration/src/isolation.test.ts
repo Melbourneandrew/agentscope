@@ -501,6 +501,34 @@ describe("scenario cleanup evidence", () => {
     });
   });
 
+  it("records evidence when every bounded teardown operation fails", async () => {
+    const fixture = driver();
+    fixture.removeContainer.mockRejectedValue(new Error("cleanup failed"));
+    fixture.implementation.removeNetwork = vi
+      .fn<IsolationDriver["removeNetwork"]>()
+      .mockRejectedValue(new Error("cleanup failed"));
+    fixture.implementation.removeImage = vi
+      .fn<IsolationDriver["removeImage"]>()
+      .mockRejectedValue(new Error("cleanup failed"));
+    fixture.implementation.removeContext = vi
+      .fn<IsolationDriver["removeContext"]>()
+      .mockRejectedValue(new Error("cleanup failed"));
+
+    await expect(
+      executeIsolationPlan(
+        planFor("0123456789abcdef"),
+        fixture.implementation,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("integration.isolation.cleanup");
+    expect(fixture.recordEvidence).toHaveBeenCalledOnce();
+    expect(fixture.recordEvidence.mock.calls[0]?.[0].cleanup).toEqual({
+      outcome: "failed",
+      removalFailureCount: 10,
+      remaining: emptyCleanupInventory(),
+    });
+  });
+
   it("rejects a non-digest image result and still tears down", async () => {
     const fixture = driver();
     fixture.buildImage.mockResolvedValueOnce("latest");

@@ -218,7 +218,7 @@ const cleanupInventorySchema = z.strictObject({
 const cleanupEvidenceSchema = z
   .strictObject({
     outcome: z.enum(["complete", "failed", "verification-failed"]),
-    removalFailureCount: z.number().int().min(0).max(8),
+    removalFailureCount: z.number().int().min(0).max(10),
     remaining: cleanupInventorySchema.nullable(),
   })
   .superRefine((value, context) => {
