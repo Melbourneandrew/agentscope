@@ -412,7 +412,7 @@ const failSystemd = () => {
 };
 
 const failSystemdTool = (stage) => {
-  const error = new Error("integration.controller.systemd-tool");
+  const error = new Error(`integration.controller.systemd-tool:${stage}`);
   systemdToolFailures.set(error, stage);
   throw error;
 };

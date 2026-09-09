@@ -1480,6 +1480,9 @@ it("emits only an authenticated closed systemd-tool stage annotation", () => {
   ])
     expect(supervisor).toContain(`"${operation}"`);
   expect(supervisor).toContain("systemdToolFailures.set(error, stage)");
+  expect(supervisor).toContain(
+    "new Error(`integration.controller.systemd-tool:${stage}`)",
+  );
 });
 
 it("closes retained descriptor authority exactly once on capture failure", () => {
