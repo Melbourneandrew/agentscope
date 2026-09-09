@@ -1365,7 +1365,7 @@ it.runIf(existsSync("/usr/bin/python3"))(
           "-I",
           "-S",
           "-c",
-          `import json,sys\nrecords={int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in json.loads(sys.argv[1]).items()}\ndef group_records(group): return records\n${admission}\nexpected={10:(b"100",10),11:(b"110",10)}\ntry:\n admit_group_members(10,expected)\nexcept Exception:\n sys.exit(17)\nif expected!={10:(b"100",10),11:(b"110",10),12:(b"120",10)}: sys.exit(18)`,
+          `import json,sys\nrecords={int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in json.loads(sys.argv[1]).items()}\ndef group_records(group,expected_members=None): return records\n${admission}\nexpected={10:(b"100",10),11:(b"110",10)}\ntry:\n admit_group_members(10,expected)\nexcept Exception:\n sys.exit(17)\nif expected!={10:(b"100",10),11:(b"110",10),12:(b"120",10)}: sys.exit(18)`,
           JSON.stringify(records),
         ],
         { encoding: "utf8", env: {}, timeout: 3_000 },
@@ -1492,7 +1492,11 @@ it.runIf(existsSync("/usr/bin/python3"))(
           start,
         ].join(" ")}\n`,
       ).toString("base64url");
-    const invoke = (records: Record<string, string>, entries: string[]) =>
+    const invoke = (
+      records: Record<string, string>,
+      entries: string[],
+      expectedMembers?: Record<string, [string, number]>,
+    ) =>
       spawnSync(
         "/usr/bin/python3",
         [
@@ -1506,11 +1510,12 @@ os=types.SimpleNamespace(listdir=lambda path:payload["entries"])
 def open(path,mode): return io.BytesIO(records[path.split("/")[2]])
 ${parser}
 try:
- result=group_records(10)
+ expected=None if payload.get("expected") is None else {int(key):(value[0].encode("ascii"),value[1]) for key,value in payload["expected"].items()}
+ result=group_records(10,expected)
 except Exception:
  sys.exit(17)
 if result!={10:(b"456",10,1)}: sys.exit(18)`,
-          JSON.stringify({ entries, records }),
+          JSON.stringify({ entries, expected: expectedMembers, records }),
         ],
         { encoding: "utf8", env: {}, timeout: 3_000 },
       );
@@ -1532,6 +1537,13 @@ if result!={10:(b"456",10,1)}: sys.exit(18)`,
     expect(invoke({ "10": record(10, "1", "10") }, ["10", "10"])).toMatchObject(
       { status: 17, signal: null, stderr: "" },
     );
+    expect(
+      invoke(
+        { "10": record(10, "1", "10"), "11": record(11, "10", "11") },
+        ["10", "11"],
+        { "10": ["456", 10], "11": ["456", 10] },
+      ),
+    ).toMatchObject({ status: 17, signal: null, stderr: "" });
   },
 );
 

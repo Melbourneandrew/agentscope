@@ -185,15 +185,19 @@ def process_record(pid):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
  except FileNotFoundError: return None
  return parse_process_record(data,pid)
-def process_record_for_group(pid,group):
+def process_record_for_group(pid,group,expected_members=None):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
  except FileNotFoundError: return None
  fields=parse_process_fields(data,pid)
  observed_group=int(fields[2])
+ record=(fields[19],observed_group,int(fields[1]))
+ if expected_members is not None and pid in expected_members and record[:2]!=expected_members[pid]:
+  raise RuntimeError("identity")
  if observed_group==0 or observed_group!=group: return None
- return (fields[19],observed_group,int(fields[1]))
-def group_records(group):
+ return record
+def group_records(group,expected_members=None):
  if not isinstance(group,int) or group<1: raise RuntimeError("inventory")
+ if expected_members is not None and not isinstance(expected_members,dict): raise RuntimeError("inventory")
  entries=os.listdir("/proc")
  if len(entries)>65536: raise RuntimeError("inventory")
  records={}
@@ -203,13 +207,13 @@ def group_records(group):
    pid=int(entry)
    if pid in seen: raise RuntimeError("inventory")
    seen.add(pid)
-   observed=process_record_for_group(pid,group)
+   observed=process_record_for_group(pid,group,expected_members)
    if observed is not None: records[pid]=observed
  return records
 def group_members(group):
  return sorted(group_records(group))
 def admit_group_members(group,expected_members):
- records=group_records(group)
+ records=group_records(group,expected_members)
  pending=dict(records)
  while pending:
   progressed=False
@@ -340,7 +344,7 @@ def close_group(leader,expected,control,expected_members):
  leader_reaped=False
  REASON="reap-timeout"
  while now()<DEADLINE:
-  records=group_records(leader)
+  records=group_records(leader,expected_members)
   for pid,record in records.items():
    member=expected_members.get(pid)
    if member is None or record[:2]!=member:
