@@ -143,8 +143,14 @@ const revalidateFileIdentity = (path, identity, maximumBytes, expectedMode) => {
   return identity.digest;
 };
 const retainedInputIdentities = new Map();
+const retainedInputMode = (name) =>
+  name === "current-images.json" ? 0o600 : 0o644;
 const readRetainedJson = (path, name) => {
-  const identity = captureFileIdentity(path, 1024 * 1024, 0o644);
+  const identity = captureFileIdentity(
+    path,
+    1024 * 1024,
+    retainedInputMode(name),
+  );
   retainedInputIdentities.set(name, identity);
   return JSON.parse(identity.content.toString("utf8"));
 };
@@ -194,7 +200,7 @@ try {
   const imageIdentity = captureFileIdentity(
     imageEvidencePath,
     1024 * 1024,
-    0o644,
+    retainedInputMode("current-images.json"),
   );
   retainedInputIdentities.set("current-images.json", imageIdentity);
   preparedImageEvidence = validatePreparedImageEvidence(
@@ -1958,7 +1964,7 @@ const retainedControllerInputs = () =>
         path,
         retainedInputIdentities.get(name),
         1024 * 1024,
-        0o644,
+        retainedInputMode(name),
       ),
     ]),
   );

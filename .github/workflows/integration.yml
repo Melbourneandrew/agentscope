@@ -291,12 +291,20 @@ jobs:
             "current-model-routes.json",
             "current-selection.json",
           ])) fail();
-          const retainedInputs = verifyDigests(
-            Object.fromEntries(Object.entries(manifest.retainedInputs).filter(([name]) => name !== "capability-manifest.json")),
-            ["current-candidate.json", "current-images.json", "current-model-routes.json", "current-selection.json"],
-            artifactsRoot,
-            0o644,
-          );
+          const retainedInputs = {
+            ...verifyDigests(
+              Object.fromEntries(Object.entries(manifest.retainedInputs).filter(([name]) => name !== "capability-manifest.json" && name !== "current-images.json")),
+              ["current-candidate.json", "current-model-routes.json", "current-selection.json"],
+              artifactsRoot,
+              0o644,
+            ),
+            ...verifyDigests(
+              { "current-images.json": manifest.retainedInputs["current-images.json"] },
+              ["current-images.json"],
+              artifactsRoot,
+              0o600,
+            ),
+          };
           const retainedManifest = verifyDigests(
             { "capability-manifest.json": manifest.retainedInputs["capability-manifest.json"] },
             ["capability-manifest.json"],

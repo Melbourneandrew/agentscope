@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -121,7 +122,7 @@ const writeRetainedFailureInputs = (directory: string) => {
   };
   for (const [fileName, value] of Object.entries(inputs))
     writeFileSync(resolve(artifacts, fileName), `${JSON.stringify(value)}\n`, {
-      mode: 0o644,
+      mode: fileName === "current-images.json" ? 0o600 : 0o644,
     });
   const integration = resolve(directory, "tests/integration");
   mkdirSync(integration, { recursive: true, mode: 0o700 });
@@ -674,6 +675,9 @@ describe("integration workflow routing policy", () => {
     expect(scenarios).toContain("const before = fstatSync(descriptor)");
     expect(scenarios).toContain("const after = fstatSync(descriptor)");
     expect(scenarios).toContain("JSON.parse(identity.content.toString");
+    expect(scenarios).toContain(
+      'name === "current-images.json" ? 0o600 : 0o644',
+    );
   });
 });
 
@@ -712,6 +716,9 @@ describe("integration workflow anonymous failure artifact policy", () => {
         expect(value).toBeTypeOf("object");
         expect(value).not.toBeNull();
       }
+      chmodSync(resolve(artifacts, "current-images.json"), 0o644);
+      expect(runFailureVerifier(source, directory).status).not.toBe(0);
+      chmodSync(resolve(artifacts, "current-images.json"), 0o600);
       writeFileSync(
         resolve(artifacts, "runs", runIds[0]!, "model-ledger.json"),
         '{"substituted":true}\n',
