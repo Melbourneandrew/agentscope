@@ -146,6 +146,8 @@ jobs:
             openSync,
             readFileSync,
             readdirSync,
+            rmdirSync,
+            unlinkSync,
           } from "node:fs";
           import { resolve } from "node:path";
           import {
@@ -240,7 +242,7 @@ jobs:
                 after.size !== before.size ||
                 after.nlink !== before.nlink
               ) fail();
-              authenticatedDescriptors.push(descriptor);
+              authenticatedDescriptors.push({ descriptor, path, status: before });
               descriptor = undefined;
               return { content, status: before };
             } finally {
@@ -283,7 +285,7 @@ jobs:
               !terminalPredicates[terminal.stage].includes(terminal.predicate) ||
               (manifestPresent && terminal.stage !== "publish-manifest")
             ) fail();
-            for (const descriptor of authenticatedDescriptors.splice(0))
+            for (const { descriptor } of authenticatedDescriptors.splice(0))
               closeSync(descriptor);
             process.stdout.write(`${JSON.stringify({
               predicate: terminal.predicate,
@@ -606,7 +608,30 @@ jobs:
           if (!exactKeys(receipt, ["artifactDigest", "artifactId", "artifactSize", "status"]) || receipt.status !== "uploaded" || !Number.isSafeInteger(receipt.artifactId) || receipt.artifactId < 1 || !Number.isSafeInteger(receipt.artifactSize) || receipt.artifactSize < 1 || !/^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest)) fail();
           const canonicalReceipt = `${JSON.stringify({ artifactDigest: receipt.artifactDigest, artifactId: receipt.artifactId, artifactSize: receipt.artifactSize, status: "uploaded" })}\n`;
           if (uploader.stdout.toString("utf8") !== canonicalReceipt) fail();
-          for (const descriptor of authenticatedDescriptors.splice(0)) closeSync(descriptor);
+          const retireUploadedFailureEvidence = () => {
+            for (const authority of authenticatedDescriptors) {
+              if (!authority.path.startsWith(`${artifactsRoot}/`)) continue;
+              const named = lstatSync(authority.path);
+              if (
+                named.dev !== authority.status.dev ||
+                named.ino !== authority.status.ino ||
+                named.size !== authority.status.size ||
+                named.nlink !== authority.status.nlink ||
+                named.isSymbolicLink()
+              ) fail();
+              unlinkSync(authority.path);
+            }
+            for (const { descriptor } of authenticatedDescriptors.splice(0))
+              closeSync(descriptor);
+            for (const runId of manifest.runIds) {
+              const directory = resolve(runsRoot, runId);
+              if (readdirSync(directory).length !== 0) fail();
+              rmdirSync(directory);
+            }
+            if (readdirSync(runsRoot).length !== 0) fail();
+            rmdirSync(runsRoot);
+          };
+          retireUploadedFailureEvidence();
           NODE
   hermetic-integration:
     name: hermetic-integration

@@ -202,6 +202,7 @@ const compileFailureRetention = (
   requiredRunIds,
   failureEvidence,
   retainedInputDigests,
+  expectedControllerAuthorityDigest,
 ) => {
   const expectedInputs = [
     "capability-manifest.json",
@@ -220,7 +221,8 @@ const compileFailureRetention = (
       "runIds",
     ]) ||
     manifest.controllerFailureManifestVersion !== 1 ||
-    !/^sha256:[a-f0-9]{64}$/u.test(manifest.controllerAuthorityDigest) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(expectedControllerAuthorityDigest) ||
+    manifest.controllerAuthorityDigest !== expectedControllerAuthorityDigest ||
     JSON.stringify(manifest.runIds) !== JSON.stringify(sortedRunIds) ||
     JSON.stringify(manifest.failureEvidence) !==
       JSON.stringify(sortedFailureEvidence) ||
@@ -300,6 +302,7 @@ const assertFailureRetention = (requiredRunIds, failureEvidence) => {
     requiredRunIds,
     failureEvidence,
     retainedInputDigests,
+    capability.binding.privateStorage.authorityDigest,
   );
 };
 const installedPtyFailurePredicates = Object.freeze({

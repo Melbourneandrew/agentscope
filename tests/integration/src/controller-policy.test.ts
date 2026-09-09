@@ -259,6 +259,7 @@ const runFailureVerifier = (
   source: string,
   directory: string,
   fault?: "digest" | "helper" | "identity" | "receipt" | "terminal",
+  retire = false,
 ) => {
   const runnerTemp = mkdtempSync(resolve(directory, "runner-temp-"));
   const bundleOutput = resolve(runnerTemp, "fixture-bundle.json");
@@ -290,6 +291,11 @@ const runFailureVerifier = (
     fixtureSource = fixtureSource.replace(
       'Buffer.from(JSON.stringify(receipt) + "\\n")',
       'Buffer.from(JSON.stringify(receipt) + " \\n")',
+    );
+  if (!retire)
+    fixtureSource = fixtureSource.replace(
+      "retireUploadedFailureEvidence();",
+      "for (const { descriptor } of authenticatedDescriptors.splice(0)) closeSync(descriptor);",
     );
   const result = spawnSync(
     process.execPath,
@@ -438,7 +444,7 @@ const executeFailureVerifier = (
     if (sealingStart < 0) throw new Error("missing sealed bundle boundary");
     const verifierSource =
       fault === undefined
-        ? `${source.slice(0, sealingStart)}for (const descriptor of authenticatedDescriptors.splice(0)) closeSync(descriptor);`
+        ? `${source.slice(0, sealingStart)}for (const { descriptor } of authenticatedDescriptors.splice(0)) closeSync(descriptor);`
         : source;
     return runFailureVerifier(verifierSource, directory, fault).status;
   } finally {
@@ -609,6 +615,7 @@ describe("integration cleanup failure retention", () => {
       candidateRuns: unknown = [runId],
       candidateEvidence: unknown = failureEvidence,
       candidateInputs: unknown = retainedInputs,
+      candidateAuthority: unknown = digest("b"),
     ) =>
       spawnSync(
         process.execPath,
@@ -621,6 +628,7 @@ describe("integration cleanup failure retention", () => {
             candidateRuns,
             candidateEvidence,
             candidateInputs,
+            candidateAuthority,
           ]),
         ],
         { encoding: "utf8" },
@@ -651,6 +659,14 @@ describe("integration cleanup failure retention", () => {
           ...retainedInputs,
           "current-selection.json": digest("8"),
         }),
+      () =>
+        compile(
+          manifest,
+          [runId],
+          failureEvidence,
+          retainedInputs,
+          digest("c"),
+        ),
     ])
       expect(rejected().status).not.toBe(0);
   });
@@ -970,6 +986,38 @@ describe("integration workflow anonymous failure artifact policy", () => {
         recursive: true,
       });
       expect(runFailureVerifier(source, directory).status).not.toBe(0);
+    } finally {
+      removeFailureVerifierFixture(directory);
+    }
+  });
+
+  it("retires only authenticated retained evidence after upload terminal", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const source = failureVerifierSource(workflow);
+    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
+    const runId = "0123456789abcdef";
+    try {
+      const artifacts = writeFailureManifestFixture(directory, [runId]);
+      expect(
+        runFailureVerifier(source, directory, undefined, true).status,
+      ).toBe(0);
+      for (const name of [
+        "controller-failure-manifest.json",
+        "current-candidate.json",
+        "current-images.json",
+        "current-model-routes.json",
+        "current-selection.json",
+      ])
+        expect(existsSync(resolve(artifacts, name)), name).toBe(false);
+      expect(existsSync(resolve(artifacts, "runs"))).toBe(false);
+      expect(
+        existsSync(
+          resolve(directory, "tests/integration/capability-manifest.json"),
+        ),
+      ).toBe(true);
     } finally {
       removeFailureVerifierFixture(directory);
     }
