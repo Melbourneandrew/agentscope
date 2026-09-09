@@ -17,6 +17,10 @@ const containmentProofMilliseconds = 5_000;
 const containmentPollMilliseconds = 10;
 const systemdTerminationGraceMilliseconds = 1_000;
 const maximumToolOutputBytes = 64 * 1024;
+const maximumManagerBytes = 16 * 1024 * 1024;
+const readlinkPath = "/usr/bin/readlink";
+const sha256sumPath = "/usr/bin/sha256sum";
+const statPath = "/usr/bin/stat";
 const sudoPath = "/usr/bin/sudo";
 const systemctlPath = "/usr/bin/systemctl";
 const systemdRunPath = "/usr/bin/systemd-run";
@@ -170,6 +174,97 @@ const readBounded = (path, maximumBytes) => {
   }
 };
 
+const digestRegularFile = (path) => {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const status = fstatSync(descriptor);
+    if (
+      !status.isFile() ||
+      status.uid !== 0 ||
+      status.gid !== 0 ||
+      (status.mode & 0o022) !== 0 ||
+      (status.mode & 0o111) === 0 ||
+      status.size < 1 ||
+      status.size > maximumManagerBytes
+    )
+      failSystemd();
+    const hash = createHash("sha256");
+    const content = Buffer.alloc(64 * 1024);
+    let total = 0;
+    while (total < status.size) {
+      const count = readSync(descriptor, content, 0, content.length, null);
+      if (count === 0) failSystemd();
+      total += count;
+      if (total > status.size) failSystemd();
+      hash.update(content.subarray(0, count));
+    }
+    const after = fstatSync(descriptor);
+    if (
+      after.dev !== status.dev ||
+      after.ino !== status.ino ||
+      after.mode !== status.mode ||
+      after.uid !== status.uid ||
+      after.gid !== status.gid ||
+      after.size !== status.size
+    )
+      failSystemd();
+    return Object.freeze({
+      dev: status.dev,
+      digest: hash.digest("hex"),
+      gid: status.gid,
+      ino: status.ino,
+      mode: status.mode,
+      size: status.size,
+      uid: status.uid,
+    });
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
+const readPid1Snapshot = () => {
+  const processStat = readBounded("/proc/1/stat", 4096).trimEnd();
+  if (!processStat.startsWith("1 (") || /[\0\r\n]/u.test(processStat))
+    failSystemd();
+  const commandEnd = processStat.lastIndexOf(") ");
+  if (commandEnd < 4) failSystemd();
+  const fields = processStat.slice(commandEnd + 2).split(" ");
+  const startTime = fields[19];
+  const bootId = readBounded("/proc/sys/kernel/random/boot_id", 128).trimEnd();
+  if (
+    fields.length < 20 ||
+    !/^[A-Z]$/u.test(fields[0] ?? "") ||
+    !/^[1-9][0-9]*$/u.test(startTime ?? "") ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
+      bootId,
+    )
+  )
+    failSystemd();
+  return Object.freeze({ bootId, startTime });
+};
+
+export const validateRootPid1Probe = ({
+  after,
+  before,
+  digestOutput,
+  firstTarget,
+  manager,
+  secondTarget,
+  statOutput,
+}) =>
+  before?.bootId === after?.bootId &&
+  before?.startTime === after?.startTime &&
+  firstTarget === `${systemdPath}\n` &&
+  secondTarget === firstTarget &&
+  statOutput ===
+    `${manager.dev}:${manager.ino}:${manager.mode.toString(16)}:${manager.uid}:${manager.gid}:${manager.size}\n` &&
+  digestOutput === `${manager.digest} *${"/proc/1/exe"}\0`;
+
+export const rootPid1ProbeRequired = (error) =>
+  error !== null &&
+  typeof error === "object" &&
+  (error.code === "EACCES" || error.code === "EPERM");
+
 const authenticateExecutable = (path, mode) => {
   if (realpathSync(path) !== path) failSystemd();
   const status = statSync(path);
@@ -182,21 +277,62 @@ const authenticateExecutable = (path, mode) => {
     failSystemd();
 };
 
-const authenticateSystemdHost = () => {
+const authenticateSystemdHost = async (deadline) => {
   if (
     process.platform !== "linux" ||
     process.env.GITHUB_ACTIONS !== "true" ||
     process.env.RUNNER_ENVIRONMENT !== "github-hosted" ||
-    process.getuid?.() === 0 ||
-    realpathSync("/proc/1/exe") !== systemdPath
+    process.getuid?.() === 0
   )
-    failSystemd();
-  const manager = statSync(systemdPath);
-  if (!manager.isFile() || manager.uid !== 0 || (manager.mode & 0o022) !== 0)
     failSystemd();
   authenticateExecutable(sudoPath, 0o4000);
   authenticateExecutable(systemctlPath, 0o111);
   authenticateExecutable(systemdRunPath, 0o111);
+  const manager = digestRegularFile(systemdPath);
+  let directTarget;
+  try {
+    directTarget = realpathSync("/proc/1/exe");
+  } catch (error) {
+    if (!rootPid1ProbeRequired(error)) failSystemd();
+    authenticateExecutable(readlinkPath, 0o111);
+    authenticateExecutable(sha256sumPath, 0o111);
+    authenticateExecutable(statPath, 0o111);
+    const before = readPid1Snapshot();
+    const firstTarget = await rootTool(
+      readlinkPath,
+      ["--canonicalize-existing", "--", "/proc/1/exe"],
+      deadline,
+    );
+    const statOutput = await rootTool(
+      statPath,
+      ["--dereference", "--format=%d:%i:%f:%u:%g:%s", "--", "/proc/1/exe"],
+      deadline,
+    );
+    const digestOutput = await rootTool(
+      sha256sumPath,
+      ["--binary", "--zero", "--", "/proc/1/exe"],
+      deadline,
+    );
+    const secondTarget = await rootTool(
+      readlinkPath,
+      ["--canonicalize-existing", "--", "/proc/1/exe"],
+      deadline,
+    );
+    const after = readPid1Snapshot();
+    if (
+      !validateRootPid1Probe({
+        after,
+        before,
+        digestOutput,
+        firstTarget,
+        manager,
+        secondTarget,
+        statOutput,
+      })
+    )
+      failSystemd();
+  }
+  if (directTarget !== undefined && directTarget !== systemdPath) failSystemd();
   const mounts = readBounded("/proc/self/mountinfo", 1024 * 1024)
     .trimEnd()
     .split("\n")
@@ -441,7 +577,6 @@ const runSystemdSupervised = async ({
   executable,
   maximumMilliseconds,
 }) => {
-  authenticateSystemdHost();
   if (
     !Number.isSafeInteger(maximumMilliseconds) ||
     maximumMilliseconds < 1 ||
@@ -453,6 +588,7 @@ const runSystemdSupervised = async ({
   if (!executableStatus.isFile() || (executableStatus.mode & 0o022) !== 0)
     failSystemd();
   const deadline = performance.now() + maximumMilliseconds;
+  await authenticateSystemdHost(deadline);
   const executionDeadline = deadline - containmentProofMilliseconds;
   if (executionDeadline <= performance.now()) failSystemd();
   const authority = systemdIdentity(environment);

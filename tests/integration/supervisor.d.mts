@@ -9,6 +9,28 @@ export function parseSystemdTerminalExit(
   facts: Readonly<Record<string, string>>,
 ): number | undefined;
 
+export function validateRootPid1Probe(
+  input: Readonly<{
+    after: Readonly<{ bootId: string; startTime: string }>;
+    before: Readonly<{ bootId: string; startTime: string }>;
+    digestOutput: string;
+    firstTarget: string;
+    manager: Readonly<{
+      dev: number;
+      digest: string;
+      gid: number;
+      ino: number;
+      mode: number;
+      size: number;
+      uid: number;
+    }>;
+    secondTarget: string;
+    statOutput: string;
+  }>,
+): boolean;
+
+export function rootPid1ProbeRequired(error: unknown): boolean;
+
 export function runSupervisedProcess(input: {
   arguments_?: readonly string[];
   containment?: "github-systemd";

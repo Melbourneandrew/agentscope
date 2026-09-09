@@ -18,7 +18,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   parseSystemdTerminalExit,
+  rootPid1ProbeRequired,
   runSupervisedProcess,
+  validateRootPid1Probe,
 } from "../supervisor.mjs";
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
 
@@ -735,6 +737,9 @@ it("pins the credentialed lifecycle to a nondelegated whole-unit authority", () 
     '"/usr/bin/sudo"',
     '"/usr/bin/systemctl"',
     '"/usr/bin/systemd-run"',
+    '"/usr/bin/readlink"',
+    '"/usr/bin/sha256sum"',
+    '"/usr/bin/stat"',
     '"cgroup.events"',
     'facts.LoadState === "not-found"',
   ])
@@ -775,6 +780,54 @@ it("accepts only exact numeric systemd exit terminal facts", () => {
     { ...failed, SubState: "exited" },
   ])
     expect(parseSystemdTerminalExit(substituted)).toBeUndefined();
+});
+
+it("binds the root-mediated PID 1 probe to one stable manager identity", () => {
+  const snapshot = {
+    bootId: "01234567-89ab-cdef-0123-456789abcdef",
+    startTime: "123456",
+  };
+  const manager = {
+    dev: 42,
+    digest: "a".repeat(64),
+    gid: 0,
+    ino: 84,
+    mode: 0o100755,
+    size: 4096,
+    uid: 0,
+  };
+  const probe = {
+    after: snapshot,
+    before: snapshot,
+    digestOutput: `${manager.digest} */proc/1/exe\0`,
+    firstTarget: "/usr/lib/systemd/systemd\n",
+    manager,
+    secondTarget: "/usr/lib/systemd/systemd\n",
+    statOutput: `${manager.dev}:${manager.ino}:${manager.mode.toString(16)}:0:0:${manager.size}\n`,
+  };
+  expect(validateRootPid1Probe(probe)).toBe(true);
+  for (const substituted of [
+    { ...probe, before: { ...snapshot, startTime: "123455" } },
+    {
+      ...probe,
+      after: { ...snapshot, bootId: snapshot.bootId.replace("0", "1") },
+    },
+    { ...probe, firstTarget: "/usr/bin/false\n" },
+    { ...probe, secondTarget: "/usr/bin/false\n" },
+    { ...probe, statOutput: probe.statOutput.replace(":84:", ":85:") },
+    { ...probe, manager: { ...manager, uid: 1 } },
+    { ...probe, manager: { ...manager, gid: 1 } },
+    { ...probe, manager: { ...manager, mode: 0o100777 } },
+    { ...probe, manager: { ...manager, size: 4095 } },
+    { ...probe, statOutput: `${probe.statOutput}extra\n` },
+    { ...probe, digestOutput: `${"b".repeat(64)} */proc/1/exe\0` },
+    { ...probe, digestOutput: `${probe.digestOutput}\n` },
+  ])
+    expect(validateRootPid1Probe(substituted)).toBe(false);
+  expect(rootPid1ProbeRequired({ code: "EACCES" })).toBe(true);
+  expect(rootPid1ProbeRequired({ code: "EPERM" })).toBe(true);
+  for (const error of [undefined, null, {}, { code: "ENOENT" }, "EACCES"])
+    expect(rootPid1ProbeRequired(error)).toBe(false);
 });
 
 it.runIf(
