@@ -5,8 +5,10 @@ import {
   constants,
   existsSync,
   fstatSync,
+  lstatSync,
   openSync,
   readSync,
+  readlinkSync,
   realpathSync,
   statSync,
 } from "node:fs";
@@ -23,8 +25,173 @@ const readlinkPath = "/usr/bin/readlink";
 const sha256sumPath = "/usr/bin/sha256sum";
 const statPath = "/usr/bin/stat";
 const sudoPath = "/usr/bin/sudo";
+const pythonPath = "/usr/bin/python3";
 const systemctlPath = "/usr/bin/systemctl";
 const systemdRunPath = "/usr/bin/systemd-run";
+const timeoutPath = "/usr/bin/timeout";
+const rootToolKillAfterMilliseconds = 250;
+const rootToolJoinReserveMilliseconds = 500;
+const rootHelperSource = String.raw`
+import base64,json,os,signal,subprocess,sys,time
+MAX=65536
+TEST_CODE='import signal,subprocess,sys,time; subprocess.Popen([sys.executable,"-I","-S","-c","import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)","agentscope-root-helper-descendant"],stdout=sys.stdout,stderr=subprocess.DEVNULL); sys.exit(0)'
+TEST_ARGS=["-I","-S","-c",TEST_CODE]
+TOOLS={"/usr/bin/python3","/usr/bin/readlink","/usr/bin/sha256sum","/usr/bin/stat","/usr/bin/systemctl","/usr/bin/systemd-run"}
+def now(): return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+def emit(status,output=""):
+ data=json.dumps({"output":base64.urlsafe_b64encode(output).decode("ascii").rstrip("="),"status":status},sort_keys=True,separators=(",",":"))
+ os.write(1,data.encode("ascii"))
+def group_present(pid):
+ try: os.killpg(pid,0); return True
+ except ProcessLookupError: return False
+def process_identity(pid,require_leader=False):
+ try: data=open("/proc/%d/stat"%pid,"rb").read(4096)
+ except FileNotFoundError: return None
+ end=data.rfind(b") ")
+ if end<1 or b"\x00" in data or b"\n" in data: raise RuntimeError("identity")
+ fields=data[end+2:].split()
+ if len(fields)<20 or (require_leader and int(fields[2])!=pid): raise RuntimeError("identity")
+ return (fields[19],int(fields[2]))
+def group_members(group):
+ entries=os.listdir("/proc")
+ if len(entries)>65536: raise RuntimeError("inventory")
+ members=[]
+ for entry in entries:
+  if entry.isdigit():
+   observed=process_identity(int(entry))
+   if observed is not None and observed[1]==group: members.append(int(entry))
+ return sorted(members)
+def create_group():
+ control_read,control_write=os.pipe2(os.O_CLOEXEC)
+ leader=os.fork()
+ if leader==0:
+  try:
+   os.close(control_write); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)
+   while os.read(control_read,1): pass
+  finally: os._exit(0)
+ os.close(control_read)
+ cutoff=now()+250000000
+ expected=None
+ while now()<cutoff:
+  expected=process_identity(leader,True)
+  if expected is not None: break
+  time.sleep(0.001)
+ if expected is None:
+  os.close(control_write)
+  try: os.kill(leader,signal.SIGKILL)
+  except ProcessLookupError: pass
+  reaped=False
+  while now()<DEADLINE:
+   waited=os.waitpid(leader,os.WNOHANG)
+   if waited[0]==leader: reaped=True; break
+   time.sleep(0.005)
+  if not reaped: raise RuntimeError("join")
+  raise RuntimeError("group")
+ return leader,expected,control_write
+def close_group(leader,expected,control):
+ if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+ if group_members(leader)!=[leader]: raise RuntimeError("residual")
+ os.close(control)
+ reaped=False
+ while now()<DEADLINE:
+  waited=os.waitpid(leader,os.WNOHANG)
+  if waited[0]==leader: reaped=True; break
+  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  time.sleep(0.005)
+ if not reaped: raise RuntimeError("join")
+ if group_present(leader): raise RuntimeError("residual")
+def terminate(child,leader,expected,control):
+ child.poll()
+ observed=process_identity(leader,True)
+ if observed is None: raise RuntimeError("identity")
+ if observed!=expected: raise RuntimeError("identity")
+ try: os.killpg(leader,signal.SIGTERM)
+ except ProcessLookupError: pass
+ grace=min(DEADLINE,now()+250000000)
+ while child.poll() is None and now()<grace: time.sleep(0.005)
+ if child.poll() is None or group_present(leader):
+  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  try: os.killpg(leader,signal.SIGKILL)
+  except ProcessLookupError: pass
+ leader_reaped=False
+ while group_present(leader) and now()<DEADLINE:
+  child.poll()
+  if not leader_reaped:
+   waited=os.waitpid(leader,os.WNOHANG)
+   leader_reaped=waited[0]==leader
+  time.sleep(0.005)
+ child.poll()
+ try: os.close(control)
+ except OSError: pass
+ if not leader_reaped:
+  waited=os.waitpid(leader,os.WNOHANG)
+  leader_reaped=waited[0]==leader
+ if not leader_reaped or group_present(leader) or child.returncode is None: raise RuntimeError("join")
+def run(argv,cutoff):
+ if now()>=cutoff: raise RuntimeError("cutoff")
+ leader,expected,control=create_group()
+ child=None
+ output=bytearray()
+ try:
+  if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")
+  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)
+  if process_identity(leader,True)!=expected: raise RuntimeError("identity")
+  os.set_blocking(child.stdout.fileno(),False)
+  while child.poll() is None:
+   if now()>=cutoff: terminate(child,leader,expected,control)
+   try:
+    part=os.read(child.stdout.fileno(),4096)
+    if part:
+     output.extend(part)
+     if len(output)>MAX: raise RuntimeError("oversize")
+   except BlockingIOError: pass
+   if child.poll() is None:
+    if now()>=DEADLINE: raise RuntimeError("deadline")
+    time.sleep(0.005)
+  while True:
+   part=os.read(child.stdout.fileno(),4096)
+   if not part: break
+   output.extend(part)
+   if len(output)>MAX: raise RuntimeError("oversize")
+  close_group(leader,expected,control)
+  if now()>=DEADLINE or child.returncode!=0: raise RuntimeError("terminal")
+  return bytes(output)
+ except Exception:
+  if child is None:
+   close_group(leader,expected,control)
+  else:
+   terminate(child,leader,expected,control)
+  raise
+ finally:
+  if child is not None and child.stdout is not None: child.stdout.close()
+def reconcile(unit):
+ for args in (["kill","--kill-whom=all","--signal=SIGKILL",unit],["stop",unit],["reset-failed",unit]):
+  try: run(["/usr/bin/systemctl",*args],DEADLINE-100000000)
+  except Exception: pass
+ try:
+  out=run(["/usr/bin/systemctl","show","--no-pager","--property=LoadState",unit],DEADLINE-50000000)
+  return out==b"LoadState=not-found\n"
+ except Exception: return False
+try:
+ if len(sys.argv)!=6: raise RuntimeError("argv")
+ DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); tool=sys.argv[3]
+ raw=sys.argv[4]; unit=sys.argv[5]
+ if tool not in TOOLS or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
+ args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
+ if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or args!=TEST_ARGS): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/systemd-run":
+  if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
+ else:
+  if unit: raise RuntimeError("unit")
+ output=run([tool,*args],CUTOFF)
+ emit("ok",output)
+except Exception:
+ if "tool" in globals() and tool=="/usr/bin/systemd-run" and "unit" in globals() and unit:
+  if not reconcile(unit): emit("uncertain"); sys.exit(1)
+ emit("error"); sys.exit(1)
+`;
 const cgroupRoot = "/sys/fs/cgroup";
 const systemdPath = "/usr/lib/systemd/systemd";
 const systemdInaccessiblePaths =
@@ -412,10 +579,8 @@ export const closePreparedGithubSystemdSupervision = (preparation) => {
       ? systemdPreparations.get(preparation)
       : undefined;
   if (state === undefined) failSystemd();
-  if (state.closed) return false;
-  state.closed = true;
-  closeSync(state.mappedExecutable.descriptor);
-  return true;
+  if (state.closed) return Promise.resolve(false);
+  return closePreparedSystemdState(state);
 };
 
 export const snapshotSystemdEnvironment = (environment) => {
@@ -460,6 +625,59 @@ export const sameSystemdEnvironment = (expected, observed) => {
   );
 };
 
+export const snapshotSystemdArguments = (arguments_) => {
+  if (!Array.isArray(arguments_)) failSystemd();
+  const descriptors = Object.getOwnPropertyDescriptors(arguments_);
+  if (Reflect.ownKeys(descriptors).some((key) => typeof key === "symbol"))
+    failSystemd();
+  const length = descriptors.length;
+  if (
+    length === undefined ||
+    !("value" in length) ||
+    !Number.isSafeInteger(length.value) ||
+    length.value < 0 ||
+    length.value > 128
+  )
+    failSystemd();
+  const names = Object.getOwnPropertyNames(descriptors);
+  if (
+    names.length !== length.value + 1 ||
+    !names.every(
+      (name) =>
+        name === "length" ||
+        (/^(?:0|[1-9][0-9]{0,2})$/u.test(name) && Number(name) < length.value),
+    )
+  )
+    failSystemd();
+  const snapshot = [];
+  for (let index = 0; index < length.value; index += 1) {
+    const descriptor = descriptors[index];
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      typeof descriptor.value !== "string" ||
+      descriptor.value.length > 4096 ||
+      descriptor.value.includes("\0")
+    )
+      failSystemd();
+    snapshot.push(descriptor.value);
+  }
+  return Object.freeze(snapshot);
+};
+
+export const sameSystemdArguments = (expected, observed) => {
+  let snapshot;
+  try {
+    snapshot = snapshotSystemdArguments(observed);
+  } catch {
+    return false;
+  }
+  return (
+    snapshot.length === expected.length &&
+    snapshot.every((argument, index) => argument === expected[index])
+  );
+};
+
 export const validateRootPid1Probe = ({
   after,
   before,
@@ -494,6 +712,24 @@ const authenticateExecutable = (path, mode) => {
     failSystemd();
 };
 
+const authenticatePython = () => {
+  const lexical = lstatSync(pythonPath);
+  if (lexical.isFile()) {
+    authenticateExecutable(pythonPath, 0o111);
+    return;
+  }
+  if (
+    !lexical.isSymbolicLink() ||
+    lexical.uid !== 0 ||
+    lexical.gid !== 0 ||
+    (lexical.mode & 0o022) !== 0 ||
+    readlinkSync(pythonPath) !== "python3.12" ||
+    realpathSync(pythonPath) !== "/usr/bin/python3.12"
+  )
+    failSystemd();
+  authenticateExecutable("/usr/bin/python3.12", 0o111);
+};
+
 const authenticateSystemdHost = async (deadline) => {
   if (
     process.platform !== "linux" ||
@@ -503,8 +739,10 @@ const authenticateSystemdHost = async (deadline) => {
   )
     failSystemd();
   authenticateExecutable(sudoPath, 0o4000);
+  authenticatePython();
   authenticateExecutable(systemctlPath, 0o111);
   authenticateExecutable(systemdRunPath, 0o111);
+  authenticateExecutable(timeoutPath, 0o111);
   const manager = digestRegularFile(systemdPath);
   let directTarget;
   try {
@@ -568,9 +806,25 @@ const remainingMilliseconds = (deadline) => {
   return remaining;
 };
 
+const clockBoottimeNanoseconds = () => {
+  const uptime = readBounded("/proc/uptime", 128).trimEnd().split(" ")[0];
+  if (!/^(?:0|[1-9][0-9]*)\.[0-9]{2}$/u.test(uptime ?? "")) failSystemd();
+  const [seconds, fraction] = uptime.split(".");
+  return BigInt(seconds) * 1_000_000_000n + BigInt(fraction) * 10_000_000n;
+};
+
+const absoluteBoottimeDeadline = (deadline) => {
+  const remaining = remainingMilliseconds(deadline);
+  return clockBoottimeNanoseconds() + BigInt(remaining) * 1_000_000n;
+};
+
 const runTool = (executable, arguments_, deadline) =>
   new Promise((resolveTool, rejectTool) => {
+    const timeout = remainingMilliseconds(deadline);
+    if (timeout <= rootToolJoinReserveMilliseconds) failSystemd();
     let settled = false;
+    let childError;
+    let deadlineExpired = false;
     let size = 0;
     const chunks = [];
     const child = spawn(executable, arguments_, {
@@ -578,9 +832,15 @@ const runTool = (executable, arguments_, deadline) =>
       env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
       stdio: ["ignore", "pipe", "ignore"],
     });
+    if (!Number.isSafeInteger(child.pid) || child.pid < 1) failSystemd();
     const timer = setTimeout(() => {
-      signalGroup(child.pid, "SIGKILL");
-    }, remainingMilliseconds(deadline));
+      deadlineExpired = true;
+      try {
+        signalGroup(child.pid, "SIGKILL");
+      } catch {
+        // Only authenticated wrapper close proves root-helper termination.
+      }
+    }, timeout);
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
@@ -590,19 +850,96 @@ const runTool = (executable, arguments_, deadline) =>
     };
     child.stdout.on("data", (chunk) => {
       size += chunk.length;
-      if (size > maximumToolOutputBytes) signalGroup(child.pid, "SIGKILL");
-      else chunks.push(chunk);
+      if (size <= maximumToolOutputBytes) chunks.push(chunk);
     });
-    child.once("error", (error) => finish(error));
+    child.once("error", (error) => {
+      childError = error;
+    });
     child.once("close", (code, signal) => {
-      if (code !== 0 || signal !== null || size > maximumToolOutputBytes)
+      if (
+        childError !== undefined ||
+        deadlineExpired ||
+        code !== 0 ||
+        signal !== null ||
+        size > maximumToolOutputBytes
+      )
         finish(new Error("integration.controller.systemd-tool"));
       else finish(undefined, Buffer.concat(chunks).toString("utf8"));
     });
   });
 
-const rootTool = (path, arguments_, deadline) =>
-  runTool(sudoPath, ["-n", "--", path, ...arguments_], deadline);
+const rootTool = (
+  path,
+  arguments_,
+  deadline,
+  { mutationDeadline, unit = "" } = {},
+) => {
+  const timeout = remainingMilliseconds(deadline);
+  if (
+    timeout <=
+    rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds
+  )
+    failSystemd();
+  const rootTimeoutSeconds = `${(
+    (timeout + rootToolJoinReserveMilliseconds) /
+    1_000
+  ).toFixed(3)}s`;
+  const killAfterSeconds = `${(rootToolKillAfterMilliseconds / 1_000).toFixed(
+    3,
+  )}s`;
+  const absoluteDeadline = absoluteBoottimeDeadline(deadline);
+  const effectiveMutationDeadline =
+    mutationDeadline ?? deadline - rootToolJoinReserveMilliseconds;
+  const absoluteMutationDeadline = absoluteBoottimeDeadline(
+    effectiveMutationDeadline,
+  );
+  if (absoluteMutationDeadline >= absoluteDeadline) failSystemd();
+  const encodedArguments = Buffer.from(JSON.stringify(arguments_)).toString(
+    "base64url",
+  );
+  return runTool(
+    sudoPath,
+    [
+      "-n",
+      timeoutPath,
+      "--signal=TERM",
+      `--kill-after=${killAfterSeconds}`,
+      rootTimeoutSeconds,
+      pythonPath,
+      "-I",
+      "-S",
+      "-c",
+      rootHelperSource,
+      String(absoluteDeadline),
+      String(absoluteMutationDeadline),
+      path,
+      encodedArguments,
+      unit,
+    ],
+    deadline,
+  ).then((receipt) => {
+    if (Buffer.byteLength(receipt) > maximumToolOutputBytes) failSystemd();
+    let parsed;
+    try {
+      parsed = JSON.parse(receipt);
+    } catch {
+      failSystemd();
+    }
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).sort().join(",") !== "output,status" ||
+      parsed.status !== "ok" ||
+      typeof parsed.output !== "string" ||
+      !/^[A-Za-z0-9_-]*$/u.test(parsed.output)
+    )
+      failSystemd();
+    const output = Buffer.from(parsed.output, "base64url");
+    if (output.toString("base64url") !== parsed.output) failSystemd();
+    return output.toString("utf8");
+  });
+};
 
 const exactUnitFacts = (output) => {
   if (Buffer.byteLength(output) > maximumToolOutputBytes) failSystemd();
@@ -817,18 +1154,22 @@ const systemdStartArguments = ({
 ];
 
 export const prepareGithubSystemdSupervision = async ({
+  arguments_: suppliedArguments = [],
   environment,
   executable,
   maximumMilliseconds,
+  stdio: suppliedStdio = "inherit",
 }) => {
   if (
     !Number.isSafeInteger(maximumMilliseconds) ||
     maximumMilliseconds < 1 ||
     !isAbsolute(executable) ||
-    realpathSync(executable) !== executable
+    realpathSync(executable) !== executable ||
+    !["ignore", "inherit"].includes(suppliedStdio)
   )
     failSystemd();
   const deadline = performance.now() + maximumMilliseconds;
+  const arguments_ = snapshotSystemdArguments(suppliedArguments);
   const environmentSnapshot = snapshotSystemdEnvironment(environment);
   await authenticateSystemdHost(deadline);
   const executionDeadline = deadline - containmentProofMilliseconds;
@@ -837,44 +1178,105 @@ export const prepareGithubSystemdSupervision = async ({
   const cgroupPath = resolve(cgroupRoot, authority.cgroup.slice(1));
   if (existsSync(cgroupPath)) failSystemd();
   const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
-  let transferred = false;
+  const interrupted = { value: false };
+  const forwardSignal = () => {
+    interrupted.value = true;
+  };
+  process.once("SIGINT", forwardSignal);
+  process.once("SIGTERM", forwardSignal);
+  const state = {
+    arguments_,
+    authority,
+    cgroupPath,
+    closed: false,
+    consumed: false,
+    deadline,
+    environment: environmentSnapshot,
+    executable,
+    executionDeadline,
+    forwardSignal,
+    interrupted,
+    mappedExecutable,
+    maximumMilliseconds,
+    stdio: suppliedStdio,
+    unitMayExist: false,
+  };
   try {
-    const state = {
-      authority,
-      cgroupPath,
-      closed: false,
-      consumed: false,
+    const mappedExecutablePath = recheckLiveMappedExecutable(mappedExecutable);
+    state.unitMayExist = true;
+    await rootTool(
+      systemdRunPath,
+      systemdStartArguments({
+        arguments_,
+        authority,
+        environment: environmentSnapshot,
+        executable: mappedExecutablePath,
+      }),
       deadline,
-      environment: environmentSnapshot,
-      executable,
-      executionDeadline,
-      mappedExecutable,
-      maximumMilliseconds,
-    };
+      { mutationDeadline: executionDeadline, unit: authority.unit },
+    );
+    recheckLiveMappedExecutable(mappedExecutable);
+    const admitted = await showUnit(authority.unit, executionDeadline);
+    assertUnitAuthority(admitted, authority);
+    if (executionDeadline <= performance.now() || !existsSync(cgroupPath))
+      failSystemd();
+    authenticateCgroup(cgroupPath);
     const preparation = Object.freeze({});
     systemdPreparations.set(preparation, state);
-    transferred = true;
     return preparation;
-  } finally {
-    if (!transferred) closeSync(mappedExecutable.descriptor);
+  } catch {
+    await closePreparedSystemdState(state);
+    failSystemd();
   }
 };
 
+const closePreparedSystemdState = async (state) => {
+  if (state.closed) return false;
+  state.closed = true;
+  let contained = !state.unitMayExist;
+  try {
+    if (state.unitMayExist) {
+      if (existsSync(state.cgroupPath)) {
+        authenticateCgroup(state.cgroupPath);
+        await systemdSignal(state.authority.unit, "SIGKILL", state.deadline);
+        while (!cgroupIsEmpty(state.cgroupPath))
+          await delay(Math.min(50, remainingMilliseconds(state.deadline)));
+      }
+      await retireUnit(state.authority, state.deadline);
+      contained = await proveCollected(
+        state.authority,
+        state.cgroupPath,
+        state.deadline,
+      );
+    }
+  } catch {
+    contained = false;
+  } finally {
+    process.removeListener("SIGINT", state.forwardSignal);
+    process.removeListener("SIGTERM", state.forwardSignal);
+    closeSync(state.mappedExecutable.descriptor);
+  }
+  return contained;
+};
+
 const runSystemdSupervised = async ({
-  arguments_: arguments_ = [],
+  arguments_: suppliedArguments = [],
   environment: suppliedEnvironment,
   executable,
   maximumMilliseconds,
   preparation,
+  stdio: suppliedStdio = "inherit",
 }) => {
   const prepared = preparation;
   const state = preparedSystemdState(prepared);
   if (
     !sameSystemdEnvironment(state.environment, suppliedEnvironment) ||
+    !sameSystemdArguments(state.arguments_, suppliedArguments) ||
     state.executable !== executable ||
-    state.maximumMilliseconds !== maximumMilliseconds
+    state.maximumMilliseconds !== maximumMilliseconds ||
+    state.stdio !== suppliedStdio
   ) {
-    closePreparedGithubSystemdSupervision(prepared);
+    await closePreparedGithubSystemdSupervision(prepared);
     failSystemd();
   }
   state.consumed = true;
@@ -883,36 +1285,22 @@ const runSystemdSupervised = async ({
     cgroupPath,
     deadline,
     executionDeadline,
-    environment,
+    interrupted,
     mappedExecutable,
   } = state;
-  if (executionDeadline <= performance.now() || existsSync(cgroupPath)) {
-    closePreparedGithubSystemdSupervision(prepared);
+  if (executionDeadline <= performance.now() || !existsSync(cgroupPath)) {
+    await closePreparedGithubSystemdSupervision(prepared);
     failSystemd();
   }
-  const interrupted = { value: false };
-  const forwardSignal = () => {
-    interrupted.value = true;
-  };
-  process.once("SIGINT", forwardSignal);
-  process.once("SIGTERM", forwardSignal);
   let terminal;
   let residualWorkObserved;
   try {
-    const mappedExecutablePath = recheckLiveMappedExecutable(mappedExecutable);
-    await rootTool(
-      systemdRunPath,
-      systemdStartArguments({
-        arguments_,
-        authority,
-        environment,
-        executable: mappedExecutablePath,
-      }),
-      deadline,
-    );
     recheckLiveMappedExecutable(mappedExecutable);
+    const admitted = await showUnit(authority.unit, executionDeadline);
+    assertUnitAuthority(admitted, authority);
+    authenticateCgroup(cgroupPath);
     terminal = await waitForTerminal(authority, executionDeadline, interrupted);
-    const authoritative = await showUnit(authority.unit, deadline);
+    const authoritative = await showUnit(authority.unit, executionDeadline);
     assertUnitAuthority(authoritative, authority);
     authenticateCgroup(cgroupPath);
     residualWorkObserved = !cgroupIsEmpty(cgroupPath);
@@ -965,19 +1353,17 @@ const runSystemdSupervised = async ({
       signal: null,
     };
   } finally {
-    process.removeListener("SIGINT", forwardSignal);
-    process.removeListener("SIGTERM", forwardSignal);
-    closePreparedGithubSystemdSupervision(prepared);
+    await closePreparedGithubSystemdSupervision(prepared);
   }
 };
 
-export const runSupervisedProcess = (options) => {
+export const runSupervisedProcess = async (options) => {
   if (options.containment === "github-systemd") {
     if (options.preparation === undefined) failSystemd();
     return runSystemdSupervised(options);
   }
   if (options.preparation !== undefined) {
-    closePreparedGithubSystemdSupervision(options.preparation);
+    await closePreparedGithubSystemdSupervision(options.preparation);
     failSystemd();
   }
   return runProcessGroupSupervised(options);

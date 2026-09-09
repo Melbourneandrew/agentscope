@@ -86,15 +86,26 @@ export function sameSystemdEnvironment(
   observed: NodeJS.ProcessEnv,
 ): boolean;
 
+export function snapshotSystemdArguments(
+  arguments_: readonly string[],
+): readonly string[];
+
+export function sameSystemdArguments(
+  expected: readonly string[],
+  observed: readonly string[],
+): boolean;
+
 export function prepareGithubSystemdSupervision(input: {
+  arguments_?: readonly string[];
   environment: NodeJS.ProcessEnv;
   executable: string;
   maximumMilliseconds: number;
+  stdio?: "ignore" | "inherit";
 }): Promise<PreparedGithubSystemdSupervision>;
 
 export function closePreparedGithubSystemdSupervision(
   preparation: PreparedGithubSystemdSupervision,
-): boolean;
+): Promise<boolean>;
 
 type CommonSupervisedProcessInput = Readonly<{
   arguments_?: readonly string[];

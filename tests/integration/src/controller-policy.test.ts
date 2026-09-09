@@ -22,7 +22,9 @@ import {
   prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
   runSupervisedProcess,
+  sameSystemdArguments,
   sameSystemdEnvironment,
+  snapshotSystemdArguments,
   snapshotSystemdEnvironment,
   transferDescriptorAuthority,
   validateLiveMappedExecutable,
@@ -909,6 +911,66 @@ it("snapshots a closed systemd environment and rejects valid-form drift", () => 
   ).toThrow("integration.controller.systemd-containment");
 });
 
+it("snapshots systemd arguments from one closed descriptor inventory", () => {
+  const arguments_ = ["fixture.mjs", "--mode=stubborn"];
+  const snapshot = snapshotSystemdArguments(arguments_);
+  expect(snapshot).not.toBe(arguments_);
+  expect(Object.isFrozen(snapshot)).toBe(true);
+  expect(snapshot).toEqual(arguments_);
+  expect(sameSystemdArguments(snapshot, arguments_)).toBe(true);
+  expect(
+    sameSystemdArguments(snapshot, ["fixture.mjs", "--mode=substituted"]),
+  ).toBe(false);
+
+  const accessor: string[] = [];
+  Object.defineProperty(accessor, "0", {
+    configurable: true,
+    enumerable: true,
+    get: () => "fixture.mjs",
+  });
+  accessor.length = 1;
+  expect(() => snapshotSystemdArguments(accessor)).toThrow(
+    "integration.controller.systemd-containment",
+  );
+
+  const sparse = Array<string>(1);
+  expect(() => snapshotSystemdArguments(sparse)).toThrow(
+    "integration.controller.systemd-containment",
+  );
+
+  const symbolized = ["fixture.mjs"];
+  Object.defineProperty(symbolized, Symbol("authority"), {
+    value: "substituted",
+  });
+  expect(() => snapshotSystemdArguments(symbolized)).toThrow(
+    "integration.controller.systemd-containment",
+  );
+
+  const extended = ["fixture.mjs"] as string[] & { authority?: string };
+  extended.authority = "substituted";
+  expect(() => snapshotSystemdArguments(extended)).toThrow(
+    "integration.controller.systemd-containment",
+  );
+
+  let descriptorReads = 0;
+  const stateful = new Proxy(["fixture.mjs"], {
+    getOwnPropertyDescriptor(target, property) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, property);
+      if (property !== "0" || descriptor === undefined) return descriptor;
+      descriptorReads += 1;
+      return {
+        ...descriptor,
+        value: descriptorReads === 1 ? "fixture.mjs" : "substituted.mjs",
+      };
+    },
+  });
+  const statefulSnapshot = snapshotSystemdArguments(stateful);
+  expect(statefulSnapshot).toEqual(["fixture.mjs"]);
+  expect(descriptorReads).toBe(1);
+  expect(sameSystemdArguments(statefulSnapshot, stateful)).toBe(false);
+  expect(descriptorReads).toBe(2);
+});
+
 it("digests one retained Node descriptor under the original deadline", () => {
   const supervisorSource = readFileSync(
     resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
@@ -924,11 +986,34 @@ it("digests one retained Node descriptor under the original deadline", () => {
   );
   const lifecycle = supervisorSource.slice(start, end);
   const preparation = supervisorSource.slice(preparationStart, start);
+  expect(supervisorSource).toContain(
+    "const containmentProofMilliseconds = 5_000;",
+  );
   expect(preparation).toContain(
     "const deadline = performance.now() + maximumMilliseconds;",
   );
   expect(preparation.match(/captureLiveMappedExecutable\(/gu)).toHaveLength(1);
-  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
+  expect(preparation.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
+  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(1);
+  expect(preparation).toContain("systemdStartArguments({");
+  expect(lifecycle).not.toContain("systemdStartArguments({");
+  expect(preparation.indexOf("systemdStartArguments({")).toBeLessThan(
+    preparation.indexOf("systemdPreparations.set(preparation, state)"),
+  );
+  expect(preparation).toContain("await closePreparedSystemdState(state)");
+  expect(preparation).toContain("state.unitMayExist = true;");
+  expect(preparation).toContain(
+    "systemdStartArguments({\n        arguments_,\n        authority,\n        environment: environmentSnapshot,\n        executable: mappedExecutablePath,\n      }),\n      deadline,\n      { mutationDeadline: executionDeadline, unit: authority.unit },",
+  );
+  expect(preparation).toContain(
+    "const admitted = await showUnit(authority.unit, executionDeadline);",
+  );
+  expect(preparation).toContain(
+    "const arguments_ = snapshotSystemdArguments(suppliedArguments);",
+  );
+  expect(lifecycle).toContain(
+    "!sameSystemdArguments(state.arguments_, suppliedArguments)",
+  );
   expect(
     supervisorSource.match(
       /const deadline = performance\.now\(\) \+ maximumMilliseconds;/gu,
@@ -955,6 +1040,171 @@ it("digests one retained Node descriptor under the original deadline", () => {
     "openSync(`/proc/${process.pid}/exe`, constants.O_RDONLY)",
   );
 });
+
+it("binds root helpers to one absolute boottime authority", () => {
+  const supervisorSource = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const preparationStart = supervisorSource.indexOf(
+    "export const prepareGithubSystemdSupervision = async",
+  );
+  const lifecycleStart = supervisorSource.indexOf(
+    "const runSystemdSupervised = async",
+  );
+  const lifecycleEnd = supervisorSource.indexOf(
+    "export const runSupervisedProcess",
+    lifecycleStart,
+  );
+  const preparation = supervisorSource.slice(preparationStart, lifecycleStart);
+  const lifecycle = supervisorSource.slice(lifecycleStart, lifecycleEnd);
+  const tool = supervisorSource.slice(
+    supervisorSource.indexOf("const runTool ="),
+    supervisorSource.indexOf("const rootTool ="),
+  );
+  expect(
+    tool.indexOf("const timeout = remainingMilliseconds(deadline);"),
+  ).toBeLessThan(tool.indexOf("const child = spawn("));
+  expect(tool).toContain("}, timeout);");
+  expect(tool).toContain('child.once("close", (code, signal) => {');
+  expect(supervisorSource).toContain(
+    "authenticateExecutable(timeoutPath, 0o111);",
+  );
+  const rootTool = supervisorSource.slice(
+    supervisorSource.indexOf("const rootTool ="),
+    supervisorSource.indexOf("const exactUnitFacts ="),
+  );
+  expect(rootTool).toContain(
+    "rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds",
+  );
+  expect(rootTool).toContain(
+    'timeoutPath,\n      "--signal=TERM",\n      `--kill-after=${killAfterSeconds}`,\n      rootTimeoutSeconds,',
+  );
+  expect(rootTool).toContain(
+    'pythonPath,\n      "-I",\n      "-S",\n      "-c",\n      rootHelperSource,',
+  );
+  expect(rootTool).toContain("absoluteBoottimeDeadline(deadline)");
+  expect(rootTool).toContain(
+    "absoluteBoottimeDeadline(\n    effectiveMutationDeadline,",
+  );
+  const rootHelper = supervisorSource.slice(
+    supervisorSource.indexOf("const rootHelperSource ="),
+    supervisorSource.indexOf("const cgroupRoot ="),
+  );
+  expect(rootHelper).toContain(
+    'if tool not in TOOLS or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")',
+  );
+  expect(rootHelper).toContain("leader,expected,control=create_group()");
+  expect(rootHelper).toContain(
+    'if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")',
+  );
+  expect(
+    rootHelper.indexOf("leader,expected,control=create_group()"),
+  ).toBeLessThan(
+    rootHelper.indexOf(
+      'if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")',
+    ),
+  );
+  expect(
+    rootHelper.indexOf(
+      'if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")',
+    ),
+  ).toBeLessThan(rootHelper.indexOf("child=subprocess.Popen("));
+  expect(rootHelper).toContain("process_group=leader,close_fds=True");
+  expect(rootHelper).toContain("signal.signal(signal.SIGTERM,signal.SIG_IGN)");
+  expect(rootHelper).toContain("if group_members(leader)!=[leader]");
+  expect(rootHelper).toContain("os.killpg(leader,signal.SIGTERM)");
+  expect(rootHelper).toContain("os.killpg(leader,signal.SIGKILL)");
+  expect(rootHelper).toContain("os.waitpid(leader,os.WNOHANG)");
+  expect(rootHelper).not.toContain("os.waitpid(leader,0)");
+  expect(rootHelper.indexOf("os.waitpid(leader,os.WNOHANG)")).toBeLessThan(
+    rootHelper.indexOf(
+      "if not leader_reaped or group_present(leader) or child.returncode is None",
+    ),
+  );
+  expect(rootHelper).toContain('if not reconcile(unit): emit("uncertain")');
+  expect(preparation).toContain(
+    "{ mutationDeadline: executionDeadline, unit: authority.unit }",
+  );
+  expect(preparation).toContain(
+    "const admitted = await showUnit(authority.unit, executionDeadline);",
+  );
+  expect(lifecycle).toContain(
+    "const admitted = await showUnit(authority.unit, executionDeadline);",
+  );
+  expect(lifecycle).toContain(
+    "const authoritative = await showUnit(authority.unit, executionDeadline);",
+  );
+  expect(lifecycle).not.toContain(
+    "const authoritative = await showUnit(authority.unit, deadline);",
+  );
+});
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "retains the helper group leader until a fast leader descendant is joined",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    expect(start).toBeGreaterThan(prefix.length);
+    expect(end).toBeGreaterThan(start);
+    const helper = supervisorSource.slice(start, end);
+    const testCode =
+      'import signal,subprocess,sys,time; subprocess.Popen([sys.executable,"-I","-S","-c","import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)","agentscope-root-helper-descendant"],stdout=sys.stdout,stderr=subprocess.DEVNULL); sys.exit(0)';
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", testCode]),
+    ).toString("base64url");
+    const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+    if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+      throw new Error("invalid synthetic boottime authority");
+    const [seconds, fraction] = uptime.split(".");
+    if (seconds === undefined || fraction === undefined)
+      throw new Error("invalid synthetic boottime authority");
+    const now =
+      BigInt(seconds) * 1_000_000_000n +
+      BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+    const terminal = spawnSync(
+      "/usr/bin/python3",
+      [
+        "-I",
+        "-S",
+        "-c",
+        helper,
+        String(now + 2_000_000_000n),
+        String(now + 500_000_000n),
+        "/usr/bin/python3",
+        encodedArguments,
+        "",
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+        timeout: 3_000,
+      },
+    );
+    expect(terminal).toMatchObject({
+      signal: null,
+      status: 1,
+      stderr: "",
+      stdout: '{"output":"","status":"error"}',
+    });
+    const survivors = readdirSync("/proc").filter((entry) => {
+      if (!/^\d+$/u.test(entry)) return false;
+      try {
+        return readFileSync(`/proc/${entry}/cmdline`, "utf8").includes(
+          "agentscope-root-helper-descendant",
+        );
+      } catch {
+        return false;
+      }
+    });
+    expect(survivors).toEqual([]);
+  },
+);
 
 it("closes retained descriptor authority exactly once on capture failure", () => {
   const closed: number[] = [];
@@ -984,11 +1234,13 @@ it("closes retained descriptor authority exactly once on capture failure", () =>
 });
 
 type GithubSystemdSetup = {
+  arguments_: readonly string[];
   directory: string;
   environment: NodeJS.ProcessEnv;
   escapeEvidence: string;
   escapeUnit: string;
   evidence: string;
+  losingEvidence: string;
   preparation: Awaited<ReturnType<typeof prepareGithubSystemdSupervision>>;
 };
 
@@ -996,6 +1248,7 @@ const prepareGithubSystemdFixture = async (): Promise<GithubSystemdSetup> => {
   const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
   const evidence = resolve(directory, "descendant.pid");
   const escapeEvidence = resolve(directory, "escape.json");
+  const losingEvidence = resolve(directory, "losing.txt");
   const escapeUnit = `agentscope-escape-${createHash("sha256")
     .update(directory)
     .digest("hex")
@@ -1017,24 +1270,60 @@ const prepareGithubSystemdFixture = async (): Promise<GithubSystemdSetup> => {
     PATH: "/usr/bin:/bin",
     RUNNER_ENVIRONMENT: "github-hosted",
   };
+  const arguments_ = [
+    resolve(
+      workspaceRoot,
+      "tests/integration/fixtures/stubborn-controller-child.mjs",
+    ),
+  ];
   try {
     const preparation = await prepareGithubSystemdSupervision({
+      arguments_,
       environment,
       executable: process.execPath,
       maximumMilliseconds: 15_000,
+      stdio: "ignore",
     });
     return {
+      arguments_,
       directory,
       environment,
       escapeEvidence,
       escapeUnit,
       evidence,
+      losingEvidence,
       preparation,
     };
   } catch (error) {
     rmSync(directory, { force: true, recursive: true });
     throw error;
   }
+};
+
+const rejectPreparedSystemdSubstitution = async (
+  current: GithubSystemdSetup,
+  substitution: "arguments" | "environment",
+) => {
+  await expect(
+    runSupervisedProcess({
+      arguments_:
+        substitution === "arguments"
+          ? [...current.arguments_, "substituted"]
+          : current.arguments_,
+      containment: "github-systemd",
+      environment:
+        substitution === "environment"
+          ? { ...current.environment, LANG: "C" }
+          : current.environment,
+      executable: process.execPath,
+      maximumMilliseconds: 15_000,
+      preparation: current.preparation,
+      stdio: "ignore",
+    }),
+  ).rejects.toThrow("integration.controller.systemd-containment");
+  expect(await closePreparedGithubSystemdSupervision(current.preparation)).toBe(
+    false,
+  );
 };
 
 describe.runIf(
@@ -1048,14 +1337,14 @@ describe.runIf(
     setup = await prepareGithubSystemdFixture();
   }, 15_000);
 
-  afterEach(() => {
+  afterEach(async () => {
     if (setup === undefined) return;
-    closePreparedGithubSystemdSupervision(setup.preparation);
+    await closePreparedGithubSystemdSupervision(setup.preparation);
     rmSync(setup.directory, { force: true, recursive: true });
     setup = undefined;
   });
 
-  it("closes prepared authority before a weaker route starts", () => {
+  it("closes prepared authority before a weaker route starts", async () => {
     if (setup === undefined) throw new Error("missing systemd preparation");
     const current = setup;
     expect(Object.isFrozen(current.preparation)).toBe(true);
@@ -1068,7 +1357,7 @@ describe.runIf(
       arguments_: [
         "--input-type=module",
         "--eval",
-        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(current.evidence)}, "started");`,
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(current.losingEvidence)}, "started");`,
       ],
       environment: current.environment,
       executable: process.execPath,
@@ -1076,26 +1365,29 @@ describe.runIf(
       preparation: current.preparation,
       stdio: "ignore" as const,
     };
-    expect(() =>
+    await expect(
       runSupervisedProcess(
         losingRoute as unknown as Parameters<typeof runSupervisedProcess>[0],
       ),
-    ).toThrow("integration.controller.systemd-containment");
-    expect(closePreparedGithubSystemdSupervision(current.preparation)).toBe(
-      false,
-    );
-    expect(existsSync(current.evidence)).toBe(false);
+    ).rejects.toThrow("integration.controller.systemd-containment");
+    expect(
+      await closePreparedGithubSystemdSupervision(current.preparation),
+    ).toBe(false);
+    expect(existsSync(current.losingEvidence)).toBe(false);
   });
+
+  it.each(["arguments", "environment"] as const)(
+    "rejects prepared %s substitution and closes the running unit",
+    async (substitution) => {
+      if (setup === undefined) throw new Error("missing systemd preparation");
+      await rejectPreparedSystemdSubstitution(setup, substitution);
+    },
+  );
 
   it("contains a detached session in the authenticated systemd unit", async () => {
     if (setup === undefined) throw new Error("missing systemd preparation");
     const result = await runSupervisedProcess({
-      arguments_: [
-        resolve(
-          workspaceRoot,
-          "tests/integration/fixtures/stubborn-controller-child.mjs",
-        ),
-      ],
+      arguments_: setup.arguments_,
       containment: "github-systemd",
       environment: setup.environment,
       executable: process.execPath,
@@ -1140,6 +1432,17 @@ describe.runIf(
       status: 0,
       stdout: "LoadState=not-found\n",
     });
+    await expect(
+      runSupervisedProcess({
+        arguments_: setup.arguments_,
+        containment: "github-systemd",
+        environment: setup.environment,
+        executable: process.execPath,
+        maximumMilliseconds: 15_000,
+        preparation: setup.preparation,
+        stdio: "ignore",
+      }),
+    ).rejects.toThrow("integration.controller.systemd-containment");
   });
 });
 

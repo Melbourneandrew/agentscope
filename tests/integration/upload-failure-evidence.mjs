@@ -1221,7 +1221,14 @@ const outerControllerMain = async () => {
   const lifecycleEnvironment = buildLifecycleEnvironment(process.env);
   lifecycleEnvironment.AGENTSCOPE_INTEGRATION_REPLAY =
     process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME.endsWith("-1") ? "1" : "2";
+  const lifecycleArguments = [
+    resolve(
+      process.env.GITHUB_WORKSPACE,
+      "tests/integration/controller-process.mjs",
+    ),
+  ];
   const preparation = await prepareGithubSystemdSupervision({
+    arguments_: lifecycleArguments,
     environment: lifecycleEnvironment,
     executable: process.execPath,
     maximumMilliseconds,
@@ -1229,12 +1236,7 @@ const outerControllerMain = async () => {
   const result = await runSupervisedProcess({
     environment: lifecycleEnvironment,
     executable: process.execPath,
-    arguments_: [
-      resolve(
-        process.env.GITHUB_WORKSPACE,
-        "tests/integration/controller-process.mjs",
-      ),
-    ],
+    arguments_: lifecycleArguments,
     maximumMilliseconds,
     containment: "github-systemd",
     preparation,
