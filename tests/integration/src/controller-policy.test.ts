@@ -23,6 +23,7 @@ import {
   parseSystemdTerminalExit,
   prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
+  rootToolHasPreparationBudget,
   runSupervisedProcess,
   sameSystemdArguments,
   sameSystemdEnvironment,
@@ -1170,7 +1171,6 @@ it("binds root helpers to one absolute boottime authority", () => {
   expect(rootHelper).toContain("leader,expected,control=create_group()");
   expect(rootHelper).toContain("inherited_group=os.getpgrp()");
   expect(rootHelper).toContain("expected_start=observed[0]");
-  expect(rootHelper).toContain("boundary=min(CUTOFF,DEADLINE-750000000)");
   expect(rootHelper).toContain("os.setpgid(leader,leader)");
   expect(rootHelper).toContain("error.errno!=errno.EACCES");
   expect(rootHelper).not.toContain("now()+250000000\n expected=None");
@@ -1240,6 +1240,12 @@ it("bounds root-wrapper force and group settlement inside the join reserve", () 
   expect(supervisorSource).toContain(
     "const rootToolJoinReserveMilliseconds = 500;",
   );
+  expect(supervisorSource).toContain(
+    "const rootToolSentinelPreparationMilliseconds = 500;",
+  );
+  expect(supervisorSource).toContain(
+    "const rootToolHelperTeardownReserveMilliseconds = 750;",
+  );
   expect(rootTool).toContain(
     "const forceDeadline = deadline + rootToolKillAfterMilliseconds;",
   );
@@ -1263,6 +1269,29 @@ it("bounds root-wrapper force and group settlement inside the join reserve", () 
   expect(tool).toContain(
     "initial identity uncertainty must use\n      // the same bounded close/absence envelope rather than rejecting early.",
   );
+});
+
+it("reserves sentinel preparation without extending mutation authority", () => {
+  const supervisorSource = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const rootHelper = supervisorSource.slice(
+    supervisorSource.indexOf("const rootHelperSource ="),
+    supervisorSource.indexOf("const cgroupRoot ="),
+  );
+  expect(rootHelper).toContain("SENTINEL_PREPARATION=500000000");
+  expect(rootHelper).toContain("TEARDOWN_RESERVE=750000000");
+  expect(rootHelper).toContain("sentinel_started=now()");
+  expect(rootHelper).toContain(
+    "boundary=min(sentinel_started+SENTINEL_PREPARATION,DEADLINE-TEARDOWN_RESERVE)",
+  );
+  expect(rootHelper).not.toContain("boundary=min(CUTOFF,");
+  expect(rootHelper).toContain('STAGE="cutoff"\n  REASON=""');
+  expect(rootToolHasPreparationBudget(2_000, 749)).toBe(true);
+  expect(rootToolHasPreparationBudget(2_000, 750)).toBe(false);
+  expect(rootToolHasPreparationBudget(2_000, 751)).toBe(false);
+  expect(rootToolHasPreparationBudget(Number.POSITIVE_INFINITY, 0)).toBe(false);
 });
 
 it("observes root-wrapper close and group absence in either order", () => {
@@ -2092,7 +2121,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
 );
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
-  "rejects a delayed sentinel transition at the original cutoff",
+  "establishes the sentinel before rejecting expired mutation authority",
   () => {
     const supervisorSource = readFileSync(
       resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
@@ -2152,8 +2181,8 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       }),
     ).toEqual({
       output: "",
-      reason: "transition-timeout",
-      stage: "sentinel",
+      reason: "",
+      stage: "cutoff",
       status: "error",
     });
   },

@@ -194,6 +194,11 @@ export function advanceToolForceState(
   shouldForce: boolean;
 }>;
 
+export function rootToolHasPreparationBudget(
+  deadline: number,
+  now: number,
+): boolean;
+
 export function transferDescriptorAuthority<T>(
   input: Readonly<{
     close(descriptor: number): void;

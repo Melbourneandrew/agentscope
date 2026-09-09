@@ -36,6 +36,8 @@ const systemdRunPath = "/usr/bin/systemd-run";
 const timeoutPath = "/usr/bin/timeout";
 const rootToolKillAfterMilliseconds = 250;
 const rootToolJoinReserveMilliseconds = 500;
+const rootToolSentinelPreparationMilliseconds = 500;
+const rootToolHelperTeardownReserveMilliseconds = 750;
 const rootHelperStages = new Set([
   "startup",
   "cutoff",
@@ -123,6 +125,8 @@ os.write(1,b"agentscope-python-helper-v1\n")
 const rootHelperSource = String.raw`
 import base64,errno,hashlib,hmac,json,os,signal,subprocess,sys,time
 MAX=65536
+SENTINEL_PREPARATION=500000000
+TEARDOWN_RESERVE=750000000
 TEST_CODE='import signal,subprocess,sys,time; subprocess.Popen([sys.executable,"-I","-S","-c","import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)","agentscope-root-helper-descendant"],stdout=sys.stdout,stderr=subprocess.DEVNULL); sys.exit(0)'
 TEST_ARGS=["-I","-S","-c",TEST_CODE]
 TEST_FAIL_CODE='import sys; sys.exit(17)'
@@ -243,19 +247,21 @@ def create_group():
  global STAGE,REASON
  STAGE="sentinel"
  REASON="internal-unknown"
+ sentinel_started=now()
  inherited_group=os.getpgrp()
  control_read,control_write=os.pipe2(os.O_CLOEXEC)
  leader=os.fork()
  if leader==0:
   try:
    os.close(control_write)
-   if OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"}: time.sleep(0.35)
+   if OPERATION=="synthetic-delayed-sentinel": time.sleep(0.35)
+   if OPERATION=="synthetic-sentinel-cleanup-failure": time.sleep(0.6)
    os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)
    if os.read(control_read,1)!=b"\x00": raise RuntimeError("control-revoke")
    while os.read(control_read,1): pass
   finally: os._exit(0)
  os.close(control_read)
- boundary=min(CUTOFF,DEADLINE-750000000)
+ boundary=min(sentinel_started+SENTINEL_PREPARATION,DEADLINE-TEARDOWN_RESERVE)
  expected=None
  expected_start=None
  try:
@@ -271,7 +277,8 @@ def create_group():
    expected_start=observed[0]
   if expected_start is None:
    REASON="transition-timeout"; raise RuntimeError("sentinel")
-  if OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"}: time.sleep(0.35)
+  if OPERATION=="synthetic-delayed-sentinel": time.sleep(0.35)
+  if OPERATION=="synthetic-sentinel-cleanup-failure": time.sleep(0.6)
   if now()>=boundary:
    REASON="transition-timeout"; raise RuntimeError("sentinel")
   try:
@@ -413,6 +420,8 @@ def run(argv,cutoff,operation_stage):
  child=None
  output=bytearray()
  try:
+  STAGE="cutoff"
+  REASON=""
   if now()>=cutoff or now()>=DEADLINE: raise RuntimeError("cutoff")
   if process_identity(leader)!=expected: raise RuntimeError("identity")
   STAGE="tool-spawn"
@@ -506,7 +515,7 @@ try:
  if len(sys.argv)!=8: raise RuntimeError("argv")
  DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); OPERATION=sys.argv[3]
  tool=sys.argv[4]; raw=sys.argv[5]; unit=sys.argv[6]; KEY=sys.argv[7]
- if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
+ if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or DEADLINE-now()<=SENTINEL_PREPARATION+TEARDOWN_RESERVE or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
  if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION in {"synthetic-cleanup-failure","synthetic-client-nonzero"} and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline","synthetic-client-output-read","synthetic-client-member-identity"} and args!=TEST_SLEEP_ARGS) or (OPERATION=="synthetic-client-output-bound" and args!=TEST_OUTPUT_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-setpgid-eacces","synthetic-setpgid-non-eacces","synthetic-sentinel-cleanup-failure","synthetic-join-failure","synthetic-join-cleanup-failure","synthetic-join-identity-drift","synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-internal"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
@@ -1390,6 +1399,13 @@ const remainingMilliseconds = (deadline) => {
   return remaining;
 };
 
+export const rootToolHasPreparationBudget = (deadline, now) =>
+  Number.isFinite(deadline) &&
+  Number.isFinite(now) &&
+  deadline - now >
+    rootToolSentinelPreparationMilliseconds +
+      rootToolHelperTeardownReserveMilliseconds;
+
 const clockBoottimeNanoseconds = () => {
   const uptime = readBounded("/proc/uptime", 128).trimEnd().split(" ")[0];
   if (!/^(?:0|[1-9][0-9]*)\.[0-9]{2}$/u.test(uptime ?? "")) failSystemd();
@@ -1561,8 +1577,8 @@ const rootTool = (
   const observationDeadline = deadline + rootToolJoinReserveMilliseconds;
   const forceDeadline = deadline + rootToolKillAfterMilliseconds;
   if (
-    timeout <=
-    rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds
+    !rootToolHasPreparationBudget(deadline, performance.now()) ||
+    timeout <= rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds
   )
     failSystemd();
   const rootTimeoutSeconds = `${(timeout / 1_000).toFixed(3)}s`;
@@ -1723,7 +1739,10 @@ const cgroupIsEmpty = (cgroupPath) => {
 };
 
 const waitForTerminal = async (authority, deadline, interrupted) => {
-  while (!interrupted.value && performance.now() < deadline) {
+  while (
+    !interrupted.value &&
+    rootToolHasPreparationBudget(deadline, performance.now())
+  ) {
     const facts = await showUnit(authority.unit, deadline, "unit-monitor");
     assertUnitAuthority(facts, authority);
     if (
