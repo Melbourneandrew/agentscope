@@ -17,7 +17,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, uploadFailureEvidence } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -51,6 +51,14 @@ const preloadSource = preloadCredentialedSource as unknown as (
 const revalidateSource = revalidateCredentialedSource as unknown as (
   authority: unknown,
 ) => void;
+const settleLifecycle = settleLifecycleResult as unknown as (
+  result: {
+    code: number | null;
+    contained: boolean;
+    residualWorkObserved: boolean;
+  },
+  finalize: () => Promise<void>,
+) => Promise<boolean>;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -84,6 +92,33 @@ const fixture = (): {
 };
 
 describe("failure evidence action boundary", () => {
+  it("never finalizes evidence without exact lifecycle containment", async () => {
+    const finalize = vi.fn(() => Promise.resolve());
+    await expect(
+      settleLifecycle(
+        { code: 1, contained: false, residualWorkObserved: true },
+        finalize,
+      ),
+    ).rejects.toThrow("integration.controller.failure-evidence-upload");
+    expect(finalize).not.toHaveBeenCalled();
+
+    await expect(
+      settleLifecycle(
+        { code: 0, contained: true, residualWorkObserved: false },
+        finalize,
+      ),
+    ).resolves.toBe(true);
+    expect(finalize).not.toHaveBeenCalled();
+
+    await expect(
+      settleLifecycle(
+        { code: 0, contained: true, residualWorkObserved: true },
+        finalize,
+      ),
+    ).resolves.toBe(false);
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects named source replacement after retaining its exact descriptor", () => {
     const root = mkdtempSync(resolve(tmpdir(), "agentscope-action-source-"));
     const path = resolve(root, "source.mjs");

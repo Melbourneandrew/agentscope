@@ -847,7 +847,7 @@ describe("integration workflow routing policy", () => {
       "const sealer = preloadCredentialedSource(",
     );
     const lifecycle = actionSource.indexOf("await runSupervisedProcess({");
-    const finalize = actionSource.indexOf("await finalizeFailureEvidence({");
+    const finalize = actionSource.indexOf("finalizeFailureEvidence({");
     expect(preload).toBeGreaterThanOrEqual(0);
     expect(lifecycle).toBeGreaterThan(preload);
     expect(finalize).toBeGreaterThan(lifecycle);

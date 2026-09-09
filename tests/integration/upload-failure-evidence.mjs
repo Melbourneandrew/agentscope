@@ -1171,6 +1171,13 @@ export const buildLifecycleEnvironment = (sourceEnvironment) => {
   return environment;
 };
 
+export const settleLifecycleResult = async (result, finalize) => {
+  if (result.contained !== true) fail();
+  if (result.code === 0 && result.residualWorkObserved === false) return true;
+  await finalize();
+  return false;
+};
+
 const outerControllerMain = async () => {
   const authority = exactControllerArguments(process.argv.slice(1));
   const source = readExact(
@@ -1212,25 +1219,22 @@ const outerControllerMain = async () => {
     ],
     maximumMilliseconds,
   });
-  if (result.code === 0 && result.contained && !result.residualWorkObserved) {
-    revalidateCredentialedSource(sealer);
-    closeSync(sealer.descriptor);
-    closeSync(authority.bundleDescriptor);
-    closeSync(authority.sourceDescriptor);
-    return;
-  }
+  let succeeded;
   try {
     revalidateCredentialedSource(sealer);
-    await finalizeFailureEvidence({
-      bundleDescriptor: authority.bundleDescriptor,
-      client: new DefaultArtifactClient(),
-      sealerSource: sealer.content,
-    });
+    succeeded = await settleLifecycleResult(result, () =>
+      finalizeFailureEvidence({
+        bundleDescriptor: authority.bundleDescriptor,
+        client: new DefaultArtifactClient(),
+        sealerSource: sealer.content,
+      }),
+    );
   } finally {
     closeSync(sealer.descriptor);
     closeSync(authority.bundleDescriptor);
     closeSync(authority.sourceDescriptor);
   }
+  if (succeeded) return;
   process.exitCode = result.code === 0 ? 1 : (result.code ?? 1);
 };
 
