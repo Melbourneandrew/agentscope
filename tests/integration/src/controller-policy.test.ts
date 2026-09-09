@@ -1231,7 +1231,13 @@ it("revokes helper control before joining only its authenticated process set", (
   expect(rootHelper).toContain("admit_group_members(leader,expected_members)");
   expect(rootHelper).toContain("settle_boundary=DEADLINE-750000000");
   expect(rootHelper).toContain(
-    'if process_identity(leader)!=expected or os.write(control,b"\\x00")!=1',
+    'REASON="identity-drift"\n observed_before_revoke=',
+  );
+  expect(rootHelper).toContain(
+    'if observed_before_revoke!=expected: raise RuntimeError("identity")',
+  );
+  expect(rootHelper).toContain(
+    'REASON="control-close"\n if os.write(control,b"\\x00")!=1',
   );
   expect(rootHelper).toContain(
     'if os.read(control_read,1)!=b"\\x00": raise RuntimeError("control-revoke")',
@@ -1499,9 +1505,10 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const encodedArguments = Buffer.from(
       JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
     ).toString("base64url");
-    for (const [operation, status] of [
-      ["synthetic-join-failure", "error"],
-      ["synthetic-join-cleanup-failure", "uncertain"],
+    for (const [operation, status, reason] of [
+      ["synthetic-join-failure", "error", "preclose-residual"],
+      ["synthetic-join-cleanup-failure", "uncertain", "preclose-residual"],
+      ["synthetic-join-identity-drift", "error", "identity-drift"],
     ] as const) {
       const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
       if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
@@ -1547,7 +1554,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         }),
       ).toEqual({
         output: "",
-        reason: "preclose-residual",
+        reason,
         stage: "join",
         status,
       });

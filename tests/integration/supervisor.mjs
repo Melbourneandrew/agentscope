@@ -75,6 +75,7 @@ const rootToolOperations = new Map([
   ["synthetic-sentinel-cleanup-failure", pythonPath],
   ["synthetic-join-failure", pythonPath],
   ["synthetic-join-cleanup-failure", pythonPath],
+  ["synthetic-join-identity-drift", pythonPath],
   ["pid1-readlink-1", readlinkPath],
   ["pid1-stat", statPath],
   ["pid1-digest", sha256sumPath],
@@ -107,7 +108,7 @@ TEST_FAIL_CODE='import sys; sys.exit(17)'
 TEST_FAIL_ARGS=["-I","-S","-c",TEST_FAIL_CODE]
 TEST_DELAY_CODE='import sys; sys.exit(0)'
 TEST_DELAY_ARGS=["-I","-S","-c",TEST_DELAY_CODE]
-OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-setpgid-eacces":"/usr/bin/python3","synthetic-setpgid-non-eacces":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","synthetic-join-failure":"/usr/bin/python3","synthetic-join-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
+OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-setpgid-eacces":"/usr/bin/python3","synthetic-setpgid-non-eacces":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","synthetic-join-failure":"/usr/bin/python3","synthetic-join-cleanup-failure":"/usr/bin/python3","synthetic-join-identity-drift":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
 SENTINEL_REASONS={"child-exit","start-identity","inherited-group","transition-timeout","kill","reap-join","residual","internal-unknown"}
 JOIN_REASONS={"leader-identity","preclose-residual","control-close","reap-timeout","identity-drift","postreap-residual","internal-unknown"}
@@ -279,8 +280,11 @@ def close_group(leader,expected,control,expected_members):
  if OPERATION in {"synthetic-join-failure","synthetic-join-cleanup-failure"} and JOIN_CALLS==1:
   raise RuntimeError("synthetic-join")
  records=admit_group_members(leader,expected_members)
+ REASON="identity-drift"
+ observed_before_revoke=None if OPERATION=="synthetic-join-identity-drift" else process_identity(leader)
+ if observed_before_revoke!=expected: raise RuntimeError("identity")
  REASON="control-close"
- if process_identity(leader)!=expected or os.write(control,b"\x00")!=1: raise RuntimeError("control-revoke")
+ if os.write(control,b"\x00")!=1: raise RuntimeError("control-revoke")
  REASON="preclose-residual"
  settle_boundary=DEADLINE-750000000
  while any(pid!=leader for pid in records):
@@ -422,7 +426,7 @@ try:
  if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
- if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-setpgid-eacces","synthetic-setpgid-non-eacces","synthetic-sentinel-cleanup-failure","synthetic-join-failure","synthetic-join-cleanup-failure"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-setpgid-eacces","synthetic-setpgid-non-eacces","synthetic-sentinel-cleanup-failure","synthetic-join-failure","synthetic-join-cleanup-failure","synthetic-join-identity-drift"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
  if tool=="/usr/bin/systemd-run":
   if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
  elif tool=="/usr/bin/systemctl":
