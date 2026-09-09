@@ -198,6 +198,9 @@ def process_record_for_group(pid,group,expected_members=None):
 def group_records(group,expected_members=None):
  if not isinstance(group,int) or group<1: raise RuntimeError("inventory")
  if expected_members is not None and not isinstance(expected_members,dict): raise RuntimeError("inventory")
+ if expected_members is not None:
+  for pid,record in expected_members.items():
+   if not isinstance(pid,int) or pid<1 or not isinstance(record,tuple) or len(record)!=3: raise RuntimeError("inventory")
  entries=os.listdir("/proc")
  if len(entries)>65536: raise RuntimeError("inventory")
  records={}
@@ -209,6 +212,13 @@ def group_records(group,expected_members=None):
    seen.add(pid)
    observed=process_record_for_group(pid,group,expected_members)
    if observed is not None: records[pid]=observed
+ if expected_members is not None:
+  for pid,expected in expected_members.items():
+   if pid in seen: continue
+   observed=process_record(pid)
+   if observed is None: continue
+   if observed!=expected: raise RuntimeError("identity")
+   records[pid]=observed
  return records
 def group_members(group):
  return sorted(group_records(group))

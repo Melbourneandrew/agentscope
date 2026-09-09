@@ -1496,6 +1496,9 @@ it.runIf(existsSync("/usr/bin/python3"))(
       records: Record<string, string>,
       entries: string[],
       expectedMembers?: Record<string, [string, number, number]>,
+      expectedResult: Record<string, [string, number, number]> = {
+        "10": ["456", 10, 1],
+      },
     ) =>
       spawnSync(
         "/usr/bin/python3",
@@ -1510,12 +1513,18 @@ os=types.SimpleNamespace(listdir=lambda path:payload["entries"])
 def open(path,mode): return io.BytesIO(records[path.split("/")[2]])
 ${parser}
 try:
- expected=None if payload.get("expected") is None else {int(key):(value[0].encode("ascii"),value[1]) for key,value in payload["expected"].items()}
+ expected=None if payload.get("expected") is None else {int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in payload["expected"].items()}
  result=group_records(10,expected)
 except Exception:
  sys.exit(17)
-if result!={10:(b"456",10,1)}: sys.exit(18)`,
-          JSON.stringify({ entries, expected: expectedMembers, records }),
+expected_result={int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in payload["result"].items()}
+if result!=expected_result: sys.exit(18)`,
+          JSON.stringify({
+            entries,
+            expected: expectedMembers,
+            records,
+            result: expectedResult,
+          }),
         ],
         { encoding: "utf8", env: {}, timeout: 3_000 },
       );
@@ -1524,6 +1533,14 @@ if result!={10:(b"456",10,1)}: sys.exit(18)`,
         "1",
         "10",
       ]),
+    ).toMatchObject({ status: 0, signal: null, stderr: "" });
+    expect(
+      invoke(
+        { "10": record(10, "1", "10"), "11": record(11, "10", "10") },
+        ["10"],
+        { "10": ["456", 10, 1], "11": ["456", 10, 10] },
+        { "10": ["456", 10, 1], "11": ["456", 10, 10] },
+      ),
     ).toMatchObject({ status: 0, signal: null, stderr: "" });
     for (const rejected of [
       { "1": record(1, "0", "x"), "10": record(10, "1", "10") },
@@ -1555,10 +1572,11 @@ if result!={10:(b"456",10,1)}: sys.exit(18)`,
         }),
       ).toMatchObject({ status: 17, signal: null, stderr: "" });
     expect(
-      invoke({ "10": record(10, "1", "10") }, ["10", "11"], {
-        "10": ["456", 10, 1],
-        "11": ["456", 10, 10],
-      }),
+      invoke(
+        { "10": record(10, "1", "10"), "11": record(11, "10", "11") },
+        ["10"],
+        { "10": ["456", 10, 1], "11": ["456", 10, 10] },
+      ),
     ).toMatchObject({ status: 17, signal: null, stderr: "" });
   },
 );
