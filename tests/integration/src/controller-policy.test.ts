@@ -30,6 +30,7 @@ import {
   cgroupObservationSettled,
   exactPathIsAbsent,
   classifySystemdUnitAuthority,
+  classifyRetirementSystemdUnitAuthority,
   classifyToolSettlement,
   closeDescriptorSet,
   closePreparedGithubSystemdSupervision,
@@ -816,6 +817,43 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
     expect(
       classifySystemdUnitAuthority({ ...facts, [field]: value }, authority),
     ).toBe(reason);
+
+  const present = { absent: false, empty: true };
+  const absent = { absent: true, empty: true };
+  expect(
+    classifyRetirementSystemdUnitAuthority(facts, authority, present, present),
+  ).toBeUndefined();
+  expect(
+    classifyRetirementSystemdUnitAuthority(
+      { ...facts, ControlGroup: "" },
+      authority,
+      absent,
+      absent,
+    ),
+  ).toBeUndefined();
+  for (const [before, after, controlGroup] of [
+    [present, present, ""],
+    [absent, absent, authority.cgroup],
+    [present, absent, ""],
+    [absent, present, ""],
+    [absent, absent, "/system.slice/agentscope-other.service"],
+  ] as const)
+    expect(
+      classifyRetirementSystemdUnitAuthority(
+        { ...facts, ControlGroup: controlGroup },
+        authority,
+        before,
+        after,
+      ),
+    ).toBe("cgroup");
+  expect(
+    classifyRetirementSystemdUnitAuthority(
+      { ...facts, ControlGroup: "", User: "1002" },
+      authority,
+      absent,
+      absent,
+    ),
+  ).toBe("principal");
 });
 
 it("treats a retired cgroup disappearance only as input to collection proof", () => {

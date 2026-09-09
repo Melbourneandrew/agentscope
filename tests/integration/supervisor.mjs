@@ -1846,6 +1846,27 @@ export const classifySystemdUnitAuthority = (facts, authority) => {
   return undefined;
 };
 
+export const classifyRetirementSystemdUnitAuthority = (
+  facts,
+  authority,
+  before,
+  after,
+) => {
+  if (
+    typeof before?.absent !== "boolean" ||
+    typeof after?.absent !== "boolean" ||
+    before.absent !== after.absent
+  )
+    return "cgroup";
+  const immutableMismatch = classifySystemdUnitAuthority(
+    { ...facts, ControlGroup: authority.cgroup },
+    authority,
+  );
+  if (immutableMismatch !== undefined) return immutableMismatch;
+  if (before.absent) return facts.ControlGroup === "" ? undefined : "cgroup";
+  return facts.ControlGroup === authority.cgroup ? undefined : "cgroup";
+};
+
 const assertUnitAuthority = (facts, authority) => {
   if (classifySystemdUnitAuthority(facts, authority) !== undefined)
     failSystemd();
@@ -2194,7 +2215,24 @@ const proveCollected = async (
   return false;
 };
 
-const retireUnit = async (authority, deadline, lifecycleState) => {
+const retireUnit = async (
+  authority,
+  deadline,
+  lifecycleState,
+  cgroupPath,
+  cgroupIdentity,
+) => {
+  const markDiagnostic = (reason) => {
+    if (lifecycleState === undefined) return;
+    if (!systemdRetirementDiagnosticReasons.has(reason)) failSystemd();
+    lifecycleState.retirementDiagnosticReason = reason;
+  };
+  if (cgroupPath === undefined || cgroupIdentity === undefined) failSystemd();
+  const before = observeAuthenticatedCgroup(
+    cgroupPath,
+    cgroupIdentity,
+    markDiagnostic,
+  );
   let facts;
   try {
     if (lifecycleState !== undefined)
@@ -2205,7 +2243,17 @@ const retireUnit = async (authority, deadline, lifecycleState) => {
     rethrowSystemdLifecycle(lifecycleState, error, "unit-show");
   }
   if (facts.LoadState === "not-found") return;
-  const mismatch = classifySystemdUnitAuthority(facts, authority);
+  const after = observeAuthenticatedCgroup(
+    cgroupPath,
+    cgroupIdentity,
+    markDiagnostic,
+  );
+  const mismatch = classifyRetirementSystemdUnitAuthority(
+    facts,
+    authority,
+    before,
+    after,
+  );
   if (mismatch !== undefined) {
     if (lifecycleState === undefined) failSystemd();
     failSystemdLifecycle(lifecycleState, "retirement", `authority-${mismatch}`);
@@ -2395,7 +2443,13 @@ const closePreparedSystemdState = async (state) => {
         while (!cgroupObservationSettled(state.cgroupPath, cgroupIdentity))
           await delay(Math.min(50, remainingMilliseconds(state.deadline)));
       }
-      await retireUnit(state.authority, state.deadline);
+      await retireUnit(
+        state.authority,
+        state.deadline,
+        undefined,
+        state.cgroupPath,
+        state.cgroupIdentity,
+      );
       contained = await proveCollected(
         state.authority,
         state.cgroupPath,
@@ -2555,7 +2609,13 @@ const retireAndCollectSystemdUnit = async (state) => {
       )
     )
       await delay(Math.min(50, remainingMilliseconds(state.deadline)));
-    await retireUnit(state.authority, state.deadline, state);
+    await retireUnit(
+      state.authority,
+      state.deadline,
+      state,
+      state.cgroupPath,
+      state.cgroupIdentity,
+    );
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }

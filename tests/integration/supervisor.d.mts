@@ -50,6 +50,18 @@ export function classifySystemdUnitAuthority(
     unit: string;
   }>,
 ): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
+export function classifyRetirementSystemdUnitAuthority(
+  facts: Readonly<Record<string, string>>,
+  authority: Readonly<{
+    cgroup: string;
+    gid: number;
+    groups: readonly number[];
+    uid: number;
+    unit: string;
+  }>,
+  before: Readonly<{ absent: boolean; empty: boolean }>,
+  after: Readonly<{ absent: boolean; empty: boolean }>,
+): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
 
 export function validateRootPid1Probe(
   input: Readonly<{
