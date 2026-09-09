@@ -1282,7 +1282,7 @@ it.runIf(existsSync("/usr/bin/python3"))(
       helperStart,
     );
     const helper = supervisorSource.slice(helperStart, helperEnd);
-    const parserStart = helper.indexOf("def parse_process_identity(data,pid):");
+    const parserStart = helper.indexOf("def parse_process_fields(data,pid):");
     const parserEnd = helper.indexOf("def group_members(group):", parserStart);
     expect(parserStart).toBeGreaterThanOrEqual(0);
     expect(parserEnd).toBeGreaterThan(parserStart);
@@ -1416,7 +1416,7 @@ it.runIf(existsSync("/usr/bin/python3"))(
       helperStart,
     );
     const helper = supervisorSource.slice(helperStart, helperEnd);
-    const parserStart = helper.indexOf("def parse_process_identity(data,pid):");
+    const parserStart = helper.indexOf("def parse_process_fields(data,pid):");
     const parserEnd = helper.indexOf("def process_record(pid):", parserStart);
     const parser = helper.slice(parserStart, parserEnd);
     const invoke = (pid: number, ppid: string, pgrp: string) => {
@@ -1450,12 +1450,88 @@ it.runIf(existsSync("/usr/bin/python3"))(
       signal: null,
       stderr: "",
     });
+    expect(invoke(2, "0", "0")).toMatchObject({
+      status: 17,
+      signal: null,
+      stderr: "",
+    });
     for (const ppid of ["-1", "+1", "x", "1x"])
       expect(invoke(123, ppid, "123")).toMatchObject({
         status: 17,
         signal: null,
         stderr: "",
       });
+  },
+);
+
+it.runIf(existsSync("/usr/bin/python3"))(
+  "filters fully framed foreign process groups before target admission",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const helperPrefix = "const rootHelperSource = String.raw`";
+    const helperStart =
+      supervisorSource.indexOf(helperPrefix) + helperPrefix.length;
+    const helperEnd = supervisorSource.indexOf(
+      "`;\nconst cgroupRoot =",
+      helperStart,
+    );
+    const helper = supervisorSource.slice(helperStart, helperEnd);
+    const parserStart = helper.indexOf("def parse_process_fields(data,pid):");
+    const parserEnd = helper.indexOf("def group_members(group):", parserStart);
+    const parser = helper.slice(parserStart, parserEnd);
+    const record = (pid: number, ppid: string, pgrp: string, start = "456") =>
+      Buffer.from(
+        `${pid} (fixture) ${[
+          "S",
+          ppid,
+          pgrp,
+          ...Array.from({ length: 16 }, () => "0"),
+          start,
+        ].join(" ")}\n`,
+      ).toString("base64url");
+    const invoke = (records: Record<string, string>, entries: string[]) =>
+      spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          `import base64,io,json,sys,types
+payload=json.loads(sys.argv[1])
+records={key:base64.urlsafe_b64decode(value+"="*((4-len(value)%4)%4)) for key,value in payload["records"].items()}
+os=types.SimpleNamespace(listdir=lambda path:payload["entries"])
+def open(path,mode): return io.BytesIO(records[path.split("/")[2]])
+${parser}
+try:
+ result=group_records(10)
+except Exception:
+ sys.exit(17)
+if result!={10:(b"456",10,1)}: sys.exit(18)`,
+          JSON.stringify({ entries, records }),
+        ],
+        { encoding: "utf8", env: {}, timeout: 3_000 },
+      );
+    expect(
+      invoke({ "1": record(1, "0", "0"), "10": record(10, "1", "10") }, [
+        "1",
+        "10",
+      ]),
+    ).toMatchObject({ status: 0, signal: null, stderr: "" });
+    for (const rejected of [
+      { "1": record(1, "0", "x"), "10": record(10, "1", "10") },
+      { "1": record(1, "0", "0"), "10": record(10, "1", "10", "0") },
+    ])
+      expect(invoke(rejected, ["1", "10"])).toMatchObject({
+        status: 17,
+        signal: null,
+        stderr: "",
+      });
+    expect(invoke({ "10": record(10, "1", "10") }, ["10", "10"])).toMatchObject(
+      { status: 17, signal: null, stderr: "" },
+    );
   },
 );
 
@@ -1474,7 +1550,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       helperStart,
     );
     const helper = supervisorSource.slice(helperStart, helperEnd);
-    const parserStart = helper.indexOf("def parse_process_identity(data,pid):");
+    const parserStart = helper.indexOf("def parse_process_fields(data,pid):");
     const parserEnd = helper.indexOf("def create_group():", parserStart);
     const procInventory = helper.slice(parserStart, parserEnd);
     const terminal = spawnSync(
@@ -1483,7 +1559,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         "-I",
         "-S",
         "-c",
-        `${procInventory}\nrecord=process_record(1)\nif record is None or record[2]!=0: raise SystemExit(17)\ngroup_records(-1)`,
+        `import os\n${procInventory}\nrecord=process_record(1)\nif record is None or record[2]!=0: raise SystemExit(17)\ngroup_records(2147483647)`,
       ],
       { encoding: "utf8", env: {}, timeout: 3_000 },
     );

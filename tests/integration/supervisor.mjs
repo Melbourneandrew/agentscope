@@ -153,7 +153,7 @@ def emit(status,output=b""):
 def group_present(pid):
  try: os.killpg(pid,0); return True
  except ProcessLookupError: return False
-def parse_process_identity(data,pid):
+def parse_process_fields(data,pid):
  if not isinstance(data,bytes) or len(data)<4 or len(data)>4096 or not data.endswith(b"\n"):
   raise RuntimeError("identity")
  record=data[:-1]
@@ -165,8 +165,13 @@ def parse_process_identity(data,pid):
  if end<=len(prefix): raise RuntimeError("identity")
  fields=record[end+2:].split()
  if len(fields)<20 or len(fields[0])!=1 or not fields[0].isascii(): raise RuntimeError("identity")
- if not fields[2].isascii() or not fields[2].isdigit() or int(fields[2])<1: raise RuntimeError("identity")
+ if not fields[1].isascii() or not fields[1].isdigit(): raise RuntimeError("identity")
+ if not fields[2].isascii() or not fields[2].isdigit(): raise RuntimeError("identity")
  if not fields[19].isascii() or not fields[19].isdigit() or int(fields[19])<1: raise RuntimeError("identity")
+ return fields
+def parse_process_identity(data,pid):
+ fields=parse_process_fields(data,pid)
+ if int(fields[2])<1: raise RuntimeError("identity")
  return (fields[19],int(fields[2]))
 def process_identity(pid):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
@@ -174,23 +179,32 @@ def process_identity(pid):
  return parse_process_identity(data,pid)
 def parse_process_record(data,pid):
  identity=parse_process_identity(data,pid)
- record=data[:-1]
- end=record.rfind(b") ")
- fields=record[end+2:].split()
- if not fields[1].isascii() or not fields[1].isdigit(): raise RuntimeError("identity")
+ fields=parse_process_fields(data,pid)
  return (identity[0],identity[1],int(fields[1]))
 def process_record(pid):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
  except FileNotFoundError: return None
  return parse_process_record(data,pid)
+def process_record_for_group(pid,group):
+ try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
+ except FileNotFoundError: return None
+ fields=parse_process_fields(data,pid)
+ observed_group=int(fields[2])
+ if observed_group==0 or observed_group!=group: return None
+ return (fields[19],observed_group,int(fields[1]))
 def group_records(group):
+ if not isinstance(group,int) or group<1: raise RuntimeError("inventory")
  entries=os.listdir("/proc")
  if len(entries)>65536: raise RuntimeError("inventory")
  records={}
+ seen=set()
  for entry in entries:
   if entry.isdigit():
-   observed=process_record(int(entry))
-   if observed is not None and observed[1]==group: records[int(entry)]=observed
+   pid=int(entry)
+   if pid in seen: raise RuntimeError("inventory")
+   seen.add(pid)
+   observed=process_record_for_group(pid,group)
+   if observed is not None: records[pid]=observed
  return records
 def group_members(group):
  return sorted(group_records(group))
