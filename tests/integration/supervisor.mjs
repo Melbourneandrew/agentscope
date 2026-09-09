@@ -882,19 +882,33 @@ const readProcessSnapshot = (pid) => {
   const commandEnd = processStat.lastIndexOf(") ");
   if (commandEnd < String(pid).length + 3) failSystemd();
   const fields = processStat.slice(commandEnd + 2).split(" ");
+  const processGroup = fields[2];
   const startTime = fields[19];
   const bootId = readBounded("/proc/sys/kernel/random/boot_id", 128).trimEnd();
   if (
     fields.length < 20 ||
     !/^[A-Z]$/u.test(fields[0] ?? "") ||
+    !/^[1-9][0-9]*$/u.test(processGroup ?? "") ||
     !/^[1-9][0-9]*$/u.test(startTime ?? "") ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
       bootId,
     )
   )
     failSystemd();
-  return Object.freeze({ bootId, pid, startTime });
+  return Object.freeze({
+    bootId,
+    pid,
+    processGroup: Number(processGroup),
+    startTime,
+  });
 };
+
+export const validateToolLeaderSnapshot = (expected, observed) =>
+  expected?.pid === observed?.pid &&
+  expected.pid === expected.processGroup &&
+  observed.pid === observed.processGroup &&
+  expected.bootId === observed.bootId &&
+  expected.startTime === observed.startTime;
 
 const executableMetadata = (status) =>
   Object.freeze({
@@ -1342,14 +1356,22 @@ const runTool = (
   executable,
   arguments_,
   deadline,
-  { acceptClosedFailure = false } = {},
+  { acceptClosedFailure = false, forceDeadline } = {},
 ) =>
   new Promise((resolveTool, rejectTool) => {
     const timeout = remainingMilliseconds(deadline);
-    if (timeout <= rootToolJoinReserveMilliseconds) failSystemd();
+    const boundedForceDeadline = forceDeadline ?? deadline;
+    if (
+      timeout <= 0 ||
+      boundedForceDeadline > deadline ||
+      boundedForceDeadline < performance.now()
+    )
+      failSystemd();
     let settled = false;
     let childError;
-    let deadlineExpired = false;
+    let terminal;
+    let forced = false;
+    let authorityUncertain = false;
     let size = 0;
     const chunks = [];
     const child = spawn(executable, arguments_, {
@@ -1358,16 +1380,9 @@ const runTool = (
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (!Number.isSafeInteger(child.pid) || child.pid < 1) failSystemd();
-    const timer = setTimeout(() => {
-      deadlineExpired = true;
-      try {
-        signalGroup(child.pid, "SIGKILL");
-      } catch {
-        // Only authenticated wrapper close proves root-helper termination.
-      } finally {
-        finish(new Error("integration.controller.systemd-tool"));
-      }
-    }, timeout);
+    const leader = readProcessSnapshot(child.pid);
+    if (leader.processGroup !== child.pid) failSystemd();
+    let timer;
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
@@ -1375,34 +1390,74 @@ const runTool = (
       if (error === undefined) resolveTool(value);
       else rejectTool(error);
     };
+    const checkSettlement = () => {
+      if (settled) return;
+      const now = performance.now();
+      if (!forced && now >= boundedForceDeadline) {
+        forced = true;
+        try {
+          const observed = readProcessSnapshot(child.pid);
+          if (!validateToolLeaderSnapshot(leader, observed)) failSystemd();
+          if (signalGroup(child.pid, "SIGKILL")) authorityUncertain = true;
+        } catch {
+          // A disappeared group is proved below. Every other identity or signal
+          // ambiguity remains terminal uncertainty and can never authorize a
+          // successful root-tool receipt.
+          authorityUncertain = true;
+        }
+      }
+      let absent = false;
+      try {
+        absent = groupIsAbsent(child.pid);
+      } catch {
+        authorityUncertain = true;
+      }
+      if (absent && terminal !== undefined) {
+        const { code, signal } = terminal;
+        if (
+          childError !== undefined ||
+          authorityUncertain ||
+          (!acceptClosedFailure && code !== 0) ||
+          (acceptClosedFailure && code !== 0 && code !== 1) ||
+          signal !== null ||
+          size > maximumToolOutputBytes
+        )
+          finish(new Error("integration.controller.systemd-tool"));
+        else
+          finish(
+            undefined,
+            acceptClosedFailure
+              ? Object.freeze({
+                  code,
+                  output: Buffer.concat(chunks).toString("utf8"),
+                })
+              : Buffer.concat(chunks).toString("utf8"),
+          );
+        return;
+      }
+      if (absent || now >= deadline) {
+        finish(new Error("integration.controller.systemd-tool"));
+        return;
+      }
+      const nextBoundary = forced ? deadline : boundedForceDeadline;
+      timer = setTimeout(
+        checkSettlement,
+        Math.max(1, Math.min(containmentPollMilliseconds, nextBoundary - now)),
+      );
+    };
     child.stdout.on("data", (chunk) => {
       size += chunk.length;
       if (size <= maximumToolOutputBytes) chunks.push(chunk);
     });
     child.once("error", (error) => {
       childError = error;
+      checkSettlement();
     });
     child.once("close", (code, signal) => {
-      if (
-        childError !== undefined ||
-        deadlineExpired ||
-        (!acceptClosedFailure && code !== 0) ||
-        (acceptClosedFailure && code !== 0 && code !== 1) ||
-        signal !== null ||
-        size > maximumToolOutputBytes
-      )
-        finish(new Error("integration.controller.systemd-tool"));
-      else
-        finish(
-          undefined,
-          acceptClosedFailure
-            ? Object.freeze({
-                code,
-                output: Buffer.concat(chunks).toString("utf8"),
-              })
-            : Buffer.concat(chunks).toString("utf8"),
-        );
+      terminal = Object.freeze({ code, signal });
+      checkSettlement();
     });
+    checkSettlement();
   });
 
 const rootTool = (
@@ -1413,6 +1468,7 @@ const rootTool = (
 ) => {
   const timeout = remainingMilliseconds(deadline);
   const observationDeadline = deadline + rootToolJoinReserveMilliseconds;
+  const forceDeadline = deadline + rootToolKillAfterMilliseconds;
   if (
     timeout <=
     rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds
@@ -1459,7 +1515,7 @@ const rootTool = (
       receiptKey,
     ],
     observationDeadline,
-    { acceptClosedFailure: true },
+    { acceptClosedFailure: true, forceDeadline },
   ).then((terminal) => {
     const parsed = validateRootToolReceipt({
       identity: {

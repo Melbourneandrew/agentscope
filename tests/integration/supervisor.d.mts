@@ -157,6 +157,18 @@ export function validatePythonAuthority(
   }>,
 ): boolean;
 
+type ToolLeaderSnapshot = Readonly<{
+  bootId: string;
+  pid: number;
+  processGroup: number;
+  startTime: string;
+}>;
+
+export function validateToolLeaderSnapshot(
+  expected: ToolLeaderSnapshot,
+  observed: ToolLeaderSnapshot,
+): boolean;
+
 export function transferDescriptorAuthority<T>(
   input: Readonly<{
     close(descriptor: number): void;

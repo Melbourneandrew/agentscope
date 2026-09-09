@@ -32,6 +32,7 @@ import {
   validatePythonAuthority,
   validateRootPid1Probe,
   validateRootToolReceipt,
+  validateToolLeaderSnapshot,
 } from "../supervisor.mjs";
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
 
@@ -1124,9 +1125,6 @@ it("binds root helpers to one absolute boottime authority", () => {
   expect(
     tool.indexOf("const timeout = remainingMilliseconds(deadline);"),
   ).toBeLessThan(tool.indexOf("const child = spawn("));
-  expect(tool).toContain(
-    'finish(new Error("integration.controller.systemd-tool"));',
-  );
   expect(tool).toContain('child.once("close", (code, signal) => {');
   expect(supervisorSource).toContain(
     "authenticateExecutable(timeoutPath, 0o111);",
@@ -1152,7 +1150,7 @@ it("binds root helpers to one absolute boottime authority", () => {
   );
   expect(rootTool).toContain("absoluteBoottimeDeadline(deadline)");
   expect(rootTool).toContain(
-    "observationDeadline,\n    { acceptClosedFailure: true },",
+    "observationDeadline,\n    { acceptClosedFailure: true, forceDeadline },",
   );
   expect(rootTool).not.toContain(
     "absoluteBoottimeDeadline(observationDeadline)",
@@ -1219,6 +1217,66 @@ it("binds root helpers to one absolute boottime authority", () => {
   expect(lifecycle).not.toContain(
     "const authoritative = await showUnit(authority.unit, deadline);",
   );
+});
+
+it("bounds root-wrapper force and group settlement inside the join reserve", () => {
+  const supervisorSource = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const tool = supervisorSource.slice(
+    supervisorSource.indexOf("const runTool ="),
+    supervisorSource.indexOf("const rootTool ="),
+  );
+  const rootTool = supervisorSource.slice(
+    supervisorSource.indexOf("const rootTool ="),
+    supervisorSource.indexOf("const exactUnitFacts ="),
+  );
+  expect(supervisorSource).toContain(
+    "const rootToolKillAfterMilliseconds = 250;",
+  );
+  expect(supervisorSource).toContain(
+    "const rootToolJoinReserveMilliseconds = 500;",
+  );
+  expect(rootTool).toContain(
+    "const forceDeadline = deadline + rootToolKillAfterMilliseconds;",
+  );
+  expect(tool).toContain(
+    "const boundedForceDeadline = forceDeadline ?? deadline;",
+  );
+  expect(tool).toContain(
+    "if (!validateToolLeaderSnapshot(leader, observed)) failSystemd();",
+  );
+  expect(tool).toContain(
+    'if (signalGroup(child.pid, "SIGKILL")) authorityUncertain = true;',
+  );
+  expect(tool).toContain("absent = groupIsAbsent(child.pid);");
+  expect(tool).toContain("if (absent && terminal !== undefined) {");
+  expect(tool.indexOf('if (signalGroup(child.pid, "SIGKILL"))')).toBeLessThan(
+    tool.indexOf("if (absent || now >= deadline)"),
+  );
+});
+
+it("rejects root-wrapper leader reuse and group substitution", () => {
+  const leader = {
+    bootId: "00000000-0000-0000-0000-000000000001",
+    pid: 71,
+    processGroup: 71,
+    startTime: "900",
+  };
+  expect(validateToolLeaderSnapshot(leader, { ...leader })).toBe(true);
+  expect(
+    validateToolLeaderSnapshot(leader, { ...leader, startTime: "901" }),
+  ).toBe(false);
+  expect(
+    validateToolLeaderSnapshot(leader, { ...leader, processGroup: 72 }),
+  ).toBe(false);
+  expect(
+    validateToolLeaderSnapshot(leader, {
+      ...leader,
+      bootId: "00000000-0000-0000-0000-000000000002",
+    }),
+  ).toBe(false);
 });
 
 it("revokes helper control before joining only its authenticated process set", () => {
