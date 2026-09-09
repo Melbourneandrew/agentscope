@@ -56,6 +56,15 @@ const rootHelperSentinelReasons = new Set([
   "residual",
   "internal-unknown",
 ]);
+const rootHelperJoinReasons = new Set([
+  "leader-identity",
+  "preclose-residual",
+  "control-close",
+  "reap-timeout",
+  "identity-drift",
+  "postreap-residual",
+  "internal-unknown",
+]);
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
@@ -99,13 +108,14 @@ TEST_DELAY_ARGS=["-I","-S","-c",TEST_DELAY_CODE]
 OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-setpgid-eacces":"/usr/bin/python3","synthetic-setpgid-non-eacces":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
 SENTINEL_REASONS={"child-exit","start-identity","inherited-group","transition-timeout","kill","reap-join","residual","internal-unknown"}
+JOIN_REASONS={"leader-identity","preclose-residual","control-close","reap-timeout","identity-drift","postreap-residual","internal-unknown"}
 STAGE="startup"
 REASON=""
 class CleanupUncertain(Exception): pass
 def now(): return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
 def emit(status,output=b""):
  encoded=base64.urlsafe_b64encode(output).decode("ascii").rstrip("=")
- reason=REASON if STAGE=="sentinel" and REASON in SENTINEL_REASONS else ""
+ reason=REASON if (STAGE=="sentinel" and REASON in SENTINEL_REASONS) or (STAGE=="join" and REASON in JOIN_REASONS) else ""
  identity={"cutoff":str(CUTOFF),"deadline":str(DEADLINE),"operation":OPERATION,"output":encoded,"reason":reason,"stage":STAGE,"status":status,"unit":unit}
  mac=hmac.new(bytes.fromhex(KEY),json.dumps(identity,sort_keys=True,separators=(",",":")).encode("ascii"),hashlib.sha256).hexdigest()
  data=json.dumps({"mac":mac,"output":encoded,"reason":reason,"stage":STAGE,"status":status},sort_keys=True,separators=(",",":"))
@@ -225,19 +235,29 @@ def create_group():
  REASON=""
  return leader,expected,control_write
 def close_group(leader,expected,control):
- global STAGE
+ global STAGE,REASON
  STAGE="join"
+ REASON="internal-unknown"
+ REASON="leader-identity"
  if process_identity(leader)!=expected: raise RuntimeError("identity")
+ REASON="preclose-residual"
  if group_members(leader)!=[leader]: raise RuntimeError("residual")
- os.close(control)
+ REASON="control-close"
+ try: os.close(control)
+ except OSError: raise RuntimeError("control-close")
  reaped=False
+ REASON="reap-timeout"
  while now()<DEADLINE:
   waited=os.waitpid(leader,os.WNOHANG)
   if waited[0]==leader: reaped=True; break
+  REASON="identity-drift"
   if process_identity(leader)!=expected: raise RuntimeError("identity")
+  REASON="reap-timeout"
   time.sleep(0.005)
  if not reaped: raise RuntimeError("join")
+ REASON="postreap-residual"
  if group_present(leader): raise RuntimeError("residual")
+ REASON=""
 def terminate(child,leader,expected,control):
  global STAGE
  STAGE="retirement"
@@ -268,7 +288,7 @@ def terminate(child,leader,expected,control):
   leader_reaped=waited[0]==leader
  if not leader_reaped or group_present(leader) or child.returncode is None: raise RuntimeError("join")
 def run(argv,cutoff,operation_stage):
- global STAGE
+ global STAGE,REASON
  STAGE="cutoff"
  if now()>=cutoff: raise RuntimeError("cutoff")
  leader,expected,control=create_group()
@@ -315,6 +335,7 @@ def run(argv,cutoff,operation_stage):
    raise CleanupUncertain() from None
   finally:
    STAGE=failed_stage
+   REASON=failed_reason
   raise original
  finally:
   if child is not None and child.stdout is not None: child.stdout.close()
@@ -482,7 +503,8 @@ const failSystemd = () => {
 };
 
 const failSystemdTool = (stage, reason) => {
-  const predicate = stage === "sentinel" ? `${stage}:${reason}` : stage;
+  const predicate =
+    stage === "sentinel" || stage === "join" ? `${stage}:${reason}` : stage;
   const error = new Error(`integration.controller.systemd-tool:${predicate}`);
   systemdToolFailures.set(error, predicate);
   throw error;
@@ -518,7 +540,9 @@ const validRootHelperReason = (stage, reason) =>
   typeof reason === "string" &&
   (stage === "sentinel"
     ? rootHelperSentinelReasons.has(reason)
-    : reason === "");
+    : stage === "join"
+      ? rootHelperJoinReasons.has(reason)
+      : reason === "");
 
 const validRootToolReceiptShape = (parsed, receipt) =>
   parsed !== null &&
@@ -528,7 +552,7 @@ const validRootToolReceiptShape = (parsed, receipt) =>
   rootHelperStages.has(parsed.stage) &&
   validRootHelperReason(parsed.stage, parsed.reason) &&
   !(
-    parsed.stage === "sentinel" &&
+    (parsed.stage === "sentinel" || parsed.stage === "join") &&
     (parsed.status === "ok" || parsed.output !== "")
   ) &&
   ["error", "ok", "uncertain"].includes(parsed.status) &&

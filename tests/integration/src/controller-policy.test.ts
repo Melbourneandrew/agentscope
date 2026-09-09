@@ -1723,11 +1723,17 @@ it("authenticates a closed root-helper stage receipt against its operation ident
     operation: "unit-admission",
     unit: "agentscope-test.service",
   };
+  const reasonForStage = (stage: string) =>
+    stage === "sentinel"
+      ? "transition-timeout"
+      : stage === "join"
+        ? "leader-identity"
+        : "";
   const receiptFor = (
     stage: string,
     status = "error",
     output = "",
-    reason = stage === "sentinel" ? "transition-timeout" : "",
+    reason = reasonForStage(stage),
   ) => {
     const mac = createHmac("sha256", Buffer.from(key, "hex"))
       .update(
@@ -1754,7 +1760,7 @@ it("authenticates a closed root-helper stage receipt against its operation ident
       }),
     ).toEqual({
       output: "",
-      reason: stage === "sentinel" ? "transition-timeout" : "",
+      reason: reasonForStage(stage),
       stage,
       status: "error",
     });
@@ -1881,6 +1887,81 @@ it("authenticates only the closed sentinel reason inventory", () => {
       ),
     }),
   ).toBeUndefined();
+});
+
+it("authenticates only the closed join reason inventory", () => {
+  const key = "6".repeat(64);
+  const identity = {
+    cutoff: "100",
+    deadline: "200",
+    operation: "unit-admission",
+    unit: "agentscope-test.service",
+  };
+  const receiptFor = (reason: string) => {
+    const fields = {
+      cutoff: identity.cutoff,
+      deadline: identity.deadline,
+      operation: identity.operation,
+      output: "",
+      reason,
+      stage: "join",
+      status: "error",
+      unit: identity.unit,
+    };
+    const mac = createHmac("sha256", Buffer.from(key, "hex"))
+      .update(JSON.stringify(fields))
+      .digest("hex");
+    return JSON.stringify({
+      mac,
+      output: "",
+      reason,
+      stage: "join",
+      status: "error",
+    });
+  };
+  for (const reason of [
+    "leader-identity",
+    "preclose-residual",
+    "control-close",
+    "reap-timeout",
+    "identity-drift",
+    "postreap-residual",
+    "internal-unknown",
+  ])
+    expect(
+      validateRootToolReceipt({ identity, key, receipt: receiptFor(reason) }),
+    ).toEqual({ output: "", reason, stage: "join", status: "error" });
+  for (const receipt of [
+    receiptFor("unknown"),
+    receiptFor("leader-identity").slice(0, -1),
+    receiptFor("leader-identity").replace(
+      '"reason":"leader-identity"',
+      '"reason":"leader-identity","reason":"leader-identity"',
+    ),
+  ])
+    expect(validateRootToolReceipt({ identity, key, receipt })).toBeUndefined();
+  expect(
+    validateRootToolReceipt({
+      identity: { ...identity, operation: "unit-monitor" },
+      key,
+      receipt: receiptFor("leader-identity"),
+    }),
+  ).toBeUndefined();
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  for (const boundary of [
+    'REASON="leader-identity"\n if process_identity(leader)!=expected',
+    'REASON="preclose-residual"\n if group_members(leader)!=[leader]',
+    'REASON="control-close"\n try: os.close(control)',
+    'REASON="reap-timeout"\n while now()<DEADLINE',
+    'REASON="identity-drift"\n  if process_identity(leader)!=expected',
+    'REASON="postreap-residual"\n if group_present(leader)',
+  ])
+    expect(supervisor).toContain(boundary);
+  expect(supervisor).toContain("STAGE=failed_stage\n   REASON=failed_reason");
 });
 
 it("emits only an authenticated closed systemd-tool stage annotation", () => {
