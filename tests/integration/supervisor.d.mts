@@ -5,6 +5,10 @@ export type SupervisedProcessResult = Readonly<{
   signal: NodeJS.Signals | null;
 }>;
 
+export function parseSystemdTerminalExit(
+  facts: Readonly<Record<string, string>>,
+): number | undefined;
+
 export function runSupervisedProcess(input: {
   arguments_?: readonly string[];
   containment?: "github-systemd";

@@ -16,7 +16,10 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { runSupervisedProcess } from "../supervisor.mjs";
+import {
+  parseSystemdTerminalExit,
+  runSupervisedProcess,
+} from "../supervisor.mjs";
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
@@ -731,6 +734,41 @@ it("pins the credentialed lifecycle to a nondelegated whole-unit authority", () 
   ])
     expect(source).toContain(authority);
   expect(source).not.toContain('"--scope"');
+});
+
+it("accepts only exact numeric systemd exit terminal facts", () => {
+  const successful = {
+    ActiveState: "active",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
+    Result: "success",
+    SubState: "exited",
+  };
+  const failed = {
+    ActiveState: "failed",
+    ExecMainCode: "1",
+    ExecMainStatus: "17",
+    Result: "exit-code",
+    SubState: "failed",
+  };
+  expect(parseSystemdTerminalExit(successful)).toBe(0);
+  expect(parseSystemdTerminalExit(failed)).toBe(17);
+  for (const substituted of [
+    { ...successful, ExecMainCode: "exited" },
+    { ...successful, ExecMainCode: "2" },
+    { ...successful, ExecMainCode: "3" },
+    { ...successful, ExecMainStatus: "00" },
+    { ...successful, ExecMainStatus: "256" },
+    { ...successful, ExecMainStatus: "" },
+    { ...successful, Result: "exit-code" },
+    { ...successful, ActiveState: "inactive" },
+    { ...successful, SubState: "dead" },
+    { ...failed, ExecMainStatus: "0" },
+    { ...failed, Result: "success" },
+    { ...failed, ActiveState: "active" },
+    { ...failed, SubState: "exited" },
+  ])
+    expect(parseSystemdTerminalExit(substituted)).toBeUndefined();
 });
 
 describe("integration controller supervision", () => {

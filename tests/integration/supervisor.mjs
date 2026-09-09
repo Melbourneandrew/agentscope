@@ -23,6 +23,29 @@ const systemdRunPath = "/usr/bin/systemd-run";
 const cgroupRoot = "/sys/fs/cgroup";
 const systemdPath = "/usr/lib/systemd/systemd";
 
+export const parseSystemdTerminalExit = (facts) => {
+  if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(facts.ExecMainStatus ?? ""))
+    return undefined;
+  const code = Number(facts.ExecMainStatus);
+  if (facts.ExecMainCode !== "1" || !Number.isSafeInteger(code) || code > 255)
+    return undefined;
+  if (
+    code === 0 &&
+    facts.ActiveState === "active" &&
+    facts.SubState === "exited" &&
+    facts.Result === "success"
+  )
+    return code;
+  if (
+    code > 0 &&
+    facts.ActiveState === "failed" &&
+    facts.SubState === "failed" &&
+    facts.Result === "exit-code"
+  )
+    return code;
+  return undefined;
+};
+
 const delay = (milliseconds) =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 
@@ -469,14 +492,8 @@ const runSystemdSupervised = async ({
         residualWorkObserved,
         signal: null,
       };
-    const code = Number(terminal.ExecMainStatus);
-    if (
-      terminal.ExecMainCode !== "exited" ||
-      !Number.isSafeInteger(code) ||
-      code < 0 ||
-      code > 255 ||
-      !new Set(["success", "exit-code"]).has(terminal.Result)
-    )
+    const code = parseSystemdTerminalExit(terminal);
+    if (code === undefined)
       return {
         code: null,
         contained: false,
