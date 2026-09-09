@@ -569,7 +569,7 @@ const forbiddenLifecycleEnvironment = new Set([
 ]);
 const systemdPreparations = new WeakMap();
 
-export const parseSystemdMainExitStatus = (facts) => {
+const parseNumericSystemdExitStatus = (facts) => {
   if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(facts.ExecMainStatus ?? ""))
     return undefined;
   const code = Number(facts.ExecMainStatus);
@@ -579,7 +579,7 @@ export const parseSystemdMainExitStatus = (facts) => {
 };
 
 export const parseSystemdTerminalExit = (facts) => {
-  const code = parseSystemdMainExitStatus(facts);
+  const code = parseNumericSystemdExitStatus(facts);
   if (code === undefined) return undefined;
   if (
     code === 0 &&
@@ -593,6 +593,21 @@ export const parseSystemdTerminalExit = (facts) => {
     facts.ActiveState === "failed" &&
     facts.SubState === "failed" &&
     facts.Result === "exit-code"
+  )
+    return code;
+  return undefined;
+};
+
+export const parseSystemdMainExitStatus = (facts) => {
+  const terminal = parseSystemdTerminalExit(facts);
+  if (terminal !== undefined) return terminal;
+  const code = parseNumericSystemdExitStatus(facts);
+  if (
+    code === 0 &&
+    facts.Result === "success" &&
+    ((facts.ActiveState === "active" && facts.SubState === "running") ||
+      (facts.ActiveState === "deactivating" &&
+        facts.SubState === "stop-sigterm"))
   )
     return code;
   return undefined;
