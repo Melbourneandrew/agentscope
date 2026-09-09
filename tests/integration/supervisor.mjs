@@ -79,6 +79,23 @@ const rootHelperClientTerminalReasons = new Set([
   "nonzero-terminal",
   "internal-unknown",
 ]);
+const systemdLifecyclePhases = new Set([
+  "mapped-executable-pre-submit",
+  "unit-admission",
+  "terminal-wait",
+  "unit-authoritative",
+  "cgroup-observation",
+  "termination",
+  "retirement",
+  "collection",
+]);
+const systemdLifecycleReasons = new Set([
+  "deadline",
+  "interrupted",
+  "authority",
+  "malformed",
+  "internal",
+]);
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
@@ -671,13 +688,47 @@ const failSystemdTool = (stage, reason) => {
       ? `${stage}:${reason}`
       : stage;
   const error = new Error(`integration.controller.systemd-tool:${predicate}`);
-  systemdToolFailures.set(error, predicate);
+  systemdToolFailures.set(error, Object.freeze({ predicate }));
   throw error;
+};
+
+const failSystemdLifecycle = (state, phase, reason) => {
+  if (
+    !systemdLifecyclePhases.has(phase) ||
+    !systemdLifecycleReasons.has(reason) ||
+    typeof state.authority?.unit !== "string" ||
+    !Number.isFinite(state.deadline) ||
+    !Number.isFinite(state.executionDeadline)
+  )
+    failSystemd();
+  const predicate = `lifecycle:${phase}:${reason}`;
+  const error = new Error(`integration.controller.systemd-tool:${predicate}`);
+  systemdToolFailures.set(
+    error,
+    Object.freeze({
+      deadline: state.deadline,
+      executionDeadline: state.executionDeadline,
+      operation: phase,
+      predicate,
+      unit: state.authority.unit,
+    }),
+  );
+  throw error;
+};
+
+export const validSystemdLifecyclePredicate = (predicate) => {
+  if (typeof predicate !== "string") return false;
+  const match = /^lifecycle:([^:]+):([^:]+)$/u.exec(predicate);
+  return (
+    match !== null &&
+    systemdLifecyclePhases.has(match[1]) &&
+    systemdLifecycleReasons.has(match[2])
+  );
 };
 
 export const systemdToolFailureStage = (error) =>
   error !== null && typeof error === "object"
-    ? systemdToolFailures.get(error)
+    ? systemdToolFailures.get(error)?.predicate
     : undefined;
 
 const rootToolMacInput = ({
@@ -1997,12 +2048,134 @@ const closePreparedSystemdState = async (state) => {
   return contained;
 };
 
-const uncertainSystemdResult = (residualWorkObserved = true) => ({
-  code: null,
-  contained: false,
-  residualWorkObserved,
-  signal: null,
-});
+const systemdLifecycleReason = (state, fallback = "authority") => {
+  if (state.interrupted.value) return "interrupted";
+  const boundary = ["termination", "retirement", "collection"].includes(
+    state.lifecyclePhase,
+  )
+    ? state.deadline
+    : state.executionDeadline;
+  return performance.now() >= boundary ? "deadline" : fallback;
+};
+
+const rethrowSystemdLifecycle = (state, error, fallback) => {
+  if (systemdToolFailureStage(error) !== undefined) throw error;
+  failSystemdLifecycle(
+    state,
+    state.lifecyclePhase,
+    systemdLifecycleReason(state, fallback),
+  );
+};
+
+const mappedExecutableForSystemd = (state) => {
+  state.lifecyclePhase = "mapped-executable-pre-submit";
+  try {
+    return recheckLiveMappedExecutable(state.mappedExecutable);
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+};
+
+const admitSystemdUnit = async (state) => {
+  state.lifecyclePhase = "unit-admission";
+  try {
+    recheckLiveMappedExecutable(state.mappedExecutable);
+    const admitted = await showUnit(
+      state.authority.unit,
+      state.executionDeadline,
+      "unit-admission",
+    );
+    assertUnitAuthority(admitted, state.authority);
+    authenticateCgroup(state.cgroupPath);
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+};
+
+const observeSystemdTerminal = async (state) => {
+  state.lifecyclePhase = "terminal-wait";
+  let terminal;
+  try {
+    terminal = await waitForTerminal(
+      state.authority,
+      state.executionDeadline,
+      state.interrupted,
+    );
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+  if (terminal === undefined)
+    failSystemdLifecycle(
+      state,
+      "terminal-wait",
+      systemdLifecycleReason(state, "deadline"),
+    );
+  return terminal;
+};
+
+const authenticateTerminalSystemdUnit = async (state) => {
+  state.lifecyclePhase = "unit-authoritative";
+  try {
+    const authoritative = await showUnit(
+      state.authority.unit,
+      state.executionDeadline,
+      "unit-authoritative",
+    );
+    assertUnitAuthority(authoritative, state.authority);
+    authenticateCgroup(state.cgroupPath);
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+};
+
+const observeSystemdCgroup = (state) => {
+  state.lifecyclePhase = "cgroup-observation";
+  try {
+    return !cgroupIsEmpty(state.cgroupPath);
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "malformed");
+  }
+};
+
+const terminateSystemdCgroup = async (state) => {
+  state.lifecyclePhase = "termination";
+  try {
+    await systemdSignal(state.authority.unit, "SIGTERM", state.deadline);
+    const grace = Math.min(
+      state.deadline,
+      performance.now() + systemdTerminationGraceMilliseconds,
+    );
+    while (performance.now() < grace && !cgroupIsEmpty(state.cgroupPath))
+      await delay(Math.min(50, remainingMilliseconds(state.deadline)));
+    if (!cgroupIsEmpty(state.cgroupPath))
+      await systemdSignal(state.authority.unit, "SIGKILL", state.deadline);
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+};
+
+const retireAndCollectSystemdUnit = async (state) => {
+  state.lifecyclePhase = "retirement";
+  try {
+    while (!cgroupIsEmpty(state.cgroupPath))
+      await delay(Math.min(50, remainingMilliseconds(state.deadline)));
+    await retireUnit(state.authority, state.deadline);
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+  state.lifecyclePhase = "collection";
+  let contained;
+  try {
+    contained = await proveCollected(
+      state.authority,
+      state.cgroupPath,
+      state.deadline,
+    );
+  } catch (error) {
+    rethrowSystemdLifecycle(state, error, "authority");
+  }
+  if (!contained) failSystemdLifecycle(state, "collection", "deadline");
+};
 
 const runSystemdSupervised = async ({
   arguments_: suppliedArguments = [],
@@ -2025,7 +2198,7 @@ const runSystemdSupervised = async ({
     failSystemd();
   }
   state.consumed = true;
-  const { authority, cgroupPath, interrupted, mappedExecutable } = state;
+  const { authority } = state;
   if (state.preparationDeadline <= performance.now()) {
     await closePreparedGithubSystemdSupervision(prepared);
     failSystemd();
@@ -2043,14 +2216,14 @@ const runSystemdSupervised = async ({
   }
   state.deadline = deadline;
   state.executionDeadline = executionDeadline;
-  if (existsSync(cgroupPath)) {
+  if (existsSync(state.cgroupPath)) {
     await closePreparedGithubSystemdSupervision(prepared);
     failSystemd();
   }
   let terminal;
   let residualWorkObserved;
   try {
-    const mappedExecutablePath = recheckLiveMappedExecutable(mappedExecutable);
+    const mappedExecutablePath = mappedExecutableForSystemd(state);
     state.unitMayExist = true;
     await rootTool(
       systemdRunPath,
@@ -2067,46 +2240,19 @@ const runSystemdSupervised = async ({
         unit: authority.unit,
       },
     );
-    recheckLiveMappedExecutable(mappedExecutable);
-    const admitted = await showUnit(
-      authority.unit,
-      executionDeadline,
-      "unit-admission",
-    );
-    assertUnitAuthority(admitted, authority);
-    authenticateCgroup(cgroupPath);
-    terminal = await waitForTerminal(authority, executionDeadline, interrupted);
-    const authoritative = await showUnit(
-      authority.unit,
-      executionDeadline,
-      "unit-authoritative",
-    );
-    assertUnitAuthority(authoritative, authority);
-    authenticateCgroup(cgroupPath);
-    residualWorkObserved = !cgroupIsEmpty(cgroupPath);
-    if (residualWorkObserved) {
-      await systemdSignal(authority.unit, "SIGTERM", deadline);
-      const grace = Math.min(
-        deadline,
-        performance.now() + systemdTerminationGraceMilliseconds,
-      );
-      while (performance.now() < grace && !cgroupIsEmpty(cgroupPath))
-        await delay(Math.min(50, remainingMilliseconds(deadline)));
-      if (!cgroupIsEmpty(cgroupPath))
-        await systemdSignal(authority.unit, "SIGKILL", deadline);
-    }
-    while (!cgroupIsEmpty(cgroupPath))
-      await delay(Math.min(50, remainingMilliseconds(deadline)));
-    await retireUnit(authority, deadline);
-    const contained = await proveCollected(authority, cgroupPath, deadline);
-    if (!contained || terminal === undefined)
-      return uncertainSystemdResult(residualWorkObserved);
+    await admitSystemdUnit(state);
+    terminal = await observeSystemdTerminal(state);
+    await authenticateTerminalSystemdUnit(state);
+    residualWorkObserved = observeSystemdCgroup(state);
+    if (residualWorkObserved) await terminateSystemdCgroup(state);
+    await retireAndCollectSystemdUnit(state);
     const code = parseSystemdTerminalExit(terminal);
-    if (code === undefined) return uncertainSystemdResult(residualWorkObserved);
+    if (code === undefined)
+      failSystemdLifecycle(state, "unit-authoritative", "malformed");
     return { code, contained: true, residualWorkObserved, signal: null };
   } catch (error) {
     if (systemdToolFailureStage(error) !== undefined) throw error;
-    return uncertainSystemdResult();
+    rethrowSystemdLifecycle(state, error, "internal");
   } finally {
     await closePreparedGithubSystemdSupervision(prepared);
   }

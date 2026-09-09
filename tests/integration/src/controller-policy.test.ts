@@ -33,6 +33,7 @@ import {
   snapshotSystemdEnvironment,
   systemdToolFailureStage,
   transferDescriptorAuthority,
+  validSystemdLifecyclePredicate,
   validateLiveMappedExecutable,
   validatePythonAuthority,
   validateRootPid1Probe,
@@ -1046,13 +1047,16 @@ it("separates bounded preparation from the consumed execution deadline", () => {
   const preparationStart = supervisorSource.indexOf(
     "export const prepareGithubSystemdSupervision = async",
   );
-  const start = supervisorSource.indexOf("const runSystemdSupervised = async");
+  const preparationEnd = supervisorSource.indexOf(
+    "const closePreparedSystemdState = async",
+  );
+  const start = supervisorSource.indexOf("const systemdLifecycleReason =");
   const end = supervisorSource.indexOf(
     "export const runSupervisedProcess",
     start,
   );
   const lifecycle = supervisorSource.slice(start, end);
-  const preparation = supervisorSource.slice(preparationStart, start);
+  const preparation = supervisorSource.slice(preparationStart, preparationEnd);
   expect(supervisorSource).toContain(
     "const containmentProofMilliseconds = 5_000;",
   );
@@ -1089,7 +1093,7 @@ it("separates bounded preparation from the consumed execution deadline", () => {
     lifecycle.indexOf("state.preparationDeadline <= performance.now()"),
   ).toBeLessThan(lifecycle.indexOf("systemdConsumptionDeadlines("));
   expect(lifecycle).toContain(
-    "const grace = Math.min(\n        deadline,\n        performance.now() + systemdTerminationGraceMilliseconds,",
+    "const grace = Math.min(\n      state.deadline,\n      performance.now() + systemdTerminationGraceMilliseconds,",
   );
   expect(lifecycle).toContain(
     "closePreparedGithubSystemdSupervision(prepared)",
@@ -1174,14 +1178,17 @@ it("binds root helpers to one absolute boottime authority", () => {
   const preparationStart = supervisorSource.indexOf(
     "export const prepareGithubSystemdSupervision = async",
   );
+  const preparationEnd = supervisorSource.indexOf(
+    "const closePreparedSystemdState = async",
+  );
   const lifecycleStart = supervisorSource.indexOf(
-    "const runSystemdSupervised = async",
+    "const systemdLifecycleReason =",
   );
   const lifecycleEnd = supervisorSource.indexOf(
     "export const runSupervisedProcess",
     lifecycleStart,
   );
-  const preparation = supervisorSource.slice(preparationStart, lifecycleStart);
+  const preparation = supervisorSource.slice(preparationStart, preparationEnd);
   const lifecycle = supervisorSource.slice(lifecycleStart, lifecycleEnd);
   const tool = supervisorSource.slice(
     supervisorSource.indexOf("const runTool ="),
@@ -2509,6 +2516,72 @@ it("authenticates a closed root-helper stage receipt against its operation ident
   ).toBeUndefined();
 });
 
+it("admits only the closed systemd lifecycle diagnostic inventory", () => {
+  const phases = [
+    "mapped-executable-pre-submit",
+    "unit-admission",
+    "terminal-wait",
+    "unit-authoritative",
+    "cgroup-observation",
+    "termination",
+    "retirement",
+    "collection",
+  ] as const;
+  const reasons = [
+    "deadline",
+    "interrupted",
+    "authority",
+    "malformed",
+    "internal",
+  ] as const;
+  for (const phase of phases)
+    for (const reason of reasons)
+      expect(
+        validSystemdLifecyclePredicate(`lifecycle:${phase}:${reason}`),
+      ).toBe(true);
+  for (const rejected of [
+    undefined,
+    "",
+    "lifecycle:unknown:deadline",
+    "lifecycle:terminal-wait:unknown",
+    "lifecycle:terminal-wait:deadline:extra",
+    "lifecycle::deadline",
+    "lifecycle:terminal-wait:",
+    "lifecycle:terminal-wait:deadline\nlifecycle:collection:deadline",
+  ])
+    expect(validSystemdLifecyclePredicate(rejected)).toBe(false);
+  expect(
+    systemdToolFailureStage(
+      new Error(
+        "integration.controller.systemd-tool:lifecycle:terminal-wait:deadline",
+      ),
+    ),
+  ).toBeUndefined();
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  for (const phase of phases)
+    expect(supervisor).toContain(`state.lifecyclePhase = "${phase}"`);
+  expect(supervisor).toContain(
+    "if (systemdToolFailureStage(error) !== undefined) throw error;",
+  );
+  expect(supervisor).toContain("executionDeadline: state.executionDeadline,");
+  expect(supervisor).toContain("deadline: state.deadline,");
+
+  const action = readFileSync(
+    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+    "utf8",
+  );
+  expect(action).toContain("const stage = systemdToolFailureStage(error);");
+  expect(action).toContain(
+    "`::error::integration.controller.systemd-tool:${stage}\\n`",
+  );
+  expect(action).not.toContain("error.message");
+  expect(action).not.toContain("error.stack");
+});
+
 it("authenticates only the closed sentinel reason inventory", () => {
   const key = "3".repeat(64);
   const identity = {
@@ -2877,7 +2950,9 @@ it("emits only an authenticated closed systemd-tool stage annotation", () => {
     "unit-reset",
   ])
     expect(supervisor).toContain(`"${operation}"`);
-  expect(supervisor).toContain("systemdToolFailures.set(error, predicate)");
+  expect(supervisor).toContain(
+    "systemdToolFailures.set(error, Object.freeze({ predicate }))",
+  );
   expect(supervisor).toContain(
     "new Error(`integration.controller.systemd-tool:${predicate}`)",
   );

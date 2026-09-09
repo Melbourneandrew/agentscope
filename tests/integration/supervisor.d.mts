@@ -71,11 +71,36 @@ export type SystemdToolClientTerminalReason =
   | "nonzero-terminal"
   | "internal-unknown";
 
+export type SystemdLifecyclePhase =
+  | "mapped-executable-pre-submit"
+  | "unit-admission"
+  | "terminal-wait"
+  | "unit-authoritative"
+  | "cgroup-observation"
+  | "termination"
+  | "retirement"
+  | "collection";
+
+export type SystemdLifecycleReason =
+  | "deadline"
+  | "interrupted"
+  | "authority"
+  | "malformed"
+  | "internal";
+
+export type SystemdLifecycleFailurePredicate =
+  `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`;
+
 export type SystemdToolFailurePredicate =
   | Exclude<SystemdToolFailureStage, "sentinel" | "join" | "client-terminal">
   | `sentinel:${SystemdToolSentinelReason}`
   | `join:${SystemdToolJoinReason}`
-  | `client-terminal:${SystemdToolClientTerminalReason}`;
+  | `client-terminal:${SystemdToolClientTerminalReason}`
+  | SystemdLifecycleFailurePredicate;
+
+export function validSystemdLifecyclePredicate(
+  predicate: unknown,
+): predicate is SystemdLifecycleFailurePredicate;
 
 export function systemdToolFailureStage(
   error: unknown,
