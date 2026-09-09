@@ -36,7 +36,7 @@ const forbiddenLifecycleEnvironment = new Set([
   "DBUS_SESSION_BUS_ADDRESS",
   "XDG_RUNTIME_DIR",
 ]);
-const systemdPreparationBrand = Symbol("agentscope.systemd-preparation");
+const systemdPreparations = new WeakMap();
 
 export const parseSystemdTerminalExit = (facts) => {
   if (!/^(?:0|[1-9][0-9]{0,2})$/u.test(facts.ExecMainStatus ?? ""))
@@ -398,18 +398,66 @@ const recheckLiveMappedExecutable = (expected) => {
 };
 
 const preparedSystemdState = (preparation) => {
-  const state = preparation?.[systemdPreparationBrand];
-  if (state?.preparation !== preparation || state.closed || state.consumed)
-    failSystemd();
+  const state =
+    preparation !== null && typeof preparation === "object"
+      ? systemdPreparations.get(preparation)
+      : undefined;
+  if (state === undefined || state.closed || state.consumed) failSystemd();
   return state;
 };
 
 export const closePreparedGithubSystemdSupervision = (preparation) => {
-  const state = preparation?.[systemdPreparationBrand];
-  if (state?.preparation !== preparation) failSystemd();
-  if (state.closed) return;
+  const state =
+    preparation !== null && typeof preparation === "object"
+      ? systemdPreparations.get(preparation)
+      : undefined;
+  if (state === undefined) failSystemd();
+  if (state.closed) return false;
   state.closed = true;
   closeSync(state.mappedExecutable.descriptor);
+  return true;
+};
+
+export const snapshotSystemdEnvironment = (environment) => {
+  if (
+    environment === null ||
+    typeof environment !== "object" ||
+    Array.isArray(environment) ||
+    Object.getOwnPropertySymbols(environment).length !== 0
+  )
+    failSystemd();
+  const descriptors = Object.getOwnPropertyDescriptors(environment);
+  const names = Object.keys(descriptors).sort();
+  if (names.length > 128) failSystemd();
+  const entries = names.map((name) => {
+    const descriptor = descriptors[name];
+    if (
+      descriptor === undefined ||
+      !("value" in descriptor) ||
+      (typeof descriptor.value !== "string" && descriptor.value !== undefined)
+    )
+      failSystemd();
+    return [name, descriptor.value];
+  });
+  return Object.freeze(Object.fromEntries(entries));
+};
+
+export const sameSystemdEnvironment = (expected, observed) => {
+  let snapshot;
+  try {
+    snapshot = snapshotSystemdEnvironment(observed);
+  } catch {
+    return false;
+  }
+  const expectedNames = Object.keys(expected);
+  const observedNames = Object.keys(snapshot);
+  return (
+    expectedNames.length === observedNames.length &&
+    expectedNames.every(
+      (name, index) =>
+        name === observedNames[index] && expected[name] === snapshot[name],
+    )
+  );
 };
 
 export const validateRootPid1Probe = ({
@@ -781,10 +829,11 @@ export const prepareGithubSystemdSupervision = async ({
   )
     failSystemd();
   const deadline = performance.now() + maximumMilliseconds;
+  const environmentSnapshot = snapshotSystemdEnvironment(environment);
   await authenticateSystemdHost(deadline);
   const executionDeadline = deadline - containmentProofMilliseconds;
   if (executionDeadline <= performance.now()) failSystemd();
-  const authority = systemdIdentity(environment);
+  const authority = systemdIdentity(environmentSnapshot);
   const cgroupPath = resolve(cgroupRoot, authority.cgroup.slice(1));
   if (existsSync(cgroupPath)) failSystemd();
   const mappedExecutable = captureLiveMappedExecutable(executable, deadline);
@@ -796,15 +845,14 @@ export const prepareGithubSystemdSupervision = async ({
       closed: false,
       consumed: false,
       deadline,
-      environment,
+      environment: environmentSnapshot,
       executable,
       executionDeadline,
       mappedExecutable,
       maximumMilliseconds,
-      preparation: undefined,
     };
-    const preparation = Object.freeze({ [systemdPreparationBrand]: state });
-    state.preparation = preparation;
+    const preparation = Object.freeze({});
+    systemdPreparations.set(preparation, state);
     transferred = true;
     return preparation;
   } finally {
@@ -814,21 +862,15 @@ export const prepareGithubSystemdSupervision = async ({
 
 const runSystemdSupervised = async ({
   arguments_: arguments_ = [],
-  environment,
+  environment: suppliedEnvironment,
   executable,
   maximumMilliseconds,
   preparation,
 }) => {
-  const prepared =
-    preparation ??
-    (await prepareGithubSystemdSupervision({
-      environment,
-      executable,
-      maximumMilliseconds,
-    }));
+  const prepared = preparation;
   const state = preparedSystemdState(prepared);
   if (
-    state.environment !== environment ||
+    !sameSystemdEnvironment(state.environment, suppliedEnvironment) ||
     state.executable !== executable ||
     state.maximumMilliseconds !== maximumMilliseconds
   ) {
@@ -841,6 +883,7 @@ const runSystemdSupervised = async ({
     cgroupPath,
     deadline,
     executionDeadline,
+    environment,
     mappedExecutable,
   } = state;
   if (executionDeadline <= performance.now() || existsSync(cgroupPath)) {
@@ -928,7 +971,14 @@ const runSystemdSupervised = async ({
   }
 };
 
-export const runSupervisedProcess = async (options) =>
-  options.containment === "github-systemd"
-    ? runSystemdSupervised(options)
-    : runProcessGroupSupervised(options);
+export const runSupervisedProcess = (options) => {
+  if (options.containment === "github-systemd") {
+    if (options.preparation === undefined) failSystemd();
+    return runSystemdSupervised(options);
+  }
+  if (options.preparation !== undefined) {
+    closePreparedGithubSystemdSupervision(options.preparation);
+    failSystemd();
+  }
+  return runProcessGroupSupervised(options);
+};

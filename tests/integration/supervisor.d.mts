@@ -72,9 +72,19 @@ export function transferDescriptorAuthority<T>(
   }>,
 ): T;
 
-export type PreparedGithubSystemdSupervision = Readonly<
-  Record<symbol, unknown>
->;
+declare const preparedGithubSystemdSupervision: unique symbol;
+export type PreparedGithubSystemdSupervision = Readonly<{
+  [preparedGithubSystemdSupervision]: never;
+}>;
+
+export function snapshotSystemdEnvironment(
+  environment: NodeJS.ProcessEnv,
+): Readonly<NodeJS.ProcessEnv>;
+
+export function sameSystemdEnvironment(
+  expected: Readonly<NodeJS.ProcessEnv>,
+  observed: NodeJS.ProcessEnv,
+): boolean;
 
 export function prepareGithubSystemdSupervision(input: {
   environment: NodeJS.ProcessEnv;
@@ -84,14 +94,23 @@ export function prepareGithubSystemdSupervision(input: {
 
 export function closePreparedGithubSystemdSupervision(
   preparation: PreparedGithubSystemdSupervision,
-): void;
+): boolean;
 
-export function runSupervisedProcess(input: {
+type CommonSupervisedProcessInput = Readonly<{
   arguments_?: readonly string[];
-  containment?: "github-systemd";
   environment: NodeJS.ProcessEnv;
   executable: string;
   maximumMilliseconds: number;
-  preparation?: PreparedGithubSystemdSupervision;
   stdio?: "ignore" | "inherit";
-}): Promise<SupervisedProcessResult>;
+}>;
+
+export function runSupervisedProcess(
+  input: CommonSupervisedProcessInput &
+    (
+      | Readonly<{
+          containment: "github-systemd";
+          preparation: PreparedGithubSystemdSupervision;
+        }>
+      | Readonly<{ containment?: undefined; preparation?: never }>
+    ),
+): Promise<SupervisedProcessResult>;

@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   closePreparedGithubSystemdSupervision,
@@ -22,6 +22,8 @@ import {
   prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
   runSupervisedProcess,
+  sameSystemdEnvironment,
+  snapshotSystemdEnvironment,
   transferDescriptorAuthority,
   validateLiveMappedExecutable,
   validateRootPid1Probe,
@@ -872,6 +874,41 @@ it("binds the live Node mapping across systemd admission", () => {
   ).toBe(false);
 });
 
+it("snapshots a closed systemd environment and rejects valid-form drift", () => {
+  const environment = {
+    AGENTSCOPE_INTEGRATION_REPLAY: "1",
+    AGENTSCOPE_INTEGRATION_SHARD: "0/1",
+    GITHUB_ACTIONS: "true",
+    GITHUB_JOB: "hermetic-platform",
+    GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
+    GITHUB_RUN_ATTEMPT: "1",
+    GITHUB_RUN_ID: "1234",
+    GITHUB_SHA: "a".repeat(40),
+    LANG: "C.UTF-8",
+    PATH: "/usr/bin:/bin",
+    RUNNER_ENVIRONMENT: "github-hosted",
+  };
+  const snapshot = snapshotSystemdEnvironment(environment);
+  expect(snapshot).not.toBe(environment);
+  expect(Object.isFrozen(snapshot)).toBe(true);
+  expect(sameSystemdEnvironment(snapshot, environment)).toBe(true);
+  for (const substitution of [
+    { ...environment, GITHUB_SHA: "b".repeat(40) },
+    { ...environment, AGENTSCOPE_INTEGRATION_REPLAY: "2" },
+    { ...environment, AGENTSCOPE_INTEGRATION_SHARD: "1/2" },
+    { ...environment, EXTRA_AUTHORITY: "present" },
+  ])
+    expect(sameSystemdEnvironment(snapshot, substitution)).toBe(false);
+  const removed = { ...environment };
+  delete (removed as Partial<typeof environment>).LANG;
+  expect(sameSystemdEnvironment(snapshot, removed)).toBe(false);
+  expect(() =>
+    snapshotSystemdEnvironment(
+      Object.defineProperty({}, "GITHUB_SHA", { get: () => "a".repeat(40) }),
+    ),
+  ).toThrow("integration.controller.systemd-containment");
+});
+
 it("digests one retained Node descriptor under the original deadline", () => {
   const supervisorSource = readFileSync(
     resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
@@ -946,55 +983,47 @@ it("closes retained descriptor authority exactly once on capture failure", () =>
   expect(closed).toEqual([42, 43, 44]);
 });
 
-describe.runIf(
-  process.platform === "linux" &&
-    process.env.GITHUB_ACTIONS === "true" &&
-    process.env.RUNNER_ENVIRONMENT === "github-hosted",
-)("GitHub systemd containment", () => {
-  let setup:
-    | {
-        directory: string;
-        environment: NodeJS.ProcessEnv;
-        escapeEvidence: string;
-        escapeUnit: string;
-        evidence: string;
-        preparation: Awaited<
-          ReturnType<typeof prepareGithubSystemdSupervision>
-        >;
-      }
-    | undefined;
+type GithubSystemdSetup = {
+  directory: string;
+  environment: NodeJS.ProcessEnv;
+  escapeEvidence: string;
+  escapeUnit: string;
+  evidence: string;
+  preparation: Awaited<ReturnType<typeof prepareGithubSystemdSupervision>>;
+};
 
-  beforeAll(async () => {
-    const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
-    const evidence = resolve(directory, "descendant.pid");
-    const escapeEvidence = resolve(directory, "escape.json");
-    const escapeUnit = `agentscope-escape-${createHash("sha256")
-      .update(directory)
-      .digest("hex")
-      .slice(0, 32)}.service`;
-    const environment = {
-      AGENTSCOPE_INTEGRATION_SHARD: "0/1",
-      AGENTSCOPE_INTEGRATION_REPLAY: "1",
-      AGENTSCOPE_SUPERVISOR_DETACHED: "true",
-      AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
-      AGENTSCOPE_SUPERVISOR_ESCAPE_EVIDENCE: escapeEvidence,
-      AGENTSCOPE_SUPERVISOR_ESCAPE_UNIT: escapeUnit,
-      GITHUB_ACTIONS: "true",
-      GITHUB_JOB: "hermetic-platform",
-      GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
-      GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
-      GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
-      GITHUB_SHA: process.env.GITHUB_SHA,
-      LANG: "C.UTF-8",
-      PATH: "/usr/bin:/bin",
-      RUNNER_ENVIRONMENT: "github-hosted",
-    };
+const prepareGithubSystemdFixture = async (): Promise<GithubSystemdSetup> => {
+  const directory = mkdtempSync(resolve(tmpdir(), "agentscope-systemd-"));
+  const evidence = resolve(directory, "descendant.pid");
+  const escapeEvidence = resolve(directory, "escape.json");
+  const escapeUnit = `agentscope-escape-${createHash("sha256")
+    .update(directory)
+    .digest("hex")
+    .slice(0, 32)}.service`;
+  const environment = {
+    AGENTSCOPE_INTEGRATION_SHARD: "0/1",
+    AGENTSCOPE_INTEGRATION_REPLAY: "1",
+    AGENTSCOPE_SUPERVISOR_DETACHED: "true",
+    AGENTSCOPE_SUPERVISOR_EVIDENCE: evidence,
+    AGENTSCOPE_SUPERVISOR_ESCAPE_EVIDENCE: escapeEvidence,
+    AGENTSCOPE_SUPERVISOR_ESCAPE_UNIT: escapeUnit,
+    GITHUB_ACTIONS: "true",
+    GITHUB_JOB: "hermetic-platform",
+    GITHUB_REPOSITORY: "Melbourneandrew/agentscope",
+    GITHUB_RUN_ATTEMPT: process.env.GITHUB_RUN_ATTEMPT,
+    GITHUB_RUN_ID: process.env.GITHUB_RUN_ID,
+    GITHUB_SHA: process.env.GITHUB_SHA,
+    LANG: "C.UTF-8",
+    PATH: "/usr/bin:/bin",
+    RUNNER_ENVIRONMENT: "github-hosted",
+  };
+  try {
     const preparation = await prepareGithubSystemdSupervision({
       environment,
       executable: process.execPath,
       maximumMilliseconds: 15_000,
     });
-    setup = {
+    return {
       directory,
       environment,
       escapeEvidence,
@@ -1002,12 +1031,60 @@ describe.runIf(
       evidence,
       preparation,
     };
+  } catch (error) {
+    rmSync(directory, { force: true, recursive: true });
+    throw error;
+  }
+};
+
+describe.runIf(
+  process.platform === "linux" &&
+    process.env.GITHUB_ACTIONS === "true" &&
+    process.env.RUNNER_ENVIRONMENT === "github-hosted",
+)("GitHub systemd containment", () => {
+  let setup: GithubSystemdSetup | undefined;
+
+  beforeEach(async () => {
+    setup = await prepareGithubSystemdFixture();
   }, 15_000);
 
-  afterAll(() => {
+  afterEach(() => {
     if (setup === undefined) return;
     closePreparedGithubSystemdSupervision(setup.preparation);
     rmSync(setup.directory, { force: true, recursive: true });
+    setup = undefined;
+  });
+
+  it("closes prepared authority before a weaker route starts", () => {
+    if (setup === undefined) throw new Error("missing systemd preparation");
+    const current = setup;
+    expect(Object.isFrozen(current.preparation)).toBe(true);
+    expect(Object.keys(current.preparation)).toEqual([]);
+    expect(Object.getOwnPropertySymbols(current.preparation)).toEqual([]);
+    expect(() =>
+      Object.assign(current.preparation, { deadline: Number.MAX_SAFE_INTEGER }),
+    ).toThrow();
+    const losingRoute = {
+      arguments_: [
+        "--input-type=module",
+        "--eval",
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(current.evidence)}, "started");`,
+      ],
+      environment: current.environment,
+      executable: process.execPath,
+      maximumMilliseconds: 15_000,
+      preparation: current.preparation,
+      stdio: "ignore" as const,
+    };
+    expect(() =>
+      runSupervisedProcess(
+        losingRoute as unknown as Parameters<typeof runSupervisedProcess>[0],
+      ),
+    ).toThrow("integration.controller.systemd-containment");
+    expect(closePreparedGithubSystemdSupervision(current.preparation)).toBe(
+      false,
+    );
+    expect(existsSync(current.evidence)).toBe(false);
   });
 
   it("contains a detached session in the authenticated systemd unit", async () => {
