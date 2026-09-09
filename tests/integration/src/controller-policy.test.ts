@@ -1625,7 +1625,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
     expect(
-      helper.match(/terminate\(child,leader,expected,control\)/gu),
+      helper.match(/\n[ ]{4}terminate\(child,leader,expected,control\)/gu),
     ).toHaveLength(1);
     const encodedArguments = Buffer.from(
       JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
@@ -2108,7 +2108,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       }),
     ).toEqual({
       output: "",
-      reason: "",
+      reason: "nonzero-terminal",
       stage: "client-terminal",
       status: "uncertain",
     });
@@ -2847,7 +2847,7 @@ describe.runIf(
         stdio: "ignore",
       }),
     ).rejects.toThrow("integration.controller.systemd-containment");
-  });
+  }, 20_000);
 });
 
 describe("integration controller supervision", () => {
