@@ -1124,7 +1124,9 @@ it("binds root helpers to one absolute boottime authority", () => {
   expect(
     tool.indexOf("const timeout = remainingMilliseconds(deadline);"),
   ).toBeLessThan(tool.indexOf("const child = spawn("));
-  expect(tool).toContain("}, timeout);");
+  expect(tool).toContain(
+    'finish(new Error("integration.controller.systemd-tool"));',
+  );
   expect(tool).toContain('child.once("close", (code, signal) => {');
   expect(supervisorSource).toContain(
     "authenticateExecutable(timeoutPath, 0o111);",
@@ -1140,7 +1142,7 @@ it("binds root helpers to one absolute boottime authority", () => {
     "const observationDeadline = deadline + rootToolJoinReserveMilliseconds;",
   );
   expect(rootTool).toContain(
-    "remainingMilliseconds(observationDeadline) / 1_000",
+    "const rootTimeoutSeconds = `${(timeout / 1_000).toFixed(3)}s`;",
   );
   expect(rootTool).toContain(
     'timeoutPath,\n      "--signal=TERM",\n      `--kill-after=${killAfterSeconds}`,\n      rootTimeoutSeconds,',

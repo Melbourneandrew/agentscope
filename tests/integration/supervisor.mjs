@@ -1364,6 +1364,8 @@ const runTool = (
         signalGroup(child.pid, "SIGKILL");
       } catch {
         // Only authenticated wrapper close proves root-helper termination.
+      } finally {
+        finish(new Error("integration.controller.systemd-tool"));
       }
     }, timeout);
     const finish = (error, value) => {
@@ -1416,9 +1418,7 @@ const rootTool = (
     rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds
   )
     failSystemd();
-  const rootTimeoutSeconds = `${(
-    remainingMilliseconds(observationDeadline) / 1_000
-  ).toFixed(3)}s`;
+  const rootTimeoutSeconds = `${(timeout / 1_000).toFixed(3)}s`;
   const killAfterSeconds = `${(rootToolKillAfterMilliseconds / 1_000).toFixed(
     3,
   )}s`;
