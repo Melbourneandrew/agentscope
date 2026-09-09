@@ -46,10 +46,21 @@ const rootHelperStages = new Set([
   "retirement",
   "join",
 ]);
+const rootHelperSentinelReasons = new Set([
+  "child-exit",
+  "start-identity",
+  "inherited-group",
+  "transition-timeout",
+  "kill",
+  "reap-join",
+  "residual",
+  "internal-unknown",
+]);
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
   ["synthetic-cleanup-failure", pythonPath],
+  ["synthetic-delayed-sentinel", pythonPath],
   ["pid1-readlink-1", readlinkPath],
   ["pid1-stat", statPath],
   ["pid1-digest", sha256sumPath],
@@ -74,22 +85,27 @@ if len(required)!=20 or not all(callable(value) for value in required) or len(co
 os.write(1,b"agentscope-python-helper-v1\n")
 `;
 const rootHelperSource = String.raw`
-import base64,hashlib,hmac,json,os,signal,subprocess,sys,time
+import base64,errno,hashlib,hmac,json,os,signal,subprocess,sys,time
 MAX=65536
 TEST_CODE='import signal,subprocess,sys,time; subprocess.Popen([sys.executable,"-I","-S","-c","import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)","agentscope-root-helper-descendant"],stdout=sys.stdout,stderr=subprocess.DEVNULL); sys.exit(0)'
 TEST_ARGS=["-I","-S","-c",TEST_CODE]
 TEST_FAIL_CODE='import sys; sys.exit(17)'
 TEST_FAIL_ARGS=["-I","-S","-c",TEST_FAIL_CODE]
-OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
+TEST_DELAY_CODE='import sys; sys.exit(0)'
+TEST_DELAY_ARGS=["-I","-S","-c",TEST_DELAY_CODE]
+OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
+SENTINEL_REASONS={"child-exit","start-identity","inherited-group","transition-timeout","kill","reap-join","residual","internal-unknown"}
 STAGE="startup"
+REASON=""
 class CleanupUncertain(Exception): pass
 def now(): return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
 def emit(status,output=b""):
  encoded=base64.urlsafe_b64encode(output).decode("ascii").rstrip("=")
- identity={"cutoff":str(CUTOFF),"deadline":str(DEADLINE),"operation":OPERATION,"output":encoded,"stage":STAGE,"status":status,"unit":unit}
+ reason=REASON if STAGE=="sentinel" and REASON in SENTINEL_REASONS else ""
+ identity={"cutoff":str(CUTOFF),"deadline":str(DEADLINE),"operation":OPERATION,"output":encoded,"reason":reason,"stage":STAGE,"status":status,"unit":unit}
  mac=hmac.new(bytes.fromhex(KEY),json.dumps(identity,sort_keys=True,separators=(",",":")).encode("ascii"),hashlib.sha256).hexdigest()
- data=json.dumps({"mac":mac,"output":encoded,"stage":STAGE,"status":status},sort_keys=True,separators=(",",":"))
+ data=json.dumps({"mac":mac,"output":encoded,"reason":reason,"stage":STAGE,"status":status},sort_keys=True,separators=(",",":"))
  os.write(1,data.encode("ascii"))
 def group_present(pid):
  try: os.killpg(pid,0); return True
@@ -112,49 +128,80 @@ def group_members(group):
    if observed is not None and observed[1]==group: members.append(int(entry))
  return sorted(members)
 def create_group():
- global STAGE
+ global STAGE,REASON
  STAGE="sentinel"
+ REASON="internal-unknown"
  inherited_group=os.getpgrp()
  control_read,control_write=os.pipe2(os.O_CLOEXEC)
  leader=os.fork()
  if leader==0:
   try:
-   os.close(control_write); os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)
+   os.close(control_write)
+   if OPERATION=="synthetic-delayed-sentinel": time.sleep(0.35)
+   os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)
    while os.read(control_read,1): pass
   finally: os._exit(0)
  os.close(control_read)
- cutoff=min(DEADLINE,now()+250000000)
+ boundary=min(CUTOFF,DEADLINE-750000000)
  expected=None
  expected_start=None
- failure=None
  try:
-  while now()<cutoff:
+  if now()>=boundary:
+   REASON="transition-timeout"; raise RuntimeError("sentinel")
+  while now()<boundary and expected_start is None:
    observed=process_identity(leader)
    if observed is None:
     waited=os.waitpid(leader,os.WNOHANG)
-    if waited[0]==leader: raise RuntimeError("exit")
+    if waited[0]==leader:
+     REASON="child-exit"; raise RuntimeError("sentinel")
     time.sleep(0.001); continue
-   if expected_start is None: expected_start=observed[0]
-   elif observed[0]!=expected_start: raise RuntimeError("identity")
+   expected_start=observed[0]
+  if expected_start is None:
+   REASON="transition-timeout"; raise RuntimeError("sentinel")
+  if OPERATION=="synthetic-delayed-sentinel": time.sleep(0.35)
+  if now()>=boundary:
+   REASON="transition-timeout"; raise RuntimeError("sentinel")
+  try: os.setpgid(leader,leader)
+  except OSError as error:
+   observed=process_identity(leader)
+   if error.errno!=errno.EACCES or observed!=(expected_start,leader):
+    REASON="child-exit" if observed is None else "start-identity" if observed[0]!=expected_start else "inherited-group"
+    raise RuntimeError("sentinel")
+  while now()<boundary:
+   observed=process_identity(leader)
+   if observed is None:
+    REASON="child-exit"; raise RuntimeError("sentinel")
+   if observed[0]!=expected_start:
+    REASON="start-identity"; raise RuntimeError("sentinel")
    if observed[1]==leader:
     expected=(expected_start,leader); break
-   if observed[1]!=inherited_group: raise RuntimeError("group")
+   if observed[1]!=inherited_group:
+    REASON="inherited-group"; raise RuntimeError("sentinel")
    time.sleep(0.001)
- except Exception as error: failure=error
- if expected is None:
-  os.close(control_write)
+  if expected is None:
+   REASON="transition-timeout"; raise RuntimeError("sentinel")
+ except Exception:
+  failure_reason=REASON
+  try: os.close(control_write)
+  except OSError: pass
   observed=process_identity(leader)
   if expected_start is not None and observed is not None and observed[0]==expected_start:
    try: os.kill(leader,signal.SIGKILL)
    except ProcessLookupError: pass
+   except OSError:
+    REASON="kill"; raise RuntimeError("sentinel")
   reaped=False
   while now()<DEADLINE:
    waited=os.waitpid(leader,os.WNOHANG)
    if waited[0]==leader: reaped=True; break
    time.sleep(0.005)
-  if not reaped: raise RuntimeError("join")
-  if failure is not None: raise failure
-  raise RuntimeError("group")
+  if not reaped:
+   REASON="reap-join"; raise RuntimeError("sentinel")
+  if group_present(leader):
+   REASON="residual"; raise RuntimeError("sentinel")
+  REASON=failure_reason
+  raise RuntimeError("sentinel")
+ REASON=""
  return leader,expected,control_write
 def close_group(leader,expected,control):
  global STAGE
@@ -267,7 +314,7 @@ try:
  if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
- if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS)): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION=="synthetic-delayed-sentinel" and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
  if tool=="/usr/bin/systemd-run":
   if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
  elif tool=="/usr/bin/systemctl":
@@ -411,9 +458,10 @@ const failSystemd = () => {
   throw new Error("integration.controller.systemd-containment");
 };
 
-const failSystemdTool = (stage) => {
-  const error = new Error(`integration.controller.systemd-tool:${stage}`);
-  systemdToolFailures.set(error, stage);
+const failSystemdTool = (stage, reason) => {
+  const predicate = stage === "sentinel" ? `${stage}:${reason}` : stage;
+  const error = new Error(`integration.controller.systemd-tool:${predicate}`);
+  systemdToolFailures.set(error, predicate);
   throw error;
 };
 
@@ -427,11 +475,45 @@ const rootToolMacInput = ({
   deadline,
   operation,
   output,
+  reason,
   stage,
   status,
   unit,
 }) =>
-  JSON.stringify({ cutoff, deadline, operation, output, stage, status, unit });
+  JSON.stringify({
+    cutoff,
+    deadline,
+    operation,
+    output,
+    reason,
+    stage,
+    status,
+    unit,
+  });
+
+const validRootHelperReason = (stage, reason) =>
+  typeof reason === "string" &&
+  (stage === "sentinel"
+    ? rootHelperSentinelReasons.has(reason)
+    : reason === "");
+
+const validRootToolReceiptShape = (parsed, receipt) =>
+  parsed !== null &&
+  typeof parsed === "object" &&
+  !Array.isArray(parsed) &&
+  Object.keys(parsed).sort().join(",") === "mac,output,reason,stage,status" &&
+  rootHelperStages.has(parsed.stage) &&
+  validRootHelperReason(parsed.stage, parsed.reason) &&
+  !(
+    parsed.stage === "sentinel" &&
+    (parsed.status === "ok" || parsed.output !== "")
+  ) &&
+  ["error", "ok", "uncertain"].includes(parsed.status) &&
+  typeof parsed.output === "string" &&
+  /^[A-Za-z0-9_-]*$/u.test(parsed.output) &&
+  typeof parsed.mac === "string" &&
+  /^[0-9a-f]{64}$/u.test(parsed.mac) &&
+  JSON.stringify(parsed) === receipt;
 
 export const validateRootToolReceipt = ({ identity, key, receipt }) => {
   if (
@@ -456,20 +538,7 @@ export const validateRootToolReceipt = ({ identity, key, receipt }) => {
   } catch {
     return undefined;
   }
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed) ||
-    Object.keys(parsed).sort().join(",") !== "mac,output,stage,status" ||
-    !rootHelperStages.has(parsed.stage) ||
-    !["error", "ok", "uncertain"].includes(parsed.status) ||
-    typeof parsed.output !== "string" ||
-    !/^[A-Za-z0-9_-]*$/u.test(parsed.output) ||
-    typeof parsed.mac !== "string" ||
-    !/^[0-9a-f]{64}$/u.test(parsed.mac) ||
-    JSON.stringify(parsed) !== receipt
-  )
-    return undefined;
+  if (!validRootToolReceiptShape(parsed, receipt)) return undefined;
   const output = Buffer.from(parsed.output, "base64url");
   if (output.toString("base64url") !== parsed.output) return undefined;
   const expected = createHmac("sha256", Buffer.from(key, "hex"))
@@ -479,6 +548,7 @@ export const validateRootToolReceipt = ({ identity, key, receipt }) => {
         deadline: identity.deadline,
         operation: identity.operation,
         output: parsed.output,
+        reason: parsed.reason,
         stage: parsed.stage,
         status: parsed.status,
         unit: identity.unit,
@@ -493,6 +563,7 @@ export const validateRootToolReceipt = ({ identity, key, receipt }) => {
     return undefined;
   return Object.freeze({
     output: output.toString("utf8"),
+    reason: parsed.reason,
     stage: parsed.stage,
     status: parsed.status,
   });
@@ -1196,7 +1267,7 @@ const rootTool = (
         (parsed.status === "error" || parsed.status === "uncertain")
     )
       failSystemd();
-    if (parsed.status !== "ok") failSystemdTool(parsed.stage);
+    if (parsed.status !== "ok") failSystemdTool(parsed.stage, parsed.reason);
     return parsed.output;
   });
 };

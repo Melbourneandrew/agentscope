@@ -1156,6 +1156,10 @@ it("binds root helpers to one absolute boottime authority", () => {
   expect(rootHelper).toContain("leader,expected,control=create_group()");
   expect(rootHelper).toContain("inherited_group=os.getpgrp()");
   expect(rootHelper).toContain("expected_start=observed[0]");
+  expect(rootHelper).toContain("boundary=min(CUTOFF,DEADLINE-750000000)");
+  expect(rootHelper).toContain("os.setpgid(leader,leader)");
+  expect(rootHelper).toContain("error.errno!=errno.EACCES");
+  expect(rootHelper).not.toContain("now()+250000000\n expected=None");
   expect(rootHelper).toContain("observed[1]!=inherited_group");
   expect(rootHelper).toContain('def emit(status,output=b""):');
   expect(rootHelper).toContain(
@@ -1276,6 +1280,143 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
 );
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "admits a delayed sentinel transition under the original absolute cutoff",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const testCode = "import sys; sys.exit(0)";
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", testCode]),
+    ).toString("base64url");
+    const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+    if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+      throw new Error("invalid synthetic boottime authority");
+    const [seconds, fraction] = uptime.split(".");
+    if (seconds === undefined || fraction === undefined)
+      throw new Error("invalid synthetic boottime authority");
+    const now =
+      BigInt(seconds) * 1_000_000_000n +
+      BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+    const deadline = String(now + 3_000_000_000n);
+    const cutoff = String(now + 1_500_000_000n);
+    const key = "c".repeat(64);
+    const terminal = spawnSync(
+      "/usr/bin/python3",
+      [
+        "-I",
+        "-S",
+        "-c",
+        helper,
+        deadline,
+        cutoff,
+        "synthetic-delayed-sentinel",
+        "/usr/bin/python3",
+        encodedArguments,
+        "",
+        key,
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+        timeout: 4_000,
+      },
+    );
+    expect(terminal).toMatchObject({ signal: null, status: 0, stderr: "" });
+    expect(
+      validateRootToolReceipt({
+        identity: {
+          cutoff,
+          deadline,
+          operation: "synthetic-delayed-sentinel",
+          unit: "",
+        },
+        key,
+        receipt: terminal.stdout,
+      }),
+    ).toEqual({
+      output: "",
+      reason: "",
+      stage: "client-terminal",
+      status: "ok",
+    });
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "rejects a delayed sentinel transition at the original cutoff",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
+    ).toString("base64url");
+    const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+    if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+      throw new Error("invalid synthetic boottime authority");
+    const [seconds, fraction] = uptime.split(".");
+    if (seconds === undefined || fraction === undefined)
+      throw new Error("invalid synthetic boottime authority");
+    const now =
+      BigInt(seconds) * 1_000_000_000n +
+      BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+    const deadline = String(now + 3_000_000_000n);
+    const cutoff = String(now + 200_000_000n);
+    const key = "d".repeat(64);
+    const terminal = spawnSync(
+      "/usr/bin/python3",
+      [
+        "-I",
+        "-S",
+        "-c",
+        helper,
+        deadline,
+        cutoff,
+        "synthetic-delayed-sentinel",
+        "/usr/bin/python3",
+        encodedArguments,
+        "",
+        key,
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+        timeout: 4_000,
+      },
+    );
+    expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+    expect(
+      validateRootToolReceipt({
+        identity: {
+          cutoff,
+          deadline,
+          operation: "synthetic-delayed-sentinel",
+          unit: "",
+        },
+        key,
+        receipt: terminal.stdout,
+      }),
+    ).toEqual({
+      output: "",
+      reason: "transition-timeout",
+      stage: "sentinel",
+      status: "error",
+    });
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "retains the originating stage when helper cleanup is uncertain",
   () => {
     const supervisorSource = readFileSync(
@@ -1337,6 +1478,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       }),
     ).toEqual({
       output: "",
+      reason: "",
       stage: "client-terminal",
       status: "uncertain",
     });
@@ -1361,7 +1503,12 @@ it("authenticates a closed root-helper stage receipt against its operation ident
     operation: "unit-admission",
     unit: "agentscope-test.service",
   };
-  const receiptFor = (stage: string, status = "error", output = "") => {
+  const receiptFor = (
+    stage: string,
+    status = "error",
+    output = "",
+    reason = stage === "sentinel" ? "transition-timeout" : "",
+  ) => {
     const mac = createHmac("sha256", Buffer.from(key, "hex"))
       .update(
         JSON.stringify({
@@ -1369,13 +1516,14 @@ it("authenticates a closed root-helper stage receipt against its operation ident
           deadline: identity.deadline,
           operation: identity.operation,
           output,
+          reason,
           stage,
           status,
           unit: identity.unit,
         }),
       )
       .digest("hex");
-    return JSON.stringify({ mac, output, stage, status });
+    return JSON.stringify({ mac, output, reason, stage, status });
   };
   for (const stage of stages)
     expect(
@@ -1384,7 +1532,12 @@ it("authenticates a closed root-helper stage receipt against its operation ident
         key,
         receipt: receiptFor(stage),
       }),
-    ).toEqual({ output: "", stage, status: "error" });
+    ).toEqual({
+      output: "",
+      reason: stage === "sentinel" ? "transition-timeout" : "",
+      stage,
+      status: "error",
+    });
 
   expect(
     validateRootToolReceipt({
@@ -1421,6 +1574,7 @@ it("authenticates a closed root-helper stage receipt against its operation ident
     valid.replace('"status":"error"', '"status":"unknown"'),
     valid.replace('"output":""', '"output":"YQ"'),
     valid.replace('"stage":"unit-admission"', '"stage":"join"'),
+    valid.replace('"reason":""', '"reason":"unknown"'),
     valid.replace(/\}$/u, ',"extra":false}'),
   ])
     expect(
@@ -1444,6 +1598,68 @@ it("authenticates a closed root-helper stage receipt against its operation ident
     systemdToolFailureStage(
       new Error("integration.controller.systemd-tool:unit-admission"),
     ),
+  ).toBeUndefined();
+});
+
+it("authenticates only the closed sentinel reason inventory", () => {
+  const key = "3".repeat(64);
+  const identity = {
+    cutoff: "100",
+    deadline: "200",
+    operation: "unit-admission",
+    unit: "agentscope-test.service",
+  };
+  const receiptFor = (reason: string) => {
+    const fields = {
+      cutoff: identity.cutoff,
+      deadline: identity.deadline,
+      operation: identity.operation,
+      output: "",
+      reason,
+      stage: "sentinel",
+      status: "error",
+      unit: identity.unit,
+    };
+    const mac = createHmac("sha256", Buffer.from(key, "hex"))
+      .update(JSON.stringify(fields))
+      .digest("hex");
+    return JSON.stringify({
+      mac,
+      output: "",
+      reason,
+      stage: "sentinel",
+      status: "error",
+    });
+  };
+  for (const reason of [
+    "child-exit",
+    "start-identity",
+    "inherited-group",
+    "transition-timeout",
+    "kill",
+    "reap-join",
+    "residual",
+    "internal-unknown",
+  ])
+    expect(
+      validateRootToolReceipt({ identity, key, receipt: receiptFor(reason) }),
+    ).toEqual({ output: "", reason, stage: "sentinel", status: "error" });
+  expect(
+    validateRootToolReceipt({
+      identity,
+      key,
+      receipt: receiptFor("unknown"),
+    }),
+  ).toBeUndefined();
+  expect(
+    validateRootToolReceipt({
+      identity,
+      key,
+      receipt: receiptFor("child-exit").replace(
+        '"reason":"child-exit"',
+        '"reason":"child-exit","reason":"child-exit"',
+      ),
+    }),
   ).toBeUndefined();
 });
 
@@ -1479,9 +1695,9 @@ it("emits only an authenticated closed systemd-tool stage annotation", () => {
     "unit-reset",
   ])
     expect(supervisor).toContain(`"${operation}"`);
-  expect(supervisor).toContain("systemdToolFailures.set(error, stage)");
+  expect(supervisor).toContain("systemdToolFailures.set(error, predicate)");
   expect(supervisor).toContain(
-    "new Error(`integration.controller.systemd-tool:${stage}`)",
+    "new Error(`integration.controller.systemd-tool:${predicate}`)",
   );
 });
 

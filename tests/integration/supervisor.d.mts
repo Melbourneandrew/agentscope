@@ -41,9 +41,23 @@ export type SystemdToolFailureStage =
   | "retirement"
   | "join";
 
+export type SystemdToolSentinelReason =
+  | "child-exit"
+  | "start-identity"
+  | "inherited-group"
+  | "transition-timeout"
+  | "kill"
+  | "reap-join"
+  | "residual"
+  | "internal-unknown";
+
+export type SystemdToolFailurePredicate =
+  | Exclude<SystemdToolFailureStage, "sentinel">
+  | `sentinel:${SystemdToolSentinelReason}`;
+
 export function systemdToolFailureStage(
   error: unknown,
-): SystemdToolFailureStage | undefined;
+): SystemdToolFailurePredicate | undefined;
 
 export function validateRootToolReceipt(
   input: Readonly<{
@@ -59,6 +73,7 @@ export function validateRootToolReceipt(
 ):
   | Readonly<{
       output: string;
+      reason: "" | SystemdToolSentinelReason;
       stage: SystemdToolFailureStage;
       status: "error" | "ok" | "uncertain";
     }>
