@@ -2222,7 +2222,8 @@ const proveCollected = async (state) => {
         state.deadline,
         "unit-collection",
       );
-    } catch {
+    } catch (error) {
+      if (systemdToolFailureStage(error) !== undefined) throw error;
       failSystemdLifecycle(state, "collection", "unit-show");
     }
     let facts;

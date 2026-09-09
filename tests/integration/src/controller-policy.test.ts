@@ -2974,7 +2974,6 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
   expect(supervisor).toContain(
     'state.retirementDiagnosticReason = "descriptor-close";',
   );
-
   for (const phase of phases)
     expect(supervisor).toContain(`state.lifecyclePhase = "${phase}"`);
   expect(supervisor).toContain(
@@ -2993,6 +2992,30 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
   );
   expect(action).not.toContain("error.message");
   expect(action).not.toContain("error.stack");
+});
+
+it("preserves authenticated root-tool failure authority during collection", () => {
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const collection = supervisor.slice(
+    supervisor.indexOf("const proveCollected ="),
+    supervisor.indexOf("const retireUnit ="),
+  );
+  expect(collection).toContain(
+    "if (systemdToolFailureStage(error) !== undefined) throw error;",
+  );
+  expect(collection.indexOf("systemdToolFailureStage(error)")).toBeLessThan(
+    collection.indexOf(
+      'failSystemdLifecycle(state, "collection", "unit-show")',
+    ),
+  );
+  expect(
+    systemdToolFailureStage(
+      new Error("integration.controller.systemd-tool:client-terminal:deadline"),
+    ),
+  ).toBeUndefined();
 });
 
 it("authenticates only the closed sentinel reason inventory", () => {
