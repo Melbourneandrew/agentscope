@@ -2160,6 +2160,24 @@ describe("integration controller supervision", () => {
   });
 });
 
+function expectClosedOuterGitConfiguration(workflow: string) {
+  expect(
+    workflow.match(
+      /GIT_CONFIG_GLOBAL: \$\{\{ runner\.temp \}\}\/agentscope-global\.gitconfig/gu,
+    ),
+  ).toHaveLength(2);
+  expect(
+    workflow.match(/install -m 600 \/dev\/null "\$GIT_CONFIG_GLOBAL"/gu),
+  ).toHaveLength(2);
+  expect(workflow).not.toMatch(/GIT_CONFIG_GLOBAL: \/dev\/null/gu);
+  expect(workflow).not.toMatch(/(?:rm|unlink).*agentscope-global\.gitconfig/gu);
+  const controller = readFileSync(
+    resolve(workspaceRoot, "tests/integration/src/controller.ts"),
+    "utf8",
+  );
+  expect(controller).toContain('GIT_CONFIG_GLOBAL: "/dev/null"');
+}
+
 describe("integration workflow routing policy", () => {
   it("routes both CI phases through the same command", () => {
     const workflow = readFileSync(
@@ -2178,7 +2196,7 @@ describe("integration workflow routing policy", () => {
     expect(
       workflow.match(/Initialize closed npm configuration/gu),
     ).toHaveLength(2);
-    expect(workflow.match(/\$\{\{ runner\.temp \}\}/gu) ?? []).toHaveLength(0);
+    expectClosedOuterGitConfiguration(workflow);
     expect(
       workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
     ).toHaveLength(2);
