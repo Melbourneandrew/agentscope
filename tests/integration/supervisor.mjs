@@ -88,6 +88,7 @@ const rootToolOperations = new Map([
   ["synthetic-join-cleanup-failure", pythonPath],
   ["synthetic-join-identity-drift", pythonPath],
   ["synthetic-client-cutoff", pythonPath],
+  ["synthetic-client-cutoff-cleanup-failure", pythonPath],
   ["synthetic-client-deadline", pythonPath],
   ["synthetic-client-leader-identity", pythonPath],
   ["synthetic-client-child-admission", pythonPath],
@@ -132,7 +133,7 @@ TEST_SLEEP_CODE='import time; time.sleep(5)'
 TEST_SLEEP_ARGS=["-I","-S","-c",TEST_SLEEP_CODE]
 TEST_OUTPUT_CODE='import os; os.write(1,b"x"*65537)'
 TEST_OUTPUT_ARGS=["-I","-S","-c",TEST_OUTPUT_CODE]
-OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-setpgid-eacces":"/usr/bin/python3","synthetic-setpgid-non-eacces":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","synthetic-join-failure":"/usr/bin/python3","synthetic-join-cleanup-failure":"/usr/bin/python3","synthetic-join-identity-drift":"/usr/bin/python3","synthetic-client-cutoff":"/usr/bin/python3","synthetic-client-deadline":"/usr/bin/python3","synthetic-client-leader-identity":"/usr/bin/python3","synthetic-client-child-admission":"/usr/bin/python3","synthetic-client-member-identity":"/usr/bin/python3","synthetic-client-output-read":"/usr/bin/python3","synthetic-client-output-bound":"/usr/bin/python3","synthetic-client-nonzero":"/usr/bin/python3","synthetic-client-internal":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
+OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-setpgid-eacces":"/usr/bin/python3","synthetic-setpgid-non-eacces":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","synthetic-join-failure":"/usr/bin/python3","synthetic-join-cleanup-failure":"/usr/bin/python3","synthetic-join-identity-drift":"/usr/bin/python3","synthetic-client-cutoff":"/usr/bin/python3","synthetic-client-cutoff-cleanup-failure":"/usr/bin/python3","synthetic-client-deadline":"/usr/bin/python3","synthetic-client-leader-identity":"/usr/bin/python3","synthetic-client-child-admission":"/usr/bin/python3","synthetic-client-member-identity":"/usr/bin/python3","synthetic-client-output-read":"/usr/bin/python3","synthetic-client-output-bound":"/usr/bin/python3","synthetic-client-nonzero":"/usr/bin/python3","synthetic-client-internal":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
 SENTINEL_REASONS={"child-exit","start-identity","inherited-group","transition-timeout","kill","reap-join","residual","internal-unknown"}
 JOIN_REASONS={"leader-identity","preclose-residual","control-close","reap-timeout","identity-drift","postreap-residual","internal-unknown"}
@@ -403,14 +404,12 @@ def run(argv,cutoff,operation_stage):
   REASON="output-read" if operation_stage=="client-terminal" else ""
   os.set_blocking(child.stdout.fileno(),False)
   if OPERATION=="synthetic-client-output-read": child.stdout.close()
-  originating_reason=""
   while child.poll() is None:
    REASON="member-identity" if operation_stage=="client-terminal" else ""
    admit_group_members(leader,expected_members)
    if now()>=cutoff:
     REASON="cutoff" if operation_stage=="client-terminal" else ""
-    originating_reason=REASON
-    terminate(child,leader,expected,control)
+    raise RuntimeError("cutoff")
    try:
     REASON="output-read" if operation_stage=="client-terminal" else ""
     part=os.read(child.stdout.fileno(),4096)
@@ -438,7 +437,7 @@ def run(argv,cutoff,operation_stage):
    REASON="deadline" if operation_stage=="client-terminal" else ""
    raise RuntimeError("terminal")
   if child.returncode!=0:
-   REASON=originating_reason or ("nonzero-terminal" if operation_stage=="client-terminal" else "")
+   REASON="nonzero-terminal" if operation_stage=="client-terminal" else ""
    raise RuntimeError("terminal")
   close_group(leader,expected,control,expected_members)
   STAGE=operation_stage
@@ -451,7 +450,7 @@ def run(argv,cutoff,operation_stage):
     close_group(leader,expected,control,{leader:expected})
    else:
     terminate(child,leader,expected,control)
-    if OPERATION=="synthetic-cleanup-failure": raise RuntimeError("synthetic-cleanup")
+    if OPERATION in {"synthetic-cleanup-failure","synthetic-client-cutoff-cleanup-failure"}: raise RuntimeError("synthetic-cleanup")
    if OPERATION=="synthetic-join-cleanup-failure": raise RuntimeError("synthetic-cleanup")
   except Exception:
    raise CleanupUncertain() from None
@@ -478,7 +477,7 @@ try:
  if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
- if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION in {"synthetic-cleanup-failure","synthetic-client-nonzero"} and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-client-cutoff","synthetic-client-deadline","synthetic-client-output-read","synthetic-client-member-identity"} and args!=TEST_SLEEP_ARGS) or (OPERATION=="synthetic-client-output-bound" and args!=TEST_OUTPUT_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-setpgid-eacces","synthetic-setpgid-non-eacces","synthetic-sentinel-cleanup-failure","synthetic-join-failure","synthetic-join-cleanup-failure","synthetic-join-identity-drift","synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-internal"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION in {"synthetic-cleanup-failure","synthetic-client-nonzero"} and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline","synthetic-client-output-read","synthetic-client-member-identity"} and args!=TEST_SLEEP_ARGS) or (OPERATION=="synthetic-client-output-bound" and args!=TEST_OUTPUT_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-setpgid-eacces","synthetic-setpgid-non-eacces","synthetic-sentinel-cleanup-failure","synthetic-join-failure","synthetic-join-cleanup-failure","synthetic-join-identity-drift","synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-internal"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
  if tool=="/usr/bin/systemd-run":
   if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
  elif tool=="/usr/bin/systemctl":

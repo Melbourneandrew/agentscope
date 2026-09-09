@@ -2336,25 +2336,53 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
     const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
     const cases = [
-      ["synthetic-client-cutoff", "cutoff", sleepArguments],
-      ["synthetic-client-deadline", "deadline", sleepArguments],
-      ["synthetic-client-leader-identity", "leader-identity", delayArguments],
-      ["synthetic-client-child-admission", "child-admission", delayArguments],
-      ["synthetic-client-member-identity", "member-identity", sleepArguments],
-      ["synthetic-client-output-read", "output-read", sleepArguments],
+      ["synthetic-client-cutoff", "cutoff", sleepArguments, "error"],
+      [
+        "synthetic-client-cutoff-cleanup-failure",
+        "cutoff",
+        sleepArguments,
+        "uncertain",
+      ],
+      ["synthetic-client-deadline", "deadline", sleepArguments, "uncertain"],
+      [
+        "synthetic-client-leader-identity",
+        "leader-identity",
+        delayArguments,
+        "error",
+      ],
+      [
+        "synthetic-client-child-admission",
+        "child-admission",
+        delayArguments,
+        "error",
+      ],
+      [
+        "synthetic-client-member-identity",
+        "member-identity",
+        sleepArguments,
+        "error",
+      ],
+      ["synthetic-client-output-read", "output-read", sleepArguments, "error"],
       [
         "synthetic-client-output-bound",
         "output-bound",
         ["-I", "-S", "-c", 'import os; os.write(1,b"x"*65537)'],
+        "error",
       ],
       [
         "synthetic-client-nonzero",
         "nonzero-terminal",
         ["-I", "-S", "-c", "import sys; sys.exit(17)"],
+        "error",
       ],
-      ["synthetic-client-internal", "internal-unknown", delayArguments],
+      [
+        "synthetic-client-internal",
+        "internal-unknown",
+        delayArguments,
+        "error",
+      ],
     ] as const;
-    for (const [operation, reason, arguments_] of cases) {
+    for (const [operation, reason, arguments_, status] of cases) {
       const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
       if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
         throw new Error("invalid synthetic boottime authority");
@@ -2372,7 +2400,8 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       );
       const cutoff = String(
         now +
-          (operation === "synthetic-client-cutoff"
+          (operation === "synthetic-client-cutoff" ||
+          operation === "synthetic-client-cutoff-cleanup-failure"
             ? 1_000_000_000n
             : operation === "synthetic-client-deadline"
               ? 2_000_000_000n
@@ -2410,8 +2439,8 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         output: "",
         reason,
         stage: "client-terminal",
+        status,
       });
-      expect(["error", "uncertain"]).toContain(receipt?.status);
       expect(terminal.stdout).not.toContain("Traceback");
     }
   },
