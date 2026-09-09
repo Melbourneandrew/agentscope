@@ -49,6 +49,7 @@ const rootHelperStages = new Set([
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
+  ["synthetic-cleanup-failure", pythonPath],
   ["pid1-readlink-1", readlinkPath],
   ["pid1-stat", statPath],
   ["pid1-digest", sha256sumPath],
@@ -77,9 +78,12 @@ import base64,hashlib,hmac,json,os,signal,subprocess,sys,time
 MAX=65536
 TEST_CODE='import signal,subprocess,sys,time; subprocess.Popen([sys.executable,"-I","-S","-c","import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)","agentscope-root-helper-descendant"],stdout=sys.stdout,stderr=subprocess.DEVNULL); sys.exit(0)'
 TEST_ARGS=["-I","-S","-c",TEST_CODE]
-OPERATIONS={"synthetic-descendant":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
+TEST_FAIL_CODE='import sys; sys.exit(17)'
+TEST_FAIL_ARGS=["-I","-S","-c",TEST_FAIL_CODE]
+OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
 STAGE="startup"
+class CleanupUncertain(Exception): pass
 def now(): return time.clock_gettime_ns(time.CLOCK_BOOTTIME)
 def emit(status,output=b""):
  encoded=base64.urlsafe_b64encode(output).decode("ascii").rstrip("=")
@@ -226,18 +230,24 @@ def run(argv,cutoff,operation_stage):
    if not part: break
    output.extend(part)
    if len(output)>MAX: raise RuntimeError("oversize")
-  close_group(leader,expected,control)
   STAGE=operation_stage
   if now()>=DEADLINE or child.returncode!=0: raise RuntimeError("terminal")
+  close_group(leader,expected,control)
+  STAGE=operation_stage
   return bytes(output)
- except Exception:
+ except Exception as original:
   failed_stage=STAGE
-  if child is None:
-   close_group(leader,expected,control)
-  else:
-   terminate(child,leader,expected,control)
-  STAGE=failed_stage
-  raise
+  try:
+   if child is None:
+    close_group(leader,expected,control)
+   else:
+    terminate(child,leader,expected,control)
+    if OPERATION=="synthetic-cleanup-failure": raise RuntimeError("synthetic-cleanup")
+  except Exception:
+   raise CleanupUncertain() from None
+  finally:
+   STAGE=failed_stage
+  raise original
  finally:
   if child is not None and child.stdout is not None: child.stdout.close()
 def reconcile(unit):
@@ -257,7 +267,7 @@ try:
  if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
- if tool=="/usr/bin/python3" and (os.geteuid()==0 or args!=TEST_ARGS): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS)): raise RuntimeError("test-authority")
  if tool=="/usr/bin/systemd-run":
   if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
  elif tool=="/usr/bin/systemctl":
@@ -267,12 +277,13 @@ try:
  operation_stage="unit-admission" if OPERATION=="unit-admission" else "retirement" if OPERATION in {"unit-retirement","unit-kill-term","unit-kill-kill","unit-stop","unit-reset"} else "join" if OPERATION=="unit-collection" else "client-terminal"
  output=run([tool,*args],CUTOFF,operation_stage)
  emit("ok",output)
-except Exception:
+except Exception as original:
  failed_stage=STAGE
+ uncertain=isinstance(original,CleanupUncertain)
  if "tool" in globals() and tool=="/usr/bin/systemd-run" and "unit" in globals() and unit:
-  if not reconcile(unit): STAGE=failed_stage; emit("uncertain"); sys.exit(1)
+  if not reconcile(unit): uncertain=True
  STAGE=failed_stage
- emit("error"); sys.exit(1)
+ emit("uncertain" if uncertain else "error"); sys.exit(1)
 `;
 const cgroupRoot = "/sys/fs/cgroup";
 const systemdPath = "/usr/lib/systemd/systemd";

@@ -1185,9 +1185,7 @@ it("binds root helpers to one absolute boottime authority", () => {
       "if not leader_reaped or group_present(leader) or child.returncode is None",
     ),
   );
-  expect(rootHelper).toContain(
-    'if not reconcile(unit): STAGE=failed_stage; emit("uncertain")',
-  );
+  expect(rootHelper).toContain("if not reconcile(unit): uncertain=True");
   expect(preparation).toContain('operation: "systemd-submit"');
   expect(preparation).toContain('executionDeadline,\n      "unit-admission",');
   expect(lifecycle).toContain('executionDeadline,\n      "unit-admission",');
@@ -1274,6 +1272,74 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       }
     });
     expect(survivors).toEqual([]);
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "retains the originating stage when helper cleanup is uncertain",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const testCode = "import sys; sys.exit(17)";
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", testCode]),
+    ).toString("base64url");
+    const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+    if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+      throw new Error("invalid synthetic boottime authority");
+    const [seconds, fraction] = uptime.split(".");
+    if (seconds === undefined || fraction === undefined)
+      throw new Error("invalid synthetic boottime authority");
+    const now =
+      BigInt(seconds) * 1_000_000_000n +
+      BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+    const deadline = String(now + 2_000_000_000n);
+    const cutoff = String(now + 500_000_000n);
+    const key = "b".repeat(64);
+    const terminal = spawnSync(
+      "/usr/bin/python3",
+      [
+        "-I",
+        "-S",
+        "-c",
+        helper,
+        deadline,
+        cutoff,
+        "synthetic-cleanup-failure",
+        "/usr/bin/python3",
+        encodedArguments,
+        "",
+        key,
+      ],
+      {
+        encoding: "utf8",
+        env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+        timeout: 3_000,
+      },
+    );
+    expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+    expect(
+      validateRootToolReceipt({
+        identity: {
+          cutoff,
+          deadline,
+          operation: "synthetic-cleanup-failure",
+          unit: "",
+        },
+        key,
+        receipt: terminal.stdout,
+      }),
+    ).toEqual({
+      output: "",
+      stage: "client-terminal",
+      status: "uncertain",
+    });
   },
 );
 
