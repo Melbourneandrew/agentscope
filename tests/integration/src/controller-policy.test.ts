@@ -1223,10 +1223,10 @@ it("revokes helper control before joining only its authenticated process set", (
     "if child_record is None or child_record[1]!=leader or child_record[2]!=os.getpid()",
   );
   expect(rootHelper).toContain(
-    "expected_members={leader:expected,child.pid:child_record[:2]}",
+    "expected_members={leader:leader_record,child.pid:child_record}",
   );
   expect(rootHelper).toContain(
-    "parent is not None and parent_record is not None and parent_record[:2]==parent",
+    "parent is not None and parent_record is not None and parent_record==parent",
   );
   expect(rootHelper).toContain("admit_group_members(leader,expected_members)");
   expect(rootHelper).toContain("settle_boundary=DEADLINE-750000000");
@@ -1365,7 +1365,7 @@ it.runIf(existsSync("/usr/bin/python3"))(
           "-I",
           "-S",
           "-c",
-          `import json,sys\nrecords={int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in json.loads(sys.argv[1]).items()}\ndef group_records(group,expected_members=None): return records\n${admission}\nexpected={10:(b"100",10),11:(b"110",10)}\ntry:\n admit_group_members(10,expected)\nexcept Exception:\n sys.exit(17)\nif expected!={10:(b"100",10),11:(b"110",10),12:(b"120",10)}: sys.exit(18)`,
+          `import json,sys\nrecords={int(key):(value[0].encode("ascii"),value[1],value[2]) for key,value in json.loads(sys.argv[1]).items()}\ndef group_records(group,expected_members=None): return records\n${admission}\nexpected={10:(b"100",10,1),11:(b"110",10,1)}\ntry:\n admit_group_members(10,expected)\nexcept Exception:\n sys.exit(17)\nif expected!={10:(b"100",10,1),11:(b"110",10,1),12:(b"120",10,11)}: sys.exit(18)`,
           JSON.stringify(records),
         ],
         { encoding: "utf8", env: {}, timeout: 3_000 },
@@ -1495,7 +1495,7 @@ it.runIf(existsSync("/usr/bin/python3"))(
     const invoke = (
       records: Record<string, string>,
       entries: string[],
-      expectedMembers?: Record<string, [string, number]>,
+      expectedMembers?: Record<string, [string, number, number]>,
     ) =>
       spawnSync(
         "/usr/bin/python3",
@@ -1541,8 +1541,24 @@ if result!={10:(b"456",10,1)}: sys.exit(18)`,
       invoke(
         { "10": record(10, "1", "10"), "11": record(11, "10", "11") },
         ["10", "11"],
-        { "10": ["456", 10], "11": ["456", 10] },
+        { "10": ["456", 10, 1], "11": ["456", 10, 10] },
       ),
+    ).toMatchObject({ status: 17, signal: null, stderr: "" });
+    for (const changed of [
+      record(11, "10", "10", "789"),
+      record(11, "1", "10"),
+    ])
+      expect(
+        invoke({ "10": record(10, "1", "10"), "11": changed }, ["10", "11"], {
+          "10": ["456", 10, 1],
+          "11": ["456", 10, 10],
+        }),
+      ).toMatchObject({ status: 17, signal: null, stderr: "" });
+    expect(
+      invoke({ "10": record(10, "1", "10") }, ["10", "11"], {
+        "10": ["456", 10, 1],
+        "11": ["456", 10, 10],
+      }),
     ).toMatchObject({ status: 17, signal: null, stderr: "" });
   },
 );
@@ -2340,7 +2356,7 @@ it("authenticates only the closed join reason inventory", () => {
     'if not progressed: raise RuntimeError("residual")',
   );
   expect(supervisor).toContain(
-    "member=expected_members.get(pid)\n   if member is None or record[:2]!=member",
+    "member=expected_members.get(pid)\n   if member is None or record!=member",
   );
   expect(supervisor).toContain("if leader_reaped and not records: break");
   expect(supervisor).toContain("STAGE=failed_stage\n   REASON=failed_reason");

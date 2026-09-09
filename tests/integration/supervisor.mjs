@@ -191,7 +191,7 @@ def process_record_for_group(pid,group,expected_members=None):
  fields=parse_process_fields(data,pid)
  observed_group=int(fields[2])
  record=(fields[19],observed_group,int(fields[1]))
- if expected_members is not None and pid in expected_members and record[:2]!=expected_members[pid]:
+ if expected_members is not None and pid in expected_members and record!=expected_members[pid]:
   raise RuntimeError("identity")
  if observed_group==0 or observed_group!=group: return None
  return record
@@ -220,12 +220,12 @@ def admit_group_members(group,expected_members):
   for pid,record in list(pending.items()):
    expected=expected_members.get(pid)
    if expected is not None:
-    if record[:2]!=expected: raise RuntimeError("identity")
+    if record!=expected: raise RuntimeError("identity")
     del pending[pid]; progressed=True; continue
    parent=expected_members.get(record[2])
    parent_record=records.get(record[2])
-   if parent is not None and parent_record is not None and parent_record[:2]==parent:
-    expected_members[pid]=record[:2]
+   if parent is not None and parent_record is not None and parent_record==parent:
+    expected_members[pid]=record
     del pending[pid]; progressed=True
   if not progressed: raise RuntimeError("residual")
  return records
@@ -347,7 +347,7 @@ def close_group(leader,expected,control,expected_members):
   records=group_records(leader,expected_members)
   for pid,record in records.items():
    member=expected_members.get(pid)
-   if member is None or record[:2]!=member:
+   if member is None or record!=member:
     REASON="identity-drift"; raise RuntimeError("identity")
   if not leader_reaped:
    observed=process_identity(leader)
@@ -411,8 +411,10 @@ def run(argv,cutoff,operation_stage):
   REASON="child-admission" if operation_stage=="client-terminal" else ""
   child_record=None if OPERATION=="synthetic-client-child-admission" else process_record(child.pid)
   if child_record is None or child_record[1]!=leader or child_record[2]!=os.getpid(): raise RuntimeError("identity")
-  expected_members={leader:expected,child.pid:child_record[:2]}
-  if OPERATION=="synthetic-client-member-identity": expected_members[child.pid]=("0",child_record[1])
+  leader_record=process_record(leader)
+  if leader_record is None or leader_record[:2]!=expected or leader_record[2]!=os.getpid(): raise RuntimeError("identity")
+  expected_members={leader:leader_record,child.pid:child_record}
+  if OPERATION=="synthetic-client-member-identity": expected_members[child.pid]=("0",child_record[1],child_record[2])
   STAGE=operation_stage
   REASON="leader-identity" if operation_stage=="client-terminal" else ""
   observed_leader=None if OPERATION=="synthetic-client-leader-identity" else process_identity(leader)
@@ -465,7 +467,9 @@ def run(argv,cutoff,operation_stage):
   failed_reason=REASON
   try:
    if child is None:
-    close_group(leader,expected,control,{leader:expected})
+    leader_record=process_record(leader)
+    if leader_record is None or leader_record[:2]!=expected or leader_record[2]!=os.getpid(): raise RuntimeError("identity")
+    close_group(leader,expected,control,{leader:leader_record})
    else:
     terminate(child,leader,expected,control)
     if OPERATION in {"synthetic-cleanup-failure","synthetic-client-cutoff-cleanup-failure"}: raise RuntimeError("synthetic-cleanup")
