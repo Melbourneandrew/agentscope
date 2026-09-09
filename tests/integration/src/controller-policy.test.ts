@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   advanceToolForceState,
+  classifySystemdUnitAuthority,
   classifyToolSettlement,
   closePreparedGithubSystemdSupervision,
   parseSystemdMainExitStatus,
@@ -765,6 +766,45 @@ it("pins the credentialed lifecycle to a nondelegated whole-unit authority", () 
   ])
     expect(source).toContain(authority);
   expect(source).not.toContain('"--scope"');
+});
+
+it("classifies retirement authority drift without relaxing immutable facts", () => {
+  const authority = {
+    cgroup: "/system.slice/agentscope-test.service",
+    gid: 1001,
+    groups: [4, 1001],
+    uid: 1001,
+    unit: "agentscope-test.service",
+  };
+  const facts = {
+    AmbientCapabilities: "",
+    CapabilityBoundingSet: "",
+    ControlGroup: authority.cgroup,
+    Delegate: "no",
+    Group: String(authority.gid),
+    Id: authority.unit,
+    InaccessiblePaths:
+      "/run/dbus/system_bus_socket /run/systemd/private /run/user /var/run/dbus/system_bus_socket",
+    KillMode: "control-group",
+    LoadState: "loaded",
+    NoNewPrivileges: "yes",
+    ProtectControlGroups: "yes",
+    RemainAfterExit: "yes",
+    RestrictSUIDSGID: "yes",
+    SupplementaryGroups: authority.groups.join(" "),
+    User: String(authority.uid),
+  };
+  expect(classifySystemdUnitAuthority(facts, authority)).toBeUndefined();
+  for (const [field, value, reason] of [
+    ["LoadState", "masked", "load"],
+    ["Id", "agentscope-other.service", "identity"],
+    ["ControlGroup", "/system.slice/agentscope-other.service", "cgroup"],
+    ["NoNewPrivileges", "no", "hardening"],
+    ["User", "1002", "principal"],
+  ] as const)
+    expect(
+      classifySystemdUnitAuthority({ ...facts, [field]: value }, authority),
+    ).toBe(reason);
 });
 
 it("accepts only exact numeric systemd exit terminal facts", () => {
@@ -2609,6 +2649,20 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
       expect(
         validSystemdLifecyclePredicate(`lifecycle:${phase}:${reason}`),
       ).toBe(true);
+  for (const reason of [
+    "authority-load",
+    "authority-identity",
+    "authority-cgroup",
+    "authority-hardening",
+    "authority-principal",
+  ]) {
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:retirement:${reason}`),
+    ).toBe(true);
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:unit-authoritative:${reason}`),
+    ).toBe(false);
+  }
   for (const rejected of [
     undefined,
     "",

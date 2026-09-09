@@ -96,6 +96,13 @@ const systemdLifecycleReasons = new Set([
   "malformed",
   "internal",
 ]);
+const systemdRetirementAuthorityReasons = new Set([
+  "authority-load",
+  "authority-identity",
+  "authority-cgroup",
+  "authority-hardening",
+  "authority-principal",
+]);
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
@@ -720,7 +727,10 @@ const failSystemdTool = (stage, reason) => {
 const failSystemdLifecycle = (state, phase, reason) => {
   if (
     !systemdLifecyclePhases.has(phase) ||
-    !systemdLifecycleReasons.has(reason) ||
+    !(
+      systemdLifecycleReasons.has(reason) ||
+      (phase === "retirement" && systemdRetirementAuthorityReasons.has(reason))
+    ) ||
     typeof state.authority?.unit !== "string" ||
     !Number.isFinite(state.deadline) ||
     !Number.isFinite(state.executionDeadline)
@@ -747,7 +757,9 @@ export const validSystemdLifecyclePredicate = (predicate) => {
   return (
     match !== null &&
     systemdLifecyclePhases.has(match[1]) &&
-    systemdLifecycleReasons.has(match[2])
+    (systemdLifecycleReasons.has(match[2]) ||
+      (match[1] === "retirement" &&
+        systemdRetirementAuthorityReasons.has(match[2])))
   );
 };
 
@@ -1799,11 +1811,11 @@ const showUnit = async (unit, deadline, operation) =>
     ),
   );
 
-const assertUnitAuthority = (facts, authority) => {
+export const classifySystemdUnitAuthority = (facts, authority) => {
+  if (facts.LoadState !== "loaded") return "load";
+  if (facts.Id !== authority.unit) return "identity";
+  if (facts.ControlGroup !== authority.cgroup) return "cgroup";
   if (
-    facts.Id !== authority.unit ||
-    facts.LoadState !== "loaded" ||
-    facts.ControlGroup !== authority.cgroup ||
     facts.Delegate !== "no" ||
     facts.KillMode !== "control-group" ||
     facts.NoNewPrivileges !== "yes" ||
@@ -1812,11 +1824,20 @@ const assertUnitAuthority = (facts, authority) => {
     facts.AmbientCapabilities !== "" ||
     facts.ProtectControlGroups !== "yes" ||
     facts.InaccessiblePaths !== systemdInaccessiblePaths ||
-    facts.RemainAfterExit !== "yes" ||
+    facts.RemainAfterExit !== "yes"
+  )
+    return "hardening";
+  if (
     facts.User !== String(authority.uid) ||
     facts.Group !== String(authority.gid) ||
     facts.SupplementaryGroups !== authority.groups.join(" ")
   )
+    return "principal";
+  return undefined;
+};
+
+const assertUnitAuthority = (facts, authority) => {
+  if (classifySystemdUnitAuthority(facts, authority) !== undefined)
     failSystemd();
 };
 
@@ -1872,10 +1893,20 @@ const proveCollected = async (authority, cgroupPath, deadline) => {
   return false;
 };
 
-const retireUnit = async (authority, deadline) => {
-  const facts = await showUnit(authority.unit, deadline, "unit-retirement");
+const retireUnit = async (authority, deadline, lifecycleState) => {
+  let facts;
+  try {
+    facts = await showUnit(authority.unit, deadline, "unit-retirement");
+  } catch (error) {
+    if (lifecycleState === undefined) throw error;
+    rethrowSystemdLifecycle(lifecycleState, error, "malformed");
+  }
   if (facts.LoadState === "not-found") return;
-  assertUnitAuthority(facts, authority);
+  const mismatch = classifySystemdUnitAuthority(facts, authority);
+  if (mismatch !== undefined) {
+    if (lifecycleState === undefined) failSystemd();
+    failSystemdLifecycle(lifecycleState, "retirement", `authority-${mismatch}`);
+  }
   if (facts.ActiveState === "failed")
     await rootTool(systemctlPath, ["reset-failed", authority.unit], deadline, {
       operation: "unit-reset",
@@ -2180,7 +2211,7 @@ const retireAndCollectSystemdUnit = async (state) => {
   try {
     while (!cgroupIsEmpty(state.cgroupPath))
       await delay(Math.min(50, remainingMilliseconds(state.deadline)));
-    await retireUnit(state.authority, state.deadline);
+    await retireUnit(state.authority, state.deadline, state);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }

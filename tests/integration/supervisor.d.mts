@@ -14,6 +14,16 @@ export function parseSystemdMainExitStatus(
 export function systemdMainProcessIsTerminal(
   facts: Readonly<Record<string, string>>,
 ): boolean;
+export function classifySystemdUnitAuthority(
+  facts: Readonly<Record<string, string>>,
+  authority: Readonly<{
+    cgroup: string;
+    gid: number;
+    groups: readonly number[];
+    uid: number;
+    unit: string;
+  }>,
+): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
 
 export function validateRootPid1Probe(
   input: Readonly<{
@@ -88,10 +98,22 @@ export type SystemdLifecyclePhase =
   | "collection";
 
 export type SystemdLifecycleReason =
-  "deadline" | "interrupted" | "authority" | "malformed" | "internal";
+  | "deadline"
+  | "interrupted"
+  | "authority"
+  | "malformed"
+  | "internal";
+
+export type SystemdRetirementAuthorityReason =
+  | "authority-load"
+  | "authority-identity"
+  | "authority-cgroup"
+  | "authority-hardening"
+  | "authority-principal";
 
 export type SystemdLifecycleFailurePredicate =
-  `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`;
+  | `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`
+  | `lifecycle:retirement:${SystemdRetirementAuthorityReason}`;
 
 export type SystemdToolFailurePredicate =
   | Exclude<SystemdToolFailureStage, "sentinel" | "join" | "client-terminal">
