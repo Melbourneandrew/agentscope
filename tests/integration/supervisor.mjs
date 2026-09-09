@@ -277,7 +277,13 @@ def close_group(leader,expected,control,expected_members):
  REASON="preclose-residual"
  if OPERATION in {"synthetic-join-failure","synthetic-join-cleanup-failure"} and JOIN_CALLS==1:
   raise RuntimeError("synthetic-join")
- admit_group_members(leader,expected_members)
+ records=admit_group_members(leader,expected_members)
+ settle_boundary=DEADLINE-750000000
+ while any(pid!=leader for pid in records):
+  if now()>=settle_boundary: raise RuntimeError("residual")
+  time.sleep(0.005)
+  records=admit_group_members(leader,expected_members)
+ if process_identity(leader)!=expected: raise RuntimeError("identity")
  REASON="control-close"
  try: os.close(control)
  except OSError: raise RuntimeError("control-close")

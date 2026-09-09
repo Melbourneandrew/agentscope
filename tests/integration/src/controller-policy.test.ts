@@ -1229,6 +1229,11 @@ it("revokes helper control before joining only its authenticated process set", (
     "parent is not None and parent_record is not None and parent_record[:2]==parent",
   );
   expect(rootHelper).toContain("admit_group_members(leader,expected_members)");
+  expect(rootHelper).toContain("settle_boundary=DEADLINE-750000000");
+  expect(rootHelper).toContain("while any(pid!=leader for pid in records):");
+  expect(rootHelper).toContain(
+    'if now()>=settle_boundary: raise RuntimeError("residual")',
+  );
   expect(
     rootHelper.indexOf("admit_group_members(leader,expected_members)"),
   ).toBeLessThan(
