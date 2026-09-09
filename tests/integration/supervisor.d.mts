@@ -152,10 +152,14 @@ export type SystemdRetirementDiagnosticReason =
   | "unit-command"
   | "descriptor-close";
 
+export type SystemdCollectionDiagnosticReason =
+  "unit-show" | "unit-facts" | "load-state" | "cgroup-absence";
+
 export type SystemdLifecycleFailurePredicate =
   | `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`
   | `lifecycle:retirement:${
-      SystemdRetirementAuthorityReason | SystemdRetirementDiagnosticReason}`;
+      SystemdRetirementAuthorityReason | SystemdRetirementDiagnosticReason}`
+  | `lifecycle:collection:${SystemdCollectionDiagnosticReason}`;
 
 export type SystemdToolFailurePredicate =
   | Exclude<SystemdToolFailureStage, "sentinel" | "join" | "client-terminal">

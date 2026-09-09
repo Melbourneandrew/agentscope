@@ -2913,6 +2913,19 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
       validSystemdLifecyclePredicate(`lifecycle:unit-authoritative:${reason}`),
     ).toBe(false);
   }
+  for (const reason of [
+    "unit-show",
+    "unit-facts",
+    "load-state",
+    "cgroup-absence",
+  ]) {
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:collection:${reason}`),
+    ).toBe(true);
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:terminal-wait:${reason}`),
+    ).toBe(false);
+  }
   for (const rejected of [
     undefined,
     "",
@@ -2921,6 +2934,8 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     "lifecycle:terminal-wait:deadline:extra",
     "lifecycle:retirement:cgroup-retained:extra",
     "lifecycle:retirement:unknown",
+    "lifecycle:collection:unknown",
+    "lifecycle:collection:unit-show:extra",
     "lifecycle::deadline",
     "lifecycle:terminal-wait:",
     "lifecycle:terminal-wait:deadline\nlifecycle:collection:deadline",

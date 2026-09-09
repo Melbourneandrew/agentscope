@@ -110,6 +110,12 @@ const systemdRetirementDiagnosticReasons = new Set([
   "unit-command",
   "descriptor-close",
 ]);
+const systemdCollectionDiagnosticReasons = new Set([
+  "unit-show",
+  "unit-facts",
+  "load-state",
+  "cgroup-absence",
+]);
 const systemdToolFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
@@ -738,7 +744,8 @@ const failSystemdLifecycle = (state, phase, reason) => {
       systemdLifecycleReasons.has(reason) ||
       (phase === "retirement" &&
         (systemdRetirementAuthorityReasons.has(reason) ||
-          systemdRetirementDiagnosticReasons.has(reason)))
+          systemdRetirementDiagnosticReasons.has(reason))) ||
+      (phase === "collection" && systemdCollectionDiagnosticReasons.has(reason))
     ) ||
     typeof state.authority?.unit !== "string" ||
     !Number.isFinite(state.deadline) ||
@@ -769,7 +776,9 @@ export const validSystemdLifecyclePredicate = (predicate) => {
     (systemdLifecycleReasons.has(match[2]) ||
       (match[1] === "retirement" &&
         (systemdRetirementAuthorityReasons.has(match[2]) ||
-          systemdRetirementDiagnosticReasons.has(match[2]))))
+          systemdRetirementDiagnosticReasons.has(match[2]))) ||
+      (match[1] === "collection" &&
+        systemdCollectionDiagnosticReasons.has(match[2])))
   );
 };
 
@@ -1806,20 +1815,21 @@ const unitProperties = [
   "User",
 ];
 
-const showUnit = async (unit, deadline, operation) =>
-  exactUnitFacts(
-    await rootTool(
-      systemctlPath,
-      [
-        "show",
-        "--no-pager",
-        ...unitProperties.map((property) => `--property=${property}`),
-        unit,
-      ],
-      deadline,
-      { operation, unit },
-    ),
+const showUnitOutput = (unit, deadline, operation) =>
+  rootTool(
+    systemctlPath,
+    [
+      "show",
+      "--no-pager",
+      ...unitProperties.map((property) => `--property=${property}`),
+      unit,
+    ],
+    deadline,
+    { operation, unit },
   );
+
+const showUnit = async (unit, deadline, operation) =>
+  exactUnitFacts(await showUnitOutput(unit, deadline, operation));
 
 export const classifySystemdUnitAuthority = (facts, authority) => {
   if (facts.LoadState !== "loaded") return "load";
@@ -2203,20 +2213,39 @@ const systemdSignal = (unit, signal, deadline) =>
     },
   );
 
-const proveCollected = async (
-  authority,
-  cgroupPath,
-  cgroupIdentity,
-  deadline,
-) => {
-  while (performance.now() < deadline) {
-    const facts = await showUnit(authority.unit, deadline, "unit-collection");
-    if (
-      facts.LoadState === "not-found" &&
-      authenticatedCgroupIsAbsent(cgroupPath, cgroupIdentity)
-    )
-      return true;
-    await delay(Math.min(50, remainingMilliseconds(deadline)));
+const proveCollected = async (state) => {
+  while (performance.now() < state.deadline) {
+    let output;
+    try {
+      output = await showUnitOutput(
+        state.authority.unit,
+        state.deadline,
+        "unit-collection",
+      );
+    } catch {
+      failSystemdLifecycle(state, "collection", "unit-show");
+    }
+    let facts;
+    try {
+      facts = exactUnitFacts(output);
+    } catch {
+      failSystemdLifecycle(state, "collection", "unit-facts");
+    }
+    if (facts.LoadState === "not-found") {
+      let absent;
+      try {
+        absent = authenticatedCgroupIsAbsent(
+          state.cgroupPath,
+          state.cgroupIdentity,
+        );
+      } catch {
+        failSystemdLifecycle(state, "collection", "cgroup-absence");
+      }
+      if (absent) return true;
+    } else if (facts.LoadState !== "loaded") {
+      failSystemdLifecycle(state, "collection", "load-state");
+    }
+    await delay(Math.min(50, remainingMilliseconds(state.deadline)));
   }
   return false;
 };
@@ -2456,12 +2485,7 @@ const closePreparedSystemdState = async (state) => {
         state.cgroupPath,
         state.cgroupIdentity,
       );
-      contained = await proveCollected(
-        state.authority,
-        state.cgroupPath,
-        state.cgroupIdentity,
-        state.deadline,
-      );
+      contained = await proveCollected(state);
     }
   } catch {
     contained = false;
@@ -2628,12 +2652,7 @@ const retireAndCollectSystemdUnit = async (state) => {
   state.lifecyclePhase = "collection";
   let contained;
   try {
-    contained = await proveCollected(
-      state.authority,
-      state.cgroupPath,
-      state.cgroupIdentity,
-      state.deadline,
-    );
+    contained = await proveCollected(state);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }
