@@ -73,6 +73,17 @@ const fixture = (): {
 };
 
 describe("failure evidence uploader", () => {
+  it("rejects ordinary direct execution outside the local action boundary", () => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(import.meta.dirname, "../upload-failure-evidence.mjs")],
+      { encoding: "utf8", env: {}, timeout: 10_000 },
+    );
+    expect(result).toEqual(
+      expect.objectContaining({ signal: null, status: 1, stderr: "" }),
+    );
+  });
+
   it("uploads the exact retained descriptor once with closed options", async () => {
     const owned = fixture();
     try {
@@ -248,7 +259,7 @@ describe("failure evidence upload provenance", () => {
     expect(source).toContain("os.execve(");
     expect(source).toContain('"--input-type=module"');
     expect(source).toContain(
-      'UPLOADER_SHA256 = "2a82505eb7f8d5acbe2634b5822861ab2e606187dc610548574fffbbeb57b41b"',
+      'UPLOADER_SHA256 = "1b7649efbff5bf76b16272b7afb7e5ead72b28e5197278c48f49d003f9e0fecc"',
     );
     expect(source).not.toMatch(/mkstemp|NamedTemporaryFile|\/tmp\/|sudo|tee/gu);
     expect(source.indexOf("os.fsync(descriptor)")).toBeLessThan(

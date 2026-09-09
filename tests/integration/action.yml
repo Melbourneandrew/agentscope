@@ -1,0 +1,5 @@
+name: Upload authenticated integration failure evidence
+description: Upload one sealed sanitized failure-evidence bundle
+runs:
+  using: node24
+  main: upload-failure-evidence.mjs

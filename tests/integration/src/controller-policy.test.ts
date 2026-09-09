@@ -40,32 +40,35 @@ const manifest = (path: string) =>
     scripts: Record<string, string>;
   };
 const failureVerifierSource = (workflow: string) => {
-  const step = workflow.indexOf(
-    "- name: Verify complete sanitized failure evidence",
+  if (!workflow.includes("uses: ./tests/integration"))
+    throw new Error("missing failure verifier action");
+  const action = readFileSync(
+    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+    "utf8",
   );
-  const start = workflow.indexOf("        run: |\n", step);
-  const end = workflow.indexOf("  hermetic-integration:", start);
-  if (step < 0 || start < 0 || end < 0)
-    throw new Error("missing failure verifier");
-  const lines = workflow
-    .slice(start + "        run: |\n".length, end)
-    .trimEnd()
+  const marker = "export const runFailureEvidenceAction = () => {\n";
+  const start = action.indexOf(marker);
+  const end = action.indexOf(
+    "\n};\n/* eslint-enable complexity, max-lines-per-function */",
+    start,
+  );
+  if (start < 0 || end < 0)
+    throw new Error("malformed failure verifier action");
+  const body = action
+    .slice(start + marker.length, end)
+    .replace("  authenticateActionInvocation();\n", "")
     .split("\n")
-    .map((line) => line.slice(10));
-  if (
-    lines.shift() !== "node --input-type=module <<'NODE'" ||
-    lines.pop() !== "NODE"
-  )
-    throw new Error("malformed failure verifier");
-  return lines
-    .join("\n")
-    .replace(
-      '"./tests/integration/dist/index.js"',
-      JSON.stringify(
-        pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
-          .href,
-      ),
-    );
+    .map((line) => (line.startsWith("  ") ? line.slice(2) : line))
+    .join("\n");
+  return `import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
+import { compileCapabilityManifest, compileIsolationEvidence } from ${JSON.stringify(
+    pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
+      .href,
+  )};
+${body}`;
 };
 const failureReceiptValidatorSource = (workflow: string) => {
   const source = failureVerifierSource(workflow);
@@ -761,28 +764,47 @@ describe("integration workflow routing policy", () => {
     expect(workflow.match(/\$\{\{ runner\.temp \}\}/gu) ?? []).toHaveLength(0);
     expect(
       workflow.match(/AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS/gu),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
     expect(workflow).not.toMatch(
       /prepare:candidate|prepare:images|prepare:model-routes|run:scenarios|test:integration:clean/gu,
     );
     expect(workflow).toContain("if-no-files-found: error");
     expect(workflow).not.toContain("if-no-files-found: ignore");
-    expect(workflow).toContain("Verify complete sanitized failure evidence");
+    expect(workflow).toContain(
+      "Verify and upload complete sanitized failure evidence",
+    );
     expect(workflow).toContain("id: failure_evidence");
-    expect(workflow).toContain('"controller-failure-manifest.json"');
     const upload = workflow.slice(
-      workflow.indexOf("- name: Verify complete sanitized failure evidence"),
+      workflow.indexOf(
+        "- name: Verify and upload complete sanitized failure evidence",
+      ),
       workflow.indexOf("  hermetic-integration:"),
     );
     expect(upload).not.toContain("actions/upload-artifact");
-    expect(upload).toContain("tests/integration/seal-failure-evidence.py");
-    expect(upload).toContain("tests/integration/upload-failure-evidence.mjs");
-    expect(upload).toContain("ACTIONS_RUNTIME_TOKEN");
-    expect(upload).toContain("ACTIONS_RESULTS_URL");
+    expect(upload).toContain("uses: ./tests/integration");
+    expect(upload).not.toContain("run:");
+    expect(upload).not.toContain("with:");
+    const action = readFileSync(
+      resolve(workspaceRoot, "tests/integration/action.yml"),
+      "utf8",
+    );
+    expect(action).toContain("using: node24");
+    expect(action).toContain("main: upload-failure-evidence.mjs");
+    expect(action).not.toContain("inputs:");
+    const actionSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+      "utf8",
+    );
+    expect(actionSource).toContain('"controller-failure-manifest.json"');
+    expect(actionSource).toContain(
+      "tests/integration/seal-failure-evidence.py",
+    );
+    expect(actionSource).toContain("ACTIONS_RUNTIME_TOKEN");
+    expect(actionSource).toContain("ACTIONS_RESULTS_URL");
     expect(upload).not.toMatch(
       /GITHUB_OUTPUT|bundle_keeper|failure-evidence-keeper|RUNNER_TEMP|sudo|tee/gu,
     );
-    expect(workflow).toContain("runDirectories.length !== expected.size");
+    expect(actionSource).toContain("runDirectories.length !== expected.size");
     const scenarios = readFileSync(
       resolve(workspaceRoot, "tests/integration/run-scenarios.mjs"),
       "utf8",
