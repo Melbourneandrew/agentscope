@@ -1230,12 +1230,24 @@ it("revokes helper control before joining only its authenticated process set", (
   );
   expect(rootHelper).toContain("admit_group_members(leader,expected_members)");
   expect(rootHelper).toContain("settle_boundary=DEADLINE-750000000");
+  expect(rootHelper).toContain(
+    'if process_identity(leader)!=expected or os.write(control,b"\\x00")!=1',
+  );
+  expect(rootHelper).toContain(
+    'if os.read(control_read,1)!=b"\\x00": raise RuntimeError("control-revoke")',
+  );
   expect(rootHelper).toContain("while any(pid!=leader for pid in records):");
   expect(rootHelper).toContain(
     'if now()>=settle_boundary: raise RuntimeError("residual")',
   );
   expect(
     rootHelper.indexOf("admit_group_members(leader,expected_members)"),
+  ).toBeLessThan(rootHelper.indexOf('os.write(control,b"\\x00")'));
+  expect(rootHelper.indexOf('os.write(control,b"\\x00")')).toBeLessThan(
+    rootHelper.indexOf("while any(pid!=leader for pid in records):"),
+  );
+  expect(
+    rootHelper.indexOf("while any(pid!=leader for pid in records):"),
   ).toBeLessThan(
     rootHelper.indexOf('REASON="control-close"\n try: os.close(control)'),
   );

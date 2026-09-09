@@ -196,6 +196,7 @@ def create_group():
    os.close(control_write)
    if OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"}: time.sleep(0.35)
    os.setpgid(0,0); signal.signal(signal.SIGTERM,signal.SIG_IGN)
+   if os.read(control_read,1)!=b"\x00": raise RuntimeError("control-revoke")
    while os.read(control_read,1): pass
   finally: os._exit(0)
  os.close(control_read)
@@ -278,12 +279,17 @@ def close_group(leader,expected,control,expected_members):
  if OPERATION in {"synthetic-join-failure","synthetic-join-cleanup-failure"} and JOIN_CALLS==1:
   raise RuntimeError("synthetic-join")
  records=admit_group_members(leader,expected_members)
+ REASON="control-close"
+ if process_identity(leader)!=expected or os.write(control,b"\x00")!=1: raise RuntimeError("control-revoke")
+ REASON="preclose-residual"
  settle_boundary=DEADLINE-750000000
  while any(pid!=leader for pid in records):
   if now()>=settle_boundary: raise RuntimeError("residual")
   time.sleep(0.005)
   records=admit_group_members(leader,expected_members)
- if process_identity(leader)!=expected: raise RuntimeError("identity")
+  leader_record=records.get(leader)
+  if leader_record is None or leader_record[:2]!=expected:
+   REASON="identity-drift"; raise RuntimeError("identity")
  REASON="control-close"
  try: os.close(control)
  except OSError: raise RuntimeError("control-close")
