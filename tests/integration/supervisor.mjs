@@ -1410,14 +1410,14 @@ const rootTool = (
   { mutationDeadline, operation, unit = "" },
 ) => {
   const timeout = remainingMilliseconds(deadline);
+  const observationDeadline = deadline + rootToolJoinReserveMilliseconds;
   if (
     timeout <=
     rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds
   )
     failSystemd();
   const rootTimeoutSeconds = `${(
-    (timeout + rootToolJoinReserveMilliseconds) /
-    1_000
+    remainingMilliseconds(observationDeadline) / 1_000
   ).toFixed(3)}s`;
   const killAfterSeconds = `${(rootToolKillAfterMilliseconds / 1_000).toFixed(
     3,
@@ -1458,7 +1458,7 @@ const rootTool = (
       unit,
       receiptKey,
     ],
-    deadline,
+    observationDeadline,
     { acceptClosedFailure: true },
   ).then((terminal) => {
     const parsed = validateRootToolReceipt({

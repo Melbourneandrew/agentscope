@@ -1137,12 +1137,24 @@ it("binds root helpers to one absolute boottime authority", () => {
     "rootToolKillAfterMilliseconds + rootToolJoinReserveMilliseconds",
   );
   expect(rootTool).toContain(
+    "const observationDeadline = deadline + rootToolJoinReserveMilliseconds;",
+  );
+  expect(rootTool).toContain(
+    "remainingMilliseconds(observationDeadline) / 1_000",
+  );
+  expect(rootTool).toContain(
     'timeoutPath,\n      "--signal=TERM",\n      `--kill-after=${killAfterSeconds}`,\n      rootTimeoutSeconds,',
   );
   expect(rootTool).toContain(
     'pythonPath,\n      "-I",\n      "-S",\n      "-c",\n      rootHelperSource,',
   );
   expect(rootTool).toContain("absoluteBoottimeDeadline(deadline)");
+  expect(rootTool).toContain(
+    "observationDeadline,\n    { acceptClosedFailure: true },",
+  );
+  expect(rootTool).not.toContain(
+    "absoluteBoottimeDeadline(observationDeadline)",
+  );
   expect(rootTool).toContain(
     "absoluteBoottimeDeadline(\n    effectiveMutationDeadline,",
   );
