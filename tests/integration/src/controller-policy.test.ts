@@ -906,6 +906,15 @@ it("attempts every retained cgroup descriptor close exactly once", () => {
     resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
     "utf8",
   );
+  const authentication = supervisor.slice(
+    supervisor.indexOf("export const authenticateCgroup ="),
+    supervisor.indexOf("const sameCgroupIdentity ="),
+  );
+  expect(authentication).toContain("closeDescriptorSet(descriptors)");
+  expect(
+    authentication.indexOf("closeDescriptorSet(descriptors)"),
+  ).toBeLessThan(authentication.indexOf("throw error;"));
+
   const lifecycle = supervisor.slice(
     supervisor.indexOf("const runSystemdSupervised ="),
     supervisor.indexOf("export const runSupervisedProcess ="),

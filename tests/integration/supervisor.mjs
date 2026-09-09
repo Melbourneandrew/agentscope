@@ -1900,7 +1900,7 @@ export const authenticateCgroup = (cgroupPath) => {
       identities: Object.freeze(identities),
     });
   } catch (error) {
-    for (const descriptor of descriptors.reverse()) closeSync(descriptor);
+    if (descriptors.length > 0) closeDescriptorSet(descriptors);
     throw error;
   }
 };
