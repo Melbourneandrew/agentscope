@@ -43,10 +43,7 @@ const failureVerifierSource = (workflow: string) => {
     "- name: Verify complete sanitized failure evidence",
   );
   const start = workflow.indexOf("        run: |\n", step);
-  const end = workflow.indexOf(
-    "      - name: Upload sealed sanitized failure evidence",
-    start,
-  );
+  const end = workflow.indexOf("  hermetic-integration:", start);
   if (step < 0 || start < 0 || end < 0)
     throw new Error("missing failure verifier");
   const lines = workflow
@@ -241,20 +238,15 @@ const writeRetainedRunEvidence = (
 const runFailureVerifier = (
   source: string,
   directory: string,
-  fault?: "digest" | "early" | "helper" | "identity" | "receipt",
+  fault?: "digest" | "helper" | "identity" | "receipt" | "terminal",
 ) => {
   const runnerTemp = mkdtempSync(resolve(directory, "runner-temp-"));
-  const githubOutput = resolve(runnerTemp, "github-output");
   const bundleOutput = resolve(runnerTemp, "fixture-bundle.json");
-  writeFileSync(githubOutput, "", { mode: 0o600 });
-  const fixtureSpawn = `const spawnSync = (_executable, arguments_, options) => {
-            if (arguments_[1] === "hold") {
-              writeFileSync(process.env.FIXTURE_BUNDLE, options.input);
-              const digest = "sha256:" + createHash("sha256").update(options.input).digest("hex");
-              const receipt = { digest, fd: 3, keeperReceiptVersion: 1, pid: 123, size: options.input.length, startTimeTicks: "456" };
-              return { error: undefined, signal: null, status: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify(receipt) + "\\n") };
-            }
-            return { error: undefined, signal: null, status: 0, stderr: Buffer.alloc(0), stdout: Buffer.from('{"status":"authenticated"}\\n') };
+  const fixtureSpawn = `import { writeFileSync } from "node:fs";
+          const spawnSync = (_executable, arguments_, options) => {
+            writeFileSync(process.env.FIXTURE_BUNDLE, options.input);
+            const receipt = { artifactDigest: "sha256:" + "a".repeat(64), artifactId: 17, artifactSize: 321, status: "uploaded" };
+            return { error: undefined, signal: null, status: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify(receipt) + "\\n") };
           };`;
   let fixtureSource = source.replace(
     'import { spawnSync } from "node:child_process";',
@@ -262,17 +254,17 @@ const runFailureVerifier = (
   );
   if (fault === "helper")
     fixtureSource = fixtureSource.replace("status: 0", "status: 1");
-  if (fault === "early")
-    fixtureSource = fixtureSource.replace("pid: 123", "pid: 0");
   if (fault === "identity")
-    fixtureSource = fixtureSource.replace(
-      'startTimeTicks: "456"',
-      'startTimeTicks: "invalid"',
-    );
+    fixtureSource = fixtureSource.replace("artifactId: 17", "artifactId: 0");
   if (fault === "digest")
     fixtureSource = fixtureSource.replace(
-      "const receipt = { digest,",
-      'const receipt = { digest: "sha256:" + "0".repeat(64),',
+      '"sha256:" + "a".repeat(64)',
+      '"sha256:" + "0".repeat(63)',
+    );
+  if (fault === "terminal")
+    fixtureSource = fixtureSource.replace(
+      'status: "uploaded"',
+      'status: "failed"',
     );
   if (fault === "receipt")
     fixtureSource = fixtureSource.replace(
@@ -285,13 +277,20 @@ const runFailureVerifier = (
     {
       cwd: directory,
       env: {
-        AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: "999999999999",
+        AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: String(
+          Number(process.hrtime.bigint() / 1_000_000n) + 600_000,
+        ),
+        AGENTSCOPE_FAILURE_ARTIFACT_NAME: "integration-0-of-1-1",
+        ACTIONS_RESULTS_URL:
+          "https://results-receiver.actions.githubusercontent.com/",
+        ACTIONS_RUNTIME_TOKEN: "fixture-token",
         FIXTURE_BUNDLE: bundleOutput,
-        GITHUB_OUTPUT: githubOutput,
+        GITHUB_SERVER_URL: "https://github.com",
+        GITHUB_WORKSPACE: directory,
       },
     },
   );
-  return { bundleOutput, githubOutput, runnerTemp, status: result.status };
+  return { bundleOutput, runnerTemp, status: result.status };
 };
 const removeFailureVerifierFixture = (directory: string) => {
   rmSync(directory, { force: true, recursive: true });
@@ -343,7 +342,7 @@ const executeFailureVerifier = (
   source: string,
   installedPtyFailure: unknown,
   mutateEvidence?: (evidence: Record<string, unknown>) => void,
-  fault?: "digest" | "early" | "helper" | "identity" | "receipt",
+  fault?: "digest" | "helper" | "identity" | "receipt" | "terminal",
 ) => {
   const directory = mkdtempSync(resolve(tmpdir(), "agentscope-evidence-"));
   const artifacts = resolve(directory, "artifacts/integration");
@@ -642,19 +641,17 @@ describe("integration workflow routing policy", () => {
     expect(workflow).toContain("Verify complete sanitized failure evidence");
     expect(workflow).toContain("id: failure_evidence");
     expect(workflow).toContain('"controller-failure-manifest.json"');
-    expect(workflow).toContain("Upload sealed sanitized failure evidence");
-    expect(workflow).toContain("Retire sealed sanitized failure evidence");
     const upload = workflow.slice(
-      workflow.indexOf("- name: Upload sealed sanitized failure evidence"),
+      workflow.indexOf("- name: Verify complete sanitized failure evidence"),
       workflow.indexOf("  hermetic-integration:"),
     );
-    expect(upload).toContain("actions/upload-artifact@v4");
-    expect(upload).toContain("retention-days: 7");
-    expect(upload).toContain(
-      "/proc/${{ steps.failure_evidence.outputs.bundle_keeper_pid }}/fd/${{ steps.failure_evidence.outputs.bundle_fd }}",
-    );
+    expect(upload).not.toContain("actions/upload-artifact");
+    expect(upload).toContain("tests/integration/seal-failure-evidence.py");
+    expect(upload).toContain("tests/integration/upload-failure-evidence.mjs");
+    expect(upload).toContain("ACTIONS_RUNTIME_TOKEN");
+    expect(upload).toContain("ACTIONS_RESULTS_URL");
     expect(upload).not.toMatch(
-      /controller-failure-manifest|runs\/\*|current-(?:candidate|images|model-routes|selection)|capability-manifest/gu,
+      /GITHUB_OUTPUT|bundle_keeper|failure-evidence-keeper|RUNNER_TEMP|sudo|tee/gu,
     );
     expect(workflow).toContain("runDirectories.length !== expected.size");
     const scenarios = readFileSync(
@@ -681,7 +678,7 @@ describe("integration workflow routing policy", () => {
 });
 
 describe("integration workflow anonymous failure artifact policy", () => {
-  it("hands only a complete canonical sanitized bundle to the keeper", () => {
+  it("hands only a complete canonical sanitized bundle to the same-process uploader", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
       "utf8",
@@ -798,8 +795,8 @@ describe("installed-contract workflow failure evidence", () => {
     ).not.toBe(0);
   });
 
-  it.each(["digest", "early", "helper", "identity", "receipt"] as const)(
-    "fails closed on keeper %s authority",
+  it.each(["digest", "helper", "identity", "receipt", "terminal"] as const)(
+    "fails closed on uploader %s authority",
     (fault) => {
       const workflow = readFileSync(
         resolve(workspaceRoot, ".github/workflows/integration.yml"),

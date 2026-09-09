@@ -26,6 +26,7 @@
     "prepack": "node ../../scripts/refuse-private-package.mjs"
   },
   "dependencies": {
+    "@actions/artifact": "6.2.1",
     "@agentscope/testkit": "workspace:*",
     "zod": "^4.3.6"
   },

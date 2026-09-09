@@ -131,6 +131,8 @@ jobs:
       - name: Verify complete sanitized failure evidence
         id: failure_evidence
         if: failure()
+        env:
+          AGENTSCOPE_FAILURE_ARTIFACT_NAME: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
         run: |
           node --input-type=module <<'NODE'
           import { spawnSync } from "node:child_process";
@@ -143,7 +145,6 @@ jobs:
             openSync,
             readFileSync,
             readdirSync,
-            writeFileSync,
           } from "node:fs";
           import { resolve } from "node:path";
           import {
@@ -533,52 +534,33 @@ jobs:
             runs: sanitizedRuns.sort((left, right) => left.runId.localeCompare(right.runId)),
           })}\n`);
           if (bundle.byteLength < 1 || bundle.byteLength > 1024 * 1024) fail();
-          const outputFile = process.env.GITHUB_OUTPUT;
           const bundleDigest = `sha256:${createHash("sha256").update(bundle).digest("hex")}`;
           const deadline = process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
-          if (!/^[1-9]\d{0,15}$/u.test(deadline ?? "") || typeof outputFile !== "string" || !outputFile.startsWith("/")) fail();
+          if (!/^[1-9]\d{0,15}$/u.test(deadline ?? "")) fail();
           const deadlineNanoseconds = (BigInt(deadline) * 1_000_000n).toString();
-          const keeperPath = resolve("tests/integration/failure-evidence-keeper.py");
-          const keeper = spawnSync("/usr/bin/python3", [keeperPath, "hold", deadlineNanoseconds], {
-            env: {}, input: bundle, maxBuffer: 4096, stdio: ["pipe", "pipe", "pipe"], timeout: 10_000,
+          const sealPath = resolve("tests/integration/seal-failure-evidence.py");
+          const uploaderPath = resolve("tests/integration/upload-failure-evidence.mjs");
+          const artifactName = process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME;
+          let resultsUrl;
+          try { resultsUrl = new URL(process.env.ACTIONS_RESULTS_URL); } catch { fail(); }
+          if (!/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(artifactName ?? "") || process.env.GITHUB_SERVER_URL !== "https://github.com" || typeof process.env.GITHUB_WORKSPACE !== "string" || !process.env.GITHUB_WORKSPACE.startsWith("/") || !/^[A-Za-z0-9._-]{1,16384}$/u.test(process.env.ACTIONS_RUNTIME_TOKEN ?? "") || resultsUrl.protocol !== "https:" || !resultsUrl.hostname.endsWith(".actions.githubusercontent.com") || resultsUrl.username !== "" || resultsUrl.password !== "" || resultsUrl.port !== "" || resultsUrl.hash !== "") fail();
+          const remainingMilliseconds = Number(BigInt(deadline) - (process.hrtime.bigint() / 1_000_000n));
+          if (!Number.isSafeInteger(remainingMilliseconds) || remainingMilliseconds < 1 || remainingMilliseconds > 1_200_000) fail();
+          const uploader = spawnSync("/usr/bin/python3", [sealPath, "seal", process.execPath, uploaderPath, artifactName, deadlineNanoseconds, bundleDigest], {
+            env: {
+              ACTIONS_RESULTS_URL: process.env.ACTIONS_RESULTS_URL,
+              ACTIONS_RUNTIME_TOKEN: process.env.ACTIONS_RUNTIME_TOKEN,
+              GITHUB_SERVER_URL: process.env.GITHUB_SERVER_URL,
+              GITHUB_WORKSPACE: process.env.GITHUB_WORKSPACE,
+            }, input: bundle, maxBuffer: 4096, stdio: ["pipe", "pipe", "pipe"], timeout: remainingMilliseconds,
           });
-          if (keeper.error !== undefined || keeper.status !== 0 || keeper.signal !== null || keeper.stderr.length !== 0 || keeper.stdout.length < 1 || keeper.stdout.length > 1024) fail();
-          const receipt = JSON.parse(keeper.stdout.toString("utf8"));
-          if (!exactKeys(receipt, ["digest", "fd", "keeperReceiptVersion", "pid", "size", "startTimeTicks"]) || receipt.keeperReceiptVersion !== 1 || !Number.isSafeInteger(receipt.pid) || receipt.pid < 1 || !Number.isSafeInteger(receipt.fd) || receipt.fd < 0 || !Number.isSafeInteger(receipt.size) || receipt.size !== bundle.byteLength || !/^[1-9]\d*$/u.test(receipt.startTimeTicks) || receipt.digest !== bundleDigest) fail();
-          const canonicalReceipt = `${JSON.stringify({ digest: receipt.digest, fd: receipt.fd, keeperReceiptVersion: 1, pid: receipt.pid, size: receipt.size, startTimeTicks: receipt.startTimeTicks })}\n`;
-          if (keeper.stdout.toString("utf8") !== canonicalReceipt) fail();
-          const identity = [String(receipt.pid), receipt.startTimeTicks, String(receipt.fd), String(receipt.size), receipt.digest];
-          const inspection = spawnSync("/usr/bin/python3", [keeperPath, "inspect", ...identity], { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"], timeout: 10_000 });
-          if (inspection.error !== undefined || inspection.status !== 0 || inspection.signal !== null || inspection.stderr.length !== 0 || inspection.stdout.toString("utf8") !== '{"status":"authenticated"}\n') fail();
-          let outputDescriptor;
-          try {
-            outputDescriptor = openSync(outputFile, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
-            const outputStatus = fstatSync(outputDescriptor);
-            if (!outputStatus.isFile() || outputStatus.nlink !== 1) fail();
-            writeFileSync(outputDescriptor, `bundle_deadline=${deadlineNanoseconds}\nbundle_digest=${receipt.digest}\nbundle_fd=${receipt.fd}\nbundle_keeper_pid=${receipt.pid}\nbundle_keeper_start=${receipt.startTimeTicks}\nbundle_size=${receipt.size}\n`);
-          } finally { if (outputDescriptor !== undefined) closeSync(outputDescriptor); }
+          if (uploader.error !== undefined || uploader.status !== 0 || uploader.signal !== null || uploader.stderr.length !== 0 || uploader.stdout.length < 1 || uploader.stdout.length > 1024) fail();
+          const receipt = JSON.parse(uploader.stdout.toString("utf8"));
+          if (!exactKeys(receipt, ["artifactDigest", "artifactId", "artifactSize", "status"]) || receipt.status !== "uploaded" || !Number.isSafeInteger(receipt.artifactId) || receipt.artifactId < 1 || !Number.isSafeInteger(receipt.artifactSize) || receipt.artifactSize < 1 || !/^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest)) fail();
+          const canonicalReceipt = `${JSON.stringify({ artifactDigest: receipt.artifactDigest, artifactId: receipt.artifactId, artifactSize: receipt.artifactSize, status: "uploaded" })}\n`;
+          if (uploader.stdout.toString("utf8") !== canonicalReceipt) fail();
           for (const descriptor of authenticatedDescriptors.splice(0)) closeSync(descriptor);
           NODE
-      - name: Upload sealed sanitized failure evidence
-        id: failure_upload
-        if: failure() && steps.failure_evidence.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
-          path: /proc/${{ steps.failure_evidence.outputs.bundle_keeper_pid }}/fd/${{ steps.failure_evidence.outputs.bundle_fd }}
-          if-no-files-found: error
-          retention-days: 7
-      - name: Retire sealed sanitized failure evidence
-        if: always() && steps.failure_evidence.outcome == 'success'
-        env:
-          BUNDLE_DEADLINE: ${{ steps.failure_evidence.outputs.bundle_deadline }}
-          BUNDLE_DIGEST: ${{ steps.failure_evidence.outputs.bundle_digest }}
-          BUNDLE_FD: ${{ steps.failure_evidence.outputs.bundle_fd }}
-          BUNDLE_KEEPER_PID: ${{ steps.failure_evidence.outputs.bundle_keeper_pid }}
-          BUNDLE_KEEPER_START: ${{ steps.failure_evidence.outputs.bundle_keeper_start }}
-          BUNDLE_SIZE: ${{ steps.failure_evidence.outputs.bundle_size }}
-        run: |
-          /usr/bin/python3 tests/integration/failure-evidence-keeper.py retire "$BUNDLE_KEEPER_PID" "$BUNDLE_KEEPER_START" "$BUNDLE_FD" "$BUNDLE_SIZE" "$BUNDLE_DIGEST" "$BUNDLE_DEADLINE"
   hermetic-integration:
     name: hermetic-integration
     if: always()
