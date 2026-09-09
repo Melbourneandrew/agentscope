@@ -145,15 +145,17 @@ def process_identity(pid):
  try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
  except FileNotFoundError: return None
  return parse_process_identity(data,pid)
-def process_record(pid):
- try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
- except FileNotFoundError: return None
+def parse_process_record(data,pid):
  identity=parse_process_identity(data,pid)
  record=data[:-1]
  end=record.rfind(b") ")
  fields=record[end+2:].split()
- if not fields[1].isascii() or not fields[1].isdigit() or int(fields[1])<1: raise RuntimeError("identity")
+ if not fields[1].isascii() or not fields[1].isdigit(): raise RuntimeError("identity")
  return (identity[0],identity[1],int(fields[1]))
+def process_record(pid):
+ try: data=open("/proc/%d/stat"%pid,"rb").read(4097)
+ except FileNotFoundError: return None
+ return parse_process_record(data,pid)
 def group_records(group):
  entries=os.listdir("/proc")
  if len(entries)>65536: raise RuntimeError("inventory")

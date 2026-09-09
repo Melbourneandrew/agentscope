@@ -1378,6 +1378,96 @@ it.runIf(existsSync("/usr/bin/python3"))(
   },
 );
 
+it.runIf(existsSync("/usr/bin/python3"))(
+  "parses PID 1 and target-group parent identity without weakening framing",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const helperPrefix = "const rootHelperSource = String.raw`";
+    const helperStart =
+      supervisorSource.indexOf(helperPrefix) + helperPrefix.length;
+    const helperEnd = supervisorSource.indexOf(
+      "`;\nconst cgroupRoot =",
+      helperStart,
+    );
+    const helper = supervisorSource.slice(helperStart, helperEnd);
+    const parserStart = helper.indexOf("def parse_process_identity(data,pid):");
+    const parserEnd = helper.indexOf("def process_record(pid):", parserStart);
+    const parser = helper.slice(parserStart, parserEnd);
+    const invoke = (pid: number, ppid: string, pgrp: string) => {
+      const fields = [
+        "S",
+        ppid,
+        pgrp,
+        ...Array.from({ length: 16 }, () => "0"),
+        "456",
+      ];
+      const record = Buffer.from(`${pid} (fixture) ${fields.join(" ")}\n`);
+      return spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          `import base64,sys\n${parser}\nraw=sys.argv[1]\ntry:\n result=parse_process_record(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)),${pid})\nexcept Exception:\n sys.exit(17)\nif result!=(b"456",${pgrp},${/^\d+$/u.test(ppid) ? ppid : "0"}): sys.exit(18)`,
+          record.toString("base64url"),
+        ],
+        { encoding: "utf8", env: {}, timeout: 3_000 },
+      );
+    };
+    expect(invoke(1, "0", "1")).toMatchObject({
+      status: 0,
+      signal: null,
+      stderr: "",
+    });
+    expect(invoke(123, "11", "123")).toMatchObject({
+      status: 0,
+      signal: null,
+      stderr: "",
+    });
+    for (const ppid of ["-1", "+1", "x", "1x"])
+      expect(invoke(123, ppid, "123")).toMatchObject({
+        status: 17,
+        signal: null,
+        stderr: "",
+      });
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "admits the canonical PID 1 parent identity while inventorying proc",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const helperPrefix = "const rootHelperSource = String.raw`";
+    const helperStart =
+      supervisorSource.indexOf(helperPrefix) + helperPrefix.length;
+    const helperEnd = supervisorSource.indexOf(
+      "`;\nconst cgroupRoot =",
+      helperStart,
+    );
+    const helper = supervisorSource.slice(helperStart, helperEnd);
+    const parserStart = helper.indexOf("def parse_process_identity(data,pid):");
+    const parserEnd = helper.indexOf("def create_group():", parserStart);
+    const procInventory = helper.slice(parserStart, parserEnd);
+    const terminal = spawnSync(
+      "/usr/bin/python3",
+      [
+        "-I",
+        "-S",
+        "-c",
+        `${procInventory}\nrecord=process_record(1)\nif record is None or record[2]!=0: raise SystemExit(17)\ngroup_records(-1)`,
+      ],
+      { encoding: "utf8", env: {}, timeout: 3_000 },
+    );
+    expect(terminal).toMatchObject({ status: 0, signal: null, stderr: "" });
+  },
+);
+
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "preserves an originating join reason across successful and uncertain cleanup",
   () => {
