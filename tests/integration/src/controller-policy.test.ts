@@ -2163,17 +2163,43 @@ describe("integration controller supervision", () => {
 function expectClosedOuterGitConfiguration(workflow: string) {
   expect(
     workflow.match(
-      /install -m 600 \/dev\/null "\$RUNNER_TEMP\/agentscope-global\.gitconfig"/gu,
+      /if \[\[ "\$RUNNER_TEMP" != \/\* \|\| \$\{#RUNNER_TEMP\} -gt 1024/gu,
+    ),
+  ).toHaveLength(2);
+  expect(workflow.match(/"\$RUNNER_TEMP" == \*\$'\\n'\*/gu)).toHaveLength(2);
+  expect(workflow.match(/"\$RUNNER_TEMP" == \*\$'\\r'\*/gu)).toHaveLength(2);
+  expect(
+    workflow.match(
+      /git_config="\$RUNNER_TEMP\/agentscope-global\.gitconfig"/gu,
     ),
   ).toHaveLength(2);
   expect(
+    workflow.match(/install -m 600 \/dev\/null "\$git_config"/gu),
+  ).toHaveLength(2);
+  expect(
+    workflow.match(/echo "GIT_CONFIG_GLOBAL=\$git_config" >> "\$GITHUB_ENV"/gu),
+  ).toHaveLength(2);
+  expect(
     workflow.match(
-      /echo "GIT_CONFIG_GLOBAL=\$RUNNER_TEMP\/agentscope-global\.gitconfig" >> "\$GITHUB_ENV"/gu,
+      /\[\[ -f "\$git_config" && ! -L "\$git_config" && "\$\(stat -c '%a' "\$git_config"\)" == 600 \]\]/gu,
     ),
   ).toHaveLength(2);
   expect(workflow).not.toContain("${{ runner.temp }}");
   expect(workflow).not.toMatch(/GIT_CONFIG_GLOBAL: \/dev\/null/gu);
   expect(workflow).not.toMatch(/(?:rm|unlink).*agentscope-global\.gitconfig/gu);
+  for (const [job, followingJob] of [
+    ["prepare-candidate:", "  hermetic-platform:"],
+    ["hermetic-platform:", "  hermetic-integration:"],
+  ]) {
+    const start = workflow.indexOf(job);
+    const body = workflow.slice(start, workflow.indexOf(followingJob, start));
+    expect(body.indexOf("Initialize closed npm configuration")).toBeLessThan(
+      body.indexOf("uses: actions/checkout@v4"),
+    );
+    expect(body.indexOf('install -m 600 /dev/null "$git_config"')).toBe(
+      body.lastIndexOf('install -m 600 /dev/null "$git_config"'),
+    );
+  }
   const controller = readFileSync(
     resolve(workspaceRoot, "tests/integration/src/controller.ts"),
     "utf8",
