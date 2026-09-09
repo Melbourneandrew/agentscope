@@ -1281,8 +1281,6 @@ const bootstrapMain = () => {
       process.execPath,
       realpathSync(import.meta.dirname),
       source.digest,
-      String(process.pid),
-      processStartTicks(),
     ],
     {
       env: { ...process.env },

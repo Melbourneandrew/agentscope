@@ -15,8 +15,6 @@ MEMFD_NAME = "agentscope-sanitized-failure-evidence"
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
 )
-BOOTSTRAP_STAGES = frozenset({"invocation", "source", "mapping", "memfd", "exec"})
-bootstrap_stage: str | None = None
 
 
 def fail() -> None:
@@ -70,73 +68,27 @@ def same_identity(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
-def process_start_ticks(pid: int) -> str:
-    with open(f"/proc/{pid}/stat", "rb", buffering=0) as process_status:
-        process_bytes = process_status.read(4097)
-    close = process_bytes.rfind(b") ")
-    fields = process_bytes[close + 2 :].split()
-    if close < 2 or len(fields) < 20:
-        fail()
-    start = fields[19]
-    if not start.isascii() or not start.isdigit():
-        fail()
-    return start.decode("ascii")
-
-
-def authenticate_live_node(pid: int, expected_start: str, node: str) -> int:
-    if process_start_ticks(pid) != expected_start:
-        fail()
-    mapping_path = f"/proc/{pid}/exe"
-    descriptor = os.open(mapping_path, os.O_PATH | os.O_CLOEXEC)
-    try:
-        mapped = os.fstat(descriptor)
-        named = os.stat(node)
-        adjacent = os.stat(mapping_path)
-        if (
-            not stat.S_ISREG(mapped.st_mode)
-            or mapped.st_size < 1
-            or not same_identity(mapped, named)
-            or not same_identity(mapped, adjacent)
-            or process_start_ticks(pid) != expected_start
-            or not same_identity(mapped, os.fstat(descriptor))
-            or not same_identity(mapped, os.stat(mapping_path))
-        ):
-            fail()
-        return descriptor
-    except BaseException:
-        os.close(descriptor)
-        raise
-
-
 def bootstrap(arguments: list[str]) -> None:
-    global bootstrap_stage
-    bootstrap_stage = "invocation"
-    if len(arguments) != 5 or sys.platform != "linux":
+    if len(arguments) != 3 or sys.platform != "linux":
         fail()
-    node, integration_root, expected_digest, action_pid_value, action_start = arguments
+    node, integration_root, expected_digest = arguments
     verify_digest(expected_digest)
     if not os.path.isabs(node) or not os.path.isabs(integration_root):
         fail()
-    action_pid = parse_unsigned(action_pid_value, 2**31 - 1)
-    if not action_start.isascii() or not action_start.isdecimal():
-        fail()
-    bootstrap_stage = "source"
     source = read_input()
     if f"sha256:{hashlib.sha256(source).hexdigest()}" != expected_digest:
         fail()
-    bootstrap_stage = "memfd"
-    source_descriptor = -1
-    bundle_descriptor = -1
-    node_descriptor = -1
+    source_descriptor = os.memfd_create(
+        "agentscope-preloaded-failure-action",
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    bundle_descriptor = os.memfd_create(
+        MEMFD_NAME,
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    node_status = os.lstat(node)
+    node_descriptor = os.open(node, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
-        source_descriptor = os.memfd_create(
-            "agentscope-preloaded-failure-action",
-            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
-        )
-        bundle_descriptor = os.memfd_create(
-            MEMFD_NAME,
-            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
-        )
         if source_descriptor != 3 or bundle_descriptor != 4:
             fail()
         if os.write(source_descriptor, source) != len(source):
@@ -148,10 +100,7 @@ def bootstrap(arguments: list[str]) -> None:
         os.fchmod(bundle_descriptor, 0o600)
         os.set_inheritable(source_descriptor, True)
         os.set_inheritable(bundle_descriptor, True)
-        bootstrap_stage = "mapping"
-        node_descriptor = authenticate_live_node(action_pid, action_start, node)
         os.close(0)
-        bootstrap_stage = "exec"
         root_status = os.lstat(integration_root)
         root_descriptor = os.open(
             integration_root,
@@ -163,14 +112,10 @@ def bootstrap(arguments: list[str]) -> None:
             os.fchdir(root_descriptor)
         finally:
             os.close(root_descriptor)
-        if os.execve not in os.supports_fd:
-            fail()
         if (
-            process_start_ticks(action_pid) != action_start
-            or not same_identity(os.fstat(node_descriptor), os.stat(node))
-            or not same_identity(
-                os.fstat(node_descriptor), os.stat(f"/proc/{action_pid}/exe")
-            )
+            not stat.S_ISREG(node_status.st_mode)
+            or not same_identity(os.fstat(node_descriptor), node_status)
+            or os.execve not in os.supports_fd
         ):
             fail()
         os.execve(
@@ -192,9 +137,9 @@ def bootstrap(arguments: list[str]) -> None:
             os.environ,
         )
     finally:
-        for descriptor in (source_descriptor, bundle_descriptor, node_descriptor):
-            if descriptor >= 0:
-                os.close(descriptor)
+        os.close(source_descriptor)
+        os.close(bundle_descriptor)
+        os.close(node_descriptor)
 
 
 def seal_existing(arguments: list[str]) -> None:
@@ -280,10 +225,5 @@ if __name__ == "__main__":
     try:
         main()
     except BaseException:
-        if bootstrap_stage in BOOTSTRAP_STAGES:
-            sys.stderr.write(
-                f"integration.controller.failure-evidence-bootstrap:{bootstrap_stage}\n"
-            )
-        else:
-            sys.stderr.write("integration.controller.failure-evidence-seal\n")
+        sys.stderr.write("integration.controller.failure-evidence-seal\n")
         raise SystemExit(1)

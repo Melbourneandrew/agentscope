@@ -8,7 +8,6 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,31 +62,6 @@ const settleLifecycle = settleLifecycleResult as unknown as (
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
-const processStart = (pid = process.pid) => {
-  const record = readFileSync(`/proc/${pid}/stat`, "ascii");
-  const start = record
-    .slice(record.lastIndexOf(") ") + 2)
-    .trim()
-    .split(" ")[19];
-  if (start === undefined) throw new Error("fixture-process-start-invalid");
-  return start;
-};
-const mappingProbe = (pid: number, start: string, node: string) => {
-  const sealer = resolve(
-    workspaceRoot,
-    "tests/integration/seal-failure-evidence.py",
-  );
-  const program = `import os, runpy
-scope = runpy.run_path(${JSON.stringify(sealer)})
-descriptor = scope["authenticate_live_node"](${pid}, ${JSON.stringify(start)}, ${JSON.stringify(node)})
-os.close(descriptor)
-`;
-  return spawnSync("/usr/bin/python3", ["-I", "-S", "-c", program], {
-    encoding: "utf8",
-    env: {},
-    timeout: 10_000,
-  });
-};
 const fixture = (): {
   arguments_: string[];
   content: Buffer;
@@ -116,78 +90,6 @@ const fixture = (): {
   ];
   return { arguments_, content, descriptor, root };
 };
-
-describe("failure evidence bootstrap boundary", () => {
-  it.skipIf(process.platform !== "linux")(
-    "binds bootstrap execution to the live action mapping",
-    () => {
-      const root = mkdtempSync(resolve(tmpdir(), "agentscope-live-node-"));
-      const alias = resolve(root, "writable-node-alias");
-      symlinkSync(process.execPath, alias);
-      try {
-        expect(mappingProbe(process.pid, processStart(), alias)).toEqual(
-          expect.objectContaining({ status: 0, signal: null, stderr: "" }),
-        );
-        for (const result of [
-          mappingProbe(process.pid, "1", alias),
-          mappingProbe(process.pid, processStart(), "/usr/bin/python3"),
-          mappingProbe(2 ** 31 - 1, "1", alias),
-        ])
-          expect(result).toEqual(
-            expect.objectContaining({ status: 1, signal: null }),
-          );
-      } finally {
-        rmSync(root, { force: true, recursive: true });
-      }
-    },
-  );
-
-  it.skipIf(process.platform !== "linux")(
-    "reports only a closed bootstrap failure stage",
-    () => {
-      const sealer = resolve(
-        workspaceRoot,
-        "tests/integration/seal-failure-evidence.py",
-      );
-      const content = Buffer.from("fixture");
-      const invoke = (arguments_: readonly string[], input = content) =>
-        spawnSync("/usr/bin/python3", [sealer, "bootstrap", ...arguments_], {
-          encoding: "utf8",
-          env: {},
-          input,
-          timeout: 10_000,
-        });
-      const common = [
-        process.execPath,
-        workspaceRoot,
-        digest(content),
-        String(process.pid),
-        processStart(),
-      ] as const;
-      expect(invoke([]).stderr).toBe(
-        "integration.controller.failure-evidence-bootstrap:invocation\n",
-      );
-      expect(invoke(common, Buffer.from("substituted")).stderr).toBe(
-        "integration.controller.failure-evidence-bootstrap:source\n",
-      );
-      expect(invoke([...common.slice(0, -1), "1"]).stderr).toBe(
-        "integration.controller.failure-evidence-bootstrap:mapping\n",
-      );
-      expect(
-        spawnSync("/usr/bin/python3", [sealer, "bootstrap", ...common], {
-          encoding: "utf8",
-          env: {},
-          input: content,
-          stdio: ["pipe", "pipe", "pipe", "ignore"],
-          timeout: 10_000,
-        }).stderr,
-      ).toBe("integration.controller.failure-evidence-bootstrap:memfd\n");
-      expect(invoke([common[0], "/missing", ...common.slice(2)]).stderr).toBe(
-        "integration.controller.failure-evidence-bootstrap:exec\n",
-      );
-    },
-  );
-});
 
 describe("failure evidence action boundary", () => {
   it("never finalizes evidence without exact lifecycle containment", async () => {
