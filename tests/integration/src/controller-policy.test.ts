@@ -85,6 +85,17 @@ const cleanupFailureValidatorSource = () => {
   if (start < 0 || end < 0) throw new Error("missing cleanup validator");
   return source.slice(start, end);
 };
+const cleanupRetentionCompilerSource = () => {
+  const source = readFileSync(
+    resolve(workspaceRoot, "tests/integration/clean.mjs"),
+    "utf8",
+  );
+  const start = source.indexOf("const failureRetainedArtifactNames =");
+  const end = source.indexOf("const installedPtyFailurePredicates =", start);
+  if (start < 0 || end < 0)
+    throw new Error("missing failure retention compiler");
+  return source.slice(start, end);
+};
 const writeRetainedFailureInputs = (directory: string) => {
   const artifacts = resolve(directory, "artifacts/integration");
   mkdirSync(artifacts, { recursive: true, mode: 0o700 });
@@ -539,6 +550,8 @@ describe("integration controller policy", () => {
       "assertFailureEvidence(failureEvidenceByRunId.get(runId))",
     );
     expect(source).toContain("failureEvidenceCoverageIsExact(");
+    expect(source).toContain("assertFailureRetention(");
+    expect(source).toContain("if (!retainedArtifactFiles.has(name))");
   });
 
   it("rejects direct execution of every mutation stage", () => {
@@ -561,6 +574,85 @@ describe("integration controller policy", () => {
         "integration.outer-host.capability-required",
       );
     }
+  });
+});
+
+describe("integration cleanup failure retention", () => {
+  it("retains only exact manifest-bound failure inputs", () => {
+    const digest = (seed: string) => `sha256:${seed.repeat(64)}`;
+    const runId = "0123456789abcdef";
+    const failureEvidence = [
+      {
+        dev: 1,
+        digest: digest("a"),
+        ino: 2,
+        runId,
+        size: 3,
+      },
+    ];
+    const retainedInputs = {
+      "capability-manifest.json": digest("1"),
+      "current-candidate.json": digest("2"),
+      "current-images.json": digest("3"),
+      "current-model-routes.json": digest("4"),
+      "current-selection.json": digest("5"),
+    };
+    const manifest = {
+      controllerAuthorityDigest: digest("b"),
+      controllerFailureManifestVersion: 1,
+      failureEvidence,
+      retainedInputs,
+      runIds: [runId],
+    };
+    const compile = (
+      candidateManifest: unknown,
+      candidateRuns: unknown = [runId],
+      candidateEvidence: unknown = failureEvidence,
+      candidateInputs: unknown = retainedInputs,
+    ) =>
+      spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `${cleanupRetentionCompilerSource()}\ntry { const result = compileFailureRetention(...JSON.parse(process.argv[1])); process.stdout.write(JSON.stringify([...result].sort())); } catch { process.exit(1); }`,
+          JSON.stringify([
+            candidateManifest,
+            candidateRuns,
+            candidateEvidence,
+            candidateInputs,
+          ]),
+        ],
+        { encoding: "utf8" },
+      );
+    const accepted = compile(manifest);
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(accepted.stdout)).toEqual([
+      "current-candidate.json",
+      "current-images.json",
+      "current-model-routes.json",
+      "current-selection.json",
+    ]);
+    for (const rejected of [
+      () => compile({ ...manifest, runIds: [] }),
+      () => compile({ ...manifest, extra: true }),
+      () =>
+        compile({
+          ...manifest,
+          retainedInputs: {
+            ...retainedInputs,
+            "current-images.json": digest("9"),
+          },
+        }),
+      () => compile(manifest, ["fedcba9876543210"]),
+      () => compile(manifest, [runId], [{ ...failureEvidence[0], ino: 7 }]),
+      () =>
+        compile(manifest, [runId], failureEvidence, {
+          ...retainedInputs,
+          "current-selection.json": digest("8"),
+        }),
+    ])
+      expect(rejected().status).not.toBe(0);
   });
 });
 

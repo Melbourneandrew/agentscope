@@ -2,8 +2,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -182,6 +186,122 @@ const artifactMaximumBytes = Object.freeze({
   "current-model-routes.json": 16_384,
   "current-selection.json": 16_384,
 });
+const failureRetainedArtifactNames = Object.freeze([
+  "current-candidate.json",
+  "current-images.json",
+  "current-model-routes.json",
+  "current-selection.json",
+]);
+const exactKeys = (value, keys) =>
+  typeof value === "object" &&
+  value !== null &&
+  JSON.stringify(Object.keys(value).sort()) ===
+    JSON.stringify([...keys].sort());
+const compileFailureRetention = (
+  manifest,
+  requiredRunIds,
+  failureEvidence,
+  retainedInputDigests,
+) => {
+  const expectedInputs = [
+    "capability-manifest.json",
+    ...failureRetainedArtifactNames,
+  ].sort();
+  const sortedRunIds = [...requiredRunIds].sort();
+  const sortedFailureEvidence = [...failureEvidence].sort((left, right) =>
+    left.runId.localeCompare(right.runId),
+  );
+  if (
+    !exactKeys(manifest, [
+      "controllerAuthorityDigest",
+      "controllerFailureManifestVersion",
+      "failureEvidence",
+      "retainedInputs",
+      "runIds",
+    ]) ||
+    manifest.controllerFailureManifestVersion !== 1 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(manifest.controllerAuthorityDigest) ||
+    JSON.stringify(manifest.runIds) !== JSON.stringify(sortedRunIds) ||
+    JSON.stringify(manifest.failureEvidence) !==
+      JSON.stringify(sortedFailureEvidence) ||
+    !exactKeys(manifest.retainedInputs, expectedInputs) ||
+    !exactKeys(retainedInputDigests, expectedInputs) ||
+    expectedInputs.some(
+      (name) =>
+        !/^sha256:[a-f0-9]{64}$/u.test(manifest.retainedInputs[name]) ||
+        manifest.retainedInputs[name] !== retainedInputDigests[name],
+    )
+  )
+    throw new Error("integration.cleanup.failure-evidence");
+  return new Set(failureRetainedArtifactNames);
+};
+const retainedInputIdentity = (path, maximumBytes, expectedMode) => {
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(descriptor);
+    if (
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      before.size < 1 ||
+      before.size > maximumBytes ||
+      (before.mode & 0o7777) !== expectedMode
+    )
+      throw new Error("integration.cleanup.failure-evidence");
+    const content = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    const named = lstatSync(path);
+    if (
+      after.dev !== before.dev ||
+      after.ino !== before.ino ||
+      after.size !== before.size ||
+      after.nlink !== before.nlink ||
+      named.dev !== before.dev ||
+      named.ino !== before.ino ||
+      named.isSymbolicLink() ||
+      (after.mode & 0o7777) !== (before.mode & 0o7777)
+    )
+      throw new Error("integration.cleanup.failure-evidence");
+    return {
+      content,
+      digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+    };
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+};
+const assertFailureRetention = (requiredRunIds, failureEvidence) => {
+  const manifestPath = resolve(
+    artifactsRoot,
+    "controller-failure-manifest.json",
+  );
+  const manifestIdentity = retainedInputIdentity(manifestPath, 65_536, 0o600);
+  const manifest = JSON.parse(manifestIdentity.content.toString("utf8"));
+  const retainedInputDigests = Object.fromEntries([
+    [
+      "capability-manifest.json",
+      retainedInputIdentity(
+        resolve(integrationRoot, "capability-manifest.json"),
+        1024 * 1024,
+        0o644,
+      ).digest,
+    ],
+    ...failureRetainedArtifactNames.map((name) => [
+      name,
+      retainedInputIdentity(
+        resolve(artifactsRoot, name),
+        artifactMaximumBytes[name],
+        name === "current-images.json" ? 0o600 : 0o644,
+      ).digest,
+    ]),
+  ]);
+  return compileFailureRetention(
+    manifest,
+    requiredRunIds,
+    failureEvidence,
+    retainedInputDigests,
+  );
+};
 const installedPtyFailurePredicates = Object.freeze({
   "candidate-inventory": Object.freeze(["candidate-rejected"]),
   "immutable-candidate": Object.freeze(["authority-rejected"]),
@@ -372,6 +492,13 @@ try {
     owned.failureEvidence.map((identity) => [identity.runId, identity]),
   );
   const requiredFailureEvidence = new Set(owned.requiredFailureEvidence);
+  const retainedArtifactFiles =
+    requiredFailureEvidence.size === 0
+      ? new Set()
+      : assertFailureRetention(
+          owned.requiredFailureEvidence,
+          owned.failureEvidence,
+        );
   if (
     !failureEvidenceCoverageIsExact(
       owned.runIds,
@@ -381,7 +508,8 @@ try {
   )
     throw new Error("integration.cleanup.failure-evidence");
   for (const name of owned.artifactFiles)
-    addFile(diskTargets, name, artifactMaximumBytes[name]);
+    if (!retainedArtifactFiles.has(name))
+      addFile(diskTargets, name, artifactMaximumBytes[name]);
   for (const identity of owned.candidateIdentities)
     addDirectory(diskTargets, `candidates/${identity}`);
   for (const runId of owned.runIds) {
