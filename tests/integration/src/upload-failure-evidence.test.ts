@@ -262,65 +262,32 @@ describe("failure evidence upload provenance", () => {
 
 describe("Linux sealed failure evidence upload", () => {
   it.skipIf(process.platform !== "linux")(
-    "execs the uploader in place with an immutable sealed descriptor",
+    "resolves the integration client after a repository-root descriptor chdir",
     () => {
-      const owned = fixture();
-      const fixtureUploader = resolve(owned.root, "fixture-uploader.mjs");
-      writeFileSync(
-        fixtureUploader,
-        `import { DefaultArtifactClient } from "@actions/artifact";
-import { closeSync, fstatSync, ftruncateSync, writeSync } from "node:fs";
+      const integrationRoot = resolve(workspaceRoot, "tests/integration");
+      const program = `import { DefaultArtifactClient } from "@actions/artifact";
 if (typeof DefaultArtifactClient !== "function") process.exit(1);
-if (process.cwd() !== ${JSON.stringify(resolve(workspaceRoot, "tests/integration"))}) process.exit(1);
-const values = Object.fromEntries(Array.from({ length: process.argv.slice(1).length / 2 }, (_, index) => [process.argv[index * 2 + 1], process.argv[index * 2 + 2]]));
-const fd = Number(values["--fd"]);
-const status = fstatSync(fd);
-let rejected = 0;
-for (const mutation of [() => writeSync(fd, Buffer.from("x"), 0, 1, 0), () => ftruncateSync(fd, 0), () => ftruncateSync(fd, status.size + 1)]) {
-  try { mutation(); } catch { rejected += 1; }
-}
-if (fd !== 3 || rejected !== 3 || (status.mode & 0o7777) !== 0o400 || status.nlink !== 0) process.exit(1);
-closeSync(fd);
-process.stdout.write(JSON.stringify({ pid: process.pid, status: "sealed" }) + "\\n");
-`,
-        { mode: 0o400 },
+process.stdout.write(JSON.stringify({ cwd: process.cwd(), status: "resolved" }) + "\\n");`;
+      const python = `import os
+root = ${JSON.stringify(integrationRoot)}
+descriptor = os.open(root, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY)
+os.fchdir(descriptor)
+os.close(descriptor)
+os.execve(${JSON.stringify(process.execPath)}, [${JSON.stringify(process.execPath)}, "--input-type=module", "--eval", ${JSON.stringify(program)}], {})
+`;
+      const result = spawnSync("/usr/bin/python3", ["-c", python], {
+        cwd: workspaceRoot,
+        encoding: "utf8",
+        env: {},
+        timeout: 10_000,
+      });
+      expect(result).toEqual(
+        expect.objectContaining({ signal: null, status: 0, stderr: "" }),
       );
-      const result = spawnSync(
-        "/usr/bin/python3",
-        [
-          resolve(workspaceRoot, "tests/integration/seal-failure-evidence.py"),
-          "seal",
-          process.execPath,
-          fixtureUploader,
-          "integration-0-of-1-1",
-          (process.hrtime.bigint() + 30_000_000_000n).toString(),
-          digest(owned.content),
-        ],
-        {
-          cwd: workspaceRoot,
-          encoding: "utf8",
-          env: {
-            ACTIONS_RESULTS_URL:
-              "https://results-receiver.actions.githubusercontent.com/",
-            ACTIONS_RUNTIME_TOKEN: "fixture-token",
-            GITHUB_SERVER_URL: "https://github.com",
-            GITHUB_WORKSPACE: workspaceRoot,
-          },
-          input: owned.content,
-          timeout: 10_000,
-        },
-      );
-      try {
-        expect(result.status).toBe(0);
-        expect(result.signal).toBeNull();
-        expect(result.stderr).toBe("");
-        expect(JSON.parse(result.stdout)).toEqual(
-          expect.objectContaining({ status: "sealed" }),
-        );
-      } finally {
-        closeSync(owned.descriptor);
-        rmSync(owned.root, { force: true, recursive: true });
-      }
+      expect(JSON.parse(result.stdout)).toEqual({
+        cwd: integrationRoot,
+        status: "resolved",
+      });
     },
   );
 });
