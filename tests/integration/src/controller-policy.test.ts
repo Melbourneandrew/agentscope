@@ -1356,6 +1356,82 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
 );
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "classifies setpgid EACCES and non-EACCES branches without unknown state",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const encodedArguments = Buffer.from(
+      JSON.stringify(["-I", "-S", "-c", "import sys; sys.exit(0)"]),
+    ).toString("base64url");
+    for (const [operation, expected] of [
+      [
+        "synthetic-setpgid-eacces",
+        { reason: "", stage: "client-terminal", status: "ok" },
+      ],
+      [
+        "synthetic-setpgid-non-eacces",
+        { reason: "inherited-group", stage: "sentinel", status: "error" },
+      ],
+    ] as const) {
+      const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
+      if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
+        throw new Error("invalid synthetic boottime authority");
+      const [seconds, fraction] = uptime.split(".");
+      if (seconds === undefined || fraction === undefined)
+        throw new Error("invalid synthetic boottime authority");
+      const now =
+        BigInt(seconds) * 1_000_000_000n +
+        BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
+      const deadline = String(now + 3_000_000_000n);
+      const cutoff = String(now + 1_500_000_000n);
+      const key = operation.endsWith("eacces")
+        ? "4".repeat(64)
+        : "5".repeat(64);
+      const terminal = spawnSync(
+        "/usr/bin/python3",
+        [
+          "-I",
+          "-S",
+          "-c",
+          helper,
+          deadline,
+          cutoff,
+          operation,
+          "/usr/bin/python3",
+          encodedArguments,
+          "",
+          key,
+        ],
+        {
+          encoding: "utf8",
+          env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+          timeout: 4_000,
+        },
+      );
+      expect(terminal).toMatchObject({
+        signal: null,
+        status: expected.status === "ok" ? 0 : 1,
+        stderr: "",
+      });
+      expect(
+        validateRootToolReceipt({
+          identity: { cutoff, deadline, operation, unit: "" },
+          key,
+          receipt: terminal.stdout,
+        }),
+      ).toEqual({ output: "", ...expected });
+      expect(terminal.stdout).not.toContain("internal-unknown");
+    }
+  },
+);
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "rejects a delayed sentinel transition at the original cutoff",
   () => {
     const supervisorSource = readFileSync(

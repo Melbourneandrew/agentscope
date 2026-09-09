@@ -61,6 +61,8 @@ const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
   ["synthetic-cleanup-failure", pythonPath],
   ["synthetic-delayed-sentinel", pythonPath],
+  ["synthetic-setpgid-eacces", pythonPath],
+  ["synthetic-setpgid-non-eacces", pythonPath],
   ["synthetic-sentinel-cleanup-failure", pythonPath],
   ["pid1-readlink-1", readlinkPath],
   ["pid1-stat", statPath],
@@ -79,10 +81,10 @@ const rootToolOperations = new Map([
 ]);
 const pythonCapabilityReceipt = "agentscope-python-helper-v1\n";
 const pythonCapabilitySource = String.raw`
-import base64,json,os,signal,subprocess,sys,time
+import base64,errno,json,os,signal,subprocess,sys,time
 required=(base64.urlsafe_b64decode,base64.urlsafe_b64encode,json.dumps,json.loads,os.write,os.killpg,os.listdir,os.pipe2,os.fork,os.close,os.setpgid,os.read,os._exit,os.kill,os.waitpid,os.set_blocking,signal.signal,subprocess.Popen,time.clock_gettime_ns,time.sleep)
-constants=(os.O_CLOEXEC,os.WNOHANG,signal.SIGTERM,signal.SIGKILL,signal.SIG_IGN,subprocess.DEVNULL,subprocess.PIPE,time.CLOCK_BOOTTIME,sys.executable)
-if len(required)!=20 or not all(callable(value) for value in required) or len(constants)!=9: raise SystemExit(71)
+constants=(errno.EACCES,errno.EPERM,os.O_CLOEXEC,os.WNOHANG,signal.SIGTERM,signal.SIGKILL,signal.SIG_IGN,subprocess.DEVNULL,subprocess.PIPE,time.CLOCK_BOOTTIME,sys.executable)
+if len(required)!=20 or not all(callable(value) for value in required) or len(constants)!=11 or errno.EACCES!=13 or errno.EPERM!=1: raise SystemExit(71)
 os.write(1,b"agentscope-python-helper-v1\n")
 `;
 const rootHelperSource = String.raw`
@@ -94,7 +96,7 @@ TEST_FAIL_CODE='import sys; sys.exit(17)'
 TEST_FAIL_ARGS=["-I","-S","-c",TEST_FAIL_CODE]
 TEST_DELAY_CODE='import sys; sys.exit(0)'
 TEST_DELAY_ARGS=["-I","-S","-c",TEST_DELAY_CODE]
-OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
+OPERATIONS={"synthetic-descendant":"/usr/bin/python3","synthetic-cleanup-failure":"/usr/bin/python3","synthetic-delayed-sentinel":"/usr/bin/python3","synthetic-setpgid-eacces":"/usr/bin/python3","synthetic-setpgid-non-eacces":"/usr/bin/python3","synthetic-sentinel-cleanup-failure":"/usr/bin/python3","pid1-readlink-1":"/usr/bin/readlink","pid1-stat":"/usr/bin/stat","pid1-digest":"/usr/bin/sha256sum","pid1-readlink-2":"/usr/bin/readlink","systemd-submit":"/usr/bin/systemd-run","unit-admission":"/usr/bin/systemctl","unit-monitor":"/usr/bin/systemctl","unit-authoritative":"/usr/bin/systemctl","unit-collection":"/usr/bin/systemctl","unit-retirement":"/usr/bin/systemctl","unit-kill-term":"/usr/bin/systemctl","unit-kill-kill":"/usr/bin/systemctl","unit-stop":"/usr/bin/systemctl","unit-reset":"/usr/bin/systemctl"}
 STAGES={"startup","cutoff","sentinel","tool-spawn","client-terminal","unit-admission","retirement","join"}
 SENTINEL_REASONS={"child-exit","start-identity","inherited-group","transition-timeout","kill","reap-join","residual","internal-unknown"}
 STAGE="startup"
@@ -162,7 +164,12 @@ def create_group():
   if OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"}: time.sleep(0.35)
   if now()>=boundary:
    REASON="transition-timeout"; raise RuntimeError("sentinel")
-  try: os.setpgid(leader,leader)
+  try:
+   if OPERATION=="synthetic-setpgid-eacces":
+    while now()<boundary and process_identity(leader)!=(expected_start,leader): time.sleep(0.001)
+    raise OSError(errno.EACCES,"synthetic")
+   if OPERATION=="synthetic-setpgid-non-eacces": raise OSError(errno.EPERM,"synthetic")
+   os.setpgid(leader,leader)
   except OSError as error:
    observed=process_identity(leader)
    if error.errno!=errno.EACCES or observed!=(expected_start,leader):
@@ -317,7 +324,7 @@ try:
  if OPERATION not in OPERATIONS or tool!=OPERATIONS[OPERATION] or not hmac.compare_digest(KEY.lower(),KEY) or len(KEY)!=64 or any(c not in "0123456789abcdef" for c in KEY) or now()>=CUTOFF or len(raw)>131072: raise RuntimeError("authority")
  args=json.loads(base64.urlsafe_b64decode(raw+"="*((4-len(raw)%4)%4)))
  if not isinstance(args,list) or len(args)>256 or any(not isinstance(value,str) or len(value)>4096 or "\x00" in value for value in args): raise RuntimeError("arguments")
- if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-sentinel-cleanup-failure"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
+ if tool=="/usr/bin/python3" and (os.geteuid()==0 or (OPERATION=="synthetic-descendant" and args!=TEST_ARGS) or (OPERATION=="synthetic-cleanup-failure" and args!=TEST_FAIL_ARGS) or (OPERATION in {"synthetic-delayed-sentinel","synthetic-setpgid-eacces","synthetic-setpgid-non-eacces","synthetic-sentinel-cleanup-failure"} and args!=TEST_DELAY_ARGS)): raise RuntimeError("test-authority")
  if tool=="/usr/bin/systemd-run":
   if not unit or ("--unit="+unit) not in args: raise RuntimeError("unit")
  elif tool=="/usr/bin/systemctl":
