@@ -1,5 +1,5 @@
-name: Upload authenticated integration failure evidence
-description: Upload one sealed sanitized failure-evidence bundle
+name: Run authenticated integration lifecycle
+description: Run the hermetic lifecycle and retain one sealed failure bundle
 runs:
   using: node24
   main: upload-failure-evidence.mjs

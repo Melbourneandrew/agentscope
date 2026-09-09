@@ -15,8 +15,9 @@ import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
+// prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { uploadFailureEvidence } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, uploadFailureEvidence } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -40,6 +41,16 @@ type UploadFailureEvidence = (options: {
   status: "uploaded";
 }>;
 const invokeUpload = uploadFailureEvidence as unknown as UploadFailureEvidence;
+const buildChildEnvironment = buildLifecycleEnvironment as unknown as (
+  environment: NodeJS.ProcessEnv,
+) => NodeJS.ProcessEnv;
+const preloadSource = preloadCredentialedSource as unknown as (
+  path: string,
+  maximumBytes: number,
+) => { descriptor: number };
+const revalidateSource = revalidateCredentialedSource as unknown as (
+  authority: unknown,
+) => void;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -72,7 +83,45 @@ const fixture = (): {
   return { arguments_, content, descriptor, root };
 };
 
-describe("failure evidence uploader", () => {
+describe("failure evidence action boundary", () => {
+  it("rejects named source replacement after retaining its exact descriptor", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "agentscope-action-source-"));
+    const path = resolve(root, "source.mjs");
+    writeFileSync(path, "export const authority = 1;\n", { mode: 0o600 });
+    const authority = preloadSource(path, 1024);
+    try {
+      expect(() => {
+        revalidateSource(authority);
+      }).not.toThrow();
+      rmSync(path);
+      writeFileSync(path, "export const authority = 2;\n", { mode: 0o600 });
+      expect(() => {
+        revalidateSource(authority);
+      }).toThrow("integration.controller.failure-evidence-upload");
+    } finally {
+      closeSync(authority.descriptor);
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("removes every artifact-service credential from the lifecycle child", () => {
+    expect(
+      buildChildEnvironment({
+        ACTIONS_RESULTS_URL: "https://results.actions.githubusercontent.com/",
+        ACTIONS_RUNTIME_TOKEN: "secret",
+        AGENTSCOPE_FAILURE_ARTIFACT_NAME: "integration-0-of-1-1",
+        GITHUB_ACTION_PATH: "/action",
+        GITHUB_ACTION_REPOSITORY: "owner/repository",
+        GITHUB_ACTIONS: "true",
+        REPLAY_SCENARIO: "",
+        REPLAY_SHARD: "0/1",
+      }),
+    ).toEqual({
+      AGENTSCOPE_INTEGRATION_SHARD: "0/1",
+      GITHUB_ACTIONS: "true",
+    });
+  });
+
   it("rejects ordinary direct execution outside the local action boundary", () => {
     const result = spawnSync(
       process.execPath,
@@ -83,7 +132,9 @@ describe("failure evidence uploader", () => {
       expect.objectContaining({ signal: null, status: 1, stderr: "" }),
     );
   });
+});
 
+describe("failure evidence uploader", () => {
   it("uploads the exact retained descriptor once with closed options", async () => {
     const owned = fixture();
     try {
@@ -254,20 +305,14 @@ describe("failure evidence upload provenance", () => {
     );
     expect(source).toContain("os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING");
     expect(source).toContain("fcntl.F_ADD_SEALS, REQUIRED_SEALS");
-    expect(source).toContain("inheritable_inventory() != {1, 2, descriptor}");
-    expect(source).toContain("os.fchdir(integration_descriptor)");
+    expect(source).toContain("os.set_inheritable(source_descriptor, True)");
+    expect(source).toContain("os.set_inheritable(bundle_descriptor, True)");
+    expect(source).toContain("os.fchdir(root_descriptor)");
     expect(source).toContain("os.execve(");
     expect(source).toContain('"--input-type=module"');
-    expect(source).toContain(
-      'UPLOADER_SHA256 = "1b7649efbff5bf76b16272b7afb7e5ead72b28e5197278c48f49d003f9e0fecc"',
-    );
+    expect(source).not.toContain("UPLOADER_SHA256");
     expect(source).not.toMatch(/mkstemp|NamedTemporaryFile|\/tmp\/|sudo|tee/gu);
-    expect(source.indexOf("os.fsync(descriptor)")).toBeLessThan(
-      source.indexOf("fcntl.F_ADD_SEALS, REQUIRED_SEALS"),
-    );
-    expect(source.indexOf("fcntl.F_ADD_SEALS, REQUIRED_SEALS")).toBeLessThan(
-      source.indexOf("os.execve("),
-    );
+    expect(source).toContain('elif sys.argv[1] == "seal-existing"');
   });
 });
 

@@ -115,25 +115,15 @@ jobs:
         with:
           name: integration-candidate-${{ github.sha }}
           path: artifacts/integration
-      - name: Run the private integration lifecycle
+      - name: Run the private integration lifecycle and retain failure evidence
+        id: integration_lifecycle
+        uses: ./tests/integration
         env:
           AGENTSCOPE_INTEGRATION_CONCURRENCY: "2"
           AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000"
+          AGENTSCOPE_FAILURE_ARTIFACT_NAME: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
           REPLAY_SCENARIO: ${{ inputs.scenario }}
           REPLAY_SHARD: ${{ inputs.shard || matrix.shard.selector }}
-        run: |
-          if [ -n "$REPLAY_SCENARIO" ]; then
-            export AGENTSCOPE_INTEGRATION_SCENARIO="$REPLAY_SCENARIO"
-          else
-            export AGENTSCOPE_INTEGRATION_SHARD="$REPLAY_SHARD"
-          fi
-          pnpm test:integration
-      - name: Verify and upload complete sanitized failure evidence
-        id: failure_evidence
-        if: failure()
-        uses: ./tests/integration
-        env:
-          AGENTSCOPE_FAILURE_ARTIFACT_NAME: integration-${{ matrix.shard.name }}-${{ matrix.replay }}
   hermetic-integration:
     name: hermetic-integration
     if: always()

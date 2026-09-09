@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Seal one sanitized failure bundle, then exec its exact in-process uploader."""
+"""Bootstrap the preloaded action and seal its anonymous failure bundle."""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ import sys
 
 
 MAXIMUM_BYTES = 1024 * 1024
-MAXIMUM_UPLOADER_BYTES = 64 * 1024
-UPLOADER_SHA256 = "1b7649efbff5bf76b16272b7afb7e5ead72b28e5197278c48f49d003f9e0fecc"
 MEMFD_NAME = "agentscope-sanitized-failure-evidence"
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -43,28 +41,6 @@ def verify_digest(value: str) -> None:
         fail()
 
 
-def descriptor_inventory() -> set[int]:
-    observed: set[int] = set()
-    for name in os.listdir("/proc/self/fd"):
-        if not name.isascii() or not name.isdecimal():
-            fail()
-        descriptor = int(name)
-        try:
-            os.fstat(descriptor)
-        except OSError:
-            continue
-        observed.add(descriptor)
-    return observed
-
-
-def inheritable_inventory() -> set[int]:
-    return {
-        descriptor
-        for descriptor in descriptor_inventory()
-        if os.get_inheritable(descriptor)
-    }
-
-
 def read_input() -> bytes:
     content = sys.stdin.buffer.read(MAXIMUM_BYTES + 1)
     if not content or len(content) > MAXIMUM_BYTES:
@@ -92,116 +68,55 @@ def same_identity(left: os.stat_result, right: os.stat_result) -> bool:
     )
 
 
-def seal(arguments: list[str]) -> None:
-    if len(arguments) != 5 or sys.platform != "linux":
+def bootstrap(arguments: list[str]) -> None:
+    if len(arguments) != 3 or sys.platform != "linux":
         fail()
-    expected_environment = {
-        "ACTIONS_RESULTS_URL",
-        "ACTIONS_RUNTIME_TOKEN",
-        "GITHUB_SERVER_URL",
-        "GITHUB_WORKSPACE",
-    }
-    if set(os.environ) != expected_environment:
-        fail()
-    node, uploader, artifact_name, deadline, expected_digest = arguments
-    if (
-        not os.path.isabs(node)
-        or not os.path.isabs(uploader)
-        or not artifact_name.isascii()
-        or len(artifact_name) < 1
-        or len(artifact_name) > 128
-        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in artifact_name)
-    ):
-        fail()
-    parse_unsigned(deadline, 2**63 - 1)
+    node, integration_root, expected_digest = arguments
     verify_digest(expected_digest)
+    if not os.path.isabs(node) or not os.path.isabs(integration_root):
+        fail()
+    source = read_input()
+    if f"sha256:{hashlib.sha256(source).hexdigest()}" != expected_digest:
+        fail()
+    source_descriptor = os.memfd_create(
+        "agentscope-preloaded-failure-action",
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    bundle_descriptor = os.memfd_create(
+        MEMFD_NAME,
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
     node_status = os.lstat(node)
-    uploader_status = os.lstat(uploader)
-    if (
-        not stat.S_ISREG(node_status.st_mode)
-        or stat.S_ISLNK(node_status.st_mode)
-        or not stat.S_ISREG(uploader_status.st_mode)
-        or stat.S_ISLNK(uploader_status.st_mode)
-        or uploader_status.st_size < 1
-        or uploader_status.st_size > MAXIMUM_UPLOADER_BYTES
-    ):
-        fail()
-    if descriptor_inventory() != {0, 1, 2}:
-        fail()
-    content = read_input()
-    if f"sha256:{hashlib.sha256(content).hexdigest()}" != expected_digest:
-        fail()
-    uploader_descriptor = os.open(uploader, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    try:
-        if not same_identity(os.fstat(uploader_descriptor), uploader_status):
-            fail()
-        uploader_source = os.read(uploader_descriptor, MAXIMUM_UPLOADER_BYTES + 1)
-        if len(uploader_source) != uploader_status.st_size or os.read(uploader_descriptor, 1):
-            fail()
-        try:
-            uploader_program = uploader_source.decode("utf-8")
-        except UnicodeDecodeError:
-            fail()
-        if hashlib.sha256(uploader_source).hexdigest() != UPLOADER_SHA256:
-            fail()
-    finally:
-        os.close(uploader_descriptor)
-    integration_root = os.path.join(
-        os.environ["GITHUB_WORKSPACE"], "tests", "integration"
-    )
-    integration_status = os.lstat(integration_root)
-    if not stat.S_ISDIR(integration_status.st_mode) or stat.S_ISLNK(
-        integration_status.st_mode
-    ):
-        fail()
-    integration_descriptor = os.open(
-        integration_root,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
-    )
-    try:
-        if not same_identity(os.fstat(integration_descriptor), integration_status):
-            fail()
-        os.fchdir(integration_descriptor)
-        if not same_identity(os.stat("."), integration_status):
-            fail()
-    finally:
-        os.close(integration_descriptor)
-    descriptor = os.memfd_create(MEMFD_NAME, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
     node_descriptor = os.open(node, os.O_PATH | os.O_CLOEXEC | os.O_NOFOLLOW)
     try:
-        if descriptor != 3:
+        if source_descriptor != 3 or bundle_descriptor != 4:
             fail()
-        offset = 0
-        while offset < len(content):
-            written = os.write(descriptor, content[offset:])
-            if written <= 0:
-                fail()
-            offset += written
-        os.fsync(descriptor)
-        os.fchmod(descriptor, 0o400)
-        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, REQUIRED_SEALS)
-        if fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
+        if os.write(source_descriptor, source) != len(source):
             fail()
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        os.set_inheritable(descriptor, True)
+        os.fchmod(source_descriptor, 0o400)
+        fcntl.fcntl(source_descriptor, fcntl.F_ADD_SEALS, REQUIRED_SEALS)
+        if fcntl.fcntl(source_descriptor, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
+            fail()
+        os.fchmod(bundle_descriptor, 0o600)
+        os.set_inheritable(source_descriptor, True)
+        os.set_inheritable(bundle_descriptor, True)
         os.close(0)
-        if descriptor_inventory() != {1, 2, descriptor, node_descriptor}:
-            fail()
-        if inheritable_inventory() != {1, 2, descriptor}:
-            fail()
-        environment = {
-            name: os.environ[name]
-            for name in (
-                "ACTIONS_RESULTS_URL",
-                "ACTIONS_RUNTIME_TOKEN",
-                "GITHUB_SERVER_URL",
-                "GITHUB_WORKSPACE",
-            )
-            if name in os.environ
-        }
-        if set(environment) != expected_environment:
-            fail()
-        if not same_identity(os.fstat(node_descriptor), node_status) or os.execve not in os.supports_fd:
+        root_status = os.lstat(integration_root)
+        root_descriptor = os.open(
+            integration_root,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
+        )
+        try:
+            if not same_identity(os.fstat(root_descriptor), root_status):
+                fail()
+            os.fchdir(root_descriptor)
+        finally:
+            os.close(root_descriptor)
+        if (
+            not stat.S_ISREG(node_status.st_mode)
+            or not same_identity(os.fstat(node_descriptor), node_status)
+            or os.execve not in os.supports_fd
+        ):
             fail()
         os.execve(
             node_descriptor,
@@ -209,26 +124,44 @@ def seal(arguments: list[str]) -> None:
                 node,
                 "--input-type=module",
                 "--eval",
-                uploader_program,
+                source.decode("utf-8"),
                 "--",
-                "--fd",
-                str(descriptor),
-                "--size",
-                str(len(content)),
-                "--digest",
+                "--outer-controller",
+                "--source-fd",
+                str(source_descriptor),
+                "--bundle-fd",
+                str(bundle_descriptor),
+                "--source-digest",
                 expected_digest,
-                "--name",
-                artifact_name,
-                "--deadline",
-                deadline,
-                "--python",
-                os.path.abspath(__file__),
             ],
-            environment,
+            os.environ,
         )
     finally:
-        os.close(descriptor)
+        os.close(source_descriptor)
+        os.close(bundle_descriptor)
         os.close(node_descriptor)
+
+
+def seal_existing(arguments: list[str]) -> None:
+    if len(arguments) != 2 or sys.platform != "linux":
+        fail()
+    size = parse_unsigned(arguments[0], MAXIMUM_BYTES)
+    verify_digest(arguments[1])
+    descriptor = 3
+    status = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_nlink != 0
+        or status.st_size != size
+        or stat.S_IMODE(status.st_mode) != 0o600
+    ):
+        fail()
+    os.fsync(descriptor)
+    os.fchmod(descriptor, 0o400)
+    fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, REQUIRED_SEALS)
+    if fcntl.fcntl(descriptor, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
+        fail()
+    sys.stdout.write('{"status":"sealed"}\n')
 
 
 def probe(arguments: list[str]) -> None:
@@ -278,8 +211,10 @@ def probe(arguments: list[str]) -> None:
 def main() -> None:
     if len(sys.argv) < 2:
         fail()
-    if sys.argv[1] == "seal":
-        seal(sys.argv[2:])
+    if sys.argv[1] == "bootstrap":
+        bootstrap(sys.argv[2:])
+    elif sys.argv[1] == "seal-existing":
+        seal_existing(sys.argv[2:])
     elif sys.argv[1] == "probe":
         probe(sys.argv[2:])
     else:

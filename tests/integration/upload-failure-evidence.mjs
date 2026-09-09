@@ -4,6 +4,7 @@ import {
   closeSync,
   constants,
   existsSync,
+  fsyncSync,
   fstatSync,
   lstatSync,
   openSync,
@@ -13,6 +14,7 @@ import {
   readdirSync,
   rmdirSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -21,6 +23,8 @@ import {
   compileCapabilityManifest,
   compileIsolationEvidence,
 } from "./dist/index.js";
+import { runSupervisedProcess } from "./supervisor.mjs";
+import { DefaultArtifactClient } from "@actions/artifact";
 
 const MAXIMUM_BYTES = 1024 * 1024;
 const ARTIFACT_PATCH_SHA256 =
@@ -152,13 +156,10 @@ const resolveArtifactClientEntry = (workspace) => {
 };
 const verifyArtifactClientProvenance = () => {
   if (
-    Object.keys(process.env).sort().join("\n") !==
-    [
-      "ACTIONS_RESULTS_URL",
-      "ACTIONS_RUNTIME_TOKEN",
-      "GITHUB_SERVER_URL",
-      "GITHUB_WORKSPACE",
-    ].join("\n")
+    typeof process.env.ACTIONS_RESULTS_URL !== "string" ||
+    typeof process.env.ACTIONS_RUNTIME_TOKEN !== "string" ||
+    process.env.GITHUB_SERVER_URL !== "https://github.com" ||
+    typeof process.env.GITHUB_WORKSPACE !== "string"
   )
     fail();
   const workspace = process.env.GITHUB_WORKSPACE;
@@ -293,8 +294,11 @@ const authenticateActionInvocation = () => {
 };
 
 /* eslint-disable complexity, max-lines-per-function -- This closed verifier deliberately keeps the complete evidence grammar in the credential-bearing action process. */
-export const runFailureEvidenceAction = () => {
-  authenticateActionInvocation();
+export const finalizeFailureEvidence = async ({
+  bundleDescriptor,
+  client,
+  sealerSource,
+}) => {
   const fail = () => {
     throw new Error("integration.controller.failure-evidence");
   };
@@ -947,8 +951,6 @@ export const runFailureEvidenceAction = () => {
     process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
   if (!/^[1-9]\d{0,15}$/u.test(deadline ?? "")) fail();
   const deadlineNanoseconds = (BigInt(deadline) * 1_000_000n).toString();
-  const sealPath = resolve("tests/integration/seal-failure-evidence.py");
-  const uploaderPath = resolve("tests/integration/upload-failure-evidence.mjs");
   const artifactName = process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME;
   let resultsUrl;
   try {
@@ -981,57 +983,83 @@ export const runFailureEvidenceAction = () => {
     remainingMilliseconds > 1_200_000
   )
     fail();
-  const uploader = spawnSync(
+  if (
+    !Number.isSafeInteger(bundleDescriptor) ||
+    bundleDescriptor < 3 ||
+    !Buffer.isBuffer(sealerSource)
+  )
+    fail();
+  const written = writeSync(bundleDescriptor, bundle, 0, bundle.length, 0);
+  if (written !== bundle.length) fail();
+  fsyncSync(bundleDescriptor);
+  const sealer = spawnSync(
     "/usr/bin/python3",
     [
-      sealPath,
-      "seal",
-      process.execPath,
-      uploaderPath,
-      artifactName,
-      deadlineNanoseconds,
+      "-c",
+      sealerSource.toString("utf8"),
+      "seal-existing",
+      String(bundle.length),
       bundleDigest,
     ],
     {
-      env: {
-        ACTIONS_RESULTS_URL: process.env.ACTIONS_RESULTS_URL,
-        ACTIONS_RUNTIME_TOKEN: process.env.ACTIONS_RUNTIME_TOKEN,
-        GITHUB_SERVER_URL: process.env.GITHUB_SERVER_URL,
-        GITHUB_WORKSPACE: process.env.GITHUB_WORKSPACE,
-      },
-      input: bundle,
+      env: {},
       maxBuffer: 4096,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", bundleDescriptor],
       timeout: remainingMilliseconds,
     },
   );
   if (
-    uploader.error !== undefined ||
-    uploader.status !== 0 ||
-    uploader.signal !== null ||
-    uploader.stderr.length !== 0 ||
-    uploader.stdout.length < 1 ||
-    uploader.stdout.length > 1024
+    sealer.error !== undefined ||
+    sealer.status !== 0 ||
+    sealer.signal !== null ||
+    sealer.stderr.length !== 0 ||
+    sealer.stdout.toString("utf8") !== '{"status":"sealed"}\n'
   )
     fail();
-  const receipt = JSON.parse(uploader.stdout.toString("utf8"));
-  if (
-    !exactKeys(receipt, [
-      "artifactDigest",
-      "artifactId",
-      "artifactSize",
-      "status",
-    ]) ||
-    receipt.status !== "uploaded" ||
-    !Number.isSafeInteger(receipt.artifactId) ||
-    receipt.artifactId < 1 ||
-    !Number.isSafeInteger(receipt.artifactSize) ||
-    receipt.artifactSize < 1 ||
-    !/^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest)
-  )
-    fail();
-  const canonicalReceipt = `${JSON.stringify({ artifactDigest: receipt.artifactDigest, artifactId: receipt.artifactId, artifactSize: receipt.artifactSize, status: "uploaded" })}\n`;
-  if (uploader.stdout.toString("utf8") !== canonicalReceipt) fail();
+  const probe = async (arguments_) => {
+    const result = spawnSync(
+      "/usr/bin/python3",
+      ["-c", sealerSource.toString("utf8"), ...arguments_.slice(1)],
+      { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    if (
+      result.error !== undefined ||
+      result.status !== 0 ||
+      result.signal !== null ||
+      result.stderr.length !== 0 ||
+      result.stdout.toString("utf8") !== '{"status":"authenticated"}\n'
+    )
+      fail();
+  };
+  const originalStdout = process.stdout.write.bind(process.stdout);
+  const originalStderr = process.stderr.write.bind(process.stderr);
+  try {
+    process.stdout.write = () => true;
+    process.stderr.write = () => true;
+    await uploadFailureEvidence({
+      arguments_: [
+        "--fd",
+        String(bundleDescriptor),
+        "--size",
+        String(bundle.length),
+        "--digest",
+        bundleDigest,
+        "--name",
+        artifactName,
+        "--deadline",
+        deadlineNanoseconds,
+        "--python",
+        "/usr/bin/python3",
+      ],
+      client,
+      nowNanoseconds: process.hrtime.bigint,
+      probe,
+      startTicks: processStartTicks,
+    });
+  } finally {
+    process.stdout.write = originalStdout;
+    process.stderr.write = originalStderr;
+  }
   const retireUploadedFailureEvidence = () => {
     for (const authority of authenticatedDescriptors) {
       if (!authority.path.startsWith(`${artifactsRoot}/`)) continue;
@@ -1060,48 +1088,194 @@ export const runFailureEvidenceAction = () => {
 };
 /* eslint-enable complexity, max-lines-per-function */
 
-const main = async () => {
-  const arguments_ = process.argv.slice(1);
-  const values = exactArguments(arguments_);
-  const descriptor = parseUnsigned(values.fd, 2 ** 20);
-  const probe = async (arguments_) => {
-    const result = spawnSync(arguments_[0], arguments_.slice(1), {
-      env: {},
-      maxBuffer: 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
-    });
+const exactControllerArguments = (arguments_) => {
+  if (
+    arguments_.length !== 7 ||
+    arguments_[0] !== "--outer-controller" ||
+    arguments_[1] !== "--source-fd" ||
+    arguments_[3] !== "--bundle-fd" ||
+    arguments_[5] !== "--source-digest"
+  )
+    fail();
+  return Object.freeze({
+    bundleDescriptor: parseUnsigned(arguments_[4], 1024),
+    sourceDescriptor: parseUnsigned(arguments_[2], 1024),
+    sourceDigest: arguments_[6],
+  });
+};
+
+export const preloadCredentialedSource = (path, maximumBytes) => {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const status = fstatSync(descriptor);
     if (
-      result.error !== undefined ||
-      result.status !== 0 ||
-      result.signal !== null ||
-      result.stderr.length !== 0 ||
-      result.stdout.toString("utf8") !== '{"status":"authenticated"}\n'
+      !status.isFile() ||
+      status.nlink !== 1 ||
+      status.size < 1 ||
+      status.size > maximumBytes
     )
       fail();
-  };
-  let receipt;
-  try {
-    verifyArtifactClientProvenance();
-    const { DefaultArtifactClient } = await import("@actions/artifact");
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = () => true;
-    process.stderr.write = () => true;
-    receipt = await uploadFailureEvidence({
-      arguments_,
-      client: new DefaultArtifactClient(),
-      nowNanoseconds: process.hrtime.bigint,
-      probe,
+    const content = readExact(descriptor, status.size);
+    return Object.freeze({
+      content,
+      descriptor,
+      digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+      path,
+      status,
     });
-    process.stdout.write = originalWrite;
-    originalWrite(`${JSON.stringify(receipt)}\n`);
-  } finally {
+  } catch (error) {
     closeSync(descriptor);
+    throw error;
   }
 };
 
-if (process.argv[1] === "--fd") {
-  main().catch(() => {
+export const revalidateCredentialedSource = (authority) => {
+  const status = fstatSync(authority.descriptor);
+  const named = lstatSync(authority.path);
+  const content = readExact(authority.descriptor, authority.status.size);
+  if (
+    status.dev !== authority.status.dev ||
+    status.ino !== authority.status.ino ||
+    status.mode !== authority.status.mode ||
+    status.nlink !== authority.status.nlink ||
+    status.size !== authority.status.size ||
+    named.dev !== authority.status.dev ||
+    named.ino !== authority.status.ino ||
+    named.mode !== authority.status.mode ||
+    named.nlink !== authority.status.nlink ||
+    named.size !== authority.status.size ||
+    named.isSymbolicLink() ||
+    `sha256:${createHash("sha256").update(content).digest("hex")}` !==
+      authority.digest
+  )
+    fail();
+};
+
+export const buildLifecycleEnvironment = (sourceEnvironment) => {
+  const environment = { ...sourceEnvironment };
+  for (const name of [
+    "ACTIONS_RESULTS_URL",
+    "ACTIONS_RUNTIME_TOKEN",
+    "AGENTSCOPE_FAILURE_ARTIFACT_NAME",
+    "GITHUB_ACTION_PATH",
+    "GITHUB_ACTION_REPOSITORY",
+    "REPLAY_SCENARIO",
+    "REPLAY_SHARD",
+  ])
+    delete environment[name];
+  if ((sourceEnvironment.REPLAY_SCENARIO ?? "") !== "")
+    environment.AGENTSCOPE_INTEGRATION_SCENARIO =
+      sourceEnvironment.REPLAY_SCENARIO;
+  else
+    environment.AGENTSCOPE_INTEGRATION_SHARD = sourceEnvironment.REPLAY_SHARD;
+  return environment;
+};
+
+const outerControllerMain = async () => {
+  const authority = exactControllerArguments(process.argv.slice(1));
+  const source = readExact(
+    authority.sourceDescriptor,
+    fstatSync(authority.sourceDescriptor).size,
+  );
+  if (
+    authority.sourceDigest !==
+      `sha256:${createHash("sha256").update(source).digest("hex")}` ||
+    (fstatSync(authority.sourceDescriptor).mode & 0o7777) !== 0o400
+  )
+    fail();
+  verifyArtifactClientProvenance();
+  const sealer = preloadCredentialedSource(
+    resolve(
+      process.env.GITHUB_WORKSPACE,
+      "tests/integration/seal-failure-evidence.py",
+    ),
+    64 * 1024,
+  );
+  const suppliedDeadline =
+    process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
+  if (!/^\d{7,15}$/u.test(suppliedDeadline ?? "")) fail();
+  const hostMilliseconds =
+    Number(readFileSync("/proc/uptime", "utf8").split(" ", 1)[0]) * 1000;
+  const maximumMilliseconds = Math.min(
+    24 * 60 * 1000,
+    Number(suppliedDeadline) - hostMilliseconds,
+  );
+  if (maximumMilliseconds < 2 * 60 * 1000) fail();
+  const result = await runSupervisedProcess({
+    environment: buildLifecycleEnvironment(process.env),
+    executable: process.execPath,
+    arguments_: [
+      resolve(
+        process.env.GITHUB_WORKSPACE,
+        "tests/integration/controller-process.mjs",
+      ),
+    ],
+    maximumMilliseconds,
+  });
+  if (result.code === 0 && result.contained && !result.residualWorkObserved) {
+    revalidateCredentialedSource(sealer);
+    closeSync(sealer.descriptor);
+    closeSync(authority.bundleDescriptor);
+    closeSync(authority.sourceDescriptor);
+    return;
+  }
+  try {
+    revalidateCredentialedSource(sealer);
+    await finalizeFailureEvidence({
+      bundleDescriptor: authority.bundleDescriptor,
+      client: new DefaultArtifactClient(),
+      sealerSource: sealer.content,
+    });
+  } finally {
+    closeSync(sealer.descriptor);
+    closeSync(authority.bundleDescriptor);
+    closeSync(authority.sourceDescriptor);
+  }
+  process.exitCode = result.code === 0 ? 1 : (result.code ?? 1);
+};
+
+const bootstrapMain = () => {
+  authenticateActionInvocation();
+  verifyArtifactClientProvenance();
+  const source = preloadCredentialedSource(
+    resolve(import.meta.dirname, "upload-failure-evidence.mjs"),
+    64 * 1024,
+  );
+  const sealer = preloadCredentialedSource(
+    resolve(import.meta.dirname, "seal-failure-evidence.py"),
+    64 * 1024,
+  );
+  const result = spawnSync(
+    "/usr/bin/python3",
+    [
+      "-c",
+      sealer.content.toString("utf8"),
+      "bootstrap",
+      process.execPath,
+      realpathSync(import.meta.dirname),
+      source.digest,
+    ],
+    {
+      env: { ...process.env },
+      input: source.content,
+      stdio: ["pipe", "inherit", "inherit"],
+      timeout: 20 * 60 * 1000,
+    },
+  );
+  revalidateCredentialedSource(source);
+  revalidateCredentialedSource(sealer);
+  closeSync(source.descriptor);
+  closeSync(sealer.descriptor);
+  if (
+    result.error !== undefined ||
+    result.status !== 0 ||
+    result.signal !== null
+  )
+    fail();
+};
+
+if (process.argv[1] === "--outer-controller") {
+  outerControllerMain().catch(() => {
     process.exitCode = 1;
   });
 } else if (
@@ -1109,7 +1283,7 @@ if (process.argv[1] === "--fd") {
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   try {
-    runFailureEvidenceAction();
+    bootstrapMain();
   } catch {
     process.exitCode = 1;
   }

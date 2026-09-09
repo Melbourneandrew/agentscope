@@ -46,7 +46,7 @@ const failureVerifierSource = (workflow: string) => {
     resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
     "utf8",
   );
-  const marker = "export const runFailureEvidenceAction = () => {\n";
+  const marker = "export const finalizeFailureEvidence = async ({\n";
   const start = action.indexOf(marker);
   const end = action.indexOf(
     "\n};\n/* eslint-enable complexity, max-lines-per-function */",
@@ -54,9 +54,48 @@ const failureVerifierSource = (workflow: string) => {
   );
   if (start < 0 || end < 0)
     throw new Error("malformed failure verifier action");
-  const body = action
-    .slice(start + marker.length, end)
-    .replace("  authenticateActionInvocation();\n", "")
+  const functionBody = action.slice(
+    action.indexOf("}) => {\n", start) + "}) => {\n".length,
+    end,
+  );
+  const tailStart = functionBody.indexOf("  const deadline =");
+  const retirementStart = functionBody.indexOf(
+    "  const retireUploadedFailureEvidence =",
+    tailStart,
+  );
+  if (tailStart < 0 || retirementStart < 0)
+    throw new Error("malformed failure verifier action");
+  const syntheticUpload = `  const uploader = spawnSync("fixture", [], {
+    input: bundle,
+    maxBuffer: 4096,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (
+    uploader.error !== undefined ||
+    uploader.status !== 0 ||
+    uploader.signal !== null ||
+    uploader.stderr.length !== 0 ||
+    uploader.stdout.length < 1 ||
+    uploader.stdout.length > 1024
+  ) fail();
+  const receipt = JSON.parse(uploader.stdout.toString("utf8"));
+  if (
+    !exactKeys(receipt, ["artifactDigest", "artifactId", "artifactSize", "status"]) ||
+    receipt.status !== "uploaded" ||
+    !Number.isSafeInteger(receipt.artifactId) ||
+    receipt.artifactId < 1 ||
+    !Number.isSafeInteger(receipt.artifactSize) ||
+    receipt.artifactSize < 1 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest)
+  ) fail();
+  const canonicalReceipt = JSON.stringify({ artifactDigest: receipt.artifactDigest, artifactId: receipt.artifactId, artifactSize: receipt.artifactSize, status: "uploaded" }) + "\\n";
+  if (uploader.stdout.toString("utf8") !== canonicalReceipt) fail();
+`;
+  const body = (
+    functionBody.slice(0, tailStart) +
+    syntheticUpload +
+    functionBody.slice(retirementStart)
+  )
     .split("\n")
     .map((line) => (line.startsWith("  ") ? line.slice(2) : line))
     .join("\n");
@@ -750,7 +789,7 @@ describe("integration workflow routing policy", () => {
       resolve(workspaceRoot, ".github/workflows/integration.yml"),
       "utf8",
     );
-    expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(2);
+    expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(1);
     expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
     expect(
       workflow.match(/NPM_CONFIG_GLOBALCONFIG=.*agentscope-global\.npmrc/gu),
@@ -771,12 +810,12 @@ describe("integration workflow routing policy", () => {
     expect(workflow).toContain("if-no-files-found: error");
     expect(workflow).not.toContain("if-no-files-found: ignore");
     expect(workflow).toContain(
-      "Verify and upload complete sanitized failure evidence",
+      "Run the private integration lifecycle and retain failure evidence",
     );
-    expect(workflow).toContain("id: failure_evidence");
+    expect(workflow).toContain("id: integration_lifecycle");
     const upload = workflow.slice(
       workflow.indexOf(
-        "- name: Verify and upload complete sanitized failure evidence",
+        "- name: Run the private integration lifecycle and retain failure evidence",
       ),
       workflow.indexOf("  hermetic-integration:"),
     );
@@ -801,6 +840,18 @@ describe("integration workflow routing policy", () => {
     );
     expect(actionSource).toContain("ACTIONS_RUNTIME_TOKEN");
     expect(actionSource).toContain("ACTIONS_RESULTS_URL");
+    expect(actionSource).toContain("delete environment[name]");
+    expect(actionSource).toContain('"ACTIONS_RUNTIME_TOKEN"');
+    expect(actionSource).toContain('"ACTIONS_RESULTS_URL"');
+    const preload = actionSource.indexOf(
+      "const sealer = preloadCredentialedSource(",
+    );
+    const lifecycle = actionSource.indexOf("await runSupervisedProcess({");
+    const finalize = actionSource.indexOf("await finalizeFailureEvidence({");
+    expect(preload).toBeGreaterThanOrEqual(0);
+    expect(lifecycle).toBeGreaterThan(preload);
+    expect(finalize).toBeGreaterThan(lifecycle);
+    expect(actionSource).not.toContain('await import("@actions/artifact")');
     expect(upload).not.toMatch(
       /GITHUB_OUTPUT|bundle_keeper|failure-evidence-keeper|RUNNER_TEMP|sudo|tee/gu,
     );
