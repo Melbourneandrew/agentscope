@@ -98,11 +98,7 @@ export type SystemdLifecyclePhase =
   | "collection";
 
 export type SystemdLifecycleReason =
-  | "deadline"
-  | "interrupted"
-  | "authority"
-  | "malformed"
-  | "internal";
+  "deadline" | "interrupted" | "authority" | "malformed" | "internal";
 
 export type SystemdRetirementAuthorityReason =
   | "authority-load"
