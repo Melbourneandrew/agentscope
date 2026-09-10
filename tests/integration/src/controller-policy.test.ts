@@ -106,10 +106,24 @@ const failureVerifierSource = (workflow: string) => {
   );
   if (start < 0 || end < 0)
     throw new Error("malformed failure verifier action");
-  const functionBody = action.slice(
+  const rawFunctionBody = action.slice(
     action.indexOf("}) => {\n", start) + "}) => {\n".length,
     end,
   );
+  const wrapperStart = "  try {\n    const authenticatedDescriptors = []";
+  const wrapperEnd =
+    "\n  } catch (error) {\n    if (failureEvidenceFinalizationReason(error) !== undefined) throw error;\n    throw bindFailureEvidenceFinalization(finalizationReason);\n  }";
+  const wrapperStartIndex = rawFunctionBody.indexOf(wrapperStart);
+  const wrapperEndIndex = rawFunctionBody.lastIndexOf(wrapperEnd);
+  if (wrapperStartIndex < 0 || wrapperEndIndex < wrapperStartIndex)
+    throw new Error("malformed failure verifier finalization wrapper");
+  const functionBody =
+    rawFunctionBody.slice(0, wrapperStartIndex) +
+    "  const authenticatedDescriptors = []" +
+    rawFunctionBody.slice(
+      wrapperStartIndex + wrapperStart.length,
+      wrapperEndIndex,
+    );
   const tailStart = functionBody.indexOf("  const deadline =");
   const retirementStart = functionBody.indexOf(
     "  const retireUploadedFailureEvidence =",

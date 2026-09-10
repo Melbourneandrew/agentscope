@@ -651,823 +651,838 @@ export const finalizeFailureEvidence = async ({
     value !== null &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify([...keys].sort());
-  const authenticatedDescriptors = [];
-  const ptyFailurePredicates = {
-    "candidate-inventory": ["candidate-rejected"],
-    "immutable-candidate": ["authority-rejected"],
-    "installed-cli": [
-      "bin-authority",
-      "cli-authority",
-      "cli-boundary",
-      "driver-input",
-      "execution-rejected",
-      "interpreter-authority",
-      "package-authority",
-      "package-manifest",
-      "receipt-rejected",
-    ],
-    "pty-receipt": ["receipt-rejected"],
-    "runner-bootstrap": ["runner-rejected"],
-  };
-  const installedContractFailurePredicates = {
-    "aggregate-evaluation": ["evaluation-rejected"],
-    "artifact-install": [
-      "candidate-rejected",
-      "egress-rejected",
-      "install-rejected",
-      "manifest-rejected",
-      "plan-rejected",
-      "toolchain-rejected",
-    ],
-    "case-execution": [
-      "narrow-help-rejected",
-      "setup-rejected",
-      "state-rejected",
-      "testkit.headless.aborted",
-      "testkit.headless.backend.receipt",
-      "testkit.headless.capability",
-      "testkit.headless.kernel.failure",
-      "testkit.headless.kernel.options",
-      "testkit.headless.kernel.request",
-      "testkit.headless.kernel.spawn",
-      "testkit.headless.observer.identity",
-      "testkit.headless.observer.read",
-      "testkit.headless.observer.reap",
-      "testkit.headless.observer.root",
-      "testkit.headless.observer.signal",
-      "testkit.headless.reconciliation.deadline",
-      "testkit.headless.startup.deadline",
-      "testkit.pty.immutable-candidate",
-    ],
-    "receipt-finalization": ["receipt-rejected"],
-  };
-  const installedContractCaseCount = 123;
-  const installedContractInventorySha256 =
-    "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a";
-  const validPtyFailure = (value) =>
-    value === null ||
-    (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
-      value.receiptVersion === 1 &&
-      Object.hasOwn(ptyFailurePredicates, value.phase) &&
-      ptyFailurePredicates[value.phase].includes(value.predicate)) ||
-    (exactKeys(
-      value,
-      value?.phase === "case-execution"
-        ? [
-            "caseOrdinal",
-            "contractInventorySha256",
-            "phase",
-            "predicate",
-            "receiptVersion",
-          ]
-        : ["phase", "predicate", "receiptVersion"],
-    ) &&
-      value.receiptVersion === 1 &&
-      Object.hasOwn(installedContractFailurePredicates, value.phase) &&
-      installedContractFailurePredicates[value.phase].includes(
-        value.predicate,
-      ) &&
-      (value.phase !== "case-execution" ||
-        (Number.isSafeInteger(value.caseOrdinal) &&
-          value.caseOrdinal >= 0 &&
-          value.caseOrdinal < installedContractCaseCount &&
-          value.contractInventorySha256 === installedContractInventorySha256)));
-  const readBounded = (path, maximumBytes, expectedMode = 0o600) => {
-    let descriptor;
-    let firstFailure;
-    let result;
-    try {
-      mark("open");
-      descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-      mark("stat");
-      const before = fstatSync(descriptor);
-      if (
-        !before.isFile() ||
-        before.nlink !== 1 ||
-        before.size < 1 ||
-        before.size > maximumBytes ||
-        (before.mode & 0o7777) !== expectedMode
-      )
-        fail();
-      mark("read");
-      const content = readFileSync(descriptor);
-      mark("stat");
-      const after = fstatSync(descriptor);
-      if (
-        after.dev !== before.dev ||
-        after.ino !== before.ino ||
-        after.size !== before.size ||
-        after.nlink !== before.nlink
-      )
-        fail();
-      authenticatedDescriptors.push({ descriptor, path, status: before });
-      descriptor = undefined;
-      mark("validation");
-      result = { content, status: before };
-    } catch (error) {
-      firstFailure =
-        failureEvidenceFinalizationReason(error) !== undefined
-          ? error
-          : bindFailureEvidenceFinalization(finalizationReason);
-    }
-    if (descriptor !== undefined)
-      firstFailure = closeFailureEvidenceDescriptor(
-        descriptor,
-        firstFailure,
-        finalizationReason,
-      );
-    if (firstFailure !== undefined) throw firstFailure;
-    return result;
-  };
-  const artifactsRoot = resolve("artifacts/integration");
-  const runsRoot = resolve(artifactsRoot, "runs");
-  const manifestPath = resolve(
-    artifactsRoot,
-    "controller-failure-manifest.json",
-  );
-  const terminalPath = resolve(
-    artifactsRoot,
-    "controller-failure-terminal.json",
-  );
-  const manifestPresent = existsSync(manifestPath);
-  const terminalPresent = existsSync(terminalPath);
-  if (!manifestPresent && !terminalPresent) fail();
-  if (terminalPresent) {
-    const terminal = JSON.parse(
-      readBounded(terminalPath, 4096).content.toString("utf8"),
-    );
-    const terminalPredicates = {
-      "require-evidence": ["authority-rejected"],
-      "finalize-run": [
-        "retained-evidence-unavailable",
-        "run-finalization-rejected",
+  try {
+    const authenticatedDescriptors = [];
+    const ptyFailurePredicates = {
+      "candidate-inventory": ["candidate-rejected"],
+      "immutable-candidate": ["authority-rejected"],
+      "installed-cli": [
+        "bin-authority",
+        "cli-authority",
+        "cli-boundary",
+        "driver-input",
+        "execution-rejected",
+        "interpreter-authority",
+        "package-authority",
+        "package-manifest",
+        "receipt-rejected",
       ],
-      "publish-manifest": ["manifest-publication-rejected"],
+      "pty-receipt": ["receipt-rejected"],
+      "runner-bootstrap": ["runner-rejected"],
+    };
+    const installedContractFailurePredicates = {
+      "aggregate-evaluation": ["evaluation-rejected"],
+      "artifact-install": [
+        "candidate-rejected",
+        "egress-rejected",
+        "install-rejected",
+        "manifest-rejected",
+        "plan-rejected",
+        "toolchain-rejected",
+      ],
+      "case-execution": [
+        "narrow-help-rejected",
+        "setup-rejected",
+        "state-rejected",
+        "testkit.headless.aborted",
+        "testkit.headless.backend.receipt",
+        "testkit.headless.capability",
+        "testkit.headless.kernel.failure",
+        "testkit.headless.kernel.options",
+        "testkit.headless.kernel.request",
+        "testkit.headless.kernel.spawn",
+        "testkit.headless.observer.identity",
+        "testkit.headless.observer.read",
+        "testkit.headless.observer.reap",
+        "testkit.headless.observer.root",
+        "testkit.headless.observer.signal",
+        "testkit.headless.reconciliation.deadline",
+        "testkit.headless.startup.deadline",
+        "testkit.pty.immutable-candidate",
+      ],
+      "receipt-finalization": ["receipt-rejected"],
+    };
+    const installedContractCaseCount = 123;
+    const installedContractInventorySha256 =
+      "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a";
+    const validPtyFailure = (value) =>
+      value === null ||
+      (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
+        value.receiptVersion === 1 &&
+        Object.hasOwn(ptyFailurePredicates, value.phase) &&
+        ptyFailurePredicates[value.phase].includes(value.predicate)) ||
+      (exactKeys(
+        value,
+        value?.phase === "case-execution"
+          ? [
+              "caseOrdinal",
+              "contractInventorySha256",
+              "phase",
+              "predicate",
+              "receiptVersion",
+            ]
+          : ["phase", "predicate", "receiptVersion"],
+      ) &&
+        value.receiptVersion === 1 &&
+        Object.hasOwn(installedContractFailurePredicates, value.phase) &&
+        installedContractFailurePredicates[value.phase].includes(
+          value.predicate,
+        ) &&
+        (value.phase !== "case-execution" ||
+          (Number.isSafeInteger(value.caseOrdinal) &&
+            value.caseOrdinal >= 0 &&
+            value.caseOrdinal < installedContractCaseCount &&
+            value.contractInventorySha256 ===
+              installedContractInventorySha256)));
+    const readBounded = (path, maximumBytes, expectedMode = 0o600) => {
+      let descriptor;
+      let firstFailure;
+      let result;
+      try {
+        mark("open");
+        descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        mark("stat");
+        const before = fstatSync(descriptor);
+        if (
+          !before.isFile() ||
+          before.nlink !== 1 ||
+          before.size < 1 ||
+          before.size > maximumBytes ||
+          (before.mode & 0o7777) !== expectedMode
+        )
+          fail();
+        mark("read");
+        const content = readFileSync(descriptor);
+        mark("stat");
+        const after = fstatSync(descriptor);
+        if (
+          after.dev !== before.dev ||
+          after.ino !== before.ino ||
+          after.size !== before.size ||
+          after.nlink !== before.nlink
+        )
+          fail();
+        authenticatedDescriptors.push({ descriptor, path, status: before });
+        descriptor = undefined;
+        mark("validation");
+        result = { content, status: before };
+      } catch (error) {
+        firstFailure =
+          failureEvidenceFinalizationReason(error) !== undefined
+            ? error
+            : bindFailureEvidenceFinalization(finalizationReason);
+      }
+      if (descriptor !== undefined)
+        firstFailure = closeFailureEvidenceDescriptor(
+          descriptor,
+          firstFailure,
+          finalizationReason,
+        );
+      if (firstFailure !== undefined) throw firstFailure;
+      return result;
+    };
+    const artifactsRoot = resolve("artifacts/integration");
+    const runsRoot = resolve(artifactsRoot, "runs");
+    const manifestPath = resolve(
+      artifactsRoot,
+      "controller-failure-manifest.json",
+    );
+    const terminalPath = resolve(
+      artifactsRoot,
+      "controller-failure-terminal.json",
+    );
+    const manifestPresent = existsSync(manifestPath);
+    const terminalPresent = existsSync(terminalPath);
+    if (!manifestPresent && !terminalPresent) fail();
+    if (terminalPresent) {
+      const terminal = JSON.parse(
+        readBounded(terminalPath, 4096).content.toString("utf8"),
+      );
+      const terminalPredicates = {
+        "require-evidence": ["authority-rejected"],
+        "finalize-run": [
+          "retained-evidence-unavailable",
+          "run-finalization-rejected",
+        ],
+        "publish-manifest": ["manifest-publication-rejected"],
+      };
+      if (
+        !exactKeys(terminal, [
+          "controllerFailureTerminalVersion",
+          "predicate",
+          "stage",
+        ]) ||
+        terminal.controllerFailureTerminalVersion !== 1 ||
+        !Object.hasOwn(terminalPredicates, terminal.stage) ||
+        !terminalPredicates[terminal.stage].includes(terminal.predicate) ||
+        (manifestPresent && terminal.stage !== "publish-manifest")
+      )
+        fail();
+      mark("retirement");
+      let closeFailure;
+      for (const { descriptor } of authenticatedDescriptors.splice(0))
+        closeFailure = closeFailureEvidenceDescriptor(
+          descriptor,
+          closeFailure,
+          finalizationReason,
+        );
+      if (closeFailure !== undefined) throw closeFailure;
+      process.stdout.write(
+        `${JSON.stringify({
+          predicate: terminal.predicate,
+          stage: terminal.stage,
+        })}\n`,
+      );
+      process.exit(1);
+    }
+    const manifestBytes = readBounded(manifestPath, 65_536).content;
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    if (
+      !exactKeys(manifest, [
+        "controllerAuthorityDigest",
+        "controllerFailureManifestVersion",
+        "failureEvidence",
+        "retainedInputs",
+        "runIds",
+      ]) ||
+      manifest.controllerFailureManifestVersion !== 1 ||
+      !/^sha256:[a-f0-9]{64}$/u.test(manifest.controllerAuthorityDigest) ||
+      !Array.isArray(manifest.runIds) ||
+      !Array.isArray(manifest.failureEvidence) ||
+      manifest.runIds.length < 1 ||
+      manifest.runIds.length > 256 ||
+      new Set(manifest.runIds).size !== manifest.runIds.length ||
+      JSON.stringify(manifest.runIds) !==
+        JSON.stringify([...manifest.runIds].sort()) ||
+      manifest.failureEvidence.length !== manifest.runIds.length
+    )
+      fail();
+    const verifyDigests = (value, expectedNames, root, mode) => {
+      if (!exactKeys(value, expectedNames)) fail();
+      const parsed = {};
+      for (const name of expectedNames) {
+        if (!/^sha256:[a-f0-9]{64}$/u.test(value[name])) fail();
+        const retained = readBounded(resolve(root, name), 1024 * 1024, mode);
+        if (
+          `sha256:${createHash("sha256").update(retained.content).digest("hex")}` !==
+          value[name]
+        )
+          fail();
+        parsed[name] = JSON.parse(retained.content.toString("utf8"));
+      }
+      return parsed;
     };
     if (
-      !exactKeys(terminal, [
-        "controllerFailureTerminalVersion",
-        "predicate",
-        "stage",
-      ]) ||
-      terminal.controllerFailureTerminalVersion !== 1 ||
-      !Object.hasOwn(terminalPredicates, terminal.stage) ||
-      !terminalPredicates[terminal.stage].includes(terminal.predicate) ||
-      (manifestPresent && terminal.stage !== "publish-manifest")
-    )
-      fail();
-    mark("retirement");
-    let closeFailure;
-    for (const { descriptor } of authenticatedDescriptors.splice(0))
-      closeFailure = closeFailureEvidenceDescriptor(
-        descriptor,
-        closeFailure,
-        finalizationReason,
-      );
-    if (closeFailure !== undefined) throw closeFailure;
-    process.stdout.write(
-      `${JSON.stringify({
-        predicate: terminal.predicate,
-        stage: terminal.stage,
-      })}\n`,
-    );
-    process.exit(1);
-  }
-  const manifestBytes = readBounded(manifestPath, 65_536).content;
-  const manifest = JSON.parse(manifestBytes.toString("utf8"));
-  if (
-    !exactKeys(manifest, [
-      "controllerAuthorityDigest",
-      "controllerFailureManifestVersion",
-      "failureEvidence",
-      "retainedInputs",
-      "runIds",
-    ]) ||
-    manifest.controllerFailureManifestVersion !== 1 ||
-    !/^sha256:[a-f0-9]{64}$/u.test(manifest.controllerAuthorityDigest) ||
-    !Array.isArray(manifest.runIds) ||
-    !Array.isArray(manifest.failureEvidence) ||
-    manifest.runIds.length < 1 ||
-    manifest.runIds.length > 256 ||
-    new Set(manifest.runIds).size !== manifest.runIds.length ||
-    JSON.stringify(manifest.runIds) !==
-      JSON.stringify([...manifest.runIds].sort()) ||
-    manifest.failureEvidence.length !== manifest.runIds.length
-  )
-    fail();
-  const verifyDigests = (value, expectedNames, root, mode) => {
-    if (!exactKeys(value, expectedNames)) fail();
-    const parsed = {};
-    for (const name of expectedNames) {
-      if (!/^sha256:[a-f0-9]{64}$/u.test(value[name])) fail();
-      const retained = readBounded(resolve(root, name), 1024 * 1024, mode);
-      if (
-        `sha256:${createHash("sha256").update(retained.content).digest("hex")}` !==
-        value[name]
-      )
-        fail();
-      parsed[name] = JSON.parse(retained.content.toString("utf8"));
-    }
-    return parsed;
-  };
-  if (
-    !exactKeys(manifest.retainedInputs, [
-      "capability-manifest.json",
-      "current-candidate.json",
-      "current-images.json",
-      "current-model-routes.json",
-      "current-selection.json",
-    ])
-  )
-    fail();
-  const retainedInputs = {
-    ...verifyDigests(
-      Object.fromEntries(
-        Object.entries(manifest.retainedInputs).filter(
-          ([name]) =>
-            name !== "capability-manifest.json" &&
-            name !== "current-images.json",
-        ),
-      ),
-      [
+      !exactKeys(manifest.retainedInputs, [
+        "capability-manifest.json",
         "current-candidate.json",
+        "current-images.json",
         "current-model-routes.json",
         "current-selection.json",
-      ],
-      artifactsRoot,
+      ])
+    )
+      fail();
+    const retainedInputs = {
+      ...verifyDigests(
+        Object.fromEntries(
+          Object.entries(manifest.retainedInputs).filter(
+            ([name]) =>
+              name !== "capability-manifest.json" &&
+              name !== "current-images.json",
+          ),
+        ),
+        [
+          "current-candidate.json",
+          "current-model-routes.json",
+          "current-selection.json",
+        ],
+        artifactsRoot,
+        0o644,
+      ),
+      ...verifyDigests(
+        {
+          "current-images.json": manifest.retainedInputs["current-images.json"],
+        },
+        ["current-images.json"],
+        artifactsRoot,
+        0o600,
+      ),
+    };
+    const retainedManifest = verifyDigests(
+      {
+        "capability-manifest.json":
+          manifest.retainedInputs["capability-manifest.json"],
+      },
+      ["capability-manifest.json"],
+      "tests/integration",
       0o644,
-    ),
-    ...verifyDigests(
-      { "current-images.json": manifest.retainedInputs["current-images.json"] },
-      ["current-images.json"],
-      artifactsRoot,
-      0o600,
-    ),
-  };
-  const retainedManifest = verifyDigests(
-    {
-      "capability-manifest.json":
-        manifest.retainedInputs["capability-manifest.json"],
-    },
-    ["capability-manifest.json"],
-    "tests/integration",
-    0o644,
-  );
-  const candidate = retainedInputs["current-candidate.json"];
-  const images = retainedInputs["current-images.json"];
-  const routes = retainedInputs["current-model-routes.json"];
-  const selection = retainedInputs["current-selection.json"];
-  const capability = retainedManifest["capability-manifest.json"];
-  try {
-    compileCapabilityManifest(capability);
-  } catch {
-    fail();
-  }
-  if (
-    !exactKeys(candidate, [
-      "bundleIdentity",
-      "candidateRevision",
-      "pointerVersion",
-    ]) ||
-    candidate.pointerVersion !== 1 ||
-    !/^sha256-[a-f0-9]{64}$/u.test(candidate.bundleIdentity) ||
-    !/^[a-f0-9]{40,64}$/u.test(candidate.candidateRevision) ||
-    !exactKeys(capability, [
-      "evidence",
-      "manifestIdentity",
-      "manifestVersion",
-      "requiredRepresentativeIds",
-      "scenarios",
-    ]) ||
-    capability.manifestVersion !== 1 ||
-    !/^sha256-[a-f0-9]{64}$/u.test(capability.manifestIdentity) ||
-    !Array.isArray(capability.evidence) ||
-    !Array.isArray(capability.scenarios) ||
-    !exactKeys(selection, [
-      "manifestIdentity",
-      "scenarioIds",
-      "selectionMode",
-      "selectionVersion",
-      "selector",
-    ]) ||
-    selection.selectionVersion !== 2 ||
-    selection.manifestIdentity !== capability.manifestIdentity ||
-    !Array.isArray(selection.scenarioIds) ||
-    !exactKeys(routes, [
-      "mockServerInitialization",
-      "routeFixtureVersion",
-      "routeIds",
-      "routes",
-    ]) ||
-    routes.routeFixtureVersion !== 1 ||
-    !Array.isArray(routes.routeIds) ||
-    !Array.isArray(routes.routes) ||
-    !Array.isArray(routes.mockServerInitialization) ||
-    !exactKeys(images, [
-      "dockerDaemon",
-      "dockerSocket",
-      "imageEvidenceVersion",
-      "images",
-      "manifestIdentity",
-      "preparationPolicy",
-      "terminalCleanup",
-    ]) ||
-    images.imageEvidenceVersion !== 2 ||
-    images.manifestIdentity !== capability.manifestIdentity ||
-    !Array.isArray(images.images)
-  )
-    fail();
-  const validLedger = (value) =>
-    (exactKeys(value, ["status"]) && value.status === "uncertain") ||
-    (exactKeys(value, ["entriesSha256", "entryCount", "overflow", "status"]) &&
-      value.status === "authenticated" &&
-      Number.isSafeInteger(value.entryCount) &&
-      value.entryCount >= 0 &&
-      value.entryCount <= 4096 &&
-      typeof value.overflow === "boolean" &&
-      /^sha256:[a-f0-9]{64}$/u.test(value.entriesSha256));
-  const samePreparedIdentity = (prepared, retained) =>
-    prepared !== undefined &&
-    exactKeys(retained, [
-      "configDigest",
-      "image",
-      "manifestDigest",
-      "platform",
-    ]) &&
-    retained.image === prepared.image &&
-    retained.configDigest === prepared.configDigest &&
-    retained.manifestDigest === prepared.manifestDigest &&
-    JSON.stringify(retained.platform) === JSON.stringify(prepared.platform);
-  const expected = new Set(manifest.runIds);
-  const observed = [];
-  const sanitizedRuns = [];
-  for (const identity of manifest.failureEvidence) {
-    if (
-      !exactKeys(identity, ["dev", "digest", "ino", "runId", "size"]) ||
-      !expected.has(identity.runId) ||
-      !/^[a-f0-9]{16}$/u.test(identity.runId) ||
-      !/^sha256:[a-f0-9]{64}$/u.test(identity.digest) ||
-      !Number.isSafeInteger(identity.dev) ||
-      !Number.isSafeInteger(identity.ino) ||
-      !Number.isSafeInteger(identity.size)
-    )
-      fail();
-    const path = resolve(runsRoot, identity.runId, "controller-failure.json");
-    const { content, status } = readBounded(path, 16_384);
-    const record = JSON.parse(content.toString("utf8"));
-    if (
-      status.dev !== identity.dev ||
-      status.ino !== identity.ino ||
-      status.size !== identity.size ||
-      `sha256:${createHash("sha256").update(content).digest("hex")}` !==
-        identity.digest ||
-      !exactKeys(record, [
-        "cleanupFailure",
-        "controllerFailureEvidenceVersion",
-        "controllerOutcome",
-        "installedPtyFailure",
-        "primaryFailure",
-        "privateCleanup",
-        "retainedEvidence",
-        "runId",
-        "scenarioFailure",
-        "scenarioSecondaryFailures",
-        "scenarioOutcome",
-      ]) ||
-      record.controllerFailureEvidenceVersion !== 2 ||
-      record.runId !== identity.runId ||
-      record.controllerOutcome !== "retired-failure" ||
-      !validPtyFailure(record.installedPtyFailure) ||
-      !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
-      !(
-        record.scenarioFailure === null ||
-        /^integration\.[a-z.-]{1,96}$/u.test(record.scenarioFailure)
-      ) ||
-      !Array.isArray(record.scenarioSecondaryFailures) ||
-      record.scenarioSecondaryFailures.length > 2 ||
-      new Set(record.scenarioSecondaryFailures).size !==
-        record.scenarioSecondaryFailures.length ||
-      record.scenarioSecondaryFailures.some(
-        (failure) =>
-          !/^integration\.isolation\.(?:cleanup|evidence)$/u.test(failure),
-      ) ||
-      !(
-        record.cleanupFailure === null ||
-        /^integration\.[a-z.-]{1,96}$/u.test(record.cleanupFailure)
-      ) ||
-      !["passed", "failed", "interrupted", "not-complete"].includes(
-        record.scenarioOutcome,
-      )
-    )
-      fail();
-    const retained = verifyDigests(
-      record.retainedEvidence,
-      [
-        "destination-ledger.json",
-        "evidence.json",
-        "fixture-lifecycle.json",
-        "model-ledger.json",
-      ],
-      resolve(runsRoot, identity.runId),
-      0o600,
     );
-    const evidence = retained["evidence.json"];
-    const lifecycle = retained["fixture-lifecycle.json"];
-    const modelLedger = retained["model-ledger.json"];
-    const destinationLedger = retained["destination-ledger.json"];
+    const candidate = retainedInputs["current-candidate.json"];
+    const images = retainedInputs["current-images.json"];
+    const routes = retainedInputs["current-model-routes.json"];
+    const selection = retainedInputs["current-selection.json"];
+    const capability = retainedManifest["capability-manifest.json"];
     try {
-      compileIsolationEvidence(evidence, {
-        baseImageIdentity: evidence.baseImageIdentity,
-        mockServerImageIdentity: evidence.mockServerImageIdentity,
-        installedCliContractEvidence: evidence.installedCliContractEvidence,
-      });
+      compileCapabilityManifest(capability);
     } catch {
       fail();
     }
     if (
-      !exactKeys(evidence, [
-        "baseImage",
-        "baseImageIdentity",
-        "builtImageDigest",
-        "builtMockServerImageDigest",
-        "candidateBundleIdentity",
+      !exactKeys(candidate, [
+        "bundleIdentity",
         "candidateRevision",
-        "cleanup",
-        "evidenceVersion",
-        "executionPolicy",
-        "headlessTerminalReceipt",
-        "hostMountCount",
-        "installedCliContractEvidence",
+        "pointerVersion",
+      ]) ||
+      candidate.pointerVersion !== 1 ||
+      !/^sha256-[a-f0-9]{64}$/u.test(candidate.bundleIdentity) ||
+      !/^[a-f0-9]{40,64}$/u.test(candidate.candidateRevision) ||
+      !exactKeys(capability, [
+        "evidence",
         "manifestIdentity",
-        "mockServerImage",
-        "mockServerImageIdentity",
-        "networkMode",
-        "outcome",
-        "readOnlyRootFilesystem",
-        "runId",
-        "scenarioId",
-        "tmpfsMounts",
+        "manifestVersion",
+        "requiredRepresentativeIds",
+        "scenarios",
       ]) ||
-      evidence.evidenceVersion !== 2 ||
-      evidence.runId !== record.runId ||
-      evidence.manifestIdentity !== capability.manifestIdentity ||
-      evidence.candidateBundleIdentity !== candidate.bundleIdentity ||
-      evidence.candidateRevision !== candidate.candidateRevision ||
-      evidence.outcome !== record.scenarioOutcome ||
-      !validLedger(modelLedger) ||
-      !exactKeys(destinationLedger, ["ingestion", "retrieval"]) ||
-      !validLedger(destinationLedger.ingestion) ||
-      !validLedger(destinationLedger.retrieval) ||
-      !exactKeys(
-        lifecycle,
-        lifecycle.resultStatus === "unavailable"
-          ? [
-              "evidenceVersion",
-              "ledgerObservation",
-              "resultStatus",
-              "scenarioId",
-            ]
-          : [
-              "artifactFileName",
-              "eventKinds",
-              "evidenceVersion",
-              "ledgerObservation",
-              "lifecycle",
-              "resultStatus",
-              "scenarioId",
-            ],
-      ) ||
-      lifecycle.evidenceVersion !== 1 ||
-      lifecycle.scenarioId !== evidence.scenarioId ||
-      !exactKeys(lifecycle.ledgerObservation, [
-        "ingestion",
-        "model",
-        "retrieval",
+      capability.manifestVersion !== 1 ||
+      !/^sha256-[a-f0-9]{64}$/u.test(capability.manifestIdentity) ||
+      !Array.isArray(capability.evidence) ||
+      !Array.isArray(capability.scenarios) ||
+      !exactKeys(selection, [
+        "manifestIdentity",
+        "scenarioIds",
+        "selectionMode",
+        "selectionVersion",
+        "selector",
       ]) ||
-      !["authenticated", "uncertain"].includes(
-        lifecycle.ledgerObservation.model,
-      ) ||
-      !["authenticated", "uncertain"].includes(
-        lifecycle.ledgerObservation.ingestion,
-      ) ||
-      !["authenticated", "uncertain"].includes(
-        lifecycle.ledgerObservation.retrieval,
-      )
-    )
-      fail();
-    const preparedBase = images.images.find(
-      (image) => image.image === evidence.baseImage,
-    );
-    const preparedMock = images.images.find(
-      (image) => image.image === evidence.mockServerImage,
-    );
-    const declaredScenario = capability.scenarios.find(
-      (scenario) => scenario.scenarioId === evidence.scenarioId,
-    );
-    const cleanupComplete =
-      exactKeys(evidence.cleanup, [
-        "outcome",
-        "remaining",
-        "removalFailureCount",
-      ]) &&
-      evidence.cleanup.outcome === "complete" &&
-      evidence.cleanup.removalFailureCount === 0 &&
-      exactKeys(evidence.cleanup.remaining, [
-        "activeRunMarkers",
-        "buildContexts",
-        "containers",
+      selection.selectionVersion !== 2 ||
+      selection.manifestIdentity !== capability.manifestIdentity ||
+      !Array.isArray(selection.scenarioIds) ||
+      !exactKeys(routes, [
+        "mockServerInitialization",
+        "routeFixtureVersion",
+        "routeIds",
+        "routes",
+      ]) ||
+      routes.routeFixtureVersion !== 1 ||
+      !Array.isArray(routes.routeIds) ||
+      !Array.isArray(routes.routes) ||
+      !Array.isArray(routes.mockServerInitialization) ||
+      !exactKeys(images, [
+        "dockerDaemon",
+        "dockerSocket",
+        "imageEvidenceVersion",
         "images",
-        "networks",
-        "volumes",
+        "manifestIdentity",
+        "preparationPolicy",
+        "terminalCleanup",
+      ]) ||
+      images.imageEvidenceVersion !== 2 ||
+      images.manifestIdentity !== capability.manifestIdentity ||
+      !Array.isArray(images.images)
+    )
+      fail();
+    const validLedger = (value) =>
+      (exactKeys(value, ["status"]) && value.status === "uncertain") ||
+      (exactKeys(value, [
+        "entriesSha256",
+        "entryCount",
+        "overflow",
+        "status",
       ]) &&
-      Object.values(evidence.cleanup.remaining).every((count) => count === 0);
-    const terminalComplete =
-      evidence.headlessTerminalReceipt !== null &&
-      evidence.headlessTerminalReceipt.outcome === "exited" &&
-      evidence.headlessTerminalReceipt.exitCode === 0 &&
-      evidence.headlessTerminalReceipt.signal === null &&
-      evidence.headlessTerminalReceipt.cleanup === "clean" &&
-      evidence.headlessTerminalReceipt.residualProcessCount === 0 &&
-      evidence.headlessTerminalReceipt.processJoined === true &&
-      evidence.headlessTerminalReceipt.stdinJoined === true &&
-      evidence.headlessTerminalReceipt.stdoutJoined === true &&
-      evidence.headlessTerminalReceipt.stderrJoined === true;
-    const lifecycleComplete =
-      lifecycle.resultStatus === "complete" &&
-      /^agentscope-cli(?:-[0-9.]+)?\.tgz$/u.test(lifecycle.artifactFileName) &&
-      JSON.stringify(lifecycle.lifecycle) ===
-        JSON.stringify([
-          "install",
-          "configure",
-          "hook",
-          "execute",
-          "export",
-          "retrieve",
-          "uninstall",
-        ]) &&
-      Array.isArray(lifecycle.eventKinds) &&
-      lifecycle.eventKinds.length > 0 &&
-      lifecycle.eventKinds.length <= 32 &&
-      new Set(lifecycle.eventKinds).size === lifecycle.eventKinds.length &&
-      lifecycle.eventKinds.every((kind) =>
-        /^[a-z][a-z0-9-]{0,63}$/u.test(kind),
-      );
-    if (
-      !selection.scenarioIds.includes(evidence.scenarioId) ||
-      declaredScenario === undefined ||
-      declaredScenario.image !== evidence.baseImage ||
-      declaredScenario.mockServerImage !== evidence.mockServerImage ||
-      !Array.isArray(declaredScenario.modelRoutes) ||
-      declaredScenario.modelRoutes.some(
-        (route) => !routes.routeIds.includes(route),
-      ) ||
-      !samePreparedIdentity(preparedBase, evidence.baseImageIdentity) ||
-      !samePreparedIdentity(preparedMock, evidence.mockServerImageIdentity) ||
-      (lifecycle.ledgerObservation.model === "authenticated") !==
-        (modelLedger.status === "authenticated") ||
-      (lifecycle.ledgerObservation.ingestion === "authenticated") !==
-        (destinationLedger.ingestion.status === "authenticated") ||
-      (lifecycle.ledgerObservation.retrieval === "authenticated") !==
-        (destinationLedger.retrieval.status === "authenticated") ||
-      record.scenarioOutcome === "not-complete" ||
-      (evidence.outcome === "interrupted" &&
-        record.primaryFailure !== "integration.isolation.interrupted" &&
-        record.scenarioFailure !== "integration.isolation.interrupted") ||
-      (evidence.outcome === "passed" &&
-        (!cleanupComplete ||
-          !terminalComplete ||
-          evidence.installedCliContractEvidence === null ||
-          evidence.builtImageDigest === null ||
-          evidence.builtMockServerImageDigest === null ||
-          !lifecycleComplete ||
-          modelLedger.status !== "authenticated" ||
-          modelLedger.overflow !== false ||
-          destinationLedger.ingestion.status !== "authenticated" ||
-          destinationLedger.ingestion.overflow !== false ||
-          destinationLedger.retrieval.status !== "authenticated" ||
-          destinationLedger.retrieval.overflow !== false))
-    )
-      fail();
-    sanitizedRuns.push({
-      cleanupFailure: record.cleanupFailure,
-      controllerOutcome: record.controllerOutcome,
-      evidence: {
-        baseImageIdentityDigest: `sha256:${createHash("sha256").update(JSON.stringify(evidence.baseImageIdentity)).digest("hex")}`,
-        candidateBundleIdentity: evidence.candidateBundleIdentity,
-        candidateRevision: evidence.candidateRevision,
-        cleanupOutcome: evidence.cleanup.outcome,
-        manifestIdentity: evidence.manifestIdentity,
-        mockServerImageIdentityDigest: `sha256:${createHash("sha256").update(JSON.stringify(evidence.mockServerImageIdentity)).digest("hex")}`,
-        outcome: evidence.outcome,
-        runId: evidence.runId,
-        scenarioId: evidence.scenarioId,
-      },
-      installedPtyFailure: record.installedPtyFailure,
-      ledger: { destination: destinationLedger, model: modelLedger },
-      lifecycle: {
-        ledgerObservation: lifecycle.ledgerObservation,
-        resultStatus: lifecycle.resultStatus,
-      },
-      primaryFailure: record.primaryFailure,
-      runId: record.runId,
-      scenarioFailure: record.scenarioFailure,
-      scenarioSecondaryFailures: record.scenarioSecondaryFailures,
-    });
-    observed.push(identity.runId);
-  }
-  if (
-    new Set(observed).size !== expected.size ||
-    observed.some((runId) => !expected.has(runId))
-  )
-    fail();
-  const runDirectories = readdirSync(runsRoot, { withFileTypes: true });
-  if (
-    runDirectories.length !== expected.size ||
-    runDirectories.some((entry) => {
-      if (!entry.isDirectory() || !expected.has(entry.name)) return true;
-      const status = lstatSync(resolve(runsRoot, entry.name));
-      return !status.isDirectory() || status.isSymbolicLink();
-    })
-  )
-    fail();
-  const bundle = Buffer.from(
-    `${JSON.stringify({
-      bundleVersion: 1,
-      controllerAuthorityDigest: manifest.controllerAuthorityDigest,
-      preparedInput: {
-        candidate,
-        images: {
-          imageEvidenceVersion: images.imageEvidenceVersion,
-          images: images.images,
-          manifestIdentity: images.manifestIdentity,
-        },
-        manifest: capability,
-        routes: {
-          routeFixtureVersion: routes.routeFixtureVersion,
-          routeIds: routes.routeIds,
-        },
-        selection,
-      },
-      retainedInputs: manifest.retainedInputs,
-      runs: sanitizedRuns.sort((left, right) =>
-        left.runId.localeCompare(right.runId),
-      ),
-    })}\n`,
-  );
-  if (bundle.byteLength < 1 || bundle.byteLength > 1024 * 1024) fail();
-  const bundleDigest = `sha256:${createHash("sha256").update(bundle).digest("hex")}`;
-  const deadline =
-    process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
-  if (!/^[1-9]\d{0,15}$/u.test(deadline ?? "")) fail();
-  const deadlineNanoseconds = (BigInt(deadline) * 1_000_000n).toString();
-  const artifactName = process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME;
-  let resultsUrl;
-  try {
-    resultsUrl = new URL(process.env.ACTIONS_RESULTS_URL);
-  } catch {
-    fail();
-  }
-  if (
-    !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(artifactName ?? "") ||
-    process.env.GITHUB_SERVER_URL !== "https://github.com" ||
-    typeof process.env.GITHUB_WORKSPACE !== "string" ||
-    !process.env.GITHUB_WORKSPACE.startsWith("/") ||
-    !/^[A-Za-z0-9._-]{1,16384}$/u.test(
-      process.env.ACTIONS_RUNTIME_TOKEN ?? "",
-    ) ||
-    resultsUrl.protocol !== "https:" ||
-    !resultsUrl.hostname.endsWith(".actions.githubusercontent.com") ||
-    resultsUrl.username !== "" ||
-    resultsUrl.password !== "" ||
-    resultsUrl.port !== "" ||
-    resultsUrl.hash !== ""
-  )
-    fail();
-  const remainingMilliseconds = Number(
-    BigInt(deadline) - process.hrtime.bigint() / 1_000_000n,
-  );
-  if (
-    !Number.isSafeInteger(remainingMilliseconds) ||
-    remainingMilliseconds < 1 ||
-    remainingMilliseconds > 1_200_000
-  )
-    fail();
-  if (
-    !Number.isSafeInteger(bundleDescriptor) ||
-    bundleDescriptor < 3 ||
-    !Buffer.isBuffer(sealerSource)
-  )
-    fail();
-  mark("write");
-  const written = perform(() =>
-    writeSync(bundleDescriptor, bundle, 0, bundle.length, 0),
-  );
-  if (written !== bundle.length) fail();
-  mark("fsync");
-  perform(() => fsyncSync(bundleDescriptor));
-  mark("child-terminal");
-  const sealer = perform(() =>
-    spawnSync(
-      "/usr/bin/python3",
-      [
-        "-c",
-        sealerSource.toString("utf8"),
-        "seal-existing",
-        String(bundle.length),
-        bundleDigest,
-      ],
-      {
-        env: {},
-        maxBuffer: 4096,
-        stdio: ["ignore", "pipe", "pipe", bundleDescriptor],
-        timeout: remainingMilliseconds,
-      },
-    ),
-  );
-  if (
-    sealer.error !== undefined ||
-    sealer.status !== 0 ||
-    sealer.signal !== null ||
-    sealer.stderr.length !== 0 ||
-    sealer.stdout.toString("utf8") !== '{"status":"sealed"}\n'
-  )
-    fail();
-  mark("artifact-upload");
-  const probe = async (arguments_) => {
-    const result = spawnSync(
-      "/usr/bin/python3",
-      ["-c", sealerSource.toString("utf8"), ...arguments_.slice(1)],
-      { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"] },
-    );
-    if (
-      result.error !== undefined ||
-      result.status !== 0 ||
-      result.signal !== null ||
-      result.stderr.length !== 0 ||
-      result.stdout.toString("utf8") !== '{"status":"authenticated"}\n'
-    )
-      fail();
-  };
-  const originalStdout = process.stdout.write.bind(process.stdout);
-  const originalStderr = process.stderr.write.bind(process.stderr);
-  try {
-    process.stdout.write = () => true;
-    process.stderr.write = () => true;
-    try {
-      await uploadFailureEvidence({
-        arguments_: [
-          "--fd",
-          String(bundleDescriptor),
-          "--size",
-          String(bundle.length),
-          "--digest",
-          bundleDigest,
-          "--name",
-          artifactName,
-          "--deadline",
-          deadlineNanoseconds,
-          "--python",
-          "/usr/bin/python3",
-        ],
-        client,
-        nowNanoseconds: process.hrtime.bigint,
-        probe,
-        startTicks: processStartTicks,
-      });
-    } catch (error) {
-      if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
-      throw bindFailureEvidenceFinalization(finalizationReason);
-    }
-  } finally {
-    process.stdout.write = originalStdout;
-    process.stderr.write = originalStderr;
-  }
-  mark("retirement");
-  const retireUploadedFailureEvidence = () => {
-    for (const authority of authenticatedDescriptors) {
-      if (!authority.path.startsWith(`${artifactsRoot}/`)) continue;
-      const named = lstatSync(authority.path);
+        value.status === "authenticated" &&
+        Number.isSafeInteger(value.entryCount) &&
+        value.entryCount >= 0 &&
+        value.entryCount <= 4096 &&
+        typeof value.overflow === "boolean" &&
+        /^sha256:[a-f0-9]{64}$/u.test(value.entriesSha256));
+    const samePreparedIdentity = (prepared, retained) =>
+      prepared !== undefined &&
+      exactKeys(retained, [
+        "configDigest",
+        "image",
+        "manifestDigest",
+        "platform",
+      ]) &&
+      retained.image === prepared.image &&
+      retained.configDigest === prepared.configDigest &&
+      retained.manifestDigest === prepared.manifestDigest &&
+      JSON.stringify(retained.platform) === JSON.stringify(prepared.platform);
+    const expected = new Set(manifest.runIds);
+    const observed = [];
+    const sanitizedRuns = [];
+    for (const identity of manifest.failureEvidence) {
       if (
-        named.dev !== authority.status.dev ||
-        named.ino !== authority.status.ino ||
-        named.size !== authority.status.size ||
-        named.nlink !== authority.status.nlink ||
-        named.isSymbolicLink()
+        !exactKeys(identity, ["dev", "digest", "ino", "runId", "size"]) ||
+        !expected.has(identity.runId) ||
+        !/^[a-f0-9]{16}$/u.test(identity.runId) ||
+        !/^sha256:[a-f0-9]{64}$/u.test(identity.digest) ||
+        !Number.isSafeInteger(identity.dev) ||
+        !Number.isSafeInteger(identity.ino) ||
+        !Number.isSafeInteger(identity.size)
       )
         fail();
-      unlinkSync(authority.path);
+      const path = resolve(runsRoot, identity.runId, "controller-failure.json");
+      const { content, status } = readBounded(path, 16_384);
+      const record = JSON.parse(content.toString("utf8"));
+      if (
+        status.dev !== identity.dev ||
+        status.ino !== identity.ino ||
+        status.size !== identity.size ||
+        `sha256:${createHash("sha256").update(content).digest("hex")}` !==
+          identity.digest ||
+        !exactKeys(record, [
+          "cleanupFailure",
+          "controllerFailureEvidenceVersion",
+          "controllerOutcome",
+          "installedPtyFailure",
+          "primaryFailure",
+          "privateCleanup",
+          "retainedEvidence",
+          "runId",
+          "scenarioFailure",
+          "scenarioSecondaryFailures",
+          "scenarioOutcome",
+        ]) ||
+        record.controllerFailureEvidenceVersion !== 2 ||
+        record.runId !== identity.runId ||
+        record.controllerOutcome !== "retired-failure" ||
+        !validPtyFailure(record.installedPtyFailure) ||
+        !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
+        !(
+          record.scenarioFailure === null ||
+          /^integration\.[a-z.-]{1,96}$/u.test(record.scenarioFailure)
+        ) ||
+        !Array.isArray(record.scenarioSecondaryFailures) ||
+        record.scenarioSecondaryFailures.length > 2 ||
+        new Set(record.scenarioSecondaryFailures).size !==
+          record.scenarioSecondaryFailures.length ||
+        record.scenarioSecondaryFailures.some(
+          (failure) =>
+            !/^integration\.isolation\.(?:cleanup|evidence)$/u.test(failure),
+        ) ||
+        !(
+          record.cleanupFailure === null ||
+          /^integration\.[a-z.-]{1,96}$/u.test(record.cleanupFailure)
+        ) ||
+        !["passed", "failed", "interrupted", "not-complete"].includes(
+          record.scenarioOutcome,
+        )
+      )
+        fail();
+      const retained = verifyDigests(
+        record.retainedEvidence,
+        [
+          "destination-ledger.json",
+          "evidence.json",
+          "fixture-lifecycle.json",
+          "model-ledger.json",
+        ],
+        resolve(runsRoot, identity.runId),
+        0o600,
+      );
+      const evidence = retained["evidence.json"];
+      const lifecycle = retained["fixture-lifecycle.json"];
+      const modelLedger = retained["model-ledger.json"];
+      const destinationLedger = retained["destination-ledger.json"];
+      try {
+        compileIsolationEvidence(evidence, {
+          baseImageIdentity: evidence.baseImageIdentity,
+          mockServerImageIdentity: evidence.mockServerImageIdentity,
+          installedCliContractEvidence: evidence.installedCliContractEvidence,
+        });
+      } catch {
+        fail();
+      }
+      if (
+        !exactKeys(evidence, [
+          "baseImage",
+          "baseImageIdentity",
+          "builtImageDigest",
+          "builtMockServerImageDigest",
+          "candidateBundleIdentity",
+          "candidateRevision",
+          "cleanup",
+          "evidenceVersion",
+          "executionPolicy",
+          "headlessTerminalReceipt",
+          "hostMountCount",
+          "installedCliContractEvidence",
+          "manifestIdentity",
+          "mockServerImage",
+          "mockServerImageIdentity",
+          "networkMode",
+          "outcome",
+          "readOnlyRootFilesystem",
+          "runId",
+          "scenarioId",
+          "tmpfsMounts",
+        ]) ||
+        evidence.evidenceVersion !== 2 ||
+        evidence.runId !== record.runId ||
+        evidence.manifestIdentity !== capability.manifestIdentity ||
+        evidence.candidateBundleIdentity !== candidate.bundleIdentity ||
+        evidence.candidateRevision !== candidate.candidateRevision ||
+        evidence.outcome !== record.scenarioOutcome ||
+        !validLedger(modelLedger) ||
+        !exactKeys(destinationLedger, ["ingestion", "retrieval"]) ||
+        !validLedger(destinationLedger.ingestion) ||
+        !validLedger(destinationLedger.retrieval) ||
+        !exactKeys(
+          lifecycle,
+          lifecycle.resultStatus === "unavailable"
+            ? [
+                "evidenceVersion",
+                "ledgerObservation",
+                "resultStatus",
+                "scenarioId",
+              ]
+            : [
+                "artifactFileName",
+                "eventKinds",
+                "evidenceVersion",
+                "ledgerObservation",
+                "lifecycle",
+                "resultStatus",
+                "scenarioId",
+              ],
+        ) ||
+        lifecycle.evidenceVersion !== 1 ||
+        lifecycle.scenarioId !== evidence.scenarioId ||
+        !exactKeys(lifecycle.ledgerObservation, [
+          "ingestion",
+          "model",
+          "retrieval",
+        ]) ||
+        !["authenticated", "uncertain"].includes(
+          lifecycle.ledgerObservation.model,
+        ) ||
+        !["authenticated", "uncertain"].includes(
+          lifecycle.ledgerObservation.ingestion,
+        ) ||
+        !["authenticated", "uncertain"].includes(
+          lifecycle.ledgerObservation.retrieval,
+        )
+      )
+        fail();
+      const preparedBase = images.images.find(
+        (image) => image.image === evidence.baseImage,
+      );
+      const preparedMock = images.images.find(
+        (image) => image.image === evidence.mockServerImage,
+      );
+      const declaredScenario = capability.scenarios.find(
+        (scenario) => scenario.scenarioId === evidence.scenarioId,
+      );
+      const cleanupComplete =
+        exactKeys(evidence.cleanup, [
+          "outcome",
+          "remaining",
+          "removalFailureCount",
+        ]) &&
+        evidence.cleanup.outcome === "complete" &&
+        evidence.cleanup.removalFailureCount === 0 &&
+        exactKeys(evidence.cleanup.remaining, [
+          "activeRunMarkers",
+          "buildContexts",
+          "containers",
+          "images",
+          "networks",
+          "volumes",
+        ]) &&
+        Object.values(evidence.cleanup.remaining).every((count) => count === 0);
+      const terminalComplete =
+        evidence.headlessTerminalReceipt !== null &&
+        evidence.headlessTerminalReceipt.outcome === "exited" &&
+        evidence.headlessTerminalReceipt.exitCode === 0 &&
+        evidence.headlessTerminalReceipt.signal === null &&
+        evidence.headlessTerminalReceipt.cleanup === "clean" &&
+        evidence.headlessTerminalReceipt.residualProcessCount === 0 &&
+        evidence.headlessTerminalReceipt.processJoined === true &&
+        evidence.headlessTerminalReceipt.stdinJoined === true &&
+        evidence.headlessTerminalReceipt.stdoutJoined === true &&
+        evidence.headlessTerminalReceipt.stderrJoined === true;
+      const lifecycleComplete =
+        lifecycle.resultStatus === "complete" &&
+        /^agentscope-cli(?:-[0-9.]+)?\.tgz$/u.test(
+          lifecycle.artifactFileName,
+        ) &&
+        JSON.stringify(lifecycle.lifecycle) ===
+          JSON.stringify([
+            "install",
+            "configure",
+            "hook",
+            "execute",
+            "export",
+            "retrieve",
+            "uninstall",
+          ]) &&
+        Array.isArray(lifecycle.eventKinds) &&
+        lifecycle.eventKinds.length > 0 &&
+        lifecycle.eventKinds.length <= 32 &&
+        new Set(lifecycle.eventKinds).size === lifecycle.eventKinds.length &&
+        lifecycle.eventKinds.every((kind) =>
+          /^[a-z][a-z0-9-]{0,63}$/u.test(kind),
+        );
+      if (
+        !selection.scenarioIds.includes(evidence.scenarioId) ||
+        declaredScenario === undefined ||
+        declaredScenario.image !== evidence.baseImage ||
+        declaredScenario.mockServerImage !== evidence.mockServerImage ||
+        !Array.isArray(declaredScenario.modelRoutes) ||
+        declaredScenario.modelRoutes.some(
+          (route) => !routes.routeIds.includes(route),
+        ) ||
+        !samePreparedIdentity(preparedBase, evidence.baseImageIdentity) ||
+        !samePreparedIdentity(preparedMock, evidence.mockServerImageIdentity) ||
+        (lifecycle.ledgerObservation.model === "authenticated") !==
+          (modelLedger.status === "authenticated") ||
+        (lifecycle.ledgerObservation.ingestion === "authenticated") !==
+          (destinationLedger.ingestion.status === "authenticated") ||
+        (lifecycle.ledgerObservation.retrieval === "authenticated") !==
+          (destinationLedger.retrieval.status === "authenticated") ||
+        record.scenarioOutcome === "not-complete" ||
+        (evidence.outcome === "interrupted" &&
+          record.primaryFailure !== "integration.isolation.interrupted" &&
+          record.scenarioFailure !== "integration.isolation.interrupted") ||
+        (evidence.outcome === "passed" &&
+          (!cleanupComplete ||
+            !terminalComplete ||
+            evidence.installedCliContractEvidence === null ||
+            evidence.builtImageDigest === null ||
+            evidence.builtMockServerImageDigest === null ||
+            !lifecycleComplete ||
+            modelLedger.status !== "authenticated" ||
+            modelLedger.overflow !== false ||
+            destinationLedger.ingestion.status !== "authenticated" ||
+            destinationLedger.ingestion.overflow !== false ||
+            destinationLedger.retrieval.status !== "authenticated" ||
+            destinationLedger.retrieval.overflow !== false))
+      )
+        fail();
+      sanitizedRuns.push({
+        cleanupFailure: record.cleanupFailure,
+        controllerOutcome: record.controllerOutcome,
+        evidence: {
+          baseImageIdentityDigest: `sha256:${createHash("sha256").update(JSON.stringify(evidence.baseImageIdentity)).digest("hex")}`,
+          candidateBundleIdentity: evidence.candidateBundleIdentity,
+          candidateRevision: evidence.candidateRevision,
+          cleanupOutcome: evidence.cleanup.outcome,
+          manifestIdentity: evidence.manifestIdentity,
+          mockServerImageIdentityDigest: `sha256:${createHash("sha256").update(JSON.stringify(evidence.mockServerImageIdentity)).digest("hex")}`,
+          outcome: evidence.outcome,
+          runId: evidence.runId,
+          scenarioId: evidence.scenarioId,
+        },
+        installedPtyFailure: record.installedPtyFailure,
+        ledger: { destination: destinationLedger, model: modelLedger },
+        lifecycle: {
+          ledgerObservation: lifecycle.ledgerObservation,
+          resultStatus: lifecycle.resultStatus,
+        },
+        primaryFailure: record.primaryFailure,
+        runId: record.runId,
+        scenarioFailure: record.scenarioFailure,
+        scenarioSecondaryFailures: record.scenarioSecondaryFailures,
+      });
+      observed.push(identity.runId);
     }
-    for (const { descriptor } of authenticatedDescriptors.splice(0))
-      closeSync(descriptor);
-    for (const runId of manifest.runIds) {
-      const directory = resolve(runsRoot, runId);
-      if (readdirSync(directory).length !== 0) fail();
-      rmdirSync(directory);
+    if (
+      new Set(observed).size !== expected.size ||
+      observed.some((runId) => !expected.has(runId))
+    )
+      fail();
+    const runDirectories = readdirSync(runsRoot, { withFileTypes: true });
+    if (
+      runDirectories.length !== expected.size ||
+      runDirectories.some((entry) => {
+        if (!entry.isDirectory() || !expected.has(entry.name)) return true;
+        const status = lstatSync(resolve(runsRoot, entry.name));
+        return !status.isDirectory() || status.isSymbolicLink();
+      })
+    )
+      fail();
+    const bundle = Buffer.from(
+      `${JSON.stringify({
+        bundleVersion: 1,
+        controllerAuthorityDigest: manifest.controllerAuthorityDigest,
+        preparedInput: {
+          candidate,
+          images: {
+            imageEvidenceVersion: images.imageEvidenceVersion,
+            images: images.images,
+            manifestIdentity: images.manifestIdentity,
+          },
+          manifest: capability,
+          routes: {
+            routeFixtureVersion: routes.routeFixtureVersion,
+            routeIds: routes.routeIds,
+          },
+          selection,
+        },
+        retainedInputs: manifest.retainedInputs,
+        runs: sanitizedRuns.sort((left, right) =>
+          left.runId.localeCompare(right.runId),
+        ),
+      })}\n`,
+    );
+    if (bundle.byteLength < 1 || bundle.byteLength > 1024 * 1024) fail();
+    const bundleDigest = `sha256:${createHash("sha256").update(bundle).digest("hex")}`;
+    const deadline =
+      process.env.AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS;
+    if (!/^[1-9]\d{0,15}$/u.test(deadline ?? "")) fail();
+    const deadlineNanoseconds = (BigInt(deadline) * 1_000_000n).toString();
+    const artifactName = process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME;
+    let resultsUrl;
+    try {
+      resultsUrl = new URL(process.env.ACTIONS_RESULTS_URL);
+    } catch {
+      fail();
     }
-    if (readdirSync(runsRoot).length !== 0) fail();
-    rmdirSync(runsRoot);
-  };
-  perform(retireUploadedFailureEvidence);
+    if (
+      !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(artifactName ?? "") ||
+      process.env.GITHUB_SERVER_URL !== "https://github.com" ||
+      typeof process.env.GITHUB_WORKSPACE !== "string" ||
+      !process.env.GITHUB_WORKSPACE.startsWith("/") ||
+      !/^[A-Za-z0-9._-]{1,16384}$/u.test(
+        process.env.ACTIONS_RUNTIME_TOKEN ?? "",
+      ) ||
+      resultsUrl.protocol !== "https:" ||
+      !resultsUrl.hostname.endsWith(".actions.githubusercontent.com") ||
+      resultsUrl.username !== "" ||
+      resultsUrl.password !== "" ||
+      resultsUrl.port !== "" ||
+      resultsUrl.hash !== ""
+    )
+      fail();
+    const remainingMilliseconds = Number(
+      BigInt(deadline) - process.hrtime.bigint() / 1_000_000n,
+    );
+    if (
+      !Number.isSafeInteger(remainingMilliseconds) ||
+      remainingMilliseconds < 1 ||
+      remainingMilliseconds > 1_200_000
+    )
+      fail();
+    if (
+      !Number.isSafeInteger(bundleDescriptor) ||
+      bundleDescriptor < 3 ||
+      !Buffer.isBuffer(sealerSource)
+    )
+      fail();
+    mark("write");
+    const written = perform(() =>
+      writeSync(bundleDescriptor, bundle, 0, bundle.length, 0),
+    );
+    if (written !== bundle.length) fail();
+    mark("fsync");
+    perform(() => fsyncSync(bundleDescriptor));
+    mark("child-terminal");
+    const sealer = perform(() =>
+      spawnSync(
+        "/usr/bin/python3",
+        [
+          "-c",
+          sealerSource.toString("utf8"),
+          "seal-existing",
+          String(bundle.length),
+          bundleDigest,
+        ],
+        {
+          env: {},
+          maxBuffer: 4096,
+          stdio: ["ignore", "pipe", "pipe", bundleDescriptor],
+          timeout: remainingMilliseconds,
+        },
+      ),
+    );
+    if (
+      sealer.error !== undefined ||
+      sealer.status !== 0 ||
+      sealer.signal !== null ||
+      sealer.stderr.length !== 0 ||
+      sealer.stdout.toString("utf8") !== '{"status":"sealed"}\n'
+    )
+      fail();
+    mark("artifact-upload");
+    const probe = async (arguments_) => {
+      const result = spawnSync(
+        "/usr/bin/python3",
+        ["-c", sealerSource.toString("utf8"), ...arguments_.slice(1)],
+        { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      if (
+        result.error !== undefined ||
+        result.status !== 0 ||
+        result.signal !== null ||
+        result.stderr.length !== 0 ||
+        result.stdout.toString("utf8") !== '{"status":"authenticated"}\n'
+      )
+        fail();
+    };
+    const originalStdout = process.stdout.write.bind(process.stdout);
+    const originalStderr = process.stderr.write.bind(process.stderr);
+    try {
+      process.stdout.write = () => true;
+      process.stderr.write = () => true;
+      try {
+        await uploadFailureEvidence({
+          arguments_: [
+            "--fd",
+            String(bundleDescriptor),
+            "--size",
+            String(bundle.length),
+            "--digest",
+            bundleDigest,
+            "--name",
+            artifactName,
+            "--deadline",
+            deadlineNanoseconds,
+            "--python",
+            "/usr/bin/python3",
+          ],
+          client,
+          nowNanoseconds: process.hrtime.bigint,
+          probe,
+          startTicks: processStartTicks,
+        });
+      } catch (error) {
+        if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+        throw bindFailureEvidenceFinalization(finalizationReason);
+      }
+    } finally {
+      process.stdout.write = originalStdout;
+      process.stderr.write = originalStderr;
+    }
+    mark("retirement");
+    const retireUploadedFailureEvidence = () => {
+      for (const authority of authenticatedDescriptors) {
+        if (!authority.path.startsWith(`${artifactsRoot}/`)) continue;
+        const named = lstatSync(authority.path);
+        if (
+          named.dev !== authority.status.dev ||
+          named.ino !== authority.status.ino ||
+          named.size !== authority.status.size ||
+          named.nlink !== authority.status.nlink ||
+          named.isSymbolicLink()
+        )
+          fail();
+        unlinkSync(authority.path);
+      }
+      for (const { descriptor } of authenticatedDescriptors.splice(0))
+        closeSync(descriptor);
+      for (const runId of manifest.runIds) {
+        const directory = resolve(runsRoot, runId);
+        if (readdirSync(directory).length !== 0) fail();
+        rmdirSync(directory);
+      }
+      if (readdirSync(runsRoot).length !== 0) fail();
+      rmdirSync(runsRoot);
+    };
+    perform(retireUploadedFailureEvidence);
+  } catch (error) {
+    if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+    throw bindFailureEvidenceFinalization(finalizationReason);
+  }
 };
 /* eslint-enable complexity, max-lines-per-function */
 
