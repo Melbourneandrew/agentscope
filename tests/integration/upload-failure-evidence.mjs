@@ -54,9 +54,24 @@ const actionBootstrapStages = new Set([
   "spawn",
   "child-terminal",
 ]);
+const actionBootstrapInvocationReasons = new Set([
+  "argv-shape",
+  "github-actions",
+  "action-path",
+  "workspace",
+  "results-url",
+  "runtime-token",
+  "artifact-name",
+]);
 let actionBootstrapStage = "invocation";
+let actionBootstrapReason = "argv-shape";
 export const validFailureEvidenceBootstrapStage = (value) =>
   typeof value === "string" && actionBootstrapStages.has(value);
+export const validFailureEvidenceBootstrapPredicate = (value) =>
+  typeof value === "string" &&
+  ((value !== "invocation" && actionBootstrapStages.has(value)) ||
+    (value.startsWith("invocation:") &&
+      actionBootstrapInvocationReasons.has(value.slice("invocation:".length))));
 const fail = () => {
   throw new Error("integration.controller.failure-evidence-upload");
 };
@@ -275,6 +290,28 @@ export const uploadFailureEvidence = async (options) => {
 };
 
 const authenticateActionInvocation = () => {
+  actionBootstrapReason = "argv-shape";
+  if (process.argv.length !== 2) fail();
+  actionBootstrapReason = "github-actions";
+  if (
+    process.env.GITHUB_ACTIONS !== "true" ||
+    process.env.GITHUB_SERVER_URL !== "https://github.com"
+  )
+    fail();
+  actionBootstrapReason = "action-path";
+  if (
+    typeof process.env.GITHUB_ACTION_PATH !== "string" ||
+    realpathSync(process.env.GITHUB_ACTION_PATH) !==
+      realpathSync(import.meta.dirname)
+  )
+    fail();
+  actionBootstrapReason = "workspace";
+  if (
+    typeof process.env.GITHUB_WORKSPACE !== "string" ||
+    realpathSync(process.env.GITHUB_WORKSPACE) !== realpathSync(".")
+  )
+    fail();
+  actionBootstrapReason = "results-url";
   let resultsUrl;
   try {
     resultsUrl = new URL(process.env.ACTIONS_RESULTS_URL ?? "");
@@ -282,30 +319,31 @@ const authenticateActionInvocation = () => {
     fail();
   }
   if (
-    process.argv.length !== 2 ||
-    process.env.GITHUB_ACTIONS !== "true" ||
-    typeof process.env.GITHUB_ACTION_PATH !== "string" ||
-    realpathSync(process.env.GITHUB_ACTION_PATH) !==
-      realpathSync(import.meta.dirname) ||
-    process.env.GITHUB_SERVER_URL !== "https://github.com" ||
-    typeof process.env.GITHUB_WORKSPACE !== "string" ||
-    realpathSync(process.env.GITHUB_WORKSPACE) !== realpathSync(".") ||
     resultsUrl.protocol !== "https:" ||
     resultsUrl.username !== "" ||
     resultsUrl.password !== "" ||
     resultsUrl.port !== "" ||
     !resultsUrl.hostname.endsWith(".actions.githubusercontent.com") ||
     resultsUrl.search !== "" ||
-    resultsUrl.hash !== "" ||
+    resultsUrl.hash !== ""
+  )
+    fail();
+  actionBootstrapReason = "runtime-token";
+  if (
     typeof process.env.ACTIONS_RUNTIME_TOKEN !== "string" ||
     process.env.ACTIONS_RUNTIME_TOKEN.length < 1 ||
     process.env.ACTIONS_RUNTIME_TOKEN.length > 16_384 ||
-    /[^\x21-\x7e]/u.test(process.env.ACTIONS_RUNTIME_TOKEN) ||
+    /[^\x21-\x7e]/u.test(process.env.ACTIONS_RUNTIME_TOKEN)
+  )
+    fail();
+  actionBootstrapReason = "artifact-name";
+  if (
     !new Set(["integration-0-of-1-1", "integration-0-of-1-2"]).has(
       process.env.AGENTSCOPE_FAILURE_ARTIFACT_NAME,
     )
   )
     fail();
+  actionBootstrapReason = "";
 };
 
 /* eslint-disable complexity, max-lines-per-function -- This closed verifier deliberately keeps the complete evidence grammar in the credential-bearing action process. */
@@ -1274,6 +1312,7 @@ const outerControllerMain = async () => {
 
 const bootstrapMain = () => {
   actionBootstrapStage = "invocation";
+  actionBootstrapReason = "argv-shape";
   authenticateActionInvocation();
   actionBootstrapStage = "artifact-provenance";
   verifyArtifactClientProvenance();
@@ -1336,9 +1375,13 @@ if (process.argv[1] === "--outer-controller") {
   try {
     bootstrapMain();
   } catch {
-    if (validFailureEvidenceBootstrapStage(actionBootstrapStage))
+    const predicate =
+      actionBootstrapStage === "invocation"
+        ? `${actionBootstrapStage}:${actionBootstrapReason}`
+        : actionBootstrapStage;
+    if (validFailureEvidenceBootstrapPredicate(predicate))
       process.stdout.write(
-        `::error::integration.controller.failure-evidence-bootstrap:${actionBootstrapStage}\n`,
+        `::error::integration.controller.failure-evidence-bootstrap:${predicate}\n`,
       );
     process.exitCode = 1;
   }

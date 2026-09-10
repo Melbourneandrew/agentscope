@@ -18,7 +18,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapStage } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -63,6 +63,10 @@ const settleLifecycle = settleLifecycleResult as unknown as (
 const validBootstrapStage = validFailureEvidenceBootstrapStage as unknown as (
   value: unknown,
 ) => boolean;
+const validBootstrapPredicate =
+  validFailureEvidenceBootstrapPredicate as unknown as (
+    value: unknown,
+  ) => boolean;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -382,6 +386,35 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
   ])
     expect(validBootstrapStage(rejected)).toBe(false);
 
+  for (const reason of [
+    "argv-shape",
+    "github-actions",
+    "action-path",
+    "workspace",
+    "results-url",
+    "runtime-token",
+    "artifact-name",
+  ])
+    expect(validBootstrapPredicate(`invocation:${reason}`)).toBe(true);
+  for (const stage of [
+    "artifact-provenance",
+    "preload-source",
+    "preload-sealer",
+    "spawn",
+    "child-terminal",
+  ])
+    expect(validBootstrapPredicate(stage)).toBe(true);
+  for (const rejected of [
+    "invocation",
+    "invocation:unknown",
+    "invocation:argv-shape:argv-shape",
+    "spawn:argv-shape",
+    "invocation:argv-shape\n",
+    ["invocation:argv-shape"],
+    { predicate: "invocation:argv-shape" },
+  ])
+    expect(validBootstrapPredicate(rejected)).toBe(false);
+
   const entry = resolve(
     workspaceRoot,
     "tests/integration/upload-failure-evidence.mjs",
@@ -397,7 +430,7 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     status: 1,
     stderr: "",
     stdout:
-      "::error::integration.controller.failure-evidence-bootstrap:invocation\n",
+      "::error::integration.controller.failure-evidence-bootstrap:invocation:github-actions\n",
   });
 });
 
