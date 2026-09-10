@@ -71,15 +71,33 @@ const actionBootstrapInvocationReasons = new Set([
   "runtime-token",
   "artifact-name",
 ]);
+const actionBootstrapArtifactProvenanceReasons = new Set([
+  "results-url",
+  "runtime-token",
+  "workspace",
+  "patch-digest",
+  "package-root",
+  "package-manifest",
+  "entry-digest",
+  "patched-file-digest",
+]);
 let actionBootstrapStage = "invocation";
 let actionBootstrapReason = "argv-shape";
 export const validFailureEvidenceBootstrapStage = (value) =>
   typeof value === "string" && actionBootstrapStages.has(value);
 export const validFailureEvidenceBootstrapPredicate = (value) =>
   typeof value === "string" &&
-  ((value !== "invocation" && actionBootstrapStages.has(value)) ||
+  ((value !== "invocation" &&
+    value !== "artifact-provenance" &&
+    actionBootstrapStages.has(value)) ||
     (value.startsWith("invocation:") &&
-      actionBootstrapInvocationReasons.has(value.slice("invocation:".length))));
+      actionBootstrapInvocationReasons.has(
+        value.slice("invocation:".length),
+      )) ||
+    (value.startsWith("artifact-provenance:") &&
+      actionBootstrapArtifactProvenanceReasons.has(
+        value.slice("artifact-provenance:".length),
+      )));
 export const validLocalActionMetadata = (value) =>
   Buffer.isBuffer(value) && value.equals(LOCAL_ACTION_METADATA);
 const fail = () => {
@@ -175,6 +193,7 @@ const verifyRegularDigest = (path, expected, maximum) => {
   }
 };
 const resolveArtifactClientEntry = (workspace) => {
+  actionBootstrapReason = "package-root";
   const packageRoot = realpathSync(
     resolve(workspace, "tests/integration/node_modules/@actions/artifact"),
   );
@@ -183,33 +202,42 @@ const resolveArtifactClientEntry = (workspace) => {
     !packageRoot.endsWith("/node_modules/@actions/artifact")
   )
     fail();
+  actionBootstrapReason = "package-manifest";
   verifyRegularDigest(
     resolve(packageRoot, "package.json"),
     ARTIFACT_PACKAGE_SHA256,
     64 * 1024,
   );
   const entry = resolve(packageRoot, "lib/artifact.js");
+  actionBootstrapReason = "entry-digest";
   verifyRegularDigest(entry, ARTIFACT_ENTRY_SHA256, 64 * 1024);
   const uploadRoot = resolve(packageRoot, "lib/internal/upload");
-  for (const [name, digest] of Object.entries(PATCHED_ARTIFACT_FILES))
+  for (const [name, digest] of Object.entries(PATCHED_ARTIFACT_FILES)) {
+    actionBootstrapReason = "patched-file-digest";
     verifyRegularDigest(resolve(uploadRoot, name), digest, 64 * 1024);
+  }
 };
 const verifyArtifactClientProvenance = () => {
+  actionBootstrapReason = "results-url";
+  if (typeof process.env.ACTIONS_RESULTS_URL !== "string") fail();
+  actionBootstrapReason = "runtime-token";
+  if (typeof process.env.ACTIONS_RUNTIME_TOKEN !== "string") fail();
+  actionBootstrapReason = "workspace";
   if (
-    typeof process.env.ACTIONS_RESULTS_URL !== "string" ||
-    typeof process.env.ACTIONS_RUNTIME_TOKEN !== "string" ||
     process.env.GITHUB_SERVER_URL !== "https://github.com" ||
     typeof process.env.GITHUB_WORKSPACE !== "string"
   )
     fail();
   const workspace = process.env.GITHUB_WORKSPACE;
   if (typeof workspace !== "string" || !workspace.startsWith("/")) fail();
+  actionBootstrapReason = "patch-digest";
   verifyRegularDigest(
     resolve(workspace, "patches/@actions__artifact@6.2.1.patch"),
     ARTIFACT_PATCH_SHA256,
     64 * 1024,
   );
   resolveArtifactClientEntry(workspace);
+  actionBootstrapReason = "";
 };
 
 const uploadFailureEvidenceImplementation = async ({
@@ -1416,7 +1444,8 @@ if (process.argv[1] === "--outer-controller") {
     bootstrapMain();
   } catch {
     const predicate =
-      actionBootstrapStage === "invocation"
+      actionBootstrapStage === "invocation" ||
+      actionBootstrapStage === "artifact-provenance"
         ? `${actionBootstrapStage}:${actionBootstrapReason}`
         : actionBootstrapStage;
     if (validFailureEvidenceBootstrapPredicate(predicate))

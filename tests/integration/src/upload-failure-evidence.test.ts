@@ -421,18 +421,32 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
   ])
     expect(validBootstrapPredicate(`invocation:${reason}`)).toBe(true);
   for (const stage of [
-    "artifact-provenance",
     "preload-source",
     "preload-sealer",
     "spawn",
     "child-terminal",
   ])
     expect(validBootstrapPredicate(stage)).toBe(true);
+  for (const reason of [
+    "results-url",
+    "runtime-token",
+    "workspace",
+    "patch-digest",
+    "package-root",
+    "package-manifest",
+    "entry-digest",
+    "patched-file-digest",
+  ])
+    expect(validBootstrapPredicate(`artifact-provenance:${reason}`)).toBe(true);
   for (const rejected of [
     "invocation",
     "invocation:unknown",
     "invocation:argv-shape:argv-shape",
     "spawn:argv-shape",
+    "artifact-provenance",
+    "artifact-provenance:unknown",
+    "artifact-provenance:patched-file-digest:filename",
+    "artifact-provenance:entry-digest\n",
     "invocation:argv-shape\n",
     ["invocation:argv-shape"],
     { predicate: "invocation:argv-shape" },
