@@ -2533,7 +2533,9 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
     '  child_record=None if OPERATION=="synthetic-client-child-admission" else process_record(child.pid)\n';
   const childSynchronizedHelper = gatedChildHelper.replace(
     childAdmissionBoundary,
-    '  if OPERATION=="synthetic-client-child-admission": test_ready(leader,expected)\n' +
+    '  if OPERATION=="synthetic-client-child-admission":\n' +
+      "   test_ready(leader,expected)\n" +
+      '   REASON="child-admission"\n' +
       childAdmissionBoundary,
   );
   const memberIdentityBoundary =
@@ -4440,6 +4442,9 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     expect(sync.readinessSynchronizedHelper).not.toBe(helper);
     expect(sync.gatedChildHelper).not.toBe(sync.readinessSynchronizedHelper);
     expect(sync.childSynchronizedHelper).not.toBe(sync.gatedChildHelper);
+    expect(sync.childSynchronizedHelper).toContain(
+      'test_ready(leader,expected)\n   REASON="child-admission"',
+    );
     expect(sync.identitySynchronizedHelper).not.toBe(
       sync.childSynchronizedHelper,
     );
