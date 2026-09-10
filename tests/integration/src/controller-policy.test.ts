@@ -2379,21 +2379,23 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       ' if OPERATION in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
       " child=None\n",
   );
-  const membershipBoundary =
-    "   admit_group_members(leader,expected_members)\n   if now()>=cutoff:\n";
+  const postAdmissionBoundary =
+    '  if OPERATION=="synthetic-client-output-read": child.stdout.close()\n  while child.poll() is None:\n';
   const synchronizedHelper = groupSynchronizedHelper.replace(
-    membershipBoundary,
-    "   admit_group_members(leader,expected_members)\n" +
-      '   if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}:\n' +
-      '    if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
-      "    else: CUTOFF=now()-1\n" +
-      '   if OPERATION.startswith("synthetic-client-") and OPERATION not in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
-      "   if now()>=cutoff:\n",
+    postAdmissionBoundary,
+    '  if OPERATION=="synthetic-client-output-read": child.stdout.close()\n' +
+      '  if OPERATION.startswith("synthetic-client-") and OPERATION not in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}:\n' +
+      "   admit_group_members(leader,expected_members)\n" +
+      '   if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
+      '   elif OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"}: CUTOFF=now()-1\n' +
+      '   os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
+      "  while child.poll() is None:\n",
   );
   return {
     deadlineArm,
     groupEstablishedBoundary,
     groupSynchronizedHelper,
+    postAdmissionBoundary,
     readinessSynchronizedHelper,
     synchronizedHelper,
   };
@@ -3791,11 +3793,13 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       deadlineArm,
       groupEstablishedBoundary,
       groupSynchronizedHelper,
+      postAdmissionBoundary,
       readinessSynchronizedHelper,
       synchronizedHelper,
     } = synchronizeSyntheticClientDeadlines(helper);
     expect(helper).toContain(deadlineArm);
     expect(helper).toContain(groupEstablishedBoundary);
+    expect(helper).toContain(postAdmissionBoundary);
     expect(readinessSynchronizedHelper).not.toBe(helper);
     expect(groupSynchronizedHelper).not.toBe(readinessSynchronizedHelper);
     expect(synchronizedHelper).not.toBe(groupSynchronizedHelper);
