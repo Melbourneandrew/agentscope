@@ -2472,11 +2472,14 @@ const parseSyntheticClientReadiness = (
     string,
   ];
   if (
-    ![deadline, cutoff, leader, start].every(
+    ![leader, start].every(
       (value) =>
         value !== undefined &&
         Number.isSafeInteger(Number(value)) &&
         Number(value) > 0,
+    ) ||
+    ![deadline, cutoff].every(
+      (value) => value !== undefined && BigInt(value) > 0n,
     )
   )
     return undefined;
@@ -2495,6 +2498,16 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
   ).toEqual({
     cutoff: "2000000",
     deadline: "1000000",
+    leader: "123",
+    start: "456",
+  });
+  expect(
+    parseSyntheticClientReadiness(
+      "123:456:10000000000000000:10000000000000001\n",
+    ),
+  ).toEqual({
+    cutoff: "10000000000000001",
+    deadline: "10000000000000000",
     leader: "123",
     start: "456",
   });
