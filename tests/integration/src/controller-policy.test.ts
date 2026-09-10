@@ -2377,7 +2377,12 @@ const syntheticGatedChildSource = [
   "args=json.loads(sys.argv[1])",
   'os.execve(args[0],args,{"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"})',
 ].join("\n");
-const syntheticPreparationNanoseconds = 15_000_000_000;
+const syntheticPreparationMilliseconds = 15_000;
+const syntheticObservationReserveMilliseconds = 5_000;
+const syntheticPreparationNanoseconds =
+  syntheticPreparationMilliseconds * 1_000_000;
+const syntheticObservationMilliseconds =
+  syntheticPreparationMilliseconds + syntheticObservationReserveMilliseconds;
 const syntheticDiagnosticOperations = new Set([
   "synthetic-client-cutoff",
   "synthetic-client-cutoff-cleanup-failure",
@@ -2576,6 +2581,14 @@ const parseSyntheticClientReadiness = (
     return undefined;
   return Object.freeze({ cutoff, deadline, leader, start });
 };
+
+it("bounds synthetic readiness observation beyond its cleanup authority", () => {
+  expect(syntheticObservationMilliseconds).toBe(
+    syntheticPreparationMilliseconds + syntheticObservationReserveMilliseconds,
+  );
+  expect(syntheticObservationReserveMilliseconds).toBeGreaterThan(0);
+  expect(syntheticObservationMilliseconds).toBeLessThan(30_000);
+});
 
 it("accepts only exact post-precondition synthetic client readiness", () => {
   const valid = "123:456:1000000:2000000\n";
@@ -4241,7 +4254,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
           encoding: "utf8",
           env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
           stdio: ["ignore", "pipe", "pipe", "pipe"],
-          timeout: 15_000,
+          timeout: syntheticObservationMilliseconds,
         },
       );
       expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
