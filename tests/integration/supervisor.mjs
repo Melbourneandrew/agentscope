@@ -134,7 +134,12 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "cgroup-transition-reappeared",
   "cgroup-transition-third-controlgroup",
   "cgroup-transition-main-nonterminal",
-  "cgroup-transition-observation-shape",
+  "cgroup-transition-observation-before-missing",
+  "cgroup-transition-observation-before-malformed",
+  "cgroup-transition-observation-after-missing",
+  "cgroup-transition-observation-after-malformed",
+  "cgroup-transition-terminal-tuple",
+  "cgroup-transition-nonterminal-tuple",
   "authority-load",
   "authority-identity",
   "authority-cgroup",
@@ -1968,10 +1973,22 @@ export const classifyTerminalSystemdUnitAuthority = (
   return "cgroup";
 };
 
-const validCgroupObservationShape = (observation) =>
-  typeof observation?.absent === "boolean" &&
-  typeof observation?.empty === "boolean" &&
-  (!observation.absent || observation.empty);
+const cgroupObservationShapeFailure = (observation, position) => {
+  if (
+    observation === null ||
+    typeof observation !== "object" ||
+    !Object.hasOwn(observation, "absent") ||
+    !Object.hasOwn(observation, "empty")
+  )
+    return `cgroup-transition-observation-${position}-missing`;
+  if (
+    typeof observation.absent !== "boolean" ||
+    typeof observation.empty !== "boolean" ||
+    (observation.absent && !observation.empty)
+  )
+    return `cgroup-transition-observation-${position}-malformed`;
+  return undefined;
+};
 
 const validCgroupObservationMembership = (observation) =>
   Array.isArray(observation?.members) &&
@@ -1988,11 +2005,10 @@ export const classifyTerminalCgroupTransitionFailure = (
   before,
   after,
 ) => {
-  if (
-    !validCgroupObservationShape(before) ||
-    !validCgroupObservationShape(after)
-  )
-    return "cgroup-transition-observation-shape";
+  const beforeShapeFailure = cgroupObservationShapeFailure(before, "before");
+  if (beforeShapeFailure !== undefined) return beforeShapeFailure;
+  const afterShapeFailure = cgroupObservationShapeFailure(after, "after");
+  if (afterShapeFailure !== undefined) return afterShapeFailure;
   if (
     !validCgroupObservationMembership(before) ||
     !validCgroupObservationMembership(after)
@@ -2021,8 +2037,8 @@ export const classifyTerminalCgroupTransitionFailure = (
       !before.empty &&
       !after.empty
       ? "cgroup-transition-main-nonterminal"
-      : "cgroup-transition-observation-shape";
-  return "cgroup-transition-observation-shape";
+      : "cgroup-transition-nonterminal-tuple";
+  return "cgroup-transition-terminal-tuple";
 };
 
 export const classifyRetirementSystemdUnitAuthority = (
@@ -2536,6 +2552,24 @@ const observeCgroupSettlement = (
 export const cgroupObservationSettled = (cgroupPath, identity) =>
   observeCgroupSettlement(cgroupPath, identity);
 
+const syntheticTerminalCgroupObservation = (mode, observation) => {
+  if (mode === "transition-main-nonterminal")
+    return Object.freeze({ absent: false, empty: false, members: [712] });
+  if (mode === "transition-reappeared" && observation === 2)
+    return Object.freeze({ absent: false, empty: true, members: [] });
+  if (mode === "transition-observation-before-malformed" && observation === 1)
+    return Object.freeze({ absent: true, empty: false, members: [] });
+  if (mode === "transition-observation-before-missing" && observation === 1)
+    return Object.freeze({ empty: true, members: [] });
+  if (mode === "transition-observation-after-malformed" && observation === 2)
+    return Object.freeze({ absent: true, empty: false, members: [] });
+  if (mode === "transition-observation-after-missing" && observation === 2)
+    return Object.freeze({ absent: true, members: [] });
+  if (mode === "transition-retained-membership" && observation === 1)
+    return Object.freeze({ absent: false, empty: false, members: [] });
+  return undefined;
+};
+
 const observeTerminalSystemdUnit = async (
   state,
   observeCgroup,
@@ -2697,14 +2731,8 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
         );
       if (mode === "transition-empty-populated" && observations === 2)
         return Object.freeze({ absent: false, empty: false, members: [712] });
-      if (mode === "transition-main-nonterminal")
-        return Object.freeze({ absent: false, empty: false, members: [712] });
-      if (mode === "transition-reappeared" && observations === 2)
-        return Object.freeze({ absent: false, empty: true, members: [] });
-      if (mode === "transition-observation-shape" && observations === 1)
-        return Object.freeze({ absent: true, empty: false, members: [] });
-      if (mode === "transition-retained-membership" && observations === 1)
-        return Object.freeze({ absent: false, empty: false, members: [] });
+      const synthetic = syntheticTerminalCgroupObservation(mode, observations);
+      if (synthetic !== undefined) return synthetic;
       return Object.freeze({ absent: true, empty: true, members: [] });
     };
     const authenticate = (observedFacts) => {

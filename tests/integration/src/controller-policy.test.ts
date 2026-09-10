@@ -3642,7 +3642,12 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
     "cgroup-transition-reappeared",
     "cgroup-transition-third-controlgroup",
     "cgroup-transition-main-nonterminal",
-    "cgroup-transition-observation-shape",
+    "cgroup-transition-observation-before-missing",
+    "cgroup-transition-observation-before-malformed",
+    "cgroup-transition-observation-after-missing",
+    "cgroup-transition-observation-after-malformed",
+    "cgroup-transition-terminal-tuple",
+    "cgroup-transition-nonterminal-tuple",
   ] as const satisfies readonly SystemdTerminalWaitCgroupReason[];
   const exhaustive: Exclude<
     SystemdTerminalWaitCgroupReason,
@@ -3671,7 +3676,12 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "cgroup-transition-reappeared",
     "cgroup-transition-third-controlgroup",
     "cgroup-transition-main-nonterminal",
-    "cgroup-transition-observation-shape",
+    "cgroup-transition-observation-before-missing",
+    "cgroup-transition-observation-before-malformed",
+    "cgroup-transition-observation-after-missing",
+    "cgroup-transition-observation-after-malformed",
+    "cgroup-transition-terminal-tuple",
+    "cgroup-transition-nonterminal-tuple",
     "authority-load",
     "authority-identity",
     "authority-cgroup",
@@ -3715,7 +3725,7 @@ const expectNonterminalCgroupTransitionClosure = (
     ),
   ).toBe("cgroup-transition-main-nonterminal");
   for (const [facts, before, after, reason] of [
-    [nonterminal, absent, absent, "cgroup-transition-observation-shape"],
+    [nonterminal, absent, absent, "cgroup-transition-nonterminal-tuple"],
     [nonterminal, absent, present, "cgroup-transition-reappeared"],
     [
       { ...nonterminal, ControlGroup: "" },
@@ -3739,7 +3749,7 @@ const expectNonterminalCgroupTransitionClosure = (
       nonterminal,
       { absent: true, empty: false, members: [] },
       absent,
-      "cgroup-transition-observation-shape",
+      "cgroup-transition-observation-before-malformed",
     ],
   ] as const)
     expect(
@@ -3963,7 +3973,7 @@ it("classifies terminal cgroup transition failures without exposing authority va
       { ...terminal, ExecMainStatus: "" },
       absent,
       absent,
-      "cgroup-transition-observation-shape",
+      "cgroup-transition-nonterminal-tuple",
     ],
     [
       { ...terminal, ControlGroup: "/system.slice/other.service" },
@@ -3975,13 +3985,50 @@ it("classifies terminal cgroup transition failures without exposing authority va
       terminal,
       { absent: true, empty: false, members: [] },
       absent,
-      "cgroup-transition-observation-shape",
+      "cgroup-transition-observation-before-malformed",
     ],
   ] as const)
     expect(
       classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
     ).toBe(reason);
   expectNonterminalCgroupTransitionClosure(terminal, authority, absent);
+});
+
+it("classifies each malformed cgroup observation seam content-free", () => {
+  const authority = {
+    cgroup: "/system.slice/agentscope-run.service",
+    gid: 1001,
+    groups: [4, 1001],
+    uid: 1001,
+    unit: "agentscope-run.service",
+  };
+  const facts = { ControlGroup: authority.cgroup };
+  const valid = { absent: true, empty: true, members: [] };
+  for (const [before, after, reason] of [
+    [
+      { empty: true, members: [] },
+      valid,
+      "cgroup-transition-observation-before-missing",
+    ],
+    [
+      { absent: true, empty: false, members: [] },
+      valid,
+      "cgroup-transition-observation-before-malformed",
+    ],
+    [
+      valid,
+      { absent: true, members: [] },
+      "cgroup-transition-observation-after-missing",
+    ],
+    [
+      valid,
+      { absent: "yes", empty: true, members: [] },
+      "cgroup-transition-observation-after-malformed",
+    ],
+  ] as const)
+    expect(
+      classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
+    ).toBe(reason);
 });
 
 it("canonicalizes retained cgroup membership while preserving process identity", () => {
@@ -4045,7 +4092,22 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     ["transition-empty-populated", "cgroup-transition-empty-populated"],
     ["transition-reappeared", "cgroup-transition-reappeared"],
     ["transition-third-controlgroup", "cgroup-transition-third-controlgroup"],
-    ["transition-observation-shape", "cgroup-transition-observation-shape"],
+    [
+      "transition-observation-before-missing",
+      "cgroup-transition-observation-before-missing",
+    ],
+    [
+      "transition-observation-before-malformed",
+      "cgroup-transition-observation-before-malformed",
+    ],
+    [
+      "transition-observation-after-missing",
+      "cgroup-transition-observation-after-missing",
+    ],
+    [
+      "transition-observation-after-malformed",
+      "cgroup-transition-observation-after-malformed",
+    ],
   ] as const)
     await expect(
       exerciseTerminalCgroupDiagnosticForTesting(mode),
@@ -4601,7 +4663,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         sleepArguments,
         "uncertain",
       ],
-      ["synthetic-client-deadline", "deadline", sleepArguments, "error"],
+      ["synthetic-client-deadline", "deadline", sleepArguments, "uncertain"],
       [
         "synthetic-client-leader-identity",
         "leader-identity",
@@ -4672,6 +4734,43 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   },
   30_000,
 );
+
+it("admits a proved-settled authenticated deadline receipt as error", () => {
+  const identity = {
+    cutoff: "100",
+    deadline: "200",
+    operation: "synthetic-client-deadline",
+    unit: "",
+  } as const;
+  const key = "11".repeat(32);
+  const payload = {
+    output: "",
+    reason: "deadline",
+    stage: "client-terminal",
+    status: "error",
+  } as const;
+  const mac = createHmac("sha256", Buffer.from(key, "hex"))
+    .update(
+      JSON.stringify({
+        cutoff: identity.cutoff,
+        deadline: identity.deadline,
+        operation: identity.operation,
+        output: payload.output,
+        reason: payload.reason,
+        stage: payload.stage,
+        status: payload.status,
+        unit: identity.unit,
+      }),
+    )
+    .digest("hex");
+  expect(
+    validateRootToolReceipt({
+      identity,
+      key,
+      receipt: JSON.stringify({ mac, ...payload }),
+    }),
+  ).toEqual(payload);
+});
 
 it("emits only an authenticated closed systemd-tool stage annotation", () => {
   const action = readFileSync(

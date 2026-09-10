@@ -71,16 +71,8 @@ export function classifyTerminalCgroupTransitionFailure(
     uid: number;
     unit: string;
   }>,
-  before: Readonly<{
-    absent: boolean;
-    empty: boolean;
-    members: readonly number[];
-  }>,
-  after: Readonly<{
-    absent: boolean;
-    empty: boolean;
-    members: readonly number[];
-  }>,
+  before: unknown,
+  after: unknown,
 ): SystemdTerminalCgroupTransitionReason;
 
 export type SystemdTerminalCgroupTransitionReason =
@@ -92,7 +84,12 @@ export type SystemdTerminalCgroupTransitionReason =
   | "cgroup-transition-reappeared"
   | "cgroup-transition-third-controlgroup"
   | "cgroup-transition-main-nonterminal"
-  | "cgroup-transition-observation-shape";
+  | "cgroup-transition-observation-before-missing"
+  | "cgroup-transition-observation-before-malformed"
+  | "cgroup-transition-observation-after-missing"
+  | "cgroup-transition-observation-after-malformed"
+  | "cgroup-transition-terminal-tuple"
+  | "cgroup-transition-nonterminal-tuple";
 export function validateMainProcessMembership(input: {
   after: Readonly<{ bootId: string; pid: number; startTime: string }>;
   before: Readonly<{ bootId: string; pid: number; startTime: string }>;
@@ -143,7 +140,10 @@ export function exerciseTerminalCgroupDiagnosticForTesting(
     | "transition-reappeared"
     | "transition-third-controlgroup"
     | "transition-main-nonterminal"
-    | "transition-observation-shape",
+    | "transition-observation-before-missing"
+    | "transition-observation-before-malformed"
+    | "transition-observation-after-missing"
+    | "transition-observation-after-malformed",
 ): Promise<
   Readonly<{
     cleanupAttempts: number;
