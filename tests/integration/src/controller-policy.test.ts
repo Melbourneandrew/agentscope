@@ -159,7 +159,7 @@ import { compileCapabilityManifest, compileIsolationEvidence } from ${JSON.strin
     pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
       .href,
   )};
-const failureEvidenceFinalizationReasons = new Set(["open", "stat", "validation", "write", "fsync", "child-terminal", "artifact-upload", "retirement"]);
+const failureEvidenceFinalizationReasons = new Set(["open", "stat", "read", "validation", "write", "fsync", "child-terminal", "artifact-upload", "retirement"]);
 const failureEvidenceFinalizationFailures = new WeakMap();
 const bindFailureEvidenceFinalization = (reason) => {
   if (!failureEvidenceFinalizationReasons.has(reason)) throw new Error("integration.controller.failure-evidence");
@@ -168,6 +168,18 @@ const bindFailureEvidenceFinalization = (reason) => {
   return bound;
 };
 const failureEvidenceFinalizationReason = (error) => error !== null && typeof error === "object" ? failureEvidenceFinalizationFailures.get(error)?.reason : undefined;
+const performFailureEvidenceFinalizationOperation = (reason, operation) => {
+  if (!failureEvidenceFinalizationReasons.has(reason) || typeof operation !== "function") throw new Error("integration.controller.failure-evidence");
+  try { return operation(); } catch (error) {
+    if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+    throw bindFailureEvidenceFinalization(reason);
+  }
+};
+const closeFailureEvidenceDescriptor = (descriptor, firstFailure, reason, close = closeSync) => {
+  try { close(descriptor); return firstFailure; } catch (error) {
+    return firstFailure ?? (failureEvidenceFinalizationReason(error) !== undefined ? error : bindFailureEvidenceFinalization(reason));
+  }
+};
 ${body}`;
 };
 const failureReceiptValidatorSource = (workflow: string) => {

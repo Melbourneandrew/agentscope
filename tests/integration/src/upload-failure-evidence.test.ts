@@ -86,6 +86,7 @@ const exerciseOuterFailure =
 const exerciseFinalizationFailure =
   exerciseFailureEvidenceFinalizationForTest as unknown as (reason: string) => {
     forgedRejected: boolean;
+    primaryPreserved: boolean;
     reason: string | undefined;
   };
 const verifyArtifactProvenance =
@@ -676,6 +677,7 @@ it("binds only closed outer-controller failure stages and preserves first cause"
   for (const reason of [
     "open",
     "stat",
+    "read",
     "validation",
     "write",
     "fsync",
@@ -687,6 +689,7 @@ it("binds only closed outer-controller failure stages and preserves first cause"
     expect(validOuterStage(stage)).toBe(true);
     expect(exerciseFinalizationFailure(reason)).toEqual({
       forgedRejected: true,
+      primaryPreserved: true,
       reason,
     });
     expect(exerciseOuterFailure(stage)).toEqual({
@@ -706,6 +709,38 @@ it("binds only closed outer-controller failure stages and preserves first cause"
     "finalize-evidence:open\n",
   ])
     expect(validOuterStage(rejected)).toBe(false);
+});
+
+it("latches each reachable finalization reason at its production operation", () => {
+  const source = readFileSync(
+    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+    "utf8",
+  );
+  const finalizer = source.slice(
+    source.indexOf("export const finalizeFailureEvidence ="),
+    source.indexOf("/* eslint-enable complexity, max-lines-per-function */"),
+  );
+  for (const [mark, operation] of [
+    ['mark("open")', "descriptor = openSync(path"],
+    ['mark("stat")', "const before = fstatSync(descriptor)"],
+    ['mark("read")', "const content = readFileSync(descriptor)"],
+    ['mark("validation")', "result = { content, status: before }"],
+    ['mark("write")', "writeSync(bundleDescriptor"],
+    ['mark("fsync")', "fsyncSync(bundleDescriptor)"],
+    ['mark("child-terminal")', "const sealer = perform"],
+    ['mark("artifact-upload")', "const probe = async"],
+    ['mark("retirement")', "const retireUploadedFailureEvidence ="],
+  ] as const) {
+    const markIndex = finalizer.indexOf(mark);
+    const operationIndex = finalizer.indexOf(operation, markIndex);
+    expect(markIndex, mark).toBeGreaterThanOrEqual(0);
+    expect(operationIndex, operation).toBeGreaterThan(markIndex);
+  }
+  expect(finalizer).not.toMatch(/mark\("(?:rename|directory-fsync)"\)/u);
+  expect(finalizer.match(/mark\("retirement"\)/gu)).toHaveLength(2);
+  expect(finalizer).toContain(
+    "if (firstFailure !== undefined) throw firstFailure",
+  );
 });
 
 it("authenticates the exact closed local action metadata", () => {

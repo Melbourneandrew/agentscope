@@ -97,6 +97,7 @@ const outerControllerStages = new Set([
 const failureEvidenceFinalizationReasons = new Set([
   "open",
   "stat",
+  "read",
   "validation",
   "write",
   "fsync",
@@ -149,6 +150,37 @@ const failureEvidenceFinalizationReason = (error) =>
   error !== null && typeof error === "object"
     ? failureEvidenceFinalizationFailures.get(error)?.reason
     : undefined;
+const performFailureEvidenceFinalizationOperation = (reason, operation) => {
+  if (
+    !failureEvidenceFinalizationReasons.has(reason) ||
+    typeof operation !== "function"
+  )
+    fail();
+  try {
+    return operation();
+  } catch (error) {
+    if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+    throw bindFailureEvidenceFinalization(reason);
+  }
+};
+const closeFailureEvidenceDescriptor = (
+  descriptor,
+  firstFailure,
+  reason,
+  close = closeSync,
+) => {
+  try {
+    close(descriptor);
+    return firstFailure;
+  } catch (error) {
+    return (
+      firstFailure ??
+      (failureEvidenceFinalizationReason(error) !== undefined
+        ? error
+        : bindFailureEvidenceFinalization(reason))
+    );
+  }
+};
 const bindOuterControllerFailure = (error, stage) => {
   if (systemdToolFailureStage(error) !== undefined) return error;
   if (
@@ -178,10 +210,27 @@ export const exerciseOuterControllerFailureForTest = (stage) => {
   });
 };
 export const exerciseFailureEvidenceFinalizationForTest = (reason) => {
-  const bound = bindFailureEvidenceFinalization(reason);
+  let bound;
+  try {
+    performFailureEvidenceFinalizationOperation(reason, () => {
+      throw new Error("private");
+    });
+  } catch (error) {
+    bound = error;
+  }
   const forged = new Error("integration.controller.failure-evidence");
+  const originating = bindFailureEvidenceFinalization(reason);
+  const preserved = closeFailureEvidenceDescriptor(
+    17,
+    originating,
+    "retirement",
+    () => {
+      throw new Error("private-close");
+    },
+  );
   return Object.freeze({
     forgedRejected: failureEvidenceFinalizationReason(forged) === undefined,
+    primaryPreserved: preserved === originating,
     reason: failureEvidenceFinalizationReason(bound),
   });
 };
@@ -592,12 +641,10 @@ export const finalizeFailureEvidence = async ({
     throw bindFailureEvidenceFinalization(finalizationReason);
   };
   const perform = (operation) => {
-    try {
-      return operation();
-    } catch (error) {
-      if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
-      throw bindFailureEvidenceFinalization(finalizationReason);
-    }
+    return performFailureEvidenceFinalizationOperation(
+      finalizationReason,
+      operation,
+    );
   };
   const exactKeys = (value, keys) =>
     typeof value === "object" &&
@@ -702,7 +749,9 @@ export const finalizeFailureEvidence = async ({
         (before.mode & 0o7777) !== expectedMode
       )
         fail();
+      mark("read");
       const content = readFileSync(descriptor);
+      mark("stat");
       const after = fstatSync(descriptor);
       if (
         after.dev !== before.dev ||
@@ -721,17 +770,12 @@ export const finalizeFailureEvidence = async ({
           ? error
           : bindFailureEvidenceFinalization(finalizationReason);
     }
-    if (descriptor !== undefined) {
-      try {
-        closeSync(descriptor);
-      } catch (error) {
-        if (firstFailure === undefined)
-          firstFailure =
-            failureEvidenceFinalizationReason(error) !== undefined
-              ? error
-              : bindFailureEvidenceFinalization(finalizationReason);
-      }
-    }
+    if (descriptor !== undefined)
+      firstFailure = closeFailureEvidenceDescriptor(
+        descriptor,
+        firstFailure,
+        finalizationReason,
+      );
     if (firstFailure !== undefined) throw firstFailure;
     return result;
   };
@@ -772,8 +816,15 @@ export const finalizeFailureEvidence = async ({
       (manifestPresent && terminal.stage !== "publish-manifest")
     )
       fail();
+    mark("retirement");
+    let closeFailure;
     for (const { descriptor } of authenticatedDescriptors.splice(0))
-      closeSync(descriptor);
+      closeFailure = closeFailureEvidenceDescriptor(
+        descriptor,
+        closeFailure,
+        finalizationReason,
+      );
+    if (closeFailure !== undefined) throw closeFailure;
     process.stdout.write(
       `${JSON.stringify({
         predicate: terminal.predicate,
