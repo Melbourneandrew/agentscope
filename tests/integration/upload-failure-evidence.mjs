@@ -87,6 +87,14 @@ const actionBootstrapPackageManifestReasons = new Set([
   "digest",
   "identity-read",
 ]);
+const outerControllerStages = new Set([
+  "prepare-systemd",
+  "run-systemd",
+  "revalidate-sealer",
+  "finalize-evidence",
+  "descriptor-close",
+]);
+const outerControllerFailures = new WeakMap();
 let actionBootstrapStage = "invocation";
 let actionBootstrapReason = "argv-shape";
 export const validFailureEvidenceBootstrapStage = (value) =>
@@ -112,6 +120,36 @@ export const validLocalActionMetadata = (value) =>
   Buffer.isBuffer(value) && value.equals(LOCAL_ACTION_METADATA);
 const fail = () => {
   throw new Error("integration.controller.failure-evidence-upload");
+};
+export const validOuterControllerStage = (value) =>
+  typeof value === "string" && outerControllerStages.has(value);
+const bindOuterControllerFailure = (error, stage) => {
+  if (systemdToolFailureStage(error) !== undefined) return error;
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    outerControllerFailures.has(error)
+  )
+    return error;
+  if (!validOuterControllerStage(stage)) fail();
+  const bound = new Error("integration.controller.outer");
+  outerControllerFailures.set(bound, Object.freeze({ stage }));
+  return bound;
+};
+const outerControllerFailureStage = (error) =>
+  error !== null && typeof error === "object"
+    ? outerControllerFailures.get(error)?.stage
+    : undefined;
+export const exerciseOuterControllerFailureForTest = (stage) => {
+  const original = new Error("private");
+  const bound = bindOuterControllerFailure(original, stage);
+  const forged = new Error("integration.controller.outer");
+  return Object.freeze({
+    firstPreserved:
+      bindOuterControllerFailure(bound, "descriptor-close") === bound,
+    forgedRejected: outerControllerFailureStage(forged) === undefined,
+    stage: outerControllerFailureStage(bound),
+  });
 };
 const parseUnsigned = (value, maximum) => {
   if (!/^(?:0|[1-9]\d*)$/u.test(value ?? "")) fail();
@@ -1436,35 +1474,58 @@ const outerControllerMain = async () => {
       "tests/integration/controller-process.mjs",
     ),
   ];
-  const preparation = await prepareGithubSystemdSupervision({
-    arguments_: lifecycleArguments,
-    environment: lifecycleEnvironment,
-    executable: process.execPath,
-    maximumMilliseconds,
-  });
-  const result = await runSupervisedProcess({
-    environment: lifecycleEnvironment,
-    executable: process.execPath,
-    arguments_: lifecycleArguments,
-    maximumMilliseconds,
-    containment: "github-systemd",
-    preparation,
-  });
+  let outerStage = "prepare-systemd";
+  let firstFailure;
+  let result;
   let succeeded;
   try {
+    const preparation = await prepareGithubSystemdSupervision({
+      arguments_: lifecycleArguments,
+      environment: lifecycleEnvironment,
+      executable: process.execPath,
+      maximumMilliseconds,
+    });
+    outerStage = "run-systemd";
+    result = await runSupervisedProcess({
+      environment: lifecycleEnvironment,
+      executable: process.execPath,
+      arguments_: lifecycleArguments,
+      maximumMilliseconds,
+      containment: "github-systemd",
+      preparation,
+    });
+    if (result.contained !== true) fail();
+    outerStage = "revalidate-sealer";
     revalidateCredentialedSource(sealer);
-    succeeded = await settleLifecycleResult(result, () =>
-      finalizeFailureEvidence({
+    if (result.code === 0 && result.residualWorkObserved === false) {
+      succeeded = true;
+    } else {
+      outerStage = "finalize-evidence";
+      await finalizeFailureEvidence({
         bundleDescriptor: authority.bundleDescriptor,
         client: new DefaultArtifactClient(),
         sealerSource: sealer.content,
-      }),
-    );
+      });
+      succeeded = false;
+    }
+  } catch (error) {
+    firstFailure = bindOuterControllerFailure(error, outerStage);
   } finally {
-    closeSync(sealer.descriptor);
-    closeSync(authority.bundleDescriptor);
-    closeSync(authority.sourceDescriptor);
+    outerStage = "descriptor-close";
+    for (const descriptor of [
+      sealer.descriptor,
+      authority.bundleDescriptor,
+      authority.sourceDescriptor,
+    ]) {
+      try {
+        closeSync(descriptor);
+      } catch (error) {
+        if (firstFailure === undefined)
+          firstFailure = bindOuterControllerFailure(error, outerStage);
+      }
+    }
   }
+  if (firstFailure !== undefined) throw firstFailure;
   if (succeeded) return;
   process.exitCode = result.code === 0 ? 1 : (result.code ?? 1);
 };
@@ -1525,6 +1586,13 @@ if (process.argv[1] === "--outer-controller") {
       process.stdout.write(
         `::error::integration.controller.systemd-tool:${stage}\n`,
       );
+    else {
+      const outerStage = outerControllerFailureStage(error);
+      if (outerStage !== undefined)
+        process.stdout.write(
+          `::error::integration.controller.outer:${outerStage}\n`,
+        );
+    }
     process.exitCode = 1;
   });
 } else if (

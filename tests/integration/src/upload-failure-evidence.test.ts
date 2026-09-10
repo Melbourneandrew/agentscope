@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -74,6 +74,15 @@ const validBootstrapPredicate =
 const validActionMetadata = validLocalActionMetadata as unknown as (
   value: unknown,
 ) => boolean;
+const validOuterStage = validOuterControllerStage as unknown as (
+  value: unknown,
+) => boolean;
+const exerciseOuterFailure =
+  exerciseOuterControllerFailureForTest as unknown as (stage: string) => {
+    firstPreserved: boolean;
+    forgedRejected: boolean;
+    stage: string | undefined;
+  };
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
     environment: NodeJS.ProcessEnv,
@@ -641,6 +650,32 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     { predicate: "invocation:argv-shape" },
   ])
     expect(validBootstrapPredicate(rejected)).toBe(false);
+});
+
+it("binds only closed outer-controller failure stages and preserves first cause", () => {
+  const stages = [
+    "prepare-systemd",
+    "run-systemd",
+    "revalidate-sealer",
+    "finalize-evidence",
+    "descriptor-close",
+  ];
+  for (const stage of stages) {
+    expect(validOuterStage(stage)).toBe(true);
+    expect(exerciseOuterFailure(stage)).toEqual({
+      firstPreserved: true,
+      forgedRejected: true,
+      stage,
+    });
+  }
+  for (const rejected of [
+    undefined,
+    "",
+    "prepare-systemd:extra",
+    "run-systemd\nfinalize-evidence",
+    "unknown",
+  ])
+    expect(validOuterStage(rejected)).toBe(false);
 });
 
 it("authenticates the exact closed local action metadata", () => {

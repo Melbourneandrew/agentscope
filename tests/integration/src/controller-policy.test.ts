@@ -3482,6 +3482,18 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const start = supervisorSource.indexOf(prefix) + prefix.length;
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
+    const deadlineArm =
+      " DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); OPERATION=sys.argv[3]\n tool=sys.argv[4]; raw=sys.argv[5]; unit=sys.argv[6]; KEY=sys.argv[7]\n";
+    const synchronizedHelper = helper.replace(
+      deadlineArm,
+      deadlineArm +
+        ' if OPERATION.startswith("synthetic-client-"):\n' +
+        "  armed=now()\n" +
+        '  DEADLINE=armed+(1300000000 if OPERATION=="synthetic-client-deadline" else 2000000000)\n' +
+        '  CUTOFF=armed+(1000000000 if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"} else 2000000000 if OPERATION=="synthetic-client-deadline" else 1200000000)\n' +
+        '  os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n',
+    );
+    expect(synchronizedHelper).not.toBe(helper);
     const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
     const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
     const cases = [
@@ -3532,30 +3544,6 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       ],
     ] as const;
     for (const [operation, reason, arguments_, status] of cases) {
-      const uptime = readFileSync("/proc/uptime", "utf8").split(" ")[0];
-      if (uptime === undefined || !/^\d+\.\d+$/u.test(uptime))
-        throw new Error("invalid synthetic boottime authority");
-      const [seconds, fraction] = uptime.split(".");
-      if (seconds === undefined || fraction === undefined)
-        throw new Error("invalid synthetic boottime authority");
-      const now =
-        BigInt(seconds) * 1_000_000_000n +
-        BigInt(fraction.slice(0, 2).padEnd(2, "0")) * 10_000_000n;
-      const deadline = String(
-        now +
-          (operation === "synthetic-client-deadline"
-            ? 1_300_000_000n
-            : 2_000_000_000n),
-      );
-      const cutoff = String(
-        now +
-          (operation === "synthetic-client-cutoff" ||
-          operation === "synthetic-client-cutoff-cleanup-failure"
-            ? 1_000_000_000n
-            : operation === "synthetic-client-deadline"
-              ? 2_000_000_000n
-              : 1_200_000_000n),
-      );
       const key = createHash("sha256").update(operation).digest("hex");
       const terminal = spawnSync(
         "/usr/bin/python3",
@@ -3563,9 +3551,9 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
           "-I",
           "-S",
           "-c",
-          helper,
-          deadline,
-          cutoff,
+          synchronizedHelper,
+          "1",
+          "1",
           operation,
           "/usr/bin/python3",
           Buffer.from(JSON.stringify(arguments_)).toString("base64url"),
@@ -3575,10 +3563,16 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         {
           encoding: "utf8",
           env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+          stdio: ["ignore", "pipe", "pipe", "pipe"],
           timeout: 3_000,
         },
       );
       expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+      const readiness = terminal.output[3];
+      expect(readiness).toMatch(/^\d{7,20}:\d{7,20}$/u);
+      const [deadline, cutoff] = String(readiness).split(":");
+      if (deadline === undefined || cutoff === undefined)
+        throw new Error("synthetic helper readiness missing");
       const receipt = validateRootToolReceipt({
         identity: { cutoff, deadline, operation, unit: "" },
         key,
@@ -3634,6 +3628,32 @@ it("emits only an authenticated closed systemd-tool stage annotation", () => {
   expect(supervisor).toContain(
     "new Error(`integration.controller.systemd-tool:${predicate}`)",
   );
+});
+
+it("latches closed outer-controller stages before every authority boundary", () => {
+  const action = readFileSync(
+    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+    "utf8",
+  );
+  const outer = action.slice(
+    action.indexOf("const outerControllerMain ="),
+    action.indexOf("const bootstrapMain ="),
+  );
+  for (const [stage, boundary] of [
+    ['outerStage = "prepare-systemd"', "prepareGithubSystemdSupervision("],
+    ['outerStage = "run-systemd"', "runSupervisedProcess("],
+    [
+      'outerStage = "revalidate-sealer"',
+      "revalidateCredentialedSource(sealer)",
+    ],
+    ['outerStage = "finalize-evidence"', "finalizeFailureEvidence("],
+    ['outerStage = "descriptor-close"', "for (const descriptor of"],
+  ] as const)
+    expect(outer.indexOf(stage)).toBeLessThan(outer.indexOf(boundary));
+  expect(action).toContain(
+    "`::error::integration.controller.outer:${outerStage}\\n`",
+  );
+  expect(action).not.toContain("integration.controller.outer:${error");
 });
 
 it("closes retained descriptor authority exactly once on capture failure", () => {
