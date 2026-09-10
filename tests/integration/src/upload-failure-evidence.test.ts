@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -99,6 +99,15 @@ const classifyBootstrapChildTerminal =
     signal?: string | null;
     status?: number | null;
   }) => string | undefined;
+const exerciseBootstrapSettlement =
+  exerciseActionBootstrapSettlementForTest as unknown as (
+    fault:
+      | "child-exit"
+      | "descriptor-close"
+      | "revalidate-sealer"
+      | "revalidate-source"
+      | "spawn",
+  ) => string | undefined;
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
     environment: NodeJS.ProcessEnv,
@@ -779,22 +788,21 @@ it("classifies child terminal authority without retaining process output", () =>
     expect(classifyBootstrapChildTerminal(result)).toBeUndefined();
 });
 
-it("keeps spawn and post-child authority failures out of exit attribution", () => {
-  const source = readFileSync(
-    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
-    "utf8",
+it("preserves exact spawn, child terminal, revalidation, and close stages", () => {
+  expect(exerciseBootstrapSettlement("spawn")).toBe(
+    "::error::integration.controller.failure-evidence-bootstrap:spawn\n",
   );
-  const bootstrap = source.slice(
-    source.indexOf("const bootstrapMain ="),
-    source.indexOf('if (process.argv[1] === "--outer-controller")'),
+  expect(exerciseBootstrapSettlement("child-exit")).toBe(
+    "::error::integration.controller.failure-evidence-bootstrap:child-terminal:exit\n",
   );
-  expect(bootstrap).toContain("childTerminalReason !== undefined");
-  expect(bootstrap).toContain('actionBootstrapStage = "revalidate-source"');
-  expect(bootstrap).toContain('actionBootstrapStage = "revalidate-sealer"');
-  expect(bootstrap).toContain('actionBootstrapStage = "descriptor-close"');
-  expect(bootstrap.indexOf('actionBootstrapStage = "spawn"')).toBeLessThan(
-    bootstrap.indexOf("spawnSync("),
-  );
+  for (const stage of [
+    "revalidate-source",
+    "revalidate-sealer",
+    "descriptor-close",
+  ] as const)
+    expect(exerciseBootstrapSettlement(stage)).toBe(
+      `::error::integration.controller.failure-evidence-bootstrap:${stage}\n`,
+    );
 });
 
 it("latches each reachable finalization reason at its production operation", () => {

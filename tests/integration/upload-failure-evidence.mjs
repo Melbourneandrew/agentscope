@@ -1658,6 +1658,83 @@ export const settleLifecycleResult = async (result, finalize) => {
   return false;
 };
 
+const settleActionBootstrapDescriptors = ({
+  childTerminalReason,
+  close = closeSync,
+  revalidate = revalidateCredentialedSource,
+  sealer,
+  source,
+  spawnFailure,
+}) => {
+  if (childTerminalReason !== undefined) {
+    actionBootstrapStage = "child-terminal";
+    actionBootstrapReason = childTerminalReason;
+  }
+  let secondaryFailure;
+  let secondaryStage;
+  try {
+    if (childTerminalReason === undefined && !spawnFailure)
+      actionBootstrapStage = "revalidate-source";
+    revalidate(source);
+    if (childTerminalReason === undefined && !spawnFailure)
+      actionBootstrapStage = "revalidate-sealer";
+    revalidate(sealer);
+  } catch (error) {
+    secondaryFailure = error;
+    secondaryStage = actionBootstrapStage;
+  }
+  for (const descriptor of [source.descriptor, sealer.descriptor]) {
+    try {
+      if (
+        childTerminalReason === undefined &&
+        !spawnFailure &&
+        secondaryFailure === undefined
+      )
+        actionBootstrapStage = "descriptor-close";
+      close(descriptor);
+    } catch (error) {
+      if (secondaryFailure === undefined) {
+        secondaryFailure = error;
+        secondaryStage = "descriptor-close";
+      }
+    }
+  }
+  if (childTerminalReason !== undefined || spawnFailure) fail();
+  if (secondaryFailure !== undefined) {
+    actionBootstrapStage = secondaryStage;
+    throw secondaryFailure;
+  }
+};
+
+export const exerciseActionBootstrapSettlementForTest = (fault) => {
+  actionBootstrapStage = "spawn";
+  actionBootstrapReason = "";
+  let calls = 0;
+  try {
+    settleActionBootstrapDescriptors({
+      childTerminalReason: fault === "child-exit" ? "exit" : undefined,
+      close: () => {
+        if (fault === "descriptor-close" && calls >= 2)
+          throw new Error("private");
+      },
+      revalidate: () => {
+        calls += 1;
+        if (
+          (fault === "revalidate-source" && calls === 1) ||
+          (fault === "revalidate-sealer" && calls === 2)
+        )
+          throw new Error("private");
+      },
+      sealer: { descriptor: 4 },
+      source: { descriptor: 3 },
+      spawnFailure: fault === "spawn",
+    });
+  } catch {
+    return failureEvidenceBootstrapAnnotation();
+  }
+  return undefined;
+};
+
 const outerControllerMain = async () => {
   const authority = exactControllerArguments(process.argv.slice(1));
   const source = readExact(
@@ -1799,32 +1876,12 @@ const bootstrapMain = () => {
   const spawnFailure =
     childTerminalReason === undefined &&
     (result.error !== undefined || !Number.isSafeInteger(result.status));
-  if (childTerminalReason !== undefined) {
-    actionBootstrapStage = "child-terminal";
-    actionBootstrapReason = childTerminalReason;
-  }
-  let secondaryFailure;
-  try {
-    if (childTerminalReason === undefined && !spawnFailure)
-      actionBootstrapStage = "revalidate-source";
-    revalidateCredentialedSource(source);
-    if (childTerminalReason === undefined && !spawnFailure)
-      actionBootstrapStage = "revalidate-sealer";
-    revalidateCredentialedSource(sealer);
-  } catch (error) {
-    secondaryFailure = error;
-  }
-  for (const descriptor of [source.descriptor, sealer.descriptor]) {
-    try {
-      if (childTerminalReason === undefined && !spawnFailure)
-        actionBootstrapStage = "descriptor-close";
-      closeSync(descriptor);
-    } catch (error) {
-      secondaryFailure ??= error;
-    }
-  }
-  if (childTerminalReason !== undefined || spawnFailure) fail();
-  if (secondaryFailure !== undefined) throw secondaryFailure;
+  settleActionBootstrapDescriptors({
+    childTerminalReason,
+    sealer,
+    source,
+    spawnFailure,
+  });
   if (result.status !== 0 || result.signal !== null) fail();
 };
 
