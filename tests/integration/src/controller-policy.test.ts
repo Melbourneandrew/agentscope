@@ -3298,34 +3298,35 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     ['"main-pid"', "captureMainProcessMembership("],
   ] as const)
     expect(admission.indexOf(reason)).toBeLessThan(admission.indexOf(boundary));
-  const membership = supervisor.slice(
-    supervisor.indexOf("const captureMainProcessMembership ="),
-    supervisor.indexOf("export const systemdTerminalTransition"),
+  const membershipStart = supervisor.indexOf(
+    "const captureMainProcessMembership =",
   );
-  const firstSnapshot = membership.indexOf("readProcessSnapshot(pid)");
-  const secondSnapshot = membership.lastIndexOf("readProcessSnapshot(pid)");
-  expect(firstSnapshot).toBeGreaterThan(-1);
-  expect(secondSnapshot).toBeGreaterThan(firstSnapshot);
-  expect(membership.indexOf('"main-pid"')).toBeLessThan(
-    membership.indexOf("facts?.MainPID"),
+  const membershipEnd = supervisor.indexOf(
+    "const retainedCgroupIsEmpty =",
+    membershipStart,
   );
-  expect(membership.indexOf('"main-snapshot-before"')).toBeLessThan(
-    firstSnapshot,
-  );
-  expect(membership.indexOf('"main-members"')).toBeGreaterThan(firstSnapshot);
-  expect(membership.indexOf('"main-members"')).toBeLessThan(
-    membership.indexOf("retainedCgroupMembers(cgroupIdentity)"),
-  );
-  expect(membership.indexOf('"main-snapshot-after"')).toBeGreaterThan(
-    membership.indexOf("retainedCgroupMembers(cgroupIdentity)"),
-  );
-  expect(membership.indexOf('"main-snapshot-after"')).toBeLessThan(
-    secondSnapshot,
-  );
-  expect(membership.indexOf('"main-identity"')).toBeGreaterThan(secondSnapshot);
-  expect(membership.indexOf('"main-identity"')).toBeLessThan(
-    membership.indexOf("validateMainProcessMembership("),
-  );
+  expect(membershipStart).toBeGreaterThan(-1);
+  expect(membershipEnd).toBeGreaterThan(membershipStart);
+  const membership = supervisor.slice(membershipStart, membershipEnd);
+  let boundary = -1;
+  for (const token of [
+    'markDiagnostic?.("main-pid")',
+    "facts?.MainPID",
+    "const pid = Number(facts.MainPID)",
+    "if (!Number.isSafeInteger(pid)) failSystemd()",
+    'markDiagnostic?.("main-snapshot-before")',
+    "const before = readProcessSnapshot(pid)",
+    'markDiagnostic?.("main-members")',
+    "const members = retainedCgroupMembers(cgroupIdentity)",
+    'markDiagnostic?.("main-snapshot-after")',
+    "const after = readProcessSnapshot(pid)",
+    'markDiagnostic?.("main-identity")',
+    "validateMainProcessMembership(",
+  ]) {
+    const next = membership.indexOf(token, boundary + 1);
+    expect(next, token).toBeGreaterThan(boundary);
+    boundary = next;
+  }
   expect(admission).toContain("systemdUnitAdmissionDiagnosticReasons.has(");
 });
 
