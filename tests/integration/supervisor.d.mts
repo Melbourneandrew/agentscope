@@ -157,6 +157,8 @@ export function exerciseTerminalCgroupDiagnosticForTesting(
     | "observe-after-error-missing"
     | "observe-after-error-permission"
     | "observe-after-unit-not-found-empty"
+    | "observe-after-unit-not-found-empty-dead"
+    | "observe-after-unit-not-found-empty-malformed"
     | "observe-after-unit-not-found-missing"
     | "observe-after-unit-not-found-third"
     | "observe-after-unit-not-found-transition"

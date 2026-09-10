@@ -4141,6 +4141,14 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       "cgroup-observe-after-unit-not-found",
     ],
     [
+      "observe-after-unit-not-found-empty-dead",
+      "cgroup-observe-after-unit-not-found",
+    ],
+    [
+      "observe-after-unit-not-found-empty-malformed",
+      "cgroup-observe-after-unit-not-found",
+    ],
+    [
       "observe-after-unit-not-found-third",
       "cgroup-observe-after-unit-not-found",
     ],

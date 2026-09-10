@@ -2576,6 +2576,8 @@ const syntheticCgroupObservationErrorCodes = Object.freeze({
   "observe-after-error-missing": "ENOENT",
   "observe-after-error-permission": "EACCES",
   "observe-after-unit-not-found-empty": "ENOENT",
+  "observe-after-unit-not-found-empty-dead": "ENOENT",
+  "observe-after-unit-not-found-empty-malformed": "ENOENT",
   "observe-after-unit-not-found-missing": "ENOENT",
   "observe-after-unit-not-found-third": "ENOENT",
   "observe-after-unit-not-found-transition": "ENOENT",
@@ -2714,13 +2716,13 @@ const observeTerminalSystemdUnit = async (
     if (
       reason === "unit-not-found" &&
       facts?.LoadState === "loaded" &&
-      systemdMainProcessIsTerminal(facts) &&
+      parseSystemdMainExitStatus(facts) !== undefined &&
       classifySystemdUnitImmutableAuthority(facts, state.authority) ===
         undefined &&
       (facts.ControlGroup === state.authority.cgroup ||
         (facts.ControlGroup === "" &&
-          ["inactive", "failed"].includes(facts.ActiveState) &&
-          ["dead", "failed"].includes(facts.SubState)))
+          facts.ActiveState === "failed" &&
+          facts.SubState === "failed"))
     ) {
       try {
         after = recoverRemoved();
@@ -2825,30 +2827,32 @@ const waitForTerminal = async (state) => {
 };
 
 const syntheticTerminalUnitFacts = (mode, authority) => ({
-  ActiveState:
-    mode === "observe-after-unit-not-found-empty" ? "failed" : "active",
+  ActiveState: mode.startsWith("observe-after-unit-not-found-empty")
+    ? "failed"
+    : "active",
   AmbientCapabilities: "",
   CapabilityBoundingSet: "",
-  ControlGroup:
-    mode === "observe-after-unit-not-found-empty"
-      ? ""
-      : mode === "observe-after-unit-not-found-missing"
-        ? undefined
-        : mode === "observe-after-unit-not-found-third"
-          ? "/system.slice/other.service"
-          : mode === "transition-monotonic-removal-empty" ||
-              mode === "transition-empty-populated"
-            ? ""
-            : mode === "transition-third-controlgroup"
-              ? "/system.slice/other.service"
-              : authority.cgroup,
+  ControlGroup: mode.startsWith("observe-after-unit-not-found-empty")
+    ? ""
+    : mode === "observe-after-unit-not-found-missing"
+      ? undefined
+      : mode === "observe-after-unit-not-found-third"
+        ? "/system.slice/other.service"
+        : mode === "transition-monotonic-removal-empty" ||
+            mode === "transition-empty-populated"
+          ? ""
+          : mode === "transition-third-controlgroup"
+            ? "/system.slice/other.service"
+            : authority.cgroup,
   Delegate: "no",
   ExecMainCode: "1",
   ExecMainStatus:
     mode === "transition-main-nonterminal"
       ? ""
-      : mode === "observe-after-unit-not-found-empty"
-        ? "17"
+      : mode.startsWith("observe-after-unit-not-found-empty")
+        ? mode === "observe-after-unit-not-found-empty-malformed"
+          ? "bad"
+          : "17"
         : "0",
   Group: "1001",
   Id: authority.unit,
@@ -2858,10 +2862,16 @@ const syntheticTerminalUnitFacts = (mode, authority) => ({
   NoNewPrivileges: "yes",
   ProtectControlGroups: "yes",
   RemainAfterExit: "yes",
-  Result:
-    mode === "observe-after-unit-not-found-empty" ? "exit-code" : "success",
+  Result: mode.startsWith("observe-after-unit-not-found-empty")
+    ? "exit-code"
+    : "success",
   RestrictSUIDSGID: "yes",
-  SubState: mode === "observe-after-unit-not-found-empty" ? "failed" : "exited",
+  SubState:
+    mode === "observe-after-unit-not-found-empty-dead"
+      ? "dead"
+      : mode.startsWith("observe-after-unit-not-found-empty")
+        ? "failed"
+        : "exited",
   SupplementaryGroups: "4 1001",
   User: "1001",
 });
