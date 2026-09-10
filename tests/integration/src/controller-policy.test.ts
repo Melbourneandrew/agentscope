@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -4236,6 +4236,76 @@ const runSyntheticClientHelper = (
   return { key, terminal };
 };
 
+const validateSyntheticReadinessFaultReceipt = ({
+  identity,
+  key,
+  reason,
+  receipt,
+}: {
+  identity: Readonly<{
+    cutoff: string;
+    deadline: string;
+    operation: string;
+    unit: string;
+  }>;
+  key: string;
+  reason: "readiness-control" | "readiness-descriptor";
+  receipt: string;
+}) => {
+  if (!/^[0-9a-f]{64}$/u.test(key) || Buffer.byteLength(receipt) > 4_096)
+    return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(receipt);
+  } catch {
+    return undefined;
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).sort().join(",") !== "mac,output,reason,stage,status"
+  )
+    return undefined;
+  const fields = parsed as Record<string, unknown>;
+  if (
+    fields.output !== "" ||
+    fields.reason !== reason ||
+    fields.stage !== "client-terminal" ||
+    fields.status !== "error" ||
+    typeof fields.mac !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(fields.mac) ||
+    JSON.stringify(fields) !== receipt
+  )
+    return undefined;
+  const expected = createHmac("sha256", Buffer.from(key, "hex"))
+    .update(
+      JSON.stringify({
+        cutoff: identity.cutoff,
+        deadline: identity.deadline,
+        operation: identity.operation,
+        output: "",
+        reason,
+        stage: "client-terminal",
+        status: "error",
+        unit: identity.unit,
+      }),
+    )
+    .digest();
+  const observed = Buffer.from(fields.mac, "hex");
+  if (
+    observed.length !== expected.length ||
+    !timingSafeEqual(observed, expected)
+  )
+    return undefined;
+  return Object.freeze({
+    output: "",
+    reason,
+    stage: "client-terminal",
+    status: "error",
+  });
+};
+
 const expectSyntheticClientReadinessFault = (
   helper: string,
   reason: "readiness-control" | "readiness-descriptor",
@@ -4255,18 +4325,39 @@ const expectSyntheticClientReadinessFault = (
       terminal.stdout,
       terminal.output[3],
     );
+  const identity = {
+    cutoff: readiness.cutoff,
+    deadline: readiness.deadline,
+    operation,
+    unit: "",
+  };
   expect(
-    validateRootToolReceipt({
-      identity: {
-        cutoff: readiness.cutoff,
-        deadline: readiness.deadline,
-        operation,
-        unit: "",
-      },
+    validateSyntheticReadinessFaultReceipt({
+      identity,
       key,
+      reason,
       receipt: terminal.stdout,
     }),
   ).toEqual({ output: "", reason, stage: "client-terminal", status: "error" });
+  expect(
+    validateSyntheticReadinessFaultReceipt({
+      identity: { ...identity, operation: "synthetic-client-deadline" },
+      key,
+      reason,
+      receipt: terminal.stdout,
+    }),
+  ).toBeUndefined();
+  expect(
+    validateSyntheticReadinessFaultReceipt({
+      identity,
+      key,
+      reason:
+        reason === "readiness-control"
+          ? "readiness-descriptor"
+          : "readiness-control",
+      receipt: terminal.stdout,
+    }),
+  ).toBeUndefined();
   expect(terminal.stdout).not.toContain("Traceback");
   let groupAbsent = false;
   try {
