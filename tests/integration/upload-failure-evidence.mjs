@@ -1918,7 +1918,13 @@ const settleActionBootstrapDescriptors = ({
   source,
   spawnFailure,
 }) => {
-  if (childTerminalReason !== undefined) {
+  if (
+    childBootstrapStage !== undefined &&
+    (childTerminalReason !== undefined || spawnFailure)
+  ) {
+    actionBootstrapStage = "child-bootstrap";
+    actionBootstrapReason = childBootstrapStage;
+  } else if (childTerminalReason !== undefined) {
     actionBootstrapStage =
       childBootstrapStage === undefined ? "child-terminal" : "child-bootstrap";
     actionBootstrapReason = childBootstrapStage ?? childTerminalReason;
@@ -1973,7 +1979,7 @@ export const exerciseActionBootstrapSettlementForTest = (
           ? "exit-one"
           : undefined,
       childBootstrapStage:
-        fault === "child-bootstrap" &&
+        (fault === "child-bootstrap" || fault === "partial-zero") &&
         childBootstrapStageSet.has(bootstrapStage)
           ? bootstrapStage
           : undefined,
@@ -1991,7 +1997,7 @@ export const exerciseActionBootstrapSettlementForTest = (
       },
       sealer: { descriptor: 4 },
       source: { descriptor: 3 },
-      spawnFailure: fault === "spawn",
+      spawnFailure: fault === "spawn" || fault === "partial-zero",
     });
   } catch {
     return failureEvidenceBootstrapAnnotation();
@@ -2132,7 +2138,6 @@ const bootstrapMain = async () => {
     64 * 1024,
   );
   actionBootstrapStage = "spawn";
-  await loadRuntimeDependencies();
   const bootstrapKey = randomBytes(CHILD_BOOTSTRAP_KEY_BYTES);
   const bootstrapNonce = randomBytes(CHILD_BOOTSTRAP_NONCE_BYTES);
   const result = spawnSync(
@@ -2156,8 +2161,6 @@ const bootstrapMain = async () => {
       timeout: 20 * 60 * 1000,
     },
   );
-  const childStageReceipt = authenticatedChildStageReceipt(result.stdout);
-  if (childStageReceipt !== undefined) process.stdout.write(childStageReceipt);
   const childBootstrapStage = authenticateChildBootstrapReceipts({
     digest: source.digest,
     key: bootstrapKey,
@@ -2169,6 +2172,20 @@ const bootstrapMain = async () => {
     (childTerminalReason === undefined &&
       (result.error !== undefined || !Number.isSafeInteger(result.status))) ||
     (result.status === 0 && childBootstrapStage !== "controller-entry");
+  if (
+    childBootstrapStage !== undefined &&
+    (childTerminalReason !== undefined || spawnFailure)
+  ) {
+    actionBootstrapStage = "child-bootstrap";
+    actionBootstrapReason = childBootstrapStage;
+  } else if (childTerminalReason !== undefined) {
+    actionBootstrapStage =
+      childBootstrapStage === undefined ? "child-terminal" : "child-bootstrap";
+    actionBootstrapReason = childBootstrapStage ?? childTerminalReason;
+  }
+  await loadRuntimeDependencies();
+  const childStageReceipt = authenticatedChildStageReceipt(result.stdout);
+  if (childStageReceipt !== undefined) process.stdout.write(childStageReceipt);
   settleActionBootstrapDescriptors({
     childBootstrapStage:
       childStageReceipt === undefined ? childBootstrapStage : undefined,

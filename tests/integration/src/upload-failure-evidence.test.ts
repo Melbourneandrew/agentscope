@@ -129,6 +129,7 @@ const exerciseBootstrapSettlement =
       | "child-exit"
       | "child-bootstrap"
       | "descriptor-close"
+      | "partial-zero"
       | "revalidate-sealer"
       | "revalidate-source"
       | "spawn",
@@ -650,6 +651,16 @@ describe("failure evidence upload provenance", () => {
     expect(source).toContain('import("./dist/index.js")');
     expect(source).toContain('import("./supervisor.mjs")');
     expect(source).toContain('import("@actions/artifact")');
+    const parent = source.slice(
+      source.indexOf("const bootstrapMain = async"),
+      source.indexOf("const runOuterControllerEnvelope"),
+    );
+    expect(parent.indexOf("spawnSync(")).toBeLessThan(
+      parent.indexOf("await loadRuntimeDependencies()"),
+    );
+    expect(parent.indexOf("authenticateChildBootstrapReceipts({")).toBeLessThan(
+      parent.indexOf("await loadRuntimeDependencies()"),
+    );
   });
 });
 
@@ -890,6 +901,9 @@ it("preserves exact spawn, child terminal, revalidation, and close stages", () =
     expect(exerciseBootstrapSettlement("child-bootstrap", stage)).toBe(
       `::error::integration.controller.failure-evidence-bootstrap:child-bootstrap:${stage}\n`,
     );
+  expect(exerciseBootstrapSettlement("partial-zero", "argv-config")).toBe(
+    "::error::integration.controller.failure-evidence-bootstrap:child-bootstrap:argv-config\n",
+  );
   for (const stage of [
     "revalidate-source",
     "revalidate-sealer",
