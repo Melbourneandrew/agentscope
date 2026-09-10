@@ -2214,7 +2214,8 @@ const waitForTerminal = async (state) => {
         state.executionDeadline,
         "unit-monitor",
       );
-    } catch {
+    } catch (error) {
+      if (systemdToolFailureStage(error) !== undefined) throw error;
       failSystemdLifecycle(state, "terminal-wait", "unit-show");
     }
     let facts;

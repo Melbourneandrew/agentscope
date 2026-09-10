@@ -1153,6 +1153,12 @@ it("observes exact main exit facts before retiring retained descendants", () => 
   expect(terminalWait).toContain('"terminal-wait", "unit-parse"');
   expect(terminalWait).toContain("`authority-${mismatch}`");
   expect(terminalWait).toContain("classifySystemdUnitAuthority(");
+  expect(terminalWait).toContain(
+    "if (systemdToolFailureStage(error) !== undefined) throw error;",
+  );
+  expect(terminalWait.indexOf("systemdToolFailureStage(error)")).toBeLessThan(
+    terminalWait.indexOf('"terminal-wait", "unit-show"'),
+  );
   expect(terminalWait).toContain("systemdMainProcessIsTerminal(facts)");
   expect(terminalWait).not.toContain(
     'facts.ActiveState === "active" && facts.SubState === "exited"',
