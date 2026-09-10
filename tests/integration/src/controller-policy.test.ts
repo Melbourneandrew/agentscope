@@ -2493,7 +2493,7 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
   );
   const syntheticRunHelper = readinessSynchronizedHelper.replace(
     syntheticClientRunGlobalBoundary,
-    "def run(argv,cutoff,operation_stage):\n global STAGE,REASON,TEST_CHILD\n",
+    "def run(argv,cutoff,operation_stage):\n global STAGE,REASON,TEST_CHILD,DEADLINE,CUTOFF\n",
   );
   const gatedChildHelper = syntheticRunHelper.replace(
     syntheticClientSpawnBoundary,
@@ -2525,7 +2525,7 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
     '  if OPERATION.startswith("synthetic-client-") and OPERATION not in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}:\n' +
       "   admit_group_members(leader,expected_members)\n" +
       '   if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
-      '   elif OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"}: CUTOFF=now()-1\n' +
+      '   elif OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"}: CUTOFF=cutoff=now()-1\n' +
       "   test_ready(leader,expected)\n" +
       '  if OPERATION=="synthetic-client-output-read": child.stdout.close()\n' +
       "  while child.poll() is None:\n",
