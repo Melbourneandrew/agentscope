@@ -103,6 +103,15 @@ const systemdRetirementAuthorityReasons = new Set([
   "authority-hardening",
   "authority-principal",
 ]);
+const systemdTerminalWaitAuthorityReasons = new Set([
+  "unit-show",
+  "unit-parse",
+  "authority-load",
+  "authority-identity",
+  "authority-cgroup",
+  "authority-hardening",
+  "authority-principal",
+]);
 const systemdRetirementDiagnosticReasons = new Set([
   "cgroup-retained",
   "cgroup-path",
@@ -745,6 +754,8 @@ const failSystemdLifecycle = (state, phase, reason) => {
       (phase === "retirement" &&
         (systemdRetirementAuthorityReasons.has(reason) ||
           systemdRetirementDiagnosticReasons.has(reason))) ||
+      (phase === "terminal-wait" &&
+        systemdTerminalWaitAuthorityReasons.has(reason)) ||
       (phase === "collection" && systemdCollectionDiagnosticReasons.has(reason))
     ) ||
     typeof state.authority?.unit !== "string" ||
@@ -777,6 +788,8 @@ export const validSystemdLifecyclePredicate = (predicate) => {
       (match[1] === "retirement" &&
         (systemdRetirementAuthorityReasons.has(match[2]) ||
           systemdRetirementDiagnosticReasons.has(match[2]))) ||
+      (match[1] === "terminal-wait" &&
+        systemdTerminalWaitAuthorityReasons.has(match[2])) ||
       (match[1] === "collection" &&
         systemdCollectionDiagnosticReasons.has(match[2])))
   );
@@ -2189,15 +2202,32 @@ const observeCgroupSettlement = (
 export const cgroupObservationSettled = (cgroupPath, identity) =>
   observeCgroupSettlement(cgroupPath, identity);
 
-const waitForTerminal = async (authority, deadline, interrupted) => {
+const waitForTerminal = async (state) => {
   while (
-    !interrupted.value &&
-    rootToolHasPreparationBudget(deadline, performance.now())
+    !state.interrupted.value &&
+    rootToolHasPreparationBudget(state.executionDeadline, performance.now())
   ) {
-    const facts = await showUnit(authority.unit, deadline, "unit-monitor");
-    assertUnitAuthority(facts, authority);
+    let output;
+    try {
+      output = await showUnitOutput(
+        state.authority.unit,
+        state.executionDeadline,
+        "unit-monitor",
+      );
+    } catch {
+      failSystemdLifecycle(state, "terminal-wait", "unit-show");
+    }
+    let facts;
+    try {
+      facts = exactUnitFacts(output);
+    } catch {
+      failSystemdLifecycle(state, "terminal-wait", "unit-parse");
+    }
+    const mismatch = classifySystemdUnitAuthority(facts, state.authority);
+    if (mismatch !== undefined)
+      failSystemdLifecycle(state, "terminal-wait", `authority-${mismatch}`);
     if (systemdMainProcessIsTerminal(facts)) return facts;
-    await delay(Math.min(50, remainingMilliseconds(deadline)));
+    await delay(Math.min(50, remainingMilliseconds(state.executionDeadline)));
   }
   return undefined;
 };
@@ -2570,11 +2600,7 @@ const observeSystemdTerminal = async (state) => {
   state.lifecyclePhase = "terminal-wait";
   let terminal;
   try {
-    terminal = await waitForTerminal(
-      state.authority,
-      state.executionDeadline,
-      state.interrupted,
-    );
+    terminal = await waitForTerminal(state);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }

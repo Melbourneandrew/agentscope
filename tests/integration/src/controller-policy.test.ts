@@ -1149,6 +1149,10 @@ it("observes exact main exit facts before retiring retained descendants", () => 
     supervisor.indexOf("const waitForTerminal ="),
     supervisor.indexOf("const systemdSignal ="),
   );
+  expect(terminalWait).toContain('"terminal-wait", "unit-show"');
+  expect(terminalWait).toContain('"terminal-wait", "unit-parse"');
+  expect(terminalWait).toContain("`authority-${mismatch}`");
+  expect(terminalWait).toContain("classifySystemdUnitAuthority(");
   expect(terminalWait).toContain("systemdMainProcessIsTerminal(facts)");
   expect(terminalWait).not.toContain(
     'facts.ActiveState === "active" && facts.SubState === "exited"',
@@ -2924,7 +2928,7 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     ).toBe(true);
     expect(
       validSystemdLifecyclePredicate(`lifecycle:terminal-wait:${reason}`),
-    ).toBe(false);
+    ).toBe(reason === "unit-show");
   }
   for (const rejected of [
     undefined,
@@ -2992,6 +2996,31 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
   );
   expect(action).not.toContain("error.message");
   expect(action).not.toContain("error.stack");
+});
+
+it("admits only closed terminal-wait authority diagnostics", () => {
+  for (const reason of [
+    "unit-show",
+    "unit-parse",
+    "authority-load",
+    "authority-identity",
+    "authority-cgroup",
+    "authority-hardening",
+    "authority-principal",
+  ]) {
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:terminal-wait:${reason}`),
+    ).toBe(true);
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:unit-authoritative:${reason}`),
+    ).toBe(false);
+  }
+  for (const rejected of [
+    "lifecycle:terminal-wait:show-output",
+    "lifecycle:terminal-wait:authority-unknown",
+    "lifecycle:terminal-wait:unit-show:extra",
+  ])
+    expect(validSystemdLifecyclePredicate(rejected)).toBe(false);
 });
 
 it("preserves authenticated root-tool failure authority during collection", () => {
