@@ -2377,6 +2377,67 @@ const syntheticGatedChildSource = [
   "args=json.loads(sys.argv[1])",
   'os.execve(args[0],args,{"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"})',
 ].join("\n");
+const syntheticDiagnosticStages = new Set([
+  "startup",
+  "cutoff",
+  "sentinel",
+  "tool-spawn",
+  "client-terminal",
+  "unit-admission",
+  "retirement",
+  "join",
+]);
+const syntheticDiagnosticReasons = new Set([
+  "",
+  "child-exit",
+  "start-identity",
+  "inherited-group",
+  "transition-timeout",
+  "kill",
+  "reap-join",
+  "residual",
+  "leader-identity",
+  "preclose-residual",
+  "control-close",
+  "reap-timeout",
+  "identity-drift",
+  "postreap-residual",
+  "cutoff",
+  "deadline",
+  "child-admission",
+  "member-identity",
+  "output-read",
+  "output-bound",
+  "nonzero-terminal",
+  "internal-unknown",
+]);
+
+const syntheticReadinessFailure = (operation: string, stdout: string) => {
+  let stage = "malformed";
+  let reason = "none";
+  try {
+    const diagnostic = JSON.parse(stdout) as {
+      reason?: unknown;
+      stage?: unknown;
+    };
+    if (
+      typeof diagnostic.stage === "string" &&
+      syntheticDiagnosticStages.has(diagnostic.stage)
+    )
+      stage = diagnostic.stage;
+    if (
+      typeof diagnostic.reason === "string" &&
+      syntheticDiagnosticReasons.has(diagnostic.reason)
+    )
+      reason = diagnostic.reason || "none";
+  } catch {
+    stage = "malformed";
+    reason = "none";
+  }
+  return new Error(
+    `synthetic helper readiness missing:${operation}:${stage}:${reason}`,
+  );
+};
 
 const synchronizeSyntheticClientDeadlines = (helper: string) => {
   const deadlineArm =
@@ -2526,6 +2587,23 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
   expect(
     parseSyntheticClientReadiness(valid, { leader: "123", start: "457" }),
   ).toBeUndefined();
+  expect(
+    syntheticReadinessFailure(
+      "synthetic-client-cutoff",
+      '{"reason":"cutoff","stage":"client-terminal"}',
+    ).message,
+  ).toBe(
+    "synthetic helper readiness missing:synthetic-client-cutoff:client-terminal:cutoff",
+  );
+  for (const substituted of [
+    "{}",
+    '{"reason":"unknown","stage":"client-terminal"}',
+    '{"reason":"cutoff","stage":"unknown"}',
+    "truncated",
+  ])
+    expect(
+      syntheticReadinessFailure("synthetic-client-cutoff", substituted).message,
+    ).not.toContain("unknown");
 });
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
@@ -4114,8 +4192,9 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       );
       expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
       const readiness = parseSyntheticClientReadiness(terminal.output[3]);
-      if (readiness === undefined)
-        throw new Error("synthetic helper readiness missing");
+      if (readiness === undefined) {
+        throw syntheticReadinessFailure(operation, terminal.stdout);
+      }
       const { cutoff, deadline } = readiness;
       const receipt = validateRootToolReceipt({
         identity: { cutoff, deadline, operation, unit: "" },
