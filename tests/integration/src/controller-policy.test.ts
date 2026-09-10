@@ -2369,8 +2369,7 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       ' if OPERATION.startswith("synthetic-client-"):\n' +
       "  armed=now()\n" +
       "  DEADLINE=armed+2000000000\n" +
-      "  CUTOFF=armed+2000000000\n" +
-      '  if OPERATION not in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n',
+      "  CUTOFF=armed+2000000000\n",
   );
   const membershipBoundary =
     "   admit_group_members(leader,expected_members)\n   if now()>=cutoff:\n";
@@ -2380,11 +2379,72 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       '   if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}:\n' +
       '    if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
       "    else: CUTOFF=now()-1\n" +
-      '    os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n' +
+      '   if OPERATION.startswith("synthetic-client-"): os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
       "   if now()>=cutoff:\n",
   );
   return { deadlineArm, readinessSynchronizedHelper, synchronizedHelper };
 };
+
+const parseSyntheticClientReadiness = (
+  readiness: unknown,
+  expected?: Readonly<{ leader: string; start: string }>,
+) => {
+  if (
+    typeof readiness !== "string" ||
+    !/^[1-9][0-9]{6,19}:[1-9][0-9]{6,19}:[1-9][0-9]*:[1-9][0-9]*$/u.test(
+      readiness,
+    )
+  )
+    return undefined;
+  const [deadline, cutoff, leader, start] = readiness.split(":") as [
+    string,
+    string,
+    string,
+    string,
+  ];
+  if (
+    ![deadline, cutoff, leader, start].every(
+      (value) =>
+        value !== undefined &&
+        Number.isSafeInteger(Number(value)) &&
+        Number(value) > 0,
+    )
+  )
+    return undefined;
+  if (
+    expected !== undefined &&
+    (leader !== expected.leader || start !== expected.start)
+  )
+    return undefined;
+  return Object.freeze({ cutoff, deadline, leader, start });
+};
+
+it("accepts only exact post-membership synthetic client readiness", () => {
+  const valid = "1000000:2000000:123:456";
+  expect(
+    parseSyntheticClientReadiness(valid, { leader: "123", start: "456" }),
+  ).toEqual({
+    cutoff: "2000000",
+    deadline: "1000000",
+    leader: "123",
+    start: "456",
+  });
+  for (const invalid of [
+    "",
+    "1000000:2000000",
+    "1000000:2000000:123:",
+    "1000000:2000000:0:456",
+    "1000000:2000000:123:456:789",
+    "1000000:2000000:123:substituted",
+  ])
+    expect(parseSyntheticClientReadiness(invalid)).toBeUndefined();
+  expect(
+    parseSyntheticClientReadiness(valid, { leader: "124", start: "456" }),
+  ).toBeUndefined();
+  expect(
+    parseSyntheticClientReadiness(valid, { leader: "123", start: "457" }),
+  ).toBeUndefined();
+});
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "admits the canonical PID 1 parent identity while inventorying proc",
@@ -3164,6 +3224,49 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
   expect(action).not.toContain("error.stack");
 });
 
+it("admits only the closed unit-admission diagnostic inventory", () => {
+  for (const reason of [
+    "mapped-executable",
+    "unit-facts",
+    "authority-load",
+    "authority-identity",
+    "authority-cgroup",
+    "authority-hardening",
+    "authority-principal",
+    "cgroup-authentication",
+    "main-membership",
+  ])
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:unit-admission:${reason}`),
+    ).toBe(true);
+  for (const reason of [
+    "mapped-executable-substituted",
+    "cgroup",
+    "membership",
+  ])
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:unit-admission:${reason}`),
+    ).toBe(false);
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const admission = supervisor.slice(
+    supervisor.indexOf("const admitSystemdUnit ="),
+    supervisor.indexOf("const observeSystemdTerminal ="),
+  );
+  for (const [reason, boundary] of [
+    ['"mapped-executable"', "recheckLiveMappedExecutable("],
+    ['"unit-facts"', "await showUnit("],
+    ["`authority-${authorityMismatch}`", "failSystemd();"],
+    ['"cgroup-authentication"', "authenticateCgroup("],
+    ['"main-membership"', "captureMainProcessMembership("],
+  ] as const)
+    expect(admission.indexOf(reason)).toBeLessThan(admission.indexOf(boundary));
+  expect(admission).toContain("systemdUnitAdmissionDiagnosticReasons.has(");
+});
+
 it("admits only closed terminal-wait authority diagnostics", () => {
   for (const reason of [
     "unit-show",
@@ -3749,11 +3852,10 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         },
       );
       expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
-      const readiness = terminal.output[3];
-      expect(readiness).toMatch(/^\d{7,20}:\d{7,20}$/u);
-      const [deadline, cutoff] = String(readiness).split(":");
-      if (deadline === undefined || cutoff === undefined)
+      const readiness = parseSyntheticClientReadiness(terminal.output[3]);
+      if (readiness === undefined)
         throw new Error("synthetic helper readiness missing");
+      const { cutoff, deadline } = readiness;
       const receipt = validateRootToolReceipt({
         identity: { cutoff, deadline, operation, unit: "" },
         key,

@@ -96,6 +96,17 @@ const systemdLifecycleReasons = new Set([
   "malformed",
   "internal",
 ]);
+const systemdUnitAdmissionDiagnosticReasons = new Set([
+  "mapped-executable",
+  "unit-facts",
+  "authority-load",
+  "authority-identity",
+  "authority-cgroup",
+  "authority-hardening",
+  "authority-principal",
+  "cgroup-authentication",
+  "main-membership",
+]);
 const systemdRetirementAuthorityReasons = new Set([
   "authority-load",
   "authority-identity",
@@ -763,6 +774,8 @@ const failSystemdLifecycle = (state, phase, reason) => {
       (phase === "retirement" &&
         (systemdRetirementAuthorityReasons.has(reason) ||
           systemdRetirementDiagnosticReasons.has(reason))) ||
+      (phase === "unit-admission" &&
+        systemdUnitAdmissionDiagnosticReasons.has(reason)) ||
       (phase === "terminal-wait" &&
         systemdTerminalWaitAuthorityReasons.has(reason)) ||
       (phase === "collection" && systemdCollectionDiagnosticReasons.has(reason))
@@ -797,6 +810,8 @@ export const validSystemdLifecyclePredicate = (predicate) => {
       (match[1] === "retirement" &&
         (systemdRetirementAuthorityReasons.has(match[2]) ||
           systemdRetirementDiagnosticReasons.has(match[2]))) ||
+      (match[1] === "unit-admission" &&
+        systemdUnitAdmissionDiagnosticReasons.has(match[2])) ||
       (match[1] === "terminal-wait" &&
         systemdTerminalWaitAuthorityReasons.has(match[2])) ||
       (match[1] === "collection" &&
@@ -2012,11 +2027,6 @@ export const classifyRetirementSystemdUnitAuthority = (
   return facts.ControlGroup === authority.cgroup ? undefined : "cgroup";
 };
 
-const assertUnitAuthority = (facts, authority) => {
-  if (classifySystemdUnitAuthority(facts, authority) !== undefined)
-    failSystemd();
-};
-
 export const authenticateCgroup = (cgroupPath) => {
   const descriptors = [];
   const identities = [];
@@ -2919,20 +2929,39 @@ const mappedExecutableForSystemd = (state) => {
 const admitSystemdUnit = async (state) => {
   state.lifecyclePhase = "unit-admission";
   try {
+    state.unitAdmissionDiagnosticReason = "mapped-executable";
     recheckLiveMappedExecutable(state.mappedExecutable);
+    state.unitAdmissionDiagnosticReason = "unit-facts";
     const admitted = await showUnit(
       state.authority.unit,
       state.executionDeadline,
       "unit-admission",
     );
-    assertUnitAuthority(admitted, state.authority);
+    const authorityMismatch = classifySystemdUnitAuthority(
+      admitted,
+      state.authority,
+    );
+    if (authorityMismatch !== undefined) {
+      state.unitAdmissionDiagnosticReason = `authority-${authorityMismatch}`;
+      failSystemd();
+    }
+    state.unitAdmissionDiagnosticReason = "cgroup-authentication";
     state.cgroupIdentity = authenticateCgroup(state.cgroupPath);
+    state.unitAdmissionDiagnosticReason = "main-membership";
     state.mainProcessIdentity = captureMainProcessMembership(
       admitted,
       state.cgroupIdentity,
     );
   } catch (error) {
-    rethrowSystemdLifecycle(state, error, "authority");
+    rethrowSystemdLifecycle(
+      state,
+      error,
+      systemdUnitAdmissionDiagnosticReasons.has(
+        state.unitAdmissionDiagnosticReason,
+      )
+        ? state.unitAdmissionDiagnosticReason
+        : "authority",
+    );
   }
 };
 
