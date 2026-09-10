@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -314,6 +315,7 @@ describe("failure evidence uploader", () => {
 
 // eslint-disable-next-line max-lines-per-function -- The provenance suite keeps the exact fixture and every causal digest boundary together.
 describe("failure evidence upload provenance", () => {
+  // eslint-disable-next-line max-lines-per-function -- One isolated fixture executes every ordered package authority boundary.
   it("causally emits every closed artifact-provenance failure", () => {
     const root = mkdtempSync(resolve(tmpdir(), "agentscope-provenance-"));
     const sourceEntry = fileURLToPath(import.meta.resolve("@actions/artifact"));
@@ -400,10 +402,36 @@ describe("failure evidence upload provenance", () => {
       );
       unlinkSync(actionLink);
       symlinkSync(packageRoot, actionLink);
-      assertDigestFailure(
-        resolve(packageRoot, "package.json"),
-        "package-manifest",
+      const manifestPath = resolve(packageRoot, "package.json");
+      const manifest = readFileSync(manifestPath);
+      unlinkSync(manifestPath);
+      mkdirSync(manifestPath);
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("package-manifest:type"),
       );
+      rmSync(manifestPath, { recursive: true });
+      writeFileSync(manifestPath, manifest);
+      const manifestLink = resolve(packageRoot, "package-link");
+      linkSync(manifestPath, manifestLink);
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("package-manifest:link-count"),
+      );
+      unlinkSync(manifestLink);
+      writeFileSync(manifestPath, Buffer.alloc(0));
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("package-manifest:size"),
+      );
+      writeFileSync(manifestPath, Buffer.concat([manifest, Buffer.from("x")]));
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("package-manifest:digest"),
+      );
+      unlinkSync(manifestPath);
+      symlinkSync(resolve(packageRoot, "package-source"), manifestPath);
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("package-manifest:identity-read"),
+      );
+      unlinkSync(manifestPath);
+      writeFileSync(manifestPath, manifest);
       assertDigestFailure(
         resolve(packageRoot, "lib/artifact.js"),
         "entry-digest",
@@ -543,11 +571,20 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "workspace",
     "patch-digest",
     "package-root",
-    "package-manifest",
     "entry-digest",
     "patched-file-digest",
   ])
     expect(validBootstrapPredicate(`artifact-provenance:${reason}`)).toBe(true);
+  for (const reason of [
+    "type",
+    "link-count",
+    "size",
+    "digest",
+    "identity-read",
+  ])
+    expect(
+      validBootstrapPredicate(`artifact-provenance:package-manifest:${reason}`),
+    ).toBe(true);
   for (const rejected of [
     "invocation",
     "invocation:unknown",
@@ -555,6 +592,9 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "spawn:argv-shape",
     "artifact-provenance",
     "artifact-provenance:unknown",
+    "artifact-provenance:package-manifest",
+    "artifact-provenance:package-manifest:unknown",
+    "artifact-provenance:package-manifest:digest:extra",
     "artifact-provenance:patched-file-digest:filename",
     "artifact-provenance:entry-digest\n",
     "invocation:argv-shape\n",

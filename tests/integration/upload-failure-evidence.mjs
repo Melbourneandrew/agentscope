@@ -77,9 +77,15 @@ const actionBootstrapArtifactProvenanceReasons = new Set([
   "workspace",
   "patch-digest",
   "package-root",
-  "package-manifest",
   "entry-digest",
   "patched-file-digest",
+]);
+const actionBootstrapPackageManifestReasons = new Set([
+  "type",
+  "link-count",
+  "size",
+  "digest",
+  "identity-read",
 ]);
 let actionBootstrapStage = "invocation";
 let actionBootstrapReason = "argv-shape";
@@ -95,9 +101,13 @@ export const validFailureEvidenceBootstrapPredicate = (value) =>
         value.slice("invocation:".length),
       )) ||
     (value.startsWith("artifact-provenance:") &&
-      actionBootstrapArtifactProvenanceReasons.has(
+      (actionBootstrapArtifactProvenanceReasons.has(
         value.slice("artifact-provenance:".length),
-      )));
+      ) ||
+        (value.startsWith("artifact-provenance:package-manifest:") &&
+          actionBootstrapPackageManifestReasons.has(
+            value.slice("artifact-provenance:package-manifest:".length),
+          )))));
 export const validLocalActionMetadata = (value) =>
   Buffer.isBuffer(value) && value.equals(LOCAL_ACTION_METADATA);
 const fail = () => {
@@ -192,6 +202,39 @@ const verifyRegularDigest = (path, expected, maximum) => {
     closeSync(descriptor);
   }
 };
+const verifyPackageManifestDigest = (path) => {
+  actionBootstrapReason = "package-manifest:identity-read";
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let failure;
+  try {
+    const status = fstatSync(descriptor);
+    actionBootstrapReason = "package-manifest:type";
+    if (!status.isFile()) fail();
+    actionBootstrapReason = "package-manifest:link-count";
+    if (status.nlink !== 1) fail();
+    actionBootstrapReason = "package-manifest:size";
+    if (status.size < 1 || status.size > 64 * 1024) fail();
+    actionBootstrapReason = "package-manifest:identity-read";
+    const content = readFileSync(descriptor);
+    if (content.length !== status.size) fail();
+    actionBootstrapReason = "package-manifest:digest";
+    if (
+      createHash("sha256").update(content).digest("hex") !==
+      ARTIFACT_PACKAGE_SHA256
+    )
+      fail();
+  } catch (error) {
+    failure = error;
+  }
+  if (failure === undefined)
+    actionBootstrapReason = "package-manifest:identity-read";
+  try {
+    closeSync(descriptor);
+  } catch (error) {
+    if (failure === undefined) failure = error;
+  }
+  if (failure !== undefined) throw failure;
+};
 const resolveArtifactClientEntry = (workspace) => {
   actionBootstrapReason = "package-root";
   const packageRoot = realpathSync(
@@ -202,12 +245,7 @@ const resolveArtifactClientEntry = (workspace) => {
     !packageRoot.endsWith("/node_modules/@actions/artifact")
   )
     fail();
-  actionBootstrapReason = "package-manifest";
-  verifyRegularDigest(
-    resolve(packageRoot, "package.json"),
-    ARTIFACT_PACKAGE_SHA256,
-    64 * 1024,
-  );
+  verifyPackageManifestDigest(resolve(packageRoot, "package.json"));
   const entry = resolve(packageRoot, "lib/artifact.js");
   actionBootstrapReason = "entry-digest";
   verifyRegularDigest(entry, ARTIFACT_ENTRY_SHA256, 64 * 1024);
