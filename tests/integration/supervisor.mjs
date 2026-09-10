@@ -2188,6 +2188,26 @@ const recheckRetainedCgroupDescriptors = (authority) => {
   }
 };
 
+export const parseRetainedCgroupMembers = (content, allowEmpty = false) => {
+  if (!Buffer.isBuffer(content) || typeof allowEmpty !== "boolean")
+    failSystemd();
+  const size = content.length;
+  if (size === 0 && allowEmpty) return Object.freeze([]);
+  if (size < 2 || size > 4096 || content[size - 1] !== 0x0a) failSystemd();
+  const text = content.toString("utf8");
+  if (/[\0\r]/u.test(text) || text.endsWith("\n\n")) failSystemd();
+  const members = text
+    .slice(0, -1)
+    .split("\n")
+    .map((value) => (/^[1-9][0-9]*$/u.test(value) ? Number(value) : NaN));
+  if (
+    members.some((pid) => !Number.isSafeInteger(pid)) ||
+    new Set(members).size !== members.length
+  )
+    failSystemd();
+  return Object.freeze(members.sort((left, right) => left - right));
+};
+
 const retainedCgroupMembers = (authority, allowEmpty = false) => {
   recheckRetainedCgroupDescriptors(authority);
   const content = Buffer.alloc(4097);
@@ -2204,20 +2224,50 @@ const retainedCgroupMembers = (authority, allowEmpty = false) => {
     size += count;
   }
   recheckRetainedCgroupDescriptors(authority);
-  if (size === 0 && allowEmpty) return Object.freeze([]);
-  if (size < 2 || size > 4096 || content[size - 1] !== 0x0a) failSystemd();
-  const text = content.subarray(0, size).toString("utf8");
-  if (/[\0\r]/u.test(text) || text.endsWith("\n\n")) failSystemd();
-  const members = text
-    .slice(0, -1)
-    .split("\n")
-    .map((value) => (/^[1-9][0-9]*$/u.test(value) ? Number(value) : NaN));
+  return parseRetainedCgroupMembers(content.subarray(0, size), allowEmpty);
+};
+
+export const sameRetainedCgroupMemberObservations = (
+  membersBefore,
+  identitiesBefore,
+  membersAfter,
+  identitiesAfter,
+) => {
   if (
-    members.some((pid) => !Number.isSafeInteger(pid)) ||
-    new Set(members).size !== members.length
+    !Array.isArray(membersBefore) ||
+    !Array.isArray(identitiesBefore) ||
+    !Array.isArray(membersAfter) ||
+    !Array.isArray(identitiesAfter) ||
+    membersAfter.length !== membersBefore.length ||
+    identitiesBefore.length !== membersBefore.length ||
+    identitiesAfter.length !== membersAfter.length
   )
-    failSystemd();
-  return Object.freeze(members.sort((left, right) => left - right));
+    return false;
+  for (let index = 0; index < membersBefore.length; index += 1) {
+    if (
+      !(index in membersBefore) ||
+      !(index in membersAfter) ||
+      !(index in identitiesBefore) ||
+      !(index in identitiesAfter) ||
+      membersAfter[index] !== membersBefore[index]
+    )
+      return false;
+    const before = identitiesBefore[index];
+    const after = identitiesAfter[index];
+    if (
+      before === null ||
+      typeof before !== "object" ||
+      after === null ||
+      typeof after !== "object" ||
+      before.pid !== membersBefore[index] ||
+      after.pid !== membersAfter[index] ||
+      before.bootId !== after.bootId ||
+      before.startTime !== after.startTime ||
+      before.processGroup !== after.processGroup
+    )
+      return false;
+  }
+  return true;
 };
 
 export const validateMainProcessMembership = ({
@@ -2441,17 +2491,12 @@ const observeAuthenticatedCgroup = (
   const membersAfter = retainedCgroupMembers(authority, true);
   const identitiesAfter = membersAfter.map(readProcessSnapshot);
   if (
-    membersAfter.length !== membersBefore.length ||
-    membersAfter.some((pid, index) => pid !== membersBefore[index]) ||
-    identitiesAfter.some((identity, index) => {
-      const before = identitiesBefore[index];
-      return (
-        before?.pid !== identity.pid ||
-        before.bootId !== identity.bootId ||
-        before.startTime !== identity.startTime ||
-        before.processGroup !== identity.processGroup
-      );
-    })
+    !sameRetainedCgroupMemberObservations(
+      membersBefore,
+      identitiesBefore,
+      membersAfter,
+      identitiesAfter,
+    )
   )
     failSystemd();
   const afterRead = classifyPaths();

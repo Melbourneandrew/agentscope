@@ -46,6 +46,7 @@ import {
   closeDescriptorSet,
   closePreparedGithubSystemdSupervision,
   parseSystemdMainExitStatus,
+  parseRetainedCgroupMembers,
   parseSystemdTerminalExit,
   prepareGithubSystemdSupervision,
   rootPid1ProbeRequired,
@@ -54,6 +55,7 @@ import {
   systemdConsumptionDeadlines,
   runSupervisedProcess,
   sameSystemdArguments,
+  sameRetainedCgroupMemberObservations,
   sameSystemdEnvironment,
   snapshotSystemdArguments,
   snapshotSystemdEnvironment,
@@ -3945,6 +3947,59 @@ it("classifies terminal cgroup transition failures without exposing authority va
       classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
     ).toBe(reason);
   expectNonterminalCgroupTransitionClosure(terminal, authority, absent);
+});
+
+it("canonicalizes retained cgroup membership while preserving process identity", () => {
+  const reorderedBefore = parseRetainedCgroupMembers(Buffer.from("712\n711\n"));
+  const reorderedAfter = parseRetainedCgroupMembers(Buffer.from("711\n712\n"));
+  expect(reorderedBefore).toEqual([711, 712]);
+  expect(reorderedAfter).toEqual(reorderedBefore);
+  const identities = reorderedBefore.map((pid) => ({
+    bootId: "boot",
+    pid,
+    processGroup: 700,
+    startTime: String(900 + pid),
+  }));
+  const [identity711, identity712] = identities;
+  if (identity711 === undefined || identity712 === undefined)
+    throw new Error("missing retained member fixture");
+  expect(
+    sameRetainedCgroupMemberObservations(
+      reorderedBefore,
+      identities,
+      reorderedAfter,
+      identities.map((identity) => ({ ...identity })),
+    ),
+  ).toBe(true);
+  expect(parseRetainedCgroupMembers(Buffer.alloc(0), true)).toEqual([]);
+  for (const malformed of [
+    Buffer.from(""),
+    Buffer.from("711"),
+    Buffer.from("711\n711\n"),
+    Buffer.from("0711\n"),
+    Buffer.from("711\r\n"),
+    Buffer.from("711\n\n"),
+    Buffer.alloc(4097, 0x31),
+  ])
+    expect(() => parseRetainedCgroupMembers(malformed)).toThrow(
+      "integration.controller.systemd-containment",
+    );
+  for (const [membersAfter, identitiesAfter] of [
+    [[711], identities.slice(0, 1)],
+    [[711, 713], identities],
+    [reorderedAfter, [{ ...identity711, startTime: "different" }, identity712]],
+    [reorderedAfter, [{ ...identity711, processGroup: 701 }, identity712]],
+    [reorderedAfter, [{ ...identity711, bootId: "other" }, identity712]],
+    [reorderedAfter, [{ ...identity711, pid: 713 }, identity712]],
+  ] as const)
+    expect(
+      sameRetainedCgroupMemberObservations(
+        reorderedBefore,
+        identities,
+        membersAfter,
+        identitiesAfter,
+      ),
+    ).toBe(false);
 });
 
 it("binds every terminal cgroup diagnostic through one cleanup path", async () => {

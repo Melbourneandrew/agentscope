@@ -100,6 +100,26 @@ export function validateMainProcessMembership(input: {
   facts: Readonly<{ MainPID?: string }>;
   members: readonly number[];
 }): boolean;
+export function parseRetainedCgroupMembers(
+  content: Buffer,
+  allowEmpty?: boolean,
+): readonly number[];
+export function sameRetainedCgroupMemberObservations(
+  membersBefore: readonly number[],
+  identitiesBefore: readonly Readonly<{
+    bootId: string;
+    pid: number;
+    processGroup: number;
+    startTime: string;
+  }>[],
+  membersAfter: readonly number[],
+  identitiesAfter: readonly Readonly<{
+    bootId: string;
+    pid: number;
+    processGroup: number;
+    startTime: string;
+  }>[],
+): boolean;
 export function classifySystemdAdmissionMainPid(
   facts: Readonly<{
     ActiveState?: string;
