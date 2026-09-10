@@ -2374,7 +2374,7 @@ const syntheticClientSpawnBoundary =
 const syntheticClientReasonBoundary =
   'CLIENT_TERMINAL_REASONS={"cutoff","deadline","leader-identity","child-admission","member-identity","output-read","output-bound","nonzero-terminal","internal-unknown"}';
 const syntheticReadinessWriteBoundary =
-  '  os.write(3,(str(leader)+":"+str(expected[0])+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n';
+  '  os.write(3,(str(leader)+":"+expected[0].decode("ascii")+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n';
 const syntheticControlWriteBoundary = '  TEST_CHILD.stdin.write(b"x")\n';
 const syntheticGatedChildSource = [
   "import json,os,sys",
@@ -2668,6 +2668,9 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
   expect(classifySyntheticClientReadiness("truncated")).toBe("malformed-shape");
   expect(classifySyntheticClientReadiness("0:456:1000000:2000000\n")).toBe(
     "leader-identity",
+  );
+  expect(classifySyntheticClientReadiness("123:b'456':1000000:2000000\n")).toBe(
+    "membership-witness",
   );
   expect(
     classifySyntheticClientReadiness(valid, {
