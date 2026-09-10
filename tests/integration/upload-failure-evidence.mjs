@@ -82,7 +82,6 @@ const actionBootstrapArtifactProvenanceReasons = new Set([
 ]);
 const actionBootstrapPackageManifestReasons = new Set([
   "type",
-  "link-count",
   "size",
   "digest",
   "identity-read",
@@ -202,7 +201,14 @@ const verifyRegularDigest = (path, expected, maximum) => {
     closeSync(descriptor);
   }
 };
-const verifyPackageManifestDigest = (path) => {
+const sameManifestIdentity = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.mode === right.mode &&
+  left.uid === right.uid &&
+  left.gid === right.gid &&
+  left.size === right.size;
+const verifyPackageManifestDigest = (path, afterRead = () => {}) => {
   actionBootstrapReason = "package-manifest:identity-read";
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   let failure;
@@ -210,13 +216,19 @@ const verifyPackageManifestDigest = (path) => {
     const status = fstatSync(descriptor);
     actionBootstrapReason = "package-manifest:type";
     if (!status.isFile()) fail();
-    actionBootstrapReason = "package-manifest:link-count";
-    if (status.nlink !== 1) fail();
     actionBootstrapReason = "package-manifest:size";
-    if (status.size < 1 || status.size > 64 * 1024) fail();
+    if (
+      (status.mode & 0o7777) !== 0o644 ||
+      status.nlink < 1 ||
+      status.size < 1 ||
+      status.size > 64 * 1024
+    )
+      fail();
     actionBootstrapReason = "package-manifest:identity-read";
     const content = readFileSync(descriptor);
     if (content.length !== status.size) fail();
+    afterRead();
+    if (!sameManifestIdentity(status, fstatSync(descriptor))) fail();
     actionBootstrapReason = "package-manifest:digest";
     if (
       createHash("sha256").update(content).digest("hex") !==
@@ -235,7 +247,7 @@ const verifyPackageManifestDigest = (path) => {
   }
   if (failure !== undefined) throw failure;
 };
-const resolveArtifactClientEntry = (workspace) => {
+const resolveArtifactClientEntry = (workspace, afterManifestRead) => {
   actionBootstrapReason = "package-root";
   const packageRoot = realpathSync(
     resolve(workspace, "tests/integration/node_modules/@actions/artifact"),
@@ -245,7 +257,10 @@ const resolveArtifactClientEntry = (workspace) => {
     !packageRoot.endsWith("/node_modules/@actions/artifact")
   )
     fail();
-  verifyPackageManifestDigest(resolve(packageRoot, "package.json"));
+  verifyPackageManifestDigest(
+    resolve(packageRoot, "package.json"),
+    afterManifestRead,
+  );
   const entry = resolve(packageRoot, "lib/artifact.js");
   actionBootstrapReason = "entry-digest";
   verifyRegularDigest(entry, ARTIFACT_ENTRY_SHA256, 64 * 1024);
@@ -255,7 +270,10 @@ const resolveArtifactClientEntry = (workspace) => {
     verifyRegularDigest(resolve(uploadRoot, name), digest, 64 * 1024);
   }
 };
-const verifyArtifactClientProvenance = (environment = process.env) => {
+const verifyArtifactClientProvenance = (
+  environment = process.env,
+  afterManifestRead,
+) => {
   actionBootstrapReason = "results-url";
   if (typeof environment.ACTIONS_RESULTS_URL !== "string") fail();
   actionBootstrapReason = "runtime-token";
@@ -274,7 +292,7 @@ const verifyArtifactClientProvenance = (environment = process.env) => {
     ARTIFACT_PATCH_SHA256,
     64 * 1024,
   );
-  resolveArtifactClientEntry(workspace);
+  resolveArtifactClientEntry(workspace, afterManifestRead);
   actionBootstrapReason = "";
 };
 const failureEvidenceBootstrapAnnotation = () => {
@@ -287,13 +305,16 @@ const failureEvidenceBootstrapAnnotation = () => {
     ? `::error::integration.controller.failure-evidence-bootstrap:${predicate}\n`
     : undefined;
 };
-export const verifyArtifactClientProvenanceForTest = (environment) => {
+export const verifyArtifactClientProvenanceForTest = (
+  environment,
+  afterManifestRead,
+) => {
   const previousStage = actionBootstrapStage;
   const previousReason = actionBootstrapReason;
   actionBootstrapStage = "artifact-provenance";
   actionBootstrapReason = "results-url";
   try {
-    verifyArtifactClientProvenance(environment);
+    verifyArtifactClientProvenance(environment, afterManifestRead);
     return undefined;
   } catch {
     return failureEvidenceBootstrapAnnotation();

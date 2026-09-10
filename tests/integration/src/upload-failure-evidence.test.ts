@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  chmodSync,
   constants,
   linkSync,
   mkdirSync,
@@ -76,6 +77,7 @@ const validActionMetadata = validLocalActionMetadata as unknown as (
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
     environment: NodeJS.ProcessEnv,
+    afterManifestRead?: () => void,
   ) => string | undefined;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const invokeBootstrap = (
@@ -413,9 +415,12 @@ describe("failure evidence upload provenance", () => {
       writeFileSync(manifestPath, manifest);
       const manifestLink = resolve(packageRoot, "package-link");
       linkSync(manifestPath, manifestLink);
+      expect(verifyArtifactProvenance(environment)).toBeUndefined();
+      writeFileSync(manifestLink, Buffer.concat([manifest, Buffer.from("x")]));
       expect(verifyArtifactProvenance(environment)).toBe(
-        annotation("package-manifest:link-count"),
+        annotation("package-manifest:digest"),
       );
+      writeFileSync(manifestPath, manifest);
       unlinkSync(manifestLink);
       writeFileSync(manifestPath, Buffer.alloc(0));
       expect(verifyArtifactProvenance(environment)).toBe(
@@ -432,10 +437,32 @@ describe("failure evidence upload provenance", () => {
       );
       unlinkSync(manifestPath);
       writeFileSync(manifestPath, manifest);
+      expect(
+        verifyArtifactProvenance(environment, () => {
+          chmodSync(manifestPath, 0o600);
+        }),
+      ).toBe(annotation("package-manifest:identity-read"));
+      chmodSync(manifestPath, 0o644);
+      expect(
+        verifyArtifactProvenance(environment, () => {
+          writeFileSync(
+            manifestPath,
+            Buffer.concat([manifest, Buffer.from("x")]),
+          );
+        }),
+      ).toBe(annotation("package-manifest:identity-read"));
+      writeFileSync(manifestPath, manifest);
       assertDigestFailure(
         resolve(packageRoot, "lib/artifact.js"),
         "entry-digest",
       );
+      const entryPath = resolve(packageRoot, "lib/artifact.js");
+      const entryLink = resolve(packageRoot, "lib/artifact-link.js");
+      linkSync(entryPath, entryLink);
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("entry-digest"),
+      );
+      unlinkSync(entryLink);
       for (const name of patchedNames)
         assertDigestFailure(
           resolve(packageRoot, "lib/internal/upload", name),
@@ -575,13 +602,7 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "patched-file-digest",
   ])
     expect(validBootstrapPredicate(`artifact-provenance:${reason}`)).toBe(true);
-  for (const reason of [
-    "type",
-    "link-count",
-    "size",
-    "digest",
-    "identity-read",
-  ])
+  for (const reason of ["type", "size", "digest", "identity-read"])
     expect(
       validBootstrapPredicate(`artifact-provenance:package-manifest:${reason}`),
     ).toBe(true);
@@ -594,6 +615,7 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "artifact-provenance:unknown",
     "artifact-provenance:package-manifest",
     "artifact-provenance:package-manifest:unknown",
+    "artifact-provenance:package-manifest:link-count",
     "artifact-provenance:package-manifest:digest:extra",
     "artifact-provenance:patched-file-digest:filename",
     "artifact-provenance:entry-digest\n",
