@@ -3302,16 +3302,30 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     supervisor.indexOf("const captureMainProcessMembership ="),
     supervisor.indexOf("export const systemdTerminalTransition"),
   );
-  for (const [reason, boundary] of [
-    ['"main-pid"', "facts?.MainPID"],
-    ['"main-snapshot-before"', "readProcessSnapshot(pid)"],
-    ['"main-members"', "retainedCgroupMembers(cgroupIdentity)"],
-    ['"main-snapshot-after"', "readProcessSnapshot(pid)"],
-    ['"main-identity"', "validateMainProcessMembership("],
-  ] as const)
-    expect(membership.indexOf(reason)).toBeLessThan(
-      membership.lastIndexOf(boundary),
-    );
+  const firstSnapshot = membership.indexOf("readProcessSnapshot(pid)");
+  const secondSnapshot = membership.lastIndexOf("readProcessSnapshot(pid)");
+  expect(firstSnapshot).toBeGreaterThan(-1);
+  expect(secondSnapshot).toBeGreaterThan(firstSnapshot);
+  expect(membership.indexOf('"main-pid"')).toBeLessThan(
+    membership.indexOf("facts?.MainPID"),
+  );
+  expect(membership.indexOf('"main-snapshot-before"')).toBeLessThan(
+    firstSnapshot,
+  );
+  expect(membership.indexOf('"main-members"')).toBeGreaterThan(firstSnapshot);
+  expect(membership.indexOf('"main-members"')).toBeLessThan(
+    membership.indexOf("retainedCgroupMembers(cgroupIdentity)"),
+  );
+  expect(membership.indexOf('"main-snapshot-after"')).toBeGreaterThan(
+    membership.indexOf("retainedCgroupMembers(cgroupIdentity)"),
+  );
+  expect(membership.indexOf('"main-snapshot-after"')).toBeLessThan(
+    secondSnapshot,
+  );
+  expect(membership.indexOf('"main-identity"')).toBeGreaterThan(secondSnapshot);
+  expect(membership.indexOf('"main-identity"')).toBeLessThan(
+    membership.indexOf("validateMainProcessMembership("),
+  );
   expect(admission).toContain("systemdUnitAdmissionDiagnosticReasons.has(");
 });
 
