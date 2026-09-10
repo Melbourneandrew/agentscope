@@ -54,6 +54,7 @@ import {
   transferDescriptorAuthority,
   validSystemdLifecyclePredicate,
   validateLiveMappedExecutable,
+  validateMainProcessMembership,
   validatePythonAuthority,
   validateRootPid1Probe,
   validateRootToolReceipt,
@@ -3197,6 +3198,87 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     expect(validSystemdLifecyclePredicate(rejected)).toBe(false);
 });
 
+const expectNonterminalCgroupTransitionClosure = (
+  terminal: Record<string, string>,
+  authority: { cgroup: string },
+  absent: { absent: boolean; empty: boolean },
+) => {
+  const present = { absent: false, empty: false };
+  const nonterminal = { ...terminal, ExecMainStatus: "" };
+  expect(
+    classifyTerminalCgroupTransitionFailure(
+      nonterminal,
+      authority,
+      present,
+      present,
+    ),
+  ).toBe("cgroup-transition-main-nonterminal");
+  for (const [facts, before, after, reason] of [
+    [nonterminal, absent, absent, "cgroup-transition-observation-shape"],
+    [nonterminal, absent, present, "cgroup-transition-reappeared"],
+    [
+      { ...nonterminal, ControlGroup: "" },
+      present,
+      absent,
+      "cgroup-transition-monotonic-removal-empty",
+    ],
+    [
+      { ...nonterminal, ControlGroup: "" },
+      present,
+      present,
+      "cgroup-transition-empty-populated",
+    ],
+    [
+      { ...nonterminal, ControlGroup: "/system.slice/other.service" },
+      present,
+      present,
+      "cgroup-transition-third-controlgroup",
+    ],
+    [
+      nonterminal,
+      { absent: true, empty: false },
+      absent,
+      "cgroup-transition-observation-shape",
+    ],
+  ] as const)
+    expect(
+      classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
+    ).toBe(reason);
+};
+
+it("binds transient main membership to exact PID and start identity", () => {
+  const facts = { MainPID: "712" };
+  const identity = { bootId: "boot", pid: 712, startTime: "991" };
+  expect(
+    validateMainProcessMembership({
+      after: identity,
+      before: identity,
+      expected: identity,
+      facts,
+      members: [712, 713],
+    }),
+  ).toBe(true);
+  for (const replacement of [
+    { after: { ...identity, startTime: "992" } },
+    { before: { ...identity, bootId: "other" } },
+    { expected: { ...identity, pid: 713 } },
+    { facts: { MainPID: "0712" } },
+    { facts: { MainPID: "713" } },
+    { members: [713] },
+    { members: [712, Number.NaN] },
+  ])
+    expect(
+      validateMainProcessMembership({
+        after: identity,
+        before: identity,
+        expected: identity,
+        facts,
+        members: [712],
+        ...replacement,
+      }),
+    ).toBe(false);
+});
+
 it("classifies terminal cgroup transition failures without exposing authority values", () => {
   const authority = {
     cgroup: "/system.slice/agentscope-run.service",
@@ -3260,7 +3342,7 @@ it("classifies terminal cgroup transition failures without exposing authority va
       { ...terminal, ExecMainStatus: "" },
       absent,
       absent,
-      "cgroup-transition-main-nonterminal",
+      "cgroup-transition-observation-shape",
     ],
     [
       { ...terminal, ControlGroup: "/system.slice/other.service" },
@@ -3278,6 +3360,7 @@ it("classifies terminal cgroup transition failures without exposing authority va
     expect(
       classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
     ).toBe(reason);
+  expectNonterminalCgroupTransitionClosure(terminal, authority, absent);
 });
 
 it("binds every terminal cgroup diagnostic through one cleanup path", async () => {

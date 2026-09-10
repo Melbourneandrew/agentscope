@@ -81,6 +81,13 @@ export function classifyTerminalCgroupTransitionFailure(
   | "cgroup-transition-third-controlgroup"
   | "cgroup-transition-main-nonterminal"
   | "cgroup-transition-observation-shape";
+export function validateMainProcessMembership(input: {
+  after: Readonly<{ bootId: string; pid: number; startTime: string }>;
+  before: Readonly<{ bootId: string; pid: number; startTime: string }>;
+  expected?: Readonly<{ bootId: string; pid: number; startTime: string }>;
+  facts: Readonly<{ MainPID?: string }>;
+  members: readonly number[];
+}): boolean;
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"

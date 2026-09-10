@@ -1860,6 +1860,7 @@ const unitProperties = [
   "InaccessiblePaths",
   "KillMode",
   "LoadState",
+  "MainPID",
   "NoNewPrivileges",
   "ProtectControlGroups",
   "RemainAfterExit",
@@ -1956,8 +1957,6 @@ export const classifyTerminalCgroupTransitionFailure = (
 ) => {
   if (!validCgroupObservation(before) || !validCgroupObservation(after))
     return "cgroup-transition-observation-shape";
-  if (!systemdMainProcessIsTerminal(facts))
-    return "cgroup-transition-main-nonterminal";
   if (facts?.ControlGroup !== authority?.cgroup && facts?.ControlGroup !== "")
     return "cgroup-transition-third-controlgroup";
   if (before.absent && !after.absent) return "cgroup-transition-reappeared";
@@ -1972,6 +1971,14 @@ export const classifyTerminalCgroupTransitionFailure = (
     (!before.empty || !after.empty)
   )
     return "cgroup-transition-empty-populated";
+  if (!systemdMainProcessIsTerminal(facts))
+    return facts.ControlGroup === authority.cgroup &&
+      !before.absent &&
+      !after.absent &&
+      !before.empty &&
+      !after.empty
+      ? "cgroup-transition-main-nonterminal"
+      : "cgroup-transition-observation-shape";
   return "cgroup-transition-observation-shape";
 };
 
@@ -2141,6 +2148,79 @@ const recheckRetainedCgroupDescriptors = (authority) => {
     )
       failSystemd();
   }
+};
+
+const retainedCgroupMembers = (authority) => {
+  recheckRetainedCgroupDescriptors(authority);
+  const content = Buffer.alloc(4097);
+  let size = 0;
+  while (size < content.length) {
+    const count = readSync(
+      authority.descriptors[2],
+      content,
+      size,
+      content.length - size,
+      size,
+    );
+    if (count === 0) break;
+    size += count;
+  }
+  recheckRetainedCgroupDescriptors(authority);
+  if (size < 2 || size > 4096 || content[size - 1] !== 0x0a) failSystemd();
+  const text = content.subarray(0, size).toString("utf8");
+  if (/[\0\r]/u.test(text) || text.endsWith("\n\n")) failSystemd();
+  const members = text
+    .slice(0, -1)
+    .split("\n")
+    .map((value) => (/^[1-9][0-9]*$/u.test(value) ? Number(value) : NaN));
+  if (
+    members.some((pid) => !Number.isSafeInteger(pid)) ||
+    new Set(members).size !== members.length
+  )
+    failSystemd();
+  return Object.freeze(members);
+};
+
+export const validateMainProcessMembership = ({
+  after,
+  before,
+  expected,
+  facts,
+  members,
+}) => {
+  if (!/^[1-9][0-9]*$/u.test(facts?.MainPID ?? "")) return false;
+  const pid = Number(facts.MainPID);
+  const sameIdentity =
+    Number.isSafeInteger(pid) &&
+    before?.pid === pid &&
+    after?.pid === pid &&
+    before.bootId === after.bootId &&
+    before.startTime === after.startTime &&
+    (expected === undefined ||
+      (expected.pid === pid &&
+        expected.bootId === before.bootId &&
+        expected.startTime === before.startTime));
+  return (
+    sameIdentity &&
+    Array.isArray(members) &&
+    members.includes(pid) &&
+    members.every(Number.isSafeInteger) &&
+    new Set(members).size === members.length
+  );
+};
+
+const captureMainProcessMembership = (facts, cgroupIdentity, expected) => {
+  if (!/^[1-9][0-9]*$/u.test(facts?.MainPID ?? "")) failSystemd();
+  const pid = Number(facts.MainPID);
+  if (!Number.isSafeInteger(pid)) failSystemd();
+  const before = readProcessSnapshot(pid);
+  const members = retainedCgroupMembers(cgroupIdentity);
+  const after = readProcessSnapshot(pid);
+  if (
+    !validateMainProcessMembership({ after, before, expected, facts, members })
+  )
+    failSystemd();
+  return Object.freeze(before);
 };
 
 const retainedCgroupIsEmpty = (authority, markDiagnostic = undefined) => {
@@ -2315,6 +2395,12 @@ const observeTerminalSystemdUnit = async (
   state,
   observeCgroup,
   observeFacts,
+  authenticateNonterminal = (facts) =>
+    captureMainProcessMembership(
+      facts,
+      state.cgroupIdentity,
+      state.mainProcessIdentity,
+    ),
 ) => {
   let before;
   try {
@@ -2347,6 +2433,7 @@ const observeTerminalSystemdUnit = async (
         : `authority-${mismatch}`;
     if (reason !== "cgroup-transition-main-nonterminal")
       failSystemdLifecycle(state, "terminal-wait", reason);
+    authenticateNonterminal(facts);
   }
   return Object.freeze({ after, facts });
 };
@@ -2445,6 +2532,8 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
           return Object.freeze({ absent: false, empty: false });
         if (mode === "transition-empty-populated" && observations === 2)
           return Object.freeze({ absent: false, empty: false });
+        if (mode === "transition-main-nonterminal")
+          return Object.freeze({ absent: false, empty: false });
         if (mode === "transition-reappeared" && observations === 2)
           return Object.freeze({ absent: false, empty: true });
         if (mode === "transition-observation-shape" && observations === 1)
@@ -2452,6 +2541,19 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
         return Object.freeze({ absent: true, empty: true });
       },
       async () => facts,
+      (observedFacts) => {
+        if (
+          mode !== "transition-main-nonterminal" ||
+          !validateMainProcessMembership({
+            after: { bootId: "boot", pid: 712, startTime: "991" },
+            before: { bootId: "boot", pid: 712, startTime: "991" },
+            expected: { bootId: "boot", pid: 712, startTime: "991" },
+            facts: { ...observedFacts, MainPID: "712" },
+            members: [712],
+          })
+        )
+          failSystemd();
+      },
     );
   } catch (error) {
     failure = error;
@@ -2703,6 +2805,7 @@ export const prepareGithubSystemdSupervision = async ({
     executionDeadline: undefined,
     forwardSignal,
     interrupted,
+    mainProcessIdentity: undefined,
     mappedExecutable,
     maximumMilliseconds,
     preparationDeadline,
@@ -2824,6 +2927,10 @@ const admitSystemdUnit = async (state) => {
     );
     assertUnitAuthority(admitted, state.authority);
     state.cgroupIdentity = authenticateCgroup(state.cgroupPath);
+    state.mainProcessIdentity = captureMainProcessMembership(
+      admitted,
+      state.cgroupIdentity,
+    );
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }
