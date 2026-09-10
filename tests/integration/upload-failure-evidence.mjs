@@ -225,10 +225,10 @@ const verifyPackageManifestDigest = (path, afterRead = () => {}) => {
     )
       fail();
     actionBootstrapReason = "package-manifest:identity-read";
-    const content = readFileSync(descriptor);
-    if (content.length !== status.size) fail();
+    const content = readExact(descriptor, status.size);
     afterRead();
     if (!sameManifestIdentity(status, fstatSync(descriptor))) fail();
+    if (!readExact(descriptor, status.size).equals(content)) fail();
     actionBootstrapReason = "package-manifest:digest";
     if (
       createHash("sha256").update(content).digest("hex") !==

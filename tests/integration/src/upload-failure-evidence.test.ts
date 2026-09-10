@@ -452,6 +452,14 @@ describe("failure evidence upload provenance", () => {
         }),
       ).toBe(annotation("package-manifest:identity-read"));
       writeFileSync(manifestPath, manifest);
+      expect(
+        verifyArtifactProvenance(environment, () => {
+          const substituted = Buffer.from(manifest);
+          substituted[0] = substituted[0] === 0x7b ? 0x5b : 0x7b;
+          writeFileSync(manifestPath, substituted);
+        }),
+      ).toBe(annotation("package-manifest:identity-read"));
+      writeFileSync(manifestPath, manifest);
       assertDigestFailure(
         resolve(packageRoot, "lib/artifact.js"),
         "entry-digest",
