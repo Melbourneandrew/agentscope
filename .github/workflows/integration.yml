@@ -115,7 +115,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - name: Install immutable workspace dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --package-import-method=copy
       - name: Build workspace fixture code
         run: pnpm build
       - name: Download exact prepared candidate

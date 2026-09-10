@@ -3767,6 +3767,27 @@ function expectClosedOuterGitConfiguration(workflow: string) {
   expect(controller).toContain('GIT_CONFIG_GLOBAL: "/dev/null"');
 }
 
+function expectHermeticCopyInstall(workflow: string) {
+  expect(workflow.match(/runs-on: ubuntu-24\.04/gu)).toHaveLength(1);
+  expect(
+    workflow.match(/run: pnpm install --frozen-lockfile$/gmu),
+  ).toHaveLength(1);
+  expect(
+    workflow.match(
+      /run: pnpm install --frozen-lockfile --package-import-method=copy$/gmu,
+    ),
+  ).toHaveLength(1);
+  const hermeticJob = workflow.slice(
+    workflow.indexOf("  hermetic-platform:"),
+    workflow.indexOf("  hermetic-integration:"),
+  );
+  expect(
+    hermeticJob.indexOf(
+      "pnpm install --frozen-lockfile --package-import-method=copy",
+    ),
+  ).toBeLessThan(hermeticJob.indexOf("uses: ./tests/integration"));
+}
+
 describe("integration workflow routing policy", () => {
   it("routes both CI phases through the same command", () => {
     const workflow = readFileSync(
@@ -3774,8 +3795,8 @@ describe("integration workflow routing policy", () => {
       "utf8",
     );
     expect(workflow.match(/pnpm test:integration/gu)).toHaveLength(1);
-    expect(workflow.match(/runs-on: ubuntu-24\.04/gu)).toHaveLength(1);
     expect(workflow.match(/persist-credentials: false/gu)).toHaveLength(2);
+    expectHermeticCopyInstall(workflow);
     expect(
       workflow.match(/NPM_CONFIG_GLOBALCONFIG=.*agentscope-global\.npmrc/gu),
     ).toHaveLength(2);

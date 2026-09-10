@@ -82,6 +82,7 @@ const actionBootstrapArtifactProvenanceReasons = new Set([
 ]);
 const actionBootstrapPackageManifestReasons = new Set([
   "type",
+  "link-count",
   "size",
   "digest",
   "identity-read",
@@ -216,10 +217,11 @@ const verifyPackageManifestDigest = (path, afterRead = () => {}) => {
     const status = fstatSync(descriptor);
     actionBootstrapReason = "package-manifest:type";
     if (!status.isFile()) fail();
+    actionBootstrapReason = "package-manifest:link-count";
+    if (status.nlink !== 1) fail();
     actionBootstrapReason = "package-manifest:size";
     if (
       (status.mode & 0o7777) !== 0o644 ||
-      status.nlink < 1 ||
       status.size < 1 ||
       status.size > 64 * 1024
     )
