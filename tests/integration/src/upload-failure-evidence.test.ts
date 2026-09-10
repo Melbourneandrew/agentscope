@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -82,6 +82,11 @@ const exerciseOuterFailure =
     firstPreserved: boolean;
     forgedRejected: boolean;
     stage: string | undefined;
+  };
+const exerciseFinalizationFailure =
+  exerciseFailureEvidenceFinalizationForTest as unknown as (reason: string) => {
+    forgedRejected: boolean;
+    reason: string | undefined;
   };
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
@@ -668,12 +673,36 @@ it("binds only closed outer-controller failure stages and preserves first cause"
       stage,
     });
   }
+  for (const reason of [
+    "write",
+    "open",
+    "stat",
+    "fsync",
+    "rename",
+    "directory-fsync",
+    "child-terminal",
+  ]) {
+    const stage = `finalize-evidence:${reason}`;
+    expect(validOuterStage(stage)).toBe(true);
+    expect(exerciseFinalizationFailure(reason)).toEqual({
+      forgedRejected: true,
+      reason,
+    });
+    expect(exerciseOuterFailure(stage)).toEqual({
+      firstPreserved: true,
+      forgedRejected: true,
+      stage,
+    });
+  }
   for (const rejected of [
     undefined,
     "",
     "prepare-systemd:extra",
     "run-systemd\nfinalize-evidence",
     "unknown",
+    "finalize-evidence:unknown",
+    "finalize-evidence:open:stat",
+    "finalize-evidence:open\n",
   ])
     expect(validOuterStage(rejected)).toBe(false);
 });

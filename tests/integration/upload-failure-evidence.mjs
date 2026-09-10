@@ -94,7 +94,17 @@ const outerControllerStages = new Set([
   "finalize-evidence",
   "descriptor-close",
 ]);
+const failureEvidenceFinalizationReasons = new Set([
+  "write",
+  "open",
+  "stat",
+  "fsync",
+  "rename",
+  "directory-fsync",
+  "child-terminal",
+]);
 const outerControllerFailures = new WeakMap();
+const failureEvidenceFinalizationFailures = new WeakMap();
 let actionBootstrapStage = "invocation";
 let actionBootstrapReason = "argv-shape";
 export const validFailureEvidenceBootstrapStage = (value) =>
@@ -122,7 +132,22 @@ const fail = () => {
   throw new Error("integration.controller.failure-evidence-upload");
 };
 export const validOuterControllerStage = (value) =>
-  typeof value === "string" && outerControllerStages.has(value);
+  typeof value === "string" &&
+  (outerControllerStages.has(value) ||
+    (value.startsWith("finalize-evidence:") &&
+      failureEvidenceFinalizationReasons.has(
+        value.slice("finalize-evidence:".length),
+      )));
+const bindFailureEvidenceFinalization = (reason) => {
+  if (!failureEvidenceFinalizationReasons.has(reason)) fail();
+  const bound = new Error("integration.controller.failure-evidence");
+  failureEvidenceFinalizationFailures.set(bound, Object.freeze({ reason }));
+  return bound;
+};
+const failureEvidenceFinalizationReason = (error) =>
+  error !== null && typeof error === "object"
+    ? failureEvidenceFinalizationFailures.get(error)?.reason
+    : undefined;
 const bindOuterControllerFailure = (error, stage) => {
   if (systemdToolFailureStage(error) !== undefined) return error;
   if (
@@ -149,6 +174,14 @@ export const exerciseOuterControllerFailureForTest = (stage) => {
       bindOuterControllerFailure(bound, "descriptor-close") === bound,
     forgedRejected: outerControllerFailureStage(forged) === undefined,
     stage: outerControllerFailureStage(bound),
+  });
+};
+export const exerciseFailureEvidenceFinalizationForTest = (reason) => {
+  const bound = bindFailureEvidenceFinalization(reason);
+  const forged = new Error("integration.controller.failure-evidence");
+  return Object.freeze({
+    forgedRejected: failureEvidenceFinalizationReason(forged) === undefined,
+    reason: failureEvidenceFinalizationReason(bound),
   });
 };
 const parseUnsigned = (value, maximum) => {
@@ -549,8 +582,21 @@ export const finalizeFailureEvidence = async ({
   client,
   sealerSource,
 }) => {
+  let finalizationReason = "open";
+  const mark = (reason) => {
+    if (!failureEvidenceFinalizationReasons.has(reason)) fail();
+    finalizationReason = reason;
+  };
   const fail = () => {
-    throw new Error("integration.controller.failure-evidence");
+    throw bindFailureEvidenceFinalization(finalizationReason);
+  };
+  const perform = (operation) => {
+    try {
+      return operation();
+    } catch (error) {
+      if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+      throw bindFailureEvidenceFinalization(finalizationReason);
+    }
   };
   const exactKeys = (value, keys) =>
     typeof value === "object" &&
@@ -641,7 +687,9 @@ export const finalizeFailureEvidence = async ({
   const readBounded = (path, maximumBytes, expectedMode = 0o600) => {
     let descriptor;
     try {
+      mark("open");
       descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      mark("stat");
       const before = fstatSync(descriptor);
       if (
         !before.isFile() ||
@@ -663,6 +711,9 @@ export const finalizeFailureEvidence = async ({
       authenticatedDescriptors.push({ descriptor, path, status: before });
       descriptor = undefined;
       return { content, status: before };
+    } catch (error) {
+      if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+      throw bindFailureEvidenceFinalization(finalizationReason);
     } finally {
       if (descriptor !== undefined) closeSync(descriptor);
     }
@@ -1239,24 +1290,31 @@ export const finalizeFailureEvidence = async ({
     !Buffer.isBuffer(sealerSource)
   )
     fail();
-  const written = writeSync(bundleDescriptor, bundle, 0, bundle.length, 0);
+  mark("write");
+  const written = perform(() =>
+    writeSync(bundleDescriptor, bundle, 0, bundle.length, 0),
+  );
   if (written !== bundle.length) fail();
-  fsyncSync(bundleDescriptor);
-  const sealer = spawnSync(
-    "/usr/bin/python3",
-    [
-      "-c",
-      sealerSource.toString("utf8"),
-      "seal-existing",
-      String(bundle.length),
-      bundleDigest,
-    ],
-    {
-      env: {},
-      maxBuffer: 4096,
-      stdio: ["ignore", "pipe", "pipe", bundleDescriptor],
-      timeout: remainingMilliseconds,
-    },
+  mark("fsync");
+  perform(() => fsyncSync(bundleDescriptor));
+  mark("child-terminal");
+  const sealer = perform(() =>
+    spawnSync(
+      "/usr/bin/python3",
+      [
+        "-c",
+        sealerSource.toString("utf8"),
+        "seal-existing",
+        String(bundle.length),
+        bundleDigest,
+      ],
+      {
+        env: {},
+        maxBuffer: 4096,
+        stdio: ["ignore", "pipe", "pipe", bundleDescriptor],
+        timeout: remainingMilliseconds,
+      },
+    ),
   );
   if (
     sealer.error !== undefined ||
@@ -1286,26 +1344,31 @@ export const finalizeFailureEvidence = async ({
   try {
     process.stdout.write = () => true;
     process.stderr.write = () => true;
-    await uploadFailureEvidence({
-      arguments_: [
-        "--fd",
-        String(bundleDescriptor),
-        "--size",
-        String(bundle.length),
-        "--digest",
-        bundleDigest,
-        "--name",
-        artifactName,
-        "--deadline",
-        deadlineNanoseconds,
-        "--python",
-        "/usr/bin/python3",
-      ],
-      client,
-      nowNanoseconds: process.hrtime.bigint,
-      probe,
-      startTicks: processStartTicks,
-    });
+    try {
+      await uploadFailureEvidence({
+        arguments_: [
+          "--fd",
+          String(bundleDescriptor),
+          "--size",
+          String(bundle.length),
+          "--digest",
+          bundleDigest,
+          "--name",
+          artifactName,
+          "--deadline",
+          deadlineNanoseconds,
+          "--python",
+          "/usr/bin/python3",
+        ],
+        client,
+        nowNanoseconds: process.hrtime.bigint,
+        probe,
+        startTicks: processStartTicks,
+      });
+    } catch (error) {
+      if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
+      throw bindFailureEvidenceFinalization(finalizationReason);
+    }
   } finally {
     process.stdout.write = originalStdout;
     process.stderr.write = originalStderr;
@@ -1509,7 +1572,13 @@ const outerControllerMain = async () => {
       succeeded = false;
     }
   } catch (error) {
-    firstFailure = bindOuterControllerFailure(error, outerStage);
+    const boundReason = failureEvidenceFinalizationReason(error);
+    firstFailure = bindOuterControllerFailure(
+      error,
+      outerStage === "finalize-evidence" && boundReason !== undefined
+        ? `${outerStage}:${boundReason}`
+        : outerStage,
+    );
   } finally {
     outerStage = "descriptor-close";
     for (const descriptor of [

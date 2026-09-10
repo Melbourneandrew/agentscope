@@ -159,6 +159,15 @@ import { compileCapabilityManifest, compileIsolationEvidence } from ${JSON.strin
     pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
       .href,
   )};
+const failureEvidenceFinalizationReasons = new Set(["write", "open", "stat", "fsync", "rename", "directory-fsync", "child-terminal"]);
+const failureEvidenceFinalizationFailures = new WeakMap();
+const bindFailureEvidenceFinalization = (reason) => {
+  if (!failureEvidenceFinalizationReasons.has(reason)) throw new Error("integration.controller.failure-evidence");
+  const bound = new Error("integration.controller.failure-evidence");
+  failureEvidenceFinalizationFailures.set(bound, Object.freeze({ reason }));
+  return bound;
+};
+const failureEvidenceFinalizationReason = (error) => error !== null && typeof error === "object" ? failureEvidenceFinalizationFailures.get(error)?.reason : undefined;
 ${body}`;
 };
 const failureReceiptValidatorSource = (workflow: string) => {
@@ -4566,7 +4575,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         sleepArguments,
         "uncertain",
       ],
-      ["synthetic-client-deadline", "deadline", sleepArguments, "uncertain"],
+      ["synthetic-client-deadline", "deadline", sleepArguments, "error"],
       [
         "synthetic-client-leader-identity",
         "leader-identity",
