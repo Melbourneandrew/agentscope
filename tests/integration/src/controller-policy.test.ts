@@ -2371,18 +2371,32 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       "  DEADLINE=armed+2000000000\n" +
       "  CUTOFF=armed+2000000000\n",
   );
+  const groupEstablishedBoundary =
+    " leader,expected,control=create_group()\n child=None\n";
+  const groupSynchronizedHelper = readinessSynchronizedHelper.replace(
+    groupEstablishedBoundary,
+    " leader,expected,control=create_group()\n" +
+      ' if OPERATION in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
+      " child=None\n",
+  );
   const membershipBoundary =
     "   admit_group_members(leader,expected_members)\n   if now()>=cutoff:\n";
-  const synchronizedHelper = readinessSynchronizedHelper.replace(
+  const synchronizedHelper = groupSynchronizedHelper.replace(
     membershipBoundary,
     "   admit_group_members(leader,expected_members)\n" +
       '   if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}:\n' +
       '    if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
       "    else: CUTOFF=now()-1\n" +
-      '   if OPERATION.startswith("synthetic-client-"): os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
+      '   if OPERATION.startswith("synthetic-client-") and OPERATION not in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
       "   if now()>=cutoff:\n",
   );
-  return { deadlineArm, readinessSynchronizedHelper, synchronizedHelper };
+  return {
+    deadlineArm,
+    groupEstablishedBoundary,
+    groupSynchronizedHelper,
+    readinessSynchronizedHelper,
+    synchronizedHelper,
+  };
 };
 
 const parseSyntheticClientReadiness = (
@@ -3773,11 +3787,18 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const start = supervisorSource.indexOf(prefix) + prefix.length;
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
-    const { deadlineArm, readinessSynchronizedHelper, synchronizedHelper } =
-      synchronizeSyntheticClientDeadlines(helper);
+    const {
+      deadlineArm,
+      groupEstablishedBoundary,
+      groupSynchronizedHelper,
+      readinessSynchronizedHelper,
+      synchronizedHelper,
+    } = synchronizeSyntheticClientDeadlines(helper);
     expect(helper).toContain(deadlineArm);
+    expect(helper).toContain(groupEstablishedBoundary);
     expect(readinessSynchronizedHelper).not.toBe(helper);
-    expect(synchronizedHelper).not.toBe(readinessSynchronizedHelper);
+    expect(groupSynchronizedHelper).not.toBe(readinessSynchronizedHelper);
+    expect(synchronizedHelper).not.toBe(groupSynchronizedHelper);
     const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
     const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
     const cases = [
