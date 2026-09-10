@@ -3511,15 +3511,19 @@ it("classifies MainPID admission transitions without widening the deadline", () 
     : false = true;
   expect(exhaustive).toBe(true);
   expect(reasons).toHaveLength(4);
-  for (const activeState of ["activating", "active"]) {
-    expect(classifySystemdAdmissionMainPid({ ActiveState: activeState })).toBe(
-      "main-pid-unavailable",
-    );
+  for (const subState of ["start-pre", "start", "start-post"]) {
+    expect(
+      classifySystemdAdmissionMainPid({
+        ActiveState: "activating",
+        SubState: subState,
+      }),
+    ).toBe("main-pid-unavailable");
     for (const mainPid of ["", "0"])
       expect(
         classifySystemdAdmissionMainPid({
-          ActiveState: activeState,
+          ActiveState: "activating",
           MainPID: mainPid,
+          SubState: subState,
         }),
       ).toBe("main-pid-unavailable");
   }
@@ -3536,7 +3540,7 @@ it("classifies MainPID admission transitions without widening the deadline", () 
         MainPID: mainPid,
       }),
     ).toBe("main-pid-malformed");
-  for (const activeState of ["inactive", "failed", "deactivating"])
+  for (const activeState of ["active", "inactive", "failed", "deactivating"])
     expect(
       classifySystemdAdmissionMainPid({
         ActiveState: activeState,

@@ -2231,17 +2231,22 @@ export const classifySystemdAdmissionMainPid = (
   expected = undefined,
 ) => {
   const value = facts?.MainPID;
-  const transient =
+  const admissible =
     facts?.ActiveState === "activating" || facts?.ActiveState === "active";
+  const unavailableTransition =
+    facts?.ActiveState === "activating" &&
+    ["start-pre", "start", "start-post"].includes(facts?.SubState);
   if (systemdMainProcessIsTerminal(facts))
     return "main-pid-terminal-unit-state";
   if (expected !== undefined && value !== String(expected))
     return "main-pid-mismatch";
   if (value === undefined || value === "" || value === "0")
-    return transient ? "main-pid-unavailable" : "main-pid-terminal-unit-state";
+    return unavailableTransition
+      ? "main-pid-unavailable"
+      : "main-pid-terminal-unit-state";
   if (!/^[1-9][0-9]*$/u.test(value) || !Number.isSafeInteger(Number(value)))
     return "main-pid-malformed";
-  return transient ? undefined : "main-pid-terminal-unit-state";
+  return admissible ? undefined : "main-pid-terminal-unit-state";
 };
 
 const captureMainProcessMembership = (
