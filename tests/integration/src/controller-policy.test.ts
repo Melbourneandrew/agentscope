@@ -2373,6 +2373,9 @@ const syntheticClientSpawnBoundary =
   '  child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)\n';
 const syntheticClientReasonBoundary =
   'CLIENT_TERMINAL_REASONS={"cutoff","deadline","leader-identity","child-admission","member-identity","output-read","output-bound","nonzero-terminal","internal-unknown"}';
+const syntheticReadinessWriteBoundary =
+  '  os.write(3,(str(leader)+":"+str(expected[0])+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n';
+const syntheticControlWriteBoundary = '  TEST_CHILD.stdin.write(b"x")\n';
 const syntheticGatedChildSource = [
   "import json,os,sys",
   'if sys.stdin.buffer.read(1)!=b"x": sys.exit(125)',
@@ -2506,9 +2509,9 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       '  if TEST_READY: raise RuntimeError("readiness")\n' +
       '  if TEST_CHILD is None or TEST_CHILD.stdin is None: raise RuntimeError("readiness")\n' +
       '  REASON="readiness-descriptor"\n' +
-      '  os.write(3,(str(leader)+":"+str(expected[0])+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
+      syntheticReadinessWriteBoundary +
       '  REASON="readiness-control"\n' +
-      '  TEST_CHILD.stdin.write(b"x")\n' +
+      syntheticControlWriteBoundary +
       "  TEST_CHILD.stdin.flush()\n" +
       "  TEST_CHILD.stdin.close()\n" +
       "  TEST_READY=True\n",
@@ -2556,6 +2559,7 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
     childAdmissionBoundary,
     childSpawnBoundary: syntheticClientSpawnBoundary,
     deadlineArm,
+    diagnosticHelper,
     gatedChildHelper,
     groupEstablishedBoundary,
     runGlobalBoundary: syntheticClientRunGlobalBoundary,
@@ -4231,6 +4235,91 @@ const runSyntheticClientHelper = (
   );
   return { key, terminal };
 };
+
+const expectSyntheticClientReadinessFault = (
+  helper: string,
+  reason: "readiness-control" | "readiness-descriptor",
+) => {
+  const operation = "synthetic-client-cutoff";
+  const { key, terminal } = runSyntheticClientHelper(helper, operation, [
+    "-I",
+    "-S",
+    "-c",
+    "import time; time.sleep(5)",
+  ]);
+  expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
+  const readiness = parseSyntheticClientReadiness(terminal.output[3]);
+  if (readiness === undefined)
+    throw syntheticReadinessFailure(
+      operation,
+      terminal.stdout,
+      terminal.output[3],
+    );
+  expect(
+    validateRootToolReceipt({
+      identity: {
+        cutoff: readiness.cutoff,
+        deadline: readiness.deadline,
+        operation,
+        unit: "",
+      },
+      key,
+      receipt: terminal.stdout,
+    }),
+  ).toEqual({ output: "", reason, stage: "client-terminal", status: "error" });
+  expect(terminal.stdout).not.toContain("Traceback");
+  let groupAbsent = false;
+  try {
+    process.kill(-Number(readiness.leader), 0);
+  } catch (error) {
+    groupAbsent =
+      error instanceof Error &&
+      "code" in error &&
+      (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+  expect(groupAbsent).toBe(true);
+};
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "executes both closed synthetic readiness channel failures and joins the group",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = supervisorSource.slice(start, end);
+    const sync = synchronizeSyntheticClientDeadlines(helper);
+    expect(sync.diagnosticHelper).not.toBe(helper);
+    expect(sync.diagnosticHelper).toContain(
+      '"readiness-control","readiness-descriptor","internal-unknown"',
+    );
+    expect(sync.synchronizedHelper).toContain(syntheticReadinessWriteBoundary);
+    expect(sync.synchronizedHelper).toContain(syntheticControlWriteBoundary);
+
+    const descriptorFaultHelper = sync.synchronizedHelper.replace(
+      syntheticReadinessWriteBoundary,
+      syntheticReadinessWriteBoundary + '  os.close(3)\n  os.write(3,b"x")\n',
+    );
+    const controlFaultHelper = sync.synchronizedHelper.replace(
+      syntheticControlWriteBoundary,
+      "  TEST_CHILD.stdin.close()\n" + syntheticControlWriteBoundary,
+    );
+    expect(descriptorFaultHelper).not.toBe(sync.synchronizedHelper);
+    expect(controlFaultHelper).not.toBe(sync.synchronizedHelper);
+    expectSyntheticClientReadinessFault(
+      descriptorFaultHelper,
+      "readiness-descriptor",
+    );
+    expectSyntheticClientReadinessFault(
+      controlFaultHelper,
+      "readiness-control",
+    );
+  },
+  30_000,
+);
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "executes every closed client-terminal failure branch without raw diagnostics",
