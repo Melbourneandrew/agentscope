@@ -71,12 +71,22 @@ export function classifyTerminalCgroupTransitionFailure(
     uid: number;
     unit: string;
   }>,
-  before: Readonly<{ absent: boolean; empty: boolean }>,
-  after: Readonly<{ absent: boolean; empty: boolean }>,
+  before: Readonly<{
+    absent: boolean;
+    empty: boolean;
+    members: readonly number[];
+  }>,
+  after: Readonly<{
+    absent: boolean;
+    empty: boolean;
+    members: readonly number[];
+  }>,
 ): SystemdTerminalCgroupTransitionReason;
 
 export type SystemdTerminalCgroupTransitionReason =
-  | "cgroup-transition-retained"
+  | "cgroup-transition-retained-empty"
+  | "cgroup-transition-retained-populated"
+  | "cgroup-transition-retained-membership"
   | "cgroup-transition-monotonic-removal-empty"
   | "cgroup-transition-empty-populated"
   | "cgroup-transition-reappeared"
@@ -105,7 +115,9 @@ export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
     | "observe-after"
-    | "transition-retained"
+    | "transition-retained-empty"
+    | "transition-retained-populated"
+    | "transition-retained-membership"
     | "transition-monotonic-removal-empty"
     | "transition-empty-populated"
     | "transition-reappeared"

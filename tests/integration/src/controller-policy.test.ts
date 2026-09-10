@@ -3597,7 +3597,9 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
   const reasons = [
     "cgroup-observe-before",
     "cgroup-observe-after",
-    "cgroup-transition-retained",
+    "cgroup-transition-retained-empty",
+    "cgroup-transition-retained-populated",
+    "cgroup-transition-retained-membership",
     "cgroup-transition-monotonic-removal-empty",
     "cgroup-transition-empty-populated",
     "cgroup-transition-reappeared",
@@ -3624,7 +3626,9 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "unit-parse",
     "cgroup-observe-before",
     "cgroup-observe-after",
-    "cgroup-transition-retained",
+    "cgroup-transition-retained-empty",
+    "cgroup-transition-retained-populated",
+    "cgroup-transition-retained-membership",
     "cgroup-transition-monotonic-removal-empty",
     "cgroup-transition-empty-populated",
     "cgroup-transition-reappeared",
@@ -3661,9 +3665,9 @@ const expectNonterminalCgroupTransitionClosure = (
     uid: number;
     unit: string;
   },
-  absent: { absent: boolean; empty: boolean },
+  absent: { absent: boolean; empty: boolean; members: readonly number[] },
 ) => {
-  const present = { absent: false, empty: false };
+  const present = { absent: false, empty: false, members: [712] };
   const nonterminal = { ...terminal, ExecMainStatus: "" };
   expect(
     classifyTerminalCgroupTransitionFailure(
@@ -3696,7 +3700,7 @@ const expectNonterminalCgroupTransitionClosure = (
     ],
     [
       nonterminal,
-      { absent: true, empty: false },
+      { absent: true, empty: false, members: [] },
       absent,
       "cgroup-transition-observation-shape",
     ],
@@ -3866,32 +3870,56 @@ it("classifies terminal cgroup transition failures without exposing authority va
     SupplementaryGroups: "4 1001",
     User: "1001",
   };
-  const absent = { absent: true, empty: true };
+  const absent = { absent: true, empty: true, members: [] };
   expect(
     classifyTerminalCgroupTransitionFailure(
       terminal,
       authority,
-      { absent: false, empty: false },
+      { absent: false, empty: false, members: [712] },
       absent,
     ),
-  ).toBe("cgroup-transition-retained");
+  ).toBe("cgroup-transition-retained-populated");
+  expect(
+    classifyTerminalCgroupTransitionFailure(
+      terminal,
+      authority,
+      { absent: false, empty: true, members: [] },
+      absent,
+    ),
+  ).toBe("cgroup-transition-retained-empty");
+  for (const malformedMembership of [
+    { absent: false, empty: false, members: [] },
+    { absent: false, empty: true, members: [712] },
+    { absent: false, empty: false, members: [712, 712] },
+    { absent: false, empty: false, members: [0] },
+    { absent: false, empty: false, members: [Number.NaN] },
+    { absent: true, empty: true, members: [712] },
+  ])
+    expect(
+      classifyTerminalCgroupTransitionFailure(
+        terminal,
+        authority,
+        malformedMembership,
+        absent,
+      ),
+    ).toBe("cgroup-transition-retained-membership");
   for (const [facts, before, after, reason] of [
     [
       { ...terminal, ControlGroup: "" },
-      { absent: false, empty: false },
+      { absent: false, empty: false, members: [712] },
       absent,
       "cgroup-transition-monotonic-removal-empty",
     ],
     [
       { ...terminal, ControlGroup: "" },
-      { absent: false, empty: false },
-      { absent: false, empty: false },
+      { absent: false, empty: false, members: [712] },
+      { absent: false, empty: false, members: [712] },
       "cgroup-transition-empty-populated",
     ],
     [
       terminal,
       absent,
-      { absent: false, empty: true },
+      { absent: false, empty: true, members: [] },
       "cgroup-transition-reappeared",
     ],
     [
@@ -3908,7 +3936,7 @@ it("classifies terminal cgroup transition failures without exposing authority va
     ],
     [
       terminal,
-      { absent: true, empty: false },
+      { absent: true, empty: false, members: [] },
       absent,
       "cgroup-transition-observation-shape",
     ],
@@ -3923,7 +3951,7 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
   for (const [mode, reason] of [
     ["observe-before", "cgroup-observe-before"],
     ["observe-after", "cgroup-observe-after"],
-    ["transition-retained", "cgroup-transition-retained"],
+    ["transition-retained-membership", "cgroup-transition-retained-membership"],
     ["transition-empty-populated", "cgroup-transition-empty-populated"],
     ["transition-reappeared", "cgroup-transition-reappeared"],
     ["transition-third-controlgroup", "cgroup-transition-third-controlgroup"],
@@ -3940,13 +3968,37 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       "transition-monotonic-removal-empty",
     ),
   ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
+  for (const mode of [
+    "transition-retained-empty",
+    "transition-retained-populated",
+  ] as const)
+    await expect(
+      exerciseTerminalCgroupDiagnosticForTesting(mode),
+    ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const terminalWait = supervisor.slice(
+    supervisor.indexOf("const waitForTerminal ="),
+    supervisor.indexOf(
+      "export const exerciseTerminalCgroupDiagnosticForTesting",
+    ),
+  );
+  expect(terminalWait).toContain("state.executionDeadline");
+  expect(terminalWait).toContain(
+    "remainingMilliseconds(state.executionDeadline)",
+  );
+  expect(terminalWait).not.toContain("Date.now");
+  expect(terminalWait).not.toContain("performance.now() +");
   await expect(
     exerciseTerminalCgroupDiagnosticForTesting("transition-main-nonterminal"),
   ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   for (const forged of [
     "lifecycle:terminal-wait:cgroup-observe-before:extra",
     "lifecycle:terminal-wait:cgroup-observe-unknown",
-    "lifecycle:terminal-wait:cgroup-transition-retained-substituted",
+    "lifecycle:terminal-wait:cgroup-transition-retained-populated-substituted",
   ])
     expect(validSystemdLifecyclePredicate(forged)).toBe(false);
 });

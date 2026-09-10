@@ -126,7 +126,9 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "unit-parse",
   "cgroup-observe-before",
   "cgroup-observe-after",
-  "cgroup-transition-retained",
+  "cgroup-transition-retained-empty",
+  "cgroup-transition-retained-populated",
+  "cgroup-transition-retained-membership",
   "cgroup-transition-monotonic-removal-empty",
   "cgroup-transition-empty-populated",
   "cgroup-transition-reappeared",
@@ -1966,10 +1968,19 @@ export const classifyTerminalSystemdUnitAuthority = (
   return "cgroup";
 };
 
-const validCgroupObservation = (observation) =>
+const validCgroupObservationShape = (observation) =>
   typeof observation?.absent === "boolean" &&
   typeof observation?.empty === "boolean" &&
   (!observation.absent || observation.empty);
+
+const validCgroupObservationMembership = (observation) =>
+  Array.isArray(observation?.members) &&
+  observation.members.every(Number.isSafeInteger) &&
+  observation.members.every((pid) => pid > 0) &&
+  new Set(observation.members).size === observation.members.length &&
+  (observation.absent
+    ? observation.members.length === 0
+    : observation.empty === (observation.members.length === 0));
 
 export const classifyTerminalCgroupTransitionFailure = (
   facts,
@@ -1977,13 +1988,23 @@ export const classifyTerminalCgroupTransitionFailure = (
   before,
   after,
 ) => {
-  if (!validCgroupObservation(before) || !validCgroupObservation(after))
+  if (
+    !validCgroupObservationShape(before) ||
+    !validCgroupObservationShape(after)
+  )
     return "cgroup-transition-observation-shape";
+  if (
+    !validCgroupObservationMembership(before) ||
+    !validCgroupObservationMembership(after)
+  )
+    return "cgroup-transition-retained-membership";
   if (facts?.ControlGroup !== authority?.cgroup && facts?.ControlGroup !== "")
     return "cgroup-transition-third-controlgroup";
   if (before.absent && !after.absent) return "cgroup-transition-reappeared";
   if (!before.absent && after.absent && facts.ControlGroup === authority.cgroup)
-    return "cgroup-transition-retained";
+    return before.empty
+      ? "cgroup-transition-retained-empty"
+      : "cgroup-transition-retained-populated";
   if (!before.absent && after.absent && facts.ControlGroup === "")
     return "cgroup-transition-monotonic-removal-empty";
   if (
@@ -2167,7 +2188,7 @@ const recheckRetainedCgroupDescriptors = (authority) => {
   }
 };
 
-const retainedCgroupMembers = (authority) => {
+const retainedCgroupMembers = (authority, allowEmpty = false) => {
   recheckRetainedCgroupDescriptors(authority);
   const content = Buffer.alloc(4097);
   let size = 0;
@@ -2183,6 +2204,7 @@ const retainedCgroupMembers = (authority) => {
     size += count;
   }
   recheckRetainedCgroupDescriptors(authority);
+  if (size === 0 && allowEmpty) return Object.freeze([]);
   if (size < 2 || size > 4096 || content[size - 1] !== 0x0a) failSystemd();
   const text = content.subarray(0, size).toString("utf8");
   if (/[\0\r]/u.test(text) || text.endsWith("\n\n")) failSystemd();
@@ -2405,15 +2427,43 @@ const observeAuthenticatedCgroup = (
     recheckParentAndRetainedRoot();
     return first[0];
   };
-  const initial = classifyPaths();
-  if (initial === "absent") return Object.freeze({ absent: true, empty: true });
-  if (initial === "transition")
-    return Object.freeze({ absent: false, empty: false });
+  let initial = classifyPaths();
+  if (initial === "transition") initial = classifyPaths();
+  if (initial === "absent")
+    return Object.freeze({
+      absent: true,
+      empty: true,
+      members: Object.freeze([]),
+    });
+  const membersBefore = retainedCgroupMembers(authority, true);
+  const identitiesBefore = membersBefore.map(readProcessSnapshot);
   const empty = retainedCgroupIsEmpty(authority, markDiagnostic);
+  const membersAfter = retainedCgroupMembers(authority, true);
+  const identitiesAfter = membersAfter.map(readProcessSnapshot);
+  if (
+    membersAfter.length !== membersBefore.length ||
+    membersAfter.some((pid, index) => pid !== membersBefore[index]) ||
+    identitiesAfter.some((identity, index) => {
+      const before = identitiesBefore[index];
+      return (
+        before?.pid !== identity.pid ||
+        before.bootId !== identity.bootId ||
+        before.startTime !== identity.startTime ||
+        before.processGroup !== identity.processGroup
+      );
+    })
+  )
+    failSystemd();
   const afterRead = classifyPaths();
+  if (afterRead === "present" && empty !== (membersAfter.length === 0))
+    failSystemd();
   return Object.freeze({
     absent: afterRead === "absent",
     empty: afterRead === "absent" || (afterRead === "present" && empty),
+    members:
+      afterRead === "absent"
+        ? Object.freeze([])
+        : Object.freeze([...membersAfter]),
   });
 };
 
@@ -2483,10 +2533,16 @@ const observeTerminalSystemdUnit = async (
         : `authority-${mismatch}`;
     if (
       reason !== "cgroup-transition-main-nonterminal" &&
-      reason !== "cgroup-transition-monotonic-removal-empty"
+      reason !== "cgroup-transition-monotonic-removal-empty" &&
+      reason !== "cgroup-transition-retained-empty" &&
+      reason !== "cgroup-transition-retained-populated"
     )
       failSystemdLifecycle(state, "terminal-wait", reason);
-    if (reason === "cgroup-transition-monotonic-removal-empty")
+    if (
+      reason === "cgroup-transition-monotonic-removal-empty" ||
+      reason === "cgroup-transition-retained-empty" ||
+      reason === "cgroup-transition-retained-populated"
+    )
       return Object.freeze({ after, facts, retry: true });
     authenticateNonterminal(facts);
   }
@@ -2550,11 +2606,13 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
     ActiveState: "active",
     AmbientCapabilities: "",
     CapabilityBoundingSet: "",
-    ControlGroup: mode.includes("empty")
-      ? ""
-      : mode === "transition-third-controlgroup"
-        ? "/system.slice/other.service"
-        : authority.cgroup,
+    ControlGroup:
+      mode === "transition-monotonic-removal-empty" ||
+      mode === "transition-empty-populated"
+        ? ""
+        : mode === "transition-third-controlgroup"
+          ? "/system.slice/other.service"
+          : authority.cgroup,
     Delegate: "no",
     ExecMainCode: "1",
     ExecMainStatus: mode === "transition-main-nonterminal" ? "" : "0",
@@ -2581,21 +2639,28 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       if (mode === "observe-before" && observations === 1) failSystemd();
       if (mode === "observe-after" && observations === 2) failSystemd();
       if (
-        (mode === "transition-retained" ||
+        (mode === "transition-retained-empty" ||
+          mode === "transition-retained-populated" ||
           mode === "transition-monotonic-removal-empty" ||
           mode === "transition-empty-populated") &&
         observations === 1
       )
-        return Object.freeze({ absent: false, empty: false });
+        return Object.freeze(
+          mode === "transition-retained-empty"
+            ? { absent: false, empty: true, members: [] }
+            : { absent: false, empty: false, members: [712] },
+        );
       if (mode === "transition-empty-populated" && observations === 2)
-        return Object.freeze({ absent: false, empty: false });
+        return Object.freeze({ absent: false, empty: false, members: [712] });
       if (mode === "transition-main-nonterminal")
-        return Object.freeze({ absent: false, empty: false });
+        return Object.freeze({ absent: false, empty: false, members: [712] });
       if (mode === "transition-reappeared" && observations === 2)
-        return Object.freeze({ absent: false, empty: true });
+        return Object.freeze({ absent: false, empty: true, members: [] });
       if (mode === "transition-observation-shape" && observations === 1)
-        return Object.freeze({ absent: true, empty: false });
-      return Object.freeze({ absent: true, empty: true });
+        return Object.freeze({ absent: true, empty: false, members: [] });
+      if (mode === "transition-retained-membership" && observations === 1)
+        return Object.freeze({ absent: false, empty: false, members: [] });
+      return Object.freeze({ absent: true, empty: true, members: [] });
     };
     const authenticate = (observedFacts) => {
       if (
@@ -2616,7 +2681,12 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       async () => facts,
       authenticate,
     );
-    if (mode === "transition-monotonic-removal-empty" && first.retry)
+    if (
+      (mode === "transition-monotonic-removal-empty" ||
+        mode === "transition-retained-empty" ||
+        mode === "transition-retained-populated") &&
+      first.retry
+    )
       await observeTerminalSystemdUnit(
         state,
         observe,
