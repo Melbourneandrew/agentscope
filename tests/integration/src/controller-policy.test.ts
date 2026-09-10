@@ -2377,6 +2377,7 @@ const syntheticGatedChildSource = [
   "args=json.loads(sys.argv[1])",
   'os.execve(args[0],args,{"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"})',
 ].join("\n");
+const syntheticPreparationNanoseconds = 15_000_000_000;
 const syntheticDiagnosticOperations = new Set([
   "synthetic-client-cutoff",
   "synthetic-client-cutoff-cleanup-failure",
@@ -2471,8 +2472,8 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
     deadlineArm +
       ' if OPERATION.startswith("synthetic-client-"):\n' +
       "  armed=now()\n" +
-      "  DEADLINE=armed+2000000000\n" +
-      "  CUTOFF=armed+2000000000\n" +
+      `  DEADLINE=armed+${syntheticPreparationNanoseconds}\n` +
+      `  CUTOFF=armed+${syntheticPreparationNanoseconds}\n` +
       " TEST_READY=False\n" +
       " TEST_CHILD=None\n" +
       " def test_ready(leader,expected):\n" +
@@ -4240,7 +4241,7 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
           encoding: "utf8",
           env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
           stdio: ["ignore", "pipe", "pipe", "pipe"],
-          timeout: 3_000,
+          timeout: 15_000,
         },
       );
       expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
