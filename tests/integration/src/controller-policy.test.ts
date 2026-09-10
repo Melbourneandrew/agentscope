@@ -113,6 +113,17 @@ const manifest = (path: string) =>
   JSON.parse(readFileSync(resolve(workspaceRoot, path), "utf8")) as {
     scripts: Record<string, string>;
   };
+const normalizeFailureVerifierDependencies = (source: string) =>
+  source
+    .replace("  await loadRuntimeDependencies();\n", "")
+    .replaceAll(
+      "runtimeDependencies.compileCapabilityManifest",
+      "compileCapabilityManifest",
+    )
+    .replaceAll(
+      "runtimeDependencies.compileIsolationEvidence",
+      "compileIsolationEvidence",
+    );
 const failureVerifierSource = (workflow: string) => {
   if (!workflow.includes("uses: ./tests/integration"))
     throw new Error("missing failure verifier action");
@@ -128,9 +139,8 @@ const failureVerifierSource = (workflow: string) => {
   );
   if (start < 0 || end < 0)
     throw new Error("malformed failure verifier action");
-  const rawFunctionBody = action.slice(
-    action.indexOf("}) => {\n", start) + "}) => {\n".length,
-    end,
+  const rawFunctionBody = normalizeFailureVerifierDependencies(
+    action.slice(action.indexOf("}) => {\n", start) + "}) => {\n".length, end),
   );
   const wrapperStart = "  try {\n    const authenticatedDescriptors = []";
   const wrapperEnd =
@@ -3574,10 +3584,8 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
     "utf8",
   );
-  expect(action).toContain("const stage = systemdToolFailureStage(error);");
-  expect(action).toContain(
-    "`::error::integration.controller.systemd-tool:${stage}\\n`",
-  );
+  expect(action).toContain("runtimeDependencies?.systemdToolFailureStage");
+  expect(action).toMatch(/systemd-tool:\$\{stage\}\\n/u);
   expect(action).not.toContain("error.message");
   expect(action).not.toContain("error.stack");
 });
@@ -5527,9 +5535,9 @@ describe("integration workflow routing policy", () => {
       "const sealer = preloadCredentialedSource(",
     );
     const preparation = actionSource.indexOf(
-      "await prepareGithubSystemdSupervision({",
+      ".prepareGithubSystemdSupervision({",
     );
-    const lifecycle = actionSource.indexOf("await runSupervisedProcess({");
+    const lifecycle = actionSource.indexOf(".runSupervisedProcess({");
     const finalize = actionSource.indexOf("finalizeFailureEvidence({");
     expect(preload).toBeGreaterThanOrEqual(0);
     expect(preparation).toBeGreaterThan(preload);

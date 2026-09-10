@@ -1,5 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 import {
   closeSync,
   constants,
@@ -19,22 +24,17 @@ import {
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import {
-  compileCapabilityManifest,
-  compileIsolationEvidence,
-} from "./dist/index.js";
-import {
-  prepareGithubSystemdSupervision,
-  runSupervisedProcess,
-  systemdToolFailureStage,
-  validSystemdToolPredicate,
-} from "./supervisor.mjs";
-import { DefaultArtifactClient } from "@actions/artifact";
-
 const MAXIMUM_BYTES = 1024 * 1024;
 const CHILD_OUTPUT_STAGE_OVERHEAD_BYTES = 4096;
 const CHILD_OUTPUT_MAXIMUM_BYTES =
   MAXIMUM_BYTES + CHILD_OUTPUT_STAGE_OVERHEAD_BYTES;
+const ACTION_SOURCE_MAXIMUM_BYTES = 96 * 1024;
+const CHILD_BOOTSTRAP_KEY_BYTES = 32;
+const CHILD_BOOTSTRAP_NONCE_BYTES = 16;
+const CHILD_BOOTSTRAP_AUTHORITY_BYTES =
+  CHILD_BOOTSTRAP_KEY_BYTES + CHILD_BOOTSTRAP_NONCE_BYTES + 71;
+const CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR = 3;
+const CHILD_BOOTSTRAP_AUTHORITY_DESCRIPTOR = 6;
 const ARTIFACT_PATCH_SHA256 =
   "9638aca3637f07d89c766e49c1719eb2f58a20b1165da4962ea755e9032c392b";
 const PATCHED_ARTIFACT_FILES = Object.freeze({
@@ -65,10 +65,20 @@ const actionBootstrapStages = new Set([
   "preload-sealer",
   "spawn",
   "child-terminal",
+  "child-bootstrap",
   "revalidate-source",
   "revalidate-sealer",
   "descriptor-close",
 ]);
+const childBootstrapStages = Object.freeze([
+  "bootstrap-entered",
+  "module-load",
+  "argv-config",
+  "capability-open",
+  "controller-entry",
+  "unexpected-terminal",
+]);
+const childBootstrapStageSet = new Set(childBootstrapStages);
 const actionBootstrapChildTerminalReasons = new Set([
   "exit-one",
   "exit-other",
@@ -131,6 +141,107 @@ const outerControllerFailures = new WeakMap();
 const failureEvidenceFinalizationFailures = new WeakMap();
 let actionBootstrapStage = "invocation";
 let actionBootstrapReason = "argv-shape";
+let runtimeDependencies;
+const loadRuntimeDependencies = async () => {
+  if (runtimeDependencies !== undefined) return runtimeDependencies;
+  const [integration, supervisor, artifact] = await Promise.all([
+    import("./dist/index.js"),
+    import("./supervisor.mjs"),
+    import("@actions/artifact"),
+  ]);
+  if (
+    typeof integration.compileCapabilityManifest !== "function" ||
+    typeof integration.compileIsolationEvidence !== "function" ||
+    typeof supervisor.prepareGithubSystemdSupervision !== "function" ||
+    typeof supervisor.runSupervisedProcess !== "function" ||
+    typeof supervisor.systemdToolFailureStage !== "function" ||
+    typeof supervisor.validSystemdToolPredicate !== "function" ||
+    typeof artifact.DefaultArtifactClient !== "function"
+  )
+    fail();
+  runtimeDependencies = Object.freeze({
+    compileCapabilityManifest: integration.compileCapabilityManifest,
+    compileIsolationEvidence: integration.compileIsolationEvidence,
+    DefaultArtifactClient: artifact.DefaultArtifactClient,
+    prepareGithubSystemdSupervision: supervisor.prepareGithubSystemdSupervision,
+    runSupervisedProcess: supervisor.runSupervisedProcess,
+    systemdToolFailureStage: supervisor.systemdToolFailureStage,
+    validSystemdToolPredicate: supervisor.validSystemdToolPredicate,
+  });
+  return runtimeDependencies;
+};
+const childBootstrapMac = ({ digest, key, nonce, sequence, stage }) =>
+  createHmac("sha256", key)
+    .update(
+      `agentscope-bootstrap-v1\0${nonce.toString("hex")}\0${sequence}\0${stage}\0${digest}`,
+      "utf8",
+    )
+    .digest();
+const encodeChildBootstrapReceipt = ({
+  digest,
+  key,
+  nonce,
+  sequence,
+  stage,
+}) => {
+  if (
+    !Number.isSafeInteger(sequence) ||
+    sequence < 0 ||
+    childBootstrapStages[sequence] !== stage ||
+    !Buffer.isBuffer(key) ||
+    key.length !== CHILD_BOOTSTRAP_KEY_BYTES ||
+    !Buffer.isBuffer(nonce) ||
+    nonce.length !== CHILD_BOOTSTRAP_NONCE_BYTES ||
+    !/^sha256:[a-f0-9]{64}$/u.test(digest)
+  )
+    fail();
+  return Buffer.from(
+    `agentscope-bootstrap-v1:${sequence}:${stage}:${nonce.toString("hex")}:${childBootstrapMac({ digest, key, nonce, sequence, stage }).toString("hex")}\n`,
+    "ascii",
+  );
+};
+const authenticateChildBootstrapReceipts = ({
+  digest,
+  key,
+  nonce,
+  receipts,
+}) => {
+  if (
+    !Buffer.isBuffer(receipts) ||
+    receipts.length < 1 ||
+    receipts.length > 2048 ||
+    !receipts.equals(Buffer.from(receipts.toString("ascii"), "ascii")) ||
+    !receipts.toString("ascii").endsWith("\n")
+  )
+    return undefined;
+  const lines = receipts.toString("ascii").slice(0, -1).split("\n");
+  if (lines.length < 1 || lines.length > childBootstrapStages.length)
+    return undefined;
+  for (const [sequence, line] of lines.entries()) {
+    const match =
+      /^agentscope-bootstrap-v1:(\d):([a-z-]+):([a-f0-9]{32}):([a-f0-9]{64})$/u.exec(
+        line,
+      );
+    const stage = childBootstrapStages[sequence];
+    if (
+      match === null ||
+      match[1] !== String(sequence) ||
+      match[2] !== stage ||
+      match[3] !== nonce.toString("hex")
+    )
+      return undefined;
+    const supplied = Buffer.from(match[4], "hex");
+    const expected = childBootstrapMac({ digest, key, nonce, sequence, stage });
+    if (
+      supplied.length !== expected.length ||
+      !timingSafeEqual(supplied, expected)
+    )
+      return undefined;
+  }
+  return lines.length === 0
+    ? undefined
+    : childBootstrapStages[lines.length - 1];
+};
 export const validFailureEvidenceBootstrapStage = (value) =>
   typeof value === "string" && actionBootstrapStages.has(value);
 export const validFailureEvidenceBootstrapPredicate = (value) =>
@@ -138,6 +249,7 @@ export const validFailureEvidenceBootstrapPredicate = (value) =>
   ((value !== "invocation" &&
     value !== "artifact-provenance" &&
     value !== "child-terminal" &&
+    value !== "child-bootstrap" &&
     actionBootstrapStages.has(value)) ||
     (value.startsWith("invocation:") &&
       actionBootstrapInvocationReasons.has(
@@ -147,6 +259,8 @@ export const validFailureEvidenceBootstrapPredicate = (value) =>
       actionBootstrapChildTerminalReasons.has(
         value.slice("child-terminal:".length),
       )) ||
+    (value.startsWith("child-bootstrap:") &&
+      childBootstrapStageSet.has(value.slice("child-bootstrap:".length))) ||
     (value.startsWith("artifact-provenance:") &&
       (actionBootstrapArtifactProvenanceReasons.has(
         value.slice("artifact-provenance:".length),
@@ -228,7 +342,8 @@ const closeFailureEvidenceDescriptor = (
   }
 };
 const bindOuterControllerFailure = (error, stage) => {
-  if (systemdToolFailureStage(error) !== undefined) return error;
+  if (runtimeDependencies?.systemdToolFailureStage(error) !== undefined)
+    return error;
   if (
     error !== null &&
     typeof error === "object" &&
@@ -480,7 +595,8 @@ const failureEvidenceBootstrapAnnotation = () => {
     actionBootstrapStage === "invocation" ||
     actionBootstrapStage === "artifact-provenance"
       ? `${actionBootstrapStage}:${actionBootstrapReason}`
-      : actionBootstrapStage === "child-terminal"
+      : actionBootstrapStage === "child-terminal" ||
+          actionBootstrapStage === "child-bootstrap"
         ? `${actionBootstrapStage}:${actionBootstrapReason}`
         : actionBootstrapStage;
   return validFailureEvidenceBootstrapPredicate(predicate)
@@ -509,7 +625,10 @@ const authenticatedChildStageReceipt = (stdout) => {
     const systemd =
       /^::error::integration\.controller\.systemd-tool:(.+)$/u.exec(line);
     const outer = /^::error::integration\.controller\.outer:(.+)$/u.exec(line);
-    if (systemd !== null && validSystemdToolPredicate(systemd[1]))
+    if (
+      systemd !== null &&
+      runtimeDependencies?.validSystemdToolPredicate(systemd[1]) === true
+    )
       retained = `${line}\n`;
     else if (outer !== null && validOuterControllerStage(outer[1]))
       retained = `${line}\n`;
@@ -520,6 +639,53 @@ const authenticatedChildStageReceipt = (stdout) => {
 };
 export const authenticatedChildStageReceiptForTest = (stdout) =>
   authenticatedChildStageReceipt(stdout);
+export const exerciseChildBootstrapReceiptsForTest = (
+  fault,
+  lastStage = "controller-entry",
+) => {
+  const digest = `sha256:${"1".repeat(64)}`;
+  const key = Buffer.alloc(CHILD_BOOTSTRAP_KEY_BYTES, 0x2a);
+  const nonce = Buffer.alloc(CHILD_BOOTSTRAP_NONCE_BYTES, 0x3b);
+  const lastSequence = childBootstrapStages.indexOf(lastStage);
+  if (lastSequence < 0) return undefined;
+  const encoded = childBootstrapStages
+    .slice(0, lastSequence + 1)
+    .map((stage, sequence) =>
+      encodeChildBootstrapReceipt({ digest, key, nonce, sequence, stage }),
+    );
+  let receipts = Buffer.concat(encoded);
+  let suppliedKey = key;
+  let suppliedNonce = nonce;
+  let suppliedDigest = digest;
+  if (fault === "missing") receipts = Buffer.alloc(0);
+  else if (fault === "duplicate")
+    receipts = Buffer.concat([encoded[0], encoded[0]]);
+  else if (fault === "out-of-order" && encoded.length > 2)
+    receipts = Buffer.concat([encoded[0], encoded[2]]);
+  else if (fault === "truncated") receipts = receipts.subarray(0, -1);
+  else if (fault === "unknown")
+    receipts = Buffer.from(
+      receipts.toString("ascii").replace("module-load", "unknownxxxx"),
+      "ascii",
+    );
+  else if (fault === "key-substitution")
+    suppliedKey = Buffer.alloc(CHILD_BOOTSTRAP_KEY_BYTES, 0x2b);
+  else if (fault === "nonce-substitution")
+    suppliedNonce = Buffer.alloc(CHILD_BOOTSTRAP_NONCE_BYTES, 0x3c);
+  else if (fault === "digest-substitution")
+    suppliedDigest = `sha256:${"2".repeat(64)}`;
+  else if (fault === "mac-substitution")
+    receipts = Buffer.concat([receipts.subarray(0, -2), Buffer.from("0\n")]);
+  else if (fault !== "valid") return undefined;
+  return authenticateChildBootstrapReceipts({
+    digest: suppliedDigest,
+    key: suppliedKey,
+    nonce: suppliedNonce,
+    receipts,
+  });
+};
+export const initializeFailureEvidenceRuntimeForTest = () =>
+  loadRuntimeDependencies();
 export const childOutputMaximumBytesForTest = CHILD_OUTPUT_MAXIMUM_BYTES;
 export const classifyActionBootstrapChildTerminalForTest = (result) =>
   classifyActionBootstrapChildTerminal(result);
@@ -722,6 +888,7 @@ export const finalizeFailureEvidence = async ({
   client,
   sealerSource,
 }) => {
+  await loadRuntimeDependencies();
   let finalizationReason = "open";
   const mark = (reason) => {
     if (!failureEvidenceFinalizationReasons.has(reason)) fail();
@@ -1030,7 +1197,7 @@ export const finalizeFailureEvidence = async ({
     const selection = retainedInputs["current-selection.json"];
     const capability = retainedManifest["capability-manifest.json"];
     try {
-      compileCapabilityManifest(capability);
+      runtimeDependencies.compileCapabilityManifest(capability);
     } catch {
       fail();
     }
@@ -1192,7 +1359,7 @@ export const finalizeFailureEvidence = async ({
       const modelLedger = retained["model-ledger.json"];
       const destinationLedger = retained["destination-ledger.json"];
       try {
-        compileIsolationEvidence(evidence, {
+        runtimeDependencies.compileIsolationEvidence(evidence, {
           baseImageIdentity: evidence.baseImageIdentity,
           mockServerImageIdentity: evidence.mockServerImageIdentity,
           installedCliContractEvidence: evidence.installedCliContractEvidence,
@@ -1595,17 +1762,69 @@ export const finalizeFailureEvidence = async ({
 
 const exactControllerArguments = (arguments_) => {
   if (
-    arguments_.length !== 7 ||
+    arguments_.length !== 11 ||
     arguments_[0] !== "--outer-controller" ||
     arguments_[1] !== "--source-fd" ||
     arguments_[3] !== "--bundle-fd" ||
-    arguments_[5] !== "--source-digest"
+    arguments_[5] !== "--source-digest" ||
+    arguments_[7] !== "--bootstrap-control-fd" ||
+    arguments_[9] !== "--bootstrap-authority-fd"
   )
     fail();
   return Object.freeze({
     bundleDescriptor: parseUnsigned(arguments_[4], 1024),
+    bootstrapAuthorityDescriptor: parseUnsigned(arguments_[10], 1024),
+    bootstrapControlDescriptor: parseUnsigned(arguments_[8], 1024),
     sourceDescriptor: parseUnsigned(arguments_[2], 1024),
     sourceDigest: arguments_[6],
+  });
+};
+
+const createChildBootstrapEmitter = () => {
+  const status = fstatSync(CHILD_BOOTSTRAP_AUTHORITY_DESCRIPTOR);
+  if (
+    !status.isFile() ||
+    status.nlink !== 0 ||
+    status.size !== CHILD_BOOTSTRAP_AUTHORITY_BYTES ||
+    (status.mode & 0o7777) !== 0o400
+  )
+    fail();
+  const authority = readExact(
+    CHILD_BOOTSTRAP_AUTHORITY_DESCRIPTOR,
+    CHILD_BOOTSTRAP_AUTHORITY_BYTES,
+  );
+  const key = authority.subarray(0, CHILD_BOOTSTRAP_KEY_BYTES);
+  const nonce = authority.subarray(
+    CHILD_BOOTSTRAP_KEY_BYTES,
+    CHILD_BOOTSTRAP_KEY_BYTES + CHILD_BOOTSTRAP_NONCE_BYTES,
+  );
+  const digest = authority
+    .subarray(CHILD_BOOTSTRAP_KEY_BYTES + CHILD_BOOTSTRAP_NONCE_BYTES)
+    .toString("ascii");
+  if (!/^sha256:[a-f0-9]{64}$/u.test(digest)) fail();
+  let sequence = 0;
+  return Object.freeze({
+    digest,
+    mark(stage) {
+      if (childBootstrapStages[sequence] !== stage) fail();
+      const receipt = encodeChildBootstrapReceipt({
+        digest,
+        key,
+        nonce,
+        sequence,
+        stage,
+      });
+      if (
+        writeSync(
+          CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR,
+          receipt,
+          0,
+          receipt.length,
+        ) !== receipt.length
+      )
+        fail();
+      sequence += 1;
+    },
   });
 };
 
@@ -1691,6 +1910,7 @@ export const settleLifecycleResult = async (result, finalize) => {
 };
 
 const settleActionBootstrapDescriptors = ({
+  childBootstrapStage,
   childTerminalReason,
   close = closeSync,
   revalidate = revalidateCredentialedSource,
@@ -1699,8 +1919,9 @@ const settleActionBootstrapDescriptors = ({
   spawnFailure,
 }) => {
   if (childTerminalReason !== undefined) {
-    actionBootstrapStage = "child-terminal";
-    actionBootstrapReason = childTerminalReason;
+    actionBootstrapStage =
+      childBootstrapStage === undefined ? "child-terminal" : "child-bootstrap";
+    actionBootstrapReason = childBootstrapStage ?? childTerminalReason;
   }
   let secondaryFailure;
   let secondaryStage;
@@ -1738,13 +1959,24 @@ const settleActionBootstrapDescriptors = ({
   }
 };
 
-export const exerciseActionBootstrapSettlementForTest = (fault) => {
+export const exerciseActionBootstrapSettlementForTest = (
+  fault,
+  bootstrapStage = "module-load",
+) => {
   actionBootstrapStage = "spawn";
   actionBootstrapReason = "";
   let calls = 0;
   try {
     settleActionBootstrapDescriptors({
-      childTerminalReason: fault === "child-exit" ? "exit-one" : undefined,
+      childTerminalReason:
+        fault === "child-exit" || fault === "child-bootstrap"
+          ? "exit-one"
+          : undefined,
+      childBootstrapStage:
+        fault === "child-bootstrap" &&
+        childBootstrapStageSet.has(bootstrapStage)
+          ? bootstrapStage
+          : undefined,
       close: () => {
         if (fault === "descriptor-close" && calls >= 2)
           throw new Error("private");
@@ -1767,8 +1999,20 @@ export const exerciseActionBootstrapSettlementForTest = (fault) => {
   return undefined;
 };
 
-const outerControllerMain = async () => {
+const outerControllerMain = async (bootstrap) => {
+  bootstrap.mark("argv-config");
   const authority = exactControllerArguments(process.argv.slice(1));
+  if (
+    authority.bootstrapControlDescriptor !==
+      CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR ||
+    authority.bootstrapAuthorityDescriptor !==
+      CHILD_BOOTSTRAP_AUTHORITY_DESCRIPTOR ||
+    authority.sourceDescriptor !== 4 ||
+    authority.bundleDescriptor !== 5 ||
+    authority.sourceDigest !== bootstrap.digest
+  )
+    fail();
+  bootstrap.mark("capability-open");
   const source = readExact(
     authority.sourceDescriptor,
     fstatSync(authority.sourceDescriptor).size,
@@ -1806,19 +2050,21 @@ const outerControllerMain = async () => {
       "tests/integration/controller-process.mjs",
     ),
   ];
+  bootstrap.mark("controller-entry");
   let outerStage = "prepare-systemd";
   let firstFailure;
   let result;
   let succeeded;
   try {
-    const preparation = await prepareGithubSystemdSupervision({
-      arguments_: lifecycleArguments,
-      environment: lifecycleEnvironment,
-      executable: process.execPath,
-      maximumMilliseconds,
-    });
+    const preparation =
+      await runtimeDependencies.prepareGithubSystemdSupervision({
+        arguments_: lifecycleArguments,
+        environment: lifecycleEnvironment,
+        executable: process.execPath,
+        maximumMilliseconds,
+      });
     outerStage = "run-systemd";
-    result = await runSupervisedProcess({
+    result = await runtimeDependencies.runSupervisedProcess({
       environment: lifecycleEnvironment,
       executable: process.execPath,
       arguments_: lifecycleArguments,
@@ -1835,7 +2081,7 @@ const outerControllerMain = async () => {
       outerStage = "finalize-evidence";
       await finalizeFailureEvidence({
         bundleDescriptor: authority.bundleDescriptor,
-        client: new DefaultArtifactClient(),
+        client: new runtimeDependencies.DefaultArtifactClient(),
         sealerSource: sealer.content,
       });
       succeeded = false;
@@ -1864,11 +2110,12 @@ const outerControllerMain = async () => {
     }
   }
   if (firstFailure !== undefined) throw firstFailure;
-  if (succeeded) return;
+  if (succeeded) return true;
   process.exitCode = result.code === 0 ? 1 : (result.code ?? 1);
+  return false;
 };
 
-const bootstrapMain = () => {
+const bootstrapMain = async () => {
   actionBootstrapStage = "invocation";
   actionBootstrapReason = "argv-shape";
   authenticateActionInvocation();
@@ -1877,7 +2124,7 @@ const bootstrapMain = () => {
   actionBootstrapStage = "preload-source";
   const source = preloadCredentialedSource(
     resolve(import.meta.dirname, "upload-failure-evidence.mjs"),
-    64 * 1024,
+    ACTION_SOURCE_MAXIMUM_BYTES,
   );
   actionBootstrapStage = "preload-sealer";
   const sealer = preloadCredentialedSource(
@@ -1885,6 +2132,9 @@ const bootstrapMain = () => {
     64 * 1024,
   );
   actionBootstrapStage = "spawn";
+  await loadRuntimeDependencies();
+  const bootstrapKey = randomBytes(CHILD_BOOTSTRAP_KEY_BYTES);
+  const bootstrapNonce = randomBytes(CHILD_BOOTSTRAP_NONCE_BYTES);
   const result = spawnSync(
     "/usr/bin/python3",
     [
@@ -1896,22 +2146,32 @@ const bootstrapMain = () => {
       source.digest,
       String(process.pid),
       processStartTicks(),
+      String(source.content.length),
     ],
     {
       env: { ...process.env },
-      input: source.content,
+      input: Buffer.concat([bootstrapKey, bootstrapNonce, source.content]),
       maxBuffer: CHILD_OUTPUT_MAXIMUM_BYTES,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
       timeout: 20 * 60 * 1000,
     },
   );
   const childStageReceipt = authenticatedChildStageReceipt(result.stdout);
   if (childStageReceipt !== undefined) process.stdout.write(childStageReceipt);
+  const childBootstrapStage = authenticateChildBootstrapReceipts({
+    digest: source.digest,
+    key: bootstrapKey,
+    nonce: bootstrapNonce,
+    receipts: result.output?.[CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR],
+  });
   const childTerminalReason = classifyActionBootstrapChildTerminal(result);
   const spawnFailure =
-    childTerminalReason === undefined &&
-    (result.error !== undefined || !Number.isSafeInteger(result.status));
+    (childTerminalReason === undefined &&
+      (result.error !== undefined || !Number.isSafeInteger(result.status))) ||
+    (result.status === 0 && childBootstrapStage !== "controller-entry");
   settleActionBootstrapDescriptors({
+    childBootstrapStage:
+      childStageReceipt === undefined ? childBootstrapStage : undefined,
     childTerminalReason,
     sealer,
     source,
@@ -1920,9 +2180,17 @@ const bootstrapMain = () => {
   if (result.status !== 0 || result.signal !== null) fail();
 };
 
-if (process.argv[1] === "--outer-controller") {
-  outerControllerMain().catch((error) => {
-    const stage = systemdToolFailureStage(error);
+const runOuterControllerEnvelope = async () => {
+  let bootstrap;
+  try {
+    bootstrap = createChildBootstrapEmitter();
+    bootstrap.mark("bootstrap-entered");
+    bootstrap.mark("module-load");
+    await loadRuntimeDependencies();
+    const succeeded = await outerControllerMain(bootstrap);
+    if (!succeeded) bootstrap.mark("unexpected-terminal");
+  } catch (error) {
+    const stage = runtimeDependencies?.systemdToolFailureStage(error);
     if (stage !== undefined)
       process.stdout.write(
         `::error::integration.controller.systemd-tool:${stage}\n`,
@@ -1935,13 +2203,28 @@ if (process.argv[1] === "--outer-controller") {
         );
     }
     process.exitCode = 1;
-  });
+  } finally {
+    for (const descriptor of [
+      CHILD_BOOTSTRAP_AUTHORITY_DESCRIPTOR,
+      CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR,
+    ]) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        process.exitCode = 1;
+      }
+    }
+  }
+};
+
+if (process.argv[1] === "--outer-controller") {
+  await runOuterControllerEnvelope();
 } else if (
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   try {
-    bootstrapMain();
+    await bootstrapMain();
   } catch {
     const annotation = failureEvidenceBootstrapAnnotation();
     if (annotation !== undefined) process.stdout.write(annotation);

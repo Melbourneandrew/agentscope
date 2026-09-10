@@ -22,7 +22,11 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { authenticatedChildStageReceiptForTest, buildLifecycleEnvironment, childOutputMaximumBytesForTest, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { authenticatedChildStageReceiptForTest, buildLifecycleEnvironment, childOutputMaximumBytesForTest, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+
+const initializeRuntime =
+  initializeFailureEvidenceRuntimeForTest as unknown as () => Promise<void>;
+await initializeRuntime();
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -71,6 +75,21 @@ const validBootstrapPredicate =
   validFailureEvidenceBootstrapPredicate as unknown as (
     value: unknown,
   ) => boolean;
+const exerciseBootstrapReceipts =
+  exerciseChildBootstrapReceiptsForTest as unknown as (
+    fault:
+      | "valid"
+      | "missing"
+      | "duplicate"
+      | "out-of-order"
+      | "truncated"
+      | "unknown"
+      | "key-substitution"
+      | "nonce-substitution"
+      | "digest-substitution"
+      | "mac-substitution",
+    lastStage?: string,
+  ) => string | undefined;
 const validActionMetadata = validLocalActionMetadata as unknown as (
   value: unknown,
 ) => boolean;
@@ -108,10 +127,12 @@ const exerciseBootstrapSettlement =
   exerciseActionBootstrapSettlementForTest as unknown as (
     fault:
       | "child-exit"
+      | "child-bootstrap"
       | "descriptor-close"
       | "revalidate-sealer"
       | "revalidate-source"
       | "spawn",
+    bootstrapStage?: string,
   ) => string | undefined;
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
@@ -590,6 +611,11 @@ describe("failure evidence upload provenance", () => {
     expect(source).toContain("fcntl.F_ADD_SEALS, REQUIRED_SEALS");
     expect(source).toContain("os.set_inheritable(source_descriptor, True)");
     expect(source).toContain("os.set_inheritable(bundle_descriptor, True)");
+    expect(source).toContain("os.set_inheritable(authority_descriptor, True)");
+    expect(source).toContain("os.set_inheritable(3, True)");
+    expect(source).toContain("source_descriptor != 4");
+    expect(source).toContain("bundle_descriptor != 5");
+    expect(source).toContain("authority_descriptor != 6");
     expect(source).toContain("os.fchdir(root_descriptor)");
     expect(source).toContain("os.execve(");
     expect(source).toContain('os.open("exe", os.O_PATH | os.O_CLOEXEC');
@@ -602,6 +628,29 @@ describe("failure evidence upload provenance", () => {
     expect(source).not.toMatch(/mkstemp|NamedTemporaryFile|\/tmp\/|sudo|tee/gu);
     expect(source).toContain('elif sys.argv[1] == "seal-existing"');
   });
+
+  it("enters the authenticated bootstrap envelope before loading controller modules", () => {
+    const source = readFileSync(
+      resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+      "utf8",
+    );
+    expect(source).not.toMatch(
+      /from "(?:\.\/dist\/index\.js|\.\/supervisor\.mjs|@actions\/artifact)"/u,
+    );
+    const envelope = source.slice(
+      source.indexOf("const runOuterControllerEnvelope"),
+      source.indexOf('if (process.argv[1] === "--outer-controller")'),
+    );
+    expect(
+      envelope.indexOf('bootstrap.mark("bootstrap-entered")'),
+    ).toBeLessThan(envelope.indexOf("await loadRuntimeDependencies()"));
+    expect(envelope.indexOf('bootstrap.mark("module-load")')).toBeLessThan(
+      envelope.indexOf("await loadRuntimeDependencies()"),
+    );
+    expect(source).toContain('import("./dist/index.js")');
+    expect(source).toContain('import("./supervisor.mjs")');
+    expect(source).toContain('import("@actions/artifact")');
+  });
 });
 
 it("admits only the exact closed action-bootstrap stage inventory", () => {
@@ -612,6 +661,7 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "preload-sealer",
     "spawn",
     "child-terminal",
+    "child-bootstrap",
     "revalidate-source",
     "revalidate-sealer",
     "descriptor-close",
@@ -693,11 +743,24 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "timeout",
   ])
     expect(validBootstrapPredicate(`child-terminal:${reason}`)).toBe(true);
+  for (const stage of [
+    "bootstrap-entered",
+    "module-load",
+    "argv-config",
+    "capability-open",
+    "controller-entry",
+    "unexpected-terminal",
+  ])
+    expect(validBootstrapPredicate(`child-bootstrap:${stage}`)).toBe(true);
   for (const rejected of [
     "child-terminal",
     "child-terminal:unknown",
     "child-terminal:exit-one:signal",
     "child-terminal:exit-one\n",
+    "child-bootstrap",
+    "child-bootstrap:unknown",
+    "child-bootstrap:module-load:extra",
+    "child-bootstrap:controller-entry\n",
   ])
     expect(validBootstrapPredicate(rejected)).toBe(false);
 });
@@ -817,6 +880,17 @@ it("preserves exact spawn, child terminal, revalidation, and close stages", () =
     "::error::integration.controller.failure-evidence-bootstrap:child-terminal:exit-one\n",
   );
   for (const stage of [
+    "bootstrap-entered",
+    "module-load",
+    "argv-config",
+    "capability-open",
+    "controller-entry",
+    "unexpected-terminal",
+  ])
+    expect(exerciseBootstrapSettlement("child-bootstrap", stage)).toBe(
+      `::error::integration.controller.failure-evidence-bootstrap:child-bootstrap:${stage}\n`,
+    );
+  for (const stage of [
     "revalidate-source",
     "revalidate-sealer",
     "descriptor-close",
@@ -824,6 +898,30 @@ it("preserves exact spawn, child terminal, revalidation, and close stages", () =
     expect(exerciseBootstrapSettlement(stage)).toBe(
       `::error::integration.controller.failure-evidence-bootstrap:${stage}\n`,
     );
+});
+
+it("authenticates one ordered nonce-bound bootstrap handoff", () => {
+  const stages = [
+    "bootstrap-entered",
+    "module-load",
+    "argv-config",
+    "capability-open",
+    "controller-entry",
+  ];
+  for (const stage of [...stages, "unexpected-terminal"])
+    expect(exerciseBootstrapReceipts("valid", stage)).toBe(stage);
+  for (const fault of [
+    "missing",
+    "duplicate",
+    "out-of-order",
+    "truncated",
+    "unknown",
+    "key-substitution",
+    "nonce-substitution",
+    "digest-substitution",
+    "mac-substitution",
+  ] as const)
+    expect(exerciseBootstrapReceipts(fault)).toBeUndefined();
 });
 
 it("retains only the last closed authenticated child-stage receipt", () => {
@@ -1104,12 +1202,18 @@ describe("Linux sealed failure evidence upload", () => {
               expectedDigest,
               pid,
               expectedStart,
+              String(source.length),
             ],
             {
               cwd: workspaceRoot,
               encoding: "utf8",
               env: {},
-              input: source,
+              input: Buffer.concat([
+                Buffer.alloc(32, 0x41),
+                Buffer.alloc(16, 0x42),
+                source,
+              ]),
+              stdio: ["pipe", "pipe", "pipe", "pipe"],
               timeout: 10_000,
             },
           );

@@ -11,6 +11,9 @@ import sys
 
 
 MAXIMUM_BYTES = 1024 * 1024
+BOOTSTRAP_KEY_BYTES = 32
+BOOTSTRAP_NONCE_BYTES = 16
+BOOTSTRAP_AUTHORITY_BYTES = BOOTSTRAP_KEY_BYTES + BOOTSTRAP_NONCE_BYTES + 71
 MEMFD_NAME = "agentscope-sanitized-failure-evidence"
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
@@ -43,9 +46,9 @@ def verify_digest(value: str) -> None:
         fail()
 
 
-def read_input() -> bytes:
-    content = sys.stdin.buffer.read(MAXIMUM_BYTES + 1)
-    if not content or len(content) > MAXIMUM_BYTES:
+def read_input(maximum: int = MAXIMUM_BYTES) -> bytes:
+    content = sys.stdin.buffer.read(maximum + 1)
+    if not content or len(content) > maximum:
         fail()
     return content
 
@@ -96,17 +99,30 @@ def process_start_ticks(pid: int) -> str:
 def bootstrap(arguments: list[str]) -> None:
     global bootstrap_stage
     bootstrap_stage = "invocation"
-    if len(arguments) != 5 or sys.platform != "linux":
+    if len(arguments) != 6 or sys.platform != "linux":
         fail()
-    node, integration_root, expected_digest, action_pid_value, expected_start = arguments
+    (
+        node,
+        integration_root,
+        expected_digest,
+        action_pid_value,
+        expected_start,
+        source_size_value,
+    ) = arguments
     verify_digest(expected_digest)
     if not os.path.isabs(node) or not os.path.isabs(integration_root):
         fail()
     action_pid = parse_unsigned(action_pid_value, 2**31 - 1)
     if not expected_start.isascii() or not expected_start.isdecimal():
         fail()
+    source_size = parse_unsigned(source_size_value, MAXIMUM_BYTES)
     bootstrap_stage = "source"
-    source = read_input()
+    supplied = read_input(MAXIMUM_BYTES + BOOTSTRAP_KEY_BYTES + BOOTSTRAP_NONCE_BYTES)
+    if len(supplied) != BOOTSTRAP_KEY_BYTES + BOOTSTRAP_NONCE_BYTES + source_size:
+        fail()
+    key = supplied[:BOOTSTRAP_KEY_BYTES]
+    nonce = supplied[BOOTSTRAP_KEY_BYTES : BOOTSTRAP_KEY_BYTES + BOOTSTRAP_NONCE_BYTES]
+    source = supplied[BOOTSTRAP_KEY_BYTES + BOOTSTRAP_NONCE_BYTES :]
     if f"sha256:{hashlib.sha256(source).hexdigest()}" != expected_digest:
         fail()
     bootstrap_stage = "memfd"
@@ -116,6 +132,10 @@ def bootstrap(arguments: list[str]) -> None:
     )
     bundle_descriptor = os.memfd_create(
         MEMFD_NAME,
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    authority_descriptor = os.memfd_create(
+        "agentscope-bootstrap-authority",
         os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
     )
     bootstrap_stage = "mapping"
@@ -129,7 +149,11 @@ def bootstrap(arguments: list[str]) -> None:
     )
     node_descriptor = os.open("exe", os.O_PATH | os.O_CLOEXEC, dir_fd=process_root_descriptor)
     try:
-        if source_descriptor != 3 or bundle_descriptor != 4:
+        if (
+            source_descriptor != 4
+            or bundle_descriptor != 5
+            or authority_descriptor != 6
+        ):
             fail()
         if os.write(source_descriptor, source) != len(source):
             fail()
@@ -137,9 +161,20 @@ def bootstrap(arguments: list[str]) -> None:
         fcntl.fcntl(source_descriptor, fcntl.F_ADD_SEALS, REQUIRED_SEALS)
         if fcntl.fcntl(source_descriptor, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
             fail()
+        authority = key + nonce + expected_digest.encode("ascii")
+        if len(authority) != BOOTSTRAP_AUTHORITY_BYTES:
+            fail()
+        if os.write(authority_descriptor, authority) != len(authority):
+            fail()
+        os.fchmod(authority_descriptor, 0o400)
+        fcntl.fcntl(authority_descriptor, fcntl.F_ADD_SEALS, REQUIRED_SEALS)
+        if fcntl.fcntl(authority_descriptor, fcntl.F_GET_SEALS) != REQUIRED_SEALS:
+            fail()
         os.fchmod(bundle_descriptor, 0o600)
+        os.set_inheritable(3, True)
         os.set_inheritable(source_descriptor, True)
         os.set_inheritable(bundle_descriptor, True)
+        os.set_inheritable(authority_descriptor, True)
         os.close(0)
         root_status = os.lstat(integration_root)
         root_descriptor = os.open(
@@ -186,12 +221,17 @@ def bootstrap(arguments: list[str]) -> None:
                 str(bundle_descriptor),
                 "--source-digest",
                 expected_digest,
+                "--bootstrap-control-fd",
+                "3",
+                "--bootstrap-authority-fd",
+                str(authority_descriptor),
             ],
             os.environ,
         )
     finally:
         os.close(source_descriptor)
         os.close(bundle_descriptor)
+        os.close(authority_descriptor)
         os.close(node_descriptor)
         os.close(process_root_descriptor)
 
