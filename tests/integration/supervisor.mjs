@@ -2217,7 +2217,7 @@ const retainedCgroupMembers = (authority, allowEmpty = false) => {
     new Set(members).size !== members.length
   )
     failSystemd();
-  return Object.freeze(members);
+  return Object.freeze(members.sort((left, right) => left - right));
 };
 
 export const validateMainProcessMembership = ({
