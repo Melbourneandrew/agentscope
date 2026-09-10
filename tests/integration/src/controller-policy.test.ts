@@ -4136,6 +4136,14 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       "observe-after-error-permission",
       "cgroup-observe-after-command-permission",
     ],
+    [
+      "observe-after-unit-not-found-missing",
+      "cgroup-observe-after-unit-not-found",
+    ],
+    [
+      "observe-after-unit-not-found-third",
+      "cgroup-observe-after-unit-not-found",
+    ],
     ["transition-retained-membership", "cgroup-transition-retained-membership"],
     ["transition-empty-populated", "cgroup-transition-empty-populated"],
     ["transition-reappeared", "cgroup-transition-reappeared"],
@@ -4171,6 +4179,11 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
   await expect(
     exerciseTerminalCgroupDiagnosticForTesting(
       "observe-after-unit-not-found-transition",
+    ),
+  ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
+  await expect(
+    exerciseTerminalCgroupDiagnosticForTesting(
+      "observe-after-unit-not-found-empty",
     ),
   ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   for (const mode of [

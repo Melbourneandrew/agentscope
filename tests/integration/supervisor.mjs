@@ -1938,10 +1938,9 @@ const showUnitOutput = (unit, deadline, operation) =>
 const showUnit = async (unit, deadline, operation) =>
   exactUnitFacts(await showUnitOutput(unit, deadline, operation));
 
-export const classifySystemdUnitAuthority = (facts, authority) => {
+const classifySystemdUnitImmutableAuthority = (facts, authority) => {
   if (facts.LoadState !== "loaded") return "load";
   if (facts.Id !== authority.unit) return "identity";
-  if (facts.ControlGroup !== authority.cgroup) return "cgroup";
   if (
     facts.Delegate !== "no" ||
     facts.KillMode !== "control-group" ||
@@ -1962,6 +1961,10 @@ export const classifySystemdUnitAuthority = (facts, authority) => {
     return "principal";
   return undefined;
 };
+
+export const classifySystemdUnitAuthority = (facts, authority) =>
+  classifySystemdUnitImmutableAuthority(facts, authority) ??
+  (facts.ControlGroup === authority.cgroup ? undefined : "cgroup");
 
 export const classifyTerminalSystemdUnitAuthority = (
   facts,
@@ -2572,6 +2575,9 @@ const syntheticCgroupObservationErrorCodes = Object.freeze({
   "observe-after-error-descriptor": "EBADF",
   "observe-after-error-missing": "ENOENT",
   "observe-after-error-permission": "EACCES",
+  "observe-after-unit-not-found-empty": "ENOENT",
+  "observe-after-unit-not-found-missing": "ENOENT",
+  "observe-after-unit-not-found-third": "ENOENT",
   "observe-after-unit-not-found-transition": "ENOENT",
 });
 export const classifyCgroupObservationFailureForTesting = (code, kind) =>
@@ -2709,10 +2715,12 @@ const observeTerminalSystemdUnit = async (
       reason === "unit-not-found" &&
       facts?.LoadState === "loaded" &&
       systemdMainProcessIsTerminal(facts) &&
-      classifySystemdUnitAuthority(
-        { ...facts, ControlGroup: state.authority.cgroup },
-        state.authority,
-      ) === undefined
+      classifySystemdUnitImmutableAuthority(facts, state.authority) ===
+        undefined &&
+      (facts.ControlGroup === state.authority.cgroup ||
+        (facts.ControlGroup === "" &&
+          ["inactive", "failed"].includes(facts.ActiveState) &&
+          ["dead", "failed"].includes(facts.SubState)))
     ) {
       try {
         after = recoverRemoved();
@@ -2816,6 +2824,48 @@ const waitForTerminal = async (state) => {
   return undefined;
 };
 
+const syntheticTerminalUnitFacts = (mode, authority) => ({
+  ActiveState:
+    mode === "observe-after-unit-not-found-empty" ? "failed" : "active",
+  AmbientCapabilities: "",
+  CapabilityBoundingSet: "",
+  ControlGroup:
+    mode === "observe-after-unit-not-found-empty"
+      ? ""
+      : mode === "observe-after-unit-not-found-missing"
+        ? undefined
+        : mode === "observe-after-unit-not-found-third"
+          ? "/system.slice/other.service"
+          : mode === "transition-monotonic-removal-empty" ||
+              mode === "transition-empty-populated"
+            ? ""
+            : mode === "transition-third-controlgroup"
+              ? "/system.slice/other.service"
+              : authority.cgroup,
+  Delegate: "no",
+  ExecMainCode: "1",
+  ExecMainStatus:
+    mode === "transition-main-nonterminal"
+      ? ""
+      : mode === "observe-after-unit-not-found-empty"
+        ? "17"
+        : "0",
+  Group: "1001",
+  Id: authority.unit,
+  InaccessiblePaths: systemdInaccessiblePaths,
+  KillMode: "control-group",
+  LoadState: mode === "observe-after-error-missing" ? "not-found" : "loaded",
+  NoNewPrivileges: "yes",
+  ProtectControlGroups: "yes",
+  RemainAfterExit: "yes",
+  Result:
+    mode === "observe-after-unit-not-found-empty" ? "exit-code" : "success",
+  RestrictSUIDSGID: "yes",
+  SubState: mode === "observe-after-unit-not-found-empty" ? "failed" : "exited",
+  SupplementaryGroups: "4 1001",
+  User: "1001",
+});
+
 export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
   const authority = Object.freeze({
     cgroup: "/system.slice/agentscope-test.service",
@@ -2829,34 +2879,7 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
     deadline: 10_000,
     executionDeadline: 5_000,
   };
-  const facts = {
-    ActiveState: "active",
-    AmbientCapabilities: "",
-    CapabilityBoundingSet: "",
-    ControlGroup:
-      mode === "transition-monotonic-removal-empty" ||
-      mode === "transition-empty-populated"
-        ? ""
-        : mode === "transition-third-controlgroup"
-          ? "/system.slice/other.service"
-          : authority.cgroup,
-    Delegate: "no",
-    ExecMainCode: "1",
-    ExecMainStatus: mode === "transition-main-nonterminal" ? "" : "0",
-    Group: "1001",
-    Id: authority.unit,
-    InaccessiblePaths: systemdInaccessiblePaths,
-    KillMode: "control-group",
-    LoadState: mode === "observe-after-error-missing" ? "not-found" : "loaded",
-    NoNewPrivileges: "yes",
-    ProtectControlGroups: "yes",
-    RemainAfterExit: "yes",
-    Result: "success",
-    RestrictSUIDSGID: "yes",
-    SubState: "exited",
-    SupplementaryGroups: "4 1001",
-    User: "1001",
-  };
+  const facts = syntheticTerminalUnitFacts(mode, authority);
   let observations = 0;
   let cleanupAttempts = 0;
   let failure;
@@ -2870,7 +2893,7 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
         throw Object.assign(new Error("private"), { code: errorCode });
       if (
         observations === 1 &&
-        mode === "observe-after-unit-not-found-transition"
+        mode.startsWith("observe-after-unit-not-found-")
       )
         return Object.freeze({ absent: false, empty: false, members: [712] });
       if (
