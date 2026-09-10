@@ -27,6 +27,7 @@ import {
   prepareGithubSystemdSupervision,
   runSupervisedProcess,
   systemdToolFailureStage,
+  validSystemdToolPredicate,
 } from "./supervisor.mjs";
 import { DefaultArtifactClient } from "@actions/artifact";
 
@@ -66,7 +67,8 @@ const actionBootstrapStages = new Set([
   "descriptor-close",
 ]);
 const actionBootstrapChildTerminalReasons = new Set([
-  "exit",
+  "exit-one",
+  "exit-other",
   "signal",
   "timeout",
 ]);
@@ -487,8 +489,29 @@ const classifyActionBootstrapChildTerminal = (result) =>
     : result?.signal !== null && result?.signal !== undefined
       ? "signal"
       : Number.isSafeInteger(result?.status) && result.status !== 0
-        ? "exit"
+        ? result.status === 1
+          ? "exit-one"
+          : "exit-other"
         : undefined;
+
+const authenticatedChildStageReceipt = (stdout) => {
+  if (!Buffer.isBuffer(stdout) || stdout.length > 4096) return undefined;
+  const lines = stdout.toString("utf8").split("\n").filter(Boolean);
+  let retained;
+  for (const line of lines) {
+    const systemd =
+      /^::error::integration\.controller\.systemd-tool:(.+)$/u.exec(line);
+    const outer = /^::error::integration\.controller\.outer:(.+)$/u.exec(line);
+    if (systemd !== null && validSystemdToolPredicate(systemd[1]))
+      retained = `${line}\n`;
+    else if (outer !== null && validOuterControllerStage(outer[1]))
+      retained = `${line}\n`;
+    else return undefined;
+  }
+  return retained;
+};
+export const authenticatedChildStageReceiptForTest = (stdout) =>
+  authenticatedChildStageReceipt(stdout);
 export const classifyActionBootstrapChildTerminalForTest = (result) =>
   classifyActionBootstrapChildTerminal(result);
 export const verifyArtifactClientProvenanceForTest = (
@@ -1712,7 +1735,7 @@ export const exerciseActionBootstrapSettlementForTest = (fault) => {
   let calls = 0;
   try {
     settleActionBootstrapDescriptors({
-      childTerminalReason: fault === "child-exit" ? "exit" : undefined,
+      childTerminalReason: fault === "child-exit" ? "exit-one" : undefined,
       close: () => {
         if (fault === "descriptor-close" && calls >= 2)
           throw new Error("private");
@@ -1868,10 +1891,13 @@ const bootstrapMain = () => {
     {
       env: { ...process.env },
       input: source.content,
-      stdio: ["pipe", "inherit", "inherit"],
+      maxBuffer: 4096,
+      stdio: ["pipe", "pipe", "pipe"],
       timeout: 20 * 60 * 1000,
     },
   );
+  const childStageReceipt = authenticatedChildStageReceipt(result.stdout);
+  if (childStageReceipt !== undefined) process.stdout.write(childStageReceipt);
   const childTerminalReason = classifyActionBootstrapChildTerminal(result);
   const spawnFailure =
     childTerminalReason === undefined &&

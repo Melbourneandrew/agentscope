@@ -127,10 +127,23 @@ export function classifySystemdAdmissionMainPid(
   }>,
   expected?: number,
 ): SystemdAdmissionMainPidReason | undefined;
+export function classifyCgroupObservationFailureForTesting(
+  code: string | undefined,
+  kind: "syntax" | "type" | undefined,
+):
+  | "unit-not-found"
+  | "command-permission"
+  | "malformed"
+  | "identity-substitution"
+  | "descriptor-state";
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
     | "observe-after"
+    | "observe-after-error-descriptor"
+    | "observe-after-error-missing"
+    | "observe-after-error-permission"
+    | "observe-after-unit-not-found-transition"
     | "transition-retained-empty"
     | "transition-retained-populated"
     | "transition-retained-membership"
@@ -274,6 +287,11 @@ export type SystemdAdmissionMainPidReason =
 export type SystemdTerminalWaitCgroupReason =
   | "cgroup-observe-before"
   | "cgroup-observe-after"
+  | "cgroup-observe-after-unit-not-found"
+  | "cgroup-observe-after-command-permission"
+  | "cgroup-observe-after-malformed"
+  | "cgroup-observe-after-identity-substitution"
+  | "cgroup-observe-after-descriptor-state"
   | SystemdTerminalCgroupTransitionReason;
 
 export type SystemdTerminalWaitAuthorityReason =
@@ -300,6 +318,9 @@ export type SystemdToolFailurePredicate =
 export function validSystemdLifecyclePredicate(
   predicate: unknown,
 ): predicate is SystemdLifecycleFailurePredicate;
+export function validSystemdToolPredicate(
+  predicate: unknown,
+): predicate is SystemdToolFailurePredicate;
 
 export function systemdToolFailureStage(
   error: unknown,

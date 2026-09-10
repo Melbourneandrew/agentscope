@@ -38,6 +38,7 @@ import {
   exerciseSystemdToolFailurePreservationForTesting,
   classifySystemdUnitAuthority,
   classifySystemdAdmissionMainPid,
+  classifyCgroupObservationFailureForTesting,
   classifyTerminalSystemdUnitAuthority,
   classifyTerminalCgroupTransitionFailure,
   exerciseTerminalCgroupDiagnosticForTesting,
@@ -72,6 +73,11 @@ import {
 import { ISOLATION_EXECUTOR_LIMITS } from "./isolation.js";
 
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
+const classifyCgroupObservationFailure =
+  classifyCgroupObservationFailureForTesting as unknown as (
+    code: string | undefined,
+    kind: "syntax" | "type" | undefined,
+  ) => string;
 const fixtureCapabilityManifest = JSON.parse(
   readFileSync(
     resolve(workspaceRoot, "tests/integration/capability-manifest.json"),
@@ -3651,6 +3657,11 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
   const reasons = [
     "cgroup-observe-before",
     "cgroup-observe-after",
+    "cgroup-observe-after-unit-not-found",
+    "cgroup-observe-after-command-permission",
+    "cgroup-observe-after-malformed",
+    "cgroup-observe-after-identity-substitution",
+    "cgroup-observe-after-descriptor-state",
     "cgroup-transition-retained-empty",
     "cgroup-transition-retained-populated",
     "cgroup-transition-retained-membership",
@@ -4102,7 +4113,13 @@ it("canonicalizes retained cgroup membership while preserving process identity",
 it("binds every terminal cgroup diagnostic through one cleanup path", async () => {
   for (const [mode, reason] of [
     ["observe-before", "cgroup-observe-before"],
-    ["observe-after", "cgroup-observe-after"],
+    ["observe-after", "cgroup-observe-after-identity-substitution"],
+    ["observe-after-error-descriptor", "cgroup-observe-after-descriptor-state"],
+    ["observe-after-error-missing", "cgroup-observe-after-unit-not-found"],
+    [
+      "observe-after-error-permission",
+      "cgroup-observe-after-command-permission",
+    ],
     ["transition-retained-membership", "cgroup-transition-retained-membership"],
     ["transition-empty-populated", "cgroup-transition-empty-populated"],
     ["transition-reappeared", "cgroup-transition-reappeared"],
@@ -4133,6 +4150,11 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
   await expect(
     exerciseTerminalCgroupDiagnosticForTesting(
       "transition-monotonic-removal-empty",
+    ),
+  ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
+  await expect(
+    exerciseTerminalCgroupDiagnosticForTesting(
+      "observe-after-unit-not-found-transition",
     ),
   ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   for (const mode of [
@@ -4168,6 +4190,20 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     "lifecycle:terminal-wait:cgroup-transition-retained-populated-substituted",
   ])
     expect(validSystemdLifecyclePredicate(forged)).toBe(false);
+});
+
+it("classifies post-terminal cgroup observation failures without content", () => {
+  for (const [code, kind, expected] of [
+    ["ENOENT", undefined, "unit-not-found"],
+    ["EACCES", undefined, "command-permission"],
+    ["EPERM", undefined, "command-permission"],
+    ["EBADF", undefined, "descriptor-state"],
+    ["EIO", undefined, "descriptor-state"],
+    [undefined, "syntax", "malformed"],
+    [undefined, "type", "malformed"],
+    ["ESTALE", undefined, "identity-substitution"],
+  ] as const)
+    expect(classifyCgroupObservationFailure(code, kind)).toBe(expected);
 });
 
 it("preserves authenticated terminal tool failure identity through cleanup", () => {

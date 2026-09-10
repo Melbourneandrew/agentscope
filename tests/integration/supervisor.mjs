@@ -126,6 +126,11 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "unit-parse",
   "cgroup-observe-before",
   "cgroup-observe-after",
+  "cgroup-observe-after-unit-not-found",
+  "cgroup-observe-after-command-permission",
+  "cgroup-observe-after-malformed",
+  "cgroup-observe-after-identity-substitution",
+  "cgroup-observe-after-descriptor-state",
   "cgroup-transition-retained-empty",
   "cgroup-transition-retained-populated",
   "cgroup-transition-retained-membership",
@@ -830,6 +835,47 @@ export const validSystemdLifecyclePredicate = (predicate) => {
       (match[1] === "collection" &&
         systemdCollectionDiagnosticReasons.has(match[2])))
   );
+};
+
+export const validSystemdToolPredicate = (predicate) => {
+  if (validSystemdLifecyclePredicate(predicate)) return true;
+  if (typeof predicate !== "string") return false;
+  if (rootToolOperations.has(predicate)) return true;
+  const match = /^(sentinel|join|client-terminal):([^:]+)$/u.exec(predicate);
+  if (match === null) return false;
+  const admitted = {
+    sentinel: new Set([
+      "child-exit",
+      "start-identity",
+      "inherited-group",
+      "transition-timeout",
+      "kill",
+      "reap-join",
+      "residual",
+      "internal-unknown",
+    ]),
+    join: new Set([
+      "leader-identity",
+      "preclose-residual",
+      "control-close",
+      "reap-timeout",
+      "identity-drift",
+      "postreap-residual",
+      "internal-unknown",
+    ]),
+    "client-terminal": new Set([
+      "cutoff",
+      "deadline",
+      "leader-identity",
+      "child-admission",
+      "member-identity",
+      "output-read",
+      "output-bound",
+      "nonzero-terminal",
+      "internal-unknown",
+    ]),
+  };
+  return admitted[match[1]].has(match[2]);
 };
 
 export const systemdToolFailureStage = (error) =>
@@ -2533,6 +2579,89 @@ const authenticatedCgroupIsAbsent = (
   markDiagnostic = undefined,
 ) => observeAuthenticatedCgroup(cgroupPath, authority, markDiagnostic).absent;
 
+const classifyCgroupObservationFailure = (error) => {
+  const code =
+    error !== null && typeof error === "object" ? error.code : undefined;
+  if (code === "ENOENT") return "unit-not-found";
+  if (code === "EACCES" || code === "EPERM") return "command-permission";
+  if (["EBADF", "EIO", "EMFILE", "ENFILE", "ENODEV"].includes(code))
+    return "descriptor-state";
+  if (error instanceof SyntaxError || error instanceof TypeError)
+    return "malformed";
+  return "identity-substitution";
+};
+
+const syntheticCgroupObservationErrorCodes = Object.freeze({
+  "observe-after-error-descriptor": "EBADF",
+  "observe-after-error-missing": "ENOENT",
+  "observe-after-error-permission": "EACCES",
+  "observe-after-unit-not-found-transition": "ENOENT",
+});
+export const classifyCgroupObservationFailureForTesting = (code, kind) =>
+  classifyCgroupObservationFailure(
+    kind === "syntax"
+      ? new SyntaxError("private")
+      : kind === "type"
+        ? new TypeError("private")
+        : code === undefined
+          ? new Error("private")
+          : Object.assign(new Error("private"), { code }),
+  );
+
+const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
+  const parentPath = dirname(cgroupPath);
+  const childPaths = [
+    cgroupPath,
+    resolve(cgroupPath, "cgroup.procs"),
+    resolve(cgroupPath, "cgroup.events"),
+  ];
+  const recheckRetainedParent = () => {
+    const named = lstatSync(parentPath);
+    const parentIdentity = authority.identities[0];
+    if (
+      !named.isDirectory() ||
+      named.dev !== parentIdentity.dev ||
+      named.ino !== parentIdentity.ino ||
+      named.mode !== parentIdentity.mode ||
+      named.uid !== parentIdentity.uid ||
+      named.gid !== parentIdentity.gid
+    )
+      failSystemd();
+    for (const index of [0, 1]) {
+      const retained = fstatSync(authority.descriptors[index]);
+      const identity = authority.identities[index];
+      if (
+        retained.dev !== identity.dev ||
+        retained.ino !== identity.ino ||
+        retained.mode !== identity.mode ||
+        retained.uid !== identity.uid ||
+        retained.gid !== identity.gid
+      )
+        failSystemd();
+    }
+  };
+  const requireAbsent = () => {
+    for (const path of childPaths) {
+      try {
+        lstatSync(path);
+        failSystemd();
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    }
+  };
+  recheckRetainedParent();
+  requireAbsent();
+  recheckRetainedParent();
+  requireAbsent();
+  recheckRetainedParent();
+  return Object.freeze({
+    absent: true,
+    empty: true,
+    members: Object.freeze([]),
+  });
+};
+
 const observeCgroupSettlement = (
   cgroupPath,
   identity,
@@ -2579,6 +2708,8 @@ const observeTerminalSystemdUnit = async (
       state.cgroupIdentity,
       state.mainProcessIdentity,
     ),
+  recoverRemoved = () =>
+    authenticateRemovedCgroupPaths(state.cgroupPath, state.cgroupIdentity),
 ) => {
   let before;
   try {
@@ -2588,10 +2719,44 @@ const observeTerminalSystemdUnit = async (
   }
   const facts = await observeFacts();
   let after;
+  let removedTransition = false;
   try {
     after = observeCgroup();
-  } catch {
-    failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-after");
+  } catch (error) {
+    const reason = classifyCgroupObservationFailure(error);
+    if (reason === "unit-not-found" && facts?.LoadState === "not-found") {
+      try {
+        after = recoverRemoved();
+        removedTransition = true;
+      } catch {
+        failSystemdLifecycle(
+          state,
+          "terminal-wait",
+          "cgroup-observe-after-identity-substitution",
+        );
+      }
+    } else {
+      failSystemdLifecycle(
+        state,
+        "terminal-wait",
+        `cgroup-observe-after-${reason}`,
+      );
+    }
+  }
+  if (removedTransition) {
+    if (
+      facts.Id !== state.authority.unit ||
+      !systemdMainProcessIsTerminal(facts) ||
+      !after.absent ||
+      !after.empty
+    )
+      failSystemdLifecycle(
+        state,
+        "terminal-wait",
+        "cgroup-observe-after-unit-not-found",
+      );
+    state.terminalUnitRemoved = true;
+    return Object.freeze({ after, facts, retry: false });
   }
   const mismatch = classifyTerminalSystemdUnitAuthority(
     facts,
@@ -2698,7 +2863,10 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
     Id: authority.unit,
     InaccessiblePaths: systemdInaccessiblePaths,
     KillMode: "control-group",
-    LoadState: "loaded",
+    LoadState:
+      mode === "observe-after-unit-not-found-transition"
+        ? "not-found"
+        : "loaded",
     NoNewPrivileges: "yes",
     ProtectControlGroups: "yes",
     RemainAfterExit: "yes",
@@ -2716,6 +2884,9 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       observations += 1;
       if (mode === "observe-before" && observations === 1) failSystemd();
       if (mode === "observe-after" && observations === 2) failSystemd();
+      const errorCode = syntheticCgroupObservationErrorCodes[mode];
+      if (observations === 2 && errorCode !== undefined)
+        throw Object.assign(new Error("private"), { code: errorCode });
       if (
         (mode === "transition-retained-empty" ||
           mode === "transition-retained-populated" ||
@@ -2752,6 +2923,7 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       observe,
       async () => facts,
       authenticate,
+      () => Object.freeze({ absent: true, empty: true, members: [] }),
     );
     if (
       (mode === "transition-monotonic-removal-empty" ||
@@ -3267,6 +3439,19 @@ const authenticateTerminalSystemdUnit = async (state, terminal) => {
       state.cgroupPath,
       state.cgroupIdentity,
     );
+    if (state.terminalUnitRemoved === true) {
+      if (
+        !before.absent ||
+        !after.absent ||
+        authoritative.LoadState !== "not-found" ||
+        (authoritative.Id !== "" &&
+          authoritative.Id !== state.authority.unit) ||
+        parseSystemdMainExitStatus(terminal) === undefined
+      )
+        failSystemd();
+      state.terminalCgroupObservation = after;
+      return;
+    }
     if (
       state.terminalCgroupObservation?.absent === true &&
       (!before.absent || !after.absent)
