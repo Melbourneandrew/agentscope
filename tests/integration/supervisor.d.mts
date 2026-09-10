@@ -217,7 +217,11 @@ export type SystemdUnitAdmissionDiagnosticReason =
   | "unit-facts"
   | SystemdRetirementAuthorityReason
   | "cgroup-authentication"
-  | "main-membership";
+  | "main-pid"
+  | "main-snapshot-before"
+  | "main-members"
+  | "main-snapshot-after"
+  | "main-identity";
 
 export type SystemdTerminalWaitCgroupReason =
   | "cgroup-observe-before"

@@ -2381,7 +2381,9 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
   const groupSynchronizedHelper = readinessSynchronizedHelper.replace(
     groupEstablishedBoundary,
     " leader,expected,control=create_group()\n" +
-      ' if OPERATION in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
+      ' if OPERATION.startswith("synthetic-client-"):\n' +
+      '  os.write(3,(str(leader)+":"+str(expected[0])+"\\n").encode("ascii"))\n' +
+      '  if OPERATION not in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
       " child=None\n",
   );
   const postAdmissionBoundary =
@@ -2393,7 +2395,7 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       "   admit_group_members(leader,expected_members)\n" +
       '   if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
       '   elif OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"}: CUTOFF=now()-1\n' +
-      '   os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+":"+str(leader)+":"+str(expected[0])).encode("ascii"))\n' +
+      '   if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
       "  while child.poll() is None:\n",
   );
   return {
@@ -2412,17 +2414,16 @@ const parseSyntheticClientReadiness = (
 ) => {
   if (
     typeof readiness !== "string" ||
-    !/^[1-9][0-9]{6,19}:[1-9][0-9]{6,19}:[1-9][0-9]*:[1-9][0-9]*$/u.test(
+    !/^[1-9][0-9]*:[1-9][0-9]*\n[1-9][0-9]{6,19}:[1-9][0-9]{6,19}\n$/u.test(
       readiness,
     )
   )
     return undefined;
-  const [deadline, cutoff, leader, start] = readiness.split(":") as [
-    string,
-    string,
-    string,
-    string,
-  ];
+  const [leaderIdentity, deadlineIdentity] = readiness
+    .trimEnd()
+    .split("\n") as [string, string];
+  const [leader, start] = leaderIdentity.split(":") as [string, string];
+  const [deadline, cutoff] = deadlineIdentity.split(":") as [string, string];
   if (
     ![deadline, cutoff, leader, start].every(
       (value) =>
@@ -2440,8 +2441,8 @@ const parseSyntheticClientReadiness = (
   return Object.freeze({ cutoff, deadline, leader, start });
 };
 
-it("accepts only exact post-membership synthetic client readiness", () => {
-  const valid = "1000000:2000000:123:456";
+it("accepts only exact synthetic client readiness frames", () => {
+  const valid = "123:456\n1000000:2000000\n";
   expect(
     parseSyntheticClientReadiness(valid, { leader: "123", start: "456" }),
   ).toEqual({
@@ -2452,11 +2453,11 @@ it("accepts only exact post-membership synthetic client readiness", () => {
   });
   for (const invalid of [
     "",
-    "1000000:2000000",
-    "1000000:2000000:123:",
-    "1000000:2000000:0:456",
-    "1000000:2000000:123:456:789",
-    "1000000:2000000:123:substituted",
+    "123:456\n",
+    "123:\n1000000:2000000\n",
+    "0:456\n1000000:2000000\n",
+    "123:456\n1000000:2000000\nextra\n",
+    "123:substituted\n1000000:2000000\n",
   ])
     expect(parseSyntheticClientReadiness(invalid)).toBeUndefined();
   expect(
@@ -3255,7 +3256,11 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     "authority-hardening",
     "authority-principal",
     "cgroup-authentication",
-    "main-membership",
+    "main-pid",
+    "main-snapshot-before",
+    "main-members",
+    "main-snapshot-after",
+    "main-identity",
   ] as const satisfies readonly SystemdUnitAdmissionDiagnosticReason[];
   const exhaustive: Exclude<
     SystemdUnitAdmissionDiagnosticReason,
@@ -3290,9 +3295,23 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     ['"unit-facts"', "await showUnit("],
     ["`authority-${authorityMismatch}`", "failSystemd();"],
     ['"cgroup-authentication"', "authenticateCgroup("],
-    ['"main-membership"', "captureMainProcessMembership("],
+    ['"main-pid"', "captureMainProcessMembership("],
   ] as const)
     expect(admission.indexOf(reason)).toBeLessThan(admission.indexOf(boundary));
+  const membership = supervisor.slice(
+    supervisor.indexOf("const captureMainProcessMembership ="),
+    supervisor.indexOf("export const systemdTerminalTransition"),
+  );
+  for (const [reason, boundary] of [
+    ['"main-pid"', "facts?.MainPID"],
+    ['"main-snapshot-before"', "readProcessSnapshot(pid)"],
+    ['"main-members"', "retainedCgroupMembers(cgroupIdentity)"],
+    ['"main-snapshot-after"', "readProcessSnapshot(pid)"],
+    ['"main-identity"', "validateMainProcessMembership("],
+  ] as const)
+    expect(membership.indexOf(reason)).toBeLessThan(
+      membership.lastIndexOf(boundary),
+    );
   expect(admission).toContain("systemdUnitAdmissionDiagnosticReasons.has(");
 });
 

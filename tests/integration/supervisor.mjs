@@ -105,7 +105,11 @@ const systemdUnitAdmissionDiagnosticReasons = new Set([
   "authority-hardening",
   "authority-principal",
   "cgroup-authentication",
-  "main-membership",
+  "main-pid",
+  "main-snapshot-before",
+  "main-members",
+  "main-snapshot-after",
+  "main-identity",
 ]);
 const systemdRetirementAuthorityReasons = new Set([
   "authority-load",
@@ -2219,13 +2223,23 @@ export const validateMainProcessMembership = ({
   );
 };
 
-const captureMainProcessMembership = (facts, cgroupIdentity, expected) => {
+const captureMainProcessMembership = (
+  facts,
+  cgroupIdentity,
+  expected,
+  markDiagnostic = undefined,
+) => {
+  markDiagnostic?.("main-pid");
   if (!/^[1-9][0-9]*$/u.test(facts?.MainPID ?? "")) failSystemd();
   const pid = Number(facts.MainPID);
   if (!Number.isSafeInteger(pid)) failSystemd();
+  markDiagnostic?.("main-snapshot-before");
   const before = readProcessSnapshot(pid);
+  markDiagnostic?.("main-members");
   const members = retainedCgroupMembers(cgroupIdentity);
+  markDiagnostic?.("main-snapshot-after");
   const after = readProcessSnapshot(pid);
+  markDiagnostic?.("main-identity");
   if (
     !validateMainProcessMembership({ after, before, expected, facts, members })
   )
@@ -2947,10 +2961,14 @@ const admitSystemdUnit = async (state) => {
     }
     state.unitAdmissionDiagnosticReason = "cgroup-authentication";
     state.cgroupIdentity = authenticateCgroup(state.cgroupPath);
-    state.unitAdmissionDiagnosticReason = "main-membership";
+    state.unitAdmissionDiagnosticReason = "main-pid";
     state.mainProcessIdentity = captureMainProcessMembership(
       admitted,
       state.cgroupIdentity,
+      undefined,
+      (reason) => {
+        state.unitAdmissionDiagnosticReason = reason;
+      },
     );
   } catch (error) {
     rethrowSystemdLifecycle(
