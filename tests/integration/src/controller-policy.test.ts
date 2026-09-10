@@ -4443,6 +4443,19 @@ const runSyntheticClientHelper = (
   return { key, terminal };
 };
 
+const syntheticProcessGroupIsAbsent = (leader: string) => {
+  try {
+    process.kill(-Number(leader), 0);
+    return false;
+  } catch (error) {
+    return (
+      error instanceof Error &&
+      "code" in error &&
+      (error as NodeJS.ErrnoException).code === "ESRCH"
+    );
+  }
+};
+
 const validateSyntheticReadinessFaultReceipt = ({
   identity,
   key,
@@ -4734,6 +4747,9 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       expect(Array.isArray(status) ? status : [status]).toContain(
         receipt?.status,
       );
+      if (receipt?.status === "error")
+        expect(syntheticProcessGroupIsAbsent(readiness.leader)).toBe(true);
+      else expect(receipt?.status).toBe("uncertain");
       expect(terminal.stdout).not.toContain("Traceback");
     }
   },
@@ -4778,6 +4794,75 @@ it("admits only authenticated deadline terminal outcomes", () => {
     ).toEqual(payload);
   }
 });
+
+it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
+  "binds deterministic settled and uncertain deadline cleanup terminals",
+  () => {
+    const supervisorSource = readFileSync(
+      resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+      "utf8",
+    );
+    const prefix = "const rootHelperSource = String.raw`";
+    const start = supervisorSource.indexOf(prefix) + prefix.length;
+    const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
+    const helper = synchronizeSyntheticClientDeadlines(
+      supervisorSource.slice(start, end),
+    ).synchronizedHelper;
+    const settled = helper.replace(
+      " while group_present(leader) and now()<DEADLINE:\n",
+      " cleanup_deadline=now()+1000000000\n while group_present(leader) and now()<cleanup_deadline:\n",
+    );
+    const uncertain = settled.replace(
+      "    terminate(child,leader,expected,control)\n",
+      '    terminate(child,leader,expected,control)\n    if OPERATION=="synthetic-client-deadline": raise RuntimeError("synthetic-cleanup")\n',
+    );
+    expect(settled).not.toBe(helper);
+    expect(uncertain).not.toBe(settled);
+    for (const [source, expectedStatus] of [
+      [settled, "error"],
+      [uncertain, "uncertain"],
+    ] as const) {
+      const { key, terminal } = runSyntheticClientHelper(
+        source,
+        "synthetic-client-deadline",
+        ["-I", "-S", "-c", "import time; time.sleep(5)"],
+      );
+      const readiness = parseSyntheticClientReadiness(terminal.output[3]);
+      expect(readiness).toBeDefined();
+      if (readiness === undefined) throw new Error("missing readiness");
+      const identity = {
+        cutoff: readiness.cutoff,
+        deadline: readiness.deadline,
+        operation: "synthetic-client-deadline",
+        unit: "",
+      };
+      const receipt = validateRootToolReceipt({
+        identity,
+        key,
+        receipt: terminal.stdout,
+      });
+      expect(receipt).toEqual({
+        output: "",
+        reason: "deadline",
+        stage: "client-terminal",
+        status: expectedStatus,
+      });
+      expect(syntheticProcessGroupIsAbsent(readiness.leader)).toBe(true);
+      const opposite = expectedStatus === "error" ? "uncertain" : "error";
+      expect(
+        validateRootToolReceipt({
+          identity,
+          key,
+          receipt: terminal.stdout.replace(
+            `"status":"${expectedStatus}"`,
+            `"status":"${opposite}"`,
+          ),
+        }),
+      ).toBeUndefined();
+    }
+  },
+  30_000,
+);
 
 it("emits only an authenticated closed systemd-tool stage annotation", () => {
   const action = readFileSync(
