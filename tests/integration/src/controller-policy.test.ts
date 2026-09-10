@@ -2377,65 +2377,89 @@ const syntheticGatedChildSource = [
   "args=json.loads(sys.argv[1])",
   'os.execve(args[0],args,{"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"})',
 ].join("\n");
-const syntheticDiagnosticStages = new Set([
-  "startup",
-  "cutoff",
-  "sentinel",
-  "tool-spawn",
-  "client-terminal",
-  "unit-admission",
-  "retirement",
-  "join",
+const syntheticDiagnosticOperations = new Set([
+  "synthetic-client-cutoff",
+  "synthetic-client-cutoff-cleanup-failure",
+  "synthetic-client-deadline",
+  "synthetic-client-leader-identity",
+  "synthetic-client-child-admission",
+  "synthetic-client-member-identity",
+  "synthetic-client-output-read",
+  "synthetic-client-output-bound",
+  "synthetic-client-nonzero",
+  "synthetic-client-internal",
 ]);
-const syntheticDiagnosticReasons = new Set([
-  "",
-  "child-exit",
-  "start-identity",
-  "inherited-group",
-  "transition-timeout",
-  "kill",
-  "reap-join",
-  "residual",
-  "leader-identity",
-  "preclose-residual",
-  "control-close",
-  "reap-timeout",
-  "identity-drift",
-  "postreap-residual",
-  "cutoff",
-  "deadline",
-  "child-admission",
-  "member-identity",
-  "output-read",
-  "output-bound",
-  "nonzero-terminal",
-  "internal-unknown",
+const syntheticDiagnosticReasonsByStage = new Map<string, ReadonlySet<string>>([
+  ["startup", new Set([""])],
+  ["cutoff", new Set([""])],
+  [
+    "sentinel",
+    new Set([
+      "child-exit",
+      "start-identity",
+      "inherited-group",
+      "transition-timeout",
+      "kill",
+      "reap-join",
+      "residual",
+      "internal-unknown",
+    ]),
+  ],
+  ["tool-spawn", new Set([""])],
+  [
+    "client-terminal",
+    new Set([
+      "cutoff",
+      "deadline",
+      "leader-identity",
+      "child-admission",
+      "member-identity",
+      "output-read",
+      "output-bound",
+      "nonzero-terminal",
+      "internal-unknown",
+    ]),
+  ],
+  ["unit-admission", new Set([""])],
+  ["retirement", new Set([""])],
+  [
+    "join",
+    new Set([
+      "leader-identity",
+      "preclose-residual",
+      "control-close",
+      "reap-timeout",
+      "identity-drift",
+      "postreap-residual",
+      "internal-unknown",
+    ]),
+  ],
 ]);
+const syntheticDiagnosticReceiptPattern =
+  /^\{"mac":"[0-9a-f]{64}","output":"","reason":"([a-z-]*)","stage":"(startup|cutoff|sentinel|tool-spawn|client-terminal|unit-admission|retirement|join)","status":"(error|uncertain)"\}$/;
 
 const syntheticReadinessFailure = (operation: string, stdout: string) => {
+  const admittedOperation = syntheticDiagnosticOperations.has(operation)
+    ? operation
+    : "unknown-operation";
   let stage = "malformed";
   let reason = "none";
-  try {
-    const diagnostic = JSON.parse(stdout) as {
-      reason?: unknown;
-      stage?: unknown;
-    };
+  const match = syntheticDiagnosticReceiptPattern.exec(stdout);
+  if (match) {
+    const [, candidateReason, candidateStage] = match;
     if (
-      typeof diagnostic.stage === "string" &&
-      syntheticDiagnosticStages.has(diagnostic.stage)
-    )
-      stage = diagnostic.stage;
-    if (
-      typeof diagnostic.reason === "string" &&
-      syntheticDiagnosticReasons.has(diagnostic.reason)
-    )
-      reason = diagnostic.reason || "none";
-  } catch {
-    stage = "malformed";
-    reason = "none";
+      candidateReason !== undefined &&
+      candidateStage !== undefined &&
+      syntheticDiagnosticReasonsByStage
+        .get(candidateStage)
+        ?.has(candidateReason)
+    ) {
+      stage = candidateStage;
+      reason = candidateReason || "none";
+    }
   }
   return new Error(
-    `synthetic helper readiness missing:${operation}:${stage}:${reason}`,
+    `synthetic helper readiness missing:${admittedOperation}:${stage}:${reason}`,
   );
 };
 
@@ -2590,20 +2614,49 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
   expect(
     syntheticReadinessFailure(
       "synthetic-client-cutoff",
-      '{"reason":"cutoff","stage":"client-terminal"}',
+      `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","status":"error"}`,
     ).message,
   ).toBe(
     "synthetic helper readiness missing:synthetic-client-cutoff:client-terminal:cutoff",
   );
+  for (const [
+    admittedStage,
+    admittedReasons,
+  ] of syntheticDiagnosticReasonsByStage)
+    for (const admittedReason of admittedReasons)
+      for (const admittedStatus of ["error", "uncertain"])
+        expect(
+          syntheticReadinessFailure(
+            "synthetic-client-internal",
+            `{"mac":"${"b".repeat(64)}","output":"","reason":"${admittedReason}","stage":"${admittedStage}","status":"${admittedStatus}"}`,
+          ).message,
+        ).toBe(
+          `synthetic helper readiness missing:synthetic-client-internal:${admittedStage}:${admittedReason || "none"}`,
+        );
+  expect(
+    syntheticReadinessFailure(
+      "raw:\nvalue",
+      `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","status":"error"}`,
+    ).message,
+  ).toBe(
+    "synthetic helper readiness missing:unknown-operation:client-terminal:cutoff",
+  );
   for (const substituted of [
     "{}",
-    '{"reason":"unknown","stage":"client-terminal"}',
-    '{"reason":"cutoff","stage":"unknown"}',
+    `{"mac":"${"a".repeat(64)}","output":"","reason":"unknown","stage":"client-terminal","status":"error"}`,
+    `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"startup","status":"error"}`,
+    `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","stage":"client-terminal","status":"error"}`,
+    `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","status":"error","extra":true}`,
+    `{"output":"","mac":"${"a".repeat(64)}","reason":"cutoff","stage":"client-terminal","status":"error"}`,
+    `{"mac":"${"a".repeat(64)}","output":"data","reason":"cutoff","stage":"client-terminal","status":"error"}`,
+    `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","status":"ok"}`,
     "truncated",
   ])
     expect(
       syntheticReadinessFailure("synthetic-client-cutoff", substituted).message,
-    ).not.toContain("unknown");
+    ).toBe(
+      "synthetic helper readiness missing:synthetic-client-cutoff:malformed:none",
+    );
 });
 
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
