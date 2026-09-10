@@ -73,7 +73,9 @@ export function classifyTerminalCgroupTransitionFailure(
   }>,
   before: Readonly<{ absent: boolean; empty: boolean }>,
   after: Readonly<{ absent: boolean; empty: boolean }>,
-):
+): SystemdTerminalCgroupTransitionReason;
+
+export type SystemdTerminalCgroupTransitionReason =
   | "cgroup-transition-retained"
   | "cgroup-transition-monotonic-removal-empty"
   | "cgroup-transition-empty-populated"
@@ -210,13 +212,29 @@ export type SystemdRetirementDiagnosticReason =
 export type SystemdCollectionDiagnosticReason =
   "unit-show" | "unit-facts" | "load-state" | "cgroup-absence";
 
+export type SystemdUnitAdmissionDiagnosticReason =
+  | "mapped-executable"
+  | "unit-facts"
+  | SystemdRetirementAuthorityReason
+  | "cgroup-authentication"
+  | "main-membership";
+
+export type SystemdTerminalWaitCgroupReason =
+  | "cgroup-observe-before"
+  | "cgroup-observe-after"
+  | SystemdTerminalCgroupTransitionReason;
+
 export type SystemdTerminalWaitAuthorityReason =
-  "unit-show" | "unit-parse" | SystemdRetirementAuthorityReason;
+  | "unit-show"
+  | "unit-parse"
+  | SystemdRetirementAuthorityReason
+  | SystemdTerminalWaitCgroupReason;
 
 export type SystemdLifecycleFailurePredicate =
   | `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`
   | `lifecycle:retirement:${
       SystemdRetirementAuthorityReason | SystemdRetirementDiagnosticReason}`
+  | `lifecycle:unit-admission:${SystemdUnitAdmissionDiagnosticReason}`
   | `lifecycle:terminal-wait:${SystemdTerminalWaitAuthorityReason}`
   | `lifecycle:collection:${SystemdCollectionDiagnosticReason}`;
 

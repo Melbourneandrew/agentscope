@@ -24,6 +24,11 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type {
+  SystemdTerminalWaitCgroupReason,
+  SystemdUnitAdmissionDiagnosticReason,
+} from "../supervisor.mjs";
+
 import {
   advanceToolForceState,
   authenticateCgroup,
@@ -3241,7 +3246,7 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
 });
 
 it("admits only the closed unit-admission diagnostic inventory", () => {
-  for (const reason of [
+  const reasons = [
     "mapped-executable",
     "unit-facts",
     "authority-load",
@@ -3251,7 +3256,15 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     "authority-principal",
     "cgroup-authentication",
     "main-membership",
-  ])
+  ] as const satisfies readonly SystemdUnitAdmissionDiagnosticReason[];
+  const exhaustive: Exclude<
+    SystemdUnitAdmissionDiagnosticReason,
+    (typeof reasons)[number]
+  > extends never
+    ? true
+    : false = true;
+  expect(exhaustive).toBe(true);
+  for (const reason of reasons)
     expect(
       validSystemdLifecyclePredicate(`lifecycle:unit-admission:${reason}`),
     ).toBe(true);
@@ -3281,6 +3294,31 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
   ] as const)
     expect(admission.indexOf(reason)).toBeLessThan(admission.indexOf(boundary));
   expect(admission).toContain("systemdUnitAdmissionDiagnosticReasons.has(");
+});
+
+it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
+  const reasons = [
+    "cgroup-observe-before",
+    "cgroup-observe-after",
+    "cgroup-transition-retained",
+    "cgroup-transition-monotonic-removal-empty",
+    "cgroup-transition-empty-populated",
+    "cgroup-transition-reappeared",
+    "cgroup-transition-third-controlgroup",
+    "cgroup-transition-main-nonterminal",
+    "cgroup-transition-observation-shape",
+  ] as const satisfies readonly SystemdTerminalWaitCgroupReason[];
+  const exhaustive: Exclude<
+    SystemdTerminalWaitCgroupReason,
+    (typeof reasons)[number]
+  > extends never
+    ? true
+    : false = true;
+  expect(exhaustive).toBe(true);
+  for (const reason of reasons)
+    expect(
+      validSystemdLifecyclePredicate(`lifecycle:terminal-wait:${reason}`),
+    ).toBe(true);
 });
 
 it("admits only closed terminal-wait authority diagnostics", () => {
