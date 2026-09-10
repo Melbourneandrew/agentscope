@@ -167,23 +167,25 @@ const failureVerifierSource = (workflow: string) => {
     .join("\n");
   return `import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { compileCapabilityManifest, compileIsolationEvidence } from ${JSON.stringify(
     pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
       .href,
   )};
 const failureEvidenceFinalizationReasons = new Set(["open", "stat", "read", "validation", "write", "fsync", "child-terminal", "artifact-upload", "retirement"]);
+const failureEvidenceFinalizationOpenReasons = new Set(["missing", "symlink", "permission", "identity", "exhaustion", "other"]);
+const validFailureEvidenceFinalizationReason = (value) => failureEvidenceFinalizationReasons.has(value) || (typeof value === "string" && value.startsWith("open:") && failureEvidenceFinalizationOpenReasons.has(value.slice("open:".length)));
 const failureEvidenceFinalizationFailures = new WeakMap();
 const bindFailureEvidenceFinalization = (reason) => {
-  if (!failureEvidenceFinalizationReasons.has(reason)) throw new Error("integration.controller.failure-evidence");
+  if (!validFailureEvidenceFinalizationReason(reason)) throw new Error("integration.controller.failure-evidence");
   const bound = new Error("integration.controller.failure-evidence");
   failureEvidenceFinalizationFailures.set(bound, Object.freeze({ reason }));
   return bound;
 };
 const failureEvidenceFinalizationReason = (error) => error !== null && typeof error === "object" ? failureEvidenceFinalizationFailures.get(error)?.reason : undefined;
 const performFailureEvidenceFinalizationOperation = (reason, operation) => {
-  if (!failureEvidenceFinalizationReasons.has(reason) || typeof operation !== "function") throw new Error("integration.controller.failure-evidence");
+  if (!validFailureEvidenceFinalizationReason(reason) || typeof operation !== "function") throw new Error("integration.controller.failure-evidence");
   try { return operation(); } catch (error) {
     if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
     throw bindFailureEvidenceFinalization(reason);
@@ -193,6 +195,15 @@ const closeFailureEvidenceDescriptor = (descriptor, firstFailure, reason, close 
   try { close(descriptor); return firstFailure; } catch (error) {
     return firstFailure ?? (failureEvidenceFinalizationReason(error) !== undefined ? error : bindFailureEvidenceFinalization(reason));
   }
+};
+const classifyFailureEvidenceOpen = (error) => {
+  const code = error !== null && typeof error === "object" ? error.code : undefined;
+  if (code === "ENOENT") return "missing";
+  if (code === "ELOOP") return "symlink";
+  if (code === "EACCES" || code === "EPERM") return "permission";
+  if (code === "ENOTDIR" || code === "EISDIR") return "identity";
+  if (code === "EMFILE" || code === "ENFILE") return "exhaustion";
+  return "other";
 };
 ${body}`;
 };
@@ -389,6 +400,7 @@ const runFailureVerifier = (
   directory: string,
   fault?: "digest" | "helper" | "identity" | "receipt" | "terminal",
   retire = false,
+  workingDirectory = directory,
 ) => {
   const runnerTemp = mkdtempSync(resolve(directory, "runner-temp-"));
   const bundleOutput = resolve(runnerTemp, "fixture-bundle.json");
@@ -430,7 +442,7 @@ const runFailureVerifier = (
     process.execPath,
     ["--input-type=module", "--eval", fixtureSource],
     {
-      cwd: directory,
+      cwd: workingDirectory,
       env: {
         AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS: String(
           Number(process.hrtime.bigint() / 1_000_000n) + 600_000,
@@ -445,7 +457,12 @@ const runFailureVerifier = (
       },
     },
   );
-  return { bundleOutput, runnerTemp, status: result.status };
+  return {
+    bundleOutput,
+    runnerTemp,
+    status: result.status,
+    stderr: result.stderr,
+  };
 };
 const removeFailureVerifierFixture = (directory: string) => {
   rmSync(directory, { force: true, recursive: true });
@@ -5544,6 +5561,31 @@ describe("integration workflow terminal failure evidence", () => {
 });
 
 describe("integration workflow anonymous failure artifact policy", () => {
+  it("anchors retained evidence to the authenticated workspace instead of the action cwd", () => {
+    const workflow = readFileSync(
+      resolve(workspaceRoot, ".github/workflows/integration.yml"),
+      "utf8",
+    );
+    const source = failureVerifierSource(workflow);
+    const directory = mkdtempSync(
+      resolve(tmpdir(), "agentscope-evidence-root-"),
+    );
+    const runId = "0123456789abcdef";
+    try {
+      writeFailureManifestFixture(directory, [runId]);
+      const run = runFailureVerifier(
+        source,
+        directory,
+        undefined,
+        false,
+        resolve(directory, "tests/integration"),
+      );
+      expect(run.status, run.stderr.toString("utf8")).toBe(0);
+    } finally {
+      removeFailureVerifierFixture(directory);
+    }
+  });
+
   it("hands only a complete canonical sanitized bundle to the same-process uploader", () => {
     const workflow = readFileSync(
       resolve(workspaceRoot, ".github/workflows/integration.yml"),

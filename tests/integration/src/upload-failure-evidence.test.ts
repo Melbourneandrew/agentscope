@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -89,6 +89,16 @@ const exerciseFinalizationFailure =
     primaryPreserved: boolean;
     reason: string | undefined;
   };
+const classifyFinalizationOpen =
+  classifyFailureEvidenceOpenForTest as unknown as (
+    code: string | undefined,
+  ) => string;
+const classifyBootstrapChildTerminal =
+  classifyActionBootstrapChildTerminalForTest as unknown as (result: {
+    error?: { code?: string };
+    signal?: string | null;
+    status?: number | null;
+  }) => string;
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
     environment: NodeJS.ProcessEnv,
@@ -612,12 +622,7 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "artifact-name",
   ])
     expect(validBootstrapPredicate(`invocation:${reason}`)).toBe(true);
-  for (const stage of [
-    "preload-source",
-    "preload-sealer",
-    "spawn",
-    "child-terminal",
-  ])
+  for (const stage of ["preload-source", "preload-sealer", "spawn"])
     expect(validBootstrapPredicate(stage)).toBe(true);
   for (const reason of [
     "results-url",
@@ -654,6 +659,15 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "invocation:argv-shape\n",
     ["invocation:argv-shape"],
     { predicate: "invocation:argv-shape" },
+  ])
+    expect(validBootstrapPredicate(rejected)).toBe(false);
+  for (const reason of ["exit", "signal", "timeout"])
+    expect(validBootstrapPredicate(`child-terminal:${reason}`)).toBe(true);
+  for (const rejected of [
+    "child-terminal",
+    "child-terminal:unknown",
+    "child-terminal:exit:signal",
+    "child-terminal:exit\n",
   ])
     expect(validBootstrapPredicate(rejected)).toBe(false);
 });
@@ -698,6 +712,15 @@ it("binds only closed outer-controller failure stages and preserves first cause"
       stage,
     });
   }
+  for (const reason of [
+    "missing",
+    "symlink",
+    "permission",
+    "identity",
+    "exhaustion",
+    "other",
+  ])
+    expect(validOuterStage(`finalize-evidence:open:${reason}`)).toBe(true);
   for (const rejected of [
     undefined,
     "",
@@ -711,6 +734,35 @@ it("binds only closed outer-controller failure stages and preserves first cause"
     expect(validOuterStage(rejected)).toBe(false);
 });
 
+it("classifies only closed content-free finalization open failures", () => {
+  expect(classifyFinalizationOpen("ENOENT")).toBe("missing");
+  expect(classifyFinalizationOpen("ELOOP")).toBe("symlink");
+  expect(classifyFinalizationOpen("EACCES")).toBe("permission");
+  expect(classifyFinalizationOpen("EPERM")).toBe("permission");
+  expect(classifyFinalizationOpen("ENOTDIR")).toBe("identity");
+  expect(classifyFinalizationOpen("EISDIR")).toBe("identity");
+  expect(classifyFinalizationOpen("EMFILE")).toBe("exhaustion");
+  expect(classifyFinalizationOpen("ENFILE")).toBe("exhaustion");
+  expect(classifyFinalizationOpen("EBADF")).toBe("other");
+  expect(classifyFinalizationOpen(undefined)).toBe("other");
+});
+
+it("classifies child terminal authority without retaining process output", () => {
+  expect(classifyBootstrapChildTerminal({ status: 1, signal: null })).toBe(
+    "exit",
+  );
+  expect(
+    classifyBootstrapChildTerminal({ status: null, signal: "SIGKILL" }),
+  ).toBe("signal");
+  expect(
+    classifyBootstrapChildTerminal({
+      error: { code: "ETIMEDOUT" },
+      signal: "SIGTERM",
+      status: null,
+    }),
+  ).toBe("timeout");
+});
+
 it("latches each reachable finalization reason at its production operation", () => {
   const source = readFileSync(
     resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
@@ -721,7 +773,7 @@ it("latches each reachable finalization reason at its production operation", () 
     source.indexOf("/* eslint-enable complexity, max-lines-per-function */"),
   );
   for (const [mark, operation] of [
-    ['mark("open")', "descriptor = openSync(path"],
+    ['mark("open")', "descriptor = openSync("],
     ['mark("stat")', "const before = fstatSync(descriptor)"],
     ['mark("read")', "const content = readFileSync(descriptor)"],
     ['mark("validation")', "result = { content, status: before }"],

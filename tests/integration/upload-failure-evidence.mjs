@@ -62,6 +62,11 @@ const actionBootstrapStages = new Set([
   "spawn",
   "child-terminal",
 ]);
+const actionBootstrapChildTerminalReasons = new Set([
+  "exit",
+  "signal",
+  "timeout",
+]);
 const actionBootstrapInvocationReasons = new Set([
   "argv-shape",
   "github-actions",
@@ -105,6 +110,14 @@ const failureEvidenceFinalizationReasons = new Set([
   "artifact-upload",
   "retirement",
 ]);
+const failureEvidenceFinalizationOpenReasons = new Set([
+  "missing",
+  "symlink",
+  "permission",
+  "identity",
+  "exhaustion",
+  "other",
+]);
 const outerControllerFailures = new WeakMap();
 const failureEvidenceFinalizationFailures = new WeakMap();
 let actionBootstrapStage = "invocation";
@@ -115,10 +128,15 @@ export const validFailureEvidenceBootstrapPredicate = (value) =>
   typeof value === "string" &&
   ((value !== "invocation" &&
     value !== "artifact-provenance" &&
+    value !== "child-terminal" &&
     actionBootstrapStages.has(value)) ||
     (value.startsWith("invocation:") &&
       actionBootstrapInvocationReasons.has(
         value.slice("invocation:".length),
+      )) ||
+    (value.startsWith("child-terminal:") &&
+      actionBootstrapChildTerminalReasons.has(
+        value.slice("child-terminal:".length),
       )) ||
     (value.startsWith("artifact-provenance:") &&
       (actionBootstrapArtifactProvenanceReasons.has(
@@ -133,15 +151,34 @@ export const validLocalActionMetadata = (value) =>
 const fail = () => {
   throw new Error("integration.controller.failure-evidence-upload");
 };
+const validFailureEvidenceFinalizationReason = (value) =>
+  failureEvidenceFinalizationReasons.has(value) ||
+  (typeof value === "string" &&
+    value.startsWith("open:") &&
+    failureEvidenceFinalizationOpenReasons.has(value.slice("open:".length)));
 export const validOuterControllerStage = (value) =>
   typeof value === "string" &&
   (outerControllerStages.has(value) ||
+    (value.startsWith("finalize-evidence:open:") &&
+      failureEvidenceFinalizationOpenReasons.has(
+        value.slice("finalize-evidence:open:".length),
+      )) ||
     (value.startsWith("finalize-evidence:") &&
       failureEvidenceFinalizationReasons.has(
         value.slice("finalize-evidence:".length),
       )));
+const classifyFailureEvidenceOpen = (error) => {
+  const code =
+    error !== null && typeof error === "object" ? error.code : undefined;
+  if (code === "ENOENT") return "missing";
+  if (code === "ELOOP") return "symlink";
+  if (code === "EACCES" || code === "EPERM") return "permission";
+  if (code === "ENOTDIR" || code === "EISDIR") return "identity";
+  if (code === "EMFILE" || code === "ENFILE") return "exhaustion";
+  return "other";
+};
 const bindFailureEvidenceFinalization = (reason) => {
-  if (!failureEvidenceFinalizationReasons.has(reason)) fail();
+  if (!validFailureEvidenceFinalizationReason(reason)) fail();
   const bound = new Error("integration.controller.failure-evidence");
   failureEvidenceFinalizationFailures.set(bound, Object.freeze({ reason }));
   return bound;
@@ -152,7 +189,7 @@ const failureEvidenceFinalizationReason = (error) =>
     : undefined;
 const performFailureEvidenceFinalizationOperation = (reason, operation) => {
   if (
-    !failureEvidenceFinalizationReasons.has(reason) ||
+    !validFailureEvidenceFinalizationReason(reason) ||
     typeof operation !== "function"
   )
     fail();
@@ -234,6 +271,12 @@ export const exerciseFailureEvidenceFinalizationForTest = (reason) => {
     reason: failureEvidenceFinalizationReason(bound),
   });
 };
+export const classifyFailureEvidenceOpenForTest = (code) =>
+  classifyFailureEvidenceOpen(
+    code === undefined
+      ? new Error("private")
+      : Object.assign(new Error(), { code }),
+  );
 const parseUnsigned = (value, maximum) => {
   if (!/^(?:0|[1-9]\d*)$/u.test(value ?? "")) fail();
   const parsed = Number(value);
@@ -428,11 +471,21 @@ const failureEvidenceBootstrapAnnotation = () => {
     actionBootstrapStage === "invocation" ||
     actionBootstrapStage === "artifact-provenance"
       ? `${actionBootstrapStage}:${actionBootstrapReason}`
-      : actionBootstrapStage;
+      : actionBootstrapStage === "child-terminal"
+        ? `${actionBootstrapStage}:${actionBootstrapReason}`
+        : actionBootstrapStage;
   return validFailureEvidenceBootstrapPredicate(predicate)
     ? `::error::integration.controller.failure-evidence-bootstrap:${predicate}\n`
     : undefined;
 };
+const classifyActionBootstrapChildTerminal = (result) =>
+  result?.error?.code === "ETIMEDOUT"
+    ? "timeout"
+    : result?.signal !== null && result?.signal !== undefined
+      ? "signal"
+      : "exit";
+export const classifyActionBootstrapChildTerminalForTest = (result) =>
+  classifyActionBootstrapChildTerminal(result);
 export const verifyArtifactClientProvenanceForTest = (
   environment,
   afterManifestRead,
@@ -740,7 +793,16 @@ export const finalizeFailureEvidence = async ({
       let result;
       try {
         mark("open");
-        descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          descriptor = openSync(
+            path,
+            constants.O_RDONLY | constants.O_NOFOLLOW,
+          );
+        } catch (error) {
+          throw bindFailureEvidenceFinalization(
+            `open:${classifyFailureEvidenceOpen(error)}`,
+          );
+        }
         mark("stat");
         const before = fstatSync(descriptor);
         if (
@@ -781,7 +843,15 @@ export const finalizeFailureEvidence = async ({
       if (firstFailure !== undefined) throw firstFailure;
       return result;
     };
-    const artifactsRoot = resolve("artifacts/integration");
+    mark("validation");
+    const suppliedWorkspace = process.env.GITHUB_WORKSPACE;
+    if (
+      typeof suppliedWorkspace !== "string" ||
+      !suppliedWorkspace.startsWith("/")
+    )
+      fail();
+    const workspace = realpathSync(suppliedWorkspace);
+    const artifactsRoot = resolve(workspace, "artifacts/integration");
     const runsRoot = resolve(artifactsRoot, "runs");
     const manifestPath = resolve(
       artifactsRoot,
@@ -914,7 +984,7 @@ export const finalizeFailureEvidence = async ({
           manifest.retainedInputs["capability-manifest.json"],
       },
       ["capability-manifest.json"],
-      "tests/integration",
+      resolve(workspace, "tests/integration"),
       0o644,
     );
     const candidate = retainedInputs["current-candidate.json"];
@@ -1721,6 +1791,7 @@ const bootstrapMain = () => {
     },
   );
   actionBootstrapStage = "child-terminal";
+  actionBootstrapReason = classifyActionBootstrapChildTerminal(result);
   revalidateCredentialedSource(source);
   revalidateCredentialedSource(sealer);
   closeSync(source.descriptor);
