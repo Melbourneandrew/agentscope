@@ -2273,65 +2273,73 @@ const observeCgroupSettlement = (
 export const cgroupObservationSettled = (cgroupPath, identity) =>
   observeCgroupSettlement(cgroupPath, identity);
 
+const observeTerminalSystemdUnit = async (
+  state,
+  observeAbsent,
+  observeFacts,
+) => {
+  let beforeAbsent;
+  try {
+    beforeAbsent = observeAbsent();
+  } catch {
+    failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-before");
+  }
+  const facts = await observeFacts();
+  let afterAbsent;
+  try {
+    afterAbsent = observeAbsent();
+  } catch {
+    failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-after");
+  }
+  const mismatch = classifyTerminalSystemdUnitAuthority(
+    facts,
+    state.authority,
+    beforeAbsent,
+    afterAbsent,
+  );
+  if (mismatch !== undefined)
+    failSystemdLifecycle(
+      state,
+      "terminal-wait",
+      mismatch === "cgroup"
+        ? classifyTerminalCgroupTransitionFailure(
+            facts,
+            state.authority,
+            beforeAbsent,
+            afterAbsent,
+          )
+        : `authority-${mismatch}`,
+    );
+  return Object.freeze({ afterAbsent, facts });
+};
+
 const waitForTerminal = async (state) => {
   while (
     !state.interrupted.value &&
     rootToolHasPreparationBudget(state.executionDeadline, performance.now())
   ) {
-    let beforeAbsent;
-    try {
-      beforeAbsent = authenticatedCgroupIsAbsent(
-        state.cgroupPath,
-        state.cgroupIdentity,
-      );
-    } catch {
-      failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-before");
-    }
-    let output;
-    try {
-      output = await showUnitOutput(
-        state.authority.unit,
-        state.executionDeadline,
-        "unit-monitor",
-      );
-    } catch (error) {
-      rethrowAuthenticatedSystemdToolFailure(error);
-      failSystemdLifecycle(state, "terminal-wait", "unit-show");
-    }
-    let facts;
-    try {
-      facts = exactUnitFacts(output);
-    } catch {
-      failSystemdLifecycle(state, "terminal-wait", "unit-parse");
-    }
-    let afterAbsent;
-    try {
-      afterAbsent = authenticatedCgroupIsAbsent(
-        state.cgroupPath,
-        state.cgroupIdentity,
-      );
-    } catch {
-      failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-after");
-    }
-    const mismatch = classifyTerminalSystemdUnitAuthority(
-      facts,
-      state.authority,
-      beforeAbsent,
-      afterAbsent,
+    const { afterAbsent, facts } = await observeTerminalSystemdUnit(
+      state,
+      () => authenticatedCgroupIsAbsent(state.cgroupPath, state.cgroupIdentity),
+      async () => {
+        let output;
+        try {
+          output = await showUnitOutput(
+            state.authority.unit,
+            state.executionDeadline,
+            "unit-monitor",
+          );
+        } catch (error) {
+          rethrowAuthenticatedSystemdToolFailure(error);
+          failSystemdLifecycle(state, "terminal-wait", "unit-show");
+        }
+        try {
+          return exactUnitFacts(output);
+        } catch {
+          failSystemdLifecycle(state, "terminal-wait", "unit-parse");
+        }
+      },
     );
-    if (mismatch !== undefined)
-      failSystemdLifecycle(
-        state,
-        "terminal-wait",
-        mismatch === "cgroup"
-          ? classifyTerminalCgroupTransitionFailure(
-              facts,
-              state.authority,
-              beforeAbsent,
-              afterAbsent,
-            )
-          : `authority-${mismatch}`,
-      );
     if (systemdMainProcessIsTerminal(facts)) {
       state.terminalCgroupAbsent = afterAbsent;
       return facts;
@@ -2339,6 +2347,69 @@ const waitForTerminal = async (state) => {
     await delay(Math.min(50, remainingMilliseconds(state.executionDeadline)));
   }
   return undefined;
+};
+
+export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
+  const authority = Object.freeze({
+    cgroup: "/system.slice/agentscope-test.service",
+    gid: 1001,
+    groups: Object.freeze([4, 1001]),
+    uid: 1001,
+    unit: "agentscope-test.service",
+  });
+  const state = {
+    authority,
+    deadline: 10_000,
+    executionDeadline: 5_000,
+  };
+  const facts = {
+    ActiveState: "active",
+    AmbientCapabilities: "",
+    CapabilityBoundingSet: "",
+    ControlGroup:
+      mode === "transition-other"
+        ? "/system.slice/other.service"
+        : authority.cgroup,
+    Delegate: "no",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
+    Group: "1001",
+    Id: authority.unit,
+    InaccessiblePaths: systemdInaccessiblePaths,
+    KillMode: "control-group",
+    LoadState: "loaded",
+    NoNewPrivileges: "yes",
+    ProtectControlGroups: "yes",
+    RemainAfterExit: "yes",
+    Result: "success",
+    RestrictSUIDSGID: "yes",
+    SubState: "exited",
+    SupplementaryGroups: "4 1001",
+    User: "1001",
+  };
+  let observations = 0;
+  let cleanupAttempts = 0;
+  let failure;
+  try {
+    await observeTerminalSystemdUnit(
+      state,
+      () => {
+        observations += 1;
+        if (mode === "observe-before" && observations === 1) failSystemd();
+        if (mode === "observe-after" && observations === 2) failSystemd();
+        return true;
+      },
+      async () => facts,
+    );
+  } catch (error) {
+    failure = error;
+  } finally {
+    cleanupAttempts += 1;
+  }
+  return Object.freeze({
+    cleanupAttempts,
+    predicate: systemdToolFailureStage(failure),
+  });
 };
 
 const systemdSignal = (unit, signal, deadline) =>

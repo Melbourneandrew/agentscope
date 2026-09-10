@@ -33,6 +33,7 @@ import {
   classifySystemdUnitAuthority,
   classifyTerminalSystemdUnitAuthority,
   classifyTerminalCgroupTransitionFailure,
+  exerciseTerminalCgroupDiagnosticForTesting,
   classifyRetirementSystemdUnitAuthority,
   classifyToolSettlement,
   closeDescriptorSet,
@@ -1234,10 +1235,16 @@ it("observes exact main exit facts before retiring retained descendants", () => 
     supervisor.indexOf("const waitForTerminal ="),
     supervisor.indexOf("const systemdSignal ="),
   );
+  const terminalObservation = supervisor.slice(
+    supervisor.indexOf("const observeTerminalSystemdUnit ="),
+    supervisor.indexOf("const waitForTerminal ="),
+  );
   expect(terminalWait).toContain('"terminal-wait", "unit-show"');
   expect(terminalWait).toContain('"terminal-wait", "unit-parse"');
-  expect(terminalWait).toContain("`authority-${mismatch}`");
-  expect(terminalWait).toContain("classifyTerminalSystemdUnitAuthority(");
+  expect(terminalObservation).toContain("`authority-${mismatch}`");
+  expect(terminalObservation).toContain(
+    "classifyTerminalSystemdUnitAuthority(",
+  );
   expect(terminalWait).toContain(
     "rethrowAuthenticatedSystemdToolFailure(error);",
   );
@@ -3182,6 +3189,27 @@ it("classifies terminal cgroup transition failures without exposing authority va
         afterAbsent,
       ),
     ).toBe("cgroup-transition-other");
+});
+
+it("binds every terminal cgroup diagnostic through one cleanup path", async () => {
+  for (const [mode, reason] of [
+    ["observe-before", "cgroup-observe-before"],
+    ["observe-after", "cgroup-observe-after"],
+    ["transition-retained", "cgroup-transition-retained"],
+    ["transition-other", "cgroup-transition-other"],
+  ] as const)
+    await expect(
+      exerciseTerminalCgroupDiagnosticForTesting(mode),
+    ).resolves.toEqual({
+      cleanupAttempts: 1,
+      predicate: `lifecycle:terminal-wait:${reason}`,
+    });
+  for (const forged of [
+    "lifecycle:terminal-wait:cgroup-observe-before:extra",
+    "lifecycle:terminal-wait:cgroup-observe-unknown",
+    "lifecycle:terminal-wait:cgroup-transition-retained-substituted",
+  ])
+    expect(validSystemdLifecyclePredicate(forged)).toBe(false);
 });
 
 it("preserves authenticated terminal tool failure identity through cleanup", () => {

@@ -74,6 +74,18 @@ export function classifyTerminalCgroupTransitionFailure(
   beforeAbsent: boolean,
   afterAbsent: boolean,
 ): "cgroup-transition-retained" | "cgroup-transition-other";
+export function exerciseTerminalCgroupDiagnosticForTesting(
+  mode:
+    | "observe-before"
+    | "observe-after"
+    | "transition-retained"
+    | "transition-other",
+): Promise<
+  Readonly<{
+    cleanupAttempts: number;
+    predicate: string | undefined;
+  }>
+>;
 export function classifyRetirementSystemdUnitAuthority(
   facts: Readonly<Record<string, string>>,
   authority: Readonly<{
