@@ -800,6 +800,39 @@ export const systemdToolFailureStage = (error) =>
     ? systemdToolFailures.get(error)?.predicate
     : undefined;
 
+const rethrowAuthenticatedSystemdToolFailure = (error) => {
+  if (systemdToolFailureStage(error) !== undefined) throw error;
+};
+
+export const exerciseSystemdToolFailurePreservationForTesting = () => {
+  let authenticated;
+  try {
+    failSystemdTool("client-terminal", "deadline");
+  } catch (error) {
+    authenticated = error;
+  }
+  let cleanupAttempts = 0;
+  let preserved;
+  try {
+    try {
+      rethrowAuthenticatedSystemdToolFailure(authenticated);
+    } finally {
+      cleanupAttempts += 1;
+    }
+  } catch (error) {
+    preserved = error;
+  }
+  const forged = new Error(
+    "integration.controller.systemd-tool:client-terminal:deadline",
+  );
+  rethrowAuthenticatedSystemdToolFailure(forged);
+  return Object.freeze({
+    authenticatedIdentityPreserved: preserved === authenticated,
+    cleanupAttempts,
+    forgedRejected: systemdToolFailureStage(forged) === undefined,
+  });
+};
+
 const rootToolMacInput = ({
   cutoff,
   deadline,
@@ -2215,7 +2248,7 @@ const waitForTerminal = async (state) => {
         "unit-monitor",
       );
     } catch (error) {
-      if (systemdToolFailureStage(error) !== undefined) throw error;
+      rethrowAuthenticatedSystemdToolFailure(error);
       failSystemdLifecycle(state, "terminal-wait", "unit-show");
     }
     let facts;

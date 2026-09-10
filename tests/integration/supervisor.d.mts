@@ -155,10 +155,16 @@ export type SystemdRetirementDiagnosticReason =
 export type SystemdCollectionDiagnosticReason =
   "unit-show" | "unit-facts" | "load-state" | "cgroup-absence";
 
+export type SystemdTerminalWaitAuthorityReason =
+  | "unit-show"
+  | "unit-parse"
+  | SystemdRetirementAuthorityReason;
+
 export type SystemdLifecycleFailurePredicate =
   | `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`
   | `lifecycle:retirement:${
       SystemdRetirementAuthorityReason | SystemdRetirementDiagnosticReason}`
+  | `lifecycle:terminal-wait:${SystemdTerminalWaitAuthorityReason}`
   | `lifecycle:collection:${SystemdCollectionDiagnosticReason}`;
 
 export type SystemdToolFailurePredicate =
@@ -175,6 +181,12 @@ export function validSystemdLifecyclePredicate(
 export function systemdToolFailureStage(
   error: unknown,
 ): SystemdToolFailurePredicate | undefined;
+
+export function exerciseSystemdToolFailurePreservationForTesting(): Readonly<{
+  authenticatedIdentityPreserved: true;
+  cleanupAttempts: 1;
+  forgedRejected: true;
+}>;
 
 export function validateRootToolReceipt(
   input: Readonly<{

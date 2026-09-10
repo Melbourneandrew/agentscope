@@ -29,6 +29,7 @@ import {
   authenticateCgroup,
   cgroupObservationSettled,
   exactPathIsAbsent,
+  exerciseSystemdToolFailurePreservationForTesting,
   classifySystemdUnitAuthority,
   classifyRetirementSystemdUnitAuthority,
   classifyToolSettlement,
@@ -1154,11 +1155,11 @@ it("observes exact main exit facts before retiring retained descendants", () => 
   expect(terminalWait).toContain("`authority-${mismatch}`");
   expect(terminalWait).toContain("classifySystemdUnitAuthority(");
   expect(terminalWait).toContain(
-    "if (systemdToolFailureStage(error) !== undefined) throw error;",
+    "rethrowAuthenticatedSystemdToolFailure(error);",
   );
-  expect(terminalWait.indexOf("systemdToolFailureStage(error)")).toBeLessThan(
-    terminalWait.indexOf('"terminal-wait", "unit-show"'),
-  );
+  expect(
+    terminalWait.indexOf("rethrowAuthenticatedSystemdToolFailure(error)"),
+  ).toBeLessThan(terminalWait.indexOf('"terminal-wait", "unit-show"'));
   expect(terminalWait).toContain("systemdMainProcessIsTerminal(facts)");
   expect(terminalWait).not.toContain(
     'facts.ActiveState === "active" && facts.SubState === "exited"',
@@ -3027,6 +3028,14 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "lifecycle:terminal-wait:unit-show:extra",
   ])
     expect(validSystemdLifecyclePredicate(rejected)).toBe(false);
+});
+
+it("preserves authenticated terminal tool failure identity through cleanup", () => {
+  expect(exerciseSystemdToolFailurePreservationForTesting()).toEqual({
+    authenticatedIdentityPreserved: true,
+    cleanupAttempts: 1,
+    forgedRejected: true,
+  });
 });
 
 it("preserves authenticated root-tool failure authority during collection", () => {
