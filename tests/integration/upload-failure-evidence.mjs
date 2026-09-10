@@ -95,13 +95,14 @@ const outerControllerStages = new Set([
   "descriptor-close",
 ]);
 const failureEvidenceFinalizationReasons = new Set([
-  "write",
   "open",
   "stat",
+  "validation",
+  "write",
   "fsync",
-  "rename",
-  "directory-fsync",
   "child-terminal",
+  "artifact-upload",
+  "retirement",
 ]);
 const outerControllerFailures = new WeakMap();
 const failureEvidenceFinalizationFailures = new WeakMap();
@@ -686,6 +687,8 @@ export const finalizeFailureEvidence = async ({
           value.contractInventorySha256 === installedContractInventorySha256)));
   const readBounded = (path, maximumBytes, expectedMode = 0o600) => {
     let descriptor;
+    let firstFailure;
+    let result;
     try {
       mark("open");
       descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -710,13 +713,27 @@ export const finalizeFailureEvidence = async ({
         fail();
       authenticatedDescriptors.push({ descriptor, path, status: before });
       descriptor = undefined;
-      return { content, status: before };
+      mark("validation");
+      result = { content, status: before };
     } catch (error) {
-      if (failureEvidenceFinalizationReason(error) !== undefined) throw error;
-      throw bindFailureEvidenceFinalization(finalizationReason);
-    } finally {
-      if (descriptor !== undefined) closeSync(descriptor);
+      firstFailure =
+        failureEvidenceFinalizationReason(error) !== undefined
+          ? error
+          : bindFailureEvidenceFinalization(finalizationReason);
     }
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch (error) {
+        if (firstFailure === undefined)
+          firstFailure =
+            failureEvidenceFinalizationReason(error) !== undefined
+              ? error
+              : bindFailureEvidenceFinalization(finalizationReason);
+      }
+    }
+    if (firstFailure !== undefined) throw firstFailure;
+    return result;
   };
   const artifactsRoot = resolve("artifacts/integration");
   const runsRoot = resolve(artifactsRoot, "runs");
@@ -1324,6 +1341,7 @@ export const finalizeFailureEvidence = async ({
     sealer.stdout.toString("utf8") !== '{"status":"sealed"}\n'
   )
     fail();
+  mark("artifact-upload");
   const probe = async (arguments_) => {
     const result = spawnSync(
       "/usr/bin/python3",
@@ -1373,6 +1391,7 @@ export const finalizeFailureEvidence = async ({
     process.stdout.write = originalStdout;
     process.stderr.write = originalStderr;
   }
+  mark("retirement");
   const retireUploadedFailureEvidence = () => {
     for (const authority of authenticatedDescriptors) {
       if (!authority.path.startsWith(`${artifactsRoot}/`)) continue;
@@ -1397,7 +1416,7 @@ export const finalizeFailureEvidence = async ({
     if (readdirSync(runsRoot).length !== 0) fail();
     rmdirSync(runsRoot);
   };
-  retireUploadedFailureEvidence();
+  perform(retireUploadedFailureEvidence);
 };
 /* eslint-enable complexity, max-lines-per-function */
 

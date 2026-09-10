@@ -674,13 +674,14 @@ it("binds only closed outer-controller failure stages and preserves first cause"
     });
   }
   for (const reason of [
-    "write",
     "open",
     "stat",
+    "validation",
+    "write",
     "fsync",
-    "rename",
-    "directory-fsync",
     "child-terminal",
+    "artifact-upload",
+    "retirement",
   ]) {
     const stage = `finalize-evidence:${reason}`;
     expect(validOuterStage(stage)).toBe(true);

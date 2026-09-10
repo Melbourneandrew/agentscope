@@ -159,7 +159,7 @@ import { compileCapabilityManifest, compileIsolationEvidence } from ${JSON.strin
     pathToFileURL(resolve(workspaceRoot, "tests/integration/dist/index.js"))
       .href,
   )};
-const failureEvidenceFinalizationReasons = new Set(["write", "open", "stat", "fsync", "rename", "directory-fsync", "child-terminal"]);
+const failureEvidenceFinalizationReasons = new Set(["open", "stat", "validation", "write", "fsync", "child-terminal", "artifact-upload", "retirement"]);
 const failureEvidenceFinalizationFailures = new WeakMap();
 const bindFailureEvidenceFinalization = (reason) => {
   if (!failureEvidenceFinalizationReasons.has(reason)) throw new Error("integration.controller.failure-evidence");
@@ -397,7 +397,7 @@ const runFailureVerifier = (
     );
   if (!retire)
     fixtureSource = fixtureSource.replace(
-      "retireUploadedFailureEvidence();",
+      "perform(retireUploadedFailureEvidence);",
       "for (const { descriptor } of authenticatedDescriptors.splice(0)) closeSync(descriptor);",
     );
   const result = spawnSync(
