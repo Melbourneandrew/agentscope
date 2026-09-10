@@ -217,18 +217,18 @@ const resolveArtifactClientEntry = (workspace) => {
     verifyRegularDigest(resolve(uploadRoot, name), digest, 64 * 1024);
   }
 };
-const verifyArtifactClientProvenance = () => {
+const verifyArtifactClientProvenance = (environment = process.env) => {
   actionBootstrapReason = "results-url";
-  if (typeof process.env.ACTIONS_RESULTS_URL !== "string") fail();
+  if (typeof environment.ACTIONS_RESULTS_URL !== "string") fail();
   actionBootstrapReason = "runtime-token";
-  if (typeof process.env.ACTIONS_RUNTIME_TOKEN !== "string") fail();
+  if (typeof environment.ACTIONS_RUNTIME_TOKEN !== "string") fail();
   actionBootstrapReason = "workspace";
   if (
-    process.env.GITHUB_SERVER_URL !== "https://github.com" ||
-    typeof process.env.GITHUB_WORKSPACE !== "string"
+    environment.GITHUB_SERVER_URL !== "https://github.com" ||
+    typeof environment.GITHUB_WORKSPACE !== "string"
   )
     fail();
-  const workspace = process.env.GITHUB_WORKSPACE;
+  const workspace = environment.GITHUB_WORKSPACE;
   if (typeof workspace !== "string" || !workspace.startsWith("/")) fail();
   actionBootstrapReason = "patch-digest";
   verifyRegularDigest(
@@ -238,6 +238,31 @@ const verifyArtifactClientProvenance = () => {
   );
   resolveArtifactClientEntry(workspace);
   actionBootstrapReason = "";
+};
+const failureEvidenceBootstrapAnnotation = () => {
+  const predicate =
+    actionBootstrapStage === "invocation" ||
+    actionBootstrapStage === "artifact-provenance"
+      ? `${actionBootstrapStage}:${actionBootstrapReason}`
+      : actionBootstrapStage;
+  return validFailureEvidenceBootstrapPredicate(predicate)
+    ? `::error::integration.controller.failure-evidence-bootstrap:${predicate}\n`
+    : undefined;
+};
+export const verifyArtifactClientProvenanceForTest = (environment) => {
+  const previousStage = actionBootstrapStage;
+  const previousReason = actionBootstrapReason;
+  actionBootstrapStage = "artifact-provenance";
+  actionBootstrapReason = "results-url";
+  try {
+    verifyArtifactClientProvenance(environment);
+    return undefined;
+  } catch {
+    return failureEvidenceBootstrapAnnotation();
+  } finally {
+    actionBootstrapStage = previousStage;
+    actionBootstrapReason = previousReason;
+  }
 };
 
 const uploadFailureEvidenceImplementation = async ({
@@ -1443,15 +1468,8 @@ if (process.argv[1] === "--outer-controller") {
   try {
     bootstrapMain();
   } catch {
-    const predicate =
-      actionBootstrapStage === "invocation" ||
-      actionBootstrapStage === "artifact-provenance"
-        ? `${actionBootstrapStage}:${actionBootstrapReason}`
-        : actionBootstrapStage;
-    if (validFailureEvidenceBootstrapPredicate(predicate))
-      process.stdout.write(
-        `::error::integration.controller.failure-evidence-bootstrap:${predicate}\n`,
-      );
+    const annotation = failureEvidenceBootstrapAnnotation();
+    if (annotation !== undefined) process.stdout.write(annotation);
     process.exitCode = 1;
   }
 }

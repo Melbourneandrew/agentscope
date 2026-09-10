@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
+  mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
@@ -19,7 +20,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -71,6 +72,10 @@ const validBootstrapPredicate =
 const validActionMetadata = validLocalActionMetadata as unknown as (
   value: unknown,
 ) => boolean;
+const verifyArtifactProvenance =
+  verifyArtifactClientProvenanceForTest as unknown as (
+    environment: NodeJS.ProcessEnv,
+  ) => string | undefined;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const invokeBootstrap = (
   entry: string,
@@ -307,7 +312,112 @@ describe("failure evidence uploader", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- The provenance suite keeps the exact fixture and every causal digest boundary together.
 describe("failure evidence upload provenance", () => {
+  it("causally emits every closed artifact-provenance failure", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "agentscope-provenance-"));
+    const sourceEntry = fileURLToPath(import.meta.resolve("@actions/artifact"));
+    const sourcePackageRoot = resolve(sourceEntry, "../..");
+    const patchedNames = [
+      "path-and-artifact-name-validation.js",
+      "stream.js",
+      "upload-artifact.js",
+      "zip.js",
+    ];
+    const packageRoot = resolve(
+      root,
+      "node_modules/.pnpm/@actions+artifact@6.2.1_patch_hash=test/node_modules/@actions/artifact",
+    );
+    const invalidPackageRoot = resolve(root, "invalid-package-root");
+    const actionLink = resolve(
+      root,
+      "tests/integration/node_modules/@actions/artifact",
+    );
+    const patchPath = resolve(root, "patches/@actions__artifact@6.2.1.patch");
+    const writePackage = (target: string) => {
+      mkdirSync(resolve(target, "lib/internal/upload"), { recursive: true });
+      for (const relative of [
+        "package.json",
+        "lib/artifact.js",
+        ...patchedNames.map((name) => `lib/internal/upload/${name}`),
+      ])
+        writeFileSync(
+          resolve(target, relative),
+          readFileSync(resolve(sourcePackageRoot, relative)),
+        );
+    };
+    const annotation = (reason: string) =>
+      `::error::integration.controller.failure-evidence-bootstrap:artifact-provenance:${reason}\n`;
+    const environment = {
+      ACTIONS_RESULTS_URL: "https://results.actions.githubusercontent.com/",
+      ACTIONS_RUNTIME_TOKEN: "token",
+      GITHUB_SERVER_URL: "https://github.com",
+      GITHUB_WORKSPACE: root,
+    };
+    try {
+      mkdirSync(resolve(actionLink, ".."), { recursive: true });
+      mkdirSync(resolve(patchPath, ".."), { recursive: true });
+      writePackage(packageRoot);
+      writePackage(invalidPackageRoot);
+      symlinkSync(packageRoot, actionLink);
+      writeFileSync(
+        patchPath,
+        readFileSync(
+          resolve(workspaceRoot, "patches/@actions__artifact@6.2.1.patch"),
+        ),
+      );
+      expect(verifyArtifactProvenance(environment)).toBeUndefined();
+      expect(
+        verifyArtifactProvenance({
+          ...environment,
+          ACTIONS_RESULTS_URL: undefined,
+        }),
+      ).toBe(annotation("results-url"));
+      expect(
+        verifyArtifactProvenance({
+          ...environment,
+          ACTIONS_RUNTIME_TOKEN: undefined,
+        }),
+      ).toBe(annotation("runtime-token"));
+      expect(
+        verifyArtifactProvenance({
+          ...environment,
+          GITHUB_SERVER_URL: "https://example.invalid",
+        }),
+      ).toBe(annotation("workspace"));
+
+      const assertDigestFailure = (path: string, reason: string) => {
+        const original = readFileSync(path);
+        writeFileSync(path, Buffer.concat([original, Buffer.from("x")]));
+        expect(verifyArtifactProvenance(environment)).toBe(annotation(reason));
+        writeFileSync(path, original);
+      };
+      assertDigestFailure(patchPath, "patch-digest");
+      unlinkSync(actionLink);
+      symlinkSync(invalidPackageRoot, actionLink);
+      expect(verifyArtifactProvenance(environment)).toBe(
+        annotation("package-root"),
+      );
+      unlinkSync(actionLink);
+      symlinkSync(packageRoot, actionLink);
+      assertDigestFailure(
+        resolve(packageRoot, "package.json"),
+        "package-manifest",
+      );
+      assertDigestFailure(
+        resolve(packageRoot, "lib/artifact.js"),
+        "entry-digest",
+      );
+      for (const name of patchedNames)
+        assertDigestFailure(
+          resolve(packageRoot, "lib/internal/upload", name),
+          "patched-file-digest",
+        );
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("pins the artifact client provenance and its narrow retained-FD patch", () => {
     const packageJson = JSON.parse(
       readFileSync(
