@@ -46,6 +46,14 @@ const ARTIFACT_ENTRY_SHA256 =
   "767d73362f34cc323231b614434fa93967110fdd7a7aa807b1a1d2b03a572cd0";
 const ARTIFACT_PACKAGE_SHA256 =
   "e21bb31fa8424754cd03c72278d78a76e50429895a9cb2babf69b4a7ba8f533a";
+const LOCAL_ACTION_METADATA = Buffer.from(
+  "name: Run authenticated integration lifecycle\n" +
+    "description: Run the hermetic lifecycle and retain one sealed failure bundle\n" +
+    "runs:\n" +
+    "  using: node24\n" +
+    "  main: upload-failure-evidence.mjs\n",
+  "utf8",
+);
 const actionBootstrapStages = new Set([
   "invocation",
   "artifact-provenance",
@@ -72,6 +80,8 @@ export const validFailureEvidenceBootstrapPredicate = (value) =>
   ((value !== "invocation" && actionBootstrapStages.has(value)) ||
     (value.startsWith("invocation:") &&
       actionBootstrapInvocationReasons.has(value.slice("invocation:".length))));
+export const validLocalActionMetadata = (value) =>
+  Buffer.isBuffer(value) && value.equals(LOCAL_ACTION_METADATA);
 const fail = () => {
   throw new Error("integration.controller.failure-evidence-upload");
 };
@@ -289,6 +299,42 @@ export const uploadFailureEvidence = async (options) => {
   }
 };
 
+const authenticateLocalAction = (workspace) => {
+  const actionRoot = resolve(workspace, "tests/integration");
+  const expectedEntry = resolve(actionRoot, "upload-failure-evidence.mjs");
+  const actionRootStatus = lstatSync(actionRoot);
+  const moduleRootStatus = lstatSync(import.meta.dirname);
+  if (
+    !actionRootStatus.isDirectory() ||
+    !moduleRootStatus.isDirectory() ||
+    actionRootStatus.dev !== moduleRootStatus.dev ||
+    actionRootStatus.ino !== moduleRootStatus.ino ||
+    realpathSync(actionRoot) !== realpathSync(import.meta.dirname) ||
+    typeof process.argv[1] !== "string" ||
+    resolve(process.argv[1]) !== expectedEntry ||
+    realpathSync(process.argv[1]) !== expectedEntry
+  )
+    fail();
+  const entryStatus = lstatSync(expectedEntry);
+  if (!entryStatus.isFile() || entryStatus.nlink !== 1) fail();
+  const metadataDescriptor = openSync(
+    resolve(actionRoot, "action.yml"),
+    constants.O_RDONLY | constants.O_NOFOLLOW,
+  );
+  try {
+    const metadataStatus = fstatSync(metadataDescriptor);
+    if (
+      !metadataStatus.isFile() ||
+      metadataStatus.nlink !== 1 ||
+      metadataStatus.size !== LOCAL_ACTION_METADATA.length ||
+      !validLocalActionMetadata(readFileSync(metadataDescriptor))
+    )
+      fail();
+  } finally {
+    closeSync(metadataDescriptor);
+  }
+};
+
 const authenticateActionInvocation = () => {
   actionBootstrapReason = "argv-shape";
   if (process.argv.length !== 2) fail();
@@ -298,19 +344,13 @@ const authenticateActionInvocation = () => {
     process.env.GITHUB_SERVER_URL !== "https://github.com"
   )
     fail();
-  actionBootstrapReason = "action-path";
-  if (
-    typeof process.env.GITHUB_ACTION_PATH !== "string" ||
-    realpathSync(process.env.GITHUB_ACTION_PATH) !==
-      realpathSync(import.meta.dirname)
-  )
-    fail();
   actionBootstrapReason = "workspace";
-  if (
-    typeof process.env.GITHUB_WORKSPACE !== "string" ||
-    realpathSync(process.env.GITHUB_WORKSPACE) !== realpathSync(".")
-  )
+  if (typeof process.env.GITHUB_WORKSPACE !== "string") fail();
+  const workspace = process.env.GITHUB_WORKSPACE;
+  if (!workspace.startsWith("/") || realpathSync(workspace) !== workspace)
     fail();
+  actionBootstrapReason = "action-path";
+  authenticateLocalAction(workspace);
   actionBootstrapReason = "results-url";
   let resultsUrl;
   try {

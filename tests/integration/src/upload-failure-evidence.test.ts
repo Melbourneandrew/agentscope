@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -67,18 +68,30 @@ const validBootstrapPredicate =
   validFailureEvidenceBootstrapPredicate as unknown as (
     value: unknown,
   ) => boolean;
+const validActionMetadata = validLocalActionMetadata as unknown as (
+  value: unknown,
+) => boolean;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
 const invokeBootstrap = (
   entry: string,
   additionalArguments: string[],
   environment: NodeJS.ProcessEnv,
+  preserveMain = false,
 ) =>
-  spawnSync(process.execPath, [entry, ...additionalArguments], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-    env: environment,
-    timeout: 10_000,
-  });
+  spawnSync(
+    process.execPath,
+    [
+      ...(preserveMain ? ["--preserve-symlinks-main"] : []),
+      entry,
+      ...additionalArguments,
+    ],
+    {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      env: environment,
+      timeout: 10_000,
+    },
+  );
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
 const fixture = (): {
@@ -425,70 +438,114 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     { predicate: "invocation:argv-shape" },
   ])
     expect(validBootstrapPredicate(rejected)).toBe(false);
+});
 
+it("authenticates the exact closed local action metadata", () => {
+  const metadata = readFileSync(
+    resolve(workspaceRoot, "tests/integration/action.yml"),
+  );
+  expect(validActionMetadata(metadata)).toBe(true);
+  expect(
+    validActionMetadata(
+      Buffer.from(metadata.toString("utf8").replace("node24", "node20")),
+    ),
+  ).toBe(false);
+  expect(
+    validActionMetadata(
+      Buffer.from(
+        metadata
+          .toString("utf8")
+          .replace("upload-failure-evidence.mjs", "alternate.mjs"),
+      ),
+    ),
+  ).toBe(false);
+  expect(
+    validActionMetadata(Buffer.concat([metadata, Buffer.from("x: y\n")])),
+  ).toBe(false);
+});
+
+it("causally classifies every action invocation failure", () => {
   const entry = resolve(
     workspaceRoot,
     "tests/integration/upload-failure-evidence.mjs",
   );
   const actionPath = resolve(workspaceRoot, "tests/integration");
+  const substitutedEntry = resolve(
+    actionPath,
+    `.agentscope-substituted-entry-${process.pid}.mjs`,
+  );
+  symlinkSync(entry, substitutedEntry);
   const validEnvironment = {
     ACTIONS_RESULTS_URL: "https://results.actions.githubusercontent.com/",
     ACTIONS_RUNTIME_TOKEN: "token",
     AGENTSCOPE_FAILURE_ARTIFACT_NAME: "integration-0-of-1-1",
     GITHUB_ACTIONS: "true",
-    GITHUB_ACTION_PATH: actionPath,
     GITHUB_SERVER_URL: "https://github.com",
     GITHUB_WORKSPACE: workspaceRoot,
   };
-  for (const { arguments_: additionalArguments, environment, reason } of [
-    {
-      arguments_: ["unexpected"],
-      environment: validEnvironment,
-      reason: "argv-shape",
-    },
-    { arguments_: [], environment: {}, reason: "github-actions" },
-    {
-      arguments_: [],
-      environment: {
-        ...validEnvironment,
-        GITHUB_ACTION_PATH: resolve(workspaceRoot, "missing-action"),
+  try {
+    for (const {
+      arguments_: additionalArguments,
+      entry: invocationEntry = entry,
+      environment,
+      preserveMain = false,
+      reason,
+    } of [
+      {
+        arguments_: ["unexpected"],
+        environment: validEnvironment,
+        reason: "argv-shape",
       },
-      reason: "action-path",
-    },
-    {
-      arguments_: [],
-      environment: {
-        ...validEnvironment,
-        GITHUB_WORKSPACE: resolve(workspaceRoot, "missing-workspace"),
+      { arguments_: [], environment: {}, reason: "github-actions" },
+      {
+        arguments_: [],
+        entry: substitutedEntry,
+        environment: validEnvironment,
+        preserveMain: true,
+        reason: "action-path",
       },
-      reason: "workspace",
-    },
-    {
-      arguments_: [],
-      environment: { ...validEnvironment, ACTIONS_RESULTS_URL: "://" },
-      reason: "results-url",
-    },
-    {
-      arguments_: [],
-      environment: { ...validEnvironment, ACTIONS_RUNTIME_TOKEN: "" },
-      reason: "runtime-token",
-    },
-    {
-      arguments_: [],
-      environment: {
-        ...validEnvironment,
-        AGENTSCOPE_FAILURE_ARTIFACT_NAME: "substituted",
+      {
+        arguments_: [],
+        environment: {
+          ...validEnvironment,
+          GITHUB_WORKSPACE: resolve(workspaceRoot, "missing-workspace"),
+        },
+        reason: "workspace",
       },
-      reason: "artifact-name",
-    },
-  ]) {
-    const terminal = invokeBootstrap(entry, additionalArguments, environment);
-    expect(terminal, reason).toMatchObject({
-      signal: null,
-      status: 1,
-      stderr: "",
-      stdout: `::error::integration.controller.failure-evidence-bootstrap:invocation:${reason}\n`,
-    });
+      {
+        arguments_: [],
+        environment: { ...validEnvironment, ACTIONS_RESULTS_URL: "://" },
+        reason: "results-url",
+      },
+      {
+        arguments_: [],
+        environment: { ...validEnvironment, ACTIONS_RUNTIME_TOKEN: "" },
+        reason: "runtime-token",
+      },
+      {
+        arguments_: [],
+        environment: {
+          ...validEnvironment,
+          AGENTSCOPE_FAILURE_ARTIFACT_NAME: "substituted",
+        },
+        reason: "artifact-name",
+      },
+    ]) {
+      const terminal = invokeBootstrap(
+        invocationEntry,
+        additionalArguments,
+        environment,
+        preserveMain,
+      );
+      expect(terminal, reason).toMatchObject({
+        signal: null,
+        status: 1,
+        stderr: "",
+        stdout: `::error::integration.controller.failure-evidence-bootstrap:invocation:${reason}\n`,
+      });
+    }
+  } finally {
+    unlinkSync(substitutedEntry);
   }
 });
 
