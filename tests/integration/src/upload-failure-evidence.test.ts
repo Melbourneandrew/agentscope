@@ -457,6 +457,13 @@ describe("failure evidence upload provenance", () => {
         }),
       ).toBe(annotation("package-manifest:identity-read"));
       writeFileSync(manifestPath, manifest);
+      const lateManifestLink = resolve(packageRoot, "late-package-link");
+      expect(
+        verifyArtifactProvenance(environment, () => {
+          linkSync(manifestPath, lateManifestLink);
+        }),
+      ).toBe(annotation("package-manifest:identity-read"));
+      unlinkSync(lateManifestLink);
       assertDigestFailure(
         resolve(packageRoot, "lib/artifact.js"),
         "entry-digest",

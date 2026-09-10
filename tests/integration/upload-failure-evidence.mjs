@@ -208,6 +208,7 @@ const sameManifestIdentity = (left, right) =>
   left.mode === right.mode &&
   left.uid === right.uid &&
   left.gid === right.gid &&
+  left.nlink === right.nlink &&
   left.size === right.size;
 const verifyPackageManifestDigest = (path, afterRead = () => {}) => {
   actionBootstrapReason = "package-manifest:identity-read";
@@ -229,8 +230,12 @@ const verifyPackageManifestDigest = (path, afterRead = () => {}) => {
     actionBootstrapReason = "package-manifest:identity-read";
     const content = readExact(descriptor, status.size);
     afterRead();
-    if (!sameManifestIdentity(status, fstatSync(descriptor))) fail();
-    if (!readExact(descriptor, status.size).equals(content)) fail();
+    const terminalContent = readExact(descriptor, status.size);
+    if (
+      !terminalContent.equals(content) ||
+      !sameManifestIdentity(status, fstatSync(descriptor))
+    )
+      fail();
     actionBootstrapReason = "package-manifest:digest";
     if (
       createHash("sha256").update(content).digest("hex") !==
