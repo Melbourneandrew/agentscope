@@ -109,7 +109,12 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "cgroup-observe-before",
   "cgroup-observe-after",
   "cgroup-transition-retained",
-  "cgroup-transition-other",
+  "cgroup-transition-monotonic-removal-empty",
+  "cgroup-transition-empty-populated",
+  "cgroup-transition-reappeared",
+  "cgroup-transition-third-controlgroup",
+  "cgroup-transition-main-nonterminal",
+  "cgroup-transition-observation-shape",
   "authority-load",
   "authority-identity",
   "authority-cgroup",
@@ -1938,18 +1943,37 @@ export const classifyTerminalSystemdUnitAuthority = (
   return "cgroup";
 };
 
+const validCgroupObservation = (observation) =>
+  typeof observation?.absent === "boolean" &&
+  typeof observation?.empty === "boolean" &&
+  (!observation.absent || observation.empty);
+
 export const classifyTerminalCgroupTransitionFailure = (
   facts,
   authority,
   before,
   after,
-) =>
-  after?.absent === true &&
-  (before?.absent === false || before?.absent === true) &&
-  facts?.ControlGroup === authority?.cgroup &&
-  systemdMainProcessIsTerminal(facts)
-    ? "cgroup-transition-retained"
-    : "cgroup-transition-other";
+) => {
+  if (!validCgroupObservation(before) || !validCgroupObservation(after))
+    return "cgroup-transition-observation-shape";
+  if (!systemdMainProcessIsTerminal(facts))
+    return "cgroup-transition-main-nonterminal";
+  if (facts?.ControlGroup !== authority?.cgroup && facts?.ControlGroup !== "")
+    return "cgroup-transition-third-controlgroup";
+  if (before.absent && !after.absent) return "cgroup-transition-reappeared";
+  if (!before.absent && after.absent && facts.ControlGroup === authority.cgroup)
+    return "cgroup-transition-retained";
+  if (!before.absent && after.absent && facts.ControlGroup === "")
+    return "cgroup-transition-monotonic-removal-empty";
+  if (
+    !before.absent &&
+    !after.absent &&
+    facts.ControlGroup === "" &&
+    (!before.empty || !after.empty)
+  )
+    return "cgroup-transition-empty-populated";
+  return "cgroup-transition-observation-shape";
+};
 
 export const classifyRetirementSystemdUnitAuthority = (
   facts,
@@ -2380,13 +2404,14 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
     ActiveState: "active",
     AmbientCapabilities: "",
     CapabilityBoundingSet: "",
-    ControlGroup:
-      mode === "transition-other"
+    ControlGroup: mode.includes("empty")
+      ? ""
+      : mode === "transition-third-controlgroup"
         ? "/system.slice/other.service"
         : authority.cgroup,
     Delegate: "no",
     ExecMainCode: "1",
-    ExecMainStatus: "0",
+    ExecMainStatus: mode === "transition-main-nonterminal" ? "" : "0",
     Group: "1001",
     Id: authority.unit,
     InaccessiblePaths: systemdInaccessiblePaths,
@@ -2411,8 +2436,19 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
         observations += 1;
         if (mode === "observe-before" && observations === 1) failSystemd();
         if (mode === "observe-after" && observations === 2) failSystemd();
-        if (mode === "transition-retained" && observations === 1)
+        if (
+          (mode === "transition-retained" ||
+            mode === "transition-monotonic-removal-empty" ||
+            mode === "transition-empty-populated") &&
+          observations === 1
+        )
           return Object.freeze({ absent: false, empty: false });
+        if (mode === "transition-empty-populated" && observations === 2)
+          return Object.freeze({ absent: false, empty: false });
+        if (mode === "transition-reappeared" && observations === 2)
+          return Object.freeze({ absent: false, empty: true });
+        if (mode === "transition-observation-shape" && observations === 1)
+          return Object.freeze({ absent: true, empty: false });
         return Object.freeze({ absent: true, empty: true });
       },
       async () => facts,

@@ -73,13 +73,25 @@ export function classifyTerminalCgroupTransitionFailure(
   }>,
   before: Readonly<{ absent: boolean; empty: boolean }>,
   after: Readonly<{ absent: boolean; empty: boolean }>,
-): "cgroup-transition-retained" | "cgroup-transition-other";
+):
+  | "cgroup-transition-retained"
+  | "cgroup-transition-monotonic-removal-empty"
+  | "cgroup-transition-empty-populated"
+  | "cgroup-transition-reappeared"
+  | "cgroup-transition-third-controlgroup"
+  | "cgroup-transition-main-nonterminal"
+  | "cgroup-transition-observation-shape";
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
     | "observe-after"
     | "transition-retained"
-    | "transition-other",
+    | "transition-monotonic-removal-empty"
+    | "transition-empty-populated"
+    | "transition-reappeared"
+    | "transition-third-controlgroup"
+    | "transition-main-nonterminal"
+    | "transition-observation-shape",
 ): Promise<
   Readonly<{
     cleanupAttempts: number;

@@ -3135,7 +3135,12 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "cgroup-observe-before",
     "cgroup-observe-after",
     "cgroup-transition-retained",
-    "cgroup-transition-other",
+    "cgroup-transition-monotonic-removal-empty",
+    "cgroup-transition-empty-populated",
+    "cgroup-transition-reappeared",
+    "cgroup-transition-third-controlgroup",
+    "cgroup-transition-main-nonterminal",
+    "cgroup-transition-observation-shape",
     "authority-load",
     "authority-identity",
     "authority-cgroup",
@@ -3189,28 +3194,55 @@ it("classifies terminal cgroup transition failures without exposing authority va
     User: "1001",
   };
   const absent = { absent: true, empty: true };
-  for (const before of [{ absent: false, empty: false }, absent])
-    expect(
-      classifyTerminalCgroupTransitionFailure(
-        terminal,
-        authority,
-        before,
-        absent,
-      ),
-    ).toBe("cgroup-transition-retained");
-  for (const [facts, before, after] of [
-    [{ ...terminal, ControlGroup: "" }, absent, absent],
-    [terminal, absent, { absent: false, empty: true }],
-    [{ ...terminal, ExecMainStatus: "" }, absent, absent],
+  expect(
+    classifyTerminalCgroupTransitionFailure(
+      terminal,
+      authority,
+      { absent: false, empty: false },
+      absent,
+    ),
+  ).toBe("cgroup-transition-retained");
+  for (const [facts, before, after, reason] of [
+    [
+      { ...terminal, ControlGroup: "" },
+      { absent: false, empty: false },
+      absent,
+      "cgroup-transition-monotonic-removal-empty",
+    ],
+    [
+      { ...terminal, ControlGroup: "" },
+      { absent: false, empty: false },
+      { absent: false, empty: false },
+      "cgroup-transition-empty-populated",
+    ],
+    [
+      terminal,
+      absent,
+      { absent: false, empty: true },
+      "cgroup-transition-reappeared",
+    ],
+    [
+      { ...terminal, ExecMainStatus: "" },
+      absent,
+      absent,
+      "cgroup-transition-main-nonterminal",
+    ],
     [
       { ...terminal, ControlGroup: "/system.slice/other.service" },
       absent,
       absent,
+      "cgroup-transition-third-controlgroup",
+    ],
+    [
+      terminal,
+      { absent: true, empty: false },
+      absent,
+      "cgroup-transition-observation-shape",
     ],
   ] as const)
     expect(
       classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
-    ).toBe("cgroup-transition-other");
+    ).toBe(reason);
 });
 
 it("binds every terminal cgroup diagnostic through one cleanup path", async () => {
@@ -3218,7 +3250,15 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     ["observe-before", "cgroup-observe-before"],
     ["observe-after", "cgroup-observe-after"],
     ["transition-retained", "cgroup-transition-retained"],
-    ["transition-other", "cgroup-transition-other"],
+    [
+      "transition-monotonic-removal-empty",
+      "cgroup-transition-monotonic-removal-empty",
+    ],
+    ["transition-empty-populated", "cgroup-transition-empty-populated"],
+    ["transition-reappeared", "cgroup-transition-reappeared"],
+    ["transition-third-controlgroup", "cgroup-transition-third-controlgroup"],
+    ["transition-main-nonterminal", "cgroup-transition-main-nonterminal"],
+    ["transition-observation-shape", "cgroup-transition-observation-shape"],
   ] as const)
     await expect(
       exerciseTerminalCgroupDiagnosticForTesting(mode),
