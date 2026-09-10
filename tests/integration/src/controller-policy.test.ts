@@ -32,6 +32,7 @@ import {
   exerciseSystemdToolFailurePreservationForTesting,
   classifySystemdUnitAuthority,
   classifyTerminalSystemdUnitAuthority,
+  classifyTerminalCgroupTransitionFailure,
   classifyRetirementSystemdUnitAuthority,
   classifyToolSettlement,
   closeDescriptorSet,
@@ -3102,6 +3103,10 @@ it("admits only closed terminal-wait authority diagnostics", () => {
   for (const reason of [
     "unit-show",
     "unit-parse",
+    "cgroup-observe-before",
+    "cgroup-observe-after",
+    "cgroup-transition-retained",
+    "cgroup-transition-other",
     "authority-load",
     "authority-identity",
     "authority-cgroup",
@@ -3121,6 +3126,62 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "lifecycle:terminal-wait:unit-show:extra",
   ])
     expect(validSystemdLifecyclePredicate(rejected)).toBe(false);
+});
+
+it("classifies terminal cgroup transition failures without exposing authority values", () => {
+  const authority = {
+    cgroup: "/system.slice/agentscope-run.service",
+    gid: 1001,
+    groups: [4, 1001],
+    uid: 1001,
+    unit: "agentscope-run.service",
+  };
+  const terminal = {
+    ActiveState: "active",
+    AmbientCapabilities: "",
+    CapabilityBoundingSet: "",
+    ControlGroup: authority.cgroup,
+    Delegate: "no",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
+    Group: "1001",
+    Id: authority.unit,
+    InaccessiblePaths:
+      "/run/dbus/system_bus_socket /run/systemd/private /run/user /var/run/dbus/system_bus_socket",
+    KillMode: "control-group",
+    LoadState: "loaded",
+    NoNewPrivileges: "yes",
+    ProtectControlGroups: "yes",
+    RemainAfterExit: "yes",
+    Result: "success",
+    RestrictSUIDSGID: "yes",
+    SubState: "exited",
+    SupplementaryGroups: "4 1001",
+    User: "1001",
+  };
+  for (const beforeAbsent of [false, true])
+    expect(
+      classifyTerminalCgroupTransitionFailure(
+        terminal,
+        authority,
+        beforeAbsent,
+        true,
+      ),
+    ).toBe("cgroup-transition-retained");
+  for (const [facts, beforeAbsent, afterAbsent] of [
+    [{ ...terminal, ControlGroup: "" }, true, true],
+    [terminal, true, false],
+    [{ ...terminal, ExecMainStatus: "" }, true, true],
+    [{ ...terminal, ControlGroup: "/system.slice/other.service" }, true, true],
+  ] as const)
+    expect(
+      classifyTerminalCgroupTransitionFailure(
+        facts,
+        authority,
+        beforeAbsent,
+        afterAbsent,
+      ),
+    ).toBe("cgroup-transition-other");
 });
 
 it("preserves authenticated terminal tool failure identity through cleanup", () => {

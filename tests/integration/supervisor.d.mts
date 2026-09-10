@@ -62,6 +62,18 @@ export function classifyTerminalSystemdUnitAuthority(
   beforeAbsent: boolean,
   afterAbsent: boolean,
 ): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
+export function classifyTerminalCgroupTransitionFailure(
+  facts: Readonly<Record<string, string>>,
+  authority: Readonly<{
+    cgroup: string;
+    gid: number;
+    groups: readonly number[];
+    uid: number;
+    unit: string;
+  }>,
+  beforeAbsent: boolean,
+  afterAbsent: boolean,
+): "cgroup-transition-retained" | "cgroup-transition-other";
 export function classifyRetirementSystemdUnitAuthority(
   facts: Readonly<Record<string, string>>,
   authority: Readonly<{

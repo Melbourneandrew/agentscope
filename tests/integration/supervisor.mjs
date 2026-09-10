@@ -106,6 +106,10 @@ const systemdRetirementAuthorityReasons = new Set([
 const systemdTerminalWaitAuthorityReasons = new Set([
   "unit-show",
   "unit-parse",
+  "cgroup-observe-before",
+  "cgroup-observe-after",
+  "cgroup-transition-retained",
+  "cgroup-transition-other",
   "authority-load",
   "authority-identity",
   "authority-cgroup",
@@ -1923,6 +1927,19 @@ export const classifyTerminalSystemdUnitAuthority = (
   return facts.ControlGroup === authority.cgroup ? undefined : "cgroup";
 };
 
+export const classifyTerminalCgroupTransitionFailure = (
+  facts,
+  authority,
+  beforeAbsent,
+  afterAbsent,
+) =>
+  afterAbsent === true &&
+  (beforeAbsent === false || beforeAbsent === true) &&
+  facts?.ControlGroup === authority?.cgroup &&
+  systemdMainProcessIsTerminal(facts)
+    ? "cgroup-transition-retained"
+    : "cgroup-transition-other";
+
 export const classifyRetirementSystemdUnitAuthority = (
   facts,
   authority,
@@ -2268,7 +2285,7 @@ const waitForTerminal = async (state) => {
         state.cgroupIdentity,
       );
     } catch {
-      failSystemdLifecycle(state, "terminal-wait", "authority-cgroup");
+      failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-before");
     }
     let output;
     try {
@@ -2294,7 +2311,7 @@ const waitForTerminal = async (state) => {
         state.cgroupIdentity,
       );
     } catch {
-      failSystemdLifecycle(state, "terminal-wait", "authority-cgroup");
+      failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-after");
     }
     const mismatch = classifyTerminalSystemdUnitAuthority(
       facts,
@@ -2303,7 +2320,18 @@ const waitForTerminal = async (state) => {
       afterAbsent,
     );
     if (mismatch !== undefined)
-      failSystemdLifecycle(state, "terminal-wait", `authority-${mismatch}`);
+      failSystemdLifecycle(
+        state,
+        "terminal-wait",
+        mismatch === "cgroup"
+          ? classifyTerminalCgroupTransitionFailure(
+              facts,
+              state.authority,
+              beforeAbsent,
+              afterAbsent,
+            )
+          : `authority-${mismatch}`,
+      );
     if (systemdMainProcessIsTerminal(facts)) {
       state.terminalCgroupAbsent = afterAbsent;
       return facts;
