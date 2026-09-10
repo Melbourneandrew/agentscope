@@ -2233,6 +2233,8 @@ export const classifySystemdAdmissionMainPid = (
   const value = facts?.MainPID;
   const transient =
     facts?.ActiveState === "activating" || facts?.ActiveState === "active";
+  if (systemdMainProcessIsTerminal(facts))
+    return "main-pid-terminal-unit-state";
   if (expected !== undefined && value !== String(expected))
     return "main-pid-mismatch";
   if (value === undefined || value === "" || value === "0")

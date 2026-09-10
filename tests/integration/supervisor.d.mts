@@ -91,9 +91,16 @@ export function validateMainProcessMembership(input: {
   members: readonly number[];
 }): boolean;
 export function classifySystemdAdmissionMainPid(
-  facts: Readonly<{ ActiveState?: string; MainPID?: string }>,
+  facts: Readonly<{
+    ActiveState?: string;
+    ExecMainCode?: string;
+    ExecMainStatus?: string;
+    MainPID?: string;
+    Result?: string;
+    SubState?: string;
+  }>,
   expected?: number,
-): SystemdUnitAdmissionDiagnosticReason | undefined;
+): SystemdAdmissionMainPidReason | undefined;
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
@@ -221,14 +228,17 @@ export type SystemdUnitAdmissionDiagnosticReason =
   | "unit-facts"
   | SystemdRetirementAuthorityReason
   | "cgroup-authentication"
-  | "main-pid-unavailable"
-  | "main-pid-malformed"
-  | "main-pid-mismatch"
-  | "main-pid-terminal-unit-state"
+  | SystemdAdmissionMainPidReason
   | "main-snapshot-before"
   | "main-members"
   | "main-snapshot-after"
   | "main-identity";
+
+export type SystemdAdmissionMainPidReason =
+  | "main-pid-unavailable"
+  | "main-pid-malformed"
+  | "main-pid-mismatch"
+  | "main-pid-terminal-unit-state";
 
 export type SystemdTerminalWaitCgroupReason =
   | "cgroup-observe-before"

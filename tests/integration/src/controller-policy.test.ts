@@ -25,6 +25,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type {
+  SystemdAdmissionMainPidReason,
   SystemdTerminalWaitCgroupReason,
   SystemdUnitAdmissionDiagnosticReason,
 } from "../supervisor.mjs";
@@ -3496,6 +3497,20 @@ it("binds transient main membership to exact PID and start identity", () => {
 });
 
 it("classifies MainPID admission transitions without widening the deadline", () => {
+  const reasons = [
+    "main-pid-unavailable",
+    "main-pid-malformed",
+    "main-pid-mismatch",
+    "main-pid-terminal-unit-state",
+  ] as const satisfies readonly SystemdAdmissionMainPidReason[];
+  const exhaustive: Exclude<
+    SystemdAdmissionMainPidReason,
+    (typeof reasons)[number]
+  > extends never
+    ? true
+    : false = true;
+  expect(exhaustive).toBe(true);
+  expect(reasons).toHaveLength(4);
   for (const activeState of ["activating", "active"]) {
     expect(classifySystemdAdmissionMainPid({ ActiveState: activeState })).toBe(
       "main-pid-unavailable",
@@ -3528,6 +3543,16 @@ it("classifies MainPID admission transitions without widening the deadline", () 
         MainPID: "0",
       }),
     ).toBe("main-pid-terminal-unit-state");
+  expect(
+    classifySystemdAdmissionMainPid({
+      ActiveState: "active",
+      ExecMainCode: "1",
+      ExecMainStatus: "0",
+      MainPID: "0",
+      Result: "success",
+      SubState: "exited",
+    }),
+  ).toBe("main-pid-terminal-unit-state");
   expect(
     classifySystemdAdmissionMainPid({ ActiveState: "active", MainPID: "712" }),
   ).toBeUndefined();
