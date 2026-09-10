@@ -2705,7 +2705,15 @@ const observeTerminalSystemdUnit = async (
     after = observeCgroup();
   } catch (error) {
     const reason = classifyCgroupObservationFailure(error);
-    if (reason === "unit-not-found" && facts?.LoadState === "not-found") {
+    if (
+      reason === "unit-not-found" &&
+      facts?.LoadState === "loaded" &&
+      systemdMainProcessIsTerminal(facts) &&
+      classifySystemdUnitAuthority(
+        { ...facts, ControlGroup: state.authority.cgroup },
+        state.authority,
+      ) === undefined
+    ) {
       try {
         after = recoverRemoved();
         removedTransition = true;
@@ -2725,12 +2733,7 @@ const observeTerminalSystemdUnit = async (
     }
   }
   if (removedTransition) {
-    if (
-      facts.Id !== state.authority.unit ||
-      !systemdMainProcessIsTerminal(facts) ||
-      !after.absent ||
-      !after.empty
-    )
+    if (facts.Id !== state.authority.unit || !after.absent || !after.empty)
       failSystemdLifecycle(
         state,
         "terminal-wait",
@@ -2844,10 +2847,7 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
     Id: authority.unit,
     InaccessiblePaths: systemdInaccessiblePaths,
     KillMode: "control-group",
-    LoadState:
-      mode === "observe-after-unit-not-found-transition"
-        ? "not-found"
-        : "loaded",
+    LoadState: mode === "observe-after-error-missing" ? "not-found" : "loaded",
     NoNewPrivileges: "yes",
     ProtectControlGroups: "yes",
     RemainAfterExit: "yes",
@@ -2868,6 +2868,11 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       const errorCode = syntheticCgroupObservationErrorCodes[mode];
       if (observations === 2 && errorCode !== undefined)
         throw Object.assign(new Error("private"), { code: errorCode });
+      if (
+        observations === 1 &&
+        mode === "observe-after-unit-not-found-transition"
+      )
+        return Object.freeze({ absent: false, empty: false, members: [712] });
       if (
         (mode === "transition-retained-empty" ||
           mode === "transition-retained-populated" ||
@@ -3407,19 +3412,22 @@ const observeSystemdTerminal = async (state) => {
 const authenticateTerminalSystemdUnit = async (state, terminal) => {
   state.lifecyclePhase = "unit-authoritative";
   try {
-    const before = observeAuthenticatedCgroup(
-      state.cgroupPath,
-      state.cgroupIdentity,
-    );
+    const observe =
+      state.terminalUnitRemoved === true
+        ? () =>
+            authenticateRemovedCgroupPaths(
+              state.cgroupPath,
+              state.cgroupIdentity,
+            )
+        : () =>
+            observeAuthenticatedCgroup(state.cgroupPath, state.cgroupIdentity);
+    const before = observe();
     const authoritative = await showUnit(
       state.authority.unit,
       state.executionDeadline,
       "unit-authoritative",
     );
-    const after = observeAuthenticatedCgroup(
-      state.cgroupPath,
-      state.cgroupIdentity,
-    );
+    const after = observe();
     if (state.terminalUnitRemoved === true) {
       if (
         !before.absent ||
