@@ -1974,7 +1974,10 @@ export const classifyRetirementSystemdUnitAuthority = (
     authority,
   );
   if (immutableMismatch !== undefined) return immutableMismatch;
-  if (before.absent) return facts.ControlGroup === "" ? undefined : "cgroup";
+  if (before.absent)
+    return facts.ControlGroup === "" || facts.ControlGroup === authority.cgroup
+      ? undefined
+      : "cgroup";
   return facts.ControlGroup === authority.cgroup ? undefined : "cgroup";
 };
 
@@ -2408,6 +2411,8 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
         observations += 1;
         if (mode === "observe-before" && observations === 1) failSystemd();
         if (mode === "observe-after" && observations === 2) failSystemd();
+        if (mode === "transition-retained" && observations === 1)
+          return Object.freeze({ absent: false, empty: false });
         return Object.freeze({ absent: true, empty: true });
       },
       async () => facts,

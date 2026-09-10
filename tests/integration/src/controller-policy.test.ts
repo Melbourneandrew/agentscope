@@ -840,9 +840,11 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
       absent,
     ),
   ).toBeUndefined();
+  expect(
+    classifyRetirementSystemdUnitAuthority(facts, authority, absent, absent),
+  ).toBeUndefined();
   for (const [before, after, controlGroup] of [
     [present, present, ""],
-    [absent, absent, authority.cgroup],
     [present, absent, ""],
     [absent, present, ""],
     [present, { absent: false, empty: false }, authority.cgroup],
@@ -947,14 +949,20 @@ it("carries terminal cgroup disappearance into retirement", () => {
     expect(
       classifyTerminalSystemdUnitAuthority(terminal, authority, absent, absent),
     ).toBeUndefined();
-  expect(
-    classifyRetirementSystemdUnitAuthority(
-      terminal,
-      authority,
-      { absent: true, empty: true },
-      { absent: true, empty: true },
-    ),
-  ).toBeUndefined();
+  for (const controlGroup of ["", authority.cgroup]) {
+    const retained = { ...terminal, ControlGroup: controlGroup };
+    expect(
+      classifyTerminalSystemdUnitAuthority(retained, authority, absent, absent),
+    ).toBeUndefined();
+    expect(
+      classifyRetirementSystemdUnitAuthority(
+        retained,
+        authority,
+        absent,
+        absent,
+      ),
+    ).toBeUndefined();
+  }
 });
 
 it("treats a retired cgroup disappearance only as input to collection proof", () => {
@@ -3209,6 +3217,7 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
   for (const [mode, reason] of [
     ["observe-before", "cgroup-observe-before"],
     ["observe-after", "cgroup-observe-after"],
+    ["transition-retained", "cgroup-transition-retained"],
     ["transition-other", "cgroup-transition-other"],
   ] as const)
     await expect(
@@ -3217,9 +3226,6 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       cleanupAttempts: 1,
       predicate: `lifecycle:terminal-wait:${reason}`,
     });
-  await expect(
-    exerciseTerminalCgroupDiagnosticForTesting("transition-retained"),
-  ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   for (const forged of [
     "lifecycle:terminal-wait:cgroup-observe-before:extra",
     "lifecycle:terminal-wait:cgroup-observe-unknown",
