@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 const initializeRuntime =
   initializeFailureEvidenceRuntimeForTest as unknown as () => Promise<void>;
@@ -98,6 +98,7 @@ const exerciseAuthenticatedChildTerminalSettlement =
   exerciseAuthenticatedChildTerminalSettlementForTest as unknown as (
     predicate: string,
     closeFailure: boolean,
+    zeroExit?: boolean,
   ) => string | undefined;
 const validActionMetadata = validLocalActionMetadata as unknown as (
   value: unknown,
@@ -127,6 +128,13 @@ const classifyBootstrapChildTerminal =
     signal?: string | null;
     status?: number | null;
   }) => string | undefined;
+const classifyBootstrapSpawnFailure =
+  classifyChildBootstrapSpawnFailureForTest as unknown as (value: {
+    childBootstrapStage?: string;
+    childBootstrapTerminal?: string;
+    childTerminalReason?: string;
+    result: { error?: unknown; status?: number | null };
+  }) => boolean;
 const exerciseBootstrapSettlement =
   exerciseActionBootstrapSettlementForTest as unknown as (
     fault:
@@ -959,6 +967,16 @@ it("MAC-binds each closed child terminal predicate into the bootstrap envelope",
     expect(exerciseAuthenticatedChildTerminalSettlement(predicate, true)).toBe(
       `::error::integration.controller.${predicate}\n`,
     );
+    expect(
+      exerciseAuthenticatedChildTerminalSettlement(predicate, false, true),
+    ).toBe(`::error::integration.controller.${predicate}\n`);
+    expect(
+      classifyBootstrapSpawnFailure({
+        childBootstrapStage: "controller-entry",
+        childBootstrapTerminal: predicate,
+        result: { status: 0 },
+      }),
+    ).toBe(true);
   }
   for (const stage of [
     "startup",

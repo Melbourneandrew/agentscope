@@ -772,6 +772,16 @@ const classifyActionBootstrapChildTerminal = (result) =>
             ? "exit-one"
             : "exit-other"
           : undefined;
+const classifyChildBootstrapSpawnFailure = ({
+  childBootstrapStage,
+  childBootstrapTerminal,
+  childTerminalReason,
+  result,
+}) =>
+  childBootstrapTerminal !== undefined ||
+  (childTerminalReason === undefined &&
+    (result.error !== undefined || !Number.isSafeInteger(result.status))) ||
+  (result.status === 0 && childBootstrapStage !== "controller-entry");
 
 export const exerciseChildBootstrapReceiptsForTest = (
   fault,
@@ -840,6 +850,8 @@ export const initializeFailureEvidenceRuntimeForTest = () =>
   loadRuntimeDependencies();
 export const classifyActionBootstrapChildTerminalForTest = (result) =>
   classifyActionBootstrapChildTerminal(result);
+export const classifyChildBootstrapSpawnFailureForTest = (value) =>
+  classifyChildBootstrapSpawnFailure(value);
 export const verifyArtifactClientProvenanceForTest = (
   environment,
   afterManifestRead,
@@ -2182,6 +2194,7 @@ export const exerciseActionBootstrapSettlementForTest = (
 export const exerciseAuthenticatedChildTerminalSettlementForTest = (
   predicate,
   closeFailure,
+  zeroExit = false,
 ) => {
   const previousAnnotation = authenticatedChildFailureAnnotation;
   authenticatedChildFailureAnnotation = validChildBootstrapTerminal(predicate)
@@ -2190,14 +2203,14 @@ export const exerciseAuthenticatedChildTerminalSettlementForTest = (
   try {
     settleActionBootstrapDescriptors({
       childBootstrapStage: "controller-entry",
-      childTerminalReason: "exit-one",
+      childTerminalReason: zeroExit ? undefined : "exit-one",
       close: () => {
         if (closeFailure) throw new Error("private");
       },
       revalidate: () => undefined,
       sealer: { descriptor: 4 },
       source: { descriptor: 3 },
-      spawnFailure: false,
+      spawnFailure: zeroExit,
     });
   } catch {
     return selectedFailureEvidenceBootstrapAnnotation();
@@ -2382,10 +2395,12 @@ const bootstrapMain = async () => {
     childBootstrapTerminal,
   );
   const childTerminalReason = classifyActionBootstrapChildTerminal(result);
-  const spawnFailure =
-    (childTerminalReason === undefined &&
-      (result.error !== undefined || !Number.isSafeInteger(result.status))) ||
-    (result.status === 0 && childBootstrapStage !== "controller-entry");
+  const spawnFailure = classifyChildBootstrapSpawnFailure({
+    childBootstrapStage,
+    childBootstrapTerminal,
+    childTerminalReason,
+    result,
+  });
   if (
     childBootstrapStage !== undefined &&
     (childTerminalReason !== undefined || spawnFailure)
