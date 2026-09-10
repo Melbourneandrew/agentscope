@@ -59,8 +59,8 @@ export function classifyTerminalSystemdUnitAuthority(
     uid: number;
     unit: string;
   }>,
-  beforeAbsent: boolean,
-  afterAbsent: boolean,
+  before: Readonly<{ absent: boolean; empty: boolean }>,
+  after: Readonly<{ absent: boolean; empty: boolean }>,
 ): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
 export function classifyTerminalCgroupTransitionFailure(
   facts: Readonly<Record<string, string>>,
@@ -71,8 +71,8 @@ export function classifyTerminalCgroupTransitionFailure(
     uid: number;
     unit: string;
   }>,
-  beforeAbsent: boolean,
-  afterAbsent: boolean,
+  before: Readonly<{ absent: boolean; empty: boolean }>,
+  after: Readonly<{ absent: boolean; empty: boolean }>,
 ): "cgroup-transition-retained" | "cgroup-transition-other";
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:

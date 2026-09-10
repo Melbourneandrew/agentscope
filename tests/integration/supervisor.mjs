@@ -1909,32 +1909,43 @@ export const classifySystemdUnitAuthority = (facts, authority) => {
 export const classifyTerminalSystemdUnitAuthority = (
   facts,
   authority,
-  beforeAbsent,
-  afterAbsent,
+  before,
+  after,
 ) => {
-  if (typeof beforeAbsent !== "boolean" || typeof afterAbsent !== "boolean")
+  if (
+    typeof before?.absent !== "boolean" ||
+    typeof before?.empty !== "boolean" ||
+    typeof after?.absent !== "boolean" ||
+    typeof after?.empty !== "boolean" ||
+    (before.absent && !before.empty) ||
+    (after.absent && !after.empty)
+  )
     return "cgroup";
   const immutableMismatch = classifySystemdUnitAuthority(
     { ...facts, ControlGroup: authority.cgroup },
     authority,
   );
   if (immutableMismatch !== undefined) return immutableMismatch;
-  if (afterAbsent)
-    return facts.ControlGroup === "" && systemdMainProcessIsTerminal(facts)
+  if (!systemdMainProcessIsTerminal(facts)) return "cgroup";
+  const stableAbsent = before.absent && after.absent;
+  const stablePresent = !before.absent && !after.absent;
+  if (facts.ControlGroup === authority.cgroup)
+    return stableAbsent || stablePresent ? undefined : "cgroup";
+  if (facts.ControlGroup === "")
+    return stableAbsent || (stablePresent && before.empty && after.empty)
       ? undefined
       : "cgroup";
-  if (beforeAbsent) return "cgroup";
-  return facts.ControlGroup === authority.cgroup ? undefined : "cgroup";
+  return "cgroup";
 };
 
 export const classifyTerminalCgroupTransitionFailure = (
   facts,
   authority,
-  beforeAbsent,
-  afterAbsent,
+  before,
+  after,
 ) =>
-  afterAbsent === true &&
-  (beforeAbsent === false || beforeAbsent === true) &&
+  after?.absent === true &&
+  (before?.absent === false || before?.absent === true) &&
   facts?.ControlGroup === authority?.cgroup &&
   systemdMainProcessIsTerminal(facts)
     ? "cgroup-transition-retained"
@@ -2275,27 +2286,27 @@ export const cgroupObservationSettled = (cgroupPath, identity) =>
 
 const observeTerminalSystemdUnit = async (
   state,
-  observeAbsent,
+  observeCgroup,
   observeFacts,
 ) => {
-  let beforeAbsent;
+  let before;
   try {
-    beforeAbsent = observeAbsent();
+    before = observeCgroup();
   } catch {
     failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-before");
   }
   const facts = await observeFacts();
-  let afterAbsent;
+  let after;
   try {
-    afterAbsent = observeAbsent();
+    after = observeCgroup();
   } catch {
     failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-after");
   }
   const mismatch = classifyTerminalSystemdUnitAuthority(
     facts,
     state.authority,
-    beforeAbsent,
-    afterAbsent,
+    before,
+    after,
   );
   if (mismatch !== undefined)
     failSystemdLifecycle(
@@ -2305,12 +2316,12 @@ const observeTerminalSystemdUnit = async (
         ? classifyTerminalCgroupTransitionFailure(
             facts,
             state.authority,
-            beforeAbsent,
-            afterAbsent,
+            before,
+            after,
           )
         : `authority-${mismatch}`,
     );
-  return Object.freeze({ afterAbsent, facts });
+  return Object.freeze({ after, facts });
 };
 
 const waitForTerminal = async (state) => {
@@ -2318,9 +2329,9 @@ const waitForTerminal = async (state) => {
     !state.interrupted.value &&
     rootToolHasPreparationBudget(state.executionDeadline, performance.now())
   ) {
-    const { afterAbsent, facts } = await observeTerminalSystemdUnit(
+    const { after, facts } = await observeTerminalSystemdUnit(
       state,
-      () => authenticatedCgroupIsAbsent(state.cgroupPath, state.cgroupIdentity),
+      () => observeAuthenticatedCgroup(state.cgroupPath, state.cgroupIdentity),
       async () => {
         let output;
         try {
@@ -2341,7 +2352,7 @@ const waitForTerminal = async (state) => {
       },
     );
     if (systemdMainProcessIsTerminal(facts)) {
-      state.terminalCgroupAbsent = afterAbsent;
+      state.terminalCgroupObservation = after;
       return facts;
     }
     await delay(Math.min(50, remainingMilliseconds(state.executionDeadline)));
@@ -2397,7 +2408,7 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
         observations += 1;
         if (mode === "observe-before" && observations === 1) failSystemd();
         if (mode === "observe-after" && observations === 2) failSystemd();
-        return true;
+        return Object.freeze({ absent: true, empty: true });
       },
       async () => facts,
     );
@@ -2657,7 +2668,7 @@ export const prepareGithubSystemdSupervision = async ({
     retirementDiagnosticReason: undefined,
     stdio: suppliedStdio,
     cgroupIdentity: undefined,
-    terminalCgroupAbsent: undefined,
+    terminalCgroupObservation: undefined,
     unitMayExist: false,
   };
   try {
@@ -2797,7 +2808,7 @@ const observeSystemdTerminal = async (state) => {
 const authenticateTerminalSystemdUnit = async (state, terminal) => {
   state.lifecyclePhase = "unit-authoritative";
   try {
-    const beforeAbsent = authenticatedCgroupIsAbsent(
+    const before = observeAuthenticatedCgroup(
       state.cgroupPath,
       state.cgroupIdentity,
     );
@@ -2806,25 +2817,28 @@ const authenticateTerminalSystemdUnit = async (state, terminal) => {
       state.executionDeadline,
       "unit-authoritative",
     );
-    const afterAbsent = authenticatedCgroupIsAbsent(
+    const after = observeAuthenticatedCgroup(
       state.cgroupPath,
       state.cgroupIdentity,
     );
-    if (state.terminalCgroupAbsent === true && (!beforeAbsent || !afterAbsent))
+    if (
+      state.terminalCgroupObservation?.absent === true &&
+      (!before.absent || !after.absent)
+    )
       failSystemd();
     const mismatch = classifyTerminalSystemdUnitAuthority(
       authoritative,
       state.authority,
-      beforeAbsent,
-      afterAbsent,
+      before,
+      after,
     );
     if (mismatch !== undefined) failSystemd();
     const expectedCode = parseSystemdMainExitStatus(terminal);
     const authoritativeCode = parseSystemdMainExitStatus(authoritative);
     if (expectedCode === undefined || authoritativeCode !== expectedCode)
       failSystemd();
-    state.terminalCgroupAbsent = afterAbsent;
-    if (!afterAbsent)
+    state.terminalCgroupObservation = after;
+    if (!after.absent)
       recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");

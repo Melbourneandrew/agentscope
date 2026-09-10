@@ -900,41 +900,52 @@ it("carries terminal cgroup disappearance into retirement", () => {
     SupplementaryGroups: "4 1001",
     User: "1001",
   };
-  for (const beforeAbsent of [false, true])
-    expect(
-      classifyTerminalSystemdUnitAuthority(
-        terminal,
-        authority,
-        beforeAbsent,
-        true,
-      ),
-    ).toBeUndefined();
-  for (const [beforeAbsent, afterAbsent, controlGroup] of [
-    [false, false, ""],
-    [true, false, authority.cgroup],
-    [true, true, authority.cgroup],
-    [false, true, authority.cgroup],
-    [true, true, "/system.slice/agentscope-other.service"],
+  const absent = { absent: true, empty: true };
+  const presentEmpty = { absent: false, empty: true };
+  const presentPopulated = { absent: false, empty: false };
+  for (const [controlGroup, before, after] of [
+    [authority.cgroup, presentPopulated, presentPopulated],
+    [authority.cgroup, absent, absent],
+    ["", absent, absent],
+    ["", presentEmpty, presentEmpty],
   ] as const)
     expect(
       classifyTerminalSystemdUnitAuthority(
         { ...terminal, ControlGroup: controlGroup },
         authority,
-        beforeAbsent,
-        afterAbsent,
+        before,
+        after,
+      ),
+    ).toBeUndefined();
+  for (const [before, after, controlGroup] of [
+    [presentPopulated, presentPopulated, ""],
+    [presentEmpty, absent, ""],
+    [absent, presentEmpty, ""],
+    [presentPopulated, absent, authority.cgroup],
+    [absent, presentEmpty, authority.cgroup],
+    [absent, absent, "/system.slice/agentscope-other.service"],
+    [{ absent: true, empty: false }, absent, ""],
+    [absent, { absent: true, empty: false }, ""],
+  ] as const)
+    expect(
+      classifyTerminalSystemdUnitAuthority(
+        { ...terminal, ControlGroup: controlGroup },
+        authority,
+        before,
+        after,
       ),
     ).toBe("cgroup");
   expect(
     classifyTerminalSystemdUnitAuthority(
       { ...terminal, ExecMainStatus: "" },
       authority,
-      true,
-      true,
+      absent,
+      absent,
     ),
   ).toBe("cgroup");
   for (let phase = 0; phase < 2; phase += 1)
     expect(
-      classifyTerminalSystemdUnitAuthority(terminal, authority, true, true),
+      classifyTerminalSystemdUnitAuthority(terminal, authority, absent, absent),
     ).toBeUndefined();
   expect(
     classifyRetirementSystemdUnitAuthority(
@@ -1262,9 +1273,12 @@ it("observes exact main exit facts before retiring retained descendants", () => 
   expect(terminalAuthority).toContain("classifyTerminalSystemdUnitAuthority(");
   expect(terminalAuthority).toContain("authoritativeCode !== expectedCode");
   expect(terminalAuthority).toContain(
-    "state.terminalCgroupAbsent = afterAbsent;",
+    "state.terminalCgroupObservation = after;",
   );
-  expect(terminalAuthority).toContain("if (!afterAbsent)");
+  expect(terminalAuthority).toContain("if (!after.absent)");
+  expect(terminalWait).toContain(
+    "observeAuthenticatedCgroup(state.cgroupPath, state.cgroupIdentity)",
+  );
 });
 
 it("binds the root-mediated PID 1 probe to one stable manager identity", () => {
@@ -3166,28 +3180,28 @@ it("classifies terminal cgroup transition failures without exposing authority va
     SupplementaryGroups: "4 1001",
     User: "1001",
   };
-  for (const beforeAbsent of [false, true])
+  const absent = { absent: true, empty: true };
+  for (const before of [{ absent: false, empty: false }, absent])
     expect(
       classifyTerminalCgroupTransitionFailure(
         terminal,
         authority,
-        beforeAbsent,
-        true,
+        before,
+        absent,
       ),
     ).toBe("cgroup-transition-retained");
-  for (const [facts, beforeAbsent, afterAbsent] of [
-    [{ ...terminal, ControlGroup: "" }, true, true],
-    [terminal, true, false],
-    [{ ...terminal, ExecMainStatus: "" }, true, true],
-    [{ ...terminal, ControlGroup: "/system.slice/other.service" }, true, true],
+  for (const [facts, before, after] of [
+    [{ ...terminal, ControlGroup: "" }, absent, absent],
+    [terminal, absent, { absent: false, empty: true }],
+    [{ ...terminal, ExecMainStatus: "" }, absent, absent],
+    [
+      { ...terminal, ControlGroup: "/system.slice/other.service" },
+      absent,
+      absent,
+    ],
   ] as const)
     expect(
-      classifyTerminalCgroupTransitionFailure(
-        facts,
-        authority,
-        beforeAbsent,
-        afterAbsent,
-      ),
+      classifyTerminalCgroupTransitionFailure(facts, authority, before, after),
     ).toBe("cgroup-transition-other");
 });
 
@@ -3195,7 +3209,6 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
   for (const [mode, reason] of [
     ["observe-before", "cgroup-observe-before"],
     ["observe-after", "cgroup-observe-after"],
-    ["transition-retained", "cgroup-transition-retained"],
     ["transition-other", "cgroup-transition-other"],
   ] as const)
     await expect(
@@ -3204,6 +3217,9 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       cleanupAttempts: 1,
       predicate: `lifecycle:terminal-wait:${reason}`,
     });
+  await expect(
+    exerciseTerminalCgroupDiagnosticForTesting("transition-retained"),
+  ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   for (const forged of [
     "lifecycle:terminal-wait:cgroup-observe-before:extra",
     "lifecycle:terminal-wait:cgroup-observe-unknown",
