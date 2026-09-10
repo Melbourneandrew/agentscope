@@ -2367,6 +2367,17 @@ if result!=expected_result: sys.exit(18)`,
   },
 );
 
+const syntheticClientRunGlobalBoundary =
+  "def run(argv,cutoff,operation_stage):\n global STAGE,REASON\n";
+const syntheticClientSpawnBoundary =
+  '  child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)\n';
+const syntheticGatedChildSource = [
+  "import json,os,sys",
+  'if sys.stdin.buffer.read(1)!=b"x": sys.exit(125)',
+  "args=json.loads(sys.argv[1])",
+  'os.execve(args[0],args,{"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"})',
+].join("\n");
+
 const synchronizeSyntheticClientDeadlines = (helper: string) => {
   const deadlineArm =
     " DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); OPERATION=sys.argv[3]\n tool=sys.argv[4]; raw=sys.argv[5]; unit=sys.argv[6]; KEY=sys.argv[7]\n";
@@ -2378,17 +2389,33 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       "  DEADLINE=armed+2000000000\n" +
       "  CUTOFF=armed+2000000000\n" +
       " TEST_READY=False\n" +
+      " TEST_CHILD=None\n" +
       " def test_ready(leader,expected):\n" +
-      "  global TEST_READY\n" +
+      "  global TEST_READY,TEST_CHILD\n" +
       '  if TEST_READY: raise RuntimeError("readiness")\n' +
+      '  if TEST_CHILD is None or TEST_CHILD.stdin is None: raise RuntimeError("readiness")\n' +
       '  os.write(3,(str(leader)+":"+str(expected[0])+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
+      '  TEST_CHILD.stdin.write(b"x")\n' +
+      "  TEST_CHILD.stdin.flush()\n" +
+      "  TEST_CHILD.stdin.close()\n" +
       "  TEST_READY=True\n",
+  );
+  const syntheticRunHelper = readinessSynchronizedHelper.replace(
+    syntheticClientRunGlobalBoundary,
+    "def run(argv,cutoff,operation_stage):\n global STAGE,REASON,TEST_CHILD\n",
+  );
+  const gatedChildHelper = syntheticRunHelper.replace(
+    syntheticClientSpawnBoundary,
+    '  if OPERATION.startswith("synthetic-client-"):\n' +
+      `   argv=["/usr/bin/python3","-I","-S","-c",${JSON.stringify(syntheticGatedChildSource)},json.dumps(argv,separators=(",",":"))]\n` +
+      '  child=subprocess.Popen(argv,stdin=subprocess.PIPE if OPERATION.startswith("synthetic-client-") else subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)\n' +
+      '  if OPERATION.startswith("synthetic-client-"): TEST_CHILD=child\n',
   );
   const groupEstablishedBoundary =
     " leader,expected,control=create_group()\n child=None\n";
   const childAdmissionBoundary =
     '  child_record=None if OPERATION=="synthetic-client-child-admission" else process_record(child.pid)\n';
-  const childSynchronizedHelper = readinessSynchronizedHelper.replace(
+  const childSynchronizedHelper = gatedChildHelper.replace(
     childAdmissionBoundary,
     '  if OPERATION=="synthetic-client-child-admission": test_ready(leader,expected)\n' +
       childAdmissionBoundary,
@@ -2414,8 +2441,11 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
   );
   return {
     childAdmissionBoundary,
+    childSpawnBoundary: syntheticClientSpawnBoundary,
     deadlineArm,
+    gatedChildHelper,
     groupEstablishedBoundary,
+    runGlobalBoundary: syntheticClientRunGlobalBoundary,
     childSynchronizedHelper,
     identitySynchronizedHelper,
     postAdmissionBoundary,
@@ -3681,10 +3711,6 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     ["observe-before", "cgroup-observe-before"],
     ["observe-after", "cgroup-observe-after"],
     ["transition-retained", "cgroup-transition-retained"],
-    [
-      "transition-monotonic-removal-empty",
-      "cgroup-transition-monotonic-removal-empty",
-    ],
     ["transition-empty-populated", "cgroup-transition-empty-populated"],
     ["transition-reappeared", "cgroup-transition-reappeared"],
     ["transition-third-controlgroup", "cgroup-transition-third-controlgroup"],
@@ -3696,6 +3722,11 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       cleanupAttempts: 1,
       predicate: `lifecycle:terminal-wait:${reason}`,
     });
+  await expect(
+    exerciseTerminalCgroupDiagnosticForTesting(
+      "transition-monotonic-removal-empty",
+    ),
+  ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   await expect(
     exerciseTerminalCgroupDiagnosticForTesting("transition-main-nonterminal"),
   ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
@@ -3977,24 +4008,24 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const start = supervisorSource.indexOf(prefix) + prefix.length;
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
-    const {
-      childAdmissionBoundary,
-      deadlineArm,
-      groupEstablishedBoundary,
-      childSynchronizedHelper,
-      identitySynchronizedHelper,
-      postAdmissionBoundary,
-      readinessSynchronizedHelper,
-      synchronizedHelper,
-    } = synchronizeSyntheticClientDeadlines(helper);
-    expect(helper).toContain(deadlineArm);
-    expect(helper).toContain(groupEstablishedBoundary);
-    expect(helper).toContain(childAdmissionBoundary);
-    expect(helper).toContain(postAdmissionBoundary);
-    expect(readinessSynchronizedHelper).not.toBe(helper);
-    expect(childSynchronizedHelper).not.toBe(readinessSynchronizedHelper);
-    expect(identitySynchronizedHelper).not.toBe(childSynchronizedHelper);
-    expect(synchronizedHelper).not.toBe(identitySynchronizedHelper);
+    const sync = synchronizeSyntheticClientDeadlines(helper);
+    const { synchronizedHelper } = sync;
+    for (const boundary of [
+      sync.deadlineArm,
+      sync.groupEstablishedBoundary,
+      sync.childAdmissionBoundary,
+      sync.childSpawnBoundary,
+      sync.runGlobalBoundary,
+      sync.postAdmissionBoundary,
+    ])
+      expect(helper).toContain(boundary);
+    expect(sync.readinessSynchronizedHelper).not.toBe(helper);
+    expect(sync.gatedChildHelper).not.toBe(sync.readinessSynchronizedHelper);
+    expect(sync.childSynchronizedHelper).not.toBe(sync.gatedChildHelper);
+    expect(sync.identitySynchronizedHelper).not.toBe(
+      sync.childSynchronizedHelper,
+    );
+    expect(synchronizedHelper).not.toBe(sync.identitySynchronizedHelper);
     const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
     const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
     const cases = [

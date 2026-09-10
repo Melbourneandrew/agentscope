@@ -2481,11 +2481,16 @@ const observeTerminalSystemdUnit = async (
             after,
           )
         : `authority-${mismatch}`;
-    if (reason !== "cgroup-transition-main-nonterminal")
+    if (
+      reason !== "cgroup-transition-main-nonterminal" &&
+      reason !== "cgroup-transition-monotonic-removal-empty"
+    )
       failSystemdLifecycle(state, "terminal-wait", reason);
+    if (reason === "cgroup-transition-monotonic-removal-empty")
+      return Object.freeze({ after, facts, retry: true });
     authenticateNonterminal(facts);
   }
-  return Object.freeze({ after, facts });
+  return Object.freeze({ after, facts, retry: false });
 };
 
 const waitForTerminal = async (state) => {
@@ -2493,7 +2498,7 @@ const waitForTerminal = async (state) => {
     !state.interrupted.value &&
     rootToolHasPreparationBudget(state.executionDeadline, performance.now())
   ) {
-    const { after, facts } = await observeTerminalSystemdUnit(
+    const { after, facts, retry } = await observeTerminalSystemdUnit(
       state,
       () => observeAuthenticatedCgroup(state.cgroupPath, state.cgroupIdentity),
       async () => {
@@ -2515,6 +2520,10 @@ const waitForTerminal = async (state) => {
         }
       },
     );
+    if (retry) {
+      await delay(Math.min(50, remainingMilliseconds(state.executionDeadline)));
+      continue;
+    }
     if (systemdMainProcessIsTerminal(facts)) {
       state.terminalCgroupObservation = after;
       return facts;
@@ -2567,44 +2576,53 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
   let cleanupAttempts = 0;
   let failure;
   try {
-    await observeTerminalSystemdUnit(
+    const observe = () => {
+      observations += 1;
+      if (mode === "observe-before" && observations === 1) failSystemd();
+      if (mode === "observe-after" && observations === 2) failSystemd();
+      if (
+        (mode === "transition-retained" ||
+          mode === "transition-monotonic-removal-empty" ||
+          mode === "transition-empty-populated") &&
+        observations === 1
+      )
+        return Object.freeze({ absent: false, empty: false });
+      if (mode === "transition-empty-populated" && observations === 2)
+        return Object.freeze({ absent: false, empty: false });
+      if (mode === "transition-main-nonterminal")
+        return Object.freeze({ absent: false, empty: false });
+      if (mode === "transition-reappeared" && observations === 2)
+        return Object.freeze({ absent: false, empty: true });
+      if (mode === "transition-observation-shape" && observations === 1)
+        return Object.freeze({ absent: true, empty: false });
+      return Object.freeze({ absent: true, empty: true });
+    };
+    const authenticate = (observedFacts) => {
+      if (
+        mode !== "transition-main-nonterminal" ||
+        !validateMainProcessMembership({
+          after: { bootId: "boot", pid: 712, startTime: "991" },
+          before: { bootId: "boot", pid: 712, startTime: "991" },
+          expected: { bootId: "boot", pid: 712, startTime: "991" },
+          facts: { ...observedFacts, MainPID: "712" },
+          members: [712],
+        })
+      )
+        failSystemd();
+    };
+    const first = await observeTerminalSystemdUnit(
       state,
-      () => {
-        observations += 1;
-        if (mode === "observe-before" && observations === 1) failSystemd();
-        if (mode === "observe-after" && observations === 2) failSystemd();
-        if (
-          (mode === "transition-retained" ||
-            mode === "transition-monotonic-removal-empty" ||
-            mode === "transition-empty-populated") &&
-          observations === 1
-        )
-          return Object.freeze({ absent: false, empty: false });
-        if (mode === "transition-empty-populated" && observations === 2)
-          return Object.freeze({ absent: false, empty: false });
-        if (mode === "transition-main-nonterminal")
-          return Object.freeze({ absent: false, empty: false });
-        if (mode === "transition-reappeared" && observations === 2)
-          return Object.freeze({ absent: false, empty: true });
-        if (mode === "transition-observation-shape" && observations === 1)
-          return Object.freeze({ absent: true, empty: false });
-        return Object.freeze({ absent: true, empty: true });
-      },
+      observe,
       async () => facts,
-      (observedFacts) => {
-        if (
-          mode !== "transition-main-nonterminal" ||
-          !validateMainProcessMembership({
-            after: { bootId: "boot", pid: 712, startTime: "991" },
-            before: { bootId: "boot", pid: 712, startTime: "991" },
-            expected: { bootId: "boot", pid: 712, startTime: "991" },
-            facts: { ...observedFacts, MainPID: "712" },
-            members: [712],
-          })
-        )
-          failSystemd();
-      },
+      authenticate,
     );
+    if (mode === "transition-monotonic-removal-empty" && first.retry)
+      await observeTerminalSystemdUnit(
+        state,
+        observe,
+        async () => facts,
+        authenticate,
+      );
   } catch (error) {
     failure = error;
   } finally {
@@ -3015,6 +3033,11 @@ const admitSystemdUnit = async (state) => {
     }
     if (mainPidReason !== undefined) {
       state.unitAdmissionDiagnosticReason = mainPidReason;
+      if (
+        mainPidReason === "main-pid-terminal-unit-state" &&
+        systemdMainProcessIsTerminal(admitted)
+      )
+        return admitted;
       failSystemd();
     }
     state.unitAdmissionDiagnosticReason = "main-pid-malformed";
@@ -3049,6 +3072,11 @@ const admitSystemdUnit = async (state) => {
     );
     if (confirmedMainPidReason !== undefined) {
       state.unitAdmissionDiagnosticReason = confirmedMainPidReason;
+      if (
+        confirmedMainPidReason === "main-pid-terminal-unit-state" &&
+        systemdMainProcessIsTerminal(confirmed)
+      )
+        return confirmed;
       failSystemd();
     }
   } catch (error) {
@@ -3250,8 +3278,8 @@ const runSystemdSupervised = async ({
         unit: authority.unit,
       },
     );
-    await admitSystemdUnit(state);
-    terminal = await observeSystemdTerminal(state);
+    terminal = await admitSystemdUnit(state);
+    terminal ??= await observeSystemdTerminal(state);
     await authenticateTerminalSystemdUnit(state, terminal);
     residualWorkObserved = observeSystemdCgroup(state);
     if (residualWorkObserved) await terminateSystemdCgroup(state);
