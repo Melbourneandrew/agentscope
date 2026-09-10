@@ -61,6 +61,9 @@ const actionBootstrapStages = new Set([
   "preload-sealer",
   "spawn",
   "child-terminal",
+  "revalidate-source",
+  "revalidate-sealer",
+  "descriptor-close",
 ]);
 const actionBootstrapChildTerminalReasons = new Set([
   "exit",
@@ -483,7 +486,9 @@ const classifyActionBootstrapChildTerminal = (result) =>
     ? "timeout"
     : result?.signal !== null && result?.signal !== undefined
       ? "signal"
-      : "exit";
+      : Number.isSafeInteger(result?.status) && result.status !== 0
+        ? "exit"
+        : undefined;
 export const classifyActionBootstrapChildTerminalForTest = (result) =>
   classifyActionBootstrapChildTerminal(result);
 export const verifyArtifactClientProvenanceForTest = (
@@ -1790,18 +1795,37 @@ const bootstrapMain = () => {
       timeout: 20 * 60 * 1000,
     },
   );
-  actionBootstrapStage = "child-terminal";
-  actionBootstrapReason = classifyActionBootstrapChildTerminal(result);
-  revalidateCredentialedSource(source);
-  revalidateCredentialedSource(sealer);
-  closeSync(source.descriptor);
-  closeSync(sealer.descriptor);
-  if (
-    result.error !== undefined ||
-    result.status !== 0 ||
-    result.signal !== null
-  )
-    fail();
+  const childTerminalReason = classifyActionBootstrapChildTerminal(result);
+  const spawnFailure =
+    childTerminalReason === undefined &&
+    (result.error !== undefined || !Number.isSafeInteger(result.status));
+  if (childTerminalReason !== undefined) {
+    actionBootstrapStage = "child-terminal";
+    actionBootstrapReason = childTerminalReason;
+  }
+  let secondaryFailure;
+  try {
+    if (childTerminalReason === undefined && !spawnFailure)
+      actionBootstrapStage = "revalidate-source";
+    revalidateCredentialedSource(source);
+    if (childTerminalReason === undefined && !spawnFailure)
+      actionBootstrapStage = "revalidate-sealer";
+    revalidateCredentialedSource(sealer);
+  } catch (error) {
+    secondaryFailure = error;
+  }
+  for (const descriptor of [source.descriptor, sealer.descriptor]) {
+    try {
+      if (childTerminalReason === undefined && !spawnFailure)
+        actionBootstrapStage = "descriptor-close";
+      closeSync(descriptor);
+    } catch (error) {
+      secondaryFailure ??= error;
+    }
+  }
+  if (childTerminalReason !== undefined || spawnFailure) fail();
+  if (secondaryFailure !== undefined) throw secondaryFailure;
+  if (result.status !== 0 || result.signal !== null) fail();
 };
 
 if (process.argv[1] === "--outer-controller") {

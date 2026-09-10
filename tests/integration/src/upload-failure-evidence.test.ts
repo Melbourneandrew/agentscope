@@ -98,7 +98,7 @@ const classifyBootstrapChildTerminal =
     error?: { code?: string };
     signal?: string | null;
     status?: number | null;
-  }) => string;
+  }) => string | undefined;
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
     environment: NodeJS.ProcessEnv,
@@ -598,6 +598,9 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "preload-sealer",
     "spawn",
     "child-terminal",
+    "revalidate-source",
+    "revalidate-sealer",
+    "descriptor-close",
   ])
     expect(validBootstrapStage(stage)).toBe(true);
   for (const rejected of [
@@ -622,7 +625,14 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "artifact-name",
   ])
     expect(validBootstrapPredicate(`invocation:${reason}`)).toBe(true);
-  for (const stage of ["preload-source", "preload-sealer", "spawn"])
+  for (const stage of [
+    "preload-source",
+    "preload-sealer",
+    "spawn",
+    "revalidate-source",
+    "revalidate-sealer",
+    "descriptor-close",
+  ])
     expect(validBootstrapPredicate(stage)).toBe(true);
   for (const reason of [
     "results-url",
@@ -761,6 +771,30 @@ it("classifies child terminal authority without retaining process output", () =>
       status: null,
     }),
   ).toBe("timeout");
+  for (const result of [
+    { error: { code: "ENOENT" }, signal: null, status: null },
+    { error: { code: "EAGAIN" }, signal: null, status: null },
+    { signal: null, status: 0 },
+  ])
+    expect(classifyBootstrapChildTerminal(result)).toBeUndefined();
+});
+
+it("keeps spawn and post-child authority failures out of exit attribution", () => {
+  const source = readFileSync(
+    resolve(workspaceRoot, "tests/integration/upload-failure-evidence.mjs"),
+    "utf8",
+  );
+  const bootstrap = source.slice(
+    source.indexOf("const bootstrapMain ="),
+    source.indexOf('if (process.argv[1] === "--outer-controller")'),
+  );
+  expect(bootstrap).toContain("childTerminalReason !== undefined");
+  expect(bootstrap).toContain('actionBootstrapStage = "revalidate-source"');
+  expect(bootstrap).toContain('actionBootstrapStage = "revalidate-sealer"');
+  expect(bootstrap).toContain('actionBootstrapStage = "descriptor-close"');
+  expect(bootstrap.indexOf('actionBootstrapStage = "spawn"')).toBeLessThan(
+    bootstrap.indexOf("spawnSync("),
+  );
 });
 
 it("latches each reachable finalization reason at its production operation", () => {
