@@ -2183,12 +2183,8 @@ const bootstrapMain = async () => {
       childBootstrapStage === undefined ? "child-terminal" : "child-bootstrap";
     actionBootstrapReason = childBootstrapStage ?? childTerminalReason;
   }
-  await loadRuntimeDependencies();
-  const childStageReceipt = authenticatedChildStageReceipt(result.stdout);
-  if (childStageReceipt !== undefined) process.stdout.write(childStageReceipt);
   settleActionBootstrapDescriptors({
-    childBootstrapStage:
-      childStageReceipt === undefined ? childBootstrapStage : undefined,
+    childBootstrapStage,
     childTerminalReason,
     sealer,
     source,

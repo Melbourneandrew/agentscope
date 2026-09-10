@@ -655,11 +655,12 @@ describe("failure evidence upload provenance", () => {
       source.indexOf("const bootstrapMain = async"),
       source.indexOf("const runOuterControllerEnvelope"),
     );
+    expect(parent).not.toContain("loadRuntimeDependencies");
     expect(parent.indexOf("spawnSync(")).toBeLessThan(
-      parent.indexOf("await loadRuntimeDependencies()"),
+      parent.indexOf("authenticateChildBootstrapReceipts({"),
     );
     expect(parent.indexOf("authenticateChildBootstrapReceipts({")).toBeLessThan(
-      parent.indexOf("await loadRuntimeDependencies()"),
+      parent.indexOf("settleActionBootstrapDescriptors({"),
     );
   });
 });
