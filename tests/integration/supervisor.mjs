@@ -2304,7 +2304,10 @@ const waitForTerminal = async (state) => {
     );
     if (mismatch !== undefined)
       failSystemdLifecycle(state, "terminal-wait", `authority-${mismatch}`);
-    if (systemdMainProcessIsTerminal(facts)) return facts;
+    if (systemdMainProcessIsTerminal(facts)) {
+      state.terminalCgroupAbsent = afterAbsent;
+      return facts;
+    }
     await delay(Math.min(50, remainingMilliseconds(state.executionDeadline)));
   }
   return undefined;
@@ -2555,6 +2558,7 @@ export const prepareGithubSystemdSupervision = async ({
     retirementDiagnosticReason: undefined,
     stdio: suppliedStdio,
     cgroupIdentity: undefined,
+    terminalCgroupAbsent: undefined,
     unitMayExist: false,
   };
   try {
@@ -2691,16 +2695,38 @@ const observeSystemdTerminal = async (state) => {
   return terminal;
 };
 
-const authenticateTerminalSystemdUnit = async (state) => {
+const authenticateTerminalSystemdUnit = async (state, terminal) => {
   state.lifecyclePhase = "unit-authoritative";
   try {
+    const beforeAbsent = authenticatedCgroupIsAbsent(
+      state.cgroupPath,
+      state.cgroupIdentity,
+    );
     const authoritative = await showUnit(
       state.authority.unit,
       state.executionDeadline,
       "unit-authoritative",
     );
-    assertUnitAuthority(authoritative, state.authority);
-    recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity);
+    const afterAbsent = authenticatedCgroupIsAbsent(
+      state.cgroupPath,
+      state.cgroupIdentity,
+    );
+    if (state.terminalCgroupAbsent === true && (!beforeAbsent || !afterAbsent))
+      failSystemd();
+    const mismatch = classifyTerminalSystemdUnitAuthority(
+      authoritative,
+      state.authority,
+      beforeAbsent,
+      afterAbsent,
+    );
+    if (mismatch !== undefined) failSystemd();
+    const expectedCode = parseSystemdMainExitStatus(terminal);
+    const authoritativeCode = parseSystemdMainExitStatus(authoritative);
+    if (expectedCode === undefined || authoritativeCode !== expectedCode)
+      failSystemd();
+    state.terminalCgroupAbsent = afterAbsent;
+    if (!afterAbsent)
+      recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity);
   } catch (error) {
     rethrowSystemdLifecycle(state, error, "authority");
   }
@@ -2837,7 +2863,7 @@ const runSystemdSupervised = async ({
     );
     await admitSystemdUnit(state);
     terminal = await observeSystemdTerminal(state);
-    await authenticateTerminalSystemdUnit(state);
+    await authenticateTerminalSystemdUnit(state, terminal);
     residualWorkObserved = observeSystemdCgroup(state);
     if (residualWorkObserved) await terminateSystemdCgroup(state);
     await retireAndCollectSystemdUnit(state);

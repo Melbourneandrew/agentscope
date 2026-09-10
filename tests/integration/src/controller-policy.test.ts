@@ -814,41 +814,6 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
     User: String(authority.uid),
   };
   expect(classifySystemdUnitAuthority(facts, authority)).toBeUndefined();
-  expect(
-    classifyTerminalSystemdUnitAuthority(facts, authority, false, false),
-  ).toBeUndefined();
-  for (const beforeAbsent of [false, true])
-    expect(
-      classifyTerminalSystemdUnitAuthority(
-        { ...facts, ControlGroup: "" },
-        authority,
-        beforeAbsent,
-        true,
-      ),
-    ).toBeUndefined();
-  for (const [beforeAbsent, afterAbsent, controlGroup] of [
-    [false, false, ""],
-    [true, false, authority.cgroup],
-    [true, true, authority.cgroup],
-    [false, true, authority.cgroup],
-    [true, true, "/system.slice/agentscope-other.service"],
-  ] as const)
-    expect(
-      classifyTerminalSystemdUnitAuthority(
-        { ...facts, ControlGroup: controlGroup },
-        authority,
-        beforeAbsent,
-        afterAbsent,
-      ),
-    ).toBe("cgroup");
-  expect(
-    classifyTerminalSystemdUnitAuthority(
-      { ...facts, ControlGroup: "", ExecMainStatus: "" },
-      authority,
-      true,
-      true,
-    ),
-  ).toBe("cgroup");
   for (const [field, value, reason] of [
     ["LoadState", "masked", "load"],
     ["Id", "agentscope-other.service", "identity"],
@@ -900,6 +865,83 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
       absent,
     ),
   ).toBe("principal");
+});
+
+it("carries terminal cgroup disappearance into retirement", () => {
+  const authority = {
+    cgroup: "/system.slice/agentscope-test.service",
+    gid: 1001,
+    groups: [4, 1001],
+    uid: 1001,
+    unit: "agentscope-test.service",
+  };
+  const terminal = {
+    ActiveState: "active",
+    AmbientCapabilities: "",
+    CapabilityBoundingSet: "",
+    ControlGroup: "",
+    Delegate: "no",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
+    Group: "1001",
+    Id: authority.unit,
+    InaccessiblePaths:
+      "/run/dbus/system_bus_socket /run/systemd/private /run/user /var/run/dbus/system_bus_socket",
+    KillMode: "control-group",
+    LoadState: "loaded",
+    NoNewPrivileges: "yes",
+    ProtectControlGroups: "yes",
+    RemainAfterExit: "yes",
+    Result: "success",
+    RestrictSUIDSGID: "yes",
+    SubState: "running",
+    SupplementaryGroups: "4 1001",
+    User: "1001",
+  };
+  for (const beforeAbsent of [false, true])
+    expect(
+      classifyTerminalSystemdUnitAuthority(
+        terminal,
+        authority,
+        beforeAbsent,
+        true,
+      ),
+    ).toBeUndefined();
+  for (const [beforeAbsent, afterAbsent, controlGroup] of [
+    [false, false, ""],
+    [true, false, authority.cgroup],
+    [true, true, authority.cgroup],
+    [false, true, authority.cgroup],
+    [true, true, "/system.slice/agentscope-other.service"],
+  ] as const)
+    expect(
+      classifyTerminalSystemdUnitAuthority(
+        { ...terminal, ControlGroup: controlGroup },
+        authority,
+        beforeAbsent,
+        afterAbsent,
+      ),
+    ).toBe("cgroup");
+  expect(
+    classifyTerminalSystemdUnitAuthority(
+      { ...terminal, ExecMainStatus: "" },
+      authority,
+      true,
+      true,
+    ),
+  ).toBe("cgroup");
+  for (let phase = 0; phase < 2; phase += 1)
+    expect(
+      classifyTerminalSystemdUnitAuthority(terminal, authority, true, true),
+    ).toBeUndefined();
+  expect(
+    classifyRetirementSystemdUnitAuthority(
+      terminal,
+      authority,
+      { absent: true, empty: true },
+      { absent: true, empty: true },
+    ),
+  ).toBeUndefined();
 });
 
 it("treats a retired cgroup disappearance only as input to collection proof", () => {
@@ -1205,6 +1247,16 @@ it("observes exact main exit facts before retiring retained descendants", () => 
   expect(terminalWait).not.toContain(
     'facts.ActiveState === "active" && facts.SubState === "exited"',
   );
+  const terminalAuthority = supervisor.slice(
+    supervisor.indexOf("const authenticateTerminalSystemdUnit ="),
+    supervisor.indexOf("const observeSystemdCgroup ="),
+  );
+  expect(terminalAuthority).toContain("classifyTerminalSystemdUnitAuthority(");
+  expect(terminalAuthority).toContain("authoritativeCode !== expectedCode");
+  expect(terminalAuthority).toContain(
+    "state.terminalCgroupAbsent = afterAbsent;",
+  );
+  expect(terminalAuthority).toContain("if (!afterAbsent)");
 });
 
 it("binds the root-mediated PID 1 probe to one stable manager identity", () => {
