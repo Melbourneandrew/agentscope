@@ -136,6 +136,19 @@ export function classifyCgroupObservationFailureForTesting(
   | "malformed"
   | "identity-substitution"
   | "descriptor-state";
+export function authenticateRemovedCgroupPathsForTesting(
+  cgroupPath: string,
+  authority: Readonly<{
+    descriptors: readonly number[];
+    identities: readonly Readonly<{
+      dev: number;
+      gid: number;
+      ino: number;
+      mode: number;
+      uid: number;
+    }>[];
+  }>,
+): Readonly<{ absent: true; empty: true; members: readonly [] }>;
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"

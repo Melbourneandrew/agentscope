@@ -840,40 +840,17 @@ export const validSystemdLifecyclePredicate = (predicate) => {
 export const validSystemdToolPredicate = (predicate) => {
   if (validSystemdLifecyclePredicate(predicate)) return true;
   if (typeof predicate !== "string") return false;
-  if (rootToolOperations.has(predicate)) return true;
+  if (
+    rootHelperStages.has(predicate) &&
+    !["sentinel", "join", "client-terminal"].includes(predicate)
+  )
+    return true;
   const match = /^(sentinel|join|client-terminal):([^:]+)$/u.exec(predicate);
   if (match === null) return false;
   const admitted = {
-    sentinel: new Set([
-      "child-exit",
-      "start-identity",
-      "inherited-group",
-      "transition-timeout",
-      "kill",
-      "reap-join",
-      "residual",
-      "internal-unknown",
-    ]),
-    join: new Set([
-      "leader-identity",
-      "preclose-residual",
-      "control-close",
-      "reap-timeout",
-      "identity-drift",
-      "postreap-residual",
-      "internal-unknown",
-    ]),
-    "client-terminal": new Set([
-      "cutoff",
-      "deadline",
-      "leader-identity",
-      "child-admission",
-      "member-identity",
-      "output-read",
-      "output-bound",
-      "nonzero-terminal",
-      "internal-unknown",
-    ]),
+    sentinel: rootHelperSentinelReasons,
+    join: rootHelperJoinReasons,
+    "client-terminal": rootHelperClientTerminalReasons,
   };
   return admitted[match[1]].has(match[2]);
 };
@@ -2661,6 +2638,10 @@ const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
     members: Object.freeze([]),
   });
 };
+export const authenticateRemovedCgroupPathsForTesting = (
+  cgroupPath,
+  authority,
+) => authenticateRemovedCgroupPaths(cgroupPath, authority);
 
 const observeCgroupSettlement = (
   cgroupPath,

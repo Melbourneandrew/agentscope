@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { authenticatedChildStageReceiptForTest, buildLifecycleEnvironment, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { authenticatedChildStageReceiptForTest, buildLifecycleEnvironment, childOutputMaximumBytesForTest, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 type ArtifactResponse = { digest?: string; id?: number; size?: number };
 type UploadClient = {
@@ -103,6 +103,7 @@ const authenticateChildStageReceipt =
   authenticatedChildStageReceiptForTest as unknown as (
     stdout: Buffer,
   ) => string | undefined;
+const childOutputMaximumBytes = childOutputMaximumBytesForTest as number;
 const exerciseBootstrapSettlement =
   exerciseActionBootstrapSettlementForTest as unknown as (
     fault:
@@ -684,7 +685,13 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     { predicate: "invocation:argv-shape" },
   ])
     expect(validBootstrapPredicate(rejected)).toBe(false);
-  for (const reason of ["exit-one", "exit-other", "signal", "timeout"])
+  for (const reason of [
+    "exit-one",
+    "exit-other",
+    "output-overflow",
+    "signal",
+    "timeout",
+  ])
     expect(validBootstrapPredicate(`child-terminal:${reason}`)).toBe(true);
   for (const rejected of [
     "child-terminal",
@@ -782,6 +789,13 @@ it("classifies child terminal authority without retaining process output", () =>
   ).toBe("signal");
   expect(
     classifyBootstrapChildTerminal({
+      error: { code: "ENOBUFS" },
+      signal: "SIGTERM",
+      status: null,
+    }),
+  ).toBe("output-overflow");
+  expect(
+    classifyBootstrapChildTerminal({
       error: { code: "ETIMEDOUT" },
       signal: "SIGTERM",
       status: null,
@@ -822,19 +836,93 @@ it("retains only the last closed authenticated child-stage receipt", () => {
   expect(authenticateChildStageReceipt(Buffer.from(outer))).toBe(outer);
   expect(authenticateChildStageReceipt(Buffer.from(lifecycle))).toBe(lifecycle);
   expect(authenticateChildStageReceipt(Buffer.from(helper))).toBe(helper);
+  for (const stage of [
+    "startup",
+    "cutoff",
+    "tool-spawn",
+    "unit-admission",
+    "retirement",
+  ]) {
+    const receipt = `::error::integration.controller.systemd-tool:${stage}\n`;
+    expect(authenticateChildStageReceipt(Buffer.from(receipt))).toBe(receipt);
+  }
+  for (const [stage, reasons] of [
+    [
+      "sentinel",
+      [
+        "child-exit",
+        "start-identity",
+        "inherited-group",
+        "transition-timeout",
+        "kill",
+        "reap-join",
+        "residual",
+        "internal-unknown",
+      ],
+    ],
+    [
+      "join",
+      [
+        "leader-identity",
+        "preclose-residual",
+        "control-close",
+        "reap-timeout",
+        "identity-drift",
+        "postreap-residual",
+        "internal-unknown",
+      ],
+    ],
+    [
+      "client-terminal",
+      [
+        "cutoff",
+        "deadline",
+        "leader-identity",
+        "child-admission",
+        "member-identity",
+        "output-read",
+        "output-bound",
+        "nonzero-terminal",
+        "internal-unknown",
+      ],
+    ],
+  ] as const)
+    for (const reason of reasons) {
+      const receipt = `::error::integration.controller.systemd-tool:${stage}:${reason}\n`;
+      expect(authenticateChildStageReceipt(Buffer.from(receipt))).toBe(receipt);
+    }
   expect(authenticateChildStageReceipt(Buffer.from(outer + lifecycle))).toBe(
     lifecycle,
   );
+  const exactBoundary = Buffer.concat([
+    Buffer.alloc(
+      childOutputMaximumBytes - Buffer.byteLength(lifecycle) - 1,
+      0x78,
+    ),
+    Buffer.from("\n"),
+    Buffer.from(lifecycle),
+  ]);
+  expect(authenticateChildStageReceipt(exactBoundary)).toBe(lifecycle);
+  expect(
+    authenticateChildStageReceipt(
+      Buffer.concat([exactBoundary, Buffer.of(0x78)]),
+    ),
+  ).toBeUndefined();
   for (const rejected of [
     "",
     "raw output\n",
     "::error::integration.controller.outer:unknown\n",
     "::error::integration.controller.systemd-tool:lifecycle:terminal-wait:unknown\n",
-    `${outer}raw output\n`,
+    "::error::integration.controller.systemd-tool:sentinel\n",
+    "::error::integration.controller.systemd-tool:join:unknown\n",
+    "::error::integration.controller.systemd-tool:pid1-stat\n",
   ])
     expect(
       authenticateChildStageReceipt(Buffer.from(rejected)),
     ).toBeUndefined();
+  expect(
+    authenticateChildStageReceipt(Buffer.from(`bounded evidence\n${outer}`)),
+  ).toBe(outer);
 });
 
 it("latches each reachable finalization reason at its production operation", () => {

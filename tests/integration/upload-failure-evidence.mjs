@@ -32,6 +32,9 @@ import {
 import { DefaultArtifactClient } from "@actions/artifact";
 
 const MAXIMUM_BYTES = 1024 * 1024;
+const CHILD_OUTPUT_STAGE_OVERHEAD_BYTES = 4096;
+const CHILD_OUTPUT_MAXIMUM_BYTES =
+  MAXIMUM_BYTES + CHILD_OUTPUT_STAGE_OVERHEAD_BYTES;
 const ARTIFACT_PATCH_SHA256 =
   "9638aca3637f07d89c766e49c1719eb2f58a20b1165da4962ea755e9032c392b";
 const PATCHED_ARTIFACT_FILES = Object.freeze({
@@ -69,6 +72,7 @@ const actionBootstrapStages = new Set([
 const actionBootstrapChildTerminalReasons = new Set([
   "exit-one",
   "exit-other",
+  "output-overflow",
   "signal",
   "timeout",
 ]);
@@ -484,18 +488,21 @@ const failureEvidenceBootstrapAnnotation = () => {
     : undefined;
 };
 const classifyActionBootstrapChildTerminal = (result) =>
-  result?.error?.code === "ETIMEDOUT"
-    ? "timeout"
-    : result?.signal !== null && result?.signal !== undefined
-      ? "signal"
-      : Number.isSafeInteger(result?.status) && result.status !== 0
-        ? result.status === 1
-          ? "exit-one"
-          : "exit-other"
-        : undefined;
+  result?.error?.code === "ENOBUFS"
+    ? "output-overflow"
+    : result?.error?.code === "ETIMEDOUT"
+      ? "timeout"
+      : result?.signal !== null && result?.signal !== undefined
+        ? "signal"
+        : Number.isSafeInteger(result?.status) && result.status !== 0
+          ? result.status === 1
+            ? "exit-one"
+            : "exit-other"
+          : undefined;
 
 const authenticatedChildStageReceipt = (stdout) => {
-  if (!Buffer.isBuffer(stdout) || stdout.length > 4096) return undefined;
+  if (!Buffer.isBuffer(stdout) || stdout.length > CHILD_OUTPUT_MAXIMUM_BYTES)
+    return undefined;
   const lines = stdout.toString("utf8").split("\n").filter(Boolean);
   let retained;
   for (const line of lines) {
@@ -506,12 +513,14 @@ const authenticatedChildStageReceipt = (stdout) => {
       retained = `${line}\n`;
     else if (outer !== null && validOuterControllerStage(outer[1]))
       retained = `${line}\n`;
-    else return undefined;
+    else if (line.startsWith("::error::integration.controller."))
+      return undefined;
   }
   return retained;
 };
 export const authenticatedChildStageReceiptForTest = (stdout) =>
   authenticatedChildStageReceipt(stdout);
+export const childOutputMaximumBytesForTest = CHILD_OUTPUT_MAXIMUM_BYTES;
 export const classifyActionBootstrapChildTerminalForTest = (result) =>
   classifyActionBootstrapChildTerminal(result);
 export const verifyArtifactClientProvenanceForTest = (
@@ -1891,7 +1900,7 @@ const bootstrapMain = () => {
     {
       env: { ...process.env },
       input: source.content,
-      maxBuffer: 4096,
+      maxBuffer: CHILD_OUTPUT_MAXIMUM_BYTES,
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 20 * 60 * 1000,
     },

@@ -12,6 +12,7 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   rmdirSync,
   symlinkSync,
@@ -32,6 +33,7 @@ import type {
 
 import {
   advanceToolForceState,
+  authenticateRemovedCgroupPathsForTesting,
   authenticateCgroup,
   cgroupObservationSettled,
   exactPathIsAbsent,
@@ -78,6 +80,20 @@ const classifyCgroupObservationFailure =
     code: string | undefined,
     kind: "syntax" | "type" | undefined,
   ) => string;
+const authenticateRemovedCgroupPaths =
+  authenticateRemovedCgroupPathsForTesting as unknown as (
+    path: string,
+    authority: {
+      descriptors: number[];
+      identities: Array<{
+        dev: number;
+        gid: number;
+        ino: number;
+        mode: number;
+        uid: number;
+      }>;
+    },
+  ) => { absent: true; empty: true; members: readonly [] };
 const fixtureCapabilityManifest = JSON.parse(
   readFileSync(
     resolve(workspaceRoot, "tests/integration/capability-manifest.json"),
@@ -4204,6 +4220,69 @@ it("classifies post-terminal cgroup observation failures without content", () =>
     ["ESTALE", undefined, "identity-substitution"],
   ] as const)
     expect(classifyCgroupObservationFailure(code, kind)).toBe(expected);
+});
+
+it("proves removed cgroup paths against retained parent and cgroup descriptors", () => {
+  const exercise = (mutate?: (parent: string, cgroup: string) => void) => {
+    const root = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-removed-"));
+    const parent = resolve(root, "system.slice");
+    const cgroup = resolve(parent, "agentscope-test.service");
+    mkdirSync(cgroup, { recursive: true, mode: 0o700 });
+    const procs = resolve(cgroup, "cgroup.procs");
+    const events = resolve(cgroup, "cgroup.events");
+    writeFileSync(procs, "");
+    writeFileSync(events, "populated 0\n");
+    const descriptors = [parent, cgroup, procs, events].map((path) =>
+      openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW),
+    );
+    const identities = descriptors.map((descriptor) => {
+      const status = fstatSync(descriptor);
+      return {
+        dev: status.dev,
+        gid: status.gid,
+        ino: status.ino,
+        mode: status.mode,
+        uid: status.uid,
+      };
+    });
+    unlinkSync(procs);
+    unlinkSync(events);
+    rmdirSync(cgroup);
+    mutate?.(parent, cgroup);
+    try {
+      return authenticateRemovedCgroupPaths(cgroup, {
+        descriptors,
+        identities,
+      });
+    } finally {
+      for (const descriptor of descriptors.reverse()) closeSync(descriptor);
+      try {
+        chmodSync(parent, 0o700);
+      } catch {
+        // The substituted parent may already have been removed by the fixture.
+      }
+      rmSync(root, { force: true, recursive: true });
+    }
+  };
+  expect(exercise()).toEqual({ absent: true, empty: true, members: [] });
+  for (const mutate of [
+    (_parent: string, cgroup: string) => {
+      mkdirSync(cgroup);
+    },
+    (_parent: string, cgroup: string) => {
+      symlinkSync("missing", cgroup);
+    },
+    (parent: string) => {
+      chmodSync(parent, 0o000);
+    },
+    (parent: string) => {
+      renameSync(parent, `${parent}.retained`);
+      mkdirSync(parent);
+    },
+  ])
+    expect(() => exercise(mutate)).toThrow(
+      "integration.controller.systemd-containment",
+    );
 });
 
 it("preserves authenticated terminal tool failure identity through cleanup", () => {
