@@ -79,6 +79,146 @@ const childBootstrapStages = Object.freeze([
   "unexpected-terminal",
 ]);
 const childBootstrapStageSet = new Set(childBootstrapStages);
+const childSystemdRootStages = Object.freeze([
+  "startup",
+  "cutoff",
+  "tool-spawn",
+  "unit-admission",
+  "retirement",
+]);
+const childSystemdSentinelReasons = Object.freeze([
+  "child-exit",
+  "start-identity",
+  "inherited-group",
+  "transition-timeout",
+  "kill",
+  "reap-join",
+  "residual",
+  "internal-unknown",
+]);
+const childSystemdJoinReasons = Object.freeze([
+  "leader-identity",
+  "preclose-residual",
+  "control-close",
+  "reap-timeout",
+  "identity-drift",
+  "postreap-residual",
+  "internal-unknown",
+]);
+const childSystemdClientTerminalReasons = Object.freeze([
+  "cutoff",
+  "deadline",
+  "leader-identity",
+  "child-admission",
+  "member-identity",
+  "output-read",
+  "output-bound",
+  "nonzero-terminal",
+  "internal-unknown",
+]);
+const childSystemdLifecyclePhases = Object.freeze([
+  "mapped-executable-pre-submit",
+  "unit-admission",
+  "terminal-wait",
+  "unit-authoritative",
+  "cgroup-observation",
+  "termination",
+  "retirement",
+  "collection",
+]);
+const childSystemdLifecycleReasons = Object.freeze([
+  "deadline",
+  "interrupted",
+  "authority",
+  "malformed",
+  "internal",
+]);
+const childSystemdUnitAdmissionReasons = Object.freeze([
+  "mapped-executable",
+  "unit-facts",
+  "authority-load",
+  "authority-identity",
+  "authority-cgroup",
+  "authority-hardening",
+  "authority-principal",
+  "cgroup-authentication",
+  "main-pid-unavailable",
+  "main-pid-malformed",
+  "main-pid-mismatch",
+  "main-pid-terminal-unit-state",
+  "main-snapshot-before",
+  "main-members",
+  "main-snapshot-after",
+  "main-identity",
+]);
+const childSystemdRetirementReasons = Object.freeze([
+  "authority-load",
+  "authority-identity",
+  "authority-cgroup",
+  "authority-hardening",
+  "authority-principal",
+  "cgroup-retained",
+  "cgroup-path",
+  "unit-show",
+  "unit-command",
+  "descriptor-close",
+]);
+const childSystemdTerminalWaitReasons = Object.freeze([
+  "unit-show",
+  "unit-parse",
+  "cgroup-observe-before",
+  "cgroup-observe-after",
+  "cgroup-observe-after-unit-not-found",
+  "cgroup-observe-after-command-permission",
+  "cgroup-observe-after-malformed",
+  "cgroup-observe-after-identity-substitution",
+  "cgroup-observe-after-descriptor-state",
+  "cgroup-transition-retained-empty",
+  "cgroup-transition-retained-populated",
+  "cgroup-transition-retained-membership",
+  "cgroup-transition-monotonic-removal-empty",
+  "cgroup-transition-empty-populated",
+  "cgroup-transition-reappeared",
+  "cgroup-transition-third-controlgroup",
+  "cgroup-transition-main-nonterminal",
+  "cgroup-transition-observation-before-missing",
+  "cgroup-transition-observation-before-malformed",
+  "cgroup-transition-observation-after-missing",
+  "cgroup-transition-observation-after-malformed",
+  "cgroup-transition-nonterminal-tuple",
+  "authority-load",
+  "authority-identity",
+  "authority-cgroup",
+  "authority-hardening",
+  "authority-principal",
+]);
+const childSystemdCollectionReasons = Object.freeze([
+  "unit-show",
+  "unit-facts",
+  "load-state",
+  "cgroup-absence",
+]);
+const childSystemdTerminalPredicates = new Set([
+  ...childSystemdRootStages,
+  ...childSystemdSentinelReasons.map((reason) => `sentinel:${reason}`),
+  ...childSystemdJoinReasons.map((reason) => `join:${reason}`),
+  ...childSystemdClientTerminalReasons.map(
+    (reason) => `client-terminal:${reason}`,
+  ),
+  ...childSystemdLifecyclePhases.flatMap((phase) => {
+    const reasons = new Set(childSystemdLifecycleReasons);
+    if (phase === "unit-admission")
+      for (const reason of childSystemdUnitAdmissionReasons)
+        reasons.add(reason);
+    if (phase === "terminal-wait")
+      for (const reason of childSystemdTerminalWaitReasons) reasons.add(reason);
+    if (phase === "retirement")
+      for (const reason of childSystemdRetirementReasons) reasons.add(reason);
+    if (phase === "collection")
+      for (const reason of childSystemdCollectionReasons) reasons.add(reason);
+    return [...reasons].map((reason) => `lifecycle:${phase}:${reason}`);
+  }),
+]);
 const actionBootstrapChildTerminalReasons = new Set([
   "exit-one",
   "exit-other",
@@ -141,6 +281,7 @@ const outerControllerFailures = new WeakMap();
 const failureEvidenceFinalizationFailures = new WeakMap();
 let actionBootstrapStage = "invocation";
 let actionBootstrapReason = "argv-shape";
+let authenticatedChildFailureAnnotation;
 let runtimeDependencies;
 const loadRuntimeDependencies = async () => {
   if (runtimeDependencies !== undefined) return runtimeDependencies;
@@ -155,7 +296,6 @@ const loadRuntimeDependencies = async () => {
     typeof supervisor.prepareGithubSystemdSupervision !== "function" ||
     typeof supervisor.runSupervisedProcess !== "function" ||
     typeof supervisor.systemdToolFailureStage !== "function" ||
-    typeof supervisor.validSystemdToolPredicate !== "function" ||
     typeof artifact.DefaultArtifactClient !== "function"
   )
     fail();
@@ -166,7 +306,6 @@ const loadRuntimeDependencies = async () => {
     prepareGithubSystemdSupervision: supervisor.prepareGithubSystemdSupervision,
     runSupervisedProcess: supervisor.runSupervisedProcess,
     systemdToolFailureStage: supervisor.systemdToolFailureStage,
-    validSystemdToolPredicate: supervisor.validSystemdToolPredicate,
   });
   return runtimeDependencies;
 };
@@ -177,6 +316,22 @@ const childBootstrapMac = ({ digest, key, nonce, sequence, stage }) =>
       "utf8",
     )
     .digest();
+const validChildBootstrapTerminal = (value) =>
+  typeof value === "string" &&
+  ((value.startsWith("systemd-tool:") &&
+    childSystemdTerminalPredicates.has(value.slice("systemd-tool:".length))) ||
+    (value.startsWith("outer:") &&
+      validOuterControllerStage(value.slice("outer:".length))));
+const childBootstrapTerminalAnnotation = (value) =>
+  value?.startsWith("systemd-tool:") === true
+    ? `::error::integration.controller.systemd-tool:${value.slice("systemd-tool:".length)}\n`
+    : value?.startsWith("outer:") === true
+      ? `::error::integration.controller.outer:${value.slice("outer:".length)}\n`
+      : undefined;
+const validChildBootstrapSequenceStage = (sequence, stage) =>
+  childBootstrapStages[sequence] === stage ||
+  (sequence === childBootstrapStages.length - 1 &&
+    validChildBootstrapTerminal(stage));
 const encodeChildBootstrapReceipt = ({
   digest,
   key,
@@ -187,7 +342,7 @@ const encodeChildBootstrapReceipt = ({
   if (
     !Number.isSafeInteger(sequence) ||
     sequence < 0 ||
-    childBootstrapStages[sequence] !== stage ||
+    !validChildBootstrapSequenceStage(sequence, stage) ||
     !Buffer.isBuffer(key) ||
     key.length !== CHILD_BOOTSTRAP_KEY_BYTES ||
     !Buffer.isBuffer(nonce) ||
@@ -217,16 +372,17 @@ const authenticateChildBootstrapReceipts = ({
   const lines = receipts.toString("ascii").slice(0, -1).split("\n");
   if (lines.length < 1 || lines.length > childBootstrapStages.length)
     return undefined;
+  let retainedStage;
   for (const [sequence, line] of lines.entries()) {
     const match =
-      /^agentscope-bootstrap-v1:(\d):([a-z-]+):([a-f0-9]{32}):([a-f0-9]{64})$/u.exec(
+      /^agentscope-bootstrap-v1:(\d):([a-z0-9:-]+):([a-f0-9]{32}):([a-f0-9]{64})$/u.exec(
         line,
       );
-    const stage = childBootstrapStages[sequence];
+    const stage = match?.[2];
     if (
       match === null ||
       match[1] !== String(sequence) ||
-      match[2] !== stage ||
+      !validChildBootstrapSequenceStage(sequence, stage) ||
       match[3] !== nonce.toString("hex")
     )
       return undefined;
@@ -237,10 +393,9 @@ const authenticateChildBootstrapReceipts = ({
       !timingSafeEqual(supplied, expected)
     )
       return undefined;
+    retainedStage = stage;
   }
-  return lines.length === 0
-    ? undefined
-    : childBootstrapStages[lines.length - 1];
+  return retainedStage;
 };
 export const validFailureEvidenceBootstrapStage = (value) =>
   typeof value === "string" && actionBootstrapStages.has(value);
@@ -603,6 +758,8 @@ const failureEvidenceBootstrapAnnotation = () => {
     ? `::error::integration.controller.failure-evidence-bootstrap:${predicate}\n`
     : undefined;
 };
+const selectedFailureEvidenceBootstrapAnnotation = () =>
+  authenticatedChildFailureAnnotation ?? failureEvidenceBootstrapAnnotation();
 const classifyActionBootstrapChildTerminal = (result) =>
   result?.error?.code === "ENOBUFS"
     ? "output-overflow"
@@ -616,29 +773,6 @@ const classifyActionBootstrapChildTerminal = (result) =>
             : "exit-other"
           : undefined;
 
-const authenticatedChildStageReceipt = (stdout) => {
-  if (!Buffer.isBuffer(stdout) || stdout.length > CHILD_OUTPUT_MAXIMUM_BYTES)
-    return undefined;
-  const lines = stdout.toString("utf8").split("\n").filter(Boolean);
-  let retained;
-  for (const line of lines) {
-    const systemd =
-      /^::error::integration\.controller\.systemd-tool:(.+)$/u.exec(line);
-    const outer = /^::error::integration\.controller\.outer:(.+)$/u.exec(line);
-    if (
-      systemd !== null &&
-      runtimeDependencies?.validSystemdToolPredicate(systemd[1]) === true
-    )
-      retained = `${line}\n`;
-    else if (outer !== null && validOuterControllerStage(outer[1]))
-      retained = `${line}\n`;
-    else if (line.startsWith("::error::integration.controller."))
-      return undefined;
-  }
-  return retained;
-};
-export const authenticatedChildStageReceiptForTest = (stdout) =>
-  authenticatedChildStageReceipt(stdout);
 export const exerciseChildBootstrapReceiptsForTest = (
   fault,
   lastStage = "controller-entry",
@@ -646,12 +780,21 @@ export const exerciseChildBootstrapReceiptsForTest = (
   const digest = `sha256:${"1".repeat(64)}`;
   const key = Buffer.alloc(CHILD_BOOTSTRAP_KEY_BYTES, 0x2a);
   const nonce = Buffer.alloc(CHILD_BOOTSTRAP_NONCE_BYTES, 0x3b);
-  const lastSequence = childBootstrapStages.indexOf(lastStage);
+  const terminal = validChildBootstrapTerminal(lastStage);
+  const lastSequence = terminal
+    ? childBootstrapStages.length - 1
+    : childBootstrapStages.indexOf(lastStage);
   if (lastSequence < 0) return undefined;
   const encoded = childBootstrapStages
     .slice(0, lastSequence + 1)
     .map((stage, sequence) =>
-      encodeChildBootstrapReceipt({ digest, key, nonce, sequence, stage }),
+      encodeChildBootstrapReceipt({
+        digest,
+        key,
+        nonce,
+        sequence,
+        stage: terminal && sequence === lastSequence ? lastStage : stage,
+      }),
     );
   let receipts = Buffer.concat(encoded);
   let suppliedKey = key;
@@ -665,7 +808,12 @@ export const exerciseChildBootstrapReceiptsForTest = (
   else if (fault === "truncated") receipts = receipts.subarray(0, -1);
   else if (fault === "unknown")
     receipts = Buffer.from(
-      receipts.toString("ascii").replace("module-load", "unknownxxxx"),
+      receipts
+        .toString("ascii")
+        .replace(
+          terminal ? lastStage : "module-load",
+          terminal ? "systemd-tool:unknown" : "unknownxxxx",
+        ),
       "ascii",
     );
   else if (fault === "key-substitution")
@@ -684,9 +832,12 @@ export const exerciseChildBootstrapReceiptsForTest = (
     receipts,
   });
 };
+export const childBootstrapTerminalAnnotationForTest = (value) =>
+  validChildBootstrapTerminal(value)
+    ? childBootstrapTerminalAnnotation(value)
+    : undefined;
 export const initializeFailureEvidenceRuntimeForTest = () =>
   loadRuntimeDependencies();
-export const childOutputMaximumBytesForTest = CHILD_OUTPUT_MAXIMUM_BYTES;
 export const classifyActionBootstrapChildTerminalForTest = (result) =>
   classifyActionBootstrapChildTerminal(result);
 export const verifyArtifactClientProvenanceForTest = (
@@ -1825,6 +1976,30 @@ const createChildBootstrapEmitter = () => {
         fail();
       sequence += 1;
     },
+    terminal(predicate) {
+      if (
+        sequence !== childBootstrapStages.length - 1 ||
+        !validChildBootstrapTerminal(predicate)
+      )
+        fail();
+      const receipt = encodeChildBootstrapReceipt({
+        digest,
+        key,
+        nonce,
+        sequence,
+        stage: predicate,
+      });
+      if (
+        writeSync(
+          CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR,
+          receipt,
+          0,
+          receipt.length,
+        ) !== receipt.length
+      )
+        fail();
+      sequence += 1;
+    },
   });
 };
 
@@ -2004,6 +2179,33 @@ export const exerciseActionBootstrapSettlementForTest = (
   }
   return undefined;
 };
+export const exerciseAuthenticatedChildTerminalSettlementForTest = (
+  predicate,
+  closeFailure,
+) => {
+  const previousAnnotation = authenticatedChildFailureAnnotation;
+  authenticatedChildFailureAnnotation = validChildBootstrapTerminal(predicate)
+    ? childBootstrapTerminalAnnotation(predicate)
+    : undefined;
+  try {
+    settleActionBootstrapDescriptors({
+      childBootstrapStage: "controller-entry",
+      childTerminalReason: "exit-one",
+      close: () => {
+        if (closeFailure) throw new Error("private");
+      },
+      revalidate: () => undefined,
+      sealer: { descriptor: 4 },
+      source: { descriptor: 3 },
+      spawnFailure: false,
+    });
+  } catch {
+    return selectedFailureEvidenceBootstrapAnnotation();
+  } finally {
+    authenticatedChildFailureAnnotation = previousAnnotation;
+  }
+  return undefined;
+};
 
 const outerControllerMain = async (bootstrap) => {
   bootstrap.mark("argv-config");
@@ -2161,12 +2363,24 @@ const bootstrapMain = async () => {
       timeout: 20 * 60 * 1000,
     },
   );
-  const childBootstrapStage = authenticateChildBootstrapReceipts({
+  const childBootstrapReceipt = authenticateChildBootstrapReceipts({
     digest: source.digest,
     key: bootstrapKey,
     nonce: bootstrapNonce,
     receipts: result.output?.[CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR],
   });
+  const childBootstrapTerminal = validChildBootstrapTerminal(
+    childBootstrapReceipt,
+  )
+    ? childBootstrapReceipt
+    : undefined;
+  const childBootstrapStage =
+    childBootstrapTerminal === undefined
+      ? childBootstrapReceipt
+      : "controller-entry";
+  authenticatedChildFailureAnnotation = childBootstrapTerminalAnnotation(
+    childBootstrapTerminal,
+  );
   const childTerminalReason = classifyActionBootstrapChildTerminal(result);
   const spawnFailure =
     (childTerminalReason === undefined &&
@@ -2204,16 +2418,11 @@ const runOuterControllerEnvelope = async () => {
     if (!succeeded) bootstrap.mark("unexpected-terminal");
   } catch (error) {
     const stage = runtimeDependencies?.systemdToolFailureStage(error);
-    if (stage !== undefined)
-      process.stdout.write(
-        `::error::integration.controller.systemd-tool:${stage}\n`,
-      );
+    if (stage !== undefined) bootstrap?.terminal(`systemd-tool:${stage}`);
     else {
       const outerStage = outerControllerFailureStage(error);
-      if (outerStage !== undefined)
-        process.stdout.write(
-          `::error::integration.controller.outer:${outerStage}\n`,
-        );
+      if (outerStage !== undefined) bootstrap?.terminal(`outer:${outerStage}`);
+      else if (bootstrap !== undefined) bootstrap.mark("unexpected-terminal");
     }
     process.exitCode = 1;
   } finally {
@@ -2239,7 +2448,7 @@ if (process.argv[1] === "--outer-controller") {
   try {
     await bootstrapMain();
   } catch {
-    const annotation = failureEvidenceBootstrapAnnotation();
+    const annotation = selectedFailureEvidenceBootstrapAnnotation();
     if (annotation !== undefined) process.stdout.write(annotation);
     process.exitCode = 1;
   }

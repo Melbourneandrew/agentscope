@@ -3585,7 +3585,7 @@ it("admits only the closed systemd lifecycle diagnostic inventory", () => {
     "utf8",
   );
   expect(action).toContain("runtimeDependencies?.systemdToolFailureStage");
-  expect(action).toMatch(/systemd-tool:\$\{stage\}\\n/u);
+  expect(action).toContain("bootstrap?.terminal(`systemd-tool:${stage}`)");
   expect(action).not.toContain("error.message");
   expect(action).not.toContain("error.stack");
 });
@@ -5031,9 +5031,7 @@ it("emits only an authenticated closed systemd-tool stage annotation", () => {
     "utf8",
   );
   expect(action).toContain("systemdToolFailureStage(error)");
-  expect(action).toContain(
-    "`::error::integration.controller.systemd-tool:${stage}\\n`",
-  );
+  expect(action).toContain("bootstrap?.terminal(`systemd-tool:${stage}`)");
   expect(action).not.toContain("error.message");
   expect(action).not.toContain("error.stack");
   const supervisor = readFileSync(
@@ -5085,9 +5083,7 @@ it("latches closed outer-controller stages before every authority boundary", () 
     ['outerStage = "descriptor-close"', "for (const descriptor of"],
   ] as const)
     expect(outer.indexOf(stage)).toBeLessThan(outer.indexOf(boundary));
-  expect(action).toContain(
-    "`::error::integration.controller.outer:${outerStage}\\n`",
-  );
+  expect(action).toContain("bootstrap?.terminal(`outer:${outerStage}`)");
   expect(action).not.toContain("integration.controller.outer:${error");
 });
 

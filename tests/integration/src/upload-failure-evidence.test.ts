@@ -22,7 +22,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { authenticatedChildStageReceiptForTest, buildLifecycleEnvironment, childOutputMaximumBytesForTest, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 const initializeRuntime =
   initializeFailureEvidenceRuntimeForTest as unknown as () => Promise<void>;
@@ -90,6 +90,15 @@ const exerciseBootstrapReceipts =
       | "mac-substitution",
     lastStage?: string,
   ) => string | undefined;
+const childBootstrapTerminalAnnotation =
+  childBootstrapTerminalAnnotationForTest as unknown as (
+    value: unknown,
+  ) => string | undefined;
+const exerciseAuthenticatedChildTerminalSettlement =
+  exerciseAuthenticatedChildTerminalSettlementForTest as unknown as (
+    predicate: string,
+    closeFailure: boolean,
+  ) => string | undefined;
 const validActionMetadata = validLocalActionMetadata as unknown as (
   value: unknown,
 ) => boolean;
@@ -118,11 +127,6 @@ const classifyBootstrapChildTerminal =
     signal?: string | null;
     status?: number | null;
   }) => string | undefined;
-const authenticateChildStageReceipt =
-  authenticatedChildStageReceiptForTest as unknown as (
-    stdout: Buffer,
-  ) => string | undefined;
-const childOutputMaximumBytes = childOutputMaximumBytesForTest as number;
 const exerciseBootstrapSettlement =
   exerciseActionBootstrapSettlementForTest as unknown as (
     fault:
@@ -939,16 +943,23 @@ it("authenticates one ordered nonce-bound bootstrap handoff", () => {
     expect(exerciseBootstrapReceipts(fault)).toBeUndefined();
 });
 
-it("retains only the last closed authenticated child-stage receipt", () => {
-  const outer =
-    "::error::integration.controller.outer:finalize-evidence:open:missing\n";
+it("MAC-binds each closed child terminal predicate into the bootstrap envelope", () => {
+  const outer = "outer:finalize-evidence:open:missing";
   const lifecycle =
-    "::error::integration.controller.systemd-tool:lifecycle:terminal-wait:cgroup-observe-after-unit-not-found\n";
-  const helper =
-    "::error::integration.controller.systemd-tool:client-terminal:deadline\n";
-  expect(authenticateChildStageReceipt(Buffer.from(outer))).toBe(outer);
-  expect(authenticateChildStageReceipt(Buffer.from(lifecycle))).toBe(lifecycle);
-  expect(authenticateChildStageReceipt(Buffer.from(helper))).toBe(helper);
+    "systemd-tool:lifecycle:terminal-wait:cgroup-observe-after-unit-not-found";
+  const helper = "systemd-tool:client-terminal:deadline";
+  for (const predicate of [outer, lifecycle, helper]) {
+    expect(exerciseBootstrapReceipts("valid", predicate)).toBe(predicate);
+    expect(childBootstrapTerminalAnnotation(predicate)).toBe(
+      `::error::integration.controller.${predicate}\n`,
+    );
+    expect(exerciseAuthenticatedChildTerminalSettlement(predicate, false)).toBe(
+      `::error::integration.controller.${predicate}\n`,
+    );
+    expect(exerciseAuthenticatedChildTerminalSettlement(predicate, true)).toBe(
+      `::error::integration.controller.${predicate}\n`,
+    );
+  }
   for (const stage of [
     "startup",
     "cutoff",
@@ -956,8 +967,11 @@ it("retains only the last closed authenticated child-stage receipt", () => {
     "unit-admission",
     "retirement",
   ]) {
-    const receipt = `::error::integration.controller.systemd-tool:${stage}\n`;
-    expect(authenticateChildStageReceipt(Buffer.from(receipt))).toBe(receipt);
+    const predicate = `systemd-tool:${stage}`;
+    expect(exerciseBootstrapReceipts("valid", predicate)).toBe(predicate);
+    expect(childBootstrapTerminalAnnotation(predicate)).toBe(
+      `::error::integration.controller.${predicate}\n`,
+    );
   }
   for (const [stage, reasons] of [
     [
@@ -1001,41 +1015,30 @@ it("retains only the last closed authenticated child-stage receipt", () => {
     ],
   ] as const)
     for (const reason of reasons) {
-      const receipt = `::error::integration.controller.systemd-tool:${stage}:${reason}\n`;
-      expect(authenticateChildStageReceipt(Buffer.from(receipt))).toBe(receipt);
+      const predicate = `systemd-tool:${stage}:${reason}`;
+      expect(exerciseBootstrapReceipts("valid", predicate)).toBe(predicate);
+      expect(childBootstrapTerminalAnnotation(predicate)).toBe(
+        `::error::integration.controller.${predicate}\n`,
+      );
     }
-  expect(authenticateChildStageReceipt(Buffer.from(outer + lifecycle))).toBe(
-    lifecycle,
-  );
-  const exactBoundary = Buffer.concat([
-    Buffer.alloc(
-      childOutputMaximumBytes - Buffer.byteLength(lifecycle) - 1,
-      0x78,
-    ),
-    Buffer.from("\n"),
-    Buffer.from(lifecycle),
-  ]);
-  expect(authenticateChildStageReceipt(exactBoundary)).toBe(lifecycle);
-  expect(
-    authenticateChildStageReceipt(
-      Buffer.concat([exactBoundary, Buffer.of(0x78)]),
-    ),
-  ).toBeUndefined();
   for (const rejected of [
-    "",
-    "raw output\n",
-    "::error::integration.controller.outer:unknown\n",
-    "::error::integration.controller.systemd-tool:lifecycle:terminal-wait:unknown\n",
-    "::error::integration.controller.systemd-tool:sentinel\n",
-    "::error::integration.controller.systemd-tool:join:unknown\n",
-    "::error::integration.controller.systemd-tool:pid1-stat\n",
+    "outer:unknown",
+    "systemd-tool:lifecycle:terminal-wait:unknown",
+    "systemd-tool:sentinel",
+    "systemd-tool:join:unknown",
+    "systemd-tool:pid1-stat",
+    "systemd-tool:startup:extra",
   ])
-    expect(
-      authenticateChildStageReceipt(Buffer.from(rejected)),
-    ).toBeUndefined();
-  expect(
-    authenticateChildStageReceipt(Buffer.from(`bounded evidence\n${outer}`)),
-  ).toBe(outer);
+    expect(exerciseBootstrapReceipts("valid", rejected)).toBeUndefined();
+  for (const fault of [
+    "unknown",
+    "key-substitution",
+    "nonce-substitution",
+    "digest-substitution",
+    "mac-substitution",
+    "truncated",
+  ] as const)
+    expect(exerciseBootstrapReceipts(fault, lifecycle)).toBeUndefined();
 });
 
 it("latches each reachable finalization reason at its production operation", () => {
