@@ -90,6 +90,10 @@ export function validateMainProcessMembership(input: {
   facts: Readonly<{ MainPID?: string }>;
   members: readonly number[];
 }): boolean;
+export function classifySystemdAdmissionMainPid(
+  facts: Readonly<{ ActiveState?: string; MainPID?: string }>,
+  expected?: number,
+): SystemdUnitAdmissionDiagnosticReason | undefined;
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
@@ -217,7 +221,10 @@ export type SystemdUnitAdmissionDiagnosticReason =
   | "unit-facts"
   | SystemdRetirementAuthorityReason
   | "cgroup-authentication"
-  | "main-pid"
+  | "main-pid-unavailable"
+  | "main-pid-malformed"
+  | "main-pid-mismatch"
+  | "main-pid-terminal-unit-state"
   | "main-snapshot-before"
   | "main-members"
   | "main-snapshot-after"

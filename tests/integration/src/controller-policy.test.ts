@@ -36,6 +36,7 @@ import {
   exactPathIsAbsent,
   exerciseSystemdToolFailurePreservationForTesting,
   classifySystemdUnitAuthority,
+  classifySystemdAdmissionMainPid,
   classifyTerminalSystemdUnitAuthority,
   classifyTerminalCgroupTransitionFailure,
   exerciseTerminalCgroupDiagnosticForTesting,
@@ -1572,7 +1573,7 @@ it("separates bounded preparation from the consumed execution deadline", () => {
   );
   expect(preparation.match(/captureLiveMappedExecutable\(/gu)).toHaveLength(1);
   expect(preparation.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(1);
-  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(2);
+  expect(lifecycle.match(/recheckLiveMappedExecutable\(/gu)).toHaveLength(3);
   expect(preparation).not.toContain("systemdStartArguments({");
   expect(lifecycle).toContain("systemdStartArguments({");
   expect(preparation).toContain("await closePreparedSystemdState(state)");
@@ -2374,34 +2375,48 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       ' if OPERATION.startswith("synthetic-client-"):\n' +
       "  armed=now()\n" +
       "  DEADLINE=armed+2000000000\n" +
-      "  CUTOFF=armed+2000000000\n",
+      "  CUTOFF=armed+2000000000\n" +
+      " TEST_READY=False\n" +
+      " def test_ready(leader,expected):\n" +
+      "  global TEST_READY\n" +
+      '  if TEST_READY: raise RuntimeError("readiness")\n' +
+      '  os.write(3,(str(leader)+":"+str(expected[0])+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
+      "  TEST_READY=True\n",
   );
   const groupEstablishedBoundary =
     " leader,expected,control=create_group()\n child=None\n";
-  const groupSynchronizedHelper = readinessSynchronizedHelper.replace(
-    groupEstablishedBoundary,
-    " leader,expected,control=create_group()\n" +
-      ' if OPERATION.startswith("synthetic-client-"):\n' +
-      '  os.write(3,(str(leader)+":"+str(expected[0])+"\\n").encode("ascii"))\n' +
-      '  if OPERATION not in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
-      " child=None\n",
+  const childAdmissionBoundary =
+    '  child_record=None if OPERATION=="synthetic-client-child-admission" else process_record(child.pid)\n';
+  const childSynchronizedHelper = readinessSynchronizedHelper.replace(
+    childAdmissionBoundary,
+    '  if OPERATION=="synthetic-client-child-admission": test_ready(leader,expected)\n' +
+      childAdmissionBoundary,
+  );
+  const memberIdentityBoundary =
+    '  if OPERATION=="synthetic-client-member-identity": expected_members[child.pid]=("0",child_record[1],child_record[2])\n';
+  const identitySynchronizedHelper = childSynchronizedHelper.replace(
+    memberIdentityBoundary,
+    '  if OPERATION in {"synthetic-client-leader-identity","synthetic-client-member-identity","synthetic-client-internal"}: test_ready(leader,expected)\n' +
+      memberIdentityBoundary,
   );
   const postAdmissionBoundary =
     '  if OPERATION=="synthetic-client-output-read": child.stdout.close()\n  while child.poll() is None:\n';
-  const synchronizedHelper = groupSynchronizedHelper.replace(
+  const synchronizedHelper = identitySynchronizedHelper.replace(
     postAdmissionBoundary,
-    '  if OPERATION=="synthetic-client-output-read": child.stdout.close()\n' +
-      '  if OPERATION.startswith("synthetic-client-") and OPERATION not in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}:\n' +
+    '  if OPERATION.startswith("synthetic-client-") and OPERATION not in {"synthetic-client-leader-identity","synthetic-client-child-admission","synthetic-client-member-identity","synthetic-client-internal"}:\n' +
       "   admit_group_members(leader,expected_members)\n" +
       '   if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
       '   elif OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"}: CUTOFF=now()-1\n' +
-      '   if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
+      "   test_ready(leader,expected)\n" +
+      '  if OPERATION=="synthetic-client-output-read": child.stdout.close()\n' +
       "  while child.poll() is None:\n",
   );
   return {
+    childAdmissionBoundary,
     deadlineArm,
     groupEstablishedBoundary,
-    groupSynchronizedHelper,
+    childSynchronizedHelper,
+    identitySynchronizedHelper,
     postAdmissionBoundary,
     readinessSynchronizedHelper,
     synchronizedHelper,
@@ -2414,16 +2429,17 @@ const parseSyntheticClientReadiness = (
 ) => {
   if (
     typeof readiness !== "string" ||
-    !/^[1-9][0-9]*:[1-9][0-9]*\n[1-9][0-9]{6,19}:[1-9][0-9]{6,19}\n$/u.test(
+    !/^[1-9][0-9]*:[1-9][0-9]*:[1-9][0-9]{6,19}:[1-9][0-9]{6,19}\n$/u.test(
       readiness,
     )
   )
     return undefined;
-  const [leaderIdentity, deadlineIdentity] = readiness
-    .trimEnd()
-    .split("\n") as [string, string];
-  const [leader, start] = leaderIdentity.split(":") as [string, string];
-  const [deadline, cutoff] = deadlineIdentity.split(":") as [string, string];
+  const [leader, start, deadline, cutoff] = readiness.trimEnd().split(":") as [
+    string,
+    string,
+    string,
+    string,
+  ];
   if (
     ![deadline, cutoff, leader, start].every(
       (value) =>
@@ -2441,8 +2457,8 @@ const parseSyntheticClientReadiness = (
   return Object.freeze({ cutoff, deadline, leader, start });
 };
 
-it("accepts only exact synthetic client readiness frames", () => {
-  const valid = "123:456\n1000000:2000000\n";
+it("accepts only exact post-precondition synthetic client readiness", () => {
+  const valid = "123:456:1000000:2000000\n";
   expect(
     parseSyntheticClientReadiness(valid, { leader: "123", start: "456" }),
   ).toEqual({
@@ -2454,10 +2470,10 @@ it("accepts only exact synthetic client readiness frames", () => {
   for (const invalid of [
     "",
     "123:456\n",
-    "123:\n1000000:2000000\n",
-    "0:456\n1000000:2000000\n",
-    "123:456\n1000000:2000000\nextra\n",
-    "123:substituted\n1000000:2000000\n",
+    "123::1000000:2000000\n",
+    "0:456:1000000:2000000\n",
+    "123:456:1000000:2000000:extra\n",
+    "123:substituted:1000000:2000000\n",
   ])
     expect(parseSyntheticClientReadiness(invalid)).toBeUndefined();
   expect(
@@ -3256,7 +3272,10 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     "authority-hardening",
     "authority-principal",
     "cgroup-authentication",
-    "main-pid",
+    "main-pid-unavailable",
+    "main-pid-malformed",
+    "main-pid-mismatch",
+    "main-pid-terminal-unit-state",
     "main-snapshot-before",
     "main-members",
     "main-snapshot-after",
@@ -3295,7 +3314,7 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
     ['"unit-facts"', "await showUnit("],
     ["`authority-${authorityMismatch}`", "failSystemd();"],
     ['"cgroup-authentication"', "authenticateCgroup("],
-    ['"main-pid"', "captureMainProcessMembership("],
+    ['"main-pid-malformed"', "captureMainProcessMembership("],
   ] as const)
     expect(admission.indexOf(reason)).toBeLessThan(admission.indexOf(boundary));
   const membershipStart = supervisor.indexOf(
@@ -3310,8 +3329,8 @@ it("admits only the closed unit-admission diagnostic inventory", () => {
   const membership = supervisor.slice(membershipStart, membershipEnd);
   let boundary = -1;
   for (const token of [
-    'markDiagnostic?.("main-pid")',
-    "facts?.MainPID",
+    'markDiagnostic?.("main-pid-malformed")',
+    "classifySystemdAdmissionMainPid(facts)",
     "const pid = Number(facts.MainPID)",
     "if (!Number.isSafeInteger(pid)) failSystemd()",
     'markDiagnostic?.("main-snapshot-before")',
@@ -3474,6 +3493,74 @@ it("binds transient main membership to exact PID and start identity", () => {
         ...replacement,
       }),
     ).toBe(false);
+});
+
+it("classifies MainPID admission transitions without widening the deadline", () => {
+  for (const activeState of ["activating", "active"]) {
+    expect(classifySystemdAdmissionMainPid({ ActiveState: activeState })).toBe(
+      "main-pid-unavailable",
+    );
+    for (const mainPid of ["", "0"])
+      expect(
+        classifySystemdAdmissionMainPid({
+          ActiveState: activeState,
+          MainPID: mainPid,
+        }),
+      ).toBe("main-pid-unavailable");
+  }
+  for (const mainPid of [
+    "-1",
+    "01",
+    "1.0",
+    "x",
+    String(Number.MAX_SAFE_INTEGER + 1),
+  ])
+    expect(
+      classifySystemdAdmissionMainPid({
+        ActiveState: "active",
+        MainPID: mainPid,
+      }),
+    ).toBe("main-pid-malformed");
+  for (const activeState of ["inactive", "failed", "deactivating"])
+    expect(
+      classifySystemdAdmissionMainPid({
+        ActiveState: activeState,
+        MainPID: "0",
+      }),
+    ).toBe("main-pid-terminal-unit-state");
+  expect(
+    classifySystemdAdmissionMainPid({ ActiveState: "active", MainPID: "712" }),
+  ).toBeUndefined();
+  expect(
+    classifySystemdAdmissionMainPid(
+      { ActiveState: "active", MainPID: "713" },
+      712,
+    ),
+  ).toBe("main-pid-mismatch");
+  expect(
+    classifySystemdAdmissionMainPid(
+      { ActiveState: "active", MainPID: "712" },
+      712,
+    ),
+  ).toBeUndefined();
+
+  const supervisor = readFileSync(
+    resolve(workspaceRoot, "tests/integration/supervisor.mjs"),
+    "utf8",
+  );
+  const admission = supervisor.slice(
+    supervisor.indexOf("const admitSystemdUnit ="),
+    supervisor.indexOf("const observeSystemdTerminal ="),
+  );
+  expect(admission).toContain(
+    'while (mainPidReason === "main-pid-unavailable")',
+  );
+  expect(admission).toContain("state.executionDeadline");
+  expect(admission).toContain("classifySystemdUnitAuthority(");
+  expect(admission).toContain(
+    "recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity)",
+  );
+  expect(admission).not.toContain("Date.now()");
 });
 
 it("classifies terminal cgroup transition failures without exposing authority values", () => {
@@ -3862,19 +3949,23 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
     const {
+      childAdmissionBoundary,
       deadlineArm,
       groupEstablishedBoundary,
-      groupSynchronizedHelper,
+      childSynchronizedHelper,
+      identitySynchronizedHelper,
       postAdmissionBoundary,
       readinessSynchronizedHelper,
       synchronizedHelper,
     } = synchronizeSyntheticClientDeadlines(helper);
     expect(helper).toContain(deadlineArm);
     expect(helper).toContain(groupEstablishedBoundary);
+    expect(helper).toContain(childAdmissionBoundary);
     expect(helper).toContain(postAdmissionBoundary);
     expect(readinessSynchronizedHelper).not.toBe(helper);
-    expect(groupSynchronizedHelper).not.toBe(readinessSynchronizedHelper);
-    expect(synchronizedHelper).not.toBe(groupSynchronizedHelper);
+    expect(childSynchronizedHelper).not.toBe(readinessSynchronizedHelper);
+    expect(identitySynchronizedHelper).not.toBe(childSynchronizedHelper);
+    expect(synchronizedHelper).not.toBe(identitySynchronizedHelper);
     const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
     const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
     const cases = [

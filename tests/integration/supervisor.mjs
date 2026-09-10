@@ -105,7 +105,10 @@ const systemdUnitAdmissionDiagnosticReasons = new Set([
   "authority-hardening",
   "authority-principal",
   "cgroup-authentication",
-  "main-pid",
+  "main-pid-unavailable",
+  "main-pid-malformed",
+  "main-pid-mismatch",
+  "main-pid-terminal-unit-state",
   "main-snapshot-before",
   "main-members",
   "main-snapshot-after",
@@ -2223,14 +2226,30 @@ export const validateMainProcessMembership = ({
   );
 };
 
+export const classifySystemdAdmissionMainPid = (
+  facts,
+  expected = undefined,
+) => {
+  const value = facts?.MainPID;
+  const transient =
+    facts?.ActiveState === "activating" || facts?.ActiveState === "active";
+  if (expected !== undefined && value !== String(expected))
+    return "main-pid-mismatch";
+  if (value === undefined || value === "" || value === "0")
+    return transient ? "main-pid-unavailable" : "main-pid-terminal-unit-state";
+  if (!/^[1-9][0-9]*$/u.test(value) || !Number.isSafeInteger(Number(value)))
+    return "main-pid-malformed";
+  return transient ? undefined : "main-pid-terminal-unit-state";
+};
+
 const captureMainProcessMembership = (
   facts,
   cgroupIdentity,
   expected,
   markDiagnostic = undefined,
 ) => {
-  markDiagnostic?.("main-pid");
-  if (!/^[1-9][0-9]*$/u.test(facts?.MainPID ?? "")) failSystemd();
+  markDiagnostic?.("main-pid-malformed");
+  if (classifySystemdAdmissionMainPid(facts) !== undefined) failSystemd();
   const pid = Number(facts.MainPID);
   if (!Number.isSafeInteger(pid)) failSystemd();
   markDiagnostic?.("main-snapshot-before");
@@ -2946,7 +2965,7 @@ const admitSystemdUnit = async (state) => {
     state.unitAdmissionDiagnosticReason = "mapped-executable";
     recheckLiveMappedExecutable(state.mappedExecutable);
     state.unitAdmissionDiagnosticReason = "unit-facts";
-    const admitted = await showUnit(
+    let admitted = await showUnit(
       state.authority.unit,
       state.executionDeadline,
       "unit-admission",
@@ -2961,7 +2980,37 @@ const admitSystemdUnit = async (state) => {
     }
     state.unitAdmissionDiagnosticReason = "cgroup-authentication";
     state.cgroupIdentity = authenticateCgroup(state.cgroupPath);
-    state.unitAdmissionDiagnosticReason = "main-pid";
+    let mainPidReason = classifySystemdAdmissionMainPid(admitted);
+    while (mainPidReason === "main-pid-unavailable") {
+      state.unitAdmissionDiagnosticReason = mainPidReason;
+      if (performance.now() >= state.executionDeadline) failSystemd();
+      await delay(10);
+      state.unitAdmissionDiagnosticReason = "mapped-executable";
+      recheckLiveMappedExecutable(state.mappedExecutable);
+      state.unitAdmissionDiagnosticReason = "unit-facts";
+      admitted = await showUnit(
+        state.authority.unit,
+        state.executionDeadline,
+        "unit-admission",
+      );
+      const polledAuthorityMismatch = classifySystemdUnitAuthority(
+        admitted,
+        state.authority,
+      );
+      if (polledAuthorityMismatch !== undefined) {
+        state.unitAdmissionDiagnosticReason = `authority-${polledAuthorityMismatch}`;
+        failSystemd();
+      }
+      state.unitAdmissionDiagnosticReason = "cgroup-authentication";
+      recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity);
+      state.unitAdmissionDiagnosticReason = "main-pid-unavailable";
+      mainPidReason = classifySystemdAdmissionMainPid(admitted);
+    }
+    if (mainPidReason !== undefined) {
+      state.unitAdmissionDiagnosticReason = mainPidReason;
+      failSystemd();
+    }
+    state.unitAdmissionDiagnosticReason = "main-pid-malformed";
     state.mainProcessIdentity = captureMainProcessMembership(
       admitted,
       state.cgroupIdentity,
@@ -2970,6 +3019,31 @@ const admitSystemdUnit = async (state) => {
         state.unitAdmissionDiagnosticReason = reason;
       },
     );
+    state.unitAdmissionDiagnosticReason = "unit-facts";
+    const confirmed = await showUnit(
+      state.authority.unit,
+      state.executionDeadline,
+      "unit-admission",
+    );
+    const confirmedAuthorityMismatch = classifySystemdUnitAuthority(
+      confirmed,
+      state.authority,
+    );
+    if (confirmedAuthorityMismatch !== undefined) {
+      state.unitAdmissionDiagnosticReason = `authority-${confirmedAuthorityMismatch}`;
+      failSystemd();
+    }
+    state.unitAdmissionDiagnosticReason = "cgroup-authentication";
+    recheckCgroupAuthority(state.cgroupPath, state.cgroupIdentity);
+    state.unitAdmissionDiagnosticReason = "main-pid-mismatch";
+    const confirmedMainPidReason = classifySystemdAdmissionMainPid(
+      confirmed,
+      state.mainProcessIdentity.pid,
+    );
+    if (confirmedMainPidReason !== undefined) {
+      state.unitAdmissionDiagnosticReason = confirmedMainPidReason;
+      failSystemd();
+    }
   } catch (error) {
     rethrowSystemdLifecycle(
       state,
