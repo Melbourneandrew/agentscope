@@ -73,7 +73,7 @@ export function classifyTerminalCgroupTransitionFailure(
   }>,
   before: unknown,
   after: unknown,
-): SystemdTerminalCgroupTransitionReason;
+): SystemdTerminalCgroupTransitionReason | undefined;
 
 export type SystemdTerminalCgroupTransitionReason =
   | "cgroup-transition-retained-empty"
@@ -88,7 +88,6 @@ export type SystemdTerminalCgroupTransitionReason =
   | "cgroup-transition-observation-before-malformed"
   | "cgroup-transition-observation-after-missing"
   | "cgroup-transition-observation-after-malformed"
-  | "cgroup-transition-terminal-tuple"
   | "cgroup-transition-nonterminal-tuple";
 export function validateMainProcessMembership(input: {
   after: Readonly<{ bootId: string; pid: number; startTime: string }>;

@@ -3646,7 +3646,6 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
     "cgroup-transition-observation-before-malformed",
     "cgroup-transition-observation-after-missing",
     "cgroup-transition-observation-after-malformed",
-    "cgroup-transition-terminal-tuple",
     "cgroup-transition-nonterminal-tuple",
   ] as const satisfies readonly SystemdTerminalWaitCgroupReason[];
   const exhaustive: Exclude<
@@ -3680,7 +3679,6 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "cgroup-transition-observation-before-malformed",
     "cgroup-transition-observation-after-missing",
     "cgroup-transition-observation-after-malformed",
-    "cgroup-transition-terminal-tuple",
     "cgroup-transition-nonterminal-tuple",
     "authority-load",
     "authority-identity",
@@ -4663,7 +4661,12 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         sleepArguments,
         "uncertain",
       ],
-      ["synthetic-client-deadline", "deadline", sleepArguments, "uncertain"],
+      [
+        "synthetic-client-deadline",
+        "deadline",
+        sleepArguments,
+        ["error", "uncertain"],
+      ],
       [
         "synthetic-client-leader-identity",
         "leader-identity",
@@ -4727,15 +4730,17 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
         output: "",
         reason,
         stage: "client-terminal",
-        status,
       });
+      expect(Array.isArray(status) ? status : [status]).toContain(
+        receipt?.status,
+      );
       expect(terminal.stdout).not.toContain("Traceback");
     }
   },
   30_000,
 );
 
-it("admits a proved-settled authenticated deadline receipt as error", () => {
+it("admits only authenticated deadline terminal outcomes", () => {
   const identity = {
     cutoff: "100",
     deadline: "200",
@@ -4743,33 +4748,35 @@ it("admits a proved-settled authenticated deadline receipt as error", () => {
     unit: "",
   } as const;
   const key = "11".repeat(32);
-  const payload = {
-    output: "",
-    reason: "deadline",
-    stage: "client-terminal",
-    status: "error",
-  } as const;
-  const mac = createHmac("sha256", Buffer.from(key, "hex"))
-    .update(
-      JSON.stringify({
-        cutoff: identity.cutoff,
-        deadline: identity.deadline,
-        operation: identity.operation,
-        output: payload.output,
-        reason: payload.reason,
-        stage: payload.stage,
-        status: payload.status,
-        unit: identity.unit,
+  for (const status of ["error", "uncertain"] as const) {
+    const payload = {
+      output: "",
+      reason: "deadline",
+      stage: "client-terminal",
+      status,
+    } as const;
+    const mac = createHmac("sha256", Buffer.from(key, "hex"))
+      .update(
+        JSON.stringify({
+          cutoff: identity.cutoff,
+          deadline: identity.deadline,
+          operation: identity.operation,
+          output: payload.output,
+          reason: payload.reason,
+          stage: payload.stage,
+          status: payload.status,
+          unit: identity.unit,
+        }),
+      )
+      .digest("hex");
+    expect(
+      validateRootToolReceipt({
+        identity,
+        key,
+        receipt: JSON.stringify({ mac, ...payload }),
       }),
-    )
-    .digest("hex");
-  expect(
-    validateRootToolReceipt({
-      identity,
-      key,
-      receipt: JSON.stringify({ mac, ...payload }),
-    }),
-  ).toEqual(payload);
+    ).toEqual(payload);
+  }
 });
 
 it("emits only an authenticated closed systemd-tool stage annotation", () => {

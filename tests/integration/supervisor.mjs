@@ -138,7 +138,6 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "cgroup-transition-observation-before-malformed",
   "cgroup-transition-observation-after-missing",
   "cgroup-transition-observation-after-malformed",
-  "cgroup-transition-terminal-tuple",
   "cgroup-transition-nonterminal-tuple",
   "authority-load",
   "authority-identity",
@@ -2038,7 +2037,7 @@ export const classifyTerminalCgroupTransitionFailure = (
       !after.empty
       ? "cgroup-transition-main-nonterminal"
       : "cgroup-transition-nonterminal-tuple";
-  return "cgroup-transition-terminal-tuple";
+  return undefined;
 };
 
 export const classifyRetirementSystemdUnitAuthority = (
@@ -2603,12 +2602,12 @@ const observeTerminalSystemdUnit = async (
   if (mismatch !== undefined) {
     const reason =
       mismatch === "cgroup"
-        ? classifyTerminalCgroupTransitionFailure(
+        ? (classifyTerminalCgroupTransitionFailure(
             facts,
             state.authority,
             before,
             after,
-          )
+          ) ?? "authority-cgroup")
         : `authority-${mismatch}`;
     if (
       reason !== "cgroup-transition-main-nonterminal" &&
