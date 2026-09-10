@@ -2371,6 +2371,8 @@ const syntheticClientRunGlobalBoundary =
   "def run(argv,cutoff,operation_stage):\n global STAGE,REASON\n";
 const syntheticClientSpawnBoundary =
   '  child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={"LANG":"C.UTF-8","PATH":"/usr/bin:/bin"},process_group=leader,close_fds=True)\n';
+const syntheticClientReasonBoundary =
+  'CLIENT_TERMINAL_REASONS={"cutoff","deadline","leader-identity","child-admission","member-identity","output-read","output-bound","nonzero-terminal","internal-unknown"}';
 const syntheticGatedChildSource = [
   "import json,os,sys",
   'if sys.stdin.buffer.read(1)!=b"x": sys.exit(125)',
@@ -2423,6 +2425,8 @@ const syntheticDiagnosticReasonsByStage = new Map<string, ReadonlySet<string>>([
       "output-read",
       "output-bound",
       "nonzero-terminal",
+      "readiness-control",
+      "readiness-descriptor",
       "internal-unknown",
     ]),
   ],
@@ -2444,7 +2448,11 @@ const syntheticDiagnosticReasonsByStage = new Map<string, ReadonlySet<string>>([
 const syntheticDiagnosticReceiptPattern =
   /^\{"mac":"[0-9a-f]{64}","output":"","reason":"([a-z-]*)","stage":"(startup|cutoff|sentinel|tool-spawn|client-terminal|unit-admission|retirement|join)","status":"(error|uncertain)"\}$/;
 
-const syntheticReadinessFailure = (operation: string, stdout: string) => {
+const syntheticReadinessFailure = (
+  operation: string,
+  stdout: string,
+  readiness?: unknown,
+) => {
   const admittedOperation = syntheticDiagnosticOperations.has(operation)
     ? operation
     : "unknown-operation";
@@ -2464,15 +2472,27 @@ const syntheticReadinessFailure = (operation: string, stdout: string) => {
       reason = candidateReason || "none";
     }
   }
+  const readinessClassification = classifySyntheticClientReadiness(readiness);
+  const readinessReason =
+    typeof readinessClassification === "string"
+      ? readinessClassification
+      : "membership-witness";
   return new Error(
-    `synthetic helper readiness missing:${admittedOperation}:${stage}:${reason}`,
+    `synthetic helper readiness missing:${admittedOperation}:${stage}:${reason}:${readinessReason}`,
   );
 };
 
 const synchronizeSyntheticClientDeadlines = (helper: string) => {
   const deadlineArm =
     " DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); OPERATION=sys.argv[3]\n tool=sys.argv[4]; raw=sys.argv[5]; unit=sys.argv[6]; KEY=sys.argv[7]\n";
-  const readinessSynchronizedHelper = helper.replace(
+  const diagnosticHelper = helper.replace(
+    syntheticClientReasonBoundary,
+    syntheticClientReasonBoundary.replace(
+      '"internal-unknown"',
+      '"readiness-control","readiness-descriptor","internal-unknown"',
+    ),
+  );
+  const readinessSynchronizedHelper = diagnosticHelper.replace(
     deadlineArm,
     deadlineArm +
       ' if OPERATION.startswith("synthetic-client-"):\n' +
@@ -2482,10 +2502,12 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       " TEST_READY=False\n" +
       " TEST_CHILD=None\n" +
       " def test_ready(leader,expected):\n" +
-      "  global TEST_READY,TEST_CHILD\n" +
+      "  global TEST_READY,TEST_CHILD,REASON\n" +
       '  if TEST_READY: raise RuntimeError("readiness")\n' +
       '  if TEST_CHILD is None or TEST_CHILD.stdin is None: raise RuntimeError("readiness")\n' +
+      '  REASON="readiness-descriptor"\n' +
       '  os.write(3,(str(leader)+":"+str(expected[0])+":"+str(DEADLINE)+":"+str(CUTOFF)+"\\n").encode("ascii"))\n' +
+      '  REASON="readiness-control"\n' +
       '  TEST_CHILD.stdin.write(b"x")\n' +
       "  TEST_CHILD.stdin.flush()\n" +
       "  TEST_CHILD.stdin.close()\n" +
@@ -2545,41 +2567,54 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
   };
 };
 
+type SyntheticReadinessFailure =
+  "leader-identity" | "malformed-shape" | "membership-witness" | "missing-eof";
+
+const classifySyntheticClientReadiness = (
+  readiness: unknown,
+  expected?: Readonly<{ leader: string; start: string }>,
+) => {
+  if (readiness === "" || readiness === null || readiness === undefined)
+    return "missing-eof" satisfies SyntheticReadinessFailure;
+  if (typeof readiness !== "string")
+    return "malformed-shape" satisfies SyntheticReadinessFailure;
+  const match = /^([^:\n]+):([^:\n]+):([^:\n]+):([^:\n]+)\n$/u.exec(readiness);
+  if (!match) return "malformed-shape" satisfies SyntheticReadinessFailure;
+  const [, leader, start, deadline, cutoff] = match;
+  if (
+    leader === undefined ||
+    !/^[1-9][0-9]*$/u.test(leader) ||
+    !Number.isSafeInteger(Number(leader))
+  )
+    return "leader-identity" satisfies SyntheticReadinessFailure;
+  if (
+    start === undefined ||
+    !/^[1-9][0-9]*$/u.test(start) ||
+    !Number.isSafeInteger(Number(start))
+  )
+    return "membership-witness" satisfies SyntheticReadinessFailure;
+  if (
+    deadline === undefined ||
+    cutoff === undefined ||
+    !/^[1-9][0-9]{6,19}$/u.test(deadline) ||
+    !/^[1-9][0-9]{6,19}$/u.test(cutoff) ||
+    BigInt(deadline) <= 0n ||
+    BigInt(cutoff) <= 0n
+  )
+    return "malformed-shape" satisfies SyntheticReadinessFailure;
+  if (expected !== undefined && expected.leader !== leader)
+    return "leader-identity" satisfies SyntheticReadinessFailure;
+  if (expected !== undefined && expected.start !== start)
+    return "membership-witness" satisfies SyntheticReadinessFailure;
+  return Object.freeze({ cutoff, deadline, leader, start });
+};
+
 const parseSyntheticClientReadiness = (
   readiness: unknown,
   expected?: Readonly<{ leader: string; start: string }>,
 ) => {
-  if (
-    typeof readiness !== "string" ||
-    !/^[1-9][0-9]*:[1-9][0-9]*:[1-9][0-9]{6,19}:[1-9][0-9]{6,19}\n$/u.test(
-      readiness,
-    )
-  )
-    return undefined;
-  const [leader, start, deadline, cutoff] = readiness.trimEnd().split(":") as [
-    string,
-    string,
-    string,
-    string,
-  ];
-  if (
-    ![leader, start].every(
-      (value) =>
-        value !== undefined &&
-        Number.isSafeInteger(Number(value)) &&
-        Number(value) > 0,
-    ) ||
-    ![deadline, cutoff].every(
-      (value) => value !== undefined && BigInt(value) > 0n,
-    )
-  )
-    return undefined;
-  if (
-    expected !== undefined &&
-    (leader !== expected.leader || start !== expected.start)
-  )
-    return undefined;
-  return Object.freeze({ cutoff, deadline, leader, start });
+  const classified = classifySyntheticClientReadiness(readiness, expected);
+  return typeof classified === "string" ? undefined : classified;
 };
 
 it("bounds synthetic readiness observation beyond its cleanup authority", () => {
@@ -2625,13 +2660,24 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
   expect(
     parseSyntheticClientReadiness(valid, { leader: "123", start: "457" }),
   ).toBeUndefined();
+  expect(classifySyntheticClientReadiness("")).toBe("missing-eof");
+  expect(classifySyntheticClientReadiness("truncated")).toBe("malformed-shape");
+  expect(classifySyntheticClientReadiness("0:456:1000000:2000000\n")).toBe(
+    "leader-identity",
+  );
+  expect(
+    classifySyntheticClientReadiness(valid, {
+      leader: "123",
+      start: "457",
+    }),
+  ).toBe("membership-witness");
   expect(
     syntheticReadinessFailure(
       "synthetic-client-cutoff",
       `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","status":"error"}`,
     ).message,
   ).toBe(
-    "synthetic helper readiness missing:synthetic-client-cutoff:client-terminal:cutoff",
+    "synthetic helper readiness missing:synthetic-client-cutoff:client-terminal:cutoff:missing-eof",
   );
   for (const [
     admittedStage,
@@ -2645,7 +2691,7 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
             `{"mac":"${"b".repeat(64)}","output":"","reason":"${admittedReason}","stage":"${admittedStage}","status":"${admittedStatus}"}`,
           ).message,
         ).toBe(
-          `synthetic helper readiness missing:synthetic-client-internal:${admittedStage}:${admittedReason || "none"}`,
+          `synthetic helper readiness missing:synthetic-client-internal:${admittedStage}:${admittedReason || "none"}:missing-eof`,
         );
   expect(
     syntheticReadinessFailure(
@@ -2653,7 +2699,7 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
       `{"mac":"${"a".repeat(64)}","output":"","reason":"cutoff","stage":"client-terminal","status":"error"}`,
     ).message,
   ).toBe(
-    "synthetic helper readiness missing:unknown-operation:client-terminal:cutoff",
+    "synthetic helper readiness missing:unknown-operation:client-terminal:cutoff:missing-eof",
   );
   for (const substituted of [
     "{}",
@@ -2669,7 +2715,7 @@ it("accepts only exact post-precondition synthetic client readiness", () => {
     expect(
       syntheticReadinessFailure("synthetic-client-cutoff", substituted).message,
     ).toBe(
-      "synthetic helper readiness missing:synthetic-client-cutoff:malformed:none",
+      "synthetic helper readiness missing:synthetic-client-cutoff:malformed:none:missing-eof",
     );
 });
 
@@ -4155,6 +4201,37 @@ it("authenticates only the closed client-terminal reason inventory", () => {
   ).toBeUndefined();
 });
 
+const runSyntheticClientHelper = (
+  helper: string,
+  operation: string,
+  arguments_: readonly string[],
+) => {
+  const key = createHash("sha256").update(operation).digest("hex");
+  const terminal = spawnSync(
+    "/usr/bin/python3",
+    [
+      "-I",
+      "-S",
+      "-c",
+      helper,
+      "1",
+      "1",
+      operation,
+      "/usr/bin/python3",
+      Buffer.from(JSON.stringify(arguments_)).toString("base64url"),
+      "",
+      key,
+    ],
+    {
+      encoding: "utf8",
+      env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+      stdio: ["ignore", "pipe", "pipe", "pipe"],
+      timeout: syntheticObservationMilliseconds,
+    },
+  );
+  return { key, terminal };
+};
+
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "executes every closed client-terminal failure branch without raw diagnostics",
   () => {
@@ -4234,33 +4311,19 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
       ],
     ] as const;
     for (const [operation, reason, arguments_, status] of cases) {
-      const key = createHash("sha256").update(operation).digest("hex");
-      const terminal = spawnSync(
-        "/usr/bin/python3",
-        [
-          "-I",
-          "-S",
-          "-c",
-          synchronizedHelper,
-          "1",
-          "1",
-          operation,
-          "/usr/bin/python3",
-          Buffer.from(JSON.stringify(arguments_)).toString("base64url"),
-          "",
-          key,
-        ],
-        {
-          encoding: "utf8",
-          env: { LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
-          stdio: ["ignore", "pipe", "pipe", "pipe"],
-          timeout: syntheticObservationMilliseconds,
-        },
+      const { key, terminal } = runSyntheticClientHelper(
+        synchronizedHelper,
+        operation,
+        arguments_,
       );
       expect(terminal).toMatchObject({ signal: null, status: 1, stderr: "" });
       const readiness = parseSyntheticClientReadiness(terminal.output[3]);
       if (readiness === undefined) {
-        throw syntheticReadinessFailure(operation, terminal.stdout);
+        throw syntheticReadinessFailure(
+          operation,
+          terminal.stdout,
+          terminal.output[3],
+        );
       }
       const { cutoff, deadline } = readiness;
       const receipt = validateRootToolReceipt({
