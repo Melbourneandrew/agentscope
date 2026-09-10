@@ -31,6 +31,7 @@ import {
   exactPathIsAbsent,
   exerciseSystemdToolFailurePreservationForTesting,
   classifySystemdUnitAuthority,
+  classifyTerminalSystemdUnitAuthority,
   classifyRetirementSystemdUnitAuthority,
   classifyToolSettlement,
   closeDescriptorSet,
@@ -790,10 +791,13 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
     unit: "agentscope-test.service",
   };
   const facts = {
+    ActiveState: "active",
     AmbientCapabilities: "",
     CapabilityBoundingSet: "",
     ControlGroup: authority.cgroup,
     Delegate: "no",
+    ExecMainCode: "1",
+    ExecMainStatus: "0",
     Group: String(authority.gid),
     Id: authority.unit,
     InaccessiblePaths:
@@ -803,11 +807,48 @@ it("classifies retirement authority drift without relaxing immutable facts", () 
     NoNewPrivileges: "yes",
     ProtectControlGroups: "yes",
     RemainAfterExit: "yes",
+    Result: "success",
     RestrictSUIDSGID: "yes",
     SupplementaryGroups: authority.groups.join(" "),
+    SubState: "running",
     User: String(authority.uid),
   };
   expect(classifySystemdUnitAuthority(facts, authority)).toBeUndefined();
+  expect(
+    classifyTerminalSystemdUnitAuthority(facts, authority, false, false),
+  ).toBeUndefined();
+  for (const beforeAbsent of [false, true])
+    expect(
+      classifyTerminalSystemdUnitAuthority(
+        { ...facts, ControlGroup: "" },
+        authority,
+        beforeAbsent,
+        true,
+      ),
+    ).toBeUndefined();
+  for (const [beforeAbsent, afterAbsent, controlGroup] of [
+    [false, false, ""],
+    [true, false, authority.cgroup],
+    [true, true, authority.cgroup],
+    [false, true, authority.cgroup],
+    [true, true, "/system.slice/agentscope-other.service"],
+  ] as const)
+    expect(
+      classifyTerminalSystemdUnitAuthority(
+        { ...facts, ControlGroup: controlGroup },
+        authority,
+        beforeAbsent,
+        afterAbsent,
+      ),
+    ).toBe("cgroup");
+  expect(
+    classifyTerminalSystemdUnitAuthority(
+      { ...facts, ControlGroup: "", ExecMainStatus: "" },
+      authority,
+      true,
+      true,
+    ),
+  ).toBe("cgroup");
   for (const [field, value, reason] of [
     ["LoadState", "masked", "load"],
     ["Id", "agentscope-other.service", "identity"],
@@ -1153,7 +1194,7 @@ it("observes exact main exit facts before retiring retained descendants", () => 
   expect(terminalWait).toContain('"terminal-wait", "unit-show"');
   expect(terminalWait).toContain('"terminal-wait", "unit-parse"');
   expect(terminalWait).toContain("`authority-${mismatch}`");
-  expect(terminalWait).toContain("classifySystemdUnitAuthority(");
+  expect(terminalWait).toContain("classifyTerminalSystemdUnitAuthority(");
   expect(terminalWait).toContain(
     "rethrowAuthenticatedSystemdToolFailure(error);",
   );

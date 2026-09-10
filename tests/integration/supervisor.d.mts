@@ -50,6 +50,18 @@ export function classifySystemdUnitAuthority(
     unit: string;
   }>,
 ): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
+export function classifyTerminalSystemdUnitAuthority(
+  facts: Readonly<Record<string, string>>,
+  authority: Readonly<{
+    cgroup: string;
+    gid: number;
+    groups: readonly number[];
+    uid: number;
+    unit: string;
+  }>,
+  beforeAbsent: boolean,
+  afterAbsent: boolean,
+): "load" | "identity" | "cgroup" | "hardening" | "principal" | undefined;
 export function classifyRetirementSystemdUnitAuthority(
   facts: Readonly<Record<string, string>>,
   authority: Readonly<{

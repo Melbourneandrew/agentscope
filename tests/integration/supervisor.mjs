@@ -1902,6 +1902,27 @@ export const classifySystemdUnitAuthority = (facts, authority) => {
   return undefined;
 };
 
+export const classifyTerminalSystemdUnitAuthority = (
+  facts,
+  authority,
+  beforeAbsent,
+  afterAbsent,
+) => {
+  if (typeof beforeAbsent !== "boolean" || typeof afterAbsent !== "boolean")
+    return "cgroup";
+  const immutableMismatch = classifySystemdUnitAuthority(
+    { ...facts, ControlGroup: authority.cgroup },
+    authority,
+  );
+  if (immutableMismatch !== undefined) return immutableMismatch;
+  if (afterAbsent)
+    return facts.ControlGroup === "" && systemdMainProcessIsTerminal(facts)
+      ? undefined
+      : "cgroup";
+  if (beforeAbsent) return "cgroup";
+  return facts.ControlGroup === authority.cgroup ? undefined : "cgroup";
+};
+
 export const classifyRetirementSystemdUnitAuthority = (
   facts,
   authority,
@@ -2240,6 +2261,15 @@ const waitForTerminal = async (state) => {
     !state.interrupted.value &&
     rootToolHasPreparationBudget(state.executionDeadline, performance.now())
   ) {
+    let beforeAbsent;
+    try {
+      beforeAbsent = authenticatedCgroupIsAbsent(
+        state.cgroupPath,
+        state.cgroupIdentity,
+      );
+    } catch {
+      failSystemdLifecycle(state, "terminal-wait", "authority-cgroup");
+    }
     let output;
     try {
       output = await showUnitOutput(
@@ -2257,7 +2287,21 @@ const waitForTerminal = async (state) => {
     } catch {
       failSystemdLifecycle(state, "terminal-wait", "unit-parse");
     }
-    const mismatch = classifySystemdUnitAuthority(facts, state.authority);
+    let afterAbsent;
+    try {
+      afterAbsent = authenticatedCgroupIsAbsent(
+        state.cgroupPath,
+        state.cgroupIdentity,
+      );
+    } catch {
+      failSystemdLifecycle(state, "terminal-wait", "authority-cgroup");
+    }
+    const mismatch = classifyTerminalSystemdUnitAuthority(
+      facts,
+      state.authority,
+      beforeAbsent,
+      afterAbsent,
+    );
     if (mismatch !== undefined)
       failSystemdLifecycle(state, "terminal-wait", `authority-${mismatch}`);
     if (systemdMainProcessIsTerminal(facts)) return facts;
