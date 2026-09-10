@@ -3200,7 +3200,13 @@ it("admits only closed terminal-wait authority diagnostics", () => {
 
 const expectNonterminalCgroupTransitionClosure = (
   terminal: Record<string, string>,
-  authority: { cgroup: string },
+  authority: {
+    cgroup: string;
+    gid: number;
+    groups: readonly number[];
+    uid: number;
+    unit: string;
+  },
   absent: { absent: boolean; empty: boolean },
 ) => {
   const present = { absent: false, empty: false };
