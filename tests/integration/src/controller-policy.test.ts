@@ -2350,6 +2350,31 @@ if result!=expected_result: sys.exit(18)`,
   },
 );
 
+const synchronizeSyntheticClientDeadlines = (helper: string) => {
+  const deadlineArm =
+    " DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); OPERATION=sys.argv[3]\n tool=sys.argv[4]; raw=sys.argv[5]; unit=sys.argv[6]; KEY=sys.argv[7]\n";
+  const readinessSynchronizedHelper = helper.replace(
+    deadlineArm,
+    deadlineArm +
+      ' if OPERATION.startswith("synthetic-client-"):\n' +
+      "  armed=now()\n" +
+      "  DEADLINE=armed+2000000000\n" +
+      '  CUTOFF=armed+(1000000000 if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"} else 2000000000 if OPERATION=="synthetic-client-deadline" else 1200000000)\n' +
+      '  if OPERATION!="synthetic-client-deadline": os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n',
+  );
+  const membershipBoundary =
+    "   admit_group_members(leader,expected_members)\n   if now()>=cutoff:\n";
+  const synchronizedHelper = readinessSynchronizedHelper.replace(
+    membershipBoundary,
+    "   admit_group_members(leader,expected_members)\n" +
+      '   if OPERATION=="synthetic-client-deadline":\n' +
+      "    DEADLINE=now()-1\n" +
+      '    os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n' +
+      "   if now()>=cutoff:\n",
+  );
+  return { deadlineArm, readinessSynchronizedHelper, synchronizedHelper };
+};
+
 it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
   "admits the canonical PID 1 parent identity while inventorying proc",
   () => {
@@ -3544,18 +3569,11 @@ it.runIf(process.platform === "linux" && existsSync("/usr/bin/python3"))(
     const start = supervisorSource.indexOf(prefix) + prefix.length;
     const end = supervisorSource.indexOf("`;\nconst cgroupRoot =", start);
     const helper = supervisorSource.slice(start, end);
-    const deadlineArm =
-      " DEADLINE=int(sys.argv[1]); CUTOFF=int(sys.argv[2]); OPERATION=sys.argv[3]\n tool=sys.argv[4]; raw=sys.argv[5]; unit=sys.argv[6]; KEY=sys.argv[7]\n";
-    const synchronizedHelper = helper.replace(
-      deadlineArm,
-      deadlineArm +
-        ' if OPERATION.startswith("synthetic-client-"):\n' +
-        "  armed=now()\n" +
-        '  DEADLINE=armed+(1300000000 if OPERATION=="synthetic-client-deadline" else 2000000000)\n' +
-        '  CUTOFF=armed+(1000000000 if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"} else 2000000000 if OPERATION=="synthetic-client-deadline" else 1200000000)\n' +
-        '  os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n',
-    );
-    expect(synchronizedHelper).not.toBe(helper);
+    const { deadlineArm, readinessSynchronizedHelper, synchronizedHelper } =
+      synchronizeSyntheticClientDeadlines(helper);
+    expect(helper).toContain(deadlineArm);
+    expect(readinessSynchronizedHelper).not.toBe(helper);
+    expect(synchronizedHelper).not.toBe(readinessSynchronizedHelper);
     const delayArguments = ["-I", "-S", "-c", "import sys; sys.exit(0)"];
     const sleepArguments = ["-I", "-S", "-c", "import time; time.sleep(5)"];
     const cases = [
