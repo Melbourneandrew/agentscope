@@ -68,6 +68,17 @@ const validBootstrapPredicate =
     value: unknown,
   ) => boolean;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
+const invokeBootstrap = (
+  entry: string,
+  additionalArguments: string[],
+  environment: NodeJS.ProcessEnv,
+) =>
+  spawnSync(process.execPath, [entry, ...additionalArguments], {
+    cwd: workspaceRoot,
+    encoding: "utf8",
+    env: environment,
+    timeout: 10_000,
+  });
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
 const fixture = (): {
@@ -419,19 +430,66 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     workspaceRoot,
     "tests/integration/upload-failure-evidence.mjs",
   );
-  const terminal = spawnSync(process.execPath, [entry], {
-    cwd: workspaceRoot,
-    encoding: "utf8",
-    env: {},
-    timeout: 10_000,
-  });
-  expect(terminal).toMatchObject({
-    signal: null,
-    status: 1,
-    stderr: "",
-    stdout:
-      "::error::integration.controller.failure-evidence-bootstrap:invocation:github-actions\n",
-  });
+  const actionPath = resolve(workspaceRoot, "tests/integration");
+  const validEnvironment = {
+    ACTIONS_RESULTS_URL: "https://results.actions.githubusercontent.com/",
+    ACTIONS_RUNTIME_TOKEN: "token",
+    AGENTSCOPE_FAILURE_ARTIFACT_NAME: "integration-0-of-1-1",
+    GITHUB_ACTIONS: "true",
+    GITHUB_ACTION_PATH: actionPath,
+    GITHUB_SERVER_URL: "https://github.com",
+    GITHUB_WORKSPACE: workspaceRoot,
+  };
+  for (const { arguments_: additionalArguments, environment, reason } of [
+    {
+      arguments_: ["unexpected"],
+      environment: validEnvironment,
+      reason: "argv-shape",
+    },
+    { arguments_: [], environment: {}, reason: "github-actions" },
+    {
+      arguments_: [],
+      environment: {
+        ...validEnvironment,
+        GITHUB_ACTION_PATH: resolve(workspaceRoot, "missing-action"),
+      },
+      reason: "action-path",
+    },
+    {
+      arguments_: [],
+      environment: {
+        ...validEnvironment,
+        GITHUB_WORKSPACE: resolve(workspaceRoot, "missing-workspace"),
+      },
+      reason: "workspace",
+    },
+    {
+      arguments_: [],
+      environment: { ...validEnvironment, ACTIONS_RESULTS_URL: "://" },
+      reason: "results-url",
+    },
+    {
+      arguments_: [],
+      environment: { ...validEnvironment, ACTIONS_RUNTIME_TOKEN: "" },
+      reason: "runtime-token",
+    },
+    {
+      arguments_: [],
+      environment: {
+        ...validEnvironment,
+        AGENTSCOPE_FAILURE_ARTIFACT_NAME: "substituted",
+      },
+      reason: "artifact-name",
+    },
+  ]) {
+    const terminal = invokeBootstrap(entry, additionalArguments, environment);
+    expect(terminal, reason).toMatchObject({
+      signal: null,
+      status: 1,
+      stderr: "",
+      stdout: `::error::integration.controller.failure-evidence-bootstrap:invocation:${reason}\n`,
+    });
+  }
 });
 
 describe("Linux sealed failure evidence upload", () => {
