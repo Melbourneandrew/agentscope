@@ -2335,10 +2335,8 @@ const observeTerminalSystemdUnit = async (
     before,
     after,
   );
-  if (mismatch !== undefined)
-    failSystemdLifecycle(
-      state,
-      "terminal-wait",
+  if (mismatch !== undefined) {
+    const reason =
       mismatch === "cgroup"
         ? classifyTerminalCgroupTransitionFailure(
             facts,
@@ -2346,8 +2344,10 @@ const observeTerminalSystemdUnit = async (
             before,
             after,
           )
-        : `authority-${mismatch}`,
-    );
+        : `authority-${mismatch}`;
+    if (reason !== "cgroup-transition-main-nonterminal")
+      failSystemdLifecycle(state, "terminal-wait", reason);
+  }
   return Object.freeze({ after, facts });
 };
 

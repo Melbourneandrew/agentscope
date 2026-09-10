@@ -1264,6 +1264,9 @@ it("observes exact main exit facts before retiring retained descendants", () => 
   expect(terminalObservation).toContain(
     "classifyTerminalSystemdUnitAuthority(",
   );
+  expect(terminalObservation).toContain(
+    'reason !== "cgroup-transition-main-nonterminal"',
+  );
   expect(terminalWait).toContain(
     "rethrowAuthenticatedSystemdToolFailure(error);",
   );
@@ -1271,6 +1274,12 @@ it("observes exact main exit facts before retiring retained descendants", () => 
     terminalWait.indexOf("rethrowAuthenticatedSystemdToolFailure(error)"),
   ).toBeLessThan(terminalWait.indexOf('"terminal-wait", "unit-show"'));
   expect(terminalWait).toContain("systemdMainProcessIsTerminal(facts)");
+  expect(terminalWait).toContain(
+    "rootToolHasPreparationBudget(state.executionDeadline, performance.now())",
+  );
+  expect(terminalWait).toContain(
+    "remainingMilliseconds(state.executionDeadline)",
+  );
   expect(terminalWait).not.toContain(
     'facts.ActiveState === "active" && facts.SubState === "exited"',
   );
@@ -2359,16 +2368,17 @@ const synchronizeSyntheticClientDeadlines = (helper: string) => {
       ' if OPERATION.startswith("synthetic-client-"):\n' +
       "  armed=now()\n" +
       "  DEADLINE=armed+2000000000\n" +
-      '  CUTOFF=armed+(1000000000 if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure"} else 2000000000 if OPERATION=="synthetic-client-deadline" else 1200000000)\n' +
-      '  if OPERATION!="synthetic-client-deadline": os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n',
+      "  CUTOFF=armed+2000000000\n" +
+      '  if OPERATION not in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}: os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n',
   );
   const membershipBoundary =
     "   admit_group_members(leader,expected_members)\n   if now()>=cutoff:\n";
   const synchronizedHelper = readinessSynchronizedHelper.replace(
     membershipBoundary,
     "   admit_group_members(leader,expected_members)\n" +
-      '   if OPERATION=="synthetic-client-deadline":\n' +
-      "    DEADLINE=now()-1\n" +
+      '   if OPERATION in {"synthetic-client-cutoff","synthetic-client-cutoff-cleanup-failure","synthetic-client-deadline"}:\n' +
+      '    if OPERATION=="synthetic-client-deadline": DEADLINE=now()-1\n' +
+      "    else: CUTOFF=now()-1\n" +
       '    os.write(3,(str(DEADLINE)+":"+str(CUTOFF)).encode("ascii"))\n' +
       "   if now()>=cutoff:\n",
   );
@@ -3282,7 +3292,6 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     ["transition-empty-populated", "cgroup-transition-empty-populated"],
     ["transition-reappeared", "cgroup-transition-reappeared"],
     ["transition-third-controlgroup", "cgroup-transition-third-controlgroup"],
-    ["transition-main-nonterminal", "cgroup-transition-main-nonterminal"],
     ["transition-observation-shape", "cgroup-transition-observation-shape"],
   ] as const)
     await expect(
@@ -3291,6 +3300,9 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       cleanupAttempts: 1,
       predicate: `lifecycle:terminal-wait:${reason}`,
     });
+  await expect(
+    exerciseTerminalCgroupDiagnosticForTesting("transition-main-nonterminal"),
+  ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   for (const forged of [
     "lifecycle:terminal-wait:cgroup-observe-before:extra",
     "lifecycle:terminal-wait:cgroup-observe-unknown",
