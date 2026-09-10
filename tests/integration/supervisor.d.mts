@@ -156,9 +156,7 @@ export type SystemdCollectionDiagnosticReason =
   "unit-show" | "unit-facts" | "load-state" | "cgroup-absence";
 
 export type SystemdTerminalWaitAuthorityReason =
-  | "unit-show"
-  | "unit-parse"
-  | SystemdRetirementAuthorityReason;
+  "unit-show" | "unit-parse" | SystemdRetirementAuthorityReason;
 
 export type SystemdLifecycleFailurePredicate =
   | `lifecycle:${SystemdLifecyclePhase}:${SystemdLifecycleReason}`
