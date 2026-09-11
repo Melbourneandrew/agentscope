@@ -561,6 +561,14 @@ try {
       fixtureFailure = new Error("integration.runner.fixture-failed");
   }
 } catch (error) {
+  if (scenario.executionMode === "interactive") {
+    const diagnostic = `${error?.message ?? ""}`.match(
+      /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
+    )?.[0];
+    process.stderr.write(
+      `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
+    );
+  }
   fixtureOutput = "";
   fixtureFailure = error;
 }
