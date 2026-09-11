@@ -27,15 +27,21 @@ const destinationEntry = z.strictObject({
   bodyBytes: byteCount,
   outcome: id,
 });
-const lifecycle = z.tuple([
-  z.literal("install"),
-  z.literal("configure"),
-  z.literal("hook"),
-  z.literal("execute"),
-  z.literal("export"),
-  z.literal("retrieve"),
-  z.literal("uninstall"),
-]);
+const lifecyclePhases = [
+  "install",
+  "configure",
+  "hook",
+  "execute",
+  "export",
+  "retrieve",
+  "uninstall",
+] as const;
+const lifecycle = z
+  .array(z.enum(lifecyclePhases))
+  .max(lifecyclePhases.length)
+  .refine((value) =>
+    value.every((phase, index) => phase === lifecyclePhases[index]),
+  );
 const eventKinds = z
   .array(id)
   .min(1)
@@ -63,8 +69,11 @@ const fixtureResult = z
   })
   .refine(
     (value) =>
-      value.resultStatus === "partial" ||
-      (eventKinds.safeParse(value.eventKinds).success &&
+      (value.resultStatus === "partial" &&
+        value.lifecycle.length < lifecyclePhases.length) ||
+      (value.resultStatus === "complete" &&
+        value.lifecycle.length === lifecyclePhases.length &&
+        eventKinds.safeParse(value.eventKinds).success &&
         value.modelLedger.entries.length > 0 &&
         value.destinationLedger.ingestion.length > 0 &&
         value.destinationLedger.retrieval.length > 0),

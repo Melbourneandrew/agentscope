@@ -269,6 +269,10 @@ const stageBuildContext = (plan) => {
     ],
     ["platform-fixture.mjs", resolve(integrationRoot, "platform-fixture.mjs")],
     [
+      "process-platform-oracle.mjs",
+      resolve(integrationRoot, "process-platform-oracle.mjs"),
+    ],
+    [
       "scenario-adapter.mjs",
       resolve(integrationRoot, scenario.fixtureAdapter.path),
     ],
@@ -348,7 +352,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs process-platform-oracle.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,

@@ -100,6 +100,7 @@ describe("integration retained artifacts", () => {
     const partial = fixtureResult();
     partial.resultStatus = "partial";
     partial.eventKinds = [];
+    partial.lifecycle = ["install", "configure"];
     partial.modelLedger.entries = [];
     partial.destinationLedger.ingestion = [];
     partial.destinationLedger.retrieval = [];
@@ -110,6 +111,26 @@ describe("integration retained artifacts", () => {
     expect(() =>
       sanitizeFixtureResult(partial, "fixture-process-smoke"),
     ).toThrow("integration.operations.fixture-result");
+    for (const lifecycle of [
+      ["configure"],
+      ["install", "hook"],
+      [
+        "install",
+        "configure",
+        "hook",
+        "execute",
+        "export",
+        "retrieve",
+        "uninstall",
+      ],
+    ]) {
+      const invalidPartial = fixtureResult();
+      invalidPartial.resultStatus = "partial";
+      invalidPartial.lifecycle = lifecycle;
+      expect(() =>
+        sanitizeFixtureResult(invalidPartial, "fixture-process-smoke"),
+      ).toThrow("integration.operations.fixture-result");
+    }
   });
 
   it("plans deterministic bounded retention while protecting current", () => {
