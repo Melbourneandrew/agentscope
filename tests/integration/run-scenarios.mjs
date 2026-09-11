@@ -32,6 +32,7 @@ import {
   verifyPreparedCandidate,
 } from "./dist/index.js";
 import {
+  BUILDKIT_IMAGE,
   buildPreparedDockerImage,
   closePreparedDockerClient,
   createPreparedDockerClient,
@@ -61,12 +62,22 @@ import {
   registerIntegrationHeadlessReceipt,
   registerIntegrationPtyReceipt,
   registerIntegrationRunIds,
+  registerSubstrateCertificationPredicate,
+  registerSubstrateCertificationProjection,
   requireIntegrationFailureEvidence,
   remainingIntegrationOperationMilliseconds,
   requireDisposableOuterHostCapability,
+  requireSubstrateCertificationCase,
+  requireSubstrateCertificationReplay,
 } from "./dist/controller.js";
+import {
+  leakedChildContainmentWasObserved,
+  SUBSTRATE_CERTIFICATION_PREDICATES,
+} from "./dist/substrate-certification.js";
 
 const capability = requireDisposableOuterHostCapability();
+const substrateCertificationCase = requireSubstrateCertificationCase();
+const substrateCertificationReplay = requireSubstrateCertificationReplay();
 const canonicalImagePlatform = `${IMAGE_PREPARATION_EXECUTION_POLICY.platform.os}/${IMAGE_PREPARATION_EXECUTION_POLICY.platform.architecture}`;
 
 const execute = promisify(execFile);
@@ -120,6 +131,12 @@ if (
   testMode !== "sidecar-failure"
 )
   throw new Error("integration.isolation.test-mode");
+if (
+  testMode !== undefined &&
+  (substrateCertificationCase !== undefined ||
+    substrateCertificationReplay !== undefined)
+)
+  throw new Error("integration.certification.request");
 if (
   selection.selectionVersion !== 2 ||
   selection.manifestIdentity !== manifest.manifestIdentity ||
@@ -271,6 +288,14 @@ const stageBuildContext = (plan) => {
     ],
     ["platform-fixture.mjs", resolve(integrationRoot, "platform-fixture.mjs")],
     [
+      "substrate-certification.js",
+      resolve(integrationRoot, "dist/substrate-certification.js"),
+    ],
+    [
+      "fixtures/substrate-negative-process.mjs",
+      resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
+    ],
+    [
       "process-platform-oracle.mjs",
       resolve(integrationRoot, "process-platform-oracle.mjs"),
     ],
@@ -354,7 +379,8 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs process-platform-oracle.mjs scenario-adapter.mjs capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY fixtures ./fixtures",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
       `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,
@@ -496,6 +522,11 @@ const createImmutableCandidateHandoff = async (plan, signal) => {
 
 const fixtureResults = new Map();
 const scenarioOutcomes = new Map();
+const observedCertificationRunIds = new Set();
+const observeSubstrateCertificationPredicate = (runId, predicate) => {
+  registerSubstrateCertificationPredicate(runId, predicate);
+  observedCertificationRunIds.add(runId);
+};
 const fingerprintHeadlessRequest = (request) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(request))
@@ -504,6 +535,8 @@ const fingerprintSelectedPtyAuthority = (authority) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(authority))
     .digest("hex")}`;
+const diagnosticDigest = (value) =>
+  `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 const linuxBootMonotonicMilliseconds = () => {
   const source = readFileSync("/proc/uptime", "utf8");
   if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
@@ -532,6 +565,11 @@ const expectedHeadlessEnvironment = (plan) => ({
   ...(testMode === undefined
     ? {}
     : { AGENTSCOPE_INTEGRATION_TEST_MODE: testMode }),
+  ...(substrateCertificationCase === undefined
+    ? {}
+    : {
+        AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: substrateCertificationCase,
+      }),
 });
 const activeMarkerFor = (runId) =>
   resolve(artifactsRoot, "active", `${runId}.json`);
@@ -582,34 +620,62 @@ const captureFixtureResult = (output, plan) => {
   );
   return true;
 };
-const headlessRequestMatches = (receipt, plan) =>
-  receipt.request?.runId === plan.runId &&
-  receipt.request.executable === "/usr/local/bin/node" &&
-  JSON.stringify(receipt.request.arguments) ===
-    JSON.stringify([
-      "/opt/agentscope/platform-fixture.mjs",
-      "--artifact",
-      `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
-    ]) &&
-  receipt.request.cwd === "/opt/agentscope" &&
-  JSON.stringify(receipt.request.environment) ===
-    JSON.stringify(expectedHeadlessEnvironment(plan)) &&
-  receipt.request.stdinBase64 === "" &&
-  receipt.request.stdoutLimitBytes === 1024 * 1024 &&
-  receipt.request.stderrLimitBytes === 1024 * 1024 &&
-  receipt.request.monotonicShutdownDeadlineMs ===
+const expectedHeadlessRequest = (receipt, plan) => ({
+  runId: plan.runId,
+  executable: "/usr/local/bin/node",
+  arguments: [
+    "/opt/agentscope/platform-fixture.mjs",
+    "--artifact",
+    `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
+  ],
+  cwd: "/opt/agentscope",
+  environment: expectedHeadlessEnvironment(plan),
+  stdinBase64: "",
+  stdoutLimitBytes: 1024 * 1024,
+  stderrLimitBytes: 1024 * 1024,
+  monotonicStartupDeadlineMs: Math.min(
+    receipt.requestConstructedAtMs + 10_000,
+    receipt.request.monotonicShutdownDeadlineMs - 5_000,
+  ),
+  monotonicExecutionDeadlineMs:
+    receipt.request.monotonicShutdownDeadlineMs - 5_000,
+  monotonicShutdownDeadlineMs:
     receipt.translationLocalAtMs +
-      (receipt.outerMonotonicDeadlineMs - receipt.translationBootAtMs) &&
-  receipt.request.monotonicExecutionDeadlineMs ===
-    receipt.request.monotonicShutdownDeadlineMs - 5_000 &&
-  receipt.request.monotonicStartupDeadlineMs ===
-    Math.min(
-      receipt.requestConstructedAtMs + 10_000,
-      receipt.request.monotonicShutdownDeadlineMs - 5_000,
-    ) &&
-  receipt.request.terminationGraceMs === 1_000 &&
+    (receipt.outerMonotonicDeadlineMs - receipt.translationBootAtMs),
+  terminationGraceMs: 1_000,
+});
+const serializedRequestMatches = (receipt, expected) =>
+  JSON.stringify(receipt.request) === JSON.stringify(expected) &&
   receipt.returnedAtMs <= receipt.request.monotonicShutdownDeadlineMs &&
   receipt.requestFingerprint === fingerprintHeadlessRequest(receipt.request);
+const expectedNegativeHeadlessRequest = (receipt, plan) => {
+  const expected = expectedHeadlessRequest(receipt, plan);
+  switch (substrateCertificationCase) {
+    case "wrong-argv":
+      return {
+        ...expected,
+        arguments: [...expected.arguments, "--unexpected"],
+      };
+    case "wrong-environment":
+      return {
+        ...expected,
+        environment: { ...expected.environment, AGENTSCOPE_UNEXPECTED: "1" },
+      };
+    case "wrong-cwd":
+      return { ...expected, cwd: "/tmp" };
+    case "mixed-artifact-digest":
+      return {
+        ...expected,
+        arguments: [
+          "/opt/agentscope/platform-fixture.mjs",
+          "--artifact",
+          `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${candidate.lockfile.fileName}`,
+        ],
+      };
+    default:
+      return undefined;
+  }
+};
 const captureHeadlessReceipt = (output, plan, expected) => {
   const line = output
     .split("\n")
@@ -633,6 +699,7 @@ const captureHeadlessReceipt = (output, plan, expected) => {
       [
         "cleanup",
         "exitCode",
+        "killRequested",
         "outcome",
         "outerMonotonicDeadlineMs",
         "processJoined",
@@ -649,6 +716,7 @@ const captureHeadlessReceipt = (output, plan, expected) => {
         "stdoutJoined",
         "translationBootAtMs",
         "translationLocalAtMs",
+        "termRequested",
       ]
         .sort()
         .join(",") ||
@@ -663,7 +731,22 @@ const captureHeadlessReceipt = (output, plan, expected) => {
     receipt.translationBootAtMs < 0 ||
     receipt.translationLocalAtMs < 0 ||
     receipt.requestConstructedAtMs < receipt.translationLocalAtMs ||
-    !headlessRequestMatches(receipt, plan)
+    typeof receipt.termRequested !== "boolean" ||
+    typeof receipt.killRequested !== "boolean"
+  )
+    throw new Error("integration.isolation.headless-receipt");
+  const negativeExpected = expectedNegativeHeadlessRequest(receipt, plan);
+  if (negativeExpected !== undefined) {
+    if (!serializedRequestMatches(receipt, negativeExpected))
+      throw new Error("integration.isolation.headless-receipt");
+    observeSubstrateCertificationPredicate(
+      plan.runId,
+      SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+    );
+    throw new Error(`integration.certification.${substrateCertificationCase}`);
+  }
+  if (
+    !serializedRequestMatches(receipt, expectedHeadlessRequest(receipt, plan))
   )
     throw new Error("integration.isolation.headless-receipt");
   return Object.freeze(receipt);
@@ -906,13 +989,37 @@ const createNetwork = async (plan, signal) => {
     [
       "network",
       "create",
-      "--internal",
+      ...(substrateCertificationCase === "public-egress" ? [] : ["--internal"]),
       ...labelArguments(plan),
       plan.networkName,
     ],
     signal,
     { mutationCapable: true },
   );
+  const { stdout } = await dockerWithSignal(
+    ["network", "inspect", plan.networkName],
+    signal,
+  );
+  let network;
+  try {
+    const records = JSON.parse(stdout);
+    if (!Array.isArray(records) || records.length !== 1) throw new Error();
+    [network] = records;
+  } catch {
+    throw new Error("integration.isolation.network");
+  }
+  if (network?.Internal !== true) {
+    if (substrateCertificationCase === "public-egress") {
+      observeSubstrateCertificationPredicate(
+        plan.runId,
+        SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+      );
+      throw new Error(
+        `integration.certification.${substrateCertificationCase}`,
+      );
+    }
+    throw new Error("integration.isolation.network");
+  }
 };
 const startCollector = async (plan, signal) => {
   await dockerWithSignal(
@@ -1059,6 +1166,13 @@ const createScenarioContainer = async (
     testMode === undefined
       ? []
       : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
+  const certificationArguments =
+    substrateCertificationCase === undefined
+      ? []
+      : [
+          "--env",
+          `AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE=${substrateCertificationCase}`,
+        ];
   await dockerWithSignal(
     [
       "create",
@@ -1099,6 +1213,7 @@ const createScenarioContainer = async (
       "--env",
       `AGENTSCOPE_IMMUTABLE_CANDIDATE_AUTHORITY=${immutableCandidate.encoded}`,
       ...testModeArguments,
+      ...certificationArguments,
       plan.imageTag,
     ],
     signal,
@@ -1142,6 +1257,51 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) =>
       receipt.terminalOutputJoined === true &&
       receipt.terminalTransportClosed === true)) &&
   installedPtyReceipt.outcome === "completed";
+const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
+  if (plan.executionMode !== "headless") return;
+  const result = fixtureResults.get(plan.runId);
+  let observed;
+  switch (substrateCertificationCase) {
+    case "missing-hook":
+      observed =
+        fixtureCaptured &&
+        result?.resultStatus === "partial" &&
+        JSON.stringify(result.lifecycle) ===
+          JSON.stringify(["install", "configure"]);
+      break;
+    case "leaked-child":
+      observed = leakedChildContainmentWasObserved({
+        cleanup: receipt.cleanup,
+        fixtureCaptured,
+        fixtureResultStatus: result?.resultStatus,
+        killRequested: receipt.killRequested,
+        residualProcessCount: receipt.residualProcessCount,
+        termRequested: receipt.termRequested,
+      });
+      break;
+    case "unbounded-output":
+      observed =
+        receipt.outcome === "output-limit" &&
+        receipt.cleanup === "clean" &&
+        receipt.residualProcessCount === 0;
+      break;
+    case "false-success":
+      observed =
+        receipt.outcome === "exited" &&
+        receipt.exitCode === 0 &&
+        fixtureCaptured &&
+        result?.resultStatus === "partial";
+      break;
+    default:
+      return;
+  }
+  if (!observed) throw new Error("integration.certification.predicate");
+  observeSubstrateCertificationPredicate(
+    plan.runId,
+    SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+  );
+  throw new Error(`integration.certification.${substrateCertificationCase}`);
+};
 const contentFreeChildFailureCode = (error) => {
   const source = `${error?.stderr ?? ""}\n${error?.message ?? ""}`;
   const diagnostic =
@@ -1185,12 +1345,13 @@ const runScenario = async (plan, signal) => {
             outerMonotonicDeadline,
           });
     const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
+    const fixtureCaptured = captureFixtureResult(stdout, plan);
+    observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
     registerScenarioReceipt(plan, receipt);
     return {
       receipt,
       succeeded:
-        scenarioReceiptSucceeded(plan, receipt, ptyReceipt) &&
-        captureFixtureResult(stdout, plan),
+        scenarioReceiptSucceeded(plan, receipt, ptyReceipt) && fixtureCaptured,
     };
   } catch (error) {
     if (plan.executionMode === "interactive")
@@ -1198,7 +1359,7 @@ const runScenario = async (plan, signal) => {
         `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
       );
     const output = `${error?.stdout ?? ""}`;
-    captureFixtureResult(output, plan);
+    const fixtureCaptured = captureFixtureResult(output, plan);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
       captureInstalledPtyFailure(output, plan);
     if (
@@ -1213,6 +1374,7 @@ const runScenario = async (plan, signal) => {
           : captureHeadlessReceipt(output, plan, {
               outerMonotonicDeadline,
             });
+      observeNegativeScenarioReceipt(plan, receipt, fixtureCaptured);
       registerScenarioReceipt(plan, receipt);
       return { receipt, succeeded: false };
     }
@@ -1286,6 +1448,13 @@ const finalizeControllerFailureEvidence = (
   const record = {
     controllerFailureEvidenceVersion: 2,
     runId: plan.runId,
+    certificationCase: substrateCertificationCase ?? null,
+    certificationPredicate:
+      substrateCertificationCase === undefined
+        ? null
+        : observedCertificationRunIds.has(plan.runId)
+          ? SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase]
+          : null,
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),
@@ -1348,10 +1517,26 @@ const finalizeControllerFailureEvidence = (
   }
 };
 const publishControllerFailureManifest = (identities) => {
+  const buildkit = preparedImageEvidence.images.find(
+    ({ image }) => image === BUILDKIT_IMAGE,
+  );
+  if (buildkit === undefined)
+    throw new Error("integration.controller.failure-evidence");
   const record = {
     controllerFailureManifestVersion: 1,
     controllerAuthorityDigest:
       capability.binding.privateStorage.authorityDigest,
+    certificationCase: substrateCertificationCase ?? null,
+    preparedAuthorityDigests: {
+      buildkitImage: diagnosticDigest({
+        configDigest: buildkit.configDigest,
+        image: buildkit.image,
+      }),
+      buildkitPlatform: diagnosticDigest(buildkit.platform),
+      daemon: diagnosticDigest(preparedImageEvidence.dockerDaemon),
+      images: diagnosticDigest(preparedImageEvidence.images),
+      socket: diagnosticDigest(preparedImageEvidence.dockerSocket),
+    },
     runIds: identities.map(({ runId }) => runId).sort(),
     failureEvidence: [...identities].sort((left, right) =>
       left.runId.localeCompare(right.runId),
@@ -1417,7 +1602,7 @@ const countDockerResources = async (kind, plan, signal) => {
   );
   return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
 };
-const createDriver = () => {
+const createDriver = (plan) => {
   let removalSignal;
   let runtimeIdentity;
   const boundedRemovalSignal = () => {
@@ -1453,8 +1638,18 @@ const createDriver = () => {
     recordEvidence,
     removeContainer: (name) =>
       ignoreMissing(["rm", "--force", name], boundedRemovalSignal()),
-    removeNetwork: (name) =>
-      ignoreMissing(["network", "rm", name], boundedRemovalSignal()),
+    removeNetwork: (name) => {
+      if (substrateCertificationCase === "cleanup-failure") {
+        observeSubstrateCertificationPredicate(
+          plan.runId,
+          SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+        );
+        throw new Error(
+          `integration.certification.${substrateCertificationCase}`,
+        );
+      }
+      return ignoreMissing(["network", "rm", name], boundedRemovalSignal());
+    },
     removeImage: (tag) =>
       ignoreMissing(["image", "rm", "--force", tag], boundedRemovalSignal()),
     removeContext: async (runId) => {
@@ -1545,7 +1740,7 @@ try {
     (plan) =>
       executeIsolationPlan(
         plan,
-        createDriver(),
+        createDriver(plan),
         AbortSignal.any([
           controller.signal,
           integrationStageSignal(),
@@ -1553,6 +1748,27 @@ try {
         ]),
       ),
   );
+  if (substrateCertificationCase !== undefined)
+    throw new Error("integration.certification.unexpected-success");
+  if (substrateCertificationReplay !== undefined) {
+    registerSubstrateCertificationProjection({
+      candidateBundleIdentity: candidate.bundleIdentity,
+      manifestIdentity: manifest.manifestIdentity,
+      selectedScenarioIds: [...selectedScenarioIds].sort(),
+      scenarioResults: evidence
+        .map(({ cleanup, outcome, scenarioId }) => ({
+          cleanup: cleanup.outcome,
+          outcome,
+          scenarioId,
+        }))
+        .toSorted((left, right) =>
+          left.scenarioId.localeCompare(right.scenarioId),
+        ),
+      selectionIdentity: `sha256:${createHash("sha256")
+        .update(JSON.stringify(executorSelection))
+        .digest("hex")}`,
+    });
+  }
   console.log(JSON.stringify(evidence));
 } catch (error) {
   if (
@@ -1564,7 +1780,13 @@ try {
       cause: error,
     });
   } else {
-    primaryError = error;
+    primaryError =
+      substrateCertificationCase !== undefined &&
+      plans.every(({ runId }) => observedCertificationRunIds.has(runId))
+        ? new Error(`integration.certification.${substrateCertificationCase}`, {
+            cause: error,
+          })
+        : error;
   }
 } finally {
   for (const plan of plans)

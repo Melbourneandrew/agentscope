@@ -24,6 +24,11 @@ import {
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
+import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
+
+const substrateCertificationCase = parseSubstrateCertificationCaseValue(
+  process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
+);
 
 const ptyFailurePhases = Object.freeze([
   "runner-bootstrap",
@@ -324,12 +329,21 @@ try {
           AGENTSCOPE_INTEGRATION_TEST_MODE:
             process.env.AGENTSCOPE_INTEGRATION_TEST_MODE,
         }),
+    ...(substrateCertificationCase === undefined
+      ? {}
+      : {
+          AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: substrateCertificationCase,
+        }),
   });
   const now = performance.now();
   const fixtureScript = "/opt/agentscope/platform-fixture.mjs";
+  const selectedArtifact =
+    substrateCertificationCase === "mixed-artifact-digest"
+      ? evidence.lockfile
+      : cliArtifact;
   const fixtureArguments = [
     "--artifact",
-    join(directory, "files", cliArtifact.fileName),
+    join(directory, "files", selectedArtifact.fileName),
   ];
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
@@ -341,8 +355,12 @@ try {
       scenario.executionMode === "interactive"
         ? fixtureArguments
         : [fixtureScript, ...fixtureArguments],
-    cwd: "/opt/agentscope",
-    environment: childEnvironment,
+    cwd:
+      substrateCertificationCase === "wrong-cwd" ? "/tmp" : "/opt/agentscope",
+    environment:
+      substrateCertificationCase === "wrong-environment"
+        ? Object.freeze({ ...childEnvironment, AGENTSCOPE_UNEXPECTED: "1" })
+        : childEnvironment,
     stdin:
       scenario.executionMode === "interactive"
         ? new TextEncoder().encode("run\n")
@@ -357,6 +375,8 @@ try {
     monotonicShutdownDeadlineMs: headlessShutdownDeadline,
     terminationGraceMs: 1_000,
   };
+  if (substrateCertificationCase === "wrong-argv")
+    request.arguments = [...request.arguments, "--unexpected"];
   request.requestFingerprint = fingerprintHeadlessRequest(request);
   const serializedProcessRequest = {
     runId: request.runId,
@@ -543,6 +563,8 @@ try {
       outcome: trace.result.outcome,
       exitCode: trace.result.exitCode,
       signal: trace.result.signal,
+      termRequested: trace.result.termRequested,
+      killRequested: trace.result.killRequested,
       cleanup: trace.result.cleanup,
       residualProcessCount: trace.result.residualProcessCount,
       processJoined: trace.observation.processJoined,
@@ -556,7 +578,9 @@ try {
     if (
       trace.result.outcome !== "exited" ||
       trace.result.exitCode !== 0 ||
-      trace.result.cleanup !== "clean"
+      trace.result.cleanup !== "clean" ||
+      trace.result.termRequested ||
+      trace.result.killRequested
     )
       fixtureFailure = new Error("integration.runner.fixture-failed");
   }

@@ -19,6 +19,10 @@ import {
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
 import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
+import {
+  SUBSTRATE_CERTIFICATION_CASES,
+  SUBSTRATE_CERTIFICATION_PREDICATES,
+} from "./dist/substrate-certification.js";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -206,6 +210,14 @@ const validInstalledPtyFailure = (value) =>
     value.receiptVersion === 1 &&
     Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
     installedPtyFailurePredicates[value.phase].includes(value.predicate));
+const validCertificationFailure = (record) =>
+  (record.certificationCase === null &&
+    record.certificationPredicate === null) ||
+  (SUBSTRATE_CERTIFICATION_CASES.includes(record.certificationCase) &&
+    record.certificationPredicate ===
+      SUBSTRATE_CERTIFICATION_PREDICATES[record.certificationCase] &&
+    record.primaryFailure ===
+      `integration.certification.${record.certificationCase}`);
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;
@@ -214,6 +226,8 @@ const addDirectory = (targets, relative) => {
     throw new Error("integration.cleanup.path");
   targets.push({ bytes: directoryBytes(path), path, relative });
 };
+// The exact record validator intentionally checks every durable field together.
+// eslint-disable-next-line complexity
 const assertFailureEvidence = (identity) => {
   const directory = resolve(artifactsRoot, "runs", identity.runId);
   const path = resolve(directory, "controller-failure.json");
@@ -251,6 +265,8 @@ const assertFailureEvidence = (identity) => {
       JSON.stringify(
         [
           "cleanupFailure",
+          "certificationCase",
+          "certificationPredicate",
           "controllerFailureEvidenceVersion",
           "controllerOutcome",
           "installedPtyFailure",
@@ -265,6 +281,7 @@ const assertFailureEvidence = (identity) => {
     record.controllerOutcome !== "retired-failure" ||
     !validInstalledPtyFailure(record.installedPtyFailure) ||
     !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
+    !validCertificationFailure(record) ||
     !(
       record.cleanupFailure === null ||
       /^(?:integration\.[a-z.-]{1,96})$/u.test(record.cleanupFailure)

@@ -85,7 +85,7 @@ jobs:
         shard:
           - selector: "0/1"
             name: 0-of-1
-        replay: [1, 2]
+        replay: [1, 2, 3]
     steps:
       - name: Establish job-scoped integration deadline
         run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
@@ -119,6 +119,7 @@ jobs:
         env:
           AGENTSCOPE_INTEGRATION_CONCURRENCY: "2"
           AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000"
+          AGENTSCOPE_SUBSTRATE_CERTIFICATION_REPLAY: ${{ matrix.replay }}
           REPLAY_SCENARIO: ${{ inputs.scenario }}
           REPLAY_SHARD: ${{ inputs.shard || matrix.shard.selector }}
         run: |
@@ -131,156 +132,7 @@ jobs:
       - name: Verify complete sanitized failure evidence
         id: failure_evidence
         if: failure()
-        run: |
-          node --input-type=module <<'NODE'
-          import { createHash } from "node:crypto";
-          import {
-            closeSync,
-            constants,
-            fstatSync,
-            lstatSync,
-            openSync,
-            readFileSync,
-            readdirSync,
-          } from "node:fs";
-          import { resolve } from "node:path";
-
-          const fail = () => {
-            throw new Error("integration.controller.failure-evidence");
-          };
-          const exactKeys = (value, keys) =>
-            typeof value === "object" &&
-            value !== null &&
-            JSON.stringify(Object.keys(value).sort()) ===
-              JSON.stringify([...keys].sort());
-          const ptyFailurePredicates = {
-            "candidate-inventory": ["candidate-rejected"],
-            "immutable-candidate": ["authority-rejected"],
-            "installed-cli": [
-              "bin-authority", "cli-authority", "cli-boundary", "driver-input",
-              "execution-rejected", "interpreter-authority", "package-authority",
-              "package-manifest", "receipt-rejected",
-            ],
-            "pty-receipt": ["receipt-rejected"],
-            "runner-bootstrap": ["runner-rejected"],
-          };
-          const validPtyFailure = (value) =>
-            value === null ||
-            (exactKeys(value, ["phase", "predicate", "receiptVersion"]) &&
-              value.receiptVersion === 1 &&
-              Object.hasOwn(ptyFailurePredicates, value.phase) &&
-              ptyFailurePredicates[value.phase].includes(value.predicate));
-          const readBounded = (path, maximumBytes) => {
-            let descriptor;
-            try {
-              descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-              const before = fstatSync(descriptor);
-              if (
-                !before.isFile() ||
-                before.nlink !== 1 ||
-                before.size < 1 ||
-                before.size > maximumBytes ||
-                (before.mode & 0o7777) !== 0o600
-              ) fail();
-              const content = readFileSync(descriptor);
-              const after = fstatSync(descriptor);
-              if (
-                after.dev !== before.dev ||
-                after.ino !== before.ino ||
-                after.size !== before.size ||
-                after.nlink !== before.nlink
-              ) fail();
-              return { content, status: before };
-            } finally {
-              if (descriptor !== undefined) closeSync(descriptor);
-            }
-          };
-          const artifactsRoot = resolve("artifacts/integration");
-          const runsRoot = resolve(artifactsRoot, "runs");
-          const manifestPath = resolve(
-            artifactsRoot,
-            "controller-failure-manifest.json",
-          );
-          const manifestBytes = readBounded(manifestPath, 65_536).content;
-          const manifest = JSON.parse(manifestBytes.toString("utf8"));
-          if (
-            !exactKeys(manifest, [
-              "controllerAuthorityDigest",
-              "controllerFailureManifestVersion",
-              "failureEvidence",
-              "runIds",
-            ]) ||
-            manifest.controllerFailureManifestVersion !== 1 ||
-            !/^sha256:[a-f0-9]{64}$/u.test(manifest.controllerAuthorityDigest) ||
-            !Array.isArray(manifest.runIds) ||
-            !Array.isArray(manifest.failureEvidence) ||
-            manifest.runIds.length < 1 ||
-            manifest.runIds.length > 256 ||
-            new Set(manifest.runIds).size !== manifest.runIds.length ||
-            JSON.stringify(manifest.runIds) !==
-              JSON.stringify([...manifest.runIds].sort()) ||
-            manifest.failureEvidence.length !== manifest.runIds.length
-          ) fail();
-          const expected = new Set(manifest.runIds);
-          const observed = [];
-          for (const identity of manifest.failureEvidence) {
-            if (
-              !exactKeys(identity, ["dev", "digest", "ino", "runId", "size"]) ||
-              !expected.has(identity.runId) ||
-              !/^[a-f0-9]{16}$/u.test(identity.runId) ||
-              !/^sha256:[a-f0-9]{64}$/u.test(identity.digest) ||
-              !Number.isSafeInteger(identity.dev) ||
-              !Number.isSafeInteger(identity.ino) ||
-              !Number.isSafeInteger(identity.size)
-            ) fail();
-            const path = resolve(runsRoot, identity.runId, "controller-failure.json");
-            const { content, status } = readBounded(path, 16_384);
-            const record = JSON.parse(content.toString("utf8"));
-            if (
-              status.dev !== identity.dev ||
-              status.ino !== identity.ino ||
-              status.size !== identity.size ||
-              `sha256:${createHash("sha256").update(content).digest("hex")}` !==
-                identity.digest ||
-              !exactKeys(record, [
-                "cleanupFailure",
-                "controllerFailureEvidenceVersion",
-                "controllerOutcome",
-                "installedPtyFailure",
-                "primaryFailure",
-                "privateCleanup",
-                "runId",
-                "scenarioOutcome",
-              ]) ||
-              record.controllerFailureEvidenceVersion !== 2 ||
-              record.runId !== identity.runId ||
-              record.controllerOutcome !== "retired-failure" ||
-              !validPtyFailure(record.installedPtyFailure) ||
-              !/^integration\.[a-z.-]{1,96}$/u.test(record.primaryFailure) ||
-              !(
-                record.cleanupFailure === null ||
-                /^integration\.[a-z.-]{1,96}$/u.test(record.cleanupFailure)
-              ) ||
-              !["passed", "failed", "not-complete"].includes(
-                record.scenarioOutcome,
-              )
-            ) fail();
-            observed.push(identity.runId);
-          }
-          if (
-            new Set(observed).size !== expected.size ||
-            observed.some((runId) => !expected.has(runId))
-          ) fail();
-          const runDirectories = readdirSync(runsRoot, { withFileTypes: true });
-          if (
-            runDirectories.length !== expected.size ||
-            runDirectories.some((entry) => {
-              if (!entry.isDirectory() || !expected.has(entry.name)) return true;
-              const status = lstatSync(resolve(runsRoot, entry.name));
-              return !status.isDirectory() || status.isSymbolicLink();
-            })
-          ) fail();
-          NODE
+        run: node tests/integration/verify-substrate-certification.mjs failure
       - name: Upload sanitized failure evidence
         if: failure() && steps.failure_evidence.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -291,17 +143,158 @@ jobs:
             artifacts/integration/runs/*/controller-failure.json
           if-no-files-found: error
           retention-days: 7
+      - name: Upload clean certification receipt
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: substrate-certification-replay-${{ matrix.replay }}-${{ github.sha }}
+          path: artifacts/integration/certification/replay-${{ matrix.replay }}.json
+          if-no-files-found: error
+          retention-days: 7
+  controlled-negative:
+    name: Substrate rejects ${{ matrix.case }}
+    needs: prepare-candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_NOSYSTEM: "1"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - wrong-argv
+          - wrong-environment
+          - wrong-cwd
+          - missing-hook
+          - leaked-child
+          - unbounded-output
+          - false-success
+          - mixed-artifact-digest
+          - public-egress
+          - credential-presence
+          - cleanup-failure
+    steps:
+      - name: Establish job-scoped integration deadline
+        run: echo "AGENTSCOPE_INTEGRATION_OUTER_DEADLINE_MONOTONIC_MS=$(awk '{ printf "%.0f", ($1 * 1000) + 1200000 }' /proc/uptime)" >> "$GITHUB_ENV"
+      - name: Initialize closed npm configuration
+        run: |
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-global.npmrc"
+          install -m 600 /dev/null "$RUNNER_TEMP/agentscope-user.npmrc"
+          echo "NPM_CONFIG_GLOBALCONFIG=$RUNNER_TEMP/agentscope-global.npmrc" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_USERCONFIG=$RUNNER_TEMP/agentscope-user.npmrc" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install immutable workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace fixture code
+        run: pnpm build
+      - name: Download exact prepared candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: integration-candidate-${{ github.sha }}
+          path: artifacts/integration
+      - name: Run one terminal controlled rejection
+        id: controlled_rejection
+        continue-on-error: true
+        env:
+          AGENTSCOPE_INTEGRATION_CONCURRENCY: "1"
+          AGENTSCOPE_INTEGRATION_SCENARIO: fixture-process-smoke
+          AGENTSCOPE_INTEGRATION_TIMEOUT_MS: "300000"
+          AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: ${{ matrix.case }}
+        run: |
+          if test "$AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE" = credential-presence; then
+            export OPENAI_API_KEY=AGENTSCOPE_SYNTHETIC_CANARY
+          fi
+          pnpm test:integration
+      - name: Require exact sanitized rejection evidence
+        if: always()
+        env:
+          AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: ${{ matrix.case }}
+          CONTROLLED_REJECTION_OUTCOME: ${{ steps.controlled_rejection.outcome }}
+        run: |
+          test "$CONTROLLED_REJECTION_OUTCOME" = failure
+          node tests/integration/verify-substrate-certification.mjs negative
+      - name: Upload sanitized controlled-rejection evidence
+        if: success() && matrix.case != 'credential-presence'
+        uses: actions/upload-artifact@v4
+        with:
+          name: substrate-certification-negative-${{ matrix.case }}-${{ github.sha }}
+          path: |
+            artifacts/integration/controller-failure-manifest.json
+            artifacts/integration/runs/*/controller-failure.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload sanitized preflight rejection evidence
+        if: success() && matrix.case == 'credential-presence'
+        uses: actions/upload-artifact@v4
+        with:
+          name: substrate-certification-negative-${{ matrix.case }}-${{ github.sha }}
+          path: artifacts/integration/controller-preflight-failure.json
+          if-no-files-found: error
+          retention-days: 7
+  substrate-certification-fan-in:
+    name: substrate-certification
+    needs: hermetic-platform
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install immutable workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build certification verifier
+        run: pnpm --filter @agentscope/integration build
+      - name: Download exactly three clean receipts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: substrate-certification-replay-*-${{ github.sha }}
+          path: artifacts/integration/certification-fan-in
+          merge-multiple: true
+      - name: Compare exact stable replay identities
+        run: |
+          chmod 600 artifacts/integration/certification-fan-in/replay-*.json
+          node tests/integration/verify-substrate-certification.mjs fan-in
   hermetic-integration:
     name: hermetic-integration
     if: always()
-    needs: [prepare-candidate, hermetic-platform]
+    needs:
+      [
+        prepare-candidate,
+        hermetic-platform,
+        controlled-negative,
+        substrate-certification-fan-in,
+      ]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every hermetic integration job
         env:
           CANDIDATE_RESULT: ${{ needs.prepare-candidate.result }}
+          NEGATIVE_RESULT: ${{ needs.controlled-negative.result }}
           PLATFORM_RESULT: ${{ needs.hermetic-platform.result }}
+          CERTIFICATION_RESULT: ${{ needs.substrate-certification-fan-in.result }}
         run: |
           test "$CANDIDATE_RESULT" = success
           test "$PLATFORM_RESULT" = success
+          test "$NEGATIVE_RESULT" = success
+          test "$CERTIFICATION_RESULT" = success
