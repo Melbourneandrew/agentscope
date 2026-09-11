@@ -383,7 +383,6 @@ try {
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
     const interaction = {
-      trigger: "semantic-ready",
       actions: [
         { action: "resize", geometry: { columns: 100, rows: 30 } },
         {
@@ -393,6 +392,7 @@ try {
         },
         { action: "eof" },
       ],
+      trigger: "semantic-ready",
     };
     const receipt = await executeSelectedPtyProcess(headlessCapability, {
       completion,
