@@ -7,6 +7,7 @@ if (!scenarioId || (mode !== "ingestion" && mode !== "retrieval"))
 
 const entries = [];
 const traces = new Map();
+const eventKindSets = [];
 const maximumRequestBytesValue = process.env.AGENTSCOPE_MAXIMUM_REQUEST_BYTES;
 if (
   !/^\d+$/u.test(maximumRequestBytesValue ?? "") ||
@@ -32,12 +33,12 @@ const sendJson = (response, status, value) => {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
 };
-const record = (request, body, operation, outcome) => {
+const record = (request, bodyBytes, operation, outcome) => {
   entries.push({
     operation,
     method: request.method ?? "GET",
     path: new URL(request.url ?? "/", "http://destination").pathname,
-    bodyBytes: body.byteLength,
+    bodyBytes,
     outcome,
   });
 };
@@ -50,22 +51,22 @@ const faultFor = (request) => {
 const handleFault = (request, response, body, operation) => {
   const fault = faultFor(request);
   if (fault === "auth") {
-    record(request, body, operation, "auth-rejected");
+    record(request, body.byteLength, operation, "auth-rejected");
     sendJson(response, 401, {});
     return true;
   }
   if (fault === "rate") {
-    record(request, body, operation, "rate-limited");
+    record(request, body.byteLength, operation, "rate-limited");
     sendJson(response, 429, {});
     return true;
   }
   if (fault === "unavailable") {
-    record(request, body, operation, "unavailable");
+    record(request, body.byteLength, operation, "unavailable");
     sendJson(response, 503, {});
     return true;
   }
   if (fault === "malformed") {
-    record(request, body, operation, "malformed-response");
+    record(request, body.byteLength, operation, "malformed-response");
     response.writeHead(200, { "content-type": "application/json" });
     response.end("{malformed");
     return true;
@@ -75,41 +76,47 @@ const handleFault = (request, response, body, operation) => {
 
 const ingestion = async (request, response, path) => {
   const body = await readBody(request);
+  const operation = path === "/v1/traces" ? "otlp-ingest" : "langfuse-ingest";
   if (body === undefined) {
+    record(request, maximumRequestBytes + 1, operation, "request-too-large");
     sendJson(response, 413, {});
     return;
   }
-  const operation = path === "/v1/traces" ? "otlp-ingest" : "langfuse-ingest";
   if (handleFault(request, response, body, operation)) return;
+  let value;
   try {
-    JSON.parse(body.toString("utf8"));
+    value = JSON.parse(body.toString("utf8"));
   } catch {
-    record(request, body, operation, "malformed-request");
+    record(request, body.byteLength, operation, "malformed-request");
     sendJson(response, 400, {});
     return;
   }
-  record(request, body, operation, "accepted");
+  const eventKinds =
+    value?.resourceSpans?.[0]?.scopeSpans?.[0]?.spans?.[0]?.events;
+  eventKindSets.push(Array.isArray(eventKinds) ? [...eventKinds] : null);
+  record(request, body.byteLength, operation, "accepted");
   sendJson(response, 202, {});
 };
 
 const retrieval = async (request, response, path) => {
   const body = await readBody(request);
+  const operation =
+    path === "/seed" ? "seed" : path === "/search" ? "search" : "get";
   if (body === undefined) {
+    record(request, maximumRequestBytes + 1, operation, "request-too-large");
     sendJson(response, 413, {});
     return;
   }
-  const operation =
-    path === "/seed" ? "seed" : path === "/search" ? "search" : "get";
   if (handleFault(request, response, body, operation)) return;
   if (path === "/seed" && request.method === "POST") {
     const value = JSON.parse(body.toString("utf8"));
     traces.set(value.traceId, value);
-    record(request, body, operation, "accepted");
+    record(request, body.byteLength, operation, "accepted");
     sendJson(response, 201, {});
     return;
   }
   if (path === "/search" && request.method === "POST") {
-    record(request, body, operation, "accepted");
+    record(request, body.byteLength, operation, "accepted");
     sendJson(response, 200, {
       traces: [...traces.values()].map(({ traceId, branch, model, tool }) => ({
         traceId,
@@ -122,11 +129,11 @@ const retrieval = async (request, response, path) => {
   }
   const traceId = path.startsWith("/trace/") ? path.slice(7) : undefined;
   if (traceId && request.method === "GET" && traces.has(traceId)) {
-    record(request, body, operation, "accepted");
+    record(request, body.byteLength, operation, "accepted");
     sendJson(response, 200, traces.get(traceId));
     return;
   }
-  record(request, body, operation, "not-found");
+  record(request, body.byteLength, operation, "not-found");
   sendJson(response, 404, {});
 };
 
@@ -139,6 +146,18 @@ createServer(async (request, response) => {
   }
   if (request.method === "GET" && path === "/ledger") {
     sendJson(response, 200, { ledgerVersion: 1, scenarioId, entries });
+    return;
+  }
+  if (
+    mode === "ingestion" &&
+    request.method === "GET" &&
+    path === "/observations"
+  ) {
+    sendJson(response, 200, {
+      observationVersion: 1,
+      scenarioId,
+      eventKindSets,
+    });
     return;
   }
   if (

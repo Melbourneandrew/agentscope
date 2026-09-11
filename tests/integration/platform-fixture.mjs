@@ -7,13 +7,14 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 
+import { FIXTURE_LIFECYCLE_PHASES } from "./testkit/platform-fixture.js";
 import {
-  COMMON_FIXTURE_ASSERTIONS,
-  composeFixtureAssertions,
-  FIXTURE_LIFECYCLE_PHASES,
-  runFixtureAssertions,
-} from "./testkit/platform-fixture.js";
-import { runPlatformAdapter } from "./scenario-adapter.mjs";
+  assertProcessFixtureEvidence,
+  captureProcessFixtureRawProjection,
+  correlateProcessFixtureObservations,
+  PROCESS_FIXTURE_STIMULUS,
+} from "./process-platform-oracle.mjs";
+import { translatePlatformObservations } from "./scenario-adapter.mjs";
 
 const required = (name) => {
   const value = process.env[name];
@@ -46,6 +47,7 @@ const scenario = manifest.scenarios.find(
 );
 if (!scenario) throw new Error("integration.fixture.scenario");
 
+const observedLifecycle = [];
 let partial = {
   eventKinds: [],
   modelLedger: { ledgerVersion: 1, scenarioId, entries: [] },
@@ -62,7 +64,7 @@ const emitEvidence = (resultStatus) => {
     resultStatus,
     scenarioId,
     artifactFileName: basename(artifactPath),
-    lifecycle: FIXTURE_LIFECYCLE_PHASES,
+    lifecycle: [...observedLifecycle],
     ...partial,
   };
   console.log(
@@ -71,6 +73,13 @@ const emitEvidence = (resultStatus) => {
   return evidence;
 };
 emitEvidence("partial");
+const recordLifecycle = (phase, publish = true) => {
+  const expected = FIXTURE_LIFECYCLE_PHASES[observedLifecycle.length];
+  if (phase !== expected)
+    throw new Error("integration.fixture.lifecycle-order");
+  observedLifecycle.push(phase);
+  if (publish) emitEvidence("partial");
+};
 
 const requestJson = async (url, options, statusCode) => {
   const response = await fetch(url, {
@@ -111,43 +120,188 @@ await Promise.all([
   waitFor(`${retrievalEndpoint}/health`),
 ]);
 writeFileSync(join(agentscopeHome, "installed.json"), '{"fixture":true}\n');
+recordLifecycle("install");
 writeFileSync(join(agentscopeHome, "config.json"), '{"fixture":true}\n');
+recordLifecycle("configure");
 writeFileSync(join(harnessHome, "hook.json"), '{"fixture":true}\n');
+recordLifecycle("hook");
 
-const adapterResult = await runPlatformAdapter({
-  ingestionEndpoint,
-  modelEndpoint,
-  requestJson,
-  retrievalEndpoint,
+// This test-family module owns stimuli and expected results. The scenario
+// adapter below receives only native observations and cannot author a pass.
+const runModels = async () => {
+  for (const routeId of scenario.modelRoutes) {
+    const route = routeFixture.routes.find(
+      (candidate) => candidate.routeId === routeId,
+    );
+    if (!route) throw new Error("integration.fixture.model-route");
+    const url = new URL(route.path, modelEndpoint);
+    for (const [name, value] of Object.entries(route.query ?? {}))
+      url.searchParams.set(name, value);
+    const response = await requestJson(
+      url,
+      {
+        method: route.method,
+        headers: route.headers,
+        body: JSON.stringify(route.requestBody),
+      },
+      200,
+    );
+    if (
+      JSON.stringify(await response.json()) !==
+      JSON.stringify(route.responseBody)
+    )
+      throw new Error("integration.fixture.model-response");
+  }
+  await requestJson(`${modelEndpoint}/agentscope-unmatched`, {}, 404);
+  return requestJson(
+    `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    },
+    200,
+  ).then((response) => response.json());
+};
+
+const representative = PROCESS_FIXTURE_STIMULUS.representative;
+const authHeaders = Object.freeze({
+  authorization: "Bearer DUMMY_DESTINATION_KEY",
+  "content-type": "application/json",
+});
+const runExports = async () => {
+  const body = JSON.stringify({
+    resourceSpans: [{ scopeSpans: [{ spans: [representative] }] }],
+  });
+  for (const path of ["/v1/traces", "/api/public/ingestion"])
+    await requestJson(
+      `${ingestionEndpoint}${path}`,
+      { method: "POST", headers: authHeaders, body },
+      202,
+    );
+  for (const [fault, expectedStatus] of [
+    [undefined, 401],
+    ["rate", 429],
+    ["unavailable", 503],
+    ["malformed", 200],
+  ]) {
+    const headers =
+      fault === undefined
+        ? { "content-type": "application/json" }
+        : { ...authHeaders, "x-agentscope-fault": fault };
+    const response = await requestJson(
+      `${ingestionEndpoint}/v1/traces`,
+      { method: "POST", headers, body },
+      expectedStatus,
+    );
+    if (fault === "malformed") {
+      try {
+        await response.json();
+        throw new Error("integration.fixture.malformed");
+      } catch (error) {
+        if (error?.message === "integration.fixture.malformed") throw error;
+      }
+    }
+  }
+  await requestJson(
+    `${ingestionEndpoint}/v1/traces`,
+    { method: "POST", headers: authHeaders, body: "x".repeat(1024 * 1024 + 1) },
+    413,
+  );
+  return Promise.all([
+    requestJson(`${ingestionEndpoint}/ledger`, {}, 200).then((response) =>
+      response.json(),
+    ),
+    requestJson(`${ingestionEndpoint}/observations`, {}, 200).then((response) =>
+      response.json(),
+    ),
+  ]);
+};
+
+const runRetrieval = async () => {
+  await requestJson(
+    `${retrievalEndpoint}/seed`,
+    {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify(representative),
+    },
+    201,
+  );
+  const search = await requestJson(
+    `${retrievalEndpoint}/search`,
+    {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({ branch: "main" }),
+    },
+    200,
+  );
+  if ((await search.json()).traces?.[0]?.traceId !== representative.traceId)
+    throw new Error("integration.fixture.search");
+  const get = await requestJson(
+    `${retrievalEndpoint}/trace/${representative.traceId}`,
+    { headers: authHeaders },
+    200,
+  );
+  if ((await get.json()).traceId !== representative.traceId)
+    throw new Error("integration.fixture.get");
+  await requestJson(
+    `${retrievalEndpoint}/search`,
+    {
+      method: "POST",
+      headers: { ...authHeaders, "x-agentscope-fault": "unavailable" },
+      body: "{}",
+    },
+    503,
+  );
+  return requestJson(`${retrievalEndpoint}/ledger`, {}, 200).then((response) =>
+    response.json(),
+  );
+};
+
+const modelRequests = await runModels();
+recordLifecycle("execute");
+const [ingestionLedger, destinationObservation] = await runExports();
+recordLifecycle("export");
+const retrievalLedger = await runRetrieval();
+recordLifecycle("retrieve");
+const rawObservations = {
+  scenarioId,
+  modelRequests,
+  ingestionLedger,
+  retrievalLedger,
+  destinationObservation,
+};
+const rawProjection = captureProcessFixtureRawProjection(rawObservations);
+const observations = translatePlatformObservations(rawObservations);
+partial = correlateProcessFixtureObservations(observations, {
+  rawProjection,
   routeFixture,
   scenario,
-  scenarioId,
-  publishCheckpoint: (checkpoint) => {
-    partial = { ...partial, ...checkpoint };
-    emitEvidence("partial");
-  },
 });
+emitEvidence("partial");
+
+rmSync(join(harnessHome, "hook.json"));
+rmSync(join(agentscopeHome, "config.json"));
+rmSync(join(agentscopeHome, "installed.json"));
+recordLifecycle("uninstall", false);
 const evidence = {
   evidenceVersion: 1,
   resultStatus: "complete",
   scenarioId,
   artifactFileName: basename(artifactPath),
-  lifecycle: FIXTURE_LIFECYCLE_PHASES,
-  eventKinds: adapterResult.eventKinds,
-  modelLedger: adapterResult.modelLedger,
-  destinationLedger: adapterResult.destinationLedger,
+  lifecycle: [...observedLifecycle],
+  ...partial,
 };
-runFixtureAssertions(
-  composeFixtureAssertions(COMMON_FIXTURE_ASSERTIONS, adapterResult.assertions),
-  evidence,
-);
+assertProcessFixtureEvidence(evidence, {
+  routeFixture,
+  scenario,
+});
 writeFileSync(
   join(ledgerHome, "fixture-lifecycle.json"),
-  `${JSON.stringify({ scenarioId, lifecycle: FIXTURE_LIFECYCLE_PHASES })}\n`,
+  `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
 );
-rmSync(join(harnessHome, "hook.json"));
-rmSync(join(agentscopeHome, "config.json"));
-rmSync(join(agentscopeHome, "installed.json"));
 console.log(
   `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
 );
