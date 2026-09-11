@@ -1,6 +1,6 @@
 export {
   HarnessDescriptorError,
-  compileHarnessRegistry,
+  defineHarnessRegistry,
   defineHarnessDescriptor,
   getHarnessDescriptor,
   isHarnessRegistry,
@@ -19,7 +19,6 @@ export type {
   HarnessDiscoveryProbe,
   HarnessDiscoveryResult,
   HarnessRegistry,
-  HarnessSupportEvidenceManifest,
 } from "./types.js";
 export type {
   HarnessInstallationPlanInput,

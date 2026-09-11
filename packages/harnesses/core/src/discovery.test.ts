@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  compileHarnessRegistry,
   defineHarnessDescriptor,
+  defineHarnessRegistry,
 } from "./descriptor.js";
 import { discoverHarness, HarnessDiscoveryError } from "./discovery.js";
 import type {
@@ -12,7 +12,6 @@ import type {
   HarnessVersionProbeResult,
 } from "./types.js";
 
-const digest = `sha256-${"b".repeat(64)}`;
 const descriptorInput: HarnessDescriptorInput = {
   descriptorVersion: 1,
   harnessType: "@agentscope/harness-codex",
@@ -38,18 +37,7 @@ const descriptorInput: HarnessDescriptorInput = {
   nativeSource: { sourceKind: "codex-session", continuityVersion: 1 },
 };
 const descriptor = defineHarnessDescriptor(descriptorInput);
-const registry = compileHarnessRegistry([descriptor], {
-  manifestVersion: 1,
-  entries: [
-    {
-      harnessType: descriptor.harnessType,
-      evidenceSlot: "stable-v1",
-      testedVersion: "1.4.0",
-      contractSuiteDigest: digest,
-      realScenarioDigest: digest,
-    },
-  ],
-});
+const registry = defineHarnessRegistry([descriptor]);
 
 const probe = (
   executable: HarnessExecutableProbeResult = {
@@ -324,21 +312,7 @@ describe("harness discovery authority containment", () => {
       ...descriptorInput,
       executable: { ...descriptorInput.executable, versionSuffix: "" },
     });
-    const emptySuffixRegistry = compileHarnessRegistry(
-      [emptySuffixDescriptor],
-      {
-        manifestVersion: 1,
-        entries: [
-          {
-            harnessType: emptySuffixDescriptor.harnessType,
-            evidenceSlot: "stable-v1",
-            testedVersion: "1.4.0",
-            contractSuiteDigest: digest,
-            realScenarioDigest: digest,
-          },
-        ],
-      },
-    );
+    const emptySuffixRegistry = defineHarnessRegistry([emptySuffixDescriptor]);
     const operations = probe(undefined, {
       kind: "observed",
       output: "codex 1.4.0",

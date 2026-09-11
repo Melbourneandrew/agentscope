@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   failureEvidenceCoverageIsExact,
+  harnessAdmissionSourcesFitOwnerForTesting,
   headlessReceiptFitsOuterAuthority,
   ptyReceiptFitsOuterAuthority,
   runIntegrationStages,
@@ -119,6 +120,64 @@ describe("PTY terminal receipt authority", () => {
     expect(ptyReceiptFitsOuterAuthority(receipt, 90, 101, new Set())).toBe(
       false,
     );
+  });
+});
+
+describe("real-harness source ownership", () => {
+  it("admits harness evidence sources only for the exact unclaimed scenario stage", () => {
+    const sources = Object.freeze({
+      authenticateMaterial: () => undefined,
+      authenticateTerminal: () => undefined,
+    });
+    expect(
+      harnessAdmissionSourcesFitOwnerForTesting("runScenarios", false, sources),
+    ).toBe(true);
+    expect(
+      harnessAdmissionSourcesFitOwnerForTesting("select", false, sources),
+    ).toBe(false);
+    expect(
+      harnessAdmissionSourcesFitOwnerForTesting("runScenarios", true, sources),
+    ).toBe(false);
+    expect(
+      harnessAdmissionSourcesFitOwnerForTesting("runScenarios", false, {
+        ...sources,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects aliased, accessor, extra, and hostile source records", () => {
+    const functionValue = () => undefined;
+    const accessor = Object.freeze(
+      Object.defineProperty(
+        { authenticateTerminal: functionValue },
+        "authenticateMaterial",
+        { enumerable: true, get: functionValue },
+      ),
+    );
+    const extra = Object.freeze({
+      authenticateMaterial: functionValue,
+      authenticateTerminal: functionValue,
+      extra: functionValue,
+    });
+    const inherited = Object.freeze(
+      Object.create({
+        authenticateMaterial: functionValue,
+        authenticateTerminal: functionValue,
+      }) as object,
+    );
+    const hostile = new Proxy(Object.freeze({}), {
+      ownKeys: () => {
+        throw new Error("CALLER-CONTENT-CANARY");
+      },
+    });
+    for (const candidate of [accessor, extra, inherited, hostile, null])
+      expect(
+        harnessAdmissionSourcesFitOwnerForTesting(
+          "runScenarios",
+          false,
+          candidate,
+        ),
+      ).toBe(false);
   });
 });
 

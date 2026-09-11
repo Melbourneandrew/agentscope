@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   HarnessDescriptorError,
-  compileHarnessRegistry,
   defineHarnessDescriptor,
+  defineHarnessRegistry,
   getHarnessDescriptor,
   isHarnessDescriptor,
   isHarnessRegistry,
@@ -13,13 +13,8 @@ import {
   parseStableSemver,
   stableSemverIsInRange,
 } from "./semver.js";
-import type {
-  HarnessDescriptorInput,
-  HarnessSupportEvidenceManifest,
-} from "./types.js";
+import type { HarnessDescriptorInput } from "./types.js";
 import { harnessesCorePackageId } from "./index.js";
-
-const digest = `sha256-${"a".repeat(64)}`;
 
 const input = (
   overrides: Partial<HarnessDescriptorInput> = {},
@@ -41,22 +36,6 @@ const input = (
     },
   ],
   nativeSource: { sourceKind: "codex-session", continuityVersion: 1 },
-  ...overrides,
-});
-
-const evidence = (
-  overrides: Partial<HarnessSupportEvidenceManifest> = {},
-): HarnessSupportEvidenceManifest => ({
-  manifestVersion: 1,
-  entries: [
-    {
-      harnessType: "@agentscope/harness-codex",
-      evidenceSlot: "stable-v1",
-      testedVersion: "1.5.0",
-      contractSuiteDigest: digest,
-      realScenarioDigest: digest,
-    },
-  ],
   ...overrides,
 });
 
@@ -82,10 +61,10 @@ describe("stable semver", () => {
 });
 
 describe("harness descriptor registry", () => {
-  it("binds descriptors to exact support evidence", () => {
+  it("registers branded descriptors without accepting support evidence", () => {
     expect(harnessesCorePackageId).toBe("@agentscope/harnesses-core");
     const descriptor = defineHarnessDescriptor(input());
-    const registry = compileHarnessRegistry([descriptor], evidence());
+    const registry = defineHarnessRegistry([descriptor]);
     expect(isHarnessDescriptor(descriptor)).toBe(true);
     expect(isHarnessRegistry(registry)).toBe(true);
     expect(registry.harnessTypes).toEqual(["@agentscope/harness-codex"]);
@@ -146,36 +125,19 @@ describe("harness descriptor registry", () => {
     );
   });
 
-  it.each([
-    { ...evidence(), manifestVersion: 2 as 1 },
-    evidence({ entries: [] }),
-    evidence({
-      entries: [{ ...evidence().entries[0]!, testedVersion: "2.0.0" }],
-    }),
-    evidence({
-      entries: [
-        { ...evidence().entries[0]!, contractSuiteDigest: "sha256-bad" },
-      ],
-    }),
-    evidence({
-      entries: [{ ...evidence().entries[0]!, testedVersion: "01.0.0" }],
-    }),
-    evidence({
-      entries: [evidence().entries[0]!, evidence().entries[0]!],
-    }),
-  ])("rejects missing, stale, malformed, or duplicate evidence", (manifest) => {
-    expect(() =>
-      compileHarnessRegistry([defineHarnessDescriptor(input())], manifest),
-    ).toThrow(HarnessDescriptorError);
-  });
-
   it("rejects duplicate descriptor identities and unbranded descriptors", () => {
     const descriptor = defineHarnessDescriptor(input());
+    expect(() => defineHarnessRegistry([descriptor, descriptor])).toThrow(
+      HarnessDescriptorError,
+    );
+    expect(() => defineHarnessRegistry([input() as never])).toThrow(
+      HarnessDescriptorError,
+    );
     expect(() =>
-      compileHarnessRegistry([descriptor, descriptor], evidence()),
-    ).toThrow(HarnessDescriptorError);
-    expect(() =>
-      compileHarnessRegistry([input() as never], evidence()),
+      (defineHarnessRegistry as (...values: unknown[]) => unknown)(
+        [descriptor],
+        { manifestVersion: 1 },
+      ),
     ).toThrow(HarnessDescriptorError);
     expect(isHarnessDescriptor(input())).toBe(false);
     expect(isHarnessRegistry(Object.freeze({}))).toBe(false);
@@ -251,7 +213,7 @@ describe("harness descriptor hostile boundaries", () => {
     ).toThrow(HarnessDescriptorError);
   });
 
-  it("supports distinct nonoverlapping evidence ranges and empty affixes", () => {
+  it("supports distinct nonoverlapping eligible ranges and empty affixes", () => {
     const descriptor = defineHarnessDescriptor(
       input({
         executable: {
@@ -273,12 +235,6 @@ describe("harness descriptor hostile boundaries", () => {
         ],
       }),
     );
-    const entries = [
-      { ...evidence().entries[0]!, evidenceSlot: "v1", testedVersion: "1.1.0" },
-      { ...evidence().entries[0]!, evidenceSlot: "v2", testedVersion: "2.1.0" },
-    ];
-    expect(
-      compileHarnessRegistry([descriptor], evidence({ entries })),
-    ).toBeDefined();
+    expect(defineHarnessRegistry([descriptor])).toBeDefined();
   });
 });

@@ -9,8 +9,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import {
-  compileHarnessRegistry,
   defineHarnessDescriptor,
+  defineHarnessRegistry,
   discoverHarness,
   harnessesCorePackageId,
   completeNativeCaptureBoundary,
@@ -55,9 +55,17 @@ if (harnessesCorePackageId !== "@agentscope/harnesses-core")
   throw new Error("Harness Core package identity drifted.");
 if (
   "createHarnessContractSuite" in harnessRoot ||
+  "compileHarnessRegistry" in harnessRoot ||
   typeof createHarnessContractSuite !== "function"
 )
   throw new Error("Harness Core testing export boundary drifted.");
+for (const declaration of ["index.d.ts", "management-index.d.ts", "types.d.ts"])
+  if (
+    /compileHarnessRegistry|HarnessSupportEvidenceManifest|HarnessRangeEvidence/u.test(
+      readFileSync(resolve(import.meta.dirname, "dist", declaration), "utf8"),
+    )
+  )
+    throw new Error("Harness Core support-admission authority leaked.");
 
 const descriptor = defineHarnessDescriptor({
   descriptorVersion: 1,
@@ -78,19 +86,7 @@ const descriptor = defineHarnessDescriptor({
   ],
   nativeSource: { sourceKind: "artifact-session", continuityVersion: 1 },
 });
-const digest = `sha256-${"a".repeat(64)}`;
-const registry = compileHarnessRegistry([descriptor], {
-  manifestVersion: 1,
-  entries: [
-    {
-      harnessType: descriptor.harnessType,
-      evidenceSlot: "artifact-v1",
-      testedVersion: "1.1.0",
-      contractSuiteDigest: digest,
-      realScenarioDigest: digest,
-    },
-  ],
-});
+const registry = defineHarnessRegistry([descriptor]);
 const result = await discoverHarness(registry, descriptor.harnessType, {
   locateExecutable: async () => ({
     kind: "found",

@@ -52,19 +52,6 @@ export type HarnessDescriptor = Readonly<{
   readonly [harnessDescriptorBrand]: true;
 }>;
 
-export type HarnessRangeEvidence = Readonly<{
-  harnessType: string;
-  evidenceSlot: string;
-  testedVersion: string;
-  contractSuiteDigest: string;
-  realScenarioDigest: string;
-}>;
-
-export type HarnessSupportEvidenceManifest = Readonly<{
-  manifestVersion: 1;
-  entries: readonly HarnessRangeEvidence[];
-}>;
-
 declare const harnessRegistryBrand: unique symbol;
 
 export type HarnessRegistry = Readonly<{
