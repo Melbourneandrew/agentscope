@@ -166,11 +166,8 @@ const ptyReceiptFor = (
 ) => {
   const rawProcessRequest = {
     ...headlessReceiptFor(runId).request,
-    arguments: [
-      "/opt/agentscope/platform-fixture.mjs",
-      "--artifact",
-      "/opt/agentscope/prepared/cli.tgz",
-    ],
+    executable: "/opt/agentscope/platform-fixture.mjs",
+    arguments: ["--artifact", "/opt/agentscope/prepared/cli.tgz"],
     stdinBase64: "cnVuCg==",
   };
   const processRequestFingerprint = `sha256:${createHash("sha256")

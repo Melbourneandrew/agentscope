@@ -333,8 +333,14 @@ try {
   ];
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
-    executable: process.execPath,
-    arguments: [fixtureScript, ...fixtureArguments],
+    executable:
+      scenario.executionMode === "interactive"
+        ? fixtureScript
+        : process.execPath,
+    arguments:
+      scenario.executionMode === "interactive"
+        ? fixtureArguments
+        : [fixtureScript, ...fixtureArguments],
     cwd: "/opt/agentscope",
     environment: childEnvironment,
     stdin:
