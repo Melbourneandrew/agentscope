@@ -199,12 +199,12 @@ try {
     process.platform === "win32" ? "agentscope.cmd" : "agentscope",
   );
   if (process.platform !== "win32") chmodSync(executable, 0o755);
-  const installedContract = run(
+  const installedSmoke = run(
     process.execPath,
     [
       "--import",
       "tsx",
-      resolve(packageRoot, "scripts/verify-installed-contract.ts"),
+      resolve(packageRoot, "scripts/verify-installed-smoke.ts"),
       "--executable",
       executable,
       "--tarball",
@@ -216,23 +216,18 @@ try {
     ],
     { env: { FORCE_COLOR: undefined, NO_COLOR: "1" } },
   );
-  const installedContractEvidence = JSON.parse(installedContract.stdout);
+  const installedSmokeResult = JSON.parse(installedSmoke.stdout);
   assert.equal(
-    installedContractEvidence.schema,
-    "agentscope.cli.installed-contract-evidence.v1",
+    installedSmokeResult.schema,
+    "agentscope.cli.installed-smoke.v1",
   );
-  assert.equal(installedContractEvidence.package, "agentscope-cli");
-  assert.equal(installedContractEvidence.version, installedManifest.version);
-  assert.match(
-    installedContractEvidence.candidateDigest,
-    /^sha256:[0-9a-f]{64}$/u,
-  );
-  assert.match(
-    installedContractEvidence.inventoryDigest,
-    /^sha256:[0-9a-f]{64}$/u,
-  );
-  assert.ok(installedContractEvidence.caseCount > 80);
-  assert.equal(installedContract.stderr, "");
+  assert.equal(installedSmokeResult.scope, "packed-public-command-smoke");
+  assert.equal(installedSmokeResult.package, "agentscope-cli");
+  assert.equal(installedSmokeResult.version, installedManifest.version);
+  assert.match(installedSmokeResult.candidateDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(installedSmokeResult.inventoryDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.ok(installedSmokeResult.checkCount > 80);
+  assert.equal(installedSmoke.stderr, "");
   const executableOptions = {
     cwd: installRoot,
     shell: process.platform === "win32",

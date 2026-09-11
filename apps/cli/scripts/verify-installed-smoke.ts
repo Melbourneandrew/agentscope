@@ -18,6 +18,10 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { commandRegistry } from "../src/command-registry.js";
 import type { CommandRegistration } from "../src/command-registry.js";
 
+// This artifact-local smoke verifies public inventory and ordinary process
+// behavior. Harness Execution ADR-004's PTY, broken-pipe, signal, deadline,
+// process-set, and external-effect cases remain integration-runner authority.
+
 type Invocation = Readonly<{
   args: readonly string[];
   caseId: string;
@@ -41,6 +45,9 @@ type InvocationResult = Readonly<{
 }>;
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+const MAX_SNAPSHOT_ENTRIES = 2_048;
+const MAX_SNAPSHOT_FILE_BYTES = 1024 * 1024;
+const MAX_SNAPSHOT_TOTAL_BYTES = 8 * 1024 * 1024;
 const PROCESS_TIMEOUT_MILLISECONDS = 15_000;
 const EXPECTED_PACKAGE = "agentscope-cli";
 const EXPECTED_BIN = "agentscope";
@@ -86,6 +93,7 @@ function regularFileSnapshot(root: string): readonly string[] {
   assert.equal(rootMetadata.isDirectory(), true);
   const pending = [root];
   const records: string[] = [`directory:.:${rootMetadata.mode & 0o777}`];
+  let totalBytes = 0;
   while (pending.length > 0) {
     const directory = pending.pop();
     assert.ok(directory);
@@ -93,14 +101,22 @@ function regularFileSnapshot(root: string): readonly string[] {
       const path = join(directory, name);
       const metadata = lstatSync(path);
       const relativePath = relative(root, path);
+      assert.ok(records.length < MAX_SNAPSHOT_ENTRIES);
       if (metadata.isDirectory()) {
         pending.push(path);
         records.push(`directory:${relativePath}:${metadata.mode & 0o777}`);
       } else {
         assert.equal(metadata.isFile(), true);
-        const digest = createHash("sha256")
-          .update(readFileSync(path))
-          .digest("hex");
+        assert.ok(metadata.size <= MAX_SNAPSHOT_FILE_BYTES);
+        totalBytes += metadata.size;
+        assert.ok(totalBytes <= MAX_SNAPSHOT_TOTAL_BYTES);
+        const bytes = readFileSync(path);
+        const after = lstatSync(path);
+        assert.deepEqual(
+          [after.dev, after.ino, after.size],
+          [metadata.dev, metadata.ino, metadata.size],
+        );
+        const digest = createHash("sha256").update(bytes).digest("hex");
         records.push(
           `${relativePath}:${metadata.mode & 0o777}:${metadata.size}:${digest}`,
         );
@@ -379,7 +395,7 @@ function createCaseRoot(caseId: string): Readonly<{
   cwd: string;
   environment: NodeJS.ProcessEnv;
   home: string;
-  stateRoot: string;
+  snapshotRoot: string;
 }> {
   const root = mkdtempSync(join(tmpdir(), "agentscope CLI contract — 测试 "));
   const home = join(root, "user home with spaces");
@@ -392,7 +408,7 @@ function createCaseRoot(caseId: string): Readonly<{
     cwd,
     environment,
     home,
-    stateRoot: join(home, ".agentscope"),
+    snapshotRoot: root,
   };
 }
 
@@ -427,7 +443,7 @@ function runInvocation(
   const fixture = createCaseRoot(caseId);
   try {
     prepareCase(invocation.prepare, fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(
       [...command.path, ...invocation.args, "--output", mode],
       fixture.cwd,
@@ -451,7 +467,7 @@ function runInvocation(
         }
       } else assertMachineOutput(caseId, mode, result);
       if (invocation.mutation !== "allowed")
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+        assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -494,7 +510,7 @@ for (const registration of publicInventory) {
   const caseId = `help.${registration.id}`;
   const fixture = createCaseRoot(caseId);
   try {
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(
       [...registration.path, "--help"],
       fixture.cwd,
@@ -506,7 +522,7 @@ for (const registration of publicInventory) {
       assert.equal(result.stderr, "");
       assert.match(result.stdout, /^Usage: agentscope/u);
       assert.match(result.stdout, /Documentation: https:\/\//u);
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -531,7 +547,7 @@ for (const registration of publicCommands) {
         fixture.cwd,
         fixture.environment,
       );
-      const before = regularFileSnapshot(fixture.stateRoot);
+      const before = regularFileSnapshot(fixture.snapshotRoot);
       const result = invoke(
         [...registration.path, ...contract.invocation.args, "--output", "yaml"],
         fixture.cwd,
@@ -542,7 +558,7 @@ for (const registration of publicCommands) {
         assert.equal(diagnosticCode(result), "cli.output.unsupported");
         assert.equal(result.stdout, "");
         assert.equal(result.stderr, "error [cli.output.unsupported]\n");
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+        assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
       });
     } finally {
       rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -553,7 +569,7 @@ for (const registration of publicCommands) {
     const fixture = createCaseRoot(caseId);
     try {
       prepareCase("initialized", fixture.cwd, fixture.environment);
-      const before = regularFileSnapshot(fixture.stateRoot);
+      const before = regularFileSnapshot(fixture.snapshotRoot);
       const result = invoke(
         [...registration.path, ...contract.missing, "--output", "json"],
         fixture.cwd,
@@ -563,7 +579,7 @@ for (const registration of publicCommands) {
         assert.equal(result.status, 2);
         assert.equal(diagnosticCode(result), requiredArgumentDiagnostic);
         assert.equal(result.stdout, "");
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+        assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
       });
     } finally {
       rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -575,14 +591,14 @@ for (const registration of publicCommands) {
   const caseId = "root.version";
   const fixture = createCaseRoot(caseId);
   try {
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(["--version"], fixture.cwd, fixture.environment);
     check(caseId, () => {
       assert.equal(result.status, 0);
       assert.equal(result.signal, null);
       assert.equal(result.stdout, `${expectedVersion}\n`);
       assert.equal(result.stderr, "");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -613,13 +629,13 @@ const hostileCases: readonly Invocation[] = Object.freeze([
 for (const hostile of hostileCases) {
   const fixture = createCaseRoot(hostile.caseId);
   try {
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(hostile.args, fixture.cwd, fixture.environment);
     check(hostile.caseId, () => {
       assert.equal(result.status, hostile.expectedCode);
       assert.equal(diagnosticCode(result), hostile.expectedDiagnostic);
       assert.equal(result.stdout, "");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
       assert.doesNotMatch(result.stderr, /CREDENTIAL_CANARY|line|break/u);
     });
   } finally {
@@ -632,7 +648,7 @@ for (const hostile of hostileCases) {
   const fixture = createCaseRoot(caseId);
   try {
     prepareCase("initialized", fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(
       [
         "traces",
@@ -652,7 +668,7 @@ for (const hostile of hostileCases) {
     check(caseId, () => {
       assert.equal(result.status, 2);
       assert.equal(diagnosticCode(result), requiredArgumentDiagnostic);
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -664,7 +680,7 @@ for (const hostile of hostileCases) {
   const fixture = createCaseRoot(caseId);
   try {
     prepareCase("initialized", fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(
       ["routing", "set", "duplicate", "duplicate", "--output", "json"],
       fixture.cwd,
@@ -674,7 +690,7 @@ for (const hostile of hostileCases) {
       assert.equal(result.status, 2);
       assert.equal(diagnosticCode(result), "routing.duplicate-connection");
       assert.equal(result.stdout, "");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -685,7 +701,7 @@ for (const hostile of hostileCases) {
   const caseId = "confirmation.non-tty-eof-cancel";
   const fixture = createCaseRoot(caseId);
   try {
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     for (const input of ["", "no\n", "yes\n"]) {
       const result = invoke(
         ["init", "--output", "json"],
@@ -701,7 +717,7 @@ for (const hostile of hostileCases) {
           "agentscope.cli.result.v1",
         );
         assert.equal(result.stderr, "");
-        assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+        assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
       });
     }
   } finally {
@@ -718,11 +734,11 @@ for (const hostile of hostileCases) {
     check(caseId, () => {
       assert.equal(first.status, 0);
     });
-    const firstState = regularFileSnapshot(fixture.stateRoot);
+    const firstState = regularFileSnapshot(fixture.snapshotRoot);
     const second = invoke(args, fixture.cwd, fixture.environment);
     check(caseId, () => {
       assert.equal(second.status, 0);
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), firstState);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), firstState);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -734,7 +750,7 @@ for (const hostile of hostileCases) {
   const fixture = createCaseRoot(caseId);
   try {
     prepareCase("invalid-configuration", fixture.cwd, fixture.environment);
-    const before = regularFileSnapshot(fixture.stateRoot);
+    const before = regularFileSnapshot(fixture.snapshotRoot);
     const result = invoke(
       ["init", "--yes", "--output", "json"],
       fixture.cwd,
@@ -743,7 +759,7 @@ for (const hostile of hostileCases) {
     check(caseId, () => {
       assert.equal(result.status, 5);
       assert.equal(diagnosticCode(result), "configuration.unavailable");
-      assert.deepEqual(regularFileSnapshot(fixture.stateRoot), before);
+      assert.deepEqual(regularFileSnapshot(fixture.snapshotRoot), before);
     });
   } finally {
     rmSync(dirname(fixture.home), { force: true, recursive: true });
@@ -753,7 +769,7 @@ for (const hostile of hostileCases) {
 process.stdout.write(
   `${JSON.stringify({
     candidateDigest,
-    caseCount:
+    checkCount:
       publicInventory.length +
       publicCommands.reduce(
         (count, registration) => {
@@ -772,7 +788,8 @@ process.stdout.write(
       .update(JSON.stringify(publicInventory))
       .digest("hex")}`,
     package: EXPECTED_PACKAGE,
-    schema: "agentscope.cli.installed-contract-evidence.v1",
+    schema: "agentscope.cli.installed-smoke.v1",
+    scope: "packed-public-command-smoke",
     version: expectedVersion,
   })}\n`,
 );
