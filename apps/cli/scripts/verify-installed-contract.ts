@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { types as utilTypes } from "node:util";
 
 type OutputMode = "human" | "json" | "jsonl";
 type PublicRegistration = Readonly<{
@@ -144,20 +145,41 @@ export const installedContractEvaluationFailureReason = (
   typeof error === "object" && error !== null
     ? installedContractEvaluationFailures.get(error)
     : undefined;
-const plainRecord = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== "object" || value === null) return false;
+const snapshotPlainRecord = (
+  value: unknown,
+): Readonly<Record<string, unknown>> | undefined => {
+  if (typeof value !== "object" || value === null || utilTypes.isProxy(value))
+    return undefined;
   try {
-    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
-    return Object.values(Object.getOwnPropertyDescriptors(value)).every(
-      (descriptor) => Object.hasOwn(descriptor, "value"),
+    if (Object.getPrototypeOf(value) !== Object.prototype) return undefined;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      Reflect.ownKeys(descriptors).some((key) => typeof key !== "string") ||
+      Object.values(descriptors).some(
+        (descriptor) => !Object.hasOwn(descriptor, "value"),
+      )
+    )
+      return undefined;
+    return Object.freeze(
+      Object.fromEntries(
+        Object.entries(descriptors).map(([key, descriptor]) => [
+          key,
+          descriptor.value,
+        ]),
+      ),
     );
   } catch {
-    return false;
+    return undefined;
   }
 };
-const denseDataArray = (value: unknown): value is unknown[] => {
-  if (!Array.isArray(value)) return false;
+const plainRecord = (value: unknown): value is Record<string, unknown> =>
+  snapshotPlainRecord(value) !== undefined;
+const snapshotDenseDataArray = (
+  value: unknown,
+): readonly unknown[] | undefined => {
+  if (!Array.isArray(value) || utilTypes.isProxy(value)) return undefined;
   try {
+    const array: unknown[] = value;
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (
       Object.keys(descriptors).some(
@@ -167,18 +189,36 @@ const denseDataArray = (value: unknown): value is unknown[] => {
         (descriptor) => !Object.hasOwn(descriptor, "value"),
       )
     )
-      return false;
-    return Object.keys(descriptors).length === value.length + 1;
+      return undefined;
+    if (Object.keys(descriptors).length !== array.length + 1) return undefined;
+    const snapshot: unknown[] = [];
+    for (let index = 0; index < array.length; index += 1) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(array, String(index));
+      if (descriptor === undefined || !Object.hasOwn(descriptor, "value"))
+        return undefined;
+      snapshot.push(descriptor.value as unknown);
+    }
+    return Object.freeze(snapshot);
+  } catch {
+    return undefined;
+  }
+};
+const denseDataArray = (value: unknown): value is unknown[] =>
+  snapshotDenseDataArray(value) !== undefined;
+const exactKeys = (
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean => {
+  try {
+    const keys = Reflect.ownKeys(value);
+    return (
+      keys.every((key): key is string => typeof key === "string") &&
+      JSON.stringify(keys.sort()) === JSON.stringify([...expected].sort())
+    );
   } catch {
     return false;
   }
 };
-const exactKeys = (
-  value: Record<string, unknown>,
-  expected: readonly string[],
-) =>
-  JSON.stringify(Object.keys(value).sort()) ===
-  JSON.stringify([...expected].sort());
 const validDigest = (value: unknown): value is string =>
   typeof value === "string" && /^sha256-[0-9a-f]{64}$/u.test(value);
 const boundedInteger = (value: unknown, maximum: number): value is number =>
@@ -187,9 +227,10 @@ const boundedInteger = (value: unknown, maximum: number): value is number =>
   value >= 0 &&
   value <= maximum;
 const validPtyShape = (value: unknown): boolean => {
-  if (!plainRecord(value)) return false;
+  const record = snapshotPlainRecord(value);
+  if (record === undefined) return false;
   return (
-    exactKeys(value, [
+    exactKeys(record, [
       "cleanup",
       "initialGeometry",
       "isTTY",
@@ -202,48 +243,77 @@ const validPtyShape = (value: unknown): boolean => {
       "terminalOutputJoined",
       "terminalTransportClosed",
     ]) &&
-    ["clean", "residual", "uncertain"].includes(String(value.cleanup)) &&
-    value.isTTY === true &&
-    boundedInteger(value.outputBytes, MAXIMUM_OUTPUT_BYTES) &&
-    typeof value.outputSha256 === "string" &&
-    /^sha256:[0-9a-f]{64}$/u.test(value.outputSha256) &&
-    boundedInteger(value.residualProcessCount, Number.MAX_SAFE_INTEGER) &&
-    typeof value.processJoined === "boolean" &&
-    typeof value.terminalInputJoined === "boolean" &&
-    typeof value.terminalOutputJoined === "boolean" &&
-    typeof value.terminalTransportClosed === "boolean" &&
-    plainRecord(value.initialGeometry) &&
-    exactKeys(value.initialGeometry, ["columns", "rows"]) &&
-    boundedInteger(value.initialGeometry.columns, 65_535) &&
-    boundedInteger(value.initialGeometry.rows, 65_535) &&
-    plainRecord(value.observedGeometry) &&
-    exactKeys(value.observedGeometry, ["columns", "rows"]) &&
-    boundedInteger(value.observedGeometry.columns, 65_535) &&
-    boundedInteger(value.observedGeometry.rows, 65_535)
+    typeof record.cleanup === "string" &&
+    ["clean", "residual", "uncertain"].includes(record.cleanup) &&
+    record.isTTY === true &&
+    boundedInteger(record.outputBytes, MAXIMUM_OUTPUT_BYTES) &&
+    typeof record.outputSha256 === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(record.outputSha256) &&
+    boundedInteger(record.residualProcessCount, Number.MAX_SAFE_INTEGER) &&
+    typeof record.processJoined === "boolean" &&
+    typeof record.terminalInputJoined === "boolean" &&
+    typeof record.terminalOutputJoined === "boolean" &&
+    typeof record.terminalTransportClosed === "boolean" &&
+    plainRecord(record.initialGeometry) &&
+    exactKeys(record.initialGeometry, ["columns", "rows"]) &&
+    boundedInteger(record.initialGeometry.columns, 65_535) &&
+    boundedInteger(record.initialGeometry.rows, 65_535) &&
+    plainRecord(record.observedGeometry) &&
+    exactKeys(record.observedGeometry, ["columns", "rows"]) &&
+    boundedInteger(record.observedGeometry.columns, 65_535) &&
+    boundedInteger(record.observedGeometry.rows, 65_535)
   );
 };
 const validTerminalResultShape = (
   value: unknown,
   expectsPty: boolean,
 ): value is InstalledCliInvocationResult => {
-  if (!plainRecord(value)) return false;
+  const record = snapshotPlainRecord(value);
+  if (record === undefined) return false;
   const keys = ["outcome", "signal", "status", "stderr", "stdout"];
   if (expectsPty) keys.push("pty");
   if (
-    !exactKeys(value, keys) ||
+    !exactKeys(record, keys) ||
+    typeof record.outcome !== "string" ||
     !["cleanup-failed", "exited", "output-limit", "timed-out"].includes(
-      String(value.outcome),
+      record.outcome,
     ) ||
-    ![null, "SIGKILL", "SIGTERM"].includes(value.signal as null | string) ||
-    !(value.status === null || boundedInteger(value.status, 255)) ||
-    typeof value.stdout !== "string" ||
-    typeof value.stderr !== "string" ||
-    Buffer.byteLength(value.stdout) > MAXIMUM_OUTPUT_BYTES ||
-    Buffer.byteLength(value.stderr) > MAXIMUM_OUTPUT_BYTES
+    ![null, "SIGKILL", "SIGTERM"].includes(record.signal as null | string) ||
+    !(record.status === null || boundedInteger(record.status, 255)) ||
+    typeof record.stdout !== "string" ||
+    typeof record.stderr !== "string" ||
+    Buffer.byteLength(record.stdout) > MAXIMUM_OUTPUT_BYTES ||
+    Buffer.byteLength(record.stderr) > MAXIMUM_OUTPUT_BYTES
   )
     return false;
   if (!expectsPty) return true;
-  return validPtyShape(value.pty);
+  return validPtyShape(record.pty);
+};
+const snapshotTerminalResult = (
+  value: unknown,
+  expectsPty: boolean,
+): InstalledCliInvocationResult | undefined => {
+  const record = snapshotPlainRecord(value);
+  if (record === undefined || !validTerminalResultShape(record, expectsPty))
+    return undefined;
+  if (!expectsPty) return Object.freeze({ ...record });
+  const pty = snapshotPlainRecord(record.pty);
+  const initialGeometry = snapshotPlainRecord(pty?.initialGeometry);
+  const observedGeometry = snapshotPlainRecord(pty?.observedGeometry);
+  if (
+    pty === undefined ||
+    initialGeometry === undefined ||
+    observedGeometry === undefined
+  )
+    return undefined;
+  return Object.freeze({
+    ...record,
+    pty: Object.freeze({
+      ...pty,
+      initialGeometry: Object.freeze({ ...initialGeometry }),
+      observedGeometry: Object.freeze({ ...observedGeometry }),
+    }),
+  }) as unknown as InstalledCliInvocationResult;
 };
 const hash = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -1916,18 +1986,18 @@ const evaluateSetupReceipt = (
   caseOrdinal: number,
 ): InstalledCliContractEvaluationFailureReason | undefined => {
   if (contractCase.setup !== "initialized") return undefined;
-  if (!validTerminalResultShape(observation.setupResult, false))
-    return "per-case-setup-receipt-shape";
+  const setupResult = snapshotTerminalResult(observation.setupResult, false);
+  if (setupResult === undefined) return "per-case-setup-receipt-shape";
   if (
-    observation.setupResult.outcome !== "exited" ||
-    observation.setupResult.status !== 0 ||
-    observation.setupResult.signal !== null
+    setupResult.outcome !== "exited" ||
+    setupResult.status !== 0 ||
+    setupResult.signal !== null
   )
     return "per-case-setup-receipt-status";
   try {
     assertOutput(
       makeStep(["init", "--yes", "--output", "json"], 0, "json", "capture"),
-      observation.setupResult,
+      setupResult,
       version,
       { caseOrdinal },
     );
@@ -1953,16 +2023,13 @@ const evaluateStepReceipts = (
   ) {
     const contractStep = contractCase.steps[stepIndex];
     const afterStateDigest = afterStateDigests[stepIndex];
-    const result = results[stepIndex];
-    if (
-      contractStep === undefined ||
-      !validDigest(afterStateDigest) ||
-      !validTerminalResultShape(
-        result,
-        contractStep.executionMode === "pty-narrow",
-      )
-    )
+    if (contractStep === undefined || !validDigest(afterStateDigest))
       return "per-case-step-receipt-shape";
+    const result = snapshotTerminalResult(
+      results[stepIndex],
+      contractStep.executionMode === "pty-narrow",
+    );
+    if (result === undefined) return "per-case-step-receipt-shape";
     if (
       result.outcome !== contractStep.expectedOutcome ||
       result.signal !== contractStep.expectedSignal ||
@@ -2015,9 +2082,10 @@ export const evaluateInstalledCliContract = (
     return failInstalledContractEvaluation("unexpected-extra-evidence");
   const observationRecords: Record<string, unknown>[] = [];
   for (const observation of observations) {
-    if (!plainRecord(observation))
+    const record = snapshotPlainRecord(observation);
+    if (record === undefined)
       return failInstalledContractEvaluation("per-case-observation-shape");
-    observationRecords.push(observation);
+    observationRecords.push(record);
   }
   const observedCaseIds = observationRecords.map(({ caseId }) => caseId);
   if (observedCaseIds.some((caseId) => typeof caseId !== "string"))
@@ -2036,8 +2104,12 @@ export const evaluateInstalledCliContract = (
       return failInstalledContractEvaluation("missing-ordinal");
     if (!validObservationShape(contractCase, observation))
       return failInstalledContractEvaluation("per-case-observation-shape");
-    const results = observation.results as unknown[];
-    const afterStateDigests = observation.afterStateDigests as unknown[];
+    const results = snapshotDenseDataArray(observation.results);
+    const afterStateDigests = snapshotDenseDataArray(
+      observation.afterStateDigests,
+    );
+    if (results === undefined || afterStateDigests === undefined)
+      return failInstalledContractEvaluation("per-case-observation-shape");
     if (
       results.length !== contractCase.steps.length ||
       afterStateDigests.length !== contractCase.steps.length
@@ -2045,7 +2117,7 @@ export const evaluateInstalledCliContract = (
       return failInstalledContractEvaluation("per-case-result-count");
     const setupFailure = evaluateSetupReceipt(
       contractCase,
-      observation,
+      { ...observation, afterStateDigests, results },
       plan.expectedVersion,
       index,
     );
@@ -2053,7 +2125,7 @@ export const evaluateInstalledCliContract = (
       return failInstalledContractEvaluation(setupFailure);
     const stepFailure = evaluateStepReceipts(
       contractCase,
-      observation,
+      { ...observation, afterStateDigests, results },
       plan.expectedVersion,
       index,
     );

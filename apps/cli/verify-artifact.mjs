@@ -979,10 +979,15 @@ try {
     { ...canonicalObservation, unexpected: true },
     { ...canonicalObservation, beforeStateDigest: "sha256:substituted" },
     { ...canonicalObservation, results: {} },
+    Object.assign({ ...canonicalObservation }, { [Symbol("extra")]: true }),
+    Object.defineProperty({ ...canonicalObservation }, "extra", {
+      value: true,
+    }),
     Object.defineProperty({ ...canonicalObservation }, "caseId", {
       enumerable: true,
       get: () => fixtureCase.caseId,
     }),
+    new Proxy(canonicalObservation, {}),
     new Proxy(canonicalObservation, {
       getOwnPropertyDescriptor: () => {
         throw new Error("substituted observation");
@@ -999,6 +1004,16 @@ try {
     { ...canonicalResult, unexpected: true },
     { ...canonicalResult, outcome: undefined },
     { ...canonicalResult, status: "0" },
+    Object.assign({ ...canonicalResult }, { [Symbol("extra")]: true }),
+    Object.defineProperty({ ...canonicalResult }, "extra", { value: true }),
+    {
+      ...canonicalResult,
+      outcome: {
+        toString: () => {
+          throw new Error("untrusted coercion");
+        },
+      },
+    },
     Object.defineProperty({ ...canonicalResult }, "status", {
       enumerable: true,
       get: () => 0,
