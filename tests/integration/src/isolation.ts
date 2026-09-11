@@ -489,7 +489,10 @@ const ptyTerminalReceiptSchema = z
           processRequestFingerprint: value.processRequestFingerprint,
           completion: value.request.completion,
           initialGeometry: value.request.initialGeometry,
-          interaction: value.request.interaction,
+          interaction: {
+            actions: value.request.interaction.actions,
+            trigger: value.request.interaction.trigger,
+          },
           interpreter: value.request.interpreter,
           scriptSha256: value.request.scriptSha256,
           inputBytes: value.inputBytes,

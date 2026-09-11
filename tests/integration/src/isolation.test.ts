@@ -195,12 +195,12 @@ const ptyReceiptFor = (
   const geometry = { columns: 80, rows: 24 };
   const completion = { kind: "semantic-marker" as const };
   const interaction = {
-    trigger: "semantic-ready" as const,
     actions: [
       { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
       { action: "input" as const, byteLength: 4, inputSha256 },
       { action: "eof" as const },
     ],
+    trigger: "semantic-ready" as const,
   };
   const interpreter = {
     path: "/usr/local/bin/node",

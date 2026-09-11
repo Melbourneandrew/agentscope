@@ -761,7 +761,10 @@ const interactivePtyFingerprintMatches = (receipt) =>
     processRequestFingerprint: receipt?.processRequestFingerprint,
     completion: receipt?.request?.completion,
     initialGeometry: receipt?.request?.initialGeometry,
-    interaction: receipt?.request?.interaction,
+    interaction: {
+      actions: receipt?.request?.interaction?.actions,
+      trigger: receipt?.request?.interaction?.trigger,
+    },
     interpreter: receipt?.request?.interpreter,
     scriptSha256: receipt?.request?.scriptSha256,
     inputBytes: receipt?.inputBytes,
