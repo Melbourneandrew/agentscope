@@ -37,6 +37,17 @@ const harnessHome = required("HARNESS_HOME");
 const agentscopeHome = required("AGENTSCOPE_HOME");
 const worktree = required("AGENTSCOPE_WORKTREE");
 const ledgerHome = required("AGENTSCOPE_LEDGER");
+const routeFixture = JSON.parse(
+  readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
+);
+const manifest = JSON.parse(
+  readFileSync("/opt/agentscope/capability-manifest.json", "utf8"),
+);
+const scenario = manifest.scenarios.find(
+  (value) => value.scenarioId === scenarioId,
+);
+if (!scenario) throw new Error("integration.fixture.scenario");
+const interactive = scenario.executionMode === "interactive";
 if (interactive) {
   if (process.hasUncaughtExceptionCaptureCallback())
     throw new Error("integration.fixture.failure-capture");
@@ -55,17 +66,6 @@ if (interactive) {
     }
   });
 }
-const routeFixture = JSON.parse(
-  readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
-);
-const manifest = JSON.parse(
-  readFileSync("/opt/agentscope/capability-manifest.json", "utf8"),
-);
-const scenario = manifest.scenarios.find(
-  (value) => value.scenarioId === scenarioId,
-);
-if (!scenario) throw new Error("integration.fixture.scenario");
-const interactive = scenario.executionMode === "interactive";
 if (
   (interactive &&
     (scenario.outputContract !== "semantic-pty" ||
