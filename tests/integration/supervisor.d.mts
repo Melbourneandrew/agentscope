@@ -116,6 +116,31 @@ export function sameRetainedCgroupMemberObservations(
     startTime: string;
   }>[],
 ): boolean;
+export function classifyRetainedCgroupMemberTransition(
+  membersBefore: readonly number[],
+  identitiesBefore: readonly Readonly<{
+    bootId: string;
+    pid: number;
+    processGroup: number;
+    startTime: string;
+  }>[],
+  membersAfter: readonly number[],
+  identitiesAfter: readonly Readonly<{
+    bootId: string;
+    pid: number;
+    processGroup: number;
+    startTime: string;
+  }>[],
+):
+  "stable" | "removed" | "member-set-transition" | "member-identity-transition";
+export function proveRemovedCgroupMembersAbsentForTesting(
+  membersBefore: readonly number[],
+  membersAfter: readonly number[],
+):
+  | "member-set-transition"
+  | "member-identity-transition"
+  | "unbound"
+  | undefined;
 export function classifySystemdAdmissionMainPid(
   facts: Readonly<{
     ActiveState?: string;
@@ -337,6 +362,17 @@ export type SystemdTerminalWaitCgroupReason =
   | "cgroup-observe-after-malformed"
   | "cgroup-observe-after-identity-substitution"
   | "cgroup-observe-after-descriptor-state"
+  | `cgroup-observe-${"before" | "after"}-${
+      | "parent-identity"
+      | "retained-identity"
+      | "path-identity"
+      | "mixed-paths"
+      | "reappeared-paths"
+      | "membership-shape"
+      | "events-shape"
+      | "member-set-transition"
+      | "member-identity-transition"
+      | "events-membership-mismatch"}`
   | "cgroup-observe-after-removed-parent-identity"
   | "cgroup-observe-after-removed-retained-identity"
   | "cgroup-observe-after-removed-path-present"

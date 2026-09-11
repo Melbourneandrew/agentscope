@@ -129,11 +129,31 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "cgroup-observe-before-command-permission",
   "cgroup-observe-before-malformed",
   "cgroup-observe-before-identity-substitution",
+  "cgroup-observe-before-parent-identity",
+  "cgroup-observe-before-retained-identity",
+  "cgroup-observe-before-path-identity",
+  "cgroup-observe-before-mixed-paths",
+  "cgroup-observe-before-reappeared-paths",
+  "cgroup-observe-before-membership-shape",
+  "cgroup-observe-before-events-shape",
+  "cgroup-observe-before-member-set-transition",
+  "cgroup-observe-before-member-identity-transition",
+  "cgroup-observe-before-events-membership-mismatch",
   "cgroup-observe-before-descriptor-state",
   "cgroup-observe-after-unit-not-found",
   "cgroup-observe-after-command-permission",
   "cgroup-observe-after-malformed",
   "cgroup-observe-after-identity-substitution",
+  "cgroup-observe-after-parent-identity",
+  "cgroup-observe-after-retained-identity",
+  "cgroup-observe-after-path-identity",
+  "cgroup-observe-after-mixed-paths",
+  "cgroup-observe-after-reappeared-paths",
+  "cgroup-observe-after-membership-shape",
+  "cgroup-observe-after-events-shape",
+  "cgroup-observe-after-member-set-transition",
+  "cgroup-observe-after-member-identity-transition",
+  "cgroup-observe-after-events-membership-mismatch",
   "cgroup-observe-after-descriptor-state",
   "cgroup-observe-after-removed-parent-identity",
   "cgroup-observe-after-removed-retained-identity",
@@ -175,6 +195,33 @@ const systemdCollectionDiagnosticReasons = new Set([
 ]);
 const systemdToolFailures = new WeakMap();
 const removedCgroupPathFailures = new WeakMap();
+const cgroupObservationFailures = new WeakMap();
+const cgroupObservationFailureReasons = new Set([
+  "parent-identity",
+  "retained-identity",
+  "path-identity",
+  "mixed-paths",
+  "reappeared-paths",
+  "membership-shape",
+  "events-shape",
+  "member-set-transition",
+  "member-identity-transition",
+  "events-membership-mismatch",
+]);
+const failCgroupObservation = (reason) => {
+  if (!cgroupObservationFailureReasons.has(reason)) failSystemd();
+  const error = new Error("integration.controller.systemd-containment");
+  cgroupObservationFailures.set(error, reason);
+  throw error;
+};
+const captureCgroupObservation = (reason, operation) => {
+  try {
+    return operation();
+  } catch (error) {
+    if (cgroupObservationFailures.has(error)) throw error;
+    failCgroupObservation(reason);
+  }
+};
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
   ["synthetic-cleanup-failure", pythonPath],
@@ -2215,11 +2262,11 @@ const recheckCgroupAuthority = (cgroupPath, authority) => {
     const status = fstatSync(descriptor);
     const identity = authority.identities[index];
     if (
-      status.dev !== identity.dev ||
-      status.ino !== identity.ino ||
-      status.mode !== identity.mode ||
-      status.uid !== identity.uid ||
-      status.gid !== identity.gid
+      status.dev !== identity?.dev ||
+      status.ino !== identity?.ino ||
+      status.mode !== identity?.mode ||
+      status.uid !== identity?.uid ||
+      status.gid !== identity?.gid
     )
       failSystemd();
   }
@@ -2230,11 +2277,11 @@ const recheckRetainedCgroupDescriptors = (authority) => {
     const status = fstatSync(descriptor);
     const identity = authority.identities[index];
     if (
-      status.dev !== identity.dev ||
-      status.ino !== identity.ino ||
-      status.mode !== identity.mode ||
-      status.uid !== identity.uid ||
-      status.gid !== identity.gid
+      status.dev !== identity?.dev ||
+      status.ino !== identity?.ino ||
+      status.mode !== identity?.mode ||
+      status.uid !== identity?.uid ||
+      status.gid !== identity?.gid
     )
       failSystemd();
   }
@@ -2260,23 +2307,42 @@ export const parseRetainedCgroupMembers = (content, allowEmpty = false) => {
   return Object.freeze(members.sort((left, right) => left - right));
 };
 
-const retainedCgroupMembers = (authority, allowEmpty = false) => {
-  recheckRetainedCgroupDescriptors(authority);
+const retainedCgroupMembers = (
+  authority,
+  allowEmpty = false,
+  bindObservation = false,
+) => {
+  const recheck = () =>
+    bindObservation
+      ? captureCgroupObservation("retained-identity", () =>
+          recheckRetainedCgroupDescriptors(authority),
+        )
+      : recheckRetainedCgroupDescriptors(authority);
+  recheck();
   const content = Buffer.alloc(4097);
   let size = 0;
-  while (size < content.length) {
-    const count = readSync(
-      authority.descriptors[2],
-      content,
-      size,
-      content.length - size,
-      size,
-    );
-    if (count === 0) break;
-    size += count;
-  }
-  recheckRetainedCgroupDescriptors(authority);
-  return parseRetainedCgroupMembers(content.subarray(0, size), allowEmpty);
+  const readMembers = () => {
+    while (size < content.length) {
+      const count = readSync(
+        authority.descriptors[2],
+        content,
+        size,
+        content.length - size,
+        size,
+      );
+      if (count === 0) break;
+      size += count;
+    }
+  };
+  if (bindObservation)
+    captureCgroupObservation("membership-shape", readMembers);
+  else readMembers();
+  recheck();
+  return bindObservation
+    ? captureCgroupObservation("membership-shape", () =>
+        parseRetainedCgroupMembers(content.subarray(0, size), allowEmpty),
+      )
+    : parseRetainedCgroupMembers(content.subarray(0, size), allowEmpty);
 };
 
 export const sameRetainedCgroupMemberObservations = (
@@ -2320,6 +2386,45 @@ export const sameRetainedCgroupMemberObservations = (
       return false;
   }
   return true;
+};
+
+export const classifyRetainedCgroupMemberTransition = (
+  membersBefore,
+  identitiesBefore,
+  membersAfter,
+  identitiesAfter,
+) => {
+  if (
+    !Array.isArray(membersBefore) ||
+    !Array.isArray(identitiesBefore) ||
+    !Array.isArray(membersAfter) ||
+    !Array.isArray(identitiesAfter) ||
+    identitiesBefore.length !== membersBefore.length ||
+    identitiesAfter.length !== membersAfter.length ||
+    new Set(membersBefore).size !== membersBefore.length ||
+    new Set(membersAfter).size !== membersAfter.length
+  )
+    return "member-set-transition";
+  const beforeByPid = new Map(
+    membersBefore.map((pid, index) => [pid, identitiesBefore[index]]),
+  );
+  if (membersAfter.some((pid) => !beforeByPid.has(pid)))
+    return "member-set-transition";
+  for (let index = 0; index < membersAfter.length; index += 1) {
+    const pid = membersAfter[index];
+    const beforeIdentity = beforeByPid.get(pid);
+    const afterIdentity = identitiesAfter[index];
+    if (
+      !Number.isSafeInteger(pid) ||
+      beforeIdentity?.pid !== pid ||
+      afterIdentity?.pid !== pid ||
+      beforeIdentity.bootId !== afterIdentity.bootId ||
+      beforeIdentity.startTime !== afterIdentity.startTime ||
+      beforeIdentity.processGroup !== afterIdentity.processGroup
+    )
+      return "member-identity-transition";
+  }
+  return membersAfter.length === membersBefore.length ? "stable" : "removed";
 };
 
 export const validateMainProcessMembership = ({
@@ -2397,24 +2502,38 @@ const captureMainProcessMembership = (
   return Object.freeze(before);
 };
 
-const retainedCgroupIsEmpty = (authority, markDiagnostic = undefined) => {
+const retainedCgroupIsEmpty = (
+  authority,
+  markDiagnostic = undefined,
+  bindObservation = false,
+) => {
   markDiagnostic?.("cgroup-retained");
-  recheckRetainedCgroupDescriptors(authority);
+  const recheck = () =>
+    bindObservation
+      ? captureCgroupObservation("retained-identity", () =>
+          recheckRetainedCgroupDescriptors(authority),
+        )
+      : recheckRetainedCgroupDescriptors(authority);
+  recheck();
   const content = Buffer.alloc(4097);
   let size = 0;
-  while (size < content.length) {
-    const count = readSync(
-      authority.descriptors[3],
-      content,
-      size,
-      content.length - size,
-      size,
-    );
-    if (count === 0) break;
-    size += count;
-  }
+  const readEvents = () => {
+    while (size < content.length) {
+      const count = readSync(
+        authority.descriptors[3],
+        content,
+        size,
+        content.length - size,
+        size,
+      );
+      if (count === 0) break;
+      size += count;
+    }
+  };
+  if (bindObservation) captureCgroupObservation("events-shape", readEvents);
+  else readEvents();
   if (size > 4096) failSystemd();
-  recheckRetainedCgroupDescriptors(authority);
+  recheck();
   const events = content.subarray(0, size).toString("utf8");
   const entries = Object.fromEntries(
     events
@@ -2455,6 +2574,64 @@ export const closeDescriptorSet = (descriptors, close = closeSync) => {
   return closed;
 };
 
+const proveRemovedCgroupMembersAbsent = (membersBefore, membersAfter) => {
+  for (const pid of membersBefore.filter(
+    (member) => !membersAfter.includes(member),
+  )) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        readProcessSnapshot(pid);
+        failCgroupObservation("member-set-transition");
+      } catch (error) {
+        if (cgroupObservationFailures.has(error)) throw error;
+        if (error?.code !== "ENOENT")
+          failCgroupObservation("member-identity-transition");
+      }
+    }
+  }
+};
+
+export const proveRemovedCgroupMembersAbsentForTesting = (
+  membersBefore,
+  membersAfter,
+) => {
+  try {
+    proveRemovedCgroupMembersAbsent(membersBefore, membersAfter);
+    return undefined;
+  } catch (error) {
+    return cgroupObservationFailures.get(error) ?? "unbound";
+  }
+};
+
+const observeAuthenticatedCgroupMembers = (authority, markDiagnostic) => {
+  const membersBefore = retainedCgroupMembers(authority, true, true);
+  const identitiesBefore = captureCgroupObservation(
+    "member-identity-transition",
+    () => membersBefore.map(readProcessSnapshot),
+  );
+  const empty = captureCgroupObservation("events-shape", () =>
+    retainedCgroupIsEmpty(authority, markDiagnostic, true),
+  );
+  const membersAfter = retainedCgroupMembers(authority, true, true);
+  const identitiesAfter = captureCgroupObservation(
+    "member-identity-transition",
+    () => membersAfter.map(readProcessSnapshot),
+  );
+  const transition = classifyRetainedCgroupMemberTransition(
+    membersBefore,
+    identitiesBefore,
+    membersAfter,
+    identitiesAfter,
+  );
+  if (transition === "member-set-transition")
+    failCgroupObservation("member-set-transition");
+  if (transition === "member-identity-transition")
+    failCgroupObservation("member-identity-transition");
+  if (transition === "removed")
+    proveRemovedCgroupMembersAbsent(membersBefore, membersAfter);
+  return Object.freeze({ empty, members: membersAfter });
+};
+
 const observeAuthenticatedCgroup = (
   cgroupPath,
   authority,
@@ -2467,28 +2644,38 @@ const observeAuthenticatedCgroup = (
     resolve(cgroupPath, "cgroup.events"),
   ];
   const recheckParentAndRetainedRoot = () => {
-    const status = lstatSync(parentPath);
+    let status;
+    try {
+      status = lstatSync(parentPath);
+    } catch {
+      failCgroupObservation("parent-identity");
+    }
     const identity = authority.identities[0];
     if (
       !status.isDirectory() ||
-      status.dev !== identity.dev ||
-      status.ino !== identity.ino ||
-      status.mode !== identity.mode ||
-      status.uid !== identity.uid ||
-      status.gid !== identity.gid
+      status.dev !== identity?.dev ||
+      status.ino !== identity?.ino ||
+      status.mode !== identity?.mode ||
+      status.uid !== identity?.uid ||
+      status.gid !== identity?.gid
     )
-      failSystemd();
+      failCgroupObservation("parent-identity");
     for (const index of [0, 1]) {
-      const retainedStatus = fstatSync(authority.descriptors[index]);
+      let retainedStatus;
+      try {
+        retainedStatus = fstatSync(authority.descriptors[index]);
+      } catch {
+        failCgroupObservation("retained-identity");
+      }
       const retainedIdentity = authority.identities[index];
       if (
-        retainedStatus.dev !== retainedIdentity.dev ||
-        retainedStatus.ino !== retainedIdentity.ino ||
-        retainedStatus.mode !== retainedIdentity.mode ||
-        retainedStatus.uid !== retainedIdentity.uid ||
-        retainedStatus.gid !== retainedIdentity.gid
+        retainedStatus.dev !== retainedIdentity?.dev ||
+        retainedStatus.ino !== retainedIdentity?.ino ||
+        retainedStatus.mode !== retainedIdentity?.mode ||
+        retainedStatus.uid !== retainedIdentity?.uid ||
+        retainedStatus.gid !== retainedIdentity?.gid
       )
-        failSystemd();
+        failCgroupObservation("retained-identity");
     }
   };
   const observePaths = () =>
@@ -2503,11 +2690,11 @@ const observeAuthenticatedCgroup = (
           status.uid !== identity.uid ||
           status.gid !== identity.gid
         )
-          failSystemd();
+          failCgroupObservation("path-identity");
         return "present";
       } catch (error) {
         if (error?.code === "ENOENT") return "absent";
-        throw error;
+        failCgroupObservation("path-identity");
       }
     });
   const classifyPaths = () => {
@@ -2515,15 +2702,15 @@ const observeAuthenticatedCgroup = (
     recheckParentAndRetainedRoot();
     markDiagnostic?.("cgroup-path");
     const first = observePaths();
-    if (new Set(first).size !== 1) failSystemd();
+    if (new Set(first).size !== 1) failCgroupObservation("mixed-paths");
     markDiagnostic?.("cgroup-retained");
     recheckParentAndRetainedRoot();
     markDiagnostic?.("cgroup-path");
     const second = observePaths();
-    if (new Set(second).size !== 1) failSystemd();
+    if (new Set(second).size !== 1) failCgroupObservation("mixed-paths");
     if (second[0] !== first[0]) {
       if (first[0] === "present" && second[0] === "absent") return "transition";
-      failSystemd();
+      failCgroupObservation("reappeared-paths");
     }
     markDiagnostic?.("cgroup-retained");
     recheckParentAndRetainedRoot();
@@ -2537,23 +2724,13 @@ const observeAuthenticatedCgroup = (
       empty: true,
       members: Object.freeze([]),
     });
-  const membersBefore = retainedCgroupMembers(authority, true);
-  const identitiesBefore = membersBefore.map(readProcessSnapshot);
-  const empty = retainedCgroupIsEmpty(authority, markDiagnostic);
-  const membersAfter = retainedCgroupMembers(authority, true);
-  const identitiesAfter = membersAfter.map(readProcessSnapshot);
-  if (
-    !sameRetainedCgroupMemberObservations(
-      membersBefore,
-      identitiesBefore,
-      membersAfter,
-      identitiesAfter,
-    )
-  )
-    failSystemd();
+  const { empty, members: membersAfter } = observeAuthenticatedCgroupMembers(
+    authority,
+    markDiagnostic,
+  );
   const afterRead = classifyPaths();
   if (afterRead === "present" && empty !== (membersAfter.length === 0))
-    failSystemd();
+    failCgroupObservation("events-membership-mismatch");
   return Object.freeze({
     absent: afterRead === "absent",
     empty: afterRead === "absent" || (afterRead === "present" && empty),
@@ -2571,6 +2748,11 @@ const authenticatedCgroupIsAbsent = (
 ) => observeAuthenticatedCgroup(cgroupPath, authority, markDiagnostic).absent;
 
 const classifyCgroupObservationFailure = (error) => {
+  const boundReason =
+    error !== null && typeof error === "object"
+      ? cgroupObservationFailures.get(error)
+      : undefined;
+  if (boundReason !== undefined) return boundReason;
   const code =
     error !== null && typeof error === "object" ? error.code : undefined;
   if (code === "ENOENT") return "unit-not-found";

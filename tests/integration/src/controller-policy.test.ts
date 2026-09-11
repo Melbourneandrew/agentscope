@@ -42,6 +42,7 @@ import {
   classifySystemdUnitAuthority,
   classifySystemdAdmissionMainPid,
   classifyCgroupObservationFailureForTesting,
+  classifyRetainedCgroupMemberTransition,
   classifyTerminalSystemdUnitAuthority,
   classifyTerminalCgroupTransitionFailure,
   exerciseTerminalCgroupDiagnosticForTesting,
@@ -53,6 +54,7 @@ import {
   parseRetainedCgroupMembers,
   parseSystemdTerminalExit,
   prepareGithubSystemdSupervision,
+  proveRemovedCgroupMembersAbsentForTesting,
   rootPid1ProbeRequired,
   rootToolHasPreparationBudget,
   systemdMainProcessIsTerminal,
@@ -3723,11 +3725,31 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
     "cgroup-observe-before-malformed",
     "cgroup-observe-before-identity-substitution",
     "cgroup-observe-before-descriptor-state",
+    "cgroup-observe-before-parent-identity",
+    "cgroup-observe-before-retained-identity",
+    "cgroup-observe-before-path-identity",
+    "cgroup-observe-before-mixed-paths",
+    "cgroup-observe-before-reappeared-paths",
+    "cgroup-observe-before-membership-shape",
+    "cgroup-observe-before-events-shape",
+    "cgroup-observe-before-member-set-transition",
+    "cgroup-observe-before-member-identity-transition",
+    "cgroup-observe-before-events-membership-mismatch",
     "cgroup-observe-after-unit-not-found",
     "cgroup-observe-after-command-permission",
     "cgroup-observe-after-malformed",
     "cgroup-observe-after-identity-substitution",
     "cgroup-observe-after-descriptor-state",
+    "cgroup-observe-after-parent-identity",
+    "cgroup-observe-after-retained-identity",
+    "cgroup-observe-after-path-identity",
+    "cgroup-observe-after-mixed-paths",
+    "cgroup-observe-after-reappeared-paths",
+    "cgroup-observe-after-membership-shape",
+    "cgroup-observe-after-events-shape",
+    "cgroup-observe-after-member-set-transition",
+    "cgroup-observe-after-member-identity-transition",
+    "cgroup-observe-after-events-membership-mismatch",
     "cgroup-observe-after-removed-parent-identity",
     "cgroup-observe-after-removed-retained-identity",
     "cgroup-observe-after-removed-path-present",
@@ -4183,7 +4205,63 @@ it("canonicalizes retained cgroup membership while preserving process identity",
         identitiesAfter,
       ),
     ).toBe(false);
+
+  expect(
+    classifyRetainedCgroupMemberTransition(
+      reorderedBefore,
+      identities,
+      reorderedAfter,
+      identities.map((identity) => ({ ...identity })),
+    ),
+  ).toBe("stable");
+  expect(
+    classifyRetainedCgroupMemberTransition(
+      reorderedBefore,
+      identities,
+      [711],
+      [identity711],
+    ),
+  ).toBe("removed");
+  expect(
+    classifyRetainedCgroupMemberTransition(
+      reorderedBefore,
+      identities,
+      [711, 713],
+      [identity711, { ...identity712, pid: 713 }],
+    ),
+  ).toBe("member-set-transition");
+  for (const changed of [
+    { ...identity711, startTime: "different" },
+    { ...identity711, processGroup: 701 },
+    { ...identity711, bootId: "other" },
+    { ...identity711, pid: 713 },
+  ])
+    expect(
+      classifyRetainedCgroupMemberTransition(
+        reorderedBefore,
+        identities,
+        [711],
+        [changed],
+      ),
+    ).toBe("member-identity-transition");
 });
+
+it.runIf(process.platform === "linux")(
+  "proves monotonic member removal only after adjacent process absence",
+  () => {
+    const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    expect(exited.status).toBe(0);
+    expect(exited.pid).toBeGreaterThan(0);
+    expect(
+      proveRemovedCgroupMembersAbsentForTesting([exited.pid], []),
+    ).toBeUndefined();
+    expect(proveRemovedCgroupMembersAbsentForTesting([process.pid], [])).toBe(
+      "member-set-transition",
+    );
+  },
+);
 
 it("binds every terminal cgroup diagnostic through one cleanup path", async () => {
   for (const [mode, reason] of [
