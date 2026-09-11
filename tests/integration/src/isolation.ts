@@ -308,10 +308,270 @@ const headlessTerminalReceiptSchema = z
     )
       context.addIssue({ code: "custom", message: "headless receipt drift" });
   });
+const ptyGeometrySchema = z.strictObject({
+  columns: z.number().int().min(1).max(512),
+  rows: z.number().int().min(1).max(512),
+});
+const ptyProcessAuthoritySchema = z
+  .strictObject({
+    runId: runToken,
+    requestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+    executable: z.string().startsWith("/").max(16_384),
+    arguments: z.array(z.string().max(16_384)).max(256),
+    cwd: z.string().startsWith("/").max(16_384),
+    environment: z.record(z.string().max(128), z.string().max(16_384)),
+    inputBytes: z.number().int().nonnegative().max(1_048_576),
+    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+    stdoutLimitBytes: z.number().int().positive().max(1_048_576),
+    stderrLimitBytes: z.number().int().positive().max(1_048_576),
+    monotonicStartupDeadlineMs: z.number().finite().nonnegative(),
+    monotonicExecutionDeadlineMs: z.number().finite().positive(),
+    monotonicShutdownDeadlineMs: z.number().finite().positive(),
+    terminationGraceMs: z.number().int().nonnegative().max(60_000),
+  })
+  .superRefine((value, context) => {
+    if (
+      Object.keys(value.environment).length > 128 ||
+      Object.keys(value.environment).some(
+        (key) => !/^[A-Z][A-Z0-9_]{0,127}$/u.test(key),
+      )
+    )
+      context.addIssue({ code: "custom", message: "pty process drift" });
+  });
+const ptyRequestedActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("resize"), geometry: ptyGeometrySchema }),
+  z.strictObject({
+    action: z.literal("input"),
+    byteLength: z.number().int().positive().max(1_048_576),
+    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+  }),
+  z.strictObject({ action: z.literal("eof") }),
+  z.strictObject({ action: z.literal("interrupt-byte"), byte: z.literal(3) }),
+  z.strictObject({
+    action: z.literal("signal"),
+    signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]),
+  }),
+]);
+const ptyObservedActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("resize"),
+    geometry: ptyGeometrySchema,
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("input"),
+    byteLength: z.number().int().positive().max(1_048_576),
+    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("eof"),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("interrupt-byte"),
+    byte: z.literal(3),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+  z.strictObject({
+    action: z.literal("signal"),
+    signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]),
+    targetStartIdentity: z.string().min(1).max(256),
+    monotonicAtMs: z.number().finite().nonnegative(),
+  }),
+]);
+const ptySnapshotSchema = z.strictObject({
+  snapshotVersion: z.literal(1),
+  geometry: ptyGeometrySchema,
+  cursor: z.strictObject({
+    column: z.number().int().min(0).max(511),
+    row: z.number().int().min(0).max(511),
+  }),
+  alternateScreen: z.boolean(),
+  cursorVisible: z.boolean(),
+  outputBytes: z.number().int().min(0).max(1_048_576),
+  printableCellCount: z.number().int().min(0).max(65_536),
+  nonEmptyLineCount: z.number().int().min(0).max(512),
+  malformedControlCount: z.number().int().min(0).max(1_048_576),
+  unsupportedControlCount: z.number().int().min(0).max(1_048_576),
+  sawCursorPositionQuery: z.boolean(),
+  titlePresent: z.boolean(),
+  titleSha256: z
+    .string()
+    .regex(/^[a-f\d]{64}$/u)
+    .nullable(),
+  screenSha256: z.string().regex(/^[a-f\d]{64}$/u),
+  semanticState: z.enum([
+    "active",
+    "ready",
+    "completed",
+    "credential-prompt",
+    "malformed-control",
+    "output-limit",
+  ]),
+});
+const ptyTerminalReceiptSchema = z
+  .strictObject({
+    receiptVersion: z.literal(1),
+    transport: z.literal("pty"),
+    scenarioId: id,
+    runId: runToken,
+    requestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+    processRequestFingerprint: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+    processStartIdentity: z
+      .string()
+      .regex(/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u),
+    inputBytes: z.number().int().nonnegative().max(1_048_576),
+    inputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+    readinessObserved: z.boolean(),
+    actions: z.array(ptyObservedActionSchema).max(64),
+    outerMonotonicDeadlineMs: z.number().finite().positive(),
+    requestConstructedAtMs: z.number().finite().nonnegative(),
+    translationBootAtMs: z.number().finite().nonnegative(),
+    translationLocalAtMs: z.number().finite().nonnegative(),
+    request: z.strictObject({
+      process: ptyProcessAuthoritySchema,
+      completion: z.strictObject({ kind: z.literal("semantic-marker") }),
+      initialGeometry: ptyGeometrySchema,
+      interaction: z.strictObject({
+        trigger: z.literal("semantic-ready"),
+        actions: z.array(ptyRequestedActionSchema).min(1).max(64),
+      }),
+      interpreter: z.strictObject({
+        path: z.string().startsWith("/").max(16_384),
+        sha256: z.string().regex(/^[a-f\d]{64}$/u),
+      }),
+      scriptSha256: z.string().regex(/^[a-f\d]{64}$/u),
+    }),
+    returnedAtMs: z.number().finite().nonnegative(),
+    isTTY: z.literal(true),
+    observedGeometry: ptyGeometrySchema,
+    observedCanonicalMode: z.literal(true),
+    eofByte: z.number().int().min(0).max(255),
+    eofByteWritten: z.boolean(),
+    inputBytesWritten: z.number().int().min(0).max(1_048_576),
+    outcome: z.enum([
+      "completed",
+      "signaled",
+      "exited-nonzero",
+      "aborted",
+      "timeout",
+      "output-limit",
+      "transport-failed",
+      "input-incomplete",
+    ]),
+    outputBytes: z.number().int().min(0).max(1_048_576),
+    outputSha256: z.string().regex(/^[a-f\d]{64}$/u),
+    finalSnapshot: ptySnapshotSchema,
+    exitCode: z.number().int().min(0).max(255).nullable(),
+    signal: z.enum(["SIGINT", "SIGTERM", "SIGKILL"]).nullable(),
+    cleanup: z.enum(["clean", "residual", "uncertain"]),
+    residualProcessCount: z.number().int().nonnegative().max(256),
+    processJoined: z.boolean(),
+    terminalInputJoined: z.boolean(),
+    terminalOutputJoined: z.boolean(),
+    terminalTransportClosed: z.boolean(),
+  })
+  .superRefine((value, context) => {
+    const request = value.request.process;
+    const finalGeometry = value.request.interaction.actions.reduce(
+      (geometry, action) =>
+        action.action === "resize" ? action.geometry : geometry,
+      value.request.initialGeometry,
+    );
+    const observedActionKinds = value.actions.map(({ action }) => action);
+    const requestedActionKinds = value.request.interaction.actions.map(
+      ({ action }) => action,
+    );
+    const requestFingerprint = `sha256:${createHash("sha256")
+      .update(
+        JSON.stringify({
+          processRequestFingerprint: value.processRequestFingerprint,
+          completion: value.request.completion,
+          initialGeometry: value.request.initialGeometry,
+          interaction: {
+            actions: value.request.interaction.actions,
+            trigger: value.request.interaction.trigger,
+          },
+          interpreter: value.request.interpreter,
+          scriptSha256: value.request.scriptSha256,
+          inputBytes: value.inputBytes,
+          inputSha256: value.inputSha256,
+        }),
+      )
+      .digest("hex")}`;
+    if (
+      request.runId !== value.runId ||
+      value.requestFingerprint !== requestFingerprint ||
+      value.processRequestFingerprint !== request.requestFingerprint ||
+      value.inputBytes !== request.inputBytes ||
+      value.inputSha256 !== request.inputSha256 ||
+      !value.readinessObserved ||
+      request.monotonicStartupDeadlineMs !==
+        Math.min(
+          value.requestConstructedAtMs + 10_000,
+          request.monotonicShutdownDeadlineMs - 5_000,
+        ) ||
+      request.monotonicExecutionDeadlineMs !==
+        request.monotonicShutdownDeadlineMs - 5_000 ||
+      request.terminationGraceMs !== 1_000 ||
+      request.monotonicShutdownDeadlineMs !==
+        value.translationLocalAtMs +
+          (value.outerMonotonicDeadlineMs - value.translationBootAtMs) ||
+      value.requestConstructedAtMs < value.translationLocalAtMs ||
+      value.returnedAtMs > request.monotonicShutdownDeadlineMs ||
+      JSON.stringify(finalGeometry) !==
+        JSON.stringify(value.observedGeometry) ||
+      JSON.stringify(value.finalSnapshot.geometry) !==
+        JSON.stringify(value.observedGeometry) ||
+      JSON.stringify(observedActionKinds) !==
+        JSON.stringify(requestedActionKinds) ||
+      value.actions.some((observed, index) => {
+        const requested = value.request.interaction.actions[index];
+        if (requested?.action !== observed.action) return true;
+        if (requested.action === "resize" && observed.action === "resize")
+          return (
+            JSON.stringify(requested.geometry) !==
+            JSON.stringify(observed.geometry)
+          );
+        if (requested.action === "input" && observed.action === "input")
+          return (
+            requested.byteLength !== observed.byteLength ||
+            requested.inputSha256 !== observed.inputSha256
+          );
+        if (
+          requested.action === "interrupt-byte" &&
+          observed.action === "interrupt-byte"
+        )
+          return requested.byte !== observed.byte;
+        return (
+          requested.action === "signal" &&
+          observed.action === "signal" &&
+          (requested.signal !== observed.signal ||
+            observed.targetStartIdentity !== value.processStartIdentity)
+        );
+      }) ||
+      value.actions.some(
+        (action, index) =>
+          action.monotonicAtMs < value.requestConstructedAtMs ||
+          action.monotonicAtMs > request.monotonicExecutionDeadlineMs ||
+          action.monotonicAtMs > value.returnedAtMs ||
+          (index > 0 &&
+            action.monotonicAtMs < value.actions[index - 1]!.monotonicAtMs),
+      ) ||
+      value.finalSnapshot.outputBytes !== value.outputBytes ||
+      value.outputBytes >
+        Math.min(request.stdoutLimitBytes, request.stderrLimitBytes) ||
+      value.inputBytesWritten > value.inputBytes ||
+      (value.eofByteWritten && value.inputBytesWritten !== value.inputBytes)
+    )
+      context.addIssue({ code: "custom", message: "pty receipt drift" });
+  });
 
 export interface IsolationPlan {
   readonly runId: string;
   readonly scenarioId: string;
+  readonly executionMode: "headless" | "interactive";
   readonly manifestIdentity: string;
   readonly candidateBundleIdentity: string;
   readonly candidateRevision: string;
@@ -338,10 +598,52 @@ export type PreparedImageIdentity = z.infer<typeof preparedImageIdentitySchema>;
 export type HeadlessTerminalReceipt = z.infer<
   typeof headlessTerminalReceiptSchema
 >;
+export type PtyTerminalReceipt = z.infer<typeof ptyTerminalReceiptSchema>;
+export type ScenarioTerminalReceipt =
+  HeadlessTerminalReceipt | PtyTerminalReceipt;
 export interface PreparedImageAuthority {
   readonly baseImageIdentity: PreparedImageIdentity;
   readonly mockServerImageIdentity: PreparedImageIdentity;
 }
+
+const headlessReceiptPasses = (
+  receipt: HeadlessTerminalReceipt | null,
+): boolean =>
+  receipt !== null &&
+  receipt.outcome === "exited" &&
+  receipt.exitCode === 0 &&
+  receipt.signal === null &&
+  receipt.cleanup === "clean" &&
+  receipt.residualProcessCount === 0 &&
+  receipt.processJoined &&
+  receipt.stdinJoined &&
+  receipt.stdoutJoined &&
+  receipt.stderrJoined;
+
+const ptyReceiptPasses = (receipt: PtyTerminalReceipt | null): boolean =>
+  receipt !== null &&
+  receipt.outcome === "completed" &&
+  receipt.exitCode === 0 &&
+  receipt.signal === null &&
+  receipt.cleanup === "clean" &&
+  receipt.residualProcessCount === 0 &&
+  receipt.finalSnapshot.semanticState === "completed" &&
+  receipt.eofByteWritten &&
+  receipt.processJoined &&
+  receipt.terminalInputJoined &&
+  receipt.terminalOutputJoined &&
+  receipt.terminalTransportClosed;
+
+const terminalEvidencePasses = (value: {
+  executionMode: "headless" | "interactive";
+  headlessTerminalReceipt: HeadlessTerminalReceipt | null;
+  ptyTerminalReceipt: PtyTerminalReceipt | null;
+}): boolean =>
+  value.executionMode === "headless"
+    ? value.ptyTerminalReceipt === null &&
+      headlessReceiptPasses(value.headlessTerminalReceipt)
+    : value.headlessTerminalReceipt === null &&
+      ptyReceiptPasses(value.ptyTerminalReceipt);
 
 const isolationEvidenceSchema = z
   .strictObject({
@@ -351,6 +653,7 @@ const isolationEvidenceSchema = z
     manifestIdentity: digest,
     candidateBundleIdentity: digest,
     candidateRevision: z.string().regex(/^[a-f\d]{40}$/u),
+    executionMode: z.enum(["headless", "interactive"]),
     baseImage: imageReference,
     mockServerImage: imageReference,
     baseImageIdentity: preparedImageIdentitySchema,
@@ -370,6 +673,7 @@ const isolationEvidenceSchema = z
     executionPolicy: executionPolicySchema,
     cleanup: cleanupEvidenceSchema,
     headlessTerminalReceipt: headlessTerminalReceiptSchema.nullable(),
+    ptyTerminalReceipt: ptyTerminalReceiptSchema.nullable(),
     outcome: z.enum(["passed", "failed", "interrupted"]),
   })
   .superRefine((value, context) => {
@@ -390,20 +694,18 @@ const isolationEvidenceSchema = z
       (value.outcome === "passed" &&
         (value.builtImageDigest === null ||
           value.builtMockServerImageDigest === null ||
-          value.headlessTerminalReceipt === null ||
-          value.headlessTerminalReceipt.outcome !== "exited" ||
-          value.headlessTerminalReceipt.exitCode !== 0 ||
-          value.headlessTerminalReceipt.signal !== null ||
-          value.headlessTerminalReceipt.cleanup !== "clean" ||
-          value.headlessTerminalReceipt.residualProcessCount !== 0 ||
-          !value.headlessTerminalReceipt.processJoined ||
-          !value.headlessTerminalReceipt.stdinJoined ||
-          !value.headlessTerminalReceipt.stdoutJoined ||
-          !value.headlessTerminalReceipt.stderrJoined)) ||
+          !terminalEvidencePasses(value))) ||
       (value.headlessTerminalReceipt !== null &&
         (value.headlessTerminalReceipt.runId !== value.runId ||
           value.headlessTerminalReceipt.returnedAtMs >
-            value.headlessTerminalReceipt.request.monotonicShutdownDeadlineMs))
+            value.headlessTerminalReceipt.request
+              .monotonicShutdownDeadlineMs)) ||
+      (value.ptyTerminalReceipt !== null &&
+        (value.ptyTerminalReceipt.runId !== value.runId ||
+          value.ptyTerminalReceipt.scenarioId !== value.scenarioId ||
+          value.ptyTerminalReceipt.returnedAtMs >
+            value.ptyTerminalReceipt.request.process
+              .monotonicShutdownDeadlineMs))
     )
       context.addIssue({ code: "custom", message: "evidence binding drift" });
   });
@@ -428,7 +730,7 @@ export interface IsolationDriver {
     plan: IsolationPlan,
     signal: AbortSignal,
   ): Promise<
-    Readonly<{ receipt: HeadlessTerminalReceipt; succeeded: boolean }>
+    Readonly<{ receipt: ScenarioTerminalReceipt; succeeded: boolean }>
   >;
   recordEvidence(evidence: IsolationEvidence): Promise<void>;
   removeContainer(name: string): Promise<void>;
@@ -517,6 +819,7 @@ export const createIsolationPlan = (input: {
   return deepFreeze({
     runId: parsedToken.data,
     scenarioId: input.scenario.scenarioId,
+    executionMode: input.scenario.executionMode,
     manifestIdentity: input.manifestIdentity,
     candidateBundleIdentity: input.candidate.bundleIdentity,
     candidateRevision: input.candidate.candidateRevision,
@@ -587,6 +890,7 @@ export const executeIsolationPlan = async (
   let mockServerImageDigest: string | undefined;
   let failure: unknown;
   let headlessTerminalReceipt: HeadlessTerminalReceipt | null = null;
+  let ptyTerminalReceipt: PtyTerminalReceipt | null = null;
   let workOutcome: IsolationEvidence["outcome"];
   try {
     executionPolicy = compileIsolationExecutionPolicy(
@@ -610,9 +914,14 @@ export const executeIsolationPlan = async (
     await driver.startRetrieval(plan, signal);
     await driver.startMockServer(plan, signal);
     const scenarioResult = await driver.runScenario(plan, signal);
-    headlessTerminalReceipt = headlessTerminalReceiptSchema.parse(
-      scenarioResult.receipt,
-    );
+    if (plan.executionMode === "interactive")
+      ptyTerminalReceipt = ptyTerminalReceiptSchema.parse(
+        scenarioResult.receipt,
+      );
+    else
+      headlessTerminalReceipt = headlessTerminalReceiptSchema.parse(
+        scenarioResult.receipt,
+      );
     if (!scenarioResult.succeeded)
       throw new Error("integration.isolation.scenario-failed");
     workOutcome = "passed";
@@ -652,6 +961,7 @@ export const executeIsolationPlan = async (
       manifestIdentity: plan.manifestIdentity,
       candidateBundleIdentity: plan.candidateBundleIdentity,
       candidateRevision: plan.candidateRevision,
+      executionMode: plan.executionMode,
       baseImage: plan.baseImage,
       mockServerImage: plan.mockServerImage,
       baseImageIdentity: plan.baseImageIdentity,
@@ -669,6 +979,7 @@ export const executeIsolationPlan = async (
         remaining: cleanupInventory,
       },
       headlessTerminalReceipt,
+      ptyTerminalReceipt,
       outcome: workOutcome,
     },
     {

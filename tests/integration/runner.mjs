@@ -9,7 +9,10 @@ import {
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
-import { executeSelectedHeadlessProcess } from "./testkit/headless-supervisor-kernel.js";
+import {
+  executeSelectedHeadlessProcess,
+  executeSelectedPtyProcess,
+} from "./testkit/headless-supervisor-kernel.js";
 import {
   composeSelectedContainerHeadlessSupervisorCapability,
   createSelectedContainerImmutableCandidateAuthority,
@@ -109,6 +112,7 @@ if (headlessShutdownDeadline <= headlessTranslationLocalAt + 6_000)
   throw new Error("integration.runner.headless-authority");
 const digest = (bytes) =>
   `sha256-${createHash("sha256").update(bytes).digest("hex")}`;
+const rawSha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const fingerprintHeadlessRequest = (request) =>
   `sha256:${createHash("sha256")
     .update(
@@ -127,6 +131,10 @@ const fingerprintHeadlessRequest = (request) =>
         terminationGraceMs: request.terminationGraceMs,
       }),
     )
+    .digest("hex")}`;
+const fingerprintSelectedPtyAuthority = (authority) =>
+  `sha256:${createHash("sha256")
+    .update(JSON.stringify(authority))
     .digest("hex")}`;
 const assertEmptyDirectory = (path) => {
   if (readdirSync(path).length !== 0)
@@ -318,17 +326,27 @@ try {
         }),
   });
   const now = performance.now();
+  const fixtureScript = "/opt/agentscope/platform-fixture.mjs";
+  const fixtureArguments = [
+    "--artifact",
+    join(directory, "files", cliArtifact.fileName),
+  ];
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
-    executable: process.execPath,
-    arguments: [
-      "/opt/agentscope/platform-fixture.mjs",
-      "--artifact",
-      join(directory, "files", cliArtifact.fileName),
-    ],
+    executable:
+      scenario.executionMode === "interactive"
+        ? fixtureScript
+        : process.execPath,
+    arguments:
+      scenario.executionMode === "interactive"
+        ? fixtureArguments
+        : [fixtureScript, ...fixtureArguments],
     cwd: "/opt/agentscope",
     environment: childEnvironment,
-    stdin: new Uint8Array(),
+    stdin:
+      scenario.executionMode === "interactive"
+        ? new TextEncoder().encode("run\n")
+        : new Uint8Array(),
     stdoutLimitBytes: 1024 * 1024,
     stderrLimitBytes: 1024 * 1024,
     monotonicStartupDeadlineMs: Math.min(
@@ -340,56 +358,231 @@ try {
     terminationGraceMs: 1_000,
   };
   request.requestFingerprint = fingerprintHeadlessRequest(request);
-  const trace = await executeSelectedHeadlessProcess(
-    headlessCapability,
-    request,
-  );
-  fixtureOutput = new TextDecoder("utf-8", { fatal: true }).decode(
-    trace.result.stdout,
-  );
-  const headlessReceipt = {
-    receiptVersion: 1,
-    runId: trace.runId,
-    requestFingerprint: trace.requestFingerprint,
-    outerMonotonicDeadlineMs: headlessOuterDeadline,
-    requestConstructedAtMs: now,
-    translationBootAtMs: headlessTranslationBootAt,
-    translationLocalAtMs: headlessTranslationLocalAt,
-    request: {
-      runId: request.runId,
-      executable: request.executable,
-      arguments: request.arguments,
-      cwd: request.cwd,
-      environment: request.environment,
-      stdinBase64: Buffer.from(request.stdin).toString("base64"),
-      stdoutLimitBytes: request.stdoutLimitBytes,
-      stderrLimitBytes: request.stderrLimitBytes,
-      monotonicStartupDeadlineMs: request.monotonicStartupDeadlineMs,
-      monotonicExecutionDeadlineMs: request.monotonicExecutionDeadlineMs,
-      monotonicShutdownDeadlineMs: request.monotonicShutdownDeadlineMs,
-      terminationGraceMs: request.terminationGraceMs,
-    },
-    returnedAtMs: trace.returnedAtMs,
-    outcome: trace.result.outcome,
-    exitCode: trace.result.exitCode,
-    signal: trace.result.signal,
-    cleanup: trace.result.cleanup,
-    residualProcessCount: trace.result.residualProcessCount,
-    processJoined: trace.observation.processJoined,
-    stdinJoined: trace.observation.stdinJoined,
-    stdoutJoined: trace.observation.stdoutJoined,
-    stderrJoined: trace.observation.stderrJoined,
+  const serializedProcessRequest = {
+    runId: request.runId,
+    executable: request.executable,
+    arguments: request.arguments,
+    cwd: request.cwd,
+    environment: request.environment,
+    stdinBase64: Buffer.from(request.stdin).toString("base64"),
+    stdoutLimitBytes: request.stdoutLimitBytes,
+    stderrLimitBytes: request.stderrLimitBytes,
+    monotonicStartupDeadlineMs: request.monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs: request.monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs: request.monotonicShutdownDeadlineMs,
+    terminationGraceMs: request.terminationGraceMs,
   };
-  console.log(
-    `AGENTSCOPE_HEADLESS_RECEIPT=${Buffer.from(JSON.stringify(headlessReceipt)).toString("base64url")}`,
-  );
-  if (
-    trace.result.outcome !== "exited" ||
-    trace.result.exitCode !== 0 ||
-    trace.result.cleanup !== "clean"
-  )
-    fixtureFailure = new Error("integration.runner.fixture-failed");
+  if (scenario.executionMode === "interactive") {
+    if (scenario.outputContract !== "semantic-pty")
+      throw new Error("integration.runner.execution-mode");
+    const interpreter = {
+      path: process.execPath,
+      sha256: rawSha256(readFileSync(process.execPath)),
+    };
+    const scriptSha256 = rawSha256(readFileSync(request.executable));
+    const initialGeometry = { columns: 80, rows: 24 };
+    const completion = { kind: "semantic-marker" };
+    const interaction = {
+      actions: [
+        { action: "resize", geometry: { columns: 100, rows: 30 } },
+        {
+          action: "input",
+          byteLength: 4,
+          inputSha256: rawSha256(request.stdin),
+        },
+        { action: "eof" },
+      ],
+      trigger: "semantic-ready",
+    };
+    const receipt = await executeSelectedPtyProcess(headlessCapability, {
+      completion,
+      initialGeometry,
+      interaction,
+      interpreter,
+      process: request,
+      scriptSha256,
+    });
+    const returnedAtMs = performance.now();
+    const processAuthority = {
+      runId: serializedProcessRequest.runId,
+      requestFingerprint: receipt.processRequestFingerprint,
+      executable: serializedProcessRequest.executable,
+      arguments: serializedProcessRequest.arguments,
+      cwd: serializedProcessRequest.cwd,
+      environment: serializedProcessRequest.environment,
+      inputBytes: receipt.inputBytes,
+      inputSha256: receipt.inputSha256,
+      stdoutLimitBytes: serializedProcessRequest.stdoutLimitBytes,
+      stderrLimitBytes: serializedProcessRequest.stderrLimitBytes,
+      monotonicStartupDeadlineMs:
+        serializedProcessRequest.monotonicStartupDeadlineMs,
+      monotonicExecutionDeadlineMs:
+        serializedProcessRequest.monotonicExecutionDeadlineMs,
+      monotonicShutdownDeadlineMs:
+        serializedProcessRequest.monotonicShutdownDeadlineMs,
+      terminationGraceMs: serializedProcessRequest.terminationGraceMs,
+    };
+    const ptyAuthority = {
+      processRequestFingerprint: processAuthority.requestFingerprint,
+      completion,
+      initialGeometry,
+      interaction,
+      interpreter,
+      scriptSha256,
+      inputBytes: processAuthority.inputBytes,
+      inputSha256: processAuthority.inputSha256,
+    };
+    if (
+      receipt.requestFingerprint !==
+      fingerprintSelectedPtyAuthority(ptyAuthority)
+    )
+      throw new Error("integration.runner.pty-authority");
+    const ptyTerminalReceipt = {
+      receiptVersion: 1,
+      transport: "pty",
+      scenarioId,
+      runId: receipt.runId,
+      requestFingerprint: receipt.requestFingerprint,
+      processRequestFingerprint: receipt.processRequestFingerprint,
+      processStartIdentity: receipt.processStartIdentity,
+      inputBytes: receipt.inputBytes,
+      inputSha256: receipt.inputSha256,
+      readinessObserved: receipt.readinessObserved,
+      actions: receipt.actions,
+      outerMonotonicDeadlineMs: headlessOuterDeadline,
+      requestConstructedAtMs: now,
+      translationBootAtMs: headlessTranslationBootAt,
+      translationLocalAtMs: headlessTranslationLocalAt,
+      request: {
+        process: processAuthority,
+        completion,
+        initialGeometry,
+        interaction,
+        interpreter,
+        scriptSha256,
+      },
+      returnedAtMs,
+      isTTY: receipt.isTTY,
+      observedGeometry: receipt.observedGeometry,
+      observedCanonicalMode: receipt.observedCanonicalMode,
+      eofByte: receipt.eofByte,
+      eofByteWritten: receipt.eofByteWritten,
+      inputBytesWritten: receipt.inputBytesWritten,
+      outcome: receipt.outcome,
+      outputBytes: receipt.outputBytes,
+      outputSha256: receipt.outputSha256,
+      finalSnapshot: receipt.finalSnapshot,
+      exitCode: receipt.exitCode,
+      signal: receipt.signal,
+      cleanup: receipt.cleanup,
+      residualProcessCount: receipt.residualProcessCount,
+      processJoined: receipt.processJoined,
+      terminalInputJoined: receipt.terminalInputJoined,
+      terminalOutputJoined: receipt.terminalOutputJoined,
+      terminalTransportClosed: receipt.terminalTransportClosed,
+    };
+    console.log(
+      `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
+    );
+    const fixtureResultPath = join(ledger, "fixture-result.json");
+    const fixtureResultStatus = lstatSync(fixtureResultPath);
+    if (
+      !fixtureResultStatus.isFile() ||
+      fixtureResultStatus.isSymbolicLink() ||
+      fixtureResultStatus.size < 1 ||
+      fixtureResultStatus.size > 1024 * 1024 ||
+      (fixtureResultStatus.mode & 0o777) !== 0o600
+    )
+      throw new Error("integration.runner.fixture-result");
+    const retained = JSON.parse(readFileSync(fixtureResultPath, "utf8"));
+    if (
+      JSON.stringify(Object.keys(retained).sort()) !==
+        JSON.stringify(["encodedEvidence", "evidenceVersion", "scenarioId"]) ||
+      retained.evidenceVersion !== 1 ||
+      retained.scenarioId !== scenarioId ||
+      typeof retained.encodedEvidence !== "string" ||
+      retained.encodedEvidence.length > 1024 * 1024 ||
+      !/^[A-Za-z0-9_-]+$/u.test(retained.encodedEvidence)
+    )
+      throw new Error("integration.runner.fixture-result");
+    fixtureOutput = `AGENTSCOPE_FIXTURE_RESULT=${retained.encodedEvidence}\n`;
+    if (
+      receipt.outcome !== "completed" ||
+      receipt.finalSnapshot.semanticState !== "completed" ||
+      receipt.cleanup !== "clean" ||
+      receipt.residualProcessCount !== 0 ||
+      !receipt.processJoined ||
+      !receipt.terminalInputJoined ||
+      !receipt.terminalOutputJoined ||
+      !receipt.terminalTransportClosed
+    )
+      fixtureFailure = new Error("integration.runner.fixture-failed");
+  } else {
+    if (
+      scenario.executionMode !== "headless" ||
+      scenario.outputContract !== "jsonl"
+    )
+      throw new Error("integration.runner.execution-mode");
+    const trace = await executeSelectedHeadlessProcess(
+      headlessCapability,
+      request,
+    );
+    fixtureOutput = new TextDecoder("utf-8", { fatal: true }).decode(
+      trace.result.stdout,
+    );
+    const headlessReceipt = {
+      receiptVersion: 1,
+      runId: trace.runId,
+      requestFingerprint: trace.requestFingerprint,
+      outerMonotonicDeadlineMs: headlessOuterDeadline,
+      requestConstructedAtMs: now,
+      translationBootAtMs: headlessTranslationBootAt,
+      translationLocalAtMs: headlessTranslationLocalAt,
+      request: serializedProcessRequest,
+      returnedAtMs: trace.returnedAtMs,
+      outcome: trace.result.outcome,
+      exitCode: trace.result.exitCode,
+      signal: trace.result.signal,
+      cleanup: trace.result.cleanup,
+      residualProcessCount: trace.result.residualProcessCount,
+      processJoined: trace.observation.processJoined,
+      stdinJoined: trace.observation.stdinJoined,
+      stdoutJoined: trace.observation.stdoutJoined,
+      stderrJoined: trace.observation.stderrJoined,
+    };
+    console.log(
+      `AGENTSCOPE_HEADLESS_RECEIPT=${Buffer.from(JSON.stringify(headlessReceipt)).toString("base64url")}`,
+    );
+    if (
+      trace.result.outcome !== "exited" ||
+      trace.result.exitCode !== 0 ||
+      trace.result.cleanup !== "clean"
+    )
+      fixtureFailure = new Error("integration.runner.fixture-failed");
+  }
 } catch (error) {
+  if (scenario.executionMode === "interactive") {
+    let diagnostic = `${error?.message ?? ""}`.match(
+      /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
+    )?.[0];
+    const failurePath = join(ledger, "interactive-failure.txt");
+    try {
+      const status = lstatSync(failurePath);
+      const content = readFileSync(failurePath, "utf8");
+      if (
+        status.isFile() &&
+        !status.isSymbolicLink() &&
+        status.size === Buffer.byteLength(content) &&
+        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+      )
+        diagnostic = content.trim();
+    } catch {
+      // The selected PTY error remains the diagnostic if no fixture record exists.
+    }
+    process.stderr.write(
+      `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
+    );
+  }
   fixtureOutput = "";
   fixtureFailure = error;
 }

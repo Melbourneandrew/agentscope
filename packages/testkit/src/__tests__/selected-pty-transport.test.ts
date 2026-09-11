@@ -23,6 +23,18 @@ const request = (
   const now = performance.now();
   return {
     completion: { kind: "semantic-marker" },
+    interaction: {
+      trigger: "semantic-ready",
+      actions: [
+        {
+          action: "input",
+          byteLength: 4,
+          inputSha256:
+            "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+        },
+        { action: "eof" },
+      ],
+    },
     initialGeometry: { columns: 40, rows: 12 },
     interpreter: {
       path: "/usr/local/bin/node",
@@ -148,7 +160,7 @@ describe("selected PTY transport", () => {
       terminalOutputJoined: true,
       terminalTransportClosed: true,
     });
-    expect(receipt.outputBytes).toBe(23);
+    expect(receipt.outputBytes).toBe(43);
     expect(receipt.outputSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(JSON.stringify(receipt)).not.toContain("ready");
   });
@@ -194,6 +206,8 @@ describe("selected PTY transport", () => {
           outputBytes: output.length,
           outputSha256: createHash("sha256").update(output).digest("hex"),
         },
+        interaction: { trigger: "immediate", actions: [{ action: "eof" }] },
+        process: { ...request().process, stdin: new Uint8Array() },
       },
       "active-terminal",
     );
@@ -211,7 +225,7 @@ describe("selected PTY transport", () => {
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
-      outputBytes: 23,
+      outputBytes: 43,
       terminalOutputJoined: true,
       terminalTransportClosed: true,
     });
@@ -224,7 +238,7 @@ describe("selected PTY transport", () => {
     );
     expect(receipt).toMatchObject({
       outcome: "completed",
-      outputBytes: 23,
+      outputBytes: 43,
       terminalOutputJoined: true,
     });
   });
@@ -247,15 +261,16 @@ describe("selected PTY transport", () => {
   });
 
   it.each([
-    "active-terminal",
-    "credential-prompt",
-    "malformed-control",
+    ["active-terminal", "testkit.pty.transport.semantic-missing-readiness"],
+    ["missing-ready", "testkit.pty.transport.semantic-missing-readiness"],
+    ["credential-prompt", "testkit.pty.transport.semantic-credential-prompt"],
+    ["malformed-control", "testkit.pty.transport.semantic-malformed-control"],
   ] as const)(
     "rejects terminal semantic state %s as completion",
-    async (seed) => {
+    async (seed, code) => {
       await expect(
         executeSelectedPtyTransportForTest(request(), seed),
-      ).rejects.toMatchObject({ code: "testkit.pty.transport" });
+      ).rejects.toMatchObject({ code });
     },
   );
 
@@ -269,6 +284,150 @@ describe("selected PTY transport", () => {
       inputBytesWritten: 4,
       outcome: "completed",
       terminalInputJoined: true,
+    });
+  });
+
+  it("applies a readiness-gated resize before segmented input and EOF", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request(),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            { action: "resize", geometry: { columns: 80, rows: 24 } },
+            {
+              action: "input",
+              byteLength: 2,
+              inputSha256:
+                "ee425df98582637bac95ed97cbf450c593d75e34cf832fd8acb5913392c52dd8",
+            },
+            {
+              action: "input",
+              byteLength: 2,
+              inputSha256:
+                "cbc80bb5c0c0f8944bf73b3a429505ac5cde16644978bc9a1e74c5755f8ca556",
+            },
+            { action: "eof" },
+          ],
+        },
+      },
+      "clean",
+    );
+    expect(receipt).toMatchObject({
+      observedGeometry: { columns: 80, rows: 24 },
+      outcome: "completed",
+      actions: [
+        { action: "resize", geometry: { columns: 80, rows: 24 } },
+        { action: "input", byteLength: 2 },
+        { action: "input", byteLength: 2 },
+        { action: "eof" },
+      ],
+    });
+  });
+
+  it("does not dispatch the validated action plan through ambient array hooks", async () => {
+    const now = performance.now();
+    const selected = {
+      ...request({
+        stdin: new Uint8Array(),
+        monotonicStartupDeadlineMs: now + 500,
+        monotonicExecutionDeadlineMs: now + 2_000,
+        monotonicShutdownDeadlineMs: now + 2_500,
+      }),
+      interaction: {
+        trigger: "semantic-ready" as const,
+        actions: [
+          ...Array.from({ length: 63 }, () => ({
+            action: "resize" as const,
+            geometry: { columns: 80, rows: 24 },
+          })),
+          { action: "eof" as const },
+        ],
+      },
+    };
+    const priorNumeric = Object.getOwnPropertyDescriptor(Array.prototype, "63");
+    let numericSetterCalls = 0;
+    let receipt;
+    let failure: unknown;
+    try {
+      Object.defineProperty(Array.prototype, "63", {
+        configurable: true,
+        set: () => {
+          numericSetterCalls += 1;
+        },
+      });
+      try {
+        receipt = await executeSelectedPtyTransportForTest(selected, "clean");
+      } catch (error) {
+        failure = error;
+      }
+    } finally {
+      if (priorNumeric === undefined)
+        Reflect.deleteProperty(Array.prototype, "63");
+      else Object.defineProperty(Array.prototype, "63", priorNumeric);
+    }
+    expect(failure).toBeUndefined();
+    expect(numericSetterCalls).toBe(0);
+    expect(receipt).toMatchObject({ outcome: "completed" });
+  });
+
+  it.each(["push", "some", "reduce"] as const)(
+    "rejects an own %s method on the action collection",
+    async (name) => {
+      const selected = request();
+      Object.defineProperty(selected.interaction.actions, name, {
+        value: () => [{ action: "signal", signal: "SIGKILL" }],
+      });
+      await expect(
+        executeSelectedPtyTransportForTest(selected, "clean"),
+      ).rejects.toMatchObject({ code: "testkit.pty.request" });
+    },
+  );
+
+  it("rejects symbol-keyed action authority", async () => {
+    const selected = request();
+    Object.defineProperty(selected.interaction.actions[0]!, Symbol("hidden"), {
+      value: { action: "signal", signal: "SIGKILL" },
+    });
+    await expect(
+      executeSelectedPtyTransportForTest(selected, "clean"),
+    ).rejects.toMatchObject({ code: "testkit.pty.request" });
+  });
+
+  it("applies a readiness-gated interrupt byte without retaining its bytes", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: new Uint8Array() }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [{ action: "interrupt-byte", byte: 3 }],
+        },
+      },
+      "clean",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [{ action: "interrupt-byte", byte: 3 }],
+    });
+    expect(JSON.stringify(receipt)).not.toContain("stdin");
+  });
+
+  it("signals the authenticated selected root from the action plan", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request({ stdin: new Uint8Array() }),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [{ action: "signal", signal: "SIGINT" }],
+        },
+      },
+      "clean",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "signaled",
+      signal: "SIGINT",
+      actions: [{ action: "signal", signal: "SIGINT" }],
+      processJoined: true,
     });
   });
 
@@ -321,7 +480,7 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it("stops input and EOF writes after output-limit authority triggers", async () => {
+  it("does not begin input before readiness when output-limit triggers", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       request({ stdoutLimitBytes: 16 }),
       "partial-input-output-limit",
@@ -329,7 +488,7 @@ describe("selected PTY transport", () => {
     expect(receipt).toMatchObject({
       eofByteWritten: false,
       finalSnapshot: { semanticState: "output-limit" },
-      inputBytesWritten: 2,
+      inputBytesWritten: 0,
       outcome: "output-limit",
       terminalInputJoined: false,
     });
@@ -411,6 +570,24 @@ describe("selected PTY transport", () => {
     ).rejects.toMatchObject({ code: "testkit.headless.startup.deadline" });
   });
 
+  it("admits no action when readiness observation crosses the execution deadline", async () => {
+    const now = performance.now();
+    const receipt = await executeSelectedPtyTransportForTest(
+      request({
+        monotonicStartupDeadlineMs: now + 10,
+        monotonicExecutionDeadlineMs: now + 30,
+        monotonicShutdownDeadlineMs: now + 300,
+      }),
+      "action-deadline-crossing",
+    );
+    expect(receipt).toMatchObject({
+      actions: [],
+      inputBytesWritten: 0,
+      outcome: "timeout",
+      terminalInputJoined: false,
+    });
+  });
+
   it("distinguishes a represented nonzero child exit", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       request(),
@@ -423,14 +600,14 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it.each(["malformed-exit", "unsupported-signal"] as const)(
-    "returns no completion receipt for %s",
-    async (seed) => {
-      await expect(
-        executeSelectedPtyTransportForTest(request(), seed),
-      ).rejects.toMatchObject({ code: "testkit.pty.transport" });
-    },
-  );
+  it.each([
+    ["malformed-exit", "testkit.pty.transport"],
+    ["unsupported-signal", "testkit.pty.transport.exit"],
+  ] as const)("returns no completion receipt for %s", async (seed, code) => {
+    await expect(
+      executeSelectedPtyTransportForTest(request(), seed),
+    ).rejects.toMatchObject({ code });
+  });
 
   it("aborts and joins the same selected PTY authority", async () => {
     const controller = new AbortController();
@@ -476,6 +653,26 @@ describe("selected PTY transport", () => {
         "clean",
       ),
     ).rejects.toMatchObject({ code: "testkit.pty.runtime.identity" });
+    await expect(
+      executeSelectedPtyTransportForTest(
+        {
+          ...valid,
+          interaction: {
+            trigger: "immediate",
+            actions: [
+              {
+                action: "input",
+                byteLength: 4,
+                inputSha256:
+                  "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+              },
+              { action: "eof" },
+            ],
+          },
+        },
+        "clean",
+      ),
+    ).rejects.toMatchObject({ code: "testkit.pty.request" });
     await expect(
       executeSelectedPtyTransportForTest(
         {

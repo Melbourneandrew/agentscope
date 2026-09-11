@@ -11,6 +11,19 @@ import {
 } from "./bounded-terminal-emulator.js";
 import type { HeadlessExecutionRequest } from "./headless-supervisor-contract.js";
 
+export type SelectedPtyExecutionAction =
+  | Readonly<{
+      action: "resize";
+      geometry: PtyTerminalGeometry;
+    }>
+  | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
+  | Readonly<{ action: "eof" }>
+  | Readonly<{ action: "interrupt-byte"; byte: 3 }>
+  | Readonly<{
+      action: "signal";
+      signal: "SIGINT" | "SIGTERM" | "SIGKILL";
+    }>;
+
 export type SelectedPtyExecutionRequest = Readonly<{
   completion:
     | Readonly<{ kind: "semantic-marker" }>
@@ -19,6 +32,10 @@ export type SelectedPtyExecutionRequest = Readonly<{
         outputBytes: number;
         outputSha256: string;
       }>;
+  interaction: Readonly<{
+    trigger: "immediate" | "semantic-ready";
+    actions: readonly SelectedPtyExecutionAction[];
+  }>;
   process: HeadlessExecutionRequest;
   initialGeometry: PtyTerminalGeometry;
   interpreter: Readonly<{ path: string; sha256: string }>;
@@ -27,6 +44,7 @@ export type SelectedPtyExecutionRequest = Readonly<{
 
 export type SelectedPtyExecutionOutcome =
   | "completed"
+  | "signaled"
   | "exited-nonzero"
   | "aborted"
   | "timeout"
@@ -38,6 +56,12 @@ export type SelectedPtyExecutionReceipt = Readonly<{
   receiptVersion: 1;
   runId: string;
   requestFingerprint: string;
+  processRequestFingerprint: string;
+  processStartIdentity: string;
+  inputBytes: number;
+  inputSha256: string;
+  readinessObserved: boolean;
+  actions: readonly PtyTransportAction[];
   isTTY: true;
   initialGeometry: PtyTerminalGeometry;
   observedGeometry: PtyTerminalGeometry;
@@ -50,7 +74,7 @@ export type SelectedPtyExecutionReceipt = Readonly<{
   outputSha256: string;
   finalSnapshot: PtyTerminalSemanticSnapshot;
   exitCode: number | null;
-  signal: "SIGTERM" | "SIGKILL" | null;
+  signal: "SIGINT" | "SIGTERM" | "SIGKILL" | null;
   cleanup: "clean" | "residual" | "uncertain";
   residualProcessCount: number;
   processJoined: boolean;

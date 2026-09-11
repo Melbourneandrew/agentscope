@@ -49,6 +49,7 @@ import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   compileCandidateInventory,
   compileImmutableCandidateHandoff,
+  decodeInteractivePtyReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeInstalledCliPtyReceipt,
   selectedRuntimeFiles,
@@ -58,6 +59,7 @@ import {
   integrationStageSignal,
   registerIntegrationFailureEvidence,
   registerIntegrationHeadlessReceipt,
+  registerIntegrationPtyReceipt,
   registerIntegrationRunIds,
   requireIntegrationFailureEvidence,
   remainingIntegrationOperationMilliseconds,
@@ -498,6 +500,10 @@ const fingerprintHeadlessRequest = (request) =>
   `sha256:${createHash("sha256")
     .update(JSON.stringify(request))
     .digest("hex")}`;
+const fingerprintSelectedPtyAuthority = (authority) =>
+  `sha256:${createHash("sha256")
+    .update(JSON.stringify(authority))
+    .digest("hex")}`;
 const linuxBootMonotonicMilliseconds = () => {
   const source = readFileSync("/proc/uptime", "utf8");
   if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
@@ -660,6 +666,131 @@ const captureHeadlessReceipt = (output, plan, expected) => {
     !headlessRequestMatches(receipt, plan)
   )
     throw new Error("integration.isolation.headless-receipt");
+  return Object.freeze(receipt);
+};
+const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
+  const input = Buffer.from("run\n");
+  const expectedRequest = {
+    runId: plan.runId,
+    executable: "/opt/agentscope/platform-fixture.mjs",
+    arguments: [
+      "--artifact",
+      `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
+    ],
+    cwd: "/opt/agentscope",
+    environment: expectedHeadlessEnvironment(plan),
+    stdinBase64: input.toString("base64"),
+    stdoutLimitBytes: 1024 * 1024,
+    stderrLimitBytes: 1024 * 1024,
+    monotonicStartupDeadlineMs: processRequest?.monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs: processRequest?.monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs: processRequest?.monotonicShutdownDeadlineMs,
+    terminationGraceMs: processRequest?.terminationGraceMs,
+  };
+  return (
+    processRequest?.runId === plan.runId &&
+    processRequest?.requestFingerprint ===
+      fingerprintHeadlessRequest(expectedRequest) &&
+    processRequest?.executable === "/opt/agentscope/platform-fixture.mjs" &&
+    JSON.stringify(processRequest?.arguments) ===
+      JSON.stringify([
+        "--artifact",
+        `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
+      ]) &&
+    processRequest?.cwd === "/opt/agentscope" &&
+    JSON.stringify(processRequest?.environment) ===
+      JSON.stringify(expectedHeadlessEnvironment(plan)) &&
+    processRequest?.inputBytes === input.length &&
+    processRequest?.inputSha256 ===
+      createHash("sha256").update(input).digest("hex") &&
+    processRequest?.stdoutLimitBytes === 1024 * 1024 &&
+    processRequest?.stderrLimitBytes === 1024 * 1024 &&
+    processRequest?.monotonicStartupDeadlineMs ===
+      Math.min(
+        receipt.requestConstructedAtMs + 10_000,
+        processRequest.monotonicShutdownDeadlineMs - 5_000,
+      ) &&
+    processRequest?.monotonicExecutionDeadlineMs ===
+      processRequest.monotonicShutdownDeadlineMs - 5_000 &&
+    processRequest?.terminationGraceMs === 1_000
+  );
+};
+const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
+  receipt?.receiptVersion === 1 &&
+  receipt?.transport === "pty" &&
+  receipt?.scenarioId === plan.scenarioId &&
+  receipt?.runId === plan.runId &&
+  receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
+  linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
+  receipt?.request?.completion?.kind === "semantic-marker" &&
+  receipt?.request?.interaction?.trigger === "semantic-ready" &&
+  JSON.stringify(receipt?.request?.interaction?.actions) ===
+    JSON.stringify([
+      { action: "resize", geometry: { columns: 100, rows: 30 } },
+      {
+        action: "input",
+        byteLength: 4,
+        inputSha256:
+          "b5004f26a852b0d60ec1237432c1a33c2307ff2458c374d9d99749d045c7feb9",
+      },
+      { action: "eof" },
+    ]) &&
+  JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
+    JSON.stringify(["resize", "input", "eof"]) &&
+  receipt?.isTTY === true &&
+  receipt?.observedCanonicalMode === true;
+const interactivePtyGeometryMatches = (receipt) =>
+  JSON.stringify(receipt?.request?.initialGeometry) ===
+    JSON.stringify({ columns: 80, rows: 24 }) &&
+  JSON.stringify(receipt?.observedGeometry) ===
+    JSON.stringify({ columns: 100, rows: 30 });
+const interactivePtyArtifactAuthorityMatches = (receipt) =>
+  receipt?.processRequestFingerprint ===
+    receipt?.request?.process?.requestFingerprint &&
+  receipt?.inputBytes === receipt?.request?.process?.inputBytes &&
+  receipt?.inputSha256 === receipt?.request?.process?.inputSha256 &&
+  receipt?.readinessObserved === true &&
+  receipt?.request?.interpreter?.path === "/usr/local/bin/node" &&
+  receipt?.request?.scriptSha256 ===
+    createHash("sha256")
+      .update(readFileSync(resolve(integrationRoot, "platform-fixture.mjs")))
+      .digest("hex");
+const interactivePtyFingerprintMatches = (receipt) =>
+  receipt?.requestFingerprint ===
+  fingerprintSelectedPtyAuthority({
+    processRequestFingerprint: receipt?.processRequestFingerprint,
+    completion: receipt?.request?.completion,
+    initialGeometry: receipt?.request?.initialGeometry,
+    interaction: {
+      actions: receipt?.request?.interaction?.actions,
+      trigger: receipt?.request?.interaction?.trigger,
+    },
+    interpreter: receipt?.request?.interpreter,
+    scriptSha256: receipt?.request?.scriptSha256,
+    inputBytes: receipt?.inputBytes,
+    inputSha256: receipt?.inputSha256,
+  });
+const interactivePtyTerminalMatches = (receipt) =>
+  interactivePtyGeometryMatches(receipt) &&
+  interactivePtyArtifactAuthorityMatches(receipt) &&
+  interactivePtyFingerprintMatches(receipt) &&
+  receipt?.returnedAtMs <=
+    receipt?.request?.process?.monotonicShutdownDeadlineMs &&
+  receipt?.finalSnapshot?.semanticState === "completed";
+const captureInteractivePtyReceipt = (output, plan, expected) => {
+  let receipt;
+  try {
+    receipt = decodeInteractivePtyReceipt(output);
+  } catch {
+    throw new Error("integration.isolation.pty-receipt");
+  }
+  const processRequest = receipt?.request?.process;
+  if (
+    !interactivePtyEnvelopeMatches(receipt, plan, expected) ||
+    !interactivePtyProcessMatches(processRequest, plan, receipt) ||
+    !interactivePtyTerminalMatches(receipt)
+  )
+    throw new Error("integration.isolation.pty-receipt");
   return Object.freeze(receipt);
 };
 const captureInstalledCliPtyReceipt = (output, plan) =>
@@ -918,23 +1049,16 @@ const startMockServer = async (plan, signal) => {
     mutationCapable: true,
   });
 };
-const runScenario = async (plan, signal) => {
-  const remainingOuterMilliseconds = Math.min(
-    scenarioTimeoutMilliseconds,
-    capability.binding.cleanupStartMonotonicMilliseconds - performance.now(),
-  );
-  if (remainingOuterMilliseconds < 40_000)
-    throw new Error("integration.isolation.headless-authority");
-  const outerMonotonicDeadline =
-    linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
+const createScenarioContainer = async (
+  plan,
+  signal,
+  outerMonotonicDeadline,
+  immutableCandidate,
+) => {
   const testModeArguments =
     testMode === undefined
       ? []
       : ["--env", `AGENTSCOPE_INTEGRATION_TEST_MODE=${testMode}`];
-  const immutableCandidate = await createImmutableCandidateHandoff(
-    plan,
-    signal,
-  );
   await dockerWithSignal(
     [
       "create",
@@ -992,42 +1116,104 @@ const runScenario = async (plan, signal) => {
     await dockerWithSignal(["stop", plan.collectorName], signal, {
       mutationCapable: true,
     });
+};
+const registerScenarioReceipt = (plan, receipt) => {
+  if (plan.executionMode === "interactive")
+    registerIntegrationPtyReceipt(receipt, performance.now());
+  else registerIntegrationHeadlessReceipt(receipt, performance.now());
+};
+const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) =>
+  ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
+    (plan.executionMode === "interactive" &&
+      receipt.outcome === "completed" &&
+      receipt.finalSnapshot?.semanticState === "completed")) &&
+  receipt.exitCode === 0 &&
+  receipt.signal === null &&
+  receipt.cleanup === "clean" &&
+  receipt.residualProcessCount === 0 &&
+  receipt.processJoined === true &&
+  (plan.executionMode === "interactive" ||
+    (receipt.stdinJoined === true &&
+      receipt.stdoutJoined === true &&
+      receipt.stderrJoined === true)) &&
+  (plan.executionMode === "headless" ||
+    (receipt.eofByteWritten === true &&
+      receipt.terminalInputJoined === true &&
+      receipt.terminalOutputJoined === true &&
+      receipt.terminalTransportClosed === true)) &&
+  installedPtyReceipt.outcome === "completed";
+const contentFreeChildFailureCode = (error) => {
+  const source = `${error?.stderr ?? ""}\n${error?.message ?? ""}`;
+  const diagnostic =
+    source.match(
+      /integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})\b/u,
+    )?.[1] ??
+    source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
+  return diagnostic ?? "integration.isolation.child-failure";
+};
+const runScenario = async (plan, signal) => {
+  const remainingOuterMilliseconds = Math.min(
+    scenarioTimeoutMilliseconds,
+    capability.binding.cleanupStartMonotonicMilliseconds - performance.now(),
+  );
+  if (remainingOuterMilliseconds < 40_000)
+    throw new Error("integration.isolation.headless-authority");
+  const outerMonotonicDeadline =
+    linuxBootMonotonicMilliseconds() + remainingOuterMilliseconds - 10_000;
+  const immutableCandidate = await createImmutableCandidateHandoff(
+    plan,
+    signal,
+  );
+  await createScenarioContainer(
+    plan,
+    signal,
+    outerMonotonicDeadline,
+    immutableCandidate,
+  );
   try {
     const { stdout } = await dockerWithSignal(
       ["start", "--attach", plan.scenarioName],
       signal,
       { mutationCapable: true },
     );
-    const receipt = captureHeadlessReceipt(stdout, plan, {
-      outerMonotonicDeadline,
-    });
+    const receipt =
+      plan.executionMode === "interactive"
+        ? captureInteractivePtyReceipt(stdout, plan, {
+            outerMonotonicDeadline,
+          })
+        : captureHeadlessReceipt(stdout, plan, {
+            outerMonotonicDeadline,
+          });
     const ptyReceipt = captureInstalledCliPtyReceipt(stdout, plan);
-    registerIntegrationHeadlessReceipt(receipt, performance.now());
+    registerScenarioReceipt(plan, receipt);
     return {
       receipt,
       succeeded:
-        receipt.outcome === "exited" &&
-        receipt.exitCode === 0 &&
-        receipt.signal === null &&
-        receipt.cleanup === "clean" &&
-        receipt.residualProcessCount === 0 &&
-        receipt.processJoined === true &&
-        receipt.stdinJoined === true &&
-        receipt.stdoutJoined === true &&
-        receipt.stderrJoined === true &&
-        ptyReceipt.outcome === "completed" &&
+        scenarioReceiptSucceeded(plan, receipt, ptyReceipt) &&
         captureFixtureResult(stdout, plan),
     };
   } catch (error) {
+    if (plan.executionMode === "interactive")
+      process.stderr.write(
+        `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
+      );
     const output = `${error?.stdout ?? ""}`;
     captureFixtureResult(output, plan);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
       captureInstalledPtyFailure(output, plan);
-    if (output.includes("AGENTSCOPE_HEADLESS_RECEIPT=")) {
-      const receipt = captureHeadlessReceipt(output, plan, {
-        outerMonotonicDeadline,
-      });
-      registerIntegrationHeadlessReceipt(receipt, performance.now());
+    if (
+      output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
+      output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")
+    ) {
+      const receipt =
+        plan.executionMode === "interactive"
+          ? captureInteractivePtyReceipt(output, plan, {
+              outerMonotonicDeadline,
+            })
+          : captureHeadlessReceipt(output, plan, {
+              outerMonotonicDeadline,
+            });
+      registerScenarioReceipt(plan, receipt);
       return { receipt, succeeded: false };
     }
     throw error;

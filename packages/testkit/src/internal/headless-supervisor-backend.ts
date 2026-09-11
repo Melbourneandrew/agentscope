@@ -38,6 +38,8 @@ import {
   validatePtyTerminalSemanticSnapshot,
 } from "../bounded-terminal-emulator.js";
 import type {
+  PtyTransportAction,
+  SelectedPtyExecutionAction,
   SelectedPtyExecutionReceipt,
   SelectedPtyExecutionRequest,
 } from "../pty-terminal-contract.js";
@@ -104,6 +106,10 @@ const maximum = Math.max;
 const minimum = Math.min;
 const objectPrototype = Object.prototype;
 const arrayPrototype = Array.prototype;
+const arrayPush = Array.prototype.push;
+const arraySome = Array.prototype.some;
+const reflectDefineProperty = Reflect.defineProperty;
+const reflectOwnKeys = Reflect.ownKeys;
 const uint8ArrayPrototype = Uint8Array.prototype;
 const getPrototypeOf = Object.getPrototypeOf;
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
@@ -189,6 +195,21 @@ const kernelError = (code: string): HeadlessSupervisorError => {
 };
 const fail = (code: string): never => {
   throw kernelError(code);
+};
+const defineArrayIndex = <T>(values: T[], index: number, value: T): void => {
+  if (
+    !safeReflectApply(reflectDefineProperty, Reflect, [
+      values,
+      String(index),
+      {
+        configurable: false,
+        enumerable: true,
+        value,
+        writable: false,
+      },
+    ])
+  )
+    return fail("testkit.pty.request");
 };
 const trustedErrorCode = (error: unknown): string | undefined =>
   typeof error === "object" && error !== null
@@ -373,7 +394,7 @@ const snapshotArguments = (
     const argument = ownData(value, String(index));
     if (typeof argument !== "string")
       return fail("testkit.headless.kernel.request");
-    result[index] = argument;
+    defineArrayIndex(result, index, argument);
   }
   return safeReflectApply(freeze, Object, [result]) as readonly string[];
 };
@@ -562,7 +583,7 @@ const snapshotSelectedRequest = (
       safeBufferByteLength(value, "utf8") > maximumStringBytes
     )
       return fail("testkit.headless.kernel.request");
-    argumentsSnapshot[index] = value;
+    defineArrayIndex(argumentsSnapshot, index, value);
   }
   if (!plainRecord(environmentCandidate))
     return fail("testkit.headless.kernel.request");
@@ -750,7 +771,7 @@ type SelectedContainerRuntime = Readonly<{
     rootPid: number,
     monotonicDeadlineNs: bigint,
   ) => AdoptedZombieReapReceipt;
-  sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+  sendSignal: (pid: number, signal: "SIGINT" | "SIGTERM" | "SIGKILL") => void;
   spawnProcess: (request: HeadlessExecutionRequest) => ChildProcess;
 }>;
 type ProcessAuthorityRuntime = Pick<
@@ -863,7 +884,7 @@ const validatePrincipalFacts = (facts: {
     facts.egid !== 1000 ||
     facts.groups === undefined ||
     facts.groups.length < 1 ||
-    facts.groups.some((group) => group !== 1000)
+    safeReflectApply(arraySome, facts.groups, [(group) => group !== 1000])
   )
     return fail("testkit.pty.immutable-candidate");
   const field = (name: string): string => {
@@ -891,7 +912,10 @@ const parseImmutableMountTable = (
 ): ReadonlyMap<number, ReadonlySet<string>> => {
   const mountTable = new Map<number, ReadonlySet<string>>();
   const lines = mountinfo.trimEnd().split("\n");
-  if (lines.length < 1 || lines.some((line) => line.length < 1))
+  if (
+    lines.length < 1 ||
+    safeReflectApply(arraySome, lines, [(line: string) => line.length < 1])
+  )
     return fail("testkit.pty.immutable-candidate");
   for (const line of lines) {
     const fields = line.split(" ");
@@ -1039,7 +1063,7 @@ const createImmutableCandidateAuthority = (
         return fail("testkit.pty.immutable-candidate");
       const path = resolve(directory, child.name);
       if (child.isDirectory()) {
-        pending.push(path);
+        safeReflectApply(arrayPush, pending, [path]);
         continue;
       }
       if (!child.isFile()) return fail("testkit.pty.immutable-candidate");
@@ -1092,7 +1116,8 @@ const listContainerProcesses = (
     const pid = Number(name);
     if (!numberIsSafeInteger(pid) || pid < 2) continue;
     const snapshot = readProcessSnapshot(pid);
-    if (snapshot !== undefined) snapshots.push(snapshot);
+    if (snapshot !== undefined)
+      safeReflectApply(arrayPush, snapshots, [snapshot]);
   }
   return snapshots.sort((left, right) => left.pid - right.pid);
 };
@@ -1125,7 +1150,7 @@ const captureStream = (
     const available = maximum(0, limit - state.length);
     if (available > 0) {
       const selected = chunk.subarray(0, minimum(available, chunk.length));
-      state.chunks.push(safeBufferFrom(selected));
+      safeReflectApply(arrayPush, state.chunks, [safeBufferFrom(selected)]);
       state.length += selected.length;
     }
     if (chunk.length > available && !state.truncated) {
@@ -1181,11 +1206,13 @@ const signalExactProcess = (
       return false;
     return fail("testkit.headless.observer.signal");
   }
-  ledger.push({
-    monotonicAtMs: safeReflectApply(performanceNow, performance, []),
-    signal,
-    targetStartIdentity: identity.startIdentity,
-  });
+  safeReflectApply(arrayPush, ledger, [
+    {
+      monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+      signal,
+      targetStartIdentity: identity.startIdentity,
+    },
+  ]);
   return true;
 };
 
@@ -1232,7 +1259,7 @@ type PtyRuntime = Readonly<{
     rootPid: number,
     monotonicDeadlineNs: bigint,
   ) => AdoptedZombieReapReceipt;
-  sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
+  sendSignal: (pid: number, signal: "SIGINT" | "SIGTERM" | "SIGKILL") => void;
   spawnPty: (
     request: HeadlessExecutionRequest,
     geometry: Readonly<{ columns: number; rows: number }>,
@@ -1648,17 +1675,18 @@ const productionPtyRuntime = (
 // The closed request schema intentionally validates every nested authority field.
 const snapshotPtyRequest = (
   candidate: SelectedPtyExecutionRequest,
-  // eslint-disable-next-line complexity
+  // eslint-disable-next-line complexity,max-lines-per-function
 ): SelectedPtyExecutionRequest => {
   if (!plainRecord(candidate)) return fail("testkit.pty.request");
   const keys = safeReflectApply(objectKeys, Object, [candidate]).sort();
   if (
-    keys.length !== 5 ||
+    keys.length !== 6 ||
     keys[0] !== "completion" ||
     keys[1] !== "initialGeometry" ||
-    keys[2] !== "interpreter" ||
-    keys[3] !== "process" ||
-    keys[4] !== "scriptSha256"
+    keys[2] !== "interaction" ||
+    keys[3] !== "interpreter" ||
+    keys[4] !== "process" ||
+    keys[5] !== "scriptSha256"
   )
     return fail("testkit.pty.request");
   const process_ = snapshotSelectedRequest(
@@ -1679,6 +1707,7 @@ const snapshotPtyRequest = (
   )
     return fail("testkit.pty.geometry");
   const interpreter = ownData(candidate, "interpreter");
+  const interaction = ownData(candidate, "interaction");
   const completion = ownData(candidate, "completion");
   const scriptSha256 = ownData(candidate, "scriptSha256");
   if (!plainRecord(interpreter)) return fail("testkit.pty.runtime.identity");
@@ -1717,11 +1746,161 @@ const snapshotPtyRequest = (
     (completionKind !== "semantic-marker" && completionKind !== "exact-output")
   )
     return fail("testkit.pty.request");
+  if (!plainRecord(interaction)) return fail("testkit.pty.request");
+  const interactionKeys = safeReflectApply(objectKeys, Object, [
+    interaction,
+  ]).sort();
+  const trigger = ownData(interaction, "trigger");
+  const actions = ownData(interaction, "actions");
+  const actionOwnKeys = arrayIsArray(actions)
+    ? safeReflectApply(reflectOwnKeys, Reflect, [actions])
+    : [];
+  if (
+    interactionKeys.join("\0") !== "actions\0trigger" ||
+    (trigger !== "immediate" && trigger !== "semantic-ready") ||
+    !arrayIsArray(actions) ||
+    isProxy(actions) ||
+    getPrototypeOf(actions) !== arrayPrototype ||
+    actions.length < 1 ||
+    actions.length > 64 ||
+    actionOwnKeys.length !== actions.length + 1 ||
+    (completionKind === "semantic-marker" && trigger !== "semantic-ready") ||
+    (completionKind === "exact-output" && trigger !== "immediate")
+  )
+    return fail("testkit.pty.request");
+  const stableActions = new SafeArray<SelectedPtyExecutionAction>(
+    actions.length,
+  );
+  let describedInputBytes = 0;
+  let eofCount = 0;
+  for (let index = 0; index < actions.length; index += 1) {
+    const action = ownData(actions, String(index));
+    if (!plainRecord(action)) return fail("testkit.pty.request");
+    const actionKind = ownData(action, "action");
+    const actionKeys = safeReflectApply(objectKeys, Object, [action])
+      .sort()
+      .join("\0");
+    if (
+      safeReflectApply(reflectOwnKeys, Reflect, [action]).length !==
+      safeReflectApply(objectKeys, Object, [action]).length
+    )
+      return fail("testkit.pty.request");
+    if (actionKind === "input") {
+      const byteLength = ownData(action, "byteLength");
+      const inputSha256 = ownData(action, "inputSha256");
+      if (
+        actionKeys !== "action\0byteLength\0inputSha256" ||
+        !boundedNonnegativeInteger(byteLength, maximumStdinBytes) ||
+        byteLength === 0 ||
+        typeof inputSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/u.test(inputSha256) ||
+        createHash("sha256")
+          .update(
+            safeBufferFrom(process_.stdin).subarray(
+              describedInputBytes,
+              describedInputBytes + byteLength,
+            ),
+          )
+          .digest("hex") !== inputSha256
+      )
+        return fail("testkit.pty.request");
+      describedInputBytes += byteLength;
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "input", byteLength, inputSha256 },
+        ]) as SelectedPtyExecutionAction,
+      );
+    } else if (actionKind === "resize") {
+      const next = ownData(action, "geometry");
+      if (
+        actionKeys !== "action\0geometry" ||
+        !plainRecord(next) ||
+        safeReflectApply(objectKeys, Object, [next]).sort().join("\0") !==
+          "columns\0rows" ||
+        !boundedInteger(ownData(next, "columns"), 512) ||
+        !boundedInteger(ownData(next, "rows"), 512) ||
+        ownData(next, "columns") === 0 ||
+        ownData(next, "rows") === 0 ||
+        (ownData(next, "columns") as number) *
+          (ownData(next, "rows") as number) >
+          65_536
+      )
+        return fail("testkit.pty.request");
+      if (
+        safeReflectApply(reflectOwnKeys, Reflect, [next]).length !==
+        safeReflectApply(objectKeys, Object, [next]).length
+      )
+        return fail("testkit.pty.request");
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          {
+            action: "resize",
+            geometry: safeReflectApply(freeze, Object, [
+              {
+                columns: ownData(next, "columns"),
+                rows: ownData(next, "rows"),
+              },
+            ]),
+          },
+        ]) as SelectedPtyExecutionAction,
+      );
+    } else if (actionKind === "eof") {
+      if (actionKeys !== "action") return fail("testkit.pty.request");
+      eofCount += 1;
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "eof" },
+        ]) as SelectedPtyExecutionAction,
+      );
+    } else if (actionKind === "interrupt-byte") {
+      if (actionKeys !== "action\0byte" || ownData(action, "byte") !== 3)
+        return fail("testkit.pty.request");
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "interrupt-byte", byte: 3 },
+        ]) as SelectedPtyExecutionAction,
+      );
+    } else if (actionKind === "signal") {
+      const signal = ownData(action, "signal");
+      if (
+        actionKeys !== "action\0signal" ||
+        (signal !== "SIGINT" && signal !== "SIGTERM" && signal !== "SIGKILL")
+      )
+        return fail("testkit.pty.request");
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "signal", signal },
+        ]) as SelectedPtyExecutionAction,
+      );
+    } else return fail("testkit.pty.request");
+  }
+  if (
+    describedInputBytes !==
+      safeReflectApply(typedArrayByteLength, process_.stdin, []) ||
+    eofCount > 1
+  )
+    return fail("testkit.pty.request");
   return safeReflectApply(freeze, Object, [
     {
       process: process_,
       completion: safeReflectApply(freeze, Object, [{ ...completion }]),
       initialGeometry: safeReflectApply(freeze, Object, [{ columns, rows }]),
+      interaction: safeReflectApply(freeze, Object, [
+        {
+          actions: safeReflectApply(freeze, Object, [stableActions]),
+          trigger,
+        },
+      ]),
       interpreter: safeReflectApply(freeze, Object, [
         { path: interpreterPath, sha256: interpreterSha256 },
       ]),
@@ -1730,8 +1909,48 @@ const snapshotPtyRequest = (
   ]) as SelectedPtyExecutionRequest;
 };
 
-const ptySignal = (signal: number): "SIGTERM" | "SIGKILL" | null =>
-  signal === 15 ? "SIGTERM" : signal === 9 ? "SIGKILL" : null;
+const selectedPtyRequestFingerprint = (
+  request: SelectedPtyExecutionRequest,
+): Readonly<{
+  fingerprint: `sha256:${string}`;
+  inputBytes: number;
+  inputSha256: string;
+}> => {
+  const input = safeBufferFrom(request.process.stdin);
+  const inputSha256 = createHash("sha256").update(input).digest("hex");
+  const authority = {
+    processRequestFingerprint: request.process.requestFingerprint,
+    completion: request.completion,
+    initialGeometry: request.initialGeometry,
+    interaction: request.interaction,
+    interpreter: request.interpreter,
+    scriptSha256: request.scriptSha256,
+    inputBytes: input.length,
+    inputSha256,
+  };
+  const serialized = safeReflectApply(jsonStringify, JSON, [authority]);
+  if (typeof serialized !== "string") return fail("testkit.pty.request");
+  return safeReflectApply(freeze, Object, [
+    {
+      fingerprint: `sha256:${createHash("sha256").update(serialized).digest("hex")}`,
+      inputBytes: input.length,
+      inputSha256,
+    },
+  ]) as Readonly<{
+    fingerprint: `sha256:${string}`;
+    inputBytes: number;
+    inputSha256: string;
+  }>;
+};
+
+const ptySignal = (signal: number): "SIGINT" | "SIGTERM" | "SIGKILL" | null =>
+  signal === 2
+    ? "SIGINT"
+    : signal === 15
+      ? "SIGTERM"
+      : signal === 9
+        ? "SIGKILL"
+        : null;
 
 const exactPtyExit = (value: PtyExit): PtyExit => {
   if (
@@ -1840,6 +2059,7 @@ const armSelectedPty = (
   const launch = async (): Promise<SelectedPtyExecutionReceipt> => {
     if (launched) return fail("testkit.headless.backend.replay");
     launched = true;
+    const ptyAuthority = selectedPtyRequestFingerprint(request);
     runtime.assertImmutableCandidateRuntime();
     runtime.assertNamespaceIdentity(composition.namespaceIdentity);
     if (
@@ -1882,7 +2102,8 @@ const armSelectedPty = (
         );
       }
     } catch (error) {
-      primaryFailure = trustedErrorCode(error) ?? "testkit.pty.transport";
+      primaryFailure =
+        trustedErrorCode(error) ?? "testkit.pty.transport.initialization";
     }
     let root: ProcessSnapshot | undefined;
     try {
@@ -1937,6 +2158,17 @@ const armSelectedPty = (
     let outputLimited = false;
     let transportError = false;
     let inputOffset = 0;
+    let actionInputOffset = 0;
+    let actionIndex = 0;
+    const actionsApplied: PtyTransportAction[] = [];
+    const recordAction = (action: PtyTransportAction): void => {
+      defineArrayIndex(
+        actionsApplied,
+        actionsApplied.length,
+        safeReflectApply(freeze, Object, [action]) as PtyTransportAction,
+      );
+    };
+    let readinessObserved = false;
     let eofAttempted = false;
     let eofByteWritten = false;
     let outputTerminal = false;
@@ -1947,38 +2179,11 @@ const armSelectedPty = (
       maximumOutputBytes: outputLimitBytes,
     });
     const input = safeBufferFrom(processRequest.stdin);
+    // The PTY pump keeps read, semantic readiness, and the write-closed action
+    // sequence adjacent so no action can escape the selected backend authority.
+    // eslint-disable-next-line complexity,max-lines-per-function
     const pumpTransport = (allowInput: boolean): void => {
       try {
-        if (
-          allowInput &&
-          primaryFailure === undefined &&
-          !eofByteWritten &&
-          inputOffset < input.length
-        ) {
-          const pending = input.subarray(inputOffset);
-          const written = exactPtyWrite(child.write(pending), pending.length);
-          inputOffset += written.bytesWritten;
-        }
-        if (
-          allowInput &&
-          primaryFailure === undefined &&
-          !eofAttempted &&
-          inputOffset === input.length
-        ) {
-          eofAttempted = true;
-          const eof = child.eof();
-          if (
-            !plainRecord(eof) ||
-            safeReflectApply(objectKeys, Object, [eof]).sort().join("\0") !==
-              "bytesWritten\0canonical\0eofByte\0status" ||
-            eof.status !== "eof-byte-written" ||
-            eof.canonical !== true ||
-            eof.bytesWritten !== 1 ||
-            eof.eofByte !== terminalObservation.eofByte
-          )
-            return fail("testkit.pty.transport");
-          eofByteWritten = true;
-        }
         for (let index = 0; index < 64 && !outputTerminal; index += 1) {
           const observation = exactPtyRead(child.read(4_096));
           if (observation.status === "would-block") break;
@@ -1997,8 +2202,15 @@ const armSelectedPty = (
           );
           if (captured.length > 0) {
             outputBytes += captured.length;
-            chunks.push(captured);
+            defineArrayIndex(chunks, chunks.length, captured);
             terminal.write(new SafeUint8Array(captured));
+            const semanticState = terminal.snapshot().semanticState;
+            if (semanticState === "ready") readinessObserved = true;
+            else if (
+              semanticState === "credential-prompt" ||
+              semanticState === "malformed-control"
+            )
+              transportError = true;
           }
           if (observation.bytes.length > captured.length) {
             outputLimited = true;
@@ -2015,6 +2227,109 @@ const armSelectedPty = (
               // The canonical emulator records the output-limit state first.
             }
             break;
+          }
+        }
+        const inputAdmitted =
+          allowInput &&
+          (request.interaction.trigger === "immediate" || readinessObserved);
+        const adjacentNow = safeReflectApply(performanceNow, performance, []);
+        if (
+          inputAdmitted &&
+          primaryFailure === undefined &&
+          !aborted &&
+          adjacentNow < processRequest.monotonicExecutionDeadlineMs
+        ) {
+          const action = request.interaction.actions[actionIndex];
+          if (action?.action === "resize") {
+            child.resize(action.geometry.columns, action.geometry.rows);
+            terminalObservation = exactPtyObservation(
+              child.inspect(),
+              action.geometry,
+            );
+            terminal.resize(action.geometry);
+            recordAction({
+              action: "resize",
+              geometry: action.geometry,
+              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+            });
+            actionIndex += 1;
+          } else if (action?.action === "input") {
+            const remainingActionBytes = action.byteLength - actionInputOffset;
+            const pending = input.subarray(
+              inputOffset,
+              inputOffset + remainingActionBytes,
+            );
+            const written = exactPtyWrite(child.write(pending), pending.length);
+            inputOffset += written.bytesWritten;
+            actionInputOffset += written.bytesWritten;
+            if (actionInputOffset === action.byteLength) {
+              const start = inputOffset - action.byteLength;
+              recordAction({
+                action: "input",
+                byteLength: action.byteLength,
+                inputSha256: createHash("sha256")
+                  .update(input.subarray(start, inputOffset))
+                  .digest("hex"),
+                monotonicAtMs: safeReflectApply(
+                  performanceNow,
+                  performance,
+                  [],
+                ),
+              });
+              actionInputOffset = 0;
+              actionIndex += 1;
+            }
+          } else if (action?.action === "eof") {
+            eofAttempted = true;
+            const eof = child.eof();
+            if (
+              !plainRecord(eof) ||
+              safeReflectApply(objectKeys, Object, [eof]).sort().join("\0") !==
+                "bytesWritten\0canonical\0eofByte\0status" ||
+              eof.status !== "eof-byte-written" ||
+              eof.canonical !== true ||
+              eof.bytesWritten !== 1 ||
+              eof.eofByte !== terminalObservation.eofByte
+            )
+              return fail("testkit.pty.transport");
+            eofByteWritten = true;
+            recordAction({
+              action: "eof",
+              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+            });
+            actionIndex += 1;
+          } else if (action?.action === "interrupt-byte") {
+            const interrupt = safeBufferFrom([action.byte]);
+            const written = exactPtyWrite(
+              child.write(interrupt),
+              interrupt.length,
+            );
+            if (written.bytesWritten !== 1)
+              return fail("testkit.pty.transport");
+            recordAction({
+              action: "interrupt-byte",
+              byte: 3,
+              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+            });
+            actionIndex += 1;
+          } else if (action?.action === "signal") {
+            if (root === undefined)
+              return fail("testkit.headless.observer.root");
+            runtime.assertNamespaceIdentity(composition.namespaceIdentity);
+            const current = runtime.readProcess(root.pid);
+            if (
+              current === undefined ||
+              current.startIdentity !== root.startIdentity
+            )
+              return fail("testkit.headless.observer.identity");
+            runtime.sendSignal(root.pid, action.signal);
+            recordAction({
+              action: "signal",
+              monotonicAtMs: safeReflectApply(performanceNow, performance, []),
+              signal: action.signal,
+              targetStartIdentity: root.startIdentity,
+            });
+            actionIndex += 1;
           }
         }
       } catch {
@@ -2039,8 +2354,26 @@ const armSelectedPty = (
         processRequest.monotonicExecutionDeadlineMs
       )
         trigger = "timeout";
-      if (trigger === undefined) pumpTransport(true);
+      if (trigger === undefined)
+        for (let step = 0; step < 64; step += 1) {
+          const beforeAction = actionIndex;
+          const beforeInput = inputOffset;
+          pumpTransport(true);
+          if (
+            transportError ||
+            outputLimited ||
+            safeReflectApply(performanceNow, performance, []) >=
+              processRequest.monotonicExecutionDeadlineMs ||
+            (beforeAction === actionIndex && beforeInput === inputOffset)
+          )
+            break;
+        }
       if (transportError || outputLimited) trigger = "failure";
+      else if (
+        safeReflectApply(performanceNow, performance, []) >=
+        processRequest.monotonicExecutionDeadlineMs
+      )
+        trigger = "timeout";
       if (trigger !== undefined) break;
       const closed = await SafePromise.race([
         terminalOf(child.closed),
@@ -2082,7 +2415,7 @@ const armSelectedPty = (
     if (authorityFailure !== undefined) return failAfterHandleSettlement();
     if (
       trigger !== "closed" ||
-      termTargets.some(({ pid }) => pid !== child.pid)
+      safeReflectApply(arraySome, termTargets, [({ pid }) => pid !== child.pid])
     )
       for (const identity of termTargets)
         try {
@@ -2217,9 +2550,17 @@ const armSelectedPty = (
     if (!outputTerminal || !transportClosed)
       return fail("testkit.headless.reconciliation.deadline");
     if (primaryFailure !== undefined) return fail(primaryFailure);
-    if (exit.signal !== 0 && exit.signal !== 9 && exit.signal !== 15)
-      return fail("testkit.pty.transport");
-    const inputJoined = inputOffset === input.length && eofByteWritten;
+    if (
+      exit.signal !== 0 &&
+      exit.signal !== 2 &&
+      exit.signal !== 9 &&
+      exit.signal !== 15
+    )
+      return fail("testkit.pty.transport.exit");
+    const inputJoined =
+      actionIndex === request.interaction.actions.length &&
+      inputOffset === input.length &&
+      (!eofAttempted || eofByteWritten);
     const clean = residual.length === 0 && outputTerminal && transportClosed;
     const output = safeBufferConcat(chunks, outputBytes);
     const outputSha256 = createHash("sha256").update(output).digest("hex");
@@ -2228,15 +2569,27 @@ const armSelectedPty = (
       request.completion.kind === "exact-output" &&
       request.completion.outputBytes === outputBytes &&
       request.completion.outputSha256 === outputSha256;
-    if (
-      !outputLimited &&
-      (finalSnapshot.semanticState === "credential-prompt" ||
-        finalSnapshot.semanticState === "malformed-control" ||
-        ((trigger === "closed" || trigger === undefined) &&
-          finalSnapshot.semanticState !== "completed" &&
-          !exactOutputCompleted))
-    )
-      return fail("testkit.pty.transport");
+    if (!outputLimited) {
+      if (finalSnapshot.semanticState === "credential-prompt")
+        return fail("testkit.pty.transport.semantic-credential-prompt");
+      if (finalSnapshot.semanticState === "malformed-control")
+        return fail("testkit.pty.transport.semantic-malformed-control");
+      if (
+        request.interaction.trigger === "semantic-ready" &&
+        !readinessObserved
+      )
+        return fail("testkit.pty.transport.semantic-missing-readiness");
+      if (
+        (trigger === "closed" || trigger === undefined) &&
+        finalSnapshot.semanticState !== "completed" &&
+        !exactOutputCompleted
+      )
+        return fail(
+          exit.code === 0
+            ? "testkit.pty.transport.semantic-incomplete"
+            : "testkit.pty.transport.semantic-nonzero",
+        );
+    }
     const outcome =
       trigger === "aborted"
         ? "aborted"
@@ -2248,9 +2601,11 @@ const armSelectedPty = (
               ? "transport-failed"
               : !inputJoined
                 ? "input-incomplete"
-                : exit.code === 0
-                  ? "completed"
-                  : "exited-nonzero";
+                : exit.signal !== 0
+                  ? "signaled"
+                  : exit.code === 0
+                    ? "completed"
+                    : "exited-nonzero";
     const receipt: SelectedPtyExecutionReceipt = safeReflectApply(
       freeze,
       Object,
@@ -2258,7 +2613,13 @@ const armSelectedPty = (
         {
           receiptVersion: 1,
           runId: processRequest.runId,
-          requestFingerprint: processRequest.requestFingerprint,
+          requestFingerprint: ptyAuthority.fingerprint,
+          processRequestFingerprint: processRequest.requestFingerprint,
+          inputBytes: ptyAuthority.inputBytes,
+          inputSha256: ptyAuthority.inputSha256,
+          readinessObserved,
+          actions: safeReflectApply(freeze, Object, [actionsApplied]),
+          processStartIdentity: root?.startIdentity ?? "",
           isTTY: true,
           initialGeometry: request.initialGeometry,
           observedGeometry: {
@@ -2434,7 +2795,9 @@ const selectedContainerBackend = (
       );
       if (
         trigger !== "closed" ||
-        termTargets.some(({ pid }) => pid !== childPid)
+        safeReflectApply(arraySome, termTargets, [
+          ({ pid }) => pid !== childPid,
+        ])
       )
         for (const identity of termTargets)
           signalExactProcess(
@@ -2547,8 +2910,12 @@ const selectedContainerBackend = (
           stderr: capturedStderr.bytes,
           stdoutTruncated: capturedStdout.truncated,
           stderrTruncated: capturedStderr.truncated,
-          termRequested: signals.some(({ signal }) => signal === "SIGTERM"),
-          killRequested: signals.some(({ signal }) => signal === "SIGKILL"),
+          termRequested: safeReflectApply(arraySome, signals, [
+            ({ signal }) => signal === "SIGTERM",
+          ]),
+          killRequested: safeReflectApply(arraySome, signals, [
+            ({ signal }) => signal === "SIGKILL",
+          ]),
           cleanup: clean
             ? "clean"
             : residual.length > 0
@@ -2726,20 +3093,110 @@ export const executeSelectedHeadlessProcessWithCapability = async (
   }
 };
 
+const ptyReceiptActionsMatch = (
+  receipt: SelectedPtyExecutionReceipt,
+  request: SelectedPtyExecutionRequest,
+): boolean => {
+  const receiptActions: readonly PtyTransportAction[] = receipt.actions;
+  const receiptActionsAreArray: boolean = safeReflectApply(
+    arrayIsArray,
+    Array,
+    [receiptActions],
+  );
+  if (
+    !receiptActionsAreArray ||
+    receiptActions.length > request.interaction.actions.length
+  )
+    return false;
+  const input = safeBufferFrom(request.process.stdin);
+  let inputOffset = 0;
+  let previousAt = 0;
+  for (let index = 0; index < receiptActions.length; index += 1) {
+    const expected = request.interaction.actions[index];
+    const observed: PtyTransportAction | undefined = receiptActions[index];
+    if (
+      expected === undefined ||
+      observed === undefined ||
+      expected.action !== observed.action ||
+      observed.monotonicAtMs < previousAt ||
+      observed.monotonicAtMs > request.process.monotonicExecutionDeadlineMs
+    )
+      return false;
+    previousAt = observed.monotonicAtMs;
+    if (expected.action === "resize" && observed.action === "resize") {
+      if (
+        expected.geometry.columns !== observed.geometry.columns ||
+        expected.geometry.rows !== observed.geometry.rows
+      )
+        return false;
+    } else if (expected.action === "input" && observed.action === "input") {
+      const bytes = input.subarray(
+        inputOffset,
+        inputOffset + expected.byteLength,
+      );
+      if (
+        expected.byteLength !== observed.byteLength ||
+        expected.inputSha256 !== observed.inputSha256 ||
+        createHash("sha256").update(bytes).digest("hex") !==
+          observed.inputSha256
+      )
+        return false;
+      inputOffset += expected.byteLength;
+    } else if (
+      expected.action === "interrupt-byte" &&
+      observed.action === "interrupt-byte"
+    ) {
+      if (expected.byte !== observed.byte) return false;
+    } else if (expected.action === "signal" && observed.action === "signal") {
+      if (
+        expected.signal !== observed.signal ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u.test(
+          observed.targetStartIdentity,
+        )
+      )
+        return false;
+    }
+  }
+  return true;
+};
+
 const assertPtyReceiptBinding = (
   receipt: SelectedPtyExecutionReceipt,
   request: SelectedPtyExecutionRequest,
   // eslint-disable-next-line complexity
 ): void => {
   const outcome = receipt.outcome;
+  const authority = selectedPtyRequestFingerprint(request);
+  let requestRequiresEof = false;
+  let expectedGeometry = request.initialGeometry;
+  for (let index = 0; index < request.interaction.actions.length; index += 1) {
+    const action = request.interaction.actions[index];
+    if (action?.action === "eof") requestRequiresEof = true;
+    else if (action?.action === "resize") expectedGeometry = action.geometry;
+  }
+  const terminalActionOutcome =
+    outcome === "completed" ||
+    outcome === "signaled" ||
+    outcome === "exited-nonzero";
   if (
     receipt.receiptVersion !== 1 ||
     receipt.runId !== request.process.runId ||
-    receipt.requestFingerprint !== request.process.requestFingerprint ||
+    receipt.requestFingerprint !== authority.fingerprint ||
+    receipt.processRequestFingerprint !== request.process.requestFingerprint ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,255}$/u.test(
+      receipt.processStartIdentity,
+    ) ||
+    receipt.inputBytes !== authority.inputBytes ||
+    receipt.inputSha256 !== authority.inputSha256 ||
+    typeof receipt.readinessObserved !== "boolean" ||
+    (outcome === "completed" &&
+      request.interaction.trigger === "semantic-ready" &&
+      !receipt.readinessObserved) ||
+    !ptyReceiptActionsMatch(receipt, request) ||
     receipt.initialGeometry.columns !== request.initialGeometry.columns ||
     receipt.initialGeometry.rows !== request.initialGeometry.rows ||
-    receipt.observedGeometry.columns !== request.initialGeometry.columns ||
-    receipt.observedGeometry.rows !== request.initialGeometry.rows ||
+    receipt.observedGeometry.columns !== expectedGeometry.columns ||
+    receipt.observedGeometry.rows !== expectedGeometry.rows ||
     receipt.isTTY !== true ||
     receipt.observedCanonicalMode !== true ||
     !boundedNonnegativeInteger(receipt.eofByte, 255) ||
@@ -2749,6 +3206,7 @@ const assertPtyReceiptBinding = (
       request.process.stdin.byteLength,
     ) ||
     (outcome !== "completed" &&
+      outcome !== "signaled" &&
       outcome !== "exited-nonzero" &&
       outcome !== "aborted" &&
       outcome !== "timeout" &&
@@ -2768,6 +3226,7 @@ const assertPtyReceiptBinding = (
     !receipt.terminalOutputJoined ||
     !receipt.terminalTransportClosed ||
     (receipt.signal !== null &&
+      receipt.signal !== "SIGINT" &&
       receipt.signal !== "SIGTERM" &&
       receipt.signal !== "SIGKILL") ||
     receipt.residualProcessCount !== 0
@@ -2793,18 +3252,30 @@ const assertPtyReceiptBinding = (
   )
     return fail("testkit.pty.receipt");
   if (
-    (receipt.outcome === "completed" || receipt.outcome === "exited-nonzero") &&
-    (!receipt.eofByteWritten ||
+    terminalActionOutcome &&
+    (receipt.actions.length !== request.interaction.actions.length ||
+      (requestRequiresEof && !receipt.eofByteWritten) ||
       receipt.inputBytesWritten !== request.process.stdin.byteLength ||
       !receipt.terminalInputJoined)
   )
     return fail("testkit.pty.receipt");
+  for (let index = 0; index < receipt.actions.length; index += 1) {
+    const action = receipt.actions[index];
+    if (
+      action?.action === "signal" &&
+      action.targetStartIdentity !== receipt.processStartIdentity
+    )
+      return fail("testkit.pty.receipt");
+  }
   if (
     (receipt.outcome === "completed" &&
       (receipt.exitCode !== 0 || receipt.signal !== null)) ||
+    (receipt.outcome === "signaled" &&
+      (receipt.exitCode !== null || receipt.signal === null)) ||
     (receipt.outcome === "exited-nonzero" &&
       (!boundedInteger(receipt.exitCode, 255) || receipt.signal !== null)) ||
     (receipt.outcome !== "completed" &&
+      receipt.outcome !== "signaled" &&
       receipt.outcome !== "exited-nonzero" &&
       receipt.exitCode !== null)
   )
@@ -3447,6 +3918,7 @@ export const executeSelectedContainerBackendForTest = async (
 
 type SelectedPtyTestSeed =
   | "active-terminal"
+  | "action-deadline-crossing"
   | "adopted-zombie"
   | "clean"
   | "close-failure"
@@ -3469,6 +3941,7 @@ type SelectedPtyTestSeed =
   | "credential-prompt"
   | "malformed-control"
   | "malformed-exit"
+  | "missing-ready"
   | "mode-substitution"
   | "nonzero-exit"
   | "observer-failure"
@@ -3565,7 +4038,10 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
       processes.delete(pid);
       if (pid === root.pid) {
         terminal = true;
-        resolveClose?.({ code: 0, signal: signal === "SIGKILL" ? 9 : 15 });
+        resolveClose?.({
+          code: 0,
+          signal: signal === "SIGINT" ? 2 : signal === "SIGKILL" ? 9 : 15,
+        });
       }
     },
     // eslint-disable-next-line max-lines-per-function
@@ -3608,14 +4084,27 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
               : seed === "malformed-control"
                 ? safeBufferFrom("\u001b[")
                 : safeBufferFrom("AGENTSCOPE_PTY_COMPLETE");
+      const ready = safeBufferFrom("AGENTSCOPE_PTY_READY");
       const chunks =
         seed === "fragmented-output"
-          ? [output.subarray(0, 2), output.subarray(2)]
+          ? [
+              ready.subarray(0, 2),
+              ready.subarray(2),
+              output.subarray(0, 2),
+              output.subarray(2),
+            ]
           : seed === "output-limit" || seed === "partial-input-output-limit"
             ? [output.subarray(0, 4_096), output.subarray(4_096)]
-            : [output];
+            : seed === "active-terminal" ||
+                seed === "missing-ready" ||
+                seed === "credential-prompt" ||
+                seed === "malformed-control"
+              ? [output]
+              : [ready, output];
       let chunkIndex = 0;
       let inputCalls = 0;
+      let transportReads = 0;
+      let currentGeometry = geometry;
       queueMicrotask(() => {
         if (seed === "residual" || seed === "adopted-zombie")
           processes.set(descendant.pid, descendant);
@@ -3642,7 +4131,7 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
                 seed === "malformed-exit"
                   ? { code: -1, signal: 0 }
                   : seed === "unsupported-signal"
-                    ? { code: 0, signal: 2 }
+                    ? { code: 0, signal: 1 }
                     : {
                         code: seed === "nonzero-exit" ? 7 : 0,
                         signal: 0,
@@ -3675,18 +4164,26 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
         inspect: () => ({
           isTTY: true,
           canonical: seed !== "mode-substitution",
-          columns: geometry.columns,
+          columns: currentGeometry.columns,
           rows:
             seed === "geometry-substitution"
-              ? geometry.rows + 1
-              : geometry.rows,
+              ? currentGeometry.rows + 1
+              : currentGeometry.rows,
           eofByte: 4,
         }),
         read: () => {
+          transportReads += 1;
+          if (seed === "action-deadline-crossing" && transportReads === 1) {
+            const stopAt = request.monotonicExecutionDeadlineMs + 1;
+            while (performance.now() < stopAt) {
+              // Cross the one execution deadline while observing readiness.
+            }
+          }
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
           if (
             seed === "late-tail" &&
+            chunkIndex > 0 &&
             (!terminal || performance.now() < tailReadyAt)
           )
             return { status: "would-block" as const };
@@ -3699,7 +4196,9 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
             ? { status: "eio" as const }
             : { status: "would-block" as const };
         },
-        resize: () => undefined,
+        resize: (columns, rows) => {
+          currentGeometry = { columns, rows };
+        },
         write: (bytes) => {
           inputCalls += 1;
           if (seed === "partial-input-timeout" && inputCalls === 1) {

@@ -172,6 +172,7 @@ export const runInstalledCliPtyProof = async ({
         outputBytes: expectedOutput.length,
         outputSha256: sha256(expectedOutput),
       },
+      interaction: { trigger: "immediate", actions: [{ action: "eof" }] },
       process: processRequest,
       initialGeometry: { columns: 40, rows: 12 },
       interpreter: { path: process.execPath, sha256: interpreter.sha256 },

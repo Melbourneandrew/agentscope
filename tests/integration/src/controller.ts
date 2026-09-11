@@ -76,6 +76,14 @@ type CapabilityState = {
       outerReceivedAtMs: number;
     }>
   >;
+  ptyReceipts: Map<
+    string,
+    Readonly<{
+      requestFingerprint: `sha256:${string}`;
+      returnedAtMs: number;
+      outerReceivedAtMs: number;
+    }>
+  >;
   requiredFailureEvidence: Set<string>;
   privateStorageRetirements: Map<
     number,
@@ -473,10 +481,45 @@ export const registerIntegrationHeadlessReceipt = (
       capability.binding.cleanupStartMonotonicMilliseconds,
       state.runIds,
     ) ||
-    state.headlessReceipts.has(receipt.runId)
+    state.headlessReceipts.has(receipt.runId) ||
+    state.ptyReceipts.has(receipt.runId)
   )
     throw new Error("integration.controller.headless-receipt");
   state.headlessReceipts.set(
+    receipt.runId,
+    Object.freeze({
+      requestFingerprint: receipt.requestFingerprint,
+      returnedAtMs: receipt.returnedAtMs,
+      outerReceivedAtMs,
+    }),
+  );
+};
+
+export const registerIntegrationPtyReceipt = (
+  receipt: Readonly<{
+    runId: string;
+    requestFingerprint: `sha256:${string}`;
+    returnedAtMs: number;
+    request: Readonly<{
+      process: Readonly<{ monotonicShutdownDeadlineMs: number }>;
+    }>;
+  }>,
+  outerReceivedAtMs: number,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    !ptyReceiptFitsOuterAuthority(
+      receipt,
+      outerReceivedAtMs,
+      capability.binding.cleanupStartMonotonicMilliseconds,
+      state.runIds,
+    ) ||
+    state.ptyReceipts.has(receipt.runId) ||
+    state.headlessReceipts.has(receipt.runId)
+  )
+    throw new Error("integration.controller.pty-receipt");
+  state.ptyReceipts.set(
     receipt.runId,
     Object.freeze({
       requestFingerprint: receipt.requestFingerprint,
@@ -507,6 +550,31 @@ export const headlessReceiptFitsOuterAuthority = (
   receipt.returnedAtMs <= receipt.request.monotonicShutdownDeadlineMs &&
   outerReceivedAtMs >= 0 &&
   outerReceivedAtMs < cleanupStartMonotonicMilliseconds;
+
+export const ptyReceiptFitsOuterAuthority = (
+  receipt: Readonly<{
+    runId: string;
+    requestFingerprint: string;
+    returnedAtMs: number;
+    request: Readonly<{
+      process: Readonly<{ monotonicShutdownDeadlineMs: number }>;
+    }>;
+  }>,
+  outerReceivedAtMs: number,
+  cleanupStartMonotonicMilliseconds: number,
+  runIds: ReadonlySet<string>,
+): boolean =>
+  headlessReceiptFitsOuterAuthority(
+    {
+      runId: receipt.runId,
+      requestFingerprint: receipt.requestFingerprint,
+      returnedAtMs: receipt.returnedAtMs,
+      request: receipt.request.process,
+    },
+    outerReceivedAtMs,
+    cleanupStartMonotonicMilliseconds,
+    runIds,
+  );
 
 export const registerIntegrationPrivateStorageRetirement = (
   retirement: Readonly<{
@@ -589,6 +657,12 @@ export const ownedIntegrationResources = (): Readonly<{
     runId: string;
     outerReceivedAtMs: number;
   }>[];
+  ptyReceipts: readonly Readonly<{
+    requestFingerprint: `sha256:${string}`;
+    returnedAtMs: number;
+    runId: string;
+    outerReceivedAtMs: number;
+  }>[];
   runIds: readonly string[];
 }> => {
   const capability = requireDisposableOuterHostCapability();
@@ -611,6 +685,11 @@ export const ownedIntegrationResources = (): Readonly<{
     ),
     headlessReceipts: Object.freeze(
       [...state.headlessReceipts.entries()]
+        .map(([runId, receipt]) => Object.freeze({ runId, ...receipt }))
+        .sort((left, right) => left.runId.localeCompare(right.runId)),
+    ),
+    ptyReceipts: Object.freeze(
+      [...state.ptyReceipts.entries()]
         .map(([runId, receipt]) => Object.freeze({ runId, ...receipt }))
         .sort((left, right) => left.runId.localeCompare(right.runId)),
     ),
@@ -790,6 +869,7 @@ export const executeIntegrationController = async (): Promise<void> => {
     candidateIdentities: new Set(),
     failureEvidence: new Map(),
     headlessReceipts: new Map(),
+    ptyReceipts: new Map(),
     requiredFailureEvidence: new Set(),
     privateStorageRetirements: new Map(),
     runIds: new Set(),

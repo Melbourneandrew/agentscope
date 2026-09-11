@@ -46,6 +46,73 @@ const scenario = manifest.scenarios.find(
   (value) => value.scenarioId === scenarioId,
 );
 if (!scenario) throw new Error("integration.fixture.scenario");
+const interactive = scenario.executionMode === "interactive";
+let interactiveFailurePhase = "bootstrap";
+if (interactive) {
+  if (process.hasUncaughtExceptionCaptureCallback())
+    throw new Error("integration.fixture.failure-capture");
+  process.setUncaughtExceptionCaptureCallback((error) => {
+    const message = error instanceof Error ? error.message : "";
+    const code = /^integration\.fixture\.[a-z0-9-]{1,96}$/u.test(message)
+      ? message
+      : `integration.fixture.${interactiveFailurePhase}`;
+    try {
+      writeFileSync(join(ledgerHome, "interactive-failure.txt"), `${code}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } finally {
+      process.exit(1);
+    }
+  });
+}
+if (
+  (interactive &&
+    (scenario.outputContract !== "semantic-pty" ||
+      process.stdin.isTTY !== true ||
+      process.stdout.isTTY !== true ||
+      process.stdout.columns !== 80 ||
+      process.stdout.rows !== 24)) ||
+  (!interactive &&
+    (scenario.executionMode !== "headless" ||
+      scenario.outputContract !== "jsonl" ||
+      process.stdin.isTTY === true ||
+      process.stdout.isTTY === true))
+)
+  throw new Error("integration.fixture.execution-mode");
+if (interactive) {
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  const input = await new Promise((resolve, reject) => {
+    let received = Buffer.alloc(0);
+    const settle = (error) => {
+      clearTimeout(timer);
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.off("error", onError);
+      process.stdin.pause();
+      if (error === undefined) resolve(received);
+      else reject(error);
+    };
+    const failInput = () =>
+      settle(new Error("integration.fixture.interactive-input"));
+    const onData = (chunk) => {
+      if (!Buffer.isBuffer(chunk) || received.length + chunk.length > 4)
+        return failInput();
+      received = Buffer.concat([received, chunk]);
+      if (received.length === 4) settle();
+    };
+    const onEnd = () => failInput();
+    const onError = () => failInput();
+    const timer = setTimeout(failInput, 5_000);
+    process.stdin.on("data", onData);
+    process.stdin.once("end", onEnd);
+    process.stdin.once("error", onError);
+    process.stdin.resume();
+  });
+  if (input.toString("utf8") !== "run\n")
+    throw new Error("integration.fixture.interactive-input");
+  interactiveFailurePhase = "services";
+}
 
 const observedLifecycle = [];
 let partial = {
@@ -67,9 +134,10 @@ const emitEvidence = (resultStatus) => {
     lifecycle: [...observedLifecycle],
     ...partial,
   };
-  console.log(
-    `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
-  );
+  if (!interactive)
+    console.log(
+      `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
+    );
   return evidence;
 };
 emitEvidence("partial");
@@ -119,6 +187,7 @@ await Promise.all([
   waitFor(`${ingestionEndpoint}/health`),
   waitFor(`${retrievalEndpoint}/health`),
 ]);
+interactiveFailurePhase = "models";
 writeFileSync(join(agentscopeHome, "installed.json"), '{"fixture":true}\n');
 recordLifecycle("install");
 writeFileSync(join(agentscopeHome, "config.json"), '{"fixture":true}\n');
@@ -261,10 +330,13 @@ const runRetrieval = async () => {
 };
 
 const modelRequests = await runModels();
+interactiveFailurePhase = "exports";
 recordLifecycle("execute");
 const [ingestionLedger, destinationObservation] = await runExports();
+interactiveFailurePhase = "retrieval";
 recordLifecycle("export");
 const retrievalLedger = await runRetrieval();
+interactiveFailurePhase = "evidence";
 recordLifecycle("retrieve");
 const rawObservations = {
   scenarioId,
@@ -282,6 +354,7 @@ partial = correlateProcessFixtureObservations(observations, {
 });
 emitEvidence("partial");
 
+interactiveFailurePhase = "cleanup";
 rmSync(join(harnessHome, "hook.json"));
 rmSync(join(agentscopeHome, "config.json"));
 rmSync(join(agentscopeHome, "installed.json"));
@@ -302,6 +375,21 @@ writeFileSync(
   join(ledgerHome, "fixture-lifecycle.json"),
   `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
 );
-console.log(
-  `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
+const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
+  "base64url",
 );
+writeFileSync(
+  join(ledgerHome, "fixture-result.json"),
+  `${JSON.stringify({ evidenceVersion: 1, encodedEvidence, scenarioId })}\n`,
+  { flag: "wx", mode: 0o600 },
+);
+if (interactive) {
+  interactiveFailurePhase = "completion";
+  await new Promise((resolve, reject) => {
+    process.stdout.write("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n", (error) =>
+      error === undefined || error === null ? resolve() : reject(error),
+    );
+  });
+  process.stdin.destroy();
+  process.exit(0);
+} else console.log(`AGENTSCOPE_FIXTURE_RESULT=${encodedEvidence}`);
