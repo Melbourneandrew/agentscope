@@ -270,7 +270,7 @@ describe("selected PTY transport", () => {
     async (seed) => {
       await expect(
         executeSelectedPtyTransportForTest(request(), seed),
-      ).rejects.toMatchObject({ code: "testkit.pty.transport" });
+      ).rejects.toMatchObject({ code: "testkit.pty.transport.semantic" });
     },
   );
 
@@ -600,14 +600,14 @@ describe("selected PTY transport", () => {
     });
   });
 
-  it.each(["malformed-exit", "unsupported-signal"] as const)(
-    "returns no completion receipt for %s",
-    async (seed) => {
-      await expect(
-        executeSelectedPtyTransportForTest(request(), seed),
-      ).rejects.toMatchObject({ code: "testkit.pty.transport" });
-    },
-  );
+  it.each([
+    ["malformed-exit", "testkit.pty.transport"],
+    ["unsupported-signal", "testkit.pty.transport.exit"],
+  ] as const)("returns no completion receipt for %s", async (seed, code) => {
+    await expect(
+      executeSelectedPtyTransportForTest(request(), seed),
+    ).rejects.toMatchObject({ code });
+  });
 
   it("aborts and joins the same selected PTY authority", async () => {
     const controller = new AbortController();

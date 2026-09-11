@@ -2102,7 +2102,8 @@ const armSelectedPty = (
         );
       }
     } catch (error) {
-      primaryFailure = trustedErrorCode(error) ?? "testkit.pty.transport";
+      primaryFailure =
+        trustedErrorCode(error) ?? "testkit.pty.transport.initialization";
     }
     let root: ProcessSnapshot | undefined;
     try {
@@ -2555,7 +2556,7 @@ const armSelectedPty = (
       exit.signal !== 9 &&
       exit.signal !== 15
     )
-      return fail("testkit.pty.transport");
+      return fail("testkit.pty.transport.exit");
     const inputJoined =
       actionIndex === request.interaction.actions.length &&
       inputOffset === input.length &&
@@ -2578,7 +2579,7 @@ const armSelectedPty = (
           finalSnapshot.semanticState !== "completed" &&
           !exactOutputCompleted))
     )
-      return fail("testkit.pty.transport");
+      return fail("testkit.pty.transport.semantic");
     const outcome =
       trigger === "aborted"
         ? "aborted"
