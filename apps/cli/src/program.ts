@@ -21,7 +21,7 @@ import { traceCommandModules } from "./trace-commands.js";
 import type { CliOutput } from "./presentation.js";
 import { writeCliDiagnostic } from "./presentation.js";
 
-const MISSING_INSTALL_HARNESS_DIAGNOSTIC = Object.freeze({
+const MISSING_HARNESS_DIAGNOSTIC = Object.freeze({
   category: "usage" as const,
   code: "cli.usage",
 });
@@ -206,8 +206,8 @@ export async function runCli(
         output,
         mode,
         error.code === "commander.missingArgument" &&
-          arguments_[0] === "install"
-          ? MISSING_INSTALL_HARNESS_DIAGNOSTIC
+          (arguments_[0] === "install" || arguments_[0] === "uninstall")
+          ? MISSING_HARNESS_DIAGNOSTIC
           : INVALID_INPUT_DIAGNOSTIC,
       );
     }

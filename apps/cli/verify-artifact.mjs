@@ -309,6 +309,26 @@ try {
       stateRule: "same-as-before",
     },
   ]);
+  const ordinal40 = installedContractPlan.cases[40];
+  assert.equal(ordinal40.caseId, "uninstall.missing-required");
+  assert.deepEqual(installedContractPlan.caseIds.slice(39, 42), [
+    "uninstall.unsupported-output",
+    "uninstall.missing-required",
+    "destination.configure.valid.human",
+  ]);
+  assert.deepEqual(ordinal40.steps, [
+    {
+      args: ["uninstall", "--output", "json"],
+      executionMode: "direct",
+      expectedDiagnostic: "cli.usage",
+      expectedOutcome: "exited",
+      expectedSignal: null,
+      expectedStatus: 2,
+      input: "",
+      outputRule: "json",
+      stateRule: "same-as-before",
+    },
+  ]);
   const directResult = {
     outcome: "exited",
     signal: null,
@@ -1273,14 +1293,15 @@ try {
     env: { HOME: ordinal35Home, USERPROFILE: ordinal35Home },
   };
   run(executable, ["init", "--yes", "--output", "json"], ordinal35Options);
-  const snapshotOrdinal35Home = () =>
-    regularFiles(ordinal35Home).map((path) => [
+  const snapshotContractHome = (home) =>
+    regularFiles(home).map((path) => [
       path,
-      lstatSync(join(ordinal35Home, path)).mode & 0o777,
+      lstatSync(join(home, path)).mode & 0o777,
       createHash("sha256")
-        .update(readFileSync(join(ordinal35Home, path)))
+        .update(readFileSync(join(home, path)))
         .digest("hex"),
     ]);
+  const snapshotOrdinal35Home = () => snapshotContractHome(ordinal35Home);
   const ordinal35Before = snapshotOrdinal35Home();
   const ordinal35Result = runRaw(
     executable,
@@ -1339,6 +1360,92 @@ try {
         { caseOrdinal: ordinal },
       ),
     );
+  }
+  const ordinal40Before = snapshotOrdinal35Home();
+  const ordinal40Result = runRaw(
+    executable,
+    ordinal40.steps[0].args,
+    ordinal35Options,
+  );
+  assert.equal(ordinal40Result.status, 2);
+  assert.equal(ordinal40Result.signal, null);
+  assert.equal(ordinal40Result.stdout, "");
+  assert.equal(
+    ordinal40Result.stderr,
+    '{"category":"usage","code":"cli.usage","command":"agentscope","schema":"agentscope.cli.diagnostic.v1"}\n',
+  );
+  assert.deepEqual(snapshotOrdinal35Home(), ordinal40Before);
+  assert.doesNotThrow(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      ordinal40.steps[0],
+      {
+        outcome: "exited",
+        signal: ordinal40Result.signal,
+        status: ordinal40Result.status,
+        stderr: ordinal40Result.stderr,
+        stdout: ordinal40Result.stdout,
+      },
+      installedManifest.version,
+      { caseOrdinal: 40 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      ordinal40.steps[0],
+      {
+        outcome: "exited",
+        signal: ordinal40Result.signal,
+        status: ordinal40Result.status,
+        stderr: ordinal40Result.stderr.replace(
+          "cli.usage",
+          "cli.input.invalid",
+        ),
+        stdout: ordinal40Result.stdout,
+      },
+      installedManifest.version,
+      { caseOrdinal: 40 },
+    ),
+  );
+  for (const ordinal of [39, 41]) {
+    const adjacentCase = installedContractPlan.cases[ordinal];
+    const adjacentHome = join(installRoot, `ordinal-${ordinal}-home`);
+    mkdirSync(adjacentHome);
+    const adjacentOptions = {
+      ...executableOptions,
+      env: { HOME: adjacentHome, USERPROFILE: adjacentHome },
+    };
+    run(executable, ["init", "--yes", "--output", "json"], adjacentOptions);
+    const adjacentBefore = snapshotContractHome(adjacentHome);
+    const adjacentResult = runRaw(
+      executable,
+      adjacentCase.steps[0].args,
+      adjacentOptions,
+    );
+    assert.deepEqual(snapshotContractHome(adjacentHome), adjacentBefore);
+    if (ordinal !== 41 || process.platform === "linux")
+      assert.doesNotThrow(() =>
+        oracleModule.validateInstalledCliInvocationOutputForTest(
+          adjacentCase.steps[0],
+          {
+            outcome: "exited",
+            signal: adjacentResult.signal,
+            status: adjacentResult.status,
+            stderr: adjacentResult.stderr,
+            stdout: adjacentResult.stdout,
+          },
+          installedManifest.version,
+          { caseOrdinal: ordinal },
+        ),
+      );
+    else {
+      assert.equal(adjacentResult.status, 5);
+      assert.equal(adjacentResult.signal, null);
+      assert.equal(adjacentResult.stdout, "");
+      assert.equal(
+        adjacentResult.stderr,
+        "error [destination.lifecycle-unavailable]\n",
+      );
+    }
   }
   assert.throws(() =>
     oracleModule.validateInstalledCliInvocationOutputForTest(

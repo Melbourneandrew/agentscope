@@ -164,6 +164,10 @@ export function authenticateRemovedCgroupPathsReasonForTesting(
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
+    | "observe-before-error-descriptor"
+    | "observe-before-error-malformed"
+    | "observe-before-error-missing"
+    | "observe-before-error-permission"
     | "observe-after"
     | "observe-after-error-descriptor"
     | "observe-after-error-missing"
@@ -321,7 +325,11 @@ export type SystemdAdmissionMainPidReason =
   | "main-pid-terminal-unit-state";
 
 export type SystemdTerminalWaitCgroupReason =
-  | "cgroup-observe-before"
+  | "cgroup-observe-before-unit-not-found"
+  | "cgroup-observe-before-command-permission"
+  | "cgroup-observe-before-malformed"
+  | "cgroup-observe-before-identity-substitution"
+  | "cgroup-observe-before-descriptor-state"
   | "cgroup-observe-after"
   | "cgroup-observe-after-unit-not-found"
   | "cgroup-observe-after-command-permission"

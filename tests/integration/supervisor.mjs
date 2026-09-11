@@ -125,7 +125,11 @@ const systemdRetirementAuthorityReasons = new Set([
 const systemdTerminalWaitAuthorityReasons = new Set([
   "unit-show",
   "unit-parse",
-  "cgroup-observe-before",
+  "cgroup-observe-before-unit-not-found",
+  "cgroup-observe-before-command-permission",
+  "cgroup-observe-before-malformed",
+  "cgroup-observe-before-identity-substitution",
+  "cgroup-observe-before-descriptor-state",
   "cgroup-observe-after",
   "cgroup-observe-after-unit-not-found",
   "cgroup-observe-after-command-permission",
@@ -2591,6 +2595,9 @@ const removedCgroupPathFailureReason = (error) =>
     : undefined;
 
 const syntheticCgroupObservationErrorCodes = Object.freeze({
+  "observe-before-error-descriptor": "EBADF",
+  "observe-before-error-missing": "ENOENT",
+  "observe-before-error-permission": "EACCES",
   "observe-after-error-descriptor": "EBADF",
   "observe-after-error-missing": "ENOENT",
   "observe-after-error-permission": "EACCES",
@@ -2751,6 +2758,33 @@ const syntheticTerminalCgroupObservation = (mode, observation) => {
   return undefined;
 };
 
+const observeTerminalCgroupBefore = (state, observeCgroup, recoverRemoved) => {
+  try {
+    return Object.freeze({ observation: observeCgroup(), removed: false });
+  } catch (error) {
+    const reason = classifyCgroupObservationFailure(error);
+    if (reason === "unit-not-found" || reason === "descriptor-state") {
+      try {
+        const observation = recoverRemoved();
+        if (observation.absent && observation.empty)
+          return Object.freeze({ observation, removed: true });
+      } catch {
+        // The original authenticated observation is the first cause. Recovery
+        // is only a closed proof attempt and cannot replace its attribution.
+      }
+    }
+    failSystemdLifecycle(
+      state,
+      "terminal-wait",
+      `cgroup-observe-before-${reason}`,
+    );
+  }
+};
+
+const cgroupObservationCanProveRemoval = (reason, beforeRemoved) =>
+  reason === "unit-not-found" ||
+  (beforeRemoved && reason === "descriptor-state");
+
 const observeTerminalSystemdUnit = async (
   state,
   observeCgroup,
@@ -2764,12 +2798,13 @@ const observeTerminalSystemdUnit = async (
   recoverRemoved = () =>
     authenticateRemovedCgroupPaths(state.cgroupPath, state.cgroupIdentity),
 ) => {
-  let before;
-  try {
-    before = observeCgroup();
-  } catch {
-    failSystemdLifecycle(state, "terminal-wait", "cgroup-observe-before");
-  }
+  const beforeAuthority = observeTerminalCgroupBefore(
+    state,
+    observeCgroup,
+    recoverRemoved,
+  );
+  const before = beforeAuthority.observation;
+  const beforeRemoved = beforeAuthority.removed;
   const facts = await observeFacts();
   let after;
   let removedTransition = false;
@@ -2778,7 +2813,7 @@ const observeTerminalSystemdUnit = async (
   } catch (error) {
     const reason = classifyCgroupObservationFailure(error);
     if (
-      reason === "unit-not-found" &&
+      cgroupObservationCanProveRemoval(reason, beforeRemoved) &&
       facts?.LoadState === "loaded" &&
       parseSystemdMainExitStatus(facts) !== undefined &&
       classifySystemdUnitImmutableAuthority(facts, state.authority) ===
@@ -2964,8 +2999,14 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       observations += 1;
       if (mode === "observe-before" && observations === 1) failSystemd();
       if (mode === "observe-after" && observations === 2) failSystemd();
+      if (mode === "observe-before-error-malformed" && observations === 1)
+        throw new SyntaxError("private");
       const errorCode = syntheticCgroupObservationErrorCodes[mode];
-      if (observations === 2 && errorCode !== undefined)
+      if (
+        errorCode !== undefined &&
+        ((mode.startsWith("observe-before-") && observations === 1) ||
+          (!mode.startsWith("observe-before-") && observations === 2))
+      )
         throw Object.assign(new Error("private"), { code: errorCode });
       if (
         observations === 1 &&

@@ -84,23 +84,25 @@ describe("agentscope root command", () => {
     expect(captured.stderr.join("")).not.toContain("CANARY");
   });
 
-  it("reports the root usage contract when install lacks its harness", async () => {
-    const captured = createCapturedOutput();
+  it("reports the root usage contract when a harness mutation lacks its harness", async () => {
     const createServices = vi.fn(() => {
       throw new Error("services must not be constructed");
     });
-    const exitCode = await runCli(["install", "--output", "json"], {
-      createServices,
-      output: captured.output,
-      version: "1.2.3",
-    });
+    for (const command of ["install", "uninstall"]) {
+      const captured = createCapturedOutput();
+      const exitCode = await runCli([command, "--output", "json"], {
+        createServices,
+        output: captured.output,
+        version: "1.2.3",
+      });
 
-    expect(exitCode).toBe(CLI_EXIT_CODES.usage);
+      expect(exitCode).toBe(CLI_EXIT_CODES.usage);
+      expect(captured.stdout).toEqual([]);
+      expect(captured.stderr).toEqual([
+        '{"category":"usage","code":"cli.usage","command":"agentscope","schema":"agentscope.cli.diagnostic.v1"}\n',
+      ]);
+    }
     expect(createServices).not.toHaveBeenCalled();
-    expect(captured.stdout).toEqual([]);
-    expect(captured.stderr).toEqual([
-      '{"category":"usage","code":"cli.usage","command":"agentscope","schema":"agentscope.cli.diagnostic.v1"}\n',
-    ]);
   });
 
   it("rejects unsafe argv before program construction", async () => {

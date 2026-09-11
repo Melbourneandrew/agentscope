@@ -885,7 +885,7 @@ export const createInstalledCliContractPlan = (
               2,
               "json",
               "same-as-before",
-              registration.id === "install"
+              registration.id === "install" || registration.id === "uninstall"
                 ? "cli.usage"
                 : requiredArgumentDiagnostic,
             ),

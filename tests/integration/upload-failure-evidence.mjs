@@ -157,7 +157,11 @@ const childSystemdRetirementReasons = Object.freeze([
 const childSystemdTerminalWaitReasons = Object.freeze([
   "unit-show",
   "unit-parse",
-  "cgroup-observe-before",
+  "cgroup-observe-before-unit-not-found",
+  "cgroup-observe-before-command-permission",
+  "cgroup-observe-before-malformed",
+  "cgroup-observe-before-identity-substitution",
+  "cgroup-observe-before-descriptor-state",
   "cgroup-observe-after",
   "cgroup-observe-after-unit-not-found",
   "cgroup-observe-after-command-permission",
