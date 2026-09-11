@@ -685,6 +685,12 @@ setInstalledContractFailureBoundary(
   "setup-workspace-root-authority",
   contractFailureCase(0),
 );
+// The offline install above is an authentication probe, not case state. npm
+// necessarily creates a node_modules/.bin symlink for the CLI. Remove the
+// completed probe before taking the complete writable-root snapshot so the
+// authority never has to admit a mutable symlink outside the case root.
+rmSync(installRoot, { force: true, recursive: true });
+rmSync(installHome, { force: true, recursive: true });
 for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   const caseFailure = contractFailureCase(caseIndex);
   setInstalledContractFailureBoundary(

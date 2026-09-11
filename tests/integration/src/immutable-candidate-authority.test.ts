@@ -1109,6 +1109,40 @@ globalThis.exercise = async (mode) => {
     );
   });
 
+  it("retires the npm install probe before writable-root authentication", () => {
+    const root = mkdtempSync(resolve(tmpdir(), "agentscope-contract-probe-"));
+    try {
+      const installRoot = resolve(root, "install");
+      const installBin = resolve(installRoot, "node_modules/.bin");
+      mkdirSync(installBin, { recursive: true });
+      symlinkSync(root, resolve(installBin, "agentscope"));
+      const input = { excludedPaths: [], roots: [root] };
+      expect(() => digestInstalledContractWritableAuthority(input)).toThrow(
+        "integration.immutable-candidate.authority",
+      );
+      rmSync(installRoot, { force: true, recursive: true });
+      expect(() =>
+        digestInstalledContractWritableAuthority(input),
+      ).not.toThrow();
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    const cleanup = runner.indexOf(
+      "rmSync(installRoot, { force: true, recursive: true });",
+    );
+    expect(cleanup).toBeGreaterThan(
+      runner.indexOf("JSON.stringify(runtimeInstalledManifest)"),
+    );
+    expect(cleanup).toBeLessThan(
+      runner.indexOf(
+        "digestInstalledContractWritableAuthority(externalWritableAuthority)",
+      ),
+    );
+  });
+
   it("reports only an exact trusted selected-headless failure code", () => {
     const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
       encoding: "utf8",
