@@ -48,6 +48,7 @@ const scenario = manifest.scenarios.find(
 );
 if (!scenario) throw new Error("integration.fixture.scenario");
 const interactive = scenario.executionMode === "interactive";
+let interactiveFailurePhase = "bootstrap";
 if (interactive) {
   if (process.hasUncaughtExceptionCaptureCallback())
     throw new Error("integration.fixture.failure-capture");
@@ -55,7 +56,7 @@ if (interactive) {
     const message = error instanceof Error ? error.message : "";
     const code = /^integration\.fixture\.[a-z0-9-]{1,96}$/u.test(message)
       ? message
-      : "integration.fixture.failed";
+      : `integration.fixture.${interactiveFailurePhase}`;
     try {
       writeFileSync(join(ledgerHome, "interactive-failure.txt"), `${code}\n`, {
         flag: "wx",
@@ -97,6 +98,7 @@ if (interactive) {
   }
   if (input.toString("utf8") !== "run\n")
     throw new Error("integration.fixture.interactive-input");
+  interactiveFailurePhase = "services";
 }
 
 const observedLifecycle = [];
@@ -172,6 +174,7 @@ await Promise.all([
   waitFor(`${ingestionEndpoint}/health`),
   waitFor(`${retrievalEndpoint}/health`),
 ]);
+interactiveFailurePhase = "models";
 writeFileSync(join(agentscopeHome, "installed.json"), '{"fixture":true}\n');
 recordLifecycle("install");
 writeFileSync(join(agentscopeHome, "config.json"), '{"fixture":true}\n');
@@ -314,10 +317,13 @@ const runRetrieval = async () => {
 };
 
 const modelRequests = await runModels();
+interactiveFailurePhase = "exports";
 recordLifecycle("execute");
 const [ingestionLedger, destinationObservation] = await runExports();
+interactiveFailurePhase = "retrieval";
 recordLifecycle("export");
 const retrievalLedger = await runRetrieval();
+interactiveFailurePhase = "evidence";
 recordLifecycle("retrieve");
 const rawObservations = {
   scenarioId,
@@ -335,6 +341,7 @@ partial = correlateProcessFixtureObservations(observations, {
 });
 emitEvidence("partial");
 
+interactiveFailurePhase = "cleanup";
 rmSync(join(harnessHome, "hook.json"));
 rmSync(join(agentscopeHome, "config.json"));
 rmSync(join(agentscopeHome, "installed.json"));
@@ -364,6 +371,7 @@ writeFileSync(
   { flag: "wx", mode: 0o600 },
 );
 if (interactive) {
+  interactiveFailurePhase = "completion";
   await new Promise((resolve, reject) => {
     process.stdout.write("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n", (error) =>
       error === undefined || error === null ? resolve() : reject(error),
