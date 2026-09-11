@@ -752,12 +752,16 @@ type SelectedContainerRuntime = Readonly<{
   ) => AdoptedZombieReapReceipt;
   sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   spawnProcess: (request: HeadlessExecutionRequest) => ChildProcess;
-  testReapObservedAt?: (
-    namespaceIdentity: string,
-    residual: readonly ProcessSnapshot[],
-    shutdownDeadlineMs: number,
-  ) => number;
 }>;
+type SelectedContainerTestReapClock = (
+  namespaceIdentity: string,
+  residual: readonly ProcessSnapshot[],
+  shutdownDeadlineMs: number,
+) => number;
+const selectedContainerTestReapClocks = new WeakMap<
+  SelectedContainerRuntime,
+  SelectedContainerTestReapClock
+>();
 type ProcessAuthorityRuntime = Pick<
   SelectedContainerRuntime,
   | "assertNamespaceIdentity"
@@ -2535,19 +2539,24 @@ const selectedContainerBackend = (
           throw error;
       }
       const residual = runtime.listProcesses(composition.namespaceIdentity);
-      const reapFailure = (): string | undefined =>
-        classifySelectedContainerReapFailure(
+      const reapFailure = (): string | undefined => {
+        const testReapObservedAt = readWeakMap(
+          selectedContainerTestReapClocks,
+          runtime,
+        );
+        return classifySelectedContainerReapFailure(
           residual.length,
           finalReapSettled,
-          runtime.testReapObservedAt === undefined
+          testReapObservedAt === undefined
             ? safeReflectApply(performanceNow, performance, [])
-            : runtime.testReapObservedAt(
+            : testReapObservedAt(
                 composition.namespaceIdentity,
                 residual,
                 request.monotonicShutdownDeadlineMs,
               ),
           request.monotonicShutdownDeadlineMs,
         );
+      };
       try {
         if (exit === undefined) {
           const terminal = await boundedInvoke(
@@ -3302,7 +3311,7 @@ const selectedContainerRuntimeForTest = (
     }
     child.emit("close", code, signal);
   };
-  return {
+  const runtime: SelectedContainerRuntime = {
     assertNamespaceIdentity: (expected) => {
       if (expected !== "pid:[synthetic-selected-container]")
         return fail("testkit.headless.observer.identity");
@@ -3491,28 +3500,26 @@ const selectedContainerRuntimeForTest = (
       });
       return emitter;
     },
-    ...(selectedReapBoundaryOffset === undefined
-      ? {}
-      : {
-          testReapObservedAt: (
-            namespaceIdentity: string,
-            residual: readonly ProcessSnapshot[],
-            shutdownDeadlineMs: number,
-          ) => {
-            if (
-              namespaceIdentity !== "pid:[synthetic-selected-container]" ||
-              residual.length === 0 ||
-              residual.length !== processes.size ||
-              residual.some(
-                ({ pid, startIdentity }) =>
-                  processes.get(pid)?.startIdentity !== startIdentity,
-              )
-            )
-              return fail("testkit.headless.observer.identity");
-            return shutdownDeadlineMs + selectedReapBoundaryOffset;
-          },
-        }),
   };
+  if (selectedReapBoundaryOffset !== undefined)
+    writeWeakMap(
+      selectedContainerTestReapClocks,
+      runtime,
+      (namespaceIdentity, residual, shutdownDeadlineMs) => {
+        if (
+          namespaceIdentity !== "pid:[synthetic-selected-container]" ||
+          residual.length === 0 ||
+          residual.length !== processes.size ||
+          residual.some(
+            ({ pid, startIdentity }) =>
+              processes.get(pid)?.startIdentity !== startIdentity,
+          )
+        )
+          return fail("testkit.headless.observer.identity");
+        return shutdownDeadlineMs + selectedReapBoundaryOffset;
+      },
+    );
+  return runtime;
 };
 
 /** Package-private selected-container lifecycle tests; never containment evidence. */

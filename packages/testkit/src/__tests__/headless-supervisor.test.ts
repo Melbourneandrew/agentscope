@@ -223,6 +223,32 @@ describe("selected-container lifecycle", () => {
     },
   );
 
+  it("does not discover the synthetic clock through runtime prototypes", async () => {
+    let inheritedClockCalls = 0;
+    Object.defineProperty(Object.prototype, "testReapObservedAt", {
+      configurable: true,
+      value: () => {
+        inheritedClockCalls += 1;
+        return Number.MAX_SAFE_INTEGER;
+      },
+    });
+    try {
+      const request = genericRequest();
+      request.monotonicStartupDeadlineMs = performance.now() + 30;
+      request.monotonicExecutionDeadlineMs = performance.now() + 50;
+      request.monotonicShutdownDeadlineMs = performance.now() + 150;
+      await expect(
+        executeSelectedContainerBackendForTest(
+          request,
+          "adopted-zombie-not-ready",
+        ),
+      ).rejects.toBeInstanceOf(HeadlessSupervisorError);
+      expect(inheritedClockCalls).toBe(0);
+    } finally {
+      Reflect.deleteProperty(Object.prototype, "testReapObservedAt");
+    }
+  });
+
   it("derives a conservative native deadline across clock-sample preemption", () => {
     const nativeBeforePreemption = 5_000_000_000n;
     const performanceAfterPreemption = 250;
