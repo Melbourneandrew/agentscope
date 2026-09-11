@@ -975,10 +975,23 @@ try {
       version: fixturePlan.expectedVersion,
     },
   );
+  const symbolResults = [canonicalResult];
+  symbolResults[Symbol("extra")] = true;
+  const symbolDigests = [beforeDigest];
+  symbolDigests[Symbol("extra")] = true;
+  const hostileDigestPrototype = [beforeDigest];
+  Object.setPrototypeOf(hostileDigestPrototype, {
+    every: () => {
+      throw new Error("hostile array prototype");
+    },
+  });
   for (const substitutedObservation of [
     { ...canonicalObservation, unexpected: true },
     { ...canonicalObservation, beforeStateDigest: "sha256:substituted" },
     { ...canonicalObservation, results: {} },
+    { ...canonicalObservation, results: symbolResults },
+    { ...canonicalObservation, afterStateDigests: symbolDigests },
+    { ...canonicalObservation, afterStateDigests: hostileDigestPrototype },
     Object.assign({ ...canonicalObservation }, { [Symbol("extra")]: true }),
     Object.defineProperty({ ...canonicalObservation }, "extra", {
       value: true,
@@ -997,6 +1010,23 @@ try {
     assertEvaluationFailure(
       installedIdentity,
       [substitutedObservation],
+      "per-case-observation-shape",
+      fixturePlan,
+    );
+  const symbolObservations = [canonicalObservation];
+  symbolObservations[Symbol("extra")] = true;
+  for (const substitutedObservations of [
+    symbolObservations,
+    new Proxy([canonicalObservation], {}),
+    new Proxy([canonicalObservation], {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("substituted observations");
+      },
+    }),
+  ])
+    assertEvaluationFailure(
+      installedIdentity,
+      substitutedObservations,
       "per-case-observation-shape",
       fixturePlan,
     );

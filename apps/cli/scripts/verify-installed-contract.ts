@@ -177,13 +177,20 @@ const plainRecord = (value: unknown): value is Record<string, unknown> =>
 const snapshotDenseDataArray = (
   value: unknown,
 ): readonly unknown[] | undefined => {
-  if (!Array.isArray(value) || utilTypes.isProxy(value)) return undefined;
+  if (
+    !Array.isArray(value) ||
+    utilTypes.isProxy(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype
+  )
+    return undefined;
   try {
     const array: unknown[] = value;
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (
-      Object.keys(descriptors).some(
-        (key) => key !== "length" && !/^(?:0|[1-9][0-9]*)$/u.test(key),
+      Reflect.ownKeys(descriptors).some(
+        (key) =>
+          typeof key !== "string" ||
+          (key !== "length" && !/^(?:0|[1-9][0-9]*)$/u.test(key)),
       ) ||
       Object.values(descriptors).some(
         (descriptor) => !Object.hasOwn(descriptor, "value"),
@@ -203,8 +210,6 @@ const snapshotDenseDataArray = (
     return undefined;
   }
 };
-const denseDataArray = (value: unknown): value is unknown[] =>
-  snapshotDenseDataArray(value) !== undefined;
 const exactKeys = (
   value: Record<string, unknown>,
   expected: readonly string[],
@@ -1960,24 +1965,31 @@ export const validateInstalledCliInvocationOutputForTest = (
 const validObservationShape = (
   contractCase: InstalledCliContractCase,
   observation: Record<string, unknown>,
-): boolean =>
-  exactKeys(
-    observation,
-    contractCase.setup === "initialized"
-      ? [
-          "afterStateDigests",
-          "beforeStateDigest",
-          "caseId",
-          "results",
-          "setupResult",
-        ]
-      : ["afterStateDigests", "beforeStateDigest", "caseId", "results"],
-  ) &&
-  observation.caseId === contractCase.caseId &&
-  denseDataArray(observation.results) &&
-  denseDataArray(observation.afterStateDigests) &&
-  validDigest(observation.beforeStateDigest) &&
-  observation.afterStateDigests.every(validDigest);
+): boolean => {
+  const results = snapshotDenseDataArray(observation.results);
+  const afterStateDigests = snapshotDenseDataArray(
+    observation.afterStateDigests,
+  );
+  return (
+    exactKeys(
+      observation,
+      contractCase.setup === "initialized"
+        ? [
+            "afterStateDigests",
+            "beforeStateDigest",
+            "caseId",
+            "results",
+            "setupResult",
+          ]
+        : ["afterStateDigests", "beforeStateDigest", "caseId", "results"],
+    ) &&
+    observation.caseId === contractCase.caseId &&
+    results !== undefined &&
+    afterStateDigests !== undefined &&
+    validDigest(observation.beforeStateDigest) &&
+    afterStateDigests.every(validDigest)
+  );
+};
 
 const evaluateSetupReceipt = (
   contractCase: InstalledCliContractCase,
@@ -2076,12 +2088,15 @@ export const evaluateInstalledCliContract = (
       "inventory-candidate-digest-mismatch",
     );
   }
-  if (observations.length < plan.caseIds.length)
+  const receivedObservations = snapshotDenseDataArray(observations);
+  if (receivedObservations === undefined)
+    return failInstalledContractEvaluation("per-case-observation-shape");
+  if (receivedObservations.length < plan.caseIds.length)
     return failInstalledContractEvaluation("missing-ordinal");
-  if (observations.length > plan.caseIds.length)
+  if (receivedObservations.length > plan.caseIds.length)
     return failInstalledContractEvaluation("unexpected-extra-evidence");
   const observationRecords: Record<string, unknown>[] = [];
-  for (const observation of observations) {
+  for (const observation of receivedObservations) {
     const record = snapshotPlainRecord(observation);
     if (record === undefined)
       return failInstalledContractEvaluation("per-case-observation-shape");
