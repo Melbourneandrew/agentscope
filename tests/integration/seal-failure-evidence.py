@@ -373,7 +373,32 @@ def bridge_create(arguments: list[str]) -> None:
             or status.st_gid != os.getgid()
         ):
             fail()
-        sys.stdout.write('{"status":"created"}\n')
+        directory_status = os.fstat(directory_descriptor)
+        named_directory = os.stat(
+            directory_name, dir_fd=workspace_descriptor, follow_symlinks=False
+        )
+        named_file = os.stat(
+            BRIDGE_FILE, dir_fd=directory_descriptor, follow_symlinks=False
+        )
+        if not same_identity(directory_status, named_directory) or not same_identity(
+            status, named_file
+        ):
+            fail()
+        identity = ":".join(
+            str(value)
+            for value in (
+                directory_status.st_dev,
+                directory_status.st_ino,
+                directory_status.st_uid,
+                directory_status.st_gid,
+                status.st_dev,
+                status.st_ino,
+                status.st_uid,
+                status.st_gid,
+                status.st_size,
+            )
+        )
+        sys.stdout.write(f'{{"status":"created:{identity}"}}\n')
     except BaseException:
         if file_descriptor is not None:
             os.close(file_descriptor)
@@ -479,6 +504,87 @@ def bridge_remove(arguments: list[str]) -> None:
     sys.stdout.write('{"status":"removed"}\n')
 
 
+def bridge_abort(arguments: list[str]) -> None:
+    if len(arguments) != 10:
+        fail()
+    directory_name, *identity_values = arguments
+    expected = tuple(
+        parse_unsigned(value, 2**63 - 1) for value in identity_values
+    )
+    if (
+        len(directory_name) != 51
+        or not directory_name.startswith(".agentscope-failure-upload-")
+        or any(character not in "0123456789abcdef" for character in directory_name[27:])
+    ):
+        fail()
+    workspace_descriptor = 3
+    directory_descriptor = os.open(
+        directory_name,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
+        dir_fd=workspace_descriptor,
+    )
+    try:
+        directory_status = os.fstat(directory_descriptor)
+        named_directory = os.stat(
+            directory_name, dir_fd=workspace_descriptor, follow_symlinks=False
+        )
+        file_descriptor = os.open(
+            BRIDGE_FILE,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=directory_descriptor,
+        )
+        try:
+            file_status = os.fstat(file_descriptor)
+            named_file = os.stat(
+                BRIDGE_FILE, dir_fd=directory_descriptor, follow_symlinks=False
+            )
+            observed = (
+                directory_status.st_dev,
+                directory_status.st_ino,
+                directory_status.st_uid,
+                directory_status.st_gid,
+                file_status.st_dev,
+                file_status.st_ino,
+                file_status.st_uid,
+                file_status.st_gid,
+                file_status.st_size,
+            )
+            if (
+                observed != expected
+                or not same_identity(directory_status, named_directory)
+                or not same_identity(file_status, named_file)
+                or not stat.S_ISDIR(directory_status.st_mode)
+                or not stat.S_ISREG(file_status.st_mode)
+            ):
+                fail()
+        finally:
+            os.close(file_descriptor)
+        os.unlink(BRIDGE_FILE, dir_fd=directory_descriptor)
+        os.fsync(directory_descriptor)
+        if os.listdir(directory_descriptor):
+            fail()
+        named_directory = os.stat(
+            directory_name, dir_fd=workspace_descriptor, follow_symlinks=False
+        )
+        if (
+            named_directory.st_dev,
+            named_directory.st_ino,
+            named_directory.st_uid,
+            named_directory.st_gid,
+        ) != expected[:4]:
+            fail()
+        os.rmdir(directory_name, dir_fd=workspace_descriptor)
+        os.fsync(workspace_descriptor)
+        try:
+            os.stat(directory_name, dir_fd=workspace_descriptor, follow_symlinks=False)
+            fail()
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(directory_descriptor)
+    sys.stdout.write('{"status":"aborted"}\n')
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         fail()
@@ -492,6 +598,8 @@ def main() -> None:
         bridge_create(sys.argv[2:])
     elif sys.argv[1] == "bridge-remove":
         bridge_remove(sys.argv[2:])
+    elif sys.argv[1] == "bridge-abort":
+        bridge_abort(sys.argv[2:])
     else:
         fail()
 

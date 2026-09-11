@@ -56,7 +56,9 @@ type UploadFailureEvidence = (options: {
 }>;
 const invokeUpload = uploadFailureEvidence as unknown as UploadFailureEvidence;
 const createBridge = createRegularUploadBridgeForTest as unknown as (options: {
+  deadline: bigint;
   digest: string;
+  nowNanoseconds: () => bigint;
   sealerSource: Buffer;
   size: number;
   sourceDescriptor: number;
@@ -447,7 +449,9 @@ describe("failure evidence uploader", () => {
     const owned = fixture();
     try {
       const bridge = createBridge({
+        deadline: process.hrtime.bigint() + 30_000_000_000n,
         digest: digest(owned.content),
+        nowNanoseconds: () => process.hrtime.bigint(),
         sealerSource,
         size: owned.content.length,
         sourceDescriptor: owned.descriptor,
@@ -470,7 +474,9 @@ describe("failure evidence uploader", () => {
     try {
       expect(() =>
         createBridge({
+          deadline: process.hrtime.bigint() + 30_000_000_000n,
           digest: `sha256:${"0".repeat(64)}`,
+          nowNanoseconds: () => process.hrtime.bigint(),
           sealerSource,
           size: owned.content.length,
           sourceDescriptor: owned.descriptor,
@@ -482,6 +488,95 @@ describe("failure evidence uploader", () => {
           entry.startsWith(".agentscope-failure-upload-"),
         ),
       ).toEqual([]);
+    } finally {
+      closeSync(owned.descriptor);
+      rmSync(owned.root, { force: true, recursive: true });
+    }
+  });
+
+  it("removes the exact created inode after post-create validation fails", () => {
+    const owned = fixture();
+    try {
+      const original = sealerSource.toString("utf8");
+      const needle =
+        '        sys.stdout.write(f\'{{"status":"created:{identity}"}}\\n\')';
+      const substituted = original.replace(
+        needle,
+        `        os.fchmod(directory_descriptor, 0o755)\n${needle}`,
+      );
+      expect(substituted).not.toBe(original);
+      expect(() =>
+        createBridge({
+          deadline: process.hrtime.bigint() + 30_000_000_000n,
+          digest: digest(owned.content),
+          nowNanoseconds: () => process.hrtime.bigint(),
+          sealerSource: Buffer.from(substituted),
+          size: owned.content.length,
+          sourceDescriptor: owned.descriptor,
+          workspace: owned.root,
+        }),
+      ).toThrow("integration.controller.failure-evidence-upload");
+      expect(
+        readdirSync(owned.root).filter((entry) =>
+          entry.startsWith(".agentscope-failure-upload-"),
+        ),
+      ).toEqual([]);
+    } finally {
+      closeSync(owned.descriptor);
+      rmSync(owned.root, { force: true, recursive: true });
+    }
+  });
+
+  it("kills and joins a stalled bridge helper inside the absolute deadline", () => {
+    const owned = fixture();
+    const started = Date.now();
+    try {
+      expect(() =>
+        createBridge({
+          deadline: process.hrtime.bigint() + 650_000_000n,
+          digest: digest(owned.content),
+          nowNanoseconds: () => process.hrtime.bigint(),
+          sealerSource: Buffer.from("import time; time.sleep(10)\n"),
+          size: owned.content.length,
+          sourceDescriptor: owned.descriptor,
+          workspace: owned.root,
+        }),
+      ).toThrow("integration.controller.failure-evidence-upload");
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(
+        readdirSync(owned.root).filter((entry) =>
+          entry.startsWith(".agentscope-failure-upload-"),
+        ),
+      ).toEqual([]);
+    } finally {
+      closeSync(owned.descriptor);
+      rmSync(owned.root, { force: true, recursive: true });
+    }
+  });
+
+  it("does not invoke the artifact client after authority expires", async () => {
+    const owned = fixture();
+    const uploadArtifact = vi.fn(() =>
+      Promise.resolve({ digest: "a".repeat(64), id: 17, size: 321 }),
+    );
+    let sample = 0;
+    try {
+      const arguments_ = [...owned.arguments_];
+      arguments_[9] = "2000000000";
+      await expect(
+        invokeUpload({
+          arguments_,
+          client: { uploadArtifact },
+          nowNanoseconds: () => {
+            sample += 1;
+            return sample < 3 ? 0n : 2_000_000_000n;
+          },
+          probe: () => Promise.resolve(),
+          sealerSource,
+          workspace: owned.root,
+        }),
+      ).rejects.toThrow("integration.controller.failure-evidence-upload");
+      expect(uploadArtifact).not.toHaveBeenCalled();
     } finally {
       closeSync(owned.descriptor);
       rmSync(owned.root, { force: true, recursive: true });

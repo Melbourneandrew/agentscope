@@ -25,6 +25,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const MAXIMUM_BYTES = 1024 * 1024;
+const BRIDGE_CLEANUP_RESERVE_NANOSECONDS = 500_000_000n;
 const CHILD_OUTPUT_STAGE_OVERHEAD_BYTES = 4096;
 const CHILD_OUTPUT_MAXIMUM_BYTES =
   MAXIMUM_BYTES + CHILD_OUTPUT_STAGE_OVERHEAD_BYTES;
@@ -622,20 +623,58 @@ const sameBridgeIdentity = (left, right) =>
   left.mode === (right.mode & 0o7777) &&
   left.nlink === right.nlink &&
   left.size === right.size;
-const runBridgeHelper = ({ arguments_, sealerSource, stdio, terminal }) => {
+const remainingHelperMilliseconds = (
+  deadline,
+  nowNanoseconds,
+  reserveNanoseconds = 0n,
+) => {
+  const remaining = deadline - reserveNanoseconds - nowNanoseconds();
+  if (remaining < 1_000_000n) fail();
+  const milliseconds = Number(remaining / 1_000_000n);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1) fail();
+  return milliseconds;
+};
+const runBridgeHelper = ({
+  arguments_,
+  deadline,
+  nowNanoseconds,
+  reserveNanoseconds = 0n,
+  sealerSource,
+  stdio,
+}) => {
   const result = spawnSync(
     "/usr/bin/python3",
     ["-c", sealerSource.toString("utf8"), ...arguments_],
-    { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe", ...stdio] },
+    {
+      env: {},
+      maxBuffer: 1024,
+      killSignal: "SIGKILL",
+      stdio: ["ignore", "pipe", "pipe", ...stdio],
+      timeout: remainingHelperMilliseconds(
+        deadline,
+        nowNanoseconds,
+        reserveNanoseconds,
+      ),
+    },
   );
   if (
     result.error !== undefined ||
     result.status !== 0 ||
     result.signal !== null ||
-    result.stderr.length !== 0 ||
-    result.stdout.toString("utf8") !== terminal
+    result.stderr.length !== 0
   )
     fail();
+  return result.stdout.toString("utf8");
+};
+const parseBridgeCreatedReceipt = (value) => {
+  const match =
+    /^\{"status":"created:([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+):([0-9]+)"\}\n$/u.exec(
+      value,
+    );
+  if (match === null) fail();
+  return Object.freeze(
+    match.slice(1).map((field) => parseUnsigned(field, 2 ** 53 - 1)),
+  );
 };
 const closeBridgeDescriptors = (descriptors) => {
   let failure;
@@ -649,9 +688,11 @@ const closeBridgeDescriptors = (descriptors) => {
   }
   if (failure !== undefined) throw failure;
 };
-/* eslint-disable max-lines-per-function -- the bridge keeps one closed creation/revalidation/removal authority together. */
+/* eslint-disable complexity, max-lines-per-function -- the bridge keeps one closed creation/revalidation/removal authority together. */
 const createRegularUploadBridge = ({
+  deadline,
   digest,
+  nowNanoseconds,
   sealerSource,
   size,
   sourceDescriptor,
@@ -671,6 +712,8 @@ const createRegularUploadBridge = ({
   );
   let directoryDescriptor;
   let fileDescriptor;
+  let creationIdentity;
+  let directoryName;
   try {
     if (
       !workspaceStatus.isDirectory() ||
@@ -678,14 +721,18 @@ const createRegularUploadBridge = ({
       !sameManifestIdentity(workspaceStatus, fstatSync(workspaceDescriptor))
     )
       fail();
-    const directoryName = `.agentscope-failure-upload-${randomBytes(12).toString("hex")}`;
+    directoryName = `.agentscope-failure-upload-${randomBytes(12).toString("hex")}`;
     const directoryPath = resolve(workspace, directoryName);
-    runBridgeHelper({
-      arguments_: ["bridge-create", directoryName, String(size), digest],
-      sealerSource,
-      stdio: [workspaceDescriptor, sourceDescriptor],
-      terminal: '{"status":"created"}\n',
-    });
+    creationIdentity = parseBridgeCreatedReceipt(
+      runBridgeHelper({
+        arguments_: ["bridge-create", directoryName, String(size), digest],
+        deadline,
+        nowNanoseconds,
+        reserveNanoseconds: BRIDGE_CLEANUP_RESERVE_NANOSECONDS,
+        sealerSource,
+        stdio: [workspaceDescriptor, sourceDescriptor],
+      }),
+    );
     const directoryStatus = lstatSync(directoryPath);
     const directoryIdentity = bridgeIdentity(directoryStatus);
     const workspaceBridgeIdentity = bridgeIdentity(
@@ -701,7 +748,14 @@ const createRegularUploadBridge = ({
       (directoryStatus.mode & 0o7777) !== 0o700 ||
       directoryStatus.uid !== process.getuid?.() ||
       directoryStatus.gid !== process.getgid?.() ||
-      !sameManifestIdentity(directoryStatus, fstatSync(directoryDescriptor))
+      !sameManifestIdentity(directoryStatus, fstatSync(directoryDescriptor)) ||
+      JSON.stringify(creationIdentity.slice(0, 4)) !==
+        JSON.stringify([
+          directoryStatus.dev,
+          directoryStatus.ino,
+          directoryStatus.uid,
+          directoryStatus.gid,
+        ])
     )
       fail();
     const path = resolve(directoryPath, "failure-evidence.json");
@@ -716,6 +770,14 @@ const createRegularUploadBridge = ({
       identity.uid !== directoryStatus.uid ||
       identity.gid !== directoryStatus.gid ||
       identity.size !== size ||
+      JSON.stringify(creationIdentity.slice(4)) !==
+        JSON.stringify([
+          identity.dev,
+          identity.ino,
+          identity.uid,
+          identity.gid,
+          identity.size,
+        ]) ||
       !sameBridgeIdentity(identity, lstatSync(path)) ||
       `sha256:${createHash("sha256").update(content).digest("hex")}` !== digest
     )
@@ -766,27 +828,31 @@ const createRegularUploadBridge = ({
       remove() {
         if (removed) fail();
         revalidateBridge();
-        runBridgeHelper({
-          arguments_: [
-            "bridge-remove",
-            directoryName,
-            String(identity.dev),
-            String(identity.ino),
-            String(identity.uid),
-            String(identity.gid),
-            String(identity.mode),
-            String(identity.nlink),
-            String(identity.size),
-            String(directoryIdentity.dev),
-            String(directoryIdentity.ino),
-            String(directoryIdentity.uid),
-            String(directoryIdentity.gid),
-            String(directoryIdentity.mode),
-          ],
-          sealerSource,
-          stdio: [workspaceDescriptor, directoryDescriptor, fileDescriptor],
-          terminal: '{"status":"removed"}\n',
-        });
+        if (
+          runBridgeHelper({
+            arguments_: [
+              "bridge-remove",
+              directoryName,
+              String(identity.dev),
+              String(identity.ino),
+              String(identity.uid),
+              String(identity.gid),
+              String(identity.mode),
+              String(identity.nlink),
+              String(identity.size),
+              String(directoryIdentity.dev),
+              String(directoryIdentity.ino),
+              String(directoryIdentity.uid),
+              String(directoryIdentity.gid),
+              String(directoryIdentity.mode),
+            ],
+            deadline,
+            nowNanoseconds,
+            sealerSource,
+            stdio: [workspaceDescriptor, directoryDescriptor, fileDescriptor],
+          }) !== '{"status":"removed"}\n'
+        )
+          fail();
         removed = true;
         const descriptors = [
           fileDescriptor,
@@ -799,6 +865,27 @@ const createRegularUploadBridge = ({
       },
     });
   } catch (error) {
+    if (creationIdentity !== undefined && directoryName !== undefined) {
+      try {
+        if (
+          runBridgeHelper({
+            arguments_: [
+              "bridge-abort",
+              directoryName,
+              ...creationIdentity.map(String),
+            ],
+            deadline,
+            nowNanoseconds,
+            sealerSource,
+            stdio: [workspaceDescriptor],
+          }) !== '{"status":"aborted"}\n'
+        )
+          fail();
+      } catch {
+        // The originating failure remains primary; cleanup ambiguity remains
+        // fail-closed and is contained by the disposable outer host.
+      }
+    }
     try {
       closeBridgeDescriptors([
         fileDescriptor,
@@ -812,6 +899,7 @@ const createRegularUploadBridge = ({
     throw error;
   }
 };
+/* eslint-enable complexity */
 /* eslint-enable max-lines-per-function */
 export const createRegularUploadBridgeForTest = (options) =>
   createRegularUploadBridge(options);
@@ -1090,7 +1178,9 @@ const uploadFailureEvidenceImplementation = async ({
     fail();
   await probe();
   const bridge = createRegularUploadBridge({
+    deadline,
     digest: values.digest,
+    nowNanoseconds,
     sealerSource,
     size,
     sourceDescriptor: descriptor,
@@ -1110,6 +1200,7 @@ const uploadFailureEvidenceImplementation = async ({
   let primary;
   try {
     bridge.revalidate();
+    if (deadline <= nowNanoseconds()) fail();
     response = await authority.uploadArtifact(
       values.name,
       [bridge.path],
@@ -2037,6 +2128,7 @@ export const finalizeFailureEvidence = async ({
       fail();
     mark("artifact-upload");
     const sourceStartTicks = processStartTicks();
+    const uploadDeadlineNanoseconds = BigInt(deadlineNanoseconds);
     const probe = async () => {
       const result = spawnSync(
         "/usr/bin/python3",
@@ -2050,7 +2142,17 @@ export const finalizeFailureEvidence = async ({
           bundleDigest,
           sourceStartTicks,
         ],
-        { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"] },
+        {
+          env: {},
+          maxBuffer: 1024,
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: remainingHelperMilliseconds(
+            uploadDeadlineNanoseconds,
+            process.hrtime.bigint,
+            BRIDGE_CLEANUP_RESERVE_NANOSECONDS,
+          ),
+          killSignal: "SIGKILL",
+        },
       );
       if (
         result.error !== undefined ||
