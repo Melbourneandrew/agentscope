@@ -21,6 +21,7 @@ import {
   type HeadlessSupervisorCapability,
 } from "../headless-supervisor.js";
 import {
+  classifySelectedContainerReapFailureForTest,
   composeSelectedContainerHeadlessSupervisorCapability,
   deriveNativeMonotonicDeadlineForTest,
   executeSelectedContainerBackendForTest,
@@ -169,6 +170,33 @@ describe("selected headless supervisor protocol", () => {
 // The selected lifecycle keeps its deadline, process-set, and receipt oracle together.
 // eslint-disable-next-line max-lines-per-function
 describe("selected-container lifecycle", () => {
+  it.each([
+    [999.999, "testkit.headless.observer.reap.residual-membership"],
+    [1_000, "testkit.headless.reconciliation.deadline"],
+    [1_000.001, "testkit.headless.reconciliation.deadline"],
+  ] as const)(
+    "preserves shutdown deadline precedence at %s",
+    (observedAtMs, code) => {
+      expect(
+        classifySelectedContainerReapFailureForTest(
+          1,
+          true,
+          observedAtMs,
+          1_000,
+        ),
+      ).toBe(code);
+    },
+  );
+
+  it("keeps unsettled observer reaping distinct while time remains", () => {
+    expect(
+      classifySelectedContainerReapFailureForTest(1, false, 999.999, 1_000),
+    ).toBe("testkit.headless.observer.reap.deadline");
+    expect(
+      classifySelectedContainerReapFailureForTest(0, false, 1_001, 1_000),
+    ).toBeUndefined();
+  });
+
   it("derives a conservative native deadline across clock-sample preemption", () => {
     const nativeBeforePreemption = 5_000_000_000n;
     const performanceAfterPreemption = 250;

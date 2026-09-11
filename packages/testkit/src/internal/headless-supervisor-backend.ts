@@ -1513,6 +1513,19 @@ const reapAdoptedZombies = (
   }
   return settled;
 };
+const classifySelectedContainerReapFailure = (
+  residualCount: number,
+  reapSettled: boolean,
+  observedAtMs: number,
+  shutdownDeadlineMs: number,
+): string | undefined => {
+  if (residualCount === 0) return undefined;
+  if (observedAtMs >= shutdownDeadlineMs)
+    return "testkit.headless.reconciliation.deadline";
+  return reapSettled
+    ? "testkit.headless.observer.reap.residual-membership"
+    : "testkit.headless.observer.reap.deadline";
+};
 const productionContainerRuntime = (
   authority: ImmutableCandidateAuthority,
 ): SelectedContainerRuntime => {
@@ -2517,12 +2530,13 @@ const selectedContainerBackend = (
           throw error;
       }
       const residual = runtime.listProcesses(composition.namespaceIdentity);
-      const reapFailure =
-        residual.length === 0
-          ? undefined
-          : finalReapSettled
-            ? "testkit.headless.observer.reap.residual-membership"
-            : "testkit.headless.observer.reap.deadline";
+      const reapFailure = (): string | undefined =>
+        classifySelectedContainerReapFailure(
+          residual.length,
+          finalReapSettled,
+          safeReflectApply(performanceNow, performance, []),
+          request.monotonicShutdownDeadlineMs,
+        );
       try {
         if (exit === undefined) {
           const terminal = await boundedInvoke(
@@ -2539,10 +2553,12 @@ const selectedContainerBackend = (
           "testkit.headless.reconciliation.deadline",
         );
       } catch (error) {
-        if (reapFailure !== undefined) return fail(reapFailure);
+        const failure = reapFailure();
+        if (failure !== undefined) return fail(failure);
         throw error;
       }
-      if (reapFailure !== undefined) return fail(reapFailure);
+      const failure = reapFailure();
+      if (failure !== undefined) return fail(failure);
       const settledAtMs = safeReflectApply(performanceNow, performance, []);
       const capturedStdout = stdout.read();
       const capturedStderr = stderr.read();
@@ -3171,6 +3187,10 @@ export const readScriptedHeadlessLaunchCountForTest = (): number =>
 /** Package-private cancellation-delivery counter; never execution evidence. */
 export const readScriptedHeadlessCancellationDeliveriesForTest = (): number =>
   scriptedCancellationDeliveries;
+
+/** Package-private deadline precedence oracle; never execution evidence. */
+export const classifySelectedContainerReapFailureForTest =
+  classifySelectedContainerReapFailure;
 
 /** Package-private generic production-path protocol evidence. */
 export const executeScriptedSelectedHeadlessProcessForTest = async (
