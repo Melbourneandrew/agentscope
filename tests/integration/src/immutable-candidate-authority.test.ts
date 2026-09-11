@@ -582,14 +582,9 @@ describe("immutable candidate authority", () => {
   it("binds closed observer-reap and aggregate-evaluation reasons", () => {
     const observerReasons = [
       "deadline",
-      "handle-close",
-      "kill",
       "leader-identity",
       "observer-stop-join",
-      "output-drain",
       "residual-membership",
-      "stop-request",
-      "term",
     ].map((reason) => `testkit.headless.observer.reap.${reason}`);
     const evaluationReasons = [
       "aggregate-count-order-digest",
@@ -607,6 +602,16 @@ describe("immutable candidate authority", () => {
     expect(installedContractFailurePredicates["case-execution"]).toContain(
       "testkit.headless.observer.reap",
     );
+    for (const unproduced of [
+      "handle-close",
+      "kill",
+      "output-drain",
+      "stop-request",
+      "term",
+    ])
+      expect(
+        installedContractFailurePredicates["case-execution"],
+      ).not.toContain(`testkit.headless.observer.reap.${unproduced}`);
     expect(installedContractFailurePredicates["aggregate-evaluation"]).toEqual(
       evaluationReasons,
     );
