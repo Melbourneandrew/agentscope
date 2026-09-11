@@ -165,8 +165,10 @@ export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
     | "observe-before-error-descriptor"
+    | "observe-before-error-descriptor-recovery"
     | "observe-before-error-malformed"
     | "observe-before-error-missing"
+    | "observe-before-error-missing-recovery"
     | "observe-before-error-permission"
     | "observe-after"
     | "observe-after-error-descriptor"
@@ -330,7 +332,6 @@ export type SystemdTerminalWaitCgroupReason =
   | "cgroup-observe-before-malformed"
   | "cgroup-observe-before-identity-substitution"
   | "cgroup-observe-before-descriptor-state"
-  | "cgroup-observe-after"
   | "cgroup-observe-after-unit-not-found"
   | "cgroup-observe-after-command-permission"
   | "cgroup-observe-after-malformed"

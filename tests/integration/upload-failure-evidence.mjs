@@ -162,7 +162,6 @@ const childSystemdTerminalWaitReasons = Object.freeze([
   "cgroup-observe-before-malformed",
   "cgroup-observe-before-identity-substitution",
   "cgroup-observe-before-descriptor-state",
-  "cgroup-observe-after",
   "cgroup-observe-after-unit-not-found",
   "cgroup-observe-after-command-permission",
   "cgroup-observe-after-malformed",

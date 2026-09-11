@@ -130,7 +130,6 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "cgroup-observe-before-malformed",
   "cgroup-observe-before-identity-substitution",
   "cgroup-observe-before-descriptor-state",
-  "cgroup-observe-after",
   "cgroup-observe-after-unit-not-found",
   "cgroup-observe-after-command-permission",
   "cgroup-observe-after-malformed",
@@ -2596,7 +2595,9 @@ const removedCgroupPathFailureReason = (error) =>
 
 const syntheticCgroupObservationErrorCodes = Object.freeze({
   "observe-before-error-descriptor": "EBADF",
+  "observe-before-error-descriptor-recovery": "EBADF",
   "observe-before-error-missing": "ENOENT",
+  "observe-before-error-missing-recovery": "ENOENT",
   "observe-before-error-permission": "EACCES",
   "observe-after-error-descriptor": "EBADF",
   "observe-after-error-missing": "ENOENT",
@@ -3051,6 +3052,9 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       authenticate,
       () => {
         const recoveryReason = {
+          "observe-before-error-descriptor-recovery":
+            "removed-retained-identity",
+          "observe-before-error-missing-recovery": "removed-path-present",
           "observe-after-unit-not-found-recovery-parent":
             "removed-parent-identity",
           "observe-after-unit-not-found-recovery-retained":

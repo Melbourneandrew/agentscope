@@ -3723,7 +3723,6 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
     "cgroup-observe-before-malformed",
     "cgroup-observe-before-identity-substitution",
     "cgroup-observe-before-descriptor-state",
-    "cgroup-observe-after",
     "cgroup-observe-after-unit-not-found",
     "cgroup-observe-after-command-permission",
     "cgroup-observe-after-malformed",
@@ -3771,7 +3770,6 @@ it("admits only closed terminal-wait authority diagnostics", () => {
     "cgroup-observe-before-malformed",
     "cgroup-observe-before-identity-substitution",
     "cgroup-observe-before-descriptor-state",
-    "cgroup-observe-after",
     "cgroup-transition-retained-empty",
     "cgroup-transition-retained-populated",
     "cgroup-transition-retained-membership",
@@ -4250,13 +4248,6 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
       "transition-monotonic-removal-empty",
     ),
   ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
-  for (const mode of [
-    "observe-before-error-missing",
-    "observe-before-error-descriptor",
-  ] as const)
-    await expect(
-      exerciseTerminalCgroupDiagnosticForTesting(mode),
-    ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
   await expect(
     exerciseTerminalCgroupDiagnosticForTesting(
       "observe-after-unit-not-found-transition",
@@ -4301,6 +4292,32 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     "lifecycle:terminal-wait:cgroup-transition-retained-populated-substituted",
   ])
     expect(validSystemdLifecyclePredicate(forged)).toBe(false);
+});
+
+it("preserves first observation authority across bounded removal recovery", async () => {
+  for (const mode of [
+    "observe-before-error-missing",
+    "observe-before-error-descriptor",
+  ] as const)
+    await expect(
+      exerciseTerminalCgroupDiagnosticForTesting(mode),
+    ).resolves.toEqual({ cleanupAttempts: 1, predicate: undefined });
+  for (const [mode, reason] of [
+    [
+      "observe-before-error-missing-recovery",
+      "cgroup-observe-before-unit-not-found",
+    ],
+    [
+      "observe-before-error-descriptor-recovery",
+      "cgroup-observe-before-descriptor-state",
+    ],
+  ] as const)
+    await expect(
+      exerciseTerminalCgroupDiagnosticForTesting(mode),
+    ).resolves.toEqual({
+      cleanupAttempts: 1,
+      predicate: `lifecycle:terminal-wait:${reason}`,
+    });
 });
 
 it.each([
