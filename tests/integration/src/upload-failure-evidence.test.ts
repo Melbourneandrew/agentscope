@@ -26,7 +26,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, createRegularUploadBridgeForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, runArtifactUploaderForTest, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, createRegularUploadBridgeForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseControllerBootstrapBoundaryForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, runArtifactUploaderForTest, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 const initializeRuntime =
   initializeFailureEvidenceRuntimeForTest as unknown as () => Promise<void>;
@@ -177,6 +177,10 @@ const exerciseBootstrapSettlement =
       | "spawn",
     bootstrapStage?: string,
   ) => string | undefined;
+const exerciseControllerBootstrapBoundary =
+  exerciseControllerBootstrapBoundaryForTest as unknown as (
+    succeeded: unknown,
+  ) => string[];
 const verifyArtifactProvenance =
   verifyArtifactClientProvenanceForTest as unknown as (
     environment: NodeJS.ProcessEnv,
@@ -1085,7 +1089,6 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "module-load",
     "argv-config",
     "capability-open",
-    "controller-entry",
     "unexpected-terminal",
   ])
     expect(validBootstrapPredicate(`child-bootstrap:${stage}`)).toBe(true);
@@ -1221,12 +1224,16 @@ it("preserves exact spawn, child terminal, revalidation, and close stages", () =
     "module-load",
     "argv-config",
     "capability-open",
-    "controller-entry",
     "unexpected-terminal",
   ])
     expect(exerciseBootstrapSettlement("child-bootstrap", stage)).toBe(
       `::error::integration.controller.failure-evidence-bootstrap:child-bootstrap:${stage}\n`,
     );
+  expect(
+    exerciseBootstrapSettlement("child-bootstrap", "controller-entry"),
+  ).toBe(
+    "::error::integration.controller.failure-evidence-bootstrap:child-terminal:exit-one\n",
+  );
   expect(exerciseBootstrapSettlement("partial-zero", "argv-config")).toBe(
     "::error::integration.controller.failure-evidence-bootstrap:child-bootstrap:argv-config\n",
   );
@@ -1238,6 +1245,14 @@ it("preserves exact spawn, child terminal, revalidation, and close stages", () =
     expect(exerciseBootstrapSettlement(stage)).toBe(
       `::error::integration.controller.failure-evidence-bootstrap:${stage}\n`,
     );
+});
+
+it("ends bootstrap authority at authenticated controller entry", () => {
+  expect(exerciseControllerBootstrapBoundary(true)).toEqual([]);
+  expect(exerciseControllerBootstrapBoundary(false)).toEqual([]);
+  expect(exerciseControllerBootstrapBoundary(undefined)).toEqual([
+    "unexpected-terminal",
+  ]);
 });
 
 it("authenticates one ordered nonce-bound bootstrap handoff", () => {

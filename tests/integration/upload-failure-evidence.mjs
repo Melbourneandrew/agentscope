@@ -2848,14 +2848,22 @@ const settleActionBootstrapDescriptors = ({
 }) => {
   if (
     childBootstrapStage !== undefined &&
+    childBootstrapStage !== "controller-entry" &&
     (childTerminalReason !== undefined || spawnFailure)
   ) {
     actionBootstrapStage = "child-bootstrap";
     actionBootstrapReason = childBootstrapStage;
   } else if (childTerminalReason !== undefined) {
     actionBootstrapStage =
-      childBootstrapStage === undefined ? "child-terminal" : "child-bootstrap";
-    actionBootstrapReason = childBootstrapStage ?? childTerminalReason;
+      childBootstrapStage === undefined ||
+      childBootstrapStage === "controller-entry"
+        ? "child-terminal"
+        : "child-bootstrap";
+    actionBootstrapReason =
+      childBootstrapStage === undefined ||
+      childBootstrapStage === "controller-entry"
+        ? childTerminalReason
+        : childBootstrapStage;
   }
   let secondaryFailure;
   let secondaryStage;
@@ -2891,6 +2899,19 @@ const settleActionBootstrapDescriptors = ({
     actionBootstrapStage = secondaryStage;
     throw secondaryFailure;
   }
+};
+
+const finishControllerBootstrap = (succeeded, bootstrap) => {
+  if (typeof succeeded === "boolean") return;
+  bootstrap.mark("unexpected-terminal");
+};
+
+export const exerciseControllerBootstrapBoundaryForTest = (succeeded) => {
+  const stages = [];
+  finishControllerBootstrap(succeeded, {
+    mark: (stage) => stages.push(stage),
+  });
+  return stages;
 };
 
 export const exerciseActionBootstrapSettlementForTest = (
@@ -3171,7 +3192,7 @@ const runOuterControllerEnvelope = async () => {
     bootstrap.mark("module-load");
     await loadRuntimeDependencies();
     const succeeded = await outerControllerMain(bootstrap);
-    if (!succeeded) bootstrap.mark("unexpected-terminal");
+    finishControllerBootstrap(succeeded, bootstrap);
   } catch (error) {
     const stage = runtimeDependencies?.systemdToolFailureStage(error);
     if (stage !== undefined) bootstrap?.terminal(`systemd-tool:${stage}`);
