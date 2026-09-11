@@ -15,7 +15,6 @@ import { test } from "vitest";
 import { parse } from "yaml";
 
 import {
-  computeNativeCiAuthorityDigest,
   parseChangedPaths,
   parseTrackedEntries,
   pruneNativeIrrelevantPaths,
@@ -117,16 +116,29 @@ test("finite irrelevant inventory is disjoint from the recomputed authority clos
     if (owner !== undefined)
       assert.equal(packedProjectClosure.has(owner.name), false, path);
   }
-  const nextRevisionEntries = trackedEntries.map((entry) =>
+  const contentChangedEntries = trackedEntries.map((entry) =>
     entry.path === "apps/cli/src/program.ts"
       ? { ...entry, objectId: "f".repeat(40) }
       : entry,
   );
-  // A first PR can introduce an edge from production source to an irrelevant
-  // document. Its changed blob ID invalidates the policy before a later docs PR.
-  assert.throws(
-    () => validateNativeCiPolicy(manifest, nextRevisionEntries),
-    /native-ci-policy-invalid/u,
+  assert.doesNotThrow(() =>
+    validateNativeCiPolicy(manifest, contentChangedEntries),
+  );
+  const newAuthorityPath = "apps/cli/src/new-command.ts";
+  const pathChangedEntries = [
+    ...trackedEntries,
+    { mode: "100644", objectId: "e".repeat(40), path: newAuthorityPath },
+  ].sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
+  const pathChangedPolicy = validateNativeCiPolicy(
+    manifest,
+    pathChangedEntries,
+  );
+  assert.ok(pathChangedPolicy.authorityFiles.includes(newAuthorityPath));
+  assert.equal(
+    selectNativeCertification("pull_request", [newAuthorityPath]).required,
+    true,
   );
   const closureAuthorities = trackedPaths.filter(
     (path) =>
@@ -137,14 +149,6 @@ test("finite irrelevant inventory is disjoint from the recomputed authority clos
       ...manifest,
       irrelevantPaths: [...manifest.irrelevantPaths, closureAuthority].sort(),
     };
-    const selfAuthorizedEntries = trackedEntries.filter(
-      ({ path }) =>
-        path !== "scripts/native-ci-irrelevant-paths.json" &&
-        !selfAuthorizingManifest.irrelevantPaths.includes(path),
-    );
-    selfAuthorizingManifest.authorityDigest = computeNativeCiAuthorityDigest(
-      selfAuthorizedEntries,
-    );
     assert.throws(
       () => validateNativeCiPolicy(selfAuthorizingManifest, trackedEntries),
       /native-ci-policy-invalid/u,
@@ -155,6 +159,27 @@ test("finite irrelevant inventory is disjoint from the recomputed authority clos
       true,
       closureAuthority,
     );
+  }
+  for (const authorityPath of [
+    ".github/workflows/pr-validation.yml",
+    ".github/workflows/release-candidate-rehearsal.yml",
+    "scripts/__tests__/native-ci-policy.test.mjs",
+    "scripts/native-ci-irrelevant-paths.json",
+    "scripts/native-ci-selection.mjs",
+    "scripts/workspace-policy-runner.mjs",
+  ]) {
+    for (const substitutedMode of ["100755", "120000", "160000"]) {
+      const substitutedEntries = trackedEntries.map((entry) =>
+        entry.path === authorityPath
+          ? { ...entry, mode: substitutedMode }
+          : entry,
+      );
+      assert.throws(
+        () => validateNativeCiPolicy(manifest, substitutedEntries),
+        /native-ci-policy-invalid/u,
+        `${authorityPath}:${substitutedMode}`,
+      );
+    }
   }
 });
 
