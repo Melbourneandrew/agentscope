@@ -96,11 +96,18 @@ export type InstalledCliContractEvidence = Readonly<{
 export type InstalledCliContractEvaluationFailureReason =
   | "aggregate-count-order-digest"
   | "duplicate-ordinal"
-  | "incomplete-observer-terminal-evidence"
   | "inventory-candidate-digest-mismatch"
   | "missing-ordinal"
   | "out-of-range-ordinal"
-  | "per-case-receipt-shape-status-mismatch"
+  | "per-case-observation-shape"
+  | "per-case-result-count"
+  | "per-case-setup-output"
+  | "per-case-setup-receipt-shape"
+  | "per-case-setup-receipt-status"
+  | "per-case-state-digest"
+  | "per-case-step-output"
+  | "per-case-step-receipt-shape"
+  | "per-case-step-receipt-status"
   | "unexpected-extra-evidence";
 
 type Invocation = Readonly<{
@@ -137,6 +144,107 @@ export const installedContractEvaluationFailureReason = (
   typeof error === "object" && error !== null
     ? installedContractEvaluationFailures.get(error)
     : undefined;
+const plainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null) return false;
+  try {
+    if (Object.getPrototypeOf(value) !== Object.prototype) return false;
+    return Object.values(Object.getOwnPropertyDescriptors(value)).every(
+      (descriptor) => Object.hasOwn(descriptor, "value"),
+    );
+  } catch {
+    return false;
+  }
+};
+const denseDataArray = (value: unknown): value is unknown[] => {
+  if (!Array.isArray(value)) return false;
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (
+      Object.keys(descriptors).some(
+        (key) => key !== "length" && !/^(?:0|[1-9][0-9]*)$/u.test(key),
+      ) ||
+      Object.values(descriptors).some(
+        (descriptor) => !Object.hasOwn(descriptor, "value"),
+      )
+    )
+      return false;
+    return Object.keys(descriptors).length === value.length + 1;
+  } catch {
+    return false;
+  }
+};
+const exactKeys = (
+  value: Record<string, unknown>,
+  expected: readonly string[],
+) =>
+  JSON.stringify(Object.keys(value).sort()) ===
+  JSON.stringify([...expected].sort());
+const validDigest = (value: unknown): value is string =>
+  typeof value === "string" && /^sha256-[0-9a-f]{64}$/u.test(value);
+const boundedInteger = (value: unknown, maximum: number): value is number =>
+  typeof value === "number" &&
+  Number.isSafeInteger(value) &&
+  value >= 0 &&
+  value <= maximum;
+const validPtyShape = (value: unknown): boolean => {
+  if (!plainRecord(value)) return false;
+  return (
+    exactKeys(value, [
+      "cleanup",
+      "initialGeometry",
+      "isTTY",
+      "observedGeometry",
+      "outputBytes",
+      "outputSha256",
+      "processJoined",
+      "residualProcessCount",
+      "terminalInputJoined",
+      "terminalOutputJoined",
+      "terminalTransportClosed",
+    ]) &&
+    ["clean", "residual", "uncertain"].includes(String(value.cleanup)) &&
+    value.isTTY === true &&
+    boundedInteger(value.outputBytes, MAXIMUM_OUTPUT_BYTES) &&
+    typeof value.outputSha256 === "string" &&
+    /^sha256:[0-9a-f]{64}$/u.test(value.outputSha256) &&
+    boundedInteger(value.residualProcessCount, Number.MAX_SAFE_INTEGER) &&
+    typeof value.processJoined === "boolean" &&
+    typeof value.terminalInputJoined === "boolean" &&
+    typeof value.terminalOutputJoined === "boolean" &&
+    typeof value.terminalTransportClosed === "boolean" &&
+    plainRecord(value.initialGeometry) &&
+    exactKeys(value.initialGeometry, ["columns", "rows"]) &&
+    boundedInteger(value.initialGeometry.columns, 65_535) &&
+    boundedInteger(value.initialGeometry.rows, 65_535) &&
+    plainRecord(value.observedGeometry) &&
+    exactKeys(value.observedGeometry, ["columns", "rows"]) &&
+    boundedInteger(value.observedGeometry.columns, 65_535) &&
+    boundedInteger(value.observedGeometry.rows, 65_535)
+  );
+};
+const validTerminalResultShape = (
+  value: unknown,
+  expectsPty: boolean,
+): value is InstalledCliInvocationResult => {
+  if (!plainRecord(value)) return false;
+  const keys = ["outcome", "signal", "status", "stderr", "stdout"];
+  if (expectsPty) keys.push("pty");
+  if (
+    !exactKeys(value, keys) ||
+    !["cleanup-failed", "exited", "output-limit", "timed-out"].includes(
+      String(value.outcome),
+    ) ||
+    ![null, "SIGKILL", "SIGTERM"].includes(value.signal as null | string) ||
+    !(value.status === null || boundedInteger(value.status, 255)) ||
+    typeof value.stdout !== "string" ||
+    typeof value.stderr !== "string" ||
+    Buffer.byteLength(value.stdout) > MAXIMUM_OUTPUT_BYTES ||
+    Buffer.byteLength(value.stderr) > MAXIMUM_OUTPUT_BYTES
+  )
+    return false;
+  if (!expectsPty) return true;
+  return validPtyShape(value.pty);
+};
 const hash = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const helpOutputSha256: Readonly<Record<string, string>> = Object.freeze({
@@ -1779,6 +1887,105 @@ export const validateInstalledCliInvocationOutputForTest = (
   assertOutput(step, result, version, outputAuthority);
 };
 
+const validObservationShape = (
+  contractCase: InstalledCliContractCase,
+  observation: Record<string, unknown>,
+): boolean =>
+  exactKeys(
+    observation,
+    contractCase.setup === "initialized"
+      ? [
+          "afterStateDigests",
+          "beforeStateDigest",
+          "caseId",
+          "results",
+          "setupResult",
+        ]
+      : ["afterStateDigests", "beforeStateDigest", "caseId", "results"],
+  ) &&
+  observation.caseId === contractCase.caseId &&
+  denseDataArray(observation.results) &&
+  denseDataArray(observation.afterStateDigests) &&
+  validDigest(observation.beforeStateDigest) &&
+  observation.afterStateDigests.every(validDigest);
+
+const evaluateSetupReceipt = (
+  contractCase: InstalledCliContractCase,
+  observation: Record<string, unknown>,
+  version: string,
+  caseOrdinal: number,
+): InstalledCliContractEvaluationFailureReason | undefined => {
+  if (contractCase.setup !== "initialized") return undefined;
+  if (!validTerminalResultShape(observation.setupResult, false))
+    return "per-case-setup-receipt-shape";
+  if (
+    observation.setupResult.outcome !== "exited" ||
+    observation.setupResult.status !== 0 ||
+    observation.setupResult.signal !== null
+  )
+    return "per-case-setup-receipt-status";
+  try {
+    assertOutput(
+      makeStep(["init", "--yes", "--output", "json"], 0, "json", "capture"),
+      observation.setupResult,
+      version,
+      { caseOrdinal },
+    );
+  } catch {
+    return "per-case-setup-output";
+  }
+  return undefined;
+};
+
+const evaluateStepReceipts = (
+  contractCase: InstalledCliContractCase,
+  observation: Record<string, unknown>,
+  version: string,
+  caseOrdinal: number,
+): InstalledCliContractEvaluationFailureReason | undefined => {
+  const results = observation.results as unknown[];
+  const afterStateDigests = observation.afterStateDigests as unknown[];
+  let previous = observation.beforeStateDigest as string;
+  for (
+    let stepIndex = 0;
+    stepIndex < contractCase.steps.length;
+    stepIndex += 1
+  ) {
+    const contractStep = contractCase.steps[stepIndex];
+    const afterStateDigest = afterStateDigests[stepIndex];
+    const result = results[stepIndex];
+    if (
+      contractStep === undefined ||
+      !validDigest(afterStateDigest) ||
+      !validTerminalResultShape(
+        result,
+        contractStep.executionMode === "pty-narrow",
+      )
+    )
+      return "per-case-step-receipt-shape";
+    if (
+      result.outcome !== contractStep.expectedOutcome ||
+      result.signal !== contractStep.expectedSignal ||
+      result.status !== contractStep.expectedStatus
+    )
+      return "per-case-step-receipt-status";
+    try {
+      assertOutput(contractStep, result, version, { caseOrdinal });
+    } catch {
+      return "per-case-step-output";
+    }
+    if (
+      (contractStep.stateRule === "same-as-before" &&
+        afterStateDigest !== observation.beforeStateDigest) ||
+      (contractStep.stateRule === "same-as-previous" &&
+        afterStateDigest !== previous)
+    )
+      return "per-case-state-digest";
+    previous = afterStateDigest;
+  }
+  return undefined;
+};
+
 export const evaluateInstalledCliContract = (
   plan: InstalledCliContractPlan,
   identity: InstalledCliArtifactIdentity,
@@ -1806,84 +2013,52 @@ export const evaluateInstalledCliContract = (
     return failInstalledContractEvaluation("missing-ordinal");
   if (observations.length > plan.caseIds.length)
     return failInstalledContractEvaluation("unexpected-extra-evidence");
-  const observedCaseIds = observations.map(({ caseId }) => caseId);
-  if (new Set(observedCaseIds).size !== observedCaseIds.length)
+  const observationRecords: Record<string, unknown>[] = [];
+  for (const observation of observations) {
+    if (!plainRecord(observation))
+      return failInstalledContractEvaluation("per-case-observation-shape");
+    observationRecords.push(observation);
+  }
+  const observedCaseIds = observationRecords.map(({ caseId }) => caseId);
+  if (observedCaseIds.some((caseId) => typeof caseId !== "string"))
+    return failInstalledContractEvaluation("per-case-observation-shape");
+  const authenticatedCaseIds = observedCaseIds as string[];
+  if (new Set(authenticatedCaseIds).size !== authenticatedCaseIds.length)
     return failInstalledContractEvaluation("duplicate-ordinal");
-  if (observedCaseIds.some((caseId) => !plan.caseIds.includes(caseId)))
+  if (authenticatedCaseIds.some((caseId) => !plan.caseIds.includes(caseId)))
     return failInstalledContractEvaluation("out-of-range-ordinal");
-  if (JSON.stringify(observedCaseIds) !== JSON.stringify(plan.caseIds))
+  if (JSON.stringify(authenticatedCaseIds) !== JSON.stringify(plan.caseIds))
     return failInstalledContractEvaluation("aggregate-count-order-digest");
   for (let index = 0; index < plan.cases.length; index += 1) {
     const contractCase = plan.cases[index];
-    const observation = observations[index];
+    const observation = observationRecords[index];
     if (contractCase === undefined || observation === undefined)
       return failInstalledContractEvaluation("missing-ordinal");
-    try {
-      assert.equal(observation.results.length, contractCase.steps.length);
-      assert.equal(
-        observation.afterStateDigests.length,
-        contractCase.steps.length,
-      );
-    } catch (error) {
-      if (installedContractEvaluationFailureReason(error) !== undefined)
-        throw error;
-      return failInstalledContractEvaluation(
-        "per-case-receipt-shape-status-mismatch",
-      );
-    }
-    try {
-      if (contractCase.setup === "initialized") {
-        assert.equal(observation.setupResult?.status, 0);
-        assert.equal(observation.setupResult.signal, null);
-        assertOutput(
-          makeStep(["init", "--yes", "--output", "json"], 0, "json", "capture"),
-          observation.setupResult,
-          plan.expectedVersion,
-          { caseOrdinal: index },
-        );
-      } else assert.equal(observation.setupResult, undefined);
-      let previous = observation.beforeStateDigest;
-      for (
-        let stepIndex = 0;
-        stepIndex < contractCase.steps.length;
-        stepIndex += 1
-      ) {
-        const contractStep = contractCase.steps[stepIndex];
-        const afterStateDigest: string | undefined =
-          observation.afterStateDigests[stepIndex];
-        const result = observation.results[stepIndex];
-        if (
-          contractStep === undefined ||
-          afterStateDigest === undefined ||
-          result === undefined
-        )
-          return failInstalledContractEvaluation(
-            "per-case-receipt-shape-status-mismatch",
-          );
-        if (
-          result.outcome !== contractStep.expectedOutcome ||
-          result.signal !== contractStep.expectedSignal ||
-          result.status !== contractStep.expectedStatus
-        )
-          return failInstalledContractEvaluation(
-            "incomplete-observer-terminal-evidence",
-          );
-        assertOutput(contractStep, result, plan.expectedVersion, {
-          caseOrdinal: index,
-        });
-        if (contractStep.stateRule === "same-as-before")
-          assert.equal(afterStateDigest, observation.beforeStateDigest);
-        if (contractStep.stateRule === "same-as-previous")
-          assert.equal(afterStateDigest, previous);
-        previous = afterStateDigest;
-      }
-    } catch (error) {
-      if (installedContractEvaluationFailureReason(error) !== undefined)
-        throw error;
-      return failInstalledContractEvaluation(
-        "per-case-receipt-shape-status-mismatch",
-      );
-    }
+    if (!validObservationShape(contractCase, observation))
+      return failInstalledContractEvaluation("per-case-observation-shape");
+    const results = observation.results as unknown[];
+    const afterStateDigests = observation.afterStateDigests as unknown[];
+    if (
+      results.length !== contractCase.steps.length ||
+      afterStateDigests.length !== contractCase.steps.length
+    )
+      return failInstalledContractEvaluation("per-case-result-count");
+    const setupFailure = evaluateSetupReceipt(
+      contractCase,
+      observation,
+      plan.expectedVersion,
+      index,
+    );
+    if (setupFailure !== undefined)
+      return failInstalledContractEvaluation(setupFailure);
+    const stepFailure = evaluateStepReceipts(
+      contractCase,
+      observation,
+      plan.expectedVersion,
+      index,
+    );
+    if (stepFailure !== undefined)
+      return failInstalledContractEvaluation(stepFailure);
   }
   return Object.freeze({
     candidateDigest: identity.candidateDigest,

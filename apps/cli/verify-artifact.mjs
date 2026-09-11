@@ -828,13 +828,14 @@ try {
     package: installedManifest.name,
     version: installedManifest.version,
   };
-  const assertEvaluationFailure = (identity, observations, expected) => {
+  const assertEvaluationFailure = (
+    identity,
+    observations,
+    expected,
+    plan = installedContractPlan,
+  ) => {
     try {
-      oracleModule.evaluateInstalledCliContract(
-        installedContractPlan,
-        identity,
-        observations,
-      );
+      oracleModule.evaluateInstalledCliContract(plan, identity, observations);
       assert.fail("installed contract evaluation unexpectedly succeeded");
     } catch (error) {
       assert.equal(
@@ -845,8 +846,10 @@ try {
   };
   const shapedObservations = installedContractPlan.cases.map(
     (contractCase) => ({
-      afterStateDigests: contractCase.steps.map(() => "sha256:after"),
-      beforeStateDigest: "sha256:before",
+      afterStateDigests: contractCase.steps.map(
+        () => `sha256-${"b".repeat(64)}`,
+      ),
+      beforeStateDigest: `sha256-${"a".repeat(64)}`,
       caseId: contractCase.caseId,
       results: contractCase.steps.map(() => ({
         outcome: "cleanup-failed",
@@ -855,6 +858,17 @@ try {
         stderr: "",
         stdout: "",
       })),
+      ...(contractCase.setup === "initialized"
+        ? {
+            setupResult: {
+              outcome: "cleanup-failed",
+              signal: null,
+              status: null,
+              stderr: "",
+              stdout: "",
+            },
+          }
+        : {}),
     }),
   );
   assertEvaluationFailure(installedIdentity, [], "missing-ordinal");
@@ -898,12 +912,248 @@ try {
     shapedObservations.map((observation, index) =>
       index === 0 ? { ...observation, results: [] } : observation,
     ),
-    "per-case-receipt-shape-status-mismatch",
+    "per-case-result-count",
   );
   assertEvaluationFailure(
     installedIdentity,
     shapedObservations,
-    "incomplete-observer-terminal-evidence",
+    "per-case-step-receipt-status",
+  );
+  const beforeDigest = `sha256-${"a".repeat(64)}`;
+  const afterDigest = `sha256-${"b".repeat(64)}`;
+  const fixtureStep = Object.freeze({
+    args: [],
+    executionMode: "stdout-closed",
+    expectedOutcome: "exited",
+    expectedSignal: null,
+    expectedStatus: 0,
+    input: "",
+    outputRule: "human",
+    stateRule: "same-as-before",
+  });
+  const fixtureCase = Object.freeze({
+    caseId: "fixture.canonical",
+    setup: "none",
+    steps: Object.freeze([fixtureStep]),
+  });
+  const fixturePlan = Object.freeze({
+    caseIds: Object.freeze([fixtureCase.caseId]),
+    caseIdsDigest: "sha256:fixture-case-ids",
+    cases: Object.freeze([fixtureCase]),
+    expectedVersion: installedContractPlan.expectedVersion,
+    inventoryDigest: "sha256:fixture-inventory",
+    planVersion: 1,
+    receiptCaseIds: Object.freeze([`${fixtureCase.caseId}.0`]),
+    receiptCaseIdsDigest: "sha256:fixture-receipts",
+  });
+  const canonicalResult = Object.freeze({
+    outcome: "exited",
+    signal: null,
+    status: 0,
+    stderr: "",
+    stdout: "",
+  });
+  const canonicalObservation = Object.freeze({
+    afterStateDigests: Object.freeze([beforeDigest]),
+    beforeStateDigest: beforeDigest,
+    caseId: fixtureCase.caseId,
+    results: Object.freeze([canonicalResult]),
+  });
+  assert.deepEqual(
+    oracleModule.evaluateInstalledCliContract(fixturePlan, installedIdentity, [
+      canonicalObservation,
+    ]),
+    {
+      candidateDigest: installedIdentity.candidateDigest,
+      caseCount: 1,
+      caseIdsDigest: fixturePlan.caseIdsDigest,
+      inventoryDigest: fixturePlan.inventoryDigest,
+      package: "agentscope-cli",
+      receiptCaseIdsDigest: fixturePlan.receiptCaseIdsDigest,
+      receiptCount: 1,
+      schema: "agentscope.cli.installed-contract-evidence.v2",
+      version: fixturePlan.expectedVersion,
+    },
+  );
+  for (const substitutedObservation of [
+    { ...canonicalObservation, unexpected: true },
+    { ...canonicalObservation, beforeStateDigest: "sha256:substituted" },
+    { ...canonicalObservation, results: {} },
+    Object.defineProperty({ ...canonicalObservation }, "caseId", {
+      enumerable: true,
+      get: () => fixtureCase.caseId,
+    }),
+    new Proxy(canonicalObservation, {
+      getOwnPropertyDescriptor: () => {
+        throw new Error("substituted observation");
+      },
+    }),
+  ])
+    assertEvaluationFailure(
+      installedIdentity,
+      [substitutedObservation],
+      "per-case-observation-shape",
+      fixturePlan,
+    );
+  for (const substitutedResult of [
+    { ...canonicalResult, unexpected: true },
+    { ...canonicalResult, outcome: undefined },
+    { ...canonicalResult, status: "0" },
+    Object.defineProperty({ ...canonicalResult }, "status", {
+      enumerable: true,
+      get: () => 0,
+    }),
+  ])
+    assertEvaluationFailure(
+      installedIdentity,
+      [{ ...canonicalObservation, results: [substitutedResult] }],
+      "per-case-step-receipt-shape",
+      fixturePlan,
+    );
+  assertEvaluationFailure(
+    installedIdentity,
+    [{ ...canonicalObservation, results: [{ ...canonicalResult, status: 1 }] }],
+    "per-case-step-receipt-status",
+    fixturePlan,
+  );
+  const sparseResults = [];
+  sparseResults.length = 1;
+  assertEvaluationFailure(
+    installedIdentity,
+    [{ ...canonicalObservation, results: sparseResults }],
+    "per-case-observation-shape",
+    fixturePlan,
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    [
+      {
+        ...canonicalObservation,
+        results: [{ ...canonicalResult, stdout: "substituted" }],
+      },
+    ],
+    "per-case-step-output",
+    fixturePlan,
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    [{ ...canonicalObservation, afterStateDigests: [afterDigest] }],
+    "per-case-state-digest",
+    fixturePlan,
+  );
+  const setupCase = Object.freeze({
+    caseId: "fixture.setup",
+    setup: "initialized",
+    steps: Object.freeze([]),
+  });
+  const setupPlan = Object.freeze({
+    ...fixturePlan,
+    caseIds: Object.freeze([setupCase.caseId]),
+    cases: Object.freeze([setupCase]),
+    receiptCaseIds: Object.freeze([]),
+  });
+  const setupObservation = Object.freeze({
+    afterStateDigests: Object.freeze([]),
+    beforeStateDigest: beforeDigest,
+    caseId: setupCase.caseId,
+    results: Object.freeze([]),
+    setupResult: canonicalResult,
+  });
+  assertEvaluationFailure(
+    installedIdentity,
+    [{ ...setupObservation, setupResult: { ...canonicalResult, extra: true } }],
+    "per-case-setup-receipt-shape",
+    setupPlan,
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    [{ ...setupObservation, setupResult: { ...canonicalResult, status: 1 } }],
+    "per-case-setup-receipt-status",
+    setupPlan,
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    [setupObservation],
+    "per-case-setup-output",
+    setupPlan,
+  );
+  const ptyDigest = `sha256:${"0".repeat(64)}`;
+  const ptyCase = Object.freeze({
+    caseId: "fixture.pty",
+    setup: "none",
+    steps: Object.freeze([
+      Object.freeze({
+        ...fixtureStep,
+        executionMode: "pty-narrow",
+        expectedOutputBytes: 0,
+        expectedOutputSha256: ptyDigest,
+      }),
+    ]),
+  });
+  const ptyPlan = Object.freeze({
+    ...fixturePlan,
+    caseIds: Object.freeze([ptyCase.caseId]),
+    cases: Object.freeze([ptyCase]),
+    receiptCaseIds: Object.freeze([`${ptyCase.caseId}.0`]),
+  });
+  const canonicalPty = Object.freeze({
+    cleanup: "clean",
+    initialGeometry: Object.freeze({ columns: 40, rows: 12 }),
+    isTTY: true,
+    observedGeometry: Object.freeze({ columns: 40, rows: 12 }),
+    outputBytes: 0,
+    outputSha256: ptyDigest,
+    processJoined: true,
+    residualProcessCount: 0,
+    terminalInputJoined: true,
+    terminalOutputJoined: true,
+    terminalTransportClosed: true,
+  });
+  const canonicalPtyObservation = Object.freeze({
+    ...canonicalObservation,
+    caseId: ptyCase.caseId,
+    results: Object.freeze([
+      Object.freeze({ ...canonicalResult, pty: canonicalPty }),
+    ]),
+  });
+  assert.equal(
+    oracleModule.evaluateInstalledCliContract(ptyPlan, installedIdentity, [
+      canonicalPtyObservation,
+    ]).caseCount,
+    1,
+  );
+  for (const substitutedPtyResult of [
+    canonicalResult,
+    { ...canonicalResult, pty: { ...canonicalPty, unexpected: true } },
+    {
+      ...canonicalResult,
+      pty: { ...canonicalPty, residualProcessCount: "0" },
+    },
+  ])
+    assertEvaluationFailure(
+      installedIdentity,
+      [{ ...canonicalPtyObservation, results: [substitutedPtyResult] }],
+      "per-case-step-receipt-shape",
+      ptyPlan,
+    );
+  assertEvaluationFailure(
+    installedIdentity,
+    [
+      {
+        ...canonicalPtyObservation,
+        results: [
+          {
+            ...canonicalResult,
+            pty: {
+              ...canonicalPty,
+              observedGeometry: { columns: 41, rows: 12 },
+            },
+          },
+        ],
+      },
+    ],
+    "per-case-step-output",
+    ptyPlan,
   );
   const executableOptions = {
     cwd: installRoot,

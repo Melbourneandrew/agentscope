@@ -589,11 +589,18 @@ describe("immutable candidate authority", () => {
     const evaluationReasons = [
       "aggregate-count-order-digest",
       "duplicate-ordinal",
-      "incomplete-observer-terminal-evidence",
       "inventory-candidate-digest-mismatch",
       "missing-ordinal",
       "out-of-range-ordinal",
-      "per-case-receipt-shape-status-mismatch",
+      "per-case-observation-shape",
+      "per-case-result-count",
+      "per-case-setup-output",
+      "per-case-setup-receipt-shape",
+      "per-case-setup-receipt-status",
+      "per-case-state-digest",
+      "per-case-step-output",
+      "per-case-step-receipt-shape",
+      "per-case-step-receipt-status",
       "unexpected-extra-evidence",
     ];
     expect(installedContractFailurePredicates["case-execution"]).toEqual(

@@ -455,7 +455,7 @@ const invokeSelected = async ({
     request,
   );
   if (contractCaseExecution) selectedHeadlessExecutionPending = false;
-  const receipt = {
+  const receipt = Object.freeze({
     caseId,
     outcome: trace.result.outcome,
     exitCode: trace.result.exitCode,
@@ -466,7 +466,7 @@ const invokeSelected = async ({
     stdinJoined: trace.observation.stdinJoined,
     stdoutJoined: trace.observation.stdoutJoined,
     stderrJoined: trace.observation.stderrJoined,
-  };
+  });
   installedContractReceipts.push(receipt);
   if (
     trace.result.cleanup !== "clean" ||
@@ -495,18 +495,20 @@ const invokeSelectedNarrowPty = async ({ caseId, home }) => {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
     shutdownDeadline: headlessShutdownDeadline,
   });
-  installedContractReceipts.push({
-    caseId,
-    outcome: "exited",
-    exitCode: receipt.exitCode,
-    signal: receipt.signal,
-    cleanup: receipt.cleanup,
-    residualProcessCount: receipt.residualProcessCount,
-    processJoined: receipt.processJoined,
-    stdinJoined: receipt.terminalInputJoined,
-    stdoutJoined: receipt.terminalOutputJoined,
-    stderrJoined: receipt.terminalTransportClosed,
-  });
+  installedContractReceipts.push(
+    Object.freeze({
+      caseId,
+      outcome: "exited",
+      exitCode: receipt.exitCode,
+      signal: receipt.signal,
+      cleanup: receipt.cleanup,
+      residualProcessCount: receipt.residualProcessCount,
+      processJoined: receipt.processJoined,
+      stdinJoined: receipt.terminalInputJoined,
+      stdoutJoined: receipt.terminalOutputJoined,
+      stderrJoined: receipt.terminalTransportClosed,
+    }),
+  );
   return Object.freeze({
     outcome: "exited",
     signal: receipt.signal,
@@ -515,9 +517,15 @@ const invokeSelectedNarrowPty = async ({ caseId, home }) => {
     stdout: "",
     pty: Object.freeze({
       cleanup: receipt.cleanup,
-      initialGeometry: receipt.initialGeometry,
+      initialGeometry: Object.freeze({
+        columns: receipt.initialGeometry.columns,
+        rows: receipt.initialGeometry.rows,
+      }),
       isTTY: receipt.isTTY,
-      observedGeometry: receipt.observedGeometry,
+      observedGeometry: Object.freeze({
+        columns: receipt.observedGeometry.columns,
+        rows: receipt.observedGeometry.rows,
+      }),
       outputBytes: receipt.outputBytes,
       outputSha256: `sha256:${receipt.outputSha256}`,
       processJoined: receipt.processJoined,
@@ -822,13 +830,15 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
       digestInstalledContractWritableAuthority(stateAuthority),
     );
   }
-  contractObservations.push({
-    afterStateDigests,
-    beforeStateDigest,
-    caseId: contractCase.caseId,
-    results,
-    ...(setupResult === undefined ? {} : { setupResult }),
-  });
+  contractObservations.push(
+    Object.freeze({
+      afterStateDigests: Object.freeze(afterStateDigests),
+      beforeStateDigest,
+      caseId: contractCase.caseId,
+      results: Object.freeze(results),
+      ...(setupResult === undefined ? {} : { setupResult }),
+    }),
+  );
   rmSync(caseRoot, { force: true, recursive: true });
 }
 setInstalledContractFailureBoundary(
