@@ -1,6 +1,7 @@
 import {
   lstatSync,
   mkdirSync,
+  readSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -63,8 +64,10 @@ if (
   throw new Error("integration.fixture.execution-mode");
 if (interactive) {
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  const input = Buffer.alloc(4);
   if (
-    readFileSync(0, "utf8") !== "run\n" ||
+    readSync(0, input, 0, input.length, null) !== input.length ||
+    input.toString("utf8") !== "run\n" ||
     process.stdout.columns !== 100 ||
     process.stdout.rows !== 30
   )

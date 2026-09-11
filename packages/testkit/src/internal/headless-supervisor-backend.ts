@@ -2201,7 +2201,7 @@ const armSelectedPty = (
           );
           if (captured.length > 0) {
             outputBytes += captured.length;
-            safeReflectApply(arrayPush, chunks, [captured]);
+            defineArrayIndex(chunks, chunks.length, captured);
             terminal.write(new SafeUint8Array(captured));
             const semanticState = terminal.snapshot().semanticState;
             if (semanticState === "ready") readinessObserved = true;
