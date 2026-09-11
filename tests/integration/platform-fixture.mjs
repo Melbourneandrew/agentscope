@@ -64,13 +64,28 @@ if (
   throw new Error("integration.fixture.execution-mode");
 if (interactive) {
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
-  const input = Buffer.alloc(4);
-  if (
-    readSync(0, input, 0, input.length, null) !== input.length ||
-    input.toString("utf8") !== "run\n" ||
-    process.stdout.columns !== 100 ||
-    process.stdout.rows !== 30
+  const geometryDeadline = performance.now() + 2_000;
+  while (
+    (process.stdout.columns !== 100 || process.stdout.rows !== 30) &&
+    performance.now() < geometryDeadline
   )
+    await new Promise((resolve) => setImmediate(resolve));
+  if (process.stdout.columns !== 100 || process.stdout.rows !== 30)
+    throw new Error("integration.fixture.interactive-geometry");
+  const input = Buffer.alloc(4);
+  let inputOffset = 0;
+  while (inputOffset < input.length) {
+    const bytesRead = readSync(
+      0,
+      input,
+      inputOffset,
+      input.length - inputOffset,
+      null,
+    );
+    if (bytesRead < 1) throw new Error("integration.fixture.interactive-input");
+    inputOffset += bytesRead;
+  }
+  if (input.toString("utf8") !== "run\n")
     throw new Error("integration.fixture.interactive-input");
 }
 
