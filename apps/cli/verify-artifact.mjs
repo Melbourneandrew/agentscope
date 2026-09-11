@@ -833,6 +833,7 @@ try {
     observations,
     expected,
     plan = installedContractPlan,
+    expectedCaseOrdinal = undefined,
   ) => {
     try {
       oracleModule.evaluateInstalledCliContract(plan, identity, observations);
@@ -842,6 +843,11 @@ try {
         oracleModule.installedContractEvaluationFailureReason(error),
         expected,
       );
+      if (expectedCaseOrdinal !== undefined)
+        assert.equal(
+          oracleModule.installedContractEvaluationFailureCaseOrdinal(error),
+          expectedCaseOrdinal,
+        );
     }
   };
   const shapedObservations = installedContractPlan.cases.map(
@@ -1069,17 +1075,32 @@ try {
     "per-case-observation-shape",
     fixturePlan,
   );
-  assertEvaluationFailure(
-    installedIdentity,
-    [
-      {
-        ...canonicalObservation,
-        results: [{ ...canonicalResult, stdout: "substituted" }],
-      },
-    ],
-    "per-case-step-output",
-    fixturePlan,
-  );
+  for (const outputRule of [
+    "confirmation",
+    "diagnostic",
+    "help",
+    "human",
+    "json",
+    "jsonl",
+    "version",
+  ]) {
+    const outputCase = Object.freeze({
+      ...fixtureCase,
+      steps: Object.freeze([Object.freeze({ ...fixtureStep, outputRule })]),
+    });
+    assertEvaluationFailure(
+      installedIdentity,
+      [
+        {
+          ...canonicalObservation,
+          results: [{ ...canonicalResult, stdout: "substituted" }],
+        },
+      ],
+      `per-case-step-output-${outputRule}`,
+      Object.freeze({ ...fixturePlan, cases: Object.freeze([outputCase]) }),
+      0,
+    );
+  }
   assertEvaluationFailure(
     installedIdentity,
     [{ ...canonicalObservation, afterStateDigests: [afterDigest] }],
@@ -1197,8 +1218,9 @@ try {
         ],
       },
     ],
-    "per-case-step-output",
+    "per-case-step-output-pty",
     ptyPlan,
+    0,
   );
   const executableOptions = {
     cwd: installRoot,

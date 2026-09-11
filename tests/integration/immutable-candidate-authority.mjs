@@ -156,7 +156,14 @@ export const installedContractFailurePredicates = Object.freeze({
     "per-case-setup-receipt-shape",
     "per-case-setup-receipt-status",
     "per-case-state-digest",
-    "per-case-step-output",
+    "per-case-step-output-confirmation",
+    "per-case-step-output-diagnostic",
+    "per-case-step-output-help",
+    "per-case-step-output-human",
+    "per-case-step-output-json",
+    "per-case-step-output-jsonl",
+    "per-case-step-output-pty",
+    "per-case-step-output-version",
     "per-case-step-receipt-shape",
     "per-case-step-receipt-status",
     "unexpected-extra-evidence",
@@ -211,7 +218,11 @@ export const decodeInstalledPtyFailureReceipt = (output) => {
 };
 
 export const compileInstalledContractFailureReceipt = (value) => {
-  const caseFailure = value?.phase === "case-execution";
+  const caseFailure =
+    value?.phase === "case-execution" ||
+    (value?.phase === "aggregate-evaluation" &&
+      typeof value?.predicate === "string" &&
+      value.predicate.startsWith("per-case-"));
   if (
     !exactKeys(
       value,
@@ -268,7 +279,9 @@ export const decodeInstalledContractFailureReceipt = (output, authority) => {
       JSON.parse(serialized),
     );
     if (
-      compiled.record.phase === "case-execution" &&
+      (compiled.record.phase === "case-execution" ||
+        (compiled.record.phase === "aggregate-evaluation" &&
+          compiled.record.predicate.startsWith("per-case-"))) &&
       (!exactKeys(authority, ["caseCount", "caseIdsDigest"]) ||
         !Number.isSafeInteger(authority.caseCount) ||
         authority.caseCount < 1 ||

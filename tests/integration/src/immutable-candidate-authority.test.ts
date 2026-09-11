@@ -497,7 +497,9 @@ describe("immutable candidate authority", () => {
           receiptVersion: 1,
           phase,
           predicate,
-          ...(phase === "case-execution"
+          ...(phase === "case-execution" ||
+          (phase === "aggregate-evaluation" &&
+            predicate.startsWith("per-case-"))
             ? {
                 caseOrdinal: 0,
                 contractInventorySha256: caseAuthority.caseIdsDigest,
@@ -513,7 +515,9 @@ describe("immutable candidate authority", () => {
         expect(
           Object.keys(compiledFailure.record as Record<string, unknown>).sort(),
         ).toEqual(
-          phase === "case-execution"
+          phase === "case-execution" ||
+            (phase === "aggregate-evaluation" &&
+              predicate.startsWith("per-case-"))
             ? [
                 "caseOrdinal",
                 "contractInventorySha256",
@@ -598,7 +602,14 @@ describe("immutable candidate authority", () => {
       "per-case-setup-receipt-shape",
       "per-case-setup-receipt-status",
       "per-case-state-digest",
-      "per-case-step-output",
+      "per-case-step-output-confirmation",
+      "per-case-step-output-diagnostic",
+      "per-case-step-output-help",
+      "per-case-step-output-human",
+      "per-case-step-output-json",
+      "per-case-step-output-jsonl",
+      "per-case-step-output-pty",
+      "per-case-step-output-version",
       "per-case-step-receipt-shape",
       "per-case-step-receipt-status",
       "unexpected-extra-evidence",
@@ -622,11 +633,19 @@ describe("immutable candidate authority", () => {
     expect(installedContractFailurePredicates["aggregate-evaluation"]).toEqual(
       evaluationReasons,
     );
-    for (const predicate of evaluationReasons)
+    for (const predicate of evaluationReasons) {
+      const caseBound = predicate.startsWith("per-case-");
       expect(
         decodeInstalledContractFailureReceipt(
           `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${
             compileInstalledContractFailureReceipt({
+              ...(caseBound
+                ? {
+                    caseOrdinal: 0,
+                    contractInventorySha256:
+                      "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+                  }
+                : {}),
               phase: "aggregate-evaluation",
               predicate,
               receiptVersion: 1,
@@ -639,6 +658,7 @@ describe("immutable candidate authority", () => {
           },
         ).predicate,
       ).toBe(predicate);
+    }
     for (const predicate of [
       "evaluation-rejected",
       "unexpected-extra-evidence-substituted",
@@ -651,6 +671,45 @@ describe("immutable candidate authority", () => {
           receiptVersion: 1,
         }),
       ).toThrow("integration.immutable-candidate.authority");
+  });
+
+  it("rejects missing or substituted per-case evaluation identity", () => {
+    for (const rejected of [
+      {
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+        receiptVersion: 1,
+      },
+      {
+        caseOrdinal: 0,
+        contractInventorySha256: `sha256:${"f".repeat(64)}`,
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+        receiptVersion: 1,
+      },
+      {
+        caseOrdinal: 123,
+        contractInventorySha256:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+        receiptVersion: 1,
+      },
+    ]) {
+      const encoded = Buffer.from(JSON.stringify(rejected)).toString(
+        "base64url",
+      );
+      expect(() =>
+        decodeInstalledContractFailureReceipt(
+          `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${encoded}`,
+          {
+            caseCount: 123,
+            caseIdsDigest:
+              "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          },
+        ),
+      ).toThrow("integration.immutable-candidate.authority");
+    }
   });
 
   it.each([
@@ -1251,7 +1310,7 @@ globalThis.exercise = async (mode) => {
       '  if (\n    typeof reason !== "string" ||\n    !installedContractFailurePredicates["aggregate-evaluation"].includes(reason)\n  ) {',
     );
     const branchEnd = runner.indexOf(
-      '  setInstalledContractFailureBoundary("aggregate-evaluation", reason);',
+      '  setInstalledContractFailureBoundary(\n    "aggregate-evaluation",',
       branchStart,
     );
     expect(branchStart).toBeGreaterThan(-1);

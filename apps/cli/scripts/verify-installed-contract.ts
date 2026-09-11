@@ -106,7 +106,14 @@ export type InstalledCliContractEvaluationFailureReason =
   | "per-case-setup-receipt-shape"
   | "per-case-setup-receipt-status"
   | "per-case-state-digest"
-  | "per-case-step-output"
+  | "per-case-step-output-confirmation"
+  | "per-case-step-output-diagnostic"
+  | "per-case-step-output-help"
+  | "per-case-step-output-human"
+  | "per-case-step-output-json"
+  | "per-case-step-output-jsonl"
+  | "per-case-step-output-pty"
+  | "per-case-step-output-version"
   | "per-case-step-receipt-shape"
   | "per-case-step-receipt-status"
   | "unexpected-extra-evidence";
@@ -130,20 +137,36 @@ const MAXIMUM_OUTPUT_BYTES = 1_048_576;
 const requiredArgumentDiagnostic = "cli.input.invalid";
 const installedContractEvaluationFailures = new WeakMap<
   object,
-  InstalledCliContractEvaluationFailureReason
+  Readonly<{
+    caseOrdinal?: number;
+    reason: InstalledCliContractEvaluationFailureReason;
+  }>
 >();
 const failInstalledContractEvaluation = (
   reason: InstalledCliContractEvaluationFailureReason,
+  caseOrdinal?: number,
 ): never => {
   const error = new Error("agentscope.cli.installed-contract:evaluation");
-  installedContractEvaluationFailures.set(error, reason);
+  installedContractEvaluationFailures.set(
+    error,
+    Object.freeze({
+      reason,
+      ...(caseOrdinal === undefined ? {} : { caseOrdinal }),
+    }),
+  );
   throw error;
 };
 export const installedContractEvaluationFailureReason = (
   error: unknown,
 ): InstalledCliContractEvaluationFailureReason | undefined =>
   typeof error === "object" && error !== null
-    ? installedContractEvaluationFailures.get(error)
+    ? installedContractEvaluationFailures.get(error)?.reason
+    : undefined;
+export const installedContractEvaluationFailureCaseOrdinal = (
+  error: unknown,
+): number | undefined =>
+  typeof error === "object" && error !== null
+    ? installedContractEvaluationFailures.get(error)?.caseOrdinal
     : undefined;
 const snapshotPlainRecord = (
   value: unknown,
@@ -2051,7 +2074,21 @@ const evaluateStepReceipts = (
     try {
       assertOutput(contractStep, result, version, { caseOrdinal });
     } catch {
-      return "per-case-step-output";
+      if (contractStep.executionMode === "pty-narrow")
+        return "per-case-step-output-pty";
+      if (contractStep.outputRule === "confirmation")
+        return "per-case-step-output-confirmation";
+      if (contractStep.outputRule === "help")
+        return "per-case-step-output-help";
+      if (contractStep.outputRule === "version")
+        return "per-case-step-output-version";
+      if (contractStep.outputRule === "json")
+        return "per-case-step-output-json";
+      if (contractStep.outputRule === "jsonl")
+        return "per-case-step-output-jsonl";
+      if (contractStep.outputRule === "human")
+        return "per-case-step-output-human";
+      return "per-case-step-output-diagnostic";
     }
     if (
       (contractStep.stateRule === "same-as-before" &&
@@ -2096,15 +2133,25 @@ export const evaluateInstalledCliContract = (
   if (receivedObservations.length > plan.caseIds.length)
     return failInstalledContractEvaluation("unexpected-extra-evidence");
   const observationRecords: Record<string, unknown>[] = [];
-  for (const observation of receivedObservations) {
+  for (let index = 0; index < receivedObservations.length; index += 1) {
+    const observation = receivedObservations[index];
     const record = snapshotPlainRecord(observation);
     if (record === undefined)
-      return failInstalledContractEvaluation("per-case-observation-shape");
+      return failInstalledContractEvaluation(
+        "per-case-observation-shape",
+        index,
+      );
     observationRecords.push(record);
   }
   const observedCaseIds = observationRecords.map(({ caseId }) => caseId);
-  if (observedCaseIds.some((caseId) => typeof caseId !== "string"))
-    return failInstalledContractEvaluation("per-case-observation-shape");
+  const malformedCaseIdOrdinal = observedCaseIds.findIndex(
+    (caseId) => typeof caseId !== "string",
+  );
+  if (malformedCaseIdOrdinal !== -1)
+    return failInstalledContractEvaluation(
+      "per-case-observation-shape",
+      malformedCaseIdOrdinal,
+    );
   const authenticatedCaseIds = observedCaseIds as string[];
   if (new Set(authenticatedCaseIds).size !== authenticatedCaseIds.length)
     return failInstalledContractEvaluation("duplicate-ordinal");
@@ -2118,18 +2165,24 @@ export const evaluateInstalledCliContract = (
     if (contractCase === undefined || observation === undefined)
       return failInstalledContractEvaluation("missing-ordinal");
     if (!validObservationShape(contractCase, observation))
-      return failInstalledContractEvaluation("per-case-observation-shape");
+      return failInstalledContractEvaluation(
+        "per-case-observation-shape",
+        index,
+      );
     const results = snapshotDenseDataArray(observation.results);
     const afterStateDigests = snapshotDenseDataArray(
       observation.afterStateDigests,
     );
     if (results === undefined || afterStateDigests === undefined)
-      return failInstalledContractEvaluation("per-case-observation-shape");
+      return failInstalledContractEvaluation(
+        "per-case-observation-shape",
+        index,
+      );
     if (
       results.length !== contractCase.steps.length ||
       afterStateDigests.length !== contractCase.steps.length
     )
-      return failInstalledContractEvaluation("per-case-result-count");
+      return failInstalledContractEvaluation("per-case-result-count", index);
     const setupFailure = evaluateSetupReceipt(
       contractCase,
       { ...observation, afterStateDigests, results },
@@ -2137,7 +2190,7 @@ export const evaluateInstalledCliContract = (
       index,
     );
     if (setupFailure !== undefined)
-      return failInstalledContractEvaluation(setupFailure);
+      return failInstalledContractEvaluation(setupFailure, index);
     const stepFailure = evaluateStepReceipts(
       contractCase,
       { ...observation, afterStateDigests, results },
@@ -2145,7 +2198,7 @@ export const evaluateInstalledCliContract = (
       index,
     );
     if (stepFailure !== undefined)
-      return failInstalledContractEvaluation(stepFailure);
+      return failInstalledContractEvaluation(stepFailure, index);
   }
   return Object.freeze({
     candidateDigest: identity.candidateDigest,

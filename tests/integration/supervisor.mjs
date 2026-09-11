@@ -131,6 +131,12 @@ const systemdTerminalWaitAuthorityReasons = new Set([
   "cgroup-observe-after-malformed",
   "cgroup-observe-after-identity-substitution",
   "cgroup-observe-after-descriptor-state",
+  "cgroup-observe-after-removed-parent-identity",
+  "cgroup-observe-after-removed-retained-identity",
+  "cgroup-observe-after-removed-path-present",
+  "cgroup-observe-after-removed-path-permission",
+  "cgroup-observe-after-removed-path-substitution",
+  "cgroup-observe-after-removed-path-reappeared",
   "cgroup-transition-retained-empty",
   "cgroup-transition-retained-populated",
   "cgroup-transition-retained-membership",
@@ -164,6 +170,7 @@ const systemdCollectionDiagnosticReasons = new Set([
   "cgroup-absence",
 ]);
 const systemdToolFailures = new WeakMap();
+const removedCgroupPathFailures = new WeakMap();
 const rootToolOperations = new Map([
   ["synthetic-descendant", pythonPath],
   ["synthetic-cleanup-failure", pythonPath],
@@ -2571,6 +2578,17 @@ const classifyCgroupObservationFailure = (error) => {
   return "identity-substitution";
 };
 
+const failRemovedCgroupPath = (reason) => {
+  const error = new Error("integration.controller.systemd-containment");
+  removedCgroupPathFailures.set(error, reason);
+  throw error;
+};
+
+const removedCgroupPathFailureReason = (error) =>
+  error !== null && typeof error === "object"
+    ? removedCgroupPathFailures.get(error)
+    : undefined;
+
 const syntheticCgroupObservationErrorCodes = Object.freeze({
   "observe-after-error-descriptor": "EBADF",
   "observe-after-error-missing": "ENOENT",
@@ -2601,7 +2619,14 @@ const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
     resolve(cgroupPath, "cgroup.events"),
   ];
   const recheckRetainedParent = () => {
-    const named = lstatSync(parentPath);
+    let named;
+    try {
+      named = lstatSync(parentPath);
+    } catch (error) {
+      if (error?.code === "EACCES" || error?.code === "EPERM")
+        failRemovedCgroupPath("removed-path-permission");
+      failRemovedCgroupPath("removed-parent-identity");
+    }
     const parentIdentity = authority.identities[0];
     if (
       !named.isDirectory() ||
@@ -2611,9 +2636,14 @@ const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
       named.uid !== parentIdentity.uid ||
       named.gid !== parentIdentity.gid
     )
-      failSystemd();
-    for (const index of [0, 1]) {
-      const retained = fstatSync(authority.descriptors[index]);
+      failRemovedCgroupPath("removed-parent-identity");
+    for (let index = 0; index < authority.descriptors.length; index += 1) {
+      let retained;
+      try {
+        retained = fstatSync(authority.descriptors[index]);
+      } catch {
+        failRemovedCgroupPath("removed-retained-identity");
+      }
       const identity = authority.identities[index];
       if (
         retained.dev !== identity.dev ||
@@ -2622,23 +2652,31 @@ const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
         retained.uid !== identity.uid ||
         retained.gid !== identity.gid
       )
-        failSystemd();
+        failRemovedCgroupPath("removed-retained-identity");
     }
   };
-  const requireAbsent = () => {
+  const requireAbsent = (recheck) => {
     for (const path of childPaths) {
       try {
-        lstatSync(path);
-        failSystemd();
+        const status = lstatSync(path);
+        if (status.isSymbolicLink())
+          failRemovedCgroupPath("removed-path-substitution");
+        failRemovedCgroupPath(
+          recheck ? "removed-path-reappeared" : "removed-path-present",
+        );
       } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+        if (removedCgroupPathFailureReason(error) !== undefined) throw error;
+        if (error?.code === "ENOENT") continue;
+        if (error?.code === "EACCES" || error?.code === "EPERM")
+          failRemovedCgroupPath("removed-path-permission");
+        failRemovedCgroupPath("removed-path-substitution");
       }
     }
   };
   recheckRetainedParent();
-  requireAbsent();
+  requireAbsent(false);
   recheckRetainedParent();
-  requireAbsent();
+  requireAbsent(true);
   recheckRetainedParent();
   return Object.freeze({
     absent: true,
@@ -2650,6 +2688,17 @@ export const authenticateRemovedCgroupPathsForTesting = (
   cgroupPath,
   authority,
 ) => authenticateRemovedCgroupPaths(cgroupPath, authority);
+export const authenticateRemovedCgroupPathsReasonForTesting = (
+  cgroupPath,
+  authority,
+) => {
+  try {
+    authenticateRemovedCgroupPaths(cgroupPath, authority);
+    return undefined;
+  } catch (error) {
+    return removedCgroupPathFailureReason(error) ?? "removed-path-substitution";
+  }
+};
 
 const observeCgroupSettlement = (
   cgroupPath,
@@ -2727,11 +2776,13 @@ const observeTerminalSystemdUnit = async (
       try {
         after = recoverRemoved();
         removedTransition = true;
-      } catch {
+      } catch (error) {
         failSystemdLifecycle(
           state,
           "terminal-wait",
-          "cgroup-observe-after-identity-substitution",
+          `cgroup-observe-after-${
+            removedCgroupPathFailureReason(error) ?? "removed-path-substitution"
+          }`,
         );
       }
     } else {

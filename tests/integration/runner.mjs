@@ -323,7 +323,10 @@ const setInstalledContractFailureBoundary = (phase, predicate, caseFailure) => {
     next > current + 1 ||
     !Object.hasOwn(installedContractFailurePredicates, phase) ||
     !installedContractFailurePredicates[phase].includes(predicate) ||
-    (phase === "case-execution") !== (caseFailure !== undefined) ||
+    (phase === "case-execution" ||
+      (phase === "aggregate-evaluation" &&
+        predicate.startsWith("per-case-"))) !==
+      (caseFailure !== undefined) ||
     (caseFailure !== undefined &&
       (!Number.isSafeInteger(caseFailure.caseOrdinal) ||
         caseFailure.caseOrdinal < 0 ||
@@ -865,6 +868,10 @@ try {
 } catch (error) {
   const reason =
     installedContractOracle.installedContractEvaluationFailureReason(error);
+  const caseOrdinal =
+    installedContractOracle.installedContractEvaluationFailureCaseOrdinal(
+      error,
+    );
   if (
     typeof reason !== "string" ||
     !installedContractFailurePredicates["aggregate-evaluation"].includes(reason)
@@ -873,7 +880,11 @@ try {
     installedContractFailureTerminal = true;
     throw error;
   }
-  setInstalledContractFailureBoundary("aggregate-evaluation", reason);
+  setInstalledContractFailureBoundary(
+    "aggregate-evaluation",
+    reason,
+    caseOrdinal === undefined ? undefined : contractFailureCase(caseOrdinal),
+  );
   throw error;
 }
 setInstalledContractFailureBoundary("receipt-finalization", "receipt-rejected");

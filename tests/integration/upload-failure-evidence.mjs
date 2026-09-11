@@ -1699,7 +1699,14 @@ export const finalizeFailureEvidence = async ({
         "per-case-setup-receipt-shape",
         "per-case-setup-receipt-status",
         "per-case-state-digest",
-        "per-case-step-output",
+        "per-case-step-output-confirmation",
+        "per-case-step-output-diagnostic",
+        "per-case-step-output-help",
+        "per-case-step-output-human",
+        "per-case-step-output-json",
+        "per-case-step-output-jsonl",
+        "per-case-step-output-pty",
+        "per-case-step-output-version",
         "per-case-step-receipt-shape",
         "per-case-step-receipt-status",
         "unexpected-extra-evidence",
@@ -1754,7 +1761,10 @@ export const finalizeFailureEvidence = async ({
         ptyFailurePredicates[value.phase].includes(value.predicate)) ||
       (exactKeys(
         value,
-        value?.phase === "case-execution"
+        value?.phase === "case-execution" ||
+          (value?.phase === "aggregate-evaluation" &&
+            typeof value?.predicate === "string" &&
+            value.predicate.startsWith("per-case-"))
           ? [
               "caseOrdinal",
               "contractInventorySha256",
@@ -1769,7 +1779,9 @@ export const finalizeFailureEvidence = async ({
         installedContractFailurePredicates[value.phase].includes(
           value.predicate,
         ) &&
-        (value.phase !== "case-execution" ||
+        ((value.phase !== "case-execution" &&
+          (value.phase !== "aggregate-evaluation" ||
+            !value.predicate.startsWith("per-case-"))) ||
           (Number.isSafeInteger(value.caseOrdinal) &&
             value.caseOrdinal >= 0 &&
             value.caseOrdinal < installedContractCaseCount &&

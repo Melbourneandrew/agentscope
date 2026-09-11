@@ -34,6 +34,7 @@ import type {
 import {
   advanceToolForceState,
   authenticateRemovedCgroupPathsForTesting,
+  authenticateRemovedCgroupPathsReasonForTesting,
   authenticateCgroup,
   cgroupObservationSettled,
   exactPathIsAbsent,
@@ -94,6 +95,11 @@ const authenticateRemovedCgroupPaths =
       }>;
     },
   ) => { absent: true; empty: true; members: readonly [] };
+const authenticateRemovedCgroupPathsReason =
+  authenticateRemovedCgroupPathsReasonForTesting as unknown as (
+    path: string,
+    authority: Parameters<typeof authenticateRemovedCgroupPaths>[1],
+  ) => string | undefined;
 const fixtureCapabilityManifest = JSON.parse(
   readFileSync(
     resolve(workspaceRoot, "tests/integration/capability-manifest.json"),
@@ -642,7 +648,14 @@ const installedContractAdmitted = {
     "per-case-setup-receipt-shape",
     "per-case-setup-receipt-status",
     "per-case-state-digest",
-    "per-case-step-output",
+    "per-case-step-output-confirmation",
+    "per-case-step-output-diagnostic",
+    "per-case-step-output-help",
+    "per-case-step-output-human",
+    "per-case-step-output-json",
+    "per-case-step-output-jsonl",
+    "per-case-step-output-pty",
+    "per-case-step-output-version",
     "per-case-step-receipt-shape",
     "per-case-step-receipt-status",
     "unexpected-extra-evidence",
@@ -3711,6 +3724,12 @@ it("keeps terminal cgroup diagnostic declarations exhaustive", () => {
     "cgroup-observe-after-malformed",
     "cgroup-observe-after-identity-substitution",
     "cgroup-observe-after-descriptor-state",
+    "cgroup-observe-after-removed-parent-identity",
+    "cgroup-observe-after-removed-retained-identity",
+    "cgroup-observe-after-removed-path-present",
+    "cgroup-observe-after-removed-path-permission",
+    "cgroup-observe-after-removed-path-substitution",
+    "cgroup-observe-after-removed-path-reappeared",
     "cgroup-transition-retained-empty",
     "cgroup-transition-retained-populated",
     "cgroup-transition-retained-membership",
@@ -4277,7 +4296,10 @@ it("classifies post-terminal cgroup observation failures without content", () =>
 });
 
 it("proves removed cgroup paths against retained parent and cgroup descriptors", () => {
-  const exercise = (mutate?: (parent: string, cgroup: string) => void) => {
+  const exercise = (
+    mutate?: (parent: string, cgroup: string) => void,
+    reasonOnly = false,
+  ) => {
     const root = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-removed-"));
     const parent = resolve(root, "system.slice");
     const cgroup = resolve(parent, "agentscope-test.service");
@@ -4304,10 +4326,13 @@ it("proves removed cgroup paths against retained parent and cgroup descriptors",
     rmdirSync(cgroup);
     mutate?.(parent, cgroup);
     try {
-      return authenticateRemovedCgroupPaths(cgroup, {
+      const authority = {
         descriptors,
         identities,
-      });
+      };
+      return reasonOnly
+        ? authenticateRemovedCgroupPathsReason(cgroup, authority)
+        : authenticateRemovedCgroupPaths(cgroup, authority);
     } finally {
       for (const descriptor of descriptors.reverse()) closeSync(descriptor);
       try {
@@ -4319,24 +4344,38 @@ it("proves removed cgroup paths against retained parent and cgroup descriptors",
     }
   };
   expect(exercise()).toEqual({ absent: true, empty: true, members: [] });
-  for (const mutate of [
-    (_parent: string, cgroup: string) => {
-      mkdirSync(cgroup);
-    },
-    (_parent: string, cgroup: string) => {
-      symlinkSync("missing", cgroup);
-    },
-    (parent: string) => {
-      chmodSync(parent, 0o000);
-    },
-    (parent: string) => {
-      renameSync(parent, `${parent}.retained`);
-      mkdirSync(parent);
-    },
-  ])
+  for (const [mutate, reason] of [
+    [
+      (_parent: string, cgroup: string) => {
+        mkdirSync(cgroup);
+      },
+      "removed-path-present",
+    ],
+    [
+      (_parent: string, cgroup: string) => {
+        symlinkSync("missing", cgroup);
+      },
+      "removed-path-substitution",
+    ],
+    [
+      (parent: string) => {
+        chmodSync(parent, 0o000);
+      },
+      "removed-parent-identity",
+    ],
+    [
+      (parent: string) => {
+        renameSync(parent, `${parent}.retained`);
+        mkdirSync(parent);
+      },
+      "removed-parent-identity",
+    ],
+  ] as const) {
+    expect(exercise(mutate, true)).toBe(reason);
     expect(() => exercise(mutate)).toThrow(
       "integration.controller.systemd-containment",
     );
+  }
 });
 
 it("preserves authenticated terminal tool failure identity through cleanup", () => {
@@ -5849,7 +5888,8 @@ describe("installed-contract workflow failure evidence", () => {
     ) => executeFailureVerifier(source, installedPtyFailure, mutateEvidence);
     const admitted = installedContractAdmitted;
     const receiptFor = (phase: string, predicate: string) => ({
-      ...(phase === "case-execution"
+      ...(phase === "case-execution" ||
+      (phase === "aggregate-evaluation" && predicate.startsWith("per-case-"))
         ? {
             caseOrdinal: 122,
             contractInventorySha256:
@@ -5866,6 +5906,18 @@ describe("installed-contract workflow failure evidence", () => {
     );
     const rejected = [
       {},
+      {
+        receiptVersion: 1,
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+      },
+      {
+        caseOrdinal: 0,
+        contractInventorySha256: `sha256:${"f".repeat(64)}`,
+        receiptVersion: 1,
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+      },
       {
         receiptVersion: 1,
         phase: "unknown",
@@ -5955,7 +6007,8 @@ describe("installed-contract cleanup failure evidence", () => {
       ).status;
     const admitted = installedContractAdmitted;
     const receiptFor = (phase: string, predicate: string) => ({
-      ...(phase === "case-execution"
+      ...(phase === "case-execution" ||
+      (phase === "aggregate-evaluation" && predicate.startsWith("per-case-"))
         ? {
             caseOrdinal: 0,
             contractInventorySha256:
@@ -5971,6 +6024,18 @@ describe("installed-contract cleanup failure evidence", () => {
         expect(validate(receiptFor(phase, predicate))).toBe(0);
     for (const rejected of [
       {},
+      {
+        receiptVersion: 1,
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+      },
+      {
+        caseOrdinal: 0,
+        contractInventorySha256: `sha256:${"f".repeat(64)}`,
+        receiptVersion: 1,
+        phase: "aggregate-evaluation",
+        predicate: "per-case-step-output-json",
+      },
       {
         receiptVersion: 1,
         phase: "unknown",

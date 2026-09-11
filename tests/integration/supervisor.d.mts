@@ -149,6 +149,17 @@ export function authenticateRemovedCgroupPathsForTesting(
     }>[];
   }>,
 ): Readonly<{ absent: true; empty: true; members: readonly [] }>;
+export function authenticateRemovedCgroupPathsReasonForTesting(
+  cgroupPath: string,
+  authority: Parameters<typeof authenticateRemovedCgroupPathsForTesting>[1],
+):
+  | "removed-parent-identity"
+  | "removed-retained-identity"
+  | "removed-path-present"
+  | "removed-path-permission"
+  | "removed-path-substitution"
+  | "removed-path-reappeared"
+  | undefined;
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
@@ -310,6 +321,12 @@ export type SystemdTerminalWaitCgroupReason =
   | "cgroup-observe-after-malformed"
   | "cgroup-observe-after-identity-substitution"
   | "cgroup-observe-after-descriptor-state"
+  | "cgroup-observe-after-removed-parent-identity"
+  | "cgroup-observe-after-removed-retained-identity"
+  | "cgroup-observe-after-removed-path-present"
+  | "cgroup-observe-after-removed-path-permission"
+  | "cgroup-observe-after-removed-path-substitution"
+  | "cgroup-observe-after-removed-path-reappeared"
   | SystemdTerminalCgroupTransitionReason;
 
 export type SystemdTerminalWaitAuthorityReason =

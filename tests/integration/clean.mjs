@@ -335,7 +335,14 @@ const installedContractFailurePredicates = Object.freeze({
     "per-case-setup-receipt-shape",
     "per-case-setup-receipt-status",
     "per-case-state-digest",
-    "per-case-step-output",
+    "per-case-step-output-confirmation",
+    "per-case-step-output-diagnostic",
+    "per-case-step-output-help",
+    "per-case-step-output-human",
+    "per-case-step-output-json",
+    "per-case-step-output-jsonl",
+    "per-case-step-output-pty",
+    "per-case-step-output-version",
     "per-case-step-receipt-shape",
     "per-case-step-receipt-status",
     "unexpected-extra-evidence",
@@ -397,7 +404,9 @@ const validInstalledPtyFailure = (value) =>
     Object.getPrototypeOf(value) === Object.prototype &&
     JSON.stringify(Object.keys(value).sort()) ===
       JSON.stringify(
-        (value.phase === "case-execution"
+        (value.phase === "case-execution" ||
+        (value.phase === "aggregate-evaluation" &&
+          value.predicate.startsWith("per-case-"))
           ? [
               "caseOrdinal",
               "contractInventorySha256",
@@ -411,7 +420,9 @@ const validInstalledPtyFailure = (value) =>
     value.receiptVersion === 1 &&
     Object.hasOwn(installedContractFailurePredicates, value.phase) &&
     installedContractFailurePredicates[value.phase].includes(value.predicate) &&
-    (value.phase !== "case-execution" ||
+    ((value.phase !== "case-execution" &&
+      (value.phase !== "aggregate-evaluation" ||
+        !value.predicate.startsWith("per-case-"))) ||
       (Number.isSafeInteger(value.caseOrdinal) &&
         value.caseOrdinal >= 0 &&
         value.caseOrdinal < installedContractCaseCount &&
