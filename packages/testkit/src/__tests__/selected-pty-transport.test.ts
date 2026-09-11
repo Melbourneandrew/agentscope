@@ -326,8 +326,14 @@ describe("selected PTY transport", () => {
   });
 
   it("does not dispatch the validated action plan through ambient array hooks", async () => {
+    const now = performance.now();
     const selected = {
-      ...request({ stdin: new Uint8Array() }),
+      ...request({
+        stdin: new Uint8Array(),
+        monotonicStartupDeadlineMs: now + 500,
+        monotonicExecutionDeadlineMs: now + 2_000,
+        monotonicShutdownDeadlineMs: now + 2_500,
+      }),
       interaction: {
         trigger: "semantic-ready" as const,
         actions: [
