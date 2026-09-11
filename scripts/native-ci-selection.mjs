@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import process from "node:process";
@@ -99,28 +98,13 @@ export function parseTrackedEntries(output) {
   });
 }
 
-export function computeNativeCiAuthorityDigest(authorityEntries) {
-  const hash = createHash("sha256");
-  hash.update("agentscope-native-ci-authority-v1\0");
-  for (const { mode, objectId, path } of authorityEntries) {
-    hash.update(mode);
-    hash.update("\0");
-    hash.update(objectId);
-    hash.update("\0");
-    hash.update(path);
-    hash.update("\0");
-  }
-  return `sha256:${hash.digest("hex")}`;
-}
-
 export function validateNativeCiPolicy(manifest, trackedEntries) {
   if (
     manifest === null ||
     typeof manifest !== "object" ||
     Array.isArray(manifest) ||
-    Object.keys(manifest).sort().join(",") !==
-      "authorityDigest,irrelevantPaths,version" ||
-    manifest.version !== 1 ||
+    Object.keys(manifest).sort().join(",") !== "irrelevantPaths,version" ||
+    manifest.version !== 2 ||
     !Array.isArray(manifest.irrelevantPaths) ||
     !Array.isArray(trackedEntries)
   )
@@ -155,17 +139,22 @@ export function validateNativeCiPolicy(manifest, trackedEntries) {
   )
     throw new Error("native-ci-policy-invalid");
   const irrelevantPaths = new Set(manifest.irrelevantPaths);
-  if ([...unconditionalNativePaths].some((path) => irrelevantPaths.has(path)))
+  const trackedByPath = new Map(
+    trackedEntries.map((entry) => [entry.path, entry]),
+  );
+  if (
+    [...unconditionalNativePaths].some((path) => irrelevantPaths.has(path)) ||
+    manifest.irrelevantPaths.some(
+      (path) =>
+        trackedByPath.get(path)?.mode !== "100644" &&
+        !(historicalIrrelevantPaths.has(path) && !trackedByPath.has(path)),
+    )
+  )
     throw new Error("native-ci-policy-invalid");
   const authorityEntries = trackedEntries.filter(
     ({ path }) => path !== policyManifestPath && !irrelevantPaths.has(path),
   );
-  if (
-    authorityEntries.length === 0 ||
-    !/^sha256:[0-9a-f]{64}$/u.test(manifest.authorityDigest) ||
-    computeNativeCiAuthorityDigest(authorityEntries) !==
-      manifest.authorityDigest
-  )
+  if (authorityEntries.length === 0)
     throw new Error("native-ci-policy-invalid");
   return Object.freeze({
     authorityFiles: Object.freeze(authorityEntries.map(({ path }) => path)),
