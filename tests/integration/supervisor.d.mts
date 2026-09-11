@@ -152,6 +152,7 @@ export function authenticateRemovedCgroupPathsForTesting(
 export function authenticateRemovedCgroupPathsReasonForTesting(
   cgroupPath: string,
   authority: Parameters<typeof authenticateRemovedCgroupPathsForTesting>[1],
+  testingFault?: "permission" | "reappeared",
 ):
   | "removed-parent-identity"
   | "removed-retained-identity"
@@ -173,6 +174,12 @@ export function exerciseTerminalCgroupDiagnosticForTesting(
     | "observe-after-unit-not-found-missing"
     | "observe-after-unit-not-found-third"
     | "observe-after-unit-not-found-transition"
+    | "observe-after-unit-not-found-recovery-parent"
+    | "observe-after-unit-not-found-recovery-retained"
+    | "observe-after-unit-not-found-recovery-present"
+    | "observe-after-unit-not-found-recovery-permission"
+    | "observe-after-unit-not-found-recovery-substitution"
+    | "observe-after-unit-not-found-recovery-reappeared"
     | "transition-retained-empty"
     | "transition-retained-populated"
     | "transition-retained-membership"

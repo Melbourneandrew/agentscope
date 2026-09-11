@@ -99,6 +99,7 @@ const authenticateRemovedCgroupPathsReason =
   authenticateRemovedCgroupPathsReasonForTesting as unknown as (
     path: string,
     authority: Parameters<typeof authenticateRemovedCgroupPaths>[1],
+    testingFault?: "permission" | "reappeared",
   ) => string | undefined;
 const fixtureCapabilityManifest = JSON.parse(
   readFileSync(
@@ -4281,6 +4282,27 @@ it("binds every terminal cgroup diagnostic through one cleanup path", async () =
     expect(validSystemdLifecyclePredicate(forged)).toBe(false);
 });
 
+it.each([
+  ["parent", "removed-parent-identity"],
+  ["retained", "removed-retained-identity"],
+  ["present", "removed-path-present"],
+  ["permission", "removed-path-permission"],
+  ["substitution", "removed-path-substitution"],
+  ["reappeared", "removed-path-reappeared"],
+] as const)(
+  "binds removed-cgroup %s failure through lifecycle authority",
+  async (mode, reason) => {
+    await expect(
+      exerciseTerminalCgroupDiagnosticForTesting(
+        `observe-after-unit-not-found-recovery-${mode}`,
+      ),
+    ).resolves.toEqual({
+      cleanupAttempts: 1,
+      predicate: `lifecycle:terminal-wait:cgroup-observe-after-${reason}`,
+    });
+  },
+);
+
 it("classifies post-terminal cgroup observation failures without content", () => {
   for (const [code, kind, expected] of [
     ["ENOENT", undefined, "unit-not-found"],
@@ -4299,6 +4321,7 @@ it("proves removed cgroup paths against retained parent and cgroup descriptors",
   const exercise = (
     mutate?: (parent: string, cgroup: string) => void,
     reasonOnly = false,
+    testingFault?: "permission" | "reappeared" | "retained",
   ) => {
     const root = mkdtempSync(resolve(tmpdir(), "agentscope-cgroup-removed-"));
     const parent = resolve(root, "system.slice");
@@ -4330,8 +4353,23 @@ it("proves removed cgroup paths against retained parent and cgroup descriptors",
         descriptors,
         identities,
       };
+      const testedAuthority =
+        testingFault === "retained"
+          ? {
+              ...authority,
+              identities: authority.identities.map((identity, index) =>
+                index === authority.identities.length - 1
+                  ? { ...identity, ino: identity.ino + 1 }
+                  : identity,
+              ),
+            }
+          : authority;
       return reasonOnly
-        ? authenticateRemovedCgroupPathsReason(cgroup, authority)
+        ? authenticateRemovedCgroupPathsReason(
+            cgroup,
+            testedAuthority,
+            testingFault === "retained" ? undefined : testingFault,
+          )
         : authenticateRemovedCgroupPaths(cgroup, authority);
     } finally {
       for (const descriptor of descriptors.reverse()) closeSync(descriptor);
@@ -4344,6 +4382,15 @@ it("proves removed cgroup paths against retained parent and cgroup descriptors",
     }
   };
   expect(exercise()).toEqual({ absent: true, empty: true, members: [] });
+  expect(exercise(undefined, true, "permission")).toBe(
+    "removed-path-permission",
+  );
+  expect(exercise(undefined, true, "reappeared")).toBe(
+    "removed-path-reappeared",
+  );
+  expect(exercise(undefined, true, "retained")).toBe(
+    "removed-retained-identity",
+  );
   for (const [mutate, reason] of [
     [
       (_parent: string, cgroup: string) => {

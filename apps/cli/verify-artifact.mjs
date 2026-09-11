@@ -1077,7 +1077,6 @@ try {
   );
   for (const outputRule of [
     "confirmation",
-    "diagnostic",
     "help",
     "human",
     "json",
@@ -1101,6 +1100,27 @@ try {
       0,
     );
   }
+  const diagnosticCase = Object.freeze({
+    ...fixtureCase,
+    steps: Object.freeze([
+      Object.freeze({
+        ...fixtureStep,
+        expectedDiagnostic: "cli.input.invalid",
+      }),
+    ]),
+  });
+  assertEvaluationFailure(
+    installedIdentity,
+    [
+      {
+        ...canonicalObservation,
+        results: [{ ...canonicalResult, stderr: "substituted" }],
+      },
+    ],
+    "per-case-step-output-diagnostic",
+    Object.freeze({ ...fixturePlan, cases: Object.freeze([diagnosticCase]) }),
+    0,
+  );
   assertEvaluationFailure(
     installedIdentity,
     [{ ...canonicalObservation, afterStateDigests: [afterDigest] }],

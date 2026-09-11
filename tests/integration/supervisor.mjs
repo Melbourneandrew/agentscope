@@ -11,6 +11,7 @@ import {
   existsSync,
   fstatSync,
   lstatSync,
+  mkdirSync,
   openSync,
   readSync,
   readlinkSync,
@@ -2599,6 +2600,12 @@ const syntheticCgroupObservationErrorCodes = Object.freeze({
   "observe-after-unit-not-found-missing": "ENOENT",
   "observe-after-unit-not-found-third": "ENOENT",
   "observe-after-unit-not-found-transition": "ENOENT",
+  "observe-after-unit-not-found-recovery-parent": "ENOENT",
+  "observe-after-unit-not-found-recovery-retained": "ENOENT",
+  "observe-after-unit-not-found-recovery-present": "ENOENT",
+  "observe-after-unit-not-found-recovery-permission": "ENOENT",
+  "observe-after-unit-not-found-recovery-substitution": "ENOENT",
+  "observe-after-unit-not-found-recovery-reappeared": "ENOENT",
 });
 export const classifyCgroupObservationFailureForTesting = (code, kind) =>
   classifyCgroupObservationFailure(
@@ -2611,7 +2618,11 @@ export const classifyCgroupObservationFailureForTesting = (code, kind) =>
           : Object.assign(new Error("private"), { code }),
   );
 
-const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
+const authenticateRemovedCgroupPaths = (
+  cgroupPath,
+  authority,
+  testingFault = undefined,
+) => {
   const parentPath = dirname(cgroupPath);
   const childPaths = [
     cgroupPath,
@@ -2658,6 +2669,8 @@ const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
   const requireAbsent = (recheck) => {
     for (const path of childPaths) {
       try {
+        if (testingFault === "permission" && path === cgroupPath)
+          throw Object.assign(new Error("private"), { code: "EACCES" });
         const status = lstatSync(path);
         if (status.isSymbolicLink())
           failRemovedCgroupPath("removed-path-substitution");
@@ -2675,6 +2688,7 @@ const authenticateRemovedCgroupPaths = (cgroupPath, authority) => {
   };
   recheckRetainedParent();
   requireAbsent(false);
+  if (testingFault === "reappeared") mkdirSync(cgroupPath);
   recheckRetainedParent();
   requireAbsent(true);
   recheckRetainedParent();
@@ -2691,9 +2705,10 @@ export const authenticateRemovedCgroupPathsForTesting = (
 export const authenticateRemovedCgroupPathsReasonForTesting = (
   cgroupPath,
   authority,
+  testingFault,
 ) => {
   try {
-    authenticateRemovedCgroupPaths(cgroupPath, authority);
+    authenticateRemovedCgroupPaths(cgroupPath, authority, testingFault);
     return undefined;
   } catch (error) {
     return removedCgroupPathFailureReason(error) ?? "removed-path-substitution";
@@ -2993,7 +3008,24 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
       observe,
       async () => facts,
       authenticate,
-      () => Object.freeze({ absent: true, empty: true, members: [] }),
+      () => {
+        const recoveryReason = {
+          "observe-after-unit-not-found-recovery-parent":
+            "removed-parent-identity",
+          "observe-after-unit-not-found-recovery-retained":
+            "removed-retained-identity",
+          "observe-after-unit-not-found-recovery-present":
+            "removed-path-present",
+          "observe-after-unit-not-found-recovery-permission":
+            "removed-path-permission",
+          "observe-after-unit-not-found-recovery-substitution":
+            "removed-path-substitution",
+          "observe-after-unit-not-found-recovery-reappeared":
+            "removed-path-reappeared",
+        }[mode];
+        if (recoveryReason !== undefined) failRemovedCgroupPath(recoveryReason);
+        return Object.freeze({ absent: true, empty: true, members: [] });
+      },
     );
     if (
       (mode === "transition-monotonic-removal-empty" ||

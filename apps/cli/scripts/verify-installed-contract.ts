@@ -2076,6 +2076,8 @@ const evaluateStepReceipts = (
     } catch {
       if (contractStep.executionMode === "pty-narrow")
         return "per-case-step-output-pty";
+      if (contractStep.expectedDiagnostic !== undefined)
+        return "per-case-step-output-diagnostic";
       if (contractStep.outputRule === "confirmation")
         return "per-case-step-output-confirmation";
       if (contractStep.outputRule === "help")
@@ -2088,7 +2090,7 @@ const evaluateStepReceipts = (
         return "per-case-step-output-jsonl";
       if (contractStep.outputRule === "human")
         return "per-case-step-output-human";
-      return "per-case-step-output-diagnostic";
+      assert.fail("agentscope.cli.installed-contract:output-rule");
     }
     if (
       (contractStep.stateRule === "same-as-before" &&
