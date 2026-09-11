@@ -323,7 +323,16 @@ const installedPtyFailurePredicates = Object.freeze({
   "runner-bootstrap": Object.freeze(["runner-rejected"]),
 });
 const installedContractFailurePredicates = Object.freeze({
-  "aggregate-evaluation": Object.freeze(["evaluation-rejected"]),
+  "aggregate-evaluation": Object.freeze([
+    "aggregate-count-order-digest",
+    "duplicate-ordinal",
+    "incomplete-observer-terminal-evidence",
+    "inventory-candidate-digest-mismatch",
+    "missing-ordinal",
+    "out-of-range-ordinal",
+    "per-case-receipt-shape-status-mismatch",
+    "unexpected-extra-evidence",
+  ]),
   "artifact-install": Object.freeze([
     "candidate-rejected",
     "egress-rejected",
@@ -351,6 +360,15 @@ const installedContractFailurePredicates = Object.freeze({
     "testkit.headless.observer.identity",
     "testkit.headless.observer.read",
     "testkit.headless.observer.reap",
+    "testkit.headless.observer.reap.deadline",
+    "testkit.headless.observer.reap.handle-close",
+    "testkit.headless.observer.reap.kill",
+    "testkit.headless.observer.reap.leader-identity",
+    "testkit.headless.observer.reap.observer-stop-join",
+    "testkit.headless.observer.reap.output-drain",
+    "testkit.headless.observer.reap.residual-membership",
+    "testkit.headless.observer.reap.stop-request",
+    "testkit.headless.observer.reap.term",
     "testkit.headless.observer.root",
     "testkit.headless.observer.signal",
     "testkit.headless.reconciliation.deadline",

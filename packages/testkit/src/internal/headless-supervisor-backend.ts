@@ -1425,7 +1425,7 @@ const exactAdoptedZombieReapReceipt = (
       ownData(value, "status") !== "not-ready" &&
       ownData(value, "status") !== "reaped")
   )
-    return fail("testkit.headless.observer.reap");
+    return fail("testkit.headless.observer.reap.observer-stop-join");
   return value;
 };
 const processesDescendantsFirst = (
@@ -1469,7 +1469,8 @@ const reapAdoptedZombies = (
   nativeDeadlineNs: bigint,
   namespaceIdentity: string,
   runtime: ProcessAuthorityRuntime,
-): void => {
+): boolean => {
+  let settled = true;
   for (const identity of processesDescendantsFirst(processes, rootPid)) {
     if (
       identity.pid === rootPid ||
@@ -1485,7 +1486,7 @@ const reapAdoptedZombies = (
       current.parentPid !== 1 ||
       current.state !== "Z"
     )
-      return fail("testkit.headless.observer.identity");
+      return fail("testkit.headless.observer.reap.leader-identity");
     const receipt = exactAdoptedZombieReapReceipt(
       runtime.reapAdoptedZombie(
         identity.pid,
@@ -1497,13 +1498,20 @@ const reapAdoptedZombies = (
     );
     const after = runtime.readProcess(identity.pid);
     if (after !== undefined && after.startIdentity !== identity.startIdentity)
-      return fail("testkit.headless.observer.identity");
-    if (
-      (receipt.status !== "reaped" && receipt.status !== "already-absent") ||
-      after !== undefined
-    )
-      return fail("testkit.headless.observer.reap");
+      return fail("testkit.headless.observer.reap.leader-identity");
+    // A zombie observed through /proc can briefly be not-ready to waitid while
+    // adoption settles. Retain it in the authenticated process set and let the
+    // caller retry under the same shutdown deadline; absence is never inferred.
+    if (receipt.status === "not-ready") {
+      if (after === undefined)
+        return fail("testkit.headless.observer.reap.observer-stop-join");
+      settled = false;
+      continue;
+    }
+    if (after !== undefined)
+      return fail("testkit.headless.observer.reap.residual-membership");
   }
+  return settled;
 };
 const productionContainerRuntime = (
   authority: ImmutableCandidateAuthority,
@@ -2386,6 +2394,7 @@ const selectedContainerBackend = (
       const observed = new Map<string, ProcessSnapshot>([
         [root.startIdentity, root],
       ]);
+      let observerReapPending = false;
       const signals: HeadlessObservedSignal[] = [];
       let aborted = false;
       void safeReflectApply(promiseThen, whenAborted, [
@@ -2453,7 +2462,7 @@ const selectedContainerBackend = (
         safeReflectApply(performanceNow, performance, []) < graceDeadline &&
         runtime.listProcesses(composition.namespaceIdentity).length > 0
       ) {
-        reapAdoptedZombies(
+        observerReapPending = !reapAdoptedZombies(
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
@@ -2478,10 +2487,10 @@ const selectedContainerBackend = (
       }
       while (
         safeReflectApply(performanceNow, performance, []) <
-          request.monotonicShutdownDeadlineMs &&
+          request.monotonicShutdownDeadlineMs - containerPollMilliseconds * 2 &&
         runtime.listProcesses(composition.namespaceIdentity).length > 0
       ) {
-        reapAdoptedZombies(
+        observerReapPending = !reapAdoptedZombies(
           runtime.listProcesses(composition.namespaceIdentity),
           childPid,
           nativeShutdownDeadlineNs,
@@ -2490,28 +2499,50 @@ const selectedContainerBackend = (
         );
         await delay(containerPollMilliseconds);
       }
-      reapAdoptedZombies(
-        runtime.listProcesses(composition.namespaceIdentity),
-        childPid,
-        nativeShutdownDeadlineNs,
-        composition.namespaceIdentity,
-        runtime,
-      );
+      let finalReapSettled = false;
+      try {
+        finalReapSettled = reapAdoptedZombies(
+          runtime.listProcesses(composition.namespaceIdentity),
+          childPid,
+          nativeShutdownDeadlineNs,
+          composition.namespaceIdentity,
+          runtime,
+        );
+        observerReapPending = !finalReapSettled;
+      } catch (error) {
+        if (
+          !observerReapPending ||
+          trustedErrorCode(error) !== "testkit.headless.reconciliation.deadline"
+        )
+          throw error;
+      }
       const residual = runtime.listProcesses(composition.namespaceIdentity);
-      if (exit === undefined) {
-        const terminal = await boundedInvoke(
-          () => closed,
+      const reapFailure =
+        residual.length === 0
+          ? undefined
+          : finalReapSettled
+            ? "testkit.headless.observer.reap.residual-membership"
+            : "testkit.headless.observer.reap.deadline";
+      try {
+        if (exit === undefined) {
+          const terminal = await boundedInvoke(
+            () => closed,
+            request.monotonicShutdownDeadlineMs,
+            "testkit.headless.reconciliation.deadline",
+          );
+          exit = terminal;
+        }
+        await boundedInvoke(
+          () =>
+            SafePromise.all([stdout.close, stderr.close]).then(() => undefined),
           request.monotonicShutdownDeadlineMs,
           "testkit.headless.reconciliation.deadline",
         );
-        exit = terminal;
+      } catch (error) {
+        if (reapFailure !== undefined) return fail(reapFailure);
+        throw error;
       }
-      await boundedInvoke(
-        () =>
-          SafePromise.all([stdout.close, stderr.close]).then(() => undefined),
-        request.monotonicShutdownDeadlineMs,
-        "testkit.headless.reconciliation.deadline",
-      );
+      if (reapFailure !== undefined) return fail(reapFailure);
       const settledAtMs = safeReflectApply(performanceNow, performance, []);
       const capturedStdout = stdout.read();
       const capturedStderr = stderr.read();
@@ -3164,6 +3195,7 @@ type SelectedContainerTestSeed =
   | "adopted-zombie-already-absent"
   | "adopted-zombie-already-absent-persistence"
   | "adopted-zombie-not-ready"
+  | "adopted-zombie-not-ready-once"
   | "adopted-zombie-reaped-persistence"
   | "adopted-zombie-reap-failure"
   | "adopted-zombie-receipt-malformed"
@@ -3262,7 +3294,7 @@ const selectedContainerRuntimeForTest = (
       else if (deadline !== reapDeadline)
         return fail("testkit.headless.reconciliation.deadline");
       if (seed === "adopted-zombie-reap-failure")
-        return fail("testkit.headless.observer.reap");
+        return fail("testkit.headless.observer.reap.observer-stop-join");
       const selected = processes.get(pid);
       if (
         selected === undefined ||
@@ -3285,9 +3317,12 @@ const selectedContainerRuntimeForTest = (
         descendantReads === 1
       ) {
         processes.set(pid, { ...selected, state: "R" });
-        return fail("testkit.headless.observer.identity");
+        return fail("testkit.headless.observer.reap.leader-identity");
       }
-      if (seed === "adopted-zombie-not-ready")
+      if (
+        seed === "adopted-zombie-not-ready" ||
+        (seed === "adopted-zombie-not-ready-once" && descendantReads === 1)
+      )
         return { pid, startIdentity, status: "not-ready" };
       if (seed === "adopted-zombie-already-absent-persistence")
         return { pid, startIdentity, status: "already-absent" };
@@ -3393,6 +3428,7 @@ const selectedContainerRuntimeForTest = (
           seed === "adopted-zombie-already-absent" ||
           seed === "adopted-zombie-already-absent-persistence" ||
           seed === "adopted-zombie-not-ready" ||
+          seed === "adopted-zombie-not-ready-once" ||
           seed === "adopted-zombie-reaped-persistence" ||
           seed === "adopted-zombie-reap-failure" ||
           seed === "adopted-zombie-receipt-malformed" ||

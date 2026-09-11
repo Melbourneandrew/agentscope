@@ -639,7 +639,7 @@ const selectedInvocationFor = (contractStep, caseRoot) => {
   return {
     arguments: [
       "-c",
-      'cli="$1"; shift; "$cli" "$@" >/dev/null 2>/dev/null; /usr/bin/sleep 60 & wait',
+      'trap "" TERM; cli="$1"; shift; "$cli" "$@" >/dev/null 2>/dev/null; /usr/bin/sleep 60 & wait',
       "agentscope-deadline-child",
       installedExecutable,
       ...contractStep.args,
@@ -833,23 +833,38 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
 }
 setInstalledContractFailureBoundary(
   "aggregate-evaluation",
-  "evaluation-rejected",
+  "aggregate-count-order-digest",
 );
-const installedContractEvidence =
-  installedContractOracle.evaluateInstalledCliContract(
-    contractPlan,
-    {
-      bin: installedManifest.bin,
-      candidateDigest: `sha256:${createHash("sha256")
-        .update(readFileSync(candidateTarball))
-        .digest("hex")}`,
-      executableRealPath: realpathSync(installedExecutable),
-      installedPackageRootRealPath: realpathSync(installedPackageRoot),
-      package: installedManifest.name,
-      version: installedManifest.version,
-    },
-    contractObservations,
-  );
+let installedContractEvidence;
+try {
+  installedContractEvidence =
+    installedContractOracle.evaluateInstalledCliContract(
+      contractPlan,
+      {
+        bin: installedManifest.bin,
+        candidateDigest: `sha256:${createHash("sha256")
+          .update(readFileSync(candidateTarball))
+          .digest("hex")}`,
+        executableRealPath: realpathSync(installedExecutable),
+        installedPackageRootRealPath: realpathSync(installedPackageRoot),
+        package: installedManifest.name,
+        version: installedManifest.version,
+      },
+      contractObservations,
+    );
+} catch (error) {
+  const reason =
+    installedContractOracle.installedContractEvaluationFailureReason(error);
+  if (
+    typeof reason !== "string" ||
+    !installedContractFailurePredicates["aggregate-evaluation"].includes(reason)
+  ) {
+    installedContractFailureTerminal = true;
+    throw error;
+  }
+  setInstalledContractFailureBoundary("aggregate-evaluation", reason);
+  throw error;
+}
 setInstalledContractFailureBoundary("receipt-finalization", "receipt-rejected");
 const receiptCaseIds = installedContractReceipts.map(({ caseId }) => caseId);
 if (

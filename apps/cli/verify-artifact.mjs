@@ -816,23 +816,94 @@ try {
     "terminal.narrow-help",
   ])
     assert.ok(installedContractPlan.caseIds.includes(requiredCaseId));
-  assert.throws(() =>
-    oracleModule.evaluateInstalledCliContract(
-      installedContractPlan,
-      {
-        bin: installedManifest.bin,
-        candidateDigest: `sha256:${createHash("sha256")
-          .update(readFileSync(tarball))
-          .digest("hex")}`,
-        executableRealPath: realpathSync(executable),
-        installedPackageRootRealPath: realpathSync(
-          join(installRoot, "node_modules/agentscope-cli"),
-        ),
-        package: installedManifest.name,
-        version: installedManifest.version,
-      },
-      [],
+  const installedIdentity = {
+    bin: installedManifest.bin,
+    candidateDigest: `sha256:${createHash("sha256")
+      .update(readFileSync(tarball))
+      .digest("hex")}`,
+    executableRealPath: realpathSync(executable),
+    installedPackageRootRealPath: realpathSync(
+      join(installRoot, "node_modules/agentscope-cli"),
     ),
+    package: installedManifest.name,
+    version: installedManifest.version,
+  };
+  const assertEvaluationFailure = (identity, observations, expected) => {
+    try {
+      oracleModule.evaluateInstalledCliContract(
+        installedContractPlan,
+        identity,
+        observations,
+      );
+      assert.fail("installed contract evaluation unexpectedly succeeded");
+    } catch (error) {
+      assert.equal(
+        oracleModule.installedContractEvaluationFailureReason(error),
+        expected,
+      );
+    }
+  };
+  const shapedObservations = installedContractPlan.cases.map(
+    (contractCase) => ({
+      afterStateDigests: contractCase.steps.map(() => "sha256:after"),
+      beforeStateDigest: "sha256:before",
+      caseId: contractCase.caseId,
+      results: contractCase.steps.map(() => ({
+        outcome: "cleanup-failed",
+        signal: null,
+        status: null,
+        stderr: "",
+        stdout: "",
+      })),
+    }),
+  );
+  assertEvaluationFailure(installedIdentity, [], "missing-ordinal");
+  assertEvaluationFailure(
+    installedIdentity,
+    [...shapedObservations, shapedObservations[0]],
+    "unexpected-extra-evidence",
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    shapedObservations.map((observation, index) =>
+      index === 1
+        ? { ...observation, caseId: shapedObservations[0].caseId }
+        : observation,
+    ),
+    "duplicate-ordinal",
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    shapedObservations.map((observation, index) =>
+      index === 0 ? { ...observation, caseId: "unknown" } : observation,
+    ),
+    "out-of-range-ordinal",
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    [
+      shapedObservations[1],
+      shapedObservations[0],
+      ...shapedObservations.slice(2),
+    ],
+    "aggregate-count-order-digest",
+  );
+  assertEvaluationFailure(
+    { ...installedIdentity, candidateDigest: "substituted" },
+    shapedObservations,
+    "inventory-candidate-digest-mismatch",
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    shapedObservations.map((observation, index) =>
+      index === 0 ? { ...observation, results: [] } : observation,
+    ),
+    "per-case-receipt-shape-status-mismatch",
+  );
+  assertEvaluationFailure(
+    installedIdentity,
+    shapedObservations,
+    "incomplete-observer-terminal-evidence",
   );
   const executableOptions = {
     cwd: installRoot,

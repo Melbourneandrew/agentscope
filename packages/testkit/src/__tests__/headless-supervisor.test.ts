@@ -191,6 +191,7 @@ describe("selected-container lifecycle", () => {
   it.each([
     ["clean", "exited"],
     ["adopted-zombie-already-absent", "exited"],
+    ["adopted-zombie-not-ready-once", "exited"],
     ["descendant", "exited"],
     ["output-limit", "output-limit"],
     ["timeout", "timed-out"],
@@ -219,14 +220,29 @@ describe("selected-container lifecycle", () => {
     ["signal-failure", "testkit.headless.observer.signal"],
     [
       "adopted-zombie-already-absent-persistence",
-      "testkit.headless.observer.reap",
+      "testkit.headless.observer.reap.residual-membership",
     ],
-    ["adopted-zombie-not-ready", "testkit.headless.observer.reap"],
-    ["adopted-zombie-reaped-persistence", "testkit.headless.observer.reap"],
-    ["adopted-zombie-reap-failure", "testkit.headless.observer.reap"],
-    ["adopted-zombie-receipt-malformed", "testkit.headless.observer.reap"],
-    ["adopted-zombie-receipt-substitution", "testkit.headless.observer.reap"],
-    ["adopted-zombie-state-substitution", "testkit.headless.observer.identity"],
+    ["adopted-zombie-not-ready", "testkit.headless.observer.reap.deadline"],
+    [
+      "adopted-zombie-reaped-persistence",
+      "testkit.headless.observer.reap.residual-membership",
+    ],
+    [
+      "adopted-zombie-reap-failure",
+      "testkit.headless.observer.reap.observer-stop-join",
+    ],
+    [
+      "adopted-zombie-receipt-malformed",
+      "testkit.headless.observer.reap.observer-stop-join",
+    ],
+    [
+      "adopted-zombie-receipt-substitution",
+      "testkit.headless.observer.reap.observer-stop-join",
+    ],
+    [
+      "adopted-zombie-state-substitution",
+      "testkit.headless.observer.reap.leader-identity",
+    ],
     ["stream-join-failure", "testkit.headless.reconciliation.deadline"],
     ["terminal-join-failure", "testkit.headless.reconciliation.deadline"],
   ] as const)("fails closed for selected-container %s", async (seed, code) => {

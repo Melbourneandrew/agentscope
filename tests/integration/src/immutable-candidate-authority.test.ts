@@ -579,6 +579,68 @@ describe("immutable candidate authority", () => {
       ).toThrow("integration.immutable-candidate.authority");
   });
 
+  it("binds closed observer-reap and aggregate-evaluation reasons", () => {
+    const observerReasons = [
+      "deadline",
+      "handle-close",
+      "kill",
+      "leader-identity",
+      "observer-stop-join",
+      "output-drain",
+      "residual-membership",
+      "stop-request",
+      "term",
+    ].map((reason) => `testkit.headless.observer.reap.${reason}`);
+    const evaluationReasons = [
+      "aggregate-count-order-digest",
+      "duplicate-ordinal",
+      "incomplete-observer-terminal-evidence",
+      "inventory-candidate-digest-mismatch",
+      "missing-ordinal",
+      "out-of-range-ordinal",
+      "per-case-receipt-shape-status-mismatch",
+      "unexpected-extra-evidence",
+    ];
+    expect(installedContractFailurePredicates["case-execution"]).toEqual(
+      expect.arrayContaining(observerReasons),
+    );
+    expect(installedContractFailurePredicates["case-execution"]).toContain(
+      "testkit.headless.observer.reap",
+    );
+    expect(installedContractFailurePredicates["aggregate-evaluation"]).toEqual(
+      evaluationReasons,
+    );
+    for (const predicate of evaluationReasons)
+      expect(
+        decodeInstalledContractFailureReceipt(
+          `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${
+            compileInstalledContractFailureReceipt({
+              phase: "aggregate-evaluation",
+              predicate,
+              receiptVersion: 1,
+            }).encoded
+          }`,
+          {
+            caseCount: 123,
+            caseIdsDigest:
+              "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          },
+        ).predicate,
+      ).toBe(predicate);
+    for (const predicate of [
+      "evaluation-rejected",
+      "unexpected-extra-evidence-substituted",
+      "",
+    ])
+      expect(() =>
+        compileInstalledContractFailureReceipt({
+          phase: "aggregate-evaluation",
+          predicate,
+          receiptVersion: 1,
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+  });
+
   it.each([
     "missing",
     "unknown",
@@ -785,10 +847,11 @@ describe("immutable candidate authority", () => {
         `setInstalledContractFailureBoundary("${phase}"`,
       );
       const operation = runner.indexOf(boundary);
-      expect(Math.max(transition, compactTransition)).toBeGreaterThanOrEqual(0);
-      expect(operation).toBeGreaterThan(
-        Math.max(transition, compactTransition),
+      const transitions = [transition, compactTransition].filter(
+        (index) => index >= 0,
       );
+      expect(transitions.length).toBeGreaterThan(0);
+      expect(operation).toBeGreaterThan(Math.min(...transitions));
     }
     const evidence = runner.indexOf("AGENTSCOPE_INSTALLED_CONTRACT_EVIDENCE=");
     const terminal = runner.indexOf(
@@ -980,12 +1043,15 @@ globalThis.exercise = async (mode) => {
     expect(invocation).toContain("monotonicShutdownDeadlineMs - 2_000");
     expect(invocation).toContain("terminationGraceMs: 1_000");
     expect(invocation).not.toContain("setTimeout(");
+    const deadlineStart = runner.indexOf('\'trap "" TERM;');
     const deadlineChild = runner.slice(
-      runner.indexOf('"agentscope-deadline-child"'),
-      runner.indexOf("};\n};", runner.indexOf('"agentscope-deadline-child"')),
+      deadlineStart,
+      runner.indexOf("};\n};", deadlineStart),
     );
     expect(deadlineChild).toContain("executionTimeoutMilliseconds: 250");
     expect(deadlineChild).toContain("shutdownTimeoutMilliseconds: 5_000");
+    expect(deadlineChild).toContain('trap "" TERM');
+    expect(deadlineChild).toContain("/usr/bin/sleep 60 & wait");
   });
 
   it("binds the complete installed-contract writable case authority", () => {
@@ -1151,7 +1217,7 @@ globalThis.exercise = async (mode) => {
       "execution-rejected",
     );
     expect(installedContractFailurePredicates["case-execution"]).toContain(
-      "testkit.headless.observer.reap",
+      "testkit.headless.observer.reap.observer-stop-join",
     );
     expect(runner).toContain("error instanceof HeadlessSupervisorError");
     expect(runner).toContain(

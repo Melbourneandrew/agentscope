@@ -93,6 +93,15 @@ export type InstalledCliContractEvidence = Readonly<{
   schema: "agentscope.cli.installed-contract-evidence.v2";
   version: string;
 }>;
+export type InstalledCliContractEvaluationFailureReason =
+  | "aggregate-count-order-digest"
+  | "duplicate-ordinal"
+  | "incomplete-observer-terminal-evidence"
+  | "inventory-candidate-digest-mismatch"
+  | "missing-ordinal"
+  | "out-of-range-ordinal"
+  | "per-case-receipt-shape-status-mismatch"
+  | "unexpected-extra-evidence";
 
 type Invocation = Readonly<{
   args: readonly string[];
@@ -111,6 +120,23 @@ const EXPECTED_PACKAGE = "agentscope-cli";
 const EXPECTED_BIN = "agentscope";
 const MAXIMUM_OUTPUT_BYTES = 1_048_576;
 const requiredArgumentDiagnostic = "cli.input.invalid";
+const installedContractEvaluationFailures = new WeakMap<
+  object,
+  InstalledCliContractEvaluationFailureReason
+>();
+const failInstalledContractEvaluation = (
+  reason: InstalledCliContractEvaluationFailureReason,
+): never => {
+  const error = new Error("agentscope.cli.installed-contract:evaluation");
+  installedContractEvaluationFailures.set(error, reason);
+  throw error;
+};
+export const installedContractEvaluationFailureReason = (
+  error: unknown,
+): InstalledCliContractEvaluationFailureReason | undefined =>
+  typeof error === "object" && error !== null
+    ? installedContractEvaluationFailures.get(error)
+    : undefined;
 const hash = (value: string): string =>
   `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const helpOutputSha256: Readonly<Record<string, string>> = Object.freeze({
@@ -1758,33 +1784,54 @@ export const evaluateInstalledCliContract = (
   identity: InstalledCliArtifactIdentity,
   observations: readonly InstalledCliContractObservation[],
 ): InstalledCliContractEvidence => {
-  assert.equal(identity.package, EXPECTED_PACKAGE);
-  assert.equal(identity.version, plan.expectedVersion);
-  assert.deepEqual(identity.bin, {
-    [EXPECTED_BIN]: "./dist/bin/agentscope.js",
-  });
-  assert.match(identity.candidateDigest, /^sha256:[0-9a-f]{64}$/u);
-  assert.ok(identity.installedPackageRootRealPath.startsWith("/"));
-  assert.ok(
-    identity.executableRealPath.startsWith(
-      `${identity.installedPackageRootRealPath}/`,
-    ),
-  );
-  assert.deepEqual(
-    observations.map(({ caseId }) => caseId),
-    plan.caseIds,
-  );
+  try {
+    assert.equal(identity.package, EXPECTED_PACKAGE);
+    assert.equal(identity.version, plan.expectedVersion);
+    assert.deepEqual(identity.bin, {
+      [EXPECTED_BIN]: "./dist/bin/agentscope.js",
+    });
+    assert.match(identity.candidateDigest, /^sha256:[0-9a-f]{64}$/u);
+    assert.ok(identity.installedPackageRootRealPath.startsWith("/"));
+    assert.ok(
+      identity.executableRealPath.startsWith(
+        `${identity.installedPackageRootRealPath}/`,
+      ),
+    );
+  } catch {
+    return failInstalledContractEvaluation(
+      "inventory-candidate-digest-mismatch",
+    );
+  }
+  if (observations.length < plan.caseIds.length)
+    return failInstalledContractEvaluation("missing-ordinal");
+  if (observations.length > plan.caseIds.length)
+    return failInstalledContractEvaluation("unexpected-extra-evidence");
+  const observedCaseIds = observations.map(({ caseId }) => caseId);
+  if (new Set(observedCaseIds).size !== observedCaseIds.length)
+    return failInstalledContractEvaluation("duplicate-ordinal");
+  if (observedCaseIds.some((caseId) => !plan.caseIds.includes(caseId)))
+    return failInstalledContractEvaluation("out-of-range-ordinal");
+  if (JSON.stringify(observedCaseIds) !== JSON.stringify(plan.caseIds))
+    return failInstalledContractEvaluation("aggregate-count-order-digest");
   for (let index = 0; index < plan.cases.length; index += 1) {
     const contractCase = plan.cases[index];
     const observation = observations[index];
     if (contractCase === undefined || observation === undefined)
-      throw new Error("agentscope.cli.installed-contract:case-identity");
+      return failInstalledContractEvaluation("missing-ordinal");
     try {
       assert.equal(observation.results.length, contractCase.steps.length);
       assert.equal(
         observation.afterStateDigests.length,
         contractCase.steps.length,
       );
+    } catch (error) {
+      if (installedContractEvaluationFailureReason(error) !== undefined)
+        throw error;
+      return failInstalledContractEvaluation(
+        "per-case-receipt-shape-status-mismatch",
+      );
+    }
+    try {
       if (contractCase.setup === "initialized") {
         assert.equal(observation.setupResult?.status, 0);
         assert.equal(observation.setupResult.signal, null);
@@ -1810,7 +1857,17 @@ export const evaluateInstalledCliContract = (
           afterStateDigest === undefined ||
           result === undefined
         )
-          throw new Error("agentscope.cli.installed-contract:step-identity");
+          return failInstalledContractEvaluation(
+            "per-case-receipt-shape-status-mismatch",
+          );
+        if (
+          result.outcome !== contractStep.expectedOutcome ||
+          result.signal !== contractStep.expectedSignal ||
+          result.status !== contractStep.expectedStatus
+        )
+          return failInstalledContractEvaluation(
+            "incomplete-observer-terminal-evidence",
+          );
         assertOutput(contractStep, result, plan.expectedVersion, {
           caseOrdinal: index,
         });
@@ -1820,9 +1877,11 @@ export const evaluateInstalledCliContract = (
           assert.equal(afterStateDigest, previous);
         previous = afterStateDigest;
       }
-    } catch {
-      throw new Error(
-        `agentscope.cli.installed-contract:${identity.candidateDigest}:${contractCase.caseId}`,
+    } catch (error) {
+      if (installedContractEvaluationFailureReason(error) !== undefined)
+        throw error;
+      return failInstalledContractEvaluation(
+        "per-case-receipt-shape-status-mismatch",
       );
     }
   }
