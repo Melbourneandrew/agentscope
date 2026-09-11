@@ -11,6 +11,7 @@ import {
   realpathSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -679,7 +680,7 @@ try {
           generation: null,
           plan: {
             destinationType: "@agentscope/destination-local-sqlite",
-            displayPath: `/tmp/agentscope-installed-contract/cases/1/user home with spaces — 测试/.agentscope/destinations/local-sqlite/sha256-${"a".repeat(64)}`,
+            displayPath: `/tmp/agentscope-installed-contract/cases/1/user home with spaces — 测试/.agentscope/destinations/local-sqlite/${"a".repeat(64)}`,
             operation: "configure",
             persistentDataNotice: true,
             retentionPolicy: {
@@ -709,6 +710,20 @@ try {
       {
         ...configureResult,
         stdout: configureResult.stdout.replace("/cases/1/", "/cases/999/"),
+      },
+      installedManifest.version,
+      { caseOrdinal: 1 },
+    ),
+  );
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      configureStep,
+      {
+        ...configureResult,
+        stdout: configureResult.stdout.replace(
+          `/${"a".repeat(64)}`,
+          `/sha256-${"a".repeat(64)}`,
+        ),
       },
       installedManifest.version,
       { caseOrdinal: 1 },
@@ -1293,15 +1308,55 @@ try {
     env: { HOME: ordinal35Home, USERPROFILE: ordinal35Home },
   };
   run(executable, ["init", "--yes", "--output", "json"], ordinal35Options);
-  const snapshotContractHome = (home) =>
-    regularFiles(home).map((path) => [
-      path,
-      lstatSync(join(home, path)).mode & 0o777,
-      createHash("sha256")
-        .update(readFileSync(join(home, path)))
-        .digest("hex"),
-    ]);
+  const snapshotContractHome = (home) => {
+    const entries = [];
+    const pending = [[".", home]];
+    while (pending.length > 0) {
+      const [path, absolutePath] = pending.pop();
+      const metadata = lstatSync(absolutePath);
+      assert.equal(metadata.isSymbolicLink(), false);
+      const kind = metadata.isDirectory()
+        ? "directory"
+        : metadata.isFile()
+          ? "file"
+          : undefined;
+      assert.notEqual(kind, undefined);
+      entries.push([
+        path,
+        kind,
+        metadata.dev,
+        metadata.ino,
+        metadata.mode & 0o777,
+        metadata.uid,
+        metadata.gid,
+        metadata.nlink,
+        kind === "file" ? metadata.size : null,
+        kind === "file"
+          ? createHash("sha256")
+              .update(readFileSync(absolutePath))
+              .digest("hex")
+          : null,
+      ]);
+      if (kind === "directory")
+        for (const name of readdirSync(absolutePath))
+          pending.push([
+            path === "." ? name : `${path}/${name}`,
+            join(absolutePath, name),
+          ]);
+    }
+    return entries.sort(([left], [right]) => left.localeCompare(right));
+  };
   const snapshotOrdinal35Home = () => snapshotContractHome(ordinal35Home);
+  const snapshotDirectoryProbeBefore = snapshotOrdinal35Home();
+  const snapshotDirectoryProbe = join(ordinal35Home, "snapshot-probe");
+  mkdirSync(snapshotDirectoryProbe);
+  assert.notDeepEqual(snapshotOrdinal35Home(), snapshotDirectoryProbeBefore);
+  chmodSync(snapshotDirectoryProbe, 0o700);
+  const snapshotDirectoryMode = snapshotOrdinal35Home();
+  chmodSync(snapshotDirectoryProbe, 0o755);
+  assert.notDeepEqual(snapshotOrdinal35Home(), snapshotDirectoryMode);
+  rmdirSync(snapshotDirectoryProbe);
+  assert.deepEqual(snapshotOrdinal35Home(), snapshotDirectoryProbeBefore);
   const ordinal35Before = snapshotOrdinal35Home();
   const ordinal35Result = runRaw(
     executable,

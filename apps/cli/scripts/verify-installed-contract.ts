@@ -1612,13 +1612,10 @@ const validateConfigureRecord = (
   );
   assert.match(String(value.plan.displayPath), /^\/[^\n\r]{1,4095}$/u);
   assert.equal(
-    String(value.plan.displayPath).slice(0, -71),
+    String(value.plan.displayPath).slice(0, -64),
     `${installedContractHome(outputAuthority.caseOrdinal)}/.agentscope/destinations/local-sqlite/`,
   );
-  assert.match(
-    String(value.plan.displayPath).slice(-71),
-    /^sha256-[0-9a-f]{64}$/u,
-  );
+  assert.match(String(value.plan.displayPath).slice(-64), /^[0-9a-f]{64}$/u);
   assert.equal(value.plan.operation, "configure");
   assert.equal(value.plan.persistentDataNotice, true);
   assert.ok(
@@ -1836,7 +1833,7 @@ const validateHumanSuccess = (
     assert.ok(text.startsWith(prefix));
     assert.match(
       text.slice(prefix.length),
-      /^sha256-[0-9a-f]{64}\nNo changes applied; rerun with --yes after reviewing the plan\.\n$/u,
+      /^[0-9a-f]{64}\nNo changes applied; rerun with --yes after reviewing the plan\.\n$/u,
     );
     return;
   }
