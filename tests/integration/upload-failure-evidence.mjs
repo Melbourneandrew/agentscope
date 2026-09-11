@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   createHash,
   createHmac,
@@ -18,6 +18,7 @@ import {
   realpathSync,
   readdirSync,
   rmdirSync,
+  statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
@@ -29,7 +30,7 @@ const BRIDGE_CLEANUP_RESERVE_NANOSECONDS = 500_000_000n;
 const CHILD_OUTPUT_STAGE_OVERHEAD_BYTES = 4096;
 const CHILD_OUTPUT_MAXIMUM_BYTES =
   MAXIMUM_BYTES + CHILD_OUTPUT_STAGE_OVERHEAD_BYTES;
-const ACTION_SOURCE_MAXIMUM_BYTES = 96 * 1024;
+const ACTION_SOURCE_MAXIMUM_BYTES = 128 * 1024;
 const CHILD_BOOTSTRAP_KEY_BYTES = 32;
 const CHILD_BOOTSTRAP_NONCE_BYTES = 16;
 const CHILD_BOOTSTRAP_AUTHORITY_BYTES =
@@ -1139,12 +1140,282 @@ export const verifyArtifactClientProvenanceForTest = (
   }
 };
 
+const artifactUploaderEnvironment = () =>
+  Object.freeze(
+    Object.fromEntries(
+      [
+        "ACTIONS_RESULTS_URL",
+        "ACTIONS_RUNTIME_TOKEN",
+        "GITHUB_SERVER_URL",
+        "GITHUB_WORKSPACE",
+      ].map((name) => {
+        const value = process.env[name];
+        if (typeof value !== "string" || value.length < 1) fail();
+        return [name, value];
+      }),
+    ),
+  );
+const artifactUploaderUncertainFailures = new WeakSet();
+const uncertainArtifactUploaderFailure = () => {
+  const error = new Error("integration.controller.failure-evidence-upload");
+  artifactUploaderUncertainFailures.add(error);
+  return error;
+};
+const artifactUploaderIdentity = (pid) => {
+  const content = readFileSync(`/proc/${pid}/stat`, "ascii");
+  if (!content.endsWith("\n") || content.slice(0, -1).includes("\n")) fail();
+  const record = content.slice(0, -1);
+  const close = record.lastIndexOf(") ");
+  const fields = record.slice(close + 2).split(" ");
+  if (
+    close < 2 ||
+    !record.startsWith(`${pid} (`) ||
+    fields.length < 20 ||
+    !/^[1-9]\d*$/u.test(fields[2]) ||
+    !/^[1-9]\d*$/u.test(fields[19])
+  )
+    fail();
+  return Object.freeze({ pgid: Number(fields[2]), start: fields[19] });
+};
+const sameArtifactUploaderExecutable = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.mode === right.mode &&
+  left.uid === right.uid &&
+  left.gid === right.gid &&
+  left.size === right.size &&
+  left.isFile() &&
+  right.isFile();
+const signalArtifactUploader = (pid, start, executable, signal) => {
+  const identity = artifactUploaderIdentity(pid);
+  if (
+    identity.pgid !== pid ||
+    identity.start !== start ||
+    !sameArtifactUploaderExecutable(executable, statSync(`/proc/${pid}/exe`))
+  )
+    fail();
+  process.kill(-pid, signal);
+};
+/* eslint-disable max-lines-per-function -- this is one closed spawn/signal/join authority. */
+const runArtifactUploaderProcess = ({
+  deadline,
+  digest,
+  environment,
+  name,
+  nowNanoseconds,
+  path,
+  root,
+  source,
+  workingDirectory,
+}) =>
+  new Promise((resolvePromise, rejectPromise) => {
+    const cutoff = deadline - BRIDGE_CLEANUP_RESERVE_NANOSECONDS;
+    if (cutoff <= nowNanoseconds()) {
+      rejectPromise(
+        new Error("integration.controller.failure-evidence-upload"),
+      );
+      return;
+    }
+    if (
+      !Buffer.isBuffer(source) ||
+      source.length < 1 ||
+      source.length > ACTION_SOURCE_MAXIMUM_BYTES ||
+      typeof workingDirectory !== "string" ||
+      !workingDirectory.startsWith("/")
+    ) {
+      rejectPromise(
+        new Error("integration.controller.failure-evidence-upload"),
+      );
+      return;
+    }
+    const executable = statSync("/proc/self/exe");
+    if (!executable.isFile()) {
+      rejectPromise(
+        new Error("integration.controller.failure-evidence-upload"),
+      );
+      return;
+    }
+    const child = spawn(
+      "/proc/self/exe",
+      [
+        "--input-type=module",
+        "--eval",
+        source.toString("utf8"),
+        "--",
+        "--artifact-uploader",
+        "--path",
+        path,
+        "--root",
+        root,
+        "--name",
+        name,
+        "--digest",
+        digest,
+        "--deadline",
+        String(cutoff),
+      ],
+      {
+        cwd: workingDirectory,
+        detached: true,
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    const pid = child.pid;
+    if (!Number.isSafeInteger(pid) || pid < 2) {
+      rejectPromise(
+        new Error("integration.controller.failure-evidence-upload"),
+      );
+      return;
+    }
+    let start;
+    let stdout = Buffer.alloc(0);
+    let stderr = Buffer.alloc(0);
+    let forced = false;
+    let settled = false;
+    let firstFailure;
+    const reject = (
+      error = new Error("integration.controller.failure-evidence-upload"),
+    ) => {
+      firstFailure ??= error;
+    };
+    const append = (current, chunk) => {
+      const next = Buffer.concat([current, chunk]);
+      if (next.length > 4096) {
+        reject();
+        return current;
+      }
+      return next;
+    };
+    child.stdout.on("data", (chunk) => {
+      stdout = append(stdout, chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = append(stderr, chunk);
+    });
+    child.on("error", reject);
+    try {
+      const identity = artifactUploaderIdentity(pid);
+      if (
+        identity.pgid !== pid ||
+        !sameArtifactUploaderExecutable(
+          executable,
+          statSync(`/proc/${pid}/exe`),
+        )
+      )
+        fail();
+      start = identity.start;
+    } catch (error) {
+      reject(error);
+    }
+    const forceTimer = setTimeout(
+      () => {
+        if (settled) return;
+        forced = true;
+        reject();
+        try {
+          signalArtifactUploader(pid, start, executable, "SIGTERM");
+        } catch (error) {
+          reject(error);
+        }
+      },
+      Math.max(1, Number((cutoff - nowNanoseconds()) / 1_000_000n)),
+    );
+    const killTimer = setTimeout(
+      () => {
+        if (settled) return;
+        forced = true;
+        reject();
+        try {
+          signalArtifactUploader(pid, start, executable, "SIGKILL");
+        } catch (error) {
+          reject(error);
+        }
+      },
+      Math.max(
+        1,
+        Number((cutoff + 250_000_000n - nowNanoseconds()) / 1_000_000n),
+      ),
+    );
+    const deadlineTimer = setTimeout(
+      () => {
+        if (settled) return;
+        forced = true;
+        rejectPromise(uncertainArtifactUploaderFailure());
+      },
+      Math.max(1, Number((deadline - nowNanoseconds()) / 1_000_000n)),
+    );
+    child.on("close", (code, signal) => {
+      settled = true;
+      clearTimeout(forceTimer);
+      clearTimeout(killTimer);
+      clearTimeout(deadlineTimer);
+      let groupAbsent = false;
+      try {
+        process.kill(-pid, 0);
+        reject();
+      } catch (error) {
+        if (error?.code === "ESRCH") groupAbsent = true;
+        else reject(error);
+      }
+      if (!groupAbsent) {
+        rejectPromise(uncertainArtifactUploaderFailure());
+        return;
+      }
+      if (
+        forced ||
+        firstFailure !== undefined ||
+        code !== 0 ||
+        signal !== null ||
+        stderr.length !== 0
+      ) {
+        rejectPromise(
+          firstFailure ??
+            new Error("integration.controller.failure-evidence-upload"),
+        );
+        return;
+      }
+      try {
+        const receipt = JSON.parse(stdout.toString("utf8"));
+        if (
+          Object.keys(receipt).sort().join(",") !==
+            "artifactDigest,artifactId,artifactSize,status" ||
+          receipt.status !== "uploaded" ||
+          !/^sha256:[a-f0-9]{64}$/u.test(receipt.artifactDigest) ||
+          !Number.isSafeInteger(receipt.artifactId) ||
+          receipt.artifactId < 1 ||
+          !Number.isSafeInteger(receipt.artifactSize) ||
+          receipt.artifactSize < 1
+        )
+          fail();
+        resolvePromise(
+          Object.freeze({
+            digest: receipt.artifactDigest.slice("sha256:".length),
+            id: receipt.artifactId,
+            size: receipt.artifactSize,
+          }),
+        );
+      } catch (error) {
+        rejectPromise(error);
+      }
+    });
+  });
+/* eslint-enable max-lines-per-function */
+const runArtifactUploader = (options) =>
+  runArtifactUploaderProcess({
+    ...options,
+    environment: artifactUploaderEnvironment(),
+  });
+export const runArtifactUploaderForTest = (options) =>
+  runArtifactUploaderProcess(options);
+
+/* eslint-disable complexity -- the bridge lifecycle is one closed transaction. */
 const uploadFailureEvidenceImplementation = async ({
   arguments_,
-  client,
   nowNanoseconds,
   probe,
   sealerSource,
+  uploader,
   workspace,
 }) => {
   const values = exactArguments(arguments_);
@@ -1162,7 +1433,8 @@ const uploadFailureEvidenceImplementation = async ({
   if (
     !/^sha256:[a-f0-9]{64}$/u.test(values.digest) ||
     !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(values.name) ||
-    typeof probe !== "function"
+    typeof probe !== "function" ||
+    typeof uploader !== "function"
   )
     fail();
   const status = fstatSync(descriptor);
@@ -1197,28 +1469,30 @@ const uploadFailureEvidenceImplementation = async ({
     typeof bridge.remove !== "function"
   )
     fail();
-  const authority = closedClient(client);
   let response;
   let primary;
   try {
     bridge.revalidate();
     if (uploadCutoff <= nowNanoseconds()) fail();
-    response = await authority.uploadArtifact(
-      values.name,
-      [bridge.path],
-      resolve(bridge.path, ".."),
-      Object.freeze({ compressionLevel: 0, retentionDays: 7 }),
-    );
+    response = await uploader({
+      deadline,
+      digest: values.digest,
+      name: values.name,
+      path: bridge.path,
+      root: resolve(bridge.path, ".."),
+    });
     if (uploadCutoff <= nowNanoseconds()) fail();
     bridge.revalidate();
     await probe();
   } catch (error) {
     primary = error;
   } finally {
-    try {
-      bridge.remove();
-    } catch (cleanupError) {
-      if (primary === undefined) primary = cleanupError;
+    if (!artifactUploaderUncertainFailures.has(primary)) {
+      try {
+        bridge.remove();
+      } catch (cleanupError) {
+        if (primary === undefined) primary = cleanupError;
+      }
     }
   }
   if (primary !== undefined) throw primary;
@@ -1237,10 +1511,18 @@ const uploadFailureEvidenceImplementation = async ({
     status: "uploaded",
   });
 };
+/* eslint-enable complexity */
 
 export const uploadFailureEvidence = async (options) => {
   try {
-    return await uploadFailureEvidenceImplementation(options);
+    const uploader =
+      options.uploader ??
+      (async ({ name, path, root }) =>
+        closedClient(options.client)["uploadArtifact"](name, [path], root, {
+          compressionLevel: 0,
+          retentionDays: 7,
+        }));
+    return await uploadFailureEvidenceImplementation({ ...options, uploader });
   } catch {
     fail();
   }
@@ -1336,8 +1618,8 @@ const authenticateActionInvocation = () => {
 /* eslint-disable complexity, max-lines-per-function -- This closed verifier deliberately keeps the complete evidence grammar in the credential-bearing action process. */
 export const finalizeFailureEvidence = async ({
   bundleDescriptor,
-  client,
   sealerSource,
+  uploaderSource,
 }) => {
   await loadRuntimeDependencies();
   let finalizationReason = "open";
@@ -2091,7 +2373,8 @@ export const finalizeFailureEvidence = async ({
     if (
       !Number.isSafeInteger(bundleDescriptor) ||
       bundleDescriptor < 3 ||
-      !Buffer.isBuffer(sealerSource)
+      !Buffer.isBuffer(sealerSource) ||
+      !Buffer.isBuffer(uploaderSource)
     )
       fail();
     mark("write");
@@ -2184,10 +2467,23 @@ export const finalizeFailureEvidence = async ({
             "--deadline",
             deadlineNanoseconds,
           ],
-          client,
           nowNanoseconds: process.hrtime.bigint,
           probe,
           sealerSource,
+          uploader: ({ deadline, digest, name, path, root }) =>
+            runArtifactUploader({
+              deadline,
+              digest,
+              name,
+              nowNanoseconds: process.hrtime.bigint,
+              path,
+              root,
+              source: uploaderSource,
+              workingDirectory: resolve(
+                process.env.GITHUB_WORKSPACE,
+                "tests/integration",
+              ),
+            }),
           workspace,
         });
       } catch (error) {
@@ -2230,6 +2526,100 @@ export const finalizeFailureEvidence = async ({
   }
 };
 /* eslint-enable complexity, max-lines-per-function */
+
+// eslint-disable-next-line complexity -- the child validates one closed upload transaction.
+const artifactUploaderMain = async () => {
+  const arguments_ = process.argv.slice(1);
+  if (
+    arguments_.length !== 11 ||
+    arguments_[0] !== "--artifact-uploader" ||
+    arguments_[1] !== "--path" ||
+    arguments_[3] !== "--root" ||
+    arguments_[5] !== "--name" ||
+    arguments_[7] !== "--digest" ||
+    arguments_[9] !== "--deadline"
+  )
+    fail();
+  const [path, root, name, digest, deadlineValue] = [
+    arguments_[2],
+    arguments_[4],
+    arguments_[6],
+    arguments_[8],
+    arguments_[10],
+  ];
+  const deadline = parseDeadline(deadlineValue);
+  const directoryName = root.slice(root.lastIndexOf("/") + 1);
+  if (
+    resolve(path, "..") !== root ||
+    resolve(root, "failure-evidence.json") !== path ||
+    !/^\.agentscope-failure-upload-[a-f0-9]{24}$/u.test(directoryName) ||
+    resolve(process.env.GITHUB_WORKSPACE, directoryName) !== root ||
+    !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(name) ||
+    !/^sha256:[a-f0-9]{64}$/u.test(digest) ||
+    deadline <= process.hrtime.bigint()
+  )
+    fail();
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let response;
+  try {
+    const status = fstatSync(descriptor);
+    if (
+      !status.isFile() ||
+      status.nlink !== 1 ||
+      status.size < 1 ||
+      status.size > MAXIMUM_BYTES ||
+      (status.mode & 0o7777) !== 0o400 ||
+      !sameBridgeIdentity(bridgeIdentity(status), lstatSync(path)) ||
+      `sha256:${createHash("sha256").update(readExact(descriptor, status.size)).digest("hex")}` !==
+        digest
+    )
+      fail();
+    await loadRuntimeDependencies();
+    const client = closedClient(
+      new runtimeDependencies.DefaultArtifactClient(),
+    );
+    const originalStdout = process.stdout.write.bind(process.stdout);
+    const originalStderr = process.stderr.write.bind(process.stderr);
+    try {
+      process.stdout.write = () => true;
+      process.stderr.write = () => true;
+      response = await client.uploadArtifact(name, [path], root, {
+        compressionLevel: 0,
+        retentionDays: 7,
+      });
+    } finally {
+      process.stdout.write = originalStdout;
+      process.stderr.write = originalStderr;
+    }
+    if (deadline <= process.hrtime.bigint()) fail();
+    const terminal = fstatSync(descriptor);
+    if (
+      !sameBridgeIdentity(bridgeIdentity(status), terminal) ||
+      !sameBridgeIdentity(bridgeIdentity(status), lstatSync(path)) ||
+      `sha256:${createHash("sha256").update(readExact(descriptor, status.size)).digest("hex")}` !==
+        digest
+    )
+      fail();
+  } finally {
+    closeSync(descriptor);
+  }
+  if (
+    !Number.isSafeInteger(response.id) ||
+    response.id < 1 ||
+    !Number.isSafeInteger(response.size) ||
+    response.size < 1 ||
+    !/^[a-f0-9]{64}$/u.test(response.digest ?? "")
+  )
+    fail();
+  process.stdout.write(
+    `${JSON.stringify({
+      artifactDigest: `sha256:${response.digest}`,
+      artifactId: response.id,
+      artifactSize: response.size,
+      status: "uploaded",
+    })}\n`,
+  );
+};
 
 const exactControllerArguments = (arguments_) => {
   if (
@@ -2610,8 +3000,8 @@ const outerControllerMain = async (bootstrap) => {
       outerStage = "finalize-evidence";
       await finalizeFailureEvidence({
         bundleDescriptor: authority.bundleDescriptor,
-        client: new runtimeDependencies.DefaultArtifactClient(),
         sealerSource: sealer.content,
+        uploaderSource: source,
       });
       succeeded = false;
     }
@@ -2762,7 +3152,13 @@ const runOuterControllerEnvelope = async () => {
   }
 };
 
-if (process.argv[1] === "--outer-controller") {
+if (process.argv[1] === "--artifact-uploader") {
+  try {
+    await artifactUploaderMain();
+  } catch {
+    process.exitCode = 1;
+  }
+} else if (process.argv[1] === "--outer-controller") {
   await runOuterControllerEnvelope();
 } else if (
   process.argv[1] !== undefined &&

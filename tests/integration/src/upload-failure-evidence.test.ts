@@ -26,7 +26,7 @@ import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, createRegularUploadBridgeForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, createRegularUploadBridgeForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, runArtifactUploaderForTest, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 const initializeRuntime =
   initializeFailureEvidenceRuntimeForTest as unknown as () => Promise<void>;
@@ -55,6 +55,17 @@ type UploadFailureEvidence = (options: {
   status: "uploaded";
 }>;
 const invokeUpload = uploadFailureEvidence as unknown as UploadFailureEvidence;
+const runUploader = runArtifactUploaderForTest as unknown as (options: {
+  deadline: bigint;
+  digest: string;
+  environment: NodeJS.ProcessEnv;
+  name: string;
+  nowNanoseconds: () => bigint;
+  path: string;
+  root: string;
+  source: Buffer;
+  workingDirectory: string;
+}) => Promise<ArtifactResponse>;
 const createBridge = createRegularUploadBridgeForTest as unknown as (options: {
   deadline: bigint;
   digest: string;
@@ -306,6 +317,74 @@ describe("failure evidence action boundary", () => {
 
 // eslint-disable-next-line max-lines-per-function -- the uploader's exact bridge lifecycle is reviewed as one causal matrix.
 describe("failure evidence uploader", () => {
+  const uploaderProcessOptions = (source: string, milliseconds = 2_000) => {
+    const root = resolve(
+      workspaceRoot,
+      ".agentscope-failure-upload-aaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    return {
+      deadline: process.hrtime.bigint() + BigInt(milliseconds) * 1_000_000n,
+      digest: `sha256:${"a".repeat(64)}`,
+      environment: {},
+      name: "integration-0-of-1-1",
+      nowNanoseconds: () => process.hrtime.bigint(),
+      path: resolve(root, "failure-evidence.json"),
+      root,
+      source: Buffer.from(source),
+      workingDirectory: resolve(workspaceRoot, "tests/integration"),
+    };
+  };
+
+  it.skipIf(process.platform !== "linux")(
+    "authenticates and joins the dedicated uploader process group",
+    async () => {
+      const receipt = JSON.stringify({
+        artifactDigest: `sha256:${"a".repeat(64)}`,
+        artifactId: 17,
+        artifactSize: 321,
+        status: "uploaded",
+      });
+      await expect(
+        runUploader(
+          uploaderProcessOptions(
+            `setTimeout(() => process.stdout.write(${JSON.stringify(`${receipt}\n`)}), 50)`,
+          ),
+        ),
+      ).resolves.toEqual({ digest: "a".repeat(64), id: 17, size: 321 });
+    },
+    5_000,
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "uses the fixed teardown reserve to TERM then KILL and join a stalled group",
+    async () => {
+      const source = `import { spawn } from "node:child_process";
+process.on("SIGTERM", () => {});
+spawn(process.execPath, ["--eval", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: "ignore" });
+setInterval(() => {}, 1000);`;
+      const started = Date.now();
+      await expect(
+        runUploader(uploaderProcessOptions(source, 1_100)),
+      ).rejects.toThrow("integration.controller.failure-evidence-upload");
+      expect(Date.now() - started).toBeLessThan(2_000);
+    },
+    5_000,
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "rejects malformed uploader completion evidence after exact join",
+    async () => {
+      await expect(
+        runUploader(
+          uploaderProcessOptions(
+            'setTimeout(() => process.stdout.write("{\\"status\\":\\"uploaded\\"}\\n"), 50)',
+          ),
+        ),
+      ).rejects.toThrow();
+    },
+    5_000,
+  );
+
   it("uploads one bounded private regular file and removes it", async () => {
     const owned = fixture();
     try {
@@ -655,6 +734,10 @@ describe("failure evidence uploader", () => {
     );
     expect(uploader).not.toContain("/proc/self/fd");
     expect(uploader).toContain("createRegularUploadBridge");
+    expect(source).toContain("runArtifactUploader");
+    expect(source).not.toContain(
+      "client: new runtimeDependencies.DefaultArtifactClient()",
+    );
     expect(source).toContain('"bridge-create"');
     expect(source).toContain('"bridge-remove"');
   });
