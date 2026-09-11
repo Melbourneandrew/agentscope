@@ -261,16 +261,16 @@ describe("selected PTY transport", () => {
   });
 
   it.each([
-    "active-terminal",
-    "missing-ready",
-    "credential-prompt",
-    "malformed-control",
+    ["active-terminal", "testkit.pty.transport.semantic-rejected"],
+    ["missing-ready", "testkit.pty.transport.semantic-rejected"],
+    ["credential-prompt", "testkit.pty.transport.semantic-rejected"],
+    ["malformed-control", "testkit.pty.transport.semantic-rejected"],
   ] as const)(
     "rejects terminal semantic state %s as completion",
-    async (seed) => {
+    async (seed, code) => {
       await expect(
         executeSelectedPtyTransportForTest(request(), seed),
-      ).rejects.toMatchObject({ code: "testkit.pty.transport.semantic" });
+      ).rejects.toMatchObject({ code });
     },
   );
 

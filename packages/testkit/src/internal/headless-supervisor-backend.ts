@@ -2569,17 +2569,24 @@ const armSelectedPty = (
       request.completion.kind === "exact-output" &&
       request.completion.outputBytes === outputBytes &&
       request.completion.outputSha256 === outputSha256;
-    if (
-      !outputLimited &&
-      (finalSnapshot.semanticState === "credential-prompt" ||
+    if (!outputLimited) {
+      if (
+        finalSnapshot.semanticState === "credential-prompt" ||
         finalSnapshot.semanticState === "malformed-control" ||
-        (request.interaction.trigger === "semantic-ready" &&
-          !readinessObserved) ||
-        ((trigger === "closed" || trigger === undefined) &&
-          finalSnapshot.semanticState !== "completed" &&
-          !exactOutputCompleted))
-    )
-      return fail("testkit.pty.transport.semantic");
+        (request.interaction.trigger === "semantic-ready" && !readinessObserved)
+      )
+        return fail("testkit.pty.transport.semantic-rejected");
+      if (
+        (trigger === "closed" || trigger === undefined) &&
+        finalSnapshot.semanticState !== "completed" &&
+        !exactOutputCompleted
+      )
+        return fail(
+          exit.code === 0
+            ? "testkit.pty.transport.semantic-incomplete"
+            : "testkit.pty.transport.semantic-nonzero",
+        );
+    }
     const outcome =
       trigger === "aborted"
         ? "aborted"
