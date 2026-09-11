@@ -1445,7 +1445,7 @@ try {
       assert.ok(adjacentResult.stdout.startsWith(prefix));
       assert.match(
         adjacentResult.stdout.slice(prefix.length),
-        /^sha256-[0-9a-f]{64}\nNo changes applied; rerun with --yes after reviewing the plan\.\n$/u,
+        /^[0-9a-f]{64}\nNo changes applied; rerun with --yes after reviewing the plan\.\n$/u,
       );
     } else {
       assert.equal(adjacentResult.status, 5);
