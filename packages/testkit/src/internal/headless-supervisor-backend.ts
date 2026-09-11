@@ -752,6 +752,11 @@ type SelectedContainerRuntime = Readonly<{
   ) => AdoptedZombieReapReceipt;
   sendSignal: (pid: number, signal: "SIGTERM" | "SIGKILL") => void;
   spawnProcess: (request: HeadlessExecutionRequest) => ChildProcess;
+  testReapObservedAt?: (
+    namespaceIdentity: string,
+    residual: readonly ProcessSnapshot[],
+    shutdownDeadlineMs: number,
+  ) => number;
 }>;
 type ProcessAuthorityRuntime = Pick<
   SelectedContainerRuntime,
@@ -2534,7 +2539,13 @@ const selectedContainerBackend = (
         classifySelectedContainerReapFailure(
           residual.length,
           finalReapSettled,
-          safeReflectApply(performanceNow, performance, []),
+          runtime.testReapObservedAt === undefined
+            ? safeReflectApply(performanceNow, performance, [])
+            : runtime.testReapObservedAt(
+                composition.namespaceIdentity,
+                residual,
+                request.monotonicShutdownDeadlineMs,
+              ),
           request.monotonicShutdownDeadlineMs,
         );
       try {
@@ -3239,6 +3250,7 @@ type SelectedContainerTestSeed =
 
 const selectedContainerRuntimeForTest = (
   seed: SelectedContainerTestSeed,
+  reapBoundaryOffset?: -1 | 0 | 1,
   // The closed synthetic matrix keeps all runtime transitions in one fixture.
   // eslint-disable-next-line max-lines-per-function
 ): SelectedContainerRuntime => {
@@ -3269,6 +3281,13 @@ const selectedContainerRuntimeForTest = (
   let descendantReads = 0;
   let reapDeadline: bigint | undefined;
   let infiniteTimer: NodeJS.Timeout | undefined;
+  const selectedReapBoundaryOffset =
+    reapBoundaryOffset ??
+    (seed === "delayed-shutdown"
+      ? 0
+      : seed === "settled-residual-before-deadline"
+        ? -1
+        : undefined);
   const finish = (code: number | null, signal: NodeJS.Signals | null) => {
     if (closed || child === undefined) return;
     closed = true;
@@ -3472,6 +3491,27 @@ const selectedContainerRuntimeForTest = (
       });
       return emitter;
     },
+    ...(selectedReapBoundaryOffset === undefined
+      ? {}
+      : {
+          testReapObservedAt: (
+            namespaceIdentity: string,
+            residual: readonly ProcessSnapshot[],
+            shutdownDeadlineMs: number,
+          ) => {
+            if (
+              namespaceIdentity !== "pid:[synthetic-selected-container]" ||
+              residual.length === 0 ||
+              residual.length !== processes.size ||
+              residual.some(
+                ({ pid, startIdentity }) =>
+                  processes.get(pid)?.startIdentity !== startIdentity,
+              )
+            )
+              return fail("testkit.headless.observer.identity");
+            return shutdownDeadlineMs + selectedReapBoundaryOffset;
+          },
+        }),
   };
 };
 
@@ -3480,6 +3520,7 @@ export const executeSelectedContainerBackendForTest = async (
   request: HeadlessExecutionRequest,
   seed: SelectedContainerTestSeed,
   options: HeadlessSupervisorExecutionOptions = {},
+  reapBoundaryOffset?: -1 | 0 | 1,
 ): Promise<HeadlessExecutionTrace> => {
   const capability = safeReflectApply(freeze, Object, [{}]) as object;
   writeWeakMap(
@@ -3490,7 +3531,7 @@ export const executeSelectedContainerBackendForTest = async (
         maximumShutdownDeadlineMs: request.monotonicShutdownDeadlineMs,
         namespaceIdentity: "pid:[synthetic-selected-container]",
       },
-      selectedContainerRuntimeForTest(seed),
+      selectedContainerRuntimeForTest(seed, reapBoundaryOffset),
     ),
   );
   if (seed === "abort") {

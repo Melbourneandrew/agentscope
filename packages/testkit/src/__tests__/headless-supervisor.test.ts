@@ -197,32 +197,31 @@ describe("selected-container lifecycle", () => {
     ).toBeUndefined();
   });
 
-  it("lets secondary settlement crossing the deadline dominate residual detail", async () => {
-    const request = genericRequest();
-    request.monotonicStartupDeadlineMs = performance.now() + 30;
-    request.monotonicExecutionDeadlineMs = performance.now() + 50;
-    request.monotonicShutdownDeadlineMs = performance.now() + 100;
-    await expect(
-      executeSelectedContainerBackendForTest(request, "delayed-shutdown"),
-    ).rejects.toMatchObject({
-      code: "testkit.headless.reconciliation.deadline",
-    });
-  });
-
-  it("retains the specific residual code after terminal settlement with time remaining", async () => {
-    const request = genericRequest();
-    request.monotonicStartupDeadlineMs = performance.now() + 30;
-    request.monotonicExecutionDeadlineMs = performance.now() + 50;
-    request.monotonicShutdownDeadlineMs = performance.now() + 150;
-    await expect(
-      executeSelectedContainerBackendForTest(
-        request,
-        "settled-residual-before-deadline",
-      ),
-    ).rejects.toMatchObject({
-      code: "testkit.headless.observer.reap.residual-membership",
-    });
-  });
+  it.each([
+    [
+      "settled-residual-before-deadline",
+      -1,
+      "testkit.headless.observer.reap.residual-membership",
+    ],
+    ["delayed-shutdown", 0, "testkit.headless.reconciliation.deadline"],
+    ["delayed-shutdown", 1, "testkit.headless.reconciliation.deadline"],
+  ] as const)(
+    "authenticates observer entry at shutdown boundary offset %s/%s",
+    async (seed, reapBoundaryOffset, code) => {
+      const request = genericRequest();
+      request.monotonicStartupDeadlineMs = performance.now() + 30;
+      request.monotonicExecutionDeadlineMs = performance.now() + 50;
+      request.monotonicShutdownDeadlineMs = performance.now() + 150;
+      await expect(
+        executeSelectedContainerBackendForTest(
+          request,
+          seed,
+          {},
+          reapBoundaryOffset,
+        ),
+      ).rejects.toMatchObject({ code });
+    },
+  );
 
   it("derives a conservative native deadline across clock-sample preemption", () => {
     const nativeBeforePreemption = 5_000_000_000n;
