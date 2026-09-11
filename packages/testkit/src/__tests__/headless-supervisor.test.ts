@@ -197,6 +197,33 @@ describe("selected-container lifecycle", () => {
     ).toBeUndefined();
   });
 
+  it("lets secondary settlement crossing the deadline dominate residual detail", async () => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 30;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 100;
+    await expect(
+      executeSelectedContainerBackendForTest(request, "delayed-shutdown"),
+    ).rejects.toMatchObject({
+      code: "testkit.headless.reconciliation.deadline",
+    });
+  });
+
+  it("retains the specific residual code after terminal settlement with time remaining", async () => {
+    const request = genericRequest();
+    request.monotonicStartupDeadlineMs = performance.now() + 30;
+    request.monotonicExecutionDeadlineMs = performance.now() + 50;
+    request.monotonicShutdownDeadlineMs = performance.now() + 150;
+    await expect(
+      executeSelectedContainerBackendForTest(
+        request,
+        "adopted-zombie-reaped-persistence",
+      ),
+    ).rejects.toMatchObject({
+      code: "testkit.headless.observer.reap.residual-membership",
+    });
+  });
+
   it("derives a conservative native deadline across clock-sample preemption", () => {
     const nativeBeforePreemption = 5_000_000_000n;
     const performanceAfterPreemption = 250;
