@@ -554,7 +554,7 @@ describe("failure evidence uploader", () => {
     }
   });
 
-  it("does not invoke the artifact client after authority expires", async () => {
+  it("does not invoke the artifact client inside the cleanup reserve", async () => {
     const owned = fixture();
     const uploadArtifact = vi.fn(() =>
       Promise.resolve({ digest: "a".repeat(64), id: 17, size: 321 }),
@@ -569,7 +569,7 @@ describe("failure evidence uploader", () => {
           client: { uploadArtifact },
           nowNanoseconds: () => {
             sample += 1;
-            return sample < 3 ? 0n : 2_000_000_000n;
+            return sample < 3 ? 0n : 1_500_000_000n;
           },
           probe: () => Promise.resolve(),
           sealerSource,
@@ -577,6 +577,11 @@ describe("failure evidence uploader", () => {
         }),
       ).rejects.toThrow("integration.controller.failure-evidence-upload");
       expect(uploadArtifact).not.toHaveBeenCalled();
+      expect(
+        readdirSync(owned.root).filter((entry) =>
+          entry.startsWith(".agentscope-failure-upload-"),
+        ),
+      ).toEqual([]);
     } finally {
       closeSync(owned.descriptor);
       rmSync(owned.root, { force: true, recursive: true });

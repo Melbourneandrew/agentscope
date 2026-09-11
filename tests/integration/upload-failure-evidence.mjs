@@ -1157,6 +1157,8 @@ const uploadFailureEvidenceImplementation = async ({
     deadline > admission + 20n * 60n * 1_000_000_000n
   )
     fail();
+  const uploadCutoff = deadline - BRIDGE_CLEANUP_RESERVE_NANOSECONDS;
+  if (uploadCutoff <= admission) fail();
   if (
     !/^sha256:[a-f0-9]{64}$/u.test(values.digest) ||
     !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(values.name) ||
@@ -1200,14 +1202,14 @@ const uploadFailureEvidenceImplementation = async ({
   let primary;
   try {
     bridge.revalidate();
-    if (deadline <= nowNanoseconds()) fail();
+    if (uploadCutoff <= nowNanoseconds()) fail();
     response = await authority.uploadArtifact(
       values.name,
       [bridge.path],
       resolve(bridge.path, ".."),
       Object.freeze({ compressionLevel: 0, retentionDays: 7 }),
     );
-    if (deadline <= nowNanoseconds()) fail();
+    if (uploadCutoff <= nowNanoseconds()) fail();
     bridge.revalidate();
     await probe();
   } catch (error) {
