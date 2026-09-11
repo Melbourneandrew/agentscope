@@ -37,6 +37,24 @@ const harnessHome = required("HARNESS_HOME");
 const agentscopeHome = required("AGENTSCOPE_HOME");
 const worktree = required("AGENTSCOPE_WORKTREE");
 const ledgerHome = required("AGENTSCOPE_LEDGER");
+if (interactive) {
+  if (process.hasUncaughtExceptionCaptureCallback())
+    throw new Error("integration.fixture.failure-capture");
+  process.setUncaughtExceptionCaptureCallback((error) => {
+    const message = error instanceof Error ? error.message : "";
+    const code = /^integration\.fixture\.[a-z0-9-]{1,96}$/u.test(message)
+      ? message
+      : "integration.fixture.failed";
+    try {
+      writeFileSync(join(ledgerHome, "interactive-failure.txt"), `${code}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } finally {
+      process.exit(1);
+    }
+  });
+}
 const routeFixture = JSON.parse(
   readFileSync("/opt/agentscope/current-model-routes.json", "utf8"),
 );

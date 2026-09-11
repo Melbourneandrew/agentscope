@@ -562,9 +562,23 @@ try {
   }
 } catch (error) {
   if (scenario.executionMode === "interactive") {
-    const diagnostic = `${error?.message ?? ""}`.match(
+    let diagnostic = `${error?.message ?? ""}`.match(
       /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
     )?.[0];
+    const failurePath = join(ledger, "interactive-failure.txt");
+    try {
+      const status = lstatSync(failurePath);
+      const content = readFileSync(failurePath, "utf8");
+      if (
+        status.isFile() &&
+        !status.isSymbolicLink() &&
+        status.size === Buffer.byteLength(content) &&
+        /^integration\.fixture\.[a-z0-9-]{1,96}\n$/u.test(content)
+      )
+        diagnostic = content.trim();
+    } catch {
+      // The selected PTY error remains the diagnostic if no fixture record exists.
+    }
     process.stderr.write(
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
