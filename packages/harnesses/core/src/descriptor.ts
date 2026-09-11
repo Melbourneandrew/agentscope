@@ -1,16 +1,10 @@
-import {
-  compareStableSemver,
-  parseStableSemver,
-  stableSemverIsInRange,
-} from "./semver.js";
+import { compareStableSemver, parseStableSemver } from "./semver.js";
 import type {
   HarnessCompatibilityRange,
   HarnessDescriptor,
   HarnessDescriptorInput,
   HarnessExecutableProbe,
-  HarnessRangeEvidence,
   HarnessRegistry,
-  HarnessSupportEvidenceManifest,
   HarnessTypeId,
 } from "./types.js";
 
@@ -25,7 +19,6 @@ const harnessTypePattern = /^@agentscope\/harness-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const tokenPattern = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const executablePattern = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const locationSegmentPattern = /^\.?[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const digestPattern = /^sha256-[a-f0-9]{64}$/;
 
 const descriptorState = new WeakSet<object>();
 const registryState = new WeakMap<
@@ -250,76 +243,21 @@ export const defineHarnessDescriptor = (
   input: HarnessDescriptorInput,
 ): HarnessDescriptor => parseDescriptor(input);
 
-const parseEvidence = (value: unknown): HarnessRangeEvidence => {
-  const record = exactRecord(value, [
-    "harnessType",
-    "evidenceSlot",
-    "testedVersion",
-    "contractSuiteDigest",
-    "realScenarioDigest",
-  ]);
-  const testedVersion = boundedString(record.testedVersion);
-  if (!parseStableSemver(testedVersion)) return invalid();
-  return Object.freeze({
-    harnessType: boundedString(record.harnessType, harnessTypePattern),
-    evidenceSlot: boundedString(record.evidenceSlot, tokenPattern),
-    testedVersion,
-    contractSuiteDigest: boundedString(
-      record.contractSuiteDigest,
-      digestPattern,
-    ),
-    realScenarioDigest: boundedString(record.realScenarioDigest, digestPattern),
-  });
-};
-
-export const compileHarnessRegistry = (
-  descriptorsInput: readonly HarnessDescriptor[],
-  evidenceInput: HarnessSupportEvidenceManifest,
+export const defineHarnessRegistry = (
+  ...input: readonly [readonly HarnessDescriptor[]]
 ): HarnessRegistry => {
+  if (input.length !== 1) return invalid();
+  const descriptorsInput = input[0];
   const descriptors = denseArray(descriptorsInput, maximumDescriptors).map(
     (descriptor) => {
       if (!isHarnessDescriptor(descriptor)) return invalid();
       return descriptor;
     },
   );
-  const evidenceRecord = exactRecord(evidenceInput, [
-    "manifestVersion",
-    "entries",
-  ]);
-  if (evidenceRecord.manifestVersion !== 1) return invalid();
-  const entries = denseArray(
-    evidenceRecord.entries,
-    maximumDescriptors * maximumRanges,
-  ).map(parseEvidence);
   const byType = new Map<HarnessTypeId, HarnessDescriptor>();
-  const required = new Map<string, HarnessCompatibilityRange>();
   for (const descriptor of descriptors) {
     if (byType.has(descriptor.harnessType)) return invalid();
     byType.set(descriptor.harnessType, descriptor);
-    for (const range of descriptor.compatibility)
-      required.set(
-        `${descriptor.harnessType}\u0000${range.evidenceSlot}`,
-        range,
-      );
-  }
-  if (required.size !== entries.length) return invalid();
-  const observed = new Set<string>();
-  for (const entry of entries) {
-    const key = `${entry.harnessType}\u0000${entry.evidenceSlot}`;
-    const range = required.get(key);
-    const version = parseStableSemver(entry.testedVersion);
-    if (
-      !range ||
-      !version ||
-      observed.has(key) ||
-      !stableSemverIsInRange(
-        version,
-        parseStableSemver(range.minimumInclusive)!,
-        parseStableSemver(range.maximumExclusive)!,
-      )
-    )
-      return invalid();
-    observed.add(key);
   }
   const registry = Object.freeze({
     descriptorVersion: 1 as const,

@@ -11,6 +11,14 @@ import {
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 
+import {
+  createHarnessAdmissionKernel,
+  type AuthenticatedHarnessMaterialAuthority,
+  type AuthenticatedHarnessTerminalAuthority,
+  type HarnessAdmissionAuthority,
+  type HarnessSupportEvidenceManifest,
+} from "./harness-admission.js";
+
 export type IntegrationControllerMode = "candidate" | "crabbox" | "lifecycle";
 
 export type IntegrationStageDependencies = Readonly<{
@@ -115,10 +123,94 @@ const artifactFiles = new Set([
 ]);
 const capabilityContext =
   new AsyncLocalStorage<DisposableOuterHostCapability>();
+const stageContext = new AsyncLocalStorage<
+  keyof IntegrationStageDependencies
+>();
 const capabilityStates = new WeakMap<
   DisposableOuterHostCapability,
   CapabilityState
 >();
+type HarnessAdmissionSources = Readonly<{
+  authenticateMaterial: (
+    authority: AuthenticatedHarnessMaterialAuthority,
+  ) => unknown;
+  authenticateTerminal: (
+    authority: AuthenticatedHarnessTerminalAuthority,
+  ) => unknown;
+}>;
+let harnessAdmissionSources: HarnessAdmissionSources | undefined;
+
+export const harnessAdmissionSourcesFitOwnerForTesting = (
+  stageName: string | undefined,
+  alreadyConfigured: boolean,
+  sources: unknown,
+): sources is HarnessAdmissionSources => {
+  try {
+    if (
+      stageName !== "runScenarios" ||
+      alreadyConfigured ||
+      typeof sources !== "object" ||
+      sources === null ||
+      !Object.isFrozen(sources) ||
+      Object.getPrototypeOf(sources) !== Object.prototype
+    )
+      return false;
+    const descriptors = Object.getOwnPropertyDescriptors(sources);
+    return (
+      Reflect.ownKeys(descriptors).length === 2 &&
+      typeof descriptors.authenticateMaterial?.value === "function" &&
+      typeof descriptors.authenticateTerminal?.value === "function"
+    );
+  } catch {
+    return false;
+  }
+};
+/* v8 ignore start -- the executable controller alone owns these source
+   callbacks; the kernel's provider boundaries are covered with injected
+   opaque authorities in harness-admission.test.ts. */
+const harnessAdmissionKernel = createHarnessAdmissionKernel(
+  (capability: DisposableOuterHostCapability) => {
+    const state = capabilityStates.get(capability);
+    if (state?.active !== true) return undefined;
+    const receipts = new Map<
+      string,
+      Readonly<{
+        requestFingerprint: string;
+        transport: "headless" | "pty";
+      }>
+    >();
+    for (const [runId, receipt] of state.headlessReceipts)
+      receipts.set(
+        runId,
+        Object.freeze({
+          requestFingerprint: receipt.requestFingerprint,
+          transport: "headless" as const,
+        }),
+      );
+    for (const [runId, receipt] of state.ptyReceipts)
+      receipts.set(
+        runId,
+        Object.freeze({
+          requestFingerprint: receipt.requestFingerprint,
+          transport: "pty" as const,
+        }),
+      );
+    return Object.freeze({
+      active: true,
+      authorityIdentity: capability.binding.privateStorage.authorityDigest,
+      candidateIdentities: state.candidateIdentities,
+      hostKind: capability.binding.hostKind,
+      receipts,
+      runIds: state.runIds,
+      workspaceRevision: capability.binding.workspaceRevision,
+    });
+  },
+  (_capability, authority) =>
+    harnessAdmissionSources?.authenticateMaterial(authority),
+  (_capability, authority) =>
+    harnessAdmissionSources?.authenticateTerminal(authority),
+);
+/* v8 ignore stop */
 let controllerConsumed = false;
 
 export const failureEvidenceCoverageIsExact = (
@@ -426,6 +518,43 @@ export const registerIntegrationCandidateIdentity = (
   if (!candidatePattern.test(identity))
     throw new Error("integration.controller.candidate-identity");
   capabilityStates.get(capability)!.candidateIdentities.add(identity);
+};
+
+export const beginRealHarnessAdmission = (
+  material: AuthenticatedHarnessMaterialAuthority,
+): HarnessAdmissionAuthority => {
+  const capability = requireDisposableOuterHostCapability();
+  return harnessAdmissionKernel.begin(capability, material);
+};
+
+export const configureRealHarnessAdmissionSources = (
+  sources: HarnessAdmissionSources,
+): void => {
+  requireDisposableOuterHostCapability();
+  if (
+    !harnessAdmissionSourcesFitOwnerForTesting(
+      stageContext.getStore(),
+      harnessAdmissionSources !== undefined,
+      sources,
+    )
+  )
+    throw new Error("integration.harness-admission.sources");
+  harnessAdmissionSources = sources;
+};
+
+export const completeRealHarnessAdmission = (
+  authority: HarnessAdmissionAuthority,
+  terminal: AuthenticatedHarnessTerminalAuthority,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  harnessAdmissionKernel.complete(capability, authority, terminal);
+};
+
+export const compileRealHarnessSupportEvidence = (
+  authorities: readonly HarnessAdmissionAuthority[],
+): HarnessSupportEvidenceManifest => {
+  const capability = requireDisposableOuterHostCapability();
+  return harnessAdmissionKernel.compile(capability, authorities);
 };
 
 export const registerIntegrationArtifactFile = (name: string): void => {
@@ -750,6 +879,7 @@ export const settleAbortableOperation = async (
 
 const runCapabilityStage = async (
   capability: DisposableOuterHostCapability,
+  stageName: keyof IntegrationStageDependencies,
   operation: () => Promise<void>,
   terminal = false,
 ): Promise<void> => {
@@ -762,7 +892,7 @@ const runCapabilityStage = async (
   const remaining = Math.floor(boundary - performance.now());
   await settleAbortableOperation(remaining, async (signal) => {
     state.signal = signal;
-    await operation();
+    await stageContext.run(stageName, operation);
   });
 };
 
@@ -821,37 +951,45 @@ const stageDependencies = (
   capability: DisposableOuterHostCapability,
 ): IntegrationStageDependencies => {
   const stage =
-    (operation: () => Promise<void>, terminal = false) =>
+    (
+      stageName: keyof IntegrationStageDependencies,
+      operation: () => Promise<void>,
+      terminal = false,
+    ) =>
     () =>
-      runCapabilityStage(capability, operation, terminal);
+      runCapabilityStage(capability, stageName, operation, terminal);
   return {
-    clean: stage(async () => {
-      // @ts-expect-error Private executable stage has no public type API.
-      await import("../clean.mjs");
-    }, true),
-    maintainArtifacts: stage(async () => {
+    clean: stage(
+      "clean",
+      async () => {
+        // @ts-expect-error Private executable stage has no public type API.
+        await import("../clean.mjs");
+      },
+      true,
+    ),
+    maintainArtifacts: stage("maintainArtifacts", async () => {
       // @ts-expect-error Private executable stage has no public type API.
       await import("../maintain-artifacts.mjs");
     }),
-    prepareCandidate: stage(async () => {
+    prepareCandidate: stage("prepareCandidate", async () => {
       // @ts-expect-error Executable verifier has no public type API.
       await import("../../../apps/cli/verify-artifact.mjs");
       // @ts-expect-error Private executable stage has no public type API.
       await import("../prepare-cli.mjs");
     }),
-    prepareImages: stage(async () => {
+    prepareImages: stage("prepareImages", async () => {
       // @ts-expect-error Private executable stage has no public type API.
       await import("../prepare-images.mjs");
     }),
-    prepareModelRoutes: stage(async () => {
+    prepareModelRoutes: stage("prepareModelRoutes", async () => {
       // @ts-expect-error Private executable stage has no public type API.
       await import("../prepare-model-routes.mjs");
     }),
-    runScenarios: stage(async () => {
+    runScenarios: stage("runScenarios", async () => {
       // @ts-expect-error Private executable stage has no public type API.
       await import("../run-scenarios.mjs");
     }),
-    select: stage(async () => {
+    select: stage("select", async () => {
       // @ts-expect-error Private executable stage has no public type API.
       await import("../select.mjs");
     }),

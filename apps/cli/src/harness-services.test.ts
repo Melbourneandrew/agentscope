@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  compileHarnessRegistry,
   defineHarnessDescriptor,
+  defineHarnessRegistry,
   type HarnessDiscoveryProbe,
   type HarnessInstallationPlanner,
 } from "@agentscope/harnesses-core/cli-management";
@@ -42,18 +42,7 @@ const descriptor = defineHarnessDescriptor({
   harnessType: "@agentscope/harness-example",
   nativeSource: { continuityVersion: 1, sourceKind: "example-session" },
 });
-const registry = compileHarnessRegistry([descriptor], {
-  entries: [
-    {
-      contractSuiteDigest: `sha256-${"a".repeat(64)}`,
-      evidenceSlot: "stable-v1",
-      harnessType: descriptor.harnessType,
-      realScenarioDigest: `sha256-${"b".repeat(64)}`,
-      testedVersion: "1.2.0",
-    },
-  ],
-  manifestVersion: 1,
-});
+const registry = defineHarnessRegistry([descriptor]);
 
 const owned = new TextEncoder().encode("agentscope-owned-hook");
 const vendor = "vendor-observability-hook";

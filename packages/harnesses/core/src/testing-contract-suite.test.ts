@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  compileHarnessRegistry,
   defineHarnessDescriptor,
+  defineHarnessRegistry,
   HarnessDescriptorError,
 } from "./descriptor.js";
 import {
@@ -546,18 +546,21 @@ describe("harness component evidence", () => {
   it("cannot populate production support evidence", () => {
     expect(referenceEvidence).toMatch(/^component-sha256-[a-f0-9]{64}$/u);
     expect(() =>
-      compileHarnessRegistry([descriptor], {
-        manifestVersion: 1,
-        entries: [
-          {
-            harnessType: descriptor.harnessType,
-            evidenceSlot: "reference-v1",
-            testedVersion: "1.2.3",
-            contractSuiteDigest: referenceEvidence,
-            realScenarioDigest: referenceEvidence,
-          },
-        ],
-      }),
+      (defineHarnessRegistry as (...values: unknown[]) => unknown)(
+        [descriptor],
+        {
+          manifestVersion: 1,
+          entries: [
+            {
+              harnessType: descriptor.harnessType,
+              evidenceSlot: "reference-v1",
+              testedVersion: "1.2.3",
+              contractSuiteDigest: referenceEvidence,
+              realScenarioDigest: referenceEvidence,
+            },
+          ],
+        },
+      ),
     ).toThrow(HarnessDescriptorError);
     expect(referenceAdapter().componentEvidence).not.toHaveProperty(
       "realScenarioDigest",

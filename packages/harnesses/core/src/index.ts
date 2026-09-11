@@ -2,7 +2,7 @@ export const harnessesCorePackageId = "@agentscope/harnesses-core" as const;
 
 export {
   HarnessDescriptorError,
-  compileHarnessRegistry,
+  defineHarnessRegistry,
   defineHarnessDescriptor,
   getHarnessDescriptor,
   isHarnessDescriptor,
@@ -58,9 +58,7 @@ export type {
   HarnessInspectionResult,
   HarnessIntegrationOperations,
   HarnessNativeSourceDeclaration,
-  HarnessRangeEvidence,
   HarnessRegistry,
-  HarnessSupportEvidenceManifest,
   HarnessTypeId,
   HarnessVerifyResult,
   HarnessVersionProbeResult,
