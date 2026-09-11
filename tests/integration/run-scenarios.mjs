@@ -672,8 +672,9 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
   const input = Buffer.from("run\n");
   const expectedRequest = {
     runId: plan.runId,
-    executable: "/opt/agentscope/platform-fixture.mjs",
+    executable: "/usr/local/bin/node",
     arguments: [
+      "/opt/agentscope/platform-fixture.mjs",
       "--artifact",
       `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
     ],
@@ -691,9 +692,10 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
     processRequest?.runId === plan.runId &&
     processRequest?.requestFingerprint ===
       fingerprintHeadlessRequest(expectedRequest) &&
-    processRequest?.executable === "/opt/agentscope/platform-fixture.mjs" &&
+    processRequest?.executable === "/usr/local/bin/node" &&
     JSON.stringify(processRequest?.arguments) ===
       JSON.stringify([
+        "/opt/agentscope/platform-fixture.mjs",
         "--artifact",
         `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
       ]) &&
