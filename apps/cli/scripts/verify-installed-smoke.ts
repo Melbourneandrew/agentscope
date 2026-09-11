@@ -2,16 +2,22 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  opendirSync,
+  openSync,
+  readSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -87,6 +93,52 @@ function check(caseId: string, operation: () => void): void {
   }
 }
 
+function snapshotRegularFile(
+  path: string,
+  relativePath: string,
+  metadata: Stats,
+): string {
+  const descriptor = openSync(
+    path,
+    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+  );
+  try {
+    const opened = fstatSync(descriptor);
+    assert.deepEqual(
+      [opened.dev, opened.ino, opened.size],
+      [metadata.dev, metadata.ino, metadata.size],
+    );
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = readSync(
+        descriptor,
+        bytes,
+        offset,
+        bytes.length - offset,
+        offset,
+      );
+      assert.ok(read > 0);
+      offset += read;
+    }
+    assert.equal(readSync(descriptor, Buffer.alloc(1), 0, 1, metadata.size), 0);
+    const after = fstatSync(descriptor);
+    const pathAfter = lstatSync(path);
+    assert.deepEqual(
+      [after.dev, after.ino, after.size],
+      [metadata.dev, metadata.ino, metadata.size],
+    );
+    assert.deepEqual(
+      [pathAfter.dev, pathAfter.ino, pathAfter.size],
+      [metadata.dev, metadata.ino, metadata.size],
+    );
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    return `${relativePath}:${metadata.mode & 0o777}:${metadata.size}:${digest}`;
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 function regularFileSnapshot(root: string): readonly string[] {
   if (!existsSync(root)) return Object.freeze([]);
   const rootMetadata = lstatSync(root);
@@ -97,30 +149,28 @@ function regularFileSnapshot(root: string): readonly string[] {
   while (pending.length > 0) {
     const directory = pending.pop();
     assert.ok(directory);
-    for (const name of readdirSync(directory).sort()) {
-      const path = join(directory, name);
-      const metadata = lstatSync(path);
-      const relativePath = relative(root, path);
-      assert.ok(records.length < MAX_SNAPSHOT_ENTRIES);
-      if (metadata.isDirectory()) {
-        pending.push(path);
-        records.push(`directory:${relativePath}:${metadata.mode & 0o777}`);
-      } else {
+    const entries = opendirSync(directory);
+    try {
+      for (;;) {
+        const entry = entries.readSync();
+        if (entry === null) break;
+        assert.ok(records.length < MAX_SNAPSHOT_ENTRIES);
+        const path = join(directory, entry.name);
+        const metadata = lstatSync(path);
+        const relativePath = relative(root, path);
+        if (metadata.isDirectory()) {
+          pending.push(path);
+          records.push(`directory:${relativePath}:${metadata.mode & 0o777}`);
+          continue;
+        }
         assert.equal(metadata.isFile(), true);
         assert.ok(metadata.size <= MAX_SNAPSHOT_FILE_BYTES);
         totalBytes += metadata.size;
         assert.ok(totalBytes <= MAX_SNAPSHOT_TOTAL_BYTES);
-        const bytes = readFileSync(path);
-        const after = lstatSync(path);
-        assert.deepEqual(
-          [after.dev, after.ino, after.size],
-          [metadata.dev, metadata.ino, metadata.size],
-        );
-        const digest = createHash("sha256").update(bytes).digest("hex");
-        records.push(
-          `${relativePath}:${metadata.mode & 0o777}:${metadata.size}:${digest}`,
-        );
+        records.push(snapshotRegularFile(path, relativePath, metadata));
       }
+    } finally {
+      entries.closeSync();
     }
   }
   return Object.freeze(records.sort());
