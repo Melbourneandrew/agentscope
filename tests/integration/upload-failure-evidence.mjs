@@ -35,24 +35,13 @@ const CHILD_BOOTSTRAP_AUTHORITY_BYTES =
   CHILD_BOOTSTRAP_KEY_BYTES + CHILD_BOOTSTRAP_NONCE_BYTES + 71;
 const CHILD_BOOTSTRAP_CONTROL_DESCRIPTOR = 3;
 const CHILD_BOOTSTRAP_AUTHORITY_DESCRIPTOR = 6;
-const ARTIFACT_PATCH_SHA256 =
-  "9638aca3637f07d89c766e49c1719eb2f58a20b1165da4962ea755e9032c392b";
-const PATCHED_ARTIFACT_FILES = Object.freeze({
-  "path-and-artifact-name-validation.js":
-    "6ce71a90c3abefd252265b4bad1dc38fe3980014d11fca8a240596615d99a6d4",
-  "stream.js":
-    "5eeaefb718a18cc6ac399c3433348d84e1c26af50d3c3defbb92cf05d988f96a",
-  "upload-artifact.js":
-    "f4936f8c7119371f65f08d7bce855458ea6c9476febfa56a0e289a454bb5427e",
-  "zip.js": "4bd1967f092499689cd0e26d116a3ad1a138dc27ac2d87adb2493697a3ac2adc",
-});
 const ARTIFACT_ENTRY_SHA256 =
   "767d73362f34cc323231b614434fa93967110fdd7a7aa807b1a1d2b03a572cd0";
 const ARTIFACT_PACKAGE_SHA256 =
   "e21bb31fa8424754cd03c72278d78a76e50429895a9cb2babf69b4a7ba8f533a";
 const LOCAL_ACTION_METADATA = Buffer.from(
   "name: Run authenticated integration lifecycle\n" +
-    "description: Run the hermetic lifecycle and retain one sealed failure bundle\n" +
+    "description: Run the hermetic lifecycle and retain one sanitized failure bundle\n" +
     "runs:\n" +
     "  using: node24\n" +
     "  main: upload-failure-evidence.mjs\n",
@@ -239,10 +228,8 @@ const actionBootstrapArtifactProvenanceReasons = new Set([
   "results-url",
   "runtime-token",
   "workspace",
-  "patch-digest",
   "package-root",
   "entry-digest",
-  "patched-file-digest",
 ]);
 const actionBootstrapPackageManifestReasons = new Set([
   "type",
@@ -569,15 +556,8 @@ const parseDeadline = (value) => {
   return parsed;
 };
 const exactArguments = (arguments_) => {
-  if (arguments_.length !== 12) fail();
-  const expected = [
-    "--fd",
-    "--size",
-    "--digest",
-    "--name",
-    "--deadline",
-    "--python",
-  ];
+  if (arguments_.length !== 10) fail();
+  const expected = ["--fd", "--size", "--digest", "--name", "--deadline"];
   const values = {};
   for (let index = 0; index < expected.length; index += 1) {
     if (arguments_[index * 2] !== expected[index]) fail();
@@ -624,6 +604,217 @@ const closedClient = (client) => {
   if (typeof uploadArtifact !== "function") fail();
   return Object.freeze({ uploadArtifact: uploadArtifact.bind(client) });
 };
+const bridgeIdentity = (status) =>
+  Object.freeze({
+    dev: status.dev,
+    gid: status.gid,
+    ino: status.ino,
+    mode: status.mode & 0o7777,
+    nlink: status.nlink,
+    size: status.size,
+    uid: status.uid,
+  });
+const sameBridgeIdentity = (left, right) =>
+  left.dev === right.dev &&
+  left.ino === right.ino &&
+  left.uid === right.uid &&
+  left.gid === right.gid &&
+  left.mode === (right.mode & 0o7777) &&
+  left.nlink === right.nlink &&
+  left.size === right.size;
+const runBridgeHelper = ({ arguments_, sealerSource, stdio, terminal }) => {
+  const result = spawnSync(
+    "/usr/bin/python3",
+    ["-c", sealerSource.toString("utf8"), ...arguments_],
+    { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe", ...stdio] },
+  );
+  if (
+    result.error !== undefined ||
+    result.status !== 0 ||
+    result.signal !== null ||
+    result.stderr.length !== 0 ||
+    result.stdout.toString("utf8") !== terminal
+  )
+    fail();
+};
+const closeBridgeDescriptors = (descriptors) => {
+  let failure;
+  for (const descriptor of descriptors) {
+    if (descriptor === undefined) continue;
+    try {
+      closeSync(descriptor);
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure !== undefined) throw failure;
+};
+/* eslint-disable max-lines-per-function -- the bridge keeps one closed creation/revalidation/removal authority together. */
+const createRegularUploadBridge = ({
+  digest,
+  sealerSource,
+  size,
+  sourceDescriptor,
+  workspace,
+}) => {
+  if (
+    !Buffer.isBuffer(sealerSource) ||
+    typeof workspace !== "string" ||
+    !workspace.startsWith("/") ||
+    realpathSync(workspace) !== workspace
+  )
+    fail();
+  const workspaceStatus = lstatSync(workspace);
+  const workspaceDescriptor = openSync(
+    workspace,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  let directoryDescriptor;
+  let fileDescriptor;
+  try {
+    if (
+      !workspaceStatus.isDirectory() ||
+      workspaceStatus.isSymbolicLink() ||
+      !sameManifestIdentity(workspaceStatus, fstatSync(workspaceDescriptor))
+    )
+      fail();
+    const directoryName = `.agentscope-failure-upload-${randomBytes(12).toString("hex")}`;
+    const directoryPath = resolve(workspace, directoryName);
+    runBridgeHelper({
+      arguments_: ["bridge-create", directoryName, String(size), digest],
+      sealerSource,
+      stdio: [workspaceDescriptor, sourceDescriptor],
+      terminal: '{"status":"created"}\n',
+    });
+    const directoryStatus = lstatSync(directoryPath);
+    const directoryIdentity = bridgeIdentity(directoryStatus);
+    const workspaceBridgeIdentity = bridgeIdentity(
+      fstatSync(workspaceDescriptor),
+    );
+    directoryDescriptor = openSync(
+      directoryPath,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    if (
+      !directoryStatus.isDirectory() ||
+      directoryStatus.isSymbolicLink() ||
+      (directoryStatus.mode & 0o7777) !== 0o700 ||
+      directoryStatus.uid !== process.getuid?.() ||
+      directoryStatus.gid !== process.getgid?.() ||
+      !sameManifestIdentity(directoryStatus, fstatSync(directoryDescriptor))
+    )
+      fail();
+    const path = resolve(directoryPath, "failure-evidence.json");
+    fileDescriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const status = fstatSync(fileDescriptor);
+    const identity = bridgeIdentity(status);
+    const content = readExact(fileDescriptor, size);
+    if (
+      !status.isFile() ||
+      identity.mode !== 0o400 ||
+      identity.nlink !== 1 ||
+      identity.uid !== directoryStatus.uid ||
+      identity.gid !== directoryStatus.gid ||
+      identity.size !== size ||
+      !sameBridgeIdentity(identity, lstatSync(path)) ||
+      `sha256:${createHash("sha256").update(content).digest("hex")}` !== digest
+    )
+      fail();
+    let removed = false;
+    const revalidateBridge = () => {
+      if (
+        !sameBridgeIdentity(
+          workspaceBridgeIdentity,
+          fstatSync(workspaceDescriptor),
+        ) ||
+        !sameBridgeIdentity(workspaceBridgeIdentity, lstatSync(workspace)) ||
+        !sameBridgeIdentity(
+          directoryIdentity,
+          fstatSync(directoryDescriptor),
+        ) ||
+        !sameBridgeIdentity(directoryIdentity, lstatSync(directoryPath))
+      )
+        fail();
+    };
+    return Object.freeze({
+      path,
+      revalidate() {
+        revalidateBridge();
+        const before = fstatSync(fileDescriptor);
+        const named = lstatSync(path);
+        const terminalContent = readExact(fileDescriptor, size);
+        const reopenedDescriptor = openSync(
+          path,
+          constants.O_RDONLY | constants.O_NOFOLLOW,
+        );
+        let reopened;
+        try {
+          reopened = fstatSync(reopenedDescriptor);
+        } finally {
+          closeSync(reopenedDescriptor);
+        }
+        if (
+          !sameBridgeIdentity(identity, before) ||
+          !sameBridgeIdentity(identity, named) ||
+          !sameBridgeIdentity(identity, reopened) ||
+          !terminalContent.equals(content) ||
+          `sha256:${createHash("sha256").update(terminalContent).digest("hex")}` !==
+            digest
+        )
+          fail();
+      },
+      remove() {
+        if (removed) fail();
+        revalidateBridge();
+        runBridgeHelper({
+          arguments_: [
+            "bridge-remove",
+            directoryName,
+            String(identity.dev),
+            String(identity.ino),
+            String(identity.uid),
+            String(identity.gid),
+            String(identity.mode),
+            String(identity.nlink),
+            String(identity.size),
+            String(directoryIdentity.dev),
+            String(directoryIdentity.ino),
+            String(directoryIdentity.uid),
+            String(directoryIdentity.gid),
+            String(directoryIdentity.mode),
+          ],
+          sealerSource,
+          stdio: [workspaceDescriptor, directoryDescriptor, fileDescriptor],
+          terminal: '{"status":"removed"}\n',
+        });
+        removed = true;
+        const descriptors = [
+          fileDescriptor,
+          directoryDescriptor,
+          workspaceDescriptor,
+        ];
+        fileDescriptor = undefined;
+        directoryDescriptor = undefined;
+        closeBridgeDescriptors(descriptors);
+      },
+    });
+  } catch (error) {
+    try {
+      closeBridgeDescriptors([
+        fileDescriptor,
+        directoryDescriptor,
+        workspaceDescriptor,
+      ]);
+    } catch {
+      // The originating authority failure remains primary; every acquired
+      // descriptor was nevertheless given one deterministic close attempt.
+    }
+    throw error;
+  }
+};
+/* eslint-enable max-lines-per-function */
+export const createRegularUploadBridgeForTest = (options) =>
+  createRegularUploadBridge(options);
 const verifyRegularDigest = (path, expected, maximum) => {
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -703,7 +894,7 @@ const resolveArtifactClientEntry = (workspace, afterManifestRead) => {
     resolve(workspace, "tests/integration/node_modules/@actions/artifact"),
   );
   if (
-    !packageRoot.includes("/@actions+artifact@6.2.1_patch_hash=") ||
+    !packageRoot.includes("/@actions+artifact@6.2.1/") ||
     !packageRoot.endsWith("/node_modules/@actions/artifact")
   )
     fail();
@@ -714,11 +905,6 @@ const resolveArtifactClientEntry = (workspace, afterManifestRead) => {
   const entry = resolve(packageRoot, "lib/artifact.js");
   actionBootstrapReason = "entry-digest";
   verifyRegularDigest(entry, ARTIFACT_ENTRY_SHA256, 64 * 1024);
-  const uploadRoot = resolve(packageRoot, "lib/internal/upload");
-  for (const [name, digest] of Object.entries(PATCHED_ARTIFACT_FILES)) {
-    actionBootstrapReason = "patched-file-digest";
-    verifyRegularDigest(resolve(uploadRoot, name), digest, 64 * 1024);
-  }
 };
 const verifyArtifactClientProvenance = (
   environment = process.env,
@@ -736,12 +922,6 @@ const verifyArtifactClientProvenance = (
     fail();
   const workspace = environment.GITHUB_WORKSPACE;
   if (typeof workspace !== "string" || !workspace.startsWith("/")) fail();
-  actionBootstrapReason = "patch-digest";
-  verifyRegularDigest(
-    resolve(workspace, "patches/@actions__artifact@6.2.1.patch"),
-    ARTIFACT_PATCH_SHA256,
-    64 * 1024,
-  );
   resolveArtifactClientEntry(workspace, afterManifestRead);
   actionBootstrapReason = "";
 };
@@ -876,7 +1056,8 @@ const uploadFailureEvidenceImplementation = async ({
   client,
   nowNanoseconds,
   probe,
-  startTicks = processStartTicks,
+  sealerSource,
+  workspace,
 }) => {
   const values = exactArguments(arguments_);
   const descriptor = parseUnsigned(values.fd, 2 ** 20);
@@ -891,7 +1072,7 @@ const uploadFailureEvidenceImplementation = async ({
   if (
     !/^sha256:[a-f0-9]{64}$/u.test(values.digest) ||
     !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(values.name) ||
-    !values.python.startsWith("/")
+    typeof probe !== "function"
   )
     fail();
   const status = fstatSync(descriptor);
@@ -907,33 +1088,47 @@ const uploadFailureEvidenceImplementation = async ({
     values.digest
   )
     fail();
-  const start = startTicks();
-  await probe([
-    values.python,
-    "probe",
-    String(process.pid),
-    String(descriptor),
-    String(size),
-    values.digest,
-    start,
-  ]);
+  await probe();
+  const bridge = createRegularUploadBridge({
+    digest: values.digest,
+    sealerSource,
+    size,
+    sourceDescriptor: descriptor,
+    workspace,
+  });
+  if (
+    bridge === null ||
+    typeof bridge !== "object" ||
+    typeof bridge.path !== "string" ||
+    !bridge.path.startsWith(`${workspace}/.agentscope-failure-upload-`) ||
+    typeof bridge.revalidate !== "function" ||
+    typeof bridge.remove !== "function"
+  )
+    fail();
   const authority = closedClient(client);
-  const response = await authority.uploadArtifact(
-    values.name,
-    [`/proc/self/fd/${descriptor}`],
-    "/proc/self/fd",
-    Object.freeze({ compressionLevel: 0, retentionDays: 7 }),
-  );
-  if (deadline <= nowNanoseconds()) fail();
-  await probe([
-    values.python,
-    "probe",
-    String(process.pid),
-    String(descriptor),
-    String(size),
-    values.digest,
-    start,
-  ]);
+  let response;
+  let primary;
+  try {
+    bridge.revalidate();
+    response = await authority.uploadArtifact(
+      values.name,
+      [bridge.path],
+      resolve(bridge.path, ".."),
+      Object.freeze({ compressionLevel: 0, retentionDays: 7 }),
+    );
+    if (deadline <= nowNanoseconds()) fail();
+    bridge.revalidate();
+    await probe();
+  } catch (error) {
+    primary = error;
+  } finally {
+    try {
+      bridge.remove();
+    } catch (cleanupError) {
+      if (primary === undefined) primary = cleanupError;
+    }
+  }
+  if (primary !== undefined) throw primary;
   if (
     !Number.isSafeInteger(response.id) ||
     response.id < 1 ||
@@ -1841,10 +2036,20 @@ export const finalizeFailureEvidence = async ({
     )
       fail();
     mark("artifact-upload");
-    const probe = async (arguments_) => {
+    const sourceStartTicks = processStartTicks();
+    const probe = async () => {
       const result = spawnSync(
         "/usr/bin/python3",
-        ["-c", sealerSource.toString("utf8"), ...arguments_.slice(1)],
+        [
+          "-c",
+          sealerSource.toString("utf8"),
+          "probe",
+          String(process.pid),
+          String(bundleDescriptor),
+          String(bundle.length),
+          bundleDigest,
+          sourceStartTicks,
+        ],
         { env: {}, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"] },
       );
       if (
@@ -1874,13 +2079,12 @@ export const finalizeFailureEvidence = async ({
             artifactName,
             "--deadline",
             deadlineNanoseconds,
-            "--python",
-            "/usr/bin/python3",
           ],
           client,
           nowNanoseconds: process.hrtime.bigint,
           probe,
-          startTicks: processStartTicks,
+          sealerSource,
+          workspace,
         });
       } catch (error) {
         if (failureEvidenceFinalizationReason(error) !== undefined) throw error;

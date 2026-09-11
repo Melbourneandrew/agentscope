@@ -15,8 +15,14 @@ BOOTSTRAP_KEY_BYTES = 32
 BOOTSTRAP_NONCE_BYTES = 16
 BOOTSTRAP_AUTHORITY_BYTES = BOOTSTRAP_KEY_BYTES + BOOTSTRAP_NONCE_BYTES + 71
 MEMFD_NAME = "agentscope-sanitized-failure-evidence"
+BRIDGE_FILE = "failure-evidence.json"
 REQUIRED_SEALS = (
     fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL
+    if all(
+        hasattr(fcntl, name)
+        for name in ("F_SEAL_WRITE", "F_SEAL_GROW", "F_SEAL_SHRINK", "F_SEAL_SEAL")
+    )
+    else 0
 )
 BOOTSTRAP_STAGES = {"invocation", "source", "mapping", "memfd", "exec"}
 bootstrap_stage = "invocation"
@@ -302,6 +308,177 @@ def probe(arguments: list[str]) -> None:
     sys.stdout.write('{"status":"authenticated"}\n')
 
 
+def bridge_create(arguments: list[str]) -> None:
+    if len(arguments) != 3:
+        fail()
+    directory_name, size_value, digest = arguments
+    if (
+        len(directory_name) != 51
+        or not directory_name.startswith(".agentscope-failure-upload-")
+        or any(character not in "0123456789abcdef" for character in directory_name[27:])
+    ):
+        fail()
+    size = parse_unsigned(size_value, MAXIMUM_BYTES)
+    verify_digest(digest)
+    workspace_descriptor = 3
+    source_descriptor = 4
+    directory_descriptor = None
+    file_descriptor = None
+    created_directory = False
+    created_file = False
+    try:
+        os.mkdir(directory_name, 0o700, dir_fd=workspace_descriptor)
+        created_directory = True
+        directory_descriptor = os.open(
+            directory_name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY,
+            dir_fd=workspace_descriptor,
+        )
+        file_descriptor = os.open(
+            BRIDGE_FILE,
+            os.O_WRONLY | os.O_CLOEXEC | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        created_file = True
+        calculated = hashlib.sha256()
+        offset = 0
+        while offset < size:
+            chunk = os.pread(source_descriptor, min(65536, size - offset), offset)
+            if not chunk:
+                fail()
+            calculated.update(chunk)
+            written = 0
+            while written < len(chunk):
+                count = os.write(file_descriptor, chunk[written:])
+                if count < 1:
+                    fail()
+                written += count
+            offset += len(chunk)
+        if os.pread(source_descriptor, 1, size):
+            fail()
+        if f"sha256:{calculated.hexdigest()}" != digest:
+            fail()
+        os.fsync(file_descriptor)
+        os.fchmod(file_descriptor, 0o400)
+        os.fsync(file_descriptor)
+        os.fsync(directory_descriptor)
+        status = os.fstat(file_descriptor)
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or status.st_nlink != 1
+            or status.st_size != size
+            or stat.S_IMODE(status.st_mode) != 0o400
+            or status.st_uid != os.getuid()
+            or status.st_gid != os.getgid()
+        ):
+            fail()
+        sys.stdout.write('{"status":"created"}\n')
+    except BaseException:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+            file_descriptor = None
+        if created_file and directory_descriptor is not None:
+            try:
+                os.unlink(BRIDGE_FILE, dir_fd=directory_descriptor)
+            except FileNotFoundError:
+                pass
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+            directory_descriptor = None
+        if created_directory:
+            try:
+                os.rmdir(directory_name, dir_fd=workspace_descriptor)
+            except FileNotFoundError:
+                pass
+        os.fsync(workspace_descriptor)
+        raise
+    finally:
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+
+
+def bridge_remove(arguments: list[str]) -> None:
+    if len(arguments) != 13:
+        fail()
+    directory_name, *identity_values = arguments
+    expected = tuple(
+        parse_unsigned(value, 2**63 - 1) for value in identity_values[:7]
+    )
+    expected_directory = tuple(
+        parse_unsigned(value, 2**63 - 1) for value in identity_values[7:]
+    )
+    if (
+        len(directory_name) != 51
+        or not directory_name.startswith(".agentscope-failure-upload-")
+        or any(character not in "0123456789abcdef" for character in directory_name[27:])
+    ):
+        fail()
+    workspace_descriptor = 3
+    directory_descriptor = 4
+    file_descriptor = 5
+    status = os.fstat(file_descriptor)
+    named = os.stat(BRIDGE_FILE, dir_fd=directory_descriptor, follow_symlinks=False)
+    observed = (
+        status.st_dev,
+        status.st_ino,
+        status.st_uid,
+        status.st_gid,
+        stat.S_IMODE(status.st_mode),
+        status.st_nlink,
+        status.st_size,
+    )
+    if observed != expected or not same_identity(status, named):
+        fail()
+    directory_status = os.fstat(directory_descriptor)
+    named_directory = os.stat(
+        directory_name, dir_fd=workspace_descriptor, follow_symlinks=False
+    )
+    observed_directory = (
+        directory_status.st_dev,
+        directory_status.st_ino,
+        directory_status.st_uid,
+        directory_status.st_gid,
+        stat.S_IMODE(directory_status.st_mode),
+    )
+    if (
+        observed_directory != expected_directory
+        or not same_identity(directory_status, named_directory)
+        or not stat.S_ISDIR(directory_status.st_mode)
+    ):
+        fail()
+    os.unlink(BRIDGE_FILE, dir_fd=directory_descriptor)
+    os.fsync(directory_descriptor)
+    try:
+        os.stat(BRIDGE_FILE, dir_fd=directory_descriptor, follow_symlinks=False)
+        fail()
+    except FileNotFoundError:
+        pass
+    if os.listdir(directory_descriptor):
+        fail()
+    named_directory = os.stat(
+        directory_name, dir_fd=workspace_descriptor, follow_symlinks=False
+    )
+    if (
+        named_directory.st_dev,
+        named_directory.st_ino,
+        named_directory.st_uid,
+        named_directory.st_gid,
+        stat.S_IMODE(named_directory.st_mode),
+    ) != expected_directory:
+        fail()
+    os.rmdir(directory_name, dir_fd=workspace_descriptor)
+    os.fsync(workspace_descriptor)
+    try:
+        os.stat(directory_name, dir_fd=workspace_descriptor, follow_symlinks=False)
+        fail()
+    except FileNotFoundError:
+        pass
+    sys.stdout.write('{"status":"removed"}\n')
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         fail()
@@ -311,6 +488,10 @@ def main() -> None:
         seal_existing(sys.argv[2:])
     elif sys.argv[1] == "probe":
         probe(sys.argv[2:])
+    elif sys.argv[1] == "bridge-create":
+        bridge_create(sys.argv[2:])
+    elif sys.argv[1] == "bridge-remove":
+        bridge_remove(sys.argv[2:])
     else:
         fail()
 

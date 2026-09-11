@@ -4,11 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  "@actions/artifact@6.2.1":
-    hash: l6pg4cgjf3klvtwr7mrfbnaw3y
-    path: patches/@actions__artifact@6.2.1.patch
-
 importers:
   .:
     devDependencies:
@@ -391,7 +386,7 @@ importers:
     dependencies:
       "@actions/artifact":
         specifier: 6.2.1
-        version: 6.2.1(patch_hash=l6pg4cgjf3klvtwr7mrfbnaw3y)
+        version: 6.2.1
       "@agentscope/testkit":
         specifier: workspace:*
         version: link:../../packages/testkit
@@ -7816,7 +7811,7 @@ packages:
       }
 
 snapshots:
-  "@actions/artifact@6.2.1(patch_hash=l6pg4cgjf3klvtwr7mrfbnaw3y)":
+  "@actions/artifact@6.2.1":
     dependencies:
       "@actions/core": 3.0.1
       "@actions/github": 9.1.1

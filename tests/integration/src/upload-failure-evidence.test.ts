@@ -5,10 +5,14 @@ import {
   chmodSync,
   constants,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -17,12 +21,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 // prettier-ignore
 // @ts-expect-error This private CI entry point deliberately has no package declaration.
-import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
+import { buildLifecycleEnvironment, childBootstrapTerminalAnnotationForTest, classifyActionBootstrapChildTerminalForTest, classifyChildBootstrapSpawnFailureForTest, classifyFailureEvidenceOpenForTest, createRegularUploadBridgeForTest, exerciseActionBootstrapSettlementForTest, exerciseAuthenticatedChildTerminalSettlementForTest, exerciseChildBootstrapReceiptsForTest, exerciseFailureEvidenceFinalizationForTest, exerciseOuterControllerFailureForTest, initializeFailureEvidenceRuntimeForTest, preloadCredentialedSource, revalidateCredentialedSource, settleLifecycleResult, uploadFailureEvidence, validFailureEvidenceBootstrapPredicate, validFailureEvidenceBootstrapStage, validLocalActionMetadata, validOuterControllerStage, verifyArtifactClientProvenanceForTest } from "../upload-failure-evidence.mjs";
 
 const initializeRuntime =
   initializeFailureEvidenceRuntimeForTest as unknown as () => Promise<void>;
@@ -41,8 +45,9 @@ type UploadFailureEvidence = (options: {
   arguments_: string[];
   client: UploadClient;
   nowNanoseconds: () => bigint;
-  probe: (arguments_: string[]) => Promise<void>;
-  startTicks: () => string;
+  probe: () => Promise<void>;
+  sealerSource: Buffer;
+  workspace: string;
 }) => Promise<{
   artifactDigest: string;
   artifactId: number;
@@ -50,6 +55,17 @@ type UploadFailureEvidence = (options: {
   status: "uploaded";
 }>;
 const invokeUpload = uploadFailureEvidence as unknown as UploadFailureEvidence;
+const createBridge = createRegularUploadBridgeForTest as unknown as (options: {
+  digest: string;
+  sealerSource: Buffer;
+  size: number;
+  sourceDescriptor: number;
+  workspace: string;
+}) => {
+  path: string;
+  revalidate: () => void;
+  remove: () => void;
+};
 const buildChildEnvironment = buildLifecycleEnvironment as unknown as (
   environment: NodeJS.ProcessEnv,
 ) => NodeJS.ProcessEnv;
@@ -153,6 +169,9 @@ const verifyArtifactProvenance =
     afterManifestRead?: () => void,
   ) => string | undefined;
 const workspaceRoot = resolve(import.meta.dirname, "../../..");
+const sealerSource = readFileSync(
+  resolve(workspaceRoot, "tests/integration/seal-failure-evidence.py"),
+);
 const invokeBootstrap = (
   entry: string,
   additionalArguments: string[],
@@ -175,15 +194,18 @@ const invokeBootstrap = (
   );
 const digest = (content: Buffer) =>
   `sha256:${createHash("sha256").update(content).digest("hex")}`;
-const fixture = (): {
+const fixture = (
+  content = Buffer.from('{"bundleVersion":1}\n'),
+): {
   arguments_: string[];
   content: Buffer;
   descriptor: number;
   root: string;
 } => {
-  const root = mkdtempSync(resolve(tmpdir(), "agentscope-upload-"));
+  const root = realpathSync(
+    mkdtempSync(resolve(tmpdir(), "agentscope-upload-")),
+  );
   const path = resolve(root, "evidence.json");
-  const content = Buffer.from('{"bundleVersion":1}\n');
   writeFileSync(path, content, { mode: 0o400 });
   const descriptor = openSync(path, constants.O_RDONLY);
   const deadline = process.hrtime.bigint() + 30_000_000_000n;
@@ -198,8 +220,6 @@ const fixture = (): {
     "integration-0-of-1-1",
     "--deadline",
     deadline.toString(),
-    "--python",
-    "/usr/bin/python3",
   ];
   return { arguments_, content, descriptor, root };
 };
@@ -282,19 +302,37 @@ describe("failure evidence action boundary", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function -- the uploader's exact bridge lifecycle is reviewed as one causal matrix.
 describe("failure evidence uploader", () => {
-  it("uploads the exact retained descriptor once with closed options", async () => {
+  it("uploads one bounded private regular file and removes it", async () => {
     const owned = fixture();
     try {
+      let stagedPath = "";
+      let stagedRoot = "";
       const uploadArtifact = vi.fn(
-        (..._arguments: Parameters<UploadClient["uploadArtifact"]>) =>
-          Promise.resolve({
+        (...arguments_: Parameters<UploadClient["uploadArtifact"]>) => {
+          stagedPath = arguments_[1][0]!;
+          stagedRoot = arguments_[2];
+          expect(arguments_[1]).toHaveLength(1);
+          expect(
+            stagedRoot.startsWith(`${owned.root}/.agentscope-failure-upload-`),
+          ).toBe(true);
+          expect(stagedPath).toBe(resolve(stagedRoot, "failure-evidence.json"));
+          expect(statSync(stagedRoot).mode & 0o7777).toBe(0o700);
+          const staged = lstatSync(stagedPath);
+          expect(staged.isFile()).toBe(true);
+          expect(staged.isSymbolicLink()).toBe(false);
+          expect(staged.nlink).toBe(1);
+          expect(staged.mode & 0o7777).toBe(0o400);
+          expect(readFileSync(stagedPath)).toEqual(owned.content);
+          return Promise.resolve({
             digest: "a".repeat(64),
             id: 17,
             size: 321,
-          }),
+          });
+        },
       );
-      const probe = vi.fn((_arguments: string[]) => Promise.resolve());
+      const probe = vi.fn(() => Promise.resolve());
       const receipt = await invokeUpload({
         arguments_: owned.arguments_,
         client: {
@@ -302,16 +340,16 @@ describe("failure evidence uploader", () => {
         },
         nowNanoseconds: () => process.hrtime.bigint(),
         probe,
-        startTicks: () => "123",
+        sealerSource,
+        workspace: owned.root,
       });
       expect(uploadArtifact).toHaveBeenCalledTimes(1);
-      expect(uploadArtifact).toHaveBeenCalledWith(
-        "integration-0-of-1-1",
-        [`/proc/self/fd/${owned.descriptor}`],
-        "/proc/self/fd",
-        { compressionLevel: 0, retentionDays: 7 },
-      );
       expect(probe).toHaveBeenCalledTimes(2);
+      expect(uploadArtifact.mock.calls[0]?.[0]).toBe("integration-0-of-1-1");
+      expect(uploadArtifact.mock.calls[0]?.[3]).toEqual({
+        compressionLevel: 0,
+        retentionDays: 7,
+      });
       expect(receipt).toEqual({
         artifactDigest: `sha256:${"a".repeat(64)}`,
         artifactId: 17,
@@ -319,6 +357,131 @@ describe("failure evidence uploader", () => {
         status: "uploaded",
       });
       expect(readFileSync(owned.descriptor)).toEqual(owned.content);
+      expect(stagedPath).not.toBe("");
+      expect(stagedRoot).not.toBe("");
+      expect(() => statSync(stagedPath)).toThrow();
+      expect(() => statSync(stagedRoot)).toThrow();
+    } finally {
+      closeSync(owned.descriptor);
+      rmSync(owned.root, { force: true, recursive: true });
+    }
+  });
+
+  for (const mutation of [
+    "symlink",
+    "hardlink",
+    "truncate",
+    "directory",
+  ] as const) {
+    it(`rejects a ${mutation} substitution after the artifact client opens the bridge`, async () => {
+      const owned = fixture();
+      try {
+        await expect(
+          invokeUpload({
+            arguments_: owned.arguments_,
+            client: {
+              uploadArtifact: (_name, files) => {
+                const path = files[0]!;
+                if (mutation === "symlink") {
+                  unlinkSync(path);
+                  symlinkSync(resolve(owned.root, "evidence.json"), path);
+                } else if (mutation === "hardlink") {
+                  linkSync(path, `${path}.alias`);
+                } else if (mutation === "truncate") {
+                  chmodSync(path, 0o600);
+                  writeFileSync(path, Buffer.from("x"));
+                } else {
+                  const directory = resolve(path, "..");
+                  renameSync(directory, `${directory}.moved`);
+                  mkdirSync(directory, { mode: 0o700 });
+                }
+                return Promise.resolve({
+                  digest: "a".repeat(64),
+                  id: 17,
+                  size: 321,
+                });
+              },
+            },
+            nowNanoseconds: () => process.hrtime.bigint(),
+            probe: () => Promise.resolve(),
+            sealerSource,
+            workspace: owned.root,
+          }),
+        ).rejects.toThrow("integration.controller.failure-evidence-upload");
+      } finally {
+        closeSync(owned.descriptor);
+        rmSync(owned.root, { force: true, recursive: true });
+      }
+    });
+  }
+
+  it("admits the exact bundle bound and rejects boundary plus one before upload", async () => {
+    for (const extra of [0, 1]) {
+      const owned = fixture(Buffer.alloc(1024 * 1024 + extra, 0x61));
+      const uploadArtifact = vi.fn(() =>
+        Promise.resolve({ digest: "a".repeat(64), id: 17, size: 321 }),
+      );
+      try {
+        const invocation = invokeUpload({
+          arguments_: owned.arguments_,
+          client: { uploadArtifact },
+          nowNanoseconds: () => process.hrtime.bigint(),
+          probe: () => Promise.resolve(),
+          sealerSource,
+          workspace: owned.root,
+        });
+        if (extra === 0) await expect(invocation).resolves.toBeDefined();
+        else
+          await expect(invocation).rejects.toThrow(
+            "integration.controller.failure-evidence-upload",
+          );
+        expect(uploadArtifact).toHaveBeenCalledTimes(extra === 0 ? 1 : 0);
+      } finally {
+        closeSync(owned.descriptor);
+        rmSync(owned.root, { force: true, recursive: true });
+      }
+    }
+  });
+
+  it("fails closed when exact bridge cleanup identity is substituted", () => {
+    const owned = fixture();
+    try {
+      const bridge = createBridge({
+        digest: digest(owned.content),
+        sealerSource,
+        size: owned.content.length,
+        sourceDescriptor: owned.descriptor,
+        workspace: owned.root,
+      });
+      bridge.revalidate();
+      linkSync(bridge.path, `${bridge.path}.alias`);
+      expect(() => {
+        bridge.remove();
+      }).toThrow("integration.controller.failure-evidence-upload");
+      expect(readFileSync(owned.descriptor)).toEqual(owned.content);
+    } finally {
+      closeSync(owned.descriptor);
+      rmSync(owned.root, { force: true, recursive: true });
+    }
+  });
+
+  it("removes a partial bridge when sealed-source identity is rejected", () => {
+    const owned = fixture();
+    try {
+      expect(() =>
+        createBridge({
+          digest: `sha256:${"0".repeat(64)}`,
+          sealerSource,
+          size: owned.content.length,
+          sourceDescriptor: owned.descriptor,
+          workspace: owned.root,
+        }),
+      ).toThrow("integration.controller.failure-evidence-upload");
+      expect(
+        readdirSync(owned.root).filter((entry) =>
+          entry.startsWith(".agentscope-failure-upload-"),
+        ),
+      ).toEqual([]);
     } finally {
       closeSync(owned.descriptor);
       rmSync(owned.root, { force: true, recursive: true });
@@ -344,7 +507,8 @@ describe("failure evidence uploader", () => {
         client: selectedClient,
         nowNanoseconds: () => process.hrtime.bigint(),
         probe: () => Promise.resolve(),
-        startTicks: () => "123",
+        sealerSource,
+        workspace: owned.root,
       });
     try {
       const replace = (index: number, value: string) =>
@@ -385,6 +549,14 @@ describe("failure evidence uploader", () => {
     );
     expect(source).toContain("Object.freeze({ uploadArtifact:");
     expect(source).toContain("retentionDays: 7");
+    const uploader = source.slice(
+      source.indexOf("const uploadFailureEvidenceImplementation"),
+      source.indexOf("export const uploadFailureEvidence ="),
+    );
+    expect(uploader).not.toContain("/proc/self/fd");
+    expect(uploader).toContain("createRegularUploadBridge");
+    expect(source).toContain('"bridge-create"');
+    expect(source).toContain('"bridge-remove"');
   });
 });
 
@@ -395,29 +567,18 @@ describe("failure evidence upload provenance", () => {
     const root = mkdtempSync(resolve(tmpdir(), "agentscope-provenance-"));
     const sourceEntry = fileURLToPath(import.meta.resolve("@actions/artifact"));
     const sourcePackageRoot = resolve(sourceEntry, "../..");
-    const patchedNames = [
-      "path-and-artifact-name-validation.js",
-      "stream.js",
-      "upload-artifact.js",
-      "zip.js",
-    ];
     const packageRoot = resolve(
       root,
-      "node_modules/.pnpm/@actions+artifact@6.2.1_patch_hash=test/node_modules/@actions/artifact",
+      "node_modules/.pnpm/@actions+artifact@6.2.1/node_modules/@actions/artifact",
     );
     const invalidPackageRoot = resolve(root, "invalid-package-root");
     const actionLink = resolve(
       root,
       "tests/integration/node_modules/@actions/artifact",
     );
-    const patchPath = resolve(root, "patches/@actions__artifact@6.2.1.patch");
     const writePackage = (target: string) => {
-      mkdirSync(resolve(target, "lib/internal/upload"), { recursive: true });
-      for (const relative of [
-        "package.json",
-        "lib/artifact.js",
-        ...patchedNames.map((name) => `lib/internal/upload/${name}`),
-      ])
+      mkdirSync(resolve(target, "lib"), { recursive: true });
+      for (const relative of ["package.json", "lib/artifact.js"])
         writeFileSync(
           resolve(target, relative),
           readFileSync(resolve(sourcePackageRoot, relative)),
@@ -433,16 +594,9 @@ describe("failure evidence upload provenance", () => {
     };
     try {
       mkdirSync(resolve(actionLink, ".."), { recursive: true });
-      mkdirSync(resolve(patchPath, ".."), { recursive: true });
       writePackage(packageRoot);
       writePackage(invalidPackageRoot);
       symlinkSync(packageRoot, actionLink);
-      writeFileSync(
-        patchPath,
-        readFileSync(
-          resolve(workspaceRoot, "patches/@actions__artifact@6.2.1.patch"),
-        ),
-      );
       expect(verifyArtifactProvenance(environment)).toBeUndefined();
       expect(
         verifyArtifactProvenance({
@@ -469,7 +623,6 @@ describe("failure evidence upload provenance", () => {
         expect(verifyArtifactProvenance(environment)).toBe(annotation(reason));
         writeFileSync(path, original);
       };
-      assertDigestFailure(patchPath, "patch-digest");
       unlinkSync(actionLink);
       symlinkSync(invalidPackageRoot, actionLink);
       expect(verifyArtifactProvenance(environment)).toBe(
@@ -548,17 +701,12 @@ describe("failure evidence upload provenance", () => {
         annotation("entry-digest"),
       );
       unlinkSync(entryLink);
-      for (const name of patchedNames)
-        assertDigestFailure(
-          resolve(packageRoot, "lib/internal/upload", name),
-          "patched-file-digest",
-        );
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
   });
 
-  it("pins the artifact client provenance and its narrow retained-FD patch", () => {
+  it("pins the unmodified artifact client provenance", () => {
     const packageJson = JSON.parse(
       readFileSync(
         resolve(workspaceRoot, "tests/integration/package.json"),
@@ -567,52 +715,16 @@ describe("failure evidence upload provenance", () => {
     ) as { dependencies: Record<string, string> };
     const rootPackage = JSON.parse(
       readFileSync(resolve(workspaceRoot, "package.json"), "utf8"),
-    ) as { pnpm: { patchedDependencies: Record<string, string> } };
+    ) as { pnpm?: { patchedDependencies?: Record<string, string> } };
     const lock = readFileSync(resolve(workspaceRoot, "pnpm-lock.yaml"), "utf8");
-    const patch = readFileSync(
-      resolve(workspaceRoot, "patches/@actions__artifact@6.2.1.patch"),
-    );
     expect(packageJson.dependencies["@actions/artifact"]).toBe("6.2.1");
-    expect(rootPackage.pnpm.patchedDependencies).toEqual({
-      "@actions/artifact@6.2.1": "patches/@actions__artifact@6.2.1.patch",
-    });
+    expect(rootPackage.pnpm?.patchedDependencies).toBeUndefined();
     expect(lock).toContain(
       "integrity: sha512-sJGH0mhEbEjBCw7o6SaLhUU66u27aFW8HTfkIb5Tk2/Wy0caUDc+oYQEgnuFN7a0HCpAbQyK0U6U7XUJDgDWrw==",
     );
-    expect(createHash("sha256").update(patch).digest("hex")).toBe(
-      "9638aca3637f07d89c766e49c1719eb2f58a20b1165da4962ea755e9032c392b",
-    );
-    expect(patch.toString("utf8")).toContain(
-      "validateRetainedDescriptorPath(file.sourcePath, file.stats)",
-    );
     const entry = fileURLToPath(import.meta.resolve("@actions/artifact"));
-    expect(entry).toContain("patch_hash=");
+    expect(entry).not.toContain("patch_hash=");
     expect(statSync(entry).isFile()).toBe(true);
-    const uploadRoot = resolve(entry, "../internal/upload");
-    expect(
-      Object.fromEntries(
-        [
-          "path-and-artifact-name-validation.js",
-          "stream.js",
-          "upload-artifact.js",
-          "zip.js",
-        ].map((name) => [
-          name,
-          createHash("sha256")
-            .update(readFileSync(resolve(uploadRoot, name)))
-            .digest("hex"),
-        ]),
-      ),
-    ).toEqual({
-      "path-and-artifact-name-validation.js":
-        "6ce71a90c3abefd252265b4bad1dc38fe3980014d11fca8a240596615d99a6d4",
-      "stream.js":
-        "5eeaefb718a18cc6ac399c3433348d84e1c26af50d3c3defbb92cf05d988f96a",
-      "upload-artifact.js":
-        "f4936f8c7119371f65f08d7bce855458ea6c9476febfa56a0e289a454bb5427e",
-      "zip.js":
-        "4bd1967f092499689cd0e26d116a3ad1a138dc27ac2d87adb2493697a3ac2adc",
-    });
   });
 
   it("keeps the sealing handoff descriptor-minimal and pathname-free", () => {
@@ -726,10 +838,8 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "results-url",
     "runtime-token",
     "workspace",
-    "patch-digest",
     "package-root",
     "entry-digest",
-    "patched-file-digest",
   ])
     expect(validBootstrapPredicate(`artifact-provenance:${reason}`)).toBe(true);
   for (const reason of [
@@ -752,7 +862,6 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "artifact-provenance:package-manifest",
     "artifact-provenance:package-manifest:unknown",
     "artifact-provenance:package-manifest:digest:extra",
-    "artifact-provenance:patched-file-digest:filename",
     "artifact-provenance:entry-digest\n",
     "invocation:argv-shape\n",
     ["invocation:argv-shape"],
@@ -1076,7 +1185,7 @@ it("latches each reachable finalization reason at its production operation", () 
     ['mark("write")', "writeSync(bundleDescriptor"],
     ['mark("fsync")', "fsyncSync(bundleDescriptor)"],
     ['mark("child-terminal")', "const sealer = perform"],
-    ['mark("artifact-upload")', "const probe = async"],
+    ['mark("artifact-upload")', "await uploadFailureEvidence({"],
     ['mark("retirement")', "const retireUploadedFailureEvidence ="],
   ] as const) {
     const markIndex = finalizer.indexOf(mark);
@@ -1304,68 +1413,6 @@ os.execve(${JSON.stringify(process.execPath)}, [${JSON.stringify(process.execPat
         cwd: integrationRoot,
         status: "resolved",
       });
-    },
-  );
-});
-
-describe("Linux retained failure evidence descriptor", () => {
-  it.skipIf(process.platform !== "linux")(
-    "streams only one exact retained self memfd and rejects aliases",
-    () => {
-      const entry = fileURLToPath(import.meta.resolve("@actions/artifact"));
-      const uploadRoot = resolve(entry, "../internal/upload");
-      const program = `
-        import { closeSync, constants, lstatSync, openSync } from "node:fs";
-        import { DefaultArtifactClient } from ${JSON.stringify(pathToFileURL(entry).href)};
-        import { validateRetainedDescriptorPath } from ${JSON.stringify(
-          pathToFileURL(
-            resolve(uploadRoot, "path-and-artifact-name-validation.js"),
-          ).href,
-        )};
-        import { createZipUploadStream } from ${JSON.stringify(
-          pathToFileURL(resolve(uploadRoot, "zip.js")).href,
-        )};
-        const path = "/proc/self/fd/3";
-        if (!validateRetainedDescriptorPath(path, lstatSync(path))) process.exit(1);
-        const stream = await createZipUploadStream([{ sourcePath: path, destinationPath: "/evidence.json", stats: lstatSync(path) }], 0);
-        let bytes = 0;
-        for await (const chunk of stream) bytes += chunk.length;
-        if (bytes < 1) process.exit(1);
-        if (validateRetainedDescriptorPath("/ordinary/symlink", { isSymbolicLink: () => true }) !== false) process.exit(1);
-        for (const rejected of ["/proc/1/fd/3", "/proc/self/fd/3/x", "/proc/self/fd/*", "/dev/fd/3", "../proc/self/fd/3"]) {
-          let failed = false;
-          try { validateRetainedDescriptorPath(rejected, {}); } catch { failed = true; }
-          if (!failed) process.exit(1);
-        }
-        let multiple = false;
-        try { await new DefaultArtifactClient().uploadArtifact("fixture", [path, "/ordinary"], "/", { retentionDays: 7 }); } catch { multiple = true; }
-        if (!multiple) process.exit(1);
-        closeSync(3);
-        const reused = openSync("/dev/null", constants.O_RDONLY);
-        if (reused !== 3) process.exit(1);
-        let substituted = false;
-        try { validateRetainedDescriptorPath(path, lstatSync(path)); } catch { substituted = true; }
-        closeSync(reused);
-        if (!substituted) process.exit(1);
-      `;
-      const python = `
-import fcntl, os
-content = b'{"bundleVersion":1}\\n'
-fd = os.memfd_create('agentscope-sanitized-failure-evidence', os.MFD_ALLOW_SEALING)
-if fd != 3: raise SystemExit(1)
-os.write(fd, content)
-os.fchmod(fd, 0o400)
-fcntl.fcntl(fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
-os.set_inheritable(fd, True)
-os.execve(${JSON.stringify(process.execPath)}, [${JSON.stringify(process.execPath)}, '--input-type=module', '--eval', ${JSON.stringify(program)}], {})
-`;
-      const result = spawnSync("/usr/bin/python3", ["-c", python], {
-        encoding: "utf8",
-        timeout: 10_000,
-      });
-      expect(result).toEqual(
-        expect.objectContaining({ signal: null, status: 0, stderr: "" }),
-      );
     },
   );
 });
