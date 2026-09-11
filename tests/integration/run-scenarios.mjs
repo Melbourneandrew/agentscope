@@ -1139,6 +1139,12 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) =>
       receipt.terminalOutputJoined === true &&
       receipt.terminalTransportClosed === true)) &&
   installedPtyReceipt.outcome === "completed";
+const contentFreeChildFailureCode = (error) => {
+  const diagnostic = `${error?.stderr ?? ""}\n${error?.message ?? ""}`.match(
+    /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
+  )?.[0];
+  return diagnostic ?? "integration.isolation.child-failure";
+};
 const runScenario = async (plan, signal) => {
   const remainingOuterMilliseconds = Math.min(
     scenarioTimeoutMilliseconds,
@@ -1181,6 +1187,10 @@ const runScenario = async (plan, signal) => {
         captureFixtureResult(stdout, plan),
     };
   } catch (error) {
+    if (plan.executionMode === "interactive")
+      process.stderr.write(
+        `integration.isolation.interactive-diagnostic:${contentFreeChildFailureCode(error)}\n`,
+      );
     const output = `${error?.stdout ?? ""}`;
     captureFixtureResult(output, plan);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
