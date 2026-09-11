@@ -1,7 +1,6 @@
 import {
   lstatSync,
   mkdirSync,
-  readSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -83,19 +82,33 @@ if (
   throw new Error("integration.fixture.execution-mode");
 if (interactive) {
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
-  const input = Buffer.alloc(4);
-  let inputOffset = 0;
-  while (inputOffset < input.length) {
-    const bytesRead = readSync(
-      0,
-      input,
-      inputOffset,
-      input.length - inputOffset,
-      null,
-    );
-    if (bytesRead < 1) throw new Error("integration.fixture.interactive-input");
-    inputOffset += bytesRead;
-  }
+  const input = await new Promise((resolve, reject) => {
+    let received = Buffer.alloc(0);
+    const settle = (error) => {
+      clearTimeout(timer);
+      process.stdin.off("data", onData);
+      process.stdin.off("end", onEnd);
+      process.stdin.off("error", onError);
+      process.stdin.pause();
+      if (error === undefined) resolve(received);
+      else reject(error);
+    };
+    const failInput = () =>
+      settle(new Error("integration.fixture.interactive-input"));
+    const onData = (chunk) => {
+      if (!Buffer.isBuffer(chunk) || received.length + chunk.length > 4)
+        return failInput();
+      received = Buffer.concat([received, chunk]);
+      if (received.length === 4) settle();
+    };
+    const onEnd = () => failInput();
+    const onError = () => failInput();
+    const timer = setTimeout(failInput, 5_000);
+    process.stdin.on("data", onData);
+    process.stdin.once("end", onEnd);
+    process.stdin.once("error", onError);
+    process.stdin.resume();
+  });
   if (input.toString("utf8") !== "run\n")
     throw new Error("integration.fixture.interactive-input");
   interactiveFailurePhase = "services";
