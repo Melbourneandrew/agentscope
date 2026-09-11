@@ -1231,6 +1231,43 @@ globalThis.exercise = async (mode) => {
     );
   });
 
+  it("fails the process without emitting a receipt for an untrusted evaluation error", () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    const branchStart = runner.indexOf(
+      '  if (\n    typeof reason !== "string" ||\n    !installedContractFailurePredicates["aggregate-evaluation"].includes(reason)\n  ) {',
+    );
+    const branchEnd = runner.indexOf(
+      '  setInstalledContractFailureBoundary("aggregate-evaluation", reason);',
+      branchStart,
+    );
+    expect(branchStart).toBeGreaterThan(-1);
+    expect(branchEnd).toBeGreaterThan(branchStart);
+    const branch = runner.slice(branchStart, branchEnd);
+    const state = { exitCode: undefined as number | undefined, receipts: 0 };
+    runInNewContext(
+      `(() => {
+        const process = state;
+        const reason = undefined;
+        const error = new Error("untrusted");
+        const installedContractFailurePredicates = { "aggregate-evaluation": [] };
+        let installedContractFailureTerminal = false;
+        const emitInstalledContractFailureReceipt = () => {
+          if (installedContractFailureTerminal) return;
+          state.receipts += 1;
+        };
+        try {
+          ${branch}
+        } catch (caught) {
+          emitInstalledContractFailureReceipt(caught);
+        }
+      })()`,
+      { state },
+    );
+    expect(state).toEqual({ exitCode: 1, receipts: 0 });
+  });
+
   it.each([
     "image",
     "config",

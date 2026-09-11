@@ -859,6 +859,7 @@ try {
     typeof reason !== "string" ||
     !installedContractFailurePredicates["aggregate-evaluation"].includes(reason)
   ) {
+    process.exitCode = 1;
     installedContractFailureTerminal = true;
     throw error;
   }
