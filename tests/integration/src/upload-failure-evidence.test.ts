@@ -1280,6 +1280,44 @@ it("authenticates one ordered nonce-bound bootstrap handoff", () => {
     expect(exerciseBootstrapReceipts(fault)).toBeUndefined();
 });
 
+it("mirrors each cgroup observation predicate in the bootstrap envelope", () => {
+  const observationReasons = [
+    "parent-identity",
+    "retained-identity",
+    "path-identity",
+    "mixed-paths",
+    "reappeared-paths",
+    "membership-shape",
+    "events-shape",
+    "member-set-transition",
+    "member-identity-transition",
+    "events-membership-mismatch",
+  ] as const;
+  const removedReasons = [
+    "removed-parent-identity",
+    "removed-retained-identity",
+    "removed-path-present",
+    "removed-path-permission",
+    "removed-path-substitution",
+    "removed-path-reappeared",
+  ] as const;
+  for (const position of ["before", "after"] as const)
+    for (const reason of observationReasons) {
+      const predicate = `systemd-tool:lifecycle:terminal-wait:cgroup-observe-${position}-${reason}`;
+      expect(exerciseBootstrapReceipts("valid", predicate)).toBe(predicate);
+      expect(childBootstrapTerminalAnnotation(predicate)).toBe(
+        `::error::integration.controller.${predicate}\n`,
+      );
+    }
+  for (const reason of removedReasons) {
+    const predicate = `systemd-tool:lifecycle:terminal-wait:cgroup-observe-after-${reason}`;
+    expect(exerciseBootstrapReceipts("valid", predicate)).toBe(predicate);
+    expect(childBootstrapTerminalAnnotation(predicate)).toBe(
+      `::error::integration.controller.${predicate}\n`,
+    );
+  }
+});
+
 it("MAC-binds each closed child terminal predicate into the bootstrap envelope", () => {
   const outer = "outer:finalize-evidence:open:missing";
   const lifecycle =

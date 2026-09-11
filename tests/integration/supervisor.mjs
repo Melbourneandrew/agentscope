@@ -2307,6 +2307,16 @@ export const parseRetainedCgroupMembers = (content, allowEmpty = false) => {
   return Object.freeze(members.sort((left, right) => left - right));
 };
 
+export const parseRetainedCgroupEvents = (content) => {
+  if (!Buffer.isBuffer(content) || content.length < 21 || content.length > 4096)
+    failSystemd();
+  const text = content.toString("ascii");
+  if (!content.equals(Buffer.from(text, "ascii"))) failSystemd();
+  const match = /^populated ([01])\nfrozen ([01])\n$/u.exec(text);
+  if (match === null) failSystemd();
+  return Object.freeze({ empty: match[1] === "0", frozen: match[2] === "1" });
+};
+
 const retainedCgroupMembers = (
   authority,
   allowEmpty = false,
@@ -2534,14 +2544,7 @@ const retainedCgroupIsEmpty = (
   else readEvents();
   if (size > 4096) failSystemd();
   recheck();
-  const events = content.subarray(0, size).toString("utf8");
-  const entries = Object.fromEntries(
-    events
-      .trimEnd()
-      .split("\n")
-      .map((line) => line.split(" ")),
-  );
-  return entries.populated === "0";
+  return parseRetainedCgroupEvents(content.subarray(0, size)).empty;
 };
 
 export const exactPathIsAbsent = (path) => {
@@ -3180,6 +3183,10 @@ export const exerciseTerminalCgroupDiagnosticForTesting = async (mode) => {
   try {
     const observe = () => {
       observations += 1;
+      if (mode === "observe-before-bound-events-shape" && observations === 1)
+        failCgroupObservation("events-shape");
+      if (mode === "observe-after-bound-events-shape" && observations === 2)
+        failCgroupObservation("events-shape");
       if (mode === "observe-before" && observations === 1) failSystemd();
       if (mode === "observe-after" && observations === 2) failSystemd();
       if (mode === "observe-before-error-malformed" && observations === 1)

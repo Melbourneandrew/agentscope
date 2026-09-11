@@ -100,6 +100,9 @@ export function parseRetainedCgroupMembers(
   content: Buffer,
   allowEmpty?: boolean,
 ): readonly number[];
+export function parseRetainedCgroupEvents(
+  content: Buffer,
+): Readonly<{ empty: boolean; frozen: boolean }>;
 export function sameRetainedCgroupMemberObservations(
   membersBefore: readonly number[],
   identitiesBefore: readonly Readonly<{
@@ -189,6 +192,7 @@ export function authenticateRemovedCgroupPathsReasonForTesting(
 export function exerciseTerminalCgroupDiagnosticForTesting(
   mode:
     | "observe-before"
+    | "observe-before-bound-events-shape"
     | "observe-before-error-descriptor"
     | "observe-before-error-descriptor-recovery"
     | "observe-before-error-malformed"
@@ -196,6 +200,7 @@ export function exerciseTerminalCgroupDiagnosticForTesting(
     | "observe-before-error-missing-recovery"
     | "observe-before-error-permission"
     | "observe-after"
+    | "observe-after-bound-events-shape"
     | "observe-after-error-descriptor"
     | "observe-after-error-missing"
     | "observe-after-error-permission"

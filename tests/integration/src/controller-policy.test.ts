@@ -52,6 +52,7 @@ import {
   closePreparedGithubSystemdSupervision,
   parseSystemdMainExitStatus,
   parseRetainedCgroupMembers,
+  parseRetainedCgroupEvents,
   parseSystemdTerminalExit,
   prepareGithubSystemdSupervision,
   proveRemovedCgroupMembersAbsentForTesting,
@@ -1112,7 +1113,10 @@ it("treats a retired cgroup disappearance only as input to collection proof", ()
         { dev: 1, gid: 0, ino: 5, mode: 0o100444, uid: 0 },
       ],
     } as const;
-    writeFileSync(resolve(directory, "cgroup.events"), "populated 1\n");
+    writeFileSync(
+      resolve(directory, "cgroup.events"),
+      "populated 1\nfrozen 0\n",
+    );
     writeFileSync(resolve(directory, "cgroup.procs"), "");
     expect(() => cgroupObservationSettled(directory, identity)).toThrow();
     expect(() => authenticateCgroup(directory)).toThrow();
@@ -1173,7 +1177,7 @@ it("classifies exact cgroup disappearance before touching retired event descript
   const events = resolve(cgroup, "cgroup.events");
   mkdirSync(cgroup);
   writeFileSync(procs, "");
-  writeFileSync(events, "populated 0\n");
+  writeFileSync(events, "populated 0\nfrozen 0\n");
   const paths = [parent, cgroup, procs, events];
   const openedDescriptors = paths.map((path, index) =>
     openSync(
@@ -1233,7 +1237,7 @@ it("classifies exact cgroup disappearance before touching retired event descript
     expect(() => cgroupObservationSettled(cgroup, authority)).toThrow(
       "integration.controller.systemd-containment",
     );
-    writeFileSync(events, "populated 0\n");
+    writeFileSync(events, "populated 0\nfrozen 0\n");
     expect(() => cgroupObservationSettled(cgroup, authority)).toThrow(
       "integration.controller.systemd-containment",
     );
@@ -4246,6 +4250,31 @@ it("canonicalizes retained cgroup membership while preserving process identity",
     ).toBe("member-identity-transition");
 });
 
+it("parses only the exact bounded cgroup.events schema", () => {
+  expect(
+    parseRetainedCgroupEvents(Buffer.from("populated 0\nfrozen 0\n")),
+  ).toEqual({ empty: true, frozen: false });
+  expect(
+    parseRetainedCgroupEvents(Buffer.from("populated 1\nfrozen 1\n")),
+  ).toEqual({ empty: false, frozen: true });
+  for (const malformed of [
+    Buffer.alloc(0),
+    Buffer.from("populated 0\n"),
+    Buffer.from("frozen 0\npopulated 0\n"),
+    Buffer.from("populated 0\nfrozen 0"),
+    Buffer.from("populated 0\nfrozen 0\n\n"),
+    Buffer.from("populated 1\npopulated 0\nfrozen 0\n"),
+    Buffer.from("populated 0\nfrozen 0\nunknown 0\n"),
+    Buffer.from("populated 00\nfrozen 0\n"),
+    Buffer.from("populated 0\nfrozen 0\r\n"),
+    Buffer.from([0x70, 0x6f, 0x70, 0xff, 0x0a]),
+    Buffer.alloc(4097, 0x30),
+  ])
+    expect(() => parseRetainedCgroupEvents(malformed)).toThrow(
+      "integration.controller.systemd-containment",
+    );
+});
+
 it.runIf(process.platform === "linux")(
   "proves monotonic member removal only after adjacent process absence",
   () => {
@@ -4266,12 +4295,14 @@ it.runIf(process.platform === "linux")(
 it("binds every terminal cgroup diagnostic through one cleanup path", async () => {
   for (const [mode, reason] of [
     ["observe-before", "cgroup-observe-before-identity-substitution"],
+    ["observe-before-bound-events-shape", "cgroup-observe-before-events-shape"],
     [
       "observe-before-error-permission",
       "cgroup-observe-before-command-permission",
     ],
     ["observe-before-error-malformed", "cgroup-observe-before-malformed"],
     ["observe-after", "cgroup-observe-after-identity-substitution"],
+    ["observe-after-bound-events-shape", "cgroup-observe-after-events-shape"],
     ["observe-after-error-descriptor", "cgroup-observe-after-descriptor-state"],
     ["observe-after-error-missing", "cgroup-observe-after-unit-not-found"],
     [
@@ -4446,7 +4477,7 @@ it("proves removed cgroup paths against retained parent and cgroup descriptors",
     const procs = resolve(cgroup, "cgroup.procs");
     const events = resolve(cgroup, "cgroup.events");
     writeFileSync(procs, "");
-    writeFileSync(events, "populated 0\n");
+    writeFileSync(events, "populated 0\nfrozen 0\n");
     const descriptors = [parent, cgroup, procs, events].map((path) =>
       openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW),
     );
