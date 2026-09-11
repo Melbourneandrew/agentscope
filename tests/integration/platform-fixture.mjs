@@ -338,6 +338,12 @@ writeFileSync(
   `${JSON.stringify({ evidenceVersion: 1, encodedEvidence, scenarioId })}\n`,
   { flag: "wx", mode: 0o600 },
 );
-if (interactive)
-  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n");
-else console.log(`AGENTSCOPE_FIXTURE_RESULT=${encodedEvidence}`);
+if (interactive) {
+  await new Promise((resolve, reject) => {
+    process.stdout.write("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n", (error) =>
+      error === undefined || error === null ? resolve() : reject(error),
+    );
+  });
+  process.stdin.destroy();
+  process.exit(0);
+} else console.log(`AGENTSCOPE_FIXTURE_RESULT=${encodedEvidence}`);
