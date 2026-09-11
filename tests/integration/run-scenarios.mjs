@@ -1140,9 +1140,12 @@ const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) =>
       receipt.terminalTransportClosed === true)) &&
   installedPtyReceipt.outcome === "completed";
 const contentFreeChildFailureCode = (error) => {
-  const diagnostic = `${error?.stderr ?? ""}\n${error?.message ?? ""}`.match(
-    /\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u,
-  )?.[0];
+  const source = `${error?.stderr ?? ""}\n${error?.message ?? ""}`;
+  const diagnostic =
+    source.match(
+      /integration\.runner\.interactive-diagnostic:((?:integration|testkit)\.[a-z0-9.-]{1,128})\b/u,
+    )?.[1] ??
+    source.match(/\b(?:integration|testkit)\.[a-z0-9.-]{1,128}\b/u)?.[0];
   return diagnostic ?? "integration.isolation.child-failure";
 };
 const runScenario = async (plan, signal) => {
