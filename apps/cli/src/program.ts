@@ -21,6 +21,11 @@ import { traceCommandModules } from "./trace-commands.js";
 import type { CliOutput } from "./presentation.js";
 import { writeCliDiagnostic } from "./presentation.js";
 
+const MISSING_INSTALL_HARNESS_DIAGNOSTIC = Object.freeze({
+  category: "usage" as const,
+  code: "cli.usage",
+});
+
 const semanticVersionSchema = z
   .string()
   .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
@@ -197,7 +202,14 @@ export async function runCli(
   } catch (error: unknown) {
     if (error instanceof CommanderError) {
       if (error.exitCode === 0) return 0;
-      return reportRunFailure(output, mode, INVALID_INPUT_DIAGNOSTIC);
+      return reportRunFailure(
+        output,
+        mode,
+        error.code === "commander.missingArgument" &&
+          arguments_[0] === "install"
+          ? MISSING_INSTALL_HARNESS_DIAGNOSTIC
+          : INVALID_INPUT_DIAGNOSTIC,
+      );
     }
     return reportRunFailure(output, mode, INTERNAL_DIAGNOSTIC);
   }

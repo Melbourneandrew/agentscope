@@ -885,7 +885,9 @@ export const createInstalledCliContractPlan = (
               2,
               "json",
               "same-as-before",
-              requiredArgumentDiagnostic,
+              registration.id === "install"
+                ? "cli.usage"
+                : requiredArgumentDiagnostic,
             ),
           ]),
         }),
@@ -1210,6 +1212,7 @@ const machineAuthorityForStep = (
   return authority;
 };
 const expectedCommandForStep = (step: InstalledCliContractStep): string => {
+  if (step.expectedDiagnostic === "cli.usage") return "agentscope";
   const registration = expectedPublicCommandInventory
     .filter(({ path }) =>
       path.every((segment, index) => step.args[index] === segment),

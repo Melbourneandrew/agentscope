@@ -289,6 +289,26 @@ try {
   );
   assert.match(installedContractPlan.caseIdsDigest, /^sha256:[0-9a-f]{64}$/u);
   assert.match(installedContractPlan.inventoryDigest, /^sha256:[0-9a-f]{64}$/u);
+  const ordinal35 = installedContractPlan.cases[35];
+  assert.equal(ordinal35.caseId, "install.missing-required");
+  assert.deepEqual(installedContractPlan.caseIds.slice(34, 37), [
+    "install.unsupported-output",
+    "install.missing-required",
+    "uninstall.valid.human",
+  ]);
+  assert.deepEqual(ordinal35.steps, [
+    {
+      args: ["install", "--output", "json"],
+      executionMode: "direct",
+      expectedDiagnostic: "cli.usage",
+      expectedOutcome: "exited",
+      expectedSignal: null,
+      expectedStatus: 2,
+      input: "",
+      outputRule: "json",
+      stateRule: "same-as-before",
+    },
+  ]);
   const directResult = {
     outcome: "exited",
     signal: null,
@@ -1246,6 +1266,97 @@ try {
     cwd: installRoot,
     shell: process.platform === "win32",
   };
+  const ordinal35Home = join(installRoot, "ordinal-35-home");
+  mkdirSync(ordinal35Home);
+  const ordinal35Options = {
+    ...executableOptions,
+    env: { HOME: ordinal35Home, USERPROFILE: ordinal35Home },
+  };
+  run(executable, ["init", "--yes", "--output", "json"], ordinal35Options);
+  const snapshotOrdinal35Home = () =>
+    regularFiles(ordinal35Home).map((path) => [
+      path,
+      lstatSync(join(ordinal35Home, path)).mode & 0o777,
+      createHash("sha256")
+        .update(readFileSync(join(ordinal35Home, path)))
+        .digest("hex"),
+    ]);
+  const ordinal35Before = snapshotOrdinal35Home();
+  const ordinal35Result = runRaw(
+    executable,
+    ordinal35.steps[0].args,
+    ordinal35Options,
+  );
+  assert.equal(ordinal35Result.status, 2);
+  assert.equal(ordinal35Result.signal, null);
+  assert.equal(ordinal35Result.stdout, "");
+  assert.equal(
+    ordinal35Result.stderr,
+    '{"category":"usage","code":"cli.usage","command":"agentscope","schema":"agentscope.cli.diagnostic.v1"}\n',
+  );
+  assert.deepEqual(snapshotOrdinal35Home(), ordinal35Before);
+  assert.doesNotThrow(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      ordinal35.steps[0],
+      {
+        outcome: "exited",
+        signal: ordinal35Result.signal,
+        status: ordinal35Result.status,
+        stderr: ordinal35Result.stderr,
+        stdout: ordinal35Result.stdout,
+      },
+      installedManifest.version,
+      { caseOrdinal: 35 },
+    ),
+  );
+  for (const [ordinal, expectedStatus, expectedStderr] of [
+    [34, 2, "error [cli.output.unsupported]\n"],
+    [36, 3, "error [harness.adapter-missing]\n"],
+  ]) {
+    const adjacentCase = installedContractPlan.cases[ordinal];
+    const adjacentBefore = snapshotOrdinal35Home();
+    const adjacentResult = runRaw(
+      executable,
+      adjacentCase.steps[0].args,
+      ordinal35Options,
+    );
+    assert.equal(adjacentResult.status, expectedStatus);
+    assert.equal(adjacentResult.signal, null);
+    assert.equal(adjacentResult.stdout, "");
+    assert.equal(adjacentResult.stderr, expectedStderr);
+    assert.deepEqual(snapshotOrdinal35Home(), adjacentBefore);
+    assert.doesNotThrow(() =>
+      oracleModule.validateInstalledCliInvocationOutputForTest(
+        adjacentCase.steps[0],
+        {
+          outcome: "exited",
+          signal: adjacentResult.signal,
+          status: adjacentResult.status,
+          stderr: adjacentResult.stderr,
+          stdout: adjacentResult.stdout,
+        },
+        installedManifest.version,
+        { caseOrdinal: ordinal },
+      ),
+    );
+  }
+  assert.throws(() =>
+    oracleModule.validateInstalledCliInvocationOutputForTest(
+      ordinal35.steps[0],
+      {
+        outcome: "exited",
+        signal: ordinal35Result.signal,
+        status: ordinal35Result.status,
+        stderr: ordinal35Result.stderr.replace(
+          "cli.usage",
+          "cli.input.invalid",
+        ),
+        stdout: ordinal35Result.stdout,
+      },
+      installedManifest.version,
+      { caseOrdinal: 35 },
+    ),
+  );
   const installedInternal = join(
     installRoot,
     "node_modules/agentscope-cli/dist/internal",
