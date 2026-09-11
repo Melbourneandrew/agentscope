@@ -199,19 +199,23 @@ try {
     process.platform === "win32" ? "agentscope.cmd" : "agentscope",
   );
   if (process.platform !== "win32") chmodSync(executable, 0o755);
-  const installedContract = run(process.execPath, [
-    "--import",
-    "tsx",
-    resolve(packageRoot, "scripts/verify-installed-contract.ts"),
-    "--executable",
-    executable,
-    "--tarball",
-    tarball,
-    "--installed-package-root",
-    join(installRoot, "node_modules/agentscope-cli"),
-    "--expected-version",
-    installedManifest.version,
-  ]);
+  const installedContract = run(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      resolve(packageRoot, "scripts/verify-installed-contract.ts"),
+      "--executable",
+      executable,
+      "--tarball",
+      tarball,
+      "--installed-package-root",
+      join(installRoot, "node_modules/agentscope-cli"),
+      "--expected-version",
+      installedManifest.version,
+    ],
+    { env: { FORCE_COLOR: undefined, NO_COLOR: "1" } },
+  );
   const installedContractEvidence = JSON.parse(installedContract.stdout);
   assert.equal(
     installedContractEvidence.schema,
