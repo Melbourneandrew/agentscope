@@ -50,27 +50,31 @@ const preparedIdentityFor = (image: string, fill: string) => ({
   configDigest: `sha256:${fill.toUpperCase().repeat(64)}`.toLowerCase(),
 });
 
-const planFor = (token: string) =>
-  createIsolationPlan({
-    scenario: manifest.scenarios[0]!,
+const planFor = (
+  token: string,
+  executionMode: "headless" | "interactive" = "headless",
+) => {
+  const scenario = manifest.scenarios.find(
+    (candidate) => candidate.executionMode === executionMode,
+  )!;
+  return createIsolationPlan({
+    scenario,
     manifestIdentity: manifest.manifestIdentity,
     candidate,
     runToken: token,
-    baseImageIdentity: preparedIdentityFor(manifest.scenarios[0]!.image, "a"),
-    mockServerImageIdentity: preparedIdentityFor(
-      manifest.scenarios[0]!.mockServerImage,
-      "b",
-    ),
+    baseImageIdentity: preparedIdentityFor(scenario.image, "a"),
+    mockServerImageIdentity: preparedIdentityFor(scenario.mockServerImage, "b"),
     selection: {
       selectionVersion: 2,
       manifestIdentity: manifest.manifestIdentity,
       mode: "scenario",
-      selector: { scenarioId: manifest.scenarios[0]!.scenarioId },
-      scenarioIds: [manifest.scenarios[0]!.scenarioId],
+      selector: { scenarioId: scenario.scenarioId },
+      scenarioIds: [scenario.scenarioId],
     },
     maximumParallelScenarios: 2,
     scenarioTimeoutMilliseconds: 300_000,
   });
+};
 
 const executionPolicyFor = (scenarioId = "fixture-process-smoke") => ({
   policyVersion: 1,
@@ -153,6 +157,194 @@ const headlessReceiptFor = (runId = "0123456789abcdef") => {
   };
 };
 
+// The complete canonical fixture is intentionally adjacent so every authority
+// field exercised by the isolation verifier remains visible to substitutions.
+const ptyReceiptFor = (
+  runId = "0123456789abcdef",
+  scenarioId = "fixture-process-interactive",
+  // eslint-disable-next-line max-lines-per-function
+) => {
+  const rawProcessRequest = {
+    ...headlessReceiptFor(runId).request,
+    executable: "/opt/agentscope/platform-fixture.mjs",
+    arguments: ["--artifact", "/opt/agentscope/prepared/cli.tgz"],
+    stdinBase64: "cnVuCg==",
+  };
+  const processRequestFingerprint = `sha256:${createHash("sha256")
+    .update(JSON.stringify(rawProcessRequest))
+    .digest("hex")}` as const;
+  const input = Buffer.from("run\n");
+  const inputSha256 = createHash("sha256").update(input).digest("hex");
+  const processRequest = {
+    runId: rawProcessRequest.runId,
+    requestFingerprint: processRequestFingerprint,
+    executable: rawProcessRequest.executable,
+    arguments: rawProcessRequest.arguments,
+    cwd: rawProcessRequest.cwd,
+    environment: rawProcessRequest.environment,
+    inputBytes: input.length,
+    inputSha256,
+    stdoutLimitBytes: rawProcessRequest.stdoutLimitBytes,
+    stderrLimitBytes: rawProcessRequest.stderrLimitBytes,
+    monotonicStartupDeadlineMs: rawProcessRequest.monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs:
+      rawProcessRequest.monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs: rawProcessRequest.monotonicShutdownDeadlineMs,
+    terminationGraceMs: rawProcessRequest.terminationGraceMs,
+  };
+  const geometry = { columns: 80, rows: 24 };
+  const completion = { kind: "semantic-marker" as const };
+  const interaction = {
+    trigger: "semantic-ready" as const,
+    actions: [
+      { action: "resize" as const, geometry: { columns: 100, rows: 30 } },
+      { action: "input" as const, byteLength: 4, inputSha256 },
+      { action: "eof" as const },
+    ],
+  };
+  const interpreter = {
+    path: "/usr/local/bin/node",
+    sha256: "a".repeat(64),
+  };
+  const scriptSha256 = createHash("sha256")
+    .update(readFileSync(resolve(integrationRoot, "platform-fixture.mjs")))
+    .digest("hex");
+  return {
+    receiptVersion: 1 as const,
+    transport: "pty" as const,
+    scenarioId,
+    runId,
+    requestFingerprint: `sha256:${createHash("sha256")
+      .update(
+        JSON.stringify({
+          processRequestFingerprint,
+          completion,
+          initialGeometry: geometry,
+          interaction,
+          interpreter,
+          scriptSha256,
+          inputBytes: input.length,
+          inputSha256,
+        }),
+      )
+      .digest("hex")}` as const,
+    processRequestFingerprint,
+    processStartIdentity: "42001:1",
+    inputBytes: input.length,
+    inputSha256,
+    readinessObserved: true,
+    actions: [
+      {
+        action: "resize" as const,
+        geometry: { columns: 100, rows: 30 },
+        monotonicAtMs: 2_000,
+      },
+      {
+        action: "input" as const,
+        byteLength: 4,
+        inputSha256,
+        monotonicAtMs: 2_001,
+      },
+      { action: "eof" as const, monotonicAtMs: 2_002 },
+    ],
+    outerMonotonicDeadlineMs: 31_000,
+    requestConstructedAtMs: 1_000,
+    translationBootAtMs: 1_000,
+    translationLocalAtMs: 1_000,
+    request: {
+      process: processRequest,
+      completion,
+      initialGeometry: geometry,
+      interaction,
+      interpreter,
+      scriptSha256,
+    },
+    returnedAtMs: 29_000,
+    isTTY: true as const,
+    observedGeometry: { columns: 100, rows: 30 },
+    observedCanonicalMode: true as const,
+    eofByte: 4,
+    eofByteWritten: true,
+    inputBytesWritten: 4,
+    outcome: "completed" as const,
+    outputBytes: 32,
+    outputSha256: "c".repeat(64),
+    finalSnapshot: {
+      snapshotVersion: 1 as const,
+      geometry: { columns: 100, rows: 30 },
+      cursor: { column: 0, row: 1 },
+      alternateScreen: false,
+      cursorVisible: true,
+      outputBytes: 32,
+      printableCellCount: 0,
+      nonEmptyLineCount: 0,
+      malformedControlCount: 0,
+      unsupportedControlCount: 0,
+      sawCursorPositionQuery: false,
+      titlePresent: false,
+      titleSha256: null,
+      screenSha256: "d".repeat(64),
+      semanticState: "completed" as const,
+    },
+    exitCode: 0,
+    signal: null,
+    cleanup: "clean" as const,
+    residualProcessCount: 0,
+    processJoined: true,
+    terminalInputJoined: true,
+    terminalOutputJoined: true,
+    terminalTransportClosed: true,
+  };
+};
+
+const refingerprintPtyProcessDeadline = (
+  field:
+    | "monotonicStartupDeadlineMs"
+    | "monotonicExecutionDeadlineMs"
+    | "monotonicShutdownDeadlineMs"
+    | "terminationGraceMs",
+  value: number,
+) => {
+  const receipt = ptyReceiptFor();
+  const process = { ...receipt.request.process, [field]: value };
+  const rawProcessRequest = {
+    runId: process.runId,
+    executable: process.executable,
+    arguments: process.arguments,
+    cwd: process.cwd,
+    environment: process.environment,
+    stdinBase64: "cnVuCg==",
+    stdoutLimitBytes: process.stdoutLimitBytes,
+    stderrLimitBytes: process.stderrLimitBytes,
+    monotonicStartupDeadlineMs: process.monotonicStartupDeadlineMs,
+    monotonicExecutionDeadlineMs: process.monotonicExecutionDeadlineMs,
+    monotonicShutdownDeadlineMs: process.monotonicShutdownDeadlineMs,
+    terminationGraceMs: process.terminationGraceMs,
+  };
+  const processRequestFingerprint = `sha256:${createHash("sha256")
+    .update(JSON.stringify(rawProcessRequest))
+    .digest("hex")}` as const;
+  const request = {
+    ...receipt.request,
+    process: { ...process, requestFingerprint: processRequestFingerprint },
+  };
+  const requestFingerprint = `sha256:${createHash("sha256")
+    .update(
+      JSON.stringify({
+        processRequestFingerprint,
+        completion: request.completion,
+        initialGeometry: request.initialGeometry,
+        interaction: request.interaction,
+        interpreter: request.interpreter,
+        scriptSha256: request.scriptSha256,
+        inputBytes: process.inputBytes,
+        inputSha256: process.inputSha256,
+      }),
+    )
+    .digest("hex")}` as const;
+  return { ...receipt, processRequestFingerprint, requestFingerprint, request };
+};
+
 const driver = () => {
   const calls: string[] = [];
   const buildImage = vi.fn<IsolationDriver["buildImage"]>(() => {
@@ -162,7 +354,10 @@ const driver = () => {
   const runScenario = vi.fn<IsolationDriver["runScenario"]>((plan) => {
     calls.push("scenario");
     return Promise.resolve({
-      receipt: headlessReceiptFor(plan.runId),
+      receipt:
+        plan.executionMode === "interactive"
+          ? ptyReceiptFor(plan.runId, plan.scenarioId)
+          : headlessReceiptFor(plan.runId),
       succeeded: true,
     });
   });
@@ -275,6 +470,7 @@ describe("scenario isolation", () => {
       remaining: emptyCleanupInventory(),
     });
     expect(evidence.headlessTerminalReceipt).toEqual(headlessReceiptFor());
+    expect(evidence.ptyTerminalReceipt).toBeNull();
     expect(fixture.calls).toEqual([
       "build",
       "build-mockserver",
@@ -293,6 +489,23 @@ describe("scenario isolation", () => {
       "context:0123456789abcdef",
       "evidence",
     ]);
+  });
+
+  it("records only bounded semantic PTY evidence for an interactive row", async () => {
+    const fixture = driver();
+    const plan = planFor("0123456789abcdef", "interactive");
+    const evidence = await executeIsolationPlan(
+      plan,
+      fixture.implementation,
+      new AbortController().signal,
+    );
+    expect(evidence.executionMode).toBe("interactive");
+    expect(evidence.headlessTerminalReceipt).toBeNull();
+    expect(evidence.ptyTerminalReceipt).toEqual(
+      ptyReceiptFor(plan.runId, plan.scenarioId),
+    );
+    expect(JSON.stringify(evidence)).not.toContain("AGENTSCOPE_PTY_COMPLETE");
+    expect(JSON.stringify(evidence)).not.toContain("cnVuCg==");
   });
 });
 
@@ -579,6 +792,7 @@ const compiledEvidenceFixture = () => {
       manifestIdentity: manifest.manifestIdentity,
       candidateBundleIdentity: `sha256-${"2".repeat(64)}`,
       candidateRevision: "3".repeat(40),
+      executionMode: "headless",
       baseImage: `node@sha256:${"4".repeat(64)}`,
       mockServerImage: `mockserver@sha256:${"5".repeat(64)}`,
       baseImageIdentity: preparedIdentityFor(
@@ -604,6 +818,7 @@ const compiledEvidenceFixture = () => {
         remaining: emptyCleanupInventory(),
       },
       headlessTerminalReceipt: headlessReceiptFor(),
+      ptyTerminalReceipt: null,
       outcome: "passed",
     },
   };
@@ -683,6 +898,85 @@ describe("selected headless backend evidence", () => {
           evidence,
         ),
       ).toThrow("integration.isolation.evidence");
+  });
+});
+
+describe("selected PTY backend evidence", () => {
+  it("rejects cross-mode, missing, substituted, and raw terminal evidence", () => {
+    const { evidence } = compiledEvidenceFixture();
+    const pty = ptyReceiptFor();
+    const interactive = {
+      ...evidence,
+      scenarioId: "fixture-process-interactive",
+      executionMode: "interactive",
+      executionPolicy: executionPolicyFor("fixture-process-interactive"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt: pty,
+    };
+    expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
+      interactive,
+    );
+    for (const ptyTerminalReceipt of [
+      null,
+      { ...pty, runId: "fedcba9876543210" },
+      { ...pty, scenarioId: "fixture-process-smoke" },
+      { ...pty, cleanup: "uncertain" },
+      { ...pty, readinessObserved: false },
+      { ...pty, inputSha256: "f".repeat(64) },
+      {
+        ...pty,
+        actions: pty.actions.map((action) =>
+          action.action === "input"
+            ? { ...action, inputSha256: "f".repeat(64) }
+            : action,
+        ),
+      },
+      {
+        ...pty,
+        request: {
+          ...pty.request,
+          process: { ...pty.request.process, stdinBase64: "cnVuCg==" },
+        },
+      },
+      {
+        ...pty,
+        finalSnapshot: { ...pty.finalSnapshot, semanticState: "ready" },
+      },
+      { ...pty, rawOutput: "secret terminal transcript" },
+    ])
+      expect(() =>
+        compileWithPreparedAuthority(
+          { ...interactive, ptyTerminalReceipt },
+          evidence,
+        ),
+      ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...interactive, headlessTerminalReceipt: headlessReceiptFor() },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+  });
+
+  it.each([
+    ["monotonicStartupDeadlineMs", 11_001],
+    ["monotonicExecutionDeadlineMs", 25_999],
+    ["monotonicShutdownDeadlineMs", 31_001],
+    ["terminationGraceMs", 999],
+  ] as const)("rejects refingerprinted %s substitution", (field, value) => {
+    const { evidence } = compiledEvidenceFixture();
+    const ptyTerminalReceipt = refingerprintPtyProcessDeadline(field, value);
+    const interactive = {
+      ...evidence,
+      scenarioId: "fixture-process-interactive",
+      executionMode: "interactive" as const,
+      executionPolicy: executionPolicyFor("fixture-process-interactive"),
+      headlessTerminalReceipt: null,
+      ptyTerminalReceipt,
+    };
+    expect(() => compileWithPreparedAuthority(interactive, evidence)).toThrow(
+      "integration.isolation.evidence",
+    );
   });
 });
 

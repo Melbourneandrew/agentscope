@@ -142,6 +142,24 @@ describe("integration capability manifest", () => {
   });
 });
 
+describe("integration capability execution modes", () => {
+  it("rejects a headless/interactive output-contract mismatch", () => {
+    const original = manifestFixture();
+    expect(() =>
+      compileCapabilityManifest({
+        ...original,
+        scenarios: [
+          {
+            ...original.scenarios[0]!,
+            executionMode: "interactive",
+            outputContract: "jsonl",
+          },
+        ],
+      }),
+    ).toThrow("integration.manifest.invalid");
+  });
+});
+
 describe("integration capability selection", () => {
   it("selects by harness, tag, scenario, and deterministic weighted shard", () => {
     const original = manifestFixture();
@@ -197,7 +215,7 @@ describe("integration capability selection", () => {
     for (const shard of [
       { index: -1, total: 1 },
       { index: 1, total: 1 },
-      { index: 0, total: 2 },
+      { index: 0, total: 3 },
     ])
       expect(() => selectCapabilityScenarios(compiled, { shard })).toThrow(
         "integration.manifest.shard",

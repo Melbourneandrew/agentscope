@@ -43,23 +43,37 @@ const descriptorEvidenceSchema = z.strictObject({
   capabilities: uniqueList(id),
 });
 
-const scenarioSchema = z.strictObject({
-  scenarioId: id,
-  harnessEvidenceId: id,
-  image: z.string().regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
-  mockServerImage: z
-    .string()
-    .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
-  modelRoutes: uniqueList(id),
-  tags: uniqueList(id),
-  destinations: uniqueList(id),
-  fixtureAdapter: z.strictObject({
-    path: relativeAdapterPath,
-    sha256: fileDigest,
-  }),
-  resourceClass: z.enum(["small", "medium", "large"]),
-  shardWeight: z.number().int().min(1).max(100_000),
-});
+const scenarioSchema = z
+  .strictObject({
+    scenarioId: id,
+    harnessEvidenceId: id,
+    executionMode: z.enum(["headless", "interactive"]),
+    outputContract: z.enum(["jsonl", "semantic-pty"]),
+    image: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
+    mockServerImage: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9./_-]{0,159}@sha256:[a-f\d]{64}$/u),
+    modelRoutes: uniqueList(id),
+    tags: uniqueList(id),
+    destinations: uniqueList(id),
+    fixtureAdapter: z.strictObject({
+      path: relativeAdapterPath,
+      sha256: fileDigest,
+    }),
+    resourceClass: z.enum(["small", "medium", "large"]),
+    shardWeight: z.number().int().min(1).max(100_000),
+  })
+  .superRefine((value, context) => {
+    if (
+      (value.executionMode === "headless" &&
+        value.outputContract !== "jsonl") ||
+      (value.executionMode === "interactive" &&
+        value.outputContract !== "semantic-pty")
+    )
+      context.addIssue({ code: "custom", message: "scenario mode drift" });
+  });
 
 const manifestSchema = z.strictObject({
   manifestVersion: z.literal(1),

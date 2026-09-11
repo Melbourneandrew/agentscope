@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   failureEvidenceCoverageIsExact,
   headlessReceiptFitsOuterAuthority,
+  ptyReceiptFitsOuterAuthority,
   runIntegrationStages,
   settleAbortableOperation,
 } from "./controller.js";
@@ -88,6 +89,36 @@ describe("headless terminal receipt authority", () => {
         new Set([runId]),
       ),
     ).toBe(false);
+  });
+});
+
+describe("PTY terminal receipt authority", () => {
+  const runId = "0123456789abcdef";
+  const receipt = {
+    runId,
+    requestFingerprint: `sha256:${"a".repeat(64)}`,
+    returnedAtMs: 90,
+    request: { process: { monotonicShutdownDeadlineMs: 100 } },
+  };
+
+  it("requires the exact selected run before outer cleanup", () => {
+    expect(
+      ptyReceiptFitsOuterAuthority(receipt, 90, 101, new Set([runId])),
+    ).toBe(true);
+    expect(
+      ptyReceiptFitsOuterAuthority(receipt, 101, 101, new Set([runId])),
+    ).toBe(false);
+    expect(
+      ptyReceiptFitsOuterAuthority(
+        { ...receipt, returnedAtMs: 101 },
+        90,
+        102,
+        new Set([runId]),
+      ),
+    ).toBe(false);
+    expect(ptyReceiptFitsOuterAuthority(receipt, 90, 101, new Set())).toBe(
+      false,
+    );
   });
 });
 

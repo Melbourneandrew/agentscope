@@ -64,6 +64,10 @@ const selectedPtyRequest = () => {
   const now = performance.now();
   return {
     completion: { kind: "semantic-marker" as const },
+    interaction: {
+      trigger: "semantic-ready" as const,
+      actions: [{ action: "eof" as const }],
+    },
     initialGeometry: { columns: 40, rows: 12 },
     interpreter: {
       path: "/usr/local/bin/node",
@@ -74,7 +78,7 @@ const selectedPtyRequest = () => {
       executable: "/scenario/installed-cli-driver",
       arguments: ["narrow-terminal"],
       cwd: "/scenario",
-      stdin: new Uint8Array([121, 101, 115, 10]),
+      stdin: new Uint8Array(),
       monotonicStartupDeadlineMs: now + 100,
       monotonicExecutionDeadlineMs: now + 200,
       monotonicShutdownDeadlineMs: now + 500,
@@ -825,7 +829,9 @@ describe("bounded headless supervisor package surface", () => {
   });
 });
 
+// eslint-disable-next-line max-lines-per-function
 describe("emitted selected-container lifecycle", () => {
+  // eslint-disable-next-line max-lines-per-function
   it("runs the adversarial lifecycle matrix from freshly emitted JavaScript", () => {
     const workspaceRoot = resolve(import.meta.dirname, "../../../..");
     const directory = mkdtempSync(
@@ -849,7 +855,7 @@ describe("emitted selected-container lifecycle", () => {
         runner,
         `import { performance } from "node:perf_hooks";
 	import { createHostileHeadlessProcessMatrix } from "./headless-supervisor-contract.js";
-	import { executeSelectedContainerBackendForTest, readHeadlessSupervisorKernelErrorCode } from "./internal/headless-supervisor-backend.js";
+	import { executeSelectedContainerBackendForTest, executeSelectedPtyTransportForTest, readHeadlessSupervisorKernelErrorCode } from "./internal/headless-supervisor-backend.js";
 
 const request = () => {
   const now = performance.now();
@@ -910,6 +916,46 @@ for (const candidate of hostileMatrix) {
     throw new Error("emitted-hostile-trace:" + candidate.seed);
   }
 }
+const ptyNow = performance.now();
+const ptyRequest = {
+  completion: { kind: "semantic-marker" },
+  interaction: {
+    trigger: "semantic-ready",
+    actions: [
+      ...Array.from({ length: 63 }, () => ({ action: "resize", geometry: { columns: 80, rows: 24 } })),
+      { action: "eof" },
+    ],
+  },
+  initialGeometry: { columns: 40, rows: 12 },
+  interpreter: { path: "/usr/local/bin/node", sha256: "a".repeat(64) },
+  process: {
+    ...request(),
+    executable: "/scenario/installed-cli-driver",
+    arguments: ["interactive"],
+    cwd: "/scenario",
+    stdin: new Uint8Array(),
+    monotonicStartupDeadlineMs: ptyNow + 100,
+    monotonicExecutionDeadlineMs: ptyNow + 300,
+    monotonicShutdownDeadlineMs: ptyNow + 800,
+    terminationGraceMs: 50,
+  },
+  scriptSha256: "b".repeat(64),
+};
+const ptyNumericDescriptor = Object.getOwnPropertyDescriptor(Array.prototype, "63");
+let ptyNumericSetterCalls = 0;
+let ptyReceipt;
+try {
+  Object.defineProperty(Array.prototype, "63", {
+    configurable: true,
+    set: () => { ptyNumericSetterCalls += 1; },
+  });
+  ptyReceipt = await executeSelectedPtyTransportForTest(ptyRequest, "clean");
+} finally {
+  if (ptyNumericDescriptor === undefined) Reflect.deleteProperty(Array.prototype, "63");
+  else Object.defineProperty(Array.prototype, "63", ptyNumericDescriptor);
+}
+if (ptyNumericSetterCalls !== 0 || ptyReceipt?.outcome !== "completed" || ptyReceipt.actions.length !== 64)
+  throw new Error("emitted-pty-hostile-numeric-setter");
 `,
         { encoding: "utf8", mode: 0o600 },
       );

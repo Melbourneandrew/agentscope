@@ -46,6 +46,30 @@ const scenario = manifest.scenarios.find(
   (value) => value.scenarioId === scenarioId,
 );
 if (!scenario) throw new Error("integration.fixture.scenario");
+const interactive = scenario.executionMode === "interactive";
+if (
+  (interactive &&
+    (scenario.outputContract !== "semantic-pty" ||
+      process.stdin.isTTY !== true ||
+      process.stdout.isTTY !== true ||
+      process.stdout.columns !== 80 ||
+      process.stdout.rows !== 24)) ||
+  (!interactive &&
+    (scenario.executionMode !== "headless" ||
+      scenario.outputContract !== "jsonl" ||
+      process.stdin.isTTY === true ||
+      process.stdout.isTTY === true))
+)
+  throw new Error("integration.fixture.execution-mode");
+if (interactive) {
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  if (
+    readFileSync(0, "utf8") !== "run\n" ||
+    process.stdout.columns !== 100 ||
+    process.stdout.rows !== 30
+  )
+    throw new Error("integration.fixture.interactive-input");
+}
 
 const observedLifecycle = [];
 let partial = {
@@ -67,9 +91,10 @@ const emitEvidence = (resultStatus) => {
     lifecycle: [...observedLifecycle],
     ...partial,
   };
-  console.log(
-    `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
-  );
+  if (!interactive)
+    console.log(
+      `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
+    );
   return evidence;
 };
 emitEvidence("partial");
@@ -302,6 +327,14 @@ writeFileSync(
   join(ledgerHome, "fixture-lifecycle.json"),
   `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
 );
-console.log(
-  `AGENTSCOPE_FIXTURE_RESULT=${Buffer.from(JSON.stringify(evidence)).toString("base64url")}`,
+const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
+  "base64url",
 );
+writeFileSync(
+  join(ledgerHome, "fixture-result.json"),
+  `${JSON.stringify({ evidenceVersion: 1, encodedEvidence, scenarioId })}\n`,
+  { flag: "wx", mode: 0o600 },
+);
+if (interactive)
+  process.stdout.write("AGENTSCOPE_PTY_COMPLETE\u001b[?1049l\r\n");
+else console.log(`AGENTSCOPE_FIXTURE_RESULT=${encodedEvidence}`);

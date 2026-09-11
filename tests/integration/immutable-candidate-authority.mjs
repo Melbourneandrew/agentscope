@@ -72,6 +72,27 @@ export const decodeInstalledPtyFailureReceipt = (output) => {
   }
 };
 
+export const decodeInteractivePtyReceipt = (output) => {
+  if (typeof output !== "string" || output.length > 2 * 1024 * 1024)
+    return fail();
+  const prefix = "AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=";
+  const lines = output.split("\n").filter((line) => line.startsWith(prefix));
+  if (lines.length !== 1 || lines[0].length > 32_768) return fail();
+  try {
+    const encoded = lines[0].slice(prefix.length);
+    if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) return fail();
+    const bytes = Buffer.from(encoded, "base64url");
+    if (bytes.toString("base64url") !== encoded) return fail();
+    const serialized = bytes.toString("utf8");
+    const receipt = JSON.parse(serialized);
+    if (!plainRecord(receipt) || JSON.stringify(receipt) !== serialized)
+      return fail();
+    return Object.freeze(receipt);
+  } catch {
+    return fail();
+  }
+};
+
 export const selectedRuntimeFiles = Object.freeze([
   "testkit/bounded-terminal-emulator.js",
   "testkit/headless-supervisor-contract.js",
@@ -351,13 +372,16 @@ export const compileInstalledCliPtyReceipt = (value) => {
 };
 
 const selectedPtyExecutionReceiptKeys = [
+  "actions",
   "cleanup",
   "eofByte",
   "eofByteWritten",
   "exitCode",
   "finalSnapshot",
   "initialGeometry",
+  "inputBytes",
   "inputBytesWritten",
+  "inputSha256",
   "isTTY",
   "observedCanonicalMode",
   "observedGeometry",
@@ -365,6 +389,9 @@ const selectedPtyExecutionReceiptKeys = [
   "outputBytes",
   "outputSha256",
   "processJoined",
+  "processRequestFingerprint",
+  "processStartIdentity",
+  "readinessObserved",
   "receiptVersion",
   "requestFingerprint",
   "residualProcessCount",

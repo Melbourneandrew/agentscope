@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-37d8645c8ccaf49e2bff9bd61d9a0f613afbbb34a8daa57318f54a2807972d08",
+  "manifestIdentity": "sha256-c08e8a0f512187b3bf68ccf746bb5d2eed130ca7502d811160b98e231674a6bf",
   "requiredRepresentativeIds": ["fixture-process-v1"],
   "evidence": [
     {
@@ -10,7 +10,7 @@
       "representativeVersion": "1.0.0",
       "descriptorArtifact": {
         "path": "fixtures/process-harness-evidence.json",
-        "sha256": "ca2b9a23a6844659a39e7d21b87e68f60856efd3be39dd964226b3c211b74512"
+        "sha256": "082595a65146335dbbd6fb8b19e014892dd0a96ede9a261139b36620b7d86b15"
       }
     }
   ],
@@ -18,6 +18,8 @@
     {
       "scenarioId": "fixture-process-smoke",
       "harnessEvidenceId": "fixture-process-v1",
+      "executionMode": "headless",
+      "outputContract": "jsonl",
       "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
       "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
       "modelRoutes": [
@@ -34,6 +36,28 @@
       },
       "resourceClass": "small",
       "shardWeight": 100
+    },
+    {
+      "scenarioId": "fixture-process-interactive",
+      "harnessEvidenceId": "fixture-process-v1",
+      "executionMode": "interactive",
+      "outputContract": "semantic-pty",
+      "image": "node@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32",
+      "mockServerImage": "mockserver/mockserver@sha256:0f9ef78c94894ac3e70135d156193b25e23872575d58e2228344964273b4af6b",
+      "modelRoutes": [
+        "openai-responses",
+        "openai-chat-completions",
+        "anthropic-messages",
+        "gemini-generate-content"
+      ],
+      "tags": ["interactive", "pr"],
+      "destinations": ["otlp-ledger"],
+      "fixtureAdapter": {
+        "path": "fixtures/process-platform-adapter.mjs",
+        "sha256": "b7f195570aa9f329ee0a5e301d2606d20989e82beddf664713f4621e31891c59"
+      },
+      "resourceClass": "small",
+      "shardWeight": 120
     }
   ]
 }

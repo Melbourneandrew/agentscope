@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -15,6 +16,7 @@ const {
   compileInstalledCliPtyReceipt,
   compileInstalledCliPtyReceiptFromExecution,
   decodeInstalledCliPtyReceipt,
+  decodeInteractivePtyReceipt,
   decodeInstalledPtyFailureReceipt,
   decodeImmutableCandidateHandoff,
   installedPtyFailurePredicates,
@@ -106,6 +108,12 @@ const executionReceipt = () => ({
   receiptVersion: 1,
   runId: plan().runId,
   requestFingerprint: `sha256:${hex("1")}`,
+  processRequestFingerprint: `sha256:${hex("2")}`,
+  processStartIdentity: "42001:1",
+  inputBytes: 0,
+  inputSha256: createHash("sha256").update("").digest("hex"),
+  readinessObserved: false,
+  actions: [{ action: "eof", monotonicAtMs: 1 }],
   isTTY: true,
   initialGeometry: { columns: 40, rows: 12 },
   observedGeometry: { columns: 40, rows: 12 },
@@ -476,4 +484,30 @@ describe("immutable candidate authority", () => {
       }),
     ).toThrow("integration.immutable-candidate.authority");
   });
+});
+
+describe("interactive PTY receipt transport", () => {
+  const line = (value: unknown) =>
+    `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(value)).toString("base64url")}`;
+
+  it("accepts exactly one canonical bounded receipt record", () => {
+    expect(decodeInteractivePtyReceipt(line({ receiptVersion: 1 }))).toEqual({
+      receiptVersion: 1,
+    });
+  });
+
+  it.each([
+    "",
+    `${line({ receiptVersion: 1 })}\n${line({ receiptVersion: 1 })}`,
+    `${line({ receiptVersion: 1 })}\n${line({ receiptVersion: 2 })}`,
+    "AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=***",
+    `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from('{ "receiptVersion": 1 }').toString("base64url")}`,
+  ])(
+    "rejects missing, duplicate, malformed, or noncanonical records",
+    (value) => {
+      expect(() => decodeInteractivePtyReceipt(value)).toThrow(
+        "integration.immutable-candidate.authority",
+      );
+    },
+  );
 });
