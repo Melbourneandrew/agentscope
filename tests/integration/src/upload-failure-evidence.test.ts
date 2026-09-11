@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   closeSync,
   chmodSync,
@@ -64,6 +65,7 @@ const runUploader = runArtifactUploaderForTest as unknown as (options: {
   path: string;
   root: string;
   source: Buffer;
+  spawnProcess?: (...arguments_: unknown[]) => unknown;
   workingDirectory: string;
 }) => Promise<ArtifactResponse>;
 const createBridge = createRegularUploadBridgeForTest as unknown as (options: {
@@ -334,6 +336,26 @@ describe("failure evidence uploader", () => {
       workingDirectory: resolve(workspaceRoot, "tests/integration"),
     };
   };
+
+  it.skipIf(process.platform !== "linux")(
+    "settles an asynchronous spawn failure before inspecting child PID",
+    async () => {
+      const child = new EventEmitter() as EventEmitter & { pid?: number };
+      const invocation = runUploader({
+        ...uploaderProcessOptions(""),
+        source: Buffer.from("process.exit(0)"),
+        spawnProcess: () => {
+          queueMicrotask(() => child.emit("error", new Error("private")));
+          return child;
+        },
+      });
+      await expect(invocation).rejects.toThrow(
+        "integration.controller.failure-evidence-upload",
+      );
+      await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    },
+    5_000,
+  );
 
   it.skipIf(process.platform !== "linux")(
     "authenticates and joins the dedicated uploader process group",

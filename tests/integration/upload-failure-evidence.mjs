@@ -1206,6 +1206,7 @@ const runArtifactUploaderProcess = ({
   path,
   root,
   source,
+  spawnProcess,
   workingDirectory,
 }) =>
   new Promise((resolvePromise, rejectPromise) => {
@@ -1235,7 +1236,7 @@ const runArtifactUploaderProcess = ({
       );
       return;
     }
-    const child = spawn(
+    const child = spawnProcess(
       "/proc/self/exe",
       [
         "--input-type=module",
@@ -1261,6 +1262,11 @@ const runArtifactUploaderProcess = ({
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    let pendingSpawnError;
+    let consumeSpawnError = (error) => {
+      pendingSpawnError ??= error;
+    };
+    child.on("error", (error) => consumeSpawnError(error));
     const pid = child.pid;
     if (!Number.isSafeInteger(pid) || pid < 2) {
       rejectPromise(
@@ -1279,6 +1285,8 @@ const runArtifactUploaderProcess = ({
     ) => {
       firstFailure ??= error;
     };
+    if (pendingSpawnError !== undefined) reject(pendingSpawnError);
+    consumeSpawnError = reject;
     const append = (current, chunk) => {
       const next = Buffer.concat([current, chunk]);
       if (next.length > 4096) {
@@ -1293,7 +1301,6 @@ const runArtifactUploaderProcess = ({
     child.stderr.on("data", (chunk) => {
       stderr = append(stderr, chunk);
     });
-    child.on("error", reject);
     try {
       const identity = artifactUploaderIdentity(pid);
       if (
@@ -1405,9 +1412,13 @@ const runArtifactUploader = (options) =>
   runArtifactUploaderProcess({
     ...options,
     environment: artifactUploaderEnvironment(),
+    spawnProcess: spawn,
   });
 export const runArtifactUploaderForTest = (options) =>
-  runArtifactUploaderProcess(options);
+  runArtifactUploaderProcess({
+    ...options,
+    spawnProcess: options.spawnProcess ?? spawn,
+  });
 
 /* eslint-disable complexity -- the bridge lifecycle is one closed transaction. */
 const uploadFailureEvidenceImplementation = async ({
@@ -2554,7 +2565,7 @@ const artifactUploaderMain = async () => {
     resolve(root, "failure-evidence.json") !== path ||
     !/^\.agentscope-failure-upload-[a-f0-9]{24}$/u.test(directoryName) ||
     resolve(process.env.GITHUB_WORKSPACE, directoryName) !== root ||
-    !/^[a-z0-9][a-z0-9_-]{0,127}$/u.test(name) ||
+    !new Set(["integration-0-of-1-1", "integration-0-of-1-2"]).has(name) ||
     !/^sha256:[a-f0-9]{64}$/u.test(digest) ||
     deadline <= process.hrtime.bigint()
   )
