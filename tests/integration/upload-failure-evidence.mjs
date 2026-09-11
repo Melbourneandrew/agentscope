@@ -1269,9 +1269,23 @@ const runArtifactUploaderProcess = ({
     child.on("error", (error) => consumeSpawnError(error));
     const pid = child.pid;
     if (!Number.isSafeInteger(pid) || pid < 2) {
-      rejectPromise(
-        new Error("integration.controller.failure-evidence-upload"),
+      const spawnFailureTimer = setTimeout(
+        () => rejectPromise(uncertainArtifactUploaderFailure()),
+        Math.max(1, Number((cutoff - nowNanoseconds()) / 1_000_000n)),
       );
+      child.once("close", (code, signal) => {
+        clearTimeout(spawnFailureTimer);
+        if (
+          pendingSpawnError === undefined ||
+          typeof code !== "number" ||
+          code === 0 ||
+          signal !== null
+        ) {
+          rejectPromise(uncertainArtifactUploaderFailure());
+          return;
+        }
+        rejectPromise(pendingSpawnError);
+      });
       return;
     }
     let start;

@@ -1,6 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { EventEmitter } from "node:events";
 import {
   closeSync,
   chmodSync,
@@ -340,19 +339,19 @@ describe("failure evidence uploader", () => {
   it.skipIf(process.platform !== "linux")(
     "settles an asynchronous spawn failure before inspecting child PID",
     async () => {
-      const child = new EventEmitter() as EventEmitter & { pid?: number };
       const invocation = runUploader({
         ...uploaderProcessOptions(""),
         source: Buffer.from("process.exit(0)"),
-        spawnProcess: () => {
-          queueMicrotask(() => child.emit("error", new Error("private")));
-          return child;
-        },
+        spawnProcess: (_executable, arguments_, options) =>
+          spawn(
+            "/agentscope-intentionally-missing-uploader-executable",
+            arguments_ as string[],
+            options as Parameters<typeof spawn>[2],
+          ),
       });
       await expect(invocation).rejects.toThrow(
-        "integration.controller.failure-evidence-upload",
+        /ENOENT|failure-evidence-upload/u,
       );
-      await new Promise((resolvePromise) => setImmediate(resolvePromise));
     },
     5_000,
   );
