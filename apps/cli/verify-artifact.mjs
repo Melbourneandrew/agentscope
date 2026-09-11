@@ -1408,8 +1408,11 @@ try {
   );
   for (const ordinal of [39, 41]) {
     const adjacentCase = installedContractPlan.cases[ordinal];
-    const adjacentHome = join(installRoot, `ordinal-${ordinal}-home`);
-    mkdirSync(adjacentHome);
+    const adjacentHome =
+      ordinal === 41 && process.platform === "linux"
+        ? `/tmp/agentscope-installed-contract/cases/${ordinal}/user home with spaces — 测试`
+        : join(installRoot, `ordinal-${ordinal}-home`);
+    mkdirSync(adjacentHome, { recursive: true });
     const adjacentOptions = {
       ...executableOptions,
       env: { HOME: adjacentHome, USERPROFILE: adjacentHome },
