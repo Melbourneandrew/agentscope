@@ -641,7 +641,12 @@ const installedContractAdmitted = {
   ],
   "case-execution": [
     "narrow-help-rejected",
-    "setup-rejected",
+    "setup-candidate-bin-identity",
+    "setup-cwd-env-config",
+    "setup-deadline",
+    "setup-descriptor-permission",
+    "setup-fixture-input-creation",
+    "setup-workspace-root-authority",
     "state-rejected",
     "testkit.headless.aborted",
     "testkit.headless.backend.receipt",
@@ -5841,7 +5846,11 @@ describe("installed-contract workflow failure evidence", () => {
     );
     const rejected = [
       {},
-      { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
+      {
+        receiptVersion: 1,
+        phase: "unknown",
+        predicate: "setup-workspace-root-authority",
+      },
       {
         caseOrdinal: 0,
         contractInventorySha256:
@@ -5856,7 +5865,7 @@ describe("installed-contract workflow failure evidence", () => {
           "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "case-execution",
-        predicate: "setup-rejected",
+        predicate: "setup-workspace-root-authority",
         detail: "forbidden",
       },
       { receiptVersion: 1, phase: "artifact-install", predicate: 1 },
@@ -5942,14 +5951,18 @@ describe("installed-contract cleanup failure evidence", () => {
         expect(validate(receiptFor(phase, predicate))).toBe(0);
     for (const rejected of [
       {},
-      { receiptVersion: 1, phase: "unknown", predicate: "setup-rejected" },
+      {
+        receiptVersion: 1,
+        phase: "unknown",
+        predicate: "setup-workspace-root-authority",
+      },
       {
         caseOrdinal: 0,
         contractInventorySha256:
           "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "artifact-install",
-        predicate: "setup-rejected",
+        predicate: "setup-workspace-root-authority",
       },
       {
         caseOrdinal: 0,
@@ -5957,7 +5970,7 @@ describe("installed-contract cleanup failure evidence", () => {
           "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
         receiptVersion: 1,
         phase: "case-execution",
-        predicate: "setup-rejected",
+        predicate: "setup-workspace-root-authority",
         extra: true,
       },
       { receiptVersion: "1", phase: "case-execution", predicate: 1 },

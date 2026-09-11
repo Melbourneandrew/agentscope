@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { runInNewContext } from "node:vm";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -526,6 +527,58 @@ describe("immutable candidate authority", () => {
     }
   });
 
+  it("binds every setup operation to one closed content-free predicate", () => {
+    const setupPredicates = [
+      "setup-candidate-bin-identity",
+      "setup-cwd-env-config",
+      "setup-deadline",
+      "setup-descriptor-permission",
+      "setup-fixture-input-creation",
+      "setup-workspace-root-authority",
+    ];
+    expect(installedContractFailurePredicates["case-execution"]).toEqual(
+      expect.arrayContaining(setupPredicates),
+    );
+    expect(installedContractFailurePredicates["case-execution"]).not.toContain(
+      "setup-rejected",
+    );
+    for (const predicate of setupPredicates) {
+      const compiled = compileInstalledContractFailureReceipt({
+        caseOrdinal: 0,
+        contractInventorySha256:
+          "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+        phase: "case-execution",
+        predicate,
+        receiptVersion: 1,
+      });
+      expect(
+        decodeInstalledContractFailureReceipt(
+          `AGENTSCOPE_INSTALLED_CONTRACT_FAILURE=${compiled.encoded}`,
+          {
+            caseCount: 123,
+            caseIdsDigest:
+              "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          },
+        ),
+      ).toEqual(compiled.record);
+    }
+    for (const predicate of [
+      "setup-rejected",
+      "setup-workspace-root-authority-substituted",
+      "",
+    ])
+      expect(() =>
+        compileInstalledContractFailureReceipt({
+          caseOrdinal: 0,
+          contractInventorySha256:
+            "sha256:dae8f0a435924f6c33b338281b4b59c4f3ef6c5a540ab105366b50bf62b1a90a",
+          phase: "case-execution",
+          predicate,
+          receiptVersion: 1,
+        }),
+      ).toThrow("integration.immutable-candidate.authority");
+  });
+
   it.each([
     "missing",
     "unknown",
@@ -745,6 +798,167 @@ describe("immutable candidate authority", () => {
     const cleanup = runner.indexOf("rmSync(contractRoot", terminal);
     expect(terminal).toBeGreaterThan(evidence);
     expect(cleanup).toBeGreaterThan(terminal);
+  });
+
+  it("latches setup predicates adjacent to the real setup operations", () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    const setup = runner.slice(
+      runner.indexOf("const setupDescriptorErrorCodes"),
+      runner.indexOf(
+        'setInstalledContractFailureBoundary(\n    "case-execution",\n    "state-rejected"',
+      ),
+    );
+    for (const predicate of [
+      "setup-candidate-bin-identity",
+      "setup-cwd-env-config",
+      "setup-deadline",
+      "setup-descriptor-permission",
+      "setup-fixture-input-creation",
+      "setup-workspace-root-authority",
+    ])
+      expect(runner).toContain(`"${predicate}"`);
+    expect(setup).toContain("mkdirSync(caseHome, { recursive: true })");
+    expect(setup).toContain(
+      "digestInstalledContractWritableAuthority(externalWritableAuthority)",
+    );
+    expect(setup).toContain("setupFailureCase: caseFailure");
+    expect(setup).toContain("setupDescriptorErrorCodes.has(error?.code)");
+    const selectedExecution = runner.slice(
+      runner.indexOf("request.requestFingerprint ="),
+      runner.indexOf("const receipt =", runner.indexOf("const invokeSelected")),
+    );
+    expect(selectedExecution).toContain(
+      "selectedHeadlessExecutionPending = true",
+    );
+    expect(selectedExecution).toContain(
+      "const trace = await executeSelectedHeadlessProcess(",
+    );
+    expect(selectedExecution).toContain(
+      "selectedHeadlessExecutionPending = false",
+    );
+    expect(
+      selectedExecution.indexOf("selectedHeadlessExecutionPending = true"),
+    ).toBeGreaterThan(
+      selectedExecution.indexOf('"setup-candidate-bin-identity"'),
+    );
+    expect(setup).toContain("contractCaseExecution: true");
+    expect(runner.match(/contractCaseExecution: true/gu)).toHaveLength(2);
+  });
+
+  it("arms selected-headless precedence only after local setup validation", async () => {
+    const runner = readFileSync(resolve(import.meta.dirname, "../runner.mjs"), {
+      encoding: "utf8",
+    });
+    const receiptAuthorityStart = runner.indexOf(
+      "const installedContractFailurePhases =",
+    );
+    const receiptAuthority = runner.slice(
+      receiptAuthorityStart,
+      runner.indexOf(
+        "if (process.hasUncaughtExceptionCaptureCallback())",
+        receiptAuthorityStart,
+      ),
+    );
+    const invocation = runner.slice(
+      runner.indexOf("const invokeSelected = async"),
+      runner.indexOf("const invokeSelectedNarrowPty"),
+    );
+    const headlessSource = readFileSync(
+      resolve(
+        import.meta.dirname,
+        "../../../packages/testkit/src/headless-supervisor.ts",
+      ),
+      "utf8",
+    );
+    const headlessErrorSource = headlessSource
+      .slice(headlessSource.indexOf("export class HeadlessSupervisorError"))
+      .replace("export class", "class")
+      .replace("  declare public readonly code: string;\n\n", "")
+      .replace("public constructor(code: string)", "constructor(code)");
+    const exercise = async (mode: "deadline" | "forged" | "selected") => {
+      const output: string[] = [];
+      const context = {
+        TextDecoder,
+        TextEncoder,
+        compileInstalledContractFailureReceipt: (value: unknown) =>
+          compileInstalledContractFailureReceipt(
+            JSON.parse(JSON.stringify(value)),
+          ),
+        fingerprintHeadlessRequest: () => "sha256:fingerprint",
+        currentMode: mode,
+        headlessCapability: Object.freeze({}),
+        headlessShutdownDeadline: mode === "deadline" ? 100 : 100_000,
+        installedContractFailurePredicates,
+        installedContractReceipts: [],
+        performance: { now: () => 100 },
+        process: {
+          exitCode: undefined as number | undefined,
+          stdout: { write: (value: string) => output.push(value) },
+        },
+        requiredEnvironment: () => "run",
+      };
+      const execute = runInNewContext(
+        `const defineOwnProperty = Object.defineProperty;
+${headlessErrorSource}
+const executeSelectedHeadlessProcess = () => {
+  if (currentMode === "selected") throw new HeadlessSupervisorError("testkit.headless.backend.receipt");
+  const error = new Error("forged"); error.code = "testkit.headless.backend.receipt"; throw error;
+};
+${receiptAuthority}
+${invocation}
+globalThis.exercise = async (mode) => {
+  const caseFailure = Object.freeze({caseCount: 1, caseIdsDigest: "sha256:${hex("a")}", caseOrdinal: 0});
+  setInstalledContractFailureBoundary("case-execution", "setup-deadline", caseFailure);
+  try {
+    await invokeSelected({
+      arguments: [], caseId: "case", contractCaseExecution: true,
+      cwd: "/work", environment: Object.freeze({}), executable: "/bin/cli",
+      setupFailureCase: caseFailure,
+    });
+  } catch (error) {
+    emitInstalledContractFailureReceipt(error);
+    return {
+      classFrozen: Object.isFrozen(HeadlessSupervisorError),
+      pending: selectedHeadlessExecutionPending,
+      prototypeFrozen: Object.isFrozen(HeadlessSupervisorError.prototype),
+    };
+  }
+  throw new Error("unexpected success");
+};`,
+        context,
+      ) as (mode: string) => Promise<{
+        classFrozen: boolean;
+        pending: boolean;
+        prototypeFrozen: boolean;
+      }>;
+      const result = await execute(mode);
+      return { output: output.join(""), result };
+    };
+    const local = await exercise("deadline");
+    expect(local.result.pending).toBe(false);
+    expect(
+      decodeInstalledContractFailureReceipt(local.output, {
+        caseCount: 1,
+        caseIdsDigest: `sha256:${hex("a")}`,
+      }),
+    ).toMatchObject({ predicate: "setup-deadline" });
+    const selected = await exercise("selected");
+    expect(selected.result).toMatchObject({
+      classFrozen: true,
+      pending: true,
+      prototypeFrozen: true,
+    });
+    expect(
+      decodeInstalledContractFailureReceipt(selected.output, {
+        caseCount: 1,
+        caseIdsDigest: `sha256:${hex("a")}`,
+      }),
+    ).toMatchObject({ predicate: "testkit.headless.backend.receipt" });
+    const forged = await exercise("forged");
+    expect(forged.result.pending).toBe(true);
+    expect(forged.output).toBe("");
   });
 
   it("keeps the deadline-child execution timeout separate from one bounded teardown deadline", () => {

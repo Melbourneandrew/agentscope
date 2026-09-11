@@ -1697,7 +1697,12 @@ export const finalizeFailureEvidence = async ({
       ],
       "case-execution": [
         "narrow-help-rejected",
-        "setup-rejected",
+        "setup-candidate-bin-identity",
+        "setup-cwd-env-config",
+        "setup-deadline",
+        "setup-descriptor-permission",
+        "setup-fixture-input-creation",
+        "setup-workspace-root-authority",
         "state-rejected",
         "testkit.headless.aborted",
         "testkit.headless.backend.receipt",

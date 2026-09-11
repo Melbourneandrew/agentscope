@@ -395,7 +395,15 @@ const invokeSelected = async ({
   executionTimeoutMilliseconds = 15_000,
   input = "",
   shutdownTimeoutMilliseconds = 20_000,
+  contractCaseExecution = false,
+  setupFailureCase,
 }) => {
+  if (setupFailureCase !== undefined)
+    setInstalledContractFailureBoundary(
+      "case-execution",
+      "setup-deadline",
+      setupFailureCase,
+    );
   const constructedAtMs = performance.now();
   const monotonicShutdownDeadlineMs = Math.min(
     constructedAtMs + shutdownTimeoutMilliseconds,
@@ -414,6 +422,12 @@ const invokeSelected = async ({
     monotonicExecutionDeadlineMs + 1_000 >= monotonicShutdownDeadlineMs
   )
     throw new Error("integration.runner.installed-contract-deadline");
+  if (setupFailureCase !== undefined)
+    setInstalledContractFailureBoundary(
+      "case-execution",
+      "setup-cwd-env-config",
+      setupFailureCase,
+    );
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
     executable,
@@ -429,10 +443,18 @@ const invokeSelected = async ({
     terminationGraceMs: 1_000,
   };
   request.requestFingerprint = fingerprintHeadlessRequest(request);
+  if (setupFailureCase !== undefined)
+    setInstalledContractFailureBoundary(
+      "case-execution",
+      "setup-candidate-bin-identity",
+      setupFailureCase,
+    );
+  if (contractCaseExecution) selectedHeadlessExecutionPending = true;
   const trace = await executeSelectedHeadlessProcess(
     headlessCapability,
     request,
   );
+  if (contractCaseExecution) selectedHeadlessExecutionPending = false;
   const receipt = {
     caseId,
     outcome: trace.result.outcome,
@@ -633,16 +655,41 @@ const contractFailureCase = (caseOrdinal) =>
     caseIdsDigest: contractPlan.caseIdsDigest,
     caseOrdinal,
   });
+const setupDescriptorErrorCodes = new Set([
+  "EACCES",
+  "EBADF",
+  "EMFILE",
+  "ENFILE",
+  "EPERM",
+]);
+const performInstalledContractSetupOperation = (
+  predicate,
+  caseFailure,
+  operation,
+) => {
+  setInstalledContractFailureBoundary("case-execution", predicate, caseFailure);
+  try {
+    return operation();
+  } catch (error) {
+    if (setupDescriptorErrorCodes.has(error?.code))
+      setInstalledContractFailureBoundary(
+        "case-execution",
+        "setup-descriptor-permission",
+        caseFailure,
+      );
+    throw error;
+  }
+};
 setInstalledContractFailureBoundary(
   "case-execution",
-  "setup-rejected",
+  "setup-workspace-root-authority",
   contractFailureCase(0),
 );
 for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   const caseFailure = contractFailureCase(caseIndex);
   setInstalledContractFailureBoundary(
     "case-execution",
-    "setup-rejected",
+    "setup-workspace-root-authority",
     caseFailure,
   );
   const contractCase = contractPlan.cases[caseIndex];
@@ -650,13 +697,24 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
   const caseHome = join(caseRoot, "user home with spaces — 测试");
   const caseCwd = join(caseRoot, "workspace with spaces — café");
   const temporary = join(caseRoot, "temporary files");
-  mkdirSync(caseHome, { recursive: true });
-  mkdirSync(caseCwd);
-  mkdirSync(temporary);
+  performInstalledContractSetupOperation(
+    "setup-fixture-input-creation",
+    caseFailure,
+    () => {
+      mkdirSync(caseHome, { recursive: true });
+      mkdirSync(caseCwd);
+      mkdirSync(temporary);
+    },
+  );
   const externalWritableAuthority = {
     excludedPaths: [caseRoot],
     roots: writableAuthorityRoots,
   };
+  setInstalledContractFailureBoundary(
+    "case-execution",
+    "setup-cwd-env-config",
+    caseFailure,
+  );
   const caseEnvironment = Object.freeze({
     COLUMNS: "7",
     HOME: caseHome,
@@ -669,25 +727,37 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
     USERPROFILE: caseHome,
   });
   let setupResult;
-  const externalBeforeSetup = digestInstalledContractWritableAuthority(
-    externalWritableAuthority,
+  const externalBeforeSetup = performInstalledContractSetupOperation(
+    "setup-workspace-root-authority",
+    caseFailure,
+    () => digestInstalledContractWritableAuthority(externalWritableAuthority),
   );
   if (contractCase.setup === "initialized") {
     setupResult = await invokeSelected({
       arguments: ["init", "--yes", "--output", "json"],
       caseId: `${contractCase.caseId}.setup`,
+      contractCaseExecution: true,
       cwd: caseCwd,
       environment: caseEnvironment,
       executable: installedExecutable,
+      setupFailureCase: caseFailure,
     });
   } else if (contractCase.setup === "invalid-configuration") {
-    mkdirSync(join(caseHome, ".agentscope"));
-    writeFileSync(join(caseHome, ".agentscope/config.json"), "{invalid");
+    performInstalledContractSetupOperation(
+      "setup-fixture-input-creation",
+      caseFailure,
+      () => {
+        mkdirSync(join(caseHome, ".agentscope"));
+        writeFileSync(join(caseHome, ".agentscope/config.json"), "{invalid");
+      },
+    );
   }
-  if (
-    digestInstalledContractWritableAuthority(externalWritableAuthority) !==
-    externalBeforeSetup
-  )
+  const externalAfterSetup = performInstalledContractSetupOperation(
+    "setup-workspace-root-authority",
+    caseFailure,
+    () => digestInstalledContractWritableAuthority(externalWritableAuthority),
+  );
+  if (externalAfterSetup !== externalBeforeSetup)
     throw new Error("integration.runner.installed-contract-side-effect");
   const stateRoots = writableAuthorityRoots;
   const stateAuthority = { excludedPaths: [], roots: [caseRoot] };
@@ -720,16 +790,15 @@ for (let caseIndex = 0; caseIndex < contractPlan.cases.length; caseIndex += 1) {
       results.push(await invokeSelectedNarrowPty({ caseId, home: caseHome }));
     } else {
       const selectedInvocation = selectedInvocationFor(contractStep, caseRoot);
-      selectedHeadlessExecutionPending = true;
       results.push(
         await invokeSelected({
           ...selectedInvocation,
           caseId,
+          contractCaseExecution: true,
           cwd: caseCwd,
           environment: caseEnvironment,
         }),
       );
-      selectedHeadlessExecutionPending = false;
     }
     if (
       digestInstalledContractWritableAuthority({
