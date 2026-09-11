@@ -1408,11 +1408,8 @@ try {
   );
   for (const ordinal of [39, 41]) {
     const adjacentCase = installedContractPlan.cases[ordinal];
-    const adjacentHome =
-      ordinal === 41 && process.platform === "linux"
-        ? `/tmp/agentscope-installed-contract/cases/${ordinal}/user home with spaces — 测试`
-        : join(installRoot, `ordinal-${ordinal}-home`);
-    mkdirSync(adjacentHome, { recursive: true });
+    const adjacentHome = join(installRoot, `ordinal-${ordinal}-home`);
+    mkdirSync(adjacentHome);
     const adjacentOptions = {
       ...executableOptions,
       env: { HOME: adjacentHome, USERPROFILE: adjacentHome },
@@ -1425,7 +1422,7 @@ try {
       adjacentOptions,
     );
     assert.deepEqual(snapshotContractHome(adjacentHome), adjacentBefore);
-    if (ordinal !== 41 || process.platform === "linux")
+    if (ordinal !== 41)
       assert.doesNotThrow(() =>
         oracleModule.validateInstalledCliInvocationOutputForTest(
           adjacentCase.steps[0],
@@ -1440,7 +1437,17 @@ try {
           { caseOrdinal: ordinal },
         ),
       );
-    else {
+    else if (process.platform === "linux") {
+      assert.equal(adjacentResult.status, 0);
+      assert.equal(adjacentResult.signal, null);
+      assert.equal(adjacentResult.stderr, "");
+      const prefix = `Local persistence plan: ${adjacentHome}/.agentscope/destinations/local-sqlite/`;
+      assert.ok(adjacentResult.stdout.startsWith(prefix));
+      assert.match(
+        adjacentResult.stdout.slice(prefix.length),
+        /^sha256-[0-9a-f]{64}\nNo changes applied; rerun with --yes after reviewing the plan\.\n$/u,
+      );
+    } else {
       assert.equal(adjacentResult.status, 5);
       assert.equal(adjacentResult.signal, null);
       assert.equal(adjacentResult.stdout, "");
