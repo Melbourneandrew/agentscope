@@ -261,10 +261,10 @@ describe("selected PTY transport", () => {
   });
 
   it.each([
-    ["active-terminal", "testkit.pty.transport.semantic-rejected"],
-    ["missing-ready", "testkit.pty.transport.semantic-rejected"],
-    ["credential-prompt", "testkit.pty.transport.semantic-rejected"],
-    ["malformed-control", "testkit.pty.transport.semantic-rejected"],
+    ["active-terminal", "testkit.pty.transport.semantic-missing-readiness"],
+    ["missing-ready", "testkit.pty.transport.semantic-missing-readiness"],
+    ["credential-prompt", "testkit.pty.transport.semantic-credential-prompt"],
+    ["malformed-control", "testkit.pty.transport.semantic-malformed-control"],
   ] as const)(
     "rejects terminal semantic state %s as completion",
     async (seed, code) => {

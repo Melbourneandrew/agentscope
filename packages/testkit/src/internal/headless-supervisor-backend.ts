@@ -2570,12 +2570,15 @@ const armSelectedPty = (
       request.completion.outputBytes === outputBytes &&
       request.completion.outputSha256 === outputSha256;
     if (!outputLimited) {
+      if (finalSnapshot.semanticState === "credential-prompt")
+        return fail("testkit.pty.transport.semantic-credential-prompt");
+      if (finalSnapshot.semanticState === "malformed-control")
+        return fail("testkit.pty.transport.semantic-malformed-control");
       if (
-        finalSnapshot.semanticState === "credential-prompt" ||
-        finalSnapshot.semanticState === "malformed-control" ||
-        (request.interaction.trigger === "semantic-ready" && !readinessObserved)
+        request.interaction.trigger === "semantic-ready" &&
+        !readinessObserved
       )
-        return fail("testkit.pty.transport.semantic-rejected");
+        return fail("testkit.pty.transport.semantic-missing-readiness");
       if (
         (trigger === "closed" || trigger === undefined) &&
         finalSnapshot.semanticState !== "completed" &&
