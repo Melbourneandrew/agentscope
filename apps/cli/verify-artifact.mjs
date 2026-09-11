@@ -199,6 +199,35 @@ try {
     process.platform === "win32" ? "agentscope.cmd" : "agentscope",
   );
   if (process.platform !== "win32") chmodSync(executable, 0o755);
+  const installedSmoke = run(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      resolve(packageRoot, "scripts/verify-installed-smoke.ts"),
+      "--executable",
+      executable,
+      "--tarball",
+      tarball,
+      "--installed-package-root",
+      join(installRoot, "node_modules/agentscope-cli"),
+      "--expected-version",
+      installedManifest.version,
+    ],
+    { env: { FORCE_COLOR: undefined, NO_COLOR: "1" } },
+  );
+  const installedSmokeResult = JSON.parse(installedSmoke.stdout);
+  assert.equal(
+    installedSmokeResult.schema,
+    "agentscope.cli.installed-smoke.v1",
+  );
+  assert.equal(installedSmokeResult.scope, "packed-public-command-smoke");
+  assert.equal(installedSmokeResult.package, "agentscope-cli");
+  assert.equal(installedSmokeResult.version, installedManifest.version);
+  assert.match(installedSmokeResult.candidateDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(installedSmokeResult.inventoryDigest, /^sha256:[0-9a-f]{64}$/u);
+  assert.ok(installedSmokeResult.checkCount > 80);
+  assert.equal(installedSmoke.stderr, "");
   const executableOptions = {
     cwd: installRoot,
     shell: process.platform === "win32",
