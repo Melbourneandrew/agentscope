@@ -144,6 +144,9 @@ export function validateNativeCiPolicy(manifest, trackedEntries) {
   );
   if (
     [...unconditionalNativePaths].some((path) => irrelevantPaths.has(path)) ||
+    [...unconditionalNativePaths].some(
+      (path) => trackedByPath.get(path)?.mode !== "100644",
+    ) ||
     manifest.irrelevantPaths.some(
       (path) =>
         trackedByPath.get(path)?.mode !== "100644" &&

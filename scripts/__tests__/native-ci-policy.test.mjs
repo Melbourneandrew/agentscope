@@ -160,6 +160,27 @@ test("finite irrelevant inventory is disjoint from the recomputed authority clos
       closureAuthority,
     );
   }
+  for (const authorityPath of [
+    ".github/workflows/pr-validation.yml",
+    ".github/workflows/release-candidate-rehearsal.yml",
+    "scripts/__tests__/native-ci-policy.test.mjs",
+    "scripts/native-ci-irrelevant-paths.json",
+    "scripts/native-ci-selection.mjs",
+    "scripts/workspace-policy-runner.mjs",
+  ]) {
+    for (const substitutedMode of ["100755", "120000", "160000"]) {
+      const substitutedEntries = trackedEntries.map((entry) =>
+        entry.path === authorityPath
+          ? { ...entry, mode: substitutedMode }
+          : entry,
+      );
+      assert.throws(
+        () => validateNativeCiPolicy(manifest, substitutedEntries),
+        /native-ci-policy-invalid/u,
+        `${authorityPath}:${substitutedMode}`,
+      );
+    }
+  }
 });
 
 test("required native execution removes every certified non-input", () => {
