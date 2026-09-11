@@ -217,7 +217,7 @@ describe("selected-container lifecycle", () => {
     await expect(
       executeSelectedContainerBackendForTest(
         request,
-        "adopted-zombie-reaped-persistence",
+        "settled-residual-before-deadline",
       ),
     ).rejects.toMatchObject({
       code: "testkit.headless.observer.reap.residual-membership",

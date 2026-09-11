@@ -3230,6 +3230,7 @@ type SelectedContainerTestSeed =
   | "observer-failure"
   | "output-limit"
   | "signal-failure"
+  | "settled-residual-before-deadline"
   | "startup-delay"
   | "stream-join-failure"
   | "terminal-join-failure"
@@ -3363,7 +3364,11 @@ const selectedContainerRuntimeForTest = (
     sendSignal: (pid, signal) => {
       if (seed === "signal-failure")
         return fail("testkit.headless.observer.signal");
-      if (seed === "terminal-join-failure" || seed === "delayed-shutdown")
+      if (
+        seed === "terminal-join-failure" ||
+        seed === "delayed-shutdown" ||
+        seed === "settled-residual-before-deadline"
+      )
         return;
       if (
         (seed === "timeout" || seed === "ignored-termination") &&
@@ -3445,6 +3450,7 @@ const selectedContainerRuntimeForTest = (
         } else if (
           seed === "descendant" ||
           seed === "surviving-descendant" ||
+          seed === "settled-residual-before-deadline" ||
           seed === "adopted-zombie-already-absent" ||
           seed === "adopted-zombie-already-absent-persistence" ||
           seed === "adopted-zombie-not-ready" ||
