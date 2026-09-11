@@ -1100,6 +1100,7 @@ it("admits only the exact closed action-bootstrap stage inventory", () => {
     "child-bootstrap",
     "child-bootstrap:unknown",
     "child-bootstrap:module-load:extra",
+    "child-bootstrap:controller-entry",
     "child-bootstrap:controller-entry\n",
   ])
     expect(validBootstrapPredicate(rejected)).toBe(false);

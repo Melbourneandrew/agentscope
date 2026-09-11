@@ -404,6 +404,7 @@ export const validFailureEvidenceBootstrapPredicate = (value) =>
         value.slice("child-terminal:".length),
       )) ||
     (value.startsWith("child-bootstrap:") &&
+      value !== "child-bootstrap:controller-entry" &&
       childBootstrapStageSet.has(value.slice("child-bootstrap:".length))) ||
     (value.startsWith("artifact-provenance:") &&
       (actionBootstrapArtifactProvenanceReasons.has(
