@@ -50,7 +50,6 @@ import {
   type PrepareCoreRetrievalRuntimeInput,
 } from "@agentscope/core/retrieval-orchestration";
 import {
-  compileDestinationRegistry,
   getDestinationDescriptor,
   type DestinationRegistry,
 } from "@agentscope/destinations-core/configuration";
@@ -84,6 +83,13 @@ import {
 import type { CliTraceServices } from "./trace-commands.js";
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
 import { createProductHarnesses } from "./product-harnesses.js";
+import {
+  PRODUCT_DESTINATION_REGISTRY,
+  requireExactProductDestinationRegistry,
+  requireExactProductDestinationRegistryForTesting,
+} from "./product-destination-registry.js";
+
+export { requireExactProductDestinationRegistryForTesting };
 
 declare const __AGENTSCOPE_CLI_VERSION__: string;
 
@@ -161,39 +167,6 @@ type ProductionState = Readonly<{
   store: ConfigurationStore;
   transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
 }>;
-
-const PRODUCT_DESTINATION_REGISTRY = compileDestinationRegistry([
-  langfuseDestinationDescriptor,
-  localSqliteDestinationDescriptor,
-]);
-
-const requireExactProductDestinationRegistry = (
-  registry: DestinationRegistry,
-): DestinationRegistry => {
-  try {
-    if (
-      getDestinationDescriptor(
-        registry,
-        langfuseDestinationDescriptor.destinationType,
-      ) === langfuseDestinationDescriptor &&
-      getDestinationDescriptor(
-        registry,
-        localSqliteDestinationDescriptor.destinationType,
-      ) === localSqliteDestinationDescriptor &&
-      registry.descriptors.length === 2 &&
-      registry.descriptors[0] === langfuseDestinationDescriptor &&
-      registry.descriptors[1] === localSqliteDestinationDescriptor
-    )
-      return registry;
-  } catch {
-    // The fixed product inventory error remains authoritative.
-  }
-  throw new Error("cli.product-destination-registry.invalid");
-};
-
-export const requireExactProductDestinationRegistryForTesting = (
-  registry: DestinationRegistry,
-): DestinationRegistry => requireExactProductDestinationRegistry(registry);
 
 export type CreateProductionCliServicesInput = Readonly<{
   environment?: object;

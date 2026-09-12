@@ -259,6 +259,7 @@ exactExports(
     "decodeCodexRootHookInput",
     "encodeCodexPosixHookCommand",
     "mapCodexSanitizedNativeObservation",
+    "mapCodexRootHookCapture",
   ],
   "codex.artifact.production-exports",
 );

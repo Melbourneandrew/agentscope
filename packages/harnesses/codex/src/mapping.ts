@@ -1,10 +1,14 @@
+import { isAbsolute } from "node:path";
+
 import {
   COMMON_NATIVE_SEMANTIC_FIELDS,
   completeNativeCaptureBoundary,
+  createEphemeralCaptureBoundary,
   createNativeFieldProvenance,
   createNativeUnavailableField,
   resolveNativeCaptureStart,
   type NativeCaptureBoundary,
+  type EphemeralCaptureBoundary,
   type NativeCheckpointResolver,
   type NativeFieldProvenance,
   type NativeUnavailableField,
@@ -33,7 +37,7 @@ type OperationCandidate = Readonly<{
 }>;
 
 export type CodexCapturedTraceCandidate = Readonly<{
-  captureBoundary: NativeCaptureBoundary;
+  captureBoundary: NativeCaptureBoundary | EphemeralCaptureBoundary;
   rootContext: Readonly<{
     fields: readonly SemanticFieldCandidate[];
     unavailable: readonly FieldUnavailableCandidate[];
@@ -147,6 +151,7 @@ export type CodexRootHookInput = Readonly<{
   turnId: string | null;
   model: string | null;
   transcriptAvailable: boolean;
+  workspacePath: string;
 }>;
 
 export type CodexSanitizedNativeObservation = Readonly<{
@@ -227,6 +232,9 @@ const validRootHookSchema = (
   if (
     !hasExactOwnKeys(record, schema.requiredKeys) ||
     typeof record.cwd !== "string" ||
+    record.cwd.length === 0 ||
+    record.cwd.length > 4_096 ||
+    !isAbsolute(record.cwd) ||
     typeof record.session_id !== "string" ||
     !validNullableString(record.transcript_path) ||
     (typeof record.transcript_path === "string" &&
@@ -277,6 +285,8 @@ export const decodeCodexRootHookInput = (
     )
       return invalid();
     if (!validRootHookSchema(eventName, record)) return invalid();
+    const workspacePath = record.cwd;
+    if (typeof workspacePath !== "string") return invalid();
     const sessionId = safeToken(record.session_id);
     const turnId =
       record.turn_id === undefined ? null : safeToken(record.turn_id);
@@ -289,6 +299,7 @@ export const decodeCodexRootHookInput = (
       turnId,
       model,
       transcriptAvailable: typeof transcript === "string",
+      workspacePath,
     });
     decodedRootHookAdd(result);
     return result;
@@ -726,5 +737,99 @@ export const mapCodexSanitizedNativeObservation = (
       provenance: fields.provenance,
       unavailable: fields.unavailable,
     }),
+  });
+};
+
+/**
+ * Maps one verified Codex Stop hook without treating the vendor-owned rollout
+ * path as authenticated native storage. The hook invocation is therefore a
+ * boundary-scoped observation: the stable vendor session and turn identities
+ * are retained as semantic context, while fields absent from the documented
+ * Stop payload remain explicitly unavailable.
+ */
+export const mapCodexRootHookCapture = (
+  hook: CodexRootHookInput,
+): CodexCapturedTraceCandidate => {
+  if (
+    !decodedRootHookHas(hook) ||
+    hook.eventName !== "Stop" ||
+    hook.turnId === null ||
+    hook.model === null
+  )
+    return invalid();
+  const hookProvenance = (field: string): FieldProvenanceCandidate =>
+    provenance(field, "hook-payload");
+  const nativeUnavailable = (field: string): FieldUnavailableCandidate =>
+    createNativeUnavailableField({
+      field,
+      source: "native-artifact",
+      state: "unavailable",
+      reason: "not-emitted",
+    });
+  const llmUnavailable = Object.freeze(
+    [
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelSystem,
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelProvider,
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelInvocationParameters,
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelPromptTokenCount,
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelCompletionTokenCount,
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelReasoningTokenCount,
+      COMMON_NATIVE_SEMANTIC_FIELDS.modelTotalTokenCount,
+      COMMON_NATIVE_SEMANTIC_FIELDS.errorType,
+    ].map(nativeUnavailable),
+  );
+  return Object.freeze({
+    captureBoundary: createEphemeralCaptureBoundary({
+      scope: "boundary-scoped",
+      boundaryKind: "hook-invocation",
+      boundaryId: hook.turnId,
+      generation: 0,
+      positionKind: "sequence",
+      startPosition: 0,
+      exclusiveEndPosition: 1,
+    }),
+    rootContext: Object.freeze({
+      fields: Object.freeze([
+        semanticField("session.id", hook.sessionId, "hook-payload"),
+      ]),
+      unavailable: Object.freeze([]),
+    }),
+    operations: Object.freeze([
+      Object.freeze({
+        logicalKey: "codex-turn",
+        locator: Object.freeze({
+          kind: "native-operation" as const,
+          nativeId: hook.turnId,
+        }),
+        kind: "AGENT" as const,
+        name: "codex.turn",
+        nameProvenance: hookProvenance("span.name"),
+        fields: Object.freeze([]),
+        unavailable: Object.freeze([]),
+        events: Object.freeze([]),
+        links: Object.freeze([]),
+      }),
+      Object.freeze({
+        logicalKey: "codex-llm",
+        parentLogicalKey: "codex-turn",
+        locator: Object.freeze({
+          kind: "native-operation" as const,
+          nativeId: `${hook.turnId}:llm`,
+        }),
+        kind: "LLM" as const,
+        name: "codex.response",
+        nameProvenance: hookProvenance("span.name"),
+        fields: Object.freeze([
+          semanticField(
+            COMMON_NATIVE_SEMANTIC_FIELDS.modelName,
+            hook.model,
+            "hook-payload",
+          ),
+        ]),
+        unavailable: llmUnavailable,
+        events: Object.freeze([]),
+        links: Object.freeze([]),
+      }),
+    ]),
   });
 };

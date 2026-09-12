@@ -35,6 +35,7 @@ export {
   AGENTSCOPE_HOME_DIRECTORY_NAME,
   AGENTSCOPE_HOME_ENVIRONMENT_VARIABLE,
   AgentscopeHomeError,
+  createAgentscopeHomeFromOwnedRootForCore,
   createAgentscopeHomeResolver,
   type AgentscopeHome,
   type AgentscopeHomeResolver,

@@ -8,6 +8,7 @@ import {
 } from "@agentscope/core/hook-orchestration";
 
 import { parseHookLauncherDuration } from "./hook-verifier-contract.js";
+import { runProductCodexHookEvidence } from "./hook-production.js";
 
 export type { HookVerifierChildProgram } from "./hook-verifier-child.js";
 
@@ -297,9 +298,11 @@ export const runOwnedHookBootstrap = async (
   try {
     await run(authority, {
       machineEntryPath: fileURLToPath(import.meta.url),
-      onEvidence: ({ launcher }) => {
+      onEvidence: async (value) => {
+        const { launcher } = value;
         if (!__AGENTSCOPE_HOOK_HARNESS_TYPES__.includes(launcher.harnessType))
           throw new Error("cli.hook.invalid");
+        await runProductCodexHookEvidence(value);
       },
       releaseIdentity: __AGENTSCOPE_CLI_VERSION__,
       stdin: process.stdin,
