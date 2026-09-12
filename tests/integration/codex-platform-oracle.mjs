@@ -9,7 +9,7 @@ export const correlateCodexPlatformObservations = (
   assert(observation.scenarioId === scenarioId, "scenario");
   assert(
     expectedPromptSha256 ===
-      "8fa471336a2b22881c19fc825a447c7f6c16c6f38ed937f7c0ecdf15d858276c",
+      "28e80ac9dd2867aa0163739ec137f67504a75b3465a840bd422e5eba6c724c35",
     "stimulus",
   );
   const request = observation.modelRequests[0];
