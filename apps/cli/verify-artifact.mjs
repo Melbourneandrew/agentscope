@@ -787,6 +787,12 @@ setTimeout(() => process.exit(3), 10_000).unref();
       assert.equal(invokedHook.stdout, "");
       assert.equal(invokedHook.stderr, "");
     }
+    const packedHookOperationalState = readFileSync(
+      join(localHome, "health", "operational-state-v1.json"),
+      "utf8",
+    );
+    assert.match(packedHookOperationalState, /"receipt":"accepted"/u);
+    assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
     const searchedLocal = run(
       executable,
