@@ -35,10 +35,6 @@ export const MODEL_PROTOCOL_ROUTES = deepFreeze([
           response: { id: "resp_agentscope_pty_0001" },
         },
         {
-          type: "response.output_text.delta",
-          delta: "Codex PTY fixture turn finished.",
-        },
-        {
           type: "response.output_item.done",
           item: {
             type: "message",
