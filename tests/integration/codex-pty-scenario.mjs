@@ -333,12 +333,46 @@ const readTraceSummary = async () => {
   return summary;
 };
 const waitForTraceSummary = async () => {
+  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
   while (true) {
     const summary = await readTraceSummary();
     if (summary !== null) return summary;
+    if (bootNow() >= traceDeadline)
+      throw new Error("integration.codex.trace-deadline");
     await new Promise((resolve) => setTimeout(resolve, 25));
     remaining();
   }
+};
+
+const useMaximumCodexHookDeadline = () => {
+  const configurationPath = join(agentscopeHome, "config.json");
+  const source = readFileSync(configurationPath, "utf8");
+  if (source.length > 1024 * 1024 || !source.endsWith("\n"))
+    throw new Error("integration.codex.configuration");
+  const configuration = JSON.parse(source);
+  if (
+    !exactKeys(configuration, [
+      "configurationVersion",
+      "destinations",
+      "generation",
+      "policy",
+      "routing",
+    ]) ||
+    !exactKeys(configuration.routing, [
+      "hookDeadlineMilliseconds",
+      "selectedConnectionIds",
+      "version",
+    ]) ||
+    !Number.isSafeInteger(configuration.generation) ||
+    configuration.generation < 0 ||
+    configuration.routing.hookDeadlineMilliseconds !== 2_000
+  )
+    throw new Error("integration.codex.configuration");
+  configuration.generation += 1;
+  configuration.routing.hookDeadlineMilliseconds = 2_500;
+  writeFileSync(configurationPath, `${JSON.stringify(configuration)}\n`, {
+    mode: 0o600,
+  });
 };
 
 let completed = false;
@@ -350,6 +384,7 @@ try {
     "agentscope destination configure",
   );
   await cli(["routing", "set", "local"], "agentscope routing set");
+  useMaximumCodexHookDeadline();
   await cli(["install", "codex", "--yes"], "agentscope install");
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),
@@ -360,7 +395,7 @@ try {
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
-  if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2000$/u.test(launcher))
+  if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))
     throw new Error("integration.codex.hook-deadline");
   const launcherStatus = lstatSync(launcher);
   if (
