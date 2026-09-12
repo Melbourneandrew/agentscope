@@ -47,6 +47,7 @@ describe("Agentscope home resolution", () => {
       root: "/Users/example/.agentscope",
       configFile: "/Users/example/.agentscope/config.json",
       destinationDirectory: "/Users/example/.agentscope/destinations",
+      launcherDirectory: "/Users/example/.agentscope/bin",
       platform: "darwin",
     });
     expect(Object.isFrozen(first)).toBe(true);
@@ -155,6 +156,7 @@ describe("Agentscope home layout", () => {
     await expect(ensureAgentscopeHomeLayout(home)).resolves.toBe(home);
     for (const directory of [
       home.root,
+      home.launcherDirectory,
       home.mutationDirectory,
       home.destinationDirectory,
       home.diagnosticDirectory,
@@ -221,7 +223,7 @@ describe("Agentscope home layout", () => {
     const nestedTarget = join(parent, "nested-target");
     await mkdir(nestedRoot);
     await mkdir(nestedTarget);
-    await symlink(nestedTarget, join(nestedRoot, "destinations"), "dir");
+    await symlink(nestedTarget, join(nestedRoot, "bin"), "dir");
     const nestedHome = createAgentscopeHomeResolver({
       environment: { AGENTSCOPE_HOME: nestedRoot },
       environmentOverrideAuthority: "test",
