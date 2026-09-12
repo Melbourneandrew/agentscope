@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -122,6 +122,7 @@ if (interactive) {
 }
 
 const observedLifecycle = [];
+let certificationReadiness = null;
 let partial = {
   eventKinds: [],
   modelLedger: { ledgerVersion: 1, scenarioId, entries: [] },
@@ -139,6 +140,7 @@ const emitEvidence = (resultStatus) => {
     scenarioId,
     artifactFileName: basename(artifactPath),
     lifecycle: [...observedLifecycle],
+    certificationReadiness,
     ...partial,
   };
   if (!interactive)
@@ -386,7 +388,7 @@ rmSync(join(harnessHome, "hook.json"));
 rmSync(join(agentscopeHome, "config.json"));
 rmSync(join(agentscopeHome, "installed.json"));
 recordLifecycle("uninstall", false);
-const evidence = {
+const processEvidence = {
   evidenceVersion: 1,
   resultStatus: "complete",
   scenarioId,
@@ -394,22 +396,10 @@ const evidence = {
   lifecycle: [...observedLifecycle],
   ...partial,
 };
-assertProcessFixtureEvidence(evidence, {
+assertProcessFixtureEvidence(processEvidence, {
   routeFixture,
   scenario,
 });
-writeFileSync(
-  join(ledgerHome, "fixture-lifecycle.json"),
-  `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
-);
-const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
-  "base64url",
-);
-writeFileSync(
-  join(ledgerHome, "fixture-result.json"),
-  `${JSON.stringify({ evidenceVersion: 1, encodedEvidence, scenarioId })}\n`,
-  { flag: "wx", mode: 0o600 },
-);
 if (substrateCertificationCase === "leaked-child") {
   const token = randomBytes(16).toString("hex");
   const child = spawn(
@@ -450,7 +440,25 @@ if (substrateCertificationCase === "leaked-child") {
       reject(new Error("integration.fixture.negative-readiness"));
     });
   });
+  certificationReadiness = {
+    readinessVersion: 1,
+    certificationCase: "leaked-child",
+    challengeSha256: `sha256:${createHash("sha256").update(token).digest("hex")}`,
+  };
 }
+const evidence = { ...processEvidence, certificationReadiness };
+writeFileSync(
+  join(ledgerHome, "fixture-lifecycle.json"),
+  `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
+);
+const encodedEvidence = Buffer.from(JSON.stringify(evidence)).toString(
+  "base64url",
+);
+writeFileSync(
+  join(ledgerHome, "fixture-result.json"),
+  `${JSON.stringify({ evidenceVersion: 1, encodedEvidence, scenarioId })}\n`,
+  { flag: "wx", mode: 0o600 },
+);
 if (interactive) {
   interactiveFailurePhase = "completion";
   await new Promise((resolve, reject) => {

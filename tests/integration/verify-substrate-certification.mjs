@@ -287,6 +287,7 @@ const verifyFailureEvidence = (expectedCase) => {
       !exactKeys(record, [
         "certificationCase",
         "certificationPredicate",
+        "certificationReadiness",
         "cleanupFailure",
         "controllerFailureEvidenceVersion",
         "controllerOutcome",
@@ -300,6 +301,18 @@ const verifyFailureEvidence = (expectedCase) => {
       record.runId !== identity.runId ||
       record.controllerOutcome !== "retired-failure" ||
       record.certificationCase !== expectedCase ||
+      (expectedCase === "leaked-child"
+        ? !exactKeys(record.certificationReadiness, [
+            "certificationCase",
+            "challengeSha256",
+            "readinessVersion",
+          ]) ||
+          record.certificationReadiness.readinessVersion !== 1 ||
+          record.certificationReadiness.certificationCase !== "leaked-child" ||
+          !/^sha256:[a-f0-9]{64}$/u.test(
+            record.certificationReadiness.challengeSha256,
+          )
+        : record.certificationReadiness !== null) ||
       !validPtyFailure(record.installedPtyFailure) ||
       !validPrivateCleanup(
         record.privateCleanup,

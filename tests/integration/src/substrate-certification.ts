@@ -57,11 +57,27 @@ export const SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES = Object.freeze({
 } satisfies Readonly<Record<SubstrateCertificationCase, string>>);
 
 export const leakedChildContainmentWasObserved = (input: {
+  readonly certificationReadiness: unknown;
   readonly cleanup: unknown;
   readonly fixtureCaptured: unknown;
   readonly fixtureResultStatus: unknown;
   readonly residualProcessCount: unknown;
 }): boolean =>
+  typeof input.certificationReadiness === "object" &&
+  input.certificationReadiness !== null &&
+  JSON.stringify(Object.keys(input.certificationReadiness).sort()) ===
+    JSON.stringify([
+      "certificationCase",
+      "challengeSha256",
+      "readinessVersion",
+    ]) &&
+  "readinessVersion" in input.certificationReadiness &&
+  input.certificationReadiness.readinessVersion === 1 &&
+  "certificationCase" in input.certificationReadiness &&
+  input.certificationReadiness.certificationCase === "leaked-child" &&
+  "challengeSha256" in input.certificationReadiness &&
+  typeof input.certificationReadiness.challengeSha256 === "string" &&
+  /^sha256:[a-f0-9]{64}$/u.test(input.certificationReadiness.challengeSha256) &&
   input.fixtureCaptured === true &&
   input.fixtureResultStatus === "complete" &&
   input.cleanup === "clean" &&

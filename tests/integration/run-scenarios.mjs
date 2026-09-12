@@ -1271,6 +1271,7 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
       break;
     case "leaked-child":
       observed = leakedChildContainmentWasObserved({
+        certificationReadiness: result?.certificationReadiness,
         cleanup: receipt.cleanup,
         fixtureCaptured,
         fixtureResultStatus: result?.resultStatus,
@@ -1421,6 +1422,7 @@ const recordEvidence = async (evidence) => {
           resultStatus: result.resultStatus,
           scenarioId: result.scenarioId,
           artifactFileName: result.artifactFileName,
+          certificationReadiness: result.certificationReadiness,
           lifecycle: result.lifecycle,
           eventKinds: result.eventKinds,
         },
@@ -1453,6 +1455,8 @@ const finalizeControllerFailureEvidence = (
         : observedCertificationRunIds.has(plan.runId)
           ? SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase]
           : null,
+    certificationReadiness:
+      fixtureResults.get(plan.runId)?.certificationReadiness ?? null,
     scenarioOutcome: scenarioOutcomes.get(plan.runId) ?? "not-complete",
     controllerOutcome: "retired-failure",
     primaryFailure: failureCode(primaryError),

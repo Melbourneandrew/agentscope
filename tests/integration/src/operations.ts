@@ -47,6 +47,14 @@ const eventKinds = z
   .min(1)
   .max(32)
   .refine((value) => new Set(value).size === value.length);
+const certificationReadiness = z.union([
+  z.null(),
+  z.strictObject({
+    readinessVersion: z.literal(1),
+    certificationCase: z.literal("leaked-child"),
+    challengeSha256: z.string().regex(/^sha256:[a-f\d]{64}$/u),
+  }),
+]);
 const fixtureResult = z
   .strictObject({
     evidenceVersion: z.literal(1),
@@ -54,6 +62,7 @@ const fixtureResult = z
     scenarioId: id,
     artifactFileName: z.string().regex(/^agentscope-cli(?:-[0-9.]+)?\.tgz$/u),
     lifecycle,
+    certificationReadiness,
     eventKinds: z.array(id).max(32),
     modelLedger: z.strictObject({
       ledgerVersion: z.literal(1),

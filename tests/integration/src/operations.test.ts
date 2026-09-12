@@ -13,6 +13,7 @@ const fixtureResult = () => ({
   resultStatus: "complete",
   scenarioId: "fixture-process-smoke",
   artifactFileName: "agentscope-cli.tgz",
+  certificationReadiness: null,
   lifecycle: [
     "install",
     "configure",

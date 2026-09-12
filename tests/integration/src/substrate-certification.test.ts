@@ -107,6 +107,11 @@ describe("substrate certification request", () => {
 describe("leaked-child causal observation", () => {
   const observed = (replacement: Record<string, unknown> = {}) =>
     leakedChildContainmentWasObserved({
+      certificationReadiness: {
+        readinessVersion: 1,
+        certificationCase: "leaked-child",
+        challengeSha256: `sha256:${"a".repeat(64)}`,
+      },
       cleanup: "clean",
       fixtureCaptured: true,
       fixtureResultStatus: "complete",
@@ -117,6 +122,21 @@ describe("leaked-child causal observation", () => {
   it("requires exact fixture readiness lineage and terminal containment", () => {
     expect(observed()).toBe(true);
     for (const replacement of [
+      { certificationReadiness: null },
+      {
+        certificationReadiness: {
+          readinessVersion: 1,
+          certificationCase: "other",
+          challengeSha256: `sha256:${"a".repeat(64)}`,
+        },
+      },
+      {
+        certificationReadiness: {
+          readinessVersion: 1,
+          certificationCase: "leaked-child",
+          challengeSha256: "sha256:substituted",
+        },
+      },
       { fixtureCaptured: false },
       { fixtureResultStatus: "partial" },
       { fixtureResultStatus: "complete-substituted" },
