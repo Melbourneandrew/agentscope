@@ -125,14 +125,6 @@ const requestJson = async (url, options) => {
   if (!response.ok) throw new Error("integration.codex.sidecar");
   return response.json();
 };
-const waitForFile = async (path) => {
-  while (remaining() > 0) {
-    if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8"));
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("integration.codex.hook-timeout");
-};
-const shellWord = (value) => "'" + value.replaceAll("'", `'"'"'`) + "'";
 const exactKeys = (value, keys) =>
   typeof value === "object" &&
   value !== null &&
@@ -174,30 +166,6 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const instrumentHooks = (hookPath, observationHome) => {
-  const configuration = JSON.parse(readFileSync(hookPath, "utf8"));
-  const launcher = installedLauncher(configuration);
-  for (const event of ["SessionStart", "Stop", "SessionEnd"]) {
-    const handler = configuration.hooks[event][0].hooks[0];
-    handler.command = [
-      "/usr/local/bin/node",
-      "/opt/agentscope/runtime/codex-hook-observer.mjs",
-      "--event",
-      event,
-      "--launcher",
-      launcher,
-      "--ledger",
-      observationHome,
-    ]
-      .map(shellWord)
-      .join(" ");
-  }
-  writeFileSync(hookPath, `${JSON.stringify(configuration, null, 2)}\n`, {
-    flag: "w",
-    mode: 0o600,
-  });
-  return launcher;
-};
 const countPrompt = (value) => {
   if (value === prompt) return 1;
   if (Array.isArray(value))
@@ -210,22 +178,27 @@ const countPrompt = (value) => {
   return 0;
 };
 const projectModelRequest = async () => {
-  const requests = await requestJson(
-    `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
-    {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: "{}",
-    },
-  );
-  if (!Array.isArray(requests))
-    throw new Error("integration.codex.model-request");
-  const matches = requests.filter(
-    (request) =>
-      request?.method === "POST" && request?.path === "/v1/responses",
-  );
-  if (matches.length !== 1) throw new Error("integration.codex.model-request");
-  const request = matches[0];
+  let request;
+  while (request === undefined) {
+    const requests = await requestJson(
+      `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    if (!Array.isArray(requests))
+      throw new Error("integration.codex.model-request");
+    const matches = requests.filter(
+      (candidate) =>
+        candidate?.method === "POST" && candidate?.path === "/v1/responses",
+    );
+    if (matches.length > 1) throw new Error("integration.codex.model-request");
+    request = matches[0];
+    if (request === undefined)
+      await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   const bodyText =
     typeof request.body === "string"
       ? request.body
@@ -269,6 +242,102 @@ const projectModelRequest = async () => {
     credentialHeaderCount: 0,
   });
 };
+const projectHarnessStatus = (
+  records,
+  installation,
+  configurationPresentCount,
+) => {
+  const value = records?.[0];
+  if (
+    records.length !== 1 ||
+    value?.installation !== installation ||
+    value?.discovery?.harness !== "codex" ||
+    value.discovery.harnessType !== "@agentscope/harness-codex" ||
+    value.discovery.state !== "installed" ||
+    value.discovery.reason !== "compatible" ||
+    value.discovery.version !== "0.149.1" ||
+    value.discovery.configurationLocationCount !== 1 ||
+    value.discovery.configurationPresentCount !== configurationPresentCount
+  )
+    throw new Error("integration.codex.harness-status");
+  return { installation, configurationPresentCount };
+};
+const projectDoctor = (records) => {
+  const report = records?.[0];
+  if (
+    records.length !== 1 ||
+    report?.fixed !== false ||
+    !Array.isArray(report.repairs) ||
+    report.repairs.length !== 0 ||
+    !Array.isArray(report.findings) ||
+    report.findings.length < 1 ||
+    report.findings.length > 1_159 ||
+    report.summary?.errors !== 0 ||
+    report.findings.some(({ severity }) => severity === "error")
+  )
+    throw new Error("integration.codex.doctor");
+  for (const [code, state] of [
+    ["doctor.harness.installed", "installed"],
+    ["doctor.hook.unchanged", "unchanged"],
+  ]) {
+    const matches = report.findings.filter(
+      (finding) =>
+        finding?.code === code &&
+        finding?.evidence?.state === state &&
+        finding.evidence.subject === "codex" &&
+        finding.severity === "info" &&
+        finding.suggestedAction === "none",
+    );
+    if (matches.length !== 1) throw new Error("integration.codex.doctor");
+  }
+  return {
+    findingCount: report.findings.length,
+    errors: report.summary.errors,
+    warnings: report.summary.warnings,
+  };
+};
+const projectUninstall = (records) => {
+  const value = records?.[0];
+  if (
+    records.length !== 1 ||
+    value?.applied !== true ||
+    value.changedTargetCount !== 1 ||
+    value.disposition !== "committed" ||
+    value.harness !== "codex" ||
+    value.operation !== "uninstall" ||
+    value.targetCount !== 1
+  )
+    throw new Error("integration.codex.uninstall");
+  return { disposition: value.disposition, changedTargetCount: 1 };
+};
+const projectTraceGraph = (graph, traceId) => {
+  if (!Array.isArray(graph?.resourceSpans) || graph.resourceSpans.length < 1)
+    throw new Error("integration.codex.trace-get");
+  const spans = graph.resourceSpans.flatMap((resource) =>
+    Array.isArray(resource?.scopeSpans)
+      ? resource.scopeSpans.flatMap((scope) =>
+          Array.isArray(scope?.spans) ? scope.spans : [],
+        )
+      : [],
+  );
+  const root = spans.find(({ name }) => name === "codex.turn");
+  const model = spans.find(({ name }) => name === "codex.response");
+  if (
+    spans.length !== 2 ||
+    root?.traceId !== traceId ||
+    model?.traceId !== traceId ||
+    typeof root.spanId !== "string" ||
+    root.spanId.length !== 16 ||
+    model?.parentSpanId !== root.spanId ||
+    (root.parentSpanId !== undefined && root.parentSpanId !== "")
+  )
+    throw new Error("integration.codex.trace-get");
+  return {
+    resourceSpanCount: graph.resourceSpans.length,
+    spanNames: [root.name, model.name],
+    parentLinked: true,
+  };
+};
 
 let completed = false;
 try {
@@ -279,12 +348,22 @@ try {
   );
   await cli(["routing", "set", "local"], "agentscope routing set");
   await cli(["install", "codex", "--yes"], "agentscope install");
-  await cli(["harness", "status", "codex"], "agentscope harness status");
+  const installedStatus = projectHarnessStatus(
+    await cli(["harness", "status", "codex"], "agentscope harness status"),
+    "unchanged",
+    1,
+  );
   const codexHome = join(home, ".codex");
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
-  const hookObservationHome = join(ledger, "codex-hook-observations");
-  instrumentHooks(hookPath, hookObservationHome);
+  const launcher = installedLauncher(JSON.parse(originalHooks));
+  const launcherStatus = lstatSync(launcher);
+  if (
+    !launcherStatus.isFile() ||
+    launcherStatus.isSymbolicLink() ||
+    (launcherStatus.mode & 0o111) === 0
+  )
+    throw new Error("integration.codex.hook-configuration");
   const configuration = createCodexInternalProviderConfiguration({
     baseUrl: `${modelEndpoint}/v1`,
     model: "fixture-model",
@@ -294,7 +373,6 @@ try {
     mode: 0o600,
   });
   chmodSync(join(codexHome, "config.toml"), 0o600);
-  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   const codexRun = run(
     codex,
     [
@@ -310,24 +388,12 @@ try {
       inherit: true,
     },
   );
-  const stopHook = await waitForFile(join(hookObservationHome, "Stop.json"));
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   const modelRequest = await projectModelRequest();
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   await codexRun;
-  const startHook = await waitForFile(
-    join(hookObservationHome, "SessionStart.json"),
-  );
-  const endHook = await waitForFile(
-    join(hookObservationHome, "SessionEnd.json"),
-  );
-  if (
-    startHook.sessionId !== stopHook.sessionId ||
-    endHook.sessionId !== stopHook.sessionId ||
-    startHook.event !== "SessionStart" ||
-    stopHook.event !== "Stop" ||
-    endHook.event !== "SessionEnd"
-  )
-    throw new Error("integration.codex.hook-lifecycle");
+  if (readFileSync(hookPath, "utf8") !== originalHooks)
+    throw new Error("integration.codex.hook-configuration");
   const searchRecords = await cli(
     [
       "traces",
@@ -362,24 +428,24 @@ try {
     ],
     "agentscope traces get",
   );
-  if (
-    getRecords.length !== 1 ||
-    getRecords[0]?.locator?.traceId !== traceId ||
-    !Array.isArray(getRecords[0]?.graph?.resourceSpans) ||
-    getRecords[0].graph.resourceSpans.length < 1
-  )
+  if (getRecords.length !== 1 || getRecords[0]?.locator?.traceId !== traceId)
     throw new Error("integration.codex.trace-get");
-  const doctorRecords = await cli(["doctor"], "agentscope doctor");
-  writeFileSync(hookPath, originalHooks, { flag: "w", mode: 0o600 });
+  const traceGraph = projectTraceGraph(getRecords[0].graph, traceId);
+  const doctor = projectDoctor(await cli(["doctor"], "agentscope doctor"));
   const uninstallRecords = await cli(
     ["uninstall", "codex", "--yes"],
     "agentscope uninstall",
   );
+  const uninstall = projectUninstall(uninstallRecords);
   if (existsSync(hookPath)) throw new Error("integration.codex.uninstall");
+  const uninstalledStatus = projectHarnessStatus(
+    await cli(["harness", "status", "codex"], "agentscope harness status"),
+    "ready",
+    0,
+  );
   const translated = translateCodexPlatformObservations({
     scenarioId,
     modelRequest,
-    hooks: [startHook, stopHook, endHook],
     search: {
       completion: "complete",
       harness: summary.harness,
@@ -388,12 +454,15 @@ try {
     },
     retrieval: {
       completion: "complete",
-      resourceSpanCount: getRecords[0].graph.resourceSpans.length,
+      ...traceGraph,
       traceId,
     },
-    doctor: { completion: doctorRecords.length > 0 ? "complete" : "invalid" },
+    doctor: { completion: "complete", ...doctor },
     uninstall: {
-      completion: uninstallRecords.length > 0 ? "complete" : "invalid",
+      completion: "complete",
+      installedStatus,
+      uninstall,
+      uninstalledStatus,
     },
   });
   const evidence = correlateCodexPlatformObservations(translated, {

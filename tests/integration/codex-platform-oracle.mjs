@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 const assert = (condition, code) => {
   if (!condition) throw new Error(`integration.codex.oracle-${code}`);
 };
@@ -20,20 +18,7 @@ export const correlateCodexPlatformObservations = (
       observation.modelRequest.credentialHeaderCount === 0,
     "model-request",
   );
-  assert(
-    JSON.stringify(observation.hooks.map(({ event }) => event)) ===
-      JSON.stringify(["SessionStart", "Stop", "SessionEnd"]) &&
-      new Set(observation.hooks.map(({ sessionId }) => sessionId)).size === 1 &&
-      observation.hooks.every(
-        ({ launcherExitCode, launcherStdoutBytes, launcherStderrBytes }) =>
-          launcherExitCode === 0 &&
-          launcherStdoutBytes === 0 &&
-          launcherStderrBytes === 0,
-      ),
-    "hook-lifecycle",
-  );
   assert(observation.search.traceId === observation.retrieval.traceId, "trace");
-  const digest = (value) => createHash("sha256").update(value).digest("hex");
   return Object.freeze({
     evidenceVersion: 1,
     resultStatus: "complete",
@@ -53,12 +38,13 @@ export const correlateCodexPlatformObservations = (
     harnessObservation: {
       observationVersion: 1,
       kind: "codex-tui-trace",
-      hookEvents: observation.hooks.map(({ event }) => event),
-      sessionSha256: digest(observation.hooks[0].sessionId),
-      turnSha256: digest(observation.hooks[1].turnId),
       modelRequestBodySha256: observation.modelRequest.bodySha256,
       traceId: observation.search.traceId,
       resourceSpanCount: observation.retrieval.resourceSpanCount,
+      spanNames: observation.retrieval.spanNames,
+      parentLinked: observation.retrieval.parentLinked,
+      doctorErrors: observation.doctor.errors,
+      uninstallDisposition: observation.uninstall.uninstall.disposition,
     },
     modelLedger: {
       ledgerVersion: 1,

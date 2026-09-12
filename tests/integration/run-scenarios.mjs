@@ -526,7 +526,20 @@ const stageBuildContext = (plan) => {
   );
   writeFileSync(
     resolve(context, "mockserver-initialization.json"),
-    `${JSON.stringify(modelRoutes.mockServerInitialization, undefined, 2)}\n`,
+    `${JSON.stringify(
+      scenario.modelRoutes.map((routeId) => {
+        const index = modelRoutes.routeIds.indexOf(routeId);
+        if (
+          index < 0 ||
+          modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
+          modelRoutes.mockServerInitialization[index] === undefined
+        )
+          throw new Error("integration.isolation.context");
+        return modelRoutes.mockServerInitialization[index];
+      }),
+      undefined,
+      2,
+    )}\n`,
   );
   writeFileSync(
     resolve(context, "MockServer.Dockerfile"),

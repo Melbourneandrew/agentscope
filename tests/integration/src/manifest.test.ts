@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  createMockServerInitialization,
+  MODEL_PROTOCOL_ROUTES,
+} from "@agentscope/testkit";
+
+import {
   capabilityManifestIdentity,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
@@ -138,7 +143,7 @@ describe("integration capability manifest", () => {
     const scenario = original.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
     );
-    expect(scenario?.runtimeArtifacts).toHaveLength(2);
+    expect(scenario?.runtimeArtifacts).toHaveLength(1);
     const mutated = structuredClone(original);
     const selected = mutated.scenarios.find(
       ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
@@ -147,6 +152,31 @@ describe("integration capability manifest", () => {
     expect(() => {
       verifyManifestEvidence(mutated, integrationRoot);
     }).toThrow("integration.manifest.evidence-digest");
+  });
+
+  it("selects mutually isolated MockServer expectations per scenario", () => {
+    const manifest = manifestFixture();
+    const initialization = createMockServerInitialization() as readonly {
+      id: string;
+    }[];
+    const selectedIds = (scenarioId: string) => {
+      const scenario = manifest.scenarios.find(
+        (candidate) => candidate.scenarioId === scenarioId,
+      );
+      return scenario!.modelRoutes.map((routeId) => {
+        const index = MODEL_PROTOCOL_ROUTES.findIndex(
+          (route) => route.routeId === routeId,
+        );
+        expect(index).toBeGreaterThanOrEqual(0);
+        return initialization[index]!.id;
+      });
+    };
+    expect(selectedIds("codex-tui-trace-smoke")).toEqual([
+      "codex-tui-responses",
+    ]);
+    expect(selectedIds("fixture-process-smoke")).not.toContain(
+      "codex-tui-responses",
+    );
   });
 
   it("rejects descriptor evidence that contradicts its manifest binding", () => {
