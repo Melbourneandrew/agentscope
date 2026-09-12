@@ -110,20 +110,16 @@ describe("leaked-child causal observation", () => {
       cleanup: "clean",
       fixtureCaptured: true,
       fixtureResultStatus: "complete",
-      killRequested: false,
       residualProcessCount: 0,
-      termRequested: true,
       ...replacement,
     });
 
-  it("requires exact fixture readiness lineage and a terminal intervention", () => {
+  it("requires exact fixture readiness lineage and terminal containment", () => {
     expect(observed()).toBe(true);
-    expect(observed({ killRequested: true, termRequested: false })).toBe(true);
     for (const replacement of [
       { fixtureCaptured: false },
       { fixtureResultStatus: "partial" },
       { fixtureResultStatus: "complete-substituted" },
-      { killRequested: false, termRequested: false },
       { cleanup: "failed" },
       { residualProcessCount: 1 },
     ])

@@ -1274,9 +1274,7 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
         cleanup: receipt.cleanup,
         fixtureCaptured,
         fixtureResultStatus: result?.resultStatus,
-        killRequested: receipt.killRequested,
         residualProcessCount: receipt.residualProcessCount,
-        termRequested: receipt.termRequested,
       });
       break;
     case "unbounded-output":

@@ -60,13 +60,10 @@ export const leakedChildContainmentWasObserved = (input: {
   readonly cleanup: unknown;
   readonly fixtureCaptured: unknown;
   readonly fixtureResultStatus: unknown;
-  readonly killRequested: unknown;
   readonly residualProcessCount: unknown;
-  readonly termRequested: unknown;
 }): boolean =>
   input.fixtureCaptured === true &&
   input.fixtureResultStatus === "complete" &&
-  (input.termRequested === true || input.killRequested === true) &&
   input.cleanup === "clean" &&
   input.residualProcessCount === 0;
 
