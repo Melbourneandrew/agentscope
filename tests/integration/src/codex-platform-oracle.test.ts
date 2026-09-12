@@ -9,7 +9,7 @@ import { translateCodexPlatformObservations } from "../fixtures/codex-platform-a
 
 const traceId = "0123456789abcdef0123456789abcdef";
 const promptSha256 =
-  "8fa471336a2b22881c19fc825a447c7f6c16c6f38ed937f7c0ecdf15d858276c";
+  "28e80ac9dd2867aa0163739ec137f67504a75b3465a840bd422e5eba6c724c35";
 const prompt = "Reply with one short confirmation and do not use tools.";
 const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
