@@ -12,6 +12,7 @@ import {
   createOwnedReporterDatabase,
   createOwnedRetrieverDatabase,
   initializeOwnedSqliteConnection,
+  initializeOwnedSqliteReadConnection,
   type OwnedSqliteConnection,
 } from "./sqlite-port.js";
 
@@ -43,6 +44,31 @@ const sortKey = (value: string): string => value.padStart(20, "0");
 
 /* eslint-disable max-lines-per-function -- each case keeps a complete transaction or migration evidence path adjacent. */
 describe("owned Local SQLite database ports", () => {
+  it("initializes read-only connections without storage-mutating pragmas", () => {
+    const pragmas: string[] = [];
+    initializeOwnedSqliteReadConnection(
+      {
+        close: () => undefined,
+        exec: () => undefined,
+        get inTransaction() {
+          return false;
+        },
+        pragma: (source) => {
+          pragmas.push(source);
+        },
+        prepare: () => {
+          throw new Error("unexpected");
+        },
+      },
+      1_234,
+    );
+    expect(pragmas).toEqual([
+      "foreign_keys = ON",
+      "busy_timeout = 1234",
+      "trusted_schema = OFF",
+    ]);
+  });
+
   it("migrates, writes, retains equality, and performs bounded metadata-first reads", async () => {
     const native = new DatabaseSync(":memory:");
     const database = owned(native);

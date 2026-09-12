@@ -814,3 +814,14 @@ export const initializeOwnedSqliteConnection = (
     database.pragma("trusted_schema = OFF");
   });
 };
+
+export const initializeOwnedSqliteReadConnection = (
+  database: OwnedSqliteConnection,
+  busyTimeoutMilliseconds: number,
+): void => {
+  databaseCall(() => {
+    database.pragma("foreign_keys = ON");
+    database.pragma(`busy_timeout = ${busyTimeoutMilliseconds}`);
+    database.pragma("trusted_schema = OFF");
+  });
+};
