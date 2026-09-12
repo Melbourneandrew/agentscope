@@ -8,7 +8,7 @@ import {
   runResolvedTraceLifecycle,
 } from "@agentscope/core";
 import {
-  createAgentscopeHomeFromOwnedRootForCore,
+  createAgentscopeHomeResolver,
   createConfigurationProcessIdentity,
   createConfigurationStore,
 } from "@agentscope/core/configuration-management";
@@ -40,10 +40,11 @@ const runProductCodexHookEvidenceWith = async (
     throw new Error("cli.hook.invalid");
   const hook = decodeCodexRootHookInput(input.evidence);
   if (hook.eventName !== "Stop") return;
-  const home = createAgentscopeHomeFromOwnedRootForCore(
-    input.launcher.homeRoot,
-    process.platform,
-  );
+  const home = createAgentscopeHomeResolver({
+    environment: { AGENTSCOPE_HOME: input.launcher.homeRoot },
+    environmentOverrideAuthority: "portable",
+    platform: process.platform,
+  })();
   const registry = requireExactProductDestinationRegistry(
     PRODUCT_DESTINATION_REGISTRY,
   );

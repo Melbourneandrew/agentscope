@@ -71,6 +71,7 @@ import { createMacosKeychainCredentialAdapterForTesting } from "./dist/configura
 import { createLinuxSecretServiceAdapterForTesting } from "./dist/configuration/linux-secret-service.js";
 import { createWindowsCredentialManagerAdapterForTesting } from "./dist/configuration/windows-credential-manager.js";
 import * as coreArtifactExports from "./dist/index.js";
+import * as configurationManagementArtifactExports from "./dist/configuration/management-index.js";
 import { DEFAULT_REDACTION_POLICY_REGISTRY } from "./dist/redaction/policy.js";
 import { createHookEntryAuthority } from "./dist/invocation/hook-orchestration-index.js";
 import { runOperationalCoordinatorForTesting } from "./dist/invocation/operational-coordinator.js";
@@ -95,6 +96,12 @@ import {
 // the former one-second guard so the regression remains causal.
 const ARTIFACT_COORDINATOR_TIMEOUT_MILLISECONDS = 5_000;
 const ARTIFACT_COORDINATOR_STARTUP_DELAY_MILLISECONDS = 1_100;
+
+if (
+  "createAgentscopeHomeFromOwnedRootForCore" in
+  configurationManagementArtifactExports
+)
+  throw new Error("Core-owned home mint escaped the built configuration API.");
 
 const listRegularFiles = (directory, prefix = "") => {
   const files = [];
