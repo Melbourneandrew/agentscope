@@ -18,7 +18,7 @@ const currentDocument = () => ({
   routing: {
     version: 1,
     selectedConnectionIds: [],
-    hookDeadlineMilliseconds: 2_000,
+    hookDeadlineMilliseconds: 2_500,
   },
   policy: { version: 1, reference: "policy-v1" },
 });
