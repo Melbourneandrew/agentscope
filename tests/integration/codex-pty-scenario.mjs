@@ -367,6 +367,7 @@ try {
     codex,
     [
       "--no-alt-screen",
+      "--dangerously-bypass-hook-trust",
       "--sandbox",
       "read-only",
       "--ask-for-approval",

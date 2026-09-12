@@ -198,11 +198,16 @@ describe("integration capability manifest", () => {
       "utf8",
     );
     const startupPrompt = source.indexOf("      prompt,\n");
+    const explicitHookTrust = source.indexOf(
+      '      "--dangerously-bypass-hook-trust",\n',
+    );
     const modelRequest = source.indexOf("  await waitForModelRequest();\n");
     const semanticReady = source.indexOf(
       '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
     );
     expect(startupPrompt).toBeGreaterThan(-1);
+    expect(explicitHookTrust).toBeGreaterThan(-1);
+    expect(explicitHookTrust).toBeLessThan(startupPrompt);
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(semanticReady).toBeGreaterThan(modelRequest);
   });
