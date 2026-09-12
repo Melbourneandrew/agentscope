@@ -11,6 +11,7 @@ import {
 } from "@agentscope/testkit";
 
 import {
+  capabilityScenarioImages,
   capabilityManifestIdentity,
   compileCapabilityManifest,
   partitionCapabilityScenarios,
@@ -207,6 +208,29 @@ describe("integration capability manifest", () => {
     expect(selectedIds("fixture-process-smoke")).not.toContain(
       "codex-tui-responses",
     );
+  });
+
+  it("prepares every selected scenario material verifier image", () => {
+    const manifest = compileCapabilityManifest(manifestFixture());
+    const codex = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    )!;
+    const material = manifest.evidence.find(
+      ({ evidenceId }) => evidenceId === codex.harnessEvidenceId,
+    )!.material;
+    expect(material.kind).toBe("npm");
+    if (material.kind !== "npm") throw new Error("test.material");
+    expect(capabilityScenarioImages(manifest, [codex.scenarioId])).toEqual(
+      [codex.image, codex.mockServerImage, material.verifierImage].sort(),
+    );
+    for (const scenarioIds of [
+      [],
+      [codex.scenarioId, codex.scenarioId],
+      ["missing"],
+    ])
+      expect(() => capabilityScenarioImages(manifest, scenarioIds)).toThrow(
+        "integration.manifest.image-selection",
+      );
   });
 
   it("rejects descriptor evidence that contradicts its manifest binding", () => {
