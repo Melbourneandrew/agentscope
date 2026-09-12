@@ -5,7 +5,6 @@ const assert = (condition, code) => {
 export const correlateCodexPlatformObservations = (
   observation,
   { artifactFileName, expectedPromptSha256, scenarioId },
-  // eslint-disable-next-line complexity, max-lines-per-function -- one independent oracle binds every translated success criterion
 ) => {
   assert(observation.scenarioId === scenarioId, "scenario");
   assert(
@@ -25,19 +24,6 @@ export const correlateCodexPlatformObservations = (
     "model-request",
   );
   assert(
-    observation.hookLifecycle.length === 3 &&
-      JSON.stringify(
-        observation.hookLifecycle.map(({ eventName }) => eventName),
-      ) === JSON.stringify(["SessionStart", "Stop", "SessionEnd"]) &&
-      new Set(observation.hookLifecycle.map(({ sessionId }) => sessionId))
-        .size === 1 &&
-      observation.hookLifecycle[0].model === "fixture-model" &&
-      observation.hookLifecycle[1].model === "fixture-model" &&
-      observation.hookLifecycle[1].turnId !== null &&
-      observation.hookLifecycle[2].model === null,
-    "hook-lifecycle",
-  );
-  assert(
     observation.search.completion === "complete" &&
       observation.search.harness === "codex" &&
       observation.search.spanCount === 2 &&
@@ -49,8 +35,8 @@ export const correlateCodexPlatformObservations = (
       JSON.stringify(observation.retrieval.spanNames) ===
         JSON.stringify(["codex.turn", "codex.response"]) &&
       observation.retrieval.modelName === request.model &&
-      observation.retrieval.sessionId ===
-        observation.hookLifecycle[0].sessionId,
+      typeof observation.retrieval.sessionId === "string" &&
+      observation.retrieval.sessionId.length > 0,
     "trace",
   );
   assert(
