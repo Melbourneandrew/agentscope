@@ -15,7 +15,7 @@ This Blueprint verifies the complete AgentScope setup flow without ever touching
 
 **Context:** Each leaf capability has one authoritative amendment point. Repeating isolation, artifacts, mocks, or lane policy here would create parallel ADRs that can drift.
 
-**Consequences:** This umbrella owns only the complete acceptance boundary: install the exact packed CLI in a fresh scenario, run init and owned hook installation, invoke the real harness against deterministic model mocks, observe destination delivery independently, assert canonical context/redaction, then prove owned cleanup and uninstall. Harness and destination test adapters extend their own seams without changing generic orchestration.
+**Consequences:** This umbrella owns only the complete acceptance boundary: install the exact packed CLI in a fresh scenario, run init and owned hook installation, invoke the real harness against deterministic model mocks, observe destination delivery independently, assert canonical context/redaction, then prove owned cleanup and uninstall. It uses the sole execution kernel and the CodexBar precedent from Harness Execution ADR-007; a real-harness adapter or scenario may not add another PTY runner, supervisor, or process-lifecycle mechanism. Harness and destination test adapters extend their own seams without changing generic orchestration.
 
 ### ADR-002: Keep platform certification distinct from product acceptance
 
