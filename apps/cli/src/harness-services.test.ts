@@ -129,6 +129,107 @@ describe("harness CLI composition", () => {
   });
 });
 
+describe("harness CLI asynchronous plan preparation", () => {
+  it("awaits the trusted adapter's bounded plan-input preparation", async () => {
+    const value = await fixture();
+    const original = value.adapter.createInstallationInput;
+    const prepared = vi.fn(
+      async (operation: "install" | "migrate" | "uninstall") =>
+        original(operation),
+    );
+    const services = createHarnessCliServices({
+      adapters: [{ ...value.adapter, createInstallationInput: prepared }],
+      registry,
+    });
+    await expect(
+      services.installHarness({
+        apply: false,
+        harness: "example",
+        presentPlan,
+      }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: { disposition: "ready" },
+    });
+    expect(prepared).toHaveBeenCalledTimes(1);
+    expect(prepared).toHaveBeenCalledWith("install");
+  });
+
+  it("opens adapter preparation only after an accepted apply plan", async () => {
+    const value = await fixture();
+    let presented = false;
+    const prepareApplication = vi.fn(() => {
+      expect(presented).toBe(true);
+      return Promise.resolve();
+    });
+    const services = createHarnessCliServices({
+      adapters: [{ ...value.adapter, prepareApplication }],
+      registry,
+    });
+    await services.installHarness({
+      apply: false,
+      harness: "example",
+      presentPlan,
+    });
+    expect(prepareApplication).not.toHaveBeenCalled();
+    await services.installHarness({
+      apply: true,
+      harness: "example",
+      presentPlan: () => {
+        presented = true;
+        return Promise.resolve();
+      },
+    });
+    expect(prepareApplication).toHaveBeenCalledOnce();
+    expect(prepareApplication).toHaveBeenCalledWith("install");
+  });
+});
+
+describe("harness CLI absent status", () => {
+  it("inspects owned installation state when the executable is absent", async () => {
+    const value = await fixture();
+    const createInstallationInput = vi.fn(
+      value.adapter.createInstallationInput,
+    );
+    const services = createHarnessCliServices({
+      adapters: [
+        {
+          ...value.adapter,
+          createInstallationInput,
+          probe: {
+            inspectConfiguration: () =>
+              Promise.resolve([{ locationIndex: 0, present: false }]),
+            locateExecutable: () => Promise.resolve({ kind: "absent" }),
+            readVersion: () => Promise.resolve({ kind: "unavailable" }),
+          },
+        },
+      ],
+      registry,
+    });
+
+    await expect(
+      services.statusHarness({ harness: "example" }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: {
+        discovery: { state: "absent" },
+        installation: "unchanged",
+      },
+    });
+    expect(createInstallationInput).toHaveBeenCalledWith("uninstall");
+    await writeFile(value.targetPath, owned);
+    await expect(
+      services.statusHarness({ harness: "example" }),
+    ).resolves.toMatchObject({
+      status: "success",
+      value: {
+        discovery: { state: "absent" },
+        installation: "ready",
+      },
+    });
+  });
+});
+
 describe("harness CLI plan-first mutation", () => {
   it("keeps install and uninstall plan-first and mutates only with --yes authority", async () => {
     const value = await fixture();

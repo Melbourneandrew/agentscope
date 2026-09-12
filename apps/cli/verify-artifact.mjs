@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
@@ -230,6 +230,7 @@ try {
   assert.equal(installedSmoke.stderr, "");
   const executableOptions = {
     cwd: installRoot,
+    env: { PATH: dirname(process.execPath) },
     shell: process.platform === "win32",
   };
   const installedInternal = join(
@@ -390,7 +391,17 @@ try {
     command: "agentscope harness list",
     completion: "complete",
     dataSchema: "agentscope.cli.harness-list.v1",
-    records: [],
+    records: [
+      {
+        configurationLocationCount: 2,
+        configurationPresentCount: 0,
+        harness: "codex",
+        harnessType: "@agentscope/harness-codex",
+        reason: "not-found",
+        state: "absent",
+        version: null,
+      },
+    ],
     schema: "agentscope.cli.result.v1",
   });
   assert.equal(harnesses.stderr, "");
@@ -412,7 +423,7 @@ try {
     ),
   );
   for (const code of [
-    "doctor.harness.unavailable",
+    "doctor.harness.absent",
     "doctor.destination.unavailable",
   ])
     assert.ok(
