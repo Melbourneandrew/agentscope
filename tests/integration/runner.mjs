@@ -24,6 +24,12 @@ import {
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
+import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
+import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
+
+const substrateCertificationCase = parseSubstrateCertificationCaseValue(
+  process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
+);
 
 const ptyFailurePhases = Object.freeze([
   "runner-bootstrap",
@@ -299,6 +305,8 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
+const recoverRetainedFixtureOutput = () =>
+  readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
   const childEnvironment = Object.freeze({
     AGENTSCOPE_HOME: agentscopeHome,
@@ -324,12 +332,21 @@ try {
           AGENTSCOPE_INTEGRATION_TEST_MODE:
             process.env.AGENTSCOPE_INTEGRATION_TEST_MODE,
         }),
+    ...(substrateCertificationCase === undefined
+      ? {}
+      : {
+          AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE: substrateCertificationCase,
+        }),
   });
   const now = performance.now();
   const fixtureScript = "/opt/agentscope/platform-fixture.mjs";
+  const selectedArtifact =
+    substrateCertificationCase === "mixed-artifact-digest"
+      ? evidence.lockfile
+      : cliArtifact;
   const fixtureArguments = [
     "--artifact",
-    join(directory, "files", cliArtifact.fileName),
+    join(directory, "files", selectedArtifact.fileName),
   ];
   const request = {
     runId: requiredEnvironment("AGENTSCOPE_INTEGRATION_RUN_ID"),
@@ -341,8 +358,12 @@ try {
       scenario.executionMode === "interactive"
         ? fixtureArguments
         : [fixtureScript, ...fixtureArguments],
-    cwd: "/opt/agentscope",
-    environment: childEnvironment,
+    cwd:
+      substrateCertificationCase === "wrong-cwd" ? "/tmp" : "/opt/agentscope",
+    environment:
+      substrateCertificationCase === "wrong-environment"
+        ? Object.freeze({ ...childEnvironment, AGENTSCOPE_UNEXPECTED: "1" })
+        : childEnvironment,
     stdin:
       scenario.executionMode === "interactive"
         ? new TextEncoder().encode("run\n")
@@ -357,6 +378,8 @@ try {
     monotonicShutdownDeadlineMs: headlessShutdownDeadline,
     terminationGraceMs: 1_000,
   };
+  if (substrateCertificationCase === "wrong-argv")
+    request.arguments = [...request.arguments, "--unexpected"];
   request.requestFingerprint = fingerprintHeadlessRequest(request);
   const serializedProcessRequest = {
     runId: request.runId,
@@ -484,28 +507,7 @@ try {
     console.log(
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
-    const fixtureResultPath = join(ledger, "fixture-result.json");
-    const fixtureResultStatus = lstatSync(fixtureResultPath);
-    if (
-      !fixtureResultStatus.isFile() ||
-      fixtureResultStatus.isSymbolicLink() ||
-      fixtureResultStatus.size < 1 ||
-      fixtureResultStatus.size > 1024 * 1024 ||
-      (fixtureResultStatus.mode & 0o777) !== 0o600
-    )
-      throw new Error("integration.runner.fixture-result");
-    const retained = JSON.parse(readFileSync(fixtureResultPath, "utf8"));
-    if (
-      JSON.stringify(Object.keys(retained).sort()) !==
-        JSON.stringify(["encodedEvidence", "evidenceVersion", "scenarioId"]) ||
-      retained.evidenceVersion !== 1 ||
-      retained.scenarioId !== scenarioId ||
-      typeof retained.encodedEvidence !== "string" ||
-      retained.encodedEvidence.length > 1024 * 1024 ||
-      !/^[A-Za-z0-9_-]+$/u.test(retained.encodedEvidence)
-    )
-      throw new Error("integration.runner.fixture-result");
-    fixtureOutput = `AGENTSCOPE_FIXTURE_RESULT=${retained.encodedEvidence}\n`;
+    fixtureOutput = recoverRetainedFixtureOutput();
     if (
       receipt.outcome !== "completed" ||
       receipt.finalSnapshot.semanticState !== "completed" ||
@@ -543,6 +545,8 @@ try {
       outcome: trace.result.outcome,
       exitCode: trace.result.exitCode,
       signal: trace.result.signal,
+      termRequested: trace.result.termRequested,
+      killRequested: trace.result.killRequested,
       cleanup: trace.result.cleanup,
       residualProcessCount: trace.result.residualProcessCount,
       processJoined: trace.observation.processJoined,
@@ -556,7 +560,9 @@ try {
     if (
       trace.result.outcome !== "exited" ||
       trace.result.exitCode !== 0 ||
-      trace.result.cleanup !== "clean"
+      trace.result.cleanup !== "clean" ||
+      trace.result.termRequested ||
+      trace.result.killRequested
     )
       fixtureFailure = new Error("integration.runner.fixture-failed");
   }
@@ -583,7 +589,16 @@ try {
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
   }
-  fixtureOutput = "";
+  if (
+    scenario.executionMode === "headless" &&
+    substrateCertificationCase === "leaked-child"
+  ) {
+    try {
+      fixtureOutput = recoverRetainedFixtureOutput();
+    } catch {
+      fixtureOutput = "";
+    }
+  } else fixtureOutput = "";
   fixtureFailure = error;
 }
 const fixtureResult = fixtureOutput

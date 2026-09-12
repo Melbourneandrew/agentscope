@@ -31,11 +31,27 @@ owns those outer lifecycle decisions. A failure is terminal for that guest.
 
 ## GitHub CI
 
-The integration workflow uses the same command in two modes. The candidate job
-sets `AGENTSCOPE_INTEGRATION_MODE=candidate`, builds and publishes the immutable
-candidate once. Each GitHub-hosted lifecycle job downloads that exact candidate
-and runs the command without the mode override. GitHub CI remains the merge and
-release authority; Crabbox results are development feedback only.
+The integration workflow uses the same command for candidate preparation and
+every lifecycle. The candidate job sets
+`AGENTSCOPE_INTEGRATION_MODE=candidate`, builds, and publishes the immutable
+candidate once. Three clean GitHub-hosted replay jobs download that exact
+candidate. After each canonical lifecycle and outer cleanup succeed, the
+controller emits a bounded comparison receipt. Fan-in requires all three
+receipts to bind the same commit, candidate, manifest, selection, and scenario
+outcomes. These records have `platform-certification-only` authority; they are
+not harness-admission capabilities or support evidence.
+
+The workflow also gives each closed deliberate-negative case its own fresh
+GitHub-hosted runner. The canonical lifecycle must fail, after which a
+read-only verifier requires the exact content-free predicate and complete
+retired-failure evidence. A negative job is green only when that rejection is
+proved. No case permits arbitrary commands, paths, environment values, public
+traffic, real credentials, retries, or a second mutation after failure. These
+controller-owned certification inputs are unavailable during workstation and
+Crabbox execution.
+
+GitHub CI remains the merge and release authority; Crabbox results are
+development feedback only.
 
 The inner scenario continues to use its existing internal-only network,
 read-only mounts, tmpfs homes, synthetic model service, and telemetry ledger.

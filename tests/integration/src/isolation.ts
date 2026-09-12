@@ -277,6 +277,8 @@ const headlessTerminalReceiptSchema = z
     signal: z.enum(["SIGTERM", "SIGKILL"]).nullable(),
     cleanup: z.enum(["clean", "residual", "uncertain"]),
     residualProcessCount: z.number().int().nonnegative().max(256),
+    termRequested: z.boolean(),
+    killRequested: z.boolean(),
     processJoined: z.boolean(),
     stdinJoined: z.boolean(),
     stdoutJoined: z.boolean(),
@@ -615,6 +617,8 @@ const headlessReceiptPasses = (
   receipt.signal === null &&
   receipt.cleanup === "clean" &&
   receipt.residualProcessCount === 0 &&
+  !receipt.termRequested &&
+  !receipt.killRequested &&
   receipt.processJoined &&
   receipt.stdinJoined &&
   receipt.stdoutJoined &&

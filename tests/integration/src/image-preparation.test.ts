@@ -1574,6 +1574,32 @@ describe("prepared Docker client terminal authority", () => {
     ).privateClient.root;
     markPreparedDockerClientForOuterHostRetirement(client);
     expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    const retirementDiagnostic = preparedDockerClientDiagnostic(
+      client,
+    ) as unknown as {
+      authorityDigests: Record<string, unknown>;
+      diagnosticVersion: unknown;
+      outcome: unknown;
+      retirementReason: unknown;
+      stage: unknown;
+    };
+    expect(retirementDiagnostic).toMatchObject({
+      diagnosticVersion: 1,
+      stage: "scenario-operation",
+      outcome: "retired-failure",
+      retirementReason: "mutation-outcome-unknown",
+    });
+    expect(Object.keys(retirementDiagnostic.authorityDigests).sort()).toEqual([
+      "daemon",
+      "images",
+      "socket",
+    ]);
+    for (const identity of Object.values(
+      retirementDiagnostic.authorityDigests,
+    )) {
+      expect(typeof identity).toBe("string");
+      expect(identity).toMatch(/^sha256:[a-f\d]{64}$/u);
+    }
     await expect(prepareDockerInvocation(client, ["version"])).rejects.toThrow(
       "integration.images.docker-client",
     );

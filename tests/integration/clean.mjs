@@ -19,6 +19,7 @@ import {
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
 import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
+import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -214,6 +215,8 @@ const addDirectory = (targets, relative) => {
     throw new Error("integration.cleanup.path");
   targets.push({ bytes: directoryBytes(path), path, relative });
 };
+// The exact record validator intentionally checks every durable field together.
+// eslint-disable-next-line complexity
 const assertFailureEvidence = (identity) => {
   const directory = resolve(artifactsRoot, "runs", identity.runId);
   const path = resolve(directory, "controller-failure.json");
@@ -251,6 +254,9 @@ const assertFailureEvidence = (identity) => {
       JSON.stringify(
         [
           "cleanupFailure",
+          "certificationCase",
+          "certificationPredicate",
+          "certificationReadiness",
           "controllerFailureEvidenceVersion",
           "controllerOutcome",
           "installedPtyFailure",
@@ -265,6 +271,7 @@ const assertFailureEvidence = (identity) => {
     record.controllerOutcome !== "retired-failure" ||
     !validInstalledPtyFailure(record.installedPtyFailure) ||
     !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
+    !certificationFailureAuthorityIsValid(record) ||
     !(
       record.cleanupFailure === null ||
       /^(?:integration\.[a-z.-]{1,96})$/u.test(record.cleanupFailure)

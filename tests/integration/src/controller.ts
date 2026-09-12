@@ -3,10 +3,18 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  closeSync,
+  constants,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdtempSync,
+  mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
@@ -18,6 +26,16 @@ import {
   type HarnessAdmissionAuthority,
   type HarnessSupportEvidenceManifest,
 } from "./harness-admission.js";
+import {
+  compileSubstrateCertificationProjection,
+  compileSubstrateCertificationReceipt,
+  parseSubstrateCertificationRequest,
+  providerCredentialEnvironmentIsClear,
+  SUBSTRATE_CERTIFICATION_PREDICATES,
+  type SubstrateCertificationCase,
+  type SubstrateCertificationProjection,
+  type SubstrateCertificationRequest,
+} from "./substrate-certification.js";
 
 export type IntegrationControllerMode = "candidate" | "crabbox" | "lifecycle";
 
@@ -93,6 +111,9 @@ type CapabilityState = {
     }>
   >;
   requiredFailureEvidence: Set<string>;
+  substrateCertificationPredicates: Map<string, string>;
+  substrateCertificationProjection?: SubstrateCertificationProjection;
+  substrateCertificationRequest: SubstrateCertificationRequest;
   privateStorageRetirements: Map<
     number,
     Readonly<{
@@ -357,8 +378,19 @@ const hasCredentialGitState = (workspaceRoot: string): boolean => {
 const createBinding = (
   environment: NodeJS.ProcessEnv,
   now = performance.now(),
-): { binding: DisposableOuterHostBinding; mode: IntegrationControllerMode } => {
+): {
+  binding: DisposableOuterHostBinding;
+  mode: IntegrationControllerMode;
+  substrateCertificationRequest: SubstrateCertificationRequest;
+} => {
   const { hostKind, identity, mode } = inferModeAndIdentity(environment);
+  if (!providerCredentialEnvironmentIsClear(environment))
+    throw new Error("integration.controller.provider-credentials");
+  const substrateCertificationRequest = parseSubstrateCertificationRequest(
+    environment,
+    hostKind,
+    mode,
+  );
   const workspaceRoot = resolve(import.meta.dirname, "../../..");
   const workspaceRevision = git(workspaceRoot, ["rev-parse", "HEAD"]);
   if (hostKind === "github-hosted" && workspaceRevision !== identity.GITHUB_SHA)
@@ -426,6 +458,7 @@ const createBinding = (
     .digest("hex")}` as const;
   return {
     mode,
+    substrateCertificationRequest,
     binding: Object.freeze({
       cleanupStartMonotonicMilliseconds:
         deadlineMonotonicMilliseconds - cleanupReserveMilliseconds,
@@ -475,6 +508,61 @@ export const requireDisposableOuterHostCapability =
 export const integrationStageSignal = (): AbortSignal => {
   const capability = requireDisposableOuterHostCapability();
   return capabilityStates.get(capability)!.signal;
+};
+
+export const requireSubstrateCertificationCase = ():
+  SubstrateCertificationCase | undefined => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (stageContext.getStore() !== "runScenarios")
+    throw new Error("integration.certification.authority");
+  return state.substrateCertificationRequest.kind === "negative"
+    ? state.substrateCertificationRequest.case
+    : undefined;
+};
+
+export const requireSubstrateCertificationReplay = ():
+  1 | 2 | 3 | undefined => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (stageContext.getStore() !== "runScenarios")
+    throw new Error("integration.certification.authority");
+  return state.substrateCertificationRequest.kind === "replay"
+    ? state.substrateCertificationRequest.ordinal
+    : undefined;
+};
+
+export const registerSubstrateCertificationPredicate = (
+  runId: string,
+  predicate: string,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  const request = state.substrateCertificationRequest;
+  if (
+    stageContext.getStore() !== "runScenarios" ||
+    request.kind !== "negative" ||
+    !state.runIds.has(runId) ||
+    predicate !== SUBSTRATE_CERTIFICATION_PREDICATES[request.case] ||
+    state.substrateCertificationPredicates.has(runId)
+  )
+    throw new Error("integration.certification.predicate");
+  state.substrateCertificationPredicates.set(runId, predicate);
+};
+
+export const registerSubstrateCertificationProjection = (
+  projection: SubstrateCertificationProjection,
+): void => {
+  const capability = requireDisposableOuterHostCapability();
+  const state = capabilityStates.get(capability)!;
+  if (
+    stageContext.getStore() !== "runScenarios" ||
+    state.substrateCertificationRequest.kind !== "replay" ||
+    state.substrateCertificationProjection !== undefined
+  )
+    throw new Error("integration.certification.projection");
+  state.substrateCertificationProjection =
+    compileSubstrateCertificationProjection(projection);
 };
 
 export const integrationPrivateStorageAuthority = () =>
@@ -996,10 +1084,165 @@ const stageDependencies = (
   };
 };
 
+const publishSubstrateCertificationReceipt = (
+  binding: DisposableOuterHostBinding,
+  request: SubstrateCertificationRequest,
+  projection: SubstrateCertificationProjection | undefined,
+): void => {
+  if (request.kind !== "replay") return;
+  if (projection === undefined)
+    throw new Error("integration.certification.projection");
+  const githubSha = binding.suppliedIdentity.GITHUB_SHA;
+  if (githubSha === undefined)
+    throw new Error("integration.certification.receipt");
+  const serialized = `${JSON.stringify(
+    compileSubstrateCertificationReceipt({
+      githubSha,
+      projection,
+      replayOrdinal: request.ordinal,
+    }),
+    undefined,
+    2,
+  )}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > 65_536)
+    throw new Error("integration.certification.receipt");
+  const directory = resolve(
+    binding.workspaceRoot,
+    "artifacts/integration/certification",
+  );
+  const target = resolve(directory, `replay-${request.ordinal}.json`);
+  const temporary = resolve(
+    directory,
+    `.replay-${request.ordinal}.${process.pid}.tmp`,
+  );
+  let descriptor: number | undefined;
+  let directoryDescriptor: number | undefined;
+  try {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const directoryStatus = lstatSync(directory);
+    if (
+      !directoryStatus.isDirectory() ||
+      directoryStatus.isSymbolicLink() ||
+      (directoryStatus.mode & 0o7777) !== 0o700
+    )
+      throw new Error("integration.certification.receipt");
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(directory, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.certification.receipt");
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.certification.receipt", { cause: error });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
+};
+
+const publishCredentialPreflightFailure = (
+  environment: NodeJS.ProcessEnv,
+  error: unknown,
+): void => {
+  if (
+    !(error instanceof Error) ||
+    error.message !== "integration.controller.provider-credentials" ||
+    environment.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE !==
+      "credential-presence" ||
+    typeof environment.GITHUB_SHA !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(environment.GITHUB_SHA)
+  )
+    return;
+  const record = Object.freeze({
+    certificationCase: "credential-presence",
+    certificationPredicate:
+      SUBSTRATE_CERTIFICATION_PREDICATES["credential-presence"],
+    controllerPreflightFailureVersion: 1,
+    githubSha: environment.GITHUB_SHA,
+    mutationAuthority: "not-created",
+    primaryFailure: error.message,
+  });
+  const serialized = `${JSON.stringify(record, undefined, 2)}\n`;
+  const directory = resolve(
+    import.meta.dirname,
+    "../../../artifacts/integration",
+  );
+  const target = resolve(directory, "controller-preflight-failure.json");
+  const temporary = resolve(
+    directory,
+    `.controller-preflight-failure.${process.pid}.tmp`,
+  );
+  let descriptor: number | undefined;
+  let directoryDescriptor: number | undefined;
+  try {
+    mkdirSync(directory, { recursive: true });
+    const directoryStatus = lstatSync(directory);
+    if (!directoryStatus.isDirectory() || directoryStatus.isSymbolicLink())
+      throw new Error("integration.certification.preflight-evidence");
+    descriptor = openSync(
+      temporary,
+      constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW |
+        constants.O_WRONLY,
+      0o600,
+    );
+    writeFileSync(descriptor, serialized);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    linkSync(temporary, target);
+    rmSync(temporary);
+    directoryDescriptor = openSync(directory, constants.O_RDONLY);
+    fsyncSync(directoryDescriptor);
+    const status = lstatSync(target);
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.nlink !== 1 ||
+      status.size !== Buffer.byteLength(serialized, "utf8") ||
+      (status.mode & 0o7777) !== 0o600
+    )
+      throw new Error("integration.certification.preflight-evidence");
+  } catch (publicationError) {
+    rmSync(temporary, { force: true });
+    throw new Error("integration.certification.preflight-evidence", {
+      cause: publicationError,
+    });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (directoryDescriptor !== undefined) closeSync(directoryDescriptor);
+  }
+};
+
 export const executeIntegrationController = async (): Promise<void> => {
   if (controllerConsumed) throw new Error("integration.controller.single-use");
   controllerConsumed = true;
-  const { binding, mode } = createBinding(process.env);
+  let controllerBinding: ReturnType<typeof createBinding>;
+  try {
+    controllerBinding = createBinding(process.env);
+  } catch (error) {
+    publishCredentialPreflightFailure(process.env, error);
+    throw error;
+  }
+  const { binding, mode, substrateCertificationRequest } = controllerBinding;
   const capability = Object.freeze({ binding });
   const state: CapabilityState = {
     active: true,
@@ -1009,6 +1252,8 @@ export const executeIntegrationController = async (): Promise<void> => {
     headlessReceipts: new Map(),
     ptyReceipts: new Map(),
     requiredFailureEvidence: new Set(),
+    substrateCertificationPredicates: new Map(),
+    substrateCertificationRequest,
     privateStorageRetirements: new Map(),
     runIds: new Set(),
     signal: new AbortController().signal,
@@ -1017,6 +1262,13 @@ export const executeIntegrationController = async (): Promise<void> => {
   try {
     await capabilityContext.run(capability, async () => {
       await runIntegrationStages(mode, stageDependencies(capability));
+      if (substrateCertificationRequest.kind === "negative")
+        throw new Error("integration.certification.unexpected-success");
+      publishSubstrateCertificationReceipt(
+        binding,
+        substrateCertificationRequest,
+        state.substrateCertificationProjection,
+      );
     });
   } finally {
     state.active = false;

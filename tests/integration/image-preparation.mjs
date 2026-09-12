@@ -1,3 +1,4 @@
+/* eslint import-x/no-cycle: "off" -- private in-process controller capability */
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -24,7 +25,6 @@ import { isAbsolute, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { rootCertificates } from "node:tls";
 
-// eslint-disable-next-line import-x/no-cycle -- private in-process controller capability
 import {
   integrationPrivateStorageAuthority,
   registerIntegrationPrivateStorageRetirement,
@@ -2755,7 +2755,7 @@ const buildArgumentsFor = ({
   result.push("-");
   return result;
 };
-const createBuildAuthority = async (client, policy, signal) => {
+const createBuildAuthority = async (client, policy, signal, runGeneration) => {
   const engine =
     client.engineRequestForTesting ?? engineTransport(client.socket);
   const daemon = await inspectDaemon(engine, client.socket, policy, signal);
@@ -2778,7 +2778,9 @@ const createBuildAuthority = async (client, policy, signal) => {
     !samePlatform(local.platform, buildkit.platform)
   )
     throw fixedError("integration.images.build");
-  const builder = `agentscope-${randomBytes(8).toString("hex")}`;
+  const builder = /^[a-f0-9]{16}$/u.test(runGeneration ?? "")
+    ? `agentscope-${runGeneration}`
+    : `agentscope-${randomBytes(8).toString("hex")}`;
   const run = (arguments_, input, deadline = policy.workDeadline) => {
     if (
       !sameExecutable(buildxExecutable, executableRecord(buildxExecutable.path))
@@ -3163,7 +3165,12 @@ export const buildPreparedDockerImage = async (
     deadline: policy.workDeadline,
     signal,
   });
-  const authority = await createBuildAuthority(client, policy, signal);
+  const authority = await createBuildAuthority(
+    client,
+    policy,
+    signal,
+    labels["com.agentscope.integration.run"],
+  );
   let built;
   let failure;
   try {
@@ -3248,6 +3255,21 @@ export const preparedDockerClientRequiresOuterHostRetirement = (client) =>
 export const markPreparedDockerClientForOuterHostRetirement = (client) => {
   if (!preparedDockerClients.has(client))
     throw fixedError("integration.images.docker-client");
+  if (!preparedDockerClientDiagnostics.has(client))
+    preparedDockerClientDiagnostics.set(
+      client,
+      Object.freeze({
+        diagnosticVersion: 1,
+        stage: "scenario-operation",
+        authorityDigests: Object.freeze({
+          daemon: diagnosticDigest(client.evidence.dockerDaemon),
+          images: diagnosticDigest(client.evidence.images),
+          socket: diagnosticDigest(client.evidence.dockerSocket),
+        }),
+        outcome: "retired-failure",
+        retirementReason: "mutation-outcome-unknown",
+      }),
+    );
   uncertainPreparedDockerClients.add(client);
 };
 

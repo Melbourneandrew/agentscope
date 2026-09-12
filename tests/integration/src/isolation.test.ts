@@ -150,6 +150,8 @@ const headlessReceiptFor = (runId = "0123456789abcdef") => {
     signal: null,
     cleanup: "clean" as const,
     residualProcessCount: 0 as const,
+    termRequested: false,
+    killRequested: false,
     processJoined: true as const,
     stdinJoined: true as const,
     stdoutJoined: true as const,
@@ -880,6 +882,8 @@ describe("selected headless backend evidence", () => {
           1,
       },
       { ...evidence.headlessTerminalReceipt, cleanup: "uncertain" },
+      { ...evidence.headlessTerminalReceipt, termRequested: true },
+      { ...evidence.headlessTerminalReceipt, killRequested: true },
       {
         ...evidence.headlessTerminalReceipt,
         requestFingerprint: `sha256:${"f".repeat(64)}`,

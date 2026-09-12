@@ -139,6 +139,7 @@ const evidence = () => ({
   resultStatus: "complete",
   scenarioId,
   artifactFileName: "agentscope-cli.tgz",
+  certificationReadiness: null,
   lifecycle: [
     "install",
     "configure",

@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -15,6 +17,11 @@ import {
   PROCESS_FIXTURE_STIMULUS,
 } from "./process-platform-oracle.mjs";
 import { translatePlatformObservations } from "./scenario-adapter.mjs";
+import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
+
+const substrateCertificationCase = parseSubstrateCertificationCaseValue(
+  process.env.AGENTSCOPE_SUBSTRATE_CERTIFICATION_CASE,
+);
 
 const required = (name) => {
   const value = process.env[name];
@@ -115,6 +122,7 @@ if (interactive) {
 }
 
 const observedLifecycle = [];
+let certificationReadiness = null;
 let partial = {
   eventKinds: [],
   modelLedger: { ledgerVersion: 1, scenarioId, entries: [] },
@@ -132,6 +140,7 @@ const emitEvidence = (resultStatus) => {
     scenarioId,
     artifactFileName: basename(artifactPath),
     lifecycle: [...observedLifecycle],
+    certificationReadiness,
     ...partial,
   };
   if (!interactive)
@@ -141,6 +150,24 @@ const emitEvidence = (resultStatus) => {
   return evidence;
 };
 emitEvidence("partial");
+if (substrateCertificationCase === "false-success") {
+  if (interactive) throw new Error("integration.fixture.execution-mode");
+  await new Promise((resolve, reject) => {
+    process.stdout.write("", (error) =>
+      error === undefined || error === null ? resolve() : reject(error),
+    );
+  });
+  process.exit(0);
+}
+if (substrateCertificationCase === "unbounded-output") {
+  if (interactive) throw new Error("integration.fixture.execution-mode");
+  await new Promise((resolve, reject) => {
+    process.stdout.write("X".repeat(1024 * 1024 + 1), (error) =>
+      error === undefined || error === null ? resolve() : reject(error),
+    );
+  });
+  process.exit(0);
+}
 const recordLifecycle = (phase, publish = true) => {
   const expected = FIXTURE_LIFECYCLE_PHASES[observedLifecycle.length];
   if (phase !== expected)
@@ -192,8 +219,10 @@ writeFileSync(join(agentscopeHome, "installed.json"), '{"fixture":true}\n');
 recordLifecycle("install");
 writeFileSync(join(agentscopeHome, "config.json"), '{"fixture":true}\n');
 recordLifecycle("configure");
-writeFileSync(join(harnessHome, "hook.json"), '{"fixture":true}\n');
-recordLifecycle("hook");
+if (substrateCertificationCase !== "missing-hook") {
+  writeFileSync(join(harnessHome, "hook.json"), '{"fixture":true}\n');
+  recordLifecycle("hook");
+}
 
 // This test-family module owns stimuli and expected results. The scenario
 // adapter below receives only native observations and cannot author a pass.
@@ -359,7 +388,7 @@ rmSync(join(harnessHome, "hook.json"));
 rmSync(join(agentscopeHome, "config.json"));
 rmSync(join(agentscopeHome, "installed.json"));
 recordLifecycle("uninstall", false);
-const evidence = {
+const processEvidence = {
   evidenceVersion: 1,
   resultStatus: "complete",
   scenarioId,
@@ -367,10 +396,57 @@ const evidence = {
   lifecycle: [...observedLifecycle],
   ...partial,
 };
-assertProcessFixtureEvidence(evidence, {
+assertProcessFixtureEvidence(processEvidence, {
   routeFixture,
   scenario,
 });
+if (substrateCertificationCase === "leaked-child") {
+  const token = randomBytes(16).toString("hex");
+  const child = spawn(
+    process.execPath,
+    [
+      "/opt/agentscope/fixtures/substrate-negative-process.mjs",
+      "leaked-child",
+      token,
+    ],
+    { stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const expected = `AGENTSCOPE_NEGATIVE_READY=${token}\n`;
+  await new Promise((resolve, reject) => {
+    let output = "";
+    const timer = setTimeout(
+      () => reject(new Error("integration.fixture.negative-readiness")),
+      5_000,
+    );
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.length > expected.length) {
+        clearTimeout(timer);
+        reject(new Error("integration.fixture.negative-readiness"));
+      } else if (output === expected) {
+        clearTimeout(timer);
+        child.stdout.destroy();
+        child.unref();
+        resolve();
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", () => {
+      clearTimeout(timer);
+      reject(new Error("integration.fixture.negative-readiness"));
+    });
+  });
+  certificationReadiness = {
+    readinessVersion: 1,
+    certificationCase: "leaked-child",
+    challengeSha256: `sha256:${createHash("sha256").update(token).digest("hex")}`,
+  };
+}
+const evidence = { ...processEvidence, certificationReadiness };
 writeFileSync(
   join(ledgerHome, "fixture-lifecycle.json"),
   `${JSON.stringify({ scenarioId, lifecycle: observedLifecycle })}\n`,
