@@ -10,6 +10,21 @@ export type {
   CapabilityScenario,
   CapabilitySelector,
 } from "./manifest.js";
+export {
+  compileVerifiedNpmHarnessMaterial,
+  compileVerifiedSignedManifestHarnessMaterial,
+} from "./harness-material.js";
+export type {
+  NpmHarnessMaterial,
+  SignedManifestHarnessMaterial,
+  VerifiedHarnessMaterial,
+  VerifiedNpmHarnessMaterial,
+  VerifiedSignedManifestHarnessMaterial,
+} from "./harness-material.js";
+export {
+  compileHarnessAdmissionCompletion,
+  compileHarnessAdmissionSeed,
+} from "./harness-scenario-admission.js";
 export { prepareCandidate, verifyPreparedCandidate } from "./artifacts.js";
 export type {
   CandidateArtifactInput,

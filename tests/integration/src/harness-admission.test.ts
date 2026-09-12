@@ -70,6 +70,7 @@ const seed = (overrides: Partial<HarnessAdmissionSeed> = {}) => {
       manifestDigest: ociDigest("8"),
       configDigest: ociDigest("9"),
       platformIdentity: digest("5"),
+      scenarioImageDigest: digest("6"),
     },
     ...overrides,
   } satisfies HarnessAdmissionSeed;
@@ -110,6 +111,7 @@ const completion = (overrides: Record<string, unknown> = {}) => ({
   requestFingerprint,
   observationPlaneDigest: digest("a"),
   cleanupEvidenceDigest: digest("b"),
+  scenarioImageDigest: digest("6"),
   outcome: "scenario-terminal-clean",
   remainingOwnedResources: 0,
   ...overrides,
@@ -309,6 +311,7 @@ describe("trusted real-harness admission substitutions", () => {
   it.each([
     ["run", completion({ runId: "fedcba9876543210" })],
     ["receipt", completion({ requestFingerprint: ociDigest("0") })],
+    ["scenario-image", completion({ scenarioImageDigest: digest("f") })],
     ["outcome", completion({ outcome: "failed" })],
     ["cleanup", completion({ remainingOwnedResources: 1 })],
     ["extra", completion({ extra: true })],

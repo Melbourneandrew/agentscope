@@ -37,7 +37,8 @@ const maximumManifestBytes = 1_048_576;
 const maximumEvidenceBytes = 8_388_608;
 const maximumTokenBytes = 16_384;
 const maximumHeaderBytes = 16_384;
-const maximumBuildContextBytes = 64 * 1024 * 1024;
+const defaultMaximumBuildContextBytes = 64 * 1024 * 1024;
+const maximumHarnessBuildContextBytes = 384 * 1024 * 1024;
 const maximumBuildOutputBytes = 16 * 1024 * 1024;
 const maximumProcessInspectionBytes = 1_048_576;
 const maximumPrivateStateEntries = 4_096;
@@ -83,7 +84,13 @@ const preparedDockerClients = new WeakSet();
 const closingPreparedDockerClients = new WeakSet();
 const uncertainPreparedDockerClients = new WeakSet();
 const preparedDockerClientDiagnostics = new WeakMap();
+const pendingPreparedDockerImageRetirements = new WeakMap();
 const processDiagnostics = new WeakMap();
+
+const preparedDockerClientIsUsable = (client) =>
+  preparedDockerClients.has(client) &&
+  !closingPreparedDockerClients.has(client) &&
+  !uncertainPreparedDockerClients.has(client);
 
 const fixedError = (code, timedOut = false) => {
   const error = new Error(code);
@@ -1541,8 +1548,8 @@ const readBuildContextFile = (path, expected, state) => {
     if (
       !current.isFile() ||
       !sameFileIdentity(expected, current) ||
-      current.size > BigInt(maximumBuildContextBytes) ||
-      state.total() + 512 + size + padding + 1024 > maximumBuildContextBytes
+      current.size > BigInt(state.maximumBytes()) ||
+      state.total() + 512 + size + padding + 1024 > state.maximumBytes()
     )
       throw fixedError("integration.images.build");
     const body = readFileSync(descriptor);
@@ -1629,8 +1636,19 @@ const visitBuildContextDirectory = (
 };
 const boundedBuildContext = (
   root,
-  { afterEntryForTesting, deadline = Number.POSITIVE_INFINITY, signal } = {},
+  {
+    afterEntryForTesting,
+    deadline = Number.POSITIVE_INFINITY,
+    maximumBytes = defaultMaximumBuildContextBytes,
+    signal,
+  } = {},
 ) => {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > maximumHarnessBuildContextBytes
+  )
+    throw fixedError("integration.images.build");
   const assertActive = () => assertBuildContextActive(deadline, signal);
   assertActive();
   const rootStatus = lstatSync(root, { bigint: true });
@@ -1642,8 +1660,7 @@ const boundedBuildContext = (
   const append = (chunk) => {
     assertActive();
     total += chunk.byteLength;
-    if (total > maximumBuildContextBytes)
-      throw fixedError("integration.images.build");
+    if (total > maximumBytes) throw fixedError("integration.images.build");
     chunks.push(chunk);
   };
   const state = {
@@ -1658,6 +1675,7 @@ const boundedBuildContext = (
       entries += 1;
       if (entries > 8_192) throw fixedError("integration.images.build");
     },
+    maximumBytes: () => maximumBytes,
     total: () => total,
   };
   const rootDescriptor = openSync(
@@ -2316,9 +2334,7 @@ export const createPreparedDockerClient = (evidence, options = {}) => {
 
 export const prepareDockerInvocation = async (client, arguments_, signal) => {
   if (
-    !preparedDockerClients.has(client) ||
-    closingPreparedDockerClients.has(client) ||
-    uncertainPreparedDockerClients.has(client) ||
+    !preparedDockerClientIsUsable(client) ||
     !Array.isArray(arguments_) ||
     arguments_.length === 0 ||
     arguments_.length > 256 ||
@@ -3134,14 +3150,14 @@ export const buildPreparedDockerImage = async (
     dockerfile,
     labels,
     maximumMilliseconds,
+    maximumBuildContextBytes,
+    retirementRequired = false,
     signal,
     tag,
   },
 ) => {
   if (
-    !preparedDockerClients.has(client) ||
-    closingPreparedDockerClients.has(client) ||
-    uncertainPreparedDockerClients.has(client) ||
+    !preparedDockerClientIsUsable(client) ||
     typeof context !== "string" ||
     typeof dockerfile !== "string" ||
     !/^(?:[A-Za-z\d][A-Za-z\d._-]{0,127}\.Dockerfile|Dockerfile)$/u.test(
@@ -3150,7 +3166,9 @@ export const buildPreparedDockerImage = async (
     typeof tag !== "string" ||
     !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag) ||
     !validBuildMap(buildArguments) ||
-    !validBuildMap(labels)
+    !validBuildMap(labels) ||
+    typeof retirementRequired !== "boolean" ||
+    (pendingPreparedDockerImageRetirements.get(client)?.size ?? 0) !== 0
   )
     throw fixedError("integration.images.build");
   const policy = preparationPolicy([client.evidence.images[0].image], {
@@ -3163,6 +3181,7 @@ export const buildPreparedDockerImage = async (
   const archive = createBoundedBuildContext(context, {
     afterEntryForTesting: afterBuildContextEntryForTesting,
     deadline: policy.workDeadline,
+    maximumBytes: maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
     signal,
   });
   const authority = await createBuildAuthority(
@@ -3220,10 +3239,110 @@ export const buildPreparedDockerImage = async (
     ].includes(failure?.message)
       ? failure
       : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
-  return built.Id.replace(":", "-");
+  const imageId = built.Id.replace(":", "-");
+  if (retirementRequired)
+    pendingPreparedDockerImageRetirements.set(
+      client,
+      new Map([[tag, imageId]]),
+    );
+  return imageId;
+};
+
+export const retirePreparedDockerImage = async (
+  client,
+  { deadline, imageId, signal, tag },
+) => {
+  const retirementMilliseconds = Math.floor(deadline - performance.now());
+  if (
+    !preparedDockerClients.has(client) ||
+    closingPreparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client) ||
+    !/^sha256-[a-f\d]{64}$/u.test(imageId ?? "") ||
+    !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag ?? "")
+  )
+    throw fixedError("integration.images.docker-client");
+  const pending = pendingPreparedDockerImageRetirements.get(client);
+  if (pending?.get(tag) !== imageId)
+    throw fixedError("integration.images.docker-client");
+  if (
+    !Number.isFinite(deadline) ||
+    retirementMilliseconds < 4 ||
+    retirementMilliseconds > 30_000
+  ) {
+    markPreparedDockerClientForOuterHostRetirement(client);
+    throw fixedError("integration.images.deadline");
+  }
+  const policy = preparationPolicy([client.evidence.images[0].image], {
+    maximumPreparationMilliseconds: retirementMilliseconds,
+    teardownMilliseconds: Math.min(
+      preparationTeardownMilliseconds,
+      Math.max(1, Math.floor(retirementMilliseconds / 4)),
+    ),
+  });
+  const engine =
+    client.engineRequestForTesting ?? engineTransport(client.socket);
+  try {
+    const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+    if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+      throw fixedError("integration.images.containment");
+    const current = await inspectEngineObject({
+      daemon,
+      engine,
+      name: tag,
+      policy,
+      signal,
+      type: "images",
+    });
+    if (current?.Id?.replace(":", "-") !== imageId)
+      throw fixedError("integration.images.containment");
+    const removal = await engineCall(
+      { policy, signal, transport: engine },
+      {
+        expected: [200],
+        method: "DELETE",
+        path: `/v${daemon.apiVersion}/images/${encodeURIComponent(tag)}?force=1&noprune=0`,
+      },
+    );
+    const terminalPolicy = { ...policy, workDeadline: policy.deadline };
+    const removalReceipt = JSON.parse(removal.body);
+    if (
+      !Array.isArray(removalReceipt) ||
+      !removalReceipt.some(
+        (entry) => entry?.Deleted?.replace(":", "-") === imageId,
+      ) ||
+      !removalReceipt.some((entry) => entry?.Untagged === tag)
+    )
+      throw fixedError("integration.images.containment");
+    const tagged = await inspectEngineObject({
+      daemon,
+      engine,
+      name: tag,
+      policy: terminalPolicy,
+      type: "images",
+    });
+    if (tagged !== undefined)
+      throw fixedError("integration.images.containment");
+    assertSocketCurrentFor(engine, client.socket);
+    if (
+      !sameDaemon(
+        daemon,
+        await inspectDaemon(engine, client.socket, terminalPolicy),
+      )
+    )
+      throw fixedError("integration.images.containment");
+    pending.delete(tag);
+  } catch (error) {
+    markPreparedDockerClientForOuterHostRetirement(client);
+    throw error;
+  }
 };
 
 export const closePreparedDockerClient = (client) => {
+  if ((pendingPreparedDockerImageRetirements.get(client)?.size ?? 0) !== 0) {
+    if (preparedDockerClients.has(client))
+      markPreparedDockerClientForOuterHostRetirement(client);
+    throw fixedError("integration.images.docker-client");
+  }
   if (
     !preparedDockerClients.has(client) ||
     uncertainPreparedDockerClients.has(client)
@@ -3235,6 +3354,7 @@ export const closePreparedDockerClient = (client) => {
       client.privateClient,
       performance.now() + preparationTeardownMilliseconds,
     );
+    pendingPreparedDockerImageRetirements.delete(client);
     preparedDockerClients.delete(client);
   } catch (error) {
     uncertainPreparedDockerClients.add(client);
@@ -3352,6 +3472,8 @@ export const IMAGE_PREPARATION_LIMITS = Object.freeze({
   maximumResponseBytes,
   maximumManifestBytes,
   maximumEvidenceBytes,
+  defaultMaximumBuildContextBytes,
+  maximumHarnessBuildContextBytes,
   maximumPrivateStateEntries,
   maximumPrivateStateDepth,
   maximumPrivateStateFileBytes,

@@ -48,6 +48,7 @@ import {
   probePinnedRegistryTlsForTesting,
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
+  retirePreparedDockerImage,
   retirePreparedImageEvidence,
   runOwnedImageCommandForTesting,
   validatePreparedImageEvidence,
@@ -422,6 +423,7 @@ const engineFixture = ({
   daemonArchitecture = daemon.architecture,
   daemonSwitch = false,
   dockerDesktop = false,
+  incompleteImageRemovalReceipt = false,
   lateTagAfterDelete = false,
   localValue = local,
   localInitiallyPresent = true,
@@ -448,6 +450,7 @@ const engineFixture = ({
   daemonArchitecture?: string;
   daemonSwitch?: boolean;
   dockerDesktop?: boolean;
+  incompleteImageRemovalReceipt?: boolean;
   lateTagAfterDelete?: boolean;
   localValue?: string;
   localInitiallyPresent?: boolean;
@@ -616,7 +619,14 @@ const engineFixture = ({
       if (entry.path.includes("/images/")) {
         state.built = false;
         state.imageDeleted = true;
-        return { statusCode: 200, body: "[]" };
+        return {
+          statusCode: 200,
+          body: JSON.stringify(
+            incompleteImageRemovalReceipt
+              ? [{ Untagged: buildTag }]
+              : [{ Untagged: buildTag }, { Deleted: configDigest }],
+          ),
+        };
       }
       return { statusCode: 204, body: "" };
     }
@@ -1732,6 +1742,23 @@ describe("bounded build-context acquisition", () => {
       }),
     ).toThrow("integration.images.build");
   });
+
+  it("applies a selected bounded context ceiling without widening the default", () => {
+    const context = buildContext();
+    const archive = createBoundedBuildContext(context);
+    expect(
+      createBoundedBuildContext(context, { maximumBytes: archive.length }),
+    ).toEqual(archive);
+    expect(() =>
+      createBoundedBuildContext(context, { maximumBytes: archive.length - 1 }),
+    ).toThrow("integration.images.build");
+    expect(() =>
+      createBoundedBuildContext(context, {
+        maximumBytes:
+          IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes + 1,
+      }),
+    ).toThrow("integration.images.build");
+  });
 });
 
 describe("owned buildx process execution", () => {
@@ -1878,6 +1905,7 @@ describe("authenticated buildx consumption", () => {
           dockerfile: "Dockerfile",
           labels: { "com.agentscope.integration": "true" },
           maximumMilliseconds: 4_000,
+          retirementRequired: true,
           tag: buildTag,
         }),
       ).resolves.toBe(configDigest.replace(":", "-"));
@@ -1914,9 +1942,74 @@ describe("authenticated buildx consumption", () => {
         true,
       );
       expect(build?.input?.byteLength).toBeLessThanOrEqual(64 * 1024 * 1024);
+      await expect(
+        retirePreparedDockerImage(client, {
+          deadline: performance.now() + 4_000,
+          imageId: configDigest.replace(":", "-"),
+          tag: buildTag,
+        }),
+      ).resolves.toBeUndefined();
+      expect(
+        engine.requests.some(
+          ({ method, path }) =>
+            method === "DELETE" && path.includes("/images/"),
+        ),
+      ).toBe(true);
     } finally {
       closePreparedDockerClient(client);
     }
+  });
+
+  it("retires the daemon authority when image deletion lacks its exact receipt", async () => {
+    const engine = engineFixture({
+      buildTag,
+      incompleteImageRemovalReceipt: true,
+    });
+    const client = buildClient(engine);
+    const imageId = await buildPreparedDockerImage(client, {
+      buildArguments: { BASE_IMAGE: image },
+      context: buildContext(),
+      dockerfile: "Dockerfile",
+      labels: { "com.agentscope.integration": "true" },
+      maximumMilliseconds: 4_000,
+      retirementRequired: true,
+      tag: buildTag,
+    });
+    await expect(
+      retirePreparedDockerImage(client, {
+        deadline: performance.now() + 4_000,
+        imageId,
+        tag: buildTag,
+      }),
+    ).rejects.toThrow("integration.images.containment");
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+  });
+
+  it("rejects verifier-image retirement after the caller deadline", async () => {
+    const engine = engineFixture({ buildTag });
+    const client = buildClient(engine);
+    const imageId = await buildPreparedDockerImage(client, {
+      buildArguments: { BASE_IMAGE: image },
+      context: buildContext(),
+      dockerfile: "Dockerfile",
+      labels: { "com.agentscope.integration": "true" },
+      maximumMilliseconds: 4_000,
+      retirementRequired: true,
+      tag: buildTag,
+    });
+    const requestsBeforeRetirement = engine.requests.length;
+    await expect(
+      retirePreparedDockerImage(client, {
+        deadline: performance.now() - 1,
+        imageId,
+        tag: buildTag,
+      }),
+    ).rejects.toThrow("integration.images.deadline");
+    expect(engine.requests).toHaveLength(requestsBeforeRetirement);
+    expect(preparedDockerClientRequiresOuterHostRetirement(client)).toBe(true);
+    expect(() => {
+      closePreparedDockerClient(client);
+    }).toThrow("integration.images.docker-client");
   });
 
   it.each(["2000-01-01T00:00:00.000Z", "2100-01-01T00:00:00.000Z"])(
@@ -2428,6 +2521,8 @@ describe("prepared image admission and publication", () => {
       maximumPrivateStateDepth: 16,
       maximumPrivateStateFileBytes: 8_388_608,
       maximumPrivateStateTotalBytes: 67_108_864,
+      defaultMaximumBuildContextBytes: 67_108_864,
+      maximumHarnessBuildContextBytes: 402_653_184,
     });
   });
 });

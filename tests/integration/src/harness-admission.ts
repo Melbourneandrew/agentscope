@@ -62,6 +62,7 @@ export type HarnessAdmissionSeed = Readonly<{
     manifestDigest: string;
     configDigest: string;
     platformIdentity: string;
+    scenarioImageDigest: string;
   }>;
 }>;
 
@@ -71,6 +72,7 @@ export type HarnessAdmissionCompletion = Readonly<{
   requestFingerprint: string;
   observationPlaneDigest: string;
   cleanupEvidenceDigest: string;
+  scenarioImageDigest: string;
   outcome: "scenario-terminal-clean";
   remainingOwnedResources: 0;
 }>;
@@ -366,12 +368,18 @@ const parsePreparedImage = (
     "manifestDigest",
     "configDigest",
     "platformIdentity",
+    "scenarioImageDigest",
   ]);
   return {
     image: text(preparedImage.image, imagePattern, 232),
     manifestDigest: text(preparedImage.manifestDigest, ociDigestPattern, 71),
     configDigest: text(preparedImage.configDigest, ociDigestPattern, 71),
     platformIdentity: text(preparedImage.platformIdentity, digestPattern, 71),
+    scenarioImageDigest: text(
+      preparedImage.scenarioImageDigest,
+      digestPattern,
+      71,
+    ),
   };
 };
 
@@ -451,6 +459,7 @@ const parseCompletion = (value: unknown): HarnessAdmissionCompletion => {
     "requestFingerprint",
     "observationPlaneDigest",
     "cleanupEvidenceDigest",
+    "scenarioImageDigest",
     "outcome",
     "remainingOwnedResources",
   ]);
@@ -474,6 +483,7 @@ const parseCompletion = (value: unknown): HarnessAdmissionCompletion => {
       digestPattern,
       71,
     ),
+    scenarioImageDigest: text(record.scenarioImageDigest, digestPattern, 71),
     outcome: "scenario-terminal-clean" as const,
     remainingOwnedResources: 0,
   });
@@ -623,6 +633,8 @@ const admissionMethods = <Token extends object>(
       terminalRecord.material !== state.material ||
       completion.runId !== state.seed.runId ||
       receipt?.requestFingerprint !== completion.requestFingerprint ||
+      completion.scenarioImageDigest !==
+        state.seed.preparedImage.scenarioImageDigest ||
       receipt.transport !==
         (state.seed.execution.mode === "headless" ? "headless" : "pty")
     )

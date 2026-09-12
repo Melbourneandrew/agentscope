@@ -38,8 +38,22 @@ candidate once. Three clean GitHub-hosted replay jobs download that exact
 candidate. After each canonical lifecycle and outer cleanup succeed, the
 controller emits a bounded comparison receipt. Fan-in requires all three
 receipts to bind the same commit, candidate, manifest, selection, and scenario
-outcomes. These records have `platform-certification-only` authority; they are
-not harness-admission capabilities or support evidence.
+outcomes. Process-fixture records have `platform-certification-only` authority;
+they are not harness-admission capabilities or support evidence. A selected
+real-harness row additionally binds either exact registry archives with npm
+signature/SLSA provenance or an exact native binary with its exact-version
+signed release manifest and documented signing-key identity. Both use the same
+harness-neutral material authority. Credential-free npm/GPG verification runs
+inside an exact prepared verifier image through the selected disposable Docker
+daemon; BuildKit owns and terminally joins the complete verifier process set,
+and the resulting image is identity-checked and retired before admission. No
+host process-group wrapper or shared-daemon verifier can create material
+authority. The authority binds the component fixture, built artifacts, and a
+checksum-bound scenario process. Only the outer controller can consume that
+one-use material authority after the native receipt and exact cleanup are both
+terminal. The resulting record remains
+`real-scenario-evidence-awaiting-release-gate`; it is evidence for a later
+release decision, not a support claim by the scenario or adapter.
 
 The workflow also gives each closed deliberate-negative case its own fresh
 GitHub-hosted runner. The canonical lifecycle must fail, after which a
