@@ -58,16 +58,13 @@ const certificationReadiness = z.union([
 const harnessObservation = z.strictObject({
   observationVersion: z.literal(1),
   kind: z.literal("codex-tui-trace"),
-  hookEvents: z.tuple([
-    z.literal("SessionStart"),
-    z.literal("Stop"),
-    z.literal("SessionEnd"),
-  ]),
-  sessionSha256: z.string().regex(/^[a-f\d]{64}$/u),
-  turnSha256: z.string().regex(/^[a-f\d]{64}$/u),
   modelRequestBodySha256: z.string().regex(/^[a-f\d]{64}$/u),
   traceId: z.string().regex(/^[a-f\d]{32}$/u),
   resourceSpanCount: z.number().int().min(1).max(256),
+  spanNames: z.tuple([z.literal("codex.turn"), z.literal("codex.response")]),
+  parentLinked: z.literal(true),
+  doctorErrors: z.literal(0),
+  uninstallDisposition: z.literal("committed"),
 });
 const fixtureResult = z
   .strictObject({
