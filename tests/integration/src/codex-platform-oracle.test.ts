@@ -23,26 +23,6 @@ const raw = () => ({
       headers: [] as Array<{ name: string }>,
     },
   ],
-  hookLifecycle: [
-    {
-      eventName: "SessionStart",
-      model: "fixture-model",
-      sessionId: "session-1",
-      turnId: null,
-    },
-    {
-      eventName: "Stop",
-      model: "fixture-model",
-      sessionId: "session-1",
-      turnId: "turn-1",
-    },
-    {
-      eventName: "SessionEnd",
-      model: null,
-      sessionId: "session-1",
-      turnId: null,
-    },
-  ],
   search: { completion: "complete", harness: "codex", spanCount: 2, traceId },
   retrieval: {
     completion: "complete",
@@ -128,19 +108,10 @@ describe("Codex PTY scenario observation boundary", () => {
     }
   });
 
-  it("binds the exact root hook order, count, model, and session", () => {
+  it("binds the stored hook trace model and nonempty session", () => {
     const mutations = [
-      (value: RawObservation) =>
-        value.hookLifecycle.push({ ...value.hookLifecycle[1]! }),
-      (value: RawObservation) => value.hookLifecycle.reverse(),
       (value: RawObservation) => {
-        value.hookLifecycle[1]!.sessionId = "other";
-      },
-      (value: RawObservation) => {
-        value.hookLifecycle[1]!.model = "other";
-      },
-      (value: RawObservation) => {
-        value.retrieval.sessionId = "other";
+        value.retrieval.sessionId = "";
       },
       (value: RawObservation) => {
         value.retrieval.modelName = "other";

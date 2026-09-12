@@ -6,7 +6,3 @@ export function readBoundedJsonResponse(
 export function boundedRequestLedger(
   value: unknown,
 ): readonly Readonly<Record<string, unknown>>[];
-
-export function readHookLifecycleLedger(
-  path: string,
-): readonly Readonly<Record<string, unknown>>[];

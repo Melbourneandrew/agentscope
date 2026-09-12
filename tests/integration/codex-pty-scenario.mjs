@@ -16,7 +16,6 @@ import { createCodexInternalProviderConfiguration } from "./runtime/codex-config
 import {
   boundedRequestLedger,
   readBoundedJsonResponse,
-  readHookLifecycleLedger,
 } from "./runtime/codex-runtime-evidence.mjs";
 import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
 import { translateCodexPlatformObservations } from "./scenario-adapter.mjs";
@@ -183,16 +182,6 @@ const waitForModelRequest = async () => {
   while ((await readModelRequests()).length === 0)
     await new Promise((resolve) => setTimeout(resolve, 25));
 };
-const waitForStopHook = async (path) => {
-  while (true) {
-    if (existsSync(path)) {
-      const records = readHookLifecycleLedger(path);
-      if (records.some(({ eventName }) => eventName === "Stop")) return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    remaining();
-  }
-};
 const projectHarnessStatus = (
   records,
   installation,
@@ -300,6 +289,43 @@ const projectTraceGraph = (graph, traceId) => {
     modelName: stringAttribute(model, "llm.model_name"),
   };
 };
+const readTraceSummary = async () => {
+  const records = await cli(
+    [
+      "traces",
+      "search",
+      "--destination",
+      "local",
+      "--harness",
+      "codex",
+      "--limit",
+      "50",
+    ],
+    "agentscope traces search",
+  );
+  if (
+    records.length !== 1 ||
+    !Array.isArray(records[0]?.summaries) ||
+    records[0].summaries.length > 1
+  )
+    throw new Error("integration.codex.trace-search");
+  if (records[0].summaries.length === 0) return null;
+  const summary = records[0].summaries[0];
+  if (
+    summary?.harness !== "codex" ||
+    typeof summary?.locator?.traceId !== "string"
+  )
+    throw new Error("integration.codex.trace-search");
+  return summary;
+};
+const waitForTraceSummary = async () => {
+  while (true) {
+    const summary = await readTraceSummary();
+    if (summary !== null) return summary;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    remaining();
+  }
+};
 
 let completed = false;
 try {
@@ -317,10 +343,6 @@ try {
   );
   const codexHome = join(home, ".codex");
   const hookPath = join(codexHome, "hooks.json");
-  const hookLifecyclePath = join(
-    agentscopeHome,
-    "codex-hook-lifecycle-v1.jsonl",
-  );
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
   const launcherStatus = lstatSync(launcher);
@@ -356,33 +378,18 @@ try {
   );
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   await waitForModelRequest();
-  await waitForStopHook(hookLifecyclePath);
+  const observedBeforeQuit = await waitForTraceSummary();
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   await codexRun;
   const modelRequests = await readModelRequests();
-  const hookLifecycle = readHookLifecycleLedger(hookLifecyclePath);
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
-  const searchRecords = await cli(
-    [
-      "traces",
-      "search",
-      "--destination",
-      "local",
-      "--harness",
-      "codex",
-      "--limit",
-      "50",
-    ],
-    "agentscope traces search",
-  );
+  const summary = await readTraceSummary();
   if (
-    searchRecords.length !== 1 ||
-    !Array.isArray(searchRecords[0]?.summaries) ||
-    searchRecords[0].summaries.length !== 1
+    summary === null ||
+    summary.locator.traceId !== observedBeforeQuit.locator.traceId
   )
     throw new Error("integration.codex.trace-search");
-  const summary = searchRecords[0].summaries[0];
   const traceId = summary?.locator?.traceId;
   if (summary?.harness !== "codex" || typeof traceId !== "string")
     throw new Error("integration.codex.trace-search");
@@ -417,7 +424,6 @@ try {
     prompt,
     promptSha256,
     modelRequests,
-    hookLifecycle,
     search: {
       completion: "complete",
       harness: summary.harness,

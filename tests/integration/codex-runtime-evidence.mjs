@@ -1,5 +1,3 @@
-import { lstatSync, readFileSync } from "node:fs";
-
 const plainRecord = (value) =>
   typeof value === "object" &&
   value !== null &&
@@ -54,24 +52,4 @@ export const boundedRequestLedger = (value) => {
   )
     throw new Error("integration.codex.model-request");
   return Object.freeze(value.map((entry) => Object.freeze({ ...entry })));
-};
-
-export const readHookLifecycleLedger = (path) => {
-  const status = lstatSync(path);
-  if (!status.isFile() || status.isSymbolicLink() || status.size > 16_384)
-    throw new Error("integration.codex.hook-lifecycle");
-  const source = readFileSync(path, "utf8");
-  if (Buffer.byteLength(source) !== status.size || !source.endsWith("\n"))
-    throw new Error("integration.codex.hook-lifecycle");
-  try {
-    const records = source
-      .slice(0, -1)
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    if (records.length > 8 || records.some((record) => !plainRecord(record)))
-      throw new Error("integration.codex.hook-lifecycle");
-    return Object.freeze(records.map((record) => Object.freeze(record)));
-  } catch {
-    throw new Error("integration.codex.hook-lifecycle");
-  }
 };

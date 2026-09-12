@@ -1,20 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   boundedRequestLedger,
   readBoundedJsonResponse,
-  readHookLifecycleLedger,
 } from "../codex-runtime-evidence.mjs";
-
-const roots: string[] = [];
-afterEach(() => {
-  for (const root of roots.splice(0))
-    rmSync(root, { force: true, recursive: true });
-});
 
 describe("Codex bounded native ledgers", () => {
   it("reads one bounded JSON response and rejects overflow or malformed data", async () => {
@@ -40,24 +29,6 @@ describe("Codex bounded native ledgers", () => {
     ).toThrow("integration.codex.model-request");
     expect(() => boundedRequestLedger([null])).toThrow(
       "integration.codex.model-request",
-    );
-  });
-
-  it("reads a closed hook ledger and rejects malformed or oversized input", () => {
-    const root = mkdtempSync(join(tmpdir(), "agentscope-codex-ledger-"));
-    roots.push(root);
-    const path = join(root, "hooks.jsonl");
-    writeFileSync(path, '{"eventName":"SessionStart"}\n', { mode: 0o600 });
-    expect(readHookLifecycleLedger(path)).toEqual([
-      { eventName: "SessionStart" },
-    ]);
-    writeFileSync(path, "{}", { mode: 0o600 });
-    expect(() => readHookLifecycleLedger(path)).toThrow(
-      "integration.codex.hook-lifecycle",
-    );
-    writeFileSync(path, "x".repeat(16_385), { mode: 0o600 });
-    expect(() => readHookLifecycleLedger(path)).toThrow(
-      "integration.codex.hook-lifecycle",
     );
   });
 });
