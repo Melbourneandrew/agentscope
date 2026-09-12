@@ -19,10 +19,7 @@ import {
   requireDisposableOuterHostCapability,
 } from "./dist/controller.js";
 import { IMAGE_PREPARATION_LIMITS } from "./image-preparation.mjs";
-import {
-  SUBSTRATE_CERTIFICATION_CASES,
-  SUBSTRATE_CERTIFICATION_PREDICATES,
-} from "./dist/substrate-certification.js";
+import { certificationFailureAuthorityIsValid } from "./dist/substrate-certification.js";
 
 const capability = requireDisposableOuterHostCapability();
 const owned = ownedIntegrationResources();
@@ -210,14 +207,6 @@ const validInstalledPtyFailure = (value) =>
     value.receiptVersion === 1 &&
     Object.hasOwn(installedPtyFailurePredicates, value.phase) &&
     installedPtyFailurePredicates[value.phase].includes(value.predicate));
-const validCertificationFailure = (record) =>
-  (record.certificationCase === null &&
-    record.certificationPredicate === null) ||
-  (SUBSTRATE_CERTIFICATION_CASES.includes(record.certificationCase) &&
-    record.certificationPredicate ===
-      SUBSTRATE_CERTIFICATION_PREDICATES[record.certificationCase] &&
-    record.primaryFailure ===
-      `integration.certification.${record.certificationCase}`);
 const addDirectory = (targets, relative) => {
   const path = resolve(artifactsRoot, relative);
   if (!existsSync(path)) return;
@@ -267,6 +256,7 @@ const assertFailureEvidence = (identity) => {
           "cleanupFailure",
           "certificationCase",
           "certificationPredicate",
+          "certificationReadiness",
           "controllerFailureEvidenceVersion",
           "controllerOutcome",
           "installedPtyFailure",
@@ -281,7 +271,7 @@ const assertFailureEvidence = (identity) => {
     record.controllerOutcome !== "retired-failure" ||
     !validInstalledPtyFailure(record.installedPtyFailure) ||
     !/^(?:integration\.[a-z.-]{1,96})$/u.test(record.primaryFailure) ||
-    !validCertificationFailure(record) ||
+    !certificationFailureAuthorityIsValid(record) ||
     !(
       record.cleanupFailure === null ||
       /^(?:integration\.[a-z.-]{1,96})$/u.test(record.cleanupFailure)

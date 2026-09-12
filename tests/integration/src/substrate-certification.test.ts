@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  certificationFailureAuthorityIsValid,
   compileSubstrateCertificationReceipt,
   leakedChildContainmentWasObserved,
   parseSubstrateCertificationRequest,
@@ -144,6 +145,45 @@ describe("leaked-child causal observation", () => {
       { residualProcessCount: 1 },
     ])
       expect(observed(replacement)).toBe(false);
+  });
+});
+
+describe("certification failure cleanup authority", () => {
+  const readiness = {
+    readinessVersion: 1,
+    certificationCase: "leaked-child",
+    challengeSha256: `sha256:${"a".repeat(64)}`,
+  };
+  const record = (replacement: Record<string, unknown> = {}) => ({
+    certificationCase: "leaked-child",
+    certificationPredicate: "containment-intervention",
+    certificationReadiness: readiness,
+    primaryFailure: "integration.controller.unsettled-operation",
+    ...replacement,
+  });
+
+  it("accepts current records and rejects missing or substituted readiness", () => {
+    expect(certificationFailureAuthorityIsValid(record())).toBe(true);
+    expect(
+      certificationFailureAuthorityIsValid(
+        record({ certificationReadiness: null }),
+      ),
+    ).toBe(false);
+    expect(
+      certificationFailureAuthorityIsValid(
+        record({
+          certificationReadiness: {
+            ...readiness,
+            challengeSha256: "sha256:substituted",
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      certificationFailureAuthorityIsValid(
+        record({ primaryFailure: "integration.certification.leaked-child" }),
+      ),
+    ).toBe(false);
   });
 });
 

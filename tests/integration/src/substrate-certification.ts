@@ -56,6 +56,52 @@ export const SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES = Object.freeze({
   "cleanup-failure": "integration.certification.cleanup-failure",
 } satisfies Readonly<Record<SubstrateCertificationCase, string>>);
 
+export const leakedChildReadinessIsValid = (value: unknown): boolean =>
+  typeof value === "object" &&
+  value !== null &&
+  JSON.stringify(Object.keys(value).sort()) ===
+    JSON.stringify([
+      "certificationCase",
+      "challengeSha256",
+      "readinessVersion",
+    ]) &&
+  "readinessVersion" in value &&
+  value.readinessVersion === 1 &&
+  "certificationCase" in value &&
+  value.certificationCase === "leaked-child" &&
+  "challengeSha256" in value &&
+  typeof value.challengeSha256 === "string" &&
+  /^sha256:[a-f0-9]{64}$/u.test(value.challengeSha256);
+
+export const certificationFailureAuthorityIsValid = (input: {
+  readonly certificationCase: unknown;
+  readonly certificationPredicate: unknown;
+  readonly certificationReadiness: unknown;
+  readonly primaryFailure: unknown;
+}): boolean => {
+  if (input.certificationCase === null)
+    return (
+      input.certificationPredicate === null &&
+      input.certificationReadiness === null
+    );
+  if (
+    typeof input.certificationCase !== "string" ||
+    !Object.hasOwn(SUBSTRATE_CERTIFICATION_PREDICATES, input.certificationCase)
+  )
+    return false;
+  const certificationCase =
+    input.certificationCase as SubstrateCertificationCase;
+  return (
+    input.certificationPredicate ===
+      SUBSTRATE_CERTIFICATION_PREDICATES[certificationCase] &&
+    input.primaryFailure ===
+      SUBSTRATE_CERTIFICATION_PRIMARY_FAILURES[certificationCase] &&
+    (certificationCase === "leaked-child"
+      ? leakedChildReadinessIsValid(input.certificationReadiness)
+      : input.certificationReadiness === null)
+  );
+};
+
 export const leakedChildContainmentWasObserved = (input: {
   readonly certificationReadiness: unknown;
   readonly cleanup: unknown;
@@ -63,21 +109,7 @@ export const leakedChildContainmentWasObserved = (input: {
   readonly fixtureResultStatus: unknown;
   readonly residualProcessCount: unknown;
 }): boolean =>
-  typeof input.certificationReadiness === "object" &&
-  input.certificationReadiness !== null &&
-  JSON.stringify(Object.keys(input.certificationReadiness).sort()) ===
-    JSON.stringify([
-      "certificationCase",
-      "challengeSha256",
-      "readinessVersion",
-    ]) &&
-  "readinessVersion" in input.certificationReadiness &&
-  input.certificationReadiness.readinessVersion === 1 &&
-  "certificationCase" in input.certificationReadiness &&
-  input.certificationReadiness.certificationCase === "leaked-child" &&
-  "challengeSha256" in input.certificationReadiness &&
-  typeof input.certificationReadiness.challengeSha256 === "string" &&
-  /^sha256:[a-f0-9]{64}$/u.test(input.certificationReadiness.challengeSha256) &&
+  leakedChildReadinessIsValid(input.certificationReadiness) &&
   input.fixtureCaptured === true &&
   input.fixtureResultStatus === "complete" &&
   input.cleanup === "clean" &&
