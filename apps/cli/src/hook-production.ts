@@ -11,6 +11,7 @@ import {
   createConfigurationProcessIdentity,
   createConfigurationStore,
 } from "@agentscope/core/configuration-management";
+import { createLocalResourceHomeAuthority } from "@agentscope/core/home-authority";
 import {
   resolveOwnedHookHomeForCli,
   type HookEntryAuthority,
@@ -20,6 +21,7 @@ import {
   decodeCodexRootHookInput,
   mapCodexRootHookCapture,
 } from "@agentscope/harness-codex";
+import { bindLocalSqliteProductionReporterHome } from "@agentscope/destination-local-sqlite";
 
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
 import {
@@ -45,6 +47,7 @@ const runProductCodexHookEvidenceWith = async (
   const home = resolveOwnedHookHomeForCli(input.hookEntryAuthority);
   if (home.root !== input.launcher.homeRoot)
     throw new Error("cli.hook.invalid");
+  bindLocalSqliteProductionReporterHome(createLocalResourceHomeAuthority(home));
   const registry = requireExactProductDestinationRegistry(
     PRODUCT_DESTINATION_REGISTRY,
   );
