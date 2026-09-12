@@ -872,10 +872,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
       "packed-model",
     );
     assert.equal(
-      stringAttribute(
-        packedTrace.resourceSpans[0].resource.attributes,
-        "session.id",
-      ),
+      packedSpans
+        .map(({ attributes }) => stringAttribute(attributes, "session.id"))
+        .filter((value) => value !== undefined)
+        .join("\0"),
       "packed-session",
     );
     assert.doesNotMatch(JSON.stringify(packedTrace), /PACKED_CONTENT_CANARY/u);
