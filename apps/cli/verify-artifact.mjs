@@ -720,6 +720,116 @@ setTimeout(() => process.exit(3), 10_000).unref();
       },
     ]);
     assert.match(configuredLocal.stderr, /"state":"planned"/u);
+    const routedLocal = run(
+      executable,
+      ["routing", "set", "packed-local", "--output", "json"],
+      { ...executableOptions, env: localEnvironment },
+    );
+    assert.equal(routedLocal.stderr, "");
+    assert.deepEqual(JSON.parse(routedLocal.stdout).records, [
+      { selectedConnections: ["packed-local"] },
+    ]);
+    const codexLauncher = launcherModule.createOwnedHookLauncherArtifacts({
+      ...launcherInput,
+      agentscopeHome: localHome,
+      harnessType: "@agentscope/harness-codex",
+    });
+    writeFileSync(codexLauncher.launcherPath, codexLauncher.launcherBytes, {
+      mode: codexLauncher.mode,
+    });
+    chmodSync(codexLauncher.launcherPath, codexLauncher.mode);
+    writeFileSync(codexLauncher.metadataPath, codexLauncher.metadataBytes);
+    const codexHookInput = (hookEventName) =>
+      JSON.stringify(
+        hookEventName === "SessionStart"
+          ? {
+              cwd: installRoot,
+              hook_event_name: "SessionStart",
+              model: "packed-model",
+              permission_mode: "default",
+              session_id: "packed-session",
+              source: "startup",
+              transcript_path: null,
+            }
+          : hookEventName === "Stop"
+            ? {
+                cwd: installRoot,
+                hook_event_name: "Stop",
+                last_assistant_message: "PACKED_CONTENT_CANARY",
+                model: "packed-model",
+                permission_mode: "default",
+                session_id: "packed-session",
+                stop_hook_active: false,
+                transcript_path: null,
+                turn_id: "packed-turn",
+              }
+            : {
+                cwd: installRoot,
+                hook_event_name: "SessionEnd",
+                reason: "other",
+                session_id: "packed-session",
+                transcript_path: null,
+              },
+      );
+    for (const hookEventName of ["SessionStart", "Stop", "SessionEnd"]) {
+      const invokedHook = run(codexLauncher.launcherPath, [], {
+        env: localEnvironment,
+        input: codexHookInput(hookEventName),
+      });
+      assert.equal(invokedHook.stdout, "");
+      assert.equal(invokedHook.stderr, "");
+    }
+    const searchedLocal = run(
+      executable,
+      [
+        "traces",
+        "search",
+        "--destination",
+        "packed-local",
+        "--session",
+        "packed-session",
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    const searchedLocalDocument = JSON.parse(searchedLocal.stdout);
+    assert.equal(searchedLocal.stderr, "");
+    assert.equal(searchedLocalDocument.records.length, 1);
+    assert.equal(searchedLocalDocument.records[0].summaries.length, 1);
+    const packedTraceLocator =
+      searchedLocalDocument.records[0].summaries[0].locator;
+    const retrievedLocal = run(
+      executable,
+      [
+        "traces",
+        "get",
+        "--destination",
+        "packed-local",
+        "--trace-ref",
+        JSON.stringify(packedTraceLocator),
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    const retrievedLocalDocument = JSON.parse(retrievedLocal.stdout);
+    assert.equal(retrievedLocal.stderr, "");
+    assert.equal(retrievedLocalDocument.records.length, 1);
+    const packedTrace = retrievedLocalDocument.records[0].graph;
+    assert.deepEqual(
+      packedTrace.spans.map(({ name }) => name),
+      ["codex.turn", "codex.response"],
+    );
+    assert.equal(
+      packedTrace.spans[1].attributes["llm.model_name"],
+      "packed-model",
+    );
+    assert.equal(
+      packedTrace.resource.attributes["session.id"],
+      "packed-session",
+    );
+    assert.doesNotMatch(JSON.stringify(packedTrace), /PACKED_CONTENT_CANARY/u);
     const localDoctor = run(executable, ["doctor", "--output", "json"], {
       ...executableOptions,
       env: localEnvironment,
@@ -843,6 +953,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
     "0001-initialize.sql",
     "0002-retrieval-indexes.sql",
   ]);
+  assert.deepEqual(
+    regularFiles(join(installedRoot, "dist/internal/migrations")),
+    ["0001-initialize.sql", "0002-retrieval-indexes.sql"],
+  );
   assert.deepEqual(
     regularFiles(join(installedRoot, "dist/internal/local-sqlite-runtime")),
     [
