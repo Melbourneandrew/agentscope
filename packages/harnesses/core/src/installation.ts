@@ -49,8 +49,12 @@ export type HarnessTargetInspection = Readonly<{
 
 export type HarnessTargetDecision =
   | Readonly<{ kind: "unchanged" }>
-  | Readonly<{ kind: "replace"; bytes: Uint8Array }>
-  | Readonly<{ kind: "replace-overlap"; bytes: Uint8Array }>
+  | Readonly<{ kind: "replace"; bytes: Uint8Array; mode?: 0o600 | 0o700 }>
+  | Readonly<{
+      kind: "replace-overlap";
+      bytes: Uint8Array;
+      mode?: 0o600 | 0o700;
+    }>
   | Readonly<{ kind: "remove" }>
   | Readonly<{ kind: "conflict" }>
   | Readonly<{ kind: "unsupported" }>;
@@ -463,18 +467,26 @@ const safeDecision = (
     if (Reflect.ownKeys(descriptors).length !== 1) return invalid();
     return Object.freeze({ kind } as HarnessTargetDecision);
   }
+  const keys = Reflect.ownKeys(descriptors);
   if (
     !["replace", "replace-overlap"].includes(String(kind)) ||
-    Reflect.ownKeys(descriptors).length !== 2 ||
-    !descriptors.bytes
+    (keys.length !== 2 && keys.length !== 3) ||
+    keys.some((key) => key !== "kind" && key !== "bytes" && key !== "mode") ||
+    !descriptors.bytes ||
+    (keys.length === 3 && !descriptors.mode)
   )
     return invalid();
   const bytes = copyBytes(descriptors.bytes.value);
   if (!bytes) return invalid();
-  return Object.freeze({
-    kind: kind as "replace" | "replace-overlap",
+  const mode = descriptors.mode?.value as unknown;
+  if (descriptors.mode && mode !== 0o600 && mode !== 0o700) return invalid();
+  const replacement = Object.freeze({
     bytes,
+    ...(descriptors.mode ? { mode: mode as 0o600 | 0o700 } : {}),
   });
+  return kind === "replace"
+    ? Object.freeze({ kind, ...replacement })
+    : Object.freeze({ kind: "replace-overlap", ...replacement });
 };
 
 const result = (
@@ -528,9 +540,13 @@ export const inspectHarnessInstallation = async (
               exists: true,
               bytes: new Uint8Array(decision.bytes),
               digest: hash(decision.bytes),
-              mode: before.mode ?? FILE_MODE,
+              mode: decision.mode ?? before.mode ?? FILE_MODE,
             });
-      if (before.exists === after.exists && before.digest === after.digest)
+      if (
+        before.exists === after.exists &&
+        before.digest === after.digest &&
+        before.mode === after.mode
+      )
         continue;
       targets.push(Object.freeze({ targetPath, before, after }));
     }
@@ -1248,7 +1264,11 @@ const parseManifestRecord = (
         target.backupPath !==
           (target.beforeExists ? `${prefix}.backup` : null) ||
         target.beforeExists !== (target.beforeMode !== null) ||
-        target.afterExists !== (target.afterMode !== null)
+        target.afterExists !== (target.afterMode !== null) ||
+        (target.afterMode !== null &&
+          target.afterMode !== target.beforeMode &&
+          target.afterMode !== 0o600 &&
+          target.afterMode !== 0o700)
       );
     })
   )
