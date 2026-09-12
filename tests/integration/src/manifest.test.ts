@@ -185,6 +185,28 @@ describe("integration capability manifest", () => {
     }).toThrow("integration.manifest.evidence-digest");
   });
 
+  it("starts the Codex turn before admitting PTY control input", () => {
+    const scenario = manifestFixture().scenarios.find(
+      ({ scenarioId }) => scenarioId === "codex-tui-trace-smoke",
+    )!;
+    expect(Buffer.from(scenario.terminalInputBase64, "base64")).toEqual(
+      Buffer.from("\f/quit\r"),
+    );
+    expect(scenario.postCompletionInputByteLength).toBe(6);
+    const source = readFileSync(
+      resolve(integrationRoot, scenario.scenarioProcess.path),
+      "utf8",
+    );
+    const startupPrompt = source.indexOf("      prompt,\n");
+    const modelRequest = source.indexOf("  await waitForModelRequest();\n");
+    const semanticReady = source.indexOf(
+      '  process.stdout.write("\\u001b[?1049hAGENTSCOPE_PTY_READY\\r\\n");\n',
+    );
+    expect(startupPrompt).toBeGreaterThan(-1);
+    expect(modelRequest).toBeGreaterThan(startupPrompt);
+    expect(semanticReady).toBeGreaterThan(modelRequest);
+  });
+
   it("selects mutually isolated MockServer expectations per scenario", () => {
     const manifest = manifestFixture();
     const initialization = createMockServerInitialization() as readonly {

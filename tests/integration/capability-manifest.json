@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-15b6c4d50172d7d4eb9528ced8a37681597e8db7d6f6f7bc231d57b0bae246f3",
+  "manifestIdentity": "sha256-06d30680d8faa99185a2e0589cf8797e9ed62628193d24cff92d02bef4bf576e",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -154,11 +154,11 @@
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "4a3e5541e303a4be77b5093cd2d84776fbe4729dc81d5d267ab13ab2ab3f40c5"
+        "sha256": "b7838cc08c4c53d4dbf5e83e858ea91a006428d1675f9053f16dd5735582499b"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "c469817387e5f80aa917970204e8685b9731f46a5f9078eddf7f1a0796527372"
+        "sha256": "cf112056456d9597f6421e9d7dec48930f6d58a46a6e3296d18be43a9429dec5"
       },
       "runtimeArtifacts": [
         {
@@ -178,7 +178,7 @@
           "sha256": "b3ac1851d450f2c2b020208e9a1e89b0e6ba7c2cf5a6fdf1d2143386c89f5417"
         }
       ],
-      "terminalInputBase64": "UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLg0vcXVpdA0=",
+      "terminalInputBase64": "DC9xdWl0DQ==",
       "postCompletionInputByteLength": 6,
       "waitForSemanticCompletionBeforeEof": true,
       "resourceClass": "medium",

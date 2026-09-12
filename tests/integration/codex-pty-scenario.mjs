@@ -120,7 +120,7 @@ const cli = async (arguments_, command) =>
   );
 
 const prompt = "Reply with one short confirmation and do not use tools.";
-const promptSha256 = createHash("sha256").update(`${prompt}\r`).digest("hex");
+const promptSha256 = createHash("sha256").update(prompt).digest("hex");
 const requestJson = async (url, options) => {
   const response = await fetch(url, {
     ...options,
@@ -371,6 +371,7 @@ try {
       "read-only",
       "--ask-for-approval",
       "never",
+      prompt,
     ],
     {
       cwd: worktree,
@@ -378,8 +379,8 @@ try {
       inherit: true,
     },
   );
-  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   await waitForModelRequest();
+  process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   const observedBeforeQuit = await waitForTraceSummary();
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   await codexRun;
