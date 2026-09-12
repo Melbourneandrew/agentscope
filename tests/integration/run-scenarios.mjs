@@ -283,6 +283,10 @@ const stageBuildContext = (plan) => {
       resolve(integrationRoot, "pty-installed-cli-driver.mjs"),
     ],
     [
+      "retained-fixture-result.mjs",
+      resolve(integrationRoot, "retained-fixture-result.mjs"),
+    ],
+    [
       "destination-server.mjs",
       resolve(integrationRoot, "destination-server.mjs"),
     ],
@@ -379,7 +383,7 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs destination-server.mjs platform-fixture.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs platform-fixture.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY fixtures ./fixtures",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",

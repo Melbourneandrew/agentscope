@@ -24,6 +24,7 @@ import {
   decodeImmutableCandidateHandoff,
 } from "./immutable-candidate-authority.mjs";
 import { runInstalledCliPtyProof } from "./pty-installed-cli-driver.mjs";
+import { readRetainedFixtureOutput } from "./retained-fixture-result.mjs";
 import { parseSubstrateCertificationCaseValue } from "./substrate-certification.js";
 
 const substrateCertificationCase = parseSubstrateCertificationCaseValue(
@@ -304,30 +305,8 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
-const readRetainedFixtureOutput = () => {
-  const fixtureResultPath = join(ledger, "fixture-result.json");
-  const fixtureResultStatus = lstatSync(fixtureResultPath);
-  if (
-    !fixtureResultStatus.isFile() ||
-    fixtureResultStatus.isSymbolicLink() ||
-    fixtureResultStatus.size < 1 ||
-    fixtureResultStatus.size > 1024 * 1024 ||
-    (fixtureResultStatus.mode & 0o777) !== 0o600
-  )
-    throw new Error("integration.runner.fixture-result");
-  const retained = JSON.parse(readFileSync(fixtureResultPath, "utf8"));
-  if (
-    JSON.stringify(Object.keys(retained).sort()) !==
-      JSON.stringify(["encodedEvidence", "evidenceVersion", "scenarioId"]) ||
-    retained.evidenceVersion !== 1 ||
-    retained.scenarioId !== scenarioId ||
-    typeof retained.encodedEvidence !== "string" ||
-    retained.encodedEvidence.length > 1024 * 1024 ||
-    !/^[A-Za-z0-9_-]+$/u.test(retained.encodedEvidence)
-  )
-    throw new Error("integration.runner.fixture-result");
-  return `AGENTSCOPE_FIXTURE_RESULT=${retained.encodedEvidence}\n`;
-};
+const recoverRetainedFixtureOutput = () =>
+  readRetainedFixtureOutput(join(ledger, "fixture-result.json"), scenarioId);
 try {
   const childEnvironment = Object.freeze({
     AGENTSCOPE_HOME: agentscopeHome,
@@ -528,7 +507,7 @@ try {
     console.log(
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
-    fixtureOutput = readRetainedFixtureOutput();
+    fixtureOutput = recoverRetainedFixtureOutput();
     if (
       receipt.outcome !== "completed" ||
       receipt.finalSnapshot.semanticState !== "completed" ||
@@ -615,7 +594,7 @@ try {
     substrateCertificationCase === "leaked-child"
   ) {
     try {
-      fixtureOutput = readRetainedFixtureOutput();
+      fixtureOutput = recoverRetainedFixtureOutput();
     } catch {
       fixtureOutput = "";
     }
