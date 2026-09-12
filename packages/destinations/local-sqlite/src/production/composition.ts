@@ -55,6 +55,7 @@ export const initializeLocalSqliteProductionComposition = (
       throw new Error("destination.local-sqlite.native-unavailable");
     return productionComposition.value;
   }
+  bindLocalSqliteProductionReporterHome(homeAuthority);
   const value: LocalSqliteProductionComposition = Object.freeze({
     destinationDescriptor: localSqliteDestinationDescriptor,
     /* v8 ignore start -- this ordinary package bootstrap is causally exercised

@@ -55,15 +55,6 @@ describe("Local SQLite package boundaries", () => {
       root: "/owned/agentscope-home",
       platform: process.platform,
     });
-    root.bindLocalSqliteProductionReporterHome(home);
-    expect(() => {
-      root.bindLocalSqliteProductionReporterHome(
-        bindLocalResourceHomeAuthorityForTesting({
-          root: "/substituted/agentscope-home",
-          platform: process.platform,
-        }),
-      );
-    }).toThrow("destination.local-sqlite.native-unavailable");
     const composition = root.initializeLocalSqliteProductionComposition(home);
     expect(Object.keys(composition).sort()).toEqual([
       "createLifecycleHandler",
@@ -75,6 +66,14 @@ describe("Local SQLite package boundaries", () => {
     expect(root.initializeLocalSqliteProductionComposition(home)).toBe(
       composition,
     );
+    expect(() => {
+      root.bindLocalSqliteProductionReporterHome(
+        bindLocalResourceHomeAuthorityForTesting({
+          root: "/substituted/agentscope-home",
+          platform: process.platform,
+        }),
+      );
+    }).toThrow("destination.local-sqlite.native-unavailable");
     expect(() =>
       root.initializeLocalSqliteProductionComposition(
         bindLocalResourceHomeAuthorityForTesting({
