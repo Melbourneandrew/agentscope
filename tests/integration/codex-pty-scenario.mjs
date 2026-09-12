@@ -112,6 +112,20 @@ const scenarioId = required("AGENTSCOPE_SCENARIO_ID");
 const modelEndpoint = required("AGENTSCOPE_MODEL_SERVER_URL");
 for (const directory of [home, agentscopeHome, worktree, ledger])
   mkdirSync(directory, { recursive: true });
+let interactiveFailurePhase = "bootstrap";
+if (process.hasUncaughtExceptionCaptureCallback())
+  throw new Error("integration.codex.failure-capture");
+process.setUncaughtExceptionCaptureCallback(() => {
+  try {
+    writeFileSync(
+      join(ledger, "interactive-failure.txt"),
+      `integration.fixture.codex-${interactiveFailurePhase}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+  } finally {
+    process.exit(1);
+  }
+});
 
 const cli = async (arguments_, command) =>
   parseMachine(
@@ -329,6 +343,7 @@ const waitForTraceSummary = async () => {
 
 let completed = false;
 try {
+  interactiveFailurePhase = "install";
   await cli(["init", "--yes"], "agentscope init");
   await cli(
     ["destination", "configure", "local-sqlite", "--name", "local", "--yes"],
@@ -363,6 +378,7 @@ try {
     mode: 0o600,
   });
   chmodSync(join(codexHome, "config.toml"), 0o600);
+  interactiveFailurePhase = "tui-start";
   const codexRun = run(
     codex,
     [
@@ -380,11 +396,15 @@ try {
       inherit: true,
     },
   );
+  interactiveFailurePhase = "model-request";
   await waitForModelRequest();
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
+  interactiveFailurePhase = "trace";
   const observedBeforeQuit = await waitForTraceSummary();
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
+  interactiveFailurePhase = "tui-exit";
   await codexRun;
+  interactiveFailurePhase = "verify";
   const modelRequests = await readModelRequests();
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
