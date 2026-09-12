@@ -1,6 +1,6 @@
 {
   "manifestVersion": 1,
-  "manifestIdentity": "sha256-de8aca6d384ea2e1c542920baae51a59b26f0fb6ad70b0cd4383cf229d59ce59",
+  "manifestIdentity": "sha256-0a0bb9be519033c482a87a88ebbdffc32d509085ba95d43a32eac55a1ae42f23",
   "requiredRepresentativeIds": ["fixture-process-v1", "codex-0-149-1"],
   "evidence": [
     {
@@ -68,11 +68,11 @@
           },
           "adapterArtifact": {
             "path": "packages/harnesses/codex/src/testing.ts",
-            "sha256": "e1575a41ffcbdbcd0785861c927d3fe6b6cbd6e5a7af9f4d733829526a295c55"
+            "sha256": "b935d25f7f85f5c5722affd3b215e8d59fa42711936cb10b62cd3f64f1fd520e"
           },
           "mappingArtifact": {
             "path": "packages/harnesses/codex/src/mapping.ts",
-            "sha256": "8780fe63c4db0ce29dd4d4eaa8044f03ac8ac9cc48c7451dfc2e32d4110568ad"
+            "sha256": "64d8e0d29038fbb8850af1ef7ea9caaeee1f774f93c0bdabeb7246929305e0e3"
           },
           "componentEvidenceDigest": "component-sha256-6e759e10cefadaa82b4029efabd81cf15e0efa3e4f631c96d9d3f6a1ea366c57"
         }
@@ -173,15 +173,15 @@
       "destinations": ["local-sqlite"],
       "fixtureAdapter": {
         "path": "fixtures/codex-platform-adapter.mjs",
-        "sha256": "814664ffe67445e67d4d611bdc76048c3a6fa3e8e9146556cf51a4be410cfd17"
+        "sha256": "75898b2d3e95e6dc6f59afedbcb211be3d35446089a13faa84181ad5a547c912"
       },
       "scenarioOracle": {
         "path": "codex-platform-oracle.mjs",
-        "sha256": "6c8ca7f38b51e21f8908c0e64c77d399d675b0e70c1bd34adb7e1f8747875c02"
+        "sha256": "2f8d9d2fa0273368b82a24f890fcbf5fb3dcd210b8145df1d5b51c9a99d68998"
       },
       "scenarioProcess": {
         "path": "codex-pty-scenario.mjs",
-        "sha256": "2130c636d419ca925f0f16d3a63ed44861d834ec7ba451cca66812224734e048"
+        "sha256": "fba9a2a3b427f7361d9d3fbeb8ddb2c6e425991c1f3109929dc2f263b654a8e3"
       },
       "runtimeArtifacts": [
         {
@@ -191,14 +191,6 @@
           },
           "destination": "codex-configuration.js",
           "sha256": "b3ac1851d450f2c2b020208e9a1e89b0e6ba7c2cf5a6fdf1d2143386c89f5417"
-        },
-        {
-          "source": {
-            "kind": "integration",
-            "path": "codex-hook-observer.mjs"
-          },
-          "destination": "codex-hook-observer.mjs",
-          "sha256": "38186104191ef88cf136e2c4b65aa7842884ee729d173f630ec62100fd790921"
         }
       ],
       "terminalInputBase64": "UmVwbHkgd2l0aCBvbmUgc2hvcnQgY29uZmlybWF0aW9uIGFuZCBkbyBub3QgdXNlIHRvb2xzLg0vcXVpdA0=",
