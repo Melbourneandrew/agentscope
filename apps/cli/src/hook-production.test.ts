@@ -173,7 +173,9 @@ describe("production Codex hook composition", () => {
       expect(requests).toBe(0);
     },
   );
+});
 
+describe("production Codex hook home authority", () => {
   it("rejects a launcher root substituted after the owned-home transfer", async () => {
     let requests = 0;
     await expect(

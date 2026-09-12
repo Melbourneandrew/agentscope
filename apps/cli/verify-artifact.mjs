@@ -727,7 +727,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     );
     assert.equal(routedLocal.stderr, "");
     assert.deepEqual(JSON.parse(routedLocal.stdout).records, [
-      { selectedConnections: ["packed-local"] },
+      { name: "packed-local" },
     ]);
     const codexLauncher = launcherModule.createOwnedHookLauncherArtifacts({
       ...launcherInput,
