@@ -858,16 +858,24 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.equal(retrievedLocal.stderr, "");
     assert.equal(retrievedLocalDocument.records.length, 1);
     const packedTrace = retrievedLocalDocument.records[0].graph;
+    const packedSpans = packedTrace.resourceSpans.flatMap(({ scopeSpans }) =>
+      scopeSpans.flatMap(({ spans }) => spans),
+    );
+    const stringAttribute = (attributes, key) =>
+      attributes.find((attribute) => attribute.key === key)?.value?.stringValue;
     assert.deepEqual(
-      packedTrace.spans.map(({ name }) => name),
+      packedSpans.map(({ name }) => name),
       ["codex.turn", "codex.response"],
     );
     assert.equal(
-      packedTrace.spans[1].attributes["llm.model_name"],
+      stringAttribute(packedSpans[1].attributes, "llm.model_name"),
       "packed-model",
     );
     assert.equal(
-      packedTrace.resource.attributes["session.id"],
+      stringAttribute(
+        packedTrace.resourceSpans[0].resource.attributes,
+        "session.id",
+      ),
       "packed-session",
     );
     assert.doesNotMatch(JSON.stringify(packedTrace), /PACKED_CONTENT_CANARY/u);
