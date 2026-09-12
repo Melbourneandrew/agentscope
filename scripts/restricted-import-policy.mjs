@@ -34,6 +34,8 @@ const ownedLocalSqliteReporterChild =
   /^packages\/destinations\/local-sqlite\/src\/production\/(?:reporter|retriever)-child\.ts$/u;
 const sourceExtension = /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u;
 const homeAuthoritySource = "packages/core/src/configuration/home.ts";
+const hookMachineSource = "apps/cli/src/hook-machine.ts";
+const hookProductionSource = "apps/cli/src/hook-production.ts";
 const applicationSource = /^(?:apps|packages)\//u;
 const integrationPackage = /^@agentscope\/(?:destination|harness)/u;
 const ignoredDirectories = new Set([
@@ -177,6 +179,24 @@ const assertSingleHomeAuthority = (source, file) => {
       );
 };
 
+const assertHookHomeTransferBoundary = (source, file, packageName) => {
+  if (packageName === "@agentscope/core" || testSource.test(file)) return;
+  if (
+    source.includes("createOwnedHookEntryAuthorityForCli") &&
+    file !== hookMachineSource
+  )
+    throw new Error(
+      `Owned hook home transfer is restricted to ${hookMachineSource}; forbidden mint in ${file}`,
+    );
+  if (
+    source.includes("resolveOwnedHookHomeForCli") &&
+    file !== hookProductionSource
+  )
+    throw new Error(
+      `Owned hook home resolution is restricted to ${hookProductionSource}; forbidden resolution in ${file}`,
+    );
+};
+
 const assertNoIntegrationStreams = (source, file, packageName) => {
   if (
     !integrationPackage.test(packageName) ||
@@ -279,6 +299,7 @@ export const auditCoreFinalizationImports = (
       assertNoProductionTestingImports(source, workspaceFile, packageName);
       assertNoComputedModuleLoads(source, workspaceFile, packageName);
       assertSingleHomeAuthority(source, workspaceFile);
+      assertHookHomeTransferBoundary(source, workspaceFile, packageName);
       assertNoIntegrationStreams(source, workspaceFile, packageName);
     }
   }

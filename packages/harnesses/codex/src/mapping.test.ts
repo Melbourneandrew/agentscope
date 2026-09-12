@@ -6,6 +6,7 @@ import {
   CODEX_0_149_1_ROOT_HOOK_SCHEMA_AUTHORITY,
   CodexMappingError,
   decodeCodexRootHookInput,
+  mapCodexRootHookCapture,
   mapCodexSanitizedNativeObservation,
   type CodexMappedNativeObservation,
   type CodexSanitizedNativeObservation,
@@ -181,6 +182,7 @@ describe("Codex root hook input", () => {
         turnId: null,
         model: "component-model",
         transcriptAvailable: true,
+        workspacePath: "/untrusted/workspace",
       },
     ],
     [
@@ -197,6 +199,7 @@ describe("Codex root hook input", () => {
         turnId: "turn-1",
         model: "component-model",
         transcriptAvailable: false,
+        workspacePath: "/untrusted/workspace",
       },
     ],
     [
@@ -211,9 +214,10 @@ describe("Codex root hook input", () => {
         turnId: null,
         model: null,
         transcriptAvailable: false,
+        workspacePath: "/untrusted/workspace",
       },
     ],
-  ])("retains only bounded categorical root metadata", (input, expected) => {
+  ])("retains only bounded root metadata", (input, expected) => {
     const decoded = decodeCodexRootHookInput(completeHookInput(input));
     expect(decoded).toEqual(expected);
     expect(decoded).not.toHaveProperty("transcript_path");
@@ -289,6 +293,8 @@ describe("Codex closed hook schema", () => {
 
   it.each([
     { hook_event_name: "SessionStart", cwd: 42 },
+    { hook_event_name: "SessionStart", cwd: "relative" },
+    { hook_event_name: "SessionStart", cwd: `/${"x".repeat(4_096)}` },
     { hook_event_name: "SessionStart", permission_mode: "invalid" },
     { hook_event_name: "SessionStart", transcript_path: 42 },
     { hook_event_name: "SessionStart", transcript_path: "x".repeat(4_097) },
@@ -408,6 +414,70 @@ describe("Codex hook parser prototype boundary", () => {
       else Object.defineProperty(Set.prototype, "has", previous);
     }
     expect(rejected).toBe(true);
+  });
+});
+
+describe("Codex root hook capture mapping", () => {
+  it("maps a branded Stop hook into one content-free boundary-scoped turn", () => {
+    const mapped = mapCodexRootHookCapture(
+      decodeCodexRootHookInput(
+        completeHookInput({
+          hook_event_name: "Stop",
+          session_id: "session-1",
+          turn_id: "turn-1",
+          model: "component-model",
+          last_assistant_message: "must-not-be-retained",
+        }),
+      ),
+    );
+    expect(mapped.captureBoundary).toEqual({
+      session: { kind: "boundary-scoped" },
+      boundaryKind: "hook-invocation",
+      boundaryId: "turn-1",
+      generation: 0,
+      positionKind: "sequence",
+      startPosition: 0,
+      exclusiveEndPosition: 1,
+    });
+    expect(mapped.rootContext.fields).toEqual([
+      {
+        field: "session.id",
+        value: "session-1",
+        provenance: { field: "session.id", source: "hook-payload" },
+      },
+    ]);
+    expect(mapped.operations.map(({ name }) => name)).toEqual([
+      "codex.turn",
+      "codex.response",
+    ]);
+    expect(mapped.operations[1]?.fields).toEqual([
+      {
+        field: "llm.model_name",
+        value: "component-model",
+        provenance: { field: "llm.model_name", source: "hook-payload" },
+      },
+    ]);
+    expect(JSON.stringify(mapped)).not.toContain("must-not-be-retained");
+  });
+
+  it("rejects non-Stop and unbranded hook records", () => {
+    expect(() =>
+      mapCodexRootHookCapture(
+        decodeCodexRootHookInput(
+          completeHookInput({ hook_event_name: "SessionStart" }),
+        ),
+      ),
+    ).toThrow(CodexMappingError);
+    expect(() =>
+      mapCodexRootHookCapture({
+        eventName: "Stop",
+        sessionId: "session-1",
+        turnId: "turn-1",
+        model: "component-model",
+        transcriptAvailable: false,
+        workspacePath: "/untrusted/workspace",
+      }),
+    ).toThrow(CodexMappingError);
   });
 });
 

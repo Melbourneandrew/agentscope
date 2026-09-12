@@ -115,6 +115,44 @@ test("permits configuration, hook, and harness authority only inside the CLI", (
   }
 });
 
+test("restricts the owned hook home transfer to its exact CLI composition", () => {
+  const value = fixture();
+  try {
+    const cliSource = join(value.root, "apps/cli/src");
+    mkdirSync(cliSource, { recursive: true });
+    writeFileSync(
+      join(cliSource, "hook-machine.ts"),
+      'import { createOwnedHookEntryAuthorityForCli } from "@agentscope/core/hook-orchestration";\nvoid createOwnedHookEntryAuthorityForCli;\n',
+    );
+    writeFileSync(
+      join(cliSource, "hook-production.ts"),
+      'import { resolveOwnedHookHomeForCli } from "@agentscope/core/hook-orchestration";\nvoid resolveOwnedHookHomeForCli;\n',
+    );
+    auditCoreFinalizationImports(value.root, value.packages);
+
+    const forbidden = join(cliSource, "other.ts");
+    writeFileSync(
+      forbidden,
+      'import { createOwnedHookEntryAuthorityForCli } from "@agentscope/core/hook-orchestration";\nvoid createOwnedHookEntryAuthorityForCli;\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /restricted to apps\/cli\/src\/hook-machine\.ts/u,
+    );
+    rmSync(forbidden);
+    writeFileSync(
+      forbidden,
+      'import { resolveOwnedHookHomeForCli } from "@agentscope/core/hook-orchestration";\nvoid resolveOwnedHookHomeForCli;\n',
+    );
+    assert.throws(
+      () => auditCoreFinalizationImports(value.root, value.packages),
+      /restricted to apps\/cli\/src\/hook-production\.ts/u,
+    );
+  } finally {
+    rmSync(value.root, { recursive: true, force: true });
+  }
+});
+
 test("permits destination orchestration authority only inside Core", () => {
   const value = fixture();
   try {

@@ -270,6 +270,7 @@ const expectedRoot = [
   "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST",
   "LOCAL_SQLITE_DESTINATION_TYPE",
   "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
+  "bindLocalSqliteProductionReporterHome",
   "createLocalSqliteLifecycleHandler",
   "initializeLocalSqliteProductionComposition",
   "localSqliteDestinationDescriptor",

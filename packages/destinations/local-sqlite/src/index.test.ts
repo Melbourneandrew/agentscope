@@ -14,6 +14,7 @@ describe("Local SQLite package boundaries", () => {
         "LOCAL_SQLITE_NATIVE_SUPPORT_MANIFEST_DIGEST",
         "LOCAL_SQLITE_DESTINATION_TYPE",
         "LOCAL_SQLITE_LIFECYCLE_SETTINGS_VERSION",
+        "bindLocalSqliteProductionReporterHome",
         "createLocalSqliteLifecycleHandler",
         "initializeLocalSqliteProductionComposition",
         "localSqliteDestinationDescriptor",
@@ -65,6 +66,14 @@ describe("Local SQLite package boundaries", () => {
     expect(root.initializeLocalSqliteProductionComposition(home)).toBe(
       composition,
     );
+    expect(() => {
+      root.bindLocalSqliteProductionReporterHome(
+        bindLocalResourceHomeAuthorityForTesting({
+          root: "/substituted/agentscope-home",
+          platform: process.platform,
+        }),
+      );
+    }).toThrow("destination.local-sqlite.native-unavailable");
     expect(() =>
       root.initializeLocalSqliteProductionComposition(
         bindLocalResourceHomeAuthorityForTesting({

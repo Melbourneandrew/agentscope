@@ -720,6 +720,165 @@ setTimeout(() => process.exit(3), 10_000).unref();
       },
     ]);
     assert.match(configuredLocal.stderr, /"state":"planned"/u);
+    const routedLocal = run(
+      executable,
+      ["routing", "set", "packed-local", "--output", "json"],
+      { ...executableOptions, env: localEnvironment },
+    );
+    assert.equal(routedLocal.stderr, "");
+    assert.deepEqual(JSON.parse(routedLocal.stdout).records, [
+      { name: "packed-local" },
+    ]);
+    const codexLauncher = launcherModule.createOwnedHookLauncherArtifacts({
+      ...launcherInput,
+      agentscopeHome: localHome,
+      harnessType: "@agentscope/harness-codex",
+    });
+    writeFileSync(codexLauncher.launcherPath, codexLauncher.launcherBytes, {
+      mode: codexLauncher.mode,
+    });
+    chmodSync(codexLauncher.launcherPath, codexLauncher.mode);
+    writeFileSync(codexLauncher.metadataPath, codexLauncher.metadataBytes);
+    const ambientSubstitutedHome = join(
+      installRoot,
+      "ambient-substituted-hook-home",
+    );
+    const codexHookInput = (hookEventName) =>
+      JSON.stringify(
+        hookEventName === "SessionStart"
+          ? {
+              cwd: installRoot,
+              hook_event_name: "SessionStart",
+              model: "packed-model",
+              permission_mode: "default",
+              session_id: "packed-session",
+              source: "startup",
+              transcript_path: null,
+            }
+          : hookEventName === "Stop"
+            ? {
+                cwd: installRoot,
+                hook_event_name: "Stop",
+                last_assistant_message: "PACKED_CONTENT_CANARY",
+                model: "packed-model",
+                permission_mode: "default",
+                session_id: "packed-session",
+                stop_hook_active: false,
+                transcript_path: null,
+                turn_id: "packed-turn",
+              }
+            : {
+                cwd: installRoot,
+                hook_event_name: "SessionEnd",
+                reason: "other",
+                session_id: "packed-session",
+                transcript_path: null,
+              },
+      );
+    let packedStopElapsedMilliseconds;
+    for (const hookEventName of ["SessionStart", "Stop", "SessionEnd"]) {
+      const hookStartedAt = performance.now();
+      const invokedHook = run(codexLauncher.launcherPath, [], {
+        env: {
+          AGENTSCOPE_HOME: join(ambientSubstitutedHome, "override"),
+          HOME: ambientSubstitutedHome,
+          USERPROFILE: ambientSubstitutedHome,
+        },
+        input: codexHookInput(hookEventName),
+      });
+      if (hookEventName === "Stop")
+        packedStopElapsedMilliseconds = Math.round(
+          performance.now() - hookStartedAt,
+        );
+      assert.equal(invokedHook.stdout, "");
+      assert.equal(invokedHook.stderr, "");
+    }
+    const packedHookOperationalStatePath = join(
+      localHome,
+      "health",
+      "operational-state-v1.json",
+    );
+    assert.equal(
+      existsSync(packedHookOperationalStatePath),
+      true,
+      `installed Stop hook produced no operational receipt; elapsedMilliseconds=${packedStopElapsedMilliseconds}; configurationPresent=${existsSync(join(localHome, "config.json"))}; destinationRootPresent=${existsSync(join(localHome, "destinations", "local-sqlite"))}`,
+    );
+    const packedHookOperationalState = readFileSync(
+      packedHookOperationalStatePath,
+      "utf8",
+    );
+    assert.match(packedHookOperationalState, /"receipt":"accepted"/u);
+    assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
+    assert.equal(existsSync(ambientSubstitutedHome), false);
+    const searchedLocal = runRaw(
+      executable,
+      [
+        "traces",
+        "search",
+        "--destination",
+        "packed-local",
+        "--session",
+        "packed-session",
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    if (searchedLocal.status !== 0) {
+      const diagnosedLocal = runRaw(
+        executable,
+        ["doctor", "--output", "json"],
+        { ...executableOptions, env: localEnvironment },
+      );
+      assert.fail(
+        `installed Stop trace retrieval unavailable; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}; doctorStatus=${diagnosedLocal.status}; doctor=${diagnosedLocal.stdout}${diagnosedLocal.stderr}`,
+      );
+    }
+    const searchedLocalDocument = JSON.parse(searchedLocal.stdout);
+    assert.equal(searchedLocal.stderr, "");
+    assert.equal(searchedLocalDocument.records.length, 1);
+    assert.equal(searchedLocalDocument.records[0].summaries.length, 1);
+    const packedTraceLocator =
+      searchedLocalDocument.records[0].summaries[0].locator;
+    const retrievedLocal = run(
+      executable,
+      [
+        "traces",
+        "get",
+        "--destination",
+        "packed-local",
+        "--trace-ref",
+        JSON.stringify(packedTraceLocator),
+        "--output",
+        "json",
+      ],
+      { ...executableOptions, env: localEnvironment },
+    );
+    const retrievedLocalDocument = JSON.parse(retrievedLocal.stdout);
+    assert.equal(retrievedLocal.stderr, "");
+    assert.equal(retrievedLocalDocument.records.length, 1);
+    const packedTrace = retrievedLocalDocument.records[0].graph;
+    const packedSpans = packedTrace.resourceSpans.flatMap(({ scopeSpans }) =>
+      scopeSpans.flatMap(({ spans }) => spans),
+    );
+    const stringAttribute = (attributes, key) =>
+      attributes.find((attribute) => attribute.key === key)?.value?.stringValue;
+    assert.deepEqual(
+      packedSpans.map(({ name }) => name),
+      ["codex.turn", "codex.response"],
+    );
+    assert.equal(
+      stringAttribute(packedSpans[1].attributes, "llm.model_name"),
+      "packed-model",
+    );
+    assert.equal(
+      packedSpans
+        .map(({ attributes }) => stringAttribute(attributes, "session.id"))
+        .filter((value) => value !== undefined)
+        .join("\0"),
+      "packed-session",
+    );
+    assert.doesNotMatch(JSON.stringify(packedTrace), /PACKED_CONTENT_CANARY/u);
     const localDoctor = run(executable, ["doctor", "--output", "json"], {
       ...executableOptions,
       env: localEnvironment,
@@ -843,6 +1002,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
     "0001-initialize.sql",
     "0002-retrieval-indexes.sql",
   ]);
+  assert.deepEqual(
+    regularFiles(join(installedRoot, "dist/internal/migrations")),
+    ["0001-initialize.sql", "0002-retrieval-indexes.sql"],
+  );
   assert.deepEqual(
     regularFiles(join(installedRoot, "dist/internal/local-sqlite-runtime")),
     [

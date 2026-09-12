@@ -36,7 +36,7 @@ import {
 } from "./retriever-child-protocol.js";
 import {
   createOwnedRetrieverDatabase,
-  initializeOwnedSqliteConnection,
+  initializeOwnedSqliteReadConnection,
 } from "./sqlite-port.js";
 import { resolveLocalSqliteProductionArtifactLayout } from "./production-artifact-layout.js";
 
@@ -193,7 +193,7 @@ const main = async (): Promise<void> => {
       remaining() < 1
     )
       return fail();
-    initializeOwnedSqliteConnection(database, remaining());
+    initializeOwnedSqliteReadConnection(database, remaining());
     admittedFamily = inspectOwnedSqliteFamily(
       directory,
       databaseName,

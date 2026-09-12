@@ -3,11 +3,12 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import {
-  createHookEntryAuthority,
+  createOwnedHookEntryAuthorityForCli,
   type HookEntryAuthority,
 } from "@agentscope/core/hook-orchestration";
 
 import { parseHookLauncherDuration } from "./hook-verifier-contract.js";
+import { runProductCodexHookEvidence } from "./hook-production.js";
 
 export type { HookVerifierChildProgram } from "./hook-verifier-child.js";
 
@@ -262,10 +263,6 @@ const run = async (
   try {
     const authority = exactAuthority(authorityInput);
     const duration = authority.duration;
-    const hookEntryAuthority = createHookEntryAuthority({
-      durationMilliseconds: duration,
-      startedAt: authority.deadlineStartedAt,
-    });
     const remaining = (): number =>
       Math.max(
         0,
@@ -276,6 +273,12 @@ const run = async (
     const verificationBudget = remaining();
     if (verificationBudget <= 0) throw new Error("cli.hook.invalid");
     const launcher = await runVerifier(authority, input, verificationBudget);
+    const hookEntryAuthority = createOwnedHookEntryAuthorityForCli({
+      durationMilliseconds: duration,
+      homeRoot: launcher.homeRoot,
+      platform: process.platform,
+      startedAt: authority.deadlineStartedAt,
+    });
     const evidenceBudget = remaining();
     if (evidenceBudget <= 0) throw new Error("cli.hook.invalid");
     const evidence = await readHookEvidence(input.stdin, evidenceBudget);
@@ -297,9 +300,11 @@ export const runOwnedHookBootstrap = async (
   try {
     await run(authority, {
       machineEntryPath: fileURLToPath(import.meta.url),
-      onEvidence: ({ launcher }) => {
+      onEvidence: async (value) => {
+        const { launcher } = value;
         if (!__AGENTSCOPE_HOOK_HARNESS_TYPES__.includes(launcher.harnessType))
           throw new Error("cli.hook.invalid");
+        await runProductCodexHookEvidence(value);
       },
       releaseIdentity: __AGENTSCOPE_CLI_VERSION__,
       stdin: process.stdin,

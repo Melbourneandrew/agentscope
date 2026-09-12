@@ -10,6 +10,7 @@ export {
   localSqliteLifecycleDeclaration,
 } from "./lifecycle/capability.js";
 export {
+  bindLocalSqliteProductionReporterHome,
   createLocalSqliteLifecycleHandler,
   initializeLocalSqliteProductionComposition,
   type LocalSqliteProductionComposition,

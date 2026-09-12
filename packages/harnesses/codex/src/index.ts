@@ -17,6 +17,7 @@ export {
   CODEX_0_149_1_ROOT_HOOK_SCHEMA_AUTHORITY,
   CodexMappingError,
   decodeCodexRootHookInput,
+  mapCodexRootHookCapture,
   mapCodexSanitizedNativeObservation,
   type CodexCapturedTraceCandidate,
   type CodexMappedNativeObservation,

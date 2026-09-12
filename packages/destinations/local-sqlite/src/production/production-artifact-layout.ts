@@ -34,6 +34,9 @@ export const resolveLocalSqliteProductionArtifactLayout =
       (basename(moduleDirectory) === "bin" &&
         basename(parentDirectory) === "dist" &&
         basename(modulePath) === "agentscope.js") ||
+      (basename(moduleDirectory) === "internal" &&
+        basename(parentDirectory) === "dist" &&
+        basename(modulePath) === "agentscope-hook-machine.js") ||
       (basename(moduleDirectory) === "local-sqlite-runtime" &&
         basename(parentDirectory) === "internal" &&
         basename(dirname(parentDirectory)) === "dist" &&
@@ -42,7 +45,8 @@ export const resolveLocalSqliteProductionArtifactLayout =
         ))
     ) {
       const distDirectory =
-        basename(moduleDirectory) === "bin"
+        basename(moduleDirectory) === "bin" ||
+        basename(moduleDirectory) === "internal"
           ? parentDirectory
           : dirname(parentDirectory);
       const runtimeDirectory = resolve(

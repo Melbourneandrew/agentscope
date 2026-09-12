@@ -5,6 +5,10 @@ import {
   MAXIMUM_HOOK_DEADLINE_MILLISECONDS,
   MINIMUM_HOOK_DEADLINE_MILLISECONDS,
 } from "../configuration/schema.js";
+import {
+  createAgentscopeHomeFromOwnedRootForCore,
+  type AgentscopeHome,
+} from "../configuration/home.js";
 
 declare const hookEntryAuthorityBrand: unique symbol;
 
@@ -19,6 +23,7 @@ type HookEntryAuthorityState = Readonly<{
 }>;
 
 const authorityState = new WeakMap<object, HookEntryAuthorityState>();
+const ownedHookHomes = new WeakMap<object, AgentscopeHome>();
 const monotonicNow = performance.now.bind(performance);
 const wallClockNow = Date.now.bind(Date);
 
@@ -100,6 +105,68 @@ export const createHookEntryAuthority = (
   } catch {
     return invalid();
   }
+};
+
+/** CLI-only transfer from its authenticated launcher verifier into Core. */
+export const createOwnedHookEntryAuthorityForCli = (
+  input: Readonly<{
+    durationMilliseconds: number;
+    homeRoot: string;
+    platform: NodeJS.Platform;
+    startedAt: number;
+  }>,
+): HookEntryAuthority => {
+  try {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      Array.isArray(input) ||
+      Object.getPrototypeOf(input) !== Object.prototype
+    )
+      return invalid();
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    if (
+      Reflect.ownKeys(descriptors).length !== 4 ||
+      Object.keys(descriptors).sort().join("\0") !==
+        "durationMilliseconds\0homeRoot\0platform\0startedAt" ||
+      Object.values(descriptors).some((descriptor) => !("value" in descriptor))
+    )
+      return invalid();
+    const durationMilliseconds = descriptors.durationMilliseconds
+      ?.value as unknown;
+    const homeRoot = descriptors.homeRoot?.value as unknown;
+    const platform = descriptors.platform?.value as unknown;
+    const startedAt = descriptors.startedAt?.value as unknown;
+    if (
+      typeof durationMilliseconds !== "number" ||
+      typeof homeRoot !== "string" ||
+      platform !== process.platform ||
+      typeof startedAt !== "number"
+    )
+      return invalid();
+    const home = createAgentscopeHomeFromOwnedRootForCore(
+      homeRoot,
+      platform as NodeJS.Platform,
+    );
+    const authority = createHookEntryAuthority({
+      durationMilliseconds,
+      startedAt,
+    });
+    ownedHookHomes.set(authority, home);
+    return authority;
+  } catch {
+    return invalid();
+  }
+};
+
+/** Resolves only a Core-branded home previously transferred by the CLI verifier. */
+export const resolveOwnedHookHomeForCli = (
+  authority: HookEntryAuthority,
+): AgentscopeHome => {
+  readHookEntryAuthorityForCore(authority);
+  const home = ownedHookHomes.get(authority);
+  if (!home) return invalid();
+  return home;
 };
 
 export const readHookEntryAuthorityForCore = (

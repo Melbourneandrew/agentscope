@@ -10,6 +10,7 @@ import {
 } from "../lifecycle/configuration.js";
 import { localSqliteDestinationDescriptor } from "./descriptor.js";
 import {
+  bindLocalSqliteProductionHome,
   getLocalSqliteProductionRuntime,
   initializeLocalSqliteProductionRuntime,
 } from "./runtime.js";
@@ -20,6 +21,12 @@ export type LocalSqliteProductionComposition = Readonly<{
     capability: LocalResourceLifecycleCapability,
   ) => LocalResourceLifecycleHandler;
 }>;
+
+export const bindLocalSqliteProductionReporterHome = (
+  homeAuthority: LocalResourceHomeAuthority,
+): void => {
+  bindLocalSqliteProductionHome(homeAuthority);
+};
 
 /* v8 ignore next -- the package-owned native composition is causally executed by
    the built Linux artifact verifier, not the macOS source-coverage lane. */
@@ -48,6 +55,7 @@ export const initializeLocalSqliteProductionComposition = (
       throw new Error("destination.local-sqlite.native-unavailable");
     return productionComposition.value;
   }
+  bindLocalSqliteProductionReporterHome(homeAuthority);
   const value: LocalSqliteProductionComposition = Object.freeze({
     destinationDescriptor: localSqliteDestinationDescriptor,
     /* v8 ignore start -- this ordinary package bootstrap is causally exercised
