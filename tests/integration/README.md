@@ -10,6 +10,17 @@ The repository exposes one integration command:
 pnpm test:integration
 ```
 
+Image preparation has one public controller facade,
+`image-preparation.mjs`. Its private modules have closed responsibilities:
+registry acquisition authenticates OCI manifests and config blobs; Docker owns
+Engine/buildx calls; build context owns deterministic no-follow traversal;
+evidence owns the persisted prepared-image envelope; private storage and
+retirement own destructive-cleanup reconciliation. The facade alone creates
+the process-local lifecycle authority and gives each module a frozen, typed,
+operation-scoped projection. It passes the one frozen preparation set or
+prepared-client snapshot by reference; same-process modules do not reparse,
+serialize, digest, or rebrand that snapshot.
+
 The command creates one module-private, in-process capability and one deadline,
 then runs the existing candidate, selection, image, route, scenario, retention,
 and cleanup stages in sequence. Those stages are not package scripts. Scenario
