@@ -208,6 +208,10 @@ describe("integration capability manifest", () => {
     expect(startupPrompt).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeGreaterThan(-1);
     expect(explicitHookTrust).toBeLessThan(startupPrompt);
+    expect(source).toContain(
+      "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
+    );
+    expect(source).toContain('  interactiveFailurePhase = "trace";\n');
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(semanticReady).toBeGreaterThan(modelRequest);
   });
