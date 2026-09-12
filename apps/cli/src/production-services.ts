@@ -83,6 +83,9 @@ import {
 } from "@agentscope/destinations-core";
 import type { CliTraceServices } from "./trace-commands.js";
 import { productionDestinationTransportExecutor } from "./destination-transport.js";
+import { createProductHarnesses } from "./product-harnesses.js";
+
+declare const __AGENTSCOPE_CLI_VERSION__: string;
 
 // Type-only edges declare the process-private build entries to the source
 // closure audit without loading them into the ordinary Commander runtime.
@@ -923,13 +926,19 @@ const createCliServices = (
   resolveOwnerState: (
     state: ProductionState,
   ) => (owner: ConfigurationProcessIdentity) => ConfigurationOwnerState,
+  resolveHarnesses: (
+    state: ProductionState,
+    input: CreateProductionCliServicesInput,
+  ) => CreateHarnessCliServicesInput | undefined,
 ): CliConfigurationServices &
   CliDoctorServices &
   CliHarnessServices &
   CliTraceServices => {
   const state = createState(input, registry, createLifecycleHandlers);
   const ownerState = resolveOwnerState(state);
-  const harnessServices = createHarnessCliServices(input.harnesses);
+  const harnessServices = createHarnessCliServices(
+    resolveHarnesses(state, input),
+  );
   const list = createListService(state);
   const services: CliConfigurationServices = {
     configureDestination: createConfigureService(state),
@@ -1018,6 +1027,23 @@ export const createProductionCliServices = (
     requireExactProductDestinationRegistry(PRODUCT_DESTINATION_REGISTRY),
     createProductLifecycleHandlers,
     (state) => productionOwnerState(state.owner),
+    (state, productInput) =>
+      productInput.harnesses ??
+      createProductHarnesses({
+        environment: state.environment as Readonly<
+          Record<string, string | undefined>
+        >,
+        home: state.home,
+        /* v8 ignore next -- the packed-artifact verifier executes this exact
+           production callback through installed Codex plan/apply/status. */
+        readHookDeadlineMilliseconds: async () =>
+          (await readConfigurationSnapshot(state.store))
+            .hookDeadlineMilliseconds,
+        releaseIdentity:
+          typeof __AGENTSCOPE_CLI_VERSION__ === "string"
+            ? __AGENTSCOPE_CLI_VERSION__
+            : "0.1.0",
+      }),
   );
 
 export const createProductionCliServicesForTesting = (
@@ -1040,4 +1066,5 @@ export const createProductionCliServicesForTesting = (
       input.lifecycleHandlers ??
       compileLocalResourceLifecycleHandlerRegistry(registry, []),
     (state) => input.ownerState ?? productionOwnerState(state.owner),
+    (_state, testingInput) => testingInput.harnesses,
   );

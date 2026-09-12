@@ -283,7 +283,7 @@ const contracts = Object.freeze({
       args: ["codex"],
       caseId: "install.valid",
       expectedCode: 3,
-      expectedDiagnostic: "harness.adapter-missing",
+      expectedDiagnostic: "harness.absent",
       prepare: "initialized",
     },
     missing: [],
@@ -292,8 +292,6 @@ const contracts = Object.freeze({
     invocation: {
       args: ["codex"],
       caseId: "uninstall.valid",
-      expectedCode: 3,
-      expectedDiagnostic: "harness.adapter-missing",
       prepare: "initialized",
     },
     missing: [],
@@ -309,8 +307,6 @@ const contracts = Object.freeze({
     invocation: {
       args: ["codex"],
       caseId: "harness.status.valid",
-      expectedCode: 3,
-      expectedDiagnostic: "harness.adapter-missing",
       prepare: "initialized",
     },
     missing: [],
@@ -320,7 +316,7 @@ const contracts = Object.freeze({
       args: ["codex"],
       caseId: "harness.migrate.valid",
       expectedCode: 3,
-      expectedDiagnostic: "harness.adapter-missing",
+      expectedDiagnostic: "harness.absent",
       prepare: "initialized",
     },
     missing: [],
@@ -447,7 +443,9 @@ function createCaseRoot(caseId: string): Readonly<{
   home: string;
   snapshotRoot: string;
 }> {
-  const root = mkdtempSync(join(tmpdir(), "agentscope CLI contract — 测试 "));
+  const root = realpathSync(
+    mkdtempSync(join(tmpdir(), "agentscope CLI contract — 测试 ")),
+  );
   const home = join(root, "user home with spaces");
   const cwd = join(root, `workspace ${caseId}`);
   mkdirSync(home);

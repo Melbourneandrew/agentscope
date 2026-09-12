@@ -49,6 +49,17 @@ await build({
   sourcemap: false,
   target: "node22",
 });
+await build({
+  bundle: true,
+  entryPoints: [
+    new URL("src/product-harness-installation.ts", import.meta.url).pathname,
+  ],
+  format: "esm",
+  outfile: `${packageRoot}dist/internal/agentscope-product-harness-installation.js`,
+  platform: "node",
+  sourcemap: false,
+  target: "node22",
+});
 await cp(
   new URL(
     "../../packages/destinations/local-sqlite/src/migrations/",
@@ -111,7 +122,9 @@ await build({
   bundle: true,
   define: {
     __AGENTSCOPE_CLI_VERSION__: JSON.stringify(manifest.version),
-    __AGENTSCOPE_HOOK_HARNESS_TYPES__: JSON.stringify([]),
+    __AGENTSCOPE_HOOK_HARNESS_TYPES__: JSON.stringify([
+      "@agentscope/harness-codex",
+    ]),
     __AGENTSCOPE_HOOK_VERIFIER_PROGRAM__: JSON.stringify(hookVerifierProgram),
   },
   format: "esm",
@@ -134,6 +147,7 @@ await build({
       JSON.stringify(coordinatorProgram),
   },
   entryPoints: [new URL("src/bin/agentscope.ts", import.meta.url).pathname],
+  external: ["../internal/agentscope-product-harness-installation.js"],
   format: "esm",
   minify: false,
   outfile: `${packageRoot}dist/bin/agentscope.js`,
