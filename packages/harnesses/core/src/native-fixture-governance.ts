@@ -1709,6 +1709,7 @@ const acquireCapabilitySnapshot = async (
   let settlement: Promise<CapabilitySettlement> | undefined;
   let settled: CapabilitySettlement | undefined;
   let childError: Error | undefined;
+  let childInputError: Error | undefined;
   try {
     const remainingWork = authorityDeadline - performance.now() - 1_000;
     if (remainingWork <= 0) fail("harness.fixture.inventory.capability");
@@ -1722,6 +1723,9 @@ const acquireCapabilitySnapshot = async (
         resolveSettlement(Object.freeze({ code, signal }));
       });
     });
+    spawnedChild.stdin.on("error", (error) => {
+      childInputError = error;
+    });
     const absoluteRemainingWork = authorityDeadline - performance.now() - 1_000;
     if (absoluteRemainingWork <= 0) abortWork();
     else workTimeout = setTimeout(abortWork, absoluteRemainingWork);
@@ -1734,7 +1738,7 @@ const acquireCapabilitySnapshot = async (
         testPlan,
         abortWork,
         settlement,
-        childError: () => childError,
+        childError: () => childError ?? childInputError,
         recordSettlement: (value: CapabilitySettlement) => {
           settled = value;
         },
