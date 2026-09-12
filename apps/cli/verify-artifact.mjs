@@ -775,7 +775,9 @@ setTimeout(() => process.exit(3), 10_000).unref();
                 transcript_path: null,
               },
       );
+    let packedStopElapsedMilliseconds;
     for (const hookEventName of ["SessionStart", "Stop", "SessionEnd"]) {
+      const hookStartedAt = performance.now();
       const invokedHook = run(codexLauncher.launcherPath, [], {
         env: {
           AGENTSCOPE_HOME: join(ambientSubstitutedHome, "override"),
@@ -784,11 +786,25 @@ setTimeout(() => process.exit(3), 10_000).unref();
         },
         input: codexHookInput(hookEventName),
       });
+      if (hookEventName === "Stop")
+        packedStopElapsedMilliseconds = Math.round(
+          performance.now() - hookStartedAt,
+        );
       assert.equal(invokedHook.stdout, "");
       assert.equal(invokedHook.stderr, "");
     }
+    const packedHookOperationalStatePath = join(
+      localHome,
+      "health",
+      "operational-state-v1.json",
+    );
+    assert.equal(
+      existsSync(packedHookOperationalStatePath),
+      true,
+      `installed Stop hook produced no operational receipt; elapsedMilliseconds=${packedStopElapsedMilliseconds}; configurationPresent=${existsSync(join(localHome, "config.json"))}; destinationRootPresent=${existsSync(join(localHome, "destinations", "local-sqlite"))}`,
+    );
     const packedHookOperationalState = readFileSync(
-      join(localHome, "health", "operational-state-v1.json"),
+      packedHookOperationalStatePath,
       "utf8",
     );
     assert.match(packedHookOperationalState, /"receipt":"accepted"/u);
