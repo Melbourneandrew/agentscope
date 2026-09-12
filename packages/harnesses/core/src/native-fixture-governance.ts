@@ -1001,7 +1001,9 @@ type NativeFixtureAuditTestPlanDescriptor =
         | "swap-root-before-capability"
         | "swap-root-during-scan";
     }>
-  | Readonly<{ kind: "signal-before-release" }>;
+  | Readonly<{
+      kind: "input-error-before-release" | "signal-before-release";
+    }>;
 
 type NativeFixtureAuditTestPlanRuntime = Readonly<{
   descriptor: NativeFixtureAuditTestPlanDescriptor;
@@ -1142,9 +1144,12 @@ const parseAuditTestPlan = (
     exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
     return Object.freeze({ kind: snapshot.kind });
   }
-  if (snapshot.kind === "signal-before-release") {
+  if (
+    snapshot.kind === "input-error-before-release" ||
+    snapshot.kind === "signal-before-release"
+  ) {
     exactKeys(snapshot, ["kind"], "harness.fixture.inventory.test-plan");
-    return Object.freeze({ kind: "signal-before-release" as const });
+    return Object.freeze({ kind: snapshot.kind });
   }
   return fail("harness.fixture.inventory.test-plan");
 };
@@ -1709,6 +1714,7 @@ const acquireCapabilitySnapshot = async (
   let settlement: Promise<CapabilitySettlement> | undefined;
   let settled: CapabilitySettlement | undefined;
   let childError: Error | undefined;
+  let childInputError: Error | undefined;
   try {
     const remainingWork = authorityDeadline - performance.now() - 1_000;
     if (remainingWork <= 0) fail("harness.fixture.inventory.capability");
@@ -1722,6 +1728,9 @@ const acquireCapabilitySnapshot = async (
         resolveSettlement(Object.freeze({ code, signal }));
       });
     });
+    spawnedChild.stdin.on("error", (error) => {
+      childInputError = error;
+    });
     const absoluteRemainingWork = authorityDeadline - performance.now() - 1_000;
     if (absoluteRemainingWork <= 0) abortWork();
     else workTimeout = setTimeout(abortWork, absoluteRemainingWork);
@@ -1734,7 +1743,7 @@ const acquireCapabilitySnapshot = async (
         testPlan,
         abortWork,
         settlement,
-        childError: () => childError,
+        childError: () => childError ?? childInputError,
         recordSettlement: (value: CapabilitySettlement) => {
           settled = value;
         },
@@ -1824,6 +1833,8 @@ const acquireSpawnedCapabilitySnapshot = async (
     assertCapabilityAuthority(authorityDeadline, testPlan);
     applyPlan("root-capability-before-release");
     assertCapabilityAuthority(authorityDeadline, testPlan);
+    if (testPlan?.descriptor.kind === "input-error-before-release")
+      child.stdin.emit("error", new Error("synthetic input failure"));
     child.stdin.end("release\n");
     assertCapabilityAuthority(authorityDeadline, testPlan);
     await readCapabilityTerminal(lines, authorityDeadline, testPlan);

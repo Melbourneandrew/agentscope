@@ -1796,16 +1796,16 @@ describe("native fixture fixed audit test operations", () => {
     },
   );
 
-  it("rejects a child signaled after snapshot and confirms absence", async () => {
-    const root = await writeInventoryFixture();
-    await expect(
-      auditNativeFixtureInventory(
-        root,
-        auditPlan({ kind: "signal-before-release" }),
-      ),
-    ).rejects.toThrow("harness.fixture.inventory.capability");
-    expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
-  });
+  it.each(["input-error-before-release", "signal-before-release"] as const)(
+    "rejects %s and confirms child absence",
+    async (kind) => {
+      const root = await writeInventoryFixture();
+      await expect(
+        auditNativeFixtureInventory(root, auditPlan({ kind })),
+      ).rejects.toThrow("harness.fixture.inventory.capability");
+      expect(activeNativeFixtureAuditWorkerCountForTest()).toBe(0);
+    },
+  );
 });
 
 describe("native fixture worker admission authority", () => {
