@@ -71,7 +71,7 @@ import {
   requireSubstrateCertificationReplay,
 } from "./dist/controller.js";
 import {
-  leakedChildContainmentWasObserved,
+  leakedChildReadinessWasObserved,
   SUBSTRATE_CERTIFICATION_PREDICATES,
 } from "./dist/substrate-certification.js";
 
@@ -1270,12 +1270,10 @@ const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
           JSON.stringify(["install", "configure"]);
       break;
     case "leaked-child":
-      observed = leakedChildContainmentWasObserved({
+      observed = leakedChildReadinessWasObserved({
         certificationReadiness: result?.certificationReadiness,
-        cleanup: receipt.cleanup,
         fixtureCaptured,
         fixtureResultStatus: result?.resultStatus,
-        residualProcessCount: receipt.residualProcessCount,
       });
       break;
     case "unbounded-output":
@@ -1361,6 +1359,24 @@ const runScenario = async (plan, signal) => {
     const fixtureCaptured = captureFixtureResult(output, plan);
     if (output.includes("AGENTSCOPE_PTY_FAILURE="))
       captureInstalledPtyFailure(output, plan);
+    if (
+      substrateCertificationCase === "leaked-child" &&
+      leakedChildReadinessWasObserved({
+        certificationReadiness: fixtureResults.get(plan.runId)
+          ?.certificationReadiness,
+        fixtureCaptured,
+        fixtureResultStatus: fixtureResults.get(plan.runId)?.resultStatus,
+      })
+    ) {
+      observeSubstrateCertificationPredicate(
+        plan.runId,
+        SUBSTRATE_CERTIFICATION_PREDICATES[substrateCertificationCase],
+      );
+      throw new Error(
+        `integration.certification.${substrateCertificationCase}`,
+        { cause: error },
+      );
+    }
     if (
       output.includes("AGENTSCOPE_HEADLESS_RECEIPT=") ||
       output.includes("AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=")

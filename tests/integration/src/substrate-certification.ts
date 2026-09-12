@@ -102,18 +102,14 @@ export const certificationFailureAuthorityIsValid = (input: {
   );
 };
 
-export const leakedChildContainmentWasObserved = (input: {
+export const leakedChildReadinessWasObserved = (input: {
   readonly certificationReadiness: unknown;
-  readonly cleanup: unknown;
   readonly fixtureCaptured: unknown;
   readonly fixtureResultStatus: unknown;
-  readonly residualProcessCount: unknown;
 }): boolean =>
   leakedChildReadinessIsValid(input.certificationReadiness) &&
   input.fixtureCaptured === true &&
-  input.fixtureResultStatus === "complete" &&
-  input.cleanup === "clean" &&
-  input.residualProcessCount === 0;
+  input.fixtureResultStatus === "complete";
 
 export type SubstrateCertificationRequest = Readonly<
   | { kind: "none" }

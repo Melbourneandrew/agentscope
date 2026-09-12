@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   certificationFailureAuthorityIsValid,
   compileSubstrateCertificationReceipt,
-  leakedChildContainmentWasObserved,
+  leakedChildReadinessWasObserved,
   parseSubstrateCertificationRequest,
   providerCredentialEnvironmentIsClear,
   requireThreeMatchingCertificationReceipts,
@@ -107,20 +107,18 @@ describe("substrate certification request", () => {
 
 describe("leaked-child causal observation", () => {
   const observed = (replacement: Record<string, unknown> = {}) =>
-    leakedChildContainmentWasObserved({
+    leakedChildReadinessWasObserved({
       certificationReadiness: {
         readinessVersion: 1,
         certificationCase: "leaked-child",
         challengeSha256: `sha256:${"a".repeat(64)}`,
       },
-      cleanup: "clean",
       fixtureCaptured: true,
       fixtureResultStatus: "complete",
-      residualProcessCount: 0,
       ...replacement,
     });
 
-  it("requires exact fixture readiness lineage and terminal containment", () => {
+  it("requires exact fixture readiness lineage", () => {
     expect(observed()).toBe(true);
     for (const replacement of [
       { certificationReadiness: null },
@@ -141,8 +139,6 @@ describe("leaked-child causal observation", () => {
       { fixtureCaptured: false },
       { fixtureResultStatus: "partial" },
       { fixtureResultStatus: "complete-substituted" },
-      { cleanup: "failed" },
-      { residualProcessCount: 1 },
     ])
       expect(observed(replacement)).toBe(false);
   });

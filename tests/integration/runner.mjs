@@ -304,6 +304,30 @@ const cliArtifact = evidence.artifacts.find(
 if (!cliArtifact) throw new Error("integration.runner.fixture-artifact");
 let fixtureOutput;
 let fixtureFailure;
+const readRetainedFixtureOutput = () => {
+  const fixtureResultPath = join(ledger, "fixture-result.json");
+  const fixtureResultStatus = lstatSync(fixtureResultPath);
+  if (
+    !fixtureResultStatus.isFile() ||
+    fixtureResultStatus.isSymbolicLink() ||
+    fixtureResultStatus.size < 1 ||
+    fixtureResultStatus.size > 1024 * 1024 ||
+    (fixtureResultStatus.mode & 0o777) !== 0o600
+  )
+    throw new Error("integration.runner.fixture-result");
+  const retained = JSON.parse(readFileSync(fixtureResultPath, "utf8"));
+  if (
+    JSON.stringify(Object.keys(retained).sort()) !==
+      JSON.stringify(["encodedEvidence", "evidenceVersion", "scenarioId"]) ||
+    retained.evidenceVersion !== 1 ||
+    retained.scenarioId !== scenarioId ||
+    typeof retained.encodedEvidence !== "string" ||
+    retained.encodedEvidence.length > 1024 * 1024 ||
+    !/^[A-Za-z0-9_-]+$/u.test(retained.encodedEvidence)
+  )
+    throw new Error("integration.runner.fixture-result");
+  return `AGENTSCOPE_FIXTURE_RESULT=${retained.encodedEvidence}\n`;
+};
 try {
   const childEnvironment = Object.freeze({
     AGENTSCOPE_HOME: agentscopeHome,
@@ -504,28 +528,7 @@ try {
     console.log(
       `AGENTSCOPE_INTERACTIVE_PTY_RECEIPT=${Buffer.from(JSON.stringify(ptyTerminalReceipt)).toString("base64url")}`,
     );
-    const fixtureResultPath = join(ledger, "fixture-result.json");
-    const fixtureResultStatus = lstatSync(fixtureResultPath);
-    if (
-      !fixtureResultStatus.isFile() ||
-      fixtureResultStatus.isSymbolicLink() ||
-      fixtureResultStatus.size < 1 ||
-      fixtureResultStatus.size > 1024 * 1024 ||
-      (fixtureResultStatus.mode & 0o777) !== 0o600
-    )
-      throw new Error("integration.runner.fixture-result");
-    const retained = JSON.parse(readFileSync(fixtureResultPath, "utf8"));
-    if (
-      JSON.stringify(Object.keys(retained).sort()) !==
-        JSON.stringify(["encodedEvidence", "evidenceVersion", "scenarioId"]) ||
-      retained.evidenceVersion !== 1 ||
-      retained.scenarioId !== scenarioId ||
-      typeof retained.encodedEvidence !== "string" ||
-      retained.encodedEvidence.length > 1024 * 1024 ||
-      !/^[A-Za-z0-9_-]+$/u.test(retained.encodedEvidence)
-    )
-      throw new Error("integration.runner.fixture-result");
-    fixtureOutput = `AGENTSCOPE_FIXTURE_RESULT=${retained.encodedEvidence}\n`;
+    fixtureOutput = readRetainedFixtureOutput();
     if (
       receipt.outcome !== "completed" ||
       receipt.finalSnapshot.semanticState !== "completed" ||
@@ -607,7 +610,16 @@ try {
       `integration.runner.interactive-diagnostic:${diagnostic ?? "integration.runner.fixture-failed"}\n`,
     );
   }
-  fixtureOutput = "";
+  if (
+    scenario.executionMode === "headless" &&
+    substrateCertificationCase === "leaked-child"
+  ) {
+    try {
+      fixtureOutput = readRetainedFixtureOutput();
+    } catch {
+      fixtureOutput = "";
+    }
+  } else fixtureOutput = "";
   fixtureFailure = error;
 }
 const fixtureResult = fixtureOutput
