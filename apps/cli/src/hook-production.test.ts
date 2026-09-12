@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-management";
-import { createHookEntryAuthority } from "@agentscope/core/hook-orchestration";
+import {
+  createHookEntryAuthority,
+  createOwnedHookEntryAuthorityForCli,
+} from "@agentscope/core/hook-orchestration";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -108,8 +111,10 @@ describe("production Codex hook composition", () => {
       "success",
     );
     const requests: Array<Readonly<{ body?: Uint8Array; method: string }>> = [];
-    const authority = createHookEntryAuthority({
+    const authority = createOwnedHookEntryAuthorityForCli({
       durationMilliseconds: 2_000,
+      homeRoot: root,
+      platform: process.platform,
       startedAt: performance.now(),
     });
     await runProductCodexHookEvidenceForTesting(
@@ -123,7 +128,6 @@ describe("production Codex hook composition", () => {
       },
       {
         environment,
-        homeResolver,
         transportExecutor: (request) => {
           requests.push(request);
           return Promise.resolve({
@@ -160,9 +164,6 @@ describe("production Codex hook composition", () => {
         },
         {
           environment: {},
-          homeResolver: () => {
-            throw new Error("non-Stop must not resolve home");
-          },
           transportExecutor: () => {
             requests += 1;
             return Promise.reject(new Error("unexpected"));
@@ -172,4 +173,33 @@ describe("production Codex hook composition", () => {
       expect(requests).toBe(0);
     },
   );
+
+  it("rejects a launcher root substituted after the owned-home transfer", async () => {
+    let requests = 0;
+    await expect(
+      runProductCodexHookEvidenceForTesting(
+        {
+          evidence: hook("Stop"),
+          hookEntryAuthority: createOwnedHookEntryAuthorityForCli({
+            durationMilliseconds: 2_000,
+            homeRoot: "/authenticated/agentscope-home",
+            platform: process.platform,
+            startedAt: performance.now(),
+          }),
+          launcher: {
+            harnessType: "@agentscope/harness-codex",
+            homeRoot: "/substituted/agentscope-home",
+          },
+        },
+        {
+          environment: {},
+          transportExecutor: () => {
+            requests += 1;
+            return Promise.reject(new Error("unexpected"));
+          },
+        },
+      ),
+    ).rejects.toThrow("cli.hook.invalid");
+    expect(requests).toBe(0);
+  });
 });

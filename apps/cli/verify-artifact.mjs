@@ -739,6 +739,10 @@ setTimeout(() => process.exit(3), 10_000).unref();
     });
     chmodSync(codexLauncher.launcherPath, codexLauncher.mode);
     writeFileSync(codexLauncher.metadataPath, codexLauncher.metadataBytes);
+    const ambientSubstitutedHome = join(
+      installRoot,
+      "ambient-substituted-hook-home",
+    );
     const codexHookInput = (hookEventName) =>
       JSON.stringify(
         hookEventName === "SessionStart"
@@ -773,12 +777,17 @@ setTimeout(() => process.exit(3), 10_000).unref();
       );
     for (const hookEventName of ["SessionStart", "Stop", "SessionEnd"]) {
       const invokedHook = run(codexLauncher.launcherPath, [], {
-        env: localEnvironment,
+        env: {
+          AGENTSCOPE_HOME: join(ambientSubstitutedHome, "override"),
+          HOME: ambientSubstitutedHome,
+          USERPROFILE: ambientSubstitutedHome,
+        },
         input: codexHookInput(hookEventName),
       });
       assert.equal(invokedHook.stdout, "");
       assert.equal(invokedHook.stderr, "");
     }
+    assert.equal(existsSync(ambientSubstitutedHome), false);
     const searchedLocal = run(
       executable,
       [

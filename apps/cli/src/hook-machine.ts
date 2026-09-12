@@ -3,7 +3,7 @@ import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import {
-  createHookEntryAuthority,
+  createOwnedHookEntryAuthorityForCli,
   type HookEntryAuthority,
 } from "@agentscope/core/hook-orchestration";
 
@@ -263,10 +263,6 @@ const run = async (
   try {
     const authority = exactAuthority(authorityInput);
     const duration = authority.duration;
-    const hookEntryAuthority = createHookEntryAuthority({
-      durationMilliseconds: duration,
-      startedAt: authority.deadlineStartedAt,
-    });
     const remaining = (): number =>
       Math.max(
         0,
@@ -277,6 +273,12 @@ const run = async (
     const verificationBudget = remaining();
     if (verificationBudget <= 0) throw new Error("cli.hook.invalid");
     const launcher = await runVerifier(authority, input, verificationBudget);
+    const hookEntryAuthority = createOwnedHookEntryAuthorityForCli({
+      durationMilliseconds: duration,
+      homeRoot: launcher.homeRoot,
+      platform: process.platform,
+      startedAt: authority.deadlineStartedAt,
+    });
     const evidenceBudget = remaining();
     if (evidenceBudget <= 0) throw new Error("cli.hook.invalid");
     const evidence = await readHookEvidence(input.stdin, evidenceBudget);
