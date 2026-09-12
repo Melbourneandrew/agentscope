@@ -189,8 +189,8 @@ const evidenceSchema = z
   })
   .superRefine((value, context) => {
     if (
-      (value.material.kind !== "certification-fixture") !==
-      (value.admission !== undefined)
+      value.material.kind === "certification-fixture" &&
+      value.admission !== undefined
     )
       context.addIssue({ code: "custom", message: "admission mismatch" });
     if (value.material.kind === "signed-release-manifest") {

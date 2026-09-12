@@ -39,6 +39,36 @@ describe("integration capability manifest", () => {
     verifyManifestEvidence(compiled, integrationRoot);
     expect(compiled.manifestIdentity).toMatch(/^sha256-[a-f\d]{64}$/u);
     expect(Object.isFrozen(compiled.scenarios[0])).toBe(true);
+    const codex = compiled.evidence.find(
+      ({ evidenceId }) => evidenceId === "codex-0-149-1",
+    );
+    expect(codex?.material.kind).toBe("npm");
+    expect(codex?.admission).toBeUndefined();
+  });
+
+  it("keeps authenticated diagnostic material distinct from support admission", () => {
+    const original = manifestFixture();
+    const codex = original.evidence.find(
+      ({ evidenceId }) => evidenceId === "codex-0-149-1",
+    )!;
+    expect(codex.material.kind).toBe("npm");
+    expect(codex.admission).toBeUndefined();
+
+    const fixture = original.evidence.find(
+      ({ evidenceId }) => evidenceId === "fixture-process-v1",
+    )!;
+    expect(() =>
+      compileCapabilityManifest(
+        withIdentity({
+          ...original,
+          evidence: [{ ...fixture, admission: {} as never }],
+          requiredRepresentativeIds: [fixture.evidenceId],
+          scenarios: original.scenarios.filter(
+            ({ harnessEvidenceId }) => harnessEvidenceId === fixture.evidenceId,
+          ),
+        }),
+      ),
+    ).toThrow("integration.manifest.invalid");
   });
 
   it("rejects identity, duplicate, reference, and coverage drift", () => {

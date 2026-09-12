@@ -2087,7 +2087,8 @@ try {
     );
     if (scenario === undefined || evidence === undefined)
       throw new Error("integration.harness-scenario-admission.invalid");
-    if (preparedMaterial === undefined) continue;
+    if (preparedMaterial === undefined || evidence.admission === undefined)
+      continue;
     const materialAuthority = inspectPreparedHarnessMaterial(preparedMaterial);
     const image = preparedIdentityFor(scenario.image);
     admissionByRunId.set(plan.runId, {
