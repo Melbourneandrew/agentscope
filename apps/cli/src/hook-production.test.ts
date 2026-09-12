@@ -1,9 +1,12 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createAgentscopeHomeResolver } from "@agentscope/core/configuration-management";
-import { createOwnedHookEntryAuthorityForCli } from "@agentscope/core/hook-orchestration";
+import {
+  createHookEntryAuthority,
+  createOwnedHookEntryAuthorityForCli,
+} from "@agentscope/core/hook-orchestration";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -56,58 +59,23 @@ const hook = (event: "SessionStart" | "Stop" | "SessionEnd") =>
     ),
   );
 
-// eslint-disable-next-line max-lines-per-function -- one suite proves the three-event production lifecycle and Stop delivery.
 describe("production Codex hook composition", () => {
-  it("records the exact root lifecycle without fabricating non-Stop traces", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agentscope-hook-production-"));
-    roots.push(root);
-    const authority = createOwnedHookEntryAuthorityForCli({
-      durationMilliseconds: 2_000,
-      homeRoot: root,
-      platform: process.platform,
-      startedAt: performance.now(),
-    });
+  it("keeps the production entrypoint inert for non-Stop lifecycle hooks", async () => {
     await expect(
       runProductCodexHookEvidence({
         evidence: hook("SessionStart"),
-        hookEntryAuthority: authority,
+        hookEntryAuthority: createHookEntryAuthority({
+          durationMilliseconds: 2_000,
+          startedAt: performance.now(),
+        }),
         launcher: {
           harnessType: "@agentscope/harness-codex",
-          homeRoot: root,
+          homeRoot: "/unneeded-for-non-stop",
         },
       }),
     ).resolves.toBeUndefined();
-    await expect(
-      runProductCodexHookEvidence({
-        evidence: hook("SessionEnd"),
-        hookEntryAuthority: authority,
-        launcher: {
-          harnessType: "@agentscope/harness-codex",
-          homeRoot: root,
-        },
-      }),
-    ).resolves.toBeUndefined();
-    const records = (
-      await readFile(join(root, "codex-hook-lifecycle-v1.jsonl"), "utf8")
-    )
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as unknown);
-    expect(records).toEqual([
-      {
-        eventName: "SessionStart",
-        model: "fixture-model",
-        sessionId: "session-1",
-        turnId: null,
-      },
-      {
-        eventName: "SessionEnd",
-        model: null,
-        sessionId: "session-1",
-        turnId: null,
-      },
-    ]);
   });
+
   it("routes one untouched Stop hook through Core and the selected Reporter", async () => {
     const root = await mkdtemp(join(tmpdir(), "agentscope-hook-production-"));
     roots.push(root);
@@ -177,6 +145,34 @@ describe("production Codex hook composition", () => {
       "must-not-reach-transport",
     );
   });
+
+  it.each(["SessionStart", "SessionEnd"] as const)(
+    "validates %s without fabricating a trace",
+    async (event) => {
+      let requests = 0;
+      await runProductCodexHookEvidenceForTesting(
+        {
+          evidence: hook(event),
+          hookEntryAuthority: createHookEntryAuthority({
+            durationMilliseconds: 2_000,
+            startedAt: performance.now(),
+          }),
+          launcher: {
+            harnessType: "@agentscope/harness-codex",
+            homeRoot: "/unneeded-for-non-stop",
+          },
+        },
+        {
+          environment: {},
+          transportExecutor: () => {
+            requests += 1;
+            return Promise.reject(new Error("unexpected"));
+          },
+        },
+      );
+      expect(requests).toBe(0);
+    },
+  );
 });
 
 describe("production Codex hook home authority", () => {
