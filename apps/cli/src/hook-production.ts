@@ -11,6 +11,7 @@ import {
   createAgentscopeHomeResolver,
   createConfigurationProcessIdentity,
   createConfigurationStore,
+  type AgentscopeHomeResolver,
 } from "@agentscope/core/configuration-management";
 import type { HookEntryAuthority } from "@agentscope/core/hook-orchestration";
 import type { PrepareCoreRetrievalRuntimeInput } from "@agentscope/core/retrieval-orchestration";
@@ -35,16 +36,15 @@ const runProductCodexHookEvidenceWith = async (
   input: ProductHookInput,
   environment: Readonly<Record<string, string | undefined>>,
   transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"],
+  homeResolver: AgentscopeHomeResolver,
 ): Promise<void> => {
   if (input.launcher.harnessType !== "@agentscope/harness-codex")
     throw new Error("cli.hook.invalid");
   const hook = decodeCodexRootHookInput(input.evidence);
   if (hook.eventName !== "Stop") return;
-  const home = createAgentscopeHomeResolver({
-    environment: { AGENTSCOPE_HOME: input.launcher.homeRoot },
-    environmentOverrideAuthority: "portable",
-    platform: process.platform,
-  })();
+  const home = homeResolver();
+  if (home.root !== input.launcher.homeRoot)
+    throw new Error("cli.hook.invalid");
   const registry = requireExactProductDestinationRegistry(
     PRODUCT_DESTINATION_REGISTRY,
   );
@@ -87,12 +87,14 @@ export const runProductCodexHookEvidence = (
     input,
     process.env,
     productionDestinationTransportExecutor,
+    createAgentscopeHomeResolver(),
   );
 
 export const runProductCodexHookEvidenceForTesting = (
   input: ProductHookInput,
   options: Readonly<{
     environment: Readonly<Record<string, string | undefined>>;
+    homeResolver: AgentscopeHomeResolver;
     transportExecutor: PrepareCoreRetrievalRuntimeInput["transportExecutor"];
   }>,
 ): Promise<void> =>
@@ -100,4 +102,5 @@ export const runProductCodexHookEvidenceForTesting = (
     input,
     options.environment,
     options.transportExecutor,
+    options.homeResolver,
   );

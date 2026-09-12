@@ -123,6 +123,7 @@ describe("production Codex hook composition", () => {
       },
       {
         environment,
+        homeResolver,
         transportExecutor: (request) => {
           requests.push(request);
           return Promise.resolve({
@@ -159,6 +160,9 @@ describe("production Codex hook composition", () => {
         },
         {
           environment: {},
+          homeResolver: () => {
+            throw new Error("non-Stop must not resolve home");
+          },
           transportExecutor: () => {
             requests += 1;
             return Promise.reject(new Error("unexpected"));
