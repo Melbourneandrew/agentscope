@@ -425,10 +425,20 @@ try {
   await waitForModelRequest();
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
   interactiveFailurePhase = "trace";
-  const observedBeforeQuit = await waitForTraceSummary();
+  let observedBeforeQuit;
+  let traceFailure;
+  try {
+    observedBeforeQuit = await waitForTraceSummary();
+  } catch (error) {
+    traceFailure = error;
+  }
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   interactiveFailurePhase = "tui-exit";
   await codexRun;
+  if (traceFailure !== undefined) {
+    interactiveFailurePhase = "trace";
+    throw traceFailure;
+  }
   interactiveFailurePhase = "verify";
   const modelRequests = await readModelRequests();
   if (readFileSync(hookPath, "utf8") !== originalHooks)
@@ -436,7 +446,7 @@ try {
   const summary = await readTraceSummary();
   if (
     summary === null ||
-    summary.locator.traceId !== observedBeforeQuit.locator.traceId
+    summary.locator.traceId !== observedBeforeQuit?.locator.traceId
   )
     throw new Error("integration.codex.trace-search");
   const traceId = summary?.locator?.traceId;
