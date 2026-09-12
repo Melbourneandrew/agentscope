@@ -287,6 +287,34 @@ describe("selected PTY transport", () => {
     });
   });
 
+  it("does not accept a completion marker observed before the preceding input", async () => {
+    expect(
+      await executeSelectedPtyTransportForTest(
+        {
+          ...request(),
+          interaction: {
+            trigger: "semantic-ready",
+            actions: [
+              {
+                action: "input",
+                byteLength: 4,
+                inputSha256:
+                  "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+              },
+              { action: "wait-for-semantic-completion" },
+              { action: "eof" },
+            ],
+          },
+        },
+        "fragmented-output",
+      ),
+    ).toMatchObject({
+      actions: [{ action: "input" }],
+      outcome: "input-incomplete",
+      terminalInputJoined: false,
+    });
+  });
+
   it("applies a readiness-gated resize before segmented input and EOF", async () => {
     const receipt = await executeSelectedPtyTransportForTest(
       {
@@ -322,6 +350,37 @@ describe("selected PTY transport", () => {
         { action: "input", byteLength: 2 },
         { action: "eof" },
       ],
+    });
+  });
+
+  it("waits for semantic completion before applying a terminal action", async () => {
+    const receipt = await executeSelectedPtyTransportForTest(
+      {
+        ...request(),
+        interaction: {
+          trigger: "semantic-ready",
+          actions: [
+            {
+              action: "input",
+              byteLength: 4,
+              inputSha256:
+                "5040625b1fb6fa4af07226683f6e6003b29e5e70b16f8cfb24be7a752393f0ee",
+            },
+            { action: "wait-for-semantic-completion" },
+            { action: "eof" },
+          ],
+        },
+      },
+      "post-input-completion",
+    );
+    expect(receipt).toMatchObject({
+      outcome: "completed",
+      actions: [
+        { action: "input" },
+        { action: "wait-for-semantic-completion" },
+        { action: "eof" },
+      ],
+      terminalInputJoined: true,
     });
   });
 

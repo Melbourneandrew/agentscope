@@ -296,6 +296,7 @@ const stageBuildContext = (plan) => {
   const context = resolve(artifactsRoot, "contexts", plan.runId);
   rmSync(context, { force: true, recursive: true });
   mkdirSync(resolve(context, "prepared/candidates"), { recursive: true });
+  mkdirSync(resolve(context, "runtime"), { recursive: true });
   const scenario = manifest.scenarios.find(
     (entry) => entry.scenarioId === plan.scenarioId,
   );
@@ -342,8 +343,9 @@ const stageBuildContext = (plan) => {
       resolve(integrationRoot, "fixtures/substrate-negative-process.mjs"),
     ],
     [
-      "process-platform-oracle.mjs",
-      resolve(integrationRoot, "process-platform-oracle.mjs"),
+      "scenario-oracle.mjs",
+      resolve(integrationRoot, scenario.scenarioOracle.path),
+      scenario.scenarioOracle.sha256,
     ],
     [
       "scenario-adapter.mjs",
@@ -405,6 +407,18 @@ const stageBuildContext = (plan) => {
         "packages/testkit/dist",
         file.slice("testkit/".length),
       ),
+    ]);
+  }
+  for (const artifact of scenario.runtimeArtifacts) {
+    sources.push([
+      `runtime/${artifact.destination}`,
+      resolve(
+        artifact.source.kind === "integration"
+          ? integrationRoot
+          : workspaceRoot,
+        artifact.source.path,
+      ),
+      artifact.sha256,
     ]);
   }
   for (const [destination, source, expectedDigest] of sources) {
@@ -498,7 +512,8 @@ const stageBuildContext = (plan) => {
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs scenario-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runtime ./runtime",
       "COPY fixtures ./fixtures",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
@@ -511,7 +526,20 @@ const stageBuildContext = (plan) => {
   );
   writeFileSync(
     resolve(context, "mockserver-initialization.json"),
-    `${JSON.stringify(modelRoutes.mockServerInitialization, undefined, 2)}\n`,
+    `${JSON.stringify(
+      scenario.modelRoutes.map((routeId) => {
+        const index = modelRoutes.routeIds.indexOf(routeId);
+        if (
+          index < 0 ||
+          modelRoutes.routeIds.lastIndexOf(routeId) !== index ||
+          modelRoutes.mockServerInitialization[index] === undefined
+        )
+          throw new Error("integration.isolation.context");
+        return modelRoutes.mockServerInitialization[index];
+      }),
+      undefined,
+      2,
+    )}\n`,
   );
   writeFileSync(
     resolve(context, "MockServer.Dockerfile"),
@@ -668,7 +696,7 @@ const linuxBootMonotonicMilliseconds = () => {
     throw new Error("integration.isolation.headless-clock");
   return value;
 };
-const expectedHeadlessEnvironment = (plan) => ({
+const expectedHeadlessEnvironment = (plan, outerMonotonicDeadlineMs) => ({
   AGENTSCOPE_HOME: "/agentscope-home",
   AGENTSCOPE_CANDIDATE_ROOT: "/opt/agentscope/prepared",
   AGENTSCOPE_COLLECTOR_URL: "http://collector:4318",
@@ -677,6 +705,9 @@ const expectedHeadlessEnvironment = (plan) => ({
   AGENTSCOPE_MODEL_SERVER_URL: "http://mockserver:1080",
   AGENTSCOPE_RETRIEVAL_URL: "http://retrieval:4319",
   AGENTSCOPE_SCENARIO_ID: plan.scenarioId,
+  AGENTSCOPE_SCENARIO_BOOT_DEADLINE_MS: String(
+    outerMonotonicDeadlineMs - 5_000,
+  ),
   AGENTSCOPE_WORKTREE: "/worktree",
   HARNESS_HOME: "/harness-home",
   HOME: "/home/agentscope",
@@ -758,7 +789,10 @@ const expectedHeadlessRequest = (receipt, plan) => ({
     `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
   ],
   cwd: "/opt/agentscope",
-  environment: expectedHeadlessEnvironment(plan),
+  environment: expectedHeadlessEnvironment(
+    plan,
+    receipt.outerMonotonicDeadlineMs,
+  ),
   stdinBase64: "",
   stdoutLimitBytes: 1024 * 1024,
   stderrLimitBytes: 1024 * 1024,
@@ -880,8 +914,13 @@ const captureHeadlessReceipt = (output, plan, expected) => {
     throw new Error("integration.isolation.headless-receipt");
   return Object.freeze(receipt);
 };
+// eslint-disable-next-line complexity -- exact closed receipt predicate
 const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
-  const input = Buffer.from("run\n");
+  const selectedScenario = manifest.scenarios.find(
+    ({ scenarioId }) => scenarioId === plan.scenarioId,
+  );
+  if (selectedScenario === undefined) return false;
+  const input = Buffer.from(selectedScenario.terminalInputBase64, "base64");
   const expectedRequest = {
     runId: plan.runId,
     executable: "/opt/agentscope/scenario-process.mjs",
@@ -890,7 +929,10 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
       `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
     ],
     cwd: "/opt/agentscope",
-    environment: expectedHeadlessEnvironment(plan),
+    environment: expectedHeadlessEnvironment(
+      plan,
+      receipt.outerMonotonicDeadlineMs,
+    ),
     stdinBase64: input.toString("base64"),
     stdoutLimitBytes: 1024 * 1024,
     stderrLimitBytes: 1024 * 1024,
@@ -911,7 +953,9 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
       ]) &&
     processRequest?.cwd === "/opt/agentscope" &&
     JSON.stringify(processRequest?.environment) ===
-      JSON.stringify(expectedHeadlessEnvironment(plan)) &&
+      JSON.stringify(
+        expectedHeadlessEnvironment(plan, receipt.outerMonotonicDeadlineMs),
+      ) &&
     processRequest?.inputBytes === input.length &&
     processRequest?.inputSha256 ===
       createHash("sha256").update(input).digest("hex") &&
@@ -928,29 +972,57 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
   );
 };
 const interactivePtyEnvelopeMatches = (receipt, plan, expected) =>
-  receipt?.receiptVersion === 1 &&
-  receipt?.transport === "pty" &&
-  receipt?.scenarioId === plan.scenarioId &&
-  receipt?.runId === plan.runId &&
-  receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
-  linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
-  receipt?.request?.completion?.kind === "semantic-marker" &&
-  receipt?.request?.interaction?.trigger === "semantic-ready" &&
-  JSON.stringify(receipt?.request?.interaction?.actions) ===
-    JSON.stringify([
+  // eslint-disable-next-line complexity -- exact closed receipt predicate
+  (() => {
+    const selectedScenario = manifest.scenarios.find(
+      ({ scenarioId }) => scenarioId === plan.scenarioId,
+    );
+    if (selectedScenario === undefined) return false;
+    const input = Buffer.from(selectedScenario.terminalInputBase64, "base64");
+    const initialInputBytes =
+      input.length - selectedScenario.postCompletionInputByteLength;
+    const expectedActions = [
       { action: "resize", geometry: { columns: 100, rows: 30 } },
       {
         action: "input",
-        byteLength: 4,
-        inputSha256:
-          "b5004f26a852b0d60ec1237432c1a33c2307ff2458c374d9d99749d045c7feb9",
+        byteLength: initialInputBytes,
+        inputSha256: createHash("sha256")
+          .update(input.subarray(0, initialInputBytes))
+          .digest("hex"),
       },
-      { action: "eof" },
-    ]) &&
-  JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
-    JSON.stringify(["resize", "input", "eof"]) &&
-  receipt?.isTTY === true &&
-  receipt?.observedCanonicalMode === true;
+      ...(selectedScenario.waitForSemanticCompletionBeforeEof
+        ? [
+            { action: "wait-for-semantic-completion" },
+            {
+              action: "input",
+              byteLength: selectedScenario.postCompletionInputByteLength,
+              inputSha256: createHash("sha256")
+                .update(input.subarray(initialInputBytes))
+                .digest("hex"),
+            },
+          ]
+        : []),
+      ...(selectedScenario.waitForSemanticCompletionBeforeEof
+        ? []
+        : [{ action: "eof" }]),
+    ];
+    return (
+      receipt?.receiptVersion === 1 &&
+      receipt?.transport === "pty" &&
+      receipt?.scenarioId === plan.scenarioId &&
+      receipt?.runId === plan.runId &&
+      receipt?.outerMonotonicDeadlineMs === expected.outerMonotonicDeadline &&
+      linuxBootMonotonicMilliseconds() < expected.outerMonotonicDeadline &&
+      receipt?.request?.completion?.kind === "semantic-marker" &&
+      receipt?.request?.interaction?.trigger === "semantic-ready" &&
+      JSON.stringify(receipt?.request?.interaction?.actions) ===
+        JSON.stringify(expectedActions) &&
+      JSON.stringify(receipt?.actions?.map(({ action }) => action)) ===
+        JSON.stringify(expectedActions.map(({ action }) => action)) &&
+      receipt?.isTTY === true &&
+      receipt?.observedCanonicalMode === true
+    );
+  })();
 const interactivePtyGeometryMatches = (receipt) =>
   JSON.stringify(receipt?.request?.initialGeometry) ===
     JSON.stringify({ columns: 80, rows: 24 }) &&
@@ -1382,26 +1454,34 @@ const registerScenarioReceipt = (plan, receipt) => {
     registerIntegrationPtyReceipt(receipt, performance.now());
   else registerIntegrationHeadlessReceipt(receipt, performance.now());
 };
-const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) =>
-  ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
-    (plan.executionMode === "interactive" &&
-      receipt.outcome === "completed" &&
-      receipt.finalSnapshot?.semanticState === "completed")) &&
-  receipt.exitCode === 0 &&
-  receipt.signal === null &&
-  receipt.cleanup === "clean" &&
-  receipt.residualProcessCount === 0 &&
-  receipt.processJoined === true &&
-  (plan.executionMode === "interactive" ||
-    (receipt.stdinJoined === true &&
-      receipt.stdoutJoined === true &&
-      receipt.stderrJoined === true)) &&
-  (plan.executionMode === "headless" ||
-    (receipt.eofByteWritten === true &&
-      receipt.terminalInputJoined === true &&
-      receipt.terminalOutputJoined === true &&
-      receipt.terminalTransportClosed === true)) &&
-  installedPtyReceipt.outcome === "completed";
+const scenarioReceiptSucceeded = (plan, receipt, installedPtyReceipt) => {
+  const scenario = manifest.scenarios.find(
+    ({ scenarioId }) => scenarioId === plan.scenarioId,
+  );
+  return (
+    ((plan.executionMode === "headless" && receipt.outcome === "exited") ||
+      (plan.executionMode === "interactive" &&
+        receipt.outcome === "completed" &&
+        receipt.finalSnapshot?.semanticState === "completed")) &&
+    receipt.exitCode === 0 &&
+    receipt.signal === null &&
+    receipt.cleanup === "clean" &&
+    receipt.residualProcessCount === 0 &&
+    receipt.processJoined === true &&
+    (plan.executionMode === "interactive" ||
+      (receipt.stdinJoined === true &&
+        receipt.stdoutJoined === true &&
+        receipt.stderrJoined === true)) &&
+    (plan.executionMode === "headless" ||
+      ((scenario?.waitForSemanticCompletionBeforeEof === true
+        ? receipt.eofByteWritten === false
+        : receipt.eofByteWritten === true) &&
+        receipt.terminalInputJoined === true &&
+        receipt.terminalOutputJoined === true &&
+        receipt.terminalTransportClosed === true)) &&
+    installedPtyReceipt.outcome === "completed"
+  );
+};
 const observeNegativeScenarioReceipt = (plan, receipt, fixtureCaptured) => {
   if (plan.executionMode !== "headless") return;
   const result = fixtureResults.get(plan.runId);
@@ -1541,6 +1621,7 @@ const runScenario = async (plan, signal) => {
     throw error;
   }
 };
+// eslint-disable-next-line max-lines-per-function -- one atomic retained evidence settlement
 const recordEvidence = async (evidence) => {
   const verifiedEvidence = compileIsolationEvidence(evidence, {
     baseImageIdentity: preparedIdentityFor(evidence.baseImage),
@@ -1575,6 +1656,11 @@ const recordEvidence = async (evidence) => {
       resolve(directory, "destination-ledger.json"),
       `${JSON.stringify(result.destinationLedger, undefined, 2)}\n`,
     );
+    if (result.harnessObservation !== undefined)
+      writeFileSync(
+        resolve(directory, "harness-observation.json"),
+        `${JSON.stringify(result.harnessObservation, undefined, 2)}\n`,
+      );
     writeFileSync(
       resolve(directory, "fixture-lifecycle.json"),
       `${JSON.stringify(
@@ -2001,7 +2087,8 @@ try {
     );
     if (scenario === undefined || evidence === undefined)
       throw new Error("integration.harness-scenario-admission.invalid");
-    if (preparedMaterial === undefined) continue;
+    if (preparedMaterial === undefined || evidence.admission === undefined)
+      continue;
     const materialAuthority = inspectPreparedHarnessMaterial(preparedMaterial);
     const image = preparedIdentityFor(scenario.image);
     admissionByRunId.set(plan.runId, {

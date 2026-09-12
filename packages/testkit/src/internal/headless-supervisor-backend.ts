@@ -1858,6 +1858,15 @@ const snapshotPtyRequest = (
           { action: "eof" },
         ]) as SelectedPtyExecutionAction,
       );
+    } else if (actionKind === "wait-for-semantic-completion") {
+      if (actionKeys !== "action") return fail("testkit.pty.request");
+      defineArrayIndex(
+        stableActions,
+        index,
+        safeReflectApply(freeze, Object, [
+          { action: "wait-for-semantic-completion" },
+        ]) as SelectedPtyExecutionAction,
+      );
     } else if (actionKind === "interrupt-byte") {
       if (actionKeys !== "action\0byte" || ownData(action, "byte") !== 3)
         return fail("testkit.pty.request");
@@ -2160,6 +2169,8 @@ const armSelectedPty = (
     let inputOffset = 0;
     let actionInputOffset = 0;
     let actionIndex = 0;
+    let lastCompletedInputOutputBytes = -1;
+    let semanticCompletionObservedAtOutputBytes = -1;
     const actionsApplied: PtyTransportAction[] = [];
     const recordAction = (action: PtyTransportAction): void => {
       defineArrayIndex(
@@ -2201,10 +2212,16 @@ const armSelectedPty = (
             ),
           );
           if (captured.length > 0) {
+            const priorSemanticState = terminal.snapshot().semanticState;
             outputBytes += captured.length;
             defineArrayIndex(chunks, chunks.length, captured);
             terminal.write(new SafeUint8Array(captured));
             const semanticState = terminal.snapshot().semanticState;
+            if (
+              priorSemanticState !== "completed" &&
+              semanticState === "completed"
+            )
+              semanticCompletionObservedAtOutputBytes = outputBytes;
             if (semanticState === "ready") readinessObserved = true;
             else if (
               semanticState === "credential-prompt" ||
@@ -2276,6 +2293,7 @@ const armSelectedPty = (
                   [],
                 ),
               });
+              lastCompletedInputOutputBytes = outputBytes;
               actionInputOffset = 0;
               actionIndex += 1;
             }
@@ -2298,6 +2316,22 @@ const armSelectedPty = (
               monotonicAtMs: safeReflectApply(performanceNow, performance, []),
             });
             actionIndex += 1;
+          } else if (action?.action === "wait-for-semantic-completion") {
+            if (
+              terminal.snapshot().semanticState === "completed" &&
+              semanticCompletionObservedAtOutputBytes >
+                lastCompletedInputOutputBytes
+            ) {
+              recordAction({
+                action: "wait-for-semantic-completion",
+                monotonicAtMs: safeReflectApply(
+                  performanceNow,
+                  performance,
+                  [],
+                ),
+              });
+              actionIndex += 1;
+            }
           } else if (action?.action === "interrupt-byte") {
             const interrupt = safeBufferFrom([action.byte]);
             const written = exactPtyWrite(
@@ -3147,6 +3181,12 @@ const ptyReceiptActionsMatch = (
       observed.action === "interrupt-byte"
     ) {
       if (expected.byte !== observed.byte) return false;
+    } else if (
+      expected.action === "wait-for-semantic-completion" &&
+      observed.action === "wait-for-semantic-completion"
+    ) {
+      // The backend records this action only after the bounded emulator has
+      // observed the authenticated semantic completion marker.
     } else if (expected.action === "signal" && observed.action === "signal") {
       if (
         expected.signal !== observed.signal ||
@@ -3949,6 +3989,7 @@ type SelectedPtyTestSeed =
   | "partial-input"
   | "partial-input-output-limit"
   | "partial-input-timeout"
+  | "post-input-completion"
   | "residual"
   | "root-missing"
   | "signal-failure"
@@ -4181,6 +4222,12 @@ const selectedPtyRuntimeForTest = (seed: SelectedPtyTestSeed): PtyRuntime => {
           }
           if (seed === "transport-failure")
             return fail("testkit.pty.transport");
+          if (
+            seed === "post-input-completion" &&
+            chunkIndex === 1 &&
+            inputCalls === 0
+          )
+            return { status: "would-block" as const };
           if (
             seed === "late-tail" &&
             chunkIndex > 0 &&

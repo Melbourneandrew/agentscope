@@ -32,6 +32,9 @@ const installRoot = realpathSync(
 );
 const isolatedHome = join(installRoot, "home");
 const npmUserConfig = join(installRoot, "empty-npmrc");
+// This bounds the packed topology proof, not the product hook. The installed
+// scenario and source tests retain and prove the production 2,500 ms authority.
+const packedCodexHookVerifierDeadlineMilliseconds = 2_500;
 let loopbackServer;
 mkdirSync(artifactDirectory, { recursive: true });
 
@@ -240,6 +243,16 @@ try {
   const machineEntryPath = join(
     installedInternal,
     "agentscope-hook-machine.js",
+  );
+  assert.ok(
+    lstatSync(machineEntryPath).size <= 1_600_000,
+    "the installed hook machine must retain its bounded cold-start artifact",
+  );
+  assert.ok(
+    lstatSync(
+      join(installedInternal, "local-sqlite-runtime", "reporter-child.js"),
+    ).size <= 570_000,
+    "the installed reporter child must retain its bounded cold-start artifact",
   );
   const verifierEntryPath = join(installRoot, "agentscope-hook-verifier.mjs");
   await build({
@@ -641,6 +654,11 @@ setTimeout(() => process.exit(3), 10_000).unref();
     const configurationBeforePlan = readFileSync(
       join(localHome, "config.json"),
     );
+    assert.equal(
+      JSON.parse(configurationBeforePlan).routing.hookDeadlineMilliseconds,
+      2_500,
+      "the packed product must retain the production default hook deadline",
+    );
     const plannedConfigure = run(
       executable,
       [
@@ -729,11 +747,33 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.deepEqual(JSON.parse(routedLocal.stdout).records, [
       { name: "packed-local" },
     ]);
+    const packedTopologyConfigurationPath = join(localHome, "config.json");
+    const packedTopologyConfiguration = JSON.parse(
+      readFileSync(packedTopologyConfigurationPath, "utf8"),
+    );
+    packedTopologyConfiguration.routing.hookDeadlineMilliseconds =
+      packedCodexHookVerifierDeadlineMilliseconds;
+    writeFileSync(
+      packedTopologyConfigurationPath,
+      `${JSON.stringify(packedTopologyConfiguration)}\n`,
+      { mode: 0o600 },
+    );
+    assert.equal(
+      JSON.parse(readFileSync(packedTopologyConfigurationPath, "utf8")).routing
+        .hookDeadlineMilliseconds,
+      packedCodexHookVerifierDeadlineMilliseconds,
+      "the isolated packed topology configuration must match its launcher",
+    );
     const codexLauncher = launcherModule.createOwnedHookLauncherArtifacts({
       ...launcherInput,
       agentscopeHome: localHome,
       harnessType: "@agentscope/harness-codex",
+      hookDeadlineMilliseconds: packedCodexHookVerifierDeadlineMilliseconds,
     });
+    assert.equal(
+      codexLauncher.metadata.hookDeadlineMilliseconds,
+      packedCodexHookVerifierDeadlineMilliseconds,
+    );
     writeFileSync(codexLauncher.launcherPath, codexLauncher.launcherBytes, {
       mode: codexLauncher.mode,
     });
@@ -807,7 +847,16 @@ setTimeout(() => process.exit(3), 10_000).unref();
       packedHookOperationalStatePath,
       "utf8",
     );
-    assert.match(packedHookOperationalState, /"receipt":"accepted"/u);
+    const acceptedHookConnections = JSON.parse(
+      packedHookOperationalState,
+    ).health.filter(
+      (entry) =>
+        entry.scope === "connection" &&
+        entry.stage === "remote-acceptance" &&
+        entry.outcome === "accepted" &&
+        entry.receipt === "accepted",
+    );
+    assert.ok(acceptedHookConnections.length >= 1);
     assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
     const searchedLocal = runRaw(

@@ -55,7 +55,9 @@ const planFor = (
   executionMode: "headless" | "interactive" = "headless",
 ) => {
   const scenario = manifest.scenarios.find(
-    (candidate) => candidate.executionMode === executionMode,
+    (candidate) =>
+      candidate.executionMode === executionMode &&
+      candidate.harnessEvidenceId === "fixture-process-v1",
   )!;
   return createIsolationPlan({
     scenario,
@@ -795,6 +797,7 @@ const compiledEvidenceFixture = () => {
       candidateBundleIdentity: `sha256-${"2".repeat(64)}`,
       candidateRevision: "3".repeat(40),
       executionMode: "headless",
+      terminalAction: "none",
       baseImage: `node@sha256:${"4".repeat(64)}`,
       mockServerImage: `mockserver@sha256:${"5".repeat(64)}`,
       baseImageIdentity: preparedIdentityFor(
@@ -913,6 +916,7 @@ describe("selected PTY backend evidence", () => {
       ...evidence,
       scenarioId: "fixture-process-interactive",
       executionMode: "interactive",
+      terminalAction: "eof",
       executionPolicy: executionPolicyFor("fixture-process-interactive"),
       headlessTerminalReceipt: null,
       ptyTerminalReceipt: pty,
@@ -920,6 +924,34 @@ describe("selected PTY backend evidence", () => {
     expect(compileWithPreparedAuthority(interactive, evidence)).toEqual(
       interactive,
     );
+    expect(
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          terminalAction: "post-completion-input",
+          ptyTerminalReceipt: { ...pty, eofByteWritten: false },
+        },
+        evidence,
+      ),
+    ).toMatchObject({
+      terminalAction: "post-completion-input",
+      ptyTerminalReceipt: { eofByteWritten: false },
+    });
+    expect(() =>
+      compileWithPreparedAuthority(
+        { ...interactive, terminalAction: "post-completion-input" },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
+    expect(() =>
+      compileWithPreparedAuthority(
+        {
+          ...interactive,
+          ptyTerminalReceipt: { ...pty, eofByteWritten: false },
+        },
+        evidence,
+      ),
+    ).toThrow("integration.isolation.evidence");
     for (const ptyTerminalReceipt of [
       null,
       { ...pty, runId: "fedcba9876543210" },
