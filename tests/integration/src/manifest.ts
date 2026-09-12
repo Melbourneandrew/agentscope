@@ -349,20 +349,6 @@ const assertCoverage = (manifest: CapabilityManifest): void => {
     )
   )
     throw new Error("integration.manifest.unknown-evidence");
-  const preparedImages = new Set(
-    manifest.scenarios.flatMap(({ image, mockServerImage }) => [
-      image,
-      mockServerImage,
-    ]),
-  );
-  if (
-    manifest.evidence.some(
-      ({ material }) =>
-        material.kind !== "certification-fixture" &&
-        !preparedImages.has(material.verifierImage),
-    )
-  )
-    throw new Error("integration.manifest.verifier-image");
 };
 
 export const compileCapabilityManifest = (
@@ -391,6 +377,40 @@ export const compileCapabilityManifest = (
   if (parsed.data.manifestIdentity !== expected)
     throw new Error("integration.manifest.identity");
   return deepFreeze({ ...material, manifestIdentity: expected });
+};
+
+export const capabilityScenarioImages = (
+  manifest: CapabilityManifest,
+  scenarioIds: readonly string[],
+): readonly string[] => {
+  if (
+    scenarioIds.length < 1 ||
+    scenarioIds.length > 256 ||
+    new Set(scenarioIds).size !== scenarioIds.length
+  )
+    throw new Error("integration.manifest.image-selection");
+  const scenarios = new Map(
+    manifest.scenarios.map((scenario) => [scenario.scenarioId, scenario]),
+  );
+  const evidence = new Map(
+    manifest.evidence.map((entry) => [entry.evidenceId, entry]),
+  );
+  const images = scenarioIds.flatMap((scenarioId) => {
+    const scenario = scenarios.get(scenarioId);
+    if (scenario === undefined)
+      throw new Error("integration.manifest.image-selection");
+    const material = evidence.get(scenario.harnessEvidenceId)?.material;
+    if (material === undefined)
+      throw new Error("integration.manifest.image-selection");
+    return [
+      scenario.image,
+      scenario.mockServerImage,
+      ...(material.kind === "certification-fixture"
+        ? []
+        : [material.verifierImage]),
+    ];
+  });
+  return sortedUnique([...new Set(images)]);
 };
 
 const evidencePath = (root: string, relativePath: string): string => {

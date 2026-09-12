@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   compileNpmAttestationAudit,
+  compileNpmVerifierPolicy,
   compileVerifiedNpmHarnessMaterial,
   compileVerifiedSignedManifestHarnessMaterial,
   type NpmHarnessMaterial,
@@ -158,6 +159,44 @@ describe("authenticated npm harness material", () => {
       bytes: bytes.length,
     });
     expect(Object.isFrozen(result.packages)).toBe(true);
+  });
+
+  it("binds verifier attestations by exact package name and version", () => {
+    const otherDescriptor = {
+      ...descriptor,
+      installName: "@vendor/harness-linux-x64",
+      version: "1.2.3-linux-x64",
+      attestations: {
+        ...descriptor.attestations,
+        url: "https://registry.npmjs.org/-/npm/v1/attestations/@vendor%2fharness@1.2.3-linux-x64",
+      },
+    };
+    const first = audit().verified[0]!;
+    const second = {
+      ...first,
+      version: otherDescriptor.version,
+      location: `node_modules/${otherDescriptor.installName}`,
+      attestations: {
+        ...first.attestations,
+        url: otherDescriptor.attestations.url,
+      },
+      attestationBundles: [
+        ...first.attestationBundles,
+        { predicateType: "distinct-version-marker" },
+      ],
+    };
+    const policy = compileNpmVerifierPolicy(
+      { ...material, packages: [descriptor, otherDescriptor] },
+      { invalid: [], missing: [], verified: [first, second] },
+    ) as { packages: { attestationBundleDigest: string }[] };
+
+    expect(policy.packages).toHaveLength(2);
+    expect(policy.packages[0]!.attestationBundleDigest).toMatch(
+      /^[a-f0-9]{64}$/u,
+    );
+    expect(policy.packages[0]!.attestationBundleDigest).not.toBe(
+      policy.packages[1]!.attestationBundleDigest,
+    );
   });
 
   it("rejects archive, audit, source, and subject substitutions", () => {
