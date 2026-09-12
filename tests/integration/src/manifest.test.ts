@@ -212,6 +212,37 @@ describe("integration capability manifest", () => {
       "`integration.fixture.codex-${interactiveFailurePhase}\\n`",
     );
     expect(source).toContain('  interactiveFailurePhase = "trace";\n');
+    expect(source).toContain(
+      "if (!/\\/agentscope-hook-v1-[a-f0-9]{64}-d2500$/u.test(launcher))",
+    );
+    const traceDeadline = source.indexOf(
+      "  const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);\n",
+    );
+    const preQueryDeadline = source.indexOf(
+      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
+      traceDeadline,
+    );
+    const boundedQuery = source.indexOf(
+      "    const summary = await readTraceSummary(traceDeadline);\n",
+      preQueryDeadline,
+    );
+    const postQueryDeadline = source.indexOf(
+      '    if (bootNow() >= traceDeadline)\n      throw new Error("integration.codex.trace-deadline");\n',
+      boundedQuery,
+    );
+    const acceptSummary = source.indexOf(
+      "    if (summary !== null) return summary;\n",
+      postQueryDeadline,
+    );
+    expect(traceDeadline).toBeGreaterThan(-1);
+    expect(preQueryDeadline).toBeGreaterThan(traceDeadline);
+    expect(boundedQuery).toBeGreaterThan(preQueryDeadline);
+    expect(postQueryDeadline).toBeGreaterThan(boundedQuery);
+    expect(acceptSummary).toBeGreaterThan(postQueryDeadline);
+    expect(source).toContain('            child.kill("SIGKILL");\n');
+    expect(source).toContain(
+      "      if (timer !== undefined) clearTimeout(timer);\n",
+    );
     expect(modelRequest).toBeGreaterThan(startupPrompt);
     expect(semanticReady).toBeGreaterThan(modelRequest);
   });

@@ -54,11 +54,27 @@ const maximumOutput = 1024 * 1024;
 const run = (executable, arguments_, options = {}) =>
   new Promise((resolve, reject) => {
     remaining();
+    const timeoutMilliseconds =
+      options.monotonicDeadline === undefined
+        ? undefined
+        : Math.floor(options.monotonicDeadline - bootNow());
+    if (timeoutMilliseconds !== undefined && timeoutMilliseconds <= 0) {
+      reject(new Error("integration.codex.child-deadline"));
+      return;
+    }
     const child = spawn(executable, arguments_, {
       cwd: options.cwd,
       env: options.env ?? process.env,
       stdio: options.inherit ? "inherit" : ["ignore", "pipe", "pipe"],
     });
+    let deadlineExpired = false;
+    const timer =
+      timeoutMilliseconds === undefined
+        ? undefined
+        : setTimeout(() => {
+            deadlineExpired = true;
+            child.kill("SIGKILL");
+          }, timeoutMilliseconds);
     let stdout = Buffer.alloc(0);
     let stderr = Buffer.alloc(0);
     if (!options.inherit) {
@@ -73,9 +89,11 @@ const run = (executable, arguments_, options = {}) =>
     }
     child.once("error", reject);
     child.once("close", (code, signal) => {
+      if (timer !== undefined) clearTimeout(timer);
       try {
         remaining();
         if (
+          deadlineExpired ||
           code !== 0 ||
           signal !== null ||
           stdout.length > maximumOutput ||
@@ -127,9 +145,10 @@ process.setUncaughtExceptionCaptureCallback(() => {
   }
 });
 
-const cli = async (arguments_, command) =>
+const cli = async (arguments_, command, options) =>
   parseMachine(
-    (await run(agentscope, [...arguments_, "--output", "json"])).stdout,
+    (await run(agentscope, [...arguments_, "--output", "json"], options))
+      .stdout,
     command,
   );
 
@@ -303,7 +322,7 @@ const projectTraceGraph = (graph, traceId) => {
     modelName: stringAttribute(model, "llm.model_name"),
   };
 };
-const readTraceSummary = async () => {
+const readTraceSummary = async (monotonicDeadline) => {
   const records = await cli(
     [
       "traces",
@@ -316,6 +335,7 @@ const readTraceSummary = async () => {
       "50",
     ],
     "agentscope traces search",
+    monotonicDeadline === undefined ? undefined : { monotonicDeadline },
   );
   if (
     records.length !== 1 ||
@@ -335,44 +355,15 @@ const readTraceSummary = async () => {
 const waitForTraceSummary = async () => {
   const traceDeadline = Math.min(deadline - 3_000, bootNow() + 15_000);
   while (true) {
-    const summary = await readTraceSummary();
-    if (summary !== null) return summary;
     if (bootNow() >= traceDeadline)
       throw new Error("integration.codex.trace-deadline");
+    const summary = await readTraceSummary(traceDeadline);
+    if (bootNow() >= traceDeadline)
+      throw new Error("integration.codex.trace-deadline");
+    if (summary !== null) return summary;
     await new Promise((resolve) => setTimeout(resolve, 25));
     remaining();
   }
-};
-
-const useMaximumCodexHookDeadline = () => {
-  const configurationPath = join(agentscopeHome, "config.json");
-  const source = readFileSync(configurationPath, "utf8");
-  if (source.length > 1024 * 1024 || !source.endsWith("\n"))
-    throw new Error("integration.codex.configuration");
-  const configuration = JSON.parse(source);
-  if (
-    !exactKeys(configuration, [
-      "configurationVersion",
-      "destinations",
-      "generation",
-      "policy",
-      "routing",
-    ]) ||
-    !exactKeys(configuration.routing, [
-      "hookDeadlineMilliseconds",
-      "selectedConnectionIds",
-      "version",
-    ]) ||
-    !Number.isSafeInteger(configuration.generation) ||
-    configuration.generation < 0 ||
-    configuration.routing.hookDeadlineMilliseconds !== 2_000
-  )
-    throw new Error("integration.codex.configuration");
-  configuration.generation += 1;
-  configuration.routing.hookDeadlineMilliseconds = 2_500;
-  writeFileSync(configurationPath, `${JSON.stringify(configuration)}\n`, {
-    mode: 0o600,
-  });
 };
 
 let completed = false;
@@ -384,7 +375,6 @@ try {
     "agentscope destination configure",
   );
   await cli(["routing", "set", "local"], "agentscope routing set");
-  useMaximumCodexHookDeadline();
   await cli(["install", "codex", "--yes"], "agentscope install");
   const installedStatus = projectHarnessStatus(
     await cli(["harness", "status", "codex"], "agentscope harness status"),

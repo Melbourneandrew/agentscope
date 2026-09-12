@@ -656,7 +656,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     );
     assert.equal(
       JSON.parse(configurationBeforePlan).routing.hookDeadlineMilliseconds,
-      2_000,
+      2_500,
       "the packed product must retain the production default hook deadline",
     );
     const plannedConfigure = run(

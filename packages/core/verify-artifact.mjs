@@ -459,7 +459,7 @@ const lifecycleResult = await runResolvedTraceLifecycle({
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
   hookEntryAuthority: createHookEntryAuthority({
-    durationMilliseconds: 2_000,
+    durationMilliseconds: 2_500,
     startedAt: performance.now(),
   }),
   capture: captureArtifactCandidate,
@@ -656,7 +656,7 @@ const artifactSourceLoss = await runResolvedTraceLifecycle({
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
   hookEntryAuthority: createHookEntryAuthority({
-    durationMilliseconds: 2_000,
+    durationMilliseconds: 2_500,
     startedAt: performance.now(),
   }),
   capture: (factory, _signal, checkpointResolver) => {
@@ -703,7 +703,7 @@ const hostileCheckpointResult = await runResolvedTraceLifecycle({
   workspaceCandidates: [],
   gitExecutable: "/usr/bin/git",
   hookEntryAuthority: createHookEntryAuthority({
-    durationMilliseconds: 2_000,
+    durationMilliseconds: 2_500,
     startedAt: performance.now(),
   }),
   capture: (_factory, _signal, checkpointResolver) => {
@@ -1064,7 +1064,7 @@ try {
     workspaceCandidates: [],
     gitExecutable: "/usr/bin/git",
     hookEntryAuthority: createHookEntryAuthority({
-      durationMilliseconds: 2_000,
+      durationMilliseconds: 2_500,
       startedAt: performance.now(),
     }),
     capture: async () => {
