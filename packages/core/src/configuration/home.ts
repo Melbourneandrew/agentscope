@@ -13,6 +13,7 @@ export type AgentscopeHome = Readonly<{
   root: string;
   configFile: string;
   configBackupFile: string;
+  launcherDirectory: string;
   mutationDirectory: string;
   destinationDirectory: string;
   diagnosticDirectory: string;
@@ -84,6 +85,7 @@ const resolveRoot = (input: AgentscopeHomeResolverInput): AgentscopeHome => {
       root,
       configFile: pathApi.join(root, "config.json"),
       configBackupFile: pathApi.join(root, "config.last-known-good.json"),
+      launcherDirectory: pathApi.join(root, "bin"),
       mutationDirectory: pathApi.join(root, "mutations"),
       destinationDirectory: pathApi.join(root, "destinations"),
       diagnosticDirectory: pathApi.join(root, "diagnostics"),
@@ -136,6 +138,7 @@ export const ensureAgentscopeHomeLayout = async (
     if (!resolvedHomes.has(home)) return invalid();
     const directories = [
       home.root,
+      home.launcherDirectory,
       home.mutationDirectory,
       home.destinationDirectory,
       home.diagnosticDirectory,
