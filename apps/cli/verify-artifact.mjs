@@ -810,7 +810,7 @@ setTimeout(() => process.exit(3), 10_000).unref();
     assert.match(packedHookOperationalState, /"receipt":"accepted"/u);
     assert.doesNotMatch(packedHookOperationalState, /PACKED_CONTENT_CANARY/u);
     assert.equal(existsSync(ambientSubstitutedHome), false);
-    const searchedLocal = run(
+    const searchedLocal = runRaw(
       executable,
       [
         "traces",
@@ -824,6 +824,16 @@ setTimeout(() => process.exit(3), 10_000).unref();
       ],
       { ...executableOptions, env: localEnvironment },
     );
+    if (searchedLocal.status !== 0) {
+      const diagnosedLocal = runRaw(
+        executable,
+        ["doctor", "--output", "json"],
+        { ...executableOptions, env: localEnvironment },
+      );
+      assert.fail(
+        `installed Stop trace retrieval unavailable; search=${searchedLocal.stdout}${searchedLocal.stderr}; operationalState=${packedHookOperationalState}; doctorStatus=${diagnosedLocal.status}; doctor=${diagnosedLocal.stdout}${diagnosedLocal.stderr}`,
+      );
+    }
     const searchedLocalDocument = JSON.parse(searchedLocal.stdout);
     assert.equal(searchedLocal.stderr, "");
     assert.equal(searchedLocalDocument.records.length, 1);
