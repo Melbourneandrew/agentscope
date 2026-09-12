@@ -17,6 +17,7 @@ export type SelectedPtyExecutionAction =
       geometry: PtyTerminalGeometry;
     }>
   | Readonly<{ action: "input"; byteLength: number; inputSha256: string }>
+  | Readonly<{ action: "wait-for-semantic-completion" }>
   | Readonly<{ action: "eof" }>
   | Readonly<{ action: "interrupt-byte"; byte: 3 }>
   | Readonly<{
@@ -103,6 +104,10 @@ export type PtyTransportAction =
       action: "input";
       byteLength: number;
       inputSha256: string;
+      monotonicAtMs: number;
+    }>
+  | Readonly<{
+      action: "wait-for-semantic-completion";
       monotonicAtMs: number;
     }>
   | Readonly<{ action: "eof"; monotonicAtMs: number }>
