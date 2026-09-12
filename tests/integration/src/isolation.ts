@@ -574,6 +574,7 @@ export interface IsolationPlan {
   readonly runId: string;
   readonly scenarioId: string;
   readonly executionMode: "headless" | "interactive";
+  readonly terminalAction: "none" | "eof" | "post-completion-input";
   readonly manifestIdentity: string;
   readonly candidateBundleIdentity: string;
   readonly candidateRevision: string;
@@ -624,7 +625,10 @@ const headlessReceiptPasses = (
   receipt.stdoutJoined &&
   receipt.stderrJoined;
 
-const ptyReceiptPasses = (receipt: PtyTerminalReceipt | null): boolean =>
+const ptyReceiptPasses = (
+  receipt: PtyTerminalReceipt | null,
+  terminalAction: IsolationPlan["terminalAction"],
+): boolean =>
   receipt !== null &&
   receipt.outcome === "completed" &&
   receipt.exitCode === 0 &&
@@ -632,7 +636,7 @@ const ptyReceiptPasses = (receipt: PtyTerminalReceipt | null): boolean =>
   receipt.cleanup === "clean" &&
   receipt.residualProcessCount === 0 &&
   receipt.finalSnapshot.semanticState === "completed" &&
-  receipt.eofByteWritten &&
+  receipt.eofByteWritten === (terminalAction === "eof") &&
   receipt.processJoined &&
   receipt.terminalInputJoined &&
   receipt.terminalOutputJoined &&
@@ -640,14 +644,17 @@ const ptyReceiptPasses = (receipt: PtyTerminalReceipt | null): boolean =>
 
 const terminalEvidencePasses = (value: {
   executionMode: "headless" | "interactive";
+  terminalAction: IsolationPlan["terminalAction"];
   headlessTerminalReceipt: HeadlessTerminalReceipt | null;
   ptyTerminalReceipt: PtyTerminalReceipt | null;
 }): boolean =>
   value.executionMode === "headless"
-    ? value.ptyTerminalReceipt === null &&
+    ? value.terminalAction === "none" &&
+      value.ptyTerminalReceipt === null &&
       headlessReceiptPasses(value.headlessTerminalReceipt)
-    : value.headlessTerminalReceipt === null &&
-      ptyReceiptPasses(value.ptyTerminalReceipt);
+    : value.terminalAction !== "none" &&
+      value.headlessTerminalReceipt === null &&
+      ptyReceiptPasses(value.ptyTerminalReceipt, value.terminalAction);
 
 const isolationEvidenceSchema = z
   .strictObject({
@@ -658,6 +665,7 @@ const isolationEvidenceSchema = z
     candidateBundleIdentity: digest,
     candidateRevision: z.string().regex(/^[a-f\d]{40}$/u),
     executionMode: z.enum(["headless", "interactive"]),
+    terminalAction: z.enum(["none", "eof", "post-completion-input"]),
     baseImage: imageReference,
     mockServerImage: imageReference,
     baseImageIdentity: preparedImageIdentitySchema,
@@ -824,6 +832,12 @@ export const createIsolationPlan = (input: {
     runId: parsedToken.data,
     scenarioId: input.scenario.scenarioId,
     executionMode: input.scenario.executionMode,
+    terminalAction:
+      input.scenario.executionMode === "headless"
+        ? "none"
+        : input.scenario.waitForSemanticCompletionBeforeEof
+          ? "post-completion-input"
+          : "eof",
     manifestIdentity: input.manifestIdentity,
     candidateBundleIdentity: input.candidate.bundleIdentity,
     candidateRevision: input.candidate.candidateRevision,
@@ -966,6 +980,7 @@ export const executeIsolationPlan = async (
       candidateBundleIdentity: plan.candidateBundleIdentity,
       candidateRevision: plan.candidateRevision,
       executionMode: plan.executionMode,
+      terminalAction: plan.terminalAction,
       baseImage: plan.baseImage,
       mockServerImage: plan.mockServerImage,
       baseImageIdentity: plan.baseImageIdentity,

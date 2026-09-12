@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return -- checksum-bound runtime modules intentionally expose no TypeScript API */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- checksum-bound runtime modules intentionally expose no TypeScript API */
 
 // @ts-expect-error checksum-bound runtime module intentionally has no TS API
 import { correlateCodexPlatformObservations } from "../codex-platform-oracle.mjs";
@@ -10,22 +10,46 @@ import { translateCodexPlatformObservations } from "../fixtures/codex-platform-a
 const traceId = "0123456789abcdef0123456789abcdef";
 const promptSha256 =
   "8fa471336a2b22881c19fc825a447c7f6c16c6f38ed937f7c0ecdf15d858276c";
+const prompt = "Reply with one short confirmation and do not use tools.";
 const raw = () => ({
   scenarioId: "codex-tui-trace-smoke",
-  modelRequest: {
-    bodyBytes: 128,
-    bodySha256: "a".repeat(64),
-    credentialHeaderCount: 0,
-    method: "POST",
-    path: "/v1/responses",
-    promptOccurrenceCount: 1,
-    promptSha256,
-  },
-  search: { completion: "complete", harness: "codex", spanCount: 3, traceId },
+  prompt,
+  promptSha256,
+  modelRequests: [
+    {
+      method: "POST",
+      path: "/v1/responses",
+      body: JSON.stringify({ model: "fixture-model", input: prompt }),
+      headers: [] as Array<{ name: string }>,
+    },
+  ],
+  hookLifecycle: [
+    {
+      eventName: "SessionStart",
+      model: "fixture-model",
+      sessionId: "session-1",
+      turnId: null,
+    },
+    {
+      eventName: "Stop",
+      model: "fixture-model",
+      sessionId: "session-1",
+      turnId: "turn-1",
+    },
+    {
+      eventName: "SessionEnd",
+      model: null,
+      sessionId: "session-1",
+      turnId: null,
+    },
+  ],
+  search: { completion: "complete", harness: "codex", spanCount: 2, traceId },
   retrieval: {
     completion: "complete",
+    modelName: "fixture-model",
     parentLinked: true,
     resourceSpanCount: 1,
+    sessionId: "session-1",
     spanNames: ["codex.turn", "codex.response"],
     traceId,
   },
@@ -51,6 +75,7 @@ const correlate = (value = raw()) =>
     },
   );
 
+// eslint-disable-next-line max-lines-per-function -- one matrix proves translation/oracle separation across every retained observation
 describe("Codex PTY scenario observation boundary", () => {
   it("reduces exact loopback, trace, Doctor, and uninstall observations", () => {
     expect(correlate()).toMatchObject({
@@ -67,7 +92,6 @@ describe("Codex PTY scenario observation boundary", () => {
       modelLedger: { entries: [{ path: "/v1/responses" }] },
       harnessObservation: {
         kind: "codex-tui-trace",
-        modelRequestBodySha256: "a".repeat(64),
         traceId,
         spanNames: ["codex.turn", "codex.response"],
         parentLinked: true,
@@ -80,29 +104,92 @@ describe("Codex PTY scenario observation boundary", () => {
     });
   });
 
+  it("keeps expected success values out of the translation adapter", () => {
+    const value = raw();
+    value.modelRequests[0]!.path = "/unexpected";
+    expect(
+      translateCodexPlatformObservations(value).modelRequests[0].path,
+    ).toBe("/unexpected");
+    expect(() => correlate(value)).toThrow(
+      "integration.codex.oracle-model-request",
+    );
+  });
+
+  it("rejects late, duplicate, and contradictory terminal model records", () => {
+    for (const extra of [
+      { ...raw().modelRequests[0] },
+      { ...raw().modelRequests[0], path: "/unexpected" },
+    ] as Array<RawObservation["modelRequests"][number]>) {
+      const value = raw();
+      value.modelRequests.push(extra);
+      expect(() => correlate(value)).toThrow(
+        "integration.codex.oracle-model-request",
+      );
+    }
+  });
+
+  it("binds the exact root hook order, count, model, and session", () => {
+    const mutations = [
+      (value: RawObservation) =>
+        value.hookLifecycle.push({ ...value.hookLifecycle[1]! }),
+      (value: RawObservation) => value.hookLifecycle.reverse(),
+      (value: RawObservation) => {
+        value.hookLifecycle[1]!.sessionId = "other";
+      },
+      (value: RawObservation) => {
+        value.hookLifecycle[1]!.model = "other";
+      },
+      (value: RawObservation) => {
+        value.retrieval.sessionId = "other";
+      },
+      (value: RawObservation) => {
+        value.retrieval.modelName = "other";
+      },
+    ];
+    for (const mutate of mutations) {
+      const value = raw();
+      mutate(value);
+      expect(() => correlate(value)).toThrow(/integration\.codex\.oracle-/u);
+    }
+  });
+
+  it("rejects malformed native request bodies in the adapter", () => {
+    const value = raw();
+    value.modelRequests[0]!.body = "{";
+    expect(() => translateCodexPlatformObservations(value)).toThrow(
+      "integration.codex.adapter-observation",
+    );
+  });
+
   it.each([
     [
       "credential header",
       (value: RawObservation) => {
-        value.modelRequest.credentialHeaderCount = 1;
+        value.modelRequests[0]!.headers = [{ name: "Authorization" }];
       },
     ],
     [
       "duplicate prompt",
       (value: RawObservation) => {
-        value.modelRequest.promptOccurrenceCount = 2;
+        value.modelRequests[0]!.body = JSON.stringify({
+          model: "fixture-model",
+          input: [prompt, prompt],
+        });
       },
     ],
     [
       "model path",
       (value: RawObservation) => {
-        value.modelRequest.path = "/v1/chat";
+        value.modelRequests[0]!.path = "/v1/chat";
       },
     ],
     [
-      "model digest",
+      "model identity",
       (value: RawObservation) => {
-        value.modelRequest.bodySha256 = "x";
+        value.modelRequests[0]!.body = JSON.stringify({
+          model: "other",
+          input: prompt,
+        });
       },
     ],
     [
@@ -150,9 +237,7 @@ describe("Codex PTY scenario observation boundary", () => {
   ])("rejects %s", (_name, mutate) => {
     const value = raw();
     mutate(value);
-    expect(() => correlate(value)).toThrow(
-      "integration.codex.adapter-observation",
-    );
+    expect(() => correlate(value)).toThrow(/integration\.codex\.oracle-/u);
   });
 
   it("rejects stimulus substitution independently of the adapter", () => {
@@ -168,7 +253,7 @@ describe("Codex PTY scenario observation boundary", () => {
 
   it("rejects a valid but substituted prompt digest after translation", () => {
     const value = raw();
-    value.modelRequest.promptSha256 = "0".repeat(64);
+    value.promptSha256 = "0".repeat(64);
     expect(() => correlate(value)).toThrow(
       "integration.codex.oracle-model-request",
     );

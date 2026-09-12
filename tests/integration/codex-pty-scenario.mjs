@@ -13,6 +13,11 @@ import {
 import { basename, join } from "node:path";
 
 import { createCodexInternalProviderConfiguration } from "./runtime/codex-configuration.js";
+import {
+  boundedRequestLedger,
+  readBoundedJsonResponse,
+  readHookLifecycleLedger,
+} from "./runtime/codex-runtime-evidence.mjs";
 import { correlateCodexPlatformObservations } from "./scenario-oracle.mjs";
 import { translateCodexPlatformObservations } from "./scenario-adapter.mjs";
 
@@ -123,7 +128,7 @@ const requestJson = async (url, options) => {
     signal: AbortSignal.timeout(Math.min(5_000, remaining())),
   });
   if (!response.ok) throw new Error("integration.codex.sidecar");
-  return response.json();
+  return readBoundedJsonResponse(response, maximumOutput);
 };
 const exactKeys = (value, keys) =>
   typeof value === "object" &&
@@ -166,81 +171,27 @@ const installedLauncher = (hookConfiguration) => {
     throw new Error("integration.codex.hook-configuration");
   return commands[0].slice(1, -1);
 };
-const countPrompt = (value) => {
-  if (value === prompt) return 1;
-  if (Array.isArray(value))
-    return value.reduce((count, child) => count + countPrompt(child), 0);
-  if (typeof value === "object" && value !== null)
-    return Object.values(value).reduce(
-      (count, child) => count + countPrompt(child),
-      0,
-    );
-  return 0;
-};
-const projectModelRequest = async () => {
-  let request;
-  while (request === undefined) {
-    const requests = await requestJson(
-      `${modelEndpoint}/mockserver/retrieve?type=REQUESTS`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: "{}",
-      },
-    );
-    if (!Array.isArray(requests))
-      throw new Error("integration.codex.model-request");
-    const matches = requests.filter(
-      (candidate) =>
-        candidate?.method === "POST" && candidate?.path === "/v1/responses",
-    );
-    if (matches.length > 1) throw new Error("integration.codex.model-request");
-    request = matches[0];
-    if (request === undefined)
-      await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  const bodyText =
-    typeof request.body === "string"
-      ? request.body
-      : typeof request.body?.string === "string"
-        ? request.body.string
-        : typeof request.body?.json === "string"
-          ? request.body.json
-          : undefined;
-  if (bodyText === undefined || Buffer.byteLength(bodyText) > maximumOutput)
-    throw new Error("integration.codex.model-request");
-  const parsed = JSON.parse(bodyText);
-  const headerNames = Array.isArray(request.headers)
-    ? request.headers.map(({ name }) => name)
-    : typeof request.headers === "object" && request.headers !== null
-      ? Object.keys(request.headers)
-      : [];
-  if (
-    headerNames.length > 64 ||
-    headerNames.some(
-      (name) =>
-        typeof name !== "string" || name.length < 1 || name.length > 128,
-    )
-  )
-    throw new Error("integration.codex.model-request");
-  const forbiddenHeaders = headerNames.filter((name) =>
-    /^(?:authorization|api-key|x-api-key)$/iu.test(name),
+const readModelRequests = async () =>
+  boundedRequestLedger(
+    await requestJson(`${modelEndpoint}/mockserver/retrieve?type=REQUESTS`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }),
   );
-  if (
-    parsed?.model !== "fixture-model" ||
-    countPrompt(parsed) !== 1 ||
-    forbiddenHeaders.length !== 0
-  )
-    throw new Error("integration.codex.model-request");
-  return Object.freeze({
-    method: request.method,
-    path: request.path,
-    bodyBytes: Buffer.byteLength(bodyText),
-    bodySha256: createHash("sha256").update(bodyText).digest("hex"),
-    promptSha256,
-    promptOccurrenceCount: 1,
-    credentialHeaderCount: 0,
-  });
+const waitForModelRequest = async () => {
+  while ((await readModelRequests()).length === 0)
+    await new Promise((resolve) => setTimeout(resolve, 25));
+};
+const waitForStopHook = async (path) => {
+  while (true) {
+    if (existsSync(path)) {
+      const records = readHookLifecycleLedger(path);
+      if (records.some(({ eventName }) => eventName === "Stop")) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    remaining();
+  }
 };
 const projectHarnessStatus = (
   records,
@@ -322,6 +273,15 @@ const projectTraceGraph = (graph, traceId) => {
   );
   const root = spans.find(({ name }) => name === "codex.turn");
   const model = spans.find(({ name }) => name === "codex.response");
+  const stringAttribute = (span, key) => {
+    const matches = Array.isArray(span?.attributes)
+      ? span.attributes.filter((attribute) => attribute?.key === key)
+      : [];
+    return matches.length === 1 &&
+      typeof matches[0]?.value?.stringValue === "string"
+      ? matches[0].value.stringValue
+      : null;
+  };
   if (
     spans.length !== 2 ||
     root?.traceId !== traceId ||
@@ -336,6 +296,8 @@ const projectTraceGraph = (graph, traceId) => {
     resourceSpanCount: graph.resourceSpans.length,
     spanNames: [root.name, model.name],
     parentLinked: true,
+    sessionId: stringAttribute(root, "session.id"),
+    modelName: stringAttribute(model, "llm.model_name"),
   };
 };
 
@@ -355,6 +317,10 @@ try {
   );
   const codexHome = join(home, ".codex");
   const hookPath = join(codexHome, "hooks.json");
+  const hookLifecyclePath = join(
+    agentscopeHome,
+    "codex-hook-lifecycle-v1.jsonl",
+  );
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
   const launcherStatus = lstatSync(launcher);
@@ -389,9 +355,12 @@ try {
     },
   );
   process.stdout.write("\u001b[?1049hAGENTSCOPE_PTY_READY\r\n");
-  const modelRequest = await projectModelRequest();
+  await waitForModelRequest();
+  await waitForStopHook(hookLifecyclePath);
   process.stdout.write("AGENTSCOPE_PTY_COMPLETE\r\n");
   await codexRun;
+  const modelRequests = await readModelRequests();
+  const hookLifecycle = readHookLifecycleLedger(hookLifecyclePath);
   if (readFileSync(hookPath, "utf8") !== originalHooks)
     throw new Error("integration.codex.hook-configuration");
   const searchRecords = await cli(
@@ -445,7 +414,10 @@ try {
   );
   const translated = translateCodexPlatformObservations({
     scenarioId,
-    modelRequest,
+    prompt,
+    promptSha256,
+    modelRequests,
+    hookLifecycle,
     search: {
       completion: "complete",
       harness: summary.harness,
