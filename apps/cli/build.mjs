@@ -134,6 +134,8 @@ await build({
       "@agentscope/harness-codex",
     ]),
     __AGENTSCOPE_HOOK_VERIFIER_PROGRAM__: JSON.stringify(hookVerifierProgram),
+    __AGENTSCOPE_OPERATIONAL_COORDINATOR_PROGRAM__:
+      JSON.stringify(coordinatorProgram),
   },
   format: "esm",
   outfile: `${packageRoot}dist/internal/agentscope-hook-machine.js`,
