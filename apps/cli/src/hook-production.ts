@@ -1,4 +1,13 @@
 import { randomBytes } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  fsyncSync,
+  openSync,
+  writeSync,
+} from "node:fs";
+import { join } from "node:path";
 
 import {
   compileCredentialBackendRegistry,
@@ -35,6 +44,48 @@ type ProductHookInput = {
   launcher: Readonly<{ harnessType: string; homeRoot: string }>;
 };
 
+const lifecycleObservationMaximumBytes = 256 * 1024;
+const lifecycleObservationName = "codex-hook-lifecycle-v1.jsonl";
+
+const recordCodexHookLifecycleObservation = (
+  root: string,
+  hook: ReturnType<typeof decodeCodexRootHookInput>,
+): void => {
+  const line = Buffer.from(
+    `${JSON.stringify({
+      eventName: hook.eventName,
+      model: hook.model,
+      sessionId: hook.sessionId,
+      turnId: hook.turnId,
+    })}\n`,
+  );
+  if (line.byteLength > 4_096) throw new Error("cli.hook.invalid");
+  const descriptor = openSync(
+    join(root, lifecycleObservationName),
+    constants.O_APPEND |
+      constants.O_CREAT |
+      constants.O_NOFOLLOW |
+      constants.O_WRONLY,
+    0o600,
+  );
+  try {
+    const status = fstatSync(descriptor);
+    const expectedUid = process.getuid?.();
+    if (
+      !status.isFile() ||
+      status.nlink !== 1 ||
+      (expectedUid !== undefined && status.uid !== expectedUid) ||
+      (status.mode & 0o077) !== 0 ||
+      status.size + line.byteLength > lifecycleObservationMaximumBytes ||
+      writeSync(descriptor, line) !== line.byteLength
+    )
+      throw new Error("cli.hook.invalid");
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+};
+
 const runProductCodexHookEvidenceWith = async (
   input: ProductHookInput,
   environment: Readonly<Record<string, string | undefined>>,
@@ -43,10 +94,16 @@ const runProductCodexHookEvidenceWith = async (
   if (input.launcher.harnessType !== "@agentscope/harness-codex")
     throw new Error("cli.hook.invalid");
   const hook = decodeCodexRootHookInput(input.evidence);
-  if (hook.eventName !== "Stop") return;
   const home = resolveOwnedHookHomeForCli(input.hookEntryAuthority);
   if (home.root !== input.launcher.homeRoot)
     throw new Error("cli.hook.invalid");
+  try {
+    recordCodexHookLifecycleObservation(home.root, hook);
+  } catch {
+    // The diagnostic observation plane must not turn a tracing hook into a
+    // product control plane. The scenario requires its exact terminal ledger.
+  }
+  if (hook.eventName !== "Stop") return;
   bindLocalSqliteProductionReporterHome(createLocalResourceHomeAuthority(home));
   const registry = requireExactProductDestinationRegistry(
     PRODUCT_DESTINATION_REGISTRY,
