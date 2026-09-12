@@ -345,6 +345,8 @@ try {
   const hookPath = join(codexHome, "hooks.json");
   const originalHooks = readFileSync(hookPath, "utf8");
   const launcher = installedLauncher(JSON.parse(originalHooks));
+  if (!/\/agentscope-hook-v1-[a-f0-9]{64}-d2000$/u.test(launcher))
+    throw new Error("integration.codex.hook-deadline");
   const launcherStatus = lstatSync(launcher);
   if (
     !launcherStatus.isFile() ||
