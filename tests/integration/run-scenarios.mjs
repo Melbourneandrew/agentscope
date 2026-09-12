@@ -6,6 +6,7 @@ import {
   constants,
   existsSync,
   cpSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   linkSync,
@@ -22,6 +23,8 @@ import { promisify } from "node:util";
 import {
   compileIsolationEvidence,
   compileCapabilityManifest,
+  compileHarnessAdmissionCompletion,
+  compileHarnessAdmissionSeed,
   createIsolationPlan,
   executeIsolationPlan,
   ISOLATION_EXECUTOR_LIMITS,
@@ -46,6 +49,12 @@ import {
   readPreparedImageEvidence,
   revalidatePreparedImageAdmission,
 } from "./image-preparation.mjs";
+import {
+  inspectPreparedHarnessMaterial,
+  prepareHarnessMaterial,
+  retirePreparedHarnessMaterial,
+  stagePreparedHarnessMaterial,
+} from "./harness-material.mjs";
 import { acquireIntegrationOperationLock } from "./operation-lock.mjs";
 import {
   compileCandidateInventory,
@@ -58,7 +67,12 @@ import {
 } from "./immutable-candidate-authority.mjs";
 import {
   integrationStageSignal,
+  beginRealHarnessAdmission,
+  compileRealHarnessSupportEvidence,
+  completeRealHarnessAdmission,
+  configureRealHarnessAdmissionSources,
   registerIntegrationFailureEvidence,
+  registerIntegrationArtifactFile,
   registerIntegrationHeadlessReceipt,
   registerIntegrationPtyReceipt,
   registerIntegrationRunIds,
@@ -160,6 +174,20 @@ try {
 }
 const selectedScenarioIds = selectedScenarios.map(
   ({ scenarioId }) => scenarioId,
+);
+const evidenceById = new Map(
+  manifest.evidence.map((evidence) => [evidence.evidenceId, evidence]),
+);
+const preparedHarnessMaterials = new Map();
+const admissionMaterialRecords = new WeakMap();
+const admissionTerminalRecords = new WeakMap();
+configureRealHarnessAdmissionSources(
+  Object.freeze({
+    authenticateMaterial: (authority) =>
+      admissionMaterialRecords.get(authority),
+    authenticateTerminal: (authority) =>
+      admissionTerminalRecords.get(authority),
+  }),
 );
 if (
   JSON.stringify(selection.scenarioIds) !== JSON.stringify(selectedScenarioIds)
@@ -272,6 +300,16 @@ const stageBuildContext = (plan) => {
     (entry) => entry.scenarioId === plan.scenarioId,
   );
   if (scenario === undefined) throw new Error("integration.isolation.context");
+  const evidence = evidenceById.get(scenario.harnessEvidenceId);
+  if (evidence === undefined) throw new Error("integration.isolation.context");
+  const harnessMaterial = preparedHarnessMaterials.get(
+    scenario.harnessEvidenceId,
+  );
+  if (
+    (evidence.material.kind !== "certification-fixture") !==
+    (harnessMaterial !== undefined)
+  )
+    throw new Error("integration.isolation.context");
   const sources = [
     ["runner.mjs", resolve(integrationRoot, "runner.mjs")],
     [
@@ -290,7 +328,11 @@ const stageBuildContext = (plan) => {
       "destination-server.mjs",
       resolve(integrationRoot, "destination-server.mjs"),
     ],
-    ["platform-fixture.mjs", resolve(integrationRoot, "platform-fixture.mjs")],
+    [
+      "scenario-process.mjs",
+      resolve(integrationRoot, scenario.scenarioProcess.path),
+      scenario.scenarioProcess.sha256,
+    ],
     [
       "substrate-certification.js",
       resolve(integrationRoot, "dist/substrate-certification.js"),
@@ -306,6 +348,7 @@ const stageBuildContext = (plan) => {
     [
       "scenario-adapter.mjs",
       resolve(integrationRoot, scenario.fixtureAdapter.path),
+      scenario.fixtureAdapter.sha256,
     ],
     [
       "testkit/platform-fixture.js",
@@ -364,29 +407,102 @@ const stageBuildContext = (plan) => {
       ),
     ]);
   }
-  for (const [destination, source] of sources) {
+  for (const [destination, source, expectedDigest] of sources) {
     const status = lstatSync(source);
     if (!status.isFile() || status.isSymbolicLink())
       throw new Error("integration.isolation.context");
     const target = resolve(context, destination);
     mkdirSync(dirname(target), { recursive: true });
-    cpSync(source, target);
+    const descriptor = openSync(
+      source,
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      const before = fstatSync(descriptor);
+      const bytes = readFileSync(descriptor);
+      const after = fstatSync(descriptor);
+      if (
+        !before.isFile() ||
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.size !== bytes.byteLength ||
+        (expectedDigest !== undefined &&
+          createHash("sha256").update(bytes).digest("hex") !== expectedDigest)
+      )
+        throw new Error("integration.isolation.context");
+      writeFileSync(target, bytes, {
+        flag: "wx",
+        mode: before.mode & 0o777,
+      });
+    } finally {
+      closeSync(descriptor);
+    }
   }
   cpSync(
     candidateDirectory,
     resolve(context, "prepared/candidates", candidate.bundleIdentity),
     { recursive: true },
   );
+  if (harnessMaterial !== undefined) {
+    const materialTarget = resolve(context, "harness-material");
+    stagePreparedHarnessMaterial(harnessMaterial, materialTarget);
+    const authority = inspectPreparedHarnessMaterial(harnessMaterial);
+    if (authority.kind === "npm") {
+      mkdirSync(resolve(context, "harness"), { recursive: true });
+      const dependencies = Object.fromEntries(
+        evidence.material.kind === "npm"
+          ? evidence.material.packages.map(
+              ({ installName, packageName, version }) => {
+                const packageAuthority = authority.packages.find(
+                  (entry) =>
+                    entry.installName === installName &&
+                    entry.packageName === packageName &&
+                    entry.version === version,
+                );
+                if (packageAuthority === undefined)
+                  throw new Error("integration.isolation.context");
+                return [
+                  installName,
+                  `file:/opt/agentscope/harness-material/${packageAuthority.fileName}`,
+                ];
+              },
+            )
+          : [],
+      );
+      writeFileSync(
+        resolve(context, "harness/package.json"),
+        `${JSON.stringify({ name: "agentscope-harness-runtime", version: "1.0.0", private: true, dependencies })}\n`,
+      );
+    }
+  }
+  const harnessAuthority =
+    harnessMaterial === undefined
+      ? undefined
+      : inspectPreparedHarnessMaterial(harnessMaterial);
+  const harnessInstall =
+    harnessAuthority === undefined
+      ? []
+      : harnessAuthority.kind === "npm"
+        ? [
+            "COPY harness-material ./harness-material",
+            "COPY harness ./harness",
+            'RUN --network=none ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/harness", "--ignore-scripts", "--offline", "--audit=false", "--fund=false", "--package-lock=false", "--userconfig=/dev/null", "--globalconfig=/dev/null", "--cache=/tmp/agentscope-harness-npm-cache"]',
+          ]
+        : [
+            `COPY --chmod=0755 harness-material/${harnessAuthority.binary.fileName} /usr/local/bin/${harnessAuthority.binary.executableName}`,
+          ];
   writeFileSync(
     resolve(context, "Dockerfile"),
     [
       "ARG BASE_IMAGE",
       "FROM ${BASE_IMAGE}",
       "WORKDIR /opt/agentscope",
-      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs platform-fixture.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
+      "COPY runner.mjs immutable-candidate-authority.mjs pty-installed-cli-driver.mjs retained-fixture-result.mjs destination-server.mjs scenario-process.mjs process-platform-oracle.mjs scenario-adapter.mjs substrate-certification.js capability-manifest.json current-selection.json current-model-routes.json ./",
       "COPY fixtures ./fixtures",
       "COPY testkit ./testkit",
       "COPY prepared ./prepared",
+      ...harnessInstall,
       `RUN ["/usr/local/bin/node", "/usr/local/lib/node_modules/npm/bin/npm-cli.js", "install", "--prefix", "/opt/agentscope/installed", "--ignore-scripts", "--offline", "--no-audit", "--no-fund", "./prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}"]`,
       "USER node",
       'CMD ["node", "/opt/agentscope/runner.mjs"]',
@@ -541,6 +657,8 @@ const fingerprintSelectedPtyAuthority = (authority) =>
     .digest("hex")}`;
 const diagnosticDigest = (value) =>
   `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+const admissionDigest = (value) =>
+  `sha256-${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 const linuxBootMonotonicMilliseconds = () => {
   const source = readFileSync("/proc/uptime", "utf8");
   if (source.length > 128 || !/^\d+(?:\.\d+)?\s/u.test(source))
@@ -564,7 +682,14 @@ const expectedHeadlessEnvironment = (plan) => ({
   HOME: "/home/agentscope",
   LANG: "C.UTF-8",
   NO_COLOR: "1",
-  PATH: "/usr/local/bin:/usr/bin:/bin",
+  PATH:
+    evidenceById.get(
+      manifest.scenarios.find(
+        ({ scenarioId }) => scenarioId === plan.scenarioId,
+      )?.harnessEvidenceId,
+    )?.material.kind === "npm"
+      ? "/opt/agentscope/harness/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
+      : "/usr/local/bin:/usr/bin:/bin",
   XDG_CONFIG_HOME: "/harness-home",
   ...(testMode === undefined
     ? {}
@@ -628,7 +753,7 @@ const expectedHeadlessRequest = (receipt, plan) => ({
   runId: plan.runId,
   executable: "/usr/local/bin/node",
   arguments: [
-    "/opt/agentscope/platform-fixture.mjs",
+    "/opt/agentscope/scenario-process.mjs",
     "--artifact",
     `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
   ],
@@ -671,7 +796,7 @@ const expectedNegativeHeadlessRequest = (receipt, plan) => {
       return {
         ...expected,
         arguments: [
-          "/opt/agentscope/platform-fixture.mjs",
+          "/opt/agentscope/scenario-process.mjs",
           "--artifact",
           `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${candidate.lockfile.fileName}`,
         ],
@@ -759,7 +884,7 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
   const input = Buffer.from("run\n");
   const expectedRequest = {
     runId: plan.runId,
-    executable: "/opt/agentscope/platform-fixture.mjs",
+    executable: "/opt/agentscope/scenario-process.mjs",
     arguments: [
       "--artifact",
       `/opt/agentscope/prepared/candidates/${candidate.bundleIdentity}/files/${cliArtifact.fileName}`,
@@ -778,7 +903,7 @@ const interactivePtyProcessMatches = (processRequest, plan, receipt) => {
     processRequest?.runId === plan.runId &&
     processRequest?.requestFingerprint ===
       fingerprintHeadlessRequest(expectedRequest) &&
-    processRequest?.executable === "/opt/agentscope/platform-fixture.mjs" &&
+    processRequest?.executable === "/opt/agentscope/scenario-process.mjs" &&
     JSON.stringify(processRequest?.arguments) ===
       JSON.stringify([
         "--artifact",
@@ -840,7 +965,16 @@ const interactivePtyArtifactAuthorityMatches = (receipt) =>
   receipt?.request?.interpreter?.path === "/usr/local/bin/node" &&
   receipt?.request?.scriptSha256 ===
     createHash("sha256")
-      .update(readFileSync(resolve(integrationRoot, "platform-fixture.mjs")))
+      .update(
+        readFileSync(
+          resolve(
+            integrationRoot,
+            manifest.scenarios.find(
+              (scenario) => scenario.scenarioId === receipt.scenarioId,
+            )?.scenarioProcess.path ?? "__invalid__",
+          ),
+        ),
+      )
       .digest("hex");
 const interactivePtyFingerprintMatches = (receipt) =>
   receipt?.requestFingerprint ===
@@ -965,6 +1099,13 @@ const buildImage = async (plan, signal) => {
       scenarioTimeoutMilliseconds,
       IMAGE_PREPARATION_LIMITS.maximumPreparationMilliseconds,
     ),
+    maximumBuildContextBytes: preparedHarnessMaterials.has(
+      manifest.scenarios.find(
+        ({ scenarioId }) => scenarioId === plan.scenarioId,
+      )?.harnessEvidenceId,
+    )
+      ? IMAGE_PREPARATION_LIMITS.maximumHarnessBuildContextBytes
+      : IMAGE_PREPARATION_LIMITS.defaultMaximumBuildContextBytes,
     signal,
     tag: plan.imageTag,
   });
@@ -1453,6 +1594,69 @@ const recordEvidence = async (evidence) => {
     if (result.certificationReadiness === null)
       fixtureResults.delete(verifiedEvidence.runId);
   }
+  const admission = admissionByRunId.get(verifiedEvidence.runId);
+  if (admission !== undefined) {
+    if (
+      result === undefined ||
+      result.resultStatus !== "complete" ||
+      typeof verifiedEvidence.builtImageDigest !== "string"
+    )
+      throw new Error("integration.harness-scenario-admission.invalid");
+    if (admission.authority !== undefined)
+      throw new Error("integration.harness-scenario-admission.invalid");
+    const material = Object.freeze({
+      authorityVersion: 1,
+      authorityKind: "authenticated-harness-material",
+    });
+    admissionMaterialRecords.set(
+      material,
+      compileHarnessAdmissionSeed({
+        ...admission.seed,
+        evidence: admission.evidence,
+        materialIdentity: admission.materialIdentity,
+        preparedImage: {
+          ...admission.seed.preparedImage,
+          scenarioImageDigest: verifiedEvidence.builtImageDigest,
+        },
+        scenario: admission.scenario,
+      }),
+    );
+    admission.material = material;
+    admission.authority = beginRealHarnessAdmission(material);
+    const receipt =
+      verifiedEvidence.executionMode === "interactive"
+        ? verifiedEvidence.ptyTerminalReceipt
+        : verifiedEvidence.headlessTerminalReceipt;
+    const completion = compileHarnessAdmissionCompletion({
+      cleanup: verifiedEvidence.cleanup,
+      observation: {
+        native: result,
+        execution: {
+          baseImageIdentity: verifiedEvidence.baseImageIdentity,
+          builtImageDigest: verifiedEvidence.builtImageDigest,
+          candidateBundleIdentity: verifiedEvidence.candidateBundleIdentity,
+          executionMode: verifiedEvidence.executionMode,
+          manifestIdentity: verifiedEvidence.manifestIdentity,
+          mockServerImageIdentity: verifiedEvidence.mockServerImageIdentity,
+          receipt,
+          scenarioId: verifiedEvidence.scenarioId,
+        },
+      },
+      outcome: verifiedEvidence.outcome,
+      requestFingerprint: receipt?.requestFingerprint,
+      runId: verifiedEvidence.runId,
+      scenarioImageDigest: verifiedEvidence.builtImageDigest,
+    });
+    const terminal = Object.freeze({
+      authorityVersion: 1,
+      authorityKind: "authenticated-harness-terminal",
+    });
+    admissionTerminalRecords.set(terminal, {
+      material: admission.material,
+      completion,
+    });
+    completeRealHarnessAdmission(admission.authority, terminal);
+  }
 };
 
 const failureCode = (error) =>
@@ -1731,6 +1935,7 @@ const preparedIdentityFor = (image) => {
     configDigest: prepared.configDigest,
   };
 };
+verifyManifestEvidence(manifest, integrationRoot);
 const plans = scenarios.map((scenario) =>
   createIsolationPlan({
     scenario,
@@ -1745,6 +1950,7 @@ const plans = scenarios.map((scenario) =>
   }),
 );
 registerIntegrationRunIds(plans.map(({ runId }) => runId));
+const admissionByRunId = new Map();
 const controller = new AbortController();
 const abort = () => controller.abort();
 process.once("SIGINT", abort);
@@ -1755,7 +1961,71 @@ preparedDockerClient = createPreparedDockerClient(preparedImageEvidence, {
 });
 let retirementRequired = false;
 let primaryError;
+let pendingSupportEvidence;
+let terminalEvidence;
 try {
+  for (const evidenceId of new Set(
+    selectedScenarios.map(({ harnessEvidenceId }) => harnessEvidenceId),
+  )) {
+    const evidence = evidenceById.get(evidenceId);
+    const scenario = selectedScenarios.find(
+      (entry) => entry.harnessEvidenceId === evidenceId,
+    );
+    const plan = plans.find(
+      (entry) => entry.scenarioId === scenario?.scenarioId,
+    );
+    if (evidence === undefined || plan === undefined)
+      throw new Error("integration.harness-material.failed");
+    if (evidence.material.kind !== "certification-fixture")
+      preparedHarnessMaterials.set(
+        evidenceId,
+        await prepareHarnessMaterial({
+          dockerClient: preparedDockerClient,
+          evidenceId,
+          material: evidence.material,
+          maximumMilliseconds:
+            remainingIntegrationOperationMilliseconds(300_000),
+          privateRoot: capability.binding.privateStorage.root,
+          runId: plan.runId,
+          signal: integrationStageSignal(),
+        }),
+      );
+  }
+  for (const plan of plans) {
+    const scenario = scenarios.find(
+      ({ scenarioId }) => scenarioId === plan.scenarioId,
+    );
+    const evidence = evidenceById.get(scenario?.harnessEvidenceId);
+    const preparedMaterial = preparedHarnessMaterials.get(
+      scenario?.harnessEvidenceId,
+    );
+    if (scenario === undefined || evidence === undefined)
+      throw new Error("integration.harness-scenario-admission.invalid");
+    if (preparedMaterial === undefined) continue;
+    const materialAuthority = inspectPreparedHarnessMaterial(preparedMaterial);
+    const image = preparedIdentityFor(scenario.image);
+    admissionByRunId.set(plan.runId, {
+      evidence,
+      materialIdentity: materialAuthority.materialIdentity,
+      seed: {
+        candidateDigest: candidate.bundleIdentity,
+        destinationCombinationIdentity: admissionDigest({
+          destinations: [...scenario.destinations].sort(),
+          modelRoutes: [...scenario.modelRoutes].sort(),
+        }),
+        manifestIdentity: manifest.manifestIdentity,
+        platformIdentity: admissionDigest(image.platform),
+        preparedImage: {
+          image: image.image,
+          manifestDigest: image.manifestDigest,
+          configDigest: image.configDigest,
+          platformIdentity: admissionDigest(image.platform),
+        },
+        runId: plan.runId,
+      },
+      scenario,
+    });
+  }
   await activateRuns(plans);
   const evidence = await mapWithConcurrency(
     plans,
@@ -1792,7 +2062,23 @@ try {
         .digest("hex")}`,
     });
   }
-  console.log(JSON.stringify(evidence));
+  if (admissionByRunId.size > 0) {
+    const authorities = [...admissionByRunId.values()].map(
+      ({ authority }) => authority,
+    );
+    if (authorities.some((authority) => authority === undefined))
+      throw new Error("integration.harness-admission.invalid");
+    const supportEvidence = compileRealHarnessSupportEvidence(authorities);
+    const serializedSupportEvidence = `${JSON.stringify(
+      supportEvidence,
+      undefined,
+      2,
+    )}\n`;
+    if (Buffer.byteLength(serializedSupportEvidence) > 1_048_576)
+      throw new Error("integration.harness-admission.invalid");
+    pendingSupportEvidence = serializedSupportEvidence;
+  }
+  terminalEvidence = evidence;
 } catch (error) {
   if (
     preparedDockerClient !== undefined &&
@@ -1817,11 +2103,18 @@ try {
   process.removeListener("SIGINT", abort);
   process.removeListener("SIGTERM", abort);
   let cleanupError;
+  try {
+    for (const material of preparedHarnessMaterials.values())
+      retirePreparedHarnessMaterial(material);
+  } catch (error) {
+    cleanupError = error;
+    primaryError ??= error;
+  }
   if (preparedDockerClient !== undefined && !retirementRequired) {
     try {
       closePreparedDockerClient(preparedDockerClient);
     } catch (error) {
-      cleanupError = error;
+      cleanupError ??= error;
       primaryError ??= error;
     }
   }
@@ -1840,3 +2133,12 @@ try {
   }
 }
 if (primaryError !== undefined) throw primaryError;
+if (pendingSupportEvidence !== undefined) {
+  registerIntegrationArtifactFile("harness-support-evidence.json");
+  writeFileSync(
+    resolve(artifactsRoot, "harness-support-evidence.json"),
+    pendingSupportEvidence,
+    { flag: "wx", mode: 0o600 },
+  );
+}
+console.log(JSON.stringify(terminalEvidence));

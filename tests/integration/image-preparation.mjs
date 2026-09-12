@@ -37,7 +37,8 @@ const maximumManifestBytes = 1_048_576;
 const maximumEvidenceBytes = 8_388_608;
 const maximumTokenBytes = 16_384;
 const maximumHeaderBytes = 16_384;
-const maximumBuildContextBytes = 64 * 1024 * 1024;
+const defaultMaximumBuildContextBytes = 64 * 1024 * 1024;
+const maximumHarnessBuildContextBytes = 384 * 1024 * 1024;
 const maximumBuildOutputBytes = 16 * 1024 * 1024;
 const maximumProcessInspectionBytes = 1_048_576;
 const maximumPrivateStateEntries = 4_096;
@@ -1541,8 +1542,8 @@ const readBuildContextFile = (path, expected, state) => {
     if (
       !current.isFile() ||
       !sameFileIdentity(expected, current) ||
-      current.size > BigInt(maximumBuildContextBytes) ||
-      state.total() + 512 + size + padding + 1024 > maximumBuildContextBytes
+      current.size > BigInt(state.maximumBytes()) ||
+      state.total() + 512 + size + padding + 1024 > state.maximumBytes()
     )
       throw fixedError("integration.images.build");
     const body = readFileSync(descriptor);
@@ -1629,8 +1630,19 @@ const visitBuildContextDirectory = (
 };
 const boundedBuildContext = (
   root,
-  { afterEntryForTesting, deadline = Number.POSITIVE_INFINITY, signal } = {},
+  {
+    afterEntryForTesting,
+    deadline = Number.POSITIVE_INFINITY,
+    maximumBytes = defaultMaximumBuildContextBytes,
+    signal,
+  } = {},
 ) => {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > maximumHarnessBuildContextBytes
+  )
+    throw fixedError("integration.images.build");
   const assertActive = () => assertBuildContextActive(deadline, signal);
   assertActive();
   const rootStatus = lstatSync(root, { bigint: true });
@@ -1642,8 +1654,7 @@ const boundedBuildContext = (
   const append = (chunk) => {
     assertActive();
     total += chunk.byteLength;
-    if (total > maximumBuildContextBytes)
-      throw fixedError("integration.images.build");
+    if (total > maximumBytes) throw fixedError("integration.images.build");
     chunks.push(chunk);
   };
   const state = {
@@ -1658,6 +1669,7 @@ const boundedBuildContext = (
       entries += 1;
       if (entries > 8_192) throw fixedError("integration.images.build");
     },
+    maximumBytes: () => maximumBytes,
     total: () => total,
   };
   const rootDescriptor = openSync(
@@ -3134,6 +3146,7 @@ export const buildPreparedDockerImage = async (
     dockerfile,
     labels,
     maximumMilliseconds,
+    maximumBuildContextBytes,
     signal,
     tag,
   },
@@ -3163,6 +3176,7 @@ export const buildPreparedDockerImage = async (
   const archive = createBoundedBuildContext(context, {
     afterEntryForTesting: afterBuildContextEntryForTesting,
     deadline: policy.workDeadline,
+    maximumBytes: maximumBuildContextBytes ?? defaultMaximumBuildContextBytes,
     signal,
   });
   const authority = await createBuildAuthority(
@@ -3221,6 +3235,79 @@ export const buildPreparedDockerImage = async (
       ? failure
       : fixedError("integration.images.build", failure?.code === "ETIMEDOUT");
   return built.Id.replace(":", "-");
+};
+
+export const retirePreparedDockerImage = async (
+  client,
+  { imageId, signal, tag },
+) => {
+  if (
+    !preparedDockerClients.has(client) ||
+    closingPreparedDockerClients.has(client) ||
+    uncertainPreparedDockerClients.has(client) ||
+    !/^sha256-[a-f\d]{64}$/u.test(imageId ?? "") ||
+    !/^[a-z\d][a-z\d._/-]{0,127}:[a-z\d][a-z\d._-]{0,127}$/u.test(tag ?? "")
+  )
+    throw fixedError("integration.images.docker-client");
+  const policy = preparationPolicy([client.evidence.images[0].image], {
+    maximumPreparationMilliseconds: 30_000,
+    teardownMilliseconds: preparationTeardownMilliseconds,
+  });
+  const engine =
+    client.engineRequestForTesting ?? engineTransport(client.socket);
+  try {
+    const daemon = await inspectDaemon(engine, client.socket, policy, signal);
+    if (!sameDaemon(client.evidence.dockerDaemon, daemon))
+      throw fixedError("integration.images.containment");
+    const current = await inspectEngineObject({
+      daemon,
+      engine,
+      name: tag,
+      policy,
+      signal,
+      type: "images",
+    });
+    if (current?.Id?.replace(":", "-") !== imageId)
+      throw fixedError("integration.images.containment");
+    const removal = await engineCall(
+      { policy, signal, transport: engine },
+      {
+        expected: [200],
+        method: "DELETE",
+        path: `/v${daemon.apiVersion}/images/${encodeURIComponent(tag)}?force=1&noprune=0`,
+      },
+    );
+    const terminalPolicy = { ...policy, workDeadline: policy.deadline };
+    const removalReceipt = JSON.parse(removal.body);
+    if (
+      !Array.isArray(removalReceipt) ||
+      !removalReceipt.some(
+        (entry) => entry?.Deleted?.replace(":", "-") === imageId,
+      ) ||
+      !removalReceipt.some((entry) => entry?.Untagged === tag)
+    )
+      throw fixedError("integration.images.containment");
+    const tagged = await inspectEngineObject({
+      daemon,
+      engine,
+      name: tag,
+      policy: terminalPolicy,
+      type: "images",
+    });
+    if (tagged !== undefined)
+      throw fixedError("integration.images.containment");
+    assertSocketCurrentFor(engine, client.socket);
+    if (
+      !sameDaemon(
+        daemon,
+        await inspectDaemon(engine, client.socket, terminalPolicy),
+      )
+    )
+      throw fixedError("integration.images.containment");
+  } catch (error) {
+    markPreparedDockerClientForOuterHostRetirement(client);
+    throw error;
+  }
 };
 
 export const closePreparedDockerClient = (client) => {
@@ -3352,6 +3439,8 @@ export const IMAGE_PREPARATION_LIMITS = Object.freeze({
   maximumResponseBytes,
   maximumManifestBytes,
   maximumEvidenceBytes,
+  defaultMaximumBuildContextBytes,
+  maximumHarnessBuildContextBytes,
   maximumPrivateStateEntries,
   maximumPrivateStateDepth,
   maximumPrivateStateFileBytes,

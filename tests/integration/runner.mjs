@@ -324,7 +324,12 @@ try {
     HOME: home,
     LANG: "C.UTF-8",
     NO_COLOR: "1",
-    PATH: "/usr/local/bin:/usr/bin:/bin",
+    PATH:
+      manifest.evidence.find(
+        ({ evidenceId }) => evidenceId === scenario.harnessEvidenceId,
+      )?.material.kind === "npm"
+        ? "/opt/agentscope/harness/node_modules/.bin:/usr/local/bin:/usr/bin:/bin"
+        : "/usr/local/bin:/usr/bin:/bin",
     XDG_CONFIG_HOME: requiredEnvironment("XDG_CONFIG_HOME"),
     ...(process.env.AGENTSCOPE_INTEGRATION_TEST_MODE === undefined
       ? {}
@@ -339,7 +344,10 @@ try {
         }),
   });
   const now = performance.now();
-  const fixtureScript = "/opt/agentscope/platform-fixture.mjs";
+  const fixtureScript = "/opt/agentscope/scenario-process.mjs";
+  const scenarioProcessSha256 = rawSha256(readFileSync(fixtureScript));
+  if (scenarioProcessSha256 !== scenario.scenarioProcess.sha256)
+    throw new Error("integration.runner.fixture-artifact");
   const selectedArtifact =
     substrateCertificationCase === "mixed-artifact-digest"
       ? evidence.lockfile
@@ -402,7 +410,7 @@ try {
       path: process.execPath,
       sha256: rawSha256(readFileSync(process.execPath)),
     };
-    const scriptSha256 = rawSha256(readFileSync(request.executable));
+    const scriptSha256 = scenarioProcessSha256;
     const initialGeometry = { columns: 80, rows: 24 };
     const completion = { kind: "semantic-marker" };
     const interaction = {

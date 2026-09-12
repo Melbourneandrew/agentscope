@@ -75,6 +75,24 @@ describe("integration controller policy", () => {
     );
   });
 
+  it("keeps external-material verification inside the selected disposable daemon", () => {
+    const material = readFileSync(
+      resolve(workspaceRoot, "tests/integration/harness-material.mjs"),
+      "utf8",
+    );
+    const command = readFileSync(
+      resolve(workspaceRoot, "tests/integration/harness-material-command.mjs"),
+      "utf8",
+    );
+    expect(material).toContain("buildPreparedDockerImage(client");
+    expect(material).toContain("retirePreparedDockerImage(client");
+    expect(material).toContain('RUN --network=${operation === "gpg-verify"');
+    expect(material).not.toContain("runSupervisedProcess");
+    expect(command).toContain('root !== "/verify"');
+    expect(command).toContain('NPM_CONFIG_IGNORE_SCRIPTS: "true"');
+    expect(command).toContain('"--no-auto-key-retrieve"');
+  });
+
   it("retains narrow cleanup ceilings for controller-owned artifacts", () => {
     const source = readFileSync(
       resolve(workspaceRoot, "tests/integration/clean.mjs"),
@@ -86,6 +104,7 @@ describe("integration controller policy", () => {
     expect(source).toContain('"current-candidate.json": 16_384');
     expect(source).toContain('"current-model-routes.json": 16_384');
     expect(source).toContain('"current-selection.json": 16_384');
+    expect(source).toContain('"harness-support-evidence.json": 1_048_576');
     expect(source).toContain(
       "const addFile = (targets, relative, maximumBytes = 16_384)",
     );

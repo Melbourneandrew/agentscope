@@ -142,6 +142,162 @@ describe("integration capability manifest", () => {
   });
 });
 
+describe("integration npm material policy", () => {
+  it("detects scenario process mutation", () => {
+    const original = manifestFixture();
+    const processPath = resolve(
+      integrationRoot,
+      original.scenarios[0]!.scenarioProcess.path,
+    );
+    const bytes = readFileSync(processPath);
+    try {
+      writeFileSync(processPath, `${bytes.toString("utf8")}\n`);
+      expect(() => {
+        verifyManifestEvidence(original, integrationRoot);
+      }).toThrow("integration.manifest.evidence-digest");
+    } finally {
+      writeFileSync(processPath, bytes);
+    }
+  });
+
+  it("rejects moving or incomplete npm material", () => {
+    const original = manifestFixture();
+    expect(() =>
+      compileCapabilityManifest({
+        ...original,
+        evidence: [
+          {
+            ...original.evidence[0]!,
+            material: {
+              kind: "npm",
+              platformIdentity: `sha256-${"9".repeat(64)}`,
+              verifierImage: `node@sha256:${"f".repeat(64)}`,
+              registry: "https://registry.npmjs.org/",
+              packages: [
+                {
+                  attestations: {
+                    url: "https://registry.npmjs.org/-/npm/v1/attestations/@vendor%2fharness@1.0.0",
+                    bytes: 1,
+                    sha256: "f".repeat(64),
+                  },
+                  installName: "@vendor/harness",
+                  packageName: "@vendor/harness",
+                  version: "1.0.0",
+                  tarballUrl: "https://registry.npmjs.org/latest.tgz",
+                  bytes: 1,
+                  integrity: "moving",
+                  shasum: "0".repeat(40),
+                },
+              ],
+              provenance: {
+                repository: "https://github.com/vendor/harness",
+                sourceCommit: "0".repeat(40),
+                tag: "v1.0.0",
+                workflowPath: ".github/workflows/release.yml",
+              },
+            },
+          },
+        ],
+      }),
+    ).toThrow("integration.manifest.invalid");
+  });
+});
+
+describe("integration signed-manifest material policy", () => {
+  const signedEvidence = (original: CapabilityManifest) => ({
+    ...original.evidence[0]!,
+    representativeVersion: "2.1.89",
+    material: {
+      kind: "signed-release-manifest" as const,
+      distributionId: "vendor-tool",
+      version: "2.1.89",
+      platform: "linux-x64",
+      platformIdentity: `sha256-${"9".repeat(64)}`,
+      verifierImage: original.scenarios[0]!.image,
+      binary: {
+        url: "https://downloads.vendor.invalid/releases/2.1.89/linux-x64/tool",
+        bytes: 1,
+        sha256: "a".repeat(64),
+        executableName: "tool",
+      },
+      manifest: {
+        url: "https://downloads.vendor.invalid/releases/2.1.89/manifest.json",
+        bytes: 1,
+        sha256: "b".repeat(64),
+      },
+      signature: {
+        url: "https://downloads.vendor.invalid/releases/2.1.89/manifest.json.sig",
+        bytes: 1,
+        sha256: "c".repeat(64),
+      },
+      signingKey: {
+        url: "https://downloads.vendor.invalid/keys/release.asc",
+        bytes: 1,
+        sha256: "d".repeat(64),
+        fingerprint: "A".repeat(40),
+        signerFingerprint: "A".repeat(40),
+        signatureHashAlgorithm: "sha512" as const,
+        uid: "Vendor Release Signing <security@vendor.invalid>",
+      },
+    },
+    admission: {
+      evidenceSlot: "vendor-tool-v1",
+      eligibleRange: {
+        minimumInclusive: "2.1.89",
+        maximumExclusive: "3.0.0",
+      },
+      distributionReference: "signed-manifest:vendor-tool@2.1.89#linux-x64",
+      component: {
+        fixture: {
+          path: "packages/harnesses/codex/fixtures/native/a.json",
+          sha256: "e".repeat(64),
+        },
+        adapterArtifact: {
+          path: "packages/harnesses/codex/dist/index.js",
+          sha256: "f".repeat(64),
+        },
+        mappingArtifact: {
+          path: "packages/harnesses/codex/dist/mapping.js",
+          sha256: "0".repeat(64),
+        },
+        componentEvidenceDigest: `component-sha256-${"1".repeat(64)}`,
+      },
+    },
+  });
+
+  it("compiles a harness-neutral exact-version signed release", () => {
+    const original = manifestFixture();
+    const evidence = signedEvidence(original);
+    const compiled = compileCapabilityManifest(
+      withIdentity({ ...original, evidence: [evidence] }),
+    );
+    expect(compiled.evidence[0]?.material.kind).toBe("signed-release-manifest");
+  });
+
+  it("rejects origin and exact-version path substitution", () => {
+    const original = manifestFixture();
+    const evidence = signedEvidence(original);
+    for (const manifestUrl of [
+      "https://other.vendor.invalid/releases/2.1.89/manifest.json",
+      "https://downloads.vendor.invalid/releases/latest/manifest.json",
+    ])
+      expect(() =>
+        compileCapabilityManifest({
+          ...original,
+          evidence: [
+            {
+              ...evidence,
+              material: {
+                ...evidence.material,
+                manifest: { ...evidence.material.manifest, url: manifestUrl },
+              },
+            },
+          ],
+        }),
+      ).toThrow("integration.manifest.invalid");
+  });
+});
+
 describe("integration capability execution modes", () => {
   it("rejects a headless/interactive output-contract mismatch", () => {
     const original = manifestFixture();

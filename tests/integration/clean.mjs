@@ -179,6 +179,7 @@ const artifactMaximumBytes = Object.freeze({
   "current-images.json": IMAGE_PREPARATION_LIMITS.maximumEvidenceBytes,
   "current-model-routes.json": 16_384,
   "current-selection.json": 16_384,
+  "harness-support-evidence.json": 1_048_576,
 });
 const installedPtyFailurePredicates = Object.freeze({
   "candidate-inventory": Object.freeze(["candidate-rejected"]),

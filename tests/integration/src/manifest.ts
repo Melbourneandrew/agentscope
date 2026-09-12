@@ -9,7 +9,20 @@ const id = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u);
 const packageId = z.string().regex(/^@agentscope\/[a-z][a-z0-9-]{0,63}$/u);
 const semver = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
 const digest = z.string().regex(/^sha256-[a-f\d]{64}$/u);
+const dockerImage = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f\d]{64}$/u);
 const fileDigest = z.string().regex(/^[a-f\d]{64}$/u);
+const sriSha512 = z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/u);
+const sha256Hex = z.string().regex(/^[a-f\d]{64}$/u);
+const npmPackageName = z
+  .string()
+  .regex(/^@[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}$/u);
+const httpsUrl = z
+  .string()
+  .url()
+  .max(512)
+  .refine((value) => new URL(value).protocol === "https:");
 const relativeEvidencePath = z
   .string()
   .regex(/^fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.json$/u)
@@ -18,6 +31,16 @@ const relativeAdapterPath = z
   .string()
   .regex(/^fixtures\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
   .refine((value) => !value.split("/").includes(".."));
+const relativeScenarioProcessPath = z
+  .string()
+  .regex(/^(?:fixtures\/)?[a-zA-Z0-9][a-zA-Z0-9._/-]{0,159}\.mjs$/u)
+  .refine((value) => !value.split("/").includes(".."));
+const relativeWorkspaceArtifactPath = z
+  .string()
+  .regex(
+    /^packages\/harnesses\/[a-z0-9-]+\/[a-zA-Z0-9][a-zA-Z0-9._/-]{0,191}$/u,
+  )
+  .refine((value) => !value.split("/").includes(".."));
 const uniqueList = <T extends z.ZodType<string>>(member: T) =>
   z
     .array(member)
@@ -25,16 +48,168 @@ const uniqueList = <T extends z.ZodType<string>>(member: T) =>
     .max(32)
     .refine((value) => new Set(value).size === value.length);
 
-const evidenceSchema = z.strictObject({
-  evidenceId: id,
-  harnessId: id,
-  harnessPackage: packageId,
-  representativeVersion: semver,
-  descriptorArtifact: z.strictObject({
-    path: relativeEvidencePath,
-    sha256: fileDigest,
+const signedObjectSchema = z.strictObject({
+  url: httpsUrl,
+  bytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(384 * 1024 * 1024),
+  sha256: sha256Hex,
+});
+
+const npmMaterialPackageSchema = z.strictObject({
+  attestations: signedObjectSchema,
+  installName: npmPackageName,
+  packageName: npmPackageName,
+  version: semver,
+  tarballUrl: httpsUrl,
+  bytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(384 * 1024 * 1024),
+  integrity: sriSha512,
+  shasum: z.string().regex(/^[a-f\d]{40}$/u),
+});
+const harnessMaterialSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("certification-fixture") }),
+  z.strictObject({
+    kind: z.literal("npm"),
+    platformIdentity: digest,
+    verifierImage: dockerImage,
+    registry: z.literal("https://registry.npmjs.org/"),
+    packages: z
+      .array(npmMaterialPackageSchema)
+      .min(1)
+      .max(8)
+      .refine(
+        (entries) =>
+          new Set(entries.map(({ installName }) => installName)).size ===
+            entries.length &&
+          new Set(
+            entries.map(
+              ({ packageName, version }) => `${packageName}@${version}`,
+            ),
+          ).size === entries.length,
+      )
+      .refine(
+        (entries) =>
+          entries.reduce((total, entry) => total + entry.bytes, 0) <=
+          320 * 1024 * 1024,
+      ),
+    provenance: z.strictObject({
+      repository: httpsUrl,
+      sourceCommit: z.string().regex(/^[a-f\d]{40}$/u),
+      tag: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u),
+      workflowPath: z
+        .string()
+        .regex(
+          /^\.github\/workflows\/[A-Za-z0-9][A-Za-z0-9._/-]{0,127}\.ya?ml$/u,
+        ),
+    }),
+  }),
+  z.strictObject({
+    kind: z.literal("signed-release-manifest"),
+    distributionId: id,
+    version: semver,
+    platform: id,
+    platformIdentity: digest,
+    verifierImage: dockerImage,
+    binary: signedObjectSchema.extend({
+      executableName: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/u),
+    }),
+    manifest: signedObjectSchema.extend({
+      bytes: z.number().int().min(1).max(1_048_576),
+    }),
+    signature: signedObjectSchema.extend({
+      bytes: z.number().int().min(1).max(1_048_576),
+    }),
+    signingKey: signedObjectSchema.extend({
+      bytes: z.number().int().min(1).max(1_048_576),
+      fingerprint: z.string().regex(/^[A-F\d]{40}$/u),
+      signerFingerprint: z.string().regex(/^[A-F\d]{40}$/u),
+      signatureHashAlgorithm: z.enum(["sha256", "sha384", "sha512"]),
+      uid: z.string().min(1).max(256),
+    }),
+  }),
+]);
+
+const admissionArtifactSchema = z.strictObject({
+  path: relativeWorkspaceArtifactPath,
+  sha256: fileDigest,
+});
+const harnessAdmissionSchema = z.strictObject({
+  evidenceSlot: id,
+  eligibleRange: z.strictObject({
+    minimumInclusive: semver,
+    maximumExclusive: semver,
+  }),
+  distributionReference: z
+    .string()
+    .regex(
+      /^(?:npm:@[a-z0-9][a-z0-9._-]{0,63}\/[a-z0-9][a-z0-9._-]{0,63}|signed-manifest:[a-z][a-z0-9-]{0,63})@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:#[a-z][a-z0-9-]{0,63})?$/u,
+    ),
+  component: z.strictObject({
+    fixture: admissionArtifactSchema,
+    adapterArtifact: admissionArtifactSchema,
+    mappingArtifact: admissionArtifactSchema,
+    componentEvidenceDigest: z
+      .string()
+      .regex(/^component-sha256-[a-f\d]{64}$/u),
   }),
 });
+
+const evidenceSchema = z
+  .strictObject({
+    evidenceId: id,
+    harnessId: id,
+    harnessPackage: packageId,
+    representativeVersion: semver,
+    descriptorArtifact: z.strictObject({
+      path: relativeEvidencePath,
+      sha256: fileDigest,
+    }),
+    material: harnessMaterialSchema,
+    admission: harnessAdmissionSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      (value.material.kind !== "certification-fixture") !==
+      (value.admission !== undefined)
+    )
+      context.addIssue({ code: "custom", message: "admission mismatch" });
+    if (value.material.kind === "signed-release-manifest") {
+      const origins = [
+        value.material.binary.url,
+        value.material.manifest.url,
+        value.material.signature.url,
+        value.material.signingKey.url,
+      ].map((entry) => new URL(entry).origin);
+      if (new Set(origins).size !== 1)
+        context.addIssue({
+          code: "custom",
+          message: "release origin mismatch",
+        });
+      const manifestUrl = new URL(value.material.manifest.url);
+      const releasePrefix = manifestUrl.pathname.slice(
+        0,
+        -"manifest.json".length,
+      );
+      if (
+        !manifestUrl.pathname.endsWith(
+          `/${value.material.version}/manifest.json`,
+        ) ||
+        new URL(value.material.signature.url).pathname !==
+          `${manifestUrl.pathname}.sig` ||
+        !new URL(value.material.binary.url).pathname.startsWith(releasePrefix)
+      )
+        context.addIssue({
+          code: "custom",
+          message: "release path mismatch",
+        });
+    }
+  });
 const descriptorEvidenceSchema = z.strictObject({
   evidenceVersion: z.literal(1),
   harnessId: id,
@@ -60,6 +235,10 @@ const scenarioSchema = z
     destinations: uniqueList(id),
     fixtureAdapter: z.strictObject({
       path: relativeAdapterPath,
+      sha256: fileDigest,
+    }),
+    scenarioProcess: z.strictObject({
+      path: relativeScenarioProcessPath,
       sha256: fileDigest,
     }),
     resourceClass: z.enum(["small", "medium", "large"]),
@@ -132,6 +311,20 @@ const assertCoverage = (manifest: CapabilityManifest): void => {
     )
   )
     throw new Error("integration.manifest.unknown-evidence");
+  const preparedImages = new Set(
+    manifest.scenarios.flatMap(({ image, mockServerImage }) => [
+      image,
+      mockServerImage,
+    ]),
+  );
+  if (
+    manifest.evidence.some(
+      ({ material }) =>
+        material.kind !== "certification-fixture" &&
+        !preparedImages.has(material.verifierImage),
+    )
+  )
+    throw new Error("integration.manifest.verifier-image");
 };
 
 export const compileCapabilityManifest = (
@@ -180,7 +373,12 @@ export const verifyManifestEvidence = (
       evidence.descriptorArtifact.path,
     );
     const status = lstatSync(path);
-    if (!status.isFile() || status.isSymbolicLink())
+    if (
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.size < 1 ||
+      status.size > 1_048_576
+    )
       throw new Error("integration.manifest.evidence-file");
     const actual = sha256(readFileSync(path)).slice("sha256-".length);
     if (actual !== evidence.descriptorArtifact.sha256)
@@ -199,15 +397,50 @@ export const verifyManifestEvidence = (
       descriptor.data.representativeVersion !== evidence.representativeVersion
     )
       throw new Error("integration.manifest.evidence-contract");
+    if (evidence.admission !== undefined) {
+      const workspaceRoot = resolve(integrationRoot, "../..");
+      for (const artifact of [
+        evidence.admission.component.fixture,
+        evidence.admission.component.adapterArtifact,
+        evidence.admission.component.mappingArtifact,
+      ]) {
+        const artifactPath = resolve(workspaceRoot, artifact.path);
+        if (!artifactPath.startsWith(`${workspaceRoot}${sep}`))
+          throw new Error("integration.manifest.evidence-file");
+        const artifactStatus = lstatSync(artifactPath);
+        if (
+          !artifactStatus.isFile() ||
+          artifactStatus.isSymbolicLink() ||
+          artifactStatus.size < 1 ||
+          artifactStatus.size > 16_777_216
+        )
+          throw new Error("integration.manifest.evidence-file");
+        const artifactDigest = sha256(readFileSync(artifactPath)).slice(
+          "sha256-".length,
+        );
+        if (artifactDigest !== artifact.sha256)
+          throw new Error("integration.manifest.evidence-digest");
+      }
+    }
   }
   for (const scenario of manifest.scenarios) {
-    const path = evidencePath(integrationRoot, scenario.fixtureAdapter.path);
-    const status = lstatSync(path);
-    if (!status.isFile() || status.isSymbolicLink())
-      throw new Error("integration.manifest.evidence-file");
-    const actual = sha256(readFileSync(path)).slice("sha256-".length);
-    if (actual !== scenario.fixtureAdapter.sha256)
-      throw new Error("integration.manifest.evidence-digest");
+    for (const [artifact, maximumBytes] of [
+      [scenario.fixtureAdapter, 1_048_576],
+      [scenario.scenarioProcess, 16_777_216],
+    ] as const) {
+      const path = evidencePath(integrationRoot, artifact.path);
+      const status = lstatSync(path);
+      if (
+        !status.isFile() ||
+        status.isSymbolicLink() ||
+        status.size < 1 ||
+        status.size > maximumBytes
+      )
+        throw new Error("integration.manifest.evidence-file");
+      const actual = sha256(readFileSync(path)).slice("sha256-".length);
+      if (actual !== artifact.sha256)
+        throw new Error("integration.manifest.evidence-digest");
+    }
   }
 };
 

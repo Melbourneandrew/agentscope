@@ -158,6 +158,7 @@ export declare const createBoundedBuildContext: (
   options?: Readonly<{
     afterEntryForTesting?: (entryCount: number) => void;
     deadline?: number;
+    maximumBytes?: number;
     signal?: AbortSignal;
   }>,
 ) => Buffer;
@@ -183,11 +184,21 @@ export declare const buildPreparedDockerImage: (
     context: string;
     dockerfile: string;
     labels: Readonly<Record<string, string>>;
+    maximumBuildContextBytes?: number;
     maximumMilliseconds: number;
     signal?: AbortSignal;
     tag: string;
   }>,
 ) => Promise<string>;
+
+export declare const retirePreparedDockerImage: (
+  client: PreparedDockerClient,
+  options: Readonly<{
+    imageId: string;
+    signal?: AbortSignal;
+    tag: string;
+  }>,
+) => Promise<void>;
 
 export declare const closePreparedDockerClient: (
   client: PreparedDockerClient,
@@ -291,6 +302,8 @@ export declare const IMAGE_PREPARATION_LIMITS: Readonly<{
   maximumResponseBytes: number;
   maximumManifestBytes: number;
   maximumEvidenceBytes: number;
+  defaultMaximumBuildContextBytes: number;
+  maximumHarnessBuildContextBytes: number;
   maximumPrivateStateEntries: number;
   maximumPrivateStateDepth: number;
   maximumPrivateStateFileBytes: number;

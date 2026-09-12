@@ -141,6 +141,7 @@ const artifactFiles = new Set([
   "current-images.json",
   "current-model-routes.json",
   "current-selection.json",
+  "harness-support-evidence.json",
 ]);
 const capabilityContext =
   new AsyncLocalStorage<DisposableOuterHostCapability>();
